@@ -462,15 +462,17 @@ impl Bridge {
         self.edited_param(id, value);
     }
 
-    /// Applies the document's base-value edit to the manager's cache.
-    fn keep_base_value(&mut self, id: u32, value: f64) {
-        self.base_values.insert(id, value);
+    /// Updates the live cache without retaining a temporary value as a document edit.
+    pub(crate) fn preview_param(&mut self, id: u32, value: f64) {
         let entry = self.values.entry(id).or_insert_with(|| ParamValue {
             id,
             value,
             text: String::new(),
         });
-        entry.value = value;
+        if entry.value != value {
+            entry.text.clear();
+            entry.value = value;
+        }
     }
 
     /// Sends `SetState` to the running plugin (an undo or redo changed the device's state); the
@@ -931,18 +933,11 @@ impl Bridge {
         if self.phase != Phase::Running {
             return;
         }
-        if self
-            .values
-            .get(&id)
-            .is_some_and(|entry| entry.value != value)
-            && let Some(entry) = self.values.get_mut(&id)
-        {
-            entry.text.clear();
-        }
         for restore in &mut self.state_restores {
             restore.later_edits.insert(id);
         }
-        self.keep_base_value(id, value);
+        self.base_values.insert(id, value);
+        self.preview_param(id, value);
         self.user_changed();
         self.snapshot_soon();
     }

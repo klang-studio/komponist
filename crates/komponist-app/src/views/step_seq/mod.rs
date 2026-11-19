@@ -195,6 +195,7 @@ pub struct StepSequencer {
     toolbar: toolbar::ToolbarState,
     grid: grid::GridState,
     lane: lane::LaneState,
+    automation: crate::views::automation::ClipEditor,
 }
 
 impl StepSequencer {
@@ -205,6 +206,10 @@ impl StepSequencer {
 }
 
 impl View for StepSequencer {
+    fn reset_document(&mut self) {
+        self.automation = Default::default();
+    }
+
     fn show(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
         let rect = ui.max_rect();
         let project: Arc<Project> = Arc::clone(ctx.project);
@@ -213,15 +218,63 @@ impl View for StepSequencer {
             centered_text(ui, rect, ctx.lang.step_seq_no_clip(), None);
             return;
         };
-        let hue = project.track(open.track).map_or(0, |t| t.hue.0);
+        let Some((track, clip)) = project.find_clip(open.clip) else {
+            return;
+        };
+        let hue = track.hue.0;
         if self.palette.as_ref().is_none_or(|p| p.hue != hue) {
             self.palette = None;
         }
         let palette = self.palette.get_or_insert_with(|| TrackPalette::new(hue));
-        let areas = Areas::of(rect, open.pattern.rows.len());
-        toolbar::show(ui, areas.toolbar, &open, ctx, &mut self.toolbar);
+        let base = Areas::of(rect, open.pattern.rows.len());
+        let available = rect.bottom() - base.rows.top() - row_pitch() - m::LANE_MIN_HEIGHT;
+        let automation_height = self.automation.height(clip, available);
+        let areas = Areas::of(
+            Rect::from_min_max(
+                rect.min,
+                pos2(rect.right(), rect.bottom() - automation_height),
+            ),
+            open.pattern.rows.len(),
+        );
+        let button = toolbar::show(
+            ui,
+            areas.toolbar,
+            &open,
+            ctx,
+            &mut self.toolbar,
+            self.automation.shown(clip),
+        );
+        self.automation.toolbar(ui, ctx, clip, track, &button);
         grid::show(ui, &areas, &open, ctx, &mut self.grid, palette);
         lane::show(ui, areas.lane, &open, ctx, &mut self.lane, palette);
+        let columns = grid::Columns::new(areas.rows, open.steps());
+        let resolution = open.pattern.resolution;
+        let axis = komponist_ui::timeline::TimeAxis {
+            x0: columns.left,
+            px_per_tick: (columns.width + m::CELL_GAP) / resolution.ticks().0 as f32,
+        };
+        let grid = match resolution {
+            komponist_model::StepResolution::Eighth => komponist_model::Grid::Eighth,
+            komponist_model::StepResolution::Sixteenth => komponist_model::Grid::Sixteenth,
+            komponist_model::StepResolution::ThirtySecond => komponist_model::Grid::ThirtySecond,
+            komponist_model::StepResolution::EighthTriplet => komponist_model::Grid::EighthTriplet,
+            komponist_model::StepResolution::SixteenthTriplet => {
+                komponist_model::Grid::SixteenthTriplet
+            }
+        };
+        let lanes = Rect::from_min_max(pos2(rect.left(), areas.lane.bottom()), rect.max);
+        self.automation.show(
+            ui,
+            ctx,
+            lanes,
+            columns.left,
+            clip,
+            track,
+            axis,
+            grid,
+            true,
+            palette,
+        );
     }
 }
 

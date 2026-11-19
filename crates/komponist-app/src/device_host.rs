@@ -160,6 +160,9 @@ pub trait DeviceHost {
         false
     }
 
+    /// Updates the visible value of a plugin parameter during an automation override.
+    fn preview_param(&mut self, _device: DeviceId, _id: u32, _value: f64) {}
+
     /// Sets a parameter of a bridged device; `false` if this host does not handle `device` (the
     /// caller then sends the engine's `SetParam` to the device's slot, as for hexa).
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
@@ -709,6 +712,10 @@ impl DeviceHost for PluginHost {
 
     fn edited_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
         self.manager.edited_param(device, id, value)
+    }
+
+    fn preview_param(&mut self, device: DeviceId, id: u32, value: f64) {
+        self.manager.preview_param(device, id, value);
     }
 
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {

@@ -196,9 +196,9 @@ pub fn clamp_top_key(top: i32, rows: usize) -> u8 {
     top.clamp(min, i32::from(metrics::TOP_KEY_MAX).max(min)) as u8
 }
 
-/// The velocity a press `up` points above the lane's stem base sets (`(H-4-y)/52*127`).
-pub fn lane_velocity(up: f32) -> u8 {
-    (up / metrics::VELOCITY_MAX_HEIGHT * 127.0)
+/// The velocity a press `up` points above the lane's stem base sets.
+pub fn lane_velocity(up: f32, lane_height: f32) -> u8 {
+    (up / metrics::velocity_scale(lane_height) * 127.0)
         .round()
         .clamp(1.0, 127.0) as u8
 }
@@ -328,9 +328,9 @@ mod tests {
     fn velocity_drags_in_steps_of_one_and_a_half_points() {
         assert_eq!(velocity_offset(-15.0), 10);
         assert_eq!(velocity_offset(3.0), -2);
-        assert_eq!(lane_velocity(52.0), 127);
-        assert_eq!(lane_velocity(26.0), 64);
-        assert_eq!(lane_velocity(-5.0), 1);
+        assert_eq!(lane_velocity(52.0, 64.0), 127);
+        assert_eq!(lane_velocity(26.0, 64.0), 64);
+        assert_eq!(lane_velocity(-5.0, 64.0), 1);
     }
 
     #[test]

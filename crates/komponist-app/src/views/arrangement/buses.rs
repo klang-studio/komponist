@@ -413,8 +413,14 @@ impl Arrangement {
         let modes = crate::views::automation::mode_names(t)
             .map(|(mode, label)| Entry::action(label, Pick::AutomationMode(mode)));
         entries.push(Entry::separator());
+        let automation_shown = track.automation.shown
+            && track
+                .automation
+                .lanes
+                .iter()
+                .any(|lane| !ctx.ui.hidden_automation_lanes.contains(&lane.id));
         entries.push(Entry::action(
-            if track.automation.shown {
+            if automation_shown {
                 t.automation_hide_menu()
             } else {
                 t.automation_show_menu()
@@ -463,7 +469,7 @@ impl Arrangement {
             Pick::AutomationShow => {
                 MenuAction::Edit(Action::Automation(crate::views::automation::Action::Shown(
                     AutomationOwner::Track(track.id),
-                    !track.automation.shown,
+                    !automation_shown,
                 )))
             }
             Pick::AutomationAdd => MenuAction::AutomationAdd,

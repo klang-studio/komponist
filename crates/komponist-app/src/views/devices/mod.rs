@@ -110,9 +110,20 @@ impl View for Devices {
                     device: c.device,
                     param: param.info.id.clone(),
                 };
-                if let Some(value) = super::automation::automation_controls(ctx, owner, &target) {
+                if let Some(value) = ctx.automation_value(owner, &target) {
                     param.value = param.info.to_plain(f64::from(value));
                     param.text = param.info.format(param.value);
+                    let ink = if ctx
+                        .automation_capture
+                        .and_then(|pass| pass.current_value(owner, &target))
+                        .is_some()
+                    {
+                        komponist_tokens::egui_support::color32(
+                            komponist_tokens::color::STATE_RECORD,
+                        )
+                    } else {
+                        ink
+                    };
                     c.automation.insert(param.info.id.clone(), ink);
                 }
             }

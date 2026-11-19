@@ -631,6 +631,15 @@ impl PluginManager {
         true
     }
 
+    /// Reflects a plugin GUI's temporary automation value without scheduling a snapshot.
+    pub fn preview_param(&mut self, device: DeviceId, id: u32, value: f64) {
+        if let Some(bridge) = self.bridges.get_mut(&device).filter(|b| b.running()) {
+            bridge.preview_param(id, value);
+            self.pending
+                .push(PluginManagerEvent::ParamValuesChanged { device });
+        }
+    }
+
     /// Restores `state` in the running plugin of `device` (undo or redo changed the device's
     /// state in the document); `false` if the device has no running bridge.
     pub fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {

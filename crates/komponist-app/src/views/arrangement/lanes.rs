@@ -686,6 +686,28 @@ impl Arrangement {
                     preview: Some(preview),
                 };
                 paint_clip(painter, rect, &model, state);
+                if !clip.automation.is_empty() && rect.width() >= metrics::CLIP_AUTOMATION_THRESHOLD
+                {
+                    let icon = Rect::from_center_size(
+                        pos2(
+                            rect.right() - metrics::CLIP_LOOP_ICON_INSET,
+                            rect.top() + komponist_tokens::size::CLIP_HEADER / 2.0,
+                        ),
+                        egui::vec2(metrics::CLIP_AUTOMATION_ICON, metrics::CLIP_AUTOMATION_ICON),
+                    );
+                    let mut badge = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(icon)
+                            .id_salt(("clip-automation-icon", clip.id)),
+                    );
+                    badge.set_clip_rect(painter.clip_rect().intersect(rect));
+                    komponist_ui::icons::paint_in(
+                        &badge,
+                        icon,
+                        komponist_tokens::Icon::Spline,
+                        color32(color::TEXT_1),
+                    );
+                }
                 if selected {
                     paint_selected_edge(painter, rect);
                 }
@@ -703,6 +725,11 @@ impl Arrangement {
                     Sense::hover(),
                 );
                 register(&node, &access);
+                if !clip.automation.is_empty() {
+                    komponist_ui::widgets::accesskit(&node, |node| {
+                        node.set_description(ctx.lang.automation_title())
+                    });
+                }
                 if let ClipContent::Audio(audio) = &clip.content {
                     audio_clip_menu(ui, ctx, clip, audio, &node);
                 }

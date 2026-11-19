@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use komponist_app::actions::{EditAction, PluginAction, ProjectAction, SettingsAction};
@@ -15,8 +16,13 @@ use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::{PluginView, StatusKind};
 use komponist_app::{Action, App};
-use komponist_engine::Processor;
-use komponist_ipc::{LogLevel, PluginDescriptor, PluginFormat as BundleFormat, PluginKind};
+use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
+use komponist_engine::{
+    Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+};
+use komponist_ipc::{
+    LogLevel, ParamInfo, PluginDescriptor, PluginFormat as BundleFormat, PluginKind,
+};
 use komponist_model::edits::ProjectProp;
 use komponist_model::fixtures::demo_project;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginRef, TrackId, persist};
@@ -41,17 +47,75 @@ struct Script {
     released: Vec<DeviceId>,
     scans: Vec<PluginDirs>,
     params: Vec<(DeviceId, u32, f64)>,
+    gui_edits: Vec<(DeviceId, u32, f64)>,
+    gui_previews: Vec<(DeviceId, u32, f64)>,
     closed_guis: Vec<DeviceId>,
     snapshot_calls: usize,
     shut_down: bool,
 }
 
-/// A device host without processors: devices whose plugin the catalog knows are `Ok` (and have a
-/// GUI unless they are built in), the others `Missing`.
+/// A synthetic GUI with one parameter and an RT-safe handoff to its processor.
+struct GuiEditSource {
+    device: DeviceId,
+    info: ParamInfo,
+    pending: Arc<AtomicU64>,
+    applied: Arc<AtomicU64>,
+}
+
+struct GuiProcessor {
+    id: u32,
+    pending: Arc<AtomicU64>,
+    applied: Arc<AtomicU64>,
+}
+
+impl Processor for GuiProcessor {
+    fn activate(&mut self, _: f32, _: usize) -> Result<(), ProcessorError> {
+        Ok(())
+    }
+
+    fn process(
+        &mut self,
+        _: &ProcessContext,
+        events: &[Event],
+        io: &mut StereoIo<'_>,
+    ) -> ProcessStatus {
+        for event in events {
+            if let EventKind::Param { id, value } = event.kind
+                && id == self.id
+            {
+                self.applied.store(value.to_bits(), Ordering::Relaxed);
+            }
+        }
+        io.output[0].fill(0.0);
+        io.output[1].fill(0.0);
+        ProcessStatus::Continue
+    }
+
+    fn pop_parameter_edit(&mut self) -> Option<ParameterEdit> {
+        let bits = self.pending.swap(f64::NAN.to_bits(), Ordering::Relaxed);
+        let value = f64::from_bits(bits);
+        if !value.is_finite() {
+            return None;
+        }
+        self.applied.store(bits, Ordering::Relaxed);
+        Some(ParameterEdit {
+            offset: 0,
+            kind: ParameterEditKind::Value { id: self.id, value },
+        })
+    }
+
+    fn latency(&self) -> u32 {
+        0
+    }
+    fn reset(&mut self) {}
+}
+
+/// A scripted host, with a processor only for the optional synthetic GUI.
 struct FakeHost {
     script: Rc<RefCell<Script>>,
     catalog: Catalog,
     statuses: HashMap<DeviceId, DeviceStatus>,
+    gui: Option<GuiEditSource>,
 }
 
 impl DeviceHost for FakeHost {
@@ -61,6 +125,14 @@ impl DeviceHost for FakeHost {
         _setup: ProcessorSetup,
     ) -> Option<Box<dyn Processor>> {
         self.script.borrow_mut().created.push(device.id);
+        if let Some(gui) = self.gui.as_ref().filter(|gui| gui.device == device.id) {
+            self.statuses.insert(device.id, DeviceStatus::Ok);
+            return Some(Box::new(GuiProcessor {
+                id: gui.info.id,
+                pending: Arc::clone(&gui.pending),
+                applied: Arc::clone(&gui.applied),
+            }));
+        }
         let status = match self.catalog.resolve(&device.plugin) {
             Some(_) => DeviceStatus::Ok,
             None => DeviceStatus::Missing,
@@ -120,6 +192,40 @@ impl DeviceHost for FakeHost {
         self.script.borrow_mut().scans.push(dirs.clone());
     }
 
+    fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
+        let gui = self.gui.as_ref().filter(|gui| gui.device == device)?;
+        Some(std::slice::from_ref(&gui.info))
+    }
+
+    fn param_base(&self, device: DeviceId, id: u32) -> Option<f64> {
+        let gui = self
+            .gui
+            .as_ref()
+            .filter(|gui| gui.device == device && gui.info.id == id)?;
+        Some(
+            self.script
+                .borrow()
+                .gui_edits
+                .last()
+                .map_or(gui.info.default, |edit| edit.2),
+        )
+    }
+
+    fn edited_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+        if !self.gui.as_ref().is_some_and(|gui| gui.device == device) {
+            return false;
+        }
+        self.script.borrow_mut().gui_edits.push((device, id, value));
+        true
+    }
+
+    fn preview_param(&mut self, device: DeviceId, id: u32, value: f64) {
+        self.script
+            .borrow_mut()
+            .gui_previews
+            .push((device, id, value));
+    }
+
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
         // hexa goes through the engine.
         if self.is_builtin(device) {
@@ -174,6 +280,7 @@ fn app() -> (App, Rc<RefCell<Script>>) {
         script: Rc::clone(&script),
         catalog: Catalog::builtin(),
         statuses: HashMap::new(),
+        gui: None,
     };
     let engine = EngineSync::null(Box::new(host));
     let mut app = App::new(
@@ -692,4 +799,95 @@ fn workers_without_workgroup_reach_the_status_bar() {
     app.ui_mut().status = None;
     app.step();
     assert_eq!(status_text(&app), None);
+}
+
+#[test]
+fn plugin_gui_read_override_remains_temporary_and_off_restores_the_old_base() {
+    use komponist_app::views::automation::Action as Automation;
+    use komponist_ipc::control::param_flags;
+    use komponist_model::Tick;
+    use komponist_model::automation::{
+        AutomationMode, AutomationOwner, AutomationTarget, Point, Points,
+    };
+    use komponist_model::edits::automation::{add_lane, set_lane_points};
+    use komponist_model::params::ParamId;
+
+    let project = demo_project();
+    let (track, device) = project
+        .tracks
+        .iter()
+        .find_map(|track| {
+            track
+                .channel
+                .devices
+                .iter()
+                .find(|d| d.plugin.name == "Surge XT")
+                .map(|device| (track.id, device.id))
+        })
+        .unwrap();
+    let owner = AutomationOwner::Track(track);
+    let id = 42;
+    let target = AutomationTarget::Param {
+        device,
+        param: ParamId::plugin(id),
+    };
+    let (project, lane) = add_lane(&project, owner, target.clone(), "Cutoff".into()).unwrap();
+    let project = set_lane_points(
+        &project,
+        owner,
+        lane,
+        Points::new(vec![Point::linear(Tick::ZERO, 0.75)]),
+    )
+    .unwrap();
+    let script = Rc::new(RefCell::new(Script::default()));
+    let pending = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
+    let applied = Arc::new(AtomicU64::new(0.25_f64.to_bits()));
+    let host = FakeHost {
+        script: Rc::clone(&script),
+        catalog: Catalog::builtin(),
+        statuses: HashMap::new(),
+        gui: Some(GuiEditSource {
+            device,
+            info: ParamInfo {
+                id,
+                name: "Cutoff".into(),
+                module: String::new(),
+                min: 0.0,
+                max: 1.0,
+                default: 0.25,
+                step_count: 0,
+                flags: param_flags::AUTOMATABLE,
+            },
+            pending: Arc::clone(&pending),
+            applied: Arc::clone(&applied),
+        }),
+    };
+    let mut app = App::headless(project).with_device_host(Box::new(host));
+    app.engine_mut().hold_engine().unwrap();
+    app.step();
+    let run = |app: &mut App| {
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        app.step();
+    };
+    run(&mut app);
+    assert_eq!(f64::from_bits(applied.load(Ordering::Relaxed)), 0.75);
+
+    pending.store(0.6_f64.to_bits(), Ordering::Relaxed);
+    run(&mut app);
+    assert_eq!(script.borrow().gui_previews, [(device, id, 0.6)]);
+    assert!(script.borrow().gui_edits.is_empty());
+    assert!(app.doc().undo_label().is_none());
+
+    app.dispatch(Action::Automation(Automation::Mode(
+        owner,
+        lane,
+        AutomationMode::Off,
+    )));
+    app.step();
+    run(&mut app);
+    assert_eq!(f64::from_bits(applied.load(Ordering::Relaxed)), 0.25);
+
+    pending.store(0.5_f64.to_bits(), Ordering::Relaxed);
+    run(&mut app);
+    assert_eq!(script.borrow().gui_edits, [(device, id, 0.5)]);
 }

@@ -159,6 +159,7 @@ pub(crate) struct State {
     provisional: BTreeSet<PathBuf>,
     root_override: Option<PathBuf>,
     pending_midi: Option<record::Commit>,
+    pending_automation: Option<crate::automation_capture::AutomationCapture>,
     pending_removals: BTreeSet<PathBuf>,
     save_target: Option<PathBuf>,
     save_notice: Option<(String, StatusKind)>,
@@ -176,10 +177,16 @@ impl State {
             .as_ref()
             .is_some_and(|capture| capture.material || capture.stopping)
             || self.pending_midi.is_some()
+            || self.pending_automation.is_some()
     }
     pub(crate) fn defer_midi(&mut self, commit: Option<record::Commit>) {
         if commit.is_some() {
             self.pending_midi = commit;
+        }
+    }
+    pub(crate) fn defer_automation(&mut self, pass: crate::automation_capture::AutomationCapture) {
+        if pass.has_points() {
+            self.pending_automation = Some(pass);
         }
     }
     pub(crate) fn folder(&self) -> Option<&Path> {
@@ -214,6 +221,7 @@ impl State {
             }
         }
         self.pending_midi = None;
+        self.pending_automation = None;
     }
 }
 
@@ -442,6 +450,7 @@ impl App {
                     }
                 }
                 let midi = self.audio_recording.pending_midi.take();
+                let automation = self.audio_recording.pending_automation.take();
                 let label = midi
                     .as_ref()
                     .map(|commit| commit.label().to_owned())
@@ -453,6 +462,13 @@ impl App {
                 let directory = self.project_dir();
                 self.doc.end_gesture();
                 let applied = self.apply_with(&label, |project| {
+                    let automated;
+                    let project = if let Some(pass) = &automation {
+                        automated = pass.apply(project)?;
+                        &automated
+                    } else {
+                        project
+                    };
                     let (project, mut clips) = match &midi {
                         Some(commit) => commit.apply(project)?,
                         None => (project.clone(), Vec::new()),
@@ -481,6 +497,7 @@ impl App {
             }
             Err(recording::RecordingError::Cancelled) => {
                 self.audio_recording.pending_midi = None;
+                self.audio_recording.pending_automation = None;
             }
             Err(error) => {
                 // Freeze an in-progress MIDI overlay too: writer failure can happen before
@@ -499,10 +516,17 @@ impl App {
                 }) {
                     commits.push(midi);
                 }
-                if let Some(first) = commits.first() {
-                    let label = first.label().to_owned();
+                let automation = self.audio_recording.pending_automation.take();
+                if !commits.is_empty() || automation.is_some() {
+                    let label = commits
+                        .first()
+                        .map_or("undo-automation-record", |first| first.label())
+                        .to_owned();
                     self.apply_with(&label, |project| {
-                        let mut project = project.clone();
+                        let mut project = match &automation {
+                            Some(pass) => pass.apply(project)?,
+                            None => project.clone(),
+                        };
                         let mut clips = Vec::new();
                         for commit in &commits {
                             let (next, added) = commit.apply(&project)?;

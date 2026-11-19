@@ -176,8 +176,7 @@ impl Core {
         self.automation_pass_started = false;
         self.visit_automation(|_, lanes, state, _, _| {
             for (lane, cursor) in lanes.iter().zip(state.cursors()) {
-                cursor.interrupt(false, lane.mode);
-                cursor.pending_value = None;
+                cursor.cancel_write(lane);
             }
         });
     }
@@ -403,6 +402,7 @@ impl Capture<'_> {
                 if matches!(edit.kind, ParameterEditKind::Value { .. }) {
                     state.cancel_restore(lanes, target);
                 }
+                let mut temporary = false;
                 if let Some((cursor, index)) = state.cursor(lanes, target)
                     && lanes[index].mode != AutomationMode::Off
                 {
@@ -415,6 +415,7 @@ impl Capture<'_> {
                                 time,
                                 self.clock.window.rate as f32,
                             );
+                            temporary = lane.reads() || cursor.writes();
                             cursor.manual_value(tick, lane.map.normalize(value));
                             notify.then_some(true)
                         }
@@ -444,10 +445,13 @@ impl Capture<'_> {
                         );
                     }
                 }
-                if batch.push(PluginParam {
-                    tick,
-                    kind: edit.kind,
-                }) {
+                if batch.push(
+                    PluginParam {
+                        tick,
+                        kind: edit.kind,
+                    },
+                    temporary,
+                ) {
                     self.outbox.send(
                         EngineEvent::PluginParams {
                             slot: device.slot,

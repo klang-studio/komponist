@@ -24,6 +24,7 @@ pub mod audio_editor;
 pub mod audio_inputs;
 pub mod automation;
 pub mod browser;
+mod clip_sections;
 pub mod devices;
 pub mod grid;
 pub mod inspector;
@@ -72,6 +73,8 @@ pub struct ViewCtx<'a> {
     pub requests: Requests,
     /// The take being recorded (WP-51): the arrangement and the piano roll draw it.
     pub recording: Option<&'a Recording>,
+    /// Automation points and lane states of the current write pass.
+    pub(crate) automation_capture: Option<&'a crate::automation_capture::AutomationCapture>,
     /// Live audio capture overlay, separate from the MIDI recording overlay.
     pub audio_recording: Option<&'a crate::audio_record::AudioRecording>,
     /// Folder behind the provisional-recordings notice, if any.
@@ -121,6 +124,7 @@ impl<'a> ViewCtx<'a> {
             focused: false,
             requests: Requests::default(),
             recording: None,
+            automation_capture: None,
             audio_recording: None,
             provisional_recordings: None,
             exports: &[],
@@ -128,6 +132,16 @@ impl<'a> ViewCtx<'a> {
             lang: Lang::default(),
             actions,
         }
+    }
+
+    pub(crate) fn automation_value(
+        &self,
+        owner: komponist_model::automation::AutomationOwner,
+        target: &komponist_model::automation::AutomationTarget,
+    ) -> Option<f32> {
+        self.automation_capture
+            .and_then(|capture| capture.current_value(owner, target))
+            .or_else(|| automation::automation_controls(self, owner, target))
     }
 
     /// Reports a user intention; the shell dispatches it after the frame's views ran.

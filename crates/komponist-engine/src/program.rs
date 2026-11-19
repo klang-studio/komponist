@@ -84,6 +84,13 @@ impl Program {
             .map(|lane| lane.target)
     }
 
+    /// Whether a resolved target has an effective playback curve, including clip overrides.
+    pub fn automation_reads(&self, owner: AutomationOwner, target: &AutomationTarget) -> bool {
+        self.automation_of(owner)
+            .and_then(|automation| automation.iter().find(|lane| &lane.model == target))
+            .is_some_and(CompiledTarget::reads)
+    }
+
     /// Compiled base value of this lane, in its normalised domain.
     pub fn automation_base(
         &self,

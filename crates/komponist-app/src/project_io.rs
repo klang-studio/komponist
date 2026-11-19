@@ -629,7 +629,10 @@ impl App {
             // A running take records on.
             Answer::Cancel => {}
             Answer::Discard => {
-                if self.recording.is_some() || self.audio_recording.is_active() {
+                if self.recording.is_some()
+                    || self.audio_recording.is_active()
+                    || self.automation_capture.active()
+                {
                     self.discard_take();
                 }
                 self.proceed(next);

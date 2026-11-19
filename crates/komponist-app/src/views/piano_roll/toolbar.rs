@@ -76,7 +76,8 @@ pub fn show(
     ctx: &mut ViewCtx<'_>,
     info: &Info,
     drag: &mut Option<FieldDrag>,
-) {
+    automation_shown: bool,
+) -> Option<egui::Response> {
     let ppp = ui.pixels_per_point();
     px::hline(
         ui.painter(),
@@ -221,7 +222,9 @@ pub fn show(
                 ctx.send(action);
             }
         }
-    });
+        (!info.live).then(|| crate::views::automation::toolbar_button(ui, t, automation_shown))
+    })
+    .inner
 }
 
 fn fields(row: &mut Ui, ctx: &mut ViewCtx<'_>, info: &Info, drag: &mut Option<FieldDrag>) {

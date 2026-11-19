@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
+use std::sync::Arc;
 
 use egui::accesskit::Action as AccessAction;
 use egui::{
@@ -42,7 +43,7 @@ pub(crate) struct LaneFrame<'a> {
     pub label: &'a str,
     pub access: &'a str,
     pub warning: Option<&'a str>,
-    pub points: &'a [Point],
+    pub points: &'a Points,
     pub target: Option<&'a Target>,
     pub rect: Rect,
     pub axis: TimeAxis,
@@ -53,15 +54,49 @@ pub(crate) struct LaneFrame<'a> {
 }
 
 impl LaneFrame<'_> {
+    fn points(&self) -> &[Point] {
+        self.points.as_slice()
+    }
+
+    fn editable_rect(&self) -> Rect {
+        self.end.map_or(self.rect, |end| {
+            self.rect.intersect(Rect::from_x_y_ranges(
+                self.axis.x(Tick::ZERO)..=self.axis.x(end),
+                self.rect.y_range(),
+            ))
+        })
+    }
+
+    fn value_rect(&self) -> Rect {
+        if matches!(self.source, Source::Clip(..)) {
+            self.rect.shrink2(vec2(
+                0.0,
+                m::CLIP_VALUE_INSET.min(self.rect.height() * 0.25),
+            ))
+        } else {
+            self.rect
+        }
+    }
+
+    fn curve_width(&self) -> f32 {
+        if matches!(self.source, Source::Clip(..)) {
+            m::CLIP_CURVE_WIDTH
+        } else {
+            m::CURVE_WIDTH
+        }
+    }
+
     fn pos(&self, point: Point) -> Pos2 {
+        let values = self.value_rect();
         pos2(
             self.axis.x(point.tick),
-            egui::lerp(self.rect.bottom()..=self.rect.top(), point.value),
+            egui::lerp(values.bottom()..=values.top(), point.value),
         )
     }
 
     fn value(&self, y: f32) -> f32 {
-        ((self.rect.bottom() - y) / self.rect.height()).clamp(0.0, 1.0)
+        let values = self.value_rect();
+        ((values.bottom() - y) / values.height()).clamp(0.0, 1.0)
     }
 
     fn tick(&self, x: f32, fine: bool, meter: Meter) -> Tick {
@@ -93,9 +128,35 @@ impl LaneFrame<'_> {
 pub(crate) struct Editor {
     selected: HashMap<Source, BTreeSet<usize>>,
     active: Option<Source>,
+    focus_request: Option<Source>,
     drag: Option<Drag>,
     menu_point: Option<(Source, usize)>,
     entry: Option<ValueEntry>,
+    dense_curves: HashMap<Source, DenseCurve>,
+    paint_frame: u64,
+}
+
+/// A dense trace's triangles are reused until its points, zoom, viewport or colours change.
+#[derive(Debug)]
+struct DenseCurve {
+    points: Points,
+    settings: MeshSettings,
+    mesh: Arc<egui::Mesh>,
+    frame: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MeshSettings {
+    axis: TimeAxis,
+    lane: Rect,
+    visible: Rect,
+    trace: Rect,
+    width: f32,
+    ink: Color32,
+    fill: Color32,
+    pixels_per_point: f32,
+    meter: Meter,
+    grid: Grid,
 }
 
 #[derive(Debug)]
@@ -155,11 +216,20 @@ enum PointCommand {
 }
 
 impl Editor {
+    pub fn focus(&mut self, source: Source) {
+        self.selected.clear();
+        self.active = Some(source.clone());
+        self.focus_request = Some(source);
+    }
+
     pub fn selected(&self, source: &Source) -> bool {
         self.active.as_ref() == Some(source)
     }
 
     pub fn finish_frame(&mut self, ui: &Ui, ctx: &mut ViewCtx<'_>) {
+        self.dense_curves
+            .retain(|_, entry| entry.frame == self.paint_frame);
+        self.paint_frame = self.paint_frame.wrapping_add(1);
         if let Some(entry) = self.entry.as_mut()
             && !std::mem::take(&mut entry.seen)
         {
@@ -186,7 +256,16 @@ impl Editor {
             return;
         }
         let id = ui.scope_id().with(("automation-curve", &lane.source));
-        let response = ui.interact(visible, id, Sense::click_and_drag());
+        let editable = lane.editable_rect().intersect(visible);
+        let response = if editable.is_positive() {
+            ui.interact(editable, id, Sense::click_and_drag())
+        } else {
+            ui.interact(visible, id, Sense::hover())
+        };
+        if self.focus_request.as_ref() == Some(&lane.source) {
+            response.request_focus();
+            self.focus_request = None;
+        }
         response.widget_info(|| WidgetInfo::labeled(Role::Group, true, lane.access));
         widgets::accesskit(&response, |node| {
             if let Some(warning) = lane.warning {
@@ -194,16 +273,50 @@ impl Editor {
             }
         });
         let painter = ui.painter().with_clip_rect(visible);
-        paint_background(&painter, ctx.project.meter, lane);
-        paint_curve(
-            &painter,
-            lane,
-            lane.points,
-            visible,
-            paint.curve,
-            Some(paint.fill),
-            false,
-        );
+        let hit_rect = editable.expand(m::POINT_HIT);
+        let indices = visible_range(lane, hit_rect);
+        let dense = indices.len() as f32 * m::POINT_DENSITY > editable.width();
+        let written_ranges = ctx
+            .automation_capture
+            .map_or_else(Vec::new, |capture| capture.preview_ranges(&lane.source));
+        let preview = ctx
+            .automation_capture
+            .filter(|_| !written_ranges.is_empty())
+            .and_then(|capture| match &lane.source {
+                Source::Lane(owner, id) => capture.preview_lane(*owner, *id, lane.points),
+                Source::Clip(clip, target) => capture.preview_clip(*clip, target, lane.points),
+            });
+        let contour = preview.as_ref().map_or(lane.points(), Points::as_slice);
+        let contour = &contour[editable_range(contour, lane.end)];
+        let trace = editable;
+        if dense && preview.is_none() && trace.is_positive() {
+            let settings = MeshSettings {
+                axis: lane.axis,
+                lane: lane.rect,
+                visible,
+                trace,
+                width: lane.curve_width(),
+                ink: paint.curve,
+                fill: paint.fill,
+                pixels_per_point: painter.pixels_per_point(),
+                meter: ctx.project.meter,
+                grid: lane.grid,
+            };
+            self.paint_dense(&painter, lane, contour, settings);
+        } else {
+            paint_background(&painter, ctx.project.meter, lane);
+            if trace.is_positive() {
+                paint_curve(
+                    &painter.with_clip_rect(trace),
+                    lane,
+                    contour,
+                    trace,
+                    paint.curve,
+                    Some(paint.fill),
+                    false,
+                );
+            }
+        }
         for span in paint.overrides {
             let rect = span_rect(lane, span).intersect(visible);
             if !rect.is_positive() {
@@ -220,6 +333,25 @@ impl Editor {
                 color32(color::TEXT_2),
             );
         }
+        if preview.is_some() {
+            let record = color32(color::STATE_RECORD);
+            for (start, end) in written_ranges {
+                let bounds = span_rect(lane, &Override { start, end })
+                    .expand(line::WIDTH)
+                    .intersect(trace);
+                if bounds.is_positive() {
+                    paint_curve(
+                        &painter.with_clip_rect(bounds),
+                        lane,
+                        contour,
+                        bounds,
+                        record,
+                        Some(record.gamma_multiply(0.22)),
+                        false,
+                    );
+                }
+            }
+        }
         if let Some(end) = paint.beyond {
             let outside =
                 Rect::from_min_max(pos2(lane.axis.x(end), lane.rect.top()), lane.rect.max)
@@ -228,9 +360,9 @@ impl Editor {
                 px::fill(&painter, outside, 0.0, color32(color::CANVAS_OUTSIDE_CLIP));
             }
         }
-        if lane.points.is_empty() && paint.overrides.is_empty() {
+        if contour.is_empty() && paint.overrides.is_empty() && editable.is_positive() {
             painter.text(
-                visible.center(),
+                editable.center(),
                 egui::Align2::CENTER_CENTER,
                 ctx.lang.automation_lane_empty(),
                 komponist_ui::fonts::font_id(&komponist_tokens::typography::SMALL),
@@ -238,13 +370,19 @@ impl Editor {
             );
         }
 
-        let hit_rect = visible.expand(m::POINT_HIT);
-        let indices = visible_range(lane, hit_rect);
+        if !editable.is_positive() {
+            return;
+        }
+        if let Some(selected) = self.selected.get_mut(&lane.source)
+            && lane.end.is_some()
+        {
+            let range = editable_range(lane.points(), lane.end);
+            selected.retain(|i| range.contains(i));
+        }
         let pointer = ui
             .input(|i| i.pointer.hover_pos())
-            .filter(|p| visible.contains(*p));
+            .filter(|p| editable.contains(*p));
         let handle = pointer.and_then(|p| closest_handle(lane, p));
-        let dense = indices.len() as f32 * m::POINT_DENSITY > visible.width();
         let hovered = pointer.and_then(|p| nearest_point(lane, p));
         // Only an active accessibility tree needs individual nodes for unmarked points.
         let expose_dense = dense
@@ -255,7 +393,7 @@ impl Editor {
         let mut point_action = None;
         let mut tooltip = None;
         for i in indices {
-            let point = lane.points[i];
+            let point = lane.points()[i];
             let pos = lane.pos(point);
             let selected = self
                 .selected
@@ -271,8 +409,8 @@ impl Editor {
                 painter.circle(pos, m::POINT / 2.0, fill, Stroke::new(line::WIDTH, ring));
             }
             if (marker || expose_dense)
-                && let bounds =
-                    Rect::from_center_size(pos, vec2(m::POINT_HIT, m::POINT_HIT)).intersect(visible)
+                && let bounds = Rect::from_center_size(pos, vec2(m::POINT_HIT, m::POINT_HIT))
+                    .intersect(editable)
                 && bounds.is_positive()
             {
                 let node = ui.interact(
@@ -327,12 +465,13 @@ impl Editor {
             paint_diamond(&painter, center, paint.curve);
         }
         if let Some((point, steps)) = point_action {
-            let mut points = lane.points.to_vec();
+            let mut points = lane.points().to_vec();
             points[point].value = (points[point].value + steps as f32 * 0.01).clamp(0.0, 1.0);
             send_points(ctx, lane, points, "undo-automation-value");
         }
 
         if response.hovered() {
+            ctx.ui.automation_hint = true;
             ui.ctx()
                 .set_cursor_icon(if hovered.is_some() || handle.is_some() {
                     egui::CursorIcon::Grab
@@ -342,6 +481,30 @@ impl Editor {
         }
         if let Some(tooltip) = tooltip {
             Tip::new(&tooltip).attach(&response);
+        }
+        if self
+            .drag
+            .as_ref()
+            .is_some_and(|drag| drag.source() == &lane.source)
+            && let Some(pos) = ui.input(|input| input.pointer.interact_pos())
+            && !matches!(self.drag, Some(Drag::Box { .. }))
+        {
+            let value = lane.format(ctx, lane.value(pos.y));
+            let tick = lane.tick(
+                pos.x,
+                ui.input(|input| input.modifiers.shift),
+                ctx.project.meter,
+            );
+            let text =
+                ctx.lang
+                    .automation_tooltip(lane.label, &value, fmt_pos(tick, ctx.project.meter));
+            komponist_ui::tooltip::show_value(
+                ui.ctx(),
+                id.with("drag-value"),
+                Rect::from_center_size(pos, vec2(m::POINT, m::POINT)),
+                komponist_ui::tooltip::Placement::Above,
+                &text,
+            );
         }
         self.pointer(ui, ctx, lane, &response);
         self.keyboard(ui, ctx, lane, &response);
@@ -367,6 +530,38 @@ impl Editor {
         }
     }
 
+    fn paint_dense(
+        &mut self,
+        painter: &egui::Painter,
+        lane: &LaneFrame<'_>,
+        contour: &[Point],
+        settings: MeshSettings,
+    ) {
+        let cached = self.dense_curves.get_mut(&lane.source).filter(|curve| {
+            curve.settings == settings && std::ptr::eq(curve.points.as_slice(), lane.points())
+        });
+        let mesh = if let Some(curve) = cached {
+            curve.frame = self.paint_frame;
+            Arc::clone(&curve.mesh)
+        } else {
+            let path = curve_path(lane, contour, settings.trace);
+            let mut mesh = dense_background(&settings);
+            mesh.append(dense_band(&path, &settings));
+            let mesh = Arc::new(mesh);
+            self.dense_curves.insert(
+                lane.source.clone(),
+                DenseCurve {
+                    points: lane.points.clone(),
+                    settings,
+                    mesh: Arc::clone(&mesh),
+                    frame: self.paint_frame,
+                },
+            );
+            mesh
+        };
+        painter.add(egui::Shape::Mesh(mesh));
+    }
+
     fn pointer(
         &mut self,
         ui: &Ui,
@@ -385,7 +580,7 @@ impl Editor {
         if response.double_clicked()
             && let Some(p) = pointer
         {
-            let mut points = lane.points.to_vec();
+            let mut points = lane.points().to_vec();
             if let Some(i) = nearest_point(lane, p) {
                 points.remove(i);
                 send_points(ctx, lane, points, "undo-automation-delete-points");
@@ -402,7 +597,7 @@ impl Editor {
             if mods.alt
                 && let Some(index) = closest_handle(lane, p)
             {
-                let mut points = lane.points.to_vec();
+                let mut points = lane.points().to_vec();
                 points[index].shape = Shape::Linear;
                 send_points(ctx, lane, points, "undo-automation-shape");
             } else {
@@ -436,12 +631,12 @@ impl Editor {
                     source: source.clone(),
                     index,
                     origin,
-                    points: lane.points.to_vec(),
+                    points: lane.points().to_vec(),
                     indices: self.selected[&source].clone(),
                     copy,
                 });
             } else if let Some(index) = closest_handle(lane, origin) {
-                let initial = match lane.points[index].shape {
+                let initial = match lane.points()[index].shape {
                     Shape::Curve { tension } => tension,
                     _ => 0.0,
                 };
@@ -511,8 +706,8 @@ impl Editor {
                         origin,
                         initial,
                         ..
-                    } if *index < lane.points.len() => {
-                        let mut points = lane.points.to_vec();
+                    } if *index < lane.points().len() => {
+                        let mut points = lane.points().to_vec();
                         let tension = (*initial
                             + (origin.y - pointer.y) / (lane.rect.height() / 2.0))
                             .clamp(-1.0, 1.0);
@@ -543,7 +738,7 @@ impl Editor {
                 normalized.as_slice(),
                 lane.target.is_some_and(|t| t.info.steps() > 0),
             );
-            let mut points = lane.points.to_vec();
+            let mut points = lane.points().to_vec();
             if let (Some(first), Some(last)) =
                 (thinned.as_slice().first(), thinned.as_slice().last())
             {
@@ -567,7 +762,9 @@ impl Editor {
                 .as_ref()
                 .is_some_and(|entry| entry.source == lane.source)
             || self.drag.is_some()
-            || ContextMenu::<PointCommand>::is_open(ui.ctx(), response.id)
+            || (self.menu_point.as_ref().is_some_and(|(source, index)| {
+                source == &lane.source && editable_range(lane.points(), lane.end).contains(index)
+            }) && ContextMenu::<PointCommand>::is_open(ui.ctx(), response.id))
         {
             return;
         }
@@ -577,7 +774,7 @@ impl Editor {
         if consume(Modifiers::COMMAND, Key::C) {
             let copied: Vec<Point> = indices
                 .iter()
-                .filter_map(|i| lane.points.get(*i).copied())
+                .filter_map(|i| lane.points().get(*i).copied())
                 .collect();
             if !copied.is_empty() {
                 ui.ctx().data_mut(|data| {
@@ -590,7 +787,7 @@ impl Editor {
             }) && let Some(first) = copied.first()
             {
                 let start = lane.head.max(Tick::ZERO);
-                let mut points = lane.points.to_vec();
+                let mut points = lane.points().to_vec();
                 points.extend(copied.iter().filter_map(|p| {
                     let tick = start + (p.tick - first.tick);
                     lane.end
@@ -603,7 +800,7 @@ impl Editor {
             }
         } else if consume(Modifiers::NONE, Key::Delete) || consume(Modifiers::NONE, Key::Backspace)
         {
-            self.delete_points(ctx, &lane.source);
+            self.delete_points(ctx, lane);
         } else if consume(Modifiers::NONE, Key::Enter) {
             if let Some(&index) = indices.first() {
                 self.open_entry(ctx, lane, index, response.id);
@@ -628,7 +825,7 @@ impl Editor {
                 0.0
             };
             if dx != Tick::ZERO || dy != 0.0 {
-                let (points, _) = move_points(lane.points, &indices, dx, dy, lane.end, false);
+                let (points, _) = move_points(lane.points(), &indices, dx, dy, lane.end, false);
                 send_points(ctx, lane, points, "undo-automation-move-points");
             }
         }
@@ -641,12 +838,14 @@ impl Editor {
         lane: &LaneFrame<'_>,
         response: &Response,
     ) {
+        let range = editable_range(lane.points(), lane.end);
         if response.secondary_clicked() {
             let index = response.interact_pointer_pos().and_then(|p| {
                 nearest_point(lane, p).or_else(|| {
-                    lane.points
+                    lane.points()
                         .partition_point(|point| lane.axis.x(point.tick) <= p.x)
                         .checked_sub(1)
+                        .filter(|i| range.contains(i))
                 })
             });
             self.menu_point = index.map(|i| (lane.source.clone(), i));
@@ -662,7 +861,7 @@ impl Editor {
         let Some((_, index)) = self
             .menu_point
             .as_ref()
-            .filter(|(source, index)| source == &lane.source && *index < lane.points.len())
+            .filter(|(source, index)| source == &lane.source && range.contains(index))
         else {
             return;
         };
@@ -675,7 +874,8 @@ impl Editor {
         ]
         .map(|(label, shape)| {
             Entry::action(label, PointCommand::Shape(shape)).checked(
-                std::mem::discriminant(&lane.points[index].shape) == std::mem::discriminant(&shape),
+                std::mem::discriminant(&lane.points()[index].shape)
+                    == std::mem::discriminant(&shape),
             )
         });
         let entries = [
@@ -685,12 +885,12 @@ impl Editor {
         ];
         match ContextMenu::new(lang.automation_title(), &entries).show_on(response) {
             Some(PointCommand::Shape(shape)) => {
-                let mut points = lane.points.to_vec();
+                let mut points = lane.points().to_vec();
                 points[index].shape = shape;
                 send_points(ctx, lane, points, "undo-automation-shape");
             }
             Some(PointCommand::Value) => self.open_entry(ctx, lane, index, response.id),
-            Some(PointCommand::Delete) => self.delete_points(ctx, &lane.source),
+            Some(PointCommand::Delete) => self.delete_points(ctx, lane),
             None => {}
         }
         if !ContextMenu::<PointCommand>::is_open(ui.ctx(), response.id) {
@@ -698,17 +898,21 @@ impl Editor {
         }
     }
 
-    fn delete_points(&mut self, ctx: &mut ViewCtx<'_>, focused: &Source) {
+    fn delete_points(&mut self, ctx: &mut ViewCtx<'_>, lane: &LaneFrame<'_>) {
         let mut replacements = Vec::new();
         self.selected.retain(|source, indices| {
-            if !in_same_group(source, focused) {
+            if !in_same_group(source, &lane.source) {
                 return true;
             }
             if let Some(points) = source_points(ctx.project, source) {
+                let points = points.as_slice();
+                let range = editable_range(points, lane.end);
                 let remaining: Vec<_> = points
                     .iter()
                     .enumerate()
-                    .filter_map(|(i, point)| (!indices.contains(&i)).then_some(*point))
+                    .filter_map(|(i, point)| {
+                        (!range.contains(&i) || !indices.contains(&i)).then_some(*point)
+                    })
                     .collect();
                 if remaining.len() != points.len() {
                     replacements.push(Automation::Points(
@@ -735,7 +939,7 @@ impl Editor {
     }
 
     fn open_entry(&mut self, ctx: &ViewCtx<'_>, lane: &LaneFrame<'_>, index: usize, id: Id) {
-        if let Some(point) = lane.points.get(index) {
+        if let Some(point) = lane.points().get(index) {
             self.entry = Some(ValueEntry {
                 source: lane.source.clone(),
                 index,
@@ -754,7 +958,11 @@ impl Editor {
         else {
             return;
         };
-        let Some(point) = lane.points.get(entry.index).copied() else {
+        let Some(&point) = lane
+            .points()
+            .get(entry.index)
+            .filter(|_| editable_range(lane.points(), lane.end).contains(&entry.index))
+        else {
             ui.memory_mut(|mem| mem.surrender_focus(entry.text_id));
             self.entry = None;
             return;
@@ -794,7 +1002,7 @@ impl Editor {
                     .is_some_and(|pos| !popup.response.rect.contains(pos))
         });
         if !outside && let Some(value) = value {
-            let mut points = lane.points.to_vec();
+            let mut points = lane.points().to_vec();
             points[entry.index].value = value;
             send_points(ctx, lane, points, "undo-automation-value");
         }
@@ -833,8 +1041,9 @@ impl Editor {
             }) if in_same_group(source, &lane.source) => {
                 let pointer = ui.input(|i| i.pointer.interact_pos()).unwrap_or(*end);
                 let rect = Rect::from_two_pos(*origin, pointer);
-                let hits = visible_range(lane, rect.intersect(lane.rect))
-                    .filter(|i| rect.contains(lane.pos(lane.points[*i])));
+                let paint = rect.intersect(lane.editable_rect());
+                let hits = visible_range(lane, paint)
+                    .filter(|i| paint.contains(lane.pos(lane.points()[*i])));
                 let current = ui.ctx().cumulative_pass_nr();
                 if *frame != Some(current) {
                     self.selected.clone_from(base);
@@ -844,7 +1053,6 @@ impl Editor {
                     .entry(lane.source.clone())
                     .or_default()
                     .extend(hits);
-                let paint = rect.intersect(lane.rect);
                 if paint.is_positive() {
                     px::fill(
                         painter,
@@ -868,20 +1076,20 @@ fn in_same_group(a: &Source, b: &Source) -> bool {
     }
 }
 
-fn source_points<'a>(project: &'a Project, source: &Source) -> Option<&'a [Point]> {
+fn source_points<'a>(project: &'a Project, source: &Source) -> Option<&'a Points> {
     match source {
         Source::Lane(owner, id) => lanes(project, *owner)?
             .lanes
             .iter()
             .find(|lane| lane.id == *id)
-            .map(|lane| lane.points.as_slice()),
+            .map(|lane| &lane.points),
         Source::Clip(id, target) => project
             .find_clip(*id)?
             .1
             .automation
             .iter()
             .find(|envelope| &envelope.target == target)
-            .map(|envelope| envelope.points.as_slice()),
+            .map(|envelope| &envelope.points),
     }
 }
 
@@ -892,7 +1100,7 @@ fn send_points(
     label: &'static str,
 ) -> bool {
     let points = Points::new(points);
-    if points.as_slice() == lane.points {
+    if points.as_slice() == lane.points() {
         return false;
     }
     ctx.send(Action::Automation(Automation::Points(
@@ -965,40 +1173,59 @@ fn move_points(
     (next.into_iter().map(|(point, _)| point).collect(), selected)
 }
 
+// The document retains points outside the clip's current content. Keep full-array indices for
+// edits and limit only the displayed, editable range.
+fn editable_range(points: &[Point], end: Option<Tick>) -> Range<usize> {
+    end.map_or(0..points.len(), |end| {
+        points.partition_point(|p| p.tick < Tick::ZERO)..points.partition_point(|p| p.tick <= end)
+    })
+}
+
 fn visible_range(lane: &LaneFrame<'_>, rect: Rect) -> Range<usize> {
     if rect.width() < 0.0 {
         return 0..0;
     }
     let (start, end) = lane.axis.ticks_in(rect.x_range());
-    let lo = lane.points.partition_point(|p| p.tick < start);
-    let hi = lane.points.partition_point(|p| p.tick <= end);
-    lo..hi
+    let range = editable_range(lane.points(), lane.end);
+    let lo = lane
+        .points()
+        .partition_point(|p| p.tick < start)
+        .max(range.start);
+    let hi = lane
+        .points()
+        .partition_point(|p| p.tick <= end)
+        .min(range.end);
+    lo.min(hi)..hi
 }
 
 fn nearest_point(lane: &LaneFrame<'_>, pos: Pos2) -> Option<usize> {
     let window = Rect::from_center_size(pos, vec2(m::POINT_HIT, m::POINT_HIT));
     visible_range(lane, window)
-        .map(|i| (i, lane.pos(lane.points[i]).distance_sq(pos)))
+        .map(|i| (i, lane.pos(lane.points()[i]).distance_sq(pos)))
         .filter(|(_, d)| *d <= (m::POINT_HIT / 2.0).powi(2))
         .min_by(|(_, a), (_, b)| a.total_cmp(b))
         .map(|(i, _)| i)
 }
 
 fn handle_pos(lane: &LaneFrame<'_>, i: usize) -> Option<Pos2> {
-    let a = lane.points[i];
-    let b = *lane.points.get(i + 1)?;
+    let range = editable_range(lane.points(), lane.end);
+    if i < range.start || i + 1 >= range.end {
+        return None;
+    }
+    let a = lane.points()[i];
+    let b = lane.points()[i + 1];
     if lane.axis.width(b.tick - a.tick) < m::POINT_HIT * 2.0 {
         return None;
     }
     let tick = Tick(a.tick.0 + (b.tick.0 - a.tick.0) / 2);
-    let value = automation::value_at(lane.points, tick)?;
+    let value = automation::value_at(&lane.points()[range], tick)?;
     Some(lane.pos(Point::linear(tick, value)))
 }
 
 fn closest_handle(lane: &LaneFrame<'_>, pos: Pos2) -> Option<usize> {
     let tick = Tick(lane.axis.tick_at(pos.x).floor() as i64);
     let i = lane
-        .points
+        .points()
         .partition_point(|p| p.tick <= tick)
         .checked_sub(1)?;
     (handle_pos(lane, i)?.distance(pos) < m::POINT_HIT / 2.0).then_some(i)
@@ -1122,7 +1349,7 @@ impl CurvePath {
     }
 }
 
-fn paint_curve(
+pub(super) fn paint_curve(
     painter: &egui::Painter,
     lane: &LaneFrame<'_>,
     points: &[Point],
@@ -1134,6 +1361,37 @@ fn paint_curve(
     if points.is_empty() {
         return;
     }
+    let compact = curve_path(lane, points, rect);
+    if let Some(fill) = fill {
+        let mut mesh = egui::Mesh::default();
+        for pair in compact.windows(2) {
+            let a = pair[0];
+            let b = pair[1];
+            let index = mesh.vertices.len() as u32;
+            for pos in [a, b, pos2(b.x, rect.bottom()), pos2(a.x, rect.bottom())] {
+                mesh.colored_vertex(pos, fill);
+            }
+            mesh.add_triangle(index, index + 1, index + 2);
+            mesh.add_triangle(index, index + 2, index + 3);
+        }
+        painter.add(egui::Shape::mesh(mesh));
+    }
+    if dashed {
+        painter.extend(egui::Shape::dashed_line(
+            &compact,
+            Stroke::new(lane.curve_width(), ink),
+            space::SPACE_1_5,
+            space::SPACE_1,
+        ));
+    } else {
+        painter.add(egui::Shape::line(
+            compact,
+            Stroke::new(lane.curve_width(), ink),
+        ));
+    }
+}
+
+fn curve_path(lane: &LaneFrame<'_>, points: &[Point], rect: Rect) -> Vec<Pos2> {
     let (start, end) = lane.axis.ticks_in(rect.x_range());
     let lo = points.partition_point(|p| p.tick < start).saturating_sub(1);
     let hi = (points.partition_point(|p| p.tick <= end) + 1).min(points.len());
@@ -1176,33 +1434,73 @@ fn paint_curve(
     }
     path.push(boundary(rect.right()));
 
-    let compact = path.into_points();
-    if let Some(fill) = fill {
-        let mut mesh = egui::Mesh::default();
-        for pair in compact.windows(2) {
-            let a = pair[0];
-            let b = pair[1];
-            let index = mesh.vertices.len() as u32;
-            for pos in [a, b, pos2(b.x, rect.bottom()), pos2(a.x, rect.bottom())] {
-                mesh.colored_vertex(pos, fill);
-            }
-            mesh.add_triangle(index, index + 1, index + 2);
-            mesh.add_triangle(index, index + 2, index + 3);
-        }
-        painter.add(egui::Shape::mesh(mesh));
-    }
-    if dashed {
-        painter.extend(egui::Shape::dashed_line(
-            &compact,
-            Stroke::new(m::CURVE_WIDTH, ink),
-            space::SPACE_1_5,
-            space::SPACE_1,
-        ));
-    } else {
-        painter.add(egui::Shape::line(compact, Stroke::new(m::CURVE_WIDTH, ink)));
-    }
+    path.into_points()
 }
 
+fn dense_background(settings: &MeshSettings) -> egui::Mesh {
+    let rect = settings.lane;
+    let ppp = settings.pixels_per_point;
+    let width = px::line_width(ppp);
+    let mut mesh = egui::Mesh::default();
+    mesh.add_colored_rect(px::snap_rect(rect, ppp), color32(color::SURFACE_1));
+
+    let spec = GridSpec::new(settings.grid, space::SPACE_2);
+    for (x, weight) in grid_lines(&settings.axis, settings.meter, rect.x_range(), &spec) {
+        let x = px::snap(x, ppp);
+        mesh.add_colored_rect(
+            Rect::from_min_max(
+                pos2(x, px::snap(rect.top(), ppp)),
+                pos2(x + width, px::snap(rect.bottom(), ppp)),
+            ),
+            weight.color(),
+        );
+    }
+
+    let y = px::snap(rect.center().y, ppp);
+    let mut x = rect.left();
+    while x < rect.right() {
+        mesh.add_colored_rect(
+            Rect::from_min_max(
+                pos2(x, y),
+                pos2((x + space::SPACE_1).min(rect.right()), y + width),
+            ),
+            color32(color::LINE_0),
+        );
+        x += 2.0 * space::SPACE_1;
+    }
+    mesh
+}
+
+/// A dense trace is a single band of each column's minimum and maximum values. Connecting the
+/// bands retains their envelopes and discontinuities with fewer triangles than stroking all the
+/// zigzags between extrema.
+fn dense_band(path: &[Pos2], settings: &MeshSettings) -> egui::Mesh {
+    let mut mesh = egui::Mesh::default();
+    let mut band = egui::Mesh::default();
+    let half_width = settings.width / 2.0;
+    for (index, column) in path.chunk_by(|a, b| a.x.floor() == b.x.floor()).enumerate() {
+        let first = column[0];
+        let (top, bottom) = column
+            .iter()
+            .fold((first.y, first.y), |(top, bottom), point| {
+                (top.min(point.y), bottom.max(point.y))
+            });
+        let x = first.x;
+        mesh.colored_vertex(pos2(x, (top + bottom) / 2.0), settings.fill);
+        mesh.colored_vertex(pos2(x, settings.trace.bottom()), settings.fill);
+        band.colored_vertex(pos2(x, top - half_width), settings.ink);
+        band.colored_vertex(pos2(x, bottom + half_width), settings.ink);
+        if index != 0 {
+            let fill = (index as u32 - 1) * 2;
+            mesh.add_triangle(fill, fill + 2, fill + 3);
+            mesh.add_triangle(fill, fill + 3, fill + 1);
+            band.add_triangle(fill, fill + 2, fill + 3);
+            band.add_triangle(fill, fill + 3, fill + 1);
+        }
+    }
+    mesh.append(band);
+    mesh
+}
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1248,7 +1546,9 @@ mod tests {
         }
 
         fn points(&self, lane: usize) -> &[Point] {
-            source_points(self.app.project(), &self.sources[lane]).unwrap()
+            source_points(self.app.project(), &self.sources[lane])
+                .unwrap()
+                .as_slice()
         }
 
         fn show(&mut self, ui: &mut Ui) {

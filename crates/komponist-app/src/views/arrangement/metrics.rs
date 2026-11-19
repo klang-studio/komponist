@@ -94,3 +94,8 @@ pub const BUS_METER_GAP: f32 = space::SPACE_1;
 pub const BRACKET: f32 = 3.0;
 /// Indent of a group's members in the arrangement (`05-arrangement`: 14 px).
 pub const MEMBER_INDENT: f32 = space::SPACE_3 + space::SPACE_0_5;
+
+/// Clip automation proposal mockup 04: a spline badge before the loop editing corner.
+pub const CLIP_AUTOMATION_ICON: f32 = 10.0;
+pub const CLIP_LOOP_ICON_INSET: f32 = 18.0;
+pub const CLIP_AUTOMATION_THRESHOLD: f32 = 48.0;

@@ -300,7 +300,8 @@ pub enum EngineEvent {
         /// Why this segment ended.
         kind: AutomationBoundary,
     },
-    /// Plugin GUI edits that also update the plugin manager's UI and snapshots.
+    /// Plugin GUI edits in order. Temporary automation updates the live parameter cache,
+    /// while ordinary edits also update the base and schedule a snapshot.
     PluginParams {
         /// Slot reporting the changes.
         slot: SlotId,

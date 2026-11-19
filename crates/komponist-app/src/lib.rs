@@ -50,6 +50,7 @@ pub mod application_menu;
 mod audio_controls;
 pub mod audio_import;
 pub mod audio_record;
+mod automation_capture;
 pub mod device_host;
 pub mod dialogs;
 pub mod dirs;

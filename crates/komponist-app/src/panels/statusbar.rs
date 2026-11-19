@@ -107,6 +107,22 @@ pub fn model(app: &App, now: Instant) -> StatusModel {
         AudioState::Stopped => s.right = t.status_audio_stopped().to_owned(),
     }
     context(app, &mut s);
+    if app.ui().automation_hint
+        && matches!(
+            app.transport(),
+            TransportState::Stopped | TransportState::Playing
+        )
+        && !app
+            .ui()
+            .devices
+            .touched
+            .as_ref()
+            .is_some_and(|touch| touch.dragging)
+    {
+        s.mid = Platform::current()
+            .pick(t.automation_lane_hint(), t.automation_lane_hint_mac())
+            .to_owned();
+    }
     if let Some(msg) = &app.ui().status
         && now.saturating_duration_since(msg.since) < STATUS_DURATION
     {

@@ -7,7 +7,7 @@ use egui::{
 };
 use komponist_i18n::Lang;
 use komponist_model::automation::{AutomationMode, AutomationOwner, AutomationTarget};
-use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
+use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 use komponist_model::project::{VOLUME_DB_MAX, VOLUME_DB_MIN};
 use komponist_model::{Channel, Device, TrackSend};
 use komponist_plugins::DeviceStatus;
@@ -185,13 +185,48 @@ impl<'a, 'view> Catalog<'a, 'view> {
         })
     }
 
-    fn device_target(&self, device: &Device, param: devices::Param, prefix: &str) -> Target {
+    /// Resolve just the visible lane's parameter. The full catalog is built when the chooser opens.
+    fn device_param(&self, device: &Device, id: &ParamId) -> Option<(ParamInfo, f64)> {
+        let lang = self.ctx.lang;
+        if let Some(kind) = internal_kind(device) {
+            let wire = kind.wire(id)? as usize;
+            let info = &kind.params_in(lang)[wire];
+            let value = kind
+                .decode_state(device.state.as_deref())
+                .ok()
+                .map_or(info.default, |values| values[wire]);
+            return Some((info.clone(), value));
+        }
+        if is_hexa(device) {
+            let patch = komponist_builtin::decode_state(device.state.as_deref())
+                .unwrap_or_else(|_| komponist_builtin::default_patch());
+            if let Some(param) = komponist_builtin::device::param_in(lang, id) {
+                return Some((param.info.clone(), param.field.get(&patch)));
+            }
+            let m = komponist_builtin::Macro::ALL
+                .into_iter()
+                .find(|m| m.key() == id.as_str())?;
+            return Some((m.param_info_in(lang), m.get(&patch)));
+        }
+        let wire = id.plugin_id()?;
+        let host = self.ctx.engine.host();
+        let param = host
+            .params(device.id)?
+            .iter()
+            .find(|param| param.id == wire && komponist_plugins::params::is_listed(param))?;
+        let info = komponist_plugins::params::param_info(param)
+            .texts(komponist_builtin::value_texts(lang));
+        let value = host.param_base(device.id, wire).unwrap_or(param.default);
+        Some((info, value))
+    }
+
+    fn device_target(&self, device: &Device, info: ParamInfo, value: f64, prefix: &str) -> Target {
         let key = AutomationTarget::Param {
             device: device.id,
-            param: param.info.id.clone(),
+            param: info.id.clone(),
         };
-        let label = format!("{prefix} · {}", param.info.name);
-        Target::new(key, label, param.info, param.value)
+        let label = format!("{prefix} · {}", info.name);
+        Target::new(key, label, info, value)
     }
 
     pub fn resolve(&self, target: &AutomationTarget) -> Result<Target, Option<String>> {
@@ -220,13 +255,9 @@ impl<'a, 'view> Catalog<'a, 'view> {
                     DeviceStatus::Loading => return Err(None),
                     DeviceStatus::Ok => {}
                 }
-                let found = self
-                    .device_params(device)
-                    .into_iter()
-                    .find(|p| &p.info.id == param);
-                if let Some(p) = found {
-                    if p.info.automatable {
-                        return Ok(self.device_target(device, p, &name));
+                if let Some((info, value)) = self.device_param(device, param) {
+                    if info.automatable {
+                        return Ok(self.device_target(device, info, value, &name));
                     }
                     return Err(Some(lang.automation_not_automatable().to_owned()));
                 }
@@ -262,7 +293,7 @@ impl<'a, 'view> Catalog<'a, 'view> {
                 .device_params(device)
                 .into_iter()
                 .filter(|p| p.info.automatable)
-                .map(|param| self.device_target(device, param, &name))
+                .map(|param| self.device_target(device, param.info, param.value, &name))
                 .collect::<Vec<_>>();
             if let Some(infos) = self.ctx.engine.host().params(device.id) {
                 let modules: HashMap<_, _> = infos
@@ -343,12 +374,19 @@ pub(crate) fn mode_chip(
     let before = selected;
     let label = lang.automation_mode_lane(param);
     let mut child = ui.new_child(UiBuilder::new().id_salt(id).max_rect(rect));
-    child.add(
-        Dropdown::new(&label, &mut selected, &items)
-            .compact()
-            .width(rect.width())
-            .id(id),
-    );
+    let dropdown = Dropdown::new(&label, &mut selected, &items)
+        .compact()
+        .width(rect.width())
+        .id(id);
+    let dropdown = match mode {
+        AutomationMode::Off => dropdown.field_tint(None, color32(color::TEXT_3)),
+        AutomationMode::Read => dropdown,
+        AutomationMode::Touch | AutomationMode::Latch => dropdown.field_tint(
+            Some(color32(color::STATE_RECORD_SURFACE)),
+            color32(color::STATE_RECORD_INK),
+        ),
+    };
+    child.add(dropdown);
     (selected != before).then_some(names[selected].0)
 }
 
@@ -548,6 +586,10 @@ impl Chooser {
         let mut result = None;
         let mut cancel = false;
         let popup = egui::Area::new(popup_id)
+            .kind(egui::UiKind::Popup)
+            .accessibility_parent(id)
+            .accessible_name(lang.automation_title())
+            .role(Role::ListBox)
             .order(egui::Order::Foreground)
             .pivot(if down {
                 egui::Align2::LEFT_TOP

@@ -40,7 +40,7 @@ use komponist_tokens::TrackPalette;
 
 use self::canvas::{Frame, Gesture};
 use self::geometry::Geometry;
-use crate::views::{View, ViewCtx};
+use crate::views::{View, ViewCtx, clip_sections};
 
 /// The top of the velocity lane's scale.
 pub const VELOCITY_MAX: &str = "127";
@@ -63,6 +63,7 @@ pub struct PianoRoll {
     wheel_rows: f32,
     /// Notes of the live take in the last frame (a new one may scroll the keys).
     live_notes: usize,
+    automation: crate::views::automation::ClipEditor,
 }
 
 /// Zooms horizontally by `factor` so that the absolute tick `at` stays at screen x `x`.
@@ -169,6 +170,10 @@ impl PianoRoll {
 }
 
 impl View for PianoRoll {
+    fn reset_document(&mut self) {
+        self.automation = Default::default();
+    }
+
     fn show(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
         let project = Arc::clone(ctx.project);
         // While recording, the take being recorded instead of the open clip ("Piano Roll · live",
@@ -194,7 +199,30 @@ impl View for PianoRoll {
         let meter = project.meter;
         let body = ui.max_rect();
 
-        let geo = Geometry::new(body, &ctx.ui.piano_roll, clip.start, meter);
+        let lane_budget = Geometry::lane_height_limit(body, ctx.ui.piano_roll.key_height);
+        let velocity_min = metrics::VELOCITY_MIN_HEIGHT.min(lane_budget);
+        let automation_min = if live.is_none() {
+            self.automation.minimum_height(clip)
+        } else {
+            0.0
+        };
+        let velocity_max = (lane_budget - automation_min).max(velocity_min);
+        let geometry = |view: crate::ui_state::PianoRollView| {
+            let view = crate::ui_state::PianoRollView {
+                velocity_height: view.velocity_height.min(velocity_max),
+                ..view
+            };
+            Geometry::new(body, &view, clip.start, meter)
+        };
+
+        let geo = geometry(ctx.ui.piano_roll);
+        let available = geo.grid.height() - geo.key_height;
+        let automation_height = if live.is_none() {
+            self.automation.height(clip, available)
+        } else {
+            0.0
+        };
+        let geo = geo.reserve_automation(automation_height);
         if self.shown_clip != Some(clip_id) {
             // A clip opens: its notes come into view (`openClip`), from its start.
             self.shown_clip = Some(clip_id);
@@ -208,13 +236,13 @@ impl View for PianoRoll {
         let pr = &mut ctx.ui.piano_roll;
         pr.top_key = edit::clamp_top_key(i32::from(pr.top_key), geo.full_rows());
         pr.scroll_tick = pr.scroll_tick.max(0.0);
-        let geo = Geometry::new(body, &ctx.ui.piano_roll, clip.start, meter);
+        let geo = geometry(ctx.ui.piano_roll).reserve_automation(automation_height);
         if live.is_none() {
             self.apply_requests(ui, ctx, &geo, clip, notes);
         }
-        let geo = Geometry::new(body, &ctx.ui.piano_roll, clip.start, meter);
+        let geo = geometry(ctx.ui.piano_roll).reserve_automation(automation_height);
         self.scroll_and_zoom(ui, ctx, &geo);
-        let geo = Geometry::new(body, &ctx.ui.piano_roll, clip.start, meter);
+        let geo = geometry(ctx.ui.piano_roll).reserve_automation(automation_height);
         if live.is_some() {
             // The head left the view (it ran on, or the loop wrapped): show its bar at the left.
             let (t0, t1) = geo.visible_local_ticks();
@@ -241,7 +269,7 @@ impl View for PianoRoll {
                 }
             }
         }
-        let geo = Geometry::new(body, &ctx.ui.piano_roll, clip.start, meter);
+        let geo = geometry(ctx.ui.piano_roll).reserve_automation(automation_height);
 
         if self.palette.as_ref().is_none_or(|p| p.hue != track.hue.0) {
             self.palette = Some(TrackPalette::new(track.hue.0));
@@ -289,7 +317,16 @@ impl View for PianoRoll {
             grid,
             live: live.is_some(),
         };
-        toolbar::show(ui, geo.toolbar, ctx, &info, &mut self.field_drag);
+        if let Some(button) = toolbar::show(
+            ui,
+            geo.toolbar,
+            ctx,
+            &info,
+            &mut self.field_drag,
+            self.automation.shown(clip),
+        ) {
+            self.automation.toolbar(ui, ctx, clip, track, &button);
+        }
 
         let playhead = ctx.engine.playhead();
         let running = matches!(
@@ -320,6 +357,43 @@ impl View for PianoRoll {
             live: live.is_some(),
         };
         self.canvas(ui, ctx, &frame);
+        if live.is_none() {
+            let geo = &frame.geo;
+            let lanes = egui::Rect::from_min_max(
+                egui::pos2(geo.keys.left(), geo.grid.bottom()),
+                egui::pos2(geo.grid.right(), geo.grid.bottom() + automation_height),
+            );
+            let axis = komponist_ui::timeline::TimeAxis {
+                x0: geo.axis.x(clip.start),
+                ..geo.axis
+            };
+            self.automation.show(
+                ui,
+                ctx,
+                lanes,
+                geo.grid.left(),
+                clip,
+                track,
+                axis,
+                view.grid,
+                view.snap,
+                &palette,
+            );
+            if let (Some(label), Some(lane)) = (geo.lane_label, geo.lane)
+                && lane.is_positive()
+                && let Some(height) = clip_sections::resize_from_top(
+                    ui,
+                    label.union(lane),
+                    ui.scope_id().with("velocity-height"),
+                    &ctx.lang
+                        .dock_section_height(ctx.lang.piano_roll_velocity_lane()),
+                    lane.height(),
+                    velocity_min..=velocity_max,
+                )
+            {
+                ctx.ui.piano_roll.velocity_height = height;
+            }
+        }
         if self.gesture.is_some() || running {
             ui.ctx().request_repaint();
         }

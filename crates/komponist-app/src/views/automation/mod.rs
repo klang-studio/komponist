@@ -1,6 +1,7 @@
 //! Shared arrangement and clip automation controls and editing.
 
 mod chooser;
+mod clip;
 mod curve;
 mod metrics;
 
@@ -9,6 +10,7 @@ pub(crate) use chooser::{
     Catalog, Choice, Chooser, chooser_button, mode_chip, mode_chip_width, mode_names, percentage,
     toggle,
 };
+pub(crate) use clip::{ClipEditor, toolbar_button};
 pub(crate) use curve::{Editor, LaneFrame, Override, Paint};
 pub(crate) use metrics::{CHIP_HEIGHT, RECENT_TARGETS, TOGGLE_WIDTH};
 
@@ -32,6 +34,8 @@ pub enum Source {
 pub enum Action {
     /// Show or hide all the lanes of this channel.
     Shown(AutomationOwner, bool),
+    /// Hide one arrangement lane in the current view.
+    HideLane(LaneId),
     /// Add or reveal a target. An empty lane may be reused.
     ShowTarget {
         /// Track or master.

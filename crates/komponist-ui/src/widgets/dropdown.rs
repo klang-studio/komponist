@@ -285,6 +285,7 @@ pub struct Dropdown<'a> {
     list_height: Option<f32>,
     row_details: &'a [RowDetails<'a>],
     option_ids: Option<&'a [Option<&'a str>]>,
+    field_tint: Option<(Option<Color32>, Color32)>,
 }
 
 impl<'a> Dropdown<'a> {
@@ -304,12 +305,19 @@ impl<'a> Dropdown<'a> {
             list_height: None,
             row_details: &[],
             option_ids: None,
+            field_tint: None,
         }
     }
 
     /// Identifies this field and its popup independently of other widgets inserted around it.
     pub fn id(mut self, id: Id) -> Self {
         self.id = Some(id);
+        self
+    }
+
+    /// Tints the enabled field, leaving the list and focus ring in the standard palette.
+    pub fn field_tint(mut self, fill: Option<Color32>, ink: Color32) -> Self {
+        self.field_tint = Some((fill, ink));
         self
     }
 
@@ -450,7 +458,14 @@ impl<'a> Dropdown<'a> {
         self.items.get(*self.selected).map_or("", |i| i.label)
     }
 
-    fn paint_field(&self, ui: &Ui, rect: Rect, response: &Response, l: FieldLook) {
+    fn paint_field(&self, ui: &Ui, rect: Rect, response: &Response, mut l: FieldLook) {
+        if ui.is_enabled()
+            && let Some((fill, ink)) = self.field_tint
+        {
+            l.fill = fill.unwrap_or(l.fill);
+            l.text = ink;
+            l.caret = ink;
+        }
         let style = self.field_style();
         let painter = ui.painter();
         let ppp = ui.pixels_per_point();

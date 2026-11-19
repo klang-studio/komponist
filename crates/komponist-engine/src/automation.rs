@@ -381,7 +381,8 @@ pub struct PluginParam {
 #[derive(Debug, Clone, Copy)]
 pub struct PluginParamBatch {
     events: [PluginParam; 8],
-    len: usize,
+    len: u8,
+    temporary: u8,
 }
 
 impl PluginParamBatch {
@@ -395,19 +396,31 @@ impl PluginParamBatch {
                 },
             }; 8],
             len: 0,
+            temporary: 0,
         }
     }
 
     /// Changes in plugin output order.
     pub fn as_slice(&self) -> &[PluginParam] {
-        &self.events[..self.len]
+        &self.events[..usize::from(self.len)]
     }
 
     /// Appends an event and reports when the batch is full.
-    pub(crate) fn push(&mut self, event: PluginParam) -> bool {
-        self.events[self.len] = event;
+    /// Changes in order, paired with whether the change is a temporary automation override.
+    pub fn iter(&self) -> impl Iterator<Item = (&PluginParam, bool)> {
+        self.as_slice()
+            .iter()
+            .enumerate()
+            .map(|(index, event)| (event, self.temporary & (1 << index) != 0))
+    }
+
+    pub(crate) fn push(&mut self, event: PluginParam, temporary: bool) -> bool {
+        self.events[usize::from(self.len)] = event;
+        if temporary {
+            self.temporary |= 1 << self.len;
+        }
         self.len += 1;
-        self.len == self.events.len()
+        usize::from(self.len) == self.events.len()
     }
 }
 
@@ -614,6 +627,23 @@ impl Cursor {
         ) {
             self.pending_value = Some((tick, value));
         }
+    }
+
+    pub(crate) fn cancel_write(&mut self, lane: &CompiledTarget) {
+        // A write can reach a processor before the first point has been committed. With
+        // no curve to chase, restore the base through the normal bounded event delivery.
+        if matches!(lane.target, EngineTarget::Slot { .. })
+            && !lane.reads()
+            && self.manual.is_finite()
+            && matches!(
+                self.playback_gesture(),
+                Gesture::Held { writes: true, .. } | Gesture::Latch | Gesture::Return { .. }
+            )
+        {
+            self.restore_base = true;
+        }
+        self.interrupt(false, lane.mode);
+        self.pending_value = None;
     }
 
     pub(crate) fn interrupt(&mut self, keep_touch: bool, mode: AutomationMode) -> bool {

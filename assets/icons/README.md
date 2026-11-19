@@ -28,6 +28,8 @@ root `<svg>` element:
 
 `AudioWaveform` (`audio-waveform`) is an original six-stroke geometric waveform under ISC,
 used for audio files and inputs (audio proposal §10), prepared like the Lucide subset.
+The automation proposal uses an adaptation of Lucide’s spline with round control points
+(automation proposal §9, internal notes).
 
 The screens draw most icons as text glyphs (`⋯ ▾ ▸ ‹ › × ✓ ★ ⚠`) or as plain text buttons. The
 table maps each one to a Lucide icon. Play, Stop and Record stay geometric shapes (no icon).
@@ -63,6 +65,7 @@ table maps each one to a Lucide icon. Play, Stop and Record stay geometric shape
 | `Repeat` | `repeat` | "Loop" | transport bar (S01–S08, S10); looped clip (Designsystem §05) |
 | `Timer` | `timer` | "Vorzähler 1" | transport bar (S01–S08, S10); icon with the bar count beside it (owner decision 2026-11-15, no Lucide icon says count-in; `timer` = time before the start) |
 | `Volume2` | `volume-2` | track toggle "Monitoring" (I) | arrangement track header (owner decision 2026-11-14: icon instead of the letter, ARCHITECTURE §13 item 8) |
+| `Spline` | `spline` (adapted) | automation toggle and clip marker | arrangement, piano roll and step sequencer |
 
 ## Updating
 

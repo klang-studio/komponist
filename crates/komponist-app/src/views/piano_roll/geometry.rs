@@ -42,6 +42,11 @@ pub struct Geometry {
 }
 
 impl Geometry {
+    /// Most of the editor body a lane can occupy while leaving one full key visible.
+    pub(super) fn lane_height_limit(body: Rect, key_height: f32) -> f32 {
+        (body.height() - m::TOOLBAR_HEIGHT - m::RULER_HEIGHT - key_height).max(0.0)
+    }
+
     /// The layout of `body` (the dock below its tab strip) for `view` and a clip at `clip_start`.
     pub fn new(body: Rect, view: &PianoRollView, clip_start: Tick, meter: Meter) -> Geometry {
         let (left, right) = (body.left(), body.right());
@@ -52,7 +57,10 @@ impl Geometry {
         );
         let ruler_bottom = (toolbar.bottom() + m::RULER_HEIGHT).min(body.bottom());
         let lane_top = if view.velocity_lane {
-            (body.bottom() - size::VELOCITY_LANE).max(ruler_bottom)
+            body.bottom()
+                - view
+                    .velocity_height
+                    .min(Self::lane_height_limit(body, view.key_height))
         } else {
             body.bottom()
         };
@@ -93,6 +101,15 @@ impl Geometry {
             top_key: view.top_key,
             clip_start,
         }
+    }
+
+    /// Make room between the notes and velocity, leaving one full key visible.
+    pub fn reserve_automation(mut self, height: f32) -> Self {
+        self.grid.max.y = (self.grid.max.y - height)
+            .max(self.grid.top() + self.key_height)
+            .min(self.grid.max.y);
+        self.keys.max.y = self.grid.max.y;
+        self
     }
 
     /// Number of key rows the grid shows (the last one may be cut).

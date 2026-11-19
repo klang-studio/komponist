@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use komponist_model::automation::Lane;
+use komponist_model::automation::{Lane, LaneId};
 use komponist_model::params::ParamId;
 use komponist_model::{
     ClipContent, ClipId, Device, DeviceId, Grid, NoteId, Project, TickRange, TrackId,
@@ -77,6 +77,10 @@ pub struct UiState {
     pub selection: Selection,
     /// Arrangement view.
     pub arrangement: ArrangementView,
+    /// Arrangement lanes individually hidden for this editing session.
+    pub hidden_automation_lanes: BTreeSet<LaneId>,
+    /// The automation canvas under the pointer supplies a status hint for this frame.
+    pub automation_hint: bool,
     /// Which clip the editor tab shows.
     pub editor: EditorView,
     /// Piano roll view.
@@ -114,6 +118,8 @@ impl UiState {
             layout: PanelLayout::default(),
             selection: Selection::default(),
             arrangement: ArrangementView::default(),
+            hidden_automation_lanes: BTreeSet::new(),
+            automation_hint: false,
             editor: EditorView::default(),
             piano_roll: PianoRollView::default(),
             waveform: WaveformView::default(),
@@ -222,6 +228,7 @@ impl Default for PianoRollView {
             key_height: size::key::DEFAULT,
             top_key: metrics::piano_roll::TOP_KEY,
             velocity_lane: true,
+            velocity_height: size::VELOCITY_LANE,
         }
     }
 }
@@ -383,8 +390,10 @@ pub struct PianoRollView {
     pub key_height: f32,
     /// MIDI key at the top edge.
     pub top_key: u8,
-    /// Velocity lane (64 px) visible.
+    /// Velocity lane visible.
     pub velocity_lane: bool,
+    /// Preferred height of the velocity lane in design px.
+    pub velocity_height: f32,
 }
 
 /// Lane below the step grid.
