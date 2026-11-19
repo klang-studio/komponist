@@ -484,6 +484,14 @@ impl CompileEnv for EngineEnv<'_> {
                 } if *id == device.id && key == param => target.parameter,
                 _ => None,
             })
+            .or_else(|| {
+                self.slots
+                    .tracks
+                    .iter()
+                    .flat_map(|track| track.macros.parameters.iter())
+                    .find(|entry| entry.device == device.id && entry.param == *param)
+                    .map(|entry| entry.descriptor)
+            })
     }
 
     fn sample_rate(&self) -> f64 {
@@ -1087,6 +1095,7 @@ mod tests {
         });
         let track = |notes: Vec<SeqNote>| {
             Arc::new(TrackProgram {
+                macros: Default::default(),
                 automation: Default::default(),
                 chain_latency: 0,
                 id: TrackId(1),

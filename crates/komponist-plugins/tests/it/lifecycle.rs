@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::*;
+use komponist_engine::Command;
 use komponist_ipc::GuiTarget;
 use komponist_ipc::LogLevel;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, TrackId};
@@ -88,9 +89,72 @@ fn restore_updates_parameter_bases_without_overwriting_a_later_edit() {
     assert!(rig.manager.set_state(device_id, &state));
     rig.manager.set_param(device_id, gain, -30.0);
     run_until(&mut rig, "the second restore acknowledgement", |rig| {
-        rig.events[from..].contains(&PluginManagerEvent::ParamsChanged { device: device_id })
+        rig.events[from..].contains(&PluginManagerEvent::StateApplied { device: device_id })
     });
     assert_eq!(rig.manager.param_base(device_id, gain), Some(-30.0));
+}
+
+#[test]
+fn macro_snapshot_preserves_an_independent_plugin_edit() {
+    let dir = scratch("macro-state-provenance");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let gain = param_id(&rig.manager, 10, "Gain");
+    let decay = param_id(&rig.manager, 10, "Decay");
+    let base = rig.manager.param_base(device_id, gain);
+    let slot = rig.slots[&device_id];
+    let output = |rig: &mut Rig, value| {
+        rig.send(Command::SetParam {
+            slot,
+            id: gain,
+            value,
+        });
+        rig.run(4);
+    };
+
+    rig.manager.set_macro_params(&[(device_id, gain, -24.0)]);
+    output(&mut rig, -24.0);
+    // Simulate a native GUI temporarily taking the processor away from the mapped value.
+    output(&mut rig, -36.0);
+    rig.manager.preview_param(device_id, gain, -36.0);
+    assert_eq!(rig.manager.param_base(device_id, gain), base);
+    rig.manager.request_state(device_id);
+    let from = rig.events.len();
+    for _ in 0..5 {
+        rig.process(BLOCK);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        !rig.events[from..]
+            .iter()
+            .any(|event| matches!(event, PluginManagerEvent::StateSnapshot { .. }))
+    );
+
+    output(&mut rig, -24.0);
+    rig.manager.request_state(device_id);
+    let state = next_snapshot(&mut rig, 10);
+    assert!(rig.manager.is_macro_snapshot(device_id, &state));
+    assert_eq!(rig.manager.param_base(device_id, gain), base);
+
+    rig.manager.set_macro_params(&[(device_id, gain, -30.0)]);
+    output(&mut rig, -30.0);
+    rig.manager.set_param(device_id, decay, 2.0);
+    rig.manager.request_state(device_id);
+    let state = next_snapshot(&mut rig, 10);
+    assert!(!rig.manager.is_macro_snapshot(device_id, &state));
+    assert_eq!(rig.manager.param_base(device_id, decay), Some(2.0));
+    assert_eq!(rig.manager.param_base(device_id, gain), base);
+
+    rig.manager.set_macro_params(&[]);
+    assert_eq!(rig.manager.param_base(device_id, gain), Some(-30.0));
+    rig.manager.request_state(device_id);
+    let state = next_snapshot(&mut rig, 10);
+    assert!(rig.manager.is_macro_snapshot(device_id, &state));
 }
 
 #[test]

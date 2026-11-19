@@ -108,6 +108,11 @@ pub enum PluginManagerEvent {
         /// The state.
         state: Arc<[u8]>,
     },
+    /// A plugin has applied a requested state restore to its processor.
+    StateApplied {
+        /// The restored device.
+        device: DeviceId,
+    },
     /// The parameter list changed (rebuild the generic view).
     ParamsChanged {
         /// The device.
@@ -638,6 +643,24 @@ impl PluginManager {
             self.pending
                 .push(PluginManagerEvent::ParamValuesChanged { device });
         }
+    }
+
+    /// The plain output value of every mapped native plugin parameter in the active program.
+    pub fn set_macro_params(&mut self, values: &[(DeviceId, u32, f64)]) {
+        let mut by_device = BTreeMap::<_, BTreeMap<_, _>>::new();
+        for &(device, id, value) in values {
+            by_device.entry(device).or_default().insert(id, value);
+        }
+        for (&device, bridge) in &mut self.bridges {
+            bridge.set_macro_params(by_device.remove(&device).unwrap_or_default());
+        }
+    }
+
+    /// A verified snapshot with a macro change and no pending independent parameter edit.
+    pub fn is_macro_snapshot(&self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        self.bridges
+            .get(&device)
+            .is_some_and(|bridge| bridge.is_macro_snapshot(state))
     }
 
     /// Restores `state` in the running plugin of `device` (undo or redo changed the device's

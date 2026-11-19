@@ -434,6 +434,7 @@ impl Engine {
         core.finish_cut();
         core.metronome.silence();
         core.reassert_automation();
+        core.reassert_macros(None, None);
         let mut errors = Vec::new();
         for (index, slot) in core.slots.iter_mut().enumerate() {
             if let Some(processor) = slot.processor.as_mut()
@@ -1078,8 +1079,18 @@ impl TrackJobs<'_> {
         );
         state.failed = failed;
         state.stage_dropped += hook.dropped;
-        let gain = state.gain.unwrap_or(track.gain);
-        let pan = state.pan.unwrap_or(track.pan);
+        let gain = state
+            .automation
+            .macros
+            .mixer_value(&track.macros, EngineTarget::Gain)
+            .or(state.gain)
+            .unwrap_or(track.gain);
+        let pan = state
+            .automation
+            .macros
+            .mixer_value(&track.macros, EngineTarget::Pan)
+            .or(state.pan)
+            .unwrap_or(track.pan);
         let (open, muted) = match self.gates {
             Some(gates) => (gates.output_open(index), gates.muted(index)),
             None => {
@@ -1302,7 +1313,17 @@ impl TrackJobs<'_> {
                     .get(usize::from(send.gate))
                     .copied()
                     .filter(|g| !g.is_nan());
-                fast.unwrap_or(send.gain)
+                self.routing
+                    .sends
+                    .get(usize::from(send.gate))
+                    .and_then(|&id| {
+                        source.automation.macros.mixer_value(
+                            &self.tracks[usize::from(input.from)].macros,
+                            EngineTarget::Send(id),
+                        )
+                    })
+                    .or(fast)
+                    .unwrap_or(send.gain)
             } else {
                 0.0
             };
@@ -1514,6 +1535,12 @@ impl Core {
             .iter()
             .fold(self.held_input, |held, m| held_after(held, m.data));
         let t = &self.telemetry;
+        if let Some(program) = self.program.as_deref() {
+            for (track, &index) in program.tracks.iter().zip(&self.map[..self.track_count()]) {
+                let index = usize::from(index);
+                t.publish_macros(index, track.id, self.tracks[index].automation.macros.values);
+            }
+        }
         if held != self.held_input {
             self.held_input = held;
             t.held_input[0].store(held as u64, Ordering::Relaxed);
@@ -1693,6 +1720,7 @@ impl Core {
             Command::InsertProcessor { slot, processor } => {
                 self.finish_cut();
                 self.chase_automation_slot(slot);
+                self.reassert_macros(None, Some(slot));
                 self.forget_slot(slot);
                 match self.slots.get_mut(slot.0 as usize) {
                     Some(entry) => {
@@ -1730,7 +1758,17 @@ impl Core {
             Command::FinishAutomationWrite => self.finish_automation_write(),
             Command::SetParam { slot, id, value } => {
                 if let Some(owner) = self.slot_owner(slot) {
-                    self.manual_automation(owner, EngineTarget::Slot { slot, wire_id: id }, value);
+                    let target = EngineTarget::Slot { slot, wire_id: id };
+                    if let AutomationOwner::Track(track) = owner
+                        && self
+                            .program
+                            .as_ref()
+                            .and_then(|p| p.track(track))
+                            .is_some_and(|p| p.macros.mapping(target).is_some())
+                    {
+                        return;
+                    }
+                    self.manual_automation(owner, target, value);
                 }
                 if let Some(entry) = self.slots.get_mut(slot.0 as usize)
                     && !entry.params.set(id, value)
@@ -1738,6 +1776,16 @@ impl Core {
                     self.dropped += 1;
                 }
             }
+            Command::SetMacro {
+                track,
+                index,
+                value,
+            } => {
+                if let Some(state) = self.state_of(track) {
+                    state.automation.macros.set(index, value);
+                }
+            }
+            Command::MacroReassert { track } => self.reassert_macros(Some(track), None),
             Command::SetTrackGain { track, gain } => {
                 let automated = self.manual_automation(
                     AutomationOwner::Track(track),
@@ -1829,6 +1877,22 @@ impl Core {
             let stages = track.stage_count();
             if track.chain.iter().take(stages + 1).any(|d| d.slot == slot) {
                 state.stage.flush_all();
+            }
+        }
+    }
+
+    fn reassert_macros(&mut self, owner: Option<TrackId>, slot: Option<SlotId>) {
+        let Some(program) = self.program.as_deref() else {
+            return;
+        };
+        for (track, &index) in program.tracks.iter().zip(&self.map[..self.track_count()]) {
+            if owner.is_none_or(|owner| track.id == owner)
+                && slot.is_none_or(|slot| track.chain.iter().any(|device| device.slot == slot))
+            {
+                self.tracks[usize::from(index)]
+                    .automation
+                    .macros
+                    .reassert(&track.macros, slot);
             }
         }
     }
@@ -1936,6 +2000,9 @@ impl Core {
                 state.voice.clear_tail();
             }
         }
+        if reset {
+            self.reassert_macros(None, None);
+        }
         let Some(program) = self.program.as_deref() else {
             return;
         };
@@ -2010,17 +2077,31 @@ impl Core {
                             state.hardware[channel] = 0;
                         }
                     }
-                    let old = self
-                        .program
-                        .as_deref()
-                        .and_then(|p| p.track(track.id))
-                        .map_or(&[][..], |t| &t.automation);
+                    let old = self.program.as_deref().and_then(|p| p.track(track.id));
                     state.automation.install(
-                        old,
+                        old.map_or(&[][..], |t| &t.automation),
                         &track.automation,
                         &track.chain,
                         &track.source.automation,
                     );
+                    state
+                        .automation
+                        .macros
+                        .install(old.map(|t| &t.macros), &track.macros);
+                    if let Some(old) = old {
+                        for device in &track.chain {
+                            if !device.bypass
+                                && old.chain.iter().any(|old_device| {
+                                    device.slot == old_device.slot && old_device.bypass
+                                })
+                            {
+                                state
+                                    .automation
+                                    .macros
+                                    .reassert(&track.macros, Some(device.slot));
+                            }
+                        }
+                    }
                     state.clear_fast_path();
                     break;
                 }
@@ -2038,6 +2119,9 @@ impl Core {
             used[free] = true;
             map[i] = free as u16;
             let state = &mut self.tracks[free];
+            if state.id.is_some() {
+                self.telemetry.retire_macros(free);
+            }
             state.id = Some(track.id);
             state.automation.clear();
             state.automation.install(
@@ -2046,6 +2130,7 @@ impl Core {
                 &track.chain,
                 &track.source.automation,
             );
+            state.automation.macros.install(None, &track.macros);
             state.seq.clear();
             state.hardware.fill(0);
             state.release_hardware.fill(0);
@@ -2059,7 +2144,17 @@ impl Core {
                 Some(gates) => gates.output_open(i),
                 None => audible(track.mute, track.solo, any_solo),
             };
-            state.fader = Fader::at(targets(track.gain, track.pan, open), open);
+            let gain = state
+                .automation
+                .macros
+                .mixer_value(&track.macros, EngineTarget::Gain)
+                .unwrap_or(track.gain);
+            let pan = state
+                .automation
+                .macros
+                .mixer_value(&track.macros, EngineTarget::Pan)
+                .unwrap_or(track.pan);
+            state.fader = Fader::at(targets(gain, pan, open), open);
             state.post_on = false;
         }
         // Removed tracks no longer have a segment in which to send releases. Reset their
@@ -2081,7 +2176,9 @@ impl Core {
         }
         for (index, state) in self.tracks.iter_mut().enumerate() {
             if !used[index] {
-                state.id = None;
+                if state.id.take().is_some() {
+                    self.telemetry.retire_macros(index);
+                }
                 state.hardware.fill(0);
                 state.release_hardware.fill(0);
             }
@@ -2333,19 +2430,24 @@ impl Core {
                             .get(instrument.slot.0 as usize)
                             .is_some_and(|entry| entry.runs(instrument.bypass))
                     });
-                    *dropped += state.automation.prepare(
-                        &track.automation,
-                        win,
+                    let running = |slot: SlotId| {
+                        slots
+                            .get(slot.0 as usize)
+                            .is_some_and(|slot| slot.runs(slot.bypassed))
+                            && (stage_ready
+                                || !track.chain[..track.stage_count()]
+                                    .iter()
+                                    .any(|stage| stage.slot == slot))
+                    };
+                    *dropped +=
+                        state
+                            .automation
+                            .prepare(&track.automation, win, *automation_time, running);
+                    *dropped += state.automation.prepare_macros(
+                        &track.macros,
                         *automation_time,
-                        |slot| {
-                            slots
-                                .get(slot.0 as usize)
-                                .is_some_and(|slot| slot.runs(slot.bypassed))
-                                && (stage_ready
-                                    || !track.chain[..track.stage_count()]
-                                        .iter()
-                                        .any(|stage| stage.slot == slot))
-                        },
+                        rate,
+                        running,
                     );
                     if let Some(plan) = &track.audio {
                         // Audio clips: does the playhead continue the stream, or does it jump?

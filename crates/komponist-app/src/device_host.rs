@@ -163,6 +163,14 @@ pub trait DeviceHost {
     /// Updates the visible value of a plugin parameter during an automation override.
     fn preview_param(&mut self, _device: DeviceId, _id: u32, _value: f64) {}
 
+    /// Update the bridge's verified snapshot expectations for current track-macro outputs.
+    fn set_macro_params(&mut self, _values: &[(DeviceId, u32, f64)]) {}
+
+    /// Whether a snapshot was caused by a track macro and contained no independent edit.
+    fn is_macro_snapshot(&self, _device: DeviceId, _state: &Arc<[u8]>) -> bool {
+        false
+    }
+
     /// Sets a parameter of a bridged device; `false` if this host does not handle `device` (the
     /// caller then sends the engine's `SetParam` to the device's slot, as for hexa).
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
@@ -726,6 +734,14 @@ impl DeviceHost for PluginHost {
 
     fn preview_param(&mut self, device: DeviceId, id: u32, value: f64) {
         self.manager.preview_param(device, id, value);
+    }
+
+    fn set_macro_params(&mut self, values: &[(DeviceId, u32, f64)]) {
+        self.manager.set_macro_params(values);
+    }
+
+    fn is_macro_snapshot(&self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        self.manager.is_macro_snapshot(device, state)
     }
 
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {

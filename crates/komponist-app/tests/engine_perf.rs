@@ -246,3 +246,124 @@ fn bridges_case(dirs: &komponist_plugins::PluginDirs, workers: u32) {
     eprintln!("late bridge blocks: {late}");
     app.shutdown();
 }
+
+/// Measures worst-case block-rate fan-out with each of 16 × 8 inputs changing at once.
+/// Two precompiled programs alternate so the command budget does not limit the number
+/// of changed controls. The baseline exercises the same program swaps and processors.
+#[test]
+#[ignore = "timing: run in release with --ignored --nocapture"]
+fn engine_cpu_16_tracks_with_track_macros() {
+    use komponist_engine::automation::{Parameter, PlainMap};
+    use komponist_engine::compile::{self, CompileEnv};
+    use komponist_engine::testing::TestGain;
+    use komponist_engine::{Command, Engine, EngineConfig, LiveInput, MidiPort};
+    use komponist_model::automation::AutomationTarget;
+    use komponist_model::macros::Mapping;
+    use komponist_model::params::ParamId;
+
+    struct Parameters;
+    impl CompileEnv for Parameters {
+        fn midi_port(&self, _: &str) -> Option<MidiPort> {
+            None
+        }
+
+        fn device_latency(&self, _: DeviceId) -> u32 {
+            0
+        }
+
+        fn automation_parameter(&self, _: &Device, param: &ParamId) -> Option<Parameter> {
+            Some(Parameter {
+                wire_id: param.plugin_id()?,
+                map: PlainMap::linear(0.0, 1.0, 0),
+                base: 0.0,
+            })
+        }
+    }
+
+    const RATE: f32 = 48_000.0;
+    const BLOCKS: usize = 1_000;
+    let measure = |mapped: bool| {
+        let mut project = project(false);
+        for track in &mut project.tracks {
+            let track = Arc::make_mut(track);
+            let device = track.channel.devices[0].id;
+            for (index, slot) in track.macros.0.iter_mut().enumerate() {
+                slot.value = 0.1;
+                if mapped {
+                    slot.mappings.extend((0..4).map(|wire| Mapping {
+                        target: AutomationTarget::Param {
+                            device,
+                            param: ParamId::plugin((index * 4 + wire) as u32),
+                        },
+                        label: String::new(),
+                        min: 0.0,
+                        max: 1.0,
+                        invert: false,
+                        bend: 0.4,
+                    }));
+                }
+            }
+        }
+        let low = compile::build(&project, None, &Parameters);
+        for track in &mut project.tracks {
+            for slot in &mut Arc::make_mut(track).macros.0 {
+                slot.value = 0.9;
+            }
+        }
+        let high = compile::build(&project, Some(&low), &Parameters);
+        let (mut engine, mut handle) = Engine::new(EngineConfig {
+            sample_rate: RATE,
+            max_block: BUFFER as usize,
+            seed: 0,
+        });
+        for track in &low.tracks {
+            handle
+                .send(Command::InsertProcessor {
+                    slot: track.chain[0].slot,
+                    processor: Box::new(TestGain::new(1.0)),
+                })
+                .unwrap();
+        }
+        handle
+            .send(Command::SetProgram(Box::new(low.clone())))
+            .unwrap();
+        handle.send(Command::Play).unwrap();
+        let mut left = [0.0; BUFFER as usize];
+        let mut right = [0.0; BUFFER as usize];
+        let input = LiveInput {
+            midi: &[],
+            output_latency: 0,
+        };
+        let mut total = Duration::ZERO;
+        for block in 0..(BLOCKS + 50) {
+            let program = if block % 2 == 0 { &high } else { &low };
+            handle
+                .send(Command::SetProgram(Box::new(program.clone())))
+                .unwrap();
+            let start = Instant::now();
+            assert_no_alloc::assert_no_alloc(|| engine.process(&mut left, &mut right, &input));
+            let elapsed = start.elapsed();
+            if block >= 50 {
+                total += elapsed;
+            }
+            while handle.poll().is_some() {}
+        }
+        assert_eq!(handle.telemetry().dropped_events(), 0);
+        total / BLOCKS as u32
+    };
+    let baseline = measure(false);
+    let mapped = measure(true);
+    let extra = mapped.saturating_sub(baseline);
+    let period = Duration::from_secs_f32(BUFFER as f32 / RATE);
+    eprintln!(
+        "16 tracks × 8 macros × 4 mappings: baseline {baseline:?}, fan-out {mapped:?}, \
+         added {extra:?} ({:.2}% of the period)",
+        100.0 * extra.as_secs_f64() / period.as_secs_f64(),
+    );
+    if !cfg!(debug_assertions) {
+        assert!(
+            extra <= period.mul_f64(0.02),
+            "macro fan-out exceeds 2% of a block"
+        );
+    }
+}

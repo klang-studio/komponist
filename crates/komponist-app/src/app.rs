@@ -592,6 +592,7 @@ impl App {
                     }
                     self.engine_event(&event, playhead);
                 }
+                SyncEvent::PluginParameterInput { .. } => {}
                 SyncEvent::Device(event) => {
                     recompile |= matches!(
                         event,

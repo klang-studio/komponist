@@ -10,6 +10,7 @@ use komponist_model::automation::{
 use komponist_model::params::{ParamKind, Scale, db_to_p, p_to_db, to_normalized, to_plain};
 use komponist_model::{SendId, Tick};
 
+use crate::macros::{self, MacroProgram};
 use crate::processor::{Event, EventKind, ParameterEditKind};
 use crate::program::{ChainSlot, SlotId};
 use crate::sequencer::{EventList, Window};
@@ -764,6 +765,12 @@ enum Delivery {
         last: bool,
     },
     Restore(usize),
+    Macro {
+        index: usize,
+        input: f32,
+        value: f32,
+        next_reassert: u64,
+    },
 }
 
 struct BaseRestore {
@@ -772,7 +779,12 @@ struct BaseRestore {
     delivered: bool,
 }
 
-fn delivered(event: SlotEvent, cursors: &mut [Cursor], restores: &mut [BaseRestore]) {
+fn delivered(
+    event: SlotEvent,
+    cursors: &mut [Cursor],
+    restores: &mut [BaseRestore],
+    macros: &mut macros::State,
+) {
     match event.delivery {
         Delivery::Lane { index, value, last } => {
             let cursor = &mut cursors[index];
@@ -783,11 +795,18 @@ fn delivered(event: SlotEvent, cursors: &mut [Cursor], restores: &mut [BaseResto
             }
         }
         Delivery::Restore(index) => restores[index].delivered = true,
+        Delivery::Macro {
+            index,
+            input,
+            value,
+            next_reassert,
+        } => macros.delivered(index, input, value, next_reassert),
     }
 }
 
 /// All per-owner runtime data, allocated when constructing the engine.
 pub(crate) struct State {
+    pub(crate) macros: macros::State,
     cursors: Vec<Cursor>,
     reuse: Vec<Cursor>,
     params: Vec<SlotEvent>,
@@ -797,6 +816,7 @@ pub(crate) struct State {
 impl State {
     pub(crate) fn new() -> Self {
         Self {
+            macros: macros::State::new(),
             cursors: Vec::with_capacity(MAX_TARGETS),
             reuse: Vec::with_capacity(MAX_TARGETS),
             params: Vec::with_capacity(crate::MAX_EVENTS_PER_BLOCK),
@@ -1141,6 +1161,54 @@ impl State {
         dropped
     }
 
+    /// Fan out the track's effective macro values to the shared, bounded device event list.
+    pub(crate) fn prepare_macros(
+        &mut self,
+        program: &MacroProgram,
+        time: u64,
+        rate: f64,
+        mut running: impl FnMut(SlotId) -> bool,
+    ) -> u32 {
+        if program.targets.is_empty() {
+            return 0;
+        }
+        let next_reassert = time + macros::reassert_frames(rate);
+        let mut dropped = 0;
+        let mut staged = false;
+        for (index, mapping) in program.targets.iter().copied().enumerate() {
+            if let EngineTarget::Slot { slot, wire_id } = mapping.target
+                && running(slot)
+                && let Some((input, value)) = self.macros.slot_value(index, mapping, time)
+            {
+                let event = SlotEvent {
+                    slot,
+                    event: Event {
+                        offset: 0,
+                        kind: EventKind::Param {
+                            id: wire_id,
+                            value: mapping.map.plain(value),
+                        },
+                    },
+                    important: true,
+                    sequence: u32::MAX - (program.targets.len() - index) as u32,
+                    delivery: Delivery::Macro {
+                        index,
+                        input,
+                        value,
+                        next_reassert,
+                    },
+                };
+                dropped += push_event(&mut self.params, event);
+                staged = true;
+            }
+        }
+        if staged {
+            self.params
+                .sort_unstable_by_key(|entry| (entry.slot, entry.event.offset, entry.sequence));
+        }
+        dropped
+    }
+
     fn slot_range(&self, slot: SlotId) -> std::ops::Range<usize> {
         let start = self.params.partition_point(|event| event.slot < slot);
         let end = start + self.params[start..].partition_point(|event| event.slot == slot);
@@ -1151,7 +1219,12 @@ impl State {
     pub(crate) fn stage_events(&mut self, slot: SlotId) -> impl Iterator<Item = Event> + '_ {
         let range = self.slot_range(slot);
         self.params[range].iter().map(|&entry| {
-            delivered(entry, &mut self.cursors, &mut self.restores);
+            delivered(
+                entry,
+                &mut self.cursors,
+                &mut self.restores,
+                &mut self.macros,
+            );
             entry.event
         })
     }
@@ -1166,7 +1239,12 @@ impl State {
             if skip_ramps > 0 && !event.important {
                 skip_ramps -= 1;
             } else if out.push(event.event.offset, event.event.kind) {
-                delivered(event, &mut self.cursors, &mut self.restores);
+                delivered(
+                    event,
+                    &mut self.cursors,
+                    &mut self.restores,
+                    &mut self.macros,
+                );
             }
         }
         skip as u32

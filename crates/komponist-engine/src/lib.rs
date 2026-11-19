@@ -37,6 +37,7 @@ pub mod engine;
 pub mod export;
 mod garbage;
 mod graph;
+mod macros;
 mod metronome;
 mod mixer;
 pub mod processor;

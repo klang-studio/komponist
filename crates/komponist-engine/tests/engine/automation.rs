@@ -1355,3 +1355,376 @@ fn pending_base_restore_on_a_bypassed_plugin_yields_only_to_a_new_gui_value() {
         }
     }
 }
+
+fn macro_mapping(target: AutomationTarget) -> komponist_model::macros::Mapping {
+    komponist_model::macros::Mapping {
+        target,
+        label: String::new(),
+        min: 0.0,
+        max: 1.0,
+        invert: false,
+        bend: 0.0,
+    }
+}
+
+#[test]
+fn macro_fanout_is_bounded_and_uses_the_same_slot_list_in_live_and_offline() {
+    use komponist_engine::MAX_BLOCK;
+    use komponist_model::edits::macros::{add_mapping, set_macro_value};
+    use komponist_model::macros::{MACRO_COUNT, MAX_MAPPINGS};
+
+    let (mut project, owner, device) = source();
+    let AutomationOwner::Track(track) = owner else {
+        unreachable!()
+    };
+    for macro_index in 0..MACRO_COUNT {
+        let value = (macro_index + 1) as f32 / MACRO_COUNT as f32;
+        project = set_macro_value(&project, track, macro_index as u8, value).unwrap();
+        for mapping_index in 0..MAX_MAPPINGS {
+            let wire = (macro_index * MAX_MAPPINGS + mapping_index) as u32;
+            let mut mapping = macro_mapping(parameter(device, wire));
+            mapping.invert = mapping_index % 2 == 1;
+            mapping.bend = match mapping_index % 3 {
+                0 => 0.0,
+                1 => -0.4,
+                _ => 0.4,
+            };
+            project = add_mapping(&project, track, macro_index as u8, mapping).unwrap();
+        }
+    }
+    let (mut live, _, mut live_log) = rig(&project);
+    let (mut offline, initial, mut offline_log) = rig(&project);
+    let rendering = komponist_engine::export::recompile(&mut offline.engine, &project, &initial);
+    offline.set_program(&rendering);
+    live.process(MAX_BLOCK, MAX_BLOCK);
+    offline.render(MAX_BLOCK, MAX_BLOCK / 4);
+    assert_eq!(live.l, offline.l);
+    assert_eq!(live.r, offline.r);
+    assert_eq!(live.handle.telemetry().dropped_events(), 0);
+    let settings = &project.track(track).unwrap().macros.0;
+    assert_eq!(
+        live.handle.telemetry().macro_values(track),
+        Some(settings.each_ref().map(|m| m.value))
+    );
+    for slot in settings {
+        for mapping in &slot.mappings {
+            let AutomationTarget::Param { param, .. } = &mapping.target else {
+                unreachable!()
+            };
+            let event = live_log.pop().unwrap();
+            assert_eq!(event, offline_log.pop().unwrap());
+            assert_eq!((event.0, event.1), (0, param.plugin_id().unwrap()));
+            assert!((event.2 - f64::from(mapping.value_at(slot.value))).abs() < 1e-6);
+        }
+    }
+    live.process(MAX_BLOCK, MAX_BLOCK);
+    assert!(live_log.pop().is_err());
+    assert!(offline_log.pop().is_err());
+}
+
+#[test]
+fn macro_picks_up_metadata_and_reasserts_at_resume_and_reinsert() {
+    use komponist_model::edits::macros::add_mapping;
+
+    let (project, owner, device) = source();
+    let AutomationOwner::Track(track) = owner else {
+        unreachable!()
+    };
+    let project = add_mapping(&project, track, 0, macro_mapping(parameter(device, 0))).unwrap();
+    let missing = compile::build(&project, None, &Parameters(false));
+    let available = compile::build(&project, Some(&missing), &Parameters(true));
+    assert!(!std::sync::Arc::ptr_eq(
+        &missing.tracks[0],
+        &available.tracks[0]
+    ));
+    let slot = available.slots.slot(device).unwrap();
+    let mut rig = Rig::new(RATE, 256);
+    let (writer, mut log) = rtrb::RingBuffer::new(16);
+    rig.insert(
+        slot.0,
+        Probe {
+            pos: 0,
+            gain: 1.0,
+            log: Some(writer),
+            edits: None,
+        },
+    );
+    rig.set_program(&missing);
+    rig.process(128, 128);
+    assert!(log.pop().is_err());
+
+    rig.set_program(&available);
+    rig.send(Command::SetMacro {
+        track,
+        index: 0,
+        value: 0.5,
+    });
+    rig.process(128, 128);
+    assert_eq!(log.pop().unwrap(), (128, 0, 0.5));
+    assert_eq!(rig.handle.telemetry().macro_values(track).unwrap()[0], 0.5);
+
+    let bypassed = edits::set_device_bypass(&project, device, true).unwrap();
+    let bypassed = compile::build(&bypassed, Some(&available), &Parameters(true));
+    rig.set_program(&bypassed);
+    rig.send(Command::SetMacro {
+        track,
+        index: 0,
+        value: 0.25,
+    });
+    rig.process(128, 128);
+    assert!(log.pop().is_err());
+
+    rig.set_program(&available);
+    rig.send(Command::SetMacro {
+        track,
+        index: 0,
+        value: 0.25,
+    });
+    rig.process(128, 128);
+    assert_eq!(log.pop().unwrap(), (256, 0, 0.25));
+    rig.send(Command::MacroReassert { track });
+    rig.process(128, 128);
+    assert_eq!(log.pop().unwrap(), (384, 0, 0.25));
+    let (writer, mut new_log) = rtrb::RingBuffer::new(16);
+    rig.insert(
+        slot.0,
+        Probe {
+            pos: 0,
+            gain: 1.0,
+            log: Some(writer),
+            edits: None,
+        },
+    );
+    rig.process(128, 128);
+    assert_eq!(new_log.pop().unwrap(), (0, 0, 0.25));
+}
+
+#[test]
+fn mapped_native_edit_is_temporary_and_reasserts_after_gesture_end() {
+    use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
+    use komponist_model::edits::macros::{add_mapping, remove_mapping, set_macro_value};
+
+    let (project, owner, device) = source();
+    let AutomationOwner::Track(track) = owner else {
+        unreachable!()
+    };
+    let target = parameter(device, 0);
+    let (project, _) = lane(
+        &project,
+        owner,
+        target.clone(),
+        AutomationMode::Touch,
+        vec![Point::linear(Tick::ZERO, 0.8)],
+    );
+    let project = add_mapping(&project, track, 0, macro_mapping(target.clone())).unwrap();
+    let project = set_macro_value(&project, track, 0, 0.25).unwrap();
+    let program = compile::build(&project, None, &Parameters(true));
+    assert_eq!(program.automation_target(owner, &target), None);
+    let slot = program.slots.slot(device).unwrap();
+    let edits = [
+        ParameterEdit {
+            offset: 4,
+            kind: ParameterEditKind::Gesture { id: 0, begin: true },
+        },
+        ParameterEdit {
+            offset: 9,
+            kind: ParameterEditKind::Value {
+                id: 0,
+                value: 0.675,
+            },
+        },
+        ParameterEdit {
+            offset: 14,
+            kind: ParameterEditKind::Gesture {
+                id: 0,
+                begin: false,
+            },
+        },
+    ];
+    let (writer, mut log) = rtrb::RingBuffer::new(16);
+    let mut rig = Rig::new(RATE, 256);
+    rig.insert(
+        slot.0,
+        Probe {
+            pos: 0,
+            gain: 1.0,
+            log: Some(writer),
+            edits: Some(edits.into_iter()),
+        },
+    );
+    rig.set_program(&program);
+    rig.send(Command::Play);
+    rig.process(256, 256);
+    assert_eq!(log.pop().unwrap(), (0, 0, 0.25));
+    assert!(rig.events.iter().any(|e| match e {
+        EngineEvent::PluginParams { events, .. } => events.iter().any(|(edit, temporary)| {
+            temporary && matches!(edit.kind, ParameterEditKind::Value { .. })
+        }),
+        _ => false,
+    }));
+    assert!(
+        !rig.events
+            .iter()
+            .any(|e| matches!(e, EngineEvent::AutomationTouch { .. }))
+    );
+    rig.process(256, 256);
+    assert_eq!(log.pop().unwrap(), (256, 0, 0.25));
+
+    let project = remove_mapping(&project, track, 0, &target).unwrap();
+    let program = compile::build(&project, Some(&program), &Parameters(true));
+    rig.set_program(&program);
+    rig.process(256, 256);
+    assert_eq!(log.pop().unwrap(), (512, 0, f64::from(0.8_f32)));
+}
+
+#[test]
+fn macro_controls_track_volume_pan_and_send_gain() {
+    use komponist_model::edits::macros::{add_mapping, set_macro_value};
+    use komponist_model::edits::{NewBus, add_bus, add_send};
+
+    let (project, owner, _) = source();
+    let AutomationOwner::Track(track) = owner else {
+        unreachable!()
+    };
+    let (project, bus) = add_bus(&project, NewBus::default()).unwrap();
+    let (project, send) = add_send(&project, track, bus).unwrap();
+    let mut project = project;
+    for (index, target) in [
+        AutomationTarget::Volume,
+        AutomationTarget::Pan,
+        AutomationTarget::Send { send },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        project = add_mapping(&project, track, index as u8, macro_mapping(target)).unwrap();
+    }
+    project = set_macro_value(&project, track, 1, 1.0).unwrap();
+    let (mut rig, _, _) = rig(&project);
+    rig.process(256, 256);
+    assert_eq!(rig.l[255], 0.0);
+    assert_eq!(rig.r[255], 0.0);
+    rig.send(Command::SetMacro {
+        track,
+        index: 0,
+        value: 0.5,
+    });
+    rig.process(256, 256);
+    let dry = rig.r[511];
+    assert_eq!(rig.l[511], 0.0);
+    assert!(dry > 0.0);
+    rig.send(Command::SetMacro {
+        track,
+        index: 2,
+        value: 0.5,
+    });
+    rig.process(256, 256);
+    assert_eq!(rig.l[767], 0.0);
+    assert!(rig.r[767] > dry);
+}
+
+#[test]
+fn macro_converts_stepped_and_bool_parameters_at_delivery() {
+    use komponist_model::edits::macros::{add_mapping, set_macro_value};
+    use komponist_model::params::ParamKind;
+
+    struct Quantized;
+    impl CompileEnv for Quantized {
+        fn midi_port(&self, _: &str) -> Option<MidiPort> {
+            None
+        }
+
+        fn device_latency(&self, _: DeviceId) -> u32 {
+            0
+        }
+
+        fn automation_parameter(&self, _: &Device, param: &ParamId) -> Option<Parameter> {
+            let wire_id = param.plugin_id()?;
+            let kind = match wire_id {
+                0 => ParamKind::Int { min: -2, max: 2 },
+                1 => ParamKind::Bool,
+                _ => return None,
+            };
+            Some(Parameter {
+                wire_id,
+                base: 0.0,
+                map: PlainMap::from_kind(&kind),
+            })
+        }
+    }
+
+    let (mut project, owner, device) = source();
+    let AutomationOwner::Track(track) = owner else {
+        unreachable!()
+    };
+    project = set_macro_value(&project, track, 0, 0.7).unwrap();
+    project = add_mapping(&project, track, 0, macro_mapping(parameter(device, 0))).unwrap();
+    project = add_mapping(&project, track, 0, macro_mapping(parameter(device, 1))).unwrap();
+    let program = compile::build(&project, None, &Quantized);
+    let (writer, mut log) = rtrb::RingBuffer::new(16);
+    let mut rig = Rig::new(RATE, 256);
+    rig.insert(
+        program.slots.slot(device).unwrap().0,
+        Probe {
+            pos: 0,
+            gain: 1.0,
+            log: Some(writer),
+            edits: None,
+        },
+    );
+    rig.set_program(&program);
+    rig.process(128, 128);
+    assert_eq!(log.pop().unwrap(), (0, 0, 1.0));
+    assert_eq!(log.pop().unwrap(), (0, 1, 1.0));
+    rig.send(Command::SetMacro {
+        track,
+        index: 0,
+        value: 0.1,
+    });
+    rig.process(128, 128);
+    assert_eq!(log.pop().unwrap(), (128, 0, -2.0));
+    assert_eq!(log.pop().unwrap(), (128, 1, 0.0));
+}
+
+#[test]
+fn gestureless_plugin_edit_waits_for_quiet_before_macro_reassert() {
+    use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
+    use komponist_model::edits::macros::{add_mapping, set_macro_value};
+
+    let (project, owner, device) = source();
+    let AutomationOwner::Track(track) = owner else {
+        unreachable!()
+    };
+    let project = add_mapping(&project, track, 0, macro_mapping(parameter(device, 0))).unwrap();
+    let project = set_macro_value(&project, track, 0, 0.5).unwrap();
+    let program = compile::build(&project, None, &Parameters(true));
+    let slot = program.slots.slot(device).unwrap();
+    let edits = [0, 1, 2].map(|id| ParameterEdit {
+        offset: 10,
+        kind: ParameterEditKind::Value { id, value: 0.9 },
+    });
+    let (writer, mut log) = rtrb::RingBuffer::new(16);
+    let mut rig = Rig::new(RATE, 256);
+    rig.insert(
+        slot.0,
+        Probe {
+            pos: 0,
+            gain: 1.0,
+            log: Some(writer),
+            edits: Some(edits.into_iter()),
+        },
+    );
+    rig.set_program(&program);
+    let reassert_at = (RATE * 0.25) as usize + 10;
+    rig.process(reassert_at, 256);
+    assert_eq!(log.pop().unwrap(), (0, 0, 0.5));
+    assert!(log.pop().is_err());
+    rig.process(256, 256);
+    assert_eq!(log.pop().unwrap(), (reassert_at, 0, 0.5));
+    assert!(rig.events.iter().any(|e| match e {
+        EngineEvent::PluginParams { events, .. } => events.iter().any(|(edit, temporary)| {
+            !temporary && matches!(edit.kind, ParameterEditKind::Value { id: 1, .. })
+        }),
+        _ => false,
+    }));
+}

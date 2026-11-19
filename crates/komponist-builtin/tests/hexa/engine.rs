@@ -59,6 +59,7 @@ fn program(bpm: f64, notes: Vec<SeqNote>) -> Program {
     });
     let track = TrackProgram {
         automation: Default::default(),
+        macros: Default::default(),
         chain_latency: 0,
         id: TrackId(1),
         source,
