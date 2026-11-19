@@ -52,6 +52,7 @@ pub(crate) struct TestEngine {
     pub(crate) processed: u64,
     /// The first [`RECORDED_CALLS`] callback infos.
     pub(crate) infos: [Option<CallbackInfo>; RECORDED_CALLS],
+    pub(crate) input_latencies: [Duration; RECORDED_CALLS],
 }
 
 impl TestEngine {
@@ -62,12 +63,26 @@ impl TestEngine {
             value,
             processed: 0,
             infos: [None; RECORDED_CALLS],
+            input_latencies: [Duration::ZERO; RECORDED_CALLS],
         });
         (engine, probe)
     }
 }
 
 impl AudioProcess for TestEngine {
+    fn process_input(
+        &mut self,
+        out: &mut OutputBuffer<'_>,
+        info: &CallbackInfo,
+        midi: &mut MidiIn<'_>,
+        input: &crate::InputBuffer<'_>,
+    ) {
+        if let Some(latency) = self.input_latencies.get_mut(self.processed as usize) {
+            *latency = input.latency();
+        }
+        self.process(out, info, midi);
+    }
+
     fn prepare(&mut self, params: &StreamParams) {
         let probe = &self.probe;
         probe

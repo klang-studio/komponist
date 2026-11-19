@@ -174,17 +174,16 @@ impl<P: AudioProcess> StreamCallback<P> {
     where
         T: cpal::SizedSample + cpal::FromSample<f32>,
     {
-        assert_no_alloc::assert_no_alloc(|| self.render(data, output_latency));
+        assert_no_alloc::assert_no_alloc(|| self.render(data, output_latency, Instant::now()));
     }
 
-    fn render<T>(&mut self, data: &mut [T], output_latency: Duration)
+    fn render<T>(&mut self, data: &mut [T], output_latency: Duration, now: Instant)
     where
         T: cpal::SizedSample + cpal::FromSample<f32>,
     {
         if let Some(updates) = &mut self.capture_updates {
             updates.install_pending(&mut self.input);
         }
-        let now = Instant::now();
         let StreamParams {
             sample_rate,
             max_frames,
@@ -215,7 +214,10 @@ impl<P: AudioProcess> StreamCallback<P> {
             let input = match self.input.as_mut() {
                 Some((reader, data)) => {
                     let n = frames * reader.channels();
-                    reader.read(&mut data[..n], sample_rate, info.now)
+                    // Capture age and output latency must share callback entry as their
+                    // reference. `info.now` is the end of this piece's MIDI window and
+                    // predates entry for all but the last piece of a split callback.
+                    reader.read(&mut data[..n], sample_rate, now)
                 }
                 None => crate::InputBuffer::empty(),
             };
@@ -793,6 +795,45 @@ mod tests {
         let last = infos.last().unwrap();
         assert!(before <= last.now && last.now <= after);
         assert_eq!(infos[0].output_latency, latency);
+    }
+
+    #[test]
+    fn capture_latency_uses_callback_entry_for_every_prepared_piece() {
+        for max_frames in [64, 200, 256] {
+            let (mut cb, mut handle) = callback(0.0, max_frames, 2);
+            let (mut source, reader) = crate::test_input(1, 48_000, 1024).unwrap();
+            cb = cb.with_input(Some(reader));
+            let now = Instant::now();
+            let age = Duration::from_millis(20);
+            let output_latency = Duration::from_millis(5);
+            assert!(source.push(&[0.5; 512], now - age));
+            let mut data = [0.0f32; 400];
+            assert_no_alloc::assert_no_alloc(|| cb.render(&mut data, output_latency, now));
+            drop(cb);
+            let engine = handle.try_take_engine().unwrap();
+            let mut offset = 0;
+            // The clock follower can retain one source frame at later piece boundaries.
+            let tolerance = crate::frames_to_duration(1, 48_000) + Duration::from_nanos(1);
+            for (info, input_latency) in engine.infos.iter().zip(engine.input_latencies) {
+                let Some(info) = info else { break };
+                let expected = age - crate::frames_to_duration(offset, 48_000);
+                assert!(
+                    input_latency.abs_diff(expected) <= tolerance,
+                    "{max_frames}/{offset}: {input_latency:?} != {expected:?}"
+                );
+                if offset == 0 {
+                    assert_eq!(input_latency, age);
+                }
+                // The source advances with each piece and its playback moves later by the
+                // same amount. The combined correction stays within one source frame.
+                assert!(
+                    (input_latency + info.output_latency).abs_diff(age + output_latency)
+                        <= tolerance
+                );
+                offset += u64::from(info.frames);
+            }
+            assert_eq!(offset, 200);
+        }
     }
 
     /// The device backends (PipeWire, JACK, ALSA) all run `StreamCallback::run`, which takes its
