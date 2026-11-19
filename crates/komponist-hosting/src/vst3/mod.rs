@@ -724,7 +724,7 @@ impl Vst3Plugin {
 
         let (to_processor, from_main) = rtrb::RingBuffer::new(EDIT_RING);
         let (to_controller, from_processor) = rtrb::RingBuffer::new(TO_CONTROLLER_RING);
-        let initial = self.edits.connect(to_processor);
+        let (initial_generation, initial) = self.edits.connect(to_processor);
         let alive = Arc::new(AtomicBool::new(true));
         let processor = Vst3Processor::new(ProcessorSetup {
             audio: self.audio.clone(),
@@ -739,6 +739,7 @@ impl Vst3Plugin {
             midi_map: self.midi_map.clone(),
             edits: self.edits.clone(),
             from_main,
+            initial_generation,
             initial,
             to_controller,
             alive: alive.clone(),
@@ -984,7 +985,7 @@ impl HostedPlugin for Vst3Plugin {
                 "IComponent::setState returned {result}"
             )));
         }
-        // A loaded state supersedes edits made while inactive.
+        // A loaded state supersedes queued edits, whether the processor is active or not.
         self.edits.clear_pending();
         if self.separate_controller
             && let Some(controller) = &self.controller

@@ -27,7 +27,7 @@
 //! `PluginError` or `Inactive`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -45,6 +45,8 @@ use crate::notify;
 /// How long one futex wait lasts before the loop looks at the stop flag (bounds the time
 /// [`RtThread::stop`] takes).
 const STOP_POLL: Duration = Duration::from_millis(10);
+/// Bound how long the control thread waits for an in-flight plug-in block.
+const RESTORE_WAIT: Duration = Duration::from_secs(1);
 
 /// Parameter values queued from the main thread between two blocks.
 pub const PARAM_QUEUE_CAPACITY: usize = 512;
@@ -98,7 +100,7 @@ pub struct StartFailure {
     pub error: HostingError,
 }
 
-/// Latest engine value per VST3 parameter. The RT writer stamps values with the control
+/// Latest block value per VST3 parameter. The RT writer stamps values with the control
 /// generation it observed at the start of the block. A later control edit invalidates only
 /// earlier writes to the affected parameter (or all parameters when restoring a state).
 #[derive(Debug)]
@@ -196,18 +198,27 @@ impl ControllerValues {
         }
     }
 
-    fn publish(&self, generation: u64, events: &[WireEvent]) {
+    fn publish(&self, generation: u64, input: &[WireEvent], output: &[(u32, f64)]) {
         let mut changed = false;
-        for event in events {
-            let Some(WireEventKind::ParamValue { id, value }) = event.decode() else {
-                continue;
-            };
+        let mut publish = |id, value: f64| {
             if value.is_finite()
                 && let Some(slot) = self.entry(id)
             {
                 slot.publish(generation, value);
                 changed = true;
             }
+        };
+        for event in input {
+            if let Some(WireEventKind::ParamValue { id, value }) = event.decode()
+                && output.binary_search_by_key(&id, |&(id, _)| id).is_err()
+            {
+                publish(id, value);
+            }
+        }
+        // An output from this block is authoritative for that parameter. Never publish a
+        // mirrored input first, since the control thread can already be draining these slots.
+        for &(id, value) in output {
+            publish(id, value);
         }
         if changed && !self.dirty.swap(true, Ordering::Release) {
             self.notify.controller_values_ready();
@@ -231,8 +242,54 @@ pub struct RtThread {
 
 #[derive(Debug)]
 struct RtParamSync {
+    activity: AtomicU8,
     state_generation: AtomicU64,
     controller: Option<Arc<ControllerValues>>,
+}
+
+const PROCESSING: u8 = 1;
+const RESTORING: u8 = 2;
+
+struct Activity<'a> {
+    state: &'a AtomicU8,
+    bit: u8,
+}
+
+impl Drop for Activity<'_> {
+    fn drop(&mut self) {
+        self.state.fetch_and(!self.bit, Ordering::Release);
+    }
+}
+
+impl RtParamSync {
+    /// RT never waits for a state restore. The request gets fallback audio instead.
+    fn try_process(&self) -> Option<Activity<'_>> {
+        self.activity
+            .compare_exchange(0, PROCESSING, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| Activity {
+                state: &self.activity,
+                bit: PROCESSING,
+            })
+    }
+
+    /// Prevent a new block from staging parameter edits while the control thread waits for
+    /// the current block to finish. Never load state if a stalled processor still owns it.
+    fn pause_for_restore(&self) -> Option<Activity<'_>> {
+        self.activity.fetch_or(RESTORING, Ordering::AcqRel);
+        let guard = Activity {
+            state: &self.activity,
+            bit: RESTORING,
+        };
+        let deadline = Instant::now() + RESTORE_WAIT;
+        while self.activity.load(Ordering::Acquire) & PROCESSING != 0 {
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_micros(100));
+        }
+        Some(guard)
+    }
 }
 
 #[derive(Debug)]
@@ -249,6 +306,7 @@ type Returned = (Box<dyn HostedProcessor>, Consumer<QueuedParam>);
 struct Scratch {
     events_in: Vec<WireEvent>,
     events_out: Vec<WireEvent>,
+    reset_after_restore: bool,
 }
 
 impl RtThread {
@@ -257,13 +315,17 @@ impl RtThread {
     /// with the error.
     pub fn start(
         server: BridgeServer,
-        processor: Box<dyn HostedProcessor>,
+        mut processor: Box<dyn HostedProcessor>,
         config: RtConfig,
         controller: Option<Arc<ControllerValues>>,
     ) -> Result<(RtThread, StartReport), StartFailure> {
         let (params_tx, params_rx) = RingBuffer::new(PARAM_QUEUE_CAPACITY);
         let stop = Arc::new(AtomicBool::new(false));
+        if controller.is_some() {
+            processor.use_host_controller_sync();
+        }
         let sync = Arc::new(RtParamSync {
+            activity: AtomicU8::new(0),
             state_generation: AtomicU64::new(0),
             controller,
         });
@@ -321,9 +383,18 @@ impl RtThread {
             .is_ok()
     }
 
-    /// A successful state restore supersedes control values not yet applied by the processor.
-    pub fn reset_pending_params(&self) {
-        self.sync.state_generation.fetch_add(1, Ordering::Release);
+    /// Serializes a successful restore with processing and supersedes queued control edits.
+    pub fn restore<T>(&self, load: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        let _pause = self
+            .sync
+            .pause_for_restore()
+            .ok_or_else(|| "timed out waiting for the current audio block".to_owned())?;
+        let result = load()?;
+        self.sync.state_generation.fetch_add(1, Ordering::Relaxed);
+        if let Some(controller) = &self.sync.controller {
+            controller.invalidate(None);
+        }
+        Ok(result)
     }
 
     /// Stops the thread (within about [`STOP_POLL`]) and returns the stopped processor and the
@@ -377,6 +448,7 @@ fn rt_main(
     let mut scratch = Scratch {
         events_in: vec![WireEvent::default(); PARAM_QUEUE_CAPACITY + INPUT_EVENT_CAPACITY],
         events_out: vec![WireEvent::default(); OUTPUT_EVENT_CAPACITY],
+        reset_after_restore: false,
     };
     if ok {
         // Before the report: once it arrives the main thread publishes `Active`, and every request
@@ -463,6 +535,13 @@ fn serve(
     config: &RtConfig,
     sync: &RtParamSync,
 ) {
+    let Some(_processing) = sync.try_process() else {
+        // Recovery clears voices that could otherwise miss a note-off in this discarded block.
+        scratch.reset_after_restore = true;
+        write_fallback(server, request.frames as usize, config.fallback);
+        server.finish(result(BlockStatus::Inactive, 0));
+        return;
+    };
     let controller = sync.controller.as_deref();
     // Snapshot before accepting block input. A control edit racing with this block can still
     // supersede its controller notifications when the audio thread completes later.
@@ -498,7 +577,8 @@ fn serve(
         server.finish(result(BlockStatus::PluginError, 0));
         return;
     }
-    if request.flags & BLOCK_FLAG_RESET != 0 {
+    let after_restore = std::mem::take(&mut scratch.reset_after_restore);
+    if after_restore || request.flags & BLOCK_FLAG_RESET != 0 {
         processor.reset();
     }
 
@@ -539,7 +619,11 @@ fn serve(
     if status == BlockStatus::Ok
         && let Some(controller) = controller
     {
-        controller.publish(generation, &scratch.events_in[queued..count]);
+        controller.publish(
+            generation,
+            &scratch.events_in[queued..count],
+            processor.controller_updates(),
+        );
     }
     server.finish(result(status, dropped));
 }
@@ -557,6 +641,7 @@ mod tests {
             values.publish(
                 0,
                 &[event(2, 0.3), event(1, 0.4), event(2, 0.7), event(99, 0.1)],
+                &[],
             );
         });
         assert_ne!(notify.take().0 & notify::CONTROLLER_VALUES_PENDING, 0);
@@ -564,20 +649,177 @@ mod tests {
         assert_eq!(values.drain().count(), 0);
     }
     #[test]
+    fn processor_outputs_replace_mirrored_inputs_for_the_same_parameter() {
+        let notify = Arc::new(notify::BridgeNotify::new().unwrap());
+        let values = ControllerValues::new(vec![1, 2, 3], notify);
+        let input = [
+            WireEvent::new(0, WireEventKind::ParamValue { id: 1, value: 0.75 }),
+            WireEvent::new(0, WireEventKind::ParamValue { id: 2, value: 0.25 }),
+        ];
+        assert_no_alloc::assert_no_alloc(|| values.publish(0, &input, &[(1, 0.5), (3, 0.1)]));
+        assert_eq!(
+            values.drain().collect::<Vec<_>>(),
+            [(1, 0.5), (2, 0.25), (3, 0.1)]
+        );
+    }
+
+    #[test]
+    fn state_restore_waits_for_a_staged_block_and_supersedes_older_edits() {
+        use komponist_ipc::shm::{BlockSpec, BridgeState};
+        use komponist_ipc::{BridgeClient, ShmRegion, WireTransport};
+
+        struct Probe {
+            value: Arc<AtomicU64>,
+            resets: Arc<AtomicU64>,
+            staged: Arc<AtomicBool>,
+            proceed: Arc<AtomicBool>,
+        }
+
+        impl HostedProcessor for Probe {
+            fn start_processing(&mut self) -> Result<(), HostingError> {
+                Ok(())
+            }
+            fn stop_processing(&mut self) {}
+
+            fn reset(&mut self) {
+                self.resets.fetch_add(1, Ordering::Relaxed);
+                // serve has already copied the block's parameter prefix when reset is called.
+                self.staged.store(true, Ordering::Release);
+                let deadline = Instant::now() + RESTORE_WAIT;
+                while !self.proceed.load(Ordering::Acquire) && Instant::now() < deadline {
+                    std::thread::yield_now();
+                }
+            }
+
+            fn process(&mut self, block: &mut ProcessBlock<'_>) -> ProcessStatus {
+                for event in block.events_in {
+                    if let Some(WireEventKind::ParamValue { value, .. }) = event.decode() {
+                        self.value.store(value.to_bits(), Ordering::Relaxed);
+                    }
+                }
+                ProcessStatus::Continue
+            }
+        }
+
+        let value = Arc::new(AtomicU64::new(0.0f64.to_bits()));
+        let resets = Arc::new(AtomicU64::new(0));
+        let staged = Arc::new(AtomicBool::new(false));
+        let proceed = Arc::new(AtomicBool::new(false));
+        let region = Arc::new(ShmRegion::create().unwrap());
+        let mut client = BridgeClient::new(region.clone());
+        let config = RtConfig {
+            priority: 0,
+            period: Duration::from_millis(10),
+            max_frames: 1,
+            fallback: Fallback::Silence,
+        };
+        let (mut rt, _) = RtThread::start(
+            BridgeServer::new(region.clone()),
+            Box::new(Probe {
+                value: value.clone(),
+                resets: resets.clone(),
+                staged: staged.clone(),
+                proceed: proceed.clone(),
+            }),
+            config,
+            None,
+        )
+        .unwrap_or_else(|failure| panic!("could not start probe: {}", failure.error));
+        region.set_bridge_state(BridgeState::Active);
+        let wait_for = |ready: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + RESTORE_WAIT;
+            while !ready() && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            ready()
+        };
+        let mut spec = BlockSpec {
+            frames: 1,
+            flags: BLOCK_FLAG_RESET,
+            steady_time: 0,
+            deadline: None,
+            transport: WireTransport::default(),
+        };
+        assert!(rt.set_param(0, 0.75));
+        let first = client
+            .begin_block(&spec, [&[0.0], &[0.0]], None, &[])
+            .unwrap();
+        assert!(wait_for(&|| staged.load(Ordering::Acquire)));
+        assert!(rt.set_param(0, 0.125));
+        let sync = rt.sync.clone();
+
+        let restoring = AtomicBool::new(false);
+        let restored = AtomicBool::new(false);
+        let mut output = ([0.0], [0.0]);
+        let mut wait = |client: &mut BridgeClient, seq| {
+            client
+                .wait_done(
+                    seq,
+                    Instant::now() + RESTORE_WAIT,
+                    [&mut output.0, &mut output.1],
+                )
+                .unwrap()
+                .status
+        };
+        spec.flags = 0;
+        let mut rt = std::thread::scope(|scope| {
+            let runner = scope.spawn(|| {
+                rt.restore(|| {
+                    assert_eq!(f64::from_bits(value.load(Ordering::Relaxed)), 0.75);
+                    value.store(0.5f64.to_bits(), Ordering::Relaxed);
+                    restoring.store(true, Ordering::Release);
+                    assert!(wait_for(&|| restored.load(Ordering::Acquire)));
+                    Ok(())
+                })
+                .unwrap();
+                rt
+            });
+            let blocked =
+                wait_for(&|| sync.activity.load(Ordering::Acquire) == PROCESSING | RESTORING);
+            proceed.store(true, Ordering::Release);
+            assert!(blocked, "restore did not wait for the staged block");
+            assert!(wait_for(&|| restoring.load(Ordering::Acquire)));
+            assert_eq!(wait(&mut client, first), BlockStatus::Ok as u32);
+            // Model a client that had already checked the bridge state when the pause began.
+            let racing = client
+                .begin_block(&spec, [&[0.0], &[0.0]], None, &[])
+                .unwrap();
+            let fallback = wait(&mut client, racing);
+            restored.store(true, Ordering::Release);
+            assert_eq!(fallback, BlockStatus::Inactive as u32);
+            runner.join().unwrap()
+        });
+        let after_restore = client
+            .begin_block(&spec, [&[0.0], &[0.0]], None, &[])
+            .unwrap();
+        assert_eq!(wait(&mut client, after_restore), BlockStatus::Ok as u32);
+        assert_eq!(f64::from_bits(value.load(Ordering::Relaxed)), 0.5);
+        assert_eq!(resets.load(Ordering::Relaxed), 2);
+
+        assert!(rt.set_param(0, 0.875));
+        let after_edit = client
+            .begin_block(&spec, [&[0.0], &[0.0]], None, &[])
+            .unwrap();
+        assert_eq!(wait(&mut client, after_edit), BlockStatus::Ok as u32);
+        assert_eq!(f64::from_bits(value.load(Ordering::Relaxed)), 0.875);
+        let _ = rt.stop();
+    }
+
+    #[test]
     fn control_edits_invalidate_older_controller_publications() {
         let notify = Arc::new(notify::BridgeNotify::new().unwrap());
         let values = ControllerValues::new(vec![1, 2], notify);
         let event = |id, value| WireEvent::new(0, WireEventKind::ParamValue { id, value });
         let older_block = values.generation.load(Ordering::Acquire);
-        values.publish(older_block, &[event(1, 0.25)]);
+        values.publish(older_block, &[event(1, 0.25)], &[]);
         values.invalidate(Some(1));
         // This block took its generation before SetParam but finished after it.
-        values.publish(older_block, &[event(1, 0.5), event(2, 0.4)]);
+        values.publish(older_block, &[event(1, 0.5), event(2, 0.4)], &[]);
         assert_eq!(values.drain().collect::<Vec<_>>(), [(2, 0.4)]);
         let newer_block = values.generation.load(Ordering::Acquire);
-        values.publish(newer_block, &[event(1, 0.75)]);
+        values.publish(newer_block, &[event(1, 0.75)], &[]);
         assert_eq!(values.drain().collect::<Vec<_>>(), [(1, 0.75)]);
-        values.publish(newer_block, &[event(1, 0.25), event(2, 0.5)]);
+        values.publish(newer_block, &[event(1, 0.25), event(2, 0.5)], &[]);
         values.invalidate(None);
         assert_eq!(values.drain().count(), 0);
     }

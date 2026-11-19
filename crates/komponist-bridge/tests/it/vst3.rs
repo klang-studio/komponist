@@ -215,13 +215,8 @@ fn vst3_state_round_trips_between_bridges() {
         request: 41,
         state: state.clone(),
     });
-    let values = second.expect("StateApplied", |m| match m {
-        BridgeMsg::StateApplied {
-            request: 41,
-            result: Ok(v),
-        } if v.len() == 2 => Some(v.clone()),
-        _ => None,
-    });
+    let values = second.expect_restore(41).unwrap();
+    assert_eq!(values.len(), 2, "{values:?}");
     let value = |id| values.iter().find(|v| v.id == id).unwrap().value;
     assert!((value(gain) - 0.5).abs() < 1e-6, "{values:?}");
     assert!((value(decay) - 0.25).abs() < 1e-6, "{values:?}");
@@ -254,7 +249,9 @@ fn vst3_state_round_trips_between_bridges() {
     });
     second.expect_value_of(gain, 0.25);
     second.send(ControlMsg::SetState { request: 42, state });
-    second.expect_value_of(gain, 0.5);
+    let values = second.expect_restore(42).unwrap();
+    let restored_gain = values.iter().find(|value| value.id == gain).unwrap();
+    assert!((restored_gain.value - 0.5).abs() < 1e-6, "{values:?}");
     let level = play(&mut second, 71);
     assert!(
         (0.025..0.04).contains(&level),

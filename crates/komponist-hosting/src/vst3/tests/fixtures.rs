@@ -301,7 +301,11 @@ fn controller_sync_updates_an_independent_vst3_controller() {
     let mut processor = component.activate(CONFIG).unwrap();
     processor.start_processing().unwrap();
     let mut blocks = Blocks::new();
+    blocks.run(processor.as_mut(), &[note_on(0, 0, 69)]);
+    let reference = blocks.peak(0..BLOCK);
+    assert!(reference > 0.1, "initial output was {reference}");
     blocks.run(processor.as_mut(), &[param(32, gain, 0.25)]);
+    assert!(blocks.peak(64..BLOCK) < reference * 0.1);
     assert_eq!(component.param_value(gain), Some(before));
 
     component.sync_controller_param(gain, 0.25);

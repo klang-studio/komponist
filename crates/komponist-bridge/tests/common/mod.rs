@@ -442,20 +442,32 @@ impl Bridge {
         })
     }
 
-    /// Waits for the parameter at `value` (within 1e-6), in a live report or state reply.
-    /// This is a sync point after `SetParam` or `SetState` when earlier unsolicited reports
-    /// can still carry an older value (#51).
+    /// Waits for a live report for the parameter at `value` within 1e-6.
     pub fn expect_value_of(&mut self, id: u32, value: f64) -> String {
         self.expect("ParamValues", |m| match m {
-            BridgeMsg::ParamValues(values)
-            | BridgeMsg::StateApplied {
-                result: Ok(values), ..
-            } => values
+            BridgeMsg::ParamValues(values) => values
                 .iter()
                 .find(|v| v.id == id && (v.value - value).abs() < 1e-6)
                 .map(|v| v.text.clone()),
             _ => None,
         })
+    }
+
+    /// Waits for the result of this particular state restore.
+    pub fn expect_restore(
+        &mut self,
+        request: u32,
+    ) -> Result<Vec<komponist_ipc::ParamValue>, String> {
+        self.expect(
+            &format!("StateApplied for request {request}"),
+            |m| match m {
+                BridgeMsg::StateApplied {
+                    request: reply,
+                    result,
+                } if *reply == request => Some(result.clone()),
+                _ => None,
+            },
+        )
     }
 
     /// `RT priority` log lines seen so far.

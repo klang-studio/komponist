@@ -912,28 +912,35 @@ impl Bridge {
                 .plugin
                 .as_mut()
                 .ok_or_else(|| "no plugin loaded".to_owned())?;
-            plugin.load_state(state).map_err(|e| e.to_string())?;
-            if let Some(active) = self.active.as_ref() {
-                active.rt.reset_pending_params();
-                if let Some(controller) = &active.controller {
-                    controller.invalidate(None);
-                }
-            }
+            let mut load = || {
+                plugin.load_state(state).map_err(|e| e.to_string())?;
+                Ok(plugin
+                    .params()
+                    .into_iter()
+                    .filter_map(|info| {
+                        let value = plugin.param_value(info.id)?;
+                        Some(ParamValue {
+                            id: info.id,
+                            value,
+                            text: plugin.param_text(info.id, value).unwrap_or_default(),
+                        })
+                    })
+                    .collect())
+            };
+            let values = if let Some(active) = self.active.as_ref() {
+                // Stop new requests at the client so it can retain important events while we
+                // wait for the block already in flight.
+                self.region.set_bridge_state(BridgeState::Loaded);
+                let result = active.rt.restore(load);
+                self.region.set_bridge_state(BridgeState::Active);
+                result?
+            } else {
+                load()?
+            };
             // Old coalesced values must not follow the authoritative state report.
             self.pending_values.clear();
             self.values_due = None;
-            Ok(plugin
-                .params()
-                .into_iter()
-                .filter_map(|info| {
-                    let value = plugin.param_value(info.id)?;
-                    Some(ParamValue {
-                        id: info.id,
-                        value,
-                        text: plugin.param_text(info.id, value).unwrap_or_default(),
-                    })
-                })
-                .collect())
+            Ok(values)
         })();
         self.send(BridgeMsg::StateApplied { request, result });
     }

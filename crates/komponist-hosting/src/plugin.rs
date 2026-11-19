@@ -235,6 +235,15 @@ pub trait HostedProcessor: Send {
     /// Processes one block.
     fn process(&mut self, block: &mut ProcessBlock<'_>) -> ProcessStatus;
 
+    /// Routes VST3 controller updates through the host. Called before processing starts.
+    fn use_host_controller_sync(&mut self) {}
+
+    /// Last DSP output value per parameter, sorted by ID, when routed through the host.
+    /// GUI echo events are separate and still travel through the block's output event list.
+    fn controller_updates(&self) -> &[(u32, f64)] {
+        &[]
+    }
+
     /// Clears voices and tails (CLAP `reset`; VST3: all-notes-off and a flush at the next block).
     fn reset(&mut self);
 }

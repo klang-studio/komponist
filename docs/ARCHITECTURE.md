@@ -1593,8 +1593,11 @@ Bridge → app: `Loaded{info, params, latency}`
 A successful `StateApplied` returns the restored parameter values and updates the plugin
 manager's base cache, preserving newer user edits. `ParamValues` reports live values and display
 text. For VST3, each render block stamps its controller updates with a control generation so
-`SetParam` and `SetState` can supersede older updates. The bridge applies any remaining controller
-values after it joins the RT thread during deactivation.
+`SetParam` and `SetState` can supersede older updates. The bridge uses the processor's output
+when the same block also contains an input for that parameter. State restoration holds off new
+requests while the current block finishes. If a request races the pause and needs fallback audio,
+processing resumes with a voice reset so missed note-offs cannot leave notes sounding.
+The bridge applies any remaining controller values after it joins the RT thread during deactivation.
 
 **Windows (`komponist-ipc`, port W2):** the same layout, handshake and framing on other primitives.
 The shared memory is a pagefile-backed section of exactly `SHM_SIZE` (`CreateFileMappingW`; its size

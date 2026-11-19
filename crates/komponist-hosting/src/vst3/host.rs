@@ -18,7 +18,7 @@ use std::ffi::{CStr, CString, c_void};
 #[cfg(unix)]
 use std::os::fd::{BorrowedFd, RawFd};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -68,6 +68,12 @@ pub(crate) enum Edit {
     /// A GUI gesture (`beginEdit` = true / `endEdit` = false), echoed as a `ParamGesture` output
     /// event.
     Gesture(u32, bool),
+}
+
+/// An edit is valid only until the next successful component state load.
+pub(crate) struct QueuedEdit {
+    pub(crate) generation: u64,
+    pub(crate) edit: Edit,
 }
 
 /// Whether the interface id behind `iid` is `I`'s.
@@ -369,11 +375,12 @@ impl IAttributeListTrait for HostAttributeList {
 #[derive(Default)]
 pub(crate) struct Edits {
     inner: Mutex<EditsInner>,
+    generation: AtomicU64,
 }
 
 #[derive(Default)]
 struct EditsInner {
-    to_processor: Option<rtrb::Producer<Edit>>,
+    to_processor: Option<rtrb::Producer<QueuedEdit>>,
     pending: Vec<ParamChange>,
     gestures: HashSet<u32>,
     controller_sync: HashMap<u32, Instant>,
@@ -389,6 +396,10 @@ impl EditsInner {
 }
 
 impl Edits {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
     pub(crate) fn mark_controller_sync(&self, id: u32) {
         self.inner
             .lock()
@@ -418,7 +429,12 @@ impl Edits {
             }
         }
         match (inner.to_processor.as_mut(), edit) {
-            (Some(ring), _) => ring.push(edit).is_ok(),
+            (Some(ring), _) => ring
+                .push(QueuedEdit {
+                    generation: self.generation.load(Ordering::Relaxed),
+                    edit,
+                })
+                .is_ok(),
             (None, Edit::Set(id, value) | Edit::Perform(id, value)) => {
                 inner.keep_pending((id, value));
                 true
@@ -428,10 +444,13 @@ impl Edits {
     }
 
     /// Activation: changes go to `ring` from now on; returns the pending ones.
-    pub(crate) fn connect(&self, ring: rtrb::Producer<Edit>) -> Vec<ParamChange> {
+    pub(crate) fn connect(&self, ring: rtrb::Producer<QueuedEdit>) -> (u64, Vec<ParamChange>) {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         inner.to_processor = Some(ring);
-        std::mem::take(&mut inner.pending)
+        (
+            self.generation.load(Ordering::Relaxed),
+            std::mem::take(&mut inner.pending),
+        )
     }
 
     /// Deactivation: changes the processor did not apply become pending again.
@@ -456,11 +475,9 @@ impl Edits {
 
     /// Forgets pending changes (a state load supersedes them).
     pub(crate) fn clear_pending(&self) {
-        self.inner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pending
-            .clear();
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        inner.pending.clear();
+        self.generation.fetch_add(1, Ordering::Release);
     }
 
     /// Pending changes, for tests.
@@ -1013,11 +1030,18 @@ mod tests {
         assert!(edits.push(Edit::Set(1, 0.75)));
         assert_eq!(edits.pending(), [(1, 0.75), (2, 0.5)]);
         let (producer, mut consumer) = rtrb::RingBuffer::new(2);
-        assert_eq!(edits.connect(producer), [(1, 0.75), (2, 0.5)]);
+        assert_eq!(edits.connect(producer), (0, vec![(1, 0.75), (2, 0.5)]));
         assert!(edits.pending().is_empty());
         assert!(edits.push(Edit::Gesture(3, true)) && edits.push(Edit::Perform(3, 0.1)));
         assert!(!edits.push(Edit::Set(5, 0.3)), "ring full");
-        assert_eq!(consumer.pop(), Ok(Edit::Gesture(3, true)));
+        let early = consumer.pop().unwrap();
+        assert_eq!(early.edit, Edit::Gesture(3, true));
+        edits.clear_pending();
+        let stale = consumer.pop().unwrap();
+        assert_ne!(stale.generation, edits.generation());
+        assert!(edits.push(Edit::Set(5, 0.75)));
+        let fresh = consumer.pop().unwrap();
+        assert_eq!(fresh.generation, edits.generation());
         edits.disconnect([(3, 0.1)]);
         assert!(edits.push(Edit::Set(4, 0.9)));
         assert_eq!(edits.pending(), [(3, 0.1), (4, 0.9)]);

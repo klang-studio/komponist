@@ -81,13 +81,7 @@ fn exercise(path: &str, plugin_id: &str, sound: bool) {
         request: 41,
         state: state.clone(),
     });
-    second.expect("StateApplied", |m| match m {
-        BridgeMsg::StateApplied {
-            request: 41,
-            result,
-        } => Some(result.clone().unwrap()),
-        _ => None,
-    });
+    second.expect_restore(41).unwrap();
     second.activate();
     for _ in 0..10 {
         second.block(&[]);
