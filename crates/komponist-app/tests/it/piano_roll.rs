@@ -1320,6 +1320,14 @@ fn midi_clip_automation_edits_local_content_time_without_changing_notes() {
     assert_eq!(envelope.points.as_slice().len(), 1);
     assert!(envelope.points.as_slice()[0].tick < clip_data.start);
     assert!(track.automation.lane(&AutomationTarget::Volume).is_some());
+    let from = clip_automation_points(&h).next().unwrap().rect().center();
+    drag(&mut h, from, from - vec2(0.0, 12.0), Modifiers::NONE);
+    let moved = clip_automation_points(&h).next().unwrap().rect().center();
+    assert!(
+        (from.y - moved.y - 12.0).abs() < 0.5,
+        "{from:?} → {moved:?}"
+    );
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
     assert_eq!(notes_of(h.state(), clip), notes);
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
     assert!(

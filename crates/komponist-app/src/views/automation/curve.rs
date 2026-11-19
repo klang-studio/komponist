@@ -676,7 +676,7 @@ impl Editor {
                     } => {
                         let raw_tick = lane.axis.x(points[*index].tick) + pointer.x - origin.x;
                         let dx = lane.tick(raw_tick, mods.shift, meter) - points[*index].tick;
-                        let dy = (origin.y - pointer.y) / lane.rect.height()
+                        let dy = (origin.y - pointer.y) / lane.value_rect().height().max(1.0)
                             * if mods.shift { 0.1 } else { 1.0 };
                         let rank = indices.iter().position(|i| i == index);
                         let original = points[*index];
@@ -1293,17 +1293,18 @@ fn hatch(painter: &egui::Painter, rect: Rect) {
     }
 }
 
-/// Keep each pixel column's extremes in traversal order without storing all input samples.
+/// Keep each pixel column's endpoints and extremes in traversal order.
 struct CurvePath {
     points: Vec<Pos2>,
     column: Option<CurveColumn>,
 }
 
 struct CurveColumn {
+    first: Pos2,
+    last: Pos2,
     min: Pos2,
     max: Pos2,
     min_first: bool,
-    single: bool,
 }
 
 impl CurvePath {
@@ -1320,7 +1321,7 @@ impl CurvePath {
             .as_mut()
             .filter(|column| column.min.x.floor() == point.x.floor())
         {
-            column.single = false;
+            column.last = point;
             if point.y.total_cmp(&column.min.y).is_lt() {
                 column.min = point;
                 column.min_first = false;
@@ -1331,22 +1332,26 @@ impl CurvePath {
         } else {
             self.flush_column();
             self.column = Some(CurveColumn {
+                first: point,
+                last: point,
                 min: point,
                 max: point,
                 min_first: true,
-                single: true,
             });
         }
     }
 
     fn flush_column(&mut self) {
         if let Some(column) = self.column.take() {
-            if column.single {
-                self.points.push(column.min);
-            } else if column.min_first {
-                self.points.extend([column.min, column.max]);
+            let extrema = if column.min_first {
+                [column.min, column.max]
             } else {
-                self.points.extend([column.max, column.min]);
+                [column.max, column.min]
+            };
+            for point in [column.first, extrema[0], extrema[1], column.last] {
+                if self.points.last() != Some(&point) {
+                    self.points.push(point);
+                }
             }
         }
     }
@@ -1403,7 +1408,7 @@ fn curve_path(lane: &LaneFrame<'_>, points: &[Point], rect: Rect) -> Vec<Pos2> {
     let (start, end) = lane.axis.ticks_in(rect.x_range());
     let lo = points.partition_point(|p| p.tick < start).saturating_sub(1);
     let hi = (points.partition_point(|p| p.tick <= end) + 1).min(points.len());
-    let mut path = CurvePath::new((hi - lo).min(rect.width() as usize * 2 + 2));
+    let mut path = CurvePath::new((hi - lo).min(rect.width() as usize * 4 + 4));
     let boundary = |x: f32| {
         let tick = Tick(lane.axis.tick_at(x).round() as i64);
         let value = automation::value_at(points, tick).unwrap_or_default();
@@ -1597,13 +1602,17 @@ mod tests {
             grid: Grid::Bar,
             end: None,
         };
-        let path = [
+        let mut path = CurvePath::new(5);
+        for point in [
             pos2(0.0, 24.0),
             pos2(21.0, 24.0),
             pos2(21.0, 7.0),
-            pos2(42.0, 7.0),
-        ];
-        let mesh = dense_jump_mesh(&path, &settings);
+            pos2(21.5, 10.0),
+            pos2(42.0, 10.0),
+        ] {
+            path.push(point);
+        }
+        let mesh = dense_jump_mesh(&path.into_points(), &settings);
         let (triangles, _) = mesh.indices.as_chunks::<3>();
         let fills = triangles.iter().filter(|triangle| {
             triangle
@@ -1868,13 +1877,13 @@ mod tests {
     }
 
     #[test]
-    fn column_compaction_preserves_extrema_in_traversal_order() {
+    fn column_compaction_preserves_endpoints_and_extrema_in_traversal_order() {
         let mut path = CurvePath::new(5);
         let samples = [
             pos2(0.1, 4.0),
             pos2(0.2, 8.0),
             pos2(0.3, 2.0),
-            pos2(0.4, 2.0),
+            pos2(0.4, 4.0),
             pos2(1.1, 3.0),
             pos2(1.2, 3.0),
             pos2(1.3, 3.0),
@@ -1885,7 +1894,9 @@ mod tests {
         }
         assert_eq!(
             path.into_points(),
-            [samples[1], samples[2], samples[4], samples[6], samples[7]]
+            [
+                samples[0], samples[1], samples[2], samples[3], samples[4], samples[6], samples[7]
+            ]
         );
     }
 }
