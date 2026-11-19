@@ -422,8 +422,7 @@ struct Scene {
 impl Scene {
     fn new(p: Project, c: ClipId, t: Lang) -> Self {
         let app = app(p, c, t);
-        let mut ui = app.ui().clone();
-        ui.waveform.px_per_bar = 400.0;
+        let ui = app.ui().clone();
         Self {
             app,
             ui,
@@ -637,6 +636,11 @@ fn source_readout_never_pairs_clamped_source_zero_with_an_unrelated_song_positio
             h.query_by_role_and_label(Role::Label, &expected).is_some(),
             "out-of-clip playhead uses valid clip anchor"
         );
+        // Opening fits the clip. Zoom out explicitly to expose empty space beyond the source.
+        h.state_mut().ui.waveform.px_per_bar = 400.0;
+        h.run_steps(2);
+        h.state_mut().ui.waveform.scroll_tick = (4 * BAR) as f64;
+        h.run_steps(2);
         let canvas = h
             .get_by_role_and_label(Role::Group, &t.audio_waveform_title("Pulse 90"))
             .rect();
