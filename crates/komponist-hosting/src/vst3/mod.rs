@@ -948,6 +948,10 @@ impl HostedPlugin for Vst3Plugin {
         }
     }
 
+    fn has_unapplied_edits(&self) -> bool {
+        self.active.is_some() && self.edits.has_unapplied_edits()
+    }
+
     fn save_state(&mut self) -> Result<Vec<u8>, HostingError> {
         self.flush_pending();
         // SAFETY: main thread; the stream lives for the call.

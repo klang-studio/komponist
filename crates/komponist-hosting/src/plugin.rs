@@ -175,6 +175,12 @@ pub trait HostedPlugin {
     /// processor and controller directly). Offsets are ignored.
     fn flush_params(&mut self, input: &[WireEvent], output: &mut Vec<WireEvent>);
 
+    /// Whether the controller has edits waiting for an active processor. Check while audio
+    /// processing is paused so that no edit can be in transit from the queue to the component.
+    fn has_unapplied_edits(&self) -> bool {
+        false
+    }
+
     /// The plugin state as one blob (CLAP `state.save`; VST3 component + controller states with a
     /// small header, format defined by WP-32).
     fn save_state(&mut self) -> Result<Vec<u8>, HostingError>;

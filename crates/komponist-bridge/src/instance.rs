@@ -973,6 +973,11 @@ impl Bridge {
                     plugin.sync_controller_param(id, value);
                 }
             }
+            // The VST3 editor can expose a new controller value before the component has
+            // processed it. Check the hosting queue while the audio pause is held.
+            if plugin.has_unapplied_edits() {
+                return Ok(None);
+            }
             let mut verified = Vec::with_capacity(expected.len());
             for &(id, value, allow_quantized) in expected {
                 let Some(actual) = plugin.param_value(id).filter(|actual| actual.is_finite())
@@ -994,7 +999,7 @@ impl Bridge {
                     .param_value(id)
                     .is_some_and(|actual| same_param_value(actual, value))
             });
-            Ok(stable.then_some((state, verified)))
+            Ok((stable && !plugin.has_unapplied_edits()).then_some((state, verified)))
         };
         let result = if let Some(active) = self.active.as_mut() {
             self.region.set_bridge_state(BridgeState::Loaded);
