@@ -132,8 +132,12 @@ impl PianoRoll {
     /// Wheel: keys up / down; Shift wheel (horizontal): time; Ctrl wheel: zoom around the
     /// pointer. Over the ruler, keyboard, grid and lane.
     fn scroll_and_zoom(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>, geo: &Geometry) {
-        let area = egui::Rect::from_min_max(geo.ruler.min.min(geo.keys.min), ui.max_rect().max);
-        if !ui.rect_contains_pointer(area) {
+        let notes = egui::Rect::from_min_max(geo.ruler.min.min(geo.keys.min), geo.grid.max);
+        let over_velocity = geo
+            .lane_label
+            .zip(geo.lane)
+            .is_some_and(|(label, lane)| ui.rect_contains_pointer(label.union(lane)));
+        if !ui.rect_contains_pointer(notes) && !over_velocity {
             return;
         }
         let (scroll, zoom, pointer) = ui.input(|i| {

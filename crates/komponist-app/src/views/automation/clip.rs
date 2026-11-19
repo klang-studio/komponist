@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use egui::{Color32, Rect, Response, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
 use komponist_model::automation::{
-    self, AutomationMode, AutomationOwner, AutomationTarget, ClipAutomation, Point, Points,
+    self, AutomationMode, AutomationOwner, AutomationTarget, ClipAutomation, Point,
 };
 use komponist_model::{Clip, ClipId, Grid, Tick, Track};
 use komponist_tokens::egui_support::color32;
@@ -73,7 +73,7 @@ impl ClipEditor {
                 self.shown.insert(clip.id, !shown);
             }
         }
-        self.choose(ui, ctx, clip, track, button, false);
+        self.choose(ui, ctx, clip, track, button);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -114,7 +114,7 @@ impl ClipEditor {
             .auto_shrink([false, false])
             .show(&mut body, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                for (i, envelope) in clip.automation.iter().enumerate() {
+                for envelope in &clip.automation {
                     self.lane(
                         ui,
                         ctx,
@@ -128,7 +128,6 @@ impl ClipEditor {
                         palette,
                         mode_width,
                         height_limit,
-                        i + 1 == clip.automation.len(),
                     );
                 }
             });
@@ -150,7 +149,6 @@ impl ClipEditor {
         palette: &TrackPalette,
         mode_width: f32,
         height_limit: f32,
-        last: bool,
     ) {
         let key = (clip.id, envelope.target.clone());
         let height = self
@@ -252,7 +250,7 @@ impl ClipEditor {
             if trigger.clicked() {
                 self.chooser.open(trigger.id);
             }
-            self.choose(ui, ctx, clip, track, &trigger, last);
+            self.choose(ui, ctx, clip, track, &trigger);
         }
 
         let end = automation::clip_content_length(clip);
@@ -263,12 +261,19 @@ impl ClipEditor {
             Tick(-1)
         };
         let base = target.as_ref().map_or(0.0, |target| target.base);
-        let current = automation::value_at(
-            automation::clip_points(clip, envelope),
-            head.max(Tick::ZERO),
-        )
-        .filter(|_| mode != AutomationMode::Off)
-        .unwrap_or(base);
+        let current = (mode != AutomationMode::Off)
+            .then(|| {
+                ctx.automation_capture
+                    .and_then(|capture| capture.current_clip_value(clip.id, &envelope.target))
+                    .or_else(|| {
+                        automation::value_at(
+                            automation::clip_points(clip, envelope),
+                            head.max(Tick::ZERO),
+                        )
+                    })
+            })
+            .flatten()
+            .unwrap_or(base);
         let value = warning.clone().unwrap_or_else(|| {
             target.as_ref().map_or_else(
                 || percentage(lang, current),
@@ -361,14 +366,13 @@ impl ClipEditor {
         clip: &Clip,
         track: &Track,
         trigger: &Response,
-        add: bool,
     ) {
         let Some(catalog) = Catalog::new(ctx, AutomationOwner::Track(track.id)) else {
             return;
         };
         match self
             .chooser
-            .show(ui, trigger.id, trigger.rect, &catalog, add)
+            .show(ui, trigger.id, trigger.rect, &catalog, false)
         {
             Some(Choice::Target { key, label })
                 if clip.automation.iter().all(|a| a.target != key) =>
@@ -376,7 +380,6 @@ impl ClipEditor {
                 self.shown.insert(clip.id, true);
                 ctx.send(Action::Automation(Automation::AddClip(clip.id, key, label)));
             }
-            Some(Choice::Add) => self.chooser.open(trigger.id),
             _ => {}
         }
     }
@@ -418,19 +421,17 @@ fn repetitions(
         if !interval.is_positive() {
             continue;
         }
-        let points = Points::new(
-            points
-                .iter()
-                .map(|point| Point {
-                    tick: point.tick + offset,
-                    ..*point
-                })
-                .collect(),
-        );
+        let repeated = LaneFrame {
+            axis: TimeAxis {
+                x0: lane.axis.x(offset),
+                ..lane.axis
+            },
+            ..lane.clone()
+        };
         super::curve::paint_curve(
             &painter.with_clip_rect(interval),
-            lane,
-            points.as_slice(),
+            &repeated,
+            points,
             interval,
             ink,
             None,

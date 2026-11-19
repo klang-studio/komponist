@@ -38,6 +38,7 @@ pub(crate) struct Paint<'a> {
     pub beyond: Option<Tick>,
 }
 
+#[derive(Clone)]
 pub(crate) struct LaneFrame<'a> {
     pub source: Source,
     pub label: &'a str,
@@ -157,6 +158,7 @@ struct MeshSettings {
     pixels_per_point: f32,
     meter: Meter,
     grid: Grid,
+    end: Option<Tick>,
 }
 
 #[derive(Debug)]
@@ -301,6 +303,7 @@ impl Editor {
                 pixels_per_point: painter.pixels_per_point(),
                 meter: ctx.project.meter,
                 grid: lane.grid,
+                end: lane.end,
             };
             self.paint_dense(&painter, lane, contour, settings);
         } else {
@@ -481,30 +484,6 @@ impl Editor {
         }
         if let Some(tooltip) = tooltip {
             Tip::new(&tooltip).attach(&response);
-        }
-        if self
-            .drag
-            .as_ref()
-            .is_some_and(|drag| drag.source() == &lane.source)
-            && let Some(pos) = ui.input(|input| input.pointer.interact_pos())
-            && !matches!(self.drag, Some(Drag::Box { .. }))
-        {
-            let value = lane.format(ctx, lane.value(pos.y));
-            let tick = lane.tick(
-                pos.x,
-                ui.input(|input| input.modifiers.shift),
-                ctx.project.meter,
-            );
-            let text =
-                ctx.lang
-                    .automation_tooltip(lane.label, &value, fmt_pos(tick, ctx.project.meter));
-            komponist_ui::tooltip::show_value(
-                ui.ctx(),
-                id.with("drag-value"),
-                Rect::from_center_size(pos, vec2(m::POINT, m::POINT)),
-                komponist_ui::tooltip::Placement::Above,
-                &text,
-            );
         }
         self.pointer(ui, ctx, lane, &response);
         self.keyboard(ui, ctx, lane, &response);
@@ -691,8 +670,14 @@ impl Editor {
                         let dx = lane.tick(raw_tick, mods.shift, meter) - points[*index].tick;
                         let dy = (origin.y - pointer.y) / lane.rect.height()
                             * if mods.shift { 0.1 } else { 1.0 };
+                        let rank = indices.iter().position(|i| i == index);
+                        let original = points[*index];
                         let (points, selected) =
                             move_points(points, indices, dx, dy, lane.end, *copy);
+                        let point = rank
+                            .and_then(|rank| selected.iter().nth(rank))
+                            .map_or(original, |i| points[*i]);
+                        show_drag_value(ui, ctx, lane, response.id, point);
                         let label = if *copy {
                             "undo-automation-copy-points"
                         } else {
@@ -721,6 +706,7 @@ impl Editor {
                     Drag::Draw { raw, .. } => {
                         let tick = lane.tick(pointer.x, true, meter);
                         let point = Point::linear(tick, lane.value(pointer.y));
+                        show_drag_value(ui, ctx, lane, response.id, point);
                         if raw.last().is_none_or(|old| *old != point) {
                             raw.push(point);
                         }
@@ -1066,6 +1052,20 @@ impl Editor {
             _ => {}
         }
     }
+}
+
+fn show_drag_value(ui: &Ui, ctx: &ViewCtx<'_>, lane: &LaneFrame<'_>, id: Id, point: Point) {
+    let value = lane.format(ctx, point.value);
+    let text =
+        ctx.lang
+            .automation_tooltip(lane.label, &value, fmt_pos(point.tick, ctx.project.meter));
+    komponist_ui::tooltip::show_value(
+        ui.ctx(),
+        id.with("drag-value"),
+        Rect::from_center_size(lane.pos(point), vec2(m::POINT, m::POINT)),
+        komponist_ui::tooltip::Placement::Above,
+        &text,
+    );
 }
 
 fn in_same_group(a: &Source, b: &Source) -> bool {
@@ -1471,35 +1471,62 @@ fn dense_background(settings: &MeshSettings) -> egui::Mesh {
     mesh
 }
 
-/// A dense trace is a single band of each column's minimum and maximum values. Connecting the
-/// bands retains their envelopes and discontinuities with fewer triangles than stroking all the
-/// zigzags between extrema.
+/// Keep each column's extremes as a vertical mark. Join the outgoing value of the previous
+/// column to the incoming value of the next, so a hold stays flat up to its jump.
 fn dense_band(path: &[Pos2], settings: &MeshSettings) -> egui::Mesh {
-    let mut mesh = egui::Mesh::default();
-    let mut band = egui::Mesh::default();
+    let mut fill = egui::Mesh::default();
+    let mut ink = egui::Mesh::default();
     let half_width = settings.width / 2.0;
-    for (index, column) in path.chunk_by(|a, b| a.x.floor() == b.x.floor()).enumerate() {
+    let mut previous: Option<Pos2> = None;
+    let strip = |mesh: &mut egui::Mesh, a: Pos2, b: Pos2, c: Pos2, d: Pos2, color| {
+        let index = mesh.vertices.len() as u32;
+        for vertex in [a, b, c, d] {
+            mesh.colored_vertex(vertex, color);
+        }
+        mesh.add_triangle(index, index + 1, index + 2);
+        mesh.add_triangle(index, index + 2, index + 3);
+    };
+    for column in path.chunk_by(|a, b| a.x.floor() == b.x.floor()) {
         let first = column[0];
+        let last = *column.last().unwrap();
         let (top, bottom) = column
             .iter()
             .fold((first.y, first.y), |(top, bottom), point| {
                 (top.min(point.y), bottom.max(point.y))
             });
-        let x = first.x;
-        mesh.colored_vertex(pos2(x, (top + bottom) / 2.0), settings.fill);
-        mesh.colored_vertex(pos2(x, settings.trace.bottom()), settings.fill);
-        band.colored_vertex(pos2(x, top - half_width), settings.ink);
-        band.colored_vertex(pos2(x, bottom + half_width), settings.ink);
-        if index != 0 {
-            let fill = (index as u32 - 1) * 2;
-            mesh.add_triangle(fill, fill + 2, fill + 3);
-            mesh.add_triangle(fill, fill + 3, fill + 1);
-            band.add_triangle(fill, fill + 2, fill + 3);
-            band.add_triangle(fill, fill + 3, fill + 1);
+        if let Some(before) = previous {
+            let bottom = settings.trace.bottom();
+            strip(
+                &mut fill,
+                before,
+                first,
+                pos2(first.x, bottom),
+                pos2(before.x, bottom),
+                settings.fill,
+            );
+            let dy = vec2(0.0, half_width);
+            strip(
+                &mut ink,
+                before - dy,
+                first - dy,
+                first + dy,
+                before + dy,
+                settings.ink,
+            );
         }
+        if top < bottom {
+            ink.add_colored_rect(
+                Rect::from_min_max(
+                    pos2(first.x - half_width, top - half_width),
+                    pos2(first.x + half_width, bottom + half_width),
+                ),
+                settings.ink,
+            );
+        }
+        previous = Some(last);
     }
-    mesh.append(band);
-    mesh
+    fill.append(ink);
+    fill
 }
 #[cfg(test)]
 mod tests {

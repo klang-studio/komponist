@@ -13,7 +13,7 @@ use komponist_model::{ClipContent, ClipId, Grid, Project, TICKS_PER_STEP, Tick, 
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius};
 use komponist_ui::px;
-use komponist_ui::timeline::clip::body_height;
+use komponist_ui::timeline::clip::{body_height, paint_clip_with_header_reserve};
 use komponist_ui::timeline::{
     AudioFileState, AudioLook, ClipEdge, ClipModel, ClipState, GridSpec, PreviewMesh, clip_access,
     grid_lines, paint_clip, paint_clip_ghost, paint_grid, paint_playhead,
@@ -685,9 +685,15 @@ impl Arrangement {
                     audio: audio_look.as_ref(),
                     preview: Some(preview),
                 };
-                paint_clip(painter, rect, &model, state);
-                if !clip.automation.is_empty() && rect.width() >= metrics::CLIP_AUTOMATION_THRESHOLD
-                {
+                let badge = !clip.automation.is_empty()
+                    && rect.width() >= metrics::CLIP_AUTOMATION_THRESHOLD;
+                let reserve = if badge {
+                    metrics::CLIP_LOOP_ICON_INSET + metrics::CLIP_AUTOMATION_ICON / 2.0
+                } else {
+                    0.0
+                };
+                paint_clip_with_header_reserve(painter, rect, &model, state, reserve);
+                if badge {
                     let icon = Rect::from_center_size(
                         pos2(
                             rect.right() - metrics::CLIP_LOOP_ICON_INSET,

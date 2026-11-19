@@ -429,6 +429,17 @@ pub fn clip_colors(model: &ClipModel<'_>, state: ClipState) -> ClipColors {
 
 /// Paints a clip at `rect` (see [`clip_rect`]).
 pub fn paint_clip(painter: &Painter, rect: Rect, model: &ClipModel<'_>, state: ClipState) {
+    paint_clip_with_header_reserve(painter, rect, model, state, 0.0);
+}
+
+/// Paints a clip with space reserved at the right edge of its name for an extra badge.
+pub fn paint_clip_with_header_reserve(
+    painter: &Painter,
+    rect: Rect,
+    model: &ClipModel<'_>,
+    state: ClipState,
+    header_reserve: f32,
+) {
     let ppp = painter.pixels_per_point();
     let r = px::snap_rect(rect, ppp);
     let mut c = clip_colors(model, state);
@@ -464,9 +475,10 @@ pub fn paint_clip(painter: &Painter, rect: Rect, model: &ClipModel<'_>, state: C
     }
     q.paint(painter);
 
-    let name_head = model.audio.map_or(head, |audio| {
+    let mut name_head = model.audio.map_or(head, |audio| {
         super::audio_clip::paint_badge(painter, head, audio, c.name)
     });
+    name_head.max.x = (name_head.max.x - header_reserve).max(name_head.min.x);
     paint_name(painter, name_head, model, c.name);
     if let Some(audio) = model.audio {
         super::audio_clip::paint_controls(painter, r, audio, state, c.body);

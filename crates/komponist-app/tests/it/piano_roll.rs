@@ -630,6 +630,18 @@ fn dragging_clip_section_edges_resizes_without_editing_the_clip() {
     resize(&mut h, pan, 120.0);
     assert_eq!(group(&h, &pan_lane).height(), 48.0);
     assert_eq!(group(&h, &volume_lane).height(), 128.0);
+
+    let splitter = lang.dock_section_height(pan);
+    h.get_by_role_and_label(Role::Splitter, &splitter)
+        .increment_accesskit();
+    h.run();
+    let step = komponist_tokens::space::SPACE_2;
+    assert_eq!(group(&h, &pan_lane).height(), 48.0 + step);
+    h.get_by_role_and_label(Role::Splitter, &splitter).focus();
+    h.run();
+    h.key_press(egui::Key::ArrowDown);
+    h.run();
+    assert_eq!(group(&h, &pan_lane).height(), 48.0);
     assert_eq!(h.state().project(), &original);
 }
 
