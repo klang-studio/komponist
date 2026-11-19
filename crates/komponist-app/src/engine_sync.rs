@@ -777,6 +777,21 @@ impl EngineSync {
             match event {
                 // Dropped here, on the UI thread.
                 EngineEvent::Retired(garbage) => drop(garbage),
+                EngineEvent::PluginParams { slot, ref events } => {
+                    if let Some(device) = self.program().and_then(|p| p.slots.device(slot)) {
+                        for (change, temporary) in events.iter() {
+                            use komponist_engine::processor::ParameterEditKind;
+                            if let ParameterEditKind::Value { id, value } = change.kind {
+                                if temporary {
+                                    self.host.preview_param(device, id, value);
+                                } else {
+                                    self.host.edited_param(device, id, value);
+                                }
+                            }
+                        }
+                    }
+                    out.push(SyncEvent::Engine(event));
+                }
                 other => out.push(SyncEvent::Engine(other)),
             }
         }

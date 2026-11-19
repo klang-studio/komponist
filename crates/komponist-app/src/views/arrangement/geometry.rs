@@ -7,6 +7,8 @@
 //! Spur" area down to the bottom. The lanes map ticks to x with a [`TimeAxis`] scrolled by
 //! [`ArrangementView::scroll_tick`].
 
+use std::collections::BTreeSet;
+
 use egui::{Pos2, Rangef, Rect, pos2};
 use komponist_model::automation::{AutomationOwner, LaneId, TrackAutomation};
 use komponist_model::project::{TRACK_HEIGHT_MAX, TRACK_HEIGHT_MIN};
@@ -79,46 +81,6 @@ fn plan(project: &Project, v_zoom: f32) -> Vec<(f32, RowKind, u8)> {
         .collect()
 }
 
-/// Height of everything below the ruler: the rows, the room kept for "Neue Spur" and, with effect
-/// buses, the „Busse“ section.
-pub fn content_height(project: &Project, v_zoom: f32) -> f32 {
-    let rows = plan(project, v_zoom);
-    let tracks = project
-        .tracks
-        .iter()
-        .zip(rows.iter())
-        .map(|(track, (height, kind, _))| {
-            height
-                + if *kind == RowKind::Hidden {
-                    0.0
-                } else {
-                    automation_height(&track.automation)
-                }
-        })
-        .sum::<f32>();
-    let section = if rows.iter().any(|(_, kind, _)| *kind == RowKind::EffectBus) {
-        metrics::SECTION_LABEL
-    } else {
-        0.0
-    };
-    tracks
-        + metrics::NEW_TRACK_MIN_HEIGHT
-        + section
-        + size::track::MIN
-        + automation_height(&project.master_automation)
-}
-
-fn automation_height(automation: &TrackAutomation) -> f32 {
-    if !automation.shown {
-        return 0.0;
-    }
-    automation
-        .lanes
-        .iter()
-        .map(|lane| f32::from(lane.height))
-        .sum()
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct AutomationRow {
     pub owner: AutomationOwner,
@@ -133,11 +95,15 @@ fn place_automation(
     automation: &TrackAutomation,
     y: &mut f32,
     depth: u8,
+    hidden: &BTreeSet<LaneId>,
 ) {
     if !automation.shown {
         return;
     }
     for lane in &automation.lanes {
+        if hidden.contains(&lane.id) {
+            continue;
+        }
         let bottom = *y + f32::from(lane.height);
         rows.push(AutomationRow {
             owner,
@@ -281,11 +247,21 @@ pub struct Geometry {
     /// Master row, beneath tracks, the add-track area and effect buses.
     pub master: Rangef,
     pub(super) automation: Vec<AutomationRow>,
+    scroll_limit: f32,
 }
 
 impl Geometry {
     /// The layout of `project` in `body` with the view state `view`.
     pub fn new(body: Rect, project: &Project, view: &ArrangementView) -> Geometry {
+        Self::with_hidden(body, project, view, &BTreeSet::new())
+    }
+
+    pub(super) fn with_hidden(
+        body: Rect,
+        project: &Project,
+        view: &ArrangementView,
+        hidden: &BTreeSet<LaneId>,
+    ) -> Geometry {
         let header_x = Rangef::new(body.left(), body.left() + size::TRACK_HEADER);
         let lane_x = Rangef::new(header_x.max, body.right().max(header_x.max));
         let ruler_y = Rangef::new(body.top(), body.top() + size::RULER);
@@ -329,6 +305,7 @@ impl Geometry {
                     &t.automation,
                     &mut y,
                     depth.saturating_add(1),
+                    hidden,
                 );
             }
         }
@@ -352,6 +329,7 @@ impl Geometry {
                         &track.automation,
                         &mut below,
                         1,
+                        hidden,
                     );
                 }
             }
@@ -364,6 +342,7 @@ impl Geometry {
             &project.master_automation,
             &mut end,
             1,
+            hidden,
         );
         Geometry {
             body,
@@ -378,6 +357,7 @@ impl Geometry {
             section,
             master,
             automation,
+            scroll_limit: (end + view.scroll_y - tracks.bottom()).max(0.0),
         }
     }
 
@@ -566,9 +546,9 @@ impl Geometry {
         out
     }
 
-    /// Largest vertical scroll for `project` at `v_zoom` in this view.
-    pub fn max_scroll_y(&self, project: &Project, v_zoom: f32) -> f32 {
-        (content_height(project, v_zoom) - self.tracks.height()).max(0.0)
+    /// Largest vertical scroll in this view.
+    pub fn max_scroll_y(&self) -> f32 {
+        self.scroll_limit
     }
 }
 
@@ -684,6 +664,6 @@ mod tests {
         assert_eq!(g.rows[1].y.min, 96.0);
         assert!(!g.row_visible(0));
         assert_eq!(g.axis.x(Tick(2 * 3840)), 485.0);
-        assert_eq!(g.max_scroll_y(&p, 1.0), 0.0);
+        assert_eq!(g.max_scroll_y(), 0.0);
     }
 }

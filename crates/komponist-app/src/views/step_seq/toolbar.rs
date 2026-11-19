@@ -126,7 +126,8 @@ pub fn show(
     open: &Open<'_>,
     ctx: &mut ViewCtx<'_>,
     state: &mut ToolbarState,
-) {
+    automation_shown: bool,
+) -> egui::Response {
     let ppp = ui.pixels_per_point();
     px::hline(
         ui.painter(),
@@ -230,17 +231,21 @@ pub fn show(
     }
 
     // Als MIDI-Clip.
-    row.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        let tip = Tip::new(t.step_seq_to_midi()).detail(t.step_seq_to_midi_detail());
-        if ui.add(Button::new(t.step_seq_to_midi()).tip(tip)).clicked() {
-            ctx.send(Action::Edit(EditAction::StepClipToMidi(clip)));
-        }
-    });
+    let automation = row
+        .with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let tip = Tip::new(t.step_seq_to_midi()).detail(t.step_seq_to_midi_detail());
+            if ui.add(Button::new(t.step_seq_to_midi()).tip(tip)).clicked() {
+                ctx.send(Action::Edit(EditAction::StepClipToMidi(clip)));
+            }
+            crate::views::automation::toolbar_button(ui, t, automation_shown)
+        })
+        .inner;
 
     // A drag whose field went away (its step turned off) still ends.
     if state.drag.is_some() && !ui.input(|i| i.pointer.primary_down()) {
         end_drag(ctx, state);
     }
+    automation
 }
 
 /// Vel, Wahr., Ratch. of step `step` in row `r`.

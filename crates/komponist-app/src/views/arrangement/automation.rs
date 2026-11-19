@@ -11,13 +11,14 @@ use komponist_model::automation::{
 };
 use komponist_model::edits::ChannelProp;
 use komponist_tokens::egui_support::color32;
-use komponist_tokens::{TrackPalette, color, line, space, typography};
+use komponist_tokens::{color, line, space, typography};
 use komponist_ui::timeline::{header_layout, paint_playhead};
 use komponist_ui::widgets::context_menu::{ContextMenu, Entry};
 use komponist_ui::widgets::meter::Meter;
 use komponist_ui::widgets::toggle::{ToggleEvent, ToggleKind, TrackToggle};
 use komponist_ui::{fonts, px, widgets};
 
+use super::cache::Palettes;
 use super::geometry::{AutomationRow, Geometry};
 use super::metrics;
 use crate::actions::{Action, EditAction};
@@ -58,6 +59,10 @@ enum Menu {
 }
 
 impl State {
+    pub(super) fn focus(&mut self, owner: AutomationOwner, id: automation::LaneId) {
+        self.editor.focus(Source::Lane(owner, id));
+    }
+
     pub(super) fn request(&mut self, owner: AutomationOwner) {
         self.request = Some(owner);
     }
@@ -72,28 +77,30 @@ impl State {
         owner_ink: Color32,
     ) -> Option<egui::Response> {
         let lanes = crate::views::automation::lanes(ctx.project, owner)?;
+        let shown = lanes.shown
+            && lanes
+                .lanes
+                .iter()
+                .any(|lane| !ctx.ui.hidden_automation_lanes.contains(&lane.id));
         let id = ui.scope_id().with(("automation-owner-toggle", owner));
-        let tint = if lanes.shown {
+        let tint = if ctx
+            .automation_capture
+            .is_some_and(|pass| pass.owner_writing(owner))
+        {
+            color32(color::STATE_RECORD)
+        } else if shown {
             color32(color::TEXT_1)
         } else if lanes.lanes.is_empty() {
             color32(color::TEXT_3)
         } else {
             owner_ink
         };
-        let r = toggle(
-            ui,
-            right - space::SPACE_0_5,
-            y,
-            id,
-            ctx.lang,
-            lanes.shown,
-            tint,
-        );
+        let r = toggle(ui, right - space::SPACE_0_5, y, id, ctx.lang, shown, tint);
         if r.clicked() {
             if lanes.lanes.is_empty() {
                 self.chooser.open(id);
             } else {
-                ctx.send(Action::Automation(Automation::Shown(owner, !lanes.shown)));
+                ctx.send(Action::Automation(Automation::Shown(owner, !shown)));
             }
         }
         if self.request == Some(owner) {
@@ -120,6 +127,7 @@ impl State {
         ctx: &mut ViewCtx<'_>,
         project: &Project,
         g: &Geometry,
+        palettes: &mut Palettes,
     ) {
         self.master(ui, ctx, project, g);
         let mut mode_width = None;
@@ -131,9 +139,13 @@ impl State {
             if let Some(lanes) = crate::views::automation::lanes(project, row.owner)
                 && let Some(lane) = lanes.lanes.iter().find(|lane| lane.id == row.lane)
             {
-                let last = lanes.lanes.last().is_some_and(|last| last.id == lane.id);
+                let last = lanes
+                    .lanes
+                    .iter()
+                    .rfind(|lane| !ctx.ui.hidden_automation_lanes.contains(&lane.id))
+                    .is_some_and(|last| last.id == lane.id);
                 let mode_width = *mode_width.get_or_insert_with(|| mode_chip_width(ui, ctx.lang));
-                self.lane(ui, ctx, project, g, row, lane, last, mode_width);
+                self.lane(ui, ctx, project, g, row, lane, last, palettes, mode_width);
             }
         }
         self.editor.finish_frame(ui, ctx);
@@ -259,6 +271,7 @@ impl State {
         row: &AutomationRow,
         lane: &Lane,
         last: bool,
+        palettes: &mut Palettes,
         mode_width: f32,
     ) {
         let t = ctx.lang;
@@ -306,12 +319,9 @@ impl State {
         );
         child.set_clip_rect(ui.clip_rect().intersect(header.union(body)));
         let source = Source::Lane(row.owner, row.lane);
-        let palette = track.map(|track| TrackPalette::new(track.hue.0));
-        let color = palette
-            .as_ref()
-            .map_or(color32(color::TEXT_2), |p| color32(p.base));
+        let palette = track.map(|track| palettes.get(track.hue.0));
+        let color = palette.map_or(color32(color::TEXT_2), |p| color32(p.base));
         let fill = palette
-            .as_ref()
             .map_or(color32(color::SURFACE_3), |p| color32(p.body))
             .gamma_multiply(0.5);
         let curve = if lane.mode == AutomationMode::Off || warning.is_some() {
@@ -365,11 +375,22 @@ impl State {
             )));
         }
 
+        let writing = ctx
+            .automation_capture
+            .is_some_and(|pass| pass.is_writing(row.owner, lane.id));
+        if writing {
+            child.painter().rect_stroke(
+                chip,
+                0.0,
+                egui::Stroke::new(line::WIDTH, color32(color::STATE_RECORD)),
+                egui::StrokeKind::Inside,
+            );
+        }
         let base = target.as_ref().map_or(0.0, |target| target.base);
         let head = ctx.engine.playhead();
-        let effective_now =
-            crate::views::automation::automation_controls(ctx, row.owner, &lane.target)
-                .unwrap_or(base);
+        let effective_now = ctx
+            .automation_value(row.owner, &lane.target)
+            .unwrap_or(base);
         if header.height() >= f32::from(LANE_HEIGHT_DEFAULT) {
             let value = target.as_ref().map_or_else(
                 || crate::views::automation::percentage(t, effective_now),
@@ -377,12 +398,26 @@ impl State {
             );
             let detail = warning.as_deref().unwrap_or(&value);
             let style = typography::SMALL;
+            let mut right = header.right() - space::SPACE_1;
+            if writing {
+                let badge = widgets::styled_galley(&child, t.automation_writing(), &style);
+                let badge_pos = pos2(right - badge.size().x, top + CHIP_HEIGHT);
+                let bounds = Rect::from_min_size(badge_pos, badge.size());
+                child
+                    .painter()
+                    .galley(badge_pos, badge, color32(color::STATE_RECORD));
+                let status = child.interact(bounds, id.with("writing"), Sense::hover());
+                status.widget_info(|| {
+                    WidgetInfo::labeled(Role::Status, true, t.automation_writing())
+                });
+                right = badge_pos.x - space::SPACE_1;
+            }
             let text = crate::views::elided_galley(
                 &child,
                 detail,
                 fonts::font_id(&style),
                 style.line_height,
-                header.right() - left - space::SPACE_1,
+                (right - left).max(0.0),
             );
             child.painter().galley(
                 pos2(left, top + CHIP_HEIGHT),
@@ -445,7 +480,7 @@ impl State {
             label,
             access: &access,
             warning: warning.as_deref(),
-            points: lane.points.as_slice(),
+            points: &lane.points,
             target: target.as_ref(),
             rect: body,
             axis: g.axis,
@@ -493,7 +528,7 @@ impl State {
         ];
         Some(
             match ContextMenu::new(t.automation_title(), &entries).show_on(response)? {
-                Menu::Hide => Automation::Shown(row.owner, false),
+                Menu::Hide => Automation::HideLane(row.lane),
                 Menu::Clear => Automation::Clear(row.owner, row.lane),
                 Menu::Remove => Automation::Remove(Source::Lane(row.owner, row.lane)),
                 Menu::Mode(mode) => Automation::Mode(row.owner, row.lane, mode),

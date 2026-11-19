@@ -36,9 +36,11 @@ use std::time::{Duration, Instant};
 
 use egui::{Context, Event, FocusDirection, Ui};
 use komponist_audio::{AudioError, AudioState, InputConfig};
+use komponist_engine::automation::EngineTarget;
 use komponist_engine::{Command, EngineEvent, TransportState};
 use komponist_i18n::Lang;
 use komponist_ipc::LogLevel;
+use komponist_model::automation::{AutomationOwner, AutomationTarget};
 use komponist_model::edits::{
     self, ChannelProp, EditResult, NewDevice, NewTrack, ProjectProp, TrackProp, VelocityChange,
 };
@@ -129,6 +131,9 @@ pub struct App {
     /// The take being recorded (`record`), from the end of the count-in to Stop or Esc.
     pub(crate) recording: Option<Recording>,
     pub(crate) audio_recording: crate::audio_record::State,
+    pub(crate) automation_capture: crate::automation_capture::AutomationCapture,
+    pub(crate) automation_controls: Vec<(AutomationOwner, EngineTarget)>,
+    pub(crate) automation_stop_pending: bool,
     /// The plugin frame windows (WP-50).
     pub(crate) frames: PluginFrames,
     /// The WAV export in progress and this session's exports (WP-53b, [`crate::export`]).
@@ -227,6 +232,9 @@ impl App {
             audio_devices: Arc::new(SystemDevices),
             recording: None,
             audio_recording: Default::default(),
+            automation_capture: Default::default(),
+            automation_controls: Vec::new(),
+            automation_stop_pending: false,
             frames: PluginFrames::default(),
             export: Default::default(),
             lang: Lang::default(),
@@ -455,6 +463,7 @@ impl App {
         self.poll_export();
         self.flush_queue();
         self.engine.sync(&self.doc);
+        self.sync_automation_preview();
     }
 
     // --------------------------------------------------------------------------------------------
@@ -504,6 +513,7 @@ impl App {
         self.release_auditions(&ctx);
         self.update_plugin_frames(&ctx);
         self.engine.sync(&self.doc);
+        self.sync_automation_preview();
         self.persist_panels();
         self.update_title(&ctx);
         self.schedule_repaint(&ctx);
@@ -549,6 +559,10 @@ impl App {
     /// Handles the events that arrived since the last drain; the device events are added to this
     /// frame's.
     pub(crate) fn drain_events(&mut self) {
+        self.drain_events_with_automation(true);
+    }
+
+    fn drain_events_with_automation(&mut self, capture: bool) {
         let events = self.engine.poll();
         // Only a device stream can drop out; on the null backend (tests, `--null-audio`, CI runners
         // without RTKit) the missing priority is not worth a notice.
@@ -572,7 +586,12 @@ impl App {
             match event {
                 // Garbage is dropped inside `EngineSync::poll`; a failed processor's device
                 // reports its own status.
-                SyncEvent::Engine(event) => self.engine_event(&event, playhead),
+                SyncEvent::Engine(event) => {
+                    if capture {
+                        self.capture_automation(&event);
+                    }
+                    self.engine_event(&event, playhead);
+                }
                 SyncEvent::Device(event) => {
                     recompile |= matches!(
                         event,
@@ -607,16 +626,6 @@ impl App {
             }
             // A device that dropped out of an export's render (its status says the rest).
             EngineEvent::ProcessorFailed { slot } => self.export.processor_failed(slot),
-            EngineEvent::PluginParams { slot, ref events } => {
-                if let Some(device) = self.engine.program().and_then(|p| p.slots.device(slot)) {
-                    for change in events.as_slice() {
-                        use komponist_engine::processor::ParameterEditKind;
-                        if let ParameterEditKind::Value { id, value } = change.kind {
-                            self.engine.host_mut().edited_param(device, id, value);
-                        }
-                    }
-                }
-            }
             _ => {
                 if let Some(rec) = &mut self.recording {
                     rec.handle(event, playhead, self.doc.project());
@@ -640,11 +649,17 @@ impl App {
         }
     }
 
-    /// Punch-out: commits the running take ([`App::commit_take`]) and stops capturing; playback
+    /// Punch-out: commits the running take and stops capturing; playback
     /// goes on. Nothing happens without a take.
     pub(crate) fn stop_take(&mut self) {
-        if self.recording.is_some() || self.audio_recording.is_active() {
-            self.commit_take();
+        self.drain_events();
+        let capturing_notes_or_audio = self.recording.is_some() || self.audio_recording.is_active();
+        let capturing_automation = self.automation_capture.active();
+        if capturing_notes_or_audio || capturing_automation {
+            self.engine.send(Command::FinishAutomationWrite);
+            self.finish_take();
+        }
+        if capturing_notes_or_audio {
             self.engine.send(Command::StopRecording);
         }
     }
@@ -654,6 +669,7 @@ impl App {
     pub(crate) fn has_unsaved_take(&self) -> bool {
         self.recording.as_ref().is_some_and(Recording::has_notes)
             || self.audio_recording.has_material()
+            || self.automation_capture.has_points()
             || (self.audio_recording.is_active() && self.transport() == TransportState::Recording)
     }
 
@@ -681,6 +697,16 @@ impl App {
                 }
             }
         }
+        if let Some(next) = self
+            .automation_capture
+            .project_at(&project, self.engine.playhead())
+            .map_err(|error| {
+                self.record_edit_error(error);
+            })?
+        {
+            project = next;
+            changed = true;
+        }
         if let Some(next) = self.project_with_audio_take(&project)? {
             project = next;
             changed = true;
@@ -688,33 +714,33 @@ impl App {
         Ok(changed.then_some(project))
     }
 
-    /// Stop: writes the running take as one undo step "Take n", selects its clip and opens it in
-    /// the editor (prototype `finishRec`). Events still in flight are drained first.
-    fn commit_take(&mut self) {
-        if self.recording.is_some() || self.audio_recording.is_active() {
-            self.drain_events();
-            self.finish_take();
-        }
-    }
-
-    /// [`App::commit_take`] without draining (inside a drain).
-    fn finish_take(&mut self) {
+    /// Commits the running take from the already-drained events.
+    pub(crate) fn finish_take(&mut self) {
         let commit = self
             .recording
             .take()
             .and_then(|recording| recording.commit(self.doc.project(), self.engine.playhead()));
+        let automation = self.take_automation_capture();
         if self.audio_recording.is_active() {
             self.audio_recording.defer_midi(commit);
+            self.audio_recording.defer_automation(automation);
             self.audio_recording.stop();
             return;
         }
         let Some(commit) = commit else {
+            if automation.has_points() {
+                self.end_gesture();
+                self.apply("undo-automation-record", |p| automation.apply(p));
+            }
             return;
         };
         // The take is an undo step of its own, also in the middle of a drag.
         self.doc.end_gesture();
         let label = commit.label().to_owned();
-        let Some(clips) = self.apply_with(&label, |p| commit.apply(p)) else {
+        let Some(clips) = self.apply_with(&label, |p| {
+            let project = automation.apply(p)?;
+            commit.apply(&project)
+        }) else {
             return;
         };
         if let Some(&first) = clips.first() {
@@ -728,11 +754,11 @@ impl App {
     /// Esc while recording (or "Nicht speichern" before leaving the project): the running take is
     /// gone, playback goes on.
     pub(crate) fn discard_take(&mut self) {
-        // A count-in that just ended still starts its take; it goes too.
-        self.drain_events();
-        self.recording = None;
-        self.audio_recording.cancel();
         self.shell.take_expected = false;
+        self.recording = None;
+        self.discard_automation_capture();
+        self.audio_recording.cancel();
+        self.drain_events_with_automation(false);
         self.engine.send(Command::StopRecording);
     }
 
@@ -1086,6 +1112,7 @@ impl App {
             Action::Ui(UiAction::ClearSelection)
                 if self.recording.is_some()
                     || self.audio_recording.is_active()
+                    || self.automation_capture.active()
                     || matches!(
                         self.transport(),
                         TransportState::Recording | TransportState::CountIn
@@ -1182,9 +1209,18 @@ impl App {
 
         match action {
             Automation::Shown(owner, shown) => {
-                self.apply("undo-automation-shown", |p| {
+                if self.apply("undo-automation-shown", |p| {
                     automation::set_shown(p, owner, shown)
-                });
+                }) && shown
+                    && let Some(automation) = lanes(self.doc.project(), owner)
+                {
+                    for lane in &automation.lanes {
+                        self.ui.hidden_automation_lanes.remove(&lane.id);
+                    }
+                }
+            }
+            Automation::HideLane(id) => {
+                self.ui.hidden_automation_lanes.insert(id);
             }
             Automation::ShowTarget {
                 owner,
@@ -1195,6 +1231,11 @@ impl App {
                 let old = lanes(self.project(), owner);
                 let exists = old.is_some_and(|a| a.lane(&target).is_some());
                 let reuse = replace.filter(|id| {
+                    if self.automation_capture.references_lane(owner, *id)
+                        || self.audio_recording.references_automation_lane(owner, *id)
+                    {
+                        return false;
+                    }
                     old.is_some_and(|a| {
                         a.lanes
                             .iter()
@@ -1237,7 +1278,9 @@ impl App {
                 }) && let Some(lane) =
                     lanes(self.project(), owner).and_then(|a| a.lane(&shown_target))
                 {
-                    self.ui.arrangement.automation_reveal = Some((owner, lane.id));
+                    let lane = lane.id;
+                    self.ui.hidden_automation_lanes.remove(&lane);
+                    self.ui.arrangement.automation_reveal = Some((owner, lane));
                     self.ui.layout.dock_maximized = false;
                 }
             }
@@ -1262,11 +1305,13 @@ impl App {
                 });
             }
             Automation::Mode(owner, id, mode) => {
+                self.close_writes_for_mode_change(owner, Some(id), mode);
                 self.apply("undo-automation-mode", |p| {
                     automation::set_lane_mode(p, owner, id, mode)
                 });
             }
             Automation::AllModes(owner, mode) => {
+                self.close_writes_for_mode_change(owner, None, mode);
                 self.apply("undo-automation-modes", |p| {
                     automation::set_all_modes(p, owner, mode)
                 });
@@ -1287,6 +1332,16 @@ impl App {
         }
     }
 
+    fn stop_playback(&mut self) {
+        self.drain_events();
+        if self.automation_capture.active() {
+            self.automation_stop_pending = true;
+        } else {
+            self.finish_take();
+        }
+        self.engine.send(Command::Stop);
+    }
+
     fn transport_action(&mut self, action: TransportAction) {
         let playing = self.transport() != TransportState::Stopped;
         let count_in = self.transport() == TransportState::CountIn;
@@ -1296,8 +1351,7 @@ impl App {
             }
             TransportAction::TogglePlay => {
                 if playing {
-                    self.commit_take();
-                    self.engine.send(Command::Stop);
+                    self.stop_playback();
                 } else if self.audio_ok() {
                     // Play the document as it is now: changes dispatched before Play in the same
                     // frame (a loop range, an edit) reach the engine before Play, not at the end
@@ -1309,8 +1363,7 @@ impl App {
             }
             TransportAction::Stop => {
                 if playing {
-                    self.commit_take();
-                    self.engine.send(Command::Stop);
+                    self.stop_playback();
                 } else {
                     // Stop while stopped: the hard cut (tails end at once), then back to the
                     // start.
@@ -1669,6 +1722,21 @@ impl App {
                 self.apply("undo-change-project", |p| edits::set_project_prop(p, prop));
             }
             EditAction::SetMasterProp(prop) => {
+                let automation = match prop {
+                    ChannelProp::VolumeDb(db) => Some((
+                        AutomationTarget::Volume,
+                        Command::SetMasterGain(fader_gain(db)),
+                    )),
+                    ChannelProp::Pan(pan) => {
+                        Some((AutomationTarget::Pan, Command::SetMasterPan(pan)))
+                    }
+                    _ => None,
+                };
+                if let Some((target, command)) = automation
+                    && self.manual_automation(AutomationOwner::Master, &target, command)
+                {
+                    return;
+                }
                 let before = self.doc.revision();
                 if self.apply("undo-change-master", |p| edits::set_master_prop(p, prop))
                     && self.doc.in_gesture()
@@ -1934,7 +2002,30 @@ impl App {
         }
     }
 
-    fn set_track_prop(&mut self, tracks: Vec<TrackId>, prop: TrackProp) {
+    fn set_track_prop(&mut self, mut tracks: Vec<TrackId>, prop: TrackProp) {
+        if let TrackProp::Channel(channel) = &prop {
+            tracks.retain(|&track| {
+                let automation = match *channel {
+                    ChannelProp::VolumeDb(db) => Some((
+                        AutomationTarget::Volume,
+                        Command::SetTrackGain {
+                            track,
+                            gain: fader_gain(db),
+                        },
+                    )),
+                    ChannelProp::Pan(pan) => {
+                        Some((AutomationTarget::Pan, Command::SetTrackPan { track, pan }))
+                    }
+                    _ => None,
+                };
+                !automation.is_some_and(|(target, command)| {
+                    self.manual_automation(AutomationOwner::Track(track), &target, command)
+                })
+            });
+            if tracks.is_empty() {
+                return;
+            }
+        }
         if matches!(&prop, TrackProp::AudioInput(_)) && self.audio_recording().is_some() {
             self.set_status(self.lang.audio_input_change_recording(), StatusKind::Error);
             return;
@@ -2050,6 +2141,19 @@ impl App {
     /// (`Command::SetSendGain`, ramped by the send's edge state), so dragging a send level does not
     /// recompile the program per frame.
     fn set_send(&mut self, send: komponist_model::SendId, prop: edits::SendProp) {
+        if let edits::SendProp::LevelDb(db) = prop
+            && let Some((track, _)) = self.project().find_send(send)
+            && self.manual_automation(
+                AutomationOwner::Track(track.id),
+                &AutomationTarget::Send { send },
+                Command::SetSendGain {
+                    send,
+                    gain: fader_gain(db),
+                },
+            )
+        {
+            return;
+        }
         let before = self.doc.revision();
         if !self.apply("undo-change-send", |p| edits::set_send(p, send, prop)) {
             return;
@@ -2926,6 +3030,7 @@ impl App {
         // while the project opens.
         self.recording = None;
         self.audio_recording.reset();
+        self.discard_automation_capture();
         self.shell.take_expected = false;
         self.engine.send(Command::Stop);
         self.engine.send(Command::Locate(Tick::ZERO));
@@ -2942,10 +3047,14 @@ impl App {
         self.ui.selection = Default::default();
         self.ui.editor = Default::default();
         self.views.arrangement.reset_document();
+        self.views.piano_roll.reset_document();
+        self.views.step_seq.reset_document();
         self.ui.plugin_windows.clear();
         self.ui.arrangement.scroll_tick = 0.0;
         self.ui.arrangement.scroll_y = 0.0;
         self.ui.arrangement.automation_reveal = None;
+        self.ui.hidden_automation_lanes.clear();
+        self.ui.automation_hint = false;
         self.ui.screen = Screen::Project;
         self.ui.dialog = None;
         self.shell.focus_before_dialog = None;

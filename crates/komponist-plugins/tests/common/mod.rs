@@ -376,10 +376,14 @@ impl Rig {
             if let EngineEvent::PluginParams { slot, ref events } = event
                 && let Some(device) = self.program.slots.device(slot)
             {
-                for event in events.as_slice() {
+                for (event, temporary) in events.iter() {
                     use komponist_engine::processor::ParameterEditKind;
                     if let ParameterEditKind::Value { id, value } = event.kind {
-                        self.manager.edited_param(device, id, value);
+                        if temporary {
+                            self.manager.preview_param(device, id, value);
+                        } else {
+                            self.manager.edited_param(device, id, value);
+                        }
                     }
                 }
             }

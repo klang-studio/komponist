@@ -16,7 +16,7 @@ use komponist_app::{Action, App, EditAction, UiAction};
 use komponist_i18n::{Lang, de};
 use komponist_model::edits::{self, NewBus, SendProp};
 use komponist_model::fixtures::demo_project;
-use komponist_model::{Project, Tap, TrackId, TrackOutput, routing};
+use komponist_model::{Project, Tap, Tick, TrackId, TrackOutput, routing};
 use std::sync::Arc;
 
 use fake_host::FakeHost;
@@ -139,12 +139,48 @@ fn the_full_mixer_with_groups_buses_and_sends() {
 
 #[test]
 fn the_arrangement_with_folder_and_busse_section() {
-    let mut app = app_with(routed());
+    use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points};
+
+    let lang = Lang::De;
+    let owner = AutomationOwner::Master;
+    let (project, lane) = edits::automation::add_lane(
+        &routed(),
+        owner,
+        AutomationTarget::Volume,
+        lang.param_volume().into(),
+    )
+    .unwrap();
+    let project = edits::automation::set_lane_points(
+        &project,
+        owner,
+        lane,
+        Points::new(vec![Point::linear(Tick::ZERO, 0.85)]),
+    )
+    .unwrap();
+    let mut app = app_with(project);
     let lead = id_of(app.project(), "Lead");
     select(&mut app, lead);
     let mut h = harness(app);
+    for name in ["Hall", "Delay"] {
+        assert!(
+            h.query_by_role_and_label(Role::Button, &lang.routing_record_bus_name(name))
+                .is_none()
+        );
+    }
+    h.get_by_role_and_label(Role::Button, &lang.routing_record_bus_name("Rhythmus"));
+
+    let master = h
+        .get_by_role_and_label(Role::Group, lang.a11y_automation_master())
+        .rect();
     mask_cpu(&mut h);
     h.snapshot("routing-arrangement-1x");
+    let toggle = h
+        .get_all_by_role_and_label(Role::Button, lang.automation_show())
+        .find(|node| master.contains_rect(node.rect()))
+        .unwrap();
+    toggle.click();
+    h.run_steps(2);
+    assert!(h.state().project().master_automation.shown);
 }
 
 // ------------------------------------------------------------------------------------------------

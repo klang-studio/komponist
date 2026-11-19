@@ -320,7 +320,10 @@ impl App {
 
     /// Whether leaving the project loses something: unsaved changes or a running take with notes.
     fn has_unsaved(&self) -> bool {
-        self.doc.is_dirty() || self.has_unsaved_take()
+        self.doc.is_dirty()
+            || self.has_unsaved_take()
+            || self.engine.host().has_pending_state_edits()
+            || !self.deferred_plugin_states().is_empty()
     }
 
     /// `next` replaces the open project: asks first if it has unsaved changes.
@@ -478,30 +481,58 @@ impl App {
         if !self.await_audio_take() {
             return false;
         }
-        if self.migrate_recordings_for_save(&path).is_err() {
-            return false;
-        }
-        // The bridged plugins' current states go into the file (blocking, bounded).
-        for (device, state) in self
+        // Route queued GUI edits before requesting state, so a temporary parameter cannot be
+        // mistaken for a persisted plugin value.
+        self.drain_events();
+        let snapshots = match self
             .engine
             .host_mut()
-            .snapshot_states(crate::app::SNAPSHOT_TIMEOUT)
+            .snapshot_for_save(crate::app::SNAPSHOT_TIMEOUT)
         {
-            self.store_snapshot_for_save(device, &state);
+            Ok(states) => states,
+            Err(device) => {
+                let detail = self
+                    .lang
+                    .project_save_plugin_pending(self.device_name(device));
+                self.set_status(self.lang.project_save_failed(detail), StatusKind::Error);
+                return false;
+            }
+        };
+        for (device, state) in &snapshots {
+            self.store_snapshot_for_save(*device, state);
+        }
+        if self.migrate_recordings_for_save(&path).is_err() {
+            return false;
         }
         // The sample links get the paths for this file's folder.
         self.rebase_samples(&path);
         // A running take so far, with the notes still in flight, on top of all that (#85).
-        let with_take = match self.project_with_take() {
+        let mut for_file = match self.project_with_take() {
             Ok(project) => project,
             Err(()) => return false,
         };
+        // Undo may defer a snapshot until an unrelated gesture ends. The file still needs it.
+        let deferred = self
+            .deferred_plugin_states()
+            .iter()
+            .filter(|(device, _)| !snapshots.iter().any(|(captured, _)| captured == device));
+        for (device, state) in deferred.chain(&snapshots) {
+            let project = for_file.as_ref().unwrap_or_else(|| self.project());
+            if project
+                .find_device(*device)
+                .is_some_and(|(_, _, d)| d.state.as_ref() != Some(state))
+                && let Ok(updated) =
+                    komponist_model::edits::set_device_state(project, *device, Some(state.clone()))
+            {
+                for_file = Some(updated);
+            }
+        }
         // A new file renames the project after it; the rename happens only if writing works.
         let rename = name_from_path(&path).filter(|name| {
             self.project_path.as_deref() != Some(path.as_path()) && *name != self.project().name
         });
-        let take_saved = with_take.is_some();
-        let written = match (with_take, &rename) {
+        let file_ahead = for_file.is_some();
+        let written = match (for_file, &rename) {
             (Some(mut project), rename) => {
                 if let Some(name) = rename {
                     project.name = name.clone();
@@ -520,8 +551,8 @@ impl App {
                 if let Some(name) = rename {
                     self.untracked(ProjectProp::Name(name));
                 }
-                if take_saved {
-                    // The file holds the take, the document does not yet.
+                if file_ahead {
+                    // The file holds a running take or plugin state still waiting on a gesture.
                     self.doc.forget_saved();
                 } else {
                     self.doc.mark_saved();
@@ -629,7 +660,10 @@ impl App {
             // A running take records on.
             Answer::Cancel => {}
             Answer::Discard => {
-                if self.recording.is_some() || self.audio_recording.is_active() {
+                if self.recording.is_some()
+                    || self.audio_recording.is_active()
+                    || self.automation_capture.active()
+                {
                     self.discard_take();
                 }
                 self.proceed(next);

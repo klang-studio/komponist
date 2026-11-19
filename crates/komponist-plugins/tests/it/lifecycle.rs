@@ -280,6 +280,9 @@ fn missing_plugin_keeps_its_state_byte_identical_through_a_save() {
     assert_eq!(level, 0.0);
     let gain = param_id(&rig.manager, 30, "Gain");
     rig.manager.set_param(DeviceId(30), gain, 0.5);
+    run_until(&mut rig, "the edited gain", |rig| {
+        !rig.manager.has_pending_state_edits()
+    });
 
     // Save: snapshots of the running devices go into the document (untracked), then the file.
     let mut document = Document::new(loaded);
@@ -301,6 +304,156 @@ fn missing_plugin_keeps_its_state_byte_identical_through_a_save() {
     assert!(state(30).is_some_and(|s| !s.is_empty()));
     let placeholder: &Device = find_device(&reopened, DeviceId(10));
     assert_eq!(placeholder.plugin.name, "Vital");
+    rig.manager.shutdown();
+}
+
+#[test]
+fn temporary_parameter_edit_defers_plugin_snapshot_until_base_returns() {
+    let dir = scratch("temporary-param-state");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let id = param_id(&rig.manager, 10, "Gain");
+    let base = rig.manager.param_base(device_id, id).unwrap();
+    let slot = rig.slots[&device_id];
+    let safe = rig.manager.snapshot_states(PATIENCE);
+    assert_eq!(safe.len(), 1);
+
+    let temporary = base * 0.5;
+    assert_ne!(temporary, base);
+    rig.send(komponist_engine::Command::SetParam {
+        slot,
+        id,
+        value: temporary,
+    });
+    rig.process(BLOCK);
+    rig.manager.request_state(device_id);
+    rig.manager.preview_param(device_id, id, temporary);
+    assert!(rig.manager.snapshot_states(PATIENCE).is_empty());
+    assert_eq!(rig.manager.param_base(device_id, id), Some(base));
+
+    rig.send(komponist_engine::Command::SetParam {
+        slot,
+        id,
+        value: base,
+    });
+    rig.process(BLOCK);
+    assert_eq!(rig.manager.snapshot_states(PATIENCE), safe);
+    rig.manager.shutdown();
+}
+
+#[test]
+fn snapshots_keep_an_edit_pending_until_the_engine_delivers_it() {
+    let dir = scratch("snapshot-before-engine-edit");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let id = param_id(&rig.manager, 10, "Gain");
+    let original = rig.manager.snapshot_states(PATIENCE);
+    assert_eq!(original.len(), 1);
+
+    let base = rig.manager.param_base(device_id, id).unwrap();
+    let slot = rig.slots[&device_id];
+    let send = |rig: &mut Rig, value| {
+        rig.send(komponist_engine::Command::SetParam { slot, id, value });
+        rig.process(BLOCK);
+    };
+    send(&mut rig, base * 0.5);
+    rig.manager.preview_param(device_id, id, base * 0.5);
+    assert!(rig.manager.snapshot_states(PATIENCE).is_empty());
+    send(&mut rig, base);
+    // The synth rounds to its internal 0.1 dB step. The requested value is between steps.
+    let value = 0.403;
+    assert_ne!(rig.manager.param_base(device_id, id), Some(value));
+    assert!(rig.manager.edited_param(device_id, id, value));
+    rig.manager.request_state(device_id);
+
+    // The manager has received the edit. No audio block has delivered it to the plugin yet.
+    assert!(rig.manager.snapshot_states(PATIENCE).is_empty());
+    assert!(rig.manager.poll().into_iter().all(|event| !matches!(
+        event,
+        PluginManagerEvent::StateSnapshot { device, .. } if device == device_id
+    )));
+    assert!(rig.manager.has_pending_state_edits());
+    assert_eq!(
+        rig.manager.snapshot_for_save(Duration::from_millis(100)),
+        Err(device_id)
+    );
+
+    send(&mut rig, value);
+    rig.manager.request_state(device_id);
+    let updated = next_snapshot(&mut rig, 10);
+    assert_ne!(updated, original[0].1);
+    let applied = rig.manager.param_base(device_id, id).unwrap();
+    assert!((applied - 0.403333333).abs() < 1e-6, "{applied}");
+    assert!(!rig.manager.has_pending_state_edits());
+    assert_eq!(
+        rig.manager.snapshot_for_save(PATIENCE),
+        Ok(vec![(device_id, updated)])
+    );
+    rig.manager.shutdown();
+}
+
+#[test]
+fn project_save_requires_persistent_edits_even_during_a_temporary_override() {
+    let dir = scratch("save-with-temporary-param");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let gain = param_id(&rig.manager, 10, "Gain");
+    let decay = param_id(&rig.manager, 10, "Decay");
+    let base = rig.manager.param_base(device_id, gain).unwrap();
+    let decay_before = rig.manager.param_base(device_id, decay).unwrap();
+    let slot = rig.slots[&device_id];
+    let set = |rig: &mut Rig, id, value| {
+        rig.send(komponist_engine::Command::SetParam { slot, id, value });
+        rig.process(BLOCK);
+    };
+    let temporary = base * 0.5;
+    let decay_after = 0.5;
+    assert_ne!(decay_before, decay_after);
+
+    set(&mut rig, gain, temporary);
+    rig.manager.preview_param(device_id, gain, temporary);
+    let timeout = Duration::from_millis(120);
+    assert_eq!(rig.manager.snapshot_for_save(timeout), Ok(Vec::new()));
+
+    rig.manager.edited_param(device_id, decay, decay_after);
+    set(&mut rig, decay, decay_after);
+    assert_eq!(rig.manager.snapshot_for_save(timeout), Err(device_id));
+
+    set(&mut rig, gain, base);
+    let states = rig.manager.snapshot_for_save(PATIENCE).unwrap();
+    let [(saved_device, saved)] = states.as_slice() else {
+        panic!("expected a single saved state");
+    };
+    assert_eq!(*saved_device, device_id);
+
+    // Change both values again, then load the saved blob to see what really went into the file.
+    rig.manager.edited_param(device_id, decay, decay_before);
+    set(&mut rig, decay, decay_before);
+    rig.manager.edited_param(device_id, gain, temporary);
+    set(&mut rig, gain, temporary);
+    assert!(rig.manager.set_state(device_id, saved));
+    run_until(&mut rig, "the saved bases", |rig| {
+        rig.manager.param_base(device_id, gain) == Some(base)
+            && rig
+                .manager
+                .param_base(device_id, decay)
+                .is_some_and(|v| (v - decay_after).abs() < 1e-6)
+    });
     rig.manager.shutdown();
 }
 

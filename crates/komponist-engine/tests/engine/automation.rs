@@ -177,8 +177,41 @@ fn fixed_grid_hold_jump_and_master_pan_match_across_blocks_and_offline() {
             Point::linear(Tick(122), 1.0),
         ],
     );
-    let run = |block, offline| {
-        let (mut rig, program, mut log) = rig(&project);
+    let AutomationOwner::Track(track) = owner else {
+        unreachable!()
+    };
+    let (project, clip) = edits::add_clip(
+        &project,
+        track,
+        edits::NewClip {
+            name: "Pan phrase".into(),
+            start: Tick(8),
+            length: Tick(90),
+            content: edits::NewClipContent::Midi {
+                notes: Vec::new(),
+                take_name: String::new(),
+            },
+        },
+    )
+    .unwrap();
+    let project = edits::set_clip_loop(&project, clip, Some(Tick(30)), Tick(90)).unwrap();
+    let target = AutomationTarget::Pan;
+    let project = add_clip_automation(&project, clip, target.clone(), "Clip pan".into()).unwrap();
+    let project = set_clip_points(
+        &project,
+        clip,
+        &target,
+        Points::new(vec![
+            Point::linear(Tick::ZERO, 0.2),
+            Point::linear(Tick(30), 0.7),
+        ]),
+    )
+    .unwrap();
+    let loaded =
+        komponist_model::persist::from_json(&komponist_model::persist::to_json(&project).unwrap())
+            .unwrap();
+    let run = |project: &Project, block, offline| {
+        let (mut rig, program, mut log) = rig(project);
         assert_eq!(program.master.automation.len(), 1);
         rig.send(Command::Play);
         if offline {
@@ -189,14 +222,14 @@ fn fixed_grid_hold_jump_and_master_pan_match_across_blocks_and_offline() {
         let events = core::iter::from_fn(|| log.pop().ok()).collect::<Vec<_>>();
         (rig.l, rig.r, events)
     };
-    let expected = run(64, false);
+    let expected = run(&project, 64, false);
     let jump = &expected.2[1];
     assert_eq!(jump.0, 75); // Tick 3 is not on the 64-frame ramp grid.
     assert!((jump.2 - 0.8).abs() < 1e-6);
     assert!(expected.0[3000] < expected.1[3000]);
     for block in [256, 1000, 2048] {
-        assert_eq!(run(block, false), expected);
-        assert_eq!(run(block, true), expected);
+        assert_eq!(run(&loaded, block, false), expected);
+        assert_eq!(run(&loaded, block, true), expected);
     }
 }
 
@@ -525,6 +558,89 @@ fn ramp_playback_budget() {
 }
 
 #[test]
+fn cancel_write_restores_the_device_base_on_a_still_empty_lane() {
+    for mode in [AutomationMode::Touch, AutomationMode::Latch] {
+        let (project, owner, device) = source();
+        let target = parameter(device, 0);
+        let (project, _) = lane(&project, owner, target.clone(), mode, Vec::new());
+        let (mut rig, program, mut log) = rig(&project);
+        let target = program.automation_target(owner, &target).unwrap();
+        let slot = program.slots.slot(device).unwrap();
+        rig.send(Command::Play);
+        rig.send(Command::Touch {
+            owner,
+            target,
+            begin: true,
+        });
+        rig.send(Command::SetParam {
+            slot,
+            id: 0,
+            value: 0.8,
+        });
+        rig.process(64, 64);
+        assert_eq!(rig.l[63], 0.8);
+        assert_eq!(log.pop().unwrap(), (0, 0, 0.8));
+
+        rig.send(Command::CancelAutomationWrite);
+        rig.process(64, 64);
+        assert_eq!(rig.l[64], 0.25);
+        assert_eq!(log.pop().unwrap(), (64, 0, 0.25));
+        rig.process(64, 64);
+        assert!(log.pop().is_err());
+    }
+}
+
+#[test]
+fn discarding_after_a_loop_wrap_restores_an_empty_latch_lane() {
+    let (mut project, owner, device) = source();
+    project.loop_on = true;
+    project.loop_range = TickRange::new(Tick::ZERO, Tick(6));
+    let target = parameter(device, 0);
+    let (project, _) = lane(
+        &project,
+        owner,
+        target.clone(),
+        AutomationMode::Latch,
+        Vec::new(),
+    );
+    let (mut rig, program, mut log) = rig(&project);
+    let target = program.automation_target(owner, &target).unwrap();
+    let slot = program.slots.slot(device).unwrap();
+    rig.send(Command::Play);
+    rig.send(Command::Touch {
+        owner,
+        target,
+        begin: true,
+    });
+    rig.send(Command::SetParam {
+        slot,
+        id: 0,
+        value: 0.8,
+    });
+    rig.process(64, 64);
+    rig.send(Command::Touch {
+        owner,
+        target,
+        begin: false,
+    });
+    rig.process(128, 64);
+    assert!(rig.events.iter().any(|event| matches!(
+        event,
+        EngineEvent::AutomationBoundary {
+            kind: AutomationBoundary::LoopWrap,
+            ..
+        }
+    )));
+    assert_eq!(rig.l[191], 0.8);
+    assert_eq!(log.pop().unwrap(), (0, 0, 0.8));
+
+    rig.send(Command::CancelAutomationWrite);
+    rig.process(64, 64);
+    assert_eq!(log.pop().unwrap(), (192, 0, 0.25));
+    assert!(log.pop().is_err());
+}
+
+#[test]
 fn plugin_gui_edges_and_value_use_the_engine_clock() {
     use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
 
@@ -597,9 +713,11 @@ fn plugin_gui_edges_and_value_use_the_engine_clock() {
         panic!("expected batched plugin events, got {:?}", events[3]);
     };
     assert_eq!(*captured_slot, slot);
-    for (index, event) in events.as_slice().iter().enumerate() {
+    assert_eq!(events.iter().count(), edits.len());
+    for (index, (event, temporary)) in events.iter().enumerate() {
         assert_eq!(event.tick, Tick((index + 1) as i64));
         assert_eq!(event.kind, edits[index].kind);
+        assert_eq!(temporary, index == 1);
     }
     // Latching continues through release and ends at the exact old playhead on locate.
     rig.process(100, 100);

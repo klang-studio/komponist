@@ -50,9 +50,11 @@ mod overlay;
 mod ruler;
 mod toolbar;
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use egui::{Key, Pos2, Rect, Ui, UiBuilder};
+use komponist_model::automation::LaneId;
 use komponist_model::{ChannelRef, ClipId, PluginRef, Project, Tick, TrackId};
 
 use self::cache::{Palettes, PreviewCache};
@@ -255,8 +257,18 @@ impl View for Arrangement {
         self.audio.begin_frame();
         self.follow_zoom(ui, ctx, &project, body);
         self.wheel(ui, ctx, &project, body);
-        clamp_scroll(&mut ctx.ui.arrangement, &project, body);
-        let mut g = Geometry::new(body, &project, &ctx.ui.arrangement);
+        clamp_scroll(
+            &mut ctx.ui.arrangement,
+            &project,
+            body,
+            &ctx.ui.hidden_automation_lanes,
+        );
+        let mut g = Geometry::with_hidden(
+            body,
+            &project,
+            &ctx.ui.arrangement,
+            &ctx.ui.hidden_automation_lanes,
+        );
         if let Some((owner, lane)) = ctx.ui.arrangement.automation_reveal.take()
             && let Some(row) = g
                 .automation
@@ -269,10 +281,16 @@ impl View for Arrangement {
                 (row.y.max - g.tracks.bottom()).max(0.0)
             };
             if delta != 0.0 {
-                ctx.ui.arrangement.scroll_y = (ctx.ui.arrangement.scroll_y + delta)
-                    .clamp(0.0, g.max_scroll_y(&project, ctx.ui.arrangement.v_zoom));
-                g = Geometry::new(body, &project, &ctx.ui.arrangement);
+                ctx.ui.arrangement.scroll_y =
+                    (ctx.ui.arrangement.scroll_y + delta).clamp(0.0, g.max_scroll_y());
+                g = Geometry::with_hidden(
+                    body,
+                    &project,
+                    &ctx.ui.arrangement,
+                    &ctx.ui.hidden_automation_lanes,
+                );
             }
+            self.automation.focus(owner, lane);
         }
 
         if escape_pressed(ui) && self.drag.is_some() {
@@ -314,7 +332,8 @@ impl View for Arrangement {
         self.lanes(&mut lanes, ctx, &project, &g);
         self.headers(&mut tracks, ctx, &project, &g);
         self.new_track_area(&mut tracks, ctx, &g);
-        self.automation.show(&mut tracks, ctx, &project, &g);
+        self.automation
+            .show(&mut tracks, ctx, &project, &g, &mut self.palettes);
         self.overlays(&mut tracks, ctx, &project, &g);
         if project.tracks.is_empty() {
             self.empty_hint(&mut tracks, ctx, &g);
@@ -360,7 +379,7 @@ impl Arrangement {
             .map(|(i, _)| i)
             .collect();
         let v = &mut ctx.ui.arrangement;
-        let g = Geometry::new(body, project, v);
+        let g = Geometry::with_hidden(body, project, v, &ctx.ui.hidden_automation_lanes);
         let pointer = ui.input(|i| i.pointer.hover_pos());
         if v.scroll_tick != m.scroll_tick {
             // Only the dispatcher's "Z: Auswahl einpassen" scrolls between frames: the tracks of
@@ -402,7 +421,7 @@ impl Arrangement {
         let v = &mut ctx.ui.arrangement;
         let bar = project.meter.ticks_per_bar() as f64;
         if zoom != 1.0 {
-            let g = Geometry::new(body, project, v);
+            let g = Geometry::with_hidden(body, project, v, &ctx.ui.hidden_automation_lanes);
             let old = f64::from(v.px_per_bar) / bar;
             let left = f64::from(g.lane_x.min);
             let x = pointer.map_or(left, |p| f64::from(p.x).max(left));
@@ -633,9 +652,9 @@ pub fn reorder_target(project: &Project, tracks: &[TrackId], slot: usize) -> Opt
 }
 
 /// Keeps the scroll inside the content: not before tick 0, not past the last row.
-fn clamp_scroll(v: &mut ArrangementView, project: &Project, body: Rect) {
-    let g = Geometry::new(body, project, v);
-    let max = g.max_scroll_y(project, v.v_zoom);
+fn clamp_scroll(v: &mut ArrangementView, project: &Project, body: Rect, hidden: &BTreeSet<LaneId>) {
+    let g = Geometry::with_hidden(body, project, v, hidden);
+    let max = g.max_scroll_y();
     v.scroll_y = v.scroll_y.clamp(0.0, max);
     v.scroll_tick = v.scroll_tick.max(0.0);
     v.v_zoom = v.v_zoom.clamp(V_ZOOM[0], V_ZOOM[1]);

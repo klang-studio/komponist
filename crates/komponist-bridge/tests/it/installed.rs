@@ -68,7 +68,9 @@ fn exercise(path: &str, plugin_id: &str, sound: bool) {
 
     bridge.send(ControlMsg::GetState { request: 1 });
     let state = bridge.expect("State", |m| match m {
-        BridgeMsg::State { request: 1, state } => Some(state.clone()),
+        BridgeMsg::State {
+            request: 1, state, ..
+        } => Some(state.clone()),
         _ => None,
     });
     let heartbeat = bridge.heartbeat();

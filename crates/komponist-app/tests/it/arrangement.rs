@@ -2133,3 +2133,161 @@ fn opening_a_document_clears_automation_selection_even_with_reused_ids() {
     assert_eq!(opened.id, lane);
     assert_eq!(opened.points, points);
 }
+
+#[test]
+fn snapshot_of_arrangement_automation_in_german_and_english() {
+    use komponist_app::views::automation::{Action as Automation, Source};
+    use komponist_model::automation::{
+        AutomationMode, AutomationOwner, AutomationTarget, Point, Points, Shape,
+    };
+
+    let mut results = SnapshotResults::new();
+    for (lang, name, menu_name) in [
+        (
+            Lang::De,
+            "automation-arrangement-de-1x",
+            "automation-mode-menu-de-1x",
+        ),
+        (
+            Lang::En,
+            "automation-arrangement-en-1x",
+            "automation-mode-menu-en-1x",
+        ),
+    ] {
+        let mut app = demo().with_lang(lang);
+        app.ui_mut().layout.dock_open = false;
+        let owner = AutomationOwner::Track(app.project().tracks[2].id);
+        for (owner, target, label, mode) in [
+            (
+                owner,
+                AutomationTarget::Volume,
+                lang.param_volume(),
+                AutomationMode::Touch,
+            ),
+            (
+                owner,
+                AutomationTarget::Pan,
+                lang.param_pan(),
+                AutomationMode::Off,
+            ),
+            (
+                AutomationOwner::Master,
+                AutomationTarget::Volume,
+                lang.param_volume(),
+                AutomationMode::Read,
+            ),
+        ] {
+            app.dispatch(Action::Automation(Automation::ShowTarget {
+                owner,
+                replace: None,
+                target: target.clone(),
+                label: label.to_owned(),
+            }));
+            let id = komponist_app::views::automation::lanes(app.project(), owner)
+                .unwrap()
+                .lane(&target)
+                .unwrap()
+                .id;
+            app.dispatch(Action::Automation(Automation::Points(
+                Source::Lane(owner, id),
+                Points::new(vec![
+                    Point {
+                        tick: Tick(0),
+                        value: 0.7,
+                        shape: Shape::Curve { tension: 0.4 },
+                    },
+                    Point {
+                        tick: Tick(20_000),
+                        value: 0.25,
+                        shape: Shape::Hold,
+                    },
+                    Point::linear(Tick(28_000), 0.8),
+                ]),
+                "undo-automation-add-point",
+            )));
+            app.dispatch(Action::Automation(Automation::Mode(owner, id, mode)));
+        }
+        let mut h = harness(app);
+        let snapshot = |h: &mut Harness<'_, App>, name| {
+            for rect in h
+                .query_all_by_role_and_label(Role::Status, lang.transport_cpu())
+                .map(|n| n.rect())
+                .collect::<Vec<_>>()
+            {
+                h.mask(rect.expand(2.0));
+            }
+            h.snapshot(name);
+        };
+        snapshot(&mut h, name);
+        let pan_mode = lang.automation_mode_lane(lang.param_pan());
+        h.get_by_role_and_label(Role::ComboBox, &pan_mode).click();
+        h.run_steps(2);
+        snapshot(&mut h, menu_name);
+        h.get_by_role_and_label(Role::ListBoxOption, lang.automation_mode_latch())
+            .click();
+        h.run_steps(2);
+        assert_eq!(
+            komponist_app::views::automation::lanes(h.state().project(), owner)
+                .unwrap()
+                .lane(&AutomationTarget::Pan)
+                .unwrap()
+                .mode,
+            AutomationMode::Latch,
+        );
+        results.extend_harness(&mut h);
+    }
+    results.unwrap();
+}
+
+#[test]
+fn hiding_one_automation_lane_preserves_its_points_and_its_neighbour() {
+    use komponist_app::views::automation::Action as Automation;
+    use komponist_model::automation::{AutomationOwner, AutomationTarget};
+
+    let mut app = demo();
+    let track = &app.project().tracks[0];
+    let owner = AutomationOwner::Track(track.id);
+    let name = track.name.clone();
+    let show = |target, label: &str| {
+        Action::Automation(Automation::ShowTarget {
+            owner,
+            replace: None,
+            target,
+            label: label.to_owned(),
+        })
+    };
+    app.dispatch(show(AutomationTarget::Volume, de::PARAM_VOLUME));
+    app.dispatch(show(AutomationTarget::Pan, de::PARAM_PAN));
+    let before = app.project().clone();
+    let mut h = harness(app);
+    let volume = format!("Automation {}, {name}", de::PARAM_VOLUME);
+    let pan = format!("Automation {}, {name}", de::PARAM_PAN);
+    let rect = rect_of(&h, Role::Group, &volume);
+    right_click_menu(
+        pos2(rect.left() + 22.0, rect.bottom() - 6.0),
+        de::AUTOMATION_HIDE_LANE,
+        &mut h,
+    );
+    assert!(h.query_by_role_and_label(Role::Group, &volume).is_none());
+    assert!(
+        h.query_all_by_role_and_label(Role::Group, &pan)
+            .next()
+            .is_some()
+    );
+    assert_eq!(h.state().project(), &before);
+
+    h.state_mut()
+        .dispatch(show(AutomationTarget::Volume, de::PARAM_VOLUME));
+    h.run_steps(2);
+    let canvas = h
+        .get_all_by_role_and_label(Role::Group, &volume)
+        .map(|node| node.rect())
+        .max_by(|a, b| a.left().total_cmp(&b.left()))
+        .unwrap();
+    h.event(Event::PointerMoved(canvas.center()));
+    h.run_steps(2);
+    assert!(h.state().ui().automation_hint);
+    h.event(Event::PointerMoved(pos2(0.0, 0.0)));
+    h.run_steps(2);
+    assert!(!h.state().ui().automation_hint);
+}

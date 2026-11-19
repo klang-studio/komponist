@@ -116,19 +116,28 @@ enum Case {
     /// Playing on the null backend (16 hexa tracks in real time on the audio thread), the
     /// dock open with one clip in the piano roll: playhead, meters and both canvases move.
     Playing,
+    /// Playback with four shown, densely sampled lanes on every track.
+    Automation,
 }
 
 fn measure(ppp: f32, case: Case) -> (Duration, Duration, Duration) {
     let ctx = Context::default();
     komponist_ui::install(&ctx);
     ctx.set_pixels_per_point(ppp);
-    let mut app = App::headless(big_project());
+    let mut project = big_project();
+    if case == Case::Automation {
+        add_dense_automation(&mut project);
+    }
+    let mut app = App::headless(project);
     // 56 px per bar: all 13 bars of every track in the 1154 px of timeline.
     app.ui_mut().arrangement.px_per_bar = 56.0;
     app.ui_mut().layout.dock_open = case == Case::Playing;
     if case == Case::Playing {
         let clip = app.project().tracks[2].clips[0].id;
         app.dispatch(Action::Ui(UiAction::OpenClip(clip)));
+        app.dispatch(Action::Transport(TransportAction::TogglePlay));
+    }
+    if case == Case::Automation {
         app.dispatch(Action::Transport(TransportAction::TogglePlay));
     }
     if case == Case::AllSelected {
@@ -190,5 +199,73 @@ fn frame_time_with_200_clips_and_10_000_notes() {
             worst_median < BUDGET,
             "median frame {worst_median:?} over {BUDGET:?}"
         );
+    }
+}
+
+fn add_dense_automation(project: &mut Project) {
+    use komponist_model::automation::{
+        AutomationMode, AutomationTarget, LANE_HEIGHT_DEFAULT, Lane, LaneId, Point, Points,
+    };
+    use komponist_model::params::ParamId;
+
+    let tracks = project.tracks.clone();
+    let points = Points::new(
+        (0..2_000)
+            .map(|i| Point::linear(Tick(i * 20), ((i % 37) as f32) / 36.0))
+            .collect(),
+    );
+    for (index, track) in tracks.iter().enumerate() {
+        let device = track
+            .channel
+            .devices
+            .first()
+            .expect("fixture instrument")
+            .id;
+        let targets = [
+            AutomationTarget::Volume,
+            AutomationTarget::Pan,
+            AutomationTarget::Param {
+                device,
+                param: ParamId::new("feedback"),
+            },
+            AutomationTarget::Param {
+                device,
+                param: ParamId::new("op1_attack"),
+            },
+        ];
+        let lanes = targets
+            .into_iter()
+            .map(|target| {
+                Arc::new(Lane {
+                    id: LaneId(project.alloc_id().expect("fixture identifiers")),
+                    target,
+                    label: String::from("Automation"),
+                    mode: AutomationMode::Read,
+                    points: points.clone(),
+                    height: LANE_HEIGHT_DEFAULT,
+                })
+            })
+            .collect();
+        let track = Arc::make_mut(&mut project.tracks[index]);
+        track.automation.shown = true;
+        track.automation.lanes = lanes;
+    }
+}
+
+#[test]
+#[ignore = "timing: run in release with --ignored --nocapture"]
+fn frame_time_with_dense_automation_lanes() {
+    for ppp in [1.0, 2.0] {
+        let (first, median, max) = measure(ppp, Case::Automation);
+        println!(
+            "{ppp}x, automation: first frame {:.2} ms, median {:.2} ms, worst {:.2} ms",
+            first.as_secs_f64() * 1e3,
+            median.as_secs_f64() * 1e3,
+            max.as_secs_f64() * 1e3,
+        );
+        if !cfg!(debug_assertions) {
+            assert!(median < Duration::from_millis(2), "median frame {median:?}");
+            assert!(max < BUDGET, "worst frame {max:?} over {BUDGET:?}");
+        }
     }
 }

@@ -107,6 +107,14 @@ pub(crate) enum StatePurpose {
     Collect,
 }
 
+#[derive(Debug)]
+struct StateRequest {
+    request: u32,
+    purpose: StatePurpose,
+    checked: bool,
+    superseded: bool,
+}
+
 /// A state blob that arrived for a `Collect` request.
 pub(crate) type Collected = (u32, Arc<[u8]>);
 
@@ -214,7 +222,7 @@ pub(crate) struct Bridge {
     ready_at: Option<Instant>,
     stop_deadline: Option<Instant>,
     /// `GetState` requests without answer, in send order.
-    state_requests: VecDeque<(u32, StatePurpose)>,
+    state_requests: VecDeque<StateRequest>,
     state_restores: VecDeque<StateRestore>,
     snapshot_due: Option<Instant>,
     /// The latest state: the last snapshot, or the state the bridge was started with.
@@ -222,6 +230,8 @@ pub(crate) struct Bridge {
     pub params: Vec<ParamInfo>,
     pub values: BTreeMap<u32, ParamValue>,
     pub base_values: BTreeMap<u32, f64>,
+    temporary_params: BTreeSet<u32>,
+    pending_params: BTreeSet<u32>,
     pub note_names: Vec<NoteName>,
     pub has_gui: bool,
     /// The plugin has a sidechain input (#6): from the catalog until `Loaded` says so itself.
@@ -342,6 +352,8 @@ impl Bridge {
             params: Vec::new(),
             values: BTreeMap::new(),
             base_values: BTreeMap::new(),
+            temporary_params: BTreeSet::new(),
+            pending_params: BTreeSet::new(),
             note_names: Vec::new(),
             has_gui: false,
             sidechain: s.sidechain,
@@ -428,15 +440,60 @@ impl Bridge {
         if self.phase != Phase::Running || self.keep_stored_state {
             return None;
         }
+        let checked = self.snapshot_needs_verification();
         let request = self.seq();
-        self.state_requests.push_back((request, purpose));
-        self.send(ControlMsg::GetState { request });
+        let message = if checked {
+            let expected = self
+                .temporary_params
+                .union(&self.pending_params)
+                .map(|id| {
+                    self.base_values.get(id).map(|&value| {
+                        let allow_quantized = !self.temporary_params.contains(id);
+                        (*id, value, allow_quantized)
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            ControlMsg::GetStateChecked { request, expected }
+        } else {
+            ControlMsg::GetState { request }
+        };
+        self.state_requests.push_back(StateRequest {
+            request,
+            purpose,
+            checked,
+            superseded: false,
+        });
+        self.send(message);
         Some(request)
+    }
+
+    fn snapshot_needs_verification(&self) -> bool {
+        !self.temporary_params.is_empty() || !self.pending_params.is_empty()
+    }
+
+    pub(crate) fn needs_snapshot_for_save(&self) -> bool {
+        self.is_running() && !self.pending_params.is_empty()
     }
 
     /// Whether this request still awaits a state reply or a state error.
     pub(crate) fn state_request_pending(&self, request: u32) -> bool {
-        self.state_requests.iter().any(|&(seq, _)| seq == request)
+        self.state_requests
+            .iter()
+            .any(|pending| pending.request == request)
+    }
+
+    fn take_state_request(&mut self, request: u32) -> Option<StateRequest> {
+        let index = self
+            .state_requests
+            .iter()
+            .position(|pending| pending.request == request)?;
+        self.state_requests.drain(..=index).next_back()
+    }
+
+    fn invalidate_state_requests(&mut self) {
+        for pending in &mut self.state_requests {
+            pending.superseded = true;
+        }
     }
 
     /// Schedules a debounced `StateSnapshot`.
@@ -462,15 +519,28 @@ impl Bridge {
         self.edited_param(id, value);
     }
 
-    /// Applies the document's base-value edit to the manager's cache.
-    fn keep_base_value(&mut self, id: u32, value: f64) {
-        self.base_values.insert(id, value);
+    /// Updates the live cache without retaining a temporary value as a document edit.
+    pub(crate) fn preview_param(&mut self, id: u32, value: f64) {
+        if !self.params.iter().any(|param| param.id == id) {
+            return;
+        }
+        if self.base_values.get(&id) != Some(&value) {
+            self.temporary_params.insert(id);
+            self.invalidate_state_requests();
+        }
+        self.update_live_param(id, value);
+    }
+
+    fn update_live_param(&mut self, id: u32, value: f64) {
         let entry = self.values.entry(id).or_insert_with(|| ParamValue {
             id,
             value,
             text: String::new(),
         });
-        entry.value = value;
+        if entry.value != value {
+            entry.text.clear();
+            entry.value = value;
+        }
     }
 
     /// Sends `SetState` to the running plugin (an undo or redo changed the device's state); the
@@ -482,6 +552,8 @@ impl Bridge {
         }
         self.user_changed();
         self.last_state = Some(Arc::clone(state));
+        self.pending_params.clear();
+        self.invalidate_state_requests();
         let request = self.seq();
         self.state_restores.push_back(StateRestore::new(request));
         self.send(ControlMsg::SetState {
@@ -710,27 +782,68 @@ impl Bridge {
                     self.check_ready(Instant::now(), events);
                 }
             }
-            BridgeMsg::State { request, state } => {
+            BridgeMsg::State {
+                request,
+                state,
+                verified,
+            } => {
+                let pending = self.take_state_request(request);
+                if pending.as_ref().is_some_and(|pending| pending.superseded)
+                    || (self.snapshot_needs_verification()
+                        && !pending.as_ref().is_some_and(|pending| pending.checked))
+                {
+                    self.snapshot_soon();
+                    return;
+                }
+                if pending.as_ref().is_some_and(|pending| pending.checked) {
+                    let mut changed = false;
+                    for (id, value) in verified {
+                        if self.pending_params.contains(&id)
+                            && let Some(base) = self.base_values.get_mut(&id)
+                            && (*base - value).abs() > 1e-6 * base.abs().max(1.0)
+                        {
+                            *base = value;
+                            self.update_live_param(id, value);
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        events.push(PluginManagerEvent::ParamsChanged { device });
+                        events.push(PluginManagerEvent::ParamValuesChanged { device });
+                    }
+                    self.temporary_params.clear();
+                    self.pending_params.clear();
+                }
                 let state: Arc<[u8]> = state.into();
-                let purpose = match self.state_requests.iter().position(|(r, _)| *r == request) {
-                    // Answers come in order; earlier requests without answer had errors.
-                    Some(i) => self.state_requests.drain(..=i).next_back().map(|(_, p)| p),
-                    None => None,
-                };
                 self.last_state = Some(state.clone());
-                match purpose {
-                    Some(StatePurpose::Collect) => collected.push((request, state)),
+                match pending.map(|request| request.purpose) {
+                    Some(StatePurpose::Collect) => {
+                        collected.push((request, state));
+                    }
                     Some(StatePurpose::Event) | None => {
                         events.push(PluginManagerEvent::StateSnapshot { device, state });
                     }
                 }
             }
+            BridgeMsg::StateDeferred { request } => {
+                if self.take_state_request(request).is_some() {
+                    self.snapshot_soon();
+                }
+            }
             BridgeMsg::Params(params) => {
+                let ids: BTreeSet<_> = params.iter().map(|param| param.id).collect();
+                self.temporary_params.retain(|id| ids.contains(id));
+                self.pending_params.retain(|id| ids.contains(id));
+                self.base_values.retain(|id, _| ids.contains(id));
+                self.values.retain(|id, _| ids.contains(id));
                 self.params = params;
                 events.push(PluginManagerEvent::ParamsChanged { device });
             }
             BridgeMsg::ParamValues(values) => {
                 for value in values {
+                    if !self.params.iter().any(|param| param.id == value.id) {
+                        continue;
+                    }
                     self.base_values.entry(value.id).or_insert(value.value);
                     self.values.insert(value.id, value);
                 }
@@ -928,21 +1041,21 @@ impl Bridge {
 
     /// Updates the cached value and schedules a snapshot for a user's edit.
     pub(crate) fn edited_param(&mut self, id: u32, value: f64) {
-        if self.phase != Phase::Running {
+        if self.phase != Phase::Running || !self.params.iter().any(|param| param.id == id) {
             return;
-        }
-        if self
-            .values
-            .get(&id)
-            .is_some_and(|entry| entry.value != value)
-            && let Some(entry) = self.values.get_mut(&id)
-        {
-            entry.text.clear();
         }
         for restore in &mut self.state_restores {
             restore.later_edits.insert(id);
         }
-        self.keep_base_value(id, value);
+        // The engine reports a persistent edit only after ownership returns to the user.
+        // Keep verification pending while that edit replaces the previous override.
+        let replaced_override = self.temporary_params.remove(&id);
+        if replaced_override || self.base_values.get(&id) != Some(&value) {
+            self.pending_params.insert(id);
+            self.invalidate_state_requests();
+        }
+        self.base_values.insert(id, value);
+        self.update_live_param(id, value);
         self.user_changed();
         self.snapshot_soon();
     }

@@ -733,6 +733,58 @@ pub(crate) fn split_envelopes_fit(clip: &Clip, at: Tick) -> bool {
     true
 }
 
+/// Replaces a recorded interval while preserving the surrounding curve, including portions
+/// of a curve or hold segment cut at the interval boundary.
+pub fn replace_recorded_points(
+    original: &Points,
+    start: Tick,
+    replacement: &Points,
+    base: f32,
+) -> Points {
+    let replacement = replacement.as_slice();
+    let Some(last) = replacement.last() else {
+        return original.clone();
+    };
+    let original = original.as_slice();
+    let fallback = [Point::linear(Tick::ZERO, base)];
+    let original = if original.is_empty() {
+        &fallback
+    } else {
+        original
+    };
+    let mut merged = Vec::with_capacity(original.len() + replacement.len() + 3);
+    if original[0].tick < start {
+        merged.push(Point::linear(original[0].tick, original[0].value));
+        append_slice(&mut merged, original, original[0].tick, start, Tick::ZERO);
+    } else {
+        merged.push(Point::linear(start, original[0].value));
+    }
+    for &point in replacement {
+        push_point(&mut merged, point);
+    }
+    let mut right = last.tick;
+    if value_at(original, right) != Some(last.value) {
+        right = Tick(right.0.saturating_add(1));
+        if right == last.tick {
+            return Points::new(merged);
+        }
+        if let Some(point) = merged.last_mut() {
+            point.shape = Shape::Hold;
+        }
+    }
+    let end = original.last().expect("there is always a base point").tick;
+    if right < end {
+        append_slice(&mut merged, original, right, end, Tick::ZERO);
+        push_point(&mut merged, *original.last().unwrap());
+    } else {
+        push_point(
+            &mut merged,
+            Point::linear(right, value_at(original, right).unwrap_or(base)),
+        );
+    }
+    Points::new(merged)
+}
+
 /// Splits an envelope into two content-relative curves at a timeline offset.
 pub(crate) fn split_envelope(clip: &Clip, envelope: &ClipAutomation, at: Tick) -> (Points, Points) {
     let mut left = Vec::new();
@@ -878,6 +930,18 @@ mod tests {
             assert!(bend(0.5, tension) < 0.5);
             assert!((bend(0.1, tension) + bend(0.9, -tension) - 1.0).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn recording_after_a_first_tick_jump_keeps_both_sides() {
+        let points = Points::new(vec![
+            Point::linear(Tick(10), 0.2),
+            Point::linear(Tick(10), 0.8),
+        ]);
+        let replacement = Points::new(vec![Point::linear(Tick(50), 0.5)]);
+        let merged = replace_recorded_points(&points, Tick(50), &replacement, 0.0);
+        assert_eq!(value_at(merged.as_slice(), Tick(5)), Some(0.2));
+        assert_eq!(value_at(merged.as_slice(), Tick(10)), Some(0.8));
     }
 
     #[test]

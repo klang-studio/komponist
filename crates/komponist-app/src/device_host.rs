@@ -160,6 +160,9 @@ pub trait DeviceHost {
         false
     }
 
+    /// Updates the visible value of a plugin parameter during an automation override.
+    fn preview_param(&mut self, _device: DeviceId, _id: u32, _value: f64) {}
+
     /// Sets a parameter of a bridged device; `false` if this host does not handle `device` (the
     /// caller then sends the engine's `SetParam` to the device's slot, as for hexa).
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
@@ -269,6 +272,16 @@ pub trait DeviceHost {
     fn snapshot_states(&mut self, timeout: Duration) -> Vec<(DeviceId, Arc<[u8]>)> {
         let _ = timeout;
         Vec::new()
+    }
+
+    /// Whether a plugin holds a persistent edit that still needs a safe snapshot.
+    fn has_pending_state_edits(&self) -> bool {
+        false
+    }
+
+    /// Snapshots external devices and rejects a save that would omit a persistent plugin edit.
+    fn snapshot_for_save(&mut self, timeout: Duration) -> Result<DeviceSnapshots, DeviceId> {
+        Ok(self.snapshot_states(timeout))
     }
 
     /// Snapshots bridged devices on a MIDI track before replacing its chain. Hosts with running
@@ -711,6 +724,10 @@ impl DeviceHost for PluginHost {
         self.manager.edited_param(device, id, value)
     }
 
+    fn preview_param(&mut self, device: DeviceId, id: u32, value: f64) {
+        self.manager.preview_param(device, id, value);
+    }
+
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
         if !self.is_external(device) {
             return false;
@@ -795,6 +812,14 @@ impl DeviceHost for PluginHost {
 
     fn snapshot_states(&mut self, timeout: Duration) -> Vec<(DeviceId, Arc<[u8]>)> {
         self.manager.snapshot_states(timeout)
+    }
+
+    fn has_pending_state_edits(&self) -> bool {
+        self.manager.has_pending_state_edits()
+    }
+
+    fn snapshot_for_save(&mut self, timeout: Duration) -> Result<DeviceSnapshots, DeviceId> {
+        self.manager.snapshot_for_save(timeout)
     }
 
     fn snapshot_selected_states(

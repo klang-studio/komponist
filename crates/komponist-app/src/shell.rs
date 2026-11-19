@@ -47,6 +47,7 @@ impl App {
             self.draw_dialogs(&ui.ctx().clone());
             return;
         }
+        self.ui.automation_hint = false;
         let l = layout::compute(screen, &self.ui.layout);
         self.focus_on_press(ui, &l);
 
@@ -155,6 +156,10 @@ impl App {
         ctx.lang = self.lang;
         ctx.requests = self.shell.requests;
         ctx.recording = self.recording.as_ref();
+        ctx.automation_capture = self
+            .automation_capture
+            .active()
+            .then_some(&self.automation_capture);
         ctx.audio_recording = self.audio_recording.running();
         ctx.provisional_recordings = provisional_recordings.as_deref();
         ctx.exports = &self.export.done;

@@ -45,3 +45,6 @@ dock-maximize-tip = Maximize dock
 
 # Tooltip of the maximise icon button while the dock is maximised.
 dock-restore-tip = Restore dock
+
+# Accessible name of a divider in a clip editor.
+dock-section-height = Height · { $section }

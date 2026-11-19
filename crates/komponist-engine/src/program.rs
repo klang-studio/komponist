@@ -11,7 +11,9 @@
 
 use std::sync::Arc;
 
-use komponist_model::automation::{AutomationOwner, AutomationTarget, TrackAutomation};
+use komponist_model::automation::{
+    AutomationMode, AutomationOwner, AutomationTarget, TrackAutomation,
+};
 use komponist_model::{DeviceId, DeviceRole, Tick, TickRange, TrackId};
 use komponist_model::{TempoMap, Track};
 
@@ -82,6 +84,25 @@ impl Program {
             .iter()
             .find(|lane| &lane.model == target)
             .map(|lane| lane.target)
+    }
+
+    /// Whether a resolved target has an effective playback curve, including clip overrides.
+    pub fn automation_reads(&self, owner: AutomationOwner, target: &AutomationTarget) -> bool {
+        self.automation_of(owner)
+            .and_then(|automation| automation.iter().find(|lane| &lane.model == target))
+            .is_some_and(CompiledTarget::reads)
+    }
+
+    /// Mode of the resolved lane in the installed program.
+    pub fn automation_mode(
+        &self,
+        owner: AutomationOwner,
+        target: &AutomationTarget,
+    ) -> Option<AutomationMode> {
+        self.automation_of(owner)?
+            .iter()
+            .find(|lane| &lane.model == target)
+            .map(|lane| lane.mode)
     }
 
     /// Compiled base value of this lane, in its normalised domain.

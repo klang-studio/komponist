@@ -184,6 +184,8 @@ allocated from `Project::next_id`; overflow rejects an edit or file instead of w
   audio effects only. Edits enforce these roles and ordering.
 - **Devices** store plugin identity, persistent state, bypass and optional sidechain source.
   Loading/crash/missing status belongs to runtime management, outside the saved document.
+- **Automation** uses arrangement lanes on tracks and the master, plus envelopes in MIDI and step
+  clips. Each lane has a stable ID, a target and its own playback/recording mode (§6.12).
 
 ### 5.3 Edits and undo
 
@@ -211,11 +213,13 @@ Pure formatting functions provide musical positions, elapsed time, dB, pan and n
 
 ### 5.5 Persistence
 
-A `*.komponist` file is JSON with `format: "komponist"`, **version 3** and a `project` object.
+A `*.komponist` file is JSON with `format: "komponist"`, **version 4** and a `project` object.
 Plugin states are base64 and survive a missing plugin unchanged. Loading validates data and
 routing, repairs defined dangling-reference cases and rejects cycles or invalid track content.
-Older supported files migrate through explicit version steps: v1 gains master outputs; v2
-migrates into the v3 audio-capable schema. Newer unsupported file versions are rejected.
+Explicit migrations give v1 files master outputs and add the audio-capable v3 schema after v2.
+Version 4 adds optional track, clip and master automation. The v3 → v4 migration leaves the
+project JSON unchanged and missing automation fields default to empty. Newer unsupported file
+versions are rejected.
 
 Audio assets remain linked by relative and absolute paths. Save As rebases resolving links;
 Collect and Save copies audio and Sampler sources into the project's sample folder, deduplicating
@@ -511,6 +515,42 @@ segments publish unavailable frames, retry independently and leave other tracks 
 uses the same renderer with synchronous filling, exact output length and propagated source/stretch
 errors. The UI exposes Fixed/Re-Pitch/Warp and shared source-tempo controls in editor/inspector.
 
+### 6.12 Automation (#56)
+
+Arrangement points use song ticks. MIDI and step envelopes use content-relative ticks and repeat
+with the clip. Values are normalized to 0–1 and support Linear, Curve and Hold segments. Two
+points at one tick encode a jump. Device targets pair the project's stable device ID with the
+device's parameter ID. Tracks also expose volume, pan and send levels. The master exposes volume,
+pan and insert parameters.
+
+An unmuted clip envelope overrides its arrangement lane while the clip plays. The later-starting
+clip wins on overlap, with the clip ID breaking ties. Splitting a clip preserves the original
+envelope's precedence across both halves. When no clip overrides the target, playback uses the
+arrangement curve or the base value. Missing plugin targets retain their editable curves.
+Removing a device removes its arrangement lanes in the same undo step.
+
+Compilation resolves targets and parameter ranges outside the callback. The resulting curve uses
+materialized timeline points when the expansion fits the point budget and a compact repetition
+index for larger curves. The engine evaluates both representations on the same absolute song
+sample grid, at intervals of `round(sample_rate / 750)` frames, and honors explicit point positions.
+Play, locate, loop wrap and curve changes chase the current value. Device events carry frame
+offsets. Mixer ramps follow the latency at their tap, and the master fader runs after its inserts.
+Offline rendering uses the same playback path. MIDI-to-audio flattening prints the device chain
+and moves clip overrides for volume, pan and sends into the retained arrangement lanes. The edit
+checks its expansion budget before moving those curves.
+
+Modes belong to individual lanes. Off restores the base value. Read follows the effective curve
+and permits a temporary manual override. Touch writes while a control is held and returns to the
+curve over 250 ms after release. Latch continues writing after release until a transport boundary.
+Stop, locate and loop wrap end write segments. Changing a lane's mode ends its current segment
+at the playhead. A write into a clip envelope changes the content shared by its repetitions.
+
+The engine timestamps gesture edges and values and publishes applied overrides for control
+displays. Capture uses the bounded engine event queue. The app previews raw writes and thins
+completed segments. Previewed segments can update playback before the pass finishes. The pass
+becomes one undo step, shared with recorded notes when both belong to the same take. Esc discards
+the pass and restores the playback curve or base value.
+
 ## 7. Audio and MIDI I/O (`komponist-audio`)
 
 | Platform | Audio backends | MIDI |
@@ -557,7 +597,7 @@ own process and RT thread; the plugin manager controls its lifecycle and saved s
 Shared memory (layout version 3) contains request/completion sequence words, transport/status,
 latency, bounded event rings, stereo input/output and stereo sidechain input. Each request marks
 whether sidechain audio is present; absent sidechains receive silence. The postcard control
-protocol (version 6) uses length-prefixed frames for load/activation/state/parameters, GUI and
+protocol (version 8) uses length-prefixed frames for load/activation/state/parameters, GUI and
 header actions, render mode, heartbeat and shutdown.
 
 The plugin manager loads an instance, restores saved state if present, then activates it.
@@ -567,6 +607,23 @@ updates its base cache while preserving newer edits. State restoration pauses ne
 until the in-flight block finishes. If a request races with the pause and falls back, the bridge
 replays its latest parameter values on the next block and resets voices to clear notes whose
 note-offs may have been missed.
+
+The engine-owned external processor is the single consumer of the output event ring. The engine
+locates plugin values and gestures on the song timeline and sends them to both automation capture
+and the plugin manager. Temporary automation gestures update the plugin manager's live values
+while preserving its base cache. Every snapshot request verifies pending edits and temporary
+overrides against the expected base values. The bridge accepts a quantized persistent edit only
+after the audio block delivered the requested value. Temporary values must return to their
+bases before snapshotting. A project save can reuse its last
+safe state for a device with no pending persistent edits. With pending edits, saving waits up to
+the snapshot deadline for a validated state and leaves the file intact if the device cannot
+provide one. Events from the current block carry its frame offsets. Late
+edits are anchored to the next engine segment. VST3 controller updates are coalesced on the bridge
+main thread. A parameter rescan prepares the delivery and controller entries on the control
+thread. The audio thread swaps the table at a block boundary and returns the old table for
+destruction. Entries for surviving IDs keep their delivery and controller history. The echo guard
+filters controller replies outside an active gesture, and newer control changes supersede stale
+updates from earlier blocks.
 
 The engine publishes input/events and wakes the bridge, then collects completion within its
 block deadline budget (60% of the block period minus elapsed time). Late effects pass through;
@@ -762,6 +819,8 @@ editors require platform window/input tooling because their contents are outside
   adapted as described in §8.2.
 - Track kinds are distinct. Buses have no sends, and audio clips on one track do not overlap.
 - Engine queues, processor/event counts and delay lines have explicit fixed capacities (§6.1).
+- Automation covers parameter lanes and clip envelopes (§6.12). MIDI learn, MIDI CC lanes and
+  track macros are separate work.
 - Warp is affine from original/project tempo. Fresh seeks re-prime DSP history; optional Warp data
   is not preserved by older v3 readers (§5.5, §6.11).
 - Automated backend coverage does not establish compatibility with every hardware driver or

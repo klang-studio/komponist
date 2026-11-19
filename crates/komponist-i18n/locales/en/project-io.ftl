@@ -23,6 +23,7 @@ project-saved = Saved · { $path }
 
 # Saving failed; `$reason` is one of the `project-reason-*` texts.
 project-save-failed = Saving failed: { $reason }
+project-save-plugin-pending = The state of { $device } is still pending. End any temporary automation override and save again.
 
 ## Reasons (lower case, they follow a colon). The system's own text goes to the log only.
 

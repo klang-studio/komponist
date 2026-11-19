@@ -233,6 +233,7 @@ pub fn showcase_project() -> Project {
     project.next_id = d.next;
     add_routing(&mut project);
     audio::add_tracks(&mut project);
+    add_automation(&mut project);
     project
 }
 
@@ -291,4 +292,122 @@ fn add_routing(project: &mut Project) {
     };
     *project = edits::set_sidechain(&p, presse, Some(sidechain))
         .expect("the demo routing is valid: sidechain");
+}
+
+/// The song demonstrates track, clip and master curves.
+fn add_automation(project: &mut Project) {
+    use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points, Shape};
+    use komponist_model::edits::automation as edits;
+    use komponist_model::params::{ParamId, db_to_p};
+
+    let track = |project: &Project, name: &str| {
+        project
+            .tracks
+            .iter()
+            .find(|track| track.name == name)
+            .expect("showcase track")
+            .id
+    };
+    let bars = |bar: i64| Tick::from_steps(bar * 16);
+    let lane = |project: &mut Project, owner, target, label: &str, points: Vec<Point>| {
+        let (next, id) = edits::add_lane(project, owner, target, label.to_owned())
+            .expect("showcase automation target");
+        *project = edits::set_lane_points(&next, owner, id, Points::new(points))
+            .expect("showcase lane points");
+    };
+
+    let pad = track(project, "Pad");
+    let pad_device = &project.track(pad).expect("Pad").channel.devices[0];
+    let cutoff = ParamId::new("cutoff");
+    let wire = Internal::Volt.wire(&cutoff).expect("Volt cutoff") as usize;
+    let base_cutoff = Internal::Volt
+        .decode_state(pad_device.state.as_deref())
+        .expect("Volt state")[wire];
+    let cutoff_value = Internal::Volt.params()[wire].to_normalized(base_cutoff) as f32;
+    let cutoff_target = AutomationTarget::Param {
+        device: pad_device.id,
+        param: cutoff,
+    };
+    lane(
+        project,
+        AutomationOwner::Track(pad),
+        cutoff_target,
+        "Volt · Cutoff",
+        vec![
+            Point {
+                tick: bars(8),
+                value: cutoff_value * 0.66,
+                shape: Shape::Curve { tension: 0.35 },
+            },
+            Point::linear(bars(12), cutoff_value),
+        ],
+    );
+
+    let keys = track(project, "Keys");
+    let keys_level = project.track(keys).expect("Keys").channel.volume_db;
+    lane(
+        project,
+        AutomationOwner::Track(keys),
+        AutomationTarget::Volume,
+        "Volume",
+        vec![
+            Point::linear(bars(4), 1.0 - db_to_p(-36.0)),
+            Point::linear(bars(5), 1.0 - db_to_p(keys_level)),
+        ],
+    );
+
+    let lead = track(project, "Lead");
+    let lead_track = project.track(lead).expect("Lead");
+    let hexa = &lead_track.channel.devices[0];
+    let feedback = ParamId::new("feedback");
+    let param = komponist_builtin::device::param(&feedback).expect("Hexa feedback");
+    let patch = komponist_builtin::decode_state(hexa.state.as_deref()).expect("Hexa state");
+    let base = param.info.to_normalized(param.field.get(&patch)) as f32;
+    let target = AutomationTarget::Param {
+        device: hexa.id,
+        param: feedback,
+    };
+    let (clip_index, clip) = lead_track
+        .clips
+        .iter()
+        .enumerate()
+        .find(|(_, clip)| clip.name == "Lead B")
+        .expect("Lead B");
+    let clip_id = clip.id;
+    let track_index = project
+        .tracks
+        .iter()
+        .position(|track| track.id == lead)
+        .expect("Lead index");
+    let clip =
+        Arc::make_mut(&mut Arc::make_mut(&mut project.tracks[track_index]).clips[clip_index]);
+    clip.loop_length = Some(bars(2));
+    *project =
+        edits::add_clip_automation(project, clip_id, target.clone(), "Hexa · Feedback".into())
+            .expect("showcase clip envelope");
+    *project = edits::set_clip_points(
+        project,
+        clip_id,
+        &target,
+        Points::new(vec![
+            Point::linear(Tick::ZERO, base),
+            Point::linear(bars(1), (base + 0.16).min(1.0)),
+            Point::linear(bars(2), base),
+        ]),
+    )
+    .expect("showcase envelope points");
+    *project =
+        edits::set_shown(project, AutomationOwner::Track(lead), true).expect("showcase Lead lanes");
+
+    let master_level = project.master.volume_db;
+    lane(
+        project,
+        AutomationOwner::Master,
+        AutomationTarget::Volume,
+        "Volume",
+        vec![
+            Point::linear(bars(15), 1.0 - db_to_p(master_level)),
+            Point::linear(bars(16), 0.0),
+        ],
+    );
 }

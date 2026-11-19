@@ -820,3 +820,31 @@ fn visible_steps_are_accesskit_check_boxes() {
     h.run_steps(10);
     assert!(h.query_by_label_contains(&step_label("Perc", 0)).is_some());
 }
+
+#[test]
+fn step_clip_automation_uses_the_pattern_grid_and_preserves_the_pattern() {
+    use komponist_app::views::automation::Action as Automation;
+    use komponist_model::automation::AutomationTarget;
+
+    let mut app = opened();
+    let (_, clip) = beat_b(&app);
+    let before = pattern(&app, clip);
+    app.dispatch(Action::Automation(Automation::AddClip(
+        clip,
+        AutomationTarget::Pan,
+        de::PARAM_PAN.into(),
+    )));
+    let mut h = harness(app);
+    let lane = h
+        .get_all_by_role_and_label(Role::Group, "Clip-Automation Pan")
+        .map(|node| node.rect())
+        .max_by(|a, b| a.left().total_cmp(&b.left()))
+        .unwrap();
+    let at = pos2(lane.left() + 123.0, lane.center().y);
+    click_at(&mut h, at, Modifiers::NONE);
+    click_at(&mut h, at, Modifiers::NONE);
+    let points = &h.state().project().find_clip(clip).unwrap().1.automation[0].points;
+    assert_eq!(points.as_slice().len(), 1);
+    assert_eq!(points.as_slice()[0].tick.0 % before.resolution.ticks().0, 0);
+    assert_eq!(pattern(h.state(), clip), before);
+}

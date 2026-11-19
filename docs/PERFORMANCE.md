@@ -476,3 +476,22 @@ cold priming peaks, long-session load, high-rate capacity or every target machin
 macOS/MSVC validation of WP-D remains pending; the earlier WP-B platform gates covered the
 wrapper's original domain. Architecture §6.11 describes buffering, errors and seek behavior;
 the WP-D internal notes retain logs and the native sanitizer probe.
+
+## 12. Automation (#56)
+
+| Scenario | Acceptance budget |
+|---|---|
+| Engine, 16 tracks with 16 ramping targets each, 256 frames at 48 kHz | At most 2% of the audio period (about 107 µs), with no realtime allocations |
+| Recompile one track with 32 dense lanes and 50 looping clips | At most 2 ms |
+| Arrangement playback, 16 tracks with 4 visible lanes each and 2,000 points per lane | Steady frames at most 8 ms with a median of at most 2 ms |
+
+The engine and arrangement benchmarks use the same test binaries as the existing performance suites.
+The engine tests also compare live and offline event positions across buffer sizes and exercise event
+overflow with a bounded queue. The arrangement clips painting to the visible timeline.
+
+On the Linux development host, the ramp benchmark averaged 7.1 µs without automation and 86.4 µs
+with automation across 1,000 callbacks. The added 79.3 µs is 1.49% of a 256-frame period at 48 kHz.
+
+The dense-lane benchmark measured steady medians of 1.45 ms at 1× and 0.90 ms at 2×, with
+worst steady frames of 2.06 ms and 1.31 ms. The first frames, including layout and mesh
+construction, took 10.46 ms and 10.85 ms.

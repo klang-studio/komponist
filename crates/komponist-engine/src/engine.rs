@@ -1727,6 +1727,7 @@ impl Core {
                 begin,
             } => self.automation_touch(owner, target, begin),
             Command::CancelAutomationWrite => self.cancel_automation_write(),
+            Command::FinishAutomationWrite => self.finish_automation_write(),
             Command::SetParam { slot, id, value } => {
                 if let Some(owner) = self.slot_owner(slot) {
                     self.manual_automation(owner, EngineTarget::Slot { slot, wire_id: id }, value);

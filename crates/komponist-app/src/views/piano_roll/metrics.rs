@@ -37,8 +37,14 @@ pub const BLACK_KEY_INSET: f32 = space::SPACE_4;
 /// Right padding of the key names on the C keys (`paddingRight:5`).
 pub const KEY_LABEL_PAD: f32 = 5.0;
 
-/// Highest velocity stem in the lane: `h = n.v/127*52`.
-pub const VELOCITY_MAX_HEIGHT: f32 = 52.0;
+/// Shortest velocity lane that leaves room for its labels and stems.
+pub const VELOCITY_MIN_HEIGHT: f32 = 36.0;
+/// Headroom above the tallest velocity stem. A default 64 px lane has a 52 px scale.
+const VELOCITY_TOP: f32 = space::SPACE_2;
+
+pub(super) fn velocity_scale(lane_height: f32) -> f32 {
+    (lane_height - VELOCITY_BOTTOM - VELOCITY_TOP).max(1.0)
+}
 /// Stems stand this far above the lane's bottom (`bottom:4`).
 pub const VELOCITY_BOTTOM: f32 = space::SPACE_1;
 /// Width of a velocity stem (`width:2`).

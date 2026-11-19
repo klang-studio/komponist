@@ -565,6 +565,87 @@ fn keyboard_click_auditions_on_the_clip_track() {
 }
 
 #[test]
+fn dragging_clip_section_edges_resizes_without_editing_the_clip() {
+    use komponist_i18n::Lang;
+    use komponist_model::automation::AutomationTarget;
+
+    let lang = Lang::De;
+    let (app, clip) = lead_a();
+    let volume = lang.param_volume();
+    let pan = lang.param_pan();
+    let project = komponist_model::edits::automation::add_clip_automation(
+        app.project(),
+        clip,
+        AutomationTarget::Volume,
+        volume.into(),
+    )
+    .unwrap();
+    let project = komponist_model::edits::automation::add_clip_automation(
+        &project,
+        clip,
+        AutomationTarget::Pan,
+        pan.into(),
+    )
+    .unwrap();
+    let mut app = App::headless(project);
+    app.ui_mut().layout.dock_height = TEST_DOCK;
+    app.dispatch(Action::Ui(UiAction::OpenClip(clip)));
+    // A splitter drag must stay separate from note and envelope editing even in pencil mode.
+    app.ui_mut().piano_roll.tool = Tool::Pencil;
+    let original = app.project().clone();
+    let mut h = harness(app);
+
+    let group = |h: &Harness<'_, App>, label: &str| {
+        h.get_all_by_role_and_label(Role::Group, label)
+            .map(|node| node.rect())
+            .max_by(|a, b| a.height().total_cmp(&b.height()))
+            .unwrap()
+    };
+    let volume_lane = lang.a11y_automation_clip_lane(volume);
+    let pan_lane = lang.a11y_automation_clip_lane(pan);
+    let notes_height = |h: &Harness<'_, App>| {
+        h.get_by_role_and_label(Role::Grid, lang.piano_roll_notes())
+            .rect()
+            .height()
+    };
+    let velocity = lang.piano_roll_velocity_lane();
+    let resize = |h: &mut Harness<'_, App>, label, dy| {
+        let from = h
+            .get_by_role_and_label(Role::Splitter, &lang.dock_section_height(label))
+            .rect()
+            .center();
+        drag(h, from, from + vec2(0.0, dy), Modifiers::NONE);
+    };
+    resize(&mut h, volume, -32.0);
+    assert_eq!(group(&h, &volume_lane).height(), 128.0);
+    assert_eq!(group(&h, &pan_lane).height(), 96.0);
+
+    let notes_before = notes_height(&h);
+    resize(&mut h, velocity, -40.0);
+    assert_eq!(group(&h, velocity).height(), 104.0);
+    assert_eq!(notes_height(&h), notes_before - 40.0);
+    assert_eq!(group(&h, &volume_lane).height(), 128.0);
+    assert_eq!(h.state().project(), &original);
+
+    resize(&mut h, pan, 120.0);
+    assert_eq!(group(&h, &pan_lane).height(), 48.0);
+    assert_eq!(group(&h, &volume_lane).height(), 128.0);
+
+    let splitter = lang.dock_section_height(pan);
+    h.get_by_role_and_label(Role::Splitter, &splitter)
+        .increment_accesskit();
+    h.run();
+    let step = komponist_tokens::space::SPACE_2;
+    assert_eq!(group(&h, &pan_lane).height(), 48.0 + step);
+    h.get_by_role_and_label(Role::Splitter, &splitter).focus();
+    h.run();
+    h.key_press(egui::Key::ArrowDown);
+    h.run();
+    assert_eq!(group(&h, &pan_lane).height(), 48.0);
+    assert_eq!(h.state().project(), &original);
+}
+
+#[test]
 fn velocity_lane_sets_the_nearest_start() {
     let (app, clip) = lead_a();
     let mut h = harness(app);
@@ -1213,4 +1294,251 @@ fn the_velocity_lane_announces_the_value() {
     let at = pos2(g.x_of_local(b4.start) + 2.0, lane.bottom() - 4.0 - 26.0);
     click(&mut h, at, Modifiers::NONE);
     assert_eq!(h.state().ui().status.clone().unwrap().text, "Velocity 64");
+}
+
+#[test]
+fn midi_clip_automation_edits_local_content_time_without_changing_notes() {
+    use komponist_app::views::automation::Action as Automation;
+    use komponist_model::automation::AutomationTarget;
+
+    let (mut app, clip) = lead_a();
+    let notes = notes_of(&app, clip);
+    app.dispatch(Action::Automation(Automation::AddClip(
+        clip,
+        AutomationTarget::Volume,
+        "Lautstärke".into(),
+    )));
+    let mut h = harness(app);
+    let lane = h
+        .get_all_by_role_and_label(Role::Group, "Clip-Automation Lautstärke")
+        .map(|node| node.rect())
+        .max_by(|a, b| a.left().total_cmp(&b.left()))
+        .unwrap();
+    double_click(&mut h, pos2(lane.left() + 24.0, lane.center().y));
+    let (track, clip_data) = h.state().project().find_clip(clip).unwrap();
+    let envelope = &clip_data.automation[0];
+    assert_eq!(envelope.points.as_slice().len(), 1);
+    assert!(envelope.points.as_slice()[0].tick < clip_data.start);
+    assert!(track.automation.lane(&AutomationTarget::Volume).is_some());
+    let from = clip_automation_points(&h).next().unwrap().rect().center();
+    drag(&mut h, from, from - vec2(0.0, 12.0), Modifiers::NONE);
+    let moved = clip_automation_points(&h).next().unwrap().rect().center();
+    assert!(
+        (from.y - moved.y - 12.0).abs() < 0.5,
+        "{from:?} → {moved:?}"
+    );
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(notes_of(h.state(), clip), notes);
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert!(
+        h.state().project().find_clip(clip).unwrap().1.automation[0]
+            .points
+            .is_empty()
+    );
+}
+
+#[test]
+fn removing_the_last_clip_envelope_turns_off_the_automation_button() {
+    use egui::accesskit::Toggled;
+    use komponist_app::views::automation::Action as Automation;
+    use komponist_i18n::Lang;
+    use komponist_model::automation::AutomationTarget;
+
+    let lang = Lang::De;
+    let (mut app, clip) = lead_a();
+    app.dispatch(Action::Automation(Automation::AddClip(
+        clip,
+        AutomationTarget::Pan,
+        lang.param_pan().into(),
+    )));
+    let mut h = harness(app);
+    let button = |h: &Harness<'_, App>| {
+        h.get_by_role_and_label(Role::Button, lang.automation_clip())
+            .rect()
+            .center()
+    };
+    let at = button(&h);
+    // Opening the section again stores an explicit visibility preference.
+    click(&mut h, at, Modifiers::NONE);
+    click(&mut h, at, Modifiers::NONE);
+    assert_eq!(
+        h.get_by_role_and_label(Role::Button, lang.automation_clip())
+            .accesskit_node()
+            .toggled(),
+        Some(Toggled::True)
+    );
+
+    let close = h
+        .get_by_role_and_label(Role::Button, lang.automation_clip_remove())
+        .rect()
+        .center();
+    click(&mut h, close, Modifiers::NONE);
+    assert_eq!(
+        h.get_by_role_and_label(Role::Button, lang.automation_clip())
+            .accesskit_node()
+            .toggled(),
+        Some(Toggled::False)
+    );
+    let at = button(&h);
+    click(&mut h, at, Modifiers::NONE);
+    h.get_by_role_and_label(Role::TextInput, lang.automation_search());
+}
+
+#[test]
+fn snapshot_of_clip_automation_in_german_and_english() {
+    use komponist_app::views::automation::{Action as Automation, Source};
+    use komponist_model::automation::{AutomationTarget, Point, Points, Shape};
+
+    let mut results = SnapshotResults::new();
+    for (lang, name) in [
+        (komponist_i18n::Lang::De, "automation-clip-de-1x"),
+        (komponist_i18n::Lang::En, "automation-clip-en-1x"),
+    ] {
+        let (app, clip) = lead_a();
+        let mut app = app.with_lang(lang);
+        app.dispatch(Action::Automation(Automation::AddClip(
+            clip,
+            AutomationTarget::Pan,
+            lang.param_pan().to_owned(),
+        )));
+        app.dispatch(Action::Automation(Automation::Points(
+            Source::Clip(clip, AutomationTarget::Pan),
+            Points::new(vec![
+                Point {
+                    tick: Tick(0),
+                    value: 0.2,
+                    shape: Shape::Curve { tension: -0.5 },
+                },
+                Point::linear(Tick(2 * BAR), 0.75),
+            ]),
+            "undo-automation-add-point",
+        )));
+        let mut h = harness(app);
+        let cpu_label = lang.transport_cpu();
+        for node in h
+            .query_all_by_role_and_label(Role::Status, cpu_label)
+            .map(|n| n.rect())
+            .collect::<Vec<_>>()
+        {
+            h.mask(node.expand(2.0));
+        }
+        h.snapshot(name);
+        results.extend_harness(&mut h);
+    }
+    results.unwrap();
+}
+
+fn lead_a_with_clip_automation() -> (App, ClipId, komponist_model::automation::Points) {
+    use komponist_model::automation::{AutomationTarget, Point, Points};
+    use komponist_model::edits::automation::{add_clip_automation, set_clip_points};
+
+    let project = komponist_model::fixtures::demo_song();
+    let clip = project.tracks[2].clips[0].id;
+    let target = AutomationTarget::Pan;
+    let points = Points::new(vec![
+        Point::linear(Tick(BAR / 2), 0.25),
+        Point::linear(Tick(3 * BAR / 2), 0.75),
+    ]);
+    let project =
+        add_clip_automation(&project, clip, target.clone(), de::PARAM_PAN.into()).unwrap();
+    let project = set_clip_points(&project, clip, &target, points.clone()).unwrap();
+    let mut app = App::headless(project);
+    app.ui_mut().layout.dock_height = TEST_DOCK;
+    app.dispatch(Action::Ui(UiAction::OpenClip(clip)));
+    (app, clip, points)
+}
+
+fn clip_automation_points<'a>(
+    h: &'a Harness<'_, App>,
+) -> impl Iterator<Item = egui_kittest::Node<'a>> + 'a {
+    h.get_all_by_role(Role::Slider).filter(|node| {
+        node.accesskit_node()
+            .label()
+            .is_some_and(|label| label.starts_with("Punkt "))
+    })
+}
+
+#[test]
+fn trimmed_clip_automation_points_are_preserved_and_inactive_until_restored() {
+    let (app, clip, points) = lead_a_with_clip_automation();
+    let mut h = harness(app);
+    assert_eq!(clip_automation_points(&h).count(), 2);
+    let ghost = clip_automation_points(&h).last().unwrap();
+    let at = ghost.rect().center();
+    ghost.click_accesskit();
+    h.run_steps(2);
+
+    h.state_mut()
+        .dispatch(Action::Edit(EditAction::SetClipLength {
+            clip,
+            length: Tick(BAR),
+        }));
+    h.run_steps(2);
+    assert_eq!(clip_automation_points(&h).count(), 1);
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    double_click(&mut h, at);
+    drag(&mut h, at, at + vec2(16.0, 10.0), Modifiers::COMMAND);
+    let saved = |h: &Harness<'_, App>| {
+        h.state().project().find_clip(clip).unwrap().1.automation[0]
+            .points
+            .clone()
+    };
+    assert_eq!(saved(&h), points);
+
+    // An edit inside the shortened clip still preserves the retained point.
+    clip_automation_points(&h).next().unwrap().click_accesskit();
+    h.run_steps(2);
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    assert_eq!(saved(&h).as_slice(), &points.as_slice()[1..]);
+
+    h.state_mut()
+        .dispatch(Action::Edit(EditAction::SetClipLength {
+            clip,
+            length: Tick(2 * BAR),
+        }));
+    h.run_steps(2);
+    assert_eq!(clip_automation_points(&h).count(), 1);
+    assert_eq!(saved(&h).as_slice(), &points.as_slice()[1..]);
+}
+
+#[test]
+fn reopening_a_clip_from_a_new_document_clears_automation_view_state() {
+    use komponist_app::{ProjectAction, project_io::save_project};
+
+    let (app, clip, _) = lead_a_with_clip_automation();
+    let mut replacement = (**app.project()).clone();
+    replacement.name = "Next automation document".into();
+    let dir = crate::common::scratch("clip-automation-document");
+    let path = dir.join("next.komponist");
+    save_project(&path, &replacement).unwrap();
+    let mut h = harness(app);
+    clip_automation_points(&h).next().unwrap().click_accesskit();
+    h.run_steps(2);
+    assert_eq!(
+        clip_automation_points(&h)
+            .next()
+            .unwrap()
+            .accesskit_node()
+            .is_selected(),
+        Some(true)
+    );
+    let button = dock_node(&h, Role::Button, "Automation").rect().center();
+    click(&mut h, button, Modifiers::NONE);
+    assert_eq!(clip_automation_points(&h).count(), 0);
+
+    h.state_mut()
+        .dispatch(Action::Project(ProjectAction::OpenPath(path)));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while h.state().project().name != replacement.name {
+        assert!(Instant::now() < deadline);
+        h.run_steps(1);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    h.state_mut().dispatch(Action::Ui(UiAction::OpenClip(clip)));
+    h.run_steps(3);
+
+    let first = clip_automation_points(&h).next().unwrap();
+    assert_eq!(first.accesskit_node().is_selected(), Some(false));
 }

@@ -436,12 +436,15 @@ impl Vst3Processor {
     /// `echo` (the block's output events) so they travel with the audio like CLAP's.
     fn apply_main_thread_edits(&mut self, mut echo: Option<&mut crate::plugin::EventOut<'_>>) {
         let generation = self.edits.generation();
-        if self.initial_generation == generation {
-            for (id, value) in self.initial.drain(..) {
-                self.params_in.add(id, 0, value);
+        if !self.initial.is_empty() {
+            if self.initial_generation == generation {
+                for (id, value) in self.initial.drain(..) {
+                    self.params_in.add(id, 0, value);
+                }
+            } else {
+                self.initial.clear();
             }
-        } else {
-            self.initial.clear();
+            self.edits.initial_values_staged();
         }
         while let Ok(queued) = self.from_main.pop() {
             if queued.generation != self.edits.generation() {

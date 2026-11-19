@@ -47,7 +47,8 @@ pub(super) fn section(
     };
     let resolved = crate::views::automation::Catalog::new(ctx, owner)
         .and_then(|catalog| catalog.resolve(&target).ok());
-    let value = crate::views::automation::automation_controls(ctx, owner, &target)
+    let value = ctx
+        .automation_value(owner, &target)
         .and_then(|value| resolved.as_ref().map(|target| target.format(value)));
     let lane = crate::views::automation::lanes(ctx.project, owner)
         .and_then(|a| a.lane(&target))

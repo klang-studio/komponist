@@ -376,6 +376,7 @@ impl IAttributeListTrait for HostAttributeList {
 pub(crate) struct Edits {
     inner: Mutex<EditsInner>,
     generation: AtomicU64,
+    initial_values: AtomicBool,
 }
 
 #[derive(Default)]
@@ -449,16 +450,32 @@ impl Edits {
     pub(crate) fn connect(&self, ring: rtrb::Producer<QueuedEdit>) -> (u64, Vec<ParamChange>) {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         inner.to_processor = Some(ring);
-        (
-            self.generation.load(Ordering::Relaxed),
-            std::mem::take(&mut inner.pending),
-        )
+        let initial = std::mem::take(&mut inner.pending);
+        self.initial_values
+            .store(!initial.is_empty(), Ordering::Release);
+        (self.generation.load(Ordering::Relaxed), initial)
+    }
+
+    pub(crate) fn initial_values_staged(&self) {
+        self.initial_values.store(false, Ordering::Release);
+    }
+
+    /// Changes not yet staged in a block. The caller excludes active processing while it
+    /// reads this, since removing a value from the ring alone does not apply it.
+    pub(crate) fn has_unapplied_edits(&self) -> bool {
+        let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        self.initial_values.load(Ordering::Acquire)
+            || inner
+                .to_processor
+                .as_ref()
+                .is_some_and(|ring| ring.slots() < ring.buffer().capacity())
     }
 
     /// Deactivation: changes the processor did not apply become pending again.
     pub(crate) fn disconnect(&self, leftover: impl IntoIterator<Item = ParamChange>) {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         inner.to_processor = None;
+        self.initial_values_staged();
         let newer = std::mem::take(&mut inner.pending);
         for change in leftover.into_iter().chain(newer) {
             inner.keep_pending(change);
@@ -479,6 +496,7 @@ impl Edits {
     pub(crate) fn clear_pending(&self) {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         inner.pending.clear();
+        self.initial_values_staged();
         self.generation.fetch_add(1, Ordering::Release);
     }
 

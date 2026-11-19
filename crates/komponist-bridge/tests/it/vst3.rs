@@ -135,7 +135,35 @@ fn vst3_param_changes_from_the_app_reach_the_plugin() {
     assert_eq!(value, 0.5);
     assert!(text.contains("-30") && text.contains("dB"), "{text}");
     bridge.activate();
+    let checked = |request| ControlMsg::GetStateChecked {
+        request,
+        expected: vec![(gain, 0.5, false)],
+    };
+    bridge.send(checked(41));
+    let deferred = bridge.expect("checked state or deferral", |msg| match msg {
+        BridgeMsg::StateDeferred { request: 41 } => Some(true),
+        BridgeMsg::State { request: 41, .. } => Some(false),
+        _ => None,
+    });
+    assert!(
+        deferred,
+        "the controller value arrived before the component edit"
+    );
+
     bridge.block(&[note_on(0, 69)]);
+    bridge.send(checked(42));
+    let verified = bridge.expect("checked state after the block", |msg| match msg {
+        BridgeMsg::State {
+            request: 42,
+            verified,
+            ..
+        } => Some(verified.clone()),
+        BridgeMsg::StateDeferred { request: 42 } => Some(Vec::new()),
+        _ => None,
+    });
+    assert_eq!(verified.len(), 1);
+    assert_eq!(verified[0].0, gain);
+    assert!((verified[0].1 - 0.5).abs() < 1e-6);
     let level = bridge.peak(0..BLOCK);
     assert!(
         (0.025..0.04).contains(&level),
@@ -203,7 +231,9 @@ fn vst3_state_round_trips_between_bridges() {
     first.expect_value(decay);
     first.send(ControlMsg::GetState { request: 7 });
     let state = first.expect("State", |m| match m {
-        BridgeMsg::State { request: 7, state } => Some(state.clone()),
+        BridgeMsg::State {
+            request: 7, state, ..
+        } => Some(state.clone()),
         _ => None,
     });
     assert_eq!(&state[..4], b"KPV3", "komponist's VST3 state blob");
@@ -222,7 +252,9 @@ fn vst3_state_round_trips_between_bridges() {
     assert!((value(decay) - 0.25).abs() < 1e-6, "{values:?}");
     second.send(ControlMsg::GetState { request: 8 });
     let again = second.expect("State", |m| match m {
-        BridgeMsg::State { request: 8, state } => Some(state.clone()),
+        BridgeMsg::State {
+            request: 8, state, ..
+        } => Some(state.clone()),
         _ => None,
     });
     assert_eq!(

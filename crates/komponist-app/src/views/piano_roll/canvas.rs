@@ -586,7 +586,10 @@ impl PianoRoll {
             }
             Some(Gesture::Lane { notes, begun, last }) => {
                 if let Some(lane) = f.geo.lane {
-                    let v = edit::lane_velocity(lane.bottom() - m::VELOCITY_BOTTOM - at.y);
+                    let v = edit::lane_velocity(
+                        lane.bottom() - m::VELOCITY_BOTTOM - at.y,
+                        lane.height(),
+                    );
                     if *last != Some(v) {
                         begin(ctx, begun, "undo-velocity");
                         ctx.send(Action::Edit(EditAction::SetNotesVelocity {
@@ -1064,6 +1067,7 @@ impl PianoRoll {
         let clipped = painter.with_clip_rect(area.intersect(painter.clip_rect()));
         self.paint_lines(&clipped, f, area);
         let base = lane.bottom() - m::VELOCITY_BOTTOM;
+        let scale = m::velocity_scale(lane.height());
         let mut mesh = Mesh::default();
         for i in f.window.clone() {
             let n = &f.notes[i];
@@ -1074,7 +1078,7 @@ impl PianoRoll {
             if x > area.right() || x + m::VELOCITY_HEAD_MAX_WIDTH < area.left() {
                 continue;
             }
-            let h = px::snap(f32::from(n.velocity) / 127.0 * m::VELOCITY_MAX_HEIGHT, ppp);
+            let h = px::snap(f32::from(n.velocity) / 127.0 * scale, ppp);
             let c = if f.selection.contains(&n.id) {
                 color32(color::ACCENT)
             } else {

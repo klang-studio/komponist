@@ -140,6 +140,7 @@ impl App {
     /// plugin's parameter the plugin's state is asked for at once, so the step has it when the
     /// pointer is released.
     pub(crate) fn end_gesture(&mut self) {
+        self.release_automation_controls();
         let top = self.doc.top_step();
         self.doc.end_gesture();
         self.param_undo.gesture_device = None;
@@ -175,6 +176,7 @@ impl App {
     /// gesture and so do the devices: the engine follows the document, a bridged plugin gets the
     /// document's state.
     pub(crate) fn cancel_gesture(&mut self) {
+        self.release_automation_controls();
         let before = Arc::clone(self.doc.project());
         self.doc.cancel_gesture();
         self.param_undo.gesture_device = None;
@@ -194,6 +196,10 @@ impl App {
         self.flush_deferred();
     }
 
+    pub(crate) fn deferred_plugin_states(&self) -> &[(DeviceId, Arc<[u8]>)] {
+        &self.param_undo.deferred
+    }
+
     /// Stores the snapshots that waited for a gesture, once none is open.
     pub(crate) fn flush_deferred(&mut self) {
         if self.doc.in_gesture() || self.param_undo.deferred.is_empty() {
@@ -209,6 +215,12 @@ impl App {
         // Active bridges receive edits in the same block path as built-in devices. While a
         // bridge has no running slot, keep using its control socket.
         let slot = self.engine.program().and_then(|p| p.slots.slot(device));
+        if let (Some(slot), Some((owner, target))) =
+            (slot, self.device_automation_target(device, id))
+            && self.manual_automation(owner, &target, Command::SetParam { slot, id, value })
+        {
+            return;
+        }
         let bridged = if let Some(slot) = slot
             && self.engine.host_mut().edited_param(device, id, value)
         {
@@ -405,6 +417,9 @@ impl App {
     /// that still holds what it came up with ([`App::device_up`]) gets that state into the
     /// document too (untracked: it is no edit), so the file has it.
     pub(crate) fn store_snapshot_for_save(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+        self.param_undo
+            .deferred
+            .retain(|(pending, _)| *pending != device);
         let untouched = self
             .param_undo
             .baseline

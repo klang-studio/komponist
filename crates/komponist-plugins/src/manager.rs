@@ -7,7 +7,7 @@
 //! watches every bridge's pidfd: a dead bridge turns the device `Crashed` (red edge, the track keeps
 //! running); "Neu laden" ([`PluginManager::reload`]) starts a new bridge with the last known state.
 //!
-//! State snapshots are taken on save ([`PluginManager::snapshot_states`]), on GUI close and,
+//! State snapshots are taken on save ([`PluginManager::snapshot_for_save`]), on GUI close and,
 //! debounced, after "state dirty"; they arrive as [`PluginManagerEvent::StateSnapshot`] and the app
 //! stores them with `edits::set_device_state` as tracked, coalesced undo steps (`komponist-app`'s
 //! `param_undo`).
@@ -24,7 +24,7 @@
 //!
 //! Thread: UI thread only, non-blocking except where noted.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -631,6 +631,15 @@ impl PluginManager {
         true
     }
 
+    /// Reflects a plugin GUI's temporary automation value without scheduling a snapshot.
+    pub fn preview_param(&mut self, device: DeviceId, id: u32, value: f64) {
+        if let Some(bridge) = self.bridges.get_mut(&device).filter(|b| b.running()) {
+            bridge.preview_param(id, value);
+            self.pending
+                .push(PluginManagerEvent::ParamValuesChanged { device });
+        }
+    }
+
     /// Restores `state` in the running plugin of `device` (undo or redo changed the device's
     /// state in the document); `false` if the device has no running bridge.
     pub fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
@@ -647,12 +656,53 @@ impl PluginManager {
         }
     }
 
-    /// Blocking, for saving: snapshots every running external device, waiting at most `timeout` in
+    /// Best-effort snapshots of running external devices, waiting at most `timeout` in
     /// total. Devices that do not answer in time are left out (their last snapshot stays in the
     /// document), and so are devices with a [`Self::state_warning`]. Sorted by device id; a late
     /// answer arrives later as a `StateSnapshot` event.
     pub fn snapshot_states(&mut self, timeout: Duration) -> Vec<(DeviceId, Arc<[u8]>)> {
         self.snapshot_states_if(timeout, |_| true)
+    }
+
+    /// Whether a running plugin has edits that are newer than its last safe state.
+    pub fn has_pending_state_edits(&self) -> bool {
+        self.bridges.values().any(Bridge::needs_snapshot_for_save)
+    }
+
+    /// Collects current plugin states for a project save. A bridge with a persistent edit must
+    /// supply a valid snapshot within the shared time budget before the project can be written.
+    pub fn snapshot_for_save(&mut self, timeout: Duration) -> Result<DeviceSnapshots, DeviceId> {
+        let deadline = Instant::now() + timeout;
+        let mut required: BTreeSet<_> = self
+            .bridges
+            .iter()
+            .filter(|(_, bridge)| bridge.needs_snapshot_for_save())
+            .map(|(&device, _)| device)
+            .collect();
+        let mut states = self.snapshot_states_if(timeout, |_| true);
+        loop {
+            for (device, _) in &states {
+                required.remove(device);
+            }
+            let Some(&blocked) = required.first() else {
+                states.sort_by_key(|(device, _)| *device);
+                return Ok(states);
+            };
+            let now = Instant::now();
+            if now >= deadline || !self.bridges.get(&blocked).is_some_and(Bridge::is_running) {
+                self.pending.extend(
+                    states
+                        .into_iter()
+                        .map(|(device, state)| PluginManagerEvent::StateSnapshot { device, state }),
+                );
+                return Err(blocked);
+            }
+            std::thread::sleep((deadline - now).min(Duration::from_millis(30)));
+            states.extend(self.snapshot_states_if(
+                deadline.saturating_duration_since(Instant::now()),
+                |device| required.contains(&device),
+            ));
+        }
     }
 
     /// Captures every running bridge on the track to be replaced. Devices without a running

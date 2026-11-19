@@ -381,7 +381,8 @@ pub struct PluginParam {
 #[derive(Debug, Clone, Copy)]
 pub struct PluginParamBatch {
     events: [PluginParam; 8],
-    len: usize,
+    len: u8,
+    temporary: u8,
 }
 
 impl PluginParamBatch {
@@ -395,19 +396,31 @@ impl PluginParamBatch {
                 },
             }; 8],
             len: 0,
+            temporary: 0,
         }
     }
 
     /// Changes in plugin output order.
     pub fn as_slice(&self) -> &[PluginParam] {
-        &self.events[..self.len]
+        &self.events[..usize::from(self.len)]
     }
 
     /// Appends an event and reports when the batch is full.
-    pub(crate) fn push(&mut self, event: PluginParam) -> bool {
-        self.events[self.len] = event;
+    /// Changes in order, paired with whether the change is a temporary automation override.
+    pub fn iter(&self) -> impl Iterator<Item = (&PluginParam, bool)> {
+        self.as_slice()
+            .iter()
+            .enumerate()
+            .map(|(index, event)| (event, self.temporary & (1 << index) != 0))
+    }
+
+    pub(crate) fn push(&mut self, event: PluginParam, temporary: bool) -> bool {
+        self.events[usize::from(self.len)] = event;
+        if temporary {
+            self.temporary |= 1 << self.len;
+        }
         self.len += 1;
-        self.len == self.events.len()
+        usize::from(self.len) == self.events.len()
     }
 }
 
@@ -463,6 +476,7 @@ pub(crate) struct Cursor {
     last: f32,
     chase: bool,
     restore_base: bool,
+    uncommitted_write: bool,
     gesture: Gesture,
     /// A newly held control keeps following the previous state until the first edit.
     before_edit: Option<Gesture>,
@@ -476,6 +490,7 @@ impl Cursor {
             last: f32::NAN,
             chase: true,
             restore_base: false,
+            uncommitted_write: false,
             gesture: Gesture::Idle,
             before_edit: None,
             manual: f32::NAN,
@@ -613,6 +628,28 @@ impl Cursor {
             Gesture::Held { writes: true, .. } | Gesture::Latch
         ) {
             self.pending_value = Some((tick, value));
+            self.uncommitted_write = true;
+        }
+    }
+
+    pub(crate) fn cancel_write(&mut self, lane: &CompiledTarget) {
+        // A write can reach a processor before the first point has been committed. With
+        // no curve to chase, restore the base through the normal bounded event delivery.
+        if matches!(lane.target, EngineTarget::Slot { .. })
+            && !lane.reads()
+            && self.uncommitted_write
+        {
+            self.restore_base = true;
+        }
+        self.uncommitted_write = false;
+        self.interrupt(false, lane.mode);
+        self.pending_value = None;
+    }
+
+    pub(crate) fn finish_write(&mut self, lane: &CompiledTarget) {
+        if self.writes() || matches!(self.playback_gesture(), Gesture::Return { .. }) {
+            self.interrupt(false, lane.mode);
+            self.pending_value = None;
         }
     }
 
@@ -791,9 +828,7 @@ impl State {
             if missing
                 && source.lane(&lane.model).is_none()
                 && ongoing(lane.target)
-                && (lane.reads()
-                    || cursor.restore_base
-                    || (cursor.writes() && cursor.manual().is_some()))
+                && (lane.reads() || cursor.restore_base || cursor.uncommitted_write)
                 && let Some(parameter) = lane.parameter
                 && self.restores.len() < self.restores.capacity()
             {
@@ -841,6 +876,7 @@ impl State {
     pub(crate) fn cancel_restore(&mut self, lanes: &[CompiledTarget], target: EngineTarget) {
         if let Some((cursor, _)) = self.cursor(lanes, target) {
             cursor.restore_base = false;
+            cursor.uncommitted_write = false;
         }
         self.restores.retain(|restore| restore.target != target);
     }

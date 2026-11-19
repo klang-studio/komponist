@@ -97,6 +97,8 @@ pub enum Command {
     },
     /// Discard gesture state after the UI has cancelled a recording pass.
     CancelAutomationWrite,
+    /// Ends automation writing on punch-out while preserving temporary Read gestures.
+    FinishAutomationWrite,
     /// Fast path: mute of a track, until the next program. Applies to programs with the flat
     /// routing only (without buses, sends and sidechains), and only while no `SetGates` table is
     /// active; otherwise mute and solo come from the gate table.
@@ -194,6 +196,7 @@ impl fmt::Debug for Command {
                 .field("begin", begin)
                 .finish(),
             Command::CancelAutomationWrite => f.write_str("CancelAutomationWrite"),
+            Command::FinishAutomationWrite => f.write_str("FinishAutomationWrite"),
             Command::SetTrackMute { track, mute } => f
                 .debug_struct("SetTrackMute")
                 .field("track", track)
@@ -300,7 +303,8 @@ pub enum EngineEvent {
         /// Why this segment ended.
         kind: AutomationBoundary,
     },
-    /// Plugin GUI edits that also update the plugin manager's UI and snapshots.
+    /// Plugin GUI edits in order. Temporary automation updates the live parameter cache,
+    /// while ordinary edits also update the base and schedule a snapshot.
     PluginParams {
         /// Slot reporting the changes.
         slot: SlotId,

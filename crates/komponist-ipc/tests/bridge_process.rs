@@ -139,7 +139,11 @@ fn bridge_main(channel: BridgeChannel) {
                 let _ = channel.send(&BridgeMsg::Activated { latency: LATENCY });
             }
             ControlMsg::SetState { request, state } => {
-                let _ = channel.send(&BridgeMsg::State { request, state });
+                let _ = channel.send(&BridgeMsg::State {
+                    request,
+                    state,
+                    verified: Vec::new(),
+                });
             }
             ControlMsg::Shutdown => break,
             _ => {}
@@ -519,7 +523,11 @@ fn ten_thousand_blocks_round_trip_with_data_checks() {
         .unwrap();
     assert_eq!(
         bridge.channel.recv().unwrap(),
-        BridgeMsg::State { request: 1, state }
+        BridgeMsg::State {
+            request: 1,
+            state,
+            verified: Vec::new(),
+        }
     );
 
     eprintln!(

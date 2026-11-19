@@ -615,9 +615,14 @@ fn gui_edits_reach_the_processor_and_the_output_events() {
     }
     assert_eq!(host_loop.notify().param_edits(), (1, Some((gain, 0.5))));
     let mut processor = plugin.activate(CONFIG).unwrap();
+    assert!(
+        plugin.has_unapplied_edits(),
+        "activation still owes the initial edit"
+    );
     processor.start_processing().unwrap();
     let mut blocks = Blocks::new();
     blocks.run(processor.as_mut(), &[note_on(0, 0, 69)]);
+    assert!(!plugin.has_unapplied_edits());
     let level = blocks.peak(0..BLOCK);
     assert!(
         (0.025..0.04).contains(&level),
@@ -635,7 +640,12 @@ fn gui_edits_reach_the_processor_and_the_output_events() {
         handler.performEdit(gain, 0.0);
         handler.endEdit(gain);
     }
+    assert!(
+        plugin.has_unapplied_edits(),
+        "the active GUI edit is still queued"
+    );
     blocks.run(processor.as_mut(), &[]);
+    assert!(!plugin.has_unapplied_edits());
     assert!(
         blocks.peak(0..BLOCK) < level * 0.05,
         "{}",

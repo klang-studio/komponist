@@ -170,6 +170,16 @@ fn the_song_is_the_design_fixtures_song() {
         }
     }
     ids.extend(showcase.master.devices.iter().map(|d| d.id.0));
+    ids.extend(
+        showcase
+            .master_automation
+            .lanes
+            .iter()
+            .map(|lane| lane.id.0),
+    );
+    for track in &showcase.tracks {
+        ids.extend(track.automation.lanes.iter().map(|lane| lane.id.0));
+    }
     let n = ids.len();
     ids.sort_unstable();
     ids.dedup();
@@ -432,4 +442,56 @@ fn synthesized_pulse_loop_uses_opt_in_warp_without_changing_the_showcase_tempo()
         (256000, 48000, 2)
     );
     assert_eq!(a.source_frames(c.length, p.tempo), 256000);
+}
+
+#[test]
+fn the_demo_has_track_clip_and_master_automation() {
+    use komponist_model::Tick;
+    use komponist_model::automation::{AutomationTarget, effective_value_at};
+    use komponist_model::params::ParamId;
+
+    let project = showcase_project();
+    let lead = track_named(&project, "Lead");
+    let pad = track_named(&project, "Pad");
+    let cutoff = AutomationTarget::Param {
+        device: pad.channel.devices[0].id,
+        param: ParamId::new("cutoff"),
+    };
+    let feedback = AutomationTarget::Param {
+        device: lead.channel.devices[0].id,
+        param: ParamId::new("feedback"),
+    };
+    let clip = lead
+        .clips
+        .iter()
+        .find(|clip| clip.name == "Lead B")
+        .unwrap();
+    let loop_length = clip.loop_length.expect("Lead B has two repetitions");
+    assert!(lead.automation.shown);
+    assert!(lead.automation.lane(&feedback).is_some());
+    assert_eq!(clip.automation[0].target, feedback);
+    let points = clip.automation[0].points.as_slice();
+    assert!(points[1].value - points[0].value >= 0.15);
+    assert_eq!(
+        effective_value_at(lead, &feedback, clip.start + Tick(480)),
+        effective_value_at(lead, &feedback, clip.start + loop_length + Tick(480))
+    );
+    let cutoff_points = pad.automation.lane(&cutoff).unwrap().points.as_slice();
+    assert!(cutoff_points[0].value < cutoff_points[1].value);
+    let keys = track_named(&project, "Keys");
+    assert!(keys.automation.lane(&AutomationTarget::Volume).is_some());
+    let master = project
+        .master_automation
+        .lane(&AutomationTarget::Volume)
+        .unwrap();
+    assert_eq!(master.points.as_slice().last().unwrap().value, 0.0);
+    assert!(
+        project
+            .tracks
+            .iter()
+            .flat_map(|t| t.automation.lanes.iter())
+            .chain(project.master_automation.lanes.iter())
+            .flat_map(|lane| lane.points.as_slice())
+            .all(|point| (0.0..=1.0).contains(&point.value))
+    );
 }
