@@ -1,0 +1,24 @@
+# komponist-app
+
+The application entry point and the layer that connects the egui interface, project document, audio
+engine and plugin manager. The `komponist` binary starts the desktop app or dispatches `--bridge`
+to the plugin bridge. The library also supports headless acceptance tests.
+
+## Structure
+
+- [src/app.rs](src/app.rs) — Owns the document and UI state and dispatches actions.
+- [src/actions.rs](src/actions.rs) — Defines edit, transport and UI actions shared by views and
+  keybindings.
+- [src/views/](src/views/) — Implements the arrangement, clip editors, mixer, browser and device
+  views.
+- [src/engine_sync.rs](src/engine_sync.rs) — Compiles document changes and manages the engine
+  connection.
+- [src/device_host.rs](src/device_host.rs) — Provides built-in and bridged processors.
+- [src/project_io.rs](src/project_io.rs) — Coordinates project loading, saving and linked assets.
+
+## How it works
+
+Views and shortcuts produce actions that update the document, change UI state or send engine
+commands. Structural edits produce a new engine program. Live controls can send parameter and mixer
+commands during a gesture. The UI reads telemetry for meters and transport, while recording and
+export coordinate with dedicated workers.
