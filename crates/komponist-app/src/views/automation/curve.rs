@@ -525,7 +525,15 @@ impl Editor {
         } else {
             let path = curve_path(lane, contour, settings.trace);
             let mut mesh = dense_background(&settings);
-            mesh.append(dense_band(&path, &settings));
+            let has_jump = contour.windows(2).any(|pair| {
+                pair[0].value != pair[1].value
+                    && (pair[0].shape == Shape::Hold || pair[0].tick == pair[1].tick)
+            });
+            mesh.append(if has_jump {
+                dense_jump_mesh(&path, &settings)
+            } else {
+                dense_band(&path, &settings)
+            });
             let mesh = Arc::new(mesh);
             self.dense_curves.insert(
                 lane.source.clone(),
@@ -1471,9 +1479,39 @@ fn dense_background(settings: &MeshSettings) -> egui::Mesh {
     mesh
 }
 
+/// A dense trace is a single band of each column's minimum and maximum values. Connecting the
+/// bands keeps continuous curves compact.
+fn dense_band(path: &[Pos2], settings: &MeshSettings) -> egui::Mesh {
+    let mut mesh = egui::Mesh::default();
+    let mut band = egui::Mesh::default();
+    let half_width = settings.width / 2.0;
+    for (index, column) in path.chunk_by(|a, b| a.x.floor() == b.x.floor()).enumerate() {
+        let first = column[0];
+        let (top, bottom) = column
+            .iter()
+            .fold((first.y, first.y), |(top, bottom), point| {
+                (top.min(point.y), bottom.max(point.y))
+            });
+        let x = first.x;
+        mesh.colored_vertex(pos2(x, (top + bottom) / 2.0), settings.fill);
+        mesh.colored_vertex(pos2(x, settings.trace.bottom()), settings.fill);
+        band.colored_vertex(pos2(x, top - half_width), settings.ink);
+        band.colored_vertex(pos2(x, bottom + half_width), settings.ink);
+        if index != 0 {
+            let fill = (index as u32 - 1) * 2;
+            mesh.add_triangle(fill, fill + 2, fill + 3);
+            mesh.add_triangle(fill, fill + 3, fill + 1);
+            band.add_triangle(fill, fill + 2, fill + 3);
+            band.add_triangle(fill, fill + 3, fill + 1);
+        }
+    }
+    mesh.append(band);
+    mesh
+}
+
 /// Keep each column's extremes as a vertical mark. Join the outgoing value of the previous
 /// column to the incoming value of the next, so a hold stays flat up to its jump.
-fn dense_band(path: &[Pos2], settings: &MeshSettings) -> egui::Mesh {
+fn dense_jump_mesh(path: &[Pos2], settings: &MeshSettings) -> egui::Mesh {
     let mut fill = egui::Mesh::default();
     let mut ink = egui::Mesh::default();
     let half_width = settings.width / 2.0;
@@ -1539,6 +1577,59 @@ mod tests {
 
     use super::*;
     use crate::{App, meters::Meters, ui_state::UiState};
+
+    #[test]
+    fn dense_hold_jumps_keep_the_approach_and_exit_flat() {
+        let rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(42.0, 30.0));
+        let settings = MeshSettings {
+            axis: TimeAxis {
+                x0: 0.0,
+                px_per_tick: 1.0,
+            },
+            lane: rect,
+            visible: rect,
+            trace: rect,
+            width: 2.0,
+            ink: Color32::GREEN,
+            fill: Color32::BLACK,
+            pixels_per_point: 1.0,
+            meter: Meter::FOUR_FOUR,
+            grid: Grid::Bar,
+            end: None,
+        };
+        let path = [
+            pos2(0.0, 24.0),
+            pos2(21.0, 24.0),
+            pos2(21.0, 7.0),
+            pos2(42.0, 7.0),
+        ];
+        let mesh = dense_jump_mesh(&path, &settings);
+        let fills = mesh.indices.chunks_exact(3).filter(|triangle| {
+            triangle
+                .iter()
+                .all(|&i| mesh.vertices[i as usize].color == settings.fill)
+        });
+        for triangle in fills {
+            let edge: Vec<_> = triangle
+                .iter()
+                .map(|&i| mesh.vertices[i as usize].pos)
+                .filter(|p| p.y < rect.bottom())
+                .collect();
+            if edge.len() == 2 {
+                assert_eq!(edge[0].y, edge[1].y);
+            }
+        }
+        assert!(
+            mesh.vertices
+                .iter()
+                .any(|v| v.color == settings.ink && v.pos == pos2(20.0, 6.0))
+        );
+        assert!(
+            mesh.vertices
+                .iter()
+                .any(|v| v.color == settings.ink && v.pos == pos2(22.0, 25.0))
+        );
+    }
 
     struct Fixture {
         app: App,
