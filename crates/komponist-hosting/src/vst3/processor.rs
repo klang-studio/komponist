@@ -444,7 +444,7 @@ impl Vst3Processor {
             self.initial.clear();
         }
         while let Ok(queued) = self.from_main.pop() {
-            if queued.generation != generation {
+            if queued.generation != self.edits.generation() {
                 continue;
             }
             let event = match queued.edit {

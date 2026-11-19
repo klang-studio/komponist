@@ -590,7 +590,7 @@ impl Vst3Plugin {
             return;
         };
         while let Ok((id, value)) = active.from_processor.pop() {
-            self.edits.mark_controller_sync(id);
+            self.edits.mark_controller_sync(id, value.clamp(0.0, 1.0));
             // SAFETY: main thread.
             unsafe { controller.setParamNormalized(id, value) };
         }
@@ -927,7 +927,7 @@ impl HostedPlugin for Vst3Plugin {
     }
 
     fn sync_controller_param(&mut self, id: u32, value: f64) {
-        self.edits.mark_controller_sync(id);
+        self.edits.mark_controller_sync(id, value.clamp(0.0, 1.0));
         self.set_param(id, value);
     }
 
@@ -981,6 +981,14 @@ impl HostedPlugin for Vst3Plugin {
         // SAFETY: main thread (allowed while active, VST3 threading model).
         let result = stream::read_with(parts.component, |s| unsafe { self.component.setState(s) });
         if result != kResultOk {
+            // A failed load can have changed the component. Use its current state, not the
+            // rejected blob, to bring a separate controller back in sync for parameter reads.
+            if self.separate_controller
+                && let Some(controller) = &self.controller
+                && let Ok(current) = stream::write_with(|s| unsafe { self.component.getState(s) })
+            {
+                stream::read_with(&current, |s| unsafe { controller.setComponentState(s) });
+            }
             return Err(HostingError::State(format!(
                 "IComponent::setState returned {result}"
             )));

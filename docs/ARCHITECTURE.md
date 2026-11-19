@@ -557,15 +557,16 @@ own process and RT thread; the plugin manager controls its lifecycle and saved s
 Shared memory (layout version 3) contains request/completion sequence words, transport/status,
 latency, bounded event rings, stereo input/output and stereo sidechain input. Each request marks
 whether sidechain audio is present; absent sidechains receive silence. The postcard control
-protocol (version 5) uses length-prefixed frames for load/activation/state/parameters, GUI and
+protocol (version 6) uses length-prefixed frames for load/activation/state/parameters, GUI and
 header actions, render mode, heartbeat and shutdown.
 
 The plugin manager loads an instance, restores saved state if present, then activates it.
-`SetState` carries a request ID, and `StateApplied` returns that ID with an error or the restored
-parameter values. The manager uses those values to update its base cache while preserving newer
-edits. State restoration pauses new audio requests until the in-flight block finishes. If a
-request races with the pause and falls back, processing resumes with a voice reset to clear
-notes whose note-offs may have been missed.
+`SetState` carries a request ID. `StateApplied` returns that ID with the restored parameter
+values, or an error and any parameter changes that occurred during the failed load. The manager
+updates its base cache while preserving newer edits. State restoration pauses new audio requests
+until the in-flight block finishes. If a request races with the pause and falls back, the bridge
+replays its latest parameter values on the next block and resets voices to clear notes whose
+note-offs may have been missed.
 
 The engine publishes input/events and wakes the bridge, then collects completion within its
 block deadline budget (60% of the block period minus elapsed time). Late effects pass through;

@@ -383,7 +383,7 @@ struct EditsInner {
     to_processor: Option<rtrb::Producer<QueuedEdit>>,
     pending: Vec<ParamChange>,
     gestures: HashSet<u32>,
-    controller_sync: HashMap<u32, Instant>,
+    controller_sync: HashMap<u32, (Instant, f64)>,
 }
 
 impl EditsInner {
@@ -400,22 +400,24 @@ impl Edits {
         self.generation.load(Ordering::Acquire)
     }
 
-    pub(crate) fn mark_controller_sync(&self, id: u32) {
+    pub(crate) fn mark_controller_sync(&self, id: u32, value: f64) {
         self.inner
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .controller_sync
-            .insert(id, Instant::now());
+            .insert(id, (Instant::now(), value));
     }
 
     /// A controller may echo a host value through performEdit without opening a gesture.
-    fn controller_echo(&self, id: u32) -> bool {
+    fn controller_echo(&self, id: u32, value: f64) -> bool {
         let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         !inner.gestures.contains(&id)
             && inner
                 .controller_sync
                 .get(&id)
-                .is_some_and(|sent| sent.elapsed() < Duration::from_millis(50))
+                .is_some_and(|&(sent, sent_value)| {
+                    sent.elapsed() < Duration::from_millis(50) && sent_value == value
+                })
     }
 
     /// Queues a change; `false` if the processor's ring is full (the change is lost).
@@ -529,10 +531,10 @@ impl IComponentHandlerTrait for ComponentHandler {
     }
 
     unsafe fn performEdit(&self, id: ParamID, value: ParamValue) -> tresult {
-        if self.edits.controller_echo(id) {
+        let value = value.clamp(0.0, 1.0);
+        if self.edits.controller_echo(id, value) {
             return kResultOk;
         }
-        let value = value.clamp(0.0, 1.0);
         if !self.edits.push(Edit::Perform(id, value)) {
             self.notify.log(
                 LogLevel::Warning,
@@ -929,14 +931,15 @@ mod tests {
     #[test]
     fn controller_echo_guard_allows_an_explicit_user_gesture() {
         let edits = Edits::default();
-        assert!(!edits.controller_echo(2));
-        edits.mark_controller_sync(2);
-        assert!(edits.controller_echo(2));
-        assert!(!edits.controller_echo(3));
+        assert!(!edits.controller_echo(2, 0.0));
+        edits.mark_controller_sync(2, 0.0);
+        assert!(edits.controller_echo(2, 0.0));
+        assert!(!edits.controller_echo(2, 1.0));
+        assert!(!edits.controller_echo(3, 0.0));
         edits.push(Edit::Gesture(2, true));
-        assert!(!edits.controller_echo(2));
+        assert!(!edits.controller_echo(2, 0.0));
         edits.push(Edit::Gesture(2, false));
-        assert!(edits.controller_echo(2));
+        assert!(edits.controller_echo(2, 0.0));
     }
 
     use crate::host_loop::{PollLoop, notification_bits as bits};

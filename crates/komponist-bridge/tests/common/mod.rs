@@ -457,7 +457,7 @@ impl Bridge {
     pub fn expect_restore(
         &mut self,
         request: u32,
-    ) -> Result<Vec<komponist_ipc::ParamValue>, String> {
+    ) -> Result<Vec<komponist_ipc::ParamValue>, komponist_ipc::control::StateRestoreError> {
         self.expect(
             &format!("StateApplied for request {request}"),
             |m| match m {

@@ -85,7 +85,7 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// `HeaderAction`, `Shortcut`, `HeaderKey`, `FrameMoved`, `CloseRequested`, `GuiClosed` with the
 /// frame's last rect, `RaiseFrame` and `FrameWindow`). 5 (#67): the engine consumes parameter
 /// edits and a state restore replies with its authoritative parameter values.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -221,6 +221,15 @@ pub struct ParamValue {
     pub value: f64,
     /// Text from the plugin (CLAP `value_to_text`, VST3 `getParamStringByValue`); empty if none.
     pub text: String,
+}
+
+/// A failed state restore, with any parameter changes the plugin made before returning.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StateRestoreError {
+    /// Why the state could not be restored.
+    pub message: String,
+    /// Changed parameter values, empty when the plugin state was untouched.
+    pub changed_values: Vec<ParamValue>,
 }
 
 /// A note name the instrument provides (CLAP note-name), used for step sequencer rows.
@@ -418,8 +427,8 @@ pub enum BridgeMsg {
     StateApplied {
         /// The restore request.
         request: u32,
-        /// Restored parameter values with display text, or a load error.
-        result: Result<Vec<ParamValue>, String>,
+        /// Restored parameter values with display text, or the error and partial changes.
+        result: Result<Vec<ParamValue>, StateRestoreError>,
     },
     /// Answer to `OpenGui`.
     GuiOpened {
@@ -1636,11 +1645,14 @@ mod tests {
             BridgeMsg::ParamValues(vec![value.clone()]),
             BridgeMsg::StateApplied {
                 request: 8,
-                result: Ok(vec![value]),
+                result: Ok(vec![value.clone()]),
             },
             BridgeMsg::StateApplied {
                 request: 9,
-                result: Err("bad state".into()),
+                result: Err(StateRestoreError {
+                    message: "bad state".into(),
+                    changed_values: vec![value],
+                }),
             },
             BridgeMsg::GuiOpened {
                 size: GuiSize {

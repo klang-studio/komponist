@@ -26,6 +26,8 @@
 //! that races with a stop): passthrough for effects, silence for instruments; the result carries
 //! `PluginError` or `Inactive`.
 
+use std::cell::UnsafeCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -234,30 +236,42 @@ impl ControllerValues {
 /// A running RT thread with its processor.
 #[derive(Debug)]
 pub struct RtThread {
-    handle: JoinHandle<Returned>,
+    handle: JoinHandle<Box<dyn HostedProcessor>>,
     stop: Arc<AtomicBool>,
-    params: Producer<QueuedParam>,
+    params: Producer<(u32, f64)>,
     sync: Arc<RtParamSync>,
 }
 
 #[derive(Debug)]
 struct RtParamSync {
     activity: AtomicU8,
-    state_generation: AtomicU64,
+    params: UnsafeCell<Consumer<(u32, f64)>>,
     controller: Option<Arc<ControllerValues>>,
 }
+
+// SAFETY: The consumer is accessed only through an Activity guard. Processing and a
+// completed restore pause are mutually exclusive and publish the consumer through the gate.
+unsafe impl Sync for RtParamSync {}
 
 const PROCESSING: u8 = 1;
 const RESTORING: u8 = 2;
 
 struct Activity<'a> {
-    state: &'a AtomicU8,
+    sync: &'a RtParamSync,
     bit: u8,
+}
+
+impl Activity<'_> {
+    fn params(&mut self) -> &mut Consumer<(u32, f64)> {
+        // SAFETY: Successful acquisition excludes every other consumer accessor, and this
+        // borrow cannot outlive the guard.
+        unsafe { &mut *self.sync.params.get() }
+    }
 }
 
 impl Drop for Activity<'_> {
     fn drop(&mut self) {
-        self.state.fetch_and(!self.bit, Ordering::Release);
+        self.sync.activity.fetch_and(!self.bit, Ordering::Release);
     }
 }
 
@@ -268,7 +282,7 @@ impl RtParamSync {
             .compare_exchange(0, PROCESSING, Ordering::Acquire, Ordering::Relaxed)
             .ok()
             .map(|_| Activity {
-                state: &self.activity,
+                sync: self,
                 bit: PROCESSING,
             })
     }
@@ -278,7 +292,7 @@ impl RtParamSync {
     fn pause_for_restore(&self) -> Option<Activity<'_>> {
         self.activity.fetch_or(RESTORING, Ordering::AcqRel);
         let guard = Activity {
-            state: &self.activity,
+            sync: self,
             bit: RESTORING,
         };
         let deadline = Instant::now() + RESTORE_WAIT;
@@ -292,21 +306,13 @@ impl RtParamSync {
     }
 }
 
-#[derive(Debug)]
-struct QueuedParam {
-    id: u32,
-    value: f64,
-    state_generation: u64,
-}
-
-/// What the thread hands back when it ends.
-type Returned = (Box<dyn HostedProcessor>, Consumer<QueuedParam>);
-
 /// Buffers the loop works in, allocated before it starts.
 struct Scratch {
     events_in: Vec<WireEvent>,
     events_out: Vec<WireEvent>,
     reset_after_restore: bool,
+    retry_params: Vec<WireEvent>,
+    retry_indices: HashMap<u32, usize>,
 }
 
 impl RtThread {
@@ -326,7 +332,7 @@ impl RtThread {
         }
         let sync = Arc::new(RtParamSync {
             activity: AtomicU8::new(0),
-            state_generation: AtomicU64::new(0),
+            params: UnsafeCell::new(params_rx),
             controller,
         });
         let worker_sync = sync.clone();
@@ -339,7 +345,6 @@ impl RtThread {
                 rt_main(
                     server,
                     processor,
-                    params_rx,
                     &thread_stop,
                     config,
                     report_tx,
@@ -359,7 +364,7 @@ impl RtThread {
                 report,
             )),
             Ok((report, Err(error))) => {
-                let (processor, _) = join(handle);
+                let processor = join(handle);
                 Err(StartFailure {
                     processor,
                     report,
@@ -374,25 +379,21 @@ impl RtThread {
 
     /// Queues a parameter value for the next block (offset 0). `false` if the queue is full.
     pub fn set_param(&mut self, id: u32, value: f64) -> bool {
-        self.params
-            .push(QueuedParam {
-                id,
-                value,
-                state_generation: self.sync.state_generation.load(Ordering::Relaxed),
-            })
-            .is_ok()
+        self.params.push((id, value)).is_ok()
     }
 
-    /// Serializes a successful restore with processing and supersedes queued control edits.
-    pub fn restore<T>(&self, load: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-        let _pause = self
+    /// Serializes a state load with processing. A new parameter state supersedes queued edits.
+    pub fn restore<T>(&mut self, load: impl FnOnce() -> (T, bool)) -> Result<(T, bool), String> {
+        let mut pause = self
             .sync
             .pause_for_restore()
             .ok_or_else(|| "timed out waiting for the current audio block".to_owned())?;
-        let result = load()?;
-        self.sync.state_generation.fetch_add(1, Ordering::Relaxed);
-        if let Some(controller) = &self.sync.controller {
-            controller.invalidate(None);
+        let result = load();
+        if result.1 {
+            while pause.params().pop().is_ok() {}
+            if let Some(controller) = &self.sync.controller {
+                controller.invalidate(None);
+            }
         }
         Ok(result)
     }
@@ -401,17 +402,14 @@ impl RtThread {
     /// parameter values queued after the last block.
     pub fn stop(self) -> (Box<dyn HostedProcessor>, Vec<(u32, f64)>) {
         self.stop.store(true, Ordering::Release);
-        let (processor, mut params) = join(self.handle);
-        let generation = self.sync.state_generation.load(Ordering::Relaxed);
-        let leftover = std::iter::from_fn(|| params.pop().ok())
-            .filter(|param| param.state_generation == generation)
-            .map(|param| (param.id, param.value))
-            .collect();
+        let processor = join(self.handle);
+        let mut guard = self.sync.try_process().expect("stopped RT thread");
+        let leftover = std::iter::from_fn(|| guard.params().pop().ok()).collect();
         (processor, leftover)
     }
 }
 
-fn join(handle: JoinHandle<Returned>) -> Returned {
+fn join(handle: JoinHandle<Box<dyn HostedProcessor>>) -> Box<dyn HostedProcessor> {
     // A panic on the RT thread aborts the bridge through the panic hook before this is reached.
     handle.join().unwrap_or_else(|_| std::process::abort())
 }
@@ -419,12 +417,11 @@ fn join(handle: JoinHandle<Returned>) -> Returned {
 fn rt_main(
     mut server: BridgeServer,
     mut processor: Box<dyn HostedProcessor>,
-    mut params: Consumer<QueuedParam>,
     stop: &AtomicBool,
     config: RtConfig,
     report: mpsc::SyncSender<(StartReport, Result<(), HostingError>)>,
     sync: &RtParamSync,
-) -> Returned {
+) -> Box<dyn HostedProcessor> {
     notify::mark_rt_thread();
     let priority = komponist_rt::set_current_thread_realtime(config.period, config.priority);
     // Created here, not in the loop: creating allocates. `None` outside macOS.
@@ -446,9 +443,11 @@ fn rt_main(
     let started = processor.start_processing();
     let ok = started.is_ok();
     let mut scratch = Scratch {
-        events_in: vec![WireEvent::default(); PARAM_QUEUE_CAPACITY + INPUT_EVENT_CAPACITY],
+        events_in: vec![WireEvent::default(); PARAM_QUEUE_CAPACITY + 2 * INPUT_EVENT_CAPACITY],
         events_out: vec![WireEvent::default(); OUTPUT_EVENT_CAPACITY],
         reset_after_restore: false,
+        retry_params: Vec::with_capacity(INPUT_EVENT_CAPACITY),
+        retry_indices: HashMap::with_capacity(INPUT_EVENT_CAPACITY),
     };
     if ok {
         // Before the report: once it arrives the main thread publishes `Active`, and every request
@@ -476,7 +475,6 @@ fn rt_main(
                     serve(
                         &mut server,
                         processor.as_mut(),
-                        &mut params,
                         &mut scratch,
                         &request,
                         &config,
@@ -494,7 +492,7 @@ fn rt_main(
     if let (Some(interval), Some(token)) = (&interval, token) {
         interval.leave(token);
     }
-    (processor, params)
+    processor
 }
 
 /// Answers a request that is already waiting with the fallback and `Inactive`: one published
@@ -529,19 +527,37 @@ fn write_fallback(server: &mut BridgeServer, frames: usize, fallback: Fallback) 
 fn serve(
     server: &mut BridgeServer,
     processor: &mut dyn HostedProcessor,
-    params: &mut Consumer<QueuedParam>,
     scratch: &mut Scratch,
     request: &BlockRequest,
     config: &RtConfig,
     sync: &RtParamSync,
 ) {
-    let Some(_processing) = sync.try_process() else {
+    let Some(mut processing) = sync.try_process() else {
         // Recovery clears voices that could otherwise miss a note-off in this discarded block.
         scratch.reset_after_restore = true;
+        // The client may already have timed out. Retain the latest parameter values here
+        // so one-shot writes survive even if the client never consumes this reply.
+        while let Some(event) = server.pop_event() {
+            if let Some(WireEventKind::ParamValue { id, .. }) = event.decode() {
+                let event = WireEvent { offset: 0, ..event };
+                if let Some(&index) = scratch.retry_indices.get(&id) {
+                    scratch.retry_params[index] = event;
+                } else if scratch.retry_params.len() < INPUT_EVENT_CAPACITY {
+                    scratch.retry_indices.insert(id, scratch.retry_params.len());
+                    scratch.retry_params.push(event);
+                }
+            }
+        }
         write_fallback(server, request.frames as usize, config.fallback);
         server.finish(result(BlockStatus::Inactive, 0));
         return;
     };
+    let frames = request.frames as usize;
+    if request.frames == 0 || request.frames > config.max_frames {
+        write_fallback(server, frames, config.fallback);
+        server.finish(result(BlockStatus::PluginError, 0));
+        return;
+    }
     let controller = sync.controller.as_deref();
     // Snapshot before accepting block input. A control edit racing with this block can still
     // supersede its controller notifications when the audio thread completes later.
@@ -549,34 +565,23 @@ fn serve(
     // Values from `SetParam` first: offset 0 keeps the list sorted.
     let mut count = 0;
     while count < PARAM_QUEUE_CAPACITY {
-        let Ok(QueuedParam {
-            id,
-            value,
-            state_generation: queued,
-        }) = params.pop()
-        else {
+        let Ok((id, value)) = processing.params().pop() else {
             break;
         };
-        if queued != sync.state_generation.load(Ordering::Acquire) {
-            continue;
-        }
         scratch.events_in[count] = WireEvent::new(0, WireEventKind::ParamValue { id, value });
         count += 1;
     }
     let queued = count;
+    let retry_end = count + scratch.retry_params.len();
+    scratch.events_in[count..retry_end].copy_from_slice(&scratch.retry_params);
+    count = retry_end;
+    scratch.retry_params.clear();
+    scratch.retry_indices.clear();
     while let Some(event) = server.pop_event() {
-        if let Some(slot) = scratch.events_in.get_mut(count) {
-            *slot = event;
-            count += 1;
-        }
+        scratch.events_in[count] = event;
+        count += 1;
     }
 
-    let frames = request.frames as usize;
-    if request.frames == 0 || request.frames > config.max_frames {
-        write_fallback(server, frames, config.fallback);
-        server.finish(result(BlockStatus::PluginError, 0));
-        return;
-    }
     let after_restore = std::mem::take(&mut scratch.reset_after_restore);
     if after_restore || request.flags & BLOCK_FLAG_RESET != 0 {
         processor.reset();
@@ -670,6 +675,8 @@ mod tests {
 
         struct Probe {
             value: Arc<AtomicU64>,
+            retried: Arc<AtomicU64>,
+            note_ons: Arc<AtomicU64>,
             resets: Arc<AtomicU64>,
             staged: Arc<AtomicBool>,
             proceed: Arc<AtomicBool>,
@@ -693,8 +700,17 @@ mod tests {
 
             fn process(&mut self, block: &mut ProcessBlock<'_>) -> ProcessStatus {
                 for event in block.events_in {
-                    if let Some(WireEventKind::ParamValue { value, .. }) = event.decode() {
-                        self.value.store(value.to_bits(), Ordering::Relaxed);
+                    match event.decode() {
+                        Some(WireEventKind::ParamValue { id: 0, value }) => {
+                            self.value.store(value.to_bits(), Ordering::Relaxed);
+                        }
+                        Some(WireEventKind::ParamValue { id: 1, value }) => {
+                            self.retried.store(value.to_bits(), Ordering::Relaxed);
+                        }
+                        Some(WireEventKind::NoteOn { .. }) => {
+                            self.note_ons.fetch_add(1, Ordering::Relaxed);
+                        }
+                        _ => {}
                     }
                 }
                 ProcessStatus::Continue
@@ -702,6 +718,8 @@ mod tests {
         }
 
         let value = Arc::new(AtomicU64::new(0.0f64.to_bits()));
+        let retried = Arc::new(AtomicU64::new(0));
+        let note_ons = Arc::new(AtomicU64::new(0));
         let resets = Arc::new(AtomicU64::new(0));
         let staged = Arc::new(AtomicBool::new(false));
         let proceed = Arc::new(AtomicBool::new(false));
@@ -717,6 +735,8 @@ mod tests {
             BridgeServer::new(region.clone()),
             Box::new(Probe {
                 value: value.clone(),
+                retried: retried.clone(),
+                note_ons: note_ons.clone(),
                 resets: resets.clone(),
                 staged: staged.clone(),
                 proceed: proceed.clone(),
@@ -745,7 +765,9 @@ mod tests {
             .begin_block(&spec, [&[0.0], &[0.0]], None, &[])
             .unwrap();
         assert!(wait_for(&|| staged.load(Ordering::Acquire)));
-        assert!(rt.set_param(0, 0.125));
+        for _ in 0..PARAM_QUEUE_CAPACITY {
+            assert!(rt.set_param(0, 0.125));
+        }
         let sync = rt.sync.clone();
 
         let restoring = AtomicBool::new(false);
@@ -769,7 +791,7 @@ mod tests {
                     value.store(0.5f64.to_bits(), Ordering::Relaxed);
                     restoring.store(true, Ordering::Release);
                     assert!(wait_for(&|| restored.load(Ordering::Acquire)));
-                    Ok(())
+                    ((), true)
                 })
                 .unwrap();
                 rt
@@ -782,21 +804,49 @@ mod tests {
             assert_eq!(wait(&mut client, first), BlockStatus::Ok as u32);
             // Model a client that had already checked the bridge state when the pause began.
             let racing = client
-                .begin_block(&spec, [&[0.0], &[0.0]], None, &[])
+                .begin_block(
+                    &spec,
+                    [&[0.0], &[0.0]],
+                    None,
+                    &[
+                        WireEvent::new(0, WireEventKind::ParamValue { id: 1, value: 0.25 }),
+                        WireEvent::new(
+                            0,
+                            WireEventKind::ParamValue {
+                                id: 1,
+                                value: 0.625,
+                            },
+                        ),
+                        WireEvent::new(
+                            0,
+                            WireEventKind::NoteOn {
+                                channel: 0,
+                                key: 60,
+                                velocity: 100,
+                                note_id: u32::MAX,
+                            },
+                        ),
+                    ],
+                )
                 .unwrap();
             let fallback = wait(&mut client, racing);
             restored.store(true, Ordering::Release);
             assert_eq!(fallback, BlockStatus::Inactive as u32);
             runner.join().unwrap()
         });
+        assert_eq!(rt.params.slots(), PARAM_QUEUE_CAPACITY);
         let after_restore = client
             .begin_block(&spec, [&[0.0], &[0.0]], None, &[])
             .unwrap();
         assert_eq!(wait(&mut client, after_restore), BlockStatus::Ok as u32);
         assert_eq!(f64::from_bits(value.load(Ordering::Relaxed)), 0.5);
         assert_eq!(resets.load(Ordering::Relaxed), 2);
+        assert_eq!(f64::from_bits(retried.load(Ordering::Relaxed)), 0.625);
+        assert_eq!(note_ons.load(Ordering::Relaxed), 0);
 
         assert!(rt.set_param(0, 0.875));
+        rt.restore(|| ((), false)).unwrap();
+        assert_eq!(rt.params.slots(), PARAM_QUEUE_CAPACITY - 1);
         let after_edit = client
             .begin_block(&spec, [&[0.0], &[0.0]], None, &[])
             .unwrap();

@@ -40,7 +40,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use komponist_ipc::control::{PROTOCOL_VERSION, socket_pair};
+use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError, socket_pair};
 use komponist_ipc::{
     AppChannel, BridgeClient, BridgeMsg, ChannelError, ControlMsg, ErrorContext, GuiTarget,
     LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessWatcher, RenderMode, ShmRegion,
@@ -859,7 +859,7 @@ impl Bridge {
     fn finish_restore(
         &mut self,
         request: u32,
-        result: Result<Vec<ParamValue>, String>,
+        result: Result<Vec<ParamValue>, StateRestoreError>,
         events: &mut Vec<PluginManagerEvent>,
     ) {
         let Some(index) = self
@@ -871,19 +871,23 @@ impl Bridge {
         };
         let restore = self.state_restores.remove(index).expect("matched restore");
         let device = self.device;
-        match result {
-            Ok(values) => {
-                for value in values {
-                    if !restore.later_edits.contains(&value.id) {
-                        self.base_values.insert(value.id, value.value);
-                        self.values.insert(value.id, value);
-                    }
+        let (values, error) = match result {
+            Ok(values) => (values, None),
+            Err(error) => (error.changed_values, Some(error.message)),
+        };
+        if error.is_none() || !values.is_empty() {
+            for value in values {
+                if !restore.later_edits.contains(&value.id) {
+                    self.base_values.insert(value.id, value.value);
+                    self.values.insert(value.id, value);
                 }
-                // The compiler obtains the plugin's restored base by recompiling the program.
-                events.push(PluginManagerEvent::ParamsChanged { device });
-                events.push(PluginManagerEvent::ParamValuesChanged { device });
             }
-            Err(message) if self.phase != Phase::Running => {
+            // The compiler obtains the plugin's restored base by recompiling the program.
+            events.push(PluginManagerEvent::ParamsChanged { device });
+            events.push(PluginManagerEvent::ParamValuesChanged { device });
+        }
+        if let Some(message) = error {
+            if self.phase != Phase::Running {
                 self.keep_stored_state = true;
                 events.push(PluginManagerEvent::Log {
                     device: Some(device),
@@ -891,12 +895,13 @@ impl Bridge {
                     message: format!("{STATE_LOG_PREFIX} {message}"),
                 });
                 self.state_warning = Some(message);
+            } else {
+                events.push(PluginManagerEvent::Log {
+                    device: Some(device),
+                    level: LogLevel::Error,
+                    message,
+                });
             }
-            Err(message) => events.push(PluginManagerEvent::Log {
-                device: Some(device),
-                level: LogLevel::Error,
-                message,
-            }),
         }
     }
 

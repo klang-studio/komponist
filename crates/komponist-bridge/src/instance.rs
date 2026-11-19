@@ -55,7 +55,7 @@ use komponist_hosting::host_loop::notification_bits as bits;
 use komponist_hosting::{
     ActivateConfig, HostContext, HostedPlugin, HostingError, PluginKind, RenderMode, TimerId,
 };
-use komponist_ipc::control::PROTOCOL_VERSION;
+use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError};
 use komponist_ipc::shm::MAX_BLOCK;
 use komponist_ipc::{
     BridgeChannel, BridgeMsg, BridgeServer, BridgeState, ChannelError, ControlMsg, ErrorContext,
@@ -907,40 +907,67 @@ impl Bridge {
     }
 
     fn set_state(&mut self, request: u32, state: &[u8]) {
+        let untouched = |message| StateRestoreError {
+            message,
+            changed_values: Vec::new(),
+        };
         let result = (|| {
             let plugin = self
                 .plugin
                 .as_mut()
-                .ok_or_else(|| "no plugin loaded".to_owned())?;
+                .ok_or_else(|| untouched("no plugin loaded".to_owned()))?;
             let mut load = || {
-                plugin.load_state(state).map_err(|e| e.to_string())?;
-                Ok(plugin
+                let before: BTreeMap<_, _> = plugin
+                    .params()
+                    .into_iter()
+                    .filter_map(|info| Some((info.id, plugin.param_value(info.id)?)))
+                    .collect();
+                let load_result = plugin.load_state(state);
+                let values = plugin
                     .params()
                     .into_iter()
                     .filter_map(|info| {
                         let value = plugin.param_value(info.id)?;
+                        if load_result.is_err() && before.get(&info.id) == Some(&value) {
+                            return None;
+                        }
                         Some(ParamValue {
                             id: info.id,
                             value,
                             text: plugin.param_text(info.id, value).unwrap_or_default(),
                         })
                     })
-                    .collect())
+                    .collect::<Vec<_>>();
+                match load_result {
+                    Ok(()) => (Ok(values), true),
+                    Err(error) => {
+                        let changed = !values.is_empty();
+                        (
+                            Err(StateRestoreError {
+                                message: error.to_string(),
+                                changed_values: values,
+                            }),
+                            changed,
+                        )
+                    }
+                }
             };
-            let values = if let Some(active) = self.active.as_ref() {
+            let (result, superseded) = if let Some(active) = self.active.as_mut() {
                 // Stop new requests at the client so it can retain important events while we
                 // wait for the block already in flight.
                 self.region.set_bridge_state(BridgeState::Loaded);
                 let result = active.rt.restore(load);
                 self.region.set_bridge_state(BridgeState::Active);
-                result?
+                result.map_err(untouched)?
             } else {
-                load()?
+                load()
             };
-            // Old coalesced values must not follow the authoritative state report.
-            self.pending_values.clear();
-            self.values_due = None;
-            Ok(values)
+            if superseded {
+                // Old coalesced values must not follow the authoritative state report.
+                self.pending_values.clear();
+                self.values_due = None;
+            }
+            result
         })();
         self.send(BridgeMsg::StateApplied { request, result });
     }
