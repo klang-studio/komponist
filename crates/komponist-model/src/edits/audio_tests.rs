@@ -185,6 +185,38 @@ fn flattening_carries_clip_mixer_curves_to_the_existing_arrangement_lanes() {
 }
 
 #[test]
+fn flattening_accepts_a_loop_whose_actual_point_count_fits() {
+    use crate::automation::{AutomationTarget, Point, Points};
+    use crate::edits::automation::{add_clip_automation, set_clip_points};
+
+    let (p, id) = midi_track(&Project::new("Flatten"));
+    let (p, clip) = ok_with(add_clip(&p, id, midi(240, 1200)));
+    let p = ok(set_clip_loop(&p, clip, Some(Tick(2)), Tick(400_000)));
+    let target = AutomationTarget::Pan;
+    let p = ok(add_clip_automation(&p, clip, target.clone(), String::new()));
+    let p = ok(set_clip_points(
+        &p,
+        clip,
+        &target,
+        Points::new(vec![
+            Point::linear(Tick::ZERO, 0.4),
+            Point::linear(Tick(2), 0.9),
+        ]),
+    ));
+    let track = p.track(id).unwrap();
+    assert!(crate::automation::clip_expansion_points(track, &target) > 1_000_000);
+    assert_eq!(validate_flatten_automation(track), Ok(()));
+    let (flattened, _) = ok_with(flatten_midi_track(&p, id, Tick(240), file()));
+    let lane = flattened
+        .track(id)
+        .unwrap()
+        .automation
+        .lane(&target)
+        .unwrap();
+    assert!(lane.points.as_slice().len() < 1_000_000);
+}
+
+#[test]
 fn flattening_refuses_to_expand_an_enormous_disabled_modulating_loop() {
     use crate::automation::{AutomationMode, AutomationOwner, AutomationTarget, Point, Points};
     use crate::edits::automation::{add_clip_automation, set_clip_points, set_lane_mode};
@@ -219,6 +251,10 @@ fn flattening_refuses_to_expand_an_enormous_disabled_modulating_loop() {
             Point::linear(Tick(1), 0.9),
         ]),
     ));
+    assert_eq!(
+        split_clips(&p, &[clip], Tick(500_000_240)),
+        Err(EditError::AutomationExpansionTooLarge),
+    );
     let mut doc = Document::new(p);
     let before = doc.project().clone();
     assert_eq!(

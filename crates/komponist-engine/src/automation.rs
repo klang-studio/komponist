@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use komponist_model::automation::{
-    AutomationMode, AutomationTarget, Point, Shape, TrackAutomation, value_at_fractional,
+    AutomationMode, AutomationTarget, Point, RepeatingPoints, Shape, TrackAutomation,
+    value_at_fractional,
 };
 use komponist_model::params::{ParamKind, Scale, db_to_p, p_to_db, to_normalized, to_plain};
 use komponist_model::{SendId, Tick};
@@ -136,8 +137,9 @@ pub struct CompiledTarget {
     pub base: f32,
     /// Stored per-lane mode.
     pub mode: AutomationMode,
-    /// Merged arrangement and clip curve.
+    /// Materialized timeline points for curves within the expansion budget.
     pub points: Arc<[Point]>,
+    pub(crate) repeating: Option<Arc<RepeatingPoints>>,
     pub(crate) jumps: Arc<[Tick]>,
     applied_override: Arc<AtomicU32>,
     value_ranges: Arc<[(f32, f32)]>,
@@ -170,6 +172,7 @@ impl CompiledTarget {
             base,
             mode,
             points: points.into(),
+            repeating: None,
             jumps: jumps.into(),
             applied_override: Arc::new(AtomicU32::new(f32::NAN.to_bits())),
             value_ranges,
@@ -188,28 +191,77 @@ impl CompiledTarget {
     }
 
     pub(crate) fn value(&self, tick: f64) -> f32 {
-        value_at_fractional(&self.points, tick).unwrap_or(self.base)
+        match &self.repeating {
+            Some(points) => points.value(tick),
+            None => value_at_fractional(&self.points, tick),
+        }
+        .unwrap_or(self.base)
+    }
+
+    fn same_curve(&self, other: &Self) -> bool {
+        match (&self.repeating, &other.repeating) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => Arc::ptr_eq(&self.points, &other.points),
+            _ => false,
+        }
+    }
+
+    fn point_bound(&self, mut before: impl FnMut(Tick) -> bool) -> u128 {
+        match &self.repeating {
+            Some(points) => points.partition_point(before),
+            None => self.points.partition_point(|point| before(point.tick)) as u128,
+        }
+    }
+
+    fn point(&self, index: u128) -> Option<Point> {
+        match &self.repeating {
+            Some(points) => points.get(index),
+            None => self.points.get(index as usize).copied(),
+        }
+    }
+
+    fn jump(&self, tick: Tick) -> bool {
+        if self.repeating.is_none() {
+            return self.jumps.binary_search(&tick).is_ok();
+        }
+        let first = self.point_bound(|point| point < tick);
+        let end = self.point_bound(|point| point <= tick);
+        first
+            .checked_sub(1)
+            .and_then(|index| self.point(index))
+            .is_some_and(|previous| previous.shape == Shape::Hold)
+            || (end > first + 1
+                && self.point(first).map(|point| point.value)
+                    != self.point(end - 1).map(|point| point.value))
     }
 
     /// The value just before a point, using the incoming segment.
     fn point_left(&self, tick: Tick) -> f32 {
-        let first = self.points.partition_point(|point| point.tick < tick);
-        if let Some(previous) = first.checked_sub(1).and_then(|i| self.points.get(i))
+        let first = self.point_bound(|point| point < tick);
+        if let Some(previous) = first.checked_sub(1).and_then(|i| self.point(i))
             && previous.shape == Shape::Hold
         {
             return previous.value;
         }
-        self.points
-            .get(first)
-            .map_or(self.base, |point| point.value)
+        self.point(first).map_or(self.base, |point| point.value)
     }
 
     fn read_override(&self, tick: f64) -> ReadOverride {
         let reference = self.value(tick);
-        let first = self
-            .points
-            .partition_point(|point| point.tick.0 as f64 <= tick);
-        let next = self.next_change(first, reference);
+        let first = self.point_bound(|point| point.0 as f64 <= tick);
+        let next = if let Some(points) = &self.repeating {
+            points.first_matching(first, |i, point| {
+                outside(point.value, reference)
+                    && !(self
+                        .point(i + 1)
+                        .is_some_and(|next| next.tick == point.tick)
+                        && i.checked_sub(1)
+                            .and_then(|i| self.point(i))
+                            .is_some_and(|previous| previous.shape == Shape::Hold))
+            })
+        } else {
+            self.next_change(first as usize, reference)
+        };
         ReadOverride {
             reference,
             at: tick,
@@ -239,7 +291,7 @@ impl CompiledTarget {
     }
 
     pub(crate) fn reads(&self) -> bool {
-        self.mode != AutomationMode::Off && !self.points.is_empty()
+        self.mode != AutomationMode::Off && (!self.points.is_empty() || self.repeating.is_some())
     }
 }
 
@@ -760,10 +812,7 @@ impl State {
                 if prev.model != lane.model {
                     return None;
                 }
-                if !Arc::ptr_eq(&prev.points, &lane.points)
-                    || prev.base != lane.base
-                    || prev.map != lane.map
-                {
+                if !prev.same_curve(lane) || prev.base != lane.base || prev.map != lane.map {
                     cursor.chase = true;
                     if matches!(cursor.playback_gesture(), Gesture::ReadOverride(_)) {
                         cursor.clear_playback_override();
@@ -936,7 +985,7 @@ impl State {
             }
             let gesture = cursor.playback_gesture();
             if lane.mode == AutomationMode::Off
-                || (lane.points.is_empty() && !matches!(gesture, Gesture::Return { .. }))
+                || (!lane.reads() && !matches!(gesture, Gesture::Return { .. }))
                 || matches!(gesture, Gesture::Held { .. } | Gesture::Latch)
             {
                 continue;
@@ -950,10 +999,10 @@ impl State {
             };
             if chase && let Some(value) = view.mixer_value(lane, window, window.start, time) {
                 let value = if matches!(view.gesture, Gesture::Idle) && !window.playing {
-                    let next = lane.points.partition_point(|point| {
-                        window.map.tick_to_sample(point.tick, window.rate) <= window.start
+                    let next = lane.point_bound(|tick| {
+                        window.map.tick_to_sample(tick, window.rate) <= window.start
                     });
-                    if let Some(point) = next.checked_sub(1).and_then(|i| lane.points.get(i))
+                    if let Some(point) = next.checked_sub(1).and_then(|i| lane.point(i))
                         && window.map.tick_to_sample(point.tick, window.rate) == window.start
                     {
                         lane.value(point.tick.0 as f64)
@@ -969,18 +1018,16 @@ impl State {
                 let step = ramp_step(window.rate);
                 let end = window.start + i64::from(window.frames);
                 let mut grid = window.start + (-window.start).rem_euclid(step);
-                let first = lane.points.partition_point(|point| {
-                    window.map.tick_to_sample(point.tick, window.rate) < window.start
-                });
-                let mut points = lane.points[first..].iter().peekable();
+                let frame = |tick| window.map.tick_to_sample(tick, window.rate);
+                let mut next_point = lane.point_bound(|tick| frame(tick) < window.start);
                 let return_end = cursor.return_end(window.rate);
                 let mut return_at = return_end.map_or(end, |at| {
                     window.start.saturating_add(at.saturating_sub(time) as i64)
                 });
                 loop {
-                    let point = points.peek().map_or(end, |point| {
-                        window.map.tick_to_sample(point.tick, window.rate)
-                    });
+                    let point = lane
+                        .point(next_point)
+                        .map_or(end, |point| frame(point.tick));
                     let sample = grid.min(point).min(return_at);
                     if sample >= end {
                         break;
@@ -988,11 +1035,14 @@ impl State {
                     let elapsed = time + (sample - window.start) as u64;
                     if point == sample {
                         // Points that round onto the same sample use the rightmost value.
-                        let mut tick = points.next().expect("scheduled point").tick;
-                        while let Some(next) = points.next_if(|point| {
-                            window.map.tick_to_sample(point.tick, window.rate) == sample
-                        }) {
-                            tick = next.tick;
+                        let mut tick = lane.point(next_point).expect("scheduled point").tick;
+                        next_point += 1;
+                        if lane
+                            .point(next_point)
+                            .is_some_and(|point| frame(point.tick) == sample)
+                        {
+                            next_point = lane.point_bound(|tick| frame(tick) <= sample);
+                            tick = lane.point(next_point - 1).expect("scheduled point").tick;
                         }
                         let value = if matches!(view.gesture, Gesture::Idle) {
                             lane.value(tick.0 as f64)
@@ -1000,8 +1050,7 @@ impl State {
                             view.mixer_value(lane, window, sample, elapsed)
                                 .unwrap_or(lane.base)
                         };
-                        let important =
-                            sample == return_at || lane.jumps.binary_search(&tick).is_ok();
+                        let important = sample == return_at || lane.jump(tick);
                         emit(sample, value, important);
                     } else if let Some(value) = view.mixer_value(lane, window, sample, elapsed) {
                         emit(sample, value, sample == return_at);
@@ -1225,19 +1274,15 @@ impl<'a> MixerValues<'a> {
         let mut right_point = None;
         if matches!(gesture, Gesture::Idle | Gesture::ReadOverride(_)) {
             let frame = |tick| clock.map.tick_to_sample(tick, clock.rate);
-            let after = self
-                .lane
-                .points
-                .partition_point(|point| frame(point.tick) <= sample);
+            let after = self.lane.point_bound(|tick| frame(tick) <= sample);
             left_point = after
                 .checked_sub(1)
-                .and_then(|i| self.lane.points.get(i))
+                .and_then(|i| self.lane.point(i))
                 .map(|point| (frame(point.tick), point.tick))
                 .filter(|(frame, _)| *frame >= grid);
             right_point = self
                 .lane
-                .points
-                .get(after)
+                .point(after)
                 .map(|point| (frame(point.tick), point.tick))
                 .filter(|(frame, _)| *frame <= end);
         }

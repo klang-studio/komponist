@@ -433,7 +433,12 @@ impl State {
         let effective = track
             .filter(|_| !overrides.is_empty())
             .map_or_else(Vec::new, |track| {
-                automation::effective_points(track, &lane.target, base)
+                if let Some(curve) = automation::effective_repeating_points(track, lane, base) {
+                    let (left, right) = g.visible_ticks();
+                    curve.visible_points(left, right, (body.width().ceil() as usize).clamp(2, 4096))
+                } else {
+                    automation::effective_points(track, &lane.target, base)
+                }
             });
         let frame = LaneFrame {
             source,

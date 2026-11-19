@@ -119,7 +119,7 @@ impl fmt::Display for EditError {
         match self {
             EditError::IdsExhausted => write!(f, "project object identifiers exhausted"),
             EditError::AutomationExpansionTooLarge => {
-                write!(f, "flattening would create too many automation points")
+                write!(f, "the edit would create too many automation points")
             }
             EditError::TrackNotFound(id) => write!(f, "track {} not found", id.0),
             EditError::ClipNotFound(id) => write!(f, "clip {} not found", id.0),
@@ -803,6 +803,11 @@ pub fn move_clips(
     for (track_index, clip) in &group.clips {
         let mut clip = Clip::clone(clip);
         clip.start += group.delta;
+        if group.delta != Tick::ZERO || group.track_delta != 0 {
+            for envelope in &mut clip.automation {
+                envelope.precedence = None;
+            }
+        }
         insert_clip(
             track_mut(&mut p, group.target(*track_index)),
             Arc::new(clip),
@@ -1002,7 +1007,15 @@ pub fn set_clip_prop(project: &Project, clip: ClipId, prop: ClipProp) -> EditRes
         let audio = c.kind() == ClipKind::Audio;
         match prop {
             ClipProp::Name(name) => c.name = name,
-            ClipProp::Start(start) => c.start = start.max(Tick::ZERO),
+            ClipProp::Start(start) => {
+                let start = start.max(Tick::ZERO);
+                if start != c.start {
+                    c.start = start;
+                    for envelope in &mut c.automation {
+                        envelope.precedence = None;
+                    }
+                }
+            }
             ClipProp::Transpose(_) | ClipProp::VelocityPct(_) if audio => {
                 return Err(EditError::WrongClipKind {
                     clip: c.id,
@@ -1814,6 +1827,9 @@ fn new_step_clip(rows: &[StepRowSpec]) -> StepClip {
 fn copy_clip(project: &mut Project, clip: &Clip) -> Result<Clip, EditError> {
     let mut copy = clip.clone();
     copy.id = ClipId(project.alloc_id()?);
+    for envelope in &mut copy.automation {
+        envelope.precedence = None;
+    }
     if let ClipContent::Midi(m) = &mut copy.content {
         for take in &mut m.takes {
             let notes = take
@@ -1893,6 +1909,9 @@ impl ClipGroup {
 /// Splits `clip` at clip-local `at` (`0 < at < length`) into a left part (same id) and a right
 /// part (new id); see [`split_clips`].
 fn split_clip(project: &mut Project, clip: &Clip, at: Tick) -> Result<(Clip, Clip), EditError> {
+    if !crate::automation::split_envelopes_fit(clip, at) {
+        return Err(EditError::AutomationExpansionTooLarge);
+    }
     let mut left = clip.clone();
     let mut right = clip.clone();
     right.id = ClipId(project.alloc_id()?);
@@ -1903,6 +1922,7 @@ fn split_clip(project: &mut Project, clip: &Clip, at: Tick) -> Result<(Clip, Cli
         let (before, after) = crate::automation::split_envelope(clip, envelope, at);
         left.automation[index].points = before;
         right.automation[index].points = after;
+        right.automation[index].precedence = Some(envelope.precedence(clip));
     }
     match &mut right.content {
         ClipContent::Midi(right_midi) => {
@@ -1968,6 +1988,9 @@ fn unroll(
     loop_length: Tick,
     length: Tick,
 ) -> Result<Vec<Note>, EditError> {
+    if notes.iter().all(|note| note.start >= loop_length) {
+        return Ok(Vec::new());
+    }
     let mut out = Vec::new();
     let mut offset = Tick::ZERO;
     while offset < length {

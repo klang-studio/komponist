@@ -201,6 +201,49 @@ fn fixed_grid_hold_jump_and_master_pan_match_across_blocks_and_offline() {
 }
 
 #[test]
+fn very_long_clip_automation_repeats_without_expanding_the_project() {
+    use komponist_model::edits::{NewClip, NewClipContent};
+
+    let (project, AutomationOwner::Track(track), device) = source() else {
+        unreachable!()
+    };
+    let (project, clip) = edits::add_clip(
+        &project,
+        track,
+        NewClip {
+            name: "Repeating".into(),
+            start: Tick::ZERO,
+            length: Tick(10),
+            content: NewClipContent::Midi {
+                notes: Vec::new(),
+                take_name: String::new(),
+            },
+        },
+    )
+    .unwrap();
+    let project = edits::set_clip_loop(&project, clip, Some(Tick(2)), Tick(1_000_000_000)).unwrap();
+    let target = parameter(device, 0);
+    let project = add_clip_automation(&project, clip, target.clone(), "Repeat".into()).unwrap();
+    let project = set_clip_points(
+        &project,
+        clip,
+        &target,
+        Points::new(vec![
+            Point::linear(Tick::ZERO, 0.25),
+            Point::linear(Tick(2), 0.75),
+        ]),
+    )
+    .unwrap();
+    let (mut rig, _, mut log) = rig(&project);
+    rig.send(Command::Locate(Tick(900_000_001)));
+    rig.process(1, 1);
+    assert_eq!(log.pop().unwrap(), (0, 0, 0.5));
+    rig.send(Command::Play);
+    rig.process(60, 60);
+    assert!(core::iter::from_fn(|| log.pop().ok()).any(|(_, id, value)| id == 0 && value == 0.25));
+}
+
+#[test]
 fn locate_chases_when_stopped_and_switching_off_restores_base() {
     let (project, owner, device) = source();
     let target = parameter(device, 0);

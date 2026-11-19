@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
-use komponist_model::automation::{AutomationTarget, Lane, TrackAutomation, effective_points};
+use komponist_model::automation::{
+    AutomationTarget, Lane, TrackAutomation, effective_points, effective_repeating_points,
+};
 use komponist_model::params::db_to_p;
 use komponist_model::project::Channel;
 use komponist_model::{Project, Track};
@@ -124,14 +126,22 @@ pub(super) fn track(
             {
                 return prev.clone();
             }
-            CompiledTarget::new(
+            let repeating = effective_repeating_points(track, new.lane, new.base);
+            let points = if repeating.is_some() {
+                Vec::new()
+            } else {
+                effective_points(track, &new.lane.target, new.base)
+            };
+            let mut compiled = CompiledTarget::new(
                 new.target,
                 new.lane.target.clone(),
                 new.parameter,
                 new.base,
                 new.lane.mode,
-                effective_points(track, &new.lane.target, new.base),
-            )
+                points,
+            );
+            compiled.repeating = repeating.map(Arc::new);
+            compiled
         })
         .collect()
 }

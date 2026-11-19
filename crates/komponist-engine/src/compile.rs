@@ -520,6 +520,11 @@ fn midi_notes(clip: &Clip, midi: &MidiClip, out: &mut Vec<SeqNote>) {
         Some(l) if l > Tick::ZERO => l,
         _ => length,
     };
+    if !take.notes.iter().any(|note| {
+        note.start >= Tick::ZERO && note.start < period.min(length) && note.length > Tick::ZERO
+    }) {
+        return;
+    }
     let mut offset = Tick::ZERO;
     while offset < length {
         for note in take.notes.iter() {

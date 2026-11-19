@@ -310,6 +310,7 @@ pub fn add_clip_automation(
                 target: target.clone(),
                 label: label.clone(),
                 points: Points::default(),
+                precedence: None,
             });
         }
         Ok(())

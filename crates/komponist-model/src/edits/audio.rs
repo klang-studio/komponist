@@ -19,7 +19,10 @@ use crate::audio::ClipTimeMode;
 use crate::audio::{
     AudioClip, AudioFile, AudioInput, AudioIo, AudioTake, CLIP_GAIN_DB_MAX, CLIP_GAIN_DB_MIN,
 };
-use crate::automation::{AutomationTarget, Points, clip_expansion_points, merged_clip_points};
+use crate::automation::{
+    AUTOMATION_EXPANSION_LIMIT, AutomationTarget, Points, clip_expansion_points,
+    count_clip_expansion, merged_clip_points,
+};
 use crate::ids::{ClipId, TrackId};
 use crate::params::db_to_p;
 use crate::project::{
@@ -414,9 +417,6 @@ pub(super) fn new_audio(
     Ok((a, length))
 }
 
-/// Limit the additional points materialized when moving repeated clip automation to the track.
-const MAX_FLATTEN_AUTOMATION_POINTS: u128 = 1_000_000;
-
 fn retained_automation_base(track: &Track, target: &AutomationTarget) -> Option<f32> {
     match *target {
         AutomationTarget::Volume => Some(1.0 - db_to_p(track.channel.volume_db)),
@@ -433,13 +433,21 @@ fn retained_automation_base(track: &Track, target: &AutomationTarget) -> Option<
 /// Checks that the surviving mixer automation can fit into arrangement lanes before rendering.
 /// The arrangement has no compact repeat representation, so the check includes disabled lanes.
 pub fn validate_flatten_automation(track: &Track) -> Result<(), EditError> {
-    let mut budget = MAX_FLATTEN_AUTOMATION_POINTS;
-    for lane in &track.automation.lanes {
-        if retained_automation_base(track, &lane.target).is_some() {
-            let points = clip_expansion_points(track, &lane.target);
-            budget = budget
-                .checked_sub(points)
+    let mixer_lanes = track
+        .automation
+        .lanes
+        .iter()
+        .filter(|lane| retained_automation_base(track, &lane.target).is_some());
+    let estimate = mixer_lanes
+        .clone()
+        .map(|lane| clip_expansion_points(track, &lane.target))
+        .fold(0, u128::saturating_add);
+    if estimate > AUTOMATION_EXPANSION_LIMIT {
+        let mut budget = AUTOMATION_EXPANSION_LIMIT;
+        for lane in mixer_lanes {
+            let points = count_clip_expansion(track, &lane.target, budget)
                 .ok_or(EditError::AutomationExpansionTooLarge)?;
+            budget -= points;
         }
     }
     Ok(())

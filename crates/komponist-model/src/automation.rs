@@ -1,10 +1,14 @@
 //! Project automation and pure curve evaluation, shared by the editors and engine.
 
 use std::collections::BTreeSet;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use serde::ser::SerializeTuple;
 use serde::{Deserialize, Serialize};
+
+mod repeating;
+pub use repeating::{RepeatingPoints, effective_repeating_points};
 
 pub use crate::ids::LaneId;
 use crate::params::ParamId;
@@ -100,6 +104,15 @@ pub struct ClipAutomation {
     pub target: AutomationTarget,
     pub label: String,
     pub points: Points,
+    /// Ranking inherited from the unsplit clip. Playback timing still uses the actual start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) precedence: Option<(Tick, crate::ClipId)>,
+}
+
+impl ClipAutomation {
+    pub(crate) fn precedence(&self, clip: &Clip) -> (Tick, crate::ClipId) {
+        self.precedence.unwrap_or((clip.start, clip.id))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -349,13 +362,13 @@ pub fn active_clip_automation<'a>(
     let end = track.clips.partition_point(|clip| clip.start <= tick);
     track.clips[..end]
         .iter()
-        .rev()
         .filter(|clip| tick < clip.end())
-        .find_map(|clip| {
+        .filter_map(|clip| {
             let envelope = clip_envelope(clip, target)?;
             let offset = Tick((tick - clip.start).0 % clip_content_length(clip).0);
             Some((clip.as_ref(), envelope, offset))
         })
+        .max_by_key(|(clip, envelope, _)| (envelope.precedence(clip), clip.id))
 }
 
 /// The value of the winning curve, if a curve drives the target here.
@@ -378,7 +391,7 @@ pub struct ClipOverrideSpan<'a> {
     pub envelope: &'a ClipAutomation,
 }
 
-/// All winning spans in timeline order, ordered by clip start and id on overlap.
+/// All winning spans in timeline order, with split halves inheriting the original ranking.
 pub fn clip_override_spans<'a>(
     track: &'a Track,
     target: &AutomationTarget,
@@ -400,8 +413,8 @@ pub fn clip_override_spans<'a>(
     let mut groups = events.chunk_by(|a, b| a.0 == b.0).peekable();
     while let Some(at) = groups.next() {
         for &(_, index, begin) in at {
-            let clip = clips[index].0;
-            let key = (clip.start, clip.id, index);
+            let (clip, envelope) = clips[index];
+            let key = (envelope.precedence(clip), clip.id, index);
             if begin {
                 active.insert(key);
             } else {
@@ -447,6 +460,52 @@ pub(crate) fn clip_expansion_points(track: &Track, target: &AutomationTarget) ->
             repetitions * (2 * points.len() as u128 + 2)
         })
         .fold(0, u128::saturating_add)
+}
+
+/// Maximum additional points that a destructive automation edit can materialize.
+pub(crate) const AUTOMATION_EXPANSION_LIMIT: u128 = 1_000_000;
+
+struct ExpansionBudget {
+    remaining: u128,
+    last: Option<Point>,
+}
+
+impl ExpansionBudget {
+    fn push(&mut self, point: Point) -> ControlFlow<()> {
+        if !self.last.is_some_and(|last| same_point_value(last, point)) {
+            let Some(remaining) = self.remaining.checked_sub(1) else {
+                return ControlFlow::Break(());
+            };
+            self.remaining = remaining;
+        }
+        self.last = Some(point);
+        ControlFlow::Continue(())
+    }
+}
+
+/// Counts the points introduced by the winning clip spans, stopping at the budget.
+pub(crate) fn count_clip_expansion(
+    track: &Track,
+    target: &AutomationTarget,
+    budget: u128,
+) -> Option<u128> {
+    let mut counter = ExpansionBudget {
+        remaining: budget,
+        last: None,
+    };
+    let mut emit = |point| counter.push(point);
+    for span in clip_override_spans(track, target) {
+        emit_clip_span(
+            &mut emit,
+            span.clip,
+            span.envelope,
+            span.start,
+            span.end,
+            Tick::ZERO,
+        )
+        .continue_value()?;
+    }
+    Some(budget - counter.remaining)
 }
 
 /// Flattens the winning lane and clip curves, including loop discontinuities and returns to
@@ -507,10 +566,13 @@ pub(crate) fn merged_clip_points(track: &Track, lane: &Lane, base: f32) -> Optio
     Some(result)
 }
 
+fn same_point_value(a: Point, b: Point) -> bool {
+    a.tick == b.tick && a.value == b.value
+}
+
 fn push_point(out: &mut Vec<Point>, point: Point) {
     if let Some(last) = out.last_mut()
-        && last.tick == point.tick
-        && last.value == point.value
+        && same_point_value(*last, point)
     {
         *last = point;
         return;
@@ -530,39 +592,68 @@ fn append_clip_span(
     out: &mut Vec<Point>,
     clip: &Clip,
     envelope: &ClipAutomation,
-    mut start: Tick,
+    start: Tick,
     end: Tick,
     shift: Tick,
 ) {
+    let _ = emit_clip_span(&mut append_to(out), clip, envelope, start, end, shift);
+}
+
+fn append_slice(out: &mut Vec<Point>, points: &[Point], start: Tick, end: Tick, shift: Tick) {
+    let _ = emit_slice(&mut append_to(out), points, start, end, shift);
+}
+
+fn append_to(out: &mut Vec<Point>) -> impl FnMut(Point) -> ControlFlow<()> {
+    |point| {
+        push_point(out, point);
+        ControlFlow::Continue(())
+    }
+}
+
+fn emit_clip_span(
+    emit: &mut impl FnMut(Point) -> ControlFlow<()>,
+    clip: &Clip,
+    envelope: &ClipAutomation,
+    mut start: Tick,
+    end: Tick,
+    shift: Tick,
+) -> ControlFlow<()> {
     let content = clip_content_length(clip);
     let points = clip_points(clip, envelope);
     if points.is_empty() {
-        return;
+        return ControlFlow::Continue(());
     }
     // A flat envelope has the same value in every repetition. Only its outer boundaries
     // matter, even for a long clip with a one-tick content length.
     if let Some(value) = constant_value(points) {
-        push_point(out, Point::linear(start + shift, value));
-        push_point(out, Point::linear(end + shift, value));
-        return;
+        emit(Point::linear(start + shift, value))?;
+        emit(Point::linear(end + shift, value))?;
+        return ControlFlow::Continue(());
     }
     while start < end {
         let loop_start = start - Tick((start - clip.start).0 % content.0);
         let stop = Tick(loop_start.0.saturating_add(content.0)).min(end);
-        append_slice(
-            out,
+        emit_slice(
+            emit,
             points,
             start - loop_start,
             stop - loop_start,
             loop_start + shift,
-        );
+        )?;
         start = stop;
     }
+    ControlFlow::Continue(())
 }
 
 /// Extracts [start, end), appending the left limit at end. For an exponential segment, reparameterizing
 /// a subinterval is exact: the exponent scales by the ratio of the segment lengths.
-fn append_slice(out: &mut Vec<Point>, points: &[Point], start: Tick, end: Tick, shift: Tick) {
+fn emit_slice(
+    emit: &mut impl FnMut(Point) -> ControlFlow<()>,
+    points: &[Point],
+    start: Tick,
+    end: Tick,
+    shift: Tick,
+) -> ControlFlow<()> {
     let mut previous = points
         .partition_point(|point| point.tick <= start)
         .checked_sub(1);
@@ -587,14 +678,11 @@ fn append_slice(out: &mut Vec<Point>, points: &[Point], start: Tick, end: Tick, 
             }
             _ => Shape::Linear,
         };
-        push_point(
-            out,
-            Point {
-                tick: cursor + shift,
-                value,
-                shape,
-            },
-        );
+        emit(Point {
+            tick: cursor + shift,
+            value,
+            shape,
+        })?;
         if stop == end {
             let value = match (previous, points.get(next)) {
                 (Some(index), Some(&last)) => {
@@ -602,20 +690,47 @@ fn append_slice(out: &mut Vec<Point>, points: &[Point], start: Tick, end: Tick, 
                 }
                 _ => value,
             };
-            push_point(out, Point::linear(end + shift, value));
-            break;
+            return emit(Point::linear(end + shift, value));
         }
         if let Some(index) = previous
             && points[index].shape == Shape::Hold
         {
-            push_point(out, Point::linear(stop + shift, points[index].value));
+            emit(Point::linear(stop + shift, points[index].value))?;
         } else if points.get(next + 1).is_some_and(|point| point.tick == stop) {
-            push_point(out, Point::linear(stop + shift, points[next].value));
+            emit(Point::linear(stop + shift, points[next].value))?;
         }
         previous =
             Some(next + usize::from(points.get(next + 1).is_some_and(|point| point.tick == stop)));
         cursor = stop;
     }
+}
+
+/// Splitting copies the expanded halves into separate envelopes. Validate across all lanes
+/// before the edit allocates either half.
+pub(crate) fn split_envelopes_fit(clip: &Clip, at: Tick) -> bool {
+    let mut budget = ExpansionBudget {
+        remaining: AUTOMATION_EXPANSION_LIMIT,
+        last: None,
+    };
+    let split = clip.start + at;
+    for envelope in &clip.automation {
+        for (start, end) in [(clip.start, split), (split, clip.end())] {
+            budget.last = None;
+            if emit_clip_span(
+                &mut |point| budget.push(point),
+                clip,
+                envelope,
+                start,
+                end,
+                -start,
+            )
+            .is_break()
+            {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Splits an envelope into two content-relative curves at a timeline offset.
@@ -847,6 +962,62 @@ mod tests {
                 );
             }
             p = edits::set_clips_muted(&p, &[second], true).unwrap();
+        }
+    }
+
+    #[test]
+    fn split_keeps_the_winning_envelope_of_an_overlapping_clip() {
+        let project = crate::Project::new("Split");
+        let (mut project, track) = edits::add_track(
+            &project,
+            edits::NewTrack {
+                name: None,
+                hue: None,
+                instrument: None,
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        let mut clips = Vec::new();
+        let target = AutomationTarget::Pan;
+        for (start, length, value) in [(0, 100, 0.2), (10, 80, 0.8)] {
+            let (p, clip) = edits::add_clip(
+                &project,
+                track,
+                edits::NewClip {
+                    name: "Clip".into(),
+                    start: Tick(start),
+                    length: Tick(length),
+                    content: edits::NewClipContent::Midi {
+                        notes: Vec::new(),
+                        take_name: String::new(),
+                    },
+                },
+            )
+            .unwrap();
+            let p = edit::add_clip_automation(&p, clip, target.clone(), String::new()).unwrap();
+            project = edit::set_clip_points(
+                &p,
+                clip,
+                &target,
+                Points::new(vec![Point::linear(Tick::ZERO, value)]),
+            )
+            .unwrap();
+            clips.push(clip);
+        }
+        let (split, right) = edits::split_clips(&project, &[clips[0]], Tick(20)).unwrap();
+        let (split, _) = edits::split_clips(&split, &right, Tick(40)).unwrap();
+        let before = project.track(track).unwrap();
+        let after = split.track(track).unwrap();
+        let original = effective_points(before, &target, 0.5);
+        let compiled = effective_points(after, &target, 0.5);
+        for tick in (0..100).map(Tick) {
+            assert_eq!(
+                effective_value_at(before, &target, tick),
+                effective_value_at(after, &target, tick)
+            );
+            assert_eq!(value_at(&original, tick), value_at(&compiled, tick));
         }
     }
 
