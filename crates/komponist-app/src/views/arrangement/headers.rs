@@ -90,8 +90,8 @@ pub fn toggle_on(track: &Track, kind: ToggleKind) -> bool {
 
 /// The name line of a header at `rect` (where the rename field goes): the text column, one
 /// `type.track` line high, as `paint_track_header` centres name and instrument.
-fn name_rect(rect: Rect, ppp: f32) -> Rect {
-    let l = header_layout_with_reserve(rect, automation::HEADER_RESERVE);
+fn name_rect(rect: Rect, ppp: f32, reserve: f32) -> Rect {
+    let l = header_layout_with_reserve(rect, reserve);
     let block = typography::TRACK.line_height + tm::HEADER_TEXT_GAP + typography::SMALL.line_height;
     let top = px::snap(l.body.center().y - block / 2.0, ppp);
     Rect::from_min_max(
@@ -160,7 +160,14 @@ impl Arrangement {
         };
         let implied_mute =
             gates.is_some_and(|g| !track.channel.solo && g.output(track.id).solo_muted);
-        let l = header_layout_with_reserve(rect, automation::HEADER_RESERVE);
+        let compact_input =
+            track.is_audio() && rect.height() < crate::views::audio_inputs::INPUT_LINE_MIN;
+        let reserve = if compact_input {
+            automation::HEADER_RESERVE + komponist_tokens::size::ICON
+        } else {
+            automation::HEADER_RESERVE
+        };
+        let l = header_layout_with_reserve(rect, reserve);
         let name = if track.is_bus() {
             self.bus_header(
                 ui,
@@ -199,18 +206,12 @@ impl Arrangement {
                 implied_mute,
                 meter: None,
             };
-            paint_track_header_with_reserve(
-                ui.painter(),
-                rect,
-                &model,
-                state,
-                automation::HEADER_RESERVE,
-            );
+            paint_track_header_with_reserve(ui.painter(), rect, &model, state, reserve);
             let access = header_access(komponist_ui::lang(ui.ctx()), &model, state);
             register(&response, &access);
             if track.is_audio() {
-                let name = name_rect(rect, ppp);
-                let input = if rect.height() >= crate::views::audio_inputs::INPUT_LINE_MIN {
+                let name = name_rect(rect, ppp, reserve);
+                let input = if !compact_input {
                     Rect::from_min_size(
                         pos2(l.text.left(), name.bottom() + tm::HEADER_TEXT_GAP),
                         egui::vec2(l.text.width(), typography::SMALL.line_height),
@@ -218,16 +219,16 @@ impl Arrangement {
                 } else {
                     Rect::from_center_size(
                         pos2(
-                            l.toggles[0].left() - komponist_tokens::size::ICON / 2.0,
+                            l.toggles[0].left()
+                                - automation::HEADER_RESERVE
+                                - komponist_tokens::size::ICON / 2.0,
                             rect.center().y,
                         ),
                         egui::vec2(komponist_tokens::size::ICON, komponist_tokens::size::ICON),
                     )
                 };
                 crate::views::audio_inputs::input_button(ui, ctx, project, track, input);
-                if rect.height() >= crate::views::audio_inputs::INPUT_LINE_MIN
-                    && (track.arm || crate::views::audio_inputs::monitoring(track))
-                {
+                if !compact_input && (track.arm || crate::views::audio_inputs::monitoring(track)) {
                     let bar = Rect::from_min_size(
                         pos2(
                             input.left(),
@@ -241,18 +242,14 @@ impl Arrangement {
                     crate::views::audio_inputs::input_meter(ui, ctx, track, bar);
                 }
             }
-            name_rect(rect, ppp)
+            name_rect(rect, ppp, reserve)
         };
 
         // Select, rename, reorder.
         if response.double_clicked()
-            && response.interact_pointer_pos().is_some_and(|p| {
-                name.contains(p)
-                    || (!track.is_audio()
-                        && header_layout_with_reserve(rect, automation::HEADER_RESERVE)
-                            .text
-                            .contains(p))
-            })
+            && response
+                .interact_pointer_pos()
+                .is_some_and(|p| name.contains(p) || (!track.is_audio() && l.text.contains(p)))
         {
             self.rename = Some(Rename {
                 track: track.id,
@@ -574,7 +571,7 @@ mod tests {
     #[test]
     fn name_field_sits_on_the_name_line() {
         let r = Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(224.0, 56.0));
-        let n = name_rect(r, 1.0);
+        let n = name_rect(r, 1.0, automation::HEADER_RESERVE);
         assert_eq!(n.left(), 13.0);
         assert_eq!(n.height(), 16.0);
         // Block of 16 + 1 + 14 centred in the 55 px body: top at 12.

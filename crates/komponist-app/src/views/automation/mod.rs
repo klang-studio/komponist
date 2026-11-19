@@ -6,8 +6,8 @@ mod metrics;
 
 use chooser::Target;
 pub(crate) use chooser::{
-    Catalog, Choice, Chooser, automation_controls, chooser_button, mode_chip, mode_chip_width,
-    mode_names, percentage, toggle,
+    Catalog, Choice, Chooser, chooser_button, mode_chip, mode_chip_width, mode_names, percentage,
+    toggle,
 };
 pub(crate) use curve::{Editor, LaneFrame, Override, Paint};
 pub(crate) use metrics::{CHIP_HEIGHT, RECENT_TARGETS, TOGGLE_WIDTH};
@@ -64,5 +64,33 @@ pub fn lanes(project: &Project, owner: AutomationOwner) -> Option<&TrackAutomati
     match owner {
         AutomationOwner::Track(id) => project.track(id).map(|track| &track.automation),
         AutomationOwner::Master => Some(&project.master_automation),
+    }
+}
+
+/// The value shown by a control with an active automation lane.
+pub(crate) fn automation_controls(
+    ctx: &super::ViewCtx<'_>,
+    owner: AutomationOwner,
+    target: &AutomationTarget,
+) -> Option<f32> {
+    let lane = lanes(ctx.project, owner)?.lane(target)?;
+    if lane.mode == AutomationMode::Off {
+        return None;
+    }
+    if let Some(value) = ctx
+        .engine
+        .program()
+        .and_then(|program| program.automation_override(owner, target))
+    {
+        return Some(value);
+    }
+    let tick = ctx.engine.playhead();
+    match owner {
+        AutomationOwner::Track(id) => {
+            komponist_model::automation::effective_value_at(ctx.project.track(id)?, target, tick)
+        }
+        AutomationOwner::Master => {
+            komponist_model::automation::value_at(lane.points.as_slice(), tick)
+        }
     }
 }

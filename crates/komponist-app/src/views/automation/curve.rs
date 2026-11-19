@@ -11,7 +11,7 @@ use egui::{
 };
 use komponist_model::automation::{self, Point, Points, Shape};
 use komponist_model::format::fmt_pos;
-use komponist_model::{Grid, Meter, Tick};
+use komponist_model::{Grid, Meter, Project, Tick};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, line, space};
 use komponist_ui::timeline::{GridSpec, TimeAxis, grid_lines, paint_grid, paint_playhead};
@@ -20,7 +20,7 @@ use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::{px, widgets};
 
 use super::chooser::percentage;
-use super::{Action as Automation, Source, Target, metrics as m};
+use super::{Action as Automation, Source, Target, lanes, metrics as m};
 use crate::actions::{Action, EditAction};
 use crate::views::ViewCtx;
 
@@ -103,6 +103,8 @@ struct ValueEntry {
     source: Source,
     index: usize,
     text: String,
+    text_id: Id,
+    seen: bool,
 }
 
 #[derive(Debug)]
@@ -129,7 +131,8 @@ enum Drag {
         source: Source,
         origin: Pos2,
         end: Pos2,
-        append: bool,
+        base: HashMap<Source, BTreeSet<usize>>,
+        frame: Option<u64>,
     },
 }
 
@@ -157,6 +160,12 @@ impl Editor {
     }
 
     pub fn finish_frame(&mut self, ui: &Ui, ctx: &mut ViewCtx<'_>) {
+        if let Some(entry) = self.entry.as_mut()
+            && !std::mem::take(&mut entry.seen)
+        {
+            ui.memory_mut(|mem| mem.surrender_focus(entry.text_id));
+            self.entry = None;
+        }
         if self.drag.is_some() && !ui.input(|i| i.pointer.primary_down()) {
             if matches!(self.drag, Some(Drag::Move { .. } | Drag::Bend { .. })) {
                 ctx.send(Action::Edit(EditAction::EndGesture));
@@ -229,13 +238,20 @@ impl Editor {
             );
         }
 
-        let indices = visible_range(lane, visible.expand(m::POINT_HIT));
-        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let hit_rect = visible.expand(m::POINT_HIT);
+        let indices = visible_range(lane, hit_rect);
+        let pointer = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|p| visible.contains(*p));
         let handle = pointer.and_then(|p| closest_handle(lane, p));
         let dense = indices.len() as f32 * m::POINT_DENSITY > visible.width();
-        let hovered = pointer
-            .filter(|p| visible.contains(*p))
-            .and_then(|p| nearest_point(lane, p));
+        let hovered = pointer.and_then(|p| nearest_point(lane, p));
+        // Only an active accessibility tree needs individual nodes for unmarked points.
+        let expose_dense = dense
+            && ui
+                .ctx()
+                .accesskit_node_builder(response.id, |_| ())
+                .is_some();
         let mut point_action = None;
         let mut tooltip = None;
         for i in indices {
@@ -245,18 +261,22 @@ impl Editor {
                 .selected
                 .get(&lane.source)
                 .is_some_and(|set| set.contains(&i));
-            if (!dense || selected || hovered == Some(i))
-                && visible.expand(m::POINT_HIT).contains(pos)
-            {
+            let marker = !dense || selected || hovered == Some(i);
+            if marker && hit_rect.contains(pos) {
                 let (fill, ring) = if selected {
                     (color32(color::TEXT_1), color32(color::ACCENT))
                 } else {
                     (paint.curve, color32(color::SURFACE_0))
                 };
                 painter.circle(pos, m::POINT / 2.0, fill, Stroke::new(line::WIDTH, ring));
+            }
+            if (marker || expose_dense)
+                && let bounds =
+                    Rect::from_center_size(pos, vec2(m::POINT_HIT, m::POINT_HIT)).intersect(visible)
+                && bounds.is_positive()
+            {
                 let node = ui.interact(
-                    Rect::from_center_size(pos, vec2(m::POINT_HIT, m::POINT_HIT))
-                        .intersect(visible),
+                    bounds,
                     id.with(("point", i)),
                     Sense::focusable_noninteractive(),
                 );
@@ -448,7 +468,8 @@ impl Editor {
                     source,
                     origin,
                     end: origin,
-                    append: mods.shift,
+                    base: self.selected.clone(),
+                    frame: None,
                 });
             }
         }
@@ -541,7 +562,10 @@ impl Editor {
         response: &Response,
     ) {
         if !response.has_focus()
-            || self.entry.is_some()
+            || self
+                .entry
+                .as_ref()
+                .is_some_and(|entry| entry.source == lane.source)
             || self.drag.is_some()
             || ContextMenu::<PointCommand>::is_open(ui.ctx(), response.id)
         {
@@ -573,14 +597,16 @@ impl Editor {
                         .is_none_or(|end| tick <= end)
                         .then_some(Point { tick, ..*p })
                 }));
-                send_points(ctx, lane, points, "undo-automation-paste");
+                if send_points(ctx, lane, points, "undo-automation-paste") {
+                    self.selected.clear();
+                }
             }
         } else if consume(Modifiers::NONE, Key::Delete) || consume(Modifiers::NONE, Key::Backspace)
         {
-            self.delete_points(ctx, lane, &indices);
+            self.delete_points(ctx, &lane.source);
         } else if consume(Modifiers::NONE, Key::Enter) {
             if let Some(&index) = indices.first() {
-                self.open_entry(ctx, lane, index);
+                self.open_entry(ctx, lane, index, response.id);
             }
         } else {
             let dx = if consume(Modifiers::NONE, Key::ArrowLeft) {
@@ -663,15 +689,8 @@ impl Editor {
                 points[index].shape = shape;
                 send_points(ctx, lane, points, "undo-automation-shape");
             }
-            Some(PointCommand::Value) => self.open_entry(ctx, lane, index),
-            Some(PointCommand::Delete) => {
-                let indices = self
-                    .selected
-                    .get(&lane.source)
-                    .cloned()
-                    .unwrap_or_else(|| BTreeSet::from([index]));
-                self.delete_points(ctx, lane, &indices);
-            }
+            Some(PointCommand::Value) => self.open_entry(ctx, lane, index, response.id),
+            Some(PointCommand::Delete) => self.delete_points(ctx, &lane.source),
             None => {}
         }
         if !ContextMenu::<PointCommand>::is_open(ui.ctx(), response.id) {
@@ -679,28 +698,50 @@ impl Editor {
         }
     }
 
-    fn delete_points(
-        &mut self,
-        ctx: &mut ViewCtx<'_>,
-        lane: &LaneFrame<'_>,
-        indices: &BTreeSet<usize>,
-    ) {
-        let points = lane
-            .points
-            .iter()
-            .enumerate()
-            .filter_map(|(i, p)| (!indices.contains(&i)).then_some(*p))
-            .collect();
-        send_points(ctx, lane, points, "undo-automation-delete-points");
-        self.selected.remove(&lane.source);
+    fn delete_points(&mut self, ctx: &mut ViewCtx<'_>, focused: &Source) {
+        let mut replacements = Vec::new();
+        self.selected.retain(|source, indices| {
+            if !in_same_group(source, focused) {
+                return true;
+            }
+            if let Some(points) = source_points(ctx.project, source) {
+                let remaining: Vec<_> = points
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, point)| (!indices.contains(&i)).then_some(*point))
+                    .collect();
+                if remaining.len() != points.len() {
+                    replacements.push(Automation::Points(
+                        source.clone(),
+                        Points::new(remaining),
+                        "undo-automation-delete-points",
+                    ));
+                }
+            }
+            false
+        });
+        let grouped = replacements.len() > 1;
+        if grouped {
+            ctx.send(Action::Edit(EditAction::BeginGesture {
+                label: "undo-automation-delete-points".to_owned(),
+            }));
+        }
+        for edit in replacements {
+            ctx.send(Action::Automation(edit));
+        }
+        if grouped {
+            ctx.send(Action::Edit(EditAction::EndGesture));
+        }
     }
 
-    fn open_entry(&mut self, ctx: &ViewCtx<'_>, lane: &LaneFrame<'_>, index: usize) {
+    fn open_entry(&mut self, ctx: &ViewCtx<'_>, lane: &LaneFrame<'_>, index: usize, id: Id) {
         if let Some(point) = lane.points.get(index) {
             self.entry = Some(ValueEntry {
                 source: lane.source.clone(),
                 index,
                 text: lane.format(ctx, point.value),
+                text_id: id.with("automation-value-text"),
+                seen: false,
             });
         }
     }
@@ -714,10 +755,12 @@ impl Editor {
             return;
         };
         let Some(point) = lane.points.get(entry.index).copied() else {
+            ui.memory_mut(|mem| mem.surrender_focus(entry.text_id));
             self.entry = None;
             return;
         };
-        let mut commit = false;
+        entry.seen = true;
+        let mut value = None;
         let mut cancel = false;
         let popup = egui::Area::new(id.with("automation-value"))
             .order(egui::Order::Foreground)
@@ -727,16 +770,19 @@ impl Editor {
                 widgets::menu_frame().show(ui, |ui| {
                     let text = ui.add(
                         egui::TextEdit::singleline(&mut entry.text)
-                            .id(id.with("automation-value-text"))
+                            .id(entry.text_id)
                             .desired_width(space::SPACE_8 * 2.0),
                     );
                     text.widget_info(|| {
                         WidgetInfo::labeled(Role::TextInput, true, ctx.lang.devices_enter_value())
                     });
-                    commit = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
+                    let commit = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
                         || (text.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)));
                     cancel = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
-                    if !commit && !cancel {
+                    if commit && !cancel {
+                        value = lane.parse(&entry.text);
+                    }
+                    if value.is_none() && !cancel {
                         text.request_focus();
                     }
                 });
@@ -747,14 +793,19 @@ impl Editor {
                     .interact_pos()
                     .is_some_and(|pos| !popup.response.rect.contains(pos))
         });
-        if commit && let Some(value) = lane.parse(&entry.text) {
+        if !outside && let Some(value) = value {
             let mut points = lane.points.to_vec();
             points[entry.index].value = value;
             send_points(ctx, lane, points, "undo-automation-value");
         }
-        if commit || cancel || outside {
+        if value.is_some() || cancel || outside {
+            ui.memory_mut(|mem| {
+                mem.surrender_focus(entry.text_id);
+                if !outside {
+                    mem.request_focus(id);
+                }
+            });
             self.entry = None;
-            ui.memory_mut(|mem| mem.request_focus(id));
         }
     }
 
@@ -765,7 +816,7 @@ impl Editor {
         lane: &LaneFrame<'_>,
         painter: &egui::Painter,
     ) {
-        match &self.drag {
+        match &mut self.drag {
             Some(Drag::Draw { source, raw }) if source == &lane.source => {
                 let path = raw.iter().copied().map(|p| lane.pos(p)).collect();
                 painter.add(egui::Shape::line(
@@ -777,17 +828,22 @@ impl Editor {
                 source,
                 origin,
                 end,
-                append,
+                base,
+                frame,
             }) if in_same_group(source, &lane.source) => {
                 let pointer = ui.input(|i| i.pointer.interact_pos()).unwrap_or(*end);
                 let rect = Rect::from_two_pos(*origin, pointer);
                 let hits = visible_range(lane, rect.intersect(lane.rect))
                     .filter(|i| rect.contains(lane.pos(lane.points[*i])));
-                let selected = self.selected.entry(lane.source.clone()).or_default();
-                if !append {
-                    selected.clear();
+                let current = ui.ctx().cumulative_pass_nr();
+                if *frame != Some(current) {
+                    self.selected.clone_from(base);
+                    *frame = Some(current);
                 }
-                selected.extend(hits);
+                self.selected
+                    .entry(lane.source.clone())
+                    .or_default()
+                    .extend(hits);
                 let paint = rect.intersect(lane.rect);
                 if paint.is_positive() {
                     px::fill(
@@ -812,20 +868,39 @@ fn in_same_group(a: &Source, b: &Source) -> bool {
     }
 }
 
+fn source_points<'a>(project: &'a Project, source: &Source) -> Option<&'a [Point]> {
+    match source {
+        Source::Lane(owner, id) => lanes(project, *owner)?
+            .lanes
+            .iter()
+            .find(|lane| lane.id == *id)
+            .map(|lane| lane.points.as_slice()),
+        Source::Clip(id, target) => project
+            .find_clip(*id)?
+            .1
+            .automation
+            .iter()
+            .find(|envelope| &envelope.target == target)
+            .map(|envelope| envelope.points.as_slice()),
+    }
+}
+
 fn send_points(
     ctx: &mut ViewCtx<'_>,
     lane: &LaneFrame<'_>,
     points: Vec<Point>,
     label: &'static str,
-) {
+) -> bool {
     let points = Points::new(points);
-    if points.as_slice() != lane.points {
-        ctx.send(Action::Automation(Automation::Points(
-            lane.source.clone(),
-            points,
-            label,
-        )));
+    if points.as_slice() == lane.points {
+        return false;
     }
+    ctx.send(Action::Automation(Automation::Points(
+        lane.source.clone(),
+        points,
+        label,
+    )));
+    true
 }
 
 fn move_points(
@@ -983,6 +1058,70 @@ fn hatch(painter: &egui::Painter, rect: Rect) {
     }
 }
 
+/// Keep each pixel column's extremes in traversal order without storing all input samples.
+struct CurvePath {
+    points: Vec<Pos2>,
+    column: Option<CurveColumn>,
+}
+
+struct CurveColumn {
+    min: Pos2,
+    max: Pos2,
+    min_first: bool,
+    single: bool,
+}
+
+impl CurvePath {
+    fn new(capacity: usize) -> Self {
+        Self {
+            points: Vec::with_capacity(capacity),
+            column: None,
+        }
+    }
+
+    fn push(&mut self, point: Pos2) {
+        if let Some(column) = self
+            .column
+            .as_mut()
+            .filter(|column| column.min.x.floor() == point.x.floor())
+        {
+            column.single = false;
+            if point.y.total_cmp(&column.min.y).is_lt() {
+                column.min = point;
+                column.min_first = false;
+            } else if point.y.total_cmp(&column.max.y).is_ge() {
+                column.max = point;
+                column.min_first = true;
+            }
+        } else {
+            self.flush_column();
+            self.column = Some(CurveColumn {
+                min: point,
+                max: point,
+                min_first: true,
+                single: true,
+            });
+        }
+    }
+
+    fn flush_column(&mut self) {
+        if let Some(column) = self.column.take() {
+            if column.single {
+                self.points.push(column.min);
+            } else if column.min_first {
+                self.points.extend([column.min, column.max]);
+            } else {
+                self.points.extend([column.max, column.min]);
+            }
+        }
+    }
+
+    fn into_points(mut self) -> Vec<Pos2> {
+        self.flush_column();
+        self.points
+    }
+}
+
 fn paint_curve(
     painter: &egui::Painter,
     lane: &LaneFrame<'_>,
@@ -998,7 +1137,7 @@ fn paint_curve(
     let (start, end) = lane.axis.ticks_in(rect.x_range());
     let lo = points.partition_point(|p| p.tick < start).saturating_sub(1);
     let hi = (points.partition_point(|p| p.tick <= end) + 1).min(points.len());
-    let mut path = Vec::with_capacity((hi - lo).min(rect.width() as usize * 2 + 2));
+    let mut path = CurvePath::new((hi - lo).min(rect.width() as usize * 2 + 2));
     let boundary = |x: f32| {
         let tick = Tick(lane.axis.tick_at(x).round() as i64);
         let value = automation::value_at(points, tick).unwrap_or_default();
@@ -1037,27 +1176,7 @@ fn paint_curve(
     }
     path.push(boundary(rect.right()));
 
-    // Keep the extremes of each pixel column so dense recordings do not create a draw item for
-    // every point, while fast transients stay visible.
-    let mut compact = Vec::with_capacity(path.len());
-    for column in path.chunk_by(|a, b| a.x.floor() == b.x.floor()) {
-        let min = column
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| a.y.total_cmp(&b.y))
-            .map(|(i, _)| i)
-            .unwrap();
-        let max = column
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.y.total_cmp(&b.y))
-            .map(|(i, _)| i)
-            .unwrap();
-        compact.push(column[min.min(max)]);
-        if min != max {
-            compact.push(column[min.max(max)]);
-        }
-    }
+    let compact = path.into_points();
     if let Some(fill) = fill {
         let mut mesh = egui::Mesh::default();
         for pair in compact.windows(2) {
@@ -1081,5 +1200,273 @@ fn paint_curve(
         ));
     } else {
         painter.add(egui::Shape::line(compact, Stroke::new(m::CURVE_WIDTH, ink)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use egui::{Event, PointerButton};
+    use egui_kittest::{Harness, kittest::Queryable};
+    use komponist_model::automation::{AutomationOwner, AutomationTarget};
+    use komponist_model::edits::automation::{add_lane, set_lane_points};
+
+    use super::*;
+    use crate::{App, meters::Meters, ui_state::UiState};
+
+    struct Fixture {
+        app: App,
+        editor: Editor,
+        ui_state: UiState,
+        meters: Meters,
+        sources: Vec<Source>,
+        hide_first_lane: bool,
+    }
+
+    impl Fixture {
+        fn new(lanes: &[Vec<Point>]) -> Self {
+            let mut project = Project::new("Automation curve");
+            let owner = AutomationOwner::Master;
+            let mut sources = Vec::new();
+            for (points, target) in lanes
+                .iter()
+                .zip([AutomationTarget::Volume, AutomationTarget::Pan])
+            {
+                let (next, id) = add_lane(&project, owner, target, "Test".to_owned()).unwrap();
+                project = set_lane_points(&next, owner, id, Points::new(points.clone())).unwrap();
+                sources.push(Source::Lane(owner, id));
+            }
+            Self {
+                app: App::headless(project),
+                editor: Editor::default(),
+                ui_state: UiState::new(),
+                meters: Meters::new(),
+                sources,
+                hide_first_lane: false,
+            }
+        }
+
+        fn points(&self, lane: usize) -> &[Point] {
+            source_points(self.app.project(), &self.sources[lane]).unwrap()
+        }
+
+        fn show(&mut self, ui: &mut Ui) {
+            let project = Arc::clone(self.app.project());
+            let mut actions = Vec::new();
+            let mut ctx = ViewCtx::new(
+                &project,
+                &mut self.ui_state,
+                self.app.engine(),
+                &mut self.meters,
+                self.app.keymap(),
+                &mut actions,
+            );
+            for (index, source) in self.sources.iter().enumerate() {
+                if index == 0 && self.hide_first_lane {
+                    continue;
+                }
+                self.editor.show(
+                    ui,
+                    &mut ctx,
+                    &LaneFrame {
+                        source: source.clone(),
+                        label: "Test",
+                        access: "Test",
+                        warning: None,
+                        points: source_points(&project, source).unwrap(),
+                        target: None,
+                        rect: Rect::from_min_size(
+                            pos2(10.0, 10.0 + index as f32 * 50.0),
+                            vec2(200.0, 50.0),
+                        ),
+                        axis: TimeAxis {
+                            x0: 10.0,
+                            px_per_tick: 1.0,
+                        },
+                        grid: Grid::Bar,
+                        snap: false,
+                        end: None,
+                        head: Tick::ZERO,
+                    },
+                    &Paint {
+                        curve: Color32::GREEN,
+                        fill: Color32::BLACK,
+                        effective: &[],
+                        overrides: &[],
+                        beyond: None,
+                    },
+                );
+            }
+            self.editor.finish_frame(ui, &mut ctx);
+            for action in actions {
+                self.app.dispatch(action);
+            }
+        }
+    }
+
+    fn harness(lanes: &[Vec<Point>]) -> Harness<'static, Fixture> {
+        Harness::builder()
+            .with_context_setup(komponist_ui::install)
+            .with_size(vec2(220.0, 130.0))
+            .build_ui_state(|ui, fixture| fixture.show(ui), Fixture::new(lanes))
+    }
+
+    #[test]
+    fn dense_points_have_accesskit_actions_without_hovering() {
+        let points = (1..=100)
+            .map(|tick| Point::linear(Tick(tick), 0.25))
+            .collect();
+        let mut h = harness(&[points]);
+        assert_eq!(h.get_all_by_role(Role::Slider).count(), 100);
+        h.get_all_by_role(Role::Slider)
+            .next()
+            .unwrap()
+            .increment_accesskit();
+        h.run_steps(2);
+        assert_eq!(h.state().points(0)[0].value, 0.26);
+    }
+
+    #[test]
+    fn paste_before_selected_point_clears_stale_selection() {
+        let mut h = harness(&[vec![
+            Point::linear(Tick(25), 0.25),
+            Point::linear(Tick(80), 0.75),
+        ]]);
+        h.get_all_by_role(Role::Slider)
+            .last()
+            .unwrap()
+            .click_accesskit();
+        h.run_steps(2);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::C);
+        h.run_steps(2);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::V);
+        h.run_steps(2);
+        assert_eq!(
+            h.state().points(0),
+            [
+                Point::linear(Tick::ZERO, 0.75),
+                Point::linear(Tick(25), 0.25),
+                Point::linear(Tick(80), 0.75),
+            ]
+        );
+        h.key_press(Key::Delete);
+        h.run_steps(2);
+        assert_eq!(h.state().points(0).len(), 3);
+    }
+
+    #[test]
+    fn invalid_value_keeps_focus_and_hiding_lane_closes_entry() {
+        let mut h = harness(&[
+            vec![Point::linear(Tick(25), 0.25)],
+            vec![Point::linear(Tick(50), 0.5)],
+        ]);
+        h.get_all_by_role(Role::Slider)
+            .next()
+            .unwrap()
+            .click_accesskit();
+        h.run_steps(2);
+        h.key_press(Key::Enter);
+        h.run_steps(2);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.event(Event::Text("invalid".to_owned()));
+        h.run_steps(2);
+        h.key_press(Key::Enter);
+        h.run_steps(2);
+        assert_eq!(h.state().editor.entry.as_ref().unwrap().text, "invalid");
+        assert_eq!(h.state().points(0)[0].value, 0.25);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.event(Event::Text("60 %".to_owned()));
+        h.run_steps(2);
+        h.key_press(Key::Enter);
+        h.run_steps(2);
+        assert_eq!(h.state().points(0)[0].value, 0.6);
+        assert!(h.state().editor.entry.is_none());
+
+        h.key_press(Key::Enter);
+        h.run_steps(2);
+        assert!(h.state().editor.entry.is_some());
+        h.state_mut().hide_first_lane = true;
+        h.run_steps(2);
+        assert!(h.state().editor.entry.is_none());
+        h.get_by_role(Role::Slider).click_accesskit();
+        h.run_steps(2);
+        h.key_press(Key::ArrowUp);
+        h.run_steps(2);
+        assert_eq!(h.state().points(1)[0].value, 0.51);
+    }
+
+    #[test]
+    fn shift_marquee_can_shrink_and_cross_lane_delete_is_one_undo() {
+        let mut h = harness(&[
+            vec![Point::linear(Tick(25), 0.25), Point::linear(Tick(80), 0.4)],
+            vec![Point::linear(Tick(50), 0.45)],
+        ]);
+        h.get_all_by_role(Role::Slider)
+            .next()
+            .unwrap()
+            .click_accesskit();
+        h.run_steps(2);
+        let origin = pos2(45.0, 20.0);
+        h.hover_at(origin);
+        h.event(Event::ModifiersChanged(Modifiers::SHIFT));
+        h.event(Event::PointerButton {
+            pos: origin,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::SHIFT,
+        });
+        h.run_steps(2);
+        h.hover_at(pos2(110.0, 107.0));
+        h.run_steps(2);
+        let selected = |fixture: &Fixture, lane| {
+            fixture
+                .editor
+                .selected
+                .get(&fixture.sources[lane])
+                .cloned()
+                .unwrap_or_default()
+        };
+        assert_eq!(selected(h.state(), 0), BTreeSet::from([0, 1]));
+        assert_eq!(selected(h.state(), 1), BTreeSet::from([0]));
+        h.hover_at(pos2(70.0, 58.0));
+        h.run_steps(2);
+        assert_eq!(selected(h.state(), 0), BTreeSet::from([0]));
+        assert!(selected(h.state(), 1).is_empty());
+        let end = pos2(110.0, 107.0);
+        h.hover_at(end);
+        h.run_steps(2);
+        h.drop_at(end);
+        h.event(Event::ModifiersChanged(Modifiers::NONE));
+        h.run_steps(2);
+        let previous = Arc::clone(h.state().app.project());
+        h.key_press(Key::Delete);
+        h.run_steps(2);
+        assert!(h.state().points(0).is_empty());
+        assert!(h.state().points(1).is_empty());
+        h.state_mut().app.dispatch(Action::Edit(EditAction::Undo));
+        assert_eq!(h.state().app.project(), &previous);
+    }
+
+    #[test]
+    fn column_compaction_preserves_extrema_in_traversal_order() {
+        let mut path = CurvePath::new(5);
+        let samples = [
+            pos2(0.1, 4.0),
+            pos2(0.2, 8.0),
+            pos2(0.3, 2.0),
+            pos2(0.4, 2.0),
+            pos2(1.1, 3.0),
+            pos2(1.2, 3.0),
+            pos2(1.3, 3.0),
+            pos2(2.1, 5.0),
+        ];
+        for point in samples {
+            path.push(point);
+        }
+        assert_eq!(
+            path.into_points(),
+            [samples[1], samples[2], samples[4], samples[6], samples[7]]
+        );
     }
 }

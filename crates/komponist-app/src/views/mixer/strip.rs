@@ -986,12 +986,7 @@ fn automation_value(
     strip: &Strip,
     target: &komponist_model::automation::AutomationTarget,
 ) -> Option<f32> {
-    super::super::automation::automation_controls(
-        ctx.project,
-        strip.channel.into(),
-        target,
-        ctx.engine.playhead(),
-    )
+    super::super::automation::automation_controls(ctx, strip.channel.into(), target)
 }
 
 fn automation_dot(ui: &Ui, at: egui::Pos2, s: &Strip) {

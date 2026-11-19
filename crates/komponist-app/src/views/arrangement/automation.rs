@@ -368,7 +368,7 @@ impl State {
         let base = target.as_ref().map_or(0.0, |target| target.base);
         let head = ctx.engine.playhead();
         let effective_now =
-            crate::views::automation::automation_controls(project, row.owner, &lane.target, head)
+            crate::views::automation::automation_controls(ctx, row.owner, &lane.target)
                 .unwrap_or(base);
         if header.height() >= f32::from(LANE_HEIGHT_DEFAULT) {
             let value = target.as_ref().map_or_else(

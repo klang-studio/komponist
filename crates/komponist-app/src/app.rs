@@ -1206,7 +1206,8 @@ impl App {
                 } else {
                     "undo-automation-add-lane"
                 };
-                self.apply(undo, |p| {
+                let shown_target = target.clone();
+                if self.apply(undo, |p| {
                     if exists {
                         return automation::set_shown(p, owner, true);
                     }
@@ -1216,7 +1217,12 @@ impl App {
                         automation::add_lane(p, owner, target, label)?.0
                     };
                     automation::set_shown(&project, owner, true)
-                });
+                }) && let Some(lane) =
+                    lanes(self.project(), owner).and_then(|a| a.lane(&shown_target))
+                {
+                    self.ui.arrangement.automation_reveal = Some((owner, lane.id));
+                    self.ui.layout.dock_maximized = false;
+                }
             }
             Automation::Remove(Source::Lane(owner, id)) => {
                 self.apply("undo-automation-remove-lane", |p| {
@@ -2918,6 +2924,7 @@ impl App {
         self.ui.plugin_windows.clear();
         self.ui.arrangement.scroll_tick = 0.0;
         self.ui.arrangement.scroll_y = 0.0;
+        self.ui.arrangement.automation_reveal = None;
         self.ui.screen = Screen::Project;
         self.ui.dialog = None;
         self.shell.focus_before_dialog = None;

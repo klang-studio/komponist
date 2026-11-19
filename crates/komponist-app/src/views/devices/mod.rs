@@ -110,12 +110,7 @@ impl View for Devices {
                     device: c.device,
                     param: param.info.id.clone(),
                 };
-                if let Some(value) = super::automation::automation_controls(
-                    &project,
-                    owner,
-                    &target,
-                    ctx.engine.playhead(),
-                ) {
+                if let Some(value) = super::automation::automation_controls(ctx, owner, &target) {
                     param.value = param.info.to_plain(f64::from(value));
                     param.text = param.info.format(param.value);
                     c.automation.insert(param.info.id.clone(), ink);

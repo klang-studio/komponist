@@ -1,13 +1,15 @@
 //! Discovers targets from the owning channel, and presents them in the shared parameter chooser.
 
+use std::collections::HashMap;
+
 use egui::{
     Color32, Id, Key, Modifiers, Rect, Response, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2,
 };
 use komponist_i18n::Lang;
-use komponist_model::automation::{self, AutomationMode, AutomationOwner, AutomationTarget};
+use komponist_model::automation::{AutomationMode, AutomationOwner, AutomationTarget};
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
 use komponist_model::project::{VOLUME_DB_MAX, VOLUME_DB_MIN};
-use komponist_model::{Channel, Device, Project, TrackSend};
+use komponist_model::{Channel, Device, TrackSend};
 use komponist_plugins::DeviceStatus;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, radius, size, space, typography};
@@ -263,12 +265,13 @@ impl<'a, 'view> Catalog<'a, 'view> {
                 .map(|param| self.device_target(device, param, &name))
                 .collect::<Vec<_>>();
             if let Some(infos) = self.ctx.engine.host().params(device.id) {
+                let modules: HashMap<_, _> = infos
+                    .iter()
+                    .filter(|info| !info.module.is_empty())
+                    .map(|info| (info.id, info))
+                    .collect();
                 for target in &mut targets {
-                    if let Some(id) = target.info.id.plugin_id()
-                        && let Some(info) = infos
-                            .iter()
-                            .find(|info| info.id == id && !info.module.is_empty())
-                    {
+                    if let Some(info) = target.info.id.plugin_id().and_then(|id| modules.get(&id)) {
                         target.label = format!("{name} · {} · {}", info.module, info.name);
                     }
                 }
@@ -347,25 +350,6 @@ pub(crate) fn mode_chip(
             .id(id),
     );
     (selected != before).then_some(names[selected].0)
-}
-
-pub(crate) fn automation_controls(
-    project: &Project,
-    owner: AutomationOwner,
-    key: &AutomationTarget,
-    at: komponist_model::Tick,
-) -> Option<f32> {
-    let lane = lanes(project, owner)?
-        .lanes
-        .iter()
-        .find(|lane| &lane.target == key)?;
-    if lane.mode == AutomationMode::Off {
-        return None;
-    }
-    match owner {
-        AutomationOwner::Track(id) => automation::effective_value_at(project.track(id)?, key, at),
-        AutomationOwner::Master => automation::value_at(lane.points.as_slice(), at),
-    }
 }
 
 pub(crate) fn chooser_button(ui: &mut Ui, rect: Rect, id: Id, lang: Lang, label: &str) -> Response {
@@ -461,7 +445,69 @@ pub(crate) fn toggle(
 pub(crate) struct Chooser {
     active: Option<Id>,
     query: String,
-    highlighted: usize,
+    highlighted: Highlight,
+}
+
+/// Re-resolve the selected target against the latest rows, since plugin metadata can arrive
+/// while the popup remains open. A target may be listed both under Recent and its own device.
+#[derive(Debug, Default)]
+enum Highlight {
+    #[default]
+    First,
+    Target {
+        key: AutomationTarget,
+        occurrence: usize,
+    },
+    Add,
+}
+
+impl Highlight {
+    fn update(
+        &mut self,
+        rows: &[&AutomationTarget],
+        add: bool,
+        up: bool,
+        down: bool,
+    ) -> (Option<usize>, bool) {
+        let previous = match self {
+            Self::First => Some(0),
+            Self::Target { key, occurrence } => {
+                let mut matches = rows.iter().enumerate().filter(|(_, row)| **row == &*key);
+                let first = matches.next();
+                if *occurrence == 0 {
+                    first.map(|(index, _)| index)
+                } else {
+                    matches
+                        .nth(*occurrence - 1)
+                        .or(first)
+                        .map(|(index, _)| index)
+                }
+            }
+            Self::Add => add.then_some(rows.len()),
+        };
+        let count = rows.len() + usize::from(add);
+        if count == 0 {
+            *self = Self::First;
+            return (None, previous.is_none());
+        }
+        let mut index = previous.unwrap_or(0);
+        if up {
+            index = index.saturating_sub(1);
+        }
+        if down {
+            index = (index + 1).min(count - 1);
+        }
+        *self = if let Some(key) = rows.get(index) {
+            let occurrence = rows[..index].iter().filter(|row| *row == key).count();
+            Self::Target {
+                key: (**key).clone(),
+                occurrence,
+            }
+        } else {
+            Self::Add
+        };
+        (Some(index), previous.is_none())
+    }
 }
 
 impl Chooser {
@@ -469,7 +515,7 @@ impl Chooser {
         if self.active != Some(id) {
             self.active = Some(id);
             self.query.clear();
-            self.highlighted = 0;
+            self.highlighted = Highlight::default();
         } else {
             self.active = None;
         }
@@ -527,21 +573,21 @@ impl Chooser {
                         search.request_focus();
                     }
                     if search.changed() {
-                        self.highlighted = 0;
+                        self.highlighted = Highlight::default();
                     }
                     let sections = catalog.sections(&self.query);
-                    let count = sections.iter().map(|(_, rows)| rows.len()).sum::<usize>()
-                        + usize::from(add);
                     let up = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp));
                     let down = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown));
                     let enter = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
                     cancel = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
-                    if up {
-                        self.highlighted = self.highlighted.saturating_sub(1);
-                    }
-                    if down {
-                        self.highlighted = (self.highlighted + 1).min(count.saturating_sub(1));
-                    }
+                    let (highlighted, previous_missing) = {
+                        let rows = sections
+                            .iter()
+                            .flat_map(|(_, rows)| rows.iter().map(|target| &target.key))
+                            .collect::<Vec<_>>();
+                        self.highlighted.update(&rows, add, up, down)
+                    };
+                    let enter = enter && !previous_missing;
                     egui::ScrollArea::vertical()
                         .max_height((height - search.rect.height()).max(0.0))
                         .show(ui, |ui| {
@@ -562,13 +608,13 @@ impl Chooser {
                                         ui,
                                         index,
                                         &target.label,
-                                        self.highlighted == index,
+                                        highlighted == Some(index),
                                         dot,
                                     );
-                                    if self.highlighted == index && (up || down) {
+                                    if highlighted == Some(index) && (up || down) {
                                         response.scroll_to_me(None);
                                     }
-                                    if response.clicked() || (enter && self.highlighted == index) {
+                                    if response.clicked() || (enter && highlighted == Some(index)) {
                                         result = Some(Choice::Target {
                                             key: target.key,
                                             label: target.label,
@@ -582,13 +628,13 @@ impl Chooser {
                                     ui,
                                     index,
                                     lang.automation_add_lane(),
-                                    self.highlighted == index,
+                                    highlighted == Some(index),
                                     false,
                                 );
-                                if self.highlighted == index && (up || down) {
+                                if highlighted == Some(index) && (up || down) {
                                     response.scroll_to_me(None);
                                 }
-                                if response.clicked() || (enter && self.highlighted == index) {
+                                if response.clicked() || (enter && highlighted == Some(index)) {
                                     result = Some(Choice::Add);
                                 }
                             }
@@ -653,4 +699,56 @@ fn chooser_row(ui: &mut Ui, index: usize, text: &str, highlighted: bool, dot: bo
         response
     })
     .inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn highlight_follows_target_when_rows_change() {
+        let mut highlight = Highlight::default();
+        let volume = AutomationTarget::Volume;
+        let pan = AutomationTarget::Pan;
+        let new = AutomationTarget::Macro { index: 0 };
+        assert_eq!(
+            highlight.update(&[&volume, &pan], false, false, true),
+            (Some(1), false)
+        );
+        assert_eq!(
+            highlight.update(&[&new, &volume, &pan], false, false, false),
+            (Some(2), false)
+        );
+        assert_eq!(
+            highlight.update(&[&new, &volume], false, false, false),
+            (Some(0), true)
+        );
+    }
+
+    #[test]
+    fn highlight_distinguishes_recent_from_regular_and_tracks_add_row() {
+        let mut highlight = Highlight::default();
+        let volume = AutomationTarget::Volume;
+        let pan = AutomationTarget::Pan;
+        assert_eq!(
+            highlight.update(&[&volume, &pan, &volume], true, false, true),
+            (Some(1), false)
+        );
+        assert_eq!(
+            highlight.update(&[&volume, &pan, &volume], true, false, true),
+            (Some(2), false)
+        );
+        assert_eq!(
+            highlight.update(&[&pan, &volume], true, false, false),
+            (Some(1), false)
+        );
+        assert_eq!(
+            highlight.update(&[&pan, &volume], true, false, true),
+            (Some(2), false)
+        );
+        assert_eq!(
+            highlight.update(&[&volume], true, false, false),
+            (Some(1), false)
+        );
+    }
 }
