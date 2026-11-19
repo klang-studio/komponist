@@ -305,6 +305,45 @@ fn missing_plugin_keeps_its_state_byte_identical_through_a_save() {
 }
 
 #[test]
+fn temporary_parameter_edit_defers_plugin_snapshot_until_base_returns() {
+    let dir = scratch("temporary-param-state");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let id = param_id(&rig.manager, 10, "Gain");
+    let base = rig.manager.param_base(device_id, id).unwrap();
+    let slot = rig.slots[&device_id];
+    let safe = rig.manager.snapshot_states(PATIENCE);
+    assert_eq!(safe.len(), 1);
+
+    let temporary = base * 0.5;
+    assert_ne!(temporary, base);
+    rig.send(komponist_engine::Command::SetParam {
+        slot,
+        id,
+        value: temporary,
+    });
+    rig.process(BLOCK);
+    rig.manager.request_state(device_id);
+    rig.manager.preview_param(device_id, id, temporary);
+    assert!(rig.manager.snapshot_states(PATIENCE).is_empty());
+    assert_eq!(rig.manager.param_base(device_id, id), Some(base));
+
+    rig.send(komponist_engine::Command::SetParam {
+        slot,
+        id,
+        value: base,
+    });
+    rig.process(BLOCK);
+    assert_eq!(rig.manager.snapshot_states(PATIENCE), safe);
+    rig.manager.shutdown();
+}
+
+#[test]
 fn parameter_changes_are_snapshotted_once_debounced() {
     let dir = scratch("debounce");
     let Some(manager) = scanned_manager(&dir) else {

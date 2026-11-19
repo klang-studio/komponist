@@ -85,7 +85,7 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// `HeaderAction`, `Shortcut`, `HeaderKey`, `FrameMoved`, `CloseRequested`, `GuiClosed` with the
 /// frame's last rect, `RaiseFrame` and `FrameWindow`). 5 (#67): the engine consumes parameter
 /// edits and a state restore replies with its authoritative parameter values.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -336,6 +336,13 @@ pub enum ControlMsg {
         /// Echoed in the answer.
         request: u32,
     },
+    /// Snapshot only when the listed parameters are back at their persistent values.
+    GetStateChecked {
+        /// Echoed in the answer.
+        request: u32,
+        /// Parameter IDs and their expected plain values.
+        expected: Vec<(u32, f64)>,
+    },
     /// Restore a state blob (from `State` or the project file). Answer: `StateApplied`.
     SetState {
         /// Echoed in the answer.
@@ -414,6 +421,11 @@ pub enum BridgeMsg {
         request: u32,
         /// Opaque state blob.
         state: Vec<u8>,
+    },
+    /// The plugin still has a temporary parameter value. The previous state remains valid.
+    StateDeferred {
+        /// The original snapshot request.
+        request: u32,
     },
     /// Answer to `ListParams`, or unsolicited after the plugin rescanned its parameters.
     Params(Vec<ParamInfo>),
@@ -1554,6 +1566,10 @@ mod tests {
             },
             ControlMsg::Deactivate,
             ControlMsg::GetState { request: 7 },
+            ControlMsg::GetStateChecked {
+                request: 3,
+                expected: vec![(1, 0.4)],
+            },
             ControlMsg::SetState {
                 request: 9,
                 state: vec![1, 2, 3],
@@ -1641,6 +1657,7 @@ mod tests {
                 request: 7,
                 state: vec![9; 100],
             },
+            BridgeMsg::StateDeferred { request: 11 },
             BridgeMsg::Params(vec![param]),
             BridgeMsg::ParamValues(vec![value.clone()]),
             BridgeMsg::StateApplied {

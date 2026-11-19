@@ -481,6 +481,9 @@ impl App {
         if self.migrate_recordings_for_save(&path).is_err() {
             return false;
         }
+        // Route queued GUI edits before requesting state, so a temporary parameter cannot be
+        // mistaken for a persisted plugin value.
+        self.drain_events();
         // The bridged plugins' current states go into the file (blocking, bounded).
         for (device, state) in self
             .engine

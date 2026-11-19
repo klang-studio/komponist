@@ -777,6 +777,9 @@ impl Bridge {
                     Err(e) => self.error(ErrorContext::State, e.to_string()),
                 }
             }
+            ControlMsg::GetStateChecked { request, expected } => {
+                self.get_state_checked(request, &expected);
+            }
             ControlMsg::SetState { request, state } => self.set_state(request, &state),
             ControlMsg::ListParams => {
                 // Answered in every state (an empty list before `Load`).
@@ -904,6 +907,59 @@ impl Bridge {
         self.plugin = Some(plugin);
         self.region.set_bridge_state(BridgeState::Loaded);
         self.send(BridgeMsg::Loaded(Box::new(info)));
+    }
+
+    fn get_state_checked(&mut self, request: u32, expected: &[(u32, f64)]) {
+        self.sync_controller();
+        let Some(plugin) = self.plugin.as_mut() else {
+            return self.error(ErrorContext::State, "no plugin loaded");
+        };
+        let at_base = |plugin: &dyn HostedPlugin| {
+            expected.iter().all(|&(id, value)| {
+                plugin
+                    .param_value(id)
+                    .is_some_and(|actual| (actual - value).abs() <= 1e-6 * value.abs().max(1.0))
+            })
+        };
+        if !at_base(plugin.as_ref()) {
+            self.send(BridgeMsg::StateDeferred { request });
+            return;
+        }
+        let controller = self
+            .active
+            .as_ref()
+            .and_then(|active| active.controller.clone());
+        let mut values = Vec::new();
+        let mut snapshot = || {
+            // Processing may have produced controller values after the first check.
+            if let Some(controller) = &controller {
+                values.extend(controller.drain());
+                for &(id, value) in &values {
+                    plugin.sync_controller_param(id, value);
+                }
+            }
+            if !at_base(plugin.as_ref()) {
+                return Ok(None);
+            }
+            let state = plugin.save_state().map_err(|error| error.to_string())?;
+            Ok(at_base(plugin.as_ref()).then_some(state))
+        };
+        let result = if let Some(active) = self.active.as_mut() {
+            self.region.set_bridge_state(BridgeState::Loaded);
+            let result = active.rt.restore(|| (snapshot(), false));
+            self.region.set_bridge_state(BridgeState::Active);
+            result.and_then(|(state, _)| state)
+        } else {
+            snapshot()
+        };
+        for (id, value) in values {
+            self.queue_value(id, value);
+        }
+        match result {
+            Ok(Some(state)) => self.send(BridgeMsg::State { request, state }),
+            Ok(None) => self.send(BridgeMsg::StateDeferred { request }),
+            Err(error) => self.error(ErrorContext::State, error),
+        }
     }
 
     fn set_state(&mut self, request: u32, state: &[u8]) {

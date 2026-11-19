@@ -107,6 +107,14 @@ pub(crate) enum StatePurpose {
     Collect,
 }
 
+#[derive(Debug)]
+struct StateRequest {
+    request: u32,
+    purpose: StatePurpose,
+    checked: bool,
+    superseded: bool,
+}
+
 /// A state blob that arrived for a `Collect` request.
 pub(crate) type Collected = (u32, Arc<[u8]>);
 
@@ -214,7 +222,7 @@ pub(crate) struct Bridge {
     ready_at: Option<Instant>,
     stop_deadline: Option<Instant>,
     /// `GetState` requests without answer, in send order.
-    state_requests: VecDeque<(u32, StatePurpose)>,
+    state_requests: VecDeque<StateRequest>,
     state_restores: VecDeque<StateRestore>,
     snapshot_due: Option<Instant>,
     /// The latest state: the last snapshot, or the state the bridge was started with.
@@ -222,6 +230,7 @@ pub(crate) struct Bridge {
     pub params: Vec<ParamInfo>,
     pub values: BTreeMap<u32, ParamValue>,
     pub base_values: BTreeMap<u32, f64>,
+    temporary_params: BTreeSet<u32>,
     pub note_names: Vec<NoteName>,
     pub has_gui: bool,
     /// The plugin has a sidechain input (#6): from the catalog until `Loaded` says so itself.
@@ -342,6 +351,7 @@ impl Bridge {
             params: Vec::new(),
             values: BTreeMap::new(),
             base_values: BTreeMap::new(),
+            temporary_params: BTreeSet::new(),
             note_names: Vec::new(),
             has_gui: false,
             sidechain: s.sidechain,
@@ -428,15 +438,47 @@ impl Bridge {
         if self.phase != Phase::Running || self.keep_stored_state {
             return None;
         }
+        let checked = !self.temporary_params.is_empty();
         let request = self.seq();
-        self.state_requests.push_back((request, purpose));
-        self.send(ControlMsg::GetState { request });
+        let message = if checked {
+            let expected = self
+                .temporary_params
+                .iter()
+                .map(|id| self.base_values.get(id).map(|&value| (*id, value)))
+                .collect::<Option<Vec<_>>>()?;
+            ControlMsg::GetStateChecked { request, expected }
+        } else {
+            ControlMsg::GetState { request }
+        };
+        self.state_requests.push_back(StateRequest {
+            request,
+            purpose,
+            checked,
+            superseded: false,
+        });
+        self.send(message);
         Some(request)
     }
 
     /// Whether this request still awaits a state reply or a state error.
     pub(crate) fn state_request_pending(&self, request: u32) -> bool {
-        self.state_requests.iter().any(|&(seq, _)| seq == request)
+        self.state_requests
+            .iter()
+            .any(|pending| pending.request == request)
+    }
+
+    fn take_state_request(&mut self, request: u32) -> Option<StateRequest> {
+        let index = self
+            .state_requests
+            .iter()
+            .position(|pending| pending.request == request)?;
+        self.state_requests.drain(..=index).next_back()
+    }
+
+    fn invalidate_state_requests(&mut self) {
+        for pending in &mut self.state_requests {
+            pending.superseded = true;
+        }
     }
 
     /// Schedules a debounced `StateSnapshot`.
@@ -464,6 +506,14 @@ impl Bridge {
 
     /// Updates the live cache without retaining a temporary value as a document edit.
     pub(crate) fn preview_param(&mut self, id: u32, value: f64) {
+        if self.base_values.get(&id) != Some(&value) {
+            self.temporary_params.insert(id);
+            self.invalidate_state_requests();
+        }
+        self.update_live_param(id, value);
+    }
+
+    fn update_live_param(&mut self, id: u32, value: f64) {
         let entry = self.values.entry(id).or_insert_with(|| ParamValue {
             id,
             value,
@@ -713,18 +763,29 @@ impl Bridge {
                 }
             }
             BridgeMsg::State { request, state } => {
+                let pending = self.take_state_request(request);
+                if pending.as_ref().is_some_and(|pending| pending.superseded)
+                    || (!self.temporary_params.is_empty()
+                        && !pending.as_ref().is_some_and(|pending| pending.checked))
+                {
+                    self.snapshot_soon();
+                    return;
+                }
+                if pending.as_ref().is_some_and(|pending| pending.checked) {
+                    self.temporary_params.clear();
+                }
                 let state: Arc<[u8]> = state.into();
-                let purpose = match self.state_requests.iter().position(|(r, _)| *r == request) {
-                    // Answers come in order; earlier requests without answer had errors.
-                    Some(i) => self.state_requests.drain(..=i).next_back().map(|(_, p)| p),
-                    None => None,
-                };
                 self.last_state = Some(state.clone());
-                match purpose {
+                match pending.map(|request| request.purpose) {
                     Some(StatePurpose::Collect) => collected.push((request, state)),
                     Some(StatePurpose::Event) | None => {
                         events.push(PluginManagerEvent::StateSnapshot { device, state });
                     }
+                }
+            }
+            BridgeMsg::StateDeferred { request } => {
+                if self.take_state_request(request).is_some() {
+                    self.snapshot_soon();
                 }
             }
             BridgeMsg::Params(params) => {
@@ -936,8 +997,11 @@ impl Bridge {
         for restore in &mut self.state_restores {
             restore.later_edits.insert(id);
         }
+        if self.temporary_params.contains(&id) && self.base_values.get(&id) != Some(&value) {
+            self.invalidate_state_requests();
+        }
         self.base_values.insert(id, value);
-        self.preview_param(id, value);
+        self.update_live_param(id, value);
         self.user_changed();
         self.snapshot_soon();
     }

@@ -597,7 +597,7 @@ own process and RT thread; the plugin manager controls its lifecycle and saved s
 Shared memory (layout version 3) contains request/completion sequence words, transport/status,
 latency, bounded event rings, stereo input/output and stereo sidechain input. Each request marks
 whether sidechain audio is present; absent sidechains receive silence. The postcard control
-protocol (version 6) uses length-prefixed frames for load/activation/state/parameters, GUI and
+protocol (version 7) uses length-prefixed frames for load/activation/state/parameters, GUI and
 header actions, render mode, heartbeat and shutdown.
 
 The plugin manager loads an instance, restores saved state if present, then activates it.
@@ -611,7 +611,9 @@ note-offs may have been missed.
 The engine-owned external processor is the single consumer of the output event ring. The engine
 locates plugin values and gestures on the song timeline and sends them to both automation capture
 and the plugin manager. Temporary automation gestures update the plugin manager's live values
-while preserving its base cache. Events from the current block carry its frame offsets. Late
+while preserving its base cache. If a snapshot would capture a temporary value, the bridge
+defers it and the project keeps its last safe state until the affected parameters return to
+their bases. Events from the current block carry its frame offsets. Late
 edits are anchored to the next engine segment. VST3 controller updates are coalesced on the bridge
 main thread. The echo guard filters controller replies outside an active gesture, and newer control
 changes supersede stale updates from earlier blocks.
