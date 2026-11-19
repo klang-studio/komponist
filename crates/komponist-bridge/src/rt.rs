@@ -27,7 +27,7 @@
 //! `PluginError` or `Inactive`.
 
 use std::cell::UnsafeCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -246,11 +246,12 @@ pub struct RtThread {
 struct RtParamSync {
     activity: AtomicU8,
     params: UnsafeCell<Consumer<(u32, f64)>>,
+    delivered: UnsafeCell<BTreeMap<u32, Option<f64>>>,
     controller: Option<Arc<ControllerValues>>,
 }
 
-// SAFETY: The consumer is accessed only through an Activity guard. Processing and a
-// completed restore pause are mutually exclusive and publish the consumer through the gate.
+// SAFETY: The consumer and delivered values are accessed only through an Activity guard.
+// Processing and a completed restore pause are mutually exclusive.
 unsafe impl Sync for RtParamSync {}
 
 const PROCESSING: u8 = 1;
@@ -266,6 +267,11 @@ impl Activity<'_> {
         // SAFETY: Successful acquisition excludes every other consumer accessor, and this
         // borrow cannot outlive the guard.
         unsafe { &mut *self.sync.params.get() }
+    }
+
+    fn delivered(&mut self) -> &mut BTreeMap<u32, Option<f64>> {
+        // SAFETY: The same gate protects the delivered values as the consumer.
+        unsafe { &mut *self.sync.delivered.get() }
     }
 }
 
@@ -324,6 +330,7 @@ impl RtThread {
         mut processor: Box<dyn HostedProcessor>,
         config: RtConfig,
         controller: Option<Arc<ControllerValues>>,
+        param_ids: Vec<u32>,
     ) -> Result<(RtThread, StartReport), StartFailure> {
         let (params_tx, params_rx) = RingBuffer::new(PARAM_QUEUE_CAPACITY);
         let stop = Arc::new(AtomicBool::new(false));
@@ -333,6 +340,7 @@ impl RtThread {
         let sync = Arc::new(RtParamSync {
             activity: AtomicU8::new(0),
             params: UnsafeCell::new(params_rx),
+            delivered: UnsafeCell::new(param_ids.into_iter().map(|id| (id, None)).collect()),
             controller,
         });
         let worker_sync = sync.clone();
@@ -382,6 +390,22 @@ impl RtThread {
         self.params.push((id, value)).is_ok()
     }
 
+    pub fn has_queued_params(&self) -> bool {
+        self.params.slots() < PARAM_QUEUE_CAPACITY
+    }
+
+    /// Reads state after any in-flight block has finished applying its parameters.
+    pub fn snapshot<T>(
+        &mut self,
+        capture: impl FnOnce(&BTreeMap<u32, Option<f64>>) -> T,
+    ) -> Result<T, String> {
+        let mut pause = self
+            .sync
+            .pause_for_restore()
+            .ok_or_else(|| "timed out waiting for the current audio block".to_owned())?;
+        Ok(capture(pause.delivered()))
+    }
+
     /// Serializes a state load with processing. A new parameter state supersedes queued edits.
     pub fn restore<T>(&mut self, load: impl FnOnce() -> (T, bool)) -> Result<(T, bool), String> {
         let mut pause = self
@@ -391,6 +415,9 @@ impl RtThread {
         let result = load();
         if result.1 {
             while pause.params().pop().is_ok() {}
+            for value in pause.delivered().values_mut() {
+                *value = None;
+            }
             if let Some(controller) = &self.sync.controller {
                 controller.invalidate(None);
             }
@@ -621,14 +648,31 @@ fn serve(
             BlockStatus::PluginError
         }
     };
-    if status == BlockStatus::Ok
-        && let Some(controller) = controller
-    {
-        controller.publish(
-            generation,
-            &scratch.events_in[queued..count],
-            processor.controller_updates(),
-        );
+    if status == BlockStatus::Ok {
+        let delivered = processing.delivered();
+        for event in scratch.events_in[..count]
+            .iter()
+            .chain(&scratch.events_out[..produced])
+        {
+            if let Some(WireEventKind::ParamValue { id, value }) = event.decode()
+                && let Some(last) = delivered.get_mut(&id)
+            {
+                *last = Some(value);
+            }
+        }
+        let controller_updates = processor.controller_updates();
+        for &(id, value) in controller_updates {
+            if let Some(last) = delivered.get_mut(&id) {
+                *last = Some(value);
+            }
+        }
+        if let Some(controller) = controller {
+            controller.publish(
+                generation,
+                &scratch.events_in[queued..count],
+                controller_updates,
+            );
+        }
     }
     server.finish(result(status, dropped));
 }
@@ -743,6 +787,7 @@ mod tests {
             }),
             config,
             None,
+            vec![0],
         )
         .unwrap_or_else(|failure| panic!("could not start probe: {}", failure.error));
         region.set_bridge_state(BridgeState::Active);
@@ -852,6 +897,9 @@ mod tests {
             .unwrap();
         assert_eq!(wait(&mut client, after_edit), BlockStatus::Ok as u32);
         assert_eq!(f64::from_bits(value.load(Ordering::Relaxed)), 0.875);
+        assert_eq!(rt.snapshot(|params| params[&0]).unwrap(), Some(0.875));
+        rt.restore(|| ((), true)).unwrap();
+        assert_eq!(rt.snapshot(|params| params[&0]).unwrap(), None);
         let _ = rt.stop();
     }
 

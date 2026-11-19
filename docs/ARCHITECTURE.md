@@ -597,7 +597,7 @@ own process and RT thread; the plugin manager controls its lifecycle and saved s
 Shared memory (layout version 3) contains request/completion sequence words, transport/status,
 latency, bounded event rings, stereo input/output and stereo sidechain input. Each request marks
 whether sidechain audio is present; absent sidechains receive silence. The postcard control
-protocol (version 7) uses length-prefixed frames for load/activation/state/parameters, GUI and
+protocol (version 8) uses length-prefixed frames for load/activation/state/parameters, GUI and
 header actions, render mode, heartbeat and shutdown.
 
 The plugin manager loads an instance, restores saved state if present, then activates it.
@@ -611,8 +611,10 @@ note-offs may have been missed.
 The engine-owned external processor is the single consumer of the output event ring. The engine
 locates plugin values and gestures on the song timeline and sends them to both automation capture
 and the plugin manager. Temporary automation gestures update the plugin manager's live values
-while preserving its base cache. If a snapshot would capture a temporary value, the bridge
-defers it until the affected parameters return to their bases. A project save can reuse its last
+while preserving its base cache. Every snapshot request verifies pending edits and temporary
+overrides against the expected base values. The bridge accepts a quantized persistent edit only
+after the audio block delivered the requested value. Temporary values must return to their
+bases before snapshotting. A project save can reuse its last
 safe state for a device with no pending persistent edits. With pending edits, saving waits up to
 the snapshot deadline for a validated state and leaves the file intact if the device cannot
 provide one. Events from the current block carry its frame offsets. Late

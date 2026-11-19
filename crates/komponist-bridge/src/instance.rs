@@ -773,7 +773,11 @@ impl Bridge {
                     return self.error(ErrorContext::State, "no plugin loaded");
                 };
                 match plugin.save_state() {
-                    Ok(state) => self.send(BridgeMsg::State { request, state }),
+                    Ok(state) => self.send(BridgeMsg::State {
+                        request,
+                        state,
+                        verified: Vec::new(),
+                    }),
                     Err(e) => self.error(ErrorContext::State, e.to_string()),
                 }
             }
@@ -909,19 +913,24 @@ impl Bridge {
         self.send(BridgeMsg::Loaded(Box::new(info)));
     }
 
-    fn get_state_checked(&mut self, request: u32, expected: &[(u32, f64)]) {
+    fn get_state_checked(&mut self, request: u32, expected: &[(u32, f64, bool)]) {
         self.sync_controller();
         let Some(plugin) = self.plugin.as_mut() else {
             return self.error(ErrorContext::State, "no plugin loaded");
         };
-        let at_base = |plugin: &dyn HostedPlugin| {
-            expected.iter().all(|&(id, value)| {
-                plugin
+        let close = |actual: f64, value: f64| (actual - value).abs() <= 1e-6 * value.abs().max(1.0);
+        // A control message can update a VST3 controller before its processor sees the edit.
+        let queued = self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.rt.has_queued_params());
+        let strict_mismatch = expected.iter().any(|&(id, value, allow_quantized)| {
+            !allow_quantized
+                && !plugin
                     .param_value(id)
-                    .is_some_and(|actual| (actual - value).abs() <= 1e-6 * value.abs().max(1.0))
-            })
-        };
-        if !at_base(plugin.as_ref()) {
+                    .is_some_and(|actual| close(actual, value))
+        });
+        if queued || strict_mismatch {
             self.send(BridgeMsg::StateDeferred { request });
             return;
         }
@@ -929,34 +938,53 @@ impl Bridge {
             .active
             .as_ref()
             .and_then(|active| active.controller.clone());
-        let mut values = Vec::new();
-        let mut snapshot = || {
+        let mut updates = Vec::new();
+        let mut snapshot = |delivered: &BTreeMap<u32, Option<f64>>| {
             // Processing may have produced controller values after the first check.
             if let Some(controller) = &controller {
-                values.extend(controller.drain());
-                for &(id, value) in &values {
+                updates.extend(controller.drain());
+                for &(id, value) in &updates {
                     plugin.sync_controller_param(id, value);
                 }
             }
-            if !at_base(plugin.as_ref()) {
-                return Ok(None);
+            let mut verified = Vec::with_capacity(expected.len());
+            for &(id, value, allow_quantized) in expected {
+                let Some(actual) = plugin.param_value(id).filter(|actual| actual.is_finite())
+                else {
+                    return Ok(None);
+                };
+                let processed =
+                    allow_quantized && delivered.get(&id).copied().flatten() == Some(value);
+                if !close(actual, value) && !processed {
+                    return Ok(None);
+                }
+                verified.push((id, actual));
             }
             let state = plugin.save_state().map_err(|error| error.to_string())?;
-            Ok(at_base(plugin.as_ref()).then_some(state))
+            let stable = verified.iter().all(|&(id, value)| {
+                plugin
+                    .param_value(id)
+                    .is_some_and(|actual| close(actual, value))
+            });
+            Ok(stable.then_some((state, verified)))
         };
         let result = if let Some(active) = self.active.as_mut() {
             self.region.set_bridge_state(BridgeState::Loaded);
-            let result = active.rt.restore(|| (snapshot(), false));
+            let result = active.rt.snapshot(snapshot);
             self.region.set_bridge_state(BridgeState::Active);
-            result.and_then(|(state, _)| state)
+            result.and_then(|state| state)
         } else {
-            snapshot()
+            snapshot(&BTreeMap::new())
         };
-        for (id, value) in values {
+        for (id, value) in updates {
             self.queue_value(id, value);
         }
         match result {
-            Ok(Some(state)) => self.send(BridgeMsg::State { request, state }),
+            Ok(Some((state, verified))) => self.send(BridgeMsg::State {
+                request,
+                state,
+                verified,
+            }),
             Ok(None) => self.send(BridgeMsg::StateDeferred { request }),
             Err(error) => self.error(ErrorContext::State, error),
         }
@@ -1121,21 +1149,23 @@ impl Bridge {
             fallback,
         };
         let server = BridgeServer::new(self.region.clone());
+        let param_ids: Vec<_> = plugin.params().into_iter().map(|param| param.id).collect();
         let controller =
             (plugin.descriptor().format == komponist_ipc::PluginFormat::Vst3).then(|| {
                 Arc::new(ControllerValues::new(
-                    plugin.params().into_iter().map(|p| p.id).collect(),
+                    param_ids.clone(),
                     self.notify.clone(),
                 ))
             });
-        let (rt, report) = match RtThread::start(server, processor, rt_config, controller.clone()) {
-            Ok(started) => started,
-            Err(failure) => {
-                plugin.deactivate(failure.processor);
-                self.report_rt_priority(&failure.report);
-                return Err(failure.error);
-            }
-        };
+        let (rt, report) =
+            match RtThread::start(server, processor, rt_config, controller.clone(), param_ids) {
+                Ok(started) => started,
+                Err(failure) => {
+                    plugin.deactivate(failure.processor);
+                    self.report_rt_priority(&failure.report);
+                    return Err(failure.error);
+                }
+            };
         let latency = plugin.latency();
         self.region.set_latency(latency);
         self.region.set_bridge_state(BridgeState::Active);

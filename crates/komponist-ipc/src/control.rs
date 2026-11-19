@@ -84,8 +84,9 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// bridge's own frame window on macOS) and the frame messages (`HeaderState`, `ActivateFrame`,
 /// `HeaderAction`, `Shortcut`, `HeaderKey`, `FrameMoved`, `CloseRequested`, `GuiClosed` with the
 /// frame's last rect, `RaiseFrame` and `FrameWindow`). 5 (#67): the engine consumes parameter
-/// edits and a state restore replies with its authoritative parameter values.
-pub const PROTOCOL_VERSION: u32 = 7;
+/// edits and a state restore replies with its authoritative parameter values. 8: checked
+/// snapshots distinguish delivered, quantized edits and return the verified parameter values.
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -336,12 +337,13 @@ pub enum ControlMsg {
         /// Echoed in the answer.
         request: u32,
     },
-    /// Snapshot only when the listed parameters are back at their persistent values.
+    /// Snapshot only when the listed parameters are back at their persistent values or a
+    /// persistent edit has been delivered and quantized by the plugin.
     GetStateChecked {
         /// Echoed in the answer.
         request: u32,
-        /// Parameter IDs and their expected plain values.
-        expected: Vec<(u32, f64)>,
+        /// Expected persistent values and whether a delivered edit may be quantized.
+        expected: Vec<(u32, f64, bool)>,
     },
     /// Restore a state blob (from `State` or the project file). Answer: `StateApplied`.
     SetState {
@@ -421,8 +423,10 @@ pub enum BridgeMsg {
         request: u32,
         /// Opaque state blob.
         state: Vec<u8>,
+        /// Confirmed plugin values for a checked request, empty for an ordinary request.
+        verified: Vec<(u32, f64)>,
     },
-    /// The plugin still has a temporary parameter value. The previous state remains valid.
+    /// The plugin still has a temporary value or has not processed a pending edit.
     StateDeferred {
         /// The original snapshot request.
         request: u32,
@@ -1568,7 +1572,7 @@ mod tests {
             ControlMsg::GetState { request: 7 },
             ControlMsg::GetStateChecked {
                 request: 3,
-                expected: vec![(1, 0.4)],
+                expected: vec![(1, 0.4, true)],
             },
             ControlMsg::SetState {
                 request: 9,
@@ -1656,6 +1660,7 @@ mod tests {
             BridgeMsg::State {
                 request: 7,
                 state: vec![9; 100],
+                verified: vec![(1, 0.4)],
             },
             BridgeMsg::StateDeferred { request: 11 },
             BridgeMsg::Params(vec![param]),
@@ -1766,6 +1771,7 @@ mod tests {
                     let msg = BridgeMsg::State {
                         request: state.len() as u32,
                         state: state.clone(),
+                        verified: Vec::new(),
                     };
                     bridge.send(&msg).unwrap();
                 }
@@ -1775,6 +1781,7 @@ mod tests {
                     BridgeMsg::State {
                         request,
                         state: got,
+                        ..
                     } => {
                         assert_eq!(request as usize, state.len());
                         assert!(got == *state, "state of {} bytes differs", state.len());

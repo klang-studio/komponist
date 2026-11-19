@@ -203,7 +203,9 @@ fn vst3_state_round_trips_between_bridges() {
     first.expect_value(decay);
     first.send(ControlMsg::GetState { request: 7 });
     let state = first.expect("State", |m| match m {
-        BridgeMsg::State { request: 7, state } => Some(state.clone()),
+        BridgeMsg::State {
+            request: 7, state, ..
+        } => Some(state.clone()),
         _ => None,
     });
     assert_eq!(&state[..4], b"KPV3", "komponist's VST3 state blob");
@@ -222,7 +224,9 @@ fn vst3_state_round_trips_between_bridges() {
     assert!((value(decay) - 0.25).abs() < 1e-6, "{values:?}");
     second.send(ControlMsg::GetState { request: 8 });
     let again = second.expect("State", |m| match m {
-        BridgeMsg::State { request: 8, state } => Some(state.clone()),
+        BridgeMsg::State {
+            request: 8, state, ..
+        } => Some(state.clone()),
         _ => None,
     });
     assert_eq!(

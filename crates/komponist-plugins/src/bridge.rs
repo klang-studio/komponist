@@ -105,8 +105,6 @@ pub(crate) enum StatePurpose {
     Event,
     /// Collected by `snapshot_states` (no event).
     Collect,
-    /// Collected for a project save, including validation of edits still awaiting a snapshot.
-    Save,
 }
 
 #[derive(Debug)]
@@ -442,14 +440,18 @@ impl Bridge {
         if self.phase != Phase::Running || self.keep_stored_state {
             return None;
         }
-        let checked = !self.temporary_params.is_empty()
-            || (purpose == StatePurpose::Save && !self.pending_params.is_empty());
+        let checked = self.snapshot_needs_verification();
         let request = self.seq();
         let message = if checked {
             let expected = self
                 .temporary_params
                 .union(&self.pending_params)
-                .map(|id| self.base_values.get(id).map(|&value| (*id, value)))
+                .map(|id| {
+                    self.base_values.get(id).map(|&value| {
+                        let allow_quantized = !self.temporary_params.contains(id);
+                        (*id, value, allow_quantized)
+                    })
+                })
                 .collect::<Option<Vec<_>>>()?;
             ControlMsg::GetStateChecked { request, expected }
         } else {
@@ -463,6 +465,10 @@ impl Bridge {
         });
         self.send(message);
         Some(request)
+    }
+
+    fn snapshot_needs_verification(&self) -> bool {
+        !self.temporary_params.is_empty() || !self.pending_params.is_empty()
     }
 
     pub(crate) fn needs_snapshot_for_save(&self) -> bool {
@@ -776,25 +782,42 @@ impl Bridge {
                     self.check_ready(Instant::now(), events);
                 }
             }
-            BridgeMsg::State { request, state } => {
+            BridgeMsg::State {
+                request,
+                state,
+                verified,
+            } => {
                 let pending = self.take_state_request(request);
                 if pending.as_ref().is_some_and(|pending| pending.superseded)
-                    || (!self.temporary_params.is_empty()
+                    || (self.snapshot_needs_verification()
                         && !pending.as_ref().is_some_and(|pending| pending.checked))
                 {
                     self.snapshot_soon();
                     return;
                 }
                 if pending.as_ref().is_some_and(|pending| pending.checked) {
+                    let mut changed = false;
+                    for (id, value) in verified {
+                        if self.pending_params.contains(&id)
+                            && let Some(base) = self.base_values.get_mut(&id)
+                            && (*base - value).abs() > 1e-6 * base.abs().max(1.0)
+                        {
+                            *base = value;
+                            self.update_live_param(id, value);
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        events.push(PluginManagerEvent::ParamsChanged { device });
+                        events.push(PluginManagerEvent::ParamValuesChanged { device });
+                    }
                     self.temporary_params.clear();
-                }
-                if pending.is_some() {
                     self.pending_params.clear();
                 }
                 let state: Arc<[u8]> = state.into();
                 self.last_state = Some(state.clone());
                 match pending.map(|request| request.purpose) {
-                    Some(StatePurpose::Collect | StatePurpose::Save) => {
+                    Some(StatePurpose::Collect) => {
                         collected.push((request, state));
                     }
                     Some(StatePurpose::Event) | None => {

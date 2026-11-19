@@ -280,6 +280,9 @@ fn missing_plugin_keeps_its_state_byte_identical_through_a_save() {
     assert_eq!(level, 0.0);
     let gain = param_id(&rig.manager, 30, "Gain");
     rig.manager.set_param(DeviceId(30), gain, 0.5);
+    run_until(&mut rig, "the edited gain", |rig| {
+        !rig.manager.has_pending_state_edits()
+    });
 
     // Save: snapshots of the running devices go into the document (untracked), then the file.
     let mut document = Document::new(loaded);
@@ -340,6 +343,53 @@ fn temporary_parameter_edit_defers_plugin_snapshot_until_base_returns() {
     });
     rig.process(BLOCK);
     assert_eq!(rig.manager.snapshot_states(PATIENCE), safe);
+    rig.manager.shutdown();
+}
+
+#[test]
+fn snapshots_keep_an_edit_pending_until_the_engine_delivers_it() {
+    let dir = scratch("snapshot-before-engine-edit");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let id = param_id(&rig.manager, 10, "Gain");
+    let original = rig.manager.snapshot_states(PATIENCE);
+    assert_eq!(original.len(), 1);
+    // The synth rounds to its internal 0.1 dB step. The requested value is between steps.
+    let value = 0.403;
+    assert_ne!(rig.manager.param_base(device_id, id), Some(value));
+    assert!(rig.manager.edited_param(device_id, id, value));
+    rig.manager.request_state(device_id);
+
+    // The manager has received the edit. No audio block has delivered it to the plugin yet.
+    assert!(rig.manager.snapshot_states(PATIENCE).is_empty());
+    assert!(rig.manager.poll().into_iter().all(|event| !matches!(
+        event,
+        PluginManagerEvent::StateSnapshot { device, .. } if device == device_id
+    )));
+    assert!(rig.manager.has_pending_state_edits());
+    assert_eq!(
+        rig.manager.snapshot_for_save(Duration::from_millis(100)),
+        Err(device_id)
+    );
+
+    let slot = rig.slots[&device_id];
+    rig.send(komponist_engine::Command::SetParam { slot, id, value });
+    rig.process(BLOCK);
+    rig.manager.request_state(device_id);
+    let updated = next_snapshot(&mut rig, 10);
+    assert_ne!(updated, original[0].1);
+    let applied = rig.manager.param_base(device_id, id).unwrap();
+    assert!((applied - 0.403333333).abs() < 1e-6, "{applied}");
+    assert!(!rig.manager.has_pending_state_edits());
+    assert_eq!(
+        rig.manager.snapshot_for_save(PATIENCE),
+        Ok(vec![(device_id, updated)])
+    );
     rig.manager.shutdown();
 }
 
