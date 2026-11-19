@@ -1604,7 +1604,8 @@ mod tests {
             pos2(42.0, 7.0),
         ];
         let mesh = dense_jump_mesh(&path, &settings);
-        let fills = mesh.indices.chunks_exact(3).filter(|triangle| {
+        let (triangles, _) = mesh.indices.as_chunks::<3>();
+        let fills = triangles.iter().filter(|triangle| {
             triangle
                 .iter()
                 .all(|&i| mesh.vertices[i as usize].color == settings.fill)
