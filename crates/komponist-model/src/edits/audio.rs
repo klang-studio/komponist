@@ -19,7 +19,7 @@ use crate::audio::ClipTimeMode;
 use crate::audio::{
     AudioClip, AudioFile, AudioInput, AudioIo, AudioTake, CLIP_GAIN_DB_MAX, CLIP_GAIN_DB_MIN,
 };
-use crate::automation::{AutomationTarget, Points, merged_clip_points};
+use crate::automation::{AutomationTarget, Points, clip_expansion_points, merged_clip_points};
 use crate::ids::{ClipId, TrackId};
 use crate::params::db_to_p;
 use crate::project::{
@@ -414,6 +414,37 @@ pub(super) fn new_audio(
     Ok((a, length))
 }
 
+/// Limit the additional points materialized when moving repeated clip automation to the track.
+const MAX_FLATTEN_AUTOMATION_POINTS: u128 = 1_000_000;
+
+fn retained_automation_base(track: &Track, target: &AutomationTarget) -> Option<f32> {
+    match *target {
+        AutomationTarget::Volume => Some(1.0 - db_to_p(track.channel.volume_db)),
+        AutomationTarget::Pan => Some((track.channel.pan.clamp(-1.0, 1.0) + 1.0) * 0.5),
+        AutomationTarget::Send { send } => track
+            .sends
+            .iter()
+            .find(|item| item.id == send)
+            .map(|item| 1.0 - db_to_p(item.level_db)),
+        _ => None,
+    }
+}
+
+/// Checks that the surviving mixer automation can fit into arrangement lanes before rendering.
+/// The arrangement has no compact repeat representation, so the check includes disabled lanes.
+pub fn validate_flatten_automation(track: &Track) -> Result<(), EditError> {
+    let mut budget = MAX_FLATTEN_AUTOMATION_POINTS;
+    for lane in &track.automation.lanes {
+        if retained_automation_base(track, &lane.target).is_some() {
+            let points = clip_expansion_points(track, &lane.target);
+            budget = budget
+                .checked_sub(points)
+                .ok_or(EditError::AutomationExpansionTooLarge)?;
+        }
+    }
+    Ok(())
+}
+
 /// Replaces a MIDI track's arrangement clips and device chain with a rendered audio file.
 /// Keeping its ID and channel strip preserves routing, sends and sidechains that read this track.
 pub fn flatten_midi_track(
@@ -431,6 +462,7 @@ pub fn flatten_midi_track(
             "flattening requires a MIDI track with clips",
         ));
     }
+    validate_flatten_automation(source)?;
     let mut next = project.clone();
     let track = Arc::make_mut(&mut next.tracks[index]);
     track.kind = TrackKind::Audio;
@@ -439,15 +471,12 @@ pub fn flatten_midi_track(
         .automation
         .lanes
         .retain(|lane| !matches!(lane.target, AutomationTarget::Param { .. }));
-    // The render is pre-fader. Preserve the effective gain and pan curves on the audio track
-    // before deleting the MIDI clips that used to override those lanes.
+    // The render excludes the track's fader, pan and sends. Preserve their effective curves
+    // on the audio track before deleting the MIDI clips that used to override those lanes.
     for lane in &mut track.automation.lanes {
-        let base = match lane.target {
-            AutomationTarget::Volume => 1.0 - db_to_p(source.channel.volume_db),
-            AutomationTarget::Pan => (source.channel.pan.clamp(-1.0, 1.0) + 1.0) * 0.5,
-            _ => continue,
-        };
-        if let Some(points) = merged_clip_points(source, lane, base) {
+        if let Some(base) = retained_automation_base(source, &lane.target)
+            && let Some(points) = merged_clip_points(source, lane, base)
+        {
             Arc::make_mut(lane).points = Points::new(points);
         }
     }

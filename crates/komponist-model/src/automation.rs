@@ -429,6 +429,26 @@ pub fn clip_override_spans<'a>(
     spans
 }
 
+/// An upper bound on the number of points emitted by the winning clip spans. One
+/// repetition contributes at most two points for every stored point plus its outer endpoints.
+pub(crate) fn clip_expansion_points(track: &Track, target: &AutomationTarget) -> u128 {
+    clip_override_spans(track, target)
+        .into_iter()
+        .map(|span| {
+            let points = clip_points(span.clip, span.envelope);
+            if constant_value(points).is_some() {
+                return 2;
+            }
+            let content = i128::from(clip_content_length(span.clip).0);
+            let origin = i128::from(span.clip.start.0);
+            let first = (i128::from(span.start.0) - origin) / content;
+            let last = (i128::from(span.end.0) - 1 - origin) / content;
+            let repetitions = (last - first + 1) as u128;
+            repetitions * (2 * points.len() as u128 + 2)
+        })
+        .fold(0, u128::saturating_add)
+}
+
 /// Flattens the winning lane and clip curves, including loop discontinuities and returns to
 /// `base` in gaps when the lane exists only to hold a clip envelope's mode.
 pub fn effective_points(track: &Track, target: &AutomationTarget, base: f32) -> Vec<Point> {
@@ -498,6 +518,14 @@ fn push_point(out: &mut Vec<Point>, point: Point) {
     out.push(point);
 }
 
+fn constant_value(points: &[Point]) -> Option<f32> {
+    let value = points.first()?.value;
+    points
+        .iter()
+        .all(|point| point.value == value)
+        .then_some(value)
+}
+
 fn append_clip_span(
     out: &mut Vec<Point>,
     clip: &Clip,
@@ -508,14 +536,14 @@ fn append_clip_span(
 ) {
     let content = clip_content_length(clip);
     let points = clip_points(clip, envelope);
-    let Some(first) = points.first() else {
+    if points.is_empty() {
         return;
-    };
+    }
     // A flat envelope has the same value in every repetition. Only its outer boundaries
     // matter, even for a long clip with a one-tick content length.
-    if points.iter().all(|point| point.value == first.value) {
-        push_point(out, Point::linear(start + shift, first.value));
-        push_point(out, Point::linear(end + shift, first.value));
+    if let Some(value) = constant_value(points) {
+        push_point(out, Point::linear(start + shift, value));
+        push_point(out, Point::linear(end + shift, value));
         return;
     }
     while start < end {

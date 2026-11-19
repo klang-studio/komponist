@@ -44,7 +44,7 @@ pub use audio::{
     AudioClipProp, NewAudioTrack, add_audio_take, add_audio_track, add_audio_track_in,
     flatten_midi_track, remove_audio_take, rename_audio_take, rewrite_audio_files,
     select_audio_take, set_audio_clip_file, set_audio_clip_prop, set_audio_clip_warp,
-    trim_audio_clip_start,
+    trim_audio_clip_start, validate_flatten_automation,
 };
 
 pub use routes::{
@@ -70,6 +70,8 @@ mod warp_tests;
 pub enum EditError {
     /// The project has no unused object identifiers left.
     IdsExhausted,
+    /// The rendered automation would exceed the supported arrangement point budget.
+    AutomationExpansionTooLarge,
     /// No track with this id.
     TrackNotFound(TrackId),
     /// No clip with this id.
@@ -116,6 +118,9 @@ impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             EditError::IdsExhausted => write!(f, "project object identifiers exhausted"),
+            EditError::AutomationExpansionTooLarge => {
+                write!(f, "flattening would create too many automation points")
+            }
             EditError::TrackNotFound(id) => write!(f, "track {} not found", id.0),
             EditError::ClipNotFound(id) => write!(f, "clip {} not found", id.0),
             EditError::NoteNotFound(id) => write!(f, "note {} not found", id.0),

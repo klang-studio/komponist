@@ -102,7 +102,7 @@ fn bus(p: &Project) -> (Project, TrackId) {
 }
 
 #[test]
-fn flattening_carries_clip_gain_and_pan_to_the_existing_arrangement_lanes() {
+fn flattening_carries_clip_mixer_curves_to_the_existing_arrangement_lanes() {
     use crate::automation::{
         AutomationMode, AutomationOwner, AutomationTarget, Point, Points, effective_value_at,
     };
@@ -120,6 +120,9 @@ fn flattening_carries_clip_gain_and_pan_to_the_existing_arrangement_lanes() {
         &[id],
         TrackProp::Channel(ChannelProp::Pan(-0.5)),
     ));
+    let (p, bus) = bus(&p);
+    let (p, send) = ok_with(add_send(&p, id, bus));
+    let p = ok(set_send(&p, send, SendProp::LevelDb(-24.0)));
     let (p, clip) = ok_with(add_clip(&p, id, midi(240, 1200)));
     let mut p = ok(set_clip_loop(&p, clip, Some(Tick(600)), Tick(1200)));
     let owner = AutomationOwner::Track(id);
@@ -130,6 +133,11 @@ fn flattening_carries_clip_gain_and_pan_to_the_existing_arrangement_lanes() {
             1.0 - db_to_p(-12.0),
         ),
         (AutomationTarget::Pan, AutomationMode::Off, 0.25),
+        (
+            AutomationTarget::Send { send },
+            AutomationMode::Latch,
+            1.0 - db_to_p(-24.0),
+        ),
     ];
     for (target, mode, _) in &lanes {
         p = ok(add_clip_automation(&p, clip, target.clone(), String::new()));
@@ -149,6 +157,7 @@ fn flattening_carries_clip_gain_and_pan_to_the_existing_arrangement_lanes() {
     let (flattened, _) = ok_with(flatten_midi_track(&p, id, Tick(240), file()));
     let audio = flattened.track(id).unwrap();
     assert!(audio.is_audio());
+    assert_eq!(audio.sends, p.track(id).unwrap().sends);
     assert!(audio.clips.iter().all(|clip| clip.automation.is_empty()));
     for (target, mode, base) in &lanes {
         let original = p.track(id).unwrap().automation.lane(target).unwrap();
@@ -173,6 +182,55 @@ fn flattening_carries_clip_gain_and_pan_to_the_existing_arrangement_lanes() {
             );
         }
     }
+}
+
+#[test]
+fn flattening_refuses_to_expand_an_enormous_disabled_modulating_loop() {
+    use crate::automation::{AutomationMode, AutomationOwner, AutomationTarget, Point, Points};
+    use crate::edits::automation::{add_clip_automation, set_clip_points, set_lane_mode};
+
+    let (p, id) = midi_track(&Project::new("Flatten"));
+    let (p, clip) = ok_with(add_clip(&p, id, midi(240, 1200)));
+    let p = ok(set_clip_loop(&p, clip, Some(Tick(2)), Tick(1_000_000_000)));
+    let target = AutomationTarget::Pan;
+    let p = ok(add_clip_automation(&p, clip, target.clone(), String::new()));
+    let lane = p.track(id).unwrap().automation.lane(&target).unwrap().id;
+    let p = ok(set_lane_mode(
+        &p,
+        AutomationOwner::Track(id),
+        lane,
+        AutomationMode::Off,
+    ));
+
+    // Constant values have a compact representation even with this many repetitions.
+    let p = ok(set_clip_points(
+        &p,
+        clip,
+        &target,
+        Points::new(vec![Point::linear(Tick::ZERO, 0.4)]),
+    ));
+    assert_eq!(validate_flatten_automation(p.track(id).unwrap()), Ok(()));
+    let p = ok(set_clip_points(
+        &p,
+        clip,
+        &target,
+        Points::new(vec![
+            Point::linear(Tick::ZERO, 0.4),
+            Point::linear(Tick(1), 0.9),
+        ]),
+    ));
+    let mut doc = Document::new(p);
+    let before = doc.project().clone();
+    assert_eq!(
+        validate_flatten_automation(before.track(id).unwrap()),
+        Err(EditError::AutomationExpansionTooLarge),
+    );
+    assert_eq!(
+        doc.apply_with("flatten", |p| flatten_midi_track(p, id, Tick(240), file())),
+        Err(EditError::AutomationExpansionTooLarge),
+    );
+    assert!(Arc::ptr_eq(doc.project(), &before));
+    assert!(!doc.undo());
 }
 
 // --- Tracks and kinds -------------------------------------------------------------------------

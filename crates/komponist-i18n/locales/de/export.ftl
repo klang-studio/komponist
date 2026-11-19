@@ -11,6 +11,7 @@ flatten-device-failed = Gerät nicht verfügbar · { $device }
 flatten-no-clips = Wähle eine MIDI-Spur mit Clips.
 flatten-track-changed = Die Spur oder ihre Signalquellen haben sich während des Renderns geändert.
 flatten-worker-failed = Der Rendervorgang wurde unterbrochen.
+flatten-automation-too-large = Wiederholte Clip-Automation würde zu viele Automationspunkte erzeugen.
 flatten-missing-sample = Sample nicht gefunden · { $file }
 flatten-pad-failed = { $device }, Pad { $pad } „{ $sample }“ konnte nicht geladen werden.
 flatten-state-failed = Der aktuelle Zustand von „{ $device }“ konnte für Rückgängig nicht gesichert werden.

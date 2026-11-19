@@ -785,3 +785,50 @@ fn the_localized_track_menu_opens_a_cancellable_flatten_dialog() {
         results.extend_harness(&mut h);
     }
 }
+
+#[test]
+fn oversized_clip_automation_reports_the_limit_before_rendering() {
+    use komponist_model::automation::{
+        AutomationMode, AutomationOwner, AutomationTarget, Point, Points,
+    };
+
+    let (project, track, _) = fixture();
+    let clip = project.track(track).unwrap().clips[0].id;
+    let project = edits::set_clip_loop(&project, clip, Some(Tick(2)), Tick(1_000_000_000)).unwrap();
+    let target = AutomationTarget::Pan;
+    let project =
+        edits::automation::add_clip_automation(&project, clip, target.clone(), "Pan".into())
+            .unwrap();
+    let project = edits::automation::set_clip_points(
+        &project,
+        clip,
+        &target,
+        Points::new(vec![
+            Point::linear(Tick::ZERO, 0.4),
+            Point::linear(Tick(1), 0.9),
+        ]),
+    )
+    .unwrap();
+    let owner = AutomationOwner::Track(track);
+    let lane = project
+        .track(track)
+        .unwrap()
+        .automation
+        .lane(&target)
+        .unwrap()
+        .id;
+    let project =
+        edits::automation::set_lane_mode(&project, owner, lane, AutomationMode::Off).unwrap();
+    for lang in [Lang::De, Lang::En] {
+        let mut app = App::headless(project.clone()).with_lang(lang);
+        app.dispatch(Action::Edit(EditAction::FlattenMidiTrack(track)));
+        let status = app.ui().status.as_ref().unwrap();
+        assert_eq!(status.kind, StatusKind::Error);
+        assert_eq!(
+            status.text,
+            lang.flatten_failed(lang.flatten_automation_too_large())
+        );
+        assert!(!app.is_exporting());
+        assert_eq!(app.project().as_ref(), &project);
+    }
+}
