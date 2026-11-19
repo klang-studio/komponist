@@ -405,16 +405,9 @@ impl AutomationCapture {
             };
             let return_ticks = project.tempo_map().seconds_to_ticks(0.250).round() as i64;
             let return_end = Tick(tick.0.saturating_add(return_ticks));
-            let end_value = match owner {
-                AutomationOwner::Track(track) => project
-                    .track(track)
-                    .and_then(|track| automation::effective_value_at(track, target, return_end)),
-                AutomationOwner::Master => edits::lanes(project, owner)
-                    .ok()
-                    .and_then(|lanes| lanes.lane(target))
-                    .and_then(|lane| automation::value_at(lane.points.as_slice(), return_end)),
-            }
-            .unwrap_or(write.base);
+            let end_value = self
+                .completed_value_at(project, &write, return_end)
+                .unwrap_or(write.base);
             let return_limit = if project.loop_on && tick < project.loop_range.end {
                 return_end.min(project.loop_range.end)
             } else {
@@ -455,6 +448,33 @@ impl AutomationCapture {
                 segment.boundary_anchor = true;
             }
         }
+    }
+
+    fn completed_value_at(&self, project: &Project, write: &Write, tick: Tick) -> Option<f32> {
+        let lane = edits::lanes(project, write.owner)
+            .ok()?
+            .lane(&write.target)?;
+        if matches!(write.owner, AutomationOwner::Track(_)) && lane.mode == AutomationMode::Off {
+            return None;
+        }
+        if let AutomationOwner::Track(track) = write.owner
+            && let Some((clip, envelope, offset)) =
+                automation::active_clip_automation(project.track(track)?, &write.target, tick)
+        {
+            let destination = Destination::Clip(clip.id, write.target.clone());
+            if let Some(curve) = self.finished.get(&destination) {
+                let mut envelope = envelope.clone();
+                envelope.points = curve.merged(&envelope.points);
+                return automation::value_at(automation::clip_points(clip, &envelope), offset);
+            }
+            return automation::value_at(automation::clip_points(clip, envelope), offset);
+        }
+        let destination = Destination::Lane(write.owner, lane.id);
+        let merged = self
+            .finished
+            .get(&destination)
+            .map(|curve| curve.merged(&lane.points));
+        automation::value_at(merged.as_ref().unwrap_or(&lane.points).as_slice(), tick)
     }
 
     pub(crate) fn end_segments(&mut self, project: &Project, tick: Tick) {
@@ -907,6 +927,46 @@ mod tests {
             Some(0.8)
         );
         assert!(automation::effective_value_at(track, &target, edge + Tick(100)).unwrap() < 0.8);
+    }
+
+    #[test]
+    fn touch_returns_to_the_completed_capture_from_an_earlier_lap() {
+        let project = fixtures::demo_project();
+        let track = project
+            .tracks
+            .iter()
+            .find(|track| track.name == "Lead")
+            .unwrap();
+        let (id, clip) = (track.id, &track.clips[0]);
+        let (clip, start) = (clip.id, clip.start);
+        let owner = AutomationOwner::Track(id);
+        let target = AutomationTarget::Pan;
+        let project =
+            edits::add_clip_automation(&project, clip, target.clone(), "Pan".into()).unwrap();
+        let lane = edits::lanes(&project, owner)
+            .unwrap()
+            .lane(&target)
+            .unwrap()
+            .id;
+        let project = edits::set_lane_mode(&project, owner, lane, AutomationMode::Touch).unwrap();
+        let original = Points::new(vec![Point::linear(Tick::ZERO, 0.2)]);
+        let project = edits::set_clip_points(&project, clip, &target, original).unwrap();
+        let release = start + Tick(100);
+        let end = release + Tick(project.tempo_map().seconds_to_ticks(0.250).round() as i64);
+        let mut pass = AutomationCapture::default();
+        pass.open(&project, owner, target.clone(), false, 0.2);
+        pass.value(&project, owner, &target, end - Tick(10), 0.8);
+        pass.end_segments(&project, end + Tick(10));
+
+        pass.open(&project, owner, target.clone(), false, 0.2);
+        pass.value(&project, owner, &target, start + Tick(50), 0.5);
+        pass.release(&project, owner, &target, release);
+        let result = pass.apply(&project).unwrap();
+        let track = result.track(id).unwrap();
+        assert_eq!(
+            automation::effective_value_at(track, &target, end),
+            Some(0.8)
+        );
     }
 
     #[test]
