@@ -107,7 +107,12 @@ pub struct StartFailure {
 /// earlier writes to the affected parameter (or all parameters when restoring a state).
 #[derive(Debug)]
 pub(crate) struct ControllerValues {
-    entries: Vec<ControllerValue>,
+    entries: Vec<Arc<ControllerValue>>,
+    signal: Arc<ControllerSignal>,
+}
+
+#[derive(Debug)]
+struct ControllerSignal {
     generation: AtomicU64,
     dirty: AtomicBool,
     notify: Arc<notify::BridgeNotify>,
@@ -169,14 +174,33 @@ impl ControllerValues {
         ids.sort_unstable();
         ids.dedup();
         Self {
-            entries: ids.into_iter().map(ControllerValue::new).collect(),
-            generation: AtomicU64::new(0),
-            dirty: AtomicBool::new(false),
-            notify,
+            entries: ids
+                .into_iter()
+                .map(|id| Arc::new(ControllerValue::new(id)))
+                .collect(),
+            signal: Arc::new(ControllerSignal {
+                generation: AtomicU64::new(0),
+                dirty: AtomicBool::new(false),
+                notify,
+            }),
         }
     }
 
-    fn entry(&self, id: u32) -> Option<&ControllerValue> {
+    fn with_ids(&self, ids: &[u32]) -> Self {
+        Self {
+            entries: ids
+                .iter()
+                .map(|&id| {
+                    self.entry(id)
+                        .cloned()
+                        .unwrap_or_else(|| Arc::new(ControllerValue::new(id)))
+                })
+                .collect(),
+            signal: self.signal.clone(),
+        }
+    }
+
+    fn entry(&self, id: u32) -> Option<&Arc<ControllerValue>> {
         self.entries
             .binary_search_by_key(&id, |slot| slot.id)
             .ok()
@@ -185,7 +209,7 @@ impl ControllerValues {
 
     /// Invalidate earlier publications for one parameter, or all of them after a state load.
     pub(crate) fn invalidate(&self, id: Option<u32>) {
-        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let generation = self.signal.generation.fetch_add(1, Ordering::AcqRel) + 1;
         match id {
             Some(id) => {
                 if let Some(slot) = self.entry(id) {
@@ -222,14 +246,14 @@ impl ControllerValues {
         for &(id, value) in output {
             publish(id, value);
         }
-        if changed && !self.dirty.swap(true, Ordering::Release) {
-            self.notify.controller_values_ready();
+        if changed && !self.signal.dirty.swap(true, Ordering::Release) {
+            self.signal.notify.controller_values_ready();
         }
     }
 
     pub(crate) fn drain(&self) -> impl Iterator<Item = (u32, f64)> + '_ {
-        self.dirty.swap(false, Ordering::Acquire);
-        self.entries.iter().filter_map(ControllerValue::take)
+        self.signal.dirty.swap(false, Ordering::Acquire);
+        self.entries.iter().filter_map(|slot| slot.take())
     }
 }
 
@@ -239,6 +263,10 @@ pub struct RtThread {
     handle: JoinHandle<Box<dyn HostedProcessor>>,
     stop: Arc<AtomicBool>,
     params: Producer<(u32, f64)>,
+    parameters: Arc<ParameterTable>,
+    parameter_updates: Producer<Arc<ParameterTable>>,
+    retired_parameters: Consumer<Arc<ParameterTable>>,
+    parameter_update_pending: bool,
     sync: Arc<RtParamSync>,
 }
 
@@ -281,16 +309,42 @@ pub(crate) fn same_param_value(actual: f64, expected: f64) -> bool {
     (actual - expected).abs() <= 1e-6 * expected.abs().max(1.0)
 }
 
+#[derive(Debug, Default)]
+struct DeliverySlot(UnsafeCell<ParamDelivery>);
+
+// SAFETY: Slot contents are accessed only under the activity guard of their owning RT
+// thread, including during snapshot and restore. Rescans only clone or drop their Arcs.
+unsafe impl Sync for DeliverySlot {}
+
+#[derive(Debug)]
+struct ParameterTable {
+    delivered: BTreeMap<u32, Arc<DeliverySlot>>,
+    controller: Option<Arc<ControllerValues>>,
+}
+
+/// A read-only view of delivery evidence while audio processing is paused.
+pub(crate) struct DeliveredParams<'a>(&'a BTreeMap<u32, Arc<DeliverySlot>>);
+
+impl DeliveredParams<'_> {
+    pub fn confirms_input(&self, id: u32, expected: f64, actual: f64) -> bool {
+        self.0.get(&id).is_some_and(|slot| {
+            // SAFETY: The view cannot outlive the exclusive activity guard.
+            unsafe { &*slot.0.get() }.confirms_input(expected, actual)
+        })
+    }
+}
+
 #[derive(Debug)]
 struct RtParamSync {
     activity: AtomicU8,
     params: UnsafeCell<Consumer<(u32, f64)>>,
-    delivered: UnsafeCell<BTreeMap<u32, ParamDelivery>>,
-    controller: Option<Arc<ControllerValues>>,
+    parameters: UnsafeCell<Arc<ParameterTable>>,
+    parameter_updates: UnsafeCell<Consumer<Arc<ParameterTable>>>,
+    retired_parameters: UnsafeCell<Producer<Arc<ParameterTable>>>,
 }
 
-// SAFETY: The consumer and delivered values are accessed only through an Activity guard.
-// Processing and a completed restore pause are mutually exclusive.
+// SAFETY: The live table and the RT ends of the queues are only accessed through an
+// Activity guard. Processing and a completed restore pause are mutually exclusive.
 unsafe impl Sync for RtParamSync {}
 
 const PROCESSING: u8 = 1;
@@ -308,9 +362,30 @@ impl Activity<'_> {
         unsafe { &mut *self.sync.params.get() }
     }
 
-    fn delivered(&mut self) -> &mut BTreeMap<u32, ParamDelivery> {
-        // SAFETY: The same gate protects the delivered values as the consumer.
-        unsafe { &mut *self.sync.delivered.get() }
+    fn parameters(&self) -> &ParameterTable {
+        // SAFETY: This guard excludes both audio processing and restore from other threads.
+        unsafe { &*self.sync.parameters.get() }
+    }
+
+    fn install_parameter_update(&mut self) {
+        // SAFETY: The guard gives exclusive access to each RT endpoint and the live table.
+        let updates = unsafe { &mut *self.sync.parameter_updates.get() };
+        if let Ok(next) = updates.pop() {
+            let previous = std::mem::replace(unsafe { &mut *self.sync.parameters.get() }, next);
+            let retired = unsafe { &mut *self.sync.retired_parameters.get() };
+            // The control thread never sends another table before taking the retired one.
+            if let Err(rtrb::PushError::Full(previous)) = retired.push(previous) {
+                // This is unreachable under that protocol. Never free a table on the RT thread.
+                std::mem::forget(previous);
+            }
+        }
+    }
+
+    fn update_delivery(&mut self, id: u32, update: impl FnOnce(&mut ParamDelivery)) {
+        if let Some(slot) = self.parameters().delivered.get(&id) {
+            // SAFETY: The guard is exclusive and the mutable borrow prevents an active view.
+            update(unsafe { &mut *slot.0.get() });
+        }
     }
 }
 
@@ -376,16 +451,22 @@ impl RtThread {
         if controller.is_some() {
             processor.use_host_controller_sync();
         }
+        // Exactly one table is in flight, including the trip back for destruction.
+        let (updates_tx, updates_rx) = RingBuffer::new(1);
+        let (retired_tx, retired_rx) = RingBuffer::new(1);
+        let parameters = Arc::new(ParameterTable {
+            delivered: param_ids
+                .into_iter()
+                .map(|id| (id, Arc::new(DeliverySlot::default())))
+                .collect(),
+            controller,
+        });
         let sync = Arc::new(RtParamSync {
             activity: AtomicU8::new(0),
             params: UnsafeCell::new(params_rx),
-            delivered: UnsafeCell::new(
-                param_ids
-                    .into_iter()
-                    .map(|id| (id, ParamDelivery::default()))
-                    .collect(),
-            ),
-            controller,
+            parameters: UnsafeCell::new(parameters.clone()),
+            parameter_updates: UnsafeCell::new(updates_rx),
+            retired_parameters: UnsafeCell::new(retired_tx),
         });
         let worker_sync = sync.clone();
         let (report_tx, report_rx) = mpsc::sync_channel(1);
@@ -411,6 +492,10 @@ impl RtThread {
                     handle,
                     stop,
                     params: params_tx,
+                    parameters,
+                    parameter_updates: updates_tx,
+                    retired_parameters: retired_rx,
+                    parameter_update_pending: false,
                     sync,
                 },
                 report,
@@ -438,30 +523,69 @@ impl RtThread {
         self.params.slots() < PARAM_QUEUE_CAPACITY
     }
 
-    /// Reconciles the delivery map on the control thread before announcing a rescan.
+    pub fn controller(&self) -> Option<Arc<ControllerValues>> {
+        self.parameters.controller.clone()
+    }
+
+    /// Prepares parameter entries on the control thread. Audio takes the table between blocks.
     pub fn refresh_parameter_ids(&mut self, mut ids: Vec<u32>) -> bool {
-        ids.sort_unstable();
-        let Some(mut pause) = self.sync.pause_for_restore() else {
-            return false;
-        };
-        let delivered = pause.delivered();
-        delivered.retain(|id, _| ids.binary_search(id).is_ok());
-        for id in ids {
-            delivered.entry(id).or_default();
+        if self.retired_parameters.pop().is_ok() {
+            self.parameter_update_pending = false;
         }
+        ids.sort_unstable();
+        ids.dedup();
+        if self
+            .parameters
+            .delivered
+            .keys()
+            .copied()
+            .eq(ids.iter().copied())
+        {
+            return true;
+        }
+        if self.parameter_update_pending {
+            return false;
+        }
+        let controller = self
+            .parameters
+            .controller
+            .as_ref()
+            .map(|values| Arc::new(values.with_ids(&ids)));
+        let delivered = ids
+            .into_iter()
+            .map(|id| {
+                let slot = self
+                    .parameters
+                    .delivered
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_default();
+                (id, slot)
+            })
+            .collect();
+        let next = Arc::new(ParameterTable {
+            delivered,
+            controller,
+        });
+        self.parameter_updates
+            .push(next.clone())
+            .expect("one parameter table in flight");
+        self.parameters = next;
+        self.parameter_update_pending = true;
         true
     }
 
     /// Reads state after any in-flight block has finished applying its parameters.
     pub fn snapshot<T>(
         &mut self,
-        capture: impl FnOnce(&BTreeMap<u32, ParamDelivery>) -> T,
+        capture: impl FnOnce(DeliveredParams<'_>) -> T,
     ) -> Result<T, String> {
         let mut pause = self
             .sync
             .pause_for_restore()
             .ok_or_else(|| "timed out waiting for the current audio block".to_owned())?;
-        Ok(capture(pause.delivered()))
+        pause.install_parameter_update();
+        Ok(capture(DeliveredParams(&pause.parameters().delivered)))
     }
 
     /// Serializes a state load with processing. A new parameter state supersedes queued edits.
@@ -470,13 +594,15 @@ impl RtThread {
             .sync
             .pause_for_restore()
             .ok_or_else(|| "timed out waiting for the current audio block".to_owned())?;
+        pause.install_parameter_update();
         let result = load();
         if result.1 {
             while pause.params().pop().is_ok() {}
-            for value in pause.delivered().values_mut() {
-                *value = ParamDelivery::default();
+            for slot in pause.parameters().delivered.values() {
+                // SAFETY: The pause excludes audio access while clearing the delivery evidence.
+                unsafe { *slot.0.get() = ParamDelivery::default() };
             }
-            if let Some(controller) = &self.sync.controller {
+            if let Some(controller) = &pause.parameters().controller {
                 controller.invalidate(None);
             }
         }
@@ -643,10 +769,12 @@ fn serve(
         server.finish(result(BlockStatus::PluginError, 0));
         return;
     }
-    let controller = sync.controller.as_deref();
+    processing.install_parameter_update();
+    let controller = processing.parameters().controller.as_deref();
     // Snapshot before accepting block input. A control edit racing with this block can still
     // supersede its controller notifications when the audio thread completes later.
-    let generation = controller.map_or(0, |values| values.generation.load(Ordering::Acquire));
+    let generation =
+        controller.map_or(0, |values| values.signal.generation.load(Ordering::Acquire));
     // Values from `SetParam` first: offset 0 keeps the list sorted.
     let mut count = 0;
     while count < PARAM_QUEUE_CAPACITY {
@@ -707,28 +835,21 @@ fn serve(
         }
     };
     if status == BlockStatus::Ok {
-        let delivered = processing.delivered();
         for event in &scratch.events_in[..count] {
-            if let Some(WireEventKind::ParamValue { id, value }) = event.decode()
-                && let Some(last) = delivered.get_mut(&id)
-            {
-                last.record_input(request.seq, value);
+            if let Some(WireEventKind::ParamValue { id, value }) = event.decode() {
+                processing.update_delivery(id, |last| last.record_input(request.seq, value));
             }
         }
         for event in &scratch.events_out[..produced] {
-            if let Some(WireEventKind::ParamValue { id, value }) = event.decode()
-                && let Some(last) = delivered.get_mut(&id)
-            {
-                last.record_report(request.seq, value);
+            if let Some(WireEventKind::ParamValue { id, value }) = event.decode() {
+                processing.update_delivery(id, |last| last.record_report(request.seq, value));
             }
         }
         let controller_updates = processor.controller_updates();
         for &(id, value) in controller_updates {
-            if let Some(last) = delivered.get_mut(&id) {
-                last.record_report(request.seq, value);
-            }
+            processing.update_delivery(id, |last| last.record_report(request.seq, value));
         }
-        if let Some(controller) = controller {
+        if let Some(controller) = processing.parameters().controller.as_deref() {
             controller.publish(
                 generation,
                 &scratch.events_in[queued..count],
@@ -784,6 +905,164 @@ mod tests {
             values.drain().collect::<Vec<_>>(),
             [(1, 0.5), (2, 0.25), (3, 0.1)]
         );
+    }
+
+    #[test]
+    fn a_parameter_rescan_preserves_notes_and_synchronizes_new_controller_values() {
+        use komponist_ipc::shm::{BlockSpec, BridgeState};
+        use komponist_ipc::{BridgeClient, ShmRegion, WireTransport};
+
+        #[derive(Default)]
+        struct Calls {
+            entered: AtomicBool,
+            proceed: AtomicBool,
+            note_ons: AtomicU64,
+            note_offs: AtomicU64,
+            resets: AtomicU64,
+        }
+
+        struct Probe(Arc<Calls>);
+
+        impl HostedProcessor for Probe {
+            fn start_processing(&mut self) -> Result<(), HostingError> {
+                Ok(())
+            }
+
+            fn stop_processing(&mut self) {}
+
+            fn reset(&mut self) {
+                self.0.resets.fetch_add(1, Ordering::Relaxed);
+            }
+
+            fn process(&mut self, block: &mut ProcessBlock<'_>) -> ProcessStatus {
+                if !self.0.entered.swap(true, Ordering::Release) {
+                    let deadline = Instant::now() + RESTORE_WAIT;
+                    while !self.0.proceed.load(Ordering::Acquire) && Instant::now() < deadline {
+                        std::thread::yield_now();
+                    }
+                }
+                for event in block.events_in {
+                    match event.decode() {
+                        Some(WireEventKind::NoteOn { .. }) => {
+                            self.0.note_ons.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Some(WireEventKind::NoteOff { .. }) => {
+                            self.0.note_offs.fetch_add(1, Ordering::Relaxed);
+                        }
+                        _ => {}
+                    }
+                }
+                ProcessStatus::Continue
+            }
+        }
+
+        let calls = Arc::new(Calls::default());
+        let region = Arc::new(ShmRegion::create().unwrap());
+        let mut client = BridgeClient::new(region.clone());
+        let notify = Arc::new(notify::BridgeNotify::new().unwrap());
+        let controller = Arc::new(ControllerValues::new(vec![1], notify));
+        let (mut rt, _) = RtThread::start(
+            BridgeServer::new(region.clone()),
+            Box::new(Probe(calls.clone())),
+            RtConfig {
+                priority: 0,
+                period: Duration::from_millis(10),
+                max_frames: 1,
+                fallback: Fallback::Silence,
+            },
+            Some(controller),
+            vec![1],
+        )
+        .unwrap_or_else(|failure| panic!("could not start probe: {}", failure.error));
+        region.set_bridge_state(BridgeState::Active);
+
+        let spec = BlockSpec {
+            frames: 1,
+            flags: 0,
+            steady_time: 0,
+            deadline: None,
+            transport: WireTransport::default(),
+        };
+        let first = client
+            .begin_block(
+                &spec,
+                [&[0.0], &[0.0]],
+                None,
+                &[
+                    WireEvent::new(0, WireEventKind::ParamValue { id: 1, value: 0.25 }),
+                    WireEvent::new(
+                        0,
+                        WireEventKind::NoteOn {
+                            channel: 0,
+                            key: 60,
+                            velocity: 100,
+                            note_id: u32::MAX,
+                        },
+                    ),
+                ],
+            )
+            .unwrap();
+        let deadline = Instant::now() + RESTORE_WAIT;
+        while !calls.entered.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(calls.entered.load(Ordering::Acquire));
+
+        // The first block is already in the processor. The rescan must finish without taking
+        // the restore pause, and its new controller must also see that block's older ID.
+        let accepted = rt.refresh_parameter_ids(vec![1, 7]);
+        let activity = rt.sync.activity.load(Ordering::Acquire);
+        calls.proceed.store(true, Ordering::Release);
+        assert!(accepted);
+        assert_eq!(activity, PROCESSING);
+
+        let wait = |client: &mut BridgeClient, seq| {
+            client
+                .wait_done(seq, Instant::now() + RESTORE_WAIT, [&mut [0.0], &mut [0.0]])
+                .unwrap()
+                .status
+        };
+        assert_eq!(wait(&mut client, first), BlockStatus::Ok as u32);
+        let second = client
+            .begin_block(
+                &spec,
+                [&[0.0], &[0.0]],
+                None,
+                &[
+                    WireEvent::new(0, WireEventKind::ParamValue { id: 7, value: 0.5 }),
+                    WireEvent::new(
+                        0,
+                        WireEventKind::NoteOff {
+                            channel: 0,
+                            key: 60,
+                            note_id: u32::MAX,
+                        },
+                    ),
+                ],
+            )
+            .unwrap();
+        assert_eq!(wait(&mut client, second), BlockStatus::Ok as u32);
+        assert_eq!(calls.note_ons.load(Ordering::Relaxed), 1);
+        assert_eq!(calls.note_offs.load(Ordering::Relaxed), 1);
+        assert_eq!(calls.resets.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            rt.controller().unwrap().drain().collect::<Vec<_>>(),
+            [(1, 0.25), (7, 0.5)]
+        );
+        rt.snapshot(|params| {
+            assert!(params.confirms_input(1, 0.25, 0.25));
+            assert!(params.confirms_input(7, 0.5, 0.5));
+        })
+        .unwrap();
+        assert!(rt.refresh_parameter_ids(vec![7]));
+        assert_no_alloc::assert_no_alloc(|| {
+            rt.snapshot(|params| {
+                assert!(!params.confirms_input(1, 0.25, 0.25));
+                assert!(params.confirms_input(7, 0.5, 0.5));
+            })
+            .unwrap();
+        });
+        let _ = rt.stop();
     }
 
     #[test]
@@ -985,18 +1264,15 @@ mod tests {
             .unwrap();
         assert_eq!(wait(&mut client, new_param), BlockStatus::Ok as u32);
         rt.snapshot(|params| {
-            assert!(params[&0].confirms_input(0.875, 0.875));
-            assert!(params[&1].confirms_input(0.403, 0.4));
-            assert!(!params[&1].confirms_input(0.403, 0.6));
+            assert!(params.confirms_input(0, 0.875, 0.875));
+            assert!(params.confirms_input(1, 0.403, 0.4));
+            assert!(!params.confirms_input(1, 0.403, 0.6));
         })
         .unwrap();
         rt.restore(|| ((), true)).unwrap();
         rt.snapshot(|params| {
-            assert!(
-                params
-                    .values()
-                    .all(|value| value.input.is_none() && value.report.is_none())
-            );
+            assert!(!params.confirms_input(0, 0.875, 0.875));
+            assert!(!params.confirms_input(1, 0.403, 0.4));
         })
         .unwrap();
         let _ = rt.stop();
@@ -1007,13 +1283,13 @@ mod tests {
         let notify = Arc::new(notify::BridgeNotify::new().unwrap());
         let values = ControllerValues::new(vec![1, 2], notify);
         let event = |id, value| WireEvent::new(0, WireEventKind::ParamValue { id, value });
-        let older_block = values.generation.load(Ordering::Acquire);
+        let older_block = values.signal.generation.load(Ordering::Acquire);
         values.publish(older_block, &[event(1, 0.25)], &[]);
         values.invalidate(Some(1));
         // This block took its generation before SetParam but finished after it.
         values.publish(older_block, &[event(1, 0.5), event(2, 0.4)], &[]);
         assert_eq!(values.drain().collect::<Vec<_>>(), [(2, 0.4)]);
-        let newer_block = values.generation.load(Ordering::Acquire);
+        let newer_block = values.signal.generation.load(Ordering::Acquire);
         values.publish(newer_block, &[event(1, 0.75)], &[]);
         assert_eq!(values.drain().collect::<Vec<_>>(), [(1, 0.75)]);
         values.publish(newer_block, &[event(1, 0.25), event(2, 0.5)], &[]);

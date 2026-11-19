@@ -619,8 +619,11 @@ safe state for a device with no pending persistent edits. With pending edits, sa
 the snapshot deadline for a validated state and leaves the file intact if the device cannot
 provide one. Events from the current block carry its frame offsets. Late
 edits are anchored to the next engine segment. VST3 controller updates are coalesced on the bridge
-main thread. The echo guard filters controller replies outside an active gesture, and newer control
-changes supersede stale updates from earlier blocks.
+main thread. A parameter rescan prepares the delivery and controller entries on the control
+thread. The audio thread swaps the table at a block boundary and returns the old table for
+destruction. Entries for surviving IDs keep their delivery and controller history. The echo guard
+filters controller replies outside an active gesture, and newer control changes supersede stale
+updates from earlier blocks.
 
 The engine publishes input/events and wakes the bridge, then collects completion within its
 block deadline budget (60% of the block period minus elapsed time). Late effects pass through;

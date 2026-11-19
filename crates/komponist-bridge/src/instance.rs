@@ -53,8 +53,7 @@ use komponist_hosting::FdEvents;
 use komponist_hosting::GuiParent;
 use komponist_hosting::host_loop::notification_bits as bits;
 use komponist_hosting::{
-    ActivateConfig, HostContext, HostNotification, HostNotify, HostedPlugin, HostingError,
-    PluginKind, RenderMode, TimerId,
+    ActivateConfig, HostContext, HostedPlugin, HostingError, PluginKind, RenderMode, TimerId,
 };
 use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError};
 use komponist_ipc::shm::MAX_BLOCK;
@@ -71,7 +70,7 @@ use crate::cf_loop::{CfEventLoop as EventLoop, Owner};
 use crate::event_loop::EventLoop;
 use crate::notify::{BridgeNotify, CONTROLLER_VALUES_PENDING, LOG_PENDING};
 use crate::rt::{
-    ControllerValues, Fallback, ParamDelivery, RtConfig, RtThread, StartReport, same_param_value,
+    ControllerValues, DeliveredParams, Fallback, RtConfig, RtThread, StartReport, same_param_value,
 };
 #[cfg(windows)]
 use crate::win_loop::{ControlReader, WinEventLoop as EventLoop};
@@ -188,7 +187,6 @@ fn receive_region(channel: &BridgeChannel) -> Result<ShmRegion, String> {
 /// The processing state while active.
 struct Active {
     rt: RtThread,
-    controller: Option<Arc<ControllerValues>>,
     config: ActivateConfig,
 }
 
@@ -214,6 +212,7 @@ struct Bridge {
     pending_values: BTreeMap<u32, f64>,
     values_due: Option<Instant>,
     values_sent: Option<Instant>,
+    params_due: Option<Instant>,
     controller_due: Option<Instant>,
     controller_sent: Option<Instant>,
     shutdown: bool,
@@ -248,6 +247,7 @@ impl Bridge {
             pending_values: BTreeMap::new(),
             values_due: None,
             values_sent: None,
+            params_due: None,
             controller_due: None,
             controller_sent: None,
             shutdown: false,
@@ -463,6 +463,9 @@ impl Bridge {
             self.read_control();
         }
         self.forward_logs();
+        if self.params_due.is_some_and(|due| due <= Instant::now()) && self.report_params() {
+            self.queue_all_values();
+        }
         self.sync_controller_if_due();
         self.send_values_if_due();
         #[cfg(bridge_frame)]
@@ -529,7 +532,11 @@ impl Bridge {
     // --------------------------------------------------------------------------------------------
 
     fn value_deadline(&self) -> Option<Instant> {
-        self.values_due.into_iter().chain(self.controller_due).min()
+        self.values_due
+            .into_iter()
+            .chain(self.params_due)
+            .chain(self.controller_due)
+            .min()
     }
 
     fn sync_controller_if_due(&mut self) {
@@ -540,7 +547,11 @@ impl Bridge {
 
     fn sync_controller(&mut self) {
         self.controller_due = None;
-        if let Some(controller) = self.active.as_ref().and_then(|a| a.controller.clone()) {
+        if let Some(controller) = self
+            .active
+            .as_ref()
+            .and_then(|active| active.rt.controller())
+        {
             self.apply_controller_values(&controller);
         }
     }
@@ -920,10 +931,11 @@ impl Bridge {
                 .rt
                 .refresh_parameter_ids(params.iter().map(|param| param.id).collect())
         {
-            // Wait for a bounded pause again before the host can send edits for the new IDs.
-            self.notify.notify(HostNotification::ParamsChanged);
+            // Retry after audio has had time to retire the preceding table.
+            self.params_due = Some(Instant::now() + VALUES_INTERVAL);
             return false;
         }
+        self.params_due = None;
         self.send(BridgeMsg::Params(params));
         true
     }
@@ -951,9 +963,9 @@ impl Bridge {
         let controller = self
             .active
             .as_ref()
-            .and_then(|active| active.controller.clone());
+            .and_then(|active| active.rt.controller());
         let mut updates = Vec::new();
-        let mut snapshot = |delivered: &BTreeMap<u32, ParamDelivery>| {
+        let mut snapshot = |delivered: Option<DeliveredParams<'_>>| {
             // Processing may have produced controller values after the first check.
             if let Some(controller) = &controller {
                 updates.extend(controller.drain());
@@ -969,8 +981,8 @@ impl Bridge {
                 };
                 let processed = allow_quantized
                     && delivered
-                        .get(&id)
-                        .is_some_and(|delivery| delivery.confirms_input(value, actual));
+                        .as_ref()
+                        .is_some_and(|delivery| delivery.confirms_input(id, value, actual));
                 if !same_param_value(actual, value) && !processed {
                     return Ok(None);
                 }
@@ -986,11 +998,11 @@ impl Bridge {
         };
         let result = if let Some(active) = self.active.as_mut() {
             self.region.set_bridge_state(BridgeState::Loaded);
-            let result = active.rt.snapshot(snapshot);
+            let result = active.rt.snapshot(|delivered| snapshot(Some(delivered)));
             self.region.set_bridge_state(BridgeState::Active);
             result.and_then(|state| state)
         } else {
-            snapshot(&BTreeMap::new())
+            snapshot(None)
         };
         for (id, value) in updates {
             self.queue_value(id, value);
@@ -1085,7 +1097,7 @@ impl Bridge {
                         format!("parameter queue full, value {value} of {id} dropped"),
                     );
                 }
-                if let Some(controller) = &active.controller {
+                if let Some(controller) = active.rt.controller() {
                     controller.invalidate(Some(id));
                 }
                 plugin.set_param(id, value);
@@ -1174,7 +1186,7 @@ impl Bridge {
                 ))
             });
         let (rt, report) =
-            match RtThread::start(server, processor, rt_config, controller.clone(), param_ids) {
+            match RtThread::start(server, processor, rt_config, controller, param_ids) {
                 Ok(started) => started,
                 Err(failure) => {
                     plugin.deactivate(failure.processor);
@@ -1186,11 +1198,7 @@ impl Bridge {
         self.region.set_latency(latency);
         self.region.set_bridge_state(BridgeState::Active);
         self.controller_due = None;
-        self.active = Some(Active {
-            rt,
-            config,
-            controller,
-        });
+        self.active = Some(Active { rt, config });
         self.report_rt_priority(&report);
         // Right before `Activated` (sent by the caller), on every activation.
         let rt_status = BridgeMsg::RtPriority {
@@ -1247,9 +1255,10 @@ impl Bridge {
         };
         // From now on the app's `begin_block` returns `NotActive`.
         self.region.set_bridge_state(BridgeState::Loaded);
+        let controller = active.rt.controller();
         let (processor, leftover) = active.rt.stop();
         self.controller_due = None;
-        if let Some(controller) = &active.controller {
+        if let Some(controller) = &controller {
             // The thread can have published a final value after the last main-loop deadline.
             self.apply_controller_values(controller);
         }
