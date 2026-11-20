@@ -302,10 +302,7 @@ impl<'a> NoteView<'a> {
                 repeating = Self::next_repeat(clips, &ticks, Some(key), chase);
                 return Some(note);
             }
-            regular.map(|note| {
-                flat.start += 1;
-                note
-            })
+            regular.inspect(|_| flat.start += 1)
         })
     }
 }
