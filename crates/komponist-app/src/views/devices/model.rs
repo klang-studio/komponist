@@ -2,7 +2,7 @@
 //! parameters its body shows, and the drop arithmetic of reordering. Pure, so the chain is
 //! tested without pixels.
 
-use komponist_builtin::Macro;
+use komponist_hexa::Macro;
 use komponist_i18n::Lang;
 use komponist_ipc::ParamValue;
 use komponist_ipc::control::ParamInfo as WireInfo;
@@ -142,11 +142,11 @@ impl Param {
 /// What the sampler's pads show, read from the device host's [`SamplerHandle`] every frame (WP-87):
 /// the pad grid, the waveform's data layer, its playhead and the follow-input trigger.
 ///
-/// [`SamplerHandle`]: komponist_builtin::sampler::SamplerHandle
+/// [`SamplerHandle`]: komponist_sampler::SamplerHandle
 #[derive(Debug, Clone, PartialEq)]
 pub struct SamplerView {
     /// Name, status, real length and peaks of every pad.
-    pub pads: Vec<komponist_builtin::sampler::PadView>,
+    pub pads: Vec<komponist_sampler::PadView>,
     /// The playhead of every pad (a fraction of its sample) while a voice plays it.
     pub playheads: Vec<Option<f32>>,
     /// The last note that hit a pad: a counter and the pad (0-based), for "Pad folgt Eingang".
@@ -215,7 +215,7 @@ pub struct Card {
     /// Blocks that missed their deadline, while the head shows "zu spät" (set by the view).
     pub late: Option<u64>,
     /// hexa's routing as the patch has it: the FM display draws it for algorithm 0 („Frei“).
-    pub routing: Option<komponist_builtin::algorithms::Routing>,
+    pub routing: Option<komponist_hexa::algorithms::Routing>,
     /// The levels of the device's gain-reduction meter (set by the view from `Meters`); `None`
     /// for a device without a level feed.
     pub levels: Option<DeviceLevels>,
@@ -377,7 +377,7 @@ fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWin
     // hexa and the internal devices bring their own layout; everything else gets the
     // auto-layout.
     let layout = if is_hexa(device) {
-        komponist_builtin::device::layout_in(lang)
+        komponist_hexa::device::layout_in(lang)
     } else if general_sampler {
         super::general_sampler::layout(lang)
     } else {
@@ -408,9 +408,9 @@ fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWin
     let preset_changed = loaded.is_some_and(|(_, changed)| changed);
     let preset = hexa
         .then(|| {
-            let patch = komponist_builtin::decode_state(device.state.as_deref())
-                .unwrap_or_else(|_| komponist_builtin::default_patch());
-            let encoded = komponist_builtin::encode_state(&patch);
+            let patch = komponist_hexa::decode_state(device.state.as_deref())
+                .unwrap_or_else(|_| komponist_hexa::default_patch());
+            let encoded = komponist_hexa::encode_state(&patch);
             crate::windows::plugin_frame::factory_states()
                 .iter()
                 .position(|s| *s == encoded)
@@ -453,9 +453,9 @@ fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWin
         analysis: None,
         dynamics: None,
         routing: hexa.then(|| {
-            let patch = komponist_builtin::decode_state(device.state.as_deref())
-                .unwrap_or_else(|_| komponist_builtin::default_patch());
-            komponist_builtin::algorithms::routing(&patch)
+            let patch = komponist_hexa::decode_state(device.state.as_deref())
+                .unwrap_or_else(|_| komponist_hexa::default_patch());
+            komponist_hexa::algorithms::routing(&patch)
         }),
         state,
     }
@@ -495,12 +495,12 @@ pub fn internal_params(
         .collect()
 }
 
-/// The parameters of hexa's card (`komponist_builtin::device`), read from the patch in the
+/// The parameters of hexa's card (`komponist_hexa::device`), read from the patch in the
 /// device state; the wire id is `Field::wire`.
 pub fn hexa_params(lang: Lang, device: &Device) -> Vec<Param> {
-    let patch = komponist_builtin::decode_state(device.state.as_deref())
-        .unwrap_or_else(|_| komponist_builtin::default_patch());
-    komponist_builtin::device::params_in(lang)
+    let patch = komponist_hexa::decode_state(device.state.as_deref())
+        .unwrap_or_else(|_| komponist_hexa::default_patch());
+    komponist_hexa::device::params_in(lang)
         .iter()
         .map(|p| {
             let value = p.field.get(&patch);
@@ -517,8 +517,8 @@ pub fn hexa_params(lang: Lang, device: &Device) -> Vec<Param> {
 /// hexa's 8 macros, read from the patch in the device state (the plugin window's parameter
 /// view lists them; the card has its own parameters, [`hexa_params`]).
 pub fn hexa_macro_params(lang: Lang, device: &Device) -> Vec<Param> {
-    let patch = komponist_builtin::decode_state(device.state.as_deref())
-        .unwrap_or_else(|_| komponist_builtin::default_patch());
+    let patch = komponist_hexa::decode_state(device.state.as_deref())
+        .unwrap_or_else(|_| komponist_hexa::default_patch());
     Macro::ALL
         .iter()
         .map(|m| {
@@ -564,7 +564,7 @@ pub fn all_plugin_params<'a>(
 
 /// A bridged plugin's parameter: its own names, our value words ("Off", "40%").
 fn plugin_info(lang: Lang, wire: &WireInfo) -> ParamInfo {
-    param_info(wire).texts(komponist_builtin::value_texts(lang))
+    param_info(wire).texts(komponist_device_core::value_texts(lang))
 }
 
 fn plugin_param(wire: &WireInfo, info: ParamInfo, known: Option<&ParamValue>) -> Param {
@@ -902,7 +902,7 @@ mod tests {
         assert_eq!(pages, ["Operatoren", "Hüllkurven", "LFO", "Global"]);
         assert!(hexa.presets);
         assert_eq!(hexa.tag, "INTERN");
-        assert_eq!(hexa.params.len(), komponist_builtin::device::params().len());
+        assert_eq!(hexa.params.len(), komponist_hexa::device::params().len());
         assert_eq!(hexa.params[0].name(), "Algorithmus");
         assert_eq!(hexa.open_label(Lang::De), Some(Lang::De.devices_params()));
         // Without plugin manager the effects are missing; TAL is bypassed.

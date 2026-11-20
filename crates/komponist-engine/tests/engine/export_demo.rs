@@ -3,10 +3,10 @@
 
 use std::sync::atomic::AtomicBool;
 
-use komponist_builtin::HexaProcessor;
 use komponist_engine::compile::{self, NoEnv};
 use komponist_engine::export::{BitDepth, ExportJob, NORMALIZE_TARGET_DB, export};
 use komponist_engine::{Command, MAX_BLOCK, Processor, SlotId, TransportState};
+use komponist_hexa::HexaProcessor;
 use komponist_model::fixtures::demo_project;
 use komponist_model::{DeviceRole, Tick, TickRange};
 

@@ -6,7 +6,7 @@
 //! - an instrument that reports note names (CLAP note-name): its first [`ROWS`] named keys, in key
 //!   order, with their names;
 //! - the Sampler: its pads 1–8 = notes 36–43, each named after its sample (the device host
-//!   reports the loaded pads' names as note names, [`komponist_builtin::sampler`]); an empty pad
+//!   reports the loaded pads' names as note names, [`komponist_sampler`]); an empty pad
 //!   gets the S03 name of its row (Kick, Snare, … Perc);
 //! - every other instrument (and a track without one): the prototype's General MIDI rows
 //!   ([`DEFAULT_STEP_ROWS`]).
@@ -17,7 +17,6 @@
 //! ("C1") elsewhere. Changing the instrument later does not remap the rows of existing clips: a
 //! pattern keeps the notes it was written for.
 
-use komponist_builtin::sampler;
 use komponist_i18n::Lang;
 use komponist_ipc::NoteName;
 use komponist_model::PluginFormat;
@@ -26,6 +25,7 @@ use komponist_model::format::note_name;
 use komponist_model::project::BUILTIN_SAMPLER;
 use komponist_model::project::DEFAULT_STEP_ROWS;
 use komponist_model::{Device, PluginRef, StepClip, Track};
+use komponist_sampler as sampler;
 
 /// Rows of a new step clip (S03: 8 pads).
 pub const ROWS: usize = 8;

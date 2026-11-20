@@ -5,15 +5,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use komponist_builtin::{
-    Internal,
-    sampler::{PadStatus, SyncStatus},
-};
+use komponist_builtin::Internal;
 use komponist_engine::export::{
     BitDepth, ExportError, ExportJob, ExportReport, TRACK_TAIL_SECONDS, TrackExport,
 };
 use komponist_model::{DeviceId, Project, TrackId, TrackKind, edits};
 use komponist_plugins::{DeviceSnapshots, DeviceStatus};
+use komponist_sampler::{PadStatus, SyncStatus};
 
 use super::{Phase, Run};
 use crate::actions::{Action, SelectMode, SelectionChange, UiAction};

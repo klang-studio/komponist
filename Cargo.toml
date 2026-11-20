@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = [
+    "crates/komponist-*",
+    "crates/builtin-devices/hexa/core",
+    "crates/builtin-devices/sampler/core",
+    "crates/builtin-devices/*",
+]
 # Own workspaces or throwaway code, never part of this build (ARCHITECTURE §4).
 exclude = ["test-plugins"]
 
@@ -16,7 +21,19 @@ komponist-tokens = { path = "crates/komponist-tokens" }
 komponist-model = { path = "crates/komponist-model" }
 komponist-engine = { path = "crates/komponist-engine" }
 komponist-audio = { path = "crates/komponist-audio" }
-komponist-builtin = { path = "crates/komponist-builtin" }
+komponist-arpeggiator = { path = "crates/builtin-devices/arpeggiator" }
+komponist-builtin = { path = "crates/builtin-devices/registry" }
+komponist-delay = { path = "crates/builtin-devices/delay" }
+komponist-device-core = { path = "crates/builtin-devices/core" }
+komponist-eq = { path = "crates/builtin-devices/eq" }
+komponist-general-sampler = { path = "crates/builtin-devices/general-sampler" }
+komponist-hexa = { path = "crates/builtin-devices/hexa" }
+komponist-limiter = { path = "crates/builtin-devices/limiter" }
+komponist-presse = { path = "crates/builtin-devices/presse" }
+komponist-reverb = { path = "crates/builtin-devices/reverb" }
+komponist-sampler = { path = "crates/builtin-devices/sampler" }
+komponist-scale = { path = "crates/builtin-devices/scale" }
+komponist-volt = { path = "crates/builtin-devices/volt" }
 komponist-ipc = { path = "crates/komponist-ipc" }
 komponist-rt = { path = "crates/komponist-rt" }
 komponist-audiofile = { path = "crates/komponist-audiofile" }
@@ -26,9 +43,9 @@ komponist-plugins = { path = "crates/komponist-plugins" }
 komponist-bridge = { path = "crates/komponist-bridge" }
 komponist-ui = { path = "crates/komponist-ui" }
 komponist-i18n = { path = "crates/komponist-i18n" }
-hexa-core = { path = "crates/hexa-core", features = ["alloc", "serde"] }
+hexa-core = { path = "crates/builtin-devices/hexa/core", features = ["alloc", "serde"] }
 # The Sampler's RT engine, vendored from klopfer's `dsp` crate (WP-87).
-sampler-core = { path = "crates/sampler-core" }
+sampler-core = { path = "crates/builtin-devices/sampler/core" }
 
 # Public DSP library, pinned to one commit. To work on both locally, see docs/INSTALL.md.
 klang-dsp = { git = "https://github.com/klang-studio/klang-dsp", rev = "e1737fbf04ba42a3501d14521c5d5125c9f09c2f" }

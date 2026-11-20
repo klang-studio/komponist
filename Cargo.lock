@@ -2525,13 +2525,19 @@ dependencies = [
  "komponist-audiofile",
  "komponist-bridge",
  "komponist-builtin",
+ "komponist-device-core",
  "komponist-engine",
+ "komponist-general-sampler",
+ "komponist-hexa",
  "komponist-i18n",
  "komponist-ipc",
  "komponist-model",
  "komponist-plugins",
+ "komponist-presse",
+ "komponist-sampler",
  "komponist-tokens",
  "komponist-ui",
+ "komponist-volt",
  "libc",
  "midir",
  "objc2 0.6.5",
@@ -2545,6 +2551,17 @@ dependencies = [
  "windows-sys 0.61.2",
  "winit",
  "x11rb 0.14.0",
+]
+
+[[package]]
+name = "komponist-arpeggiator"
+version = "0.2.0"
+dependencies = [
+ "assert_no_alloc",
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
 ]
 
 [[package]]
@@ -2606,16 +2623,40 @@ name = "komponist-builtin"
 version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
- "hexa-core",
- "hound",
- "klang-dsp",
- "komponist-audiofile",
+ "komponist-arpeggiator",
+ "komponist-delay",
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-eq",
+ "komponist-general-sampler",
+ "komponist-hexa",
+ "komponist-i18n",
+ "komponist-limiter",
+ "komponist-model",
+ "komponist-presse",
+ "komponist-reverb",
+ "komponist-sampler",
+ "komponist-scale",
+ "komponist-volt",
+ "serde_json",
+]
+
+[[package]]
+name = "komponist-delay"
+version = "0.2.0"
+dependencies = [
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-model",
+]
+
+[[package]]
+name = "komponist-device-core"
+version = "0.2.0"
+dependencies = [
  "komponist-engine",
  "komponist-i18n",
  "komponist-model",
- "komponist-stretch",
- "rtrb",
- "sampler-core",
  "serde_json",
 ]
 
@@ -2628,13 +2669,55 @@ dependencies = [
  "klang-dsp",
  "komponist-audiofile",
  "komponist-builtin",
+ "komponist-device-core",
+ "komponist-hexa",
  "komponist-model",
  "komponist-rt",
  "komponist-stretch",
+ "komponist-volt",
  "rtrb",
  "rustix 1.1.6",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "komponist-eq"
+version = "0.2.0"
+dependencies = [
+ "assert_no_alloc",
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
+]
+
+[[package]]
+name = "komponist-general-sampler"
+version = "0.2.0"
+dependencies = [
+ "assert_no_alloc",
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-sampler",
+ "rtrb",
+ "sampler-core",
+ "serde_json",
+]
+
+[[package]]
+name = "komponist-hexa"
+version = "0.2.0"
+dependencies = [
+ "assert_no_alloc",
+ "hexa-core",
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
+ "serde_json",
 ]
 
 [[package]]
@@ -2674,6 +2757,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "komponist-limiter"
+version = "0.2.0"
+dependencies = [
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-model",
+]
+
+[[package]]
 name = "komponist-model"
 version = "0.2.0"
 dependencies = [
@@ -2702,12 +2794,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "komponist-presse"
+version = "0.2.0"
+dependencies = [
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
+]
+
+[[package]]
+name = "komponist-reverb"
+version = "0.2.0"
+dependencies = [
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-model",
+]
+
+[[package]]
 name = "komponist-rt"
 version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "komponist-sampler"
+version = "0.2.0"
+dependencies = [
+ "assert_no_alloc",
+ "hound",
+ "komponist-audiofile",
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-stretch",
+ "rtrb",
+ "sampler-core",
+ "serde_json",
+]
+
+[[package]]
+name = "komponist-scale"
+version = "0.2.0"
+dependencies = [
+ "assert_no_alloc",
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
 ]
 
 [[package]]
@@ -2744,6 +2883,18 @@ dependencies = [
  "komponist-ui",
  "windows-sys 0.61.2",
  "winit",
+]
+
+[[package]]
+name = "komponist-volt"
+version = "0.2.0"
+dependencies = [
+ "assert_no_alloc",
+ "klang-dsp",
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
 ]
 
 [[package]]

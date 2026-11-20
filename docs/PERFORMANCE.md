@@ -53,7 +53,7 @@ are checked:
 |---|---|
 | `Engine::process` / `render`: commands, transport, count-in, loop wrap, sequencer, **note chasing**, probability, live MIDI, `LiveNote`, recording capture, fast paths, program swap, processor insert/remove (garbage), panic, PDC, mixer, meters, metronome | `komponist-engine` `tests/engine` (every call via `Rig`), incl. 1 000 random command sequences (`random.rs`) and `chase.rs` (10 000-note scan) |
 | Held MIDI-input keys (telemetry) | `live.rs` `held_input_keys_…` |
-| Hexa `PisynthProcessor::process` / `reset` / parameter events | `komponist-builtin` `tests/hexa` |
+| Hexa `HexaProcessor::process` / `reset` / parameter events | `komponist-hexa` `tests/hexa` |
 | `ExternalProcessor::process` (bridge client: wire events, stash, futex wait, fallbacks) | `komponist-plugins` `tests/it/engine.rs` (`call` and `Rig`) |
 | `ExternalProcessor::process_sidechain` (#6: the sidechain through the shared memory) | `komponist-plugins` `tests/it/sidechain.rs` (direct calls and `Rig`) |
 | IPC `begin_block` / `wait_done` / output events | `komponist-ipc` `tests/bridge_process.rs` (10 000 checked blocks), sidechain blocks in `shm.rs` unit tests |
@@ -135,7 +135,7 @@ passthrough, as designed). Not fixed in WP-61, because both remedies are bigger 
 - **Parallel track processing** (ARCHITECTURE §8.1 "later optimisation"): tracks are independent
   until the master bus; a worker pool (or bridge fan-out) would spread 16 tracks over the cores.
   Recommended as a work package after v0.1.
-- **Hexa DSP cost** (`crates/hexa-core`, WP-34's klang-dsp migration is the place).
+- **Hexa DSP cost** (`crates/builtin-devices/hexa/core`, WP-34's klang-dsp migration is the place).
 - Meanwhile a 512-frame buffer halves the per-callback scheduling risk.
 
 ### 4.2 Note chasing: yes, like Ableton
@@ -235,7 +235,7 @@ cargo test --release -p komponist-engine --test engine routing::bench -- --ignor
 cargo test --release -p komponist-app --test engine_perf -- --ignored --nocapture --test-threads 1
 KOMPONIST_PERF_WORKERS=4 KOMPONIST_PERF_SECS=300 <engine_perf binary> engine_cpu_16_hexa_tracks \
     --exact --ignored --nocapture                                  # the 5-minute stress run
-cargo test --release -p komponist-builtin --test hexa cpu_per_block -- --ignored --nocapture
+cargo test --release -p komponist-hexa --test hexa cpu_per_block -- --ignored --nocapture
 
 # IPC round trip (back to back / paced / spin), RT via chrt on the test binary:
 cargo test --release -p komponist-ipc --test bridge_process --no-run   # prints the binary
@@ -378,7 +378,7 @@ spread) per key; the numbers below are better, on a machine that was busy.
   pitch bend, mod wheel and pressure, bit-exact output with 0, 2 and 4 workers).
 
 ```bash
-cargo test --release -p komponist-builtin --lib volt::bench -- --ignored --nocapture
+cargo test --release -p komponist-volt --lib bench -- --ignored --nocapture
 ```
 
 ## 9. Routing graph (WP-102)

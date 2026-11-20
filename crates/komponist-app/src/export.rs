@@ -483,8 +483,7 @@ impl App {
                 let state = match self.engine.device_status(d.id) {
                     DeviceStatus::Ok
                         if self.engine.host().sampler(d.id).is_some_and(|handle| {
-                            handle.sync_status()
-                                == Some(komponist_builtin::sampler::SyncStatus::Unavailable)
+                            handle.sync_status() == Some(komponist_sampler::SyncStatus::Unavailable)
                         }) =>
                     {
                         DeviceState::LoadFailed

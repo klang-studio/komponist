@@ -70,7 +70,7 @@ fn hexa_header() -> HeaderModel {
     HeaderModel {
         name: "Hexa".into(),
         sub: "Lead · INTERN".into(),
-        presets: komponist_builtin::presets()
+        presets: komponist_hexa::presets()
             .map(|p| p.name.to_owned())
             .collect(),
         preset: Some(3),
@@ -298,7 +298,7 @@ fn a_plugin_without_gui_cannot_switch_to_the_plugin_view() {
         [HeaderEvent::PresetNext, HeaderEvent::PresetPrev]
     );
     // The changed preset carries " *" (prototype `pl.changed`).
-    let name = komponist_builtin::presets().nth(3).unwrap().name;
+    let name = komponist_hexa::presets().nth(3).unwrap().name;
     let field = h.get_by_role_and_label(Role::ComboBox, de::PLUGIN_FRAME_PRESET);
     assert_eq!(field.value().as_deref(), Some(format!("{name} *").as_str()));
 }
@@ -321,7 +321,7 @@ fn knobs_report_plain_values_on_the_step_grid() {
     h.run();
     let events = &h.state().body_events;
     assert!(!events.is_empty(), "the drag set the parameter");
-    let algorithm = komponist_builtin::Macro::Algorithm.id();
+    let algorithm = komponist_hexa::Macro::Algorithm.id();
     let mut sets = 0;
     for e in events {
         match *e {
@@ -748,7 +748,7 @@ fn hexa_opens_its_parameters_and_steps_through_its_presets() {
         .dispatch(Action::Plugin(PluginAction::OpenWindow(lead)));
     h.run_steps(3);
     assert_eq!(h.state().ui().plugin_windows[0].view, PluginView::Params);
-    for m in komponist_builtin::Macro::ALL {
+    for m in komponist_hexa::Macro::ALL {
         assert!(
             h.query_by_role_and_label(Role::Slider, m.name()).is_some(),
             "{}",
@@ -777,16 +777,15 @@ fn hexa_opens_its_parameters_and_steps_through_its_presets() {
         .2
         .state
         .clone();
-    let expected =
-        komponist_builtin::encode_state(&komponist_builtin::preset_patch(preset).unwrap());
+    let expected = komponist_hexa::encode_state(&komponist_hexa::preset_patch(preset).unwrap());
     assert_eq!(state.as_deref(), Some(&expected[..]));
-    let name = komponist_builtin::presets().nth(preset).unwrap().name;
+    let name = komponist_hexa::presets().nth(preset).unwrap().name;
     let field = h.get_by_role_and_label(Role::ComboBox, de::PLUGIN_FRAME_PRESET);
     assert_eq!(field.value().as_deref(), Some(name));
 
     // A knob writes into the device state (WP-44); the frame reads it back from there and marks
     // the preset as changed.
-    let attack = komponist_builtin::Macro::Attack;
+    let attack = komponist_hexa::Macro::Attack;
     let knob = h
         .get_by_role_and_label(Role::Slider, attack.name())
         .rect()
@@ -805,9 +804,9 @@ fn hexa_opens_its_parameters_and_steps_through_its_presets() {
         .2
         .state
         .clone();
-    let patch = komponist_builtin::decode_state(state.as_deref()).unwrap();
+    let patch = komponist_hexa::decode_state(state.as_deref()).unwrap();
     let stored = attack.get(&patch);
-    let preset_value = attack.get(&komponist_builtin::preset_patch(preset).unwrap());
+    let preset_value = attack.get(&komponist_hexa::preset_patch(preset).unwrap());
     assert!(stored > preset_value, "{stored} > {preset_value}");
     let shown = h.get_by_role_and_label(Role::Slider, attack.name());
     assert_eq!(shown.value().as_deref(), Some(attack.text(stored).as_str()));

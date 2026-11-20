@@ -348,7 +348,7 @@ mod devices {
     use crate::common::*;
 
     /// An activated internal device with `values` by parameter key.
-    fn device(kind: Internal, values: &[(&str, f64)]) -> komponist_builtin::InternalProcessor {
+    fn device(kind: Internal, values: &[(&str, f64)]) -> komponist_device_core::InternalProcessor {
         let mut all = kind.defaults();
         for (key, value) in values {
             all[kind.wire(&ParamId::new(*key)).unwrap() as usize] = *value;
@@ -359,7 +359,7 @@ mod devices {
     }
 
     fn rig(
-        arp: komponist_builtin::InternalProcessor,
+        arp: komponist_device_core::InternalProcessor,
         p: &komponist_engine::Program,
     ) -> (Rig, komponist_engine::testing::EventLog) {
         let mut rig = Rig::new(RATE, 512);

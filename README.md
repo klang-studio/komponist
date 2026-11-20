@@ -233,7 +233,7 @@ A Rust workspace: model and undo, a realtime engine, built-in devices, plugin ho
 komponist is licensed under the **GNU General Public License, version 3 or (at your option) any later version**, see
 [LICENSE](LICENSE).
 
-- `crates/hexa-core` (Hexa's FM engine) is a copy of the `hexa-core` crate of pisynth, and `crates/sampler-core`
+- `crates/builtin-devices/hexa/core` (Hexa's FM engine) is a copy of the `hexa-core` crate of pisynth, and `crates/builtin-devices/sampler/core`
   (the Sampler engine) is a copy of the `dsp` crate of klopfer. Both authors license the copies under
   GPL-3.0-or-later; the crates' READMEs record the provenance. The projects continue separately.
 - The DSP library [klang-dsp](https://github.com/klang-studio/klang-dsp) is a git dependency.

@@ -21,14 +21,16 @@ use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::device_host::PluginHost;
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, EditAction, PluginAction, ProjectAction, UiAction};
-use komponist_builtin::device::{self, Field};
-use komponist_builtin::sampler::{self, PadField, SampleLink, links, testkit};
-use komponist_builtin::{Internal, Patch};
+use komponist_builtin::Internal;
 use komponist_engine::Command;
+use komponist_hexa::Patch;
+use komponist_hexa::device::{self, Field};
 use komponist_model::fixtures::demo_project;
 use komponist_model::params::ParamId;
 use komponist_model::{ChannelRef, DeviceId, Project, TrackId};
 use komponist_plugins::PluginManagerEvent;
+use komponist_sampler as sampler;
+use komponist_sampler::{PadField, SampleLink, links, testkit};
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
@@ -140,7 +142,7 @@ fn hexa_app(preset: usize) -> (App, TrackId, DeviceId) {
 }
 
 fn patch_of(app: &App, device: DeviceId) -> Patch {
-    komponist_builtin::decode_state(state_of(app, device).as_deref()).unwrap()
+    komponist_hexa::decode_state(state_of(app, device).as_deref()).unwrap()
 }
 
 fn wire(key: &str) -> u32 {
@@ -283,12 +285,12 @@ fn escape_during_a_drag_puts_the_value_back_in_the_document_and_the_engine() {
 fn a_drag_that_changes_nothing_leaves_no_step() {
     let (mut app, _, synth) = hexa_app(1);
     let start = depth(&mut app);
-    let value = Field::Macro(komponist_builtin::Macro::Feedback).get(&patch_of(&app, synth));
+    let value = Field::Macro(komponist_hexa::Macro::Feedback).get(&patch_of(&app, synth));
     drag_param(&mut app, synth, wire("volume"), &[]);
     set(
         &mut app,
         synth,
-        Field::Macro(komponist_builtin::Macro::Feedback).wire(),
+        Field::Macro(komponist_hexa::Macro::Feedback).wire(),
         value,
     );
     app.step();
@@ -368,7 +370,7 @@ fn dragging_a_card_knob_and_a_wheel_burst_are_one_undo_step_each() {
     let glide = device::param(&ParamId::new("glide")).unwrap();
     let knob = knob_rect(&h, "Glide");
     drag(&mut h, knob.center(), knob.center() - vec2(0.0, 40.0));
-    let started = komponist_builtin::decode_state(before.as_deref()).unwrap();
+    let started = komponist_hexa::decode_state(before.as_deref()).unwrap();
     assert!(glide.field.get(&patch_of(h.state(), synth)) > glide.field.get(&started));
     assert_eq!(h.state().undo_text().as_deref(), Some("Glide ändern"));
     assert_eq!(

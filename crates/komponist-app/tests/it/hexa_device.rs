@@ -11,8 +11,8 @@ use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, PluginAction, UiAction};
-use komponist_builtin::device::{self, Field};
-use komponist_builtin::{Macro, Patch};
+use komponist_hexa::device::{self, Field};
+use komponist_hexa::{Macro, Patch};
 use komponist_i18n::Lang;
 use komponist_model::params::ParamId;
 use komponist_model::{DeviceId, Project};
@@ -90,7 +90,7 @@ fn app_with_hexa(preset: usize) -> (App, DeviceId) {
 
 fn patch_of(app: &App, device: DeviceId) -> Patch {
     let (_, _, d) = app.project().find_device(device).unwrap();
-    komponist_builtin::decode_state(d.state.as_deref()).unwrap()
+    komponist_hexa::decode_state(d.state.as_deref()).unwrap()
 }
 
 fn page(app: &mut App, device: DeviceId, page: usize) {
@@ -138,10 +138,10 @@ fn the_card_has_four_pages_and_the_preset_shows_in_the_head() {
 
 #[test]
 fn every_factory_preset_still_loads_into_the_card() {
-    for index in 0..komponist_builtin::PRESET_COUNT {
-        let patch = komponist_builtin::preset_patch(index).unwrap();
-        let state = komponist_builtin::encode_state(&patch);
-        let back = komponist_builtin::decode_state(Some(&state)).unwrap();
+    for index in 0..komponist_hexa::PRESET_COUNT {
+        let patch = komponist_hexa::preset_patch(index).unwrap();
+        let state = komponist_hexa::encode_state(&patch);
+        let back = komponist_hexa::decode_state(Some(&state)).unwrap();
         // Every card parameter reads a finite value from every preset.
         for p in device::params() {
             assert!(
@@ -233,7 +233,7 @@ fn a_knob_change_reaches_the_engine_and_the_document_state() {
     );
     // Everything else in the patch is untouched (here: the effects and modulation survive).
     let reference = {
-        let mut p = komponist_builtin::preset_patch(1).unwrap();
+        let mut p = komponist_hexa::preset_patch(1).unwrap();
         Field::Op(1, device::OpField::Ratio).set(&mut p, f64::from(after));
         p
     };

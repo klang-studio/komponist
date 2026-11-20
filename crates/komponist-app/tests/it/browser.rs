@@ -461,7 +461,7 @@ fn a_preset_loads_into_the_selected_tracks_hexa() {
     let mut h = harness(app);
     let r = h.get_by_role_and_label(Role::ListItem, "Tasten").rect();
     click_at(&mut h, r.center());
-    let first = komponist_builtin::presets()
+    let first = komponist_hexa::presets()
         .find(|p| p.category == "Tasten")
         .unwrap();
     let preset = h.get_by_role_and_label(Role::ListItem, first.name).rect();
@@ -492,7 +492,7 @@ fn a_preset_without_a_hexa_on_the_selected_track_makes_a_new_hexa_track() {
     let mut h = harness(app);
     let r = h.get_by_role_and_label(Role::ListItem, "Tasten").rect();
     click_at(&mut h, r.center());
-    let first = komponist_builtin::presets()
+    let first = komponist_hexa::presets()
         .find(|p| p.category == "Tasten")
         .unwrap();
     let preset = h.get_by_role_and_label(Role::ListItem, first.name).rect();
@@ -504,8 +504,8 @@ fn a_preset_without_a_hexa_on_the_selected_track_makes_a_new_hexa_track() {
     let device = &new.channel.devices[0];
     assert_eq!(
         device.state.as_deref(),
-        Some(&*komponist_builtin::encode_state(
-            &komponist_builtin::preset_patch(first.index).unwrap()
+        Some(&*komponist_hexa::encode_state(
+            &komponist_hexa::preset_patch(first.index).unwrap()
         ))
     );
     // One undo step removes the track again.

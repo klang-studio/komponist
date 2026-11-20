@@ -2340,10 +2340,10 @@ impl App {
         match action {
             PluginAction::Add { plugin, target } => self.add_plugin(plugin, target),
             PluginAction::ApplyHexaPreset { device, preset } => {
-                let Some(patch) = komponist_builtin::preset_patch(preset) else {
+                let Some(patch) = komponist_hexa::preset_patch(preset) else {
                     return;
                 };
-                let state: Arc<[u8]> = komponist_builtin::encode_state(&patch).into();
+                let state: Arc<[u8]> = komponist_hexa::encode_state(&patch).into();
                 self.apply("undo-load-preset", |p| {
                     edits::set_device_state(p, device, Some(Arc::clone(&state)))
                 });

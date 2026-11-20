@@ -740,7 +740,7 @@ impl App {
                     }
                 }
                 HeaderEvent::PresetPrev | HeaderEvent::PresetNext => {
-                    let n = komponist_builtin::PRESET_COUNT;
+                    let n = komponist_hexa::PRESET_COUNT;
                     let current = self.frames.frame_mut(device).and_then(|f| f.preset);
                     let next = match (e, current) {
                         (HeaderEvent::PresetNext, Some(i)) => (i + 1) % n,
@@ -799,7 +799,7 @@ impl App {
         let Some((_, _, d)) = self.project().find_device(device) else {
             return;
         };
-        if !is_hexa(d) || preset >= komponist_builtin::PRESET_COUNT {
+        if !is_hexa(d) || preset >= komponist_hexa::PRESET_COUNT {
             return;
         }
         if let Some(f) = self.frames.frame_mut(device) {
@@ -1517,9 +1517,9 @@ impl App {
         }
         f.state_seen = Some(state.clone());
         f.params_dirty = true;
-        let patch = komponist_builtin::decode_state(state.as_deref())
-            .unwrap_or_else(|_| komponist_builtin::default_patch());
-        let encoded = komponist_builtin::encode_state(&patch);
+        let patch = komponist_hexa::decode_state(state.as_deref())
+            .unwrap_or_else(|_| komponist_hexa::default_patch());
+        let encoded = komponist_hexa::encode_state(&patch);
         match factory_states().iter().position(|p| *p == encoded) {
             Some(p) => {
                 f.preset = Some(p);
@@ -1567,7 +1567,7 @@ impl App {
             _ => Mark::Inactive,
         };
         let presets = if hexa {
-            komponist_builtin::presets()
+            komponist_hexa::presets()
                 .map(|p| p.name.to_owned())
                 .collect()
         } else {
@@ -1689,10 +1689,10 @@ impl App {
 pub(crate) fn factory_states() -> &'static [Vec<u8>] {
     static STATES: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
     STATES.get_or_init(|| {
-        (0..komponist_builtin::PRESET_COUNT)
+        (0..komponist_hexa::PRESET_COUNT)
             .map(|p| {
-                komponist_builtin::preset_patch(p)
-                    .map(|patch| komponist_builtin::encode_state(&patch))
+                komponist_hexa::preset_patch(p)
+                    .map(|patch| komponist_hexa::encode_state(&patch))
                     .unwrap_or_default()
             })
             .collect()

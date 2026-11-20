@@ -5,7 +5,7 @@
 //!
 //! - **Link, don't copy** (owner, 2026-11-14, like Ableton): a sample dropped on a pad, chosen with
 //!   "Sample laden …" or found with "Suchen …" becomes a link in the device state
-//!   (`komponist_builtin::sampler::links`: absolute path and path relative to the project file);
+//!   (`komponist_sampler::links`: absolute path and path relative to the project file);
 //!   the device host loads it in the background.
 //! - **Saving** rewrites the links that resolve for the file being written ([`rebase_project_links`]),
 //!   so "Speichern unter" into another folder keeps relative paths right. The rewrite is outside the
@@ -29,11 +29,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egui::Context;
-use komponist_builtin::sampler::{self, Collector, PadField, SampleLink, links};
-use komponist_builtin::{Internal, general_sampler};
+use komponist_builtin::Internal;
 use komponist_engine::Command;
+use komponist_general_sampler as general_sampler;
 use komponist_model::edits;
 use komponist_model::{AudioFile, ChannelRef, ClipContent, DeviceId, Project, TrackId};
+use komponist_sampler as sampler;
+use komponist_sampler::{Collector, PadField, SampleLink, links};
 
 use crate::actions::PluginAction;
 use crate::app::App;

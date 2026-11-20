@@ -9,12 +9,13 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-use komponist_builtin::{HexaProcessor, Internal, preset_patch, presets};
+use komponist_builtin::Internal;
 use komponist_engine::testing::{TestGain, TestSine};
 use komponist_engine::{
     Command, Event, MidiInEvent, MidiPort, ProcessContext, ProcessStatus, Processor,
     ProcessorError, Program, StereoIo,
 };
+use komponist_hexa::{HexaProcessor, preset_patch, presets};
 use komponist_model::{Tick, TickRange, TrackId};
 
 use crate::bench::material;

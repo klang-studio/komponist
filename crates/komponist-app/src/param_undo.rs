@@ -332,7 +332,7 @@ impl App {
     fn param_name(&self, device: DeviceId, id: u32) -> Option<String> {
         let (_, _, d) = self.project().find_device(device)?;
         if is_hexa(d) {
-            return komponist_builtin::device::params_in(self.lang)
+            return komponist_hexa::device::params_in(self.lang)
                 .iter()
                 .find(|p| p.wire == id)
                 .map(|p| p.info.name.clone());
@@ -554,11 +554,11 @@ impl App {
 /// Apply to the device from the latest edited root when updating several parameters together.
 pub(crate) fn device_param_state(device: &Device, wire: u32, value: f64) -> Option<Arc<[u8]>> {
     if is_hexa(device) {
-        let field = komponist_builtin::device::Field::from_wire(wire)?;
-        let mut patch = komponist_builtin::decode_state(device.state.as_deref())
-            .unwrap_or_else(|_| komponist_builtin::default_patch());
+        let field = komponist_hexa::device::Field::from_wire(wire)?;
+        let mut patch = komponist_hexa::decode_state(device.state.as_deref())
+            .unwrap_or_else(|_| komponist_hexa::default_patch());
         field.set(&mut patch, value);
-        return Some(komponist_builtin::encode_state(&patch).into());
+        return Some(komponist_hexa::encode_state(&patch).into());
     }
     let kind = internal_kind(device)?;
     kind.with_value(device.state.as_deref(), wire, value)

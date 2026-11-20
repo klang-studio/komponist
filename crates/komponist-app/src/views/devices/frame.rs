@@ -647,7 +647,7 @@ fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
             .map(|p| p.name.to_owned()),
         None => card
             .preset
-            .and_then(|i| komponist_builtin::presets().nth(i))
+            .and_then(|i| komponist_hexa::presets().nth(i))
             .map(|p| p.name.to_owned()),
     }
     .map(|name| {
@@ -750,8 +750,8 @@ fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
 
 /// hexa's menu: its factory bank by category; the chosen index.
 fn hexa_preset_menu(t: Lang, r: &Response) -> Option<usize> {
-    let categories: Vec<&str> = komponist_builtin::categories().collect();
-    let presets: Vec<_> = komponist_builtin::presets().collect();
+    let categories: Vec<&str> = komponist_hexa::categories().collect();
+    let presets: Vec<_> = komponist_hexa::presets().collect();
     let groups: Vec<Vec<Entry<'_, usize>>> = categories
         .iter()
         .map(|c| {
@@ -765,7 +765,7 @@ fn hexa_preset_menu(t: Lang, r: &Response) -> Option<usize> {
     let entries: Vec<Entry<'_, usize>> = categories
         .iter()
         .zip(&groups)
-        .map(|(c, g)| Entry::submenu(komponist_builtin::category_text(t, c), g))
+        .map(|(c, g)| Entry::submenu(komponist_device_core::category_text(t, c), g))
         .collect();
     ContextMenu::new(t.devices_preset(), &entries).show_on(r)
 }
@@ -794,7 +794,7 @@ fn internal_preset_menu(t: Lang, r: &Response, kind: komponist_builtin::Internal
     let mut entries: Vec<Entry<'_, usize>> = categories
         .iter()
         .zip(&groups)
-        .map(|(c, g)| Entry::submenu(komponist_builtin::category_text(t, c), g))
+        .map(|(c, g)| Entry::submenu(komponist_device_core::category_text(t, c), g))
         .collect();
     entries.extend(
         presets

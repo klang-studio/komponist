@@ -7,10 +7,7 @@
 //! ([`crate::Catalog::resolve`]).
 
 use komponist_ipc::PluginKind;
-use komponist_model::project::BUILTIN_HEXA;
-use komponist_model::{PluginFormat, PluginRef};
-
-use komponist_builtin::Internal;
+use komponist_model::DeviceRole;
 
 use crate::catalog::{BuiltinKind, CatalogEntry, EffectCategory, PluginLocation};
 
@@ -18,54 +15,38 @@ use crate::catalog::{BuiltinKind, CatalogEntry, EffectCategory, PluginLocation};
 /// built-in klopfer entry resolve to.
 pub const KLOPFER_CLAP_ID: &str = "com.klopfer.drum-sampler";
 
-/// The built-in entries: hexa, then the internal devices (the Sampler, effects and MIDI
-/// effects) in the order of [`Internal::ALL`].
+/// Adapts the device registry's entries to the plugin catalog.
 pub(crate) fn entries() -> Vec<CatalogEntry> {
-    let mut entries = vec![CatalogEntry {
-        plugin: builtin_ref(BUILTIN_HEXA, "Hexa", "klang-studio"),
-        kind: PluginKind::Instrument,
-        category: None,
-        features: vec!["instrument".into(), "synthesizer".into()],
-        location: PluginLocation::InProcess(BuiltinKind::Hexa),
-        sidechain: false,
-    }];
-    entries.extend(Internal::ALL.into_iter().map(internal_entry));
-    entries
-}
-
-/// The catalog entry of an internal effect or MIDI effect: name, reference and features come from
-/// `komponist_builtin::Internal` (the one place a device is defined).
-fn internal_entry(kind: Internal) -> CatalogEntry {
-    let features: Vec<String> = kind.features().iter().map(|f| (*f).to_owned()).collect();
-    CatalogEntry {
-        plugin: kind.plugin_ref(),
-        kind: match kind.role() {
-            komponist_model::DeviceRole::MidiEffect => PluginKind::MidiEffect,
-            komponist_model::DeviceRole::Instrument => PluginKind::Instrument,
-            komponist_model::DeviceRole::Effect => PluginKind::Effect,
-        },
-        category: (kind.role() == komponist_model::DeviceRole::Effect)
-            .then(|| EffectCategory::from_features(&features)),
-        features,
-        location: PluginLocation::InProcess(BuiltinKind::Internal(kind)),
-        sidechain: kind.has_sidechain(),
-    }
-}
-
-/// The reference of a built-in ("INTERN").
-fn builtin_ref(id: &str, name: &str, vendor: &str) -> PluginRef {
-    PluginRef {
-        format: PluginFormat::Builtin,
-        id: id.into(),
-        name: name.into(),
-        vendor: vendor.into(),
-        version: env!("CARGO_PKG_VERSION").into(),
-        module: Box::default(),
-    }
+    BuiltinKind::all()
+        .map(|builtin| {
+            let spec = builtin.catalog();
+            let features: Vec<String> = spec
+                .features
+                .iter()
+                .map(|feature| (*feature).into())
+                .collect();
+            CatalogEntry {
+                plugin: spec.plugin_ref(),
+                kind: match spec.role {
+                    DeviceRole::MidiEffect => PluginKind::MidiEffect,
+                    DeviceRole::Instrument => PluginKind::Instrument,
+                    DeviceRole::Effect => PluginKind::Effect,
+                },
+                category: (spec.role == DeviceRole::Effect)
+                    .then(|| EffectCategory::from_features(&features)),
+                features,
+                location: PluginLocation::InProcess(builtin),
+                sidechain: spec.sidechain,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
+    use komponist_builtin::Internal;
+    use komponist_model::PluginFormat;
+
     use super::*;
 
     #[test]
@@ -79,6 +60,78 @@ mod tests {
                 .iter()
                 .all(|e| e.plugin.format == PluginFormat::Builtin)
         );
+    }
+
+    #[test]
+    fn every_builtin_project_id_round_trips_and_resolves() {
+        use komponist_model::edits::{NewDevice, NewTrack, add_track, insert_device};
+        use komponist_model::{ChannelRef, DeviceRole, Project, persist};
+
+        let catalog = crate::Catalog::builtin();
+        let ids = [
+            "pisynth",
+            "sampler",
+            "eq",
+            "delay",
+            "hall",
+            "limiter",
+            "presse",
+            "arpeggiator",
+            "tonleiter",
+            "knurr",
+            "general-sampler",
+        ];
+        assert!(
+            catalog
+                .entries()
+                .iter()
+                .map(|entry| entry.plugin.id.as_str())
+                .eq(ids)
+        );
+        let mut project = Project::new("Built-in devices");
+        let mut saved_devices = Vec::new();
+        for (entry, id) in catalog.entries().iter().zip(ids) {
+            let role = match entry.kind {
+                PluginKind::Instrument => DeviceRole::Instrument,
+                PluginKind::MidiEffect => DeviceRole::MidiEffect,
+                PluginKind::Effect => DeviceRole::Effect,
+                PluginKind::Other => panic!("unexpected built-in device: {id}"),
+            };
+            let (next, track) = add_track(
+                &project,
+                NewTrack {
+                    name: Some(id.to_owned()),
+                    hue: None,
+                    instrument: None,
+                    index: None,
+                    arm_exclusive: false,
+                },
+            )
+            .unwrap();
+            let (next, device) = insert_device(
+                &next,
+                ChannelRef::Track(track),
+                0,
+                NewDevice {
+                    role,
+                    plugin: entry.plugin.clone(),
+                    state: None,
+                    sidechain: None,
+                },
+            )
+            .unwrap();
+            project = next;
+            saved_devices.push((id, device, entry));
+        }
+
+        let saved = persist::to_json(&project).unwrap();
+        let reopened = persist::from_json(&saved).unwrap();
+        assert_eq!(reopened, project);
+        for (id, device, entry) in saved_devices {
+            let (_, _, device) = reopened.find_device(device).unwrap();
+            assert_eq!(device.plugin.id, id);
+            assert_eq!(catalog.resolve(&device.plugin), Some(entry));
+        }
     }
 
     #[test]

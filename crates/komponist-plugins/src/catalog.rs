@@ -16,6 +16,8 @@ use komponist_ipc::{PluginDescriptor, PluginFormat as BundleFormat, PluginKind};
 use komponist_model::PluginRef;
 use komponist_model::project::BUILTIN_KLOPFER;
 
+pub use komponist_builtin::BuiltinKind;
+
 pub use crate::builtin::KLOPFER_CLAP_ID;
 
 /// Time one bundle scan may take before its process is killed and the bundle skipped.
@@ -23,15 +25,6 @@ pub const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// File name of the scan cache inside the cache directory (`~/.cache/komponist/`).
 pub const SCAN_CACHE_FILE: &str = "plugins.json";
-
-/// Which built-in a catalog entry is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BuiltinKind {
-    /// hexa, 6-operator FM, runs in process as `komponist_builtin::HexaProcessor` (D6).
-    Hexa,
-    /// An internal effect of `komponist-builtin`, in process (WP-85).
-    Internal(komponist_builtin::Internal),
-}
 
 /// Where a catalog entry's code comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -545,7 +538,10 @@ mod tests {
         assert!(sampler.is_builtin());
         assert_eq!(sampler.kind, PluginKind::Instrument);
         assert_eq!(sampler.category, None);
-        assert_eq!(sampler.plugin.name, komponist_builtin::sampler::NAME);
+        assert_eq!(
+            sampler.plugin.name,
+            komponist_model::project::DRUM_SAMPLER_NAME
+        );
         assert_eq!(catalog.resolve(&sampler.plugin), Some(sampler));
 
         // The internal effects: in process, effects with a browser category, resolvable.

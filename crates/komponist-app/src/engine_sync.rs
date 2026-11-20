@@ -290,9 +290,9 @@ impl CompileEnv for Env<'_> {
     ) -> Option<komponist_engine::automation::Parameter> {
         use komponist_engine::automation::{Parameter, PlainMap};
         if crate::device_host::is_hexa(device) {
-            let patch = komponist_builtin::decode_state(device.state.as_deref())
-                .unwrap_or_else(|_| komponist_builtin::default_patch());
-            if let Some(mac) = komponist_builtin::Macro::ALL
+            let patch = komponist_hexa::decode_state(device.state.as_deref())
+                .unwrap_or_else(|_| komponist_hexa::default_patch());
+            if let Some(mac) = komponist_hexa::Macro::ALL
                 .into_iter()
                 .find(|mac| mac.key() == param.as_str())
             {
@@ -303,7 +303,7 @@ impl CompileEnv for Env<'_> {
                     base: mac.get(&patch),
                 });
             }
-            let card = komponist_builtin::device::param(param)?;
+            let card = komponist_hexa::device::param(param)?;
             return card.info.automatable.then(|| Parameter {
                 wire_id: card.wire,
                 map: PlainMap::from_kind(&card.info.kind),
@@ -673,7 +673,7 @@ impl EngineSync {
         }
         if let Some(handle) = self.host.sampler(device.id) {
             let (source_bpm, enabled) =
-                komponist_builtin::general_sampler::sync_settings(device.state.as_deref());
+                komponist_general_sampler::sync_settings(device.state.as_deref());
             handle.prepare_general_sync(source_bpm, project.tempo.bpm, enabled);
         }
     }
@@ -690,7 +690,7 @@ impl EngineSync {
     /// every device in both `before` and `after` whose state differs follows `after`.
     ///
     /// - hexa gets the patch fields that differ as `SetParam`s of its card parameters
-    ///   (`komponist_builtin::device::param_changes`), so a sounding note goes on; a change no
+    ///   (`komponist_hexa::device::param_changes`), so a sounding note goes on; a change no
     ///   parameter reaches (filters, effects, modulation, … as between most presets), more than
     ///   [`komponist_engine::MAX_PENDING_PARAMS`] changes or a state that does not decode give a
     ///   fresh processor made from the patch (like "Neu laden");
@@ -742,12 +742,11 @@ impl EngineSync {
             // The patch fields that differ, as the card's parameters, so a sounding note goes on
             // (#19); a change no parameter reaches (a preset with other filters, say) needs a
             // fresh processor.
-            let decode = |d: &komponist_model::Device| {
-                komponist_builtin::decode_state(d.state.as_deref()).ok()
-            };
+            let decode =
+                |d: &komponist_model::Device| komponist_hexa::decode_state(d.state.as_deref()).ok();
             let changes = decode(old)
                 .zip(decode(device))
-                .and_then(|(was, now)| komponist_builtin::device::param_changes(&was, &now))
+                .and_then(|(was, now)| komponist_hexa::device::param_changes(&was, &now))
                 .filter(|c| c.len() <= komponist_engine::MAX_PENDING_PARAMS);
             let Some(changes) = changes else {
                 self.reload_device(project, device.id);
@@ -762,7 +761,7 @@ impl EngineSync {
             // A state with only sample links has no `params`: its values are the defaults (as
             // the processor made from it has them).
             let values = |d: &komponist_model::Device| match kind.decode_state(d.state.as_deref()) {
-                Err(komponist_builtin::internal::StateError::NoParams) => Ok(kind.defaults()),
+                Err(komponist_device_core::StateError::NoParams) => Ok(kind.defaults()),
                 other => other,
             };
             let (Ok(was), Ok(now)) = (values(old), values(device)) else {
@@ -780,10 +779,10 @@ impl EngineSync {
                 }
             }
             if let Some(handle) = self.host.sampler(device.id) {
-                use komponist_builtin::sampler::links;
+                use komponist_sampler::links;
                 let general = kind == komponist_builtin::Internal::GeneralSampler;
                 if general {
-                    use komponist_builtin::general_sampler::read_settings;
+                    use komponist_general_sampler::read_settings;
                     let settings = read_settings(device.state.as_deref());
                     if settings != read_settings(old.state.as_deref()) {
                         handle.set_general_settings(&settings);
@@ -1749,7 +1748,7 @@ mod tests {
 
     #[test]
     fn hexa_compiler_resolves_device_macros_outside_the_parameter_grid() {
-        use komponist_builtin::Macro;
+        use komponist_hexa::Macro;
         use komponist_model::params::ParamId;
 
         let project = demo_project();
@@ -1765,8 +1764,8 @@ mod tests {
             host: &host,
             rate: 48_000.0,
         };
-        let patch = komponist_builtin::decode_state(device.state.as_deref())
-            .unwrap_or_else(|_| komponist_builtin::default_patch());
+        let patch = komponist_hexa::decode_state(device.state.as_deref())
+            .unwrap_or_else(|_| komponist_hexa::default_patch());
         for mac in Macro::ALL {
             let parameter = env
                 .automation_parameter(device, &ParamId::new(mac.key()))

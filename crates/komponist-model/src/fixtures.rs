@@ -422,7 +422,7 @@ const HEXA: DemoPlugin = DemoPlugin {
     version: "0.1.0",
 };
 
-/// The built-in sampler; its name is `komponist_builtin::sampler::NAME` (a test in komponist-app
+/// The built-in sampler; its name is `komponist_sampler::NAME` (a test in komponist-app
 /// keeps the two equal).
 const SAMPLER: DemoPlugin = DemoPlugin {
     format: PluginFormat::Builtin,
