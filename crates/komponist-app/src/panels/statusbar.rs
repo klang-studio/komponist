@@ -154,10 +154,22 @@ pub fn model(app: &App, now: Instant) -> StatusModel {
     } else if matches!(
         app.transport(),
         TransportState::Stopped | TransportState::Playing
-    ) && let Some(error) = app.engine().audio_input_error()
-    {
-        s.left = t.audio_input_open_failed(error);
-        s.left_color = color::STATE_ERROR;
+    ) {
+        if let Some(error) = app.engine().audio_input_error() {
+            s.left = t.audio_input_open_failed(error);
+            s.left_color = color::STATE_ERROR;
+        } else if let Some(program) = app.engine().program()
+            && program.routing.pdc_shortfall > 0
+            && !app
+                .ui()
+                .devices
+                .touched
+                .as_ref()
+                .is_some_and(|touch| touch.dragging)
+        {
+            s.left = t.status_pdc_shortfall(program.routing.pdc_shortfall);
+            s.left_color = color::METER_LOUD;
+        }
     }
     s
 }
@@ -448,6 +460,84 @@ mod tests {
             let labels: Vec<_> = h.query_all_by_label(message).collect();
             assert_eq!(labels.len(), expected_labels);
             assert!(labels.iter().all(|node| node.rect().right() <= width));
+        }
+    }
+
+    #[test]
+    fn compensation_warning_shows_in_both_languages_and_clears_after_a_recompile() {
+        use crate::actions::{Action, EditAction};
+        use egui_kittest::kittest::Queryable as _;
+        use komponist_builtin::Internal;
+        use komponist_engine::MAX_PDC_FRAMES;
+        use komponist_model::edits::{self, NewDevice, NewTrack};
+        use komponist_model::{ChannelRef, DeviceRole, Project};
+
+        let track = NewTrack {
+            name: None,
+            hue: None,
+            instrument: None,
+            index: None,
+            arm_exclusive: false,
+        };
+        let (project, slow) = edits::add_track(&Project::new("Latency"), track.clone()).unwrap();
+        let (mut project, _) = edits::add_track(&project, track).unwrap();
+        let limiter = NewDevice {
+            role: DeviceRole::Effect,
+            plugin: Internal::Limiter.plugin_ref(),
+            state: None,
+            sidechain: None,
+        };
+        // Each limiter contributes 96 frames at the default 48 kHz.
+        let limiters = MAX_PDC_FRAMES / 96 + 1;
+        let frames = (limiters * 96 - MAX_PDC_FRAMES) as u32;
+        for index in 0..limiters {
+            (project, _) =
+                edits::insert_device(&project, ChannelRef::Track(slow), index, limiter.clone())
+                    .unwrap();
+        }
+        let device = project.track(slow).unwrap().channel.devices[0].id;
+        let preview = std::env::var_os("KOMPONIST_PDC_PREVIEW").map(std::path::PathBuf::from);
+        if let Some(dir) = &preview {
+            crate::project_io::save_project(&dir.join("pdc.komponist"), &project).unwrap();
+        }
+
+        for lang in [Lang::De, Lang::En] {
+            let mut app = App::headless(project.clone()).with_lang(lang);
+            app.step();
+            let warning = lang.status_pdc_shortfall(frames);
+            let status = model(&app, Instant::now());
+            assert_eq!(status.left, warning);
+            assert_eq!(status.left_color, color::METER_LOUD);
+            let mut h = komponist_ui::snapshot::builder(1.0)
+                .with_size(vec2(1000.0, 36.0))
+                .build_ui_state(
+                    |ui, status| {
+                        let rect = Rect::from_min_size(
+                            ui.min_rect().min,
+                            vec2(ui.available_width(), komponist_tokens::size::STATUSBAR),
+                        );
+                        show(ui, rect, status);
+                    },
+                    status,
+                );
+            h.run_steps(2);
+            let left = h.get_by_label(&warning).rect();
+            let right = h.get_by_label(&h.state().right).rect();
+            assert!(left.right() + space::SPACE_4 < right.left());
+            if let Some(dir) = &preview {
+                h.render()
+                    .unwrap()
+                    .save(dir.join(format!("pdc-{}.png", lang.code())))
+                    .unwrap();
+            }
+
+            app.dispatch(Action::Edit(EditAction::SetDeviceBypass {
+                device,
+                bypass: true,
+            }));
+            app.step();
+            assert_eq!(app.engine().program().unwrap().routing.pdc_shortfall, 0);
+            assert_ne!(model(&app, Instant::now()).left, warning);
         }
     }
 
