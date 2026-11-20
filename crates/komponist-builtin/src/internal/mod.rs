@@ -60,19 +60,17 @@ use komponist_model::{DeviceRole, PluginFormat, PluginRef};
 
 use crate::sampler::SamplerHandle;
 
-use komponist_device_core::INITIAL_RATE;
-use komponist_device_core::layout::{knob, knob_large, param, single_page, template, toggle};
 pub use komponist_device_core::{Dsp, Preset, Spec, StateError, dsp, midi, no_presets};
 
-pub mod arpeggiator;
-pub mod delay;
-pub mod eq;
-pub mod hall;
-pub mod limiter;
+pub use komponist_arpeggiator as arpeggiator;
+pub use komponist_delay as delay;
+pub use komponist_eq as eq;
+pub use komponist_limiter as limiter;
+pub use komponist_reverb as hall;
 pub mod preset_names;
-pub mod presse;
-pub mod tonleiter;
-pub mod volt;
+pub use komponist_presse as presse;
+pub use komponist_scale as tonleiter;
+pub use komponist_volt as volt;
 
 /// The internal devices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -365,8 +363,6 @@ impl Processor for InternalProcessor {
     }
 }
 
-#[cfg(test)]
-mod eq_tap_tests;
 #[cfg(test)]
 mod fx_tests;
 #[cfg(test)]

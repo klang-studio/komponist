@@ -59,23 +59,15 @@
 //! split costs one extra control-rate step, so many events at distinct offsets in one call cost
 //! more than the same events at one offset. Creating a processor (UI thread) takes ~80 µs.
 
-pub mod algorithms;
-pub mod device;
-pub mod general_sampler;
 mod i18n;
 pub mod internal;
-pub mod macros;
-mod processor;
-pub mod sampler;
-pub mod state;
 
-pub use hexa_core::Patch;
 pub use i18n::{category_text, device_name};
 pub use internal::{Internal, InternalProcessor, Preset};
 pub use komponist_device_core::{SAMPLE_RATES, value_texts};
-pub use macros::Macro;
-pub use processor::HexaProcessor;
-pub use state::{
-    PRESET_COUNT, PresetInfo, StateError, categories, decode_state, default_patch, encode_state,
-    preset_patch, presets,
+pub use komponist_general_sampler as general_sampler;
+pub use komponist_hexa::{
+    HexaProcessor, Macro, PRESET_COUNT, Patch, PresetInfo, StateError, algorithms, categories,
+    decode_state, default_patch, device, encode_state, macros, preset_patch, presets, state,
 };
+pub use komponist_sampler as sampler;
