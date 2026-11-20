@@ -37,7 +37,7 @@ macros-min = Minimum
 macros-max = Maximum
 macros-missing = fehlt
 macros-plugin-missing-hint = Die Zuordnung bleibt gespeichert und wirkt wieder, sobald das Plugin geladen ist.
-macros-param-missing-hint = Das Plugin hat diesen Parameter nicht mehr. Die Zuordnung bleibt gespeichert.
+macros-mapping-kept = Die Zuordnung bleibt gespeichert.
 macros-targets-missing = { $n ->
         [one] 1 Ziel fehlt
        *[other] { $n } Ziele fehlen

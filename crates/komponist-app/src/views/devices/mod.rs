@@ -328,40 +328,6 @@ fn header_row(
     );
     x = mark.right() + metrics::HEADER_GAP;
     let style = typography::UI;
-    let g = w::galley(
-        ui,
-        &track.name,
-        w::font_at(&style, wm::SEMIBOLD),
-        style.line_height,
-    );
-    let pos = w::text_pos(rect, &g, x, ppp);
-    let r = ui.allocate_rect(Rect::from_min_size(pos, g.size()), Sense::hover());
-    r.widget_info(|| WidgetInfo::labeled(Role::Label, true, &track.name));
-    x = pos.x + g.size().x + metrics::HEADER_GAP;
-    if ctx.ui.track_macros.mapping == Some(track.id) {
-        let index = ctx.ui.track_macros.selected(track.id);
-        let source = track_macros::reference(t, index, &track.macros.0[usize::from(index)]);
-        let chip = t.macros_map_chip(source);
-        let g = w::styled_galley(ui, &chip, &typography::SMALL);
-        let at = w::text_pos(rect, &g, x, ppp);
-        let chip_rect = Rect::from_min_size(at, g.size()).expand2(vec2(metrics::CHIP_PAD_X, 0.0));
-        px::fill(
-            ui.painter(),
-            chip_rect,
-            radius::S,
-            color32(color::ACCENT_SURFACE),
-        );
-        ui.painter().galley(at, g, color32(color::TEXT_1));
-        ui.interact(
-            chip_rect,
-            ui.scope_id().with("macro-map-chip"),
-            Sense::hover(),
-        )
-        .widget_info(|| WidgetInfo::labeled(Role::Label, true, &chip));
-        x = chip_rect.right() + metrics::HEADER_GAP;
-    }
-    ui.painter().galley(pos, g, color32(color::TEXT_1));
-
     let button_width = {
         let g = w::galley(
             ui,
@@ -372,6 +338,49 @@ fn header_row(
         g.size().x.ceil() + 2.0 * wm::BUTTON_PADDING_X
     };
     let right_edge = rect.right() - metrics::HEADER_PAD_X - button_width;
+    let g = w::galley(
+        ui,
+        &track.name,
+        w::font_at(&style, wm::SEMIBOLD),
+        style.line_height,
+    );
+    let pos = w::text_pos(rect, &g, x, ppp);
+    let r = ui.allocate_rect(Rect::from_min_size(pos, g.size()), Sense::hover());
+    r.widget_info(|| WidgetInfo::labeled(Role::Label, true, &track.name));
+    x = pos.x + g.size().x + metrics::HEADER_GAP;
+    let chip_width = (right_edge - x - 2.0 * metrics::HEADER_GAP) / 2.0 - 2.0 * metrics::CHIP_PAD_X;
+    if ctx.ui.track_macros.mapping == Some(track.id) && chip_width > 0.0 {
+        let index = ctx.ui.track_macros.selected(track.id);
+        let source = track_macros::reference(t, index, &track.macros.0[usize::from(index)]);
+        let chip = t.macros_map_chip(source);
+        let style = typography::SMALL;
+        let g = crate::views::elided_galley(
+            ui,
+            &chip,
+            fonts::font_id(&style),
+            style.line_height,
+            chip_width,
+        );
+        let at = w::text_pos(rect, &g, x + metrics::CHIP_PAD_X, ppp);
+        let chip_rect = Rect::from_min_size(at, g.size()).expand2(vec2(metrics::CHIP_PAD_X, 0.0));
+        px::fill(
+            ui.painter(),
+            chip_rect,
+            radius::S,
+            color32(color::ACCENT_SURFACE),
+        );
+        ui.painter().galley(at, g, color32(color::TEXT_1));
+        let response = ui.interact(
+            chip_rect,
+            ui.scope_id().with("macro-map-chip"),
+            Sense::hover(),
+        );
+        response.widget_info(|| WidgetInfo::labeled(Role::Label, true, &chip));
+        response.on_hover_text(chip);
+        x = chip_rect.right() + metrics::HEADER_GAP;
+    }
+    ui.painter().galley(pos, g, color32(color::TEXT_1));
+
     let right = Rect::from_min_max(
         pos2(right_edge, rect.top()),
         pos2(rect.right() - metrics::HEADER_PAD_X, rect.bottom()),

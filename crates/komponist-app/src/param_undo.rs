@@ -218,6 +218,8 @@ impl App {
     pub(crate) fn cancel_gesture(&mut self) {
         self.release_automation_controls();
         let before = Arc::clone(self.doc.project());
+        self.ui.track_macros.range_drag_epoch =
+            self.ui.track_macros.range_drag_epoch.wrapping_add(1);
         self.doc.cancel_gesture();
         self.param_undo.gesture_device = None;
         self.param_undo.macro_gesture.clear();

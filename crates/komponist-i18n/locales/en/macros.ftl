@@ -37,7 +37,7 @@ macros-min = Minimum
 macros-max = Maximum
 macros-missing = missing
 macros-plugin-missing-hint = The mapping stays saved and works again as soon as the plugin loads.
-macros-param-missing-hint = The plugin no longer has this parameter. The mapping stays saved.
+macros-mapping-kept = The mapping stays saved.
 macros-targets-missing = { $n ->
         [one] 1 target missing
        *[other] { $n } targets missing

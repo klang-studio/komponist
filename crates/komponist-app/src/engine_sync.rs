@@ -853,12 +853,24 @@ impl EngineSync {
     /// Call every UI frame: polls the audio system, retries queued commands, drains the engine's
     /// events (dropping garbage here) and the device host's events.
     pub fn poll(&mut self) -> Vec<SyncEvent> {
-        self.poll_with_macro_mapping(None)
+        self.poll_with_macro_mapping(None, |_, _| false)
+    }
+
+    fn plugin_mapping_parameter(&self, device: DeviceId, id: u32) -> bool {
+        self.host.params(device).is_some_and(|params| {
+            params
+                .iter()
+                .any(|info| info.id == id && plugin_automatable(info))
+        })
     }
 
     /// Also routes native edits from `mapping` as prospective macro mappings. The live plugin
     /// has already received the edit. Its persisted parameter base is kept until mapping wins.
-    pub(crate) fn poll_with_macro_mapping(&mut self, mapping: Option<TrackId>) -> Vec<SyncEvent> {
+    pub(crate) fn poll_with_macro_mapping(
+        &mut self,
+        mapping: Option<TrackId>,
+        writing: impl Fn(DeviceId, u32) -> bool,
+    ) -> Vec<SyncEvent> {
         use komponist_engine::processor::ParameterEditKind;
 
         let before = self.sample_rate();
@@ -894,11 +906,8 @@ impl EngineSync {
                                 ParameterEditKind::Gesture { begin: false, .. } => continue,
                             };
                             let candidate = mapping_owner
-                                && self.host.params(device).is_some_and(|params| {
-                                    params
-                                        .iter()
-                                        .any(|info| info.id == id && plugin_automatable(info))
-                                });
+                                && !writing(device, id)
+                                && self.plugin_mapping_parameter(device, id);
                             if candidate && inputs.insert((device, id)) {
                                 let previous = self
                                     .macro_params

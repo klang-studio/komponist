@@ -12,7 +12,7 @@ use crate::device_host::{internal_kind, is_hexa};
 use crate::param_undo::device_param_state;
 use crate::ui_state::StatusKind;
 use crate::views::automation::{Catalog, automation_control_value};
-use crate::views::track_macros::{Action, reference};
+use crate::views::track_macros::{Action, effective_value, reference};
 
 impl App {
     pub(super) fn track_macros_track(&self) -> Option<TrackId> {
@@ -33,12 +33,17 @@ impl App {
             }
             Action::ToggleMapping { track } => {
                 if self.ui.track_macros.mapping == Some(track) {
-                    self.ui.track_macros.mapping = None;
-                    return;
-                }
-                if self.project().track(track).is_some() {
+                    self.track_macro_action(Action::ExitMapping);
+                } else if self.project().track(track).is_some() {
+                    self.end_gesture();
                     self.ui.track_macros.mapping = Some(track);
                     self.ui.track_macros.collapsed.remove(&track);
+                }
+            }
+            Action::ExitMapping => {
+                if self.ui.track_macros.mapping.is_some() {
+                    self.end_gesture();
+                    self.ui.track_macros.mapping = None;
                 }
             }
             Action::BeginValue { track, index } => {
@@ -276,22 +281,22 @@ impl App {
         let from_macro = old_driver.and_then(|driver| {
             let slot = &track.macros.0[usize::from(driver)];
             let mapping = slot.mappings.iter().find(|m| m.target == target)?;
+            let value = effective_value(self.project(), &self.engine, track, driver);
             Some(
-                descriptor.info.to_normalized(
-                    descriptor
-                        .info
-                        .to_plain(f64::from(mapping.value_at(slot.value))),
-                ) as f32,
+                descriptor
+                    .info
+                    .to_normalized(descriptor.info.to_plain(f64::from(mapping.value_at(value))))
+                    as f32,
             )
         });
         let owner = AutomationOwner::Track(track_id);
-        let current = previous
-            .map(|plain| descriptor.info.to_normalized(plain) as f32)
-            .or(from_macro)
+        let current = from_macro
             .or_else(|| self.automation_capture.current_value(owner, &target))
             .or_else(|| automation_control_value(self.project(), &self.engine, owner, &target))
+            .or_else(|| previous.map(|plain| descriptor.info.to_normalized(plain) as f32))
             .unwrap_or(descriptor.base);
-        let (min, max, invert) = initial_range(slot.value, current);
+        let value = effective_value(self.project(), &self.engine, track, index);
+        let (min, max, invert) = initial_range(value, current);
         let mapping = Mapping {
             target,
             label: descriptor.label,
@@ -329,7 +334,9 @@ impl App {
         else {
             return;
         };
-        if self.ui.track_macros.mapping != Some(track) {
+        if self.ui.track_macros.mapping != Some(track)
+            || self.automation_capture.plugin_parameter_writing(device, id)
+        {
             return;
         }
         let index = self.ui.track_macros.selected(track);
@@ -369,6 +376,7 @@ impl App {
         let Some(catalog) = self.macro_catalog(track) else {
             return;
         };
+        let macro_value = effective_value(self.project(), &self.engine, owner, index);
         let values: Vec<_> = slot
             .mappings
             .iter()
@@ -376,7 +384,7 @@ impl App {
             .filter(|m| target.is_none_or(|target| &m.target == target))
             .filter_map(|m| {
                 let info = catalog.resolve(&m.target).ok()?.info;
-                let value = f64::from(m.value_at(slot.value));
+                let value = f64::from(m.value_at(macro_value));
                 Some((m.target.clone(), info.to_plain(value)))
             })
             .collect();
@@ -469,6 +477,57 @@ mod tests {
     use super::*;
     use crate::actions::{Action as AppAction, EditAction, TransportAction};
     use komponist_builtin::Internal;
+
+    #[test]
+    fn mapping_edits_preserve_the_effective_macro_positions() {
+        let (project, track) = edits::add_track(
+            &Project::new("Macro test"),
+            edits::NewTrack {
+                name: None,
+                instrument: None,
+                hue: None,
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        let mut app = App::headless(project);
+        app.engine_mut().hold_engine().unwrap();
+        app.step();
+
+        let render_at = |app: &mut App, positions: &[(u8, f32)]| {
+            for &(index, value) in positions {
+                app.engine_mut().send(Command::SetMacro {
+                    track,
+                    index,
+                    value,
+                });
+            }
+            app.engine_mut().run_held_capture(128, &[], 0).unwrap();
+        };
+        let target = AutomationTarget::Pan;
+        render_at(&mut app, &[(0, 0.25)]);
+        app.map_track_macro(track, 0, target.clone(), None).unwrap();
+        let original = app.project().track(track).unwrap().macros.0[0].mappings[0].clone();
+        assert!((original.value_at(0.25) - 0.5).abs() < 1e-6);
+        app.step();
+
+        render_at(&mut app, &[(0, 0.75), (1, 0.6)]);
+        app.map_track_macro(track, 1, target.clone(), Some(-1.0))
+            .unwrap();
+        let owner = app.project().track(track).unwrap();
+        assert!(owner.macros.0[0].mappings.is_empty());
+        assert_eq!(owner.macros.0[1].value, 0.0);
+        let reassigned = owner.macros.0[1].mappings[0].clone();
+        assert!((reassigned.value_at(0.6) - original.value_at(0.75)).abs() < 1e-6);
+        app.step();
+
+        render_at(&mut app, &[(1, 0.8)]);
+        app.unmap_track_macro(track, 1, Some(&target));
+        let owner = app.project().track(track).unwrap();
+        assert!(owner.macros.0[1].mappings.is_empty());
+        assert!((owner.channel.pan - (2.0 * reassigned.value_at(0.8) - 1.0)).abs() < 1e-6);
+    }
 
     #[test]
     fn mapping_mode_preserves_pan_then_the_macro_pans_a_real_synth() {

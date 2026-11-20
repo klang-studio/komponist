@@ -1137,3 +1137,99 @@ fn track_macro_mapping_range_inversion_and_bend_are_undoable() {
     edit(&mut h, EditAction::Undo);
     assert_eq!(mapping(&h), bent);
 }
+
+#[test]
+fn track_macro_range_handles_support_collapsed_drags_and_accesskit() {
+    use komponist_app::views::track_macros::Action as Macro;
+    use komponist_model::automation::AutomationTarget;
+
+    let (mut app, track, _) = app_with_hall();
+    let target = AutomationTarget::Pan;
+    app.dispatch(Action::Macro(Macro::Map {
+        track,
+        index: 0,
+        target: target.clone(),
+    }));
+    app.dispatch(Action::Macro(Macro::Select { track, index: 0 }));
+    app.dispatch(Action::Macro(Macro::Range {
+        track,
+        index: 0,
+        target,
+        min: 0.5,
+        max: 0.5,
+    }));
+    let mut h = harness(app);
+    let bounds = |h: &Harness<'_, App>| {
+        let mapping = &h.state().project().track(track).unwrap().macros.0[0].mappings[0];
+        (mapping.min, mapping.max)
+    };
+    let label = &h.state().project().track(track).unwrap().macros.0[0].mappings[0].label;
+    let min = Lang::De.macros_a11y_min(label);
+    let max = Lang::De.macros_a11y_max(label);
+    let anchor = h.get_by_role_and_label(Role::Slider, &min).rect().center();
+    for dx in [-30.0, 30.0] {
+        let to = anchor + vec2(dx, 0.0);
+        press_and_move(&mut h, anchor, to, Modifiers::NONE);
+        release(&mut h, to, Modifiers::NONE);
+        let (low, high) = bounds(&h);
+        if dx < 0.0 {
+            assert!(low < 0.5);
+            assert_eq!(high, 0.5);
+        } else {
+            assert_eq!(low, 0.5);
+            assert!(high > 0.5);
+        }
+        h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+        h.run_steps(3);
+        assert_eq!(bounds(&h), (0.5, 0.5));
+    }
+
+    h.get_by_role_and_label(Role::Slider, &max)
+        .set_value_accesskit(0.8);
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Slider, &min)
+        .set_value_accesskit(0.2);
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Slider, &min)
+        .increment_accesskit();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Slider, &max)
+        .decrement_accesskit();
+    h.run_steps(3);
+    let (low, high) = bounds(&h);
+    assert!((low - 0.21).abs() < 1e-6 && (high - 0.79).abs() < 1e-6);
+
+    let min_handle = h.get_by_role_and_label(Role::Slider, &min).rect().center();
+    let max_handle = h.get_by_role_and_label(Role::Slider, &max).rect().center();
+    let start = min_handle.lerp(max_handle, 0.5);
+    let to = start + vec2(18.0, 0.0);
+    press_and_move(&mut h, start, to, Modifiers::ALT);
+    assert!(bounds(&h).0 > low);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert_eq!(bounds(&h), (low, high));
+    h.hover_at(to + vec2(20.0, 0.0));
+    h.run_steps(3);
+    release(&mut h, to, Modifiers::NONE);
+    assert_eq!(bounds(&h), (low, high));
+
+    let min_handle = h.get_by_role_and_label(Role::Slider, &min).rect().center();
+    click(&mut h, min_handle);
+    for key in [egui::Key::Enter, egui::Key::Escape] {
+        h.key_press(egui::Key::Enter);
+        h.run_steps(4);
+        assert!(h.ctx.text_edit_focused());
+        h.key_press(key);
+        h.run_steps(3);
+        assert!(!h.ctx.text_edit_focused());
+        assert_eq!(bounds(&h), (low, high));
+    }
+    for _ in 0..2 {
+        h.key_press(egui::Key::ArrowRight);
+        h.run_steps(3);
+    }
+    let (new_low, new_high) = bounds(&h);
+    assert!((new_low - low - 0.02).abs() < 1e-6);
+    assert_eq!(new_high, high);
+}

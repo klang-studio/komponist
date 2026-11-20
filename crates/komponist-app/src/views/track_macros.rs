@@ -8,7 +8,7 @@ use komponist_model::{Track, TrackId};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{TrackPalette, color, device, radius, size, space, typography};
 use komponist_ui::widgets::button::Button;
-use komponist_ui::widgets::context_menu::{ContextMenu, Entry};
+use komponist_ui::widgets::context_menu::{ContextMenu, Entry, Kind};
 use komponist_ui::widgets::knob::{Knob, ModArc};
 use komponist_ui::widgets::number_field::{open_value_entry, parse_number, wheel_turned};
 use komponist_ui::{fonts, px, state, widgets};
@@ -27,6 +27,7 @@ pub enum Action {
     ToggleMapping {
         track: TrackId,
     },
+    ExitMapping,
     ToggleCollapsed {
         track: TrackId,
     },
@@ -116,12 +117,23 @@ pub(crate) fn reference(lang: Lang, index: u8, slot: &TrackMacro) -> String {
 
 /// Track macro value visible to the UI, including an active automation override.
 pub(crate) fn value(ctx: &ViewCtx<'_>, track: &Track, index: u8) -> f32 {
-    ctx.engine
+    effective_value(ctx.project, ctx.engine, track, index)
+}
+
+pub(crate) fn effective_value(
+    project: &komponist_model::Project,
+    engine: &crate::engine_sync::EngineSync,
+    track: &Track,
+    index: u8,
+) -> f32 {
+    engine
         .telemetry()
         .macro_values(track.id)
         .map(|values| values[usize::from(index)])
         .or_else(|| {
-            ctx.automation_value(
+            crate::views::automation::automation_control_value(
+                project,
+                engine,
                 AutomationOwner::Track(track.id),
                 &AutomationTarget::Macro { index },
             )
@@ -324,7 +336,13 @@ impl Control {
             ];
             return ContextMenu::new(lang.devices_parameter(), &entries).show_on(r);
         }
-        let mut entries = ordinary.to_vec();
+        let mut entries: Vec<_> = ordinary
+            .iter()
+            .copied()
+            .filter(|entry| {
+                self.mapping.is_none() || !matches!(entry.kind, Kind::Action(Pick::Enter))
+            })
+            .collect();
         entries.push(Entry::submenu(lang.macros_map_to(), &slots));
         ContextMenu::new(lang.devices_parameter(), &entries).show_on(r)
     }

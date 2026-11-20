@@ -7,7 +7,9 @@ use komponist_model::{Track, TrackId};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, TrackPalette, color, radius, size, space, typography};
 use komponist_ui::widgets::button::Button;
-use komponist_ui::widgets::number_field::{NumberField, format_number, parse_number};
+use komponist_ui::widgets::number_field::{
+    NumberField, accesskit_requests, expose_value, format_number, parse_number,
+};
 use komponist_ui::{fonts, px, widgets};
 
 use super::{Meta, frame, place};
@@ -110,10 +112,42 @@ pub(super) fn section(ui: &mut Ui, ctx: &mut ViewCtx<'_>, x: Rangef, y: &mut f32
             }
             let value = macros::value(ctx, track, index);
             for mapping in &slot.mappings {
-                let row =
-                    col.take(size::CONTROL + RANGE_HANDLE[1] + 2.0 * typography::SMALL.line_height);
                 let resolved = Catalog::new(ctx, AutomationOwner::Track(track.id))
                     .map(|catalog| catalog.resolve(&mapping.target));
+                let resolved = resolved.map(|result| {
+                    result.map_err(|warning| {
+                        warning.map(|warning| {
+                            let reason = warning.trim_start_matches('⚠').trim_start();
+                            let hint = if matches!(mapping.target, AutomationTarget::Param { device, .. }
+                                if ctx.project.find_device(device).is_some()
+                                    && matches!(ctx.engine.device_status(device),
+                                        komponist_plugins::DeviceStatus::Missing
+                                            | komponist_plugins::DeviceStatus::Crashed(_)))
+                            {
+                                lang.macros_plugin_missing_hint()
+                            } else {
+                                lang.macros_mapping_kept()
+                            };
+                            format!("{reason} · {hint}")
+                        })
+                    })
+                });
+                let details_height = RANGE_HANDLE[1] + 2.0 * typography::SMALL.line_height;
+                let details_height = match &resolved {
+                    Some(Err(Some(warning))) => details_height.max(
+                        ui.painter()
+                            .layout(
+                                warning.clone(),
+                                fonts::font_id(&typography::SMALL),
+                                color32(color::TEXT_3),
+                                col.width(),
+                            )
+                            .size()
+                            .y,
+                    ),
+                    _ => details_height,
+                };
+                let row = col.take(size::CONTROL + details_height);
                 mapping_row(ui, ctx, row, track, index, mapping, resolved, value);
             }
         },
@@ -388,15 +422,8 @@ fn mapping_row(
         }));
     }
     if let Some(warning) = warning {
-        let hint = if matches!(mapping.target, AutomationTarget::Param { device, .. }
-            if !matches!(ctx.engine.device_status(device), komponist_plugins::DeviceStatus::Ok))
-        {
-            lang.macros_plugin_missing_hint()
-        } else {
-            lang.macros_param_missing_hint()
-        };
         let hint_rect = Rect::from_min_max(pos2(row.left(), line.bottom()), row.max);
-        wrapping_text(ui, hint_rect, hint);
+        wrapping_text(ui, hint_rect, &warning);
         caption_response.on_hover_text(warning);
         return;
     }
@@ -437,6 +464,12 @@ fn mapping_row(
     macros::text(ui, value_rect, &value, &typography::VALUE_S, ink);
 }
 
+#[derive(Clone, Copy)]
+struct EndpointDrag {
+    epoch: u64,
+    collapsed_at: Option<f32>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn range_bar(
     ui: &mut Ui,
@@ -471,15 +504,13 @@ fn range_bar(
         Sense::drag(),
     );
     let alt = ui.input(|i| i.modifiers.alt);
-    let moved = ui
-        .ctx()
-        .data(|d| d.get_temp::<bool>(id))
-        .unwrap_or_default();
+    let epoch = ctx.ui.track_macros.range_drag_epoch;
     if mover.drag_started() && alt {
-        ui.ctx().data_mut(|d| d.insert_temp(id, true));
+        ui.data_mut(|d| d.insert_temp(id, epoch));
         ctx.send(begin("undo-macro-range"));
     }
-    if mover.dragged() && (moved || alt && mover.drag_started()) && bar.width() > 0.0 {
+    let moving = ui.data(|d| d.get_temp::<u64>(id)) == Some(epoch);
+    if mover.dragged() && moving && bar.width() > 0.0 {
         let delta = (mover.drag_delta().x / bar.width()).clamp(-low, 1.0 - high);
         if delta != 0.0 {
             ctx.send(Action::Macro(Macro::Range {
@@ -491,9 +522,11 @@ fn range_bar(
             }));
         }
     }
-    if mover.drag_stopped() && moved {
-        ui.ctx().data_mut(|d| d.remove::<bool>(id));
-        ctx.send(Action::Edit(EditAction::EndGesture));
+    if mover.drag_stopped() {
+        ui.data_mut(|d| d.remove::<u64>(id));
+        if moving {
+            ctx.send(Action::Edit(EditAction::EndGesture));
+        }
     }
     for (is_min, current) in [(true, low), (false, high)] {
         let handle = Rect::from_center_size(cs(current), vec2(RANGE_HANDLE[0], RANGE_HANDLE[1]));
@@ -503,7 +536,6 @@ fn range_bar(
             lang.macros_a11y_max(&mapping.label)
         };
         let response = ui.interact(handle, id.with(is_min), Sense::click_and_drag());
-        response.widget_info(|| WidgetInfo::labeled(Role::Slider, true, &name));
         let formatter = |value| {
             target.map_or_else(
                 || macros::percent(lang, f64::from(value)),
@@ -511,13 +543,17 @@ fn range_bar(
             )
         };
         let text = formatter(current);
-        widgets::accesskit(&response, |node| {
-            node.set_value(text.as_str());
-            node.set_numeric_value(f64::from(current));
-            node.set_min_numeric_value(0.0);
-            node.set_max_numeric_value(1.0);
-        });
         response.clone().on_hover_text(format!("{name} · {text}"));
+        let limits = if is_min { 0.0..=high } else { low..=1.0 };
+        expose_value(
+            &response,
+            Role::Slider,
+            &name,
+            f64::from(current),
+            text,
+            f64::from(*limits.start())..=f64::from(*limits.end()),
+            NORMALIZED_STEP,
+        );
         px::fill(ui.painter(), handle, radius::S, color32(color::TEXT_2));
         let (press, edit) = ui.input(|i| {
             (
@@ -529,14 +565,50 @@ fn range_bar(
         if response.clicked() || response.drag_started() {
             response.request_focus();
         }
+        if response.has_focus() {
+            ui.memory_mut(|memory| {
+                memory.set_focus_lock_filter(
+                    response.id,
+                    egui::EventFilter {
+                        horizontal_arrows: true,
+                        ..Default::default()
+                    },
+                );
+            });
+        }
+        let drag_id = response.id.with("endpoint-drag");
+        if response.drag_started() {
+            ui.data_mut(|d| {
+                d.insert_temp(
+                    drag_id,
+                    EndpointDrag {
+                        epoch,
+                        collapsed_at: (low == high).then_some(low),
+                    },
+                );
+            });
+        }
+        let drag = ui.data(|d| d.get_temp::<EndpointDrag>(drag_id));
+        if response.drag_stopped() {
+            ui.data_mut(|d| d.remove::<EndpointDrag>(drag_id));
+        }
+        if drag.is_some_and(|drag| drag.epoch != epoch) {
+            continue;
+        }
+        let (steps, set) = accesskit_requests(ui, response.id);
+        let steps = if response.has_focus() {
+            steps + i32::from(press)
+        } else {
+            steps
+        };
         let mut candidate = if response.dragged() && bar.width() > 0.0 {
             response
                 .interact_pointer_pos()
                 .map(|p| ((p.x - bar.left()) / bar.width()).clamp(0.0, 1.0))
-        } else if response.has_focus() && press != 0 {
-            Some((current + f32::from(press) * 0.01).clamp(0.0, 1.0))
+        } else if let Some(value) = set.filter(|value| value.is_finite()) {
+            Some(value.clamp(0.0, 1.0) as f32)
         } else {
-            None
+            (steps != 0).then_some(current + steps as f32 * NORMALIZED_STEP as f32)
         };
         if response.double_clicked() || (response.has_focus() && edit) {
             ui.ctx()
@@ -555,10 +627,12 @@ fn range_bar(
             &mut actions,
             |out| {
                 if let Some(value) = candidate {
-                    let (min, max) = if is_min {
-                        (value.min(high), high)
+                    let (min, max) = if let Some(anchor) = drag.and_then(|drag| drag.collapsed_at) {
+                        (value.min(anchor), value.max(anchor))
+                    } else if is_min {
+                        (value.clamp(0.0, high), high)
                     } else {
-                        (low, value.max(low))
+                        (low, value.clamp(low, 1.0))
                     };
                     out.push(Action::Macro(Macro::Range {
                         track,
@@ -599,6 +673,12 @@ fn range_entry(
         .ctx()
         .data(|d| d.get_temp::<bool>(state.with("started")))
         .unwrap_or_default();
+    let (cancel, commit) = ui.input(|i| {
+        (
+            i.key_pressed(egui::Key::Escape),
+            i.key_pressed(egui::Key::Enter),
+        )
+    });
     let mut value = current;
     let result = egui::Area::new(state)
         .order(egui::Order::Foreground)
@@ -626,15 +706,18 @@ fn range_entry(
                 widgets::number_field::value_entry_open(ui.ctx(), edit.id),
             )
         });
-    let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
     let (changed, entry_open) = result.inner;
-    if cancel || changed || started && (!entry_open || result.response.clicked_elsewhere()) {
+    let outside = started && result.response.clicked_elsewhere();
+    if cancel || changed || started && (!entry_open || outside) {
         ui.ctx().data_mut(|d| {
             d.remove::<bool>(state);
             d.remove::<bool>(state.with("started"));
         });
+        if started && (cancel || commit) && !outside {
+            response.request_focus();
+        }
     }
-    changed.then_some(value)
+    (changed && !cancel).then_some(value)
 }
 
 fn begin(label: &str) -> Action {

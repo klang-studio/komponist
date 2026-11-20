@@ -909,8 +909,8 @@ impl App {
     fn frame_chord(&mut self, device: DeviceId, chord: KeyChord, repeat: bool) {
         if chord == KeyChord::plain(Key::Escape) {
             if !repeat {
-                let action = if let Some(track) = self.ui.track_macros.mapping {
-                    Action::Macro(crate::views::track_macros::Action::ToggleMapping { track })
+                let action = if self.ui.track_macros.mapping.is_some() {
+                    Action::Macro(crate::views::track_macros::Action::ExitMapping)
                 } else {
                     Action::Plugin(PluginAction::CloseWindow(device))
                 };

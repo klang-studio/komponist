@@ -936,7 +936,7 @@ pub(crate) fn value_tooltip_live(ui: &Ui, response: &Response) -> bool {
 
 /// AccessKit requests for the control `id` in this pass: increments minus decrements, and the
 /// last requested value.
-pub(crate) fn accesskit_requests(ui: &Ui, id: Id) -> (i32, Option<f64>) {
+pub fn accesskit_requests(ui: &Ui, id: Id) -> (i32, Option<f64>) {
     ui.input(|i| {
         let steps = i.num_accesskit_action_requests(id, Action::Increment) as i32
             - i.num_accesskit_action_requests(id, Action::Decrement) as i32;
@@ -950,9 +950,9 @@ pub(crate) fn accesskit_requests(ui: &Ui, id: Id) -> (i32, Option<f64>) {
     })
 }
 
-/// Tells AccessKit what the control behind `response` is: `role`, German `name`, the value as
+/// Tells AccessKit what the control behind `response` is: `role`, localized `name`, the value as
 /// number and as `text` (with unit), range and step, and the actions it takes.
-pub(crate) fn expose_value(
+pub fn expose_value(
     response: &Response,
     role: Role,
     name: &str,
@@ -1036,6 +1036,12 @@ pub(crate) mod entry {
     /// `true` while the text entry of control `id` is open.
     pub fn is_open(ctx: &Context, id: Id) -> bool {
         ctx.data(|d| d.get_temp::<Open>(key(id))).is_some()
+    }
+
+    /// Discards an entry when its control can no longer be edited.
+    pub(crate) fn discard(ctx: &Context, id: Id) {
+        ctx.data_mut(|d| d.remove::<Open>(key(id)));
+        ctx.memory_mut(|m| m.surrender_focus(edit_id(id)));
     }
 
     fn load(ctx: &Context, id: Id) -> Open {

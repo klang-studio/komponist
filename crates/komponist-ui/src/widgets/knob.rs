@@ -407,6 +407,13 @@ impl Widget for Knob<'_> {
         let live = !is_still(ui) && response.enabled();
         let key_step = (max - min) * KEY_STEP;
 
+        if self.redirect && entry::is_open(&ctx, id) {
+            let focused = ctx.memory(|m| m.has_focus(entry::edit_id(id)));
+            entry::discard(&ctx, id);
+            if focused && live {
+                response.request_focus();
+            }
+        }
         if live && !entry::is_open(&ctx, id) {
             update_pointer_focus(&response);
             if ClickAction::of_control(&response) == ClickAction::Reset {

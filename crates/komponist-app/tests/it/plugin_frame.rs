@@ -1003,13 +1003,15 @@ fn bridge_frame_shows_mapping_and_escape_first_ends_it() {
             .as_deref(),
         Some(expected.as_str())
     );
-    push(
-        &script,
-        PluginManagerEvent::FrameShortcut {
-            device: surge,
-            chord: FrameChord::plain("Escape"),
-        },
-    );
+    for _ in 0..2 {
+        push(
+            &script,
+            PluginManagerEvent::FrameShortcut {
+                device: surge,
+                chord: FrameChord::plain("Escape"),
+            },
+        );
+    }
     h.run_steps(3);
     assert_eq!(h.state().ui().track_macros.mapping, None);
     assert!(h.state().plugin_frame_in_bridge(surge));

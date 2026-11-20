@@ -171,9 +171,8 @@ pub(crate) struct ShellState {
     title: Option<String>,
     /// The device host's events of this frame ([`App::device_events`]).
     device_events: Vec<PluginManagerEvent>,
-    /// A widget wanted the keyboard (a text field had the focus) at the start of the last
-    /// frame; the frame after it lost the focus must not read Esc as a shortcut.
-    keyboard_wanted: bool,
+    /// A text editor had focus at the start of the last frame.
+    text_edit_focused: bool,
     /// Where the last recording started (or starts after its count-in).
     record_from: Option<Tick>,
     /// A `Command::Record` was sent and its `CountInDone` has not arrived: only then does the
@@ -564,9 +563,20 @@ impl App {
     }
 
     fn drain_events_with_automation(&mut self, capture: bool) {
+        let automation = &self.automation_capture;
         let events = self
             .engine
-            .poll_with_macro_mapping(self.ui.track_macros.mapping);
+            .poll_with_macro_mapping(self.ui.track_macros.mapping, |device, id| {
+                automation.plugin_parameter_writing(device, id)
+            });
+        // Automation touch events can precede the corresponding native edit in the batch.
+        let mapping_inputs = events
+            .iter()
+            .filter_map(|event| match event {
+                SyncEvent::PluginParameterInput { device, id, .. } => Some((*device, *id)),
+                _ => None,
+            })
+            .collect();
         // Only a device stream can drop out; on the null backend (tests, `--null-audio`, CI runners
         // without RTKit) the missing priority is not worth a notice.
         let device_stream = matches!(
@@ -591,7 +601,7 @@ impl App {
                 // reports its own status.
                 SyncEvent::Engine(event) => {
                     if capture {
-                        self.capture_automation(&event);
+                        self.capture_automation(&event, &mapping_inputs);
                     }
                     self.engine_event(&event, playhead);
                 }
@@ -1000,8 +1010,10 @@ impl App {
     /// trigger something are consumed, so widgets do not see them.
     fn handle_keys(&mut self, ctx: &Context) {
         let wants = ctx.egui_wants_keyboard_input();
-        // The Esc that ended a text entry (it surrendered the focus) is not the shortcut's.
-        let focus_just_lost = std::mem::replace(&mut self.shell.keyboard_wanted, wants) && !wants;
+        // An Escape that dismissed a text entry belongs to that editor.
+        let text_focused = ctx.text_edit_focused();
+        let text_focus_just_lost =
+            std::mem::replace(&mut self.shell.text_edit_focused, text_focused) && !wants;
         // Tab always leaves the maximised mixer, even while a widget has the focus (ring) (owner
         // decision Q9, 2026-11-14); a text field or a dialog keeps its Tab, and every other key
         // stays with the focused widget.
@@ -1012,7 +1024,7 @@ impl App {
             && layout.dock_tab == DockTab::Mixer
             && self.ui.dialog.is_none()
             && self.dialogs.overlay.is_none()
-            && !ctx.text_edit_focused();
+            && !text_focused;
         if wants && !tab_only {
             return;
         }
@@ -1091,7 +1103,7 @@ impl App {
                 continue;
             };
             if (floating && k == Key::Escape)
-                || (focus_just_lost && k == Key::Escape)
+                || (text_focus_just_lost && k == Key::Escape)
                 || (self.dialogs.overlay.is_some() && !closes_dialog(&action))
                 || (start && !on_start_screen(&action))
             {
@@ -1120,12 +1132,6 @@ impl App {
                 Action::Ui(UiAction::CloseDialog)
             }
             Action::Ui(UiAction::ClearSelection)
-                if !self.doc.in_gesture() && self.ui.track_macros.mapping.is_some() =>
-            {
-                let track = self.ui.track_macros.mapping.expect("active mapping track");
-                Action::Macro(crate::views::track_macros::Action::ToggleMapping { track })
-            }
-            Action::Ui(UiAction::ClearSelection)
                 if self.recording.is_some()
                     || self.audio_recording.is_active()
                     || self.automation_capture.active()
@@ -1138,6 +1144,9 @@ impl App {
             }
             Action::Ui(UiAction::ClearSelection) if self.doc.in_gesture() => {
                 Action::Edit(EditAction::CancelGesture)
+            }
+            Action::Ui(UiAction::ClearSelection) if self.ui.track_macros.mapping.is_some() => {
+                Action::Macro(crate::views::track_macros::Action::ExitMapping)
             }
             other => other,
         }

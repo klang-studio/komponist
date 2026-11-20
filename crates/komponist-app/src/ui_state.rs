@@ -192,6 +192,8 @@ pub struct TrackMacrosView {
     pub selected: BTreeMap<TrackId, u8>,
     /// The track whose parameters are currently mapping candidates.
     pub mapping: Option<TrackId>,
+    /// Bumped when Escape cancels the current drag, before the pointer is released.
+    pub(crate) range_drag_epoch: u64,
     /// Tracks with a collapsed macro card.
     pub collapsed: BTreeSet<TrackId>,
     /// The macro knob currently hovered or dragged, and whether it is in the inspector.

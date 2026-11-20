@@ -2,7 +2,7 @@
 //! Captured edits stay in a preview until the pass can be applied as one document edit.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use komponist_engine::automation::{AutomationBoundary, EngineTarget};
 use komponist_engine::{Command, EngineEvent, TransportState};
@@ -190,6 +190,13 @@ impl AutomationCapture {
 
     pub(crate) fn owner_writing(&self, owner: AutomationOwner) -> bool {
         self.writing.iter().any(|write| write.owner == owner)
+    }
+
+    pub(crate) fn plugin_parameter_writing(&self, device: DeviceId, id: u32) -> bool {
+        self.writing.iter().any(|write| {
+            matches!(&write.target, AutomationTarget::Param { device: d, param }
+                if *d == device && param.plugin_id() == Some(id))
+        })
     }
 
     pub(crate) fn current_value(
@@ -642,7 +649,11 @@ impl App {
         });
     }
 
-    pub(crate) fn capture_automation(&mut self, event: &EngineEvent) {
+    pub(crate) fn capture_automation(
+        &mut self,
+        event: &EngineEvent,
+        mapping_inputs: &BTreeSet<(DeviceId, u32)>,
+    ) {
         let (owner, target, tick) = match *event {
             EngineEvent::AutomationTouch {
                 owner,
@@ -681,11 +692,14 @@ impl App {
         else {
             return;
         };
-        // Native plugin gestures used for learning must not write the direct parameter's lane.
-        // An already-open gesture still receives its release.
-        if matches!(target, EngineTarget::Slot { .. })
-            && matches!(owner, AutomationOwner::Track(track) if self.ui.track_macros.mapping == Some(track))
-            && !matches!(event, EngineEvent::AutomationTouch { begin: false, .. })
+        // Learning consumes new gestures on eligible native controls. A write already in
+        // progress still receives its samples and release.
+        if let AutomationTarget::Param { device, param } = &model
+            && let Some(id) = param.plugin_id()
+            && mapping_inputs.contains(&(*device, id))
+            && !self
+                .automation_capture
+                .plugin_parameter_writing(*device, id)
         {
             return;
         }
