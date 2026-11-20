@@ -20,9 +20,9 @@
 
 komponist is an audio and MIDI DAW written in Rust with [egui](https://github.com/emilk/egui). You arrange audio and MIDI
 clips, edit waveforms, notes and steps, record inputs and buses, shape sounds with built-in instruments and effects,
-host CLAP and VST3 plugins, and mix it all on the same screen. Everything above is the demo project that ships with
-the app (`komponist --demo`). The interface is available in
-English and German; it follows your desktop language, and Settings › Appearance (or `--lang de|en`) switches it.
+host CLAP and VST3 plugins, automate parameters, and mix on the same screen. Open the Night Drive demo shown here
+with `komponist --demo`. The interface follows your desktop language. Switch between English and German in
+Settings › Appearance or with `--lang de|en`.
 
 ## Features
 
@@ -39,7 +39,22 @@ The piano roll has pointer, pencil and eraser tools, a velocity lane, quantize a
 
 The step sequencer is made for drums and Klopfer kits. Toggle steps while the pattern plays:
 
-![Toggling steps in the step sequencer while the pattern loops](docs/media/step-sequencer.gif)
+![Toggling drum steps in the step sequencer during playback](docs/media/step-sequencer.gif)
+
+### Automation and track macros
+
+Use **Show Automation** and **Add Automation Lane** in the track menu to edit mixer or device parameters over time.
+The master has automation lanes too, and individual clips can carry their own envelopes in the clip editor.
+Double-click a lane to add a point. **Read** plays back the curve, **Touch** writes while you hold the control,
+and **Latch** keeps writing after you release it until playback stops.
+
+![Automation lanes in the Night Drive arrangement, including the Open macro on Pad](docs/media/automation.png)
+
+Each track can have up to eight **Track Macros**. Choose **Map** and move the parameters you want a macro to control,
+then set each mapping's range in the inspector. Automate the macro from a lane or a clip envelope. In the demo,
+the Pad track's **Open** macro controls its send to the Reverb bus.
+
+![Editing the Pad track's Open macro automation curve](docs/media/track-macro-automation.gif)
 
 ### Audio tracks and clip editing
 
@@ -48,16 +63,15 @@ arrangement. **Ctrl+Shift+T** opens the audio-track dialog. Files stay linked to
 copies supported audio sources into the project folder for moving or sharing a session.
 
 The waveform editor shows mono and stereo sources. Trim clips, change their source start, adjust clip gain and linear
-fades, and choose **Warp** to follow the project tempo while preserving pitch. **Fixed** remains the default;
-**Re-Pitch** follows tempo with a pitch change. Enter the original BPM or set the **entire source file** to a known
-bar count; this does not fit a trimmed clip to that many bars. The duration factor and linked song/source rulers show
-the playback mapping. Edits leave the source intact. Missing files can be relinked with **Replace File…**.
+fades, and choose **Warp** to follow the project tempo while preserving pitch. **Fixed** is the default.
+**Re-Pitch** follows tempo with a pitch change. Enter the original BPM or set a known bar count for the
+**entire source file**. The duration factor and linked song/source rulers show the playback mapping. Edits leave
+the source intact. Missing files can be relinked with **Replace File…**.
 
-Warp data is optional: older v3 builds open the source unstretched, may shorten long spans, and can discard Warp
-settings when saving. Use **File actions › Detect Tempo** to estimate the active source’s original tempo. The
-menu shows the estimate and its confidence and lets you apply it at the suggested, half or double rate.
+Use **File actions › Detect Tempo** to estimate the active source’s original tempo. The menu shows the estimate
+and its confidence and lets you apply it at the suggested, half or double rate.
 
-![The stereo Warp editor with original tempo, full-source bars and the duration factor](docs/media/audio-editor.png)
+![The stereo Pulse 90 clip in Warp mode, with its original tempo and duration factor](docs/media/audio-editor.png)
 
 ### Audio recording and takes
 
@@ -65,10 +79,13 @@ Choose a hardware input or a bus, arm an audio track and press **R** to record. 
 **Off**, **Auto (When Armed)** and **On** monitoring. Settings › Audio selects the input device and recording format:
 **24-bit WAV** or **32-bit Float WAV**.
 
-The arrangement and waveform dock show the recording as it grows. **Record Bus** creates an audio track fed by a
-group or effect bus; the example below records the demo's Rhythm group without an external input:
+The audio track inspector shows the input meter. Use **Input gain** to adjust hardware input levels. On Linux with JACK, use
+Settings › Audio to assign capture ports and the left and right master outputs.
 
-![Recording the Rhythm bus into an audio track, with the live waveform and input levels](docs/media/audio-recording.png)
+The arrangement and waveform dock show the recording as it grows. **Record Bus** creates an audio track fed by a
+group or effect bus. Here, the demo's Rhythm group feeds the recording track.
+
+![Recording the Rhythm bus, with the live waveform and Input gain in the inspector](docs/media/audio-recording.png)
 
 Loop passes become takes in the same clip. Choose, rename or remove takes in the inspector. Recordings made before
 the project is saved stay in a temporary folder and move into the project when you save.
@@ -91,8 +108,16 @@ no sample files. Next to it, the Presse compressor:
 
 ![Klopfer with its pads, and the Presse compressor](docs/media/device-sampler-presse.png)
 
-The **Sampler** plays pitched phrases and MIDI-triggered slices. Its waveform editor handles playback
-ranges, fades and slice markers. It also supports reverse playback, tempo sync and modulation.
+The **Sampler** plays pitched phrases and MIDI-triggered slices. In the demo, **Glass Pluck** plays a
+pitched melody from one sample with tempo sync enabled. Set the playback range, fades and root note in the **Sample**
+view, or use reverse playback, envelopes and modulation to shape the sound.
+
+![The Sampler on Glass Pluck, showing the source waveform and tempo sync controls](docs/media/device-sampler.png)
+
+**Glass Slices** uses the same audio file with a different MIDI note for each slice. Add markers in the waveform
+and play the slices from MIDI notes.
+
+![Adding a marker to the Glass Slices waveform and playing the MIDI fill](docs/media/sampler-slices.gif)
 
 ### Built-in effects
 
@@ -128,28 +153,32 @@ bridge on macOS and Windows.
 
 The mixer shows every track with its inserts, sends, pan, mute/solo, faders and level meters. The group (named Rhythm in the demo) and the effect bus (named Reverb) have strips of their own on the right, next to the master channel:
 
-![The mixer dock with tracks, group, effect bus and master channel while playing](docs/media/mixer.png)
+![Level meters moving on the mixer tracks, Rhythm group, Reverb bus and master channel during playback](docs/media/mixer.gif)
+
+### Render tracks and export WAV
+
+Choose **Flatten to Audio** in a MIDI track's context menu to render the track and its device chain to an audio
+clip. **Undo** restores the MIDI clips and devices.
+
+![Flattening a MIDI track to audio from its track menu and using Undo to restore it](docs/media/flatten-to-audio.gif)
+
+Choose **Export WAV…** from the application menu to export the mix. Choose the whole song, the active loop or the current selection,
+then set the sample rate and bit depth (16-bit, 24-bit or 32-bit float). Add a tail for reverb and delay.
 
 ## Status
 
-komponist is **early software**. The current development version covers audio and MIDI workflows: arrange, edit,
-play, record, mix, save and export. Expect rough edges and file-format changes; released builds may have fewer features.
-
-What works: audio, MIDI and step clips; waveform, piano roll and step editors; audio and MIDI recording with takes;
-Hexa / Volt / Klopfer / Sampler; built-in effects; sidechains (also into CLAP and VST3 plugins with a sidechain input); CLAP and
-VST3 hosting; mixer with groups, buses and sends; undo and redo; project files, linked audio, Collect and Save, and export.
-
-What is coming: automation.
+komponist is **early software**. The Night Drive demo includes automation, track macros and both Sampler workflows
+shown above.
 
 ## Install
 
-Every [release](https://github.com/klang-studio/komponist/releases) has a Linux x86_64 archive (built on Ubuntu 24.04):
-unpack it, run `./komponist --demo`, and `scripts/install-desktop.sh` adds the menu entry and icon. On macOS 14.4 or newer
-(Apple Silicon) take the `macos-arm64.zip`, move `komponist.app` to `/Applications` and allow it once in System Settings →
-Privacy & Security (the app is ad-hoc signed for now, see [docs/INSTALL.md](docs/INSTALL.md#macos)). On Windows 11
-(x86_64; since v0.3.0-alpha2) take the `windows-x86_64.zip`, unpack it and run `komponist.exe`; the first start needs
-"More info → Run anyway" in SmartScreen (the exe is not code-signed yet, see
-[docs/INSTALL.md](docs/INSTALL.md#windows)). Or build from source,
+Download the archive for your platform from the [releases page](https://github.com/klang-studio/komponist/releases).
+The Linux x86_64 archive is built on Ubuntu 24.04. Unpack it and run `./komponist --demo`. Use
+`scripts/install-desktop.sh` to add the menu entry and icon. On macOS 14.4 or newer (Apple Silicon), unpack
+`macos-arm64.zip`, move `komponist.app` to `/Applications` and allow it once in System Settings →
+Privacy & Security. The app is ad-hoc signed. See [docs/INSTALL.md](docs/INSTALL.md#macos). On Windows 11 (x86_64),
+unpack `windows-x86_64.zip` and run `komponist.exe`. The executable is unsigned. On first launch, choose
+"More info → Run anyway" in SmartScreen. See [docs/INSTALL.md](docs/INSTALL.md#windows). To build from source,
 see [docs/INSTALL.md](docs/INSTALL.md) for the details (executable, icon, desktop entry, working on klang-dsp together
 with komponist).
 
@@ -186,6 +215,7 @@ The pictures in this README come from the demo project and are produced by a scr
 scripts/readme-media.sh            # everything into docs/media/
 scripts/readme-media.sh hero mixer # only these scenarios
 scripts/readme-media.sh audio_editor audio_recording # waveform editor and live recording
+scripts/readme-media.sh automation sampler flatten_to_audio # screenshots and GIFs
 ```
 
 It runs komponist in English (`--lang en`) under a private Xvfb with `--null-audio` (no audio or MIDI hardware, no
