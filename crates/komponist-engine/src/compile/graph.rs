@@ -94,9 +94,11 @@ impl Lines<'_> {
     }
 }
 
-/// Clamped delay of `frames`.
-fn delay_frames(frames: u32) -> u32 {
-    frames.min(MAX_PDC_FRAMES as u32)
+/// Clamps a requested delay, retaining the largest missing amount at a single line.
+fn compensation(frames: u32, shortfall: &mut u32) -> u32 {
+    let delay = frames.min(MAX_PDC_FRAMES as u32);
+    *shortfall = (*shortfall).max(frames - delay);
+    delay
 }
 
 /// Latency of the devices in front of chain position `k` (not bypassed ones).
@@ -105,9 +107,20 @@ fn prefix_latency(chain: &[ChainSlot], k: usize, env: &dyn CompileEnv) -> u32 {
 }
 
 /// The output delays of a flat program: every track lines up with the slowest chain.
-fn flat_delays(latencies: &[u32]) -> Vec<u32> {
+fn flat(latencies: &[u32]) -> Compiled {
     let max = latencies.iter().copied().max().unwrap_or(0);
-    latencies.iter().map(|l| delay_frames(max - l)).collect()
+    let mut pdc_shortfall = 0;
+    let delays = latencies
+        .iter()
+        .map(|l| compensation(max - l, &mut pdc_shortfall))
+        .collect();
+    Compiled {
+        routing: Arc::new(Routing {
+            pdc_shortfall,
+            ..Routing::default()
+        }),
+        delays,
+    }
 }
 
 /// Compiles the routing of `tracks` (the program's tracks, with their compiled `chains`) and of
@@ -122,10 +135,6 @@ pub(super) fn compile(
 ) -> Compiled {
     let n = tracks.len();
     let latencies: Vec<u32> = chains.iter().map(|c| chain_latency(c, env)).collect();
-    let flat = || Compiled {
-        routing: Arc::new(Routing::default()),
-        delays: flat_delays(&latencies),
-    };
     let index: HashMap<TrackId, usize> =
         tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
     let bus = |id: TrackId, from: usize| {
@@ -189,12 +198,12 @@ pub(super) fn compile(
         && wanted_sends.is_empty()
         && wanted_sides.is_empty()
     {
-        return flat();
+        return flat(&latencies);
     }
 
     // Job order: the model's topological order of the program's tracks.
     let Ok(topo) = topo_order(project) else {
-        return flat();
+        return flat(&latencies);
     };
     let mut order: Vec<usize> = Vec::with_capacity(n);
     let mut pos = vec![usize::MAX; n];
@@ -223,7 +232,7 @@ pub(super) fn compile(
             .all(|&(h, _, f, _, _)| h.is_none_or(|h| forward(f, h)));
     if !consistent {
         // Only a project that breaks the routing invariants gets here.
-        return flat();
+        return flat(&latencies);
     }
 
     // Lines for sends and sidechains (heads come after the latencies).
@@ -314,6 +323,8 @@ pub(super) fn compile(
     }
     let target_in = |target: Option<usize>| target.map_or(master_in, |b| lat_in[b]);
 
+    let mut pdc_shortfall = 0;
+    let mut delay_frames = |frames| compensation(frames, &mut pdc_shortfall);
     let delays: Vec<u32> = (0..n)
         .map(|u| delay_frames(target_in(outputs[u]).saturating_sub(lat_out[u])))
         .collect();
@@ -398,7 +409,7 @@ pub(super) fn compile(
         let start = sidechains.len() as u32;
         let main_in = target_in(holder);
         for side in sides.iter().filter(|s| s.holder == holder) {
-            let at = main_in + prefix_latency(chain_of(holder), side.device, env);
+            let at = main_in.saturating_add(prefix_latency(chain_of(holder), side.device, env));
             sidechains.push(SidechainRoute {
                 device: side.device as u16,
                 from: side.from as u16,
@@ -500,6 +511,7 @@ pub(super) fn compile(
             sends: send_ids,
             gates: Some(gates),
             lines: Arc::new(lines.finish()),
+            pdc_shortfall,
         }),
         delays,
     }

@@ -925,13 +925,21 @@ fn the_start_screen_opens_recent_projects_with_the_keyboard() {
     assert_eq!(h.state().ui().screen, Screen::Start);
     // The last project is preselected; the missing file is listed and says so.
     h.get_by_value("komponist");
-    let rows: Vec<String> = h
-        .get_all_by_role(Role::ListItem)
-        .map(|n| n.accesskit_node().label().unwrap_or_default())
-        .collect();
-    assert_eq!(rows.len(), 3, "{rows:?}");
-    assert!(rows[0].starts_with("Night Drive, 124 BPM · 6 Spuren"));
-    assert!(rows[2].starts_with("Weg, Datei fehlt"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let rows: Vec<String> = h
+            .get_all_by_role(Role::ListItem)
+            .map(|n| n.accesskit_node().label().unwrap_or_default())
+            .collect();
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        if rows[2].starts_with("Weg, Datei fehlt") {
+            assert!(rows[0].starts_with("Night Drive, 124 BPM · 6 Spuren"));
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{rows:?}");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        h.run_steps(1);
+    }
     assert_eq!(h.state().ui().start.selected, 0);
     // Entf removes the missing file from the list (not from disk).
     press(&mut h, Modifiers::NONE, Key::ArrowDown);
@@ -1718,6 +1726,73 @@ fn s09_model() -> start::Model {
             },
         ],
         message: None,
+    }
+}
+
+#[test]
+fn a_pending_recent_project_is_actionable_in_both_languages() {
+    for lang in [Lang::De, Lang::En] {
+        let mut model = s09_model();
+        let first = &mut model.recent[0];
+        first.meta = lang.start_file_loading().into();
+        first.date.clear();
+        first.hues.clear();
+        let label = format!("{}, {}", first.name, first.meta);
+        let path = first.path.clone();
+        let mut h = komponist_ui::snapshot::builder::<(StartView, Vec<start::Output>)>(1.0)
+            .with_size(vec2(W, H))
+            .build_ui_state(
+                move |ui, (view, output)| {
+                    komponist_ui::set_lang(ui.ctx(), lang);
+                    let rect = ui.ctx().content_rect();
+                    output.extend(start::show(ui, rect, &model, view, true));
+                },
+                (StartView::default(), Vec::new()),
+            );
+        h.get_by_role_and_label(Role::ListItem, &label);
+        h.key_press(Key::Enter);
+        h.run_steps(2);
+        assert_eq!(h.state().1, [start::Output::OpenRecent(path)]);
+    }
+}
+
+#[test]
+fn a_late_matching_summary_cannot_steal_the_selected_recent_project() {
+    for key in [Key::Enter, Key::Delete] {
+        let mut model = s09_model();
+        model.recent.truncate(2);
+        model.recent[0].meta = Lang::De.start_file_loading().into();
+        model.recent[1].name = "Treffer: Hafenlicht".into();
+        let path = model.recent[1].path.clone();
+        let view = StartView {
+            filter: "Treffer".into(),
+            ..Default::default()
+        };
+        let mut h =
+            komponist_ui::snapshot::builder::<(start::Model, StartView, Vec<start::Output>)>(1.0)
+                .with_size(vec2(W, H))
+                .build_ui_state(
+                    |ui, (model, view, output)| {
+                        let rect = ui.ctx().content_rect();
+                        output.extend(start::show(ui, rect, model, view, true));
+                    },
+                    (model, view, Vec::new()),
+                );
+        assert_eq!(h.state().1.selected, 0);
+        assert_eq!(h.state().1.selected_path.as_ref(), Some(&path));
+
+        // The earlier pending row now matches the filter and enters just before the user's
+        // selection. Deliver the late summary and the keystroke to the same frame.
+        h.state_mut().0.recent[0].name = "Treffer: Night Drive".into();
+        h.key_press(key);
+        h.run_steps(2);
+        assert_eq!(h.state().1.selected, 1);
+        let expected = if key == Key::Enter {
+            start::Output::OpenRecent(path)
+        } else {
+            start::Output::RemoveRecent(path)
+        };
+        assert_eq!(h.state().2, [expected]);
     }
 }
 

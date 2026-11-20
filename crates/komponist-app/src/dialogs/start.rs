@@ -8,7 +8,10 @@
 //! the entry from the list (not the file); a click opens; a project file dropped on the window
 //! opens.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::SystemTime;
 
 use egui::{Color32, Key, Modifiers, Rect, Role, Sense, Ui, UiBuilder, pos2, vec2};
@@ -173,29 +176,110 @@ pub fn recent_row(
     }
 }
 
-/// The recent projects' summaries, read when the list changes (app-private).
+#[derive(Debug)]
+enum SummaryState {
+    Pending,
+    Ready(Option<ProjectSummary>),
+}
+
+#[derive(Debug)]
+struct SummaryLoad {
+    results: Receiver<(usize, Option<ProjectSummary>)>,
+    obsolete: Arc<AtomicBool>,
+}
+
+/// The recent projects' summaries. At most one worker reads files, even if a path on a slow
+/// volume outlives an invalidation. Superseded results cannot change the visible list.
 #[derive(Debug, Default)]
 pub(crate) struct Cache {
-    /// The list the summaries belong to.
-    pub(crate) paths: Vec<PathBuf>,
-    /// One per path; `None` if the file cannot be read.
-    pub(crate) summaries: Vec<Option<ProjectSummary>>,
+    paths: Vec<PathBuf>,
+    summaries: Vec<SummaryState>,
+    load: Option<SummaryLoad>,
 }
 
 impl Cache {
-    /// Reads the summaries if `paths` differ from the cached list.
-    pub(crate) fn refresh(&mut self, paths: &[PathBuf]) {
-        if self.paths == paths {
+    fn refresh(
+        &mut self,
+        ctx: &egui::Context,
+        paths: &[PathBuf],
+        read_summary: impl Fn(&Path) -> Option<ProjectSummary> + Send + 'static,
+    ) {
+        if self.paths != paths {
+            self.paths = paths.to_vec();
+            self.invalidate();
+        }
+        if let Some(load) = &self.load {
+            loop {
+                match load.results.try_recv() {
+                    Ok((index, summary)) => {
+                        if !load.obsolete.load(Ordering::Relaxed) {
+                            self.summaries[index] = SummaryState::Ready(summary);
+                        }
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        self.load = None;
+                        break;
+                    }
+                    Err(TryRecvError::Empty) => return,
+                }
+            }
+        }
+
+        let pending: Vec<_> = self
+            .paths
+            .iter()
+            .zip(&self.summaries)
+            .enumerate()
+            .filter(|(_, (_, summary))| matches!(summary, SummaryState::Pending))
+            .map(|(index, (path, _))| (index, path.clone()))
+            .collect();
+        if pending.is_empty() {
             return;
         }
-        self.paths = paths.to_vec();
-        self.summaries = paths.iter().map(|p| ProjectSummary::read(p).ok()).collect();
+        let (sender, results) = mpsc::channel();
+        let obsolete = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::clone(&obsolete);
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            for (index, path) in pending {
+                if cancelled.load(Ordering::Relaxed)
+                    || sender.send((index, read_summary(&path))).is_err()
+                {
+                    break;
+                }
+                ctx.request_repaint();
+            }
+            // Also wake the UI when a cancelled load frees the only worker slot.
+            drop(sender);
+            ctx.request_repaint();
+        });
+        self.load = Some(SummaryLoad { results, obsolete });
     }
 
-    /// Forgets the summaries (a file was saved).
+    fn rows(&self, t: Lang, now: SystemTime) -> Vec<RecentRow> {
+        self.paths
+            .iter()
+            .zip(&self.summaries)
+            .map(|(path, summary)| match summary {
+                SummaryState::Pending => {
+                    let mut row = recent_row(t, path.clone(), None, now);
+                    row.meta = t.start_file_loading().to_owned();
+                    row.missing = false;
+                    row
+                }
+                SummaryState::Ready(summary) => recent_row(t, path.clone(), summary.as_ref(), now),
+            })
+            .collect()
+    }
+
+    /// Forgets the summaries and signals a previous batch to stop after its current read.
     pub(crate) fn invalidate(&mut self) {
-        self.paths.clear();
         self.summaries.clear();
+        self.summaries
+            .resize_with(self.paths.len(), || SummaryState::Pending);
+        if let Some(load) = &self.load {
+            load.obsolete.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -367,9 +451,14 @@ fn right_column(
     let inner = rect.shrink2(vec2(pad_x, pad_y));
     let width = inner.width().min(m::RECENT_MAX_WIDTH);
     let shown = filtered(&model.recent, &view.filter);
-    if view.selected >= shown.len() {
-        view.selected = shown.len().saturating_sub(1);
-    }
+    let remembered_index = view.selected_path.as_ref().and_then(|path| {
+        shown
+            .iter()
+            .position(|&index| model.recent[index].path == *path)
+    });
+    let selection_disappeared = view.selected_path.is_some() && remembered_index.is_none();
+    view.selected =
+        remembered_index.unwrap_or_else(|| view.selected.min(shown.len().saturating_sub(1)));
 
     // Keys before the filter field sees them: ↑ ↓ Enter work while typing in it, too.
     let filter_id = egui::Id::unique("komponist_start_filter");
@@ -389,7 +478,9 @@ fn right_column(
         if down && view.selected + 1 < shown.len() {
             view.selected += 1;
         }
-        if let Some(&i) = shown.get(view.selected) {
+        // A disappearing row may change the fallback selection. Do not act on that replacement
+        // before it has been shown to the user.
+        if !selection_disappeared && let Some(&i) = shown.get(view.selected) {
             if enter {
                 out.push(Output::OpenRecent(model.recent[i].path.clone()));
             }
@@ -432,7 +523,7 @@ fn right_column(
             .width(m::FILTER_WIDTH),
     );
     if filter.changed() {
-        view.selected = 0;
+        view.reset_selection();
     }
     col.add_space(m::RIGHT_GAP);
 
@@ -460,6 +551,9 @@ fn right_column(
             }
         }
     });
+    view.selected_path = shown
+        .get(view.selected)
+        .map(|&index| model.recent[index].path.clone());
     col.add_space(m::RIGHT_GAP + m::HINT_TOP);
     let g = styled(
         &col,
@@ -574,9 +668,8 @@ fn recent_row_ui(ui: &mut Ui, width: f32, row: &RecentRow, selected: bool) -> eg
 }
 
 impl crate::App {
-    /// The start screen's model: version, shortcuts, recent projects (summaries read when the list
-    /// changed), system rows, the last error.
-    pub(crate) fn start_model(&mut self) -> Model {
+    /// Builds the start screen model from summaries available on this frame.
+    pub(crate) fn start_model(&mut self, ctx: &egui::Context) -> Model {
         use crate::actions::{Action, ProjectAction, UiAction};
         use komponist_audio::{AudioState, HostKind};
         let t = self.lang;
@@ -589,16 +682,12 @@ impl crate::App {
             self,
             Action::Ui(UiAction::OpenSettings(SettingsSection::Audio)),
         );
-        self.dialogs.start.refresh(&self.recent.projects);
-        let now = SystemTime::now();
-        let recent = self
-            .dialogs
+        self.dialogs
             .start
-            .paths
-            .iter()
-            .zip(&self.dialogs.start.summaries)
-            .map(|(p, s)| recent_row(t, p.clone(), s.as_ref(), now))
-            .collect();
+            .refresh(ctx, &self.recent.projects, |path| {
+                ProjectSummary::read(path).ok()
+            });
+        let recent = self.dialogs.start.rows(t, SystemTime::now());
 
         let audio = match self.engine.audio_state() {
             AudioState::NoDevice { .. } => (Health::Error, t.start_audio_none().to_owned()),
@@ -684,7 +773,7 @@ impl crate::App {
     /// Draws the start screen into `rect` and applies what the user did.
     pub(crate) fn draw_start(&mut self, ui: &mut Ui, rect: Rect) {
         use crate::actions::{Action, ProjectAction, UiAction};
-        let model = self.start_model();
+        let model = self.start_model(ui.ctx());
         let keys = self.ui.dialog.is_none() && self.dialogs.overlay.is_none();
         let mut view = std::mem::take(&mut self.ui.start);
         let mut outputs = show(ui, rect, &model, &mut view, keys);
@@ -744,6 +833,69 @@ mod tests {
         assert_eq!(filtered(&rows, "hafen"), [1]);
         assert_eq!(filtered(&rows, "SKIZZEN"), [2]);
         assert!(filtered(&rows, "xyz").is_empty());
+    }
+
+    #[test]
+    fn pending_rows_keep_their_paths_and_a_superseded_read_cannot_replace_a_new_row() {
+        use std::time::{Duration, Instant};
+
+        let timeout = Duration::from_secs(3);
+        let ctx = egui::Context::default();
+        let (started, reading) = mpsc::channel();
+        let (release, finish) = mpsc::channel();
+        let mut cache = Cache::default();
+        let old_path = PathBuf::from("old.komponist");
+        cache.refresh(&ctx, std::slice::from_ref(&old_path), move |path| {
+            started.send(path.to_owned()).unwrap();
+            finish.recv_timeout(timeout).ok()?;
+            Some(ProjectSummary::of(
+                &komponist_model::Project::new("Obsolete"),
+                None,
+            ))
+        });
+        assert_eq!(reading.recv_timeout(timeout).unwrap(), old_path);
+        let pending = cache.rows(Lang::De, SystemTime::now());
+        assert_eq!(pending[0].path, old_path);
+        assert_eq!(pending[0].meta, Lang::De.start_file_loading());
+        assert!(!pending[0].missing);
+
+        // Keep the reading blocked while the list changes and verify the replacement row is
+        // immediately available without queueing another worker.
+        let new_path = PathBuf::from("replacement.komponist");
+        let missing_path = PathBuf::from("missing.komponist");
+        let expected = [new_path.clone(), missing_path];
+        cache.invalidate();
+        cache.refresh(&ctx, &expected, |_| {
+            panic!("an obsolete worker is still reading")
+        });
+        let pending = cache.rows(Lang::En, SystemTime::now());
+        assert_eq!(pending.len(), expected.len());
+        assert_eq!(pending[0].path, new_path);
+        assert_eq!(pending[0].meta, Lang::En.start_file_loading());
+        assert!(!pending[1].missing);
+
+        release.send(()).unwrap();
+        let deadline = Instant::now() + timeout;
+        loop {
+            cache.refresh(&ctx, &expected, |path| {
+                (path == Path::new("replacement.komponist")).then(|| {
+                    ProjectSummary::of(&komponist_model::Project::new("New summary"), None)
+                })
+            });
+            let rows = cache.rows(Lang::De, SystemTime::now());
+            assert_ne!(rows[0].name, "Obsolete");
+            if rows[1].missing {
+                assert_eq!(rows[0].name, "New summary");
+                assert_eq!(rows[1].meta, Lang::De.start_file_missing());
+                assert_eq!(
+                    cache.rows(Lang::En, SystemTime::now())[1].meta,
+                    Lang::En.start_file_missing(),
+                );
+                break;
+            }
+            assert!(Instant::now() < deadline, "summary worker did not finish");
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     #[test]

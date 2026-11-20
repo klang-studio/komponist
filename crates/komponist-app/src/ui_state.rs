@@ -583,6 +583,15 @@ pub struct StartView {
     pub filter: String,
     /// Selected row of the filtered recent list (the last project is preselected).
     pub selected: usize,
+    /// The selected project, so a late summary can change the displayed index safely.
+    pub selected_path: Option<std::path::PathBuf>,
+}
+
+impl StartView {
+    pub(crate) fn reset_selection(&mut self) {
+        self.selected = 0;
+        self.selected_path = None;
+    }
 }
 
 /// Sections of the settings dialog (S07 navigation).

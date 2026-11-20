@@ -29,7 +29,7 @@ use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginRef, TrackId
 use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{
     Catalog, DeviceStatus, FailReason, PluginDirs, PluginError, PluginManagerEvent, ProcessorSetup,
-    ScanReport,
+    SaveSnapshots, ScanReport,
 };
 
 /// What the test scripts and observes.
@@ -42,6 +42,8 @@ struct Script {
     latencies: HashMap<DeviceId, u32>,
     /// Answer of `snapshot_states`.
     snapshot: Vec<(DeviceId, Arc<[u8]>)>,
+    snapshot_unavailable: Vec<DeviceId>,
+    snapshot_blocked: Vec<DeviceId>,
     // Observed:
     created: Vec<DeviceId>,
     released: Vec<DeviceId>,
@@ -265,6 +267,16 @@ impl DeviceHost for FakeHost {
         let mut script = self.script.borrow_mut();
         script.snapshot_calls += 1;
         script.snapshot.clone()
+    }
+
+    fn snapshot_for_save(&mut self, timeout: Duration) -> SaveSnapshots {
+        let captured = self.snapshot_states(timeout);
+        let script = self.script.borrow();
+        SaveSnapshots {
+            captured,
+            unavailable: script.snapshot_unavailable.clone(),
+            blocked: script.snapshot_blocked.clone(),
+        }
     }
 
     fn shutdown(&mut self) {
@@ -769,6 +781,80 @@ fn saving_snapshots_the_states_and_exit_shuts_the_host_down() {
     app.shutdown();
     assert!(script.borrow().shut_down);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn saving_reports_cached_and_missing_plugin_states_without_losing_fresh_states() {
+    let (mut app, script) = app();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("Night Drive.komponist");
+    let surge = device(&app, "Surge XT");
+    let vital = device(&app, "Vital");
+    let fresh = app.project().tracks[0].channel.devices[1].id;
+    let cached = Arc::from(&b"previous surge state"[..]);
+    let captured = Arc::from(&b"fresh effect state"[..]);
+    let project =
+        komponist_model::edits::set_device_state(app.project(), surge, Some(cached)).unwrap();
+    std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
+    app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
+    app.step();
+    {
+        let mut script = script.borrow_mut();
+        script.snapshot = vec![(fresh, Arc::clone(&captured))];
+        script.snapshot_unavailable = vec![surge, vital];
+    }
+
+    app.dispatch(Action::Project(ProjectAction::Save));
+    let (status, kind) = status_text(&app).unwrap();
+    assert_eq!(kind, StatusKind::Error);
+    assert!(
+        status.contains("Vorheriger Plug-in-Zustand gespeichert: Surge XT"),
+        "{status}"
+    );
+    assert!(
+        status.starts_with("Kein Plug-in-Zustand verfügbar: Vital"),
+        "{status}"
+    );
+    let saved = komponist_app::project_io::load_project(&file).unwrap();
+    assert_eq!(
+        saved.find_device(surge).unwrap().2.state.as_deref(),
+        Some(&b"previous surge state"[..])
+    );
+    assert_eq!(saved.find_device(vital).unwrap().2.state, None);
+    assert_eq!(
+        saved.find_device(fresh).unwrap().2.state.as_ref(),
+        Some(&captured)
+    );
+
+    app.dispatch(Action::Project(ProjectAction::CollectAndSave));
+    let (status, kind) = status_text(&app).unwrap();
+    assert_eq!(kind, StatusKind::Error);
+    assert!(
+        status.contains("Vorheriger Plug-in-Zustand gespeichert: Surge XT"),
+        "{status}"
+    );
+    assert!(
+        status.starts_with("Kein Plug-in-Zustand verfügbar: Vital"),
+        "{status}"
+    );
+
+    let next = Arc::from(&b"new effect state"[..]);
+    {
+        let mut script = script.borrow_mut();
+        script.snapshot = vec![(fresh, Arc::clone(&next))];
+        script.snapshot_unavailable.clear();
+        script.snapshot_blocked = vec![surge];
+    }
+    app.dispatch(Action::Project(ProjectAction::Save));
+    let (status, kind) = status_text(&app).unwrap();
+    assert_eq!(kind, StatusKind::Error);
+    assert!(status.starts_with("Speichern fehlgeschlagen"), "{status}");
+    assert!(status.contains("Surge XT"), "{status}");
+    assert_eq!(state(&app, fresh), Some(next));
+    assert_eq!(
+        komponist_app::project_io::load_project(&file).unwrap(),
+        saved
+    );
 }
 
 /// WP-65 follow-up: workers without realtime priority say so in the status bar, in the same kind

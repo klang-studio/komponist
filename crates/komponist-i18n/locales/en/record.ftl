@@ -8,6 +8,9 @@ record-no-track = No track armed · R in the track header
 
 # Name of a take. Made in the current language when the take is recorded, content afterwards.
 record-take = Take { $number }
+record-take-incomplete = Take { $number } · incomplete
+record-notes-lost = MIDI notes lost · Affected takes are incomplete
+record-interrupted = Recording stopped because too many MIDI events were pending
 
 # Name of the clip being recorded (S02 `mc(…, '● Aufnahme · Take 1', …)`); `$take` is the take's name.
 record-clip = ● Recording · { $take }

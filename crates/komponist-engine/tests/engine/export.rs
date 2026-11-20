@@ -253,6 +253,43 @@ fn export_owns_its_staging_and_preserves_existing_sibling_files() {
 }
 
 #[test]
+fn unnormalized_wav_grows_in_staging_before_render_completion() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("out.wav");
+    std::fs::write(&path, b"previous export").unwrap();
+    let p = program(120.0, vec![track(1, 0, vec![note(0, 480, 69)])]);
+    let mut rig = sine_rig(RATE, &p);
+    let mut wrote_before_completion = false;
+    let report = export(
+        &mut rig.engine,
+        &mut rig.handle,
+        &p,
+        &job(path.clone(), RATE, 13..64_009, 56),
+        &AtomicBool::new(false),
+        |progress| {
+            if !wrote_before_completion && (0.25..0.75).contains(&progress.fraction) {
+                assert_eq!(std::fs::read(&path).unwrap(), b"previous export");
+                let entries = std::fs::read_dir(dir.path()).unwrap();
+                let staged = entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path().join("audio.wav"))
+                    .find_map(|wav| std::fs::metadata(wav).ok())
+                    .expect("private staged WAV while rendering");
+                assert!(
+                    staged.len() > 8192,
+                    "rendered samples must already be on disk"
+                );
+                wrote_before_completion = true;
+            }
+        },
+    )
+    .unwrap();
+    assert!(wrote_before_completion);
+    assert_eq!(files(dir.path()), ["out.wav"]);
+    assert_eq!(u64::from(read(&path).frames), report.frames);
+}
+
+#[test]
 fn track_export_restores_the_other_live_tracks_after_success_and_cancel() {
     use komponist_engine::compile::{self, NoEnv};
     use komponist_model::edits::{NewClip, NewClipContent, NewNote, NewTrack, add_clip, add_track};
@@ -301,12 +338,22 @@ fn track_export_restores_the_other_live_tracks_after_success_and_cancel() {
     let slot = live.track(neighbour).unwrap().chain[0].slot;
     let scoped = TrackExport::new(&project, target).unwrap();
     let dir = tempfile::tempdir().unwrap();
-    for should_cancel in [false, true] {
+    for (depth, normalize, should_cancel) in [
+        (BitDepth::Float32, None, true),
+        (BitDepth::Float32, None, false),
+        (BitDepth::Int16, None, false),
+        (BitDepth::Int24, None, false),
+        (BitDepth::Float32, Some(NORMALIZE_TARGET_DB), false),
+    ] {
         let mut rig = Rig::new(RATE, 2048);
         rig.insert(slot.0, TestSine::new());
         rig.set_program(&live);
-        let path = dir.path().join(format!("track-{should_cancel}.wav"));
-        let job = job(path.clone(), RATE, 0..12_000, 0);
+        let path = dir.path().join("track.wav");
+        let job = ExportJob {
+            bit_depth: depth,
+            normalize,
+            ..job(path.clone(), RATE, 0..12_000, 16_000)
+        };
         let cancel = AtomicBool::new(false);
         let result = export_track(
             &mut rig.engine,
@@ -315,14 +362,38 @@ fn track_export_restores_the_other_live_tracks_after_success_and_cancel() {
             (&scoped, &project),
             &job,
             &cancel,
-            |_| cancel.store(should_cancel, Ordering::Relaxed),
+            |progress| {
+                cancel.store(should_cancel, Ordering::Relaxed);
+                if !should_cancel && normalize.is_none() && progress.fraction >= 1.0 {
+                    let staged_bytes = std::fs::read_dir(dir.path())
+                        .unwrap()
+                        .filter_map(Result::ok)
+                        .find_map(|entry| std::fs::metadata(entry.path().join("audio.wav")).ok())
+                        .expect("staged track WAV")
+                        .len();
+                    let body_bytes = 12_000 * 2 * u64::from(depth.bits() / 8);
+                    assert!(
+                        staged_bytes <= body_bytes + 68,
+                        "discardable silence was written"
+                    );
+                }
+            },
         );
         if should_cancel {
             assert!(matches!(result, Err(ExportError::Cancelled)));
             assert!(!path.exists());
         } else {
-            assert_eq!(result.unwrap().frames, 12_000);
-            assert!(read(&path).samples.iter().all(|&sample| sample == 0.0));
+            // A silent track keeps its whole requested range and 0.1 s of tail padding.
+            let frames = 12_000 + 4_800;
+            assert_eq!(result.unwrap().frames, frames);
+            let wav = read(&path);
+            assert_eq!(u64::from(wav.frames), frames);
+            assert!(wav.samples.iter().all(|&sample| sample == 0.0));
+            let header = if depth == BitDepth::Int16 { 44 } else { 68 };
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().len(),
+                header + frames * 2 * u64::from(depth.bits() / 8)
+            );
         }
         // No app-level SetProgram command: the neighbouring instrument must audible immediately.
         rig.send(Command::Play);
@@ -360,6 +431,46 @@ fn the_normalised_peak_is_minus_one_dbfs() {
             );
         }
     }
+}
+
+#[test]
+fn streamed_dither_matches_a_continuous_rng_before_and_after_normalization() {
+    use klang_dsp::rng::Rng;
+    use komponist_engine::export::{normalize_gain, quantize, tpdf};
+
+    let dir = tempfile::tempdir().unwrap();
+    let p = program(120.0, vec![track(1, 0, vec![note(0, 1920, 78)])]);
+    let source = job(dir.path().join("source.wav"), RATE, 13..70_001, 50);
+    let mut rig = sine_rig(RATE, &p);
+    run(&mut rig, &p, &source).0.unwrap();
+    let rendered = read(&source.path);
+    let peak = rendered
+        .samples
+        .iter()
+        .fold(0.0_f32, |peak, s| peak.max(s.abs()));
+
+    for normalize in [None, Some(NORMALIZE_TARGET_DB)] {
+        let mut rig = sine_rig(RATE, &p);
+        let output = ExportJob {
+            path: dir.path().join("encoded.wav"),
+            bit_depth: BitDepth::Int24,
+            dither: true,
+            normalize,
+            ..source.clone()
+        };
+        let report = run(&mut rig, &p, &output).0.unwrap();
+        assert_eq!(u64::from(rendered.frames), report.frames);
+        let gain = normalize.map_or(1.0, |db| normalize_gain(peak, db));
+        let mut rng = Rng::new(0x5eed_d17e);
+        let expected = rendered
+            .samples
+            .iter()
+            .map(|&sample| quantize(sample * gain, 24, tpdf(&mut rng)))
+            .collect::<Vec<_>>();
+        assert!(expected.len() > 1 << 16);
+        assert_eq!(read(&output.path).codes, expected);
+    }
+    assert_eq!(files(dir.path()), ["encoded.wav", "source.wav"]);
 }
 
 #[test]
@@ -513,6 +624,29 @@ fn a_cancelled_export_leaves_no_file() {
 }
 
 #[test]
+fn a_failed_publication_cleans_staging_and_restores_the_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = program(120.0, vec![track(1, 0, vec![note(0, 960, 69)])]);
+    let path = dir.path().join("existing.wav");
+    std::fs::create_dir(&path).unwrap();
+    std::fs::write(path.join("keep.txt"), b"preserve").unwrap();
+    for normalize in [None, Some(NORMALIZE_TARGET_DB)] {
+        let mut rig = sine_rig(RATE, &p);
+        let request = ExportJob {
+            normalize,
+            ..job(path.clone(), RATE, 0..6000, 5000)
+        };
+        let (result, progress) = run(&mut rig, &p, &request);
+        assert!(matches!(result, Err(ExportError::Io(_))));
+        assert_eq!(progress.last().unwrap().fraction, 1.0);
+        assert_eq!(std::fs::read(path.join("keep.txt")).unwrap(), b"preserve");
+        assert_eq!(files(dir.path()), ["existing.wav"]);
+        rig.process(512, 512);
+        assert_eq!(rig.handle.telemetry().transport(), TransportState::Stopped);
+    }
+}
+
+#[test]
 fn invalid_jobs_change_nothing() {
     let dir = dir("invalid");
     let p = program(120.0, vec![track(1, 0, vec![note(0, 960, 69)])]);
@@ -530,6 +664,11 @@ fn invalid_jobs_change_nothing() {
         Err(ExportError::SampleRate { engine, job }) => assert_eq!((engine, job), (RATE, 44_100)),
         other => panic!("{other:?}"),
     }
+    let too_long = job(path.clone(), RATE, 0..u64::from(u32::MAX), 0);
+    assert!(matches!(
+        run(&mut rig, &p, &too_long).0,
+        Err(ExportError::WavTooLarge)
+    ));
     let no_name = job(PathBuf::from("/"), RATE, 0..1000, 0);
     assert!(matches!(
         run(&mut rig, &p, &no_name).0,

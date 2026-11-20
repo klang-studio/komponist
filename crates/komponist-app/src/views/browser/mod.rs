@@ -109,7 +109,7 @@ impl View for Browser {
         let layout = layout(ui, foot_text);
         let catalog = ctx.engine.host().catalog();
         let exports = model::export_names(ctx.exports);
-        let mut rows = model::rows(
+        let project_rows = model::rows(
             ctx.lang,
             &Input {
                 catalog,
@@ -121,7 +121,7 @@ impl View for Browser {
                 exports: &exports,
             },
         );
-        if segment == BrowserSegment::Files {
+        let filesystem_rows = (segment == BrowserSegment::Files).then(|| {
             let directory = ctx
                 .ui
                 .browser
@@ -130,10 +130,12 @@ impl View for Browser {
                 .or_else(|| ctx.project_dir.map(std::path::Path::to_path_buf))
                 .or_else(crate::dirs::home_dir)
                 .unwrap_or_else(crate::dirs::filesystem_root);
-            let mut filesystem = self.files.rows(ui.ctx(), directory, ctx.lang, &self.query);
-            filesystem.append(&mut rows);
-            rows = filesystem;
-        }
+            self.files.rows(ui.ctx(), directory, ctx.lang, &self.query)
+        });
+        let rows = BrowserRows {
+            filesystem: filesystem_rows.as_deref().unwrap_or_default(),
+            project: &project_rows,
+        };
         self.keys(ui, ctx, &rows, search_focused);
         self.search_field(ui, ctx, layout.search);
         segments(ui, ctx, layout.segments);
@@ -170,9 +172,79 @@ fn layout(ui: &Ui, foot_text: &str) -> Layout {
     }
 }
 
+/// The filesystem snapshot is shared across frames. Project rows follow it without copying it.
+struct BrowserRows<'a> {
+    filesystem: &'a [Row],
+    project: &'a [Row],
+}
+
+impl BrowserRows<'_> {
+    fn get(&self, index: usize) -> Option<&Row> {
+        if index < self.filesystem.len() {
+            self.filesystem.get(index)
+        } else {
+            self.project.get(index - self.filesystem.len())
+        }
+    }
+
+    fn highlight(&self, highlighted: Option<usize>, query: &str) -> Option<usize> {
+        if highlighted
+            .and_then(|index| self.get(index))
+            .is_some_and(Row::selectable)
+        {
+            return highlighted;
+        }
+        // Filesystem rows can be selected, but the first activatable search hit belongs to
+        // the model rows (for example a take). Browsing files still supports normal selection.
+        model::effective_highlight(self.project, None, query)
+            .map(|index| self.filesystem.len() + index)
+    }
+
+    fn next_selectable(&self, current: Option<usize>, direction: i32) -> Option<usize> {
+        let selectable = |index: &usize| self.get(*index).is_some_and(Row::selectable);
+        let len = self.filesystem.len() + self.project.len();
+        if direction > 0 {
+            (current.map_or(0, |index| index + 1)..len).find(selectable)
+        } else {
+            (0..current.unwrap_or(len)).rfind(selectable)
+        }
+    }
+}
+
+/// The file section header is taller than its path, directory and audio rows.
+fn file_row_top(index: usize) -> f32 {
+    if index == 0 {
+        0.0
+    } else {
+        metrics::SECTION_HEIGHT + (index - 1) as f32 * metrics::ROW_HEIGHT
+    }
+}
+
+/// Half-open range intersecting the viewport, including a partially visible row at either end.
+fn visible_file_rows(viewport: Rect, len: usize) -> std::ops::Range<usize> {
+    let body_offset = |y: f32| (y - metrics::SECTION_HEIGHT) / metrics::ROW_HEIGHT;
+    let first = if viewport.min.y < metrics::SECTION_HEIGHT {
+        0
+    } else {
+        (body_offset(viewport.min.y).floor() as usize).saturating_add(1)
+    };
+    let end = if viewport.max.y > 0.0 {
+        (body_offset(viewport.max.y).ceil() as usize).saturating_add(1)
+    } else {
+        0
+    };
+    first.min(len)..end.min(len)
+}
+
 impl Browser {
     /// ↑ ↓ Enter (and Esc in the field) before the text field sees them.
-    fn keys(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>, rows: &[Row], search_focused: bool) {
+    fn keys(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &mut ViewCtx<'_>,
+        rows: &BrowserRows<'_>,
+        search_focused: bool,
+    ) {
         let free = ctx.focused && ui.memory(|m| m.focused().is_none());
         if !search_focused && !free {
             return;
@@ -184,14 +256,13 @@ impl Browser {
                 i.consume_key(Modifiers::NONE, Key::Enter),
             )
         });
-        let current = model::effective_highlight(rows, ctx.ui.browser.highlighted, &self.query);
+        let current = rows.highlight(ctx.ui.browser.highlighted, &self.query);
         let dir = i32::from(down) - i32::from(up);
-        if dir != 0 {
-            let selectable: Vec<bool> = rows.iter().map(Row::selectable).collect();
-            if let Some(next) = w::step_enabled(&selectable, current, dir) {
-                ctx.ui.browser.highlighted = Some(next);
-                self.scroll_to_mark = true;
-            }
+        if dir != 0
+            && let Some(next) = rows.next_selectable(current, dir)
+        {
+            ctx.ui.browser.highlighted = Some(next);
+            self.scroll_to_mark = true;
         }
         if enter && let Some(row) = current.and_then(|i| rows.get(i)) {
             activate(ctx, row);
@@ -272,8 +343,8 @@ impl Browser {
         }
     }
 
-    /// The rows in a scroll area.
-    fn list(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect, rows: &[Row]) {
+    /// The filesystem rows are laid out only where they intersect the scroll viewport.
+    fn list(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect, rows: &BrowserRows<'_>) {
         let mut child = ui.new_child(
             UiBuilder::new()
                 .max_rect(rect)
@@ -283,31 +354,53 @@ impl Browser {
         );
         child.set_clip_rect(rect.intersect(ui.clip_rect()));
         group_bounds(&child, rect);
-        let mark = model::effective_highlight(rows, ctx.ui.browser.highlighted, &self.query);
+        let mark = rows.highlight(ctx.ui.browser.highlighted, &self.query);
         let scroll_to_mark = std::mem::take(&mut self.scroll_to_mark);
         egui::ScrollArea::vertical()
             .id_salt("komponist_browser_scroll")
             .auto_shrink([false, false])
-            .show(&mut child, |ui| {
+            .show_viewport(&mut child, |ui, viewport| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                 let width = ui.available_width();
-                let mut section = "";
-                for (i, row) in rows.iter().enumerate() {
-                    if row.kind == RowKind::Section {
-                        section = &row.name;
-                    }
-                    let id = ui
-                        .scope_id()
-                        .with(("komponist_browser_row", section, row.key()));
-                    let marked = mark == Some(i);
-                    let response = row_ui(ui, ctx, id, row, width, marked);
-                    if marked && scroll_to_mark {
-                        response.scroll_to_me(None);
-                    }
-                    if response.clicked() && row.selectable() {
-                        ctx.ui.browser.highlighted = Some(i);
-                    }
+                let file_count = rows.filesystem.len();
+                if scroll_to_mark && let Some(index) = mark.filter(|&index| index < file_count) {
+                    // The newly marked row need not have a widget on this frame.
+                    let (top, bottom) = (file_row_top(index), file_row_top(index + 1));
+                    let min = ui.cursor().min + vec2(0.0, top);
+                    ui.scroll_to_rect(Rect::from_min_size(min, vec2(width, bottom - top)), None);
                 }
+
+                let mut draw_rows = |ui: &mut Ui, first, visible: &[Row], initial_section: &str| {
+                    let mut section = initial_section;
+                    for (index, row) in (first..).zip(visible) {
+                        if row.kind == RowKind::Section {
+                            section = &row.name;
+                        }
+                        let id = ui
+                            .scope_id()
+                            .with(("komponist_browser_row", section, row.key()));
+                        let marked = mark == Some(index);
+                        let response = row_ui(ui, ctx, id, row, width, marked);
+                        if marked && scroll_to_mark && index >= file_count {
+                            response.scroll_to_me(None);
+                        }
+                        if response.clicked() && row.selectable() {
+                            ctx.ui.browser.highlighted = Some(index);
+                        }
+                    }
+                };
+                if let Some(heading) = rows.filesystem.first() {
+                    let visible = visible_file_rows(viewport, file_count);
+                    ui.add_space(file_row_top(visible.start));
+                    draw_rows(
+                        ui,
+                        visible.start,
+                        &rows.filesystem[visible.clone()],
+                        &heading.name,
+                    );
+                    ui.add_space(file_row_top(file_count) - file_row_top(visible.end));
+                }
+                draw_rows(ui, file_count, rows.project, "");
             });
     }
 }

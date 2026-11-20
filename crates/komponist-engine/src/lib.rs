@@ -40,6 +40,7 @@ mod graph;
 mod macros;
 mod metronome;
 mod mixer;
+mod note_schedule;
 pub mod processor;
 pub mod program;
 pub mod recording;
@@ -102,7 +103,7 @@ pub const MAX_COMMANDS_PER_BLOCK: usize = 64;
 /// Capacity of the UI → engine command queue.
 pub const COMMAND_CAPACITY: usize = 1024;
 
-/// Capacity of the engine → UI event queue (events plus garbage).
+/// Ordinary capacity of the engine → UI event queue (events plus garbage).
 pub const EVENT_CAPACITY: usize = 4096;
 
 /// Longest delay-compensation line per track, in frames.

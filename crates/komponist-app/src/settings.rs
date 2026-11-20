@@ -437,14 +437,9 @@ impl Settings {
     /// next to it and renames it, so a crash never leaves half a file.
     pub fn save(&self, path: &Path) -> Result<(), SettingsError> {
         let io = |e| SettingsError::Io(path.to_owned(), e);
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(io)?;
-        }
         let text = serde_json::to_string_pretty(self)
             .map_err(|e| SettingsError::Parse(path.to_owned(), e))?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, text).map_err(io)?;
-        std::fs::rename(&tmp, path).map_err(io)
+        crate::project_io::write_atomic(path, &text, true).map_err(io)
     }
 
     /// The folders a plugin scan covers: the default folders (ARCHITECTURE §8.3, `$CLAP_PATH`
@@ -659,8 +654,37 @@ mod tests {
         });
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);
-        assert!(!path.with_extension("json.tmp").exists());
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_settings_writers_each_publish_a_complete_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let legacy_tmp = path.with_extension("json.tmp");
+        std::fs::create_dir(&legacy_tmp).unwrap();
+        let settings = [1.5, 2.0].map(|scale| Settings {
+            ui_scale: Some(scale),
+            ..Default::default()
+        });
+        let ready = std::sync::Barrier::new(settings.len());
+        std::thread::scope(|scope| {
+            for settings in &settings {
+                let path = &path;
+                let ready = &ready;
+                scope.spawn(move || {
+                    ready.wait();
+                    settings.save(path).unwrap();
+                });
+            }
+        });
+        assert!(settings.contains(&Settings::load(&path).unwrap()));
+        assert!(legacy_tmp.is_dir());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 
     #[test]

@@ -220,6 +220,53 @@ fn folders_open_and_close() {
     assert!(!row_names(&h).contains(&"Dragonfly Plate Reverb".to_owned()));
 }
 
+#[test]
+fn large_file_browser_creates_visible_nodes_and_scrolls_to_a_keyboard_mark() {
+    let directory = tempfile::tempdir().unwrap();
+    let folder_count = 120;
+    let folder_name = |index| format!("Library {index:03}");
+    for index in 0..folder_count {
+        std::fs::create_dir(directory.path().join(folder_name(index))).unwrap();
+    }
+    let mut app = app();
+    app.ui_mut().browser.segment = BrowserSegment::Files;
+    app.ui_mut().browser.directory = Some(directory.path().to_path_buf());
+    let mut h = harness(app);
+    let first = folder_name(0);
+    let last = folder_name(folder_count - 1);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while h.query_by_role_and_label(Role::ListItem, &first).is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "directory was not listed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        h.run_steps(2);
+    }
+    assert!(h.query_by_role_and_label(Role::ListItem, &last).is_none());
+
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::F);
+    h.run_steps(2);
+    assert!(
+        h.get_by_role_and_label(Role::TextInput, de::BROWSER_SEARCH)
+            .is_focused()
+    );
+    // The first three file rows are the header, current path and parent folder.
+    let last_index = 3 + folder_count - 1;
+    h.state_mut().ui_mut().browser.highlighted = Some(last_index - 1);
+    key(&mut h, egui::Key::ArrowDown);
+    h.run_steps(48);
+    assert_eq!(h.state().ui().browser.highlighted, Some(last_index));
+    let selected = h.get_by_role_and_label(Role::ListItem, &last);
+    assert_eq!(selected.accesskit_node().is_selected(), Some(true));
+    assert!(h.query_by_role_and_label(Role::ListItem, &first).is_none());
+    key(&mut h, egui::Key::Enter);
+    assert_eq!(
+        h.state().ui().browser.directory.as_deref(),
+        Some(directory.path().join(last).as_path())
+    );
+}
+
 // ------------------------------------------------------------------------------------------------
 // S05 "Browser-Suche": Strg F, typing filters at once, ↑ ↓ choose, Enter adds to the selected track.
 

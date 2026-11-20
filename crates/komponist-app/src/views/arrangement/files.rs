@@ -651,29 +651,40 @@ mod tests {
     }
 
     #[test]
-    fn periodic_refreshes_cannot_fill_the_slots_for_a_new_visible_file() {
+    fn every_first_lookup_completes_while_periodic_refreshes_continue() {
         let scratch = tempfile::tempdir().unwrap();
-        let path = scratch.path().join("first-read.wav");
-        write_wav(&path, 48_000, 9_000);
-        let new_clip = clip(&path);
+        let periodic: Vec<_> = (0..LOOKUP_QUEUE + MAX_REFRESH_REQUESTS)
+            .map(|index| clip(&scratch.path().join(format!("periodic-{index}.wav"))))
+            .collect();
+        let unchecked: Vec<_> = (0..LOOKUP_QUEUE + LOOKUP_WORKERS + 3)
+            .map(|index| clip(&scratch.path().join(format!("first-read-{index}.wav"))))
+            .collect();
         let (started, calls) = mpsc::channel();
         let (resume, held) = mpsc::channel();
         let held = Mutex::new(held);
-        let started_reads = AtomicUsize::new(0);
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&refreshes);
         let ctx = egui::Context::default();
         let mut cache = AudioCache::default();
-        cache.worker = LookupWorker::spawn(&cache.workers, move |file, dir| {
-            if started_reads.fetch_add(1, Ordering::Relaxed) < LOOKUP_WORKERS {
+        cache.worker = LookupWorker::spawn(&cache.workers, move |file, _| {
+            if file
+                .abs
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("periodic-")
+                && counted.fetch_add(1, Ordering::Relaxed) < LOOKUP_WORKERS
+            {
                 let _ = started.send(());
                 let _ = held.lock().unwrap().recv();
             }
-            resolve(file, dir)
+            None
         });
+
         cache.begin_frame();
-        for index in 0..LOOKUP_QUEUE + MAX_REFRESH_REQUESTS {
-            let repeated = clip(&scratch.path().join(format!("periodic-{index}.wav")));
-            let ClipContent::Audio(link) = &repeated.content else {
-                panic!("audio clip")
+        for clip in &periodic {
+            let ClipContent::Audio(link) = &clip.content else {
+                panic!("audio clip");
             };
             cache.files.insert(
                 (link.file.clone(), None),
@@ -682,7 +693,7 @@ mod tests {
                     ..FileEntry::default()
                 },
             );
-            read_wave(&mut cache, &repeated, None, &ctx);
+            read_wave(&mut cache, clip, None, &ctx);
         }
         cache.end_frame();
         for _ in 0..LOOKUP_WORKERS {
@@ -698,25 +709,41 @@ mod tests {
         );
 
         cache.begin_frame();
-        assert_eq!(
-            read_wave(&mut cache, &new_clip, None, &ctx).0,
-            AudioFileState::Pending
-        );
-        let ClipContent::Audio(new_link) = &new_clip.content else {
-            panic!("audio clip")
-        };
-        assert!(
-            cache.files[&(new_link.file.clone(), None)]
-                .pending
-                .is_some()
-        );
+        for clip in periodic.iter().chain(&unchecked) {
+            read_wave(&mut cache, clip, None, &ctx);
+        }
+        let admitted = cache
+            .files
+            .values()
+            .filter(|entry| entry.checked.is_none() && entry.pending.is_some())
+            .count();
+        // Both workers are blocked. Some new jobs fit, and others must retry.
+        assert!(admitted > 0 && admitted < unchecked.len());
+        cache.end_frame();
         for _ in 0..LOOKUP_WORKERS {
             resume.send(()).unwrap();
         }
-        let ready = wait_for_wave(&mut cache, &new_clip, None, &ctx, |state, _| {
-            state == AudioFileState::Ready
-        });
-        assert!(!ready.is_empty());
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            cache.begin_frame();
+            for clip in &periodic {
+                read_wave(&mut cache, clip, None, &ctx);
+            }
+            let mut complete = true;
+            for clip in &unchecked {
+                complete &= read_wave(&mut cache, clip, None, &ctx).0 == AudioFileState::Missing;
+            }
+            cache.end_frame();
+            if complete && refreshes.load(Ordering::Relaxed) > MAX_REFRESH_REQUESTS {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "visible metadata lookups starved"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]

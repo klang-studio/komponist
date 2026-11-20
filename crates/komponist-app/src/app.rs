@@ -26,7 +26,10 @@
 //! undo step and Esc discards it ([`TransportAction::DiscardTake`]); both drain the events still in
 //! flight first.
 
+mod clip_edits;
 mod devices;
+mod edit_dispatch;
+mod track_edits;
 mod track_macro_edits;
 
 use std::collections::{BTreeSet, VecDeque};
@@ -41,11 +44,9 @@ use komponist_engine::automation::EngineTarget;
 use komponist_engine::{Command, EngineEvent, TransportState};
 use komponist_i18n::Lang;
 use komponist_ipc::LogLevel;
-use komponist_model::automation::{AutomationOwner, AutomationTarget};
-use komponist_model::edits::{
-    self, ChannelProp, EditResult, NewDevice, NewTrack, ProjectProp, TrackProp, VelocityChange,
-};
-use komponist_model::project::{BUILTIN_HEXA, VOLUME_DB_MIN};
+use komponist_model::automation::AutomationOwner;
+use komponist_model::edits::{self, EditResult, NewDevice, NewTrack, ProjectProp, TrackProp};
+use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{
     AudioInput, ChannelRef, ClipContent, DeviceId, DeviceRole, Document, EditError, PluginFormat,
     PluginRef, Project, Tick, TickRange, TrackId,
@@ -290,7 +291,7 @@ impl App {
     pub fn show_start_screen(&mut self) {
         self.ui.screen = Screen::Start;
         self.ui.focus = FocusArea::default();
-        self.ui.start.selected = 0;
+        self.ui.start.reset_selection();
     }
 
     /// The recent projects, newest first.
@@ -579,7 +580,6 @@ impl App {
             self.report_workers_without_workgroup();
         }
         self.report_midi_changes();
-        // Read after the drain: at least as new as every event drained (`record` docs).
         let playhead = self.engine.playhead();
         for event in events {
             if let EngineEvent::PluginParams {
@@ -592,7 +592,7 @@ impl App {
             } else if capture {
                 self.capture_automation(&event);
             }
-            self.engine_event(&event, playhead);
+            self.engine_event(&event);
         }
         let mut recompile = false;
         for event in self.engine.poll_device_events() {
@@ -618,18 +618,49 @@ impl App {
 
     /// The recording's part of an engine event: the count-in's end starts the take, captured
     /// notes and loop wraps go into it.
-    fn engine_event(&mut self, event: &EngineEvent, playhead: Tick) {
+    fn engine_event(&mut self, event: &EngineEvent) {
         match *event {
             EngineEvent::CountInDone { at } => {
                 if std::mem::take(&mut self.shell.take_expected) {
                     self.begin_take(at);
                 }
             }
+            EngineEvent::RecordingInterrupted {
+                at,
+                first_incomplete_lap,
+                triggering_track,
+            } => {
+                if self.recording.is_none()
+                    && triggering_track.is_some()
+                    && let Some(audio) = self.audio_recording.running()
+                {
+                    // An audio recording can gain its first MIDI input after capture starts.
+                    let project = self.doc.project();
+                    let start = if first_incomplete_lap == 0 {
+                        audio.start
+                    } else {
+                        project.loop_range.start
+                    };
+                    self.recording = Some(Recording::new(project, start, self.lang));
+                }
+                if let Some(recording) = &mut self.recording {
+                    recording.interrupt(
+                        at,
+                        first_incomplete_lap,
+                        triggering_track,
+                        self.doc.project(),
+                    );
+                }
+                if self.recording.is_some() || self.audio_recording.is_active() {
+                    self.finish_take_at(at);
+                    self.set_status(self.lang.record_interrupted(), StatusKind::Error);
+                }
+            }
             // A device that dropped out of an export's render (its status says the rest).
             EngineEvent::ProcessorFailed { slot } => self.export.processor_failed(slot),
             _ => {
                 if let Some(rec) = &mut self.recording {
-                    rec.handle(event, playhead, self.doc.project());
+                    rec.handle(event, self.doc.project());
                 }
             }
         }
@@ -665,27 +696,29 @@ impl App {
         }
     }
 
-    /// Whether a running take holds captured notes: material that is not in the document yet, so
-    /// leaving the project asks first (#85).
+    /// Whether capture has unsaved material that should trigger a prompt when leaving (#85).
     pub(crate) fn has_unsaved_take(&self) -> bool {
-        self.recording.as_ref().is_some_and(Recording::has_notes)
+        self.recording.as_ref().is_some_and(Recording::has_material)
             || self.audio_recording.has_material()
             || self.automation_capture.has_points()
             || (self.audio_recording.is_active() && self.transport() == TransportState::Recording)
     }
 
     /// The project as a save writes it while capturing (#85): the document with the running take
-    /// as Stop would commit it now; `None` without a take with notes. Events in flight are
-    /// drained first. Capture goes on.
-    pub(crate) fn project_with_take(&mut self) -> Result<Option<Project>, ()> {
-        self.drain_events();
-        let mut project = Project::clone(self.project());
+    /// as Stop would commit it now. Call after draining capture events. Capture goes on.
+    pub(crate) fn project_with_take(
+        &mut self,
+        project: &Project,
+        playhead: Tick,
+        recordings: &mut crate::audio_record::StagedRecordings,
+    ) -> Result<Option<Project>, ()> {
+        let mut project = project.clone();
         let mut changed = false;
         if let Some(rec) = self
             .recording
             .as_ref()
-            .filter(|recording| recording.has_notes())
-            && let Some(commit) = rec.commit(&project, self.engine.playhead())
+            .filter(|recording| recording.has_material())
+            && let Some(commit) = rec.commit(&project, playhead)
         {
             match commit.apply(&project) {
                 Ok((next, _)) => {
@@ -700,7 +733,7 @@ impl App {
         }
         if let Some(next) = self
             .automation_capture
-            .project_at(&project, self.engine.playhead())
+            .project_at(&project, playhead)
             .map_err(|error| {
                 self.record_edit_error(error);
             })?
@@ -708,7 +741,12 @@ impl App {
             project = next;
             changed = true;
         }
-        if let Some(next) = self.project_with_audio_take(&project)? {
+        if let Some(next) = recordings
+            .project_with_audio_take(&project, self.lang)
+            .map_err(|error| {
+                self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
+            })?
+        {
             project = next;
             changed = true;
         }
@@ -717,10 +755,14 @@ impl App {
 
     /// Commits the running take from the already-drained events.
     pub(crate) fn finish_take(&mut self) {
+        self.finish_take_at(self.engine.playhead());
+    }
+
+    fn finish_take_at(&mut self, at: Tick) {
         let commit = self
             .recording
             .take()
-            .and_then(|recording| recording.commit(self.doc.project(), self.engine.playhead()));
+            .and_then(|recording| recording.commit(self.doc.project(), at));
         let automation = self.take_automation_capture();
         if self.audio_recording.is_active() {
             self.audio_recording.defer_midi(commit);
@@ -747,7 +789,9 @@ impl App {
         if let Some(&first) = clips.first() {
             self.ui_action(UiAction::OpenClip(first));
         }
-        if let Some((take, notes)) = commit.summary() {
+        if commit.incomplete() {
+            self.set_status(self.lang.record_notes_lost(), StatusKind::Error);
+        } else if let Some((take, notes)) = commit.summary() {
             self.set_status(self.lang.record_recorded(take, notes), StatusKind::Success);
         }
     }
@@ -1510,11 +1554,11 @@ impl App {
     /// goes back to where the recording would have started (prototype `finishRec`: `recPend` →
     /// `pos = recAt`).
     fn cancel_count_in(&mut self) {
-        // A count-in that just ended may have started its take; it goes.
-        self.drain_events();
+        // Ignore a count-in completion or capture interruption that arrived since the last poll.
+        self.shell.take_expected = false;
         self.recording = None;
         self.audio_recording.cancel();
-        self.shell.take_expected = false;
+        self.drain_events();
         self.engine.send(Command::Stop);
         if let Some(from) = self.shell.record_from {
             self.engine.send(Command::Locate(from));
@@ -1597,506 +1641,6 @@ impl App {
         }
     }
 
-    /// The clip open in the editor and whether it is a MIDI clip; `None` while recording (the
-    /// editor shows the take being recorded, not the open clip).
-    fn open_clip_notes(&self) -> Option<(komponist_model::ClipId, bool)> {
-        if self.recording.is_some() || self.audio_recording.is_active() {
-            return None;
-        }
-        let id = self.ui.editor.clip?;
-        let (_, clip) = self.project().find_clip(id)?;
-        Some((id, matches!(clip.content, ClipContent::Midi(_))))
-    }
-
-    fn selected_notes(&self) -> Vec<komponist_model::NoteId> {
-        self.ui.selection.notes.iter().copied().collect()
-    }
-
-    fn edit_action(&mut self, action: EditAction) {
-        match action {
-            EditAction::Undo => {
-                // A gesture that is still open ends first (a step of its own).
-                self.end_gesture();
-                let before = Arc::clone(self.doc.project());
-                self.doc.undo();
-                self.follow_device_states(&before);
-            }
-            EditAction::Redo => {
-                self.end_gesture();
-                let before = Arc::clone(self.doc.project());
-                self.doc.redo();
-                self.follow_device_states(&before);
-            }
-            EditAction::BeginGesture { label } => {
-                self.end_gesture();
-                self.doc.begin_gesture(label);
-            }
-            EditAction::EndGesture => self.end_gesture(),
-            EditAction::CancelGesture => self.cancel_gesture(),
-            EditAction::DeleteSelection => self.delete_selection(),
-            EditAction::DuplicateSelection => {
-                let clips: Vec<_> = self.ui.selection.clips.iter().copied().collect();
-                if clips.is_empty() {
-                    return;
-                }
-                if let Some(copies) = self.apply_with("undo-duplicate-clips", |p| {
-                    edits::duplicate_clips(p, &clips)
-                }) {
-                    self.select_clips(copies, SelectMode::Replace);
-                }
-            }
-            EditAction::SplitAtPlayhead => {
-                let clips: Vec<_> = self.ui.selection.clips.iter().copied().collect();
-                if clips.is_empty() {
-                    return;
-                }
-                let at = self.engine.playhead();
-                self.apply_with("undo-split-clips", |p| edits::split_clips(p, &clips, at));
-            }
-            EditAction::ToggleMuteSelection => {
-                let clips: Vec<_> = self.ui.selection.clips.iter().copied().collect();
-                let p = self.project();
-                let any_unmuted = clips
-                    .iter()
-                    .filter_map(|&c| p.find_clip(c))
-                    .any(|(_, c)| !c.mute);
-                if clips.is_empty() {
-                    return;
-                }
-                self.apply("undo-mute-clips", |p| {
-                    edits::set_clips_muted(p, &clips, any_unmuted)
-                });
-            }
-            EditAction::ToggleMuteTracks => {
-                let tracks: Vec<_> = self.ui.selection.tracks.iter().copied().collect();
-                let p = self.project();
-                let any_unmuted = tracks
-                    .iter()
-                    .filter_map(|&t| p.track(t))
-                    .any(|t| !t.channel.mute);
-                if tracks.is_empty() {
-                    return;
-                }
-                self.apply("undo-mute-tracks", |p| {
-                    edits::set_track_prop(
-                        p,
-                        &tracks,
-                        TrackProp::Channel(ChannelProp::Mute(any_unmuted)),
-                    )
-                });
-            }
-            EditAction::QuantizeSelection => {
-                let Some((clip, true)) = self.open_clip_notes() else {
-                    return;
-                };
-                let notes = self.selected_notes();
-                let grid = self.ui.piano_roll.grid.ticks(self.project().meter);
-                self.apply("undo-quantize", |p| {
-                    let sel = (!notes.is_empty()).then_some(notes.as_slice());
-                    edits::quantize_notes(p, clip, sel, grid)
-                });
-            }
-            EditAction::TransposeSelection(semitones) => {
-                let Some((clip, true)) = self.open_clip_notes() else {
-                    return;
-                };
-                let notes = self.selected_notes();
-                if notes.is_empty() {
-                    return;
-                }
-                self.apply("undo-transpose-notes", |p| {
-                    edits::move_notes(p, clip, &notes, Tick::ZERO, i32::from(semitones))
-                });
-            }
-            EditAction::NudgeSelection(steps) => {
-                let Some((clip, true)) = self.open_clip_notes() else {
-                    return;
-                };
-                let notes = self.selected_notes();
-                if notes.is_empty() {
-                    return;
-                }
-                let grid = self.ui.piano_roll.grid.ticks(self.project().meter);
-                let delta = Tick(grid.0 * i64::from(steps));
-                self.apply("undo-move-notes", |p| {
-                    edits::move_notes(p, clip, &notes, delta, 0)
-                });
-            }
-            EditAction::NewMidiTrack => self.new_midi_track(None, hexa_ref()),
-            EditAction::NewAudioTrack => self.open_new_audio_track_dialog(),
-            EditAction::RecordBus(bus) => self.record_bus(bus),
-            EditAction::SelectAudioTake { clip, take } => {
-                self.apply_with("undo-select-audio-take", |p| {
-                    edits::select_audio_take(p, clip, take).map(|p| (p, ()))
-                });
-            }
-            EditAction::RenameAudioTake { clip, take, name } => {
-                self.apply_with("undo-rename-audio-take", |p| {
-                    edits::rename_audio_take(p, clip, take, name).map(|p| (p, ()))
-                });
-            }
-            EditAction::RemoveAudioTake { clip, take } => {
-                self.apply_with("undo-remove-audio-take", |p| {
-                    edits::remove_audio_take(p, clip, take).map(|p| (p, ()))
-                });
-            }
-            EditAction::SetProjectProp(prop) => {
-                self.apply("undo-change-project", |p| edits::set_project_prop(p, prop));
-            }
-            EditAction::SetMasterProp(prop) => {
-                let automation = match prop {
-                    ChannelProp::VolumeDb(db) => Some((
-                        AutomationTarget::Volume,
-                        Command::SetMasterGain(fader_gain(db)),
-                    )),
-                    ChannelProp::Pan(pan) => {
-                        Some((AutomationTarget::Pan, Command::SetMasterPan(pan)))
-                    }
-                    _ => None,
-                };
-                if let Some((target, command)) = automation
-                    && self.manual_automation(AutomationOwner::Master, &target, command)
-                {
-                    return;
-                }
-                let before = self.doc.revision();
-                if self.apply("undo-change-master", |p| edits::set_master_prop(p, prop))
-                    && self.doc.in_gesture()
-                    && let ChannelProp::VolumeDb(db) = prop
-                {
-                    let after = self.doc.revision();
-                    self.engine
-                        .fast_path(Command::SetMasterGain(fader_gain(db)), before, after);
-                }
-            }
-            EditAction::AddTrack(spec) => {
-                let names = default_names(self.lang);
-                if let Some(id) =
-                    self.apply_with("undo-add-track", |p| edits::add_track_in(p, spec, &names))
-                {
-                    self.select_tracks(vec![id], SelectMode::Replace);
-                }
-            }
-            EditAction::FlattenMidiTrack(track) => self.start_flatten(track),
-            EditAction::RemoveTracks(tracks) => {
-                if self.apply("undo-delete-tracks", |p| edits::remove_tracks(p, &tracks)) {
-                    self.prune_selection();
-                }
-            }
-            EditAction::MoveTracks { tracks, to_index } => {
-                self.apply("undo-move-tracks", |p| {
-                    edits::move_tracks(p, &tracks, to_index)
-                });
-            }
-            EditAction::SetTrackProp { tracks, prop } => self.set_track_prop(tracks, prop),
-            EditAction::SetExclusive { track, flag } => {
-                if flag == edits::ExclusiveFlag::Arm && !self.audio_arm_allowed(track) {
-                    return;
-                }
-                self.apply("undo-exclusive", |p| edits::set_exclusive(p, track, flag));
-            }
-            EditAction::AddClip { track, clip } => {
-                if let Some(id) =
-                    self.apply_with("undo-add-clip", |p| edits::add_clip(p, track, clip))
-                {
-                    self.select_clips(vec![id], SelectMode::Replace);
-                    self.ui_action(UiAction::OpenClip(id));
-                }
-            }
-            EditAction::RemoveClips(clips) => {
-                if self.apply("undo-delete-clips", |p| edits::remove_clips(p, &clips)) {
-                    self.prune_selection();
-                }
-            }
-            EditAction::MoveClips {
-                clips,
-                delta,
-                track_delta,
-            } => {
-                self.apply_delta("undo-move-clips", |p| {
-                    edits::move_clips(p, &clips, delta, track_delta).map(|p| (p, ()))
-                });
-            }
-            EditAction::CopyClips {
-                clips,
-                delta,
-                track_delta,
-            } => {
-                if let Some(copies) = self.apply_delta("undo-copy-clips", |p| {
-                    edits::copy_clips(p, &clips, delta, track_delta)
-                }) {
-                    self.select_clips(copies, SelectMode::Replace);
-                }
-            }
-            EditAction::SetClipLength { clip, length } => {
-                self.apply_delta("undo-clip-length", |p| {
-                    edits::set_clip_length(p, clip, length).map(|p| (p, ()))
-                });
-            }
-            EditAction::TrimAudioClipStart { clip, start } => {
-                self.apply_delta("undo-clip-length", |p| {
-                    edits::trim_audio_clip_start(p, clip, start).map(|p| (p, ()))
-                });
-            }
-            EditAction::SetAudioClipFile { clip, file } => {
-                self.apply("undo-clip-replace-file", |p| {
-                    edits::set_audio_clip_file(p, clip, file)
-                });
-            }
-            EditAction::SetAudioClipProp { clip, prop } => {
-                let label = match prop {
-                    edits::AudioClipProp::GainDb(_) => "undo-clip-gain",
-                    edits::AudioClipProp::SourceOffset(_) => "undo-clip-source-start",
-                    edits::AudioClipProp::FadeIn(_) | edits::AudioClipProp::FadeOut(_) => {
-                        "undo-clip-fade"
-                    }
-                    edits::AudioClipProp::TimeMode(_) => "undo-clip-audio-mode",
-                    edits::AudioClipProp::OriginalTempo(_) => "undo-clip-original-tempo",
-                };
-                self.apply_delta(label, |p| {
-                    edits::set_audio_clip_prop(p, clip, prop).map(|p| (p, ()))
-                });
-            }
-            EditAction::SetAudioClipWarp { clip, enabled } => {
-                self.apply_delta("undo-clip-audio-mode", |p| {
-                    edits::set_audio_clip_warp(p, clip, enabled).map(|p| (p, ()))
-                });
-            }
-            EditAction::SetClipLoop {
-                clip,
-                loop_length,
-                length,
-            } => {
-                self.apply("undo-clip-loop", |p| {
-                    edits::set_clip_loop(p, clip, loop_length, length)
-                });
-            }
-            EditAction::SetClipsMuted { clips, muted } => {
-                self.apply("undo-mute-clips", |p| {
-                    edits::set_clips_muted(p, &clips, muted)
-                });
-            }
-            EditAction::SetClipProp { clip, prop } => {
-                self.apply("undo-change-clip", |p| edits::set_clip_prop(p, clip, prop));
-            }
-            EditAction::SelectTake { clip, take } => {
-                self.apply("undo-select-take", |p| edits::select_take(p, clip, take));
-            }
-            EditAction::AddNotes { clip, notes } => {
-                if let Some(ids) =
-                    self.apply_with("undo-add-notes", |p| edits::add_notes(p, clip, &notes))
-                {
-                    self.ui.selection.notes = ids.into_iter().collect();
-                }
-            }
-            EditAction::RemoveNotes { clip, notes } => {
-                if self.apply("undo-delete-notes", |p| {
-                    edits::remove_notes(p, clip, &notes)
-                }) {
-                    for n in &notes {
-                        self.ui.selection.notes.remove(n);
-                    }
-                }
-            }
-            EditAction::MoveNotes {
-                clip,
-                notes,
-                delta,
-                pitch_delta,
-            } => {
-                self.apply_delta("undo-move-notes", |p| {
-                    edits::move_notes(p, clip, &notes, delta, pitch_delta).map(|p| (p, ()))
-                });
-            }
-            EditAction::CopyNotes {
-                clip,
-                notes,
-                delta,
-                pitch_delta,
-            } => {
-                if let Some(ids) = self.apply_delta("undo-copy-notes", |p| {
-                    edits::copy_notes(p, clip, &notes, delta, pitch_delta)
-                }) {
-                    self.ui.selection.notes = ids.into_iter().collect();
-                }
-            }
-            EditAction::ResizeNotes { clip, notes, delta } => {
-                self.apply_delta("undo-note-length", |p| {
-                    edits::resize_notes(p, clip, &notes, delta).map(|p| (p, ()))
-                });
-            }
-            EditAction::SetNotesVelocity {
-                clip,
-                notes,
-                change,
-            } => {
-                let label = "undo-velocity";
-                match change {
-                    VelocityChange::Offset(_) => {
-                        self.apply_delta(label, |p| {
-                            edits::set_notes_velocity(p, clip, &notes, change).map(|p| (p, ()))
-                        });
-                    }
-                    VelocityChange::Set(_) => {
-                        self.apply(label, |p| {
-                            edits::set_notes_velocity(p, clip, &notes, change)
-                        });
-                    }
-                }
-            }
-            EditAction::SetStep {
-                clip,
-                row,
-                step,
-                prop,
-            } => {
-                self.apply("undo-step", |p| edits::set_step(p, clip, row, step, prop));
-            }
-            EditAction::SetStepClipProp { clip, prop } => {
-                self.apply("undo-change-pattern", |p| {
-                    edits::set_step_clip_prop(p, clip, prop)
-                });
-            }
-            EditAction::SetStepRow { clip, row, prop } => {
-                self.apply("undo-change-row", |p| {
-                    edits::set_step_row(p, clip, row, prop)
-                });
-            }
-            EditAction::StepClipToMidi(clip) => {
-                self.apply("undo-as-midi-clip", |p| edits::step_clip_to_midi(p, clip));
-            }
-            EditAction::RemoveDevice(device) => {
-                if self.apply("undo-remove-device", |p| edits::remove_device(p, device)) {
-                    self.ui.selection.devices.remove(&device);
-                }
-            }
-            EditAction::MoveDevice { device, to_index } => {
-                self.apply("undo-move-device", |p| {
-                    edits::move_device(p, device, to_index)
-                });
-            }
-            EditAction::SetDeviceBypass { device, bypass } => {
-                self.apply("undo-bypass", |p| {
-                    edits::set_device_bypass(p, device, bypass)
-                });
-            }
-            EditAction::SetSidechain { device, sidechain } => {
-                self.apply("undo-set-sidechain", |p| {
-                    edits::set_sidechain(p, device, sidechain)
-                });
-            }
-            EditAction::GroupSelection => {
-                let tracks = self.selected_track_order();
-                self.group_tracks(tracks);
-            }
-            EditAction::GroupTracks(tracks) => self.group_tracks(tracks),
-            EditAction::SendToNewBus(senders) => {
-                let names = default_names(self.lang);
-                if let Some(id) = self.apply_with("undo-send-to-new-bus", |p| {
-                    edits::add_bus_in(p, edits::NewBus::effect(senders), &names)
-                }) {
-                    self.select_tracks(vec![id], SelectMode::Replace);
-                    self.request_rename(id);
-                }
-            }
-            EditAction::AddBus(spec) => {
-                let names = default_names(self.lang);
-                if let Some(id) =
-                    self.apply_with("undo-add-bus", |p| edits::add_bus_in(p, spec, &names))
-                {
-                    self.select_tracks(vec![id], SelectMode::Replace);
-                }
-            }
-            EditAction::SetOutput { tracks, output } => {
-                self.apply("undo-set-output", |p| edits::set_output(p, &tracks, output));
-            }
-            EditAction::AddSend { track, target } => {
-                self.apply_with("undo-add-send", |p| edits::add_send(p, track, target));
-            }
-            EditAction::SetSend { send, prop } => self.set_send(send, prop),
-            EditAction::RemoveSend(send) => {
-                self.apply("undo-remove-send", |p| edits::remove_send(p, send));
-            }
-            EditAction::CopyDevice { device, to, index } => self.copy_device(device, to, index),
-            EditAction::DuplicateDevices => self.duplicate_devices(),
-            EditAction::PasteDevices => self.paste_devices(),
-            EditAction::DeleteDevices => self.delete_devices(),
-        }
-    }
-
-    fn set_track_prop(&mut self, mut tracks: Vec<TrackId>, prop: TrackProp) {
-        if let TrackProp::Channel(channel) = &prop {
-            tracks.retain(|&track| {
-                let automation = match *channel {
-                    ChannelProp::VolumeDb(db) => Some((
-                        AutomationTarget::Volume,
-                        Command::SetTrackGain {
-                            track,
-                            gain: fader_gain(db),
-                        },
-                    )),
-                    ChannelProp::Pan(pan) => {
-                        Some((AutomationTarget::Pan, Command::SetTrackPan { track, pan }))
-                    }
-                    _ => None,
-                };
-                !automation.is_some_and(|(target, command)| {
-                    let owner = AutomationOwner::Track(track);
-                    self.handle_macro_target_edit(owner, &target)
-                        || self.manual_automation(owner, &target, command)
-                })
-            });
-            if tracks.is_empty() {
-                return;
-            }
-        }
-        if matches!(&prop, TrackProp::AudioInput(_)) && self.audio_recording().is_some() {
-            self.set_status(self.lang.audio_input_change_recording(), StatusKind::Error);
-            return;
-        }
-        if prop == TrackProp::Arm(true)
-            && tracks.iter().any(|&track| !self.audio_arm_allowed(track))
-        {
-            return;
-        }
-        let label = match prop {
-            TrackProp::AudioInput(_) => "undo-audio-input",
-            TrackProp::MonitorMode(_) => "undo-audio-monitor",
-            _ => "undo-change-track",
-        };
-        let before = self.doc.revision();
-        let fast = match &prop {
-            TrackProp::Channel(c) => Some(*c),
-            _ => None,
-        };
-        if !self.apply(label, |p| edits::set_track_prop(p, &tracks, prop)) {
-            return;
-        }
-        let (Some(channel), true) = (fast, self.doc.in_gesture()) else {
-            return;
-        };
-        let after = self.doc.revision();
-        // Mute and solo also go out as the gate table: with buses, solo follows the signal path.
-        let gates = matches!(channel, ChannelProp::Mute(_) | ChannelProp::Solo(_))
-            .then(|| self.engine.gates(self.doc.project()))
-            .flatten();
-        for track in tracks {
-            let command = match channel {
-                ChannelProp::VolumeDb(db) => Command::SetTrackGain {
-                    track,
-                    gain: fader_gain(db),
-                },
-                ChannelProp::Pan(pan) => Command::SetTrackPan { track, pan },
-                ChannelProp::Mute(mute) => Command::SetTrackMute { track, mute },
-                ChannelProp::Solo(solo) => Command::SetTrackSolo { track, solo },
-            };
-            self.engine.fast_path(command, before, after);
-        }
-        if let Some(command) = gates {
-            self.engine.fast_path(command, before, after);
-        }
-    }
-
     /// The selected tracks in display order.
     fn selected_track_order(&self) -> Vec<TrackId> {
         self.project()
@@ -2105,30 +1649,6 @@ impl App {
             .map(|t| t.id)
             .filter(|t| self.ui.selection.tracks.contains(t))
             .collect()
-    }
-
-    /// Strg G: `tracks` into a new group (one undo step); the group is selected and its name goes
-    /// into the edit mode of the arrangement (WP-100 §6).
-    fn group_tracks(&mut self, tracks: Vec<TrackId>) {
-        if tracks.is_empty() {
-            return;
-        }
-        let names = default_names(self.lang);
-        if let Some(id) = self.apply_with("undo-group-tracks", |p| {
-            edits::add_bus_in(p, edits::NewBus::group(tracks), &names)
-        }) {
-            self.select_tracks(vec![id], SelectMode::Replace);
-            self.request_rename(id);
-        }
-    }
-
-    /// Opens the name field of a bus just made, but only if the arrangement is visible at this
-    /// moment (owner, 2026-11-15); otherwise no request is kept and the bus has its automatic
-    /// name, so a later switch to the arrangement does not open a stale rename.
-    fn request_rename(&mut self, id: TrackId) {
-        let l = &self.ui.layout;
-        let arrangement_hidden = l.dock_open && l.dock_maximized;
-        self.ui.arrangement.rename_request = (!arrangement_hidden).then_some(id);
     }
 
     /// F2: the selected clip (exactly one: the inspector's clip section), else the first selected
@@ -2158,83 +1678,6 @@ impl App {
         } else {
             self.ui.layout.inspector_open = true;
             self.ui.inspector.rename_request = Some(InspectorRename::Track(track));
-        }
-    }
-
-    /// A send change; a level change inside a gesture reaches the engine on the fast path
-    /// (`Command::SetSendGain`, ramped by the send's edge state), so dragging a send level does not
-    /// recompile the program per frame.
-    fn set_send(&mut self, send: komponist_model::SendId, prop: edits::SendProp) {
-        if let edits::SendProp::LevelDb(db) = prop
-            && let Some((track, _)) = self.project().find_send(send)
-            && {
-                let owner = AutomationOwner::Track(track.id);
-                let target = AutomationTarget::Send { send };
-                self.handle_macro_target_edit(owner, &target)
-                    || self.manual_automation(
-                        owner,
-                        &target,
-                        Command::SetSendGain {
-                            send,
-                            gain: fader_gain(db),
-                        },
-                    )
-            }
-        {
-            return;
-        }
-        let before = self.doc.revision();
-        if !self.apply("undo-change-send", |p| edits::set_send(p, send, prop)) {
-            return;
-        }
-        if let (edits::SendProp::LevelDb(_), true) = (prop, self.doc.in_gesture()) {
-            let after = self.doc.revision();
-            let db = self
-                .project()
-                .find_send(send)
-                .map_or(0.0, |(t, i)| t.sends[i].level_db);
-            self.engine.fast_path(
-                Command::SetSendGain {
-                    send,
-                    gain: fader_gain(db),
-                },
-                before,
-                after,
-            );
-        }
-    }
-
-    /// Entf: notes in the editor, else clips, else tracks.
-    fn delete_selection(&mut self) {
-        let editor = matches!(
-            self.ui.focus,
-            FocusArea::PianoRoll | FocusArea::StepSequencer
-        );
-        if editor
-            && let Some((clip, true)) = self.open_clip_notes()
-            && !self.ui.selection.notes.is_empty()
-        {
-            let notes = self.selected_notes();
-            if self.apply("undo-delete-notes", |p| {
-                edits::remove_notes(p, clip, &notes)
-            }) {
-                self.ui.selection.notes.clear();
-            }
-            return;
-        }
-        if editor {
-            return;
-        }
-        if !self.ui.selection.clips.is_empty() {
-            let clips: Vec<_> = self.ui.selection.clips.iter().copied().collect();
-            if self.apply("undo-delete-clips", |p| edits::remove_clips(p, &clips)) {
-                self.prune_selection();
-            }
-        } else if !self.ui.selection.tracks.is_empty() {
-            let tracks: Vec<_> = self.ui.selection.tracks.iter().copied().collect();
-            if self.apply("undo-delete-tracks", |p| edits::remove_tracks(p, &tracks)) {
-                self.prune_selection();
-            }
         }
     }
 
@@ -3359,15 +2802,6 @@ pub(crate) fn repeatable(action: &Action) -> bool {
     )
 }
 
-/// The fader's linear gain for `db` (`VOLUME_DB_MIN` = −∞ → 0), as the compiler computes it.
-fn fader_gain(db: f32) -> f32 {
-    if db <= VOLUME_DB_MIN {
-        0.0
-    } else {
-        klang_dsp::units::db_to_gain(db)
-    }
-}
-
 /// The reference of the built-in hexa (Ctrl T).
 pub fn hexa_ref() -> PluginRef {
     PluginRef {
@@ -3586,7 +3020,7 @@ mod tests {
         assert!(app.shell.take_expected);
         app.open_document(Document::new(empty_project()), None);
         assert!(!app.shell.take_expected);
-        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO }, Tick::ZERO);
+        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO });
         assert!(app.recording().is_none());
     }
 
@@ -3595,7 +3029,7 @@ mod tests {
         let mut app = recording_app();
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         app.cancel_count_in();
-        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO }, Tick::ZERO);
+        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO });
         assert!(app.recording().is_none());
     }
 
@@ -3619,10 +3053,73 @@ mod tests {
     }
 
     #[test]
+    fn a_checkpoint_and_interruption_preserve_an_incomplete_midi_take() {
+        let mut app = recording_app();
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO });
+        let track = app.recording().unwrap().first().unwrap().0;
+        app.engine_event(&EngineEvent::RecordingNoteLoss { track, lap: 0 });
+        assert!(app.has_unsaved_take());
+
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("Checkpoint.komponist");
+        assert!(app.save_to(&path));
+        let checkpoint = crate::project_io::load_project(&path).unwrap();
+        let name = app.lang.record_take_incomplete(1);
+        assert_eq!(checkpoint.track(track).unwrap().clips[0].name, name);
+        assert!(app.project().track(track).unwrap().clips.is_empty());
+
+        app.engine_event(&EngineEvent::RecordingInterrupted {
+            at: Tick(20),
+            first_incomplete_lap: 0,
+            triggering_track: None,
+        });
+        assert!(app.recording().is_none());
+        assert_eq!(app.project().track(track).unwrap().clips[0].name, name);
+        assert_eq!(
+            app.ui.status.as_ref().unwrap().text,
+            app.lang.record_interrupted()
+        );
+
+        // A new request consumes only its own count-in and starts a clean take.
+        app.shell.take_expected = true;
+        app.engine_event(&EngineEvent::CountInDone { at: Tick(40) });
+        assert!(app.recording().is_some());
+        assert!(!app.shell.take_expected);
+        assert!(!app.has_unsaved_take());
+    }
+
+    #[test]
+    fn an_interrupted_take_includes_the_track_whose_first_loss_overflowed() {
+        let mut app = recording_app();
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO });
+        let first = app.recording().unwrap().first().unwrap().0;
+        app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+        let added = app
+            .project()
+            .tracks
+            .iter()
+            .find(|track| track.id != first)
+            .unwrap()
+            .id;
+        assert!(app.recording().unwrap().clip(added).is_none());
+        app.engine_event(&EngineEvent::RecordingInterrupted {
+            at: Tick(20),
+            first_incomplete_lap: 0,
+            triggering_track: Some(added),
+        });
+        assert_eq!(
+            app.project().track(added).unwrap().clips[0].name,
+            app.lang.record_take_incomplete(2)
+        );
+    }
+
+    #[test]
     fn count_in_ending_after_a_record_starts_the_take() {
         let mut app = recording_app();
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
-        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO }, Tick::ZERO);
+        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO });
         assert!(app.recording().is_some());
         assert!(!app.shell.take_expected);
     }

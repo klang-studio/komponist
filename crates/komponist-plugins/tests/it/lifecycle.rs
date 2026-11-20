@@ -15,6 +15,7 @@ use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginFormat, Plug
 use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{
     DeviceStatus, FailReason, MissingPlugin, PluginError, PluginManager, PluginManagerEvent,
+    SaveSnapshots,
 };
 
 /// Id of the parameter called `name`.
@@ -471,10 +472,10 @@ fn snapshots_keep_an_edit_pending_until_the_engine_delivers_it() {
         PluginManagerEvent::StateSnapshot { device, .. } if device == device_id
     )));
     assert!(rig.manager.has_pending_state_edits());
-    assert_eq!(
-        rig.manager.snapshot_for_save(Duration::from_millis(100)),
-        Err(device_id)
-    );
+    let outcome = rig.manager.snapshot_for_save(Duration::from_millis(100));
+    assert_eq!(outcome.blocked, [device_id]);
+    assert!(outcome.captured.is_empty());
+    assert!(outcome.unavailable.is_empty());
 
     send(&mut rig, value);
     rig.manager.request_state(device_id);
@@ -485,9 +486,62 @@ fn snapshots_keep_an_edit_pending_until_the_engine_delivers_it() {
     assert!(!rig.manager.has_pending_state_edits());
     assert_eq!(
         rig.manager.snapshot_for_save(PATIENCE),
-        Ok(vec![(device_id, updated)])
+        SaveSnapshots {
+            captured: vec![(device_id, updated)],
+            ..Default::default()
+        }
     );
     rig.manager.shutdown();
+}
+
+#[test]
+fn project_save_reports_a_slow_bridge_and_keeps_the_other_snapshot() {
+    let dir = scratch("save-with-slow-bridge");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let slow = DeviceId(10);
+    let healthy = DeviceId(20);
+    let mut rig = Rig::new(
+        manager,
+        project(vec![
+            track(
+                1,
+                vec![device(
+                    slow.0,
+                    DeviceRole::Instrument,
+                    clap_plugin(SLOW),
+                    None,
+                )],
+            ),
+            track(
+                2,
+                vec![device(
+                    healthy.0,
+                    DeviceRole::Instrument,
+                    clap_plugin(SYNTH),
+                    None,
+                )],
+            ),
+        ]),
+    );
+    rig.wait_status(slow.0, DeviceStatus::Ok);
+    rig.wait_status(healthy.0, DeviceStatus::Ok);
+    let baseline = rig.manager.snapshot_for_save(PATIENCE);
+    assert_eq!(baseline.captured.len(), 2);
+    assert!(baseline.blocked.is_empty());
+    assert!(baseline.unavailable.is_empty());
+
+    // kp-test-slow delays one state call after seeing note 125.
+    rig.note(1, 125, 127);
+    rig.run(4);
+    let outcome = rig.manager.snapshot_for_save(Duration::from_millis(200));
+    assert_eq!(outcome.unavailable, [slow]);
+    assert!(outcome.blocked.is_empty());
+    assert_eq!(outcome.captured, [baseline.captured[1].clone()]);
+
+    let retry = rig.manager.snapshot_for_save(PATIENCE);
+    assert_eq!(retry, baseline);
 }
 
 #[test]
@@ -516,14 +570,23 @@ fn project_save_requires_persistent_edits_even_during_a_temporary_override() {
     set(&mut rig, gain, temporary);
     rig.manager.preview_param(device_id, gain, temporary);
     let timeout = Duration::from_millis(120);
-    assert_eq!(rig.manager.snapshot_for_save(timeout), Ok(Vec::new()));
+    assert_eq!(
+        rig.manager.snapshot_for_save(timeout),
+        SaveSnapshots::default()
+    );
 
     rig.manager.edited_param(device_id, decay, decay_after);
     set(&mut rig, decay, decay_after);
-    assert_eq!(rig.manager.snapshot_for_save(timeout), Err(device_id));
+    let outcome = rig.manager.snapshot_for_save(timeout);
+    assert_eq!(outcome.blocked, [device_id]);
+    assert!(outcome.captured.is_empty());
+    assert!(outcome.unavailable.is_empty());
 
     set(&mut rig, gain, base);
-    let states = rig.manager.snapshot_for_save(PATIENCE).unwrap();
+    let outcome = rig.manager.snapshot_for_save(PATIENCE);
+    assert!(outcome.blocked.is_empty());
+    assert!(outcome.unavailable.is_empty());
+    let states = outcome.captured;
     let [(saved_device, saved)] = states.as_slice() else {
         panic!("expected a single saved state");
     };
@@ -604,7 +667,10 @@ fn unmapping_a_persistent_macro_value_allows_saving_after_a_failed_restore() {
     rig.manager.set_macro_params(&[(device, gain, base)]);
     rig.manager.set_macro_params(&[]);
     assert!(rig.manager.state_warning(device).is_some());
-    assert!(rig.manager.snapshot_for_save(PATIENCE).unwrap().is_empty());
+    assert_eq!(
+        rig.manager.snapshot_for_save(PATIENCE),
+        SaveSnapshots::default()
+    );
 
     let value = 0.5;
     assert_ne!(base, value);
@@ -619,7 +685,10 @@ fn unmapping_a_persistent_macro_value_allows_saving_after_a_failed_restore() {
 
     rig.manager.set_macro_params(&[]);
     assert_eq!(rig.manager.state_warning(device), None);
-    let states = rig.manager.snapshot_for_save(PATIENCE).unwrap();
+    let outcome = rig.manager.snapshot_for_save(PATIENCE);
+    assert!(outcome.blocked.is_empty());
+    assert!(outcome.unavailable.is_empty());
+    let states = outcome.captured;
     assert_eq!(states.len(), 1);
     assert_eq!(states[0].0, device);
     assert_ne!(&*states[0].1, blob);

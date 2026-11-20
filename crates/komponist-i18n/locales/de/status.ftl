@@ -9,6 +9,12 @@ status-no-realtime = ohne Echtzeit-Priorität
 # Right side while the audio stream is not running.
 status-audio-stopped = Audio angehalten
 
+# Largest number of frames missing at a single delay line.
+status-pdc-shortfall = Latenzausgleich unvollständig · Es fehlen bis zu { $frames } { $frames ->
+        [one] Frame
+       *[other] Frames
+    } je Verzögerungsleitung
+
 # Left side while recording; `$tracks` are the armed track names. The leading "● " is painted as a dot.
 status-recording = ● Aufnahme läuft · { $tracks }
 

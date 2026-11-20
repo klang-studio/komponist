@@ -4,29 +4,105 @@
 //! as [`EngineEvent::Retired`] and is dropped there. When the queue is full, retired objects wait in
 //! a preallocated holding list and go out in later blocks; the engine never drops them itself.
 //! Commands that retire something are applied only while the holding list has room
-//! ([`Outbox::can_retire`]), so the list never overflows. Other events are dropped (and counted)
-//! when the queue is full.
+//! ([`Outbox::can_retire`]), so the list never overflows. Ordinary events are dropped (and
+//! counted) when their capacity is exhausted. An additional reserve in the same FIFO keeps
+//! MIDI recording transitions and loss notices ordered with the notes that made it through.
 
 use core::sync::atomic::Ordering;
+
+use komponist_model::{Tick, TrackId};
 
 use crate::api::{EngineEvent, Garbage, Telemetry};
 
 /// Retired objects that can wait for room in the event queue.
 pub(crate) const HOLD_CAPACITY: usize = 256;
 
+/// Extra event slots dedicated to capture transitions and loss notices. This fits a notice for
+/// every track on two consecutive laps, plus the boundaries and an interruption notice.
+pub(crate) const CAPTURE_RESERVE: usize = 2 * crate::MAX_TRACKS + 8;
+
 /// The producer side of the engine → UI queue.
 pub(crate) struct Outbox {
     queue: rtrb::Producer<EngineEvent>,
     hold: Vec<Garbage>,
+    capture_reserve: usize,
+    /// Earliest incomplete lap and the track whose note first exhausted the reserve.
+    capture_overrun: Option<(u32, TrackId)>,
 }
 
 impl Outbox {
     /// Non-RT. Wraps the queue and preallocates the holding list.
-    pub(crate) fn new(queue: rtrb::Producer<EngineEvent>) -> Outbox {
+    pub(crate) fn new(queue: rtrb::Producer<EngineEvent>, capture_reserve: usize) -> Outbox {
         Outbox {
             queue,
             hold: Vec::with_capacity(HOLD_CAPACITY),
+            capture_reserve,
+            capture_overrun: None,
         }
+    }
+
+    fn has_capacity_above(&self, reserve: usize) -> bool {
+        self.queue.cached_slots() > reserve || self.queue.slots() > reserve
+    }
+
+    fn has_ordinary_space(&self) -> bool {
+        self.has_capacity_above(self.capture_reserve)
+    }
+
+    /// RT. Even on a stalled UI, leave room for a terminal interruption notice.
+    pub(crate) fn can_send_capture(&self) -> bool {
+        self.has_capacity_above(1)
+    }
+
+    /// RT. Gives reliable capture events precedence, in the same FIFO as captured notes.
+    pub(crate) fn send_capture(&mut self, event: EngineEvent) -> bool {
+        self.can_send_capture() && self.queue.push(event).is_ok()
+    }
+
+    /// RT. A dropped note marks its track once per lap. The slot for the previous lap remains
+    /// relevant after a wrap because latency correction may place a late input there.
+    pub(crate) fn send_recorded(
+        &mut self,
+        event: EngineEvent,
+        track: TrackId,
+        lap: u32,
+        noted_loss: &mut [Option<u32>; 2],
+        telemetry: &Telemetry,
+    ) {
+        if let Some((first, _)) = &mut self.capture_overrun {
+            *first = (*first).min(lap);
+            telemetry.dropped_events.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        if self.send(event, telemetry) {
+            return;
+        }
+        let seen = &mut noted_loss[lap as usize % 2];
+        if *seen != Some(lap) {
+            if self.send_capture(EngineEvent::RecordingNoteLoss { track, lap }) {
+                *seen = Some(lap);
+            } else {
+                self.capture_overrun = Some((lap, track));
+            }
+        }
+    }
+
+    pub(crate) fn capture_overrun(&self) -> bool {
+        self.capture_overrun.is_some()
+    }
+
+    /// RT. Called only when a capture event could not fit. The final slot is reserved for this.
+    pub(crate) fn interrupt_capture(&mut self, at: Tick, lap: u32) {
+        let (first_incomplete_lap, triggering_track) = self
+            .capture_overrun
+            .take()
+            .map_or((lap, None), |(lost, track)| (lost.min(lap), Some(track)));
+        let result = self.queue.push(EngineEvent::RecordingInterrupted {
+            at,
+            first_incomplete_lap,
+            triggering_track,
+        });
+        debug_assert!(result.is_ok());
     }
 
     /// RT. Whether one more object can be retired without dropping it.
@@ -37,17 +113,22 @@ impl Outbox {
     /// RT. Hands `garbage` to the UI thread: into the queue, or into the holding list while the
     /// queue is full. Callers check [`Outbox::can_retire`] first.
     pub(crate) fn retire(&mut self, garbage: Garbage) {
-        if let Err(rtrb::PushError::Full(EngineEvent::Retired(garbage))) =
-            self.queue.push(EngineEvent::Retired(garbage))
-        {
-            if self.can_retire() {
-                self.hold.push(garbage);
-            } else {
-                // Unreachable while callers respect `can_retire`. Leaking is the lesser evil: a
-                // drop here would free memory on the audio thread.
-                debug_assert!(false, "garbage holding list overflow");
-                core::mem::forget(garbage);
+        let garbage = if self.has_ordinary_space() {
+            match self.queue.push(EngineEvent::Retired(garbage)) {
+                Ok(()) => return,
+                Err(rtrb::PushError::Full(EngineEvent::Retired(garbage))) => garbage,
+                Err(_) => unreachable!(),
             }
+        } else {
+            garbage
+        };
+        if self.can_retire() {
+            self.hold.push(garbage);
+        } else {
+            // Unreachable while callers respect `can_retire`. Leaking is the lesser evil: a
+            // drop here would free memory on the audio thread.
+            debug_assert!(false, "garbage holding list overflow");
+            core::mem::forget(garbage);
         }
     }
 
@@ -55,22 +136,25 @@ impl Outbox {
     /// [`Telemetry::dropped_events`], and `false` is returned.
     pub(crate) fn send(&mut self, event: EngineEvent, telemetry: &Telemetry) -> bool {
         debug_assert!(!matches!(event, EngineEvent::Retired(_)));
-        match self.queue.push(event) {
-            Ok(()) => true,
-            Err(rtrb::PushError::Full(event)) => {
-                if let EngineEvent::Retired(garbage) = event {
-                    // Not expected (see the assertion above), but never drop garbage here.
-                    self.retire(garbage);
-                }
-                telemetry.dropped_events.fetch_add(1, Ordering::Relaxed);
-                false
+        let event = if self.has_ordinary_space() {
+            match self.queue.push(event) {
+                Ok(()) => return true,
+                Err(rtrb::PushError::Full(event)) => event,
             }
+        } else {
+            event
+        };
+        if let EngineEvent::Retired(garbage) = event {
+            // Not expected (see the assertion above), but never drop garbage here.
+            self.retire(garbage);
         }
+        telemetry.dropped_events.fetch_add(1, Ordering::Relaxed);
+        false
     }
 
     /// RT. Moves held garbage into the queue while there is room.
     pub(crate) fn flush(&mut self) {
-        while !self.hold.is_empty() && !self.queue.is_full() {
+        while !self.hold.is_empty() && self.has_ordinary_space() {
             if let Some(garbage) = self.hold.pop()
                 && let Err(rtrb::PushError::Full(EngineEvent::Retired(garbage))) =
                     self.queue.push(EngineEvent::Retired(garbage))
@@ -102,7 +186,7 @@ mod tests {
     fn garbage_waits_while_the_queue_is_full() {
         let (producer, mut consumer) = rtrb::RingBuffer::new(2);
         let telemetry = Telemetry::new();
-        let mut outbox = Outbox::new(producer);
+        let mut outbox = Outbox::new(producer, 0);
         for slot in 0..5 {
             assert!(outbox.can_retire());
             outbox.retire(processor(slot));
@@ -132,9 +216,50 @@ mod tests {
     }
 
     #[test]
+    fn the_terminal_event_names_a_track_whose_first_loss_cannot_fit() {
+        let (producer, mut consumer) = rtrb::RingBuffer::new(3);
+        let mut outbox = Outbox::new(producer, 2);
+        let telemetry = Telemetry::new();
+        assert!(outbox.send(EngineEvent::LoopWrapped { to: Tick::ZERO }, &telemetry));
+        assert!(outbox.send_capture(EngineEvent::CountInDone { at: Tick::ZERO }));
+        let track = TrackId(7);
+        outbox.send_recorded(
+            EngineEvent::RecordedNoteOn {
+                track,
+                tick: Tick(1),
+                lap: 0,
+                key: 60,
+                velocity: 100,
+            },
+            track,
+            0,
+            &mut [None; 2],
+            &telemetry,
+        );
+        assert!(outbox.capture_overrun());
+        outbox.interrupt_capture(Tick(5), 1);
+        assert!(matches!(
+            consumer.pop().unwrap(),
+            EngineEvent::LoopWrapped { .. }
+        ));
+        assert!(matches!(
+            consumer.pop().unwrap(),
+            EngineEvent::CountInDone { .. }
+        ));
+        assert!(matches!(
+            consumer.pop().unwrap(),
+            EngineEvent::RecordingInterrupted {
+                at: Tick(5),
+                first_incomplete_lap: 0,
+                triggering_track: Some(TrackId(7)),
+            }
+        ));
+    }
+
+    #[test]
     fn the_holding_list_reports_when_it_is_full() {
         let (producer, _consumer) = rtrb::RingBuffer::new(1);
-        let mut outbox = Outbox::new(producer);
+        let mut outbox = Outbox::new(producer, 0);
         let mut retired = 0;
         while outbox.can_retire() {
             outbox.retire(processor(retired));

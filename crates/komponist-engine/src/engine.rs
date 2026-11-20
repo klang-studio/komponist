@@ -81,12 +81,13 @@ use crate::api::{Command, EngineEvent, EngineHandle, Garbage, Telemetry, Transpo
 use crate::audio::streamer::{Msg, StreamShared};
 use crate::audio::voice::{Prepare, Voice};
 use crate::automation::{self, AutomationBoundary, EngineTarget, MixerClock, MixerValues};
-use crate::garbage::Outbox;
+use crate::garbage::{CAPTURE_RESERVE, Outbox};
 use crate::graph::EdgeState;
 use crate::metronome::Metronome;
 use crate::mixer::{DelayLine, Fader, audible, targets};
+use crate::note_schedule::RepeatScratch;
 use crate::processor::{DEADLINE_SHARE, Event, EventKind, ProcessContext, ProcessorError};
-use crate::program::{ChainSlot, InputFilter, MidiPort, Program, SlotId, TrackProgram};
+use crate::program::{ChainSlot, MidiPort, Program, SlotId, TrackProgram};
 use crate::route::{Delay, GateTable, MAX_LINES, MAX_SENDS, NodeRoute, Routing, SidechainRoute};
 use crate::sequencer::{Captured, EventList, LiveMsg, NoteIds, TrackSeq, Window, track_seed};
 use crate::slots::{Bufs, ChainHook, SharedSlots, Slot, chains_exclusive, run_chain};
@@ -109,6 +110,9 @@ const PARALLEL_MIN_FRAMES: usize = 32;
 const OFFLINE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 mod automation_capture;
+mod segment_input;
+
+use segment_input::{SegmentCapture, SegmentMidi};
 
 /// Engine settings fixed at creation (the sample rate can change later with
 /// [`Engine::set_sample_rate`]).
@@ -348,7 +352,7 @@ impl Engine {
             config.sample_rate
         );
         let (command_tx, command_rx) = rtrb::RingBuffer::new(COMMAND_CAPACITY);
-        let (event_tx, event_rx) = rtrb::RingBuffer::new(EVENT_CAPACITY);
+        let (event_tx, event_rx) = rtrb::RingBuffer::new(EVENT_CAPACITY + CAPTURE_RESERVE);
         let telemetry = Arc::new(Telemetry::new());
         telemetry.master_tap.set_rate(config.sample_rate);
         let (stream, stream_tx) = StreamShared::new();
@@ -360,7 +364,7 @@ impl Engine {
             max_block: config.max_block.clamp(1, MAX_BLOCK),
             seed: config.seed,
             commands: command_rx,
-            outbox: Outbox::new(event_tx),
+            outbox: Outbox::new(event_tx, CAPTURE_RESERVE),
             telemetry: telemetry.clone(),
             program: None,
             recorder: None,
@@ -388,6 +392,7 @@ impl Engine {
             fx_events: EventList::new(MAX_EVENTS_PER_BLOCK),
             live: Vec::with_capacity(MAX_EVENTS_PER_BLOCK),
             live_notes: Vec::with_capacity(MAX_COMMANDS_PER_BLOCK),
+            repeat_scratch: RepeatScratch::new(),
             note_ids: NoteIds::default(),
             unreported: false,
             dropped: 0,
@@ -674,6 +679,10 @@ struct TrackState {
     /// The track this state belongs to (`None`: free).
     id: Option<TrackId>,
     seq: TrackSeq,
+    /// The capture lap of each key still open in `seq`.
+    capture_origin: [u32; 128],
+    /// Laps already reported as incomplete (the current and previous laps).
+    capture_loss: [Option<u32>; 2],
     fader: Fader,
     /// Fast-path values (`SetTrackGain` …) until the next program.
     gain: Option<f32>,
@@ -715,6 +724,8 @@ impl TrackState {
             release_hardware: [0; 16],
             id: None,
             seq: TrackSeq::new(),
+            capture_origin: [0; 128],
+            capture_loss: [None; 2],
             fader: Fader::at((0.0, 0.0), false),
             gain: None,
             pan: None,
@@ -807,6 +818,7 @@ struct Core {
     live: Vec<LiveMsg>,
     /// `LiveNote` commands for the next block: track, key, velocity.
     live_notes: Vec<(TrackId, u8, u8)>,
+    repeat_scratch: RepeatScratch,
     note_ids: NoteIds,
     /// A processor failed and `ProcessorFailed` has not gone out yet.
     unreported: bool,
@@ -896,7 +908,7 @@ struct TrackJobs<'a> {
     audio: AudioInputBuffer<'a>,
     frame0: usize,
     recorder: Option<&'a crate::recording::Recorder>,
-    capture: Option<(crate::recording::CaptureWindow, usize, Option<u32>)>,
+    capture: Option<SegmentCapture>,
     capture_timing: &'a CaptureTiming,
 }
 
@@ -1183,19 +1195,11 @@ impl TrackJobs<'_> {
         let [l, r] = &mut state.input_audio;
         l[..n].fill(0.0);
         r[..n].fill(0.0);
-        let take = self
-            .recorder
-            .zip(self.capture)
-            .filter(|(rec, (_, _, draining))| {
-                rec.input(track.id).is_some() && (track.arm || draining.is_some())
-            });
-        let remaining = |correction: u32| {
-            take.map_or(0, |(_, (_, frames, draining))| {
-                draining.map_or(frames, |progress| {
-                    frames.min(correction.saturating_sub(progress) as usize)
-                })
-            })
-        };
+        let take = self.recorder.zip(self.capture).filter(|(rec, capture)| {
+            rec.input(track.id).is_some() && (track.arm || capture.draining.is_some())
+        });
+        let remaining =
+            |correction: u32| take.map_or(0, |(_, capture)| capture.frames_remaining(correction));
         let mut available = true;
         let mut correction = 0;
         let mut capture_gap = false;
@@ -1265,13 +1269,14 @@ impl TrackJobs<'_> {
         track.meter.record_input(peak(&l[..n]), peak(&r[..n]));
         let frames = remaining(correction);
         if frames != 0
-            && let Some((rec, (mut window, _, _))) = take
+            && let Some((rec, capture)) = take
         {
             if !available {
                 rec.fail(3);
             } else if capture_gap {
                 rec.fail(2);
             } else {
+                let mut window = capture.window;
                 window.at = window.at.saturating_sub(i64::from(correction));
                 rec.capture(track.id, &l[..frames], &r[..frames], window);
             }
@@ -1419,15 +1424,6 @@ fn held_after(held: u128, data: [u8; 3]) -> u128 {
     }
 }
 
-/// Whether a track listening with `filter` receives `m`.
-fn accepts(filter: &InputFilter, m: &MidiInEvent) -> bool {
-    let status = m.data[0];
-    !filter.port_missing
-        && (0x80..0xf0).contains(&status)
-        && filter.port.is_none_or(|p| p == m.port)
-        && filter.channel.is_none_or(|c| c == status & 0x0f)
-}
-
 impl Core {
     /// Number of program tracks the engine plays.
     fn track_count(&self) -> usize {
@@ -1471,11 +1467,7 @@ impl Core {
         let mut midi_next = 0;
         while done < n {
             if let Some(at) = self.transport.count_in_done(&self.song, rate) {
-                if let Some(rec) = &mut self.recorder {
-                    rec.start = Some(self.transport.pos);
-                    self.record_latency = Some(self.capture_timing);
-                }
-                self.send(EngineEvent::CountInDone { at });
+                self.begin_capture(at);
             }
             while let Some((event, rest)) = macros.split_first() {
                 if event.frame as usize > done {
@@ -1536,7 +1528,15 @@ impl Core {
                 if self.transport.state == TransportState::Recording {
                     // Every lap is its own take: keys held across the wrap end at the loop end.
                     self.close_captures(self.song.loop_range.end);
+                    let closing_lap = self.capture_lap;
                     self.capture_lap = self.capture_lap.saturating_add(1);
+                    if self.outbox.capture_overrun()
+                        || !self.outbox.send_capture(EngineEvent::LoopWrapped { to })
+                    {
+                        self.interrupt_capture(self.song.loop_range.end, closing_lap);
+                    }
+                } else {
+                    self.send(EngineEvent::LoopWrapped { to });
                 }
                 let count = self.track_count();
                 for &state in &self.map[..count] {
@@ -1544,8 +1544,9 @@ impl Core {
                     seq.flush(false);
                     seq.chase();
                 }
-                self.send(EngineEvent::LoopWrapped { to });
                 self.restart_automation_touch(to);
+            } else if self.outbox.capture_overrun() {
+                self.interrupt_capture(self.transport.tick(&self.song, rate), self.capture_lap);
             }
             done = seg_end;
         }
@@ -1592,6 +1593,16 @@ impl Core {
                 // processor reset, not before it. Preserve queue order until capture drains.
                 Ok(Command::Play) if self.capture_tail.is_some() && self.cut.is_some() => break,
                 Ok(next) if retires(next) && !self.outbox.can_retire() => break,
+                // A count-in completion is never dropped. Ordinary events cannot use its
+                // reserve while the count-in is running.
+                Ok(Command::Record { .. })
+                    if !matches!(
+                        self.transport.state,
+                        TransportState::CountIn | TransportState::Recording
+                    ) && !self.outbox.can_send_capture() =>
+                {
+                    break;
+                }
                 Ok(_) => {}
                 Err(_) => break,
             }
@@ -1599,11 +1610,39 @@ impl Core {
                 break;
             };
             self.apply(command);
+            if self.outbox.capture_overrun() {
+                let rate = f64::from(self.sample_rate);
+                self.interrupt_capture(self.transport.tick(&self.song, rate), self.capture_lap);
+            }
         }
     }
 
     fn send(&mut self, event: EngineEvent) {
         self.outbox.send(event, &self.telemetry);
+    }
+
+    fn begin_capture(&mut self, at: Tick) {
+        self.capture_lap = 0;
+        for state in &mut self.tracks {
+            state.capture_loss = [None; 2];
+        }
+        if let Some(rec) = &mut self.recorder {
+            rec.start = Some(self.transport.pos);
+            self.record_latency = Some(self.capture_timing);
+        }
+        let sent = self.outbox.send_capture(EngineEvent::CountInDone { at });
+        debug_assert!(sent);
+    }
+
+    fn interrupt_capture(&mut self, at: Tick, lap: u32) {
+        if self.transport.state == TransportState::Recording {
+            self.stop_audio_capture();
+            self.transport.state = TransportState::Playing;
+        }
+        for state in &mut self.tracks {
+            state.seq.close_captures(|_| ());
+        }
+        self.outbox.interrupt_capture(at, lap);
     }
 
     fn stop_audio_capture(&mut self) {
@@ -1720,12 +1759,7 @@ impl Core {
                 }
                 TransportState::Playing => {
                     self.transport.state = TransportState::Recording;
-                    if let Some(rec) = &mut self.recorder {
-                        rec.start = Some(self.transport.pos);
-                        self.record_latency = Some(self.capture_timing);
-                    }
-                    let at = self.transport.tick(&self.song, rate);
-                    self.send(EngineEvent::CountInDone { at });
+                    self.begin_capture(self.transport.tick(&self.song, rate));
                 }
                 TransportState::CountIn | TransportState::Recording => {}
             },
@@ -2064,14 +2098,21 @@ impl Core {
         };
         let count = program.tracks.len().min(MAX_TRACKS);
         for (track, &index) in program.tracks[..count].iter().zip(&self.map[..count]) {
+            let state = &mut self.tracks[usize::from(index)];
             let (outbox, telemetry) = (&mut self.outbox, &self.telemetry);
-            self.tracks[usize::from(index)].seq.close_captures(|key| {
+            state.seq.close_captures(|key| {
                 let event = EngineEvent::RecordedNoteOff {
                     track: track.id,
                     tick,
                     key,
                 };
-                outbox.send(event, telemetry);
+                outbox.send_recorded(
+                    event,
+                    track.id,
+                    state.capture_origin[usize::from(key)],
+                    &mut state.capture_loss,
+                    telemetry,
+                );
             });
         }
     }
@@ -2173,6 +2214,7 @@ impl Core {
             );
             state.automation.macros.install(None, &track.macros);
             state.seq.clear();
+            state.capture_loss = [None; 2];
             state.hardware.fill(0);
             state.release_hardware.fill(0);
             state.voice.clear();
@@ -2356,39 +2398,12 @@ impl Core {
             delay: 0,
             wrapped_loop: loop_samples.filter(|_| transport.wrapped),
         };
-        let capture = if let Some(tail) = self.capture_tail {
-            Some((
-                crate::recording::CaptureWindow {
-                    at: tail.pos,
-                    lap: tail.lap,
-                    lp: tail.cycle,
-                    map: song.map,
-                    loop_range: song.loop_range,
-                },
-                (tail.left as usize).min(n),
-                Some(tail.total - tail.left),
-            ))
-        } else if recording {
-            Some((
-                crate::recording::CaptureWindow {
-                    at: transport.pos,
-                    lap: self.capture_lap,
-                    lp: self
-                        .recorder
-                        .as_ref()
-                        .and_then(|rec| rec.cycle_window(loop_samples)),
-                    map: song.map,
-                    loop_range: song.loop_range,
-                },
-                n,
-                None,
-            ))
-        } else {
-            None
-        };
+        let capture = self.segment_capture(n, loop_samples);
         // Song tick of captured input at `sample`, corrected by the output latency (and back over
         // the loop start after a wrap).
-        let record_tick = |sample: i64| {
+        let capture_lap = self.capture_lap;
+        let record_position = |sample: i64| {
+            let mut lap = capture_lap;
             let mut corrected = sample - i64::from(latency);
             if transport.wrapped
                 && let Some((start, end)) = loop_samples
@@ -2396,8 +2411,9 @@ impl Core {
                 && sample >= start
             {
                 corrected += end - start;
+                lap = lap.saturating_sub(1);
             }
-            song.map.sample_to_tick(corrected, rate)
+            (song.map.sample_to_tick(corrected, rate), lap)
         };
 
         let Core {
@@ -2413,6 +2429,7 @@ impl Core {
             fx_events,
             live,
             live_notes,
+            repeat_scratch,
             note_ids,
             outbox,
             telemetry,
@@ -2458,6 +2475,13 @@ impl Core {
                     .any(|(t, &s)| tracks[usize::from(s)].solo.unwrap_or(t.solo));
                 let routing = &*program.routing;
                 let routed = *routed;
+                let segment_midi = SegmentMidi {
+                    hardware: midi,
+                    direct_notes: if frame0 == 0 { live_notes } else { &[] },
+                    first_frame: frame0,
+                    frames: n,
+                    recording,
+                };
                 // 1. Every track's events, on this thread in track order (note ids, probability
                 // rolls and captured input stay deterministic). A bridge instrument at the head of
                 // a chain starts at once (`Processor::begin`), so it works while the chains run;
@@ -2513,61 +2537,7 @@ impl Core {
                         state.events.clear();
                         continue;
                     }
-                    // Live MIDI input of this track.
-                    live.clear();
-                    let capture = track.arm && recording;
-                    for (channel, pending) in state.release_hardware.iter_mut().enumerate() {
-                        while *pending != 0 && live.len() < live.capacity() {
-                            let key = pending.trailing_zeros() as u8;
-                            *pending &= !(1u128 << key);
-                            live.push(LiveMsg {
-                                offset: 0,
-                                data: [0x80 | channel as u8, key, 0],
-                                play: true,
-                                capture: true,
-                            });
-                        }
-                    }
-                    if frame0 == 0 {
-                        for &(id, key, velocity) in live_notes.iter() {
-                            if id == track.id && live.len() < live.capacity() {
-                                let status = if velocity > 0 { 0x90 } else { 0x80 };
-                                live.push(LiveMsg {
-                                    offset: 0,
-                                    data: [status, key, velocity],
-                                    play: true,
-                                    capture,
-                                });
-                            }
-                        }
-                    }
-                    // An armed track monitors on its own ("Auto", owner decision 2026-11-15); I
-                    // monitors without arming.
-                    let play = track.monitor || track.arm;
-                    if play || capture {
-                        for m in midi.iter().filter(|m| accepts(&track.input, m)) {
-                            if live.len() == live.capacity() {
-                                *dropped += 1;
-                                break;
-                            }
-                            let frame = (m.frame as usize).clamp(frame0, frame0 + n - 1);
-                            if play {
-                                let held = &mut state.hardware[usize::from(m.data[0] & 0x0f)];
-                                let bit = 1u128 << (m.data[1] & 0x7f);
-                                match m.data[0] & 0xf0 {
-                                    0x90 if m.data[2] & 0x7f != 0 => *held |= bit,
-                                    0x80 | 0x90 => *held &= !bit,
-                                    _ => {}
-                                }
-                            }
-                            live.push(LiveMsg {
-                                offset: (frame - frame0) as u32,
-                                data: m.data,
-                                play,
-                                capture,
-                            });
-                        }
-                    }
+                    *dropped += segment_midi.prepare(track, state, live);
                     // The instrument's events. On a track with MIDI effects, the sequencer's and
                     // the live notes enter the stage chain instead (tagged with the first stage's
                     // slot), and the track's job (`stage::run`) makes the instrument's events.
@@ -2601,31 +2571,48 @@ impl Core {
                     }
                     let id = track.id;
                     *dropped += state.seq.sequence(
-                        &track.notes,
+                        track.notes.view(),
                         live,
                         &win,
                         target,
                         note_ids,
+                        repeat_scratch,
                         events,
                         &mut |captured| {
-                            let event = match captured {
+                            let (offset, key, velocity) = match captured {
                                 Captured::On {
                                     offset,
                                     key,
                                     velocity,
-                                } => EngineEvent::RecordedNoteOn {
+                                } => (offset, key, Some(velocity)),
+                                Captured::Off { offset, key } => (offset, key, None),
+                            };
+                            let (tick, lap) = record_position(win.start + i64::from(offset));
+                            let origin = &mut state.capture_origin[usize::from(key)];
+                            let event = match velocity {
+                                Some(velocity) => {
+                                    *origin = lap;
+                                    EngineEvent::RecordedNoteOn {
+                                        track: id,
+                                        tick,
+                                        lap,
+                                        key,
+                                        velocity,
+                                    }
+                                }
+                                None => EngineEvent::RecordedNoteOff {
                                     track: id,
-                                    tick: record_tick(win.start + i64::from(offset)),
-                                    key,
-                                    velocity,
-                                },
-                                Captured::Off { offset, key } => EngineEvent::RecordedNoteOff {
-                                    track: id,
-                                    tick: record_tick(win.start + i64::from(offset)),
+                                    tick,
                                     key,
                                 },
                             };
-                            outbox.send(event, telemetry);
+                            outbox.send_recorded(
+                                event,
+                                id,
+                                *origin,
+                                &mut state.capture_loss,
+                                telemetry,
+                            );
                         },
                     );
                     state.events.clear();

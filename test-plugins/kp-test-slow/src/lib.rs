@@ -6,22 +6,44 @@
 
 use nice_plug::midi::Key;
 use nice_plug::prelude::*;
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// A note-on of this key stalls `process`.
 pub const SLOW_KEY: u8 = 126;
 /// How long `process` sleeps per note-on of [`SLOW_KEY`].
 pub const STALL: Duration = Duration::from_millis(50);
+/// A note-on of this key delays the next state snapshot on the bridge control thread.
+pub const SLOW_STATE_KEY: u8 = 125;
+/// Delay for the state snapshot, long enough to exercise the project's shared timeout budget.
+pub const STATE_STALL: Duration = Duration::from_millis(600);
 
 #[derive(Default)]
 pub struct KpTestSlow {
     params: Arc<SlowParams>,
 }
 
-/// No parameters.
-#[derive(Params, Default)]
-pub struct SlowParams {}
+/// No parameters. The audio thread can arm a one-shot stall for the next state request.
+#[derive(Default)]
+pub struct SlowParams {
+    delay_state: AtomicBool,
+}
+
+// SAFETY: there are no parameter pointers.
+unsafe impl Params for SlowParams {
+    fn param_map(&self) -> Vec<(String, ParamPtr, String)> {
+        Vec::new()
+    }
+
+    fn serialize_fields(&self) -> BTreeMap<String, String> {
+        if self.delay_state.swap(false, Ordering::Relaxed) {
+            std::thread::sleep(STATE_STALL);
+        }
+        BTreeMap::new()
+    }
+}
 
 impl Plugin for KpTestSlow {
     const NAME: &'static str = "kp-test-slow";
@@ -54,12 +76,16 @@ impl Plugin for KpTestSlow {
     ) -> ProcessStatus {
         while let Some(event) = context.next_event() {
             if let NoteEvent::NoteOn {
-                key: Key::Number(SLOW_KEY),
+                key: Key::Number(key),
                 ..
             } = event
             {
-                // Breaks the realtime rules on purpose.
-                std::thread::sleep(STALL);
+                match key {
+                    // Breaks the realtime rules on purpose.
+                    SLOW_KEY => std::thread::sleep(STALL),
+                    SLOW_STATE_KEY => self.params.delay_state.store(true, Ordering::Relaxed),
+                    _ => {}
+                }
             }
         }
         // The audio passes through: the wrapper has copied the input to the output.

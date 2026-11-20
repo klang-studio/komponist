@@ -91,6 +91,17 @@ pub enum FailReason {
 /// State blobs captured from running plugin bridges.
 pub type DeviceSnapshots = Vec<(DeviceId, Arc<[u8]>)>;
 
+/// The outcome of collecting current external plug-in states for a project save.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SaveSnapshots {
+    /// Fresh states that can be used even when another bridge did not answer.
+    pub captured: DeviceSnapshots,
+    /// Expected snapshots that were unavailable. The file can retain the document's state.
+    pub unavailable: Vec<DeviceId>,
+    /// Known persistent edits with no valid snapshot. These must block the save.
+    pub blocked: Vec<DeviceId>,
+}
+
 /// Something the app has to react to, returned by [`PluginManager::poll`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum PluginManagerEvent {
@@ -692,39 +703,46 @@ impl PluginManager {
         self.bridges.values().any(Bridge::needs_snapshot_for_save)
     }
 
-    /// Collects current plugin states for a project save. A bridge with a persistent edit must
-    /// supply a valid snapshot within the shared time budget before the project can be written.
-    pub fn snapshot_for_save(&mut self, timeout: Duration) -> Result<DeviceSnapshots, DeviceId> {
+    /// Collects current plug-in states under one shared deadline. An unanswered request from an
+    /// otherwise running bridge is reported separately from a known unsaved persistent edit.
+    pub fn snapshot_for_save(&mut self, timeout: Duration) -> SaveSnapshots {
         let deadline = Instant::now() + timeout;
-        let mut required: BTreeSet<_> = self
-            .bridges
-            .iter()
-            .filter(|(_, bridge)| bridge.needs_snapshot_for_save())
-            .map(|(&device, _)| device)
-            .collect();
-        let mut states = self.snapshot_states_if(timeout, |_| true);
+        let mut expected = BTreeSet::new();
+        let mut required = BTreeSet::new();
+        for (&device, bridge) in &self.bridges {
+            if bridge.expects_snapshot_for_save() {
+                expected.insert(device);
+            }
+            if bridge.needs_snapshot_for_save() {
+                required.insert(device);
+            }
+        }
+        let mut captured =
+            self.snapshot_states_if(deadline.saturating_duration_since(Instant::now()), |_| true);
         loop {
-            for (device, _) in &states {
+            for (device, _) in &captured {
+                expected.remove(device);
                 required.remove(device);
             }
-            let Some(&blocked) = required.first() else {
-                states.sort_by_key(|(device, _)| *device);
-                return Ok(states);
-            };
             let now = Instant::now();
-            if now >= deadline || !self.bridges.get(&blocked).is_some_and(Bridge::is_running) {
-                self.pending.extend(
-                    states
-                        .into_iter()
-                        .map(|(device, state)| PluginManagerEvent::StateSnapshot { device, state }),
-                );
-                return Err(blocked);
+            if now >= deadline
+                || !required
+                    .iter()
+                    .any(|device| self.bridges.get(device).is_some_and(Bridge::is_running))
+            {
+                break;
             }
             std::thread::sleep((deadline - now).min(Duration::from_millis(30)));
-            states.extend(self.snapshot_states_if(
+            captured.extend(self.snapshot_states_if(
                 deadline.saturating_duration_since(Instant::now()),
                 |device| required.contains(&device),
             ));
+        }
+        captured.sort_by_key(|(device, _)| *device);
+        SaveSnapshots {
+            captured,
+            unavailable: expected.difference(&required).copied().collect(),
+            blocked: required.into_iter().collect(),
         }
     }
 

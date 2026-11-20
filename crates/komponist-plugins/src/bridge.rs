@@ -498,6 +498,12 @@ impl Bridge {
             .collect()
     }
 
+    /// A running device normally owes a fresh snapshot. A temporary override may deliberately
+    /// delay it, and a failed restore must preserve the original stored bytes.
+    pub(crate) fn expects_snapshot_for_save(&self) -> bool {
+        self.is_running() && !self.keep_stored_state && self.temporary_params.is_empty()
+    }
+
     pub(crate) fn needs_snapshot_for_save(&self) -> bool {
         self.is_running()
             && (!self.pending_params.is_empty() || !self.released_macro_params.is_empty())

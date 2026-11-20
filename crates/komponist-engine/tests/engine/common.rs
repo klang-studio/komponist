@@ -94,7 +94,7 @@ pub fn track(id: u64, slot: u32, notes: Vec<SeqNote>) -> TrackProgram {
         chain_latency: 0,
         id: TrackId(id),
         source: model_track(id),
-        notes: notes.into(),
+        notes: Arc::new(komponist_engine::program::NoteSchedule::from_sorted(notes)),
         chain: vec![instrument(slot)],
         gain: 1.0,
         pan: 0.0,
