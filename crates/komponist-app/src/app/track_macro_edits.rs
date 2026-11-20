@@ -63,6 +63,20 @@ impl App {
                 let Some(label) = self.track_macro_undo(track, index) else {
                     return;
                 };
+                if value.is_finite()
+                    && self.manual_automation(
+                        AutomationOwner::Track(track),
+                        &AutomationTarget::Macro { index },
+                        Command::SetMacro {
+                            track,
+                            index,
+                            value,
+                            edit: 0,
+                        },
+                    )
+                {
+                    return;
+                }
                 let before = self.doc.revision();
                 self.apply(&label, |project| {
                     macros::set_macro_value(project, track, index, value)
@@ -520,6 +534,73 @@ mod tests {
     use super::*;
     use crate::actions::{Action as AppAction, EditAction, TransportAction};
     use komponist_builtin::Internal;
+
+    #[test]
+    fn macro_touch_records_into_its_own_lane_and_keeps_the_base() {
+        use crate::views::automation::Action as Automation;
+        use komponist_model::Tick;
+        use komponist_model::automation::{AutomationMode, Point, Points};
+
+        let (project, track) = edits::add_track(
+            &Project::new("Macro automation"),
+            edits::NewTrack {
+                name: None,
+                instrument: None,
+                hue: None,
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        let owner = AutomationOwner::Track(track);
+        let target = AutomationTarget::Macro { index: 0 };
+        let (project, lane) =
+            edits::automation::add_lane(&project, owner, target.clone(), "Macro".into()).unwrap();
+        let before = Points::new(vec![Point::linear(Tick::ZERO, 0.3)]);
+        let project =
+            edits::automation::set_lane_points(&project, owner, lane, before.clone()).unwrap();
+        let mut app = App::headless(project);
+        app.engine_mut().hold_engine().unwrap();
+        app.step();
+        let run = |app: &mut App| {
+            assert!(app.engine_mut().run_held(1024, &[], 0));
+            app.step();
+        };
+        run(&mut app);
+        assert_eq!(
+            app.engine().telemetry().macro_values(track).unwrap()[0],
+            0.3
+        );
+        app.dispatch(AppAction::Automation(Automation::Mode(
+            owner,
+            lane,
+            AutomationMode::Touch,
+        )));
+        app.step();
+        app.dispatch(AppAction::Transport(TransportAction::TogglePlay));
+        run(&mut app);
+        app.dispatch(AppAction::Macro(Action::BeginValue { track, index: 0 }));
+        app.dispatch(AppAction::Macro(Action::SetValue {
+            track,
+            index: 0,
+            value: 0.85,
+        }));
+        run(&mut app);
+        assert!(app.automation_capture.is_writing(owner, lane));
+        assert_eq!(
+            app.engine().telemetry().macro_values(track).unwrap()[0],
+            0.85
+        );
+        app.dispatch(AppAction::Edit(EditAction::EndGesture));
+        run(&mut app);
+        app.dispatch(AppAction::Transport(TransportAction::Stop));
+        run(&mut app);
+        let track = app.project().track(track).unwrap();
+        assert_eq!(track.macros.0[0].value, 0.0);
+        let points = &track.automation.lane(&target).unwrap().points;
+        assert_ne!(points, &before);
+        assert!(points.as_slice().iter().any(|p| p.value == 0.85));
+    }
 
     #[test]
     fn a_mapping_uses_a_macro_edit_that_has_not_reached_the_engine() {

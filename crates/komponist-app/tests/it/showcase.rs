@@ -478,6 +478,22 @@ fn the_demo_has_track_clip_and_master_automation() {
     );
     let cutoff_points = pad.automation.lane(&cutoff).unwrap().points.as_slice();
     assert!(cutoff_points[0].value < cutoff_points[1].value);
+    let macro_target = AutomationTarget::Macro { index: 0 };
+    let macro_lane = pad.automation.lane(&macro_target).unwrap();
+    assert!(macro_lane.points.as_slice()[0].value > macro_lane.points.as_slice()[1].value);
+    assert!(
+        clip.automation
+            .iter()
+            .any(|envelope| envelope.target == macro_target)
+    );
+    assert_eq!(
+        effective_value_at(lead, &macro_target, clip.start),
+        Some(0.25)
+    );
+    assert_eq!(
+        effective_value_at(pad, &macro_target, Tick::ZERO),
+        Some(1.0)
+    );
     let keys = track_named(&project, "Keys");
     assert!(keys.automation.lane(&AutomationTarget::Volume).is_some());
     let master = project

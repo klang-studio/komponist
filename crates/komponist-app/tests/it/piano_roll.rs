@@ -1542,3 +1542,32 @@ fn reopening_a_clip_from_a_new_document_clears_automation_view_state() {
     let first = clip_automation_points(&h).next().unwrap();
     assert_eq!(first.accesskit_node().is_selected(), Some(false));
 }
+
+#[test]
+fn the_clip_automation_chooser_adds_a_macro_envelope() {
+    use komponist_i18n::Lang;
+    use komponist_model::automation::AutomationTarget;
+
+    let (app, clip) = lead_a();
+    let mut h = harness(app);
+    let button = h
+        .get_by_role_and_label(Role::Button, Lang::De.automation_clip())
+        .rect()
+        .center();
+    click(&mut h, button, Modifiers::NONE);
+    let label = Lang::De.macros_slot(1);
+    let option = h
+        .get_by_role_and_label(Role::ListBoxOption, &label)
+        .rect()
+        .center();
+    click(&mut h, option, Modifiers::NONE);
+    let (track, clip) = h.state().project().find_clip(clip).unwrap();
+    let target = AutomationTarget::Macro { index: 0 };
+    assert_eq!(clip.automation[0].target, target);
+    assert!(track.automation.lane(&target).is_some());
+    assert!(
+        h.get_all_by_role_and_label(Role::Group, &Lang::De.a11y_automation_clip_lane(label))
+            .next()
+            .is_some()
+    );
+}

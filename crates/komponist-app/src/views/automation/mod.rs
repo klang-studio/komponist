@@ -6,8 +6,8 @@ mod curve;
 mod metrics;
 
 pub(crate) use chooser::{
-    Catalog, Choice, Chooser, Target, chooser_button, mode_chip, mode_chip_width, mode_names,
-    percentage, toggle,
+    Catalog, Choice, Chooser, Target, chooser_button, macro_label, mode_chip, mode_chip_width,
+    mode_names, percentage, toggle,
 };
 pub(crate) use clip::{ClipEditor, toolbar_button};
 pub(crate) use curve::{Editor, LaneFrame, Override, Paint};
@@ -86,6 +86,11 @@ pub(crate) fn automation_control_value(
     owner: AutomationOwner,
     target: &AutomationTarget,
 ) -> Option<f32> {
+    if let AutomationOwner::Track(id) = owner
+        && project.track(id)?.macros.driver(target).is_some()
+    {
+        return None;
+    }
     let lane = lanes(project, owner)?.lane(target)?;
     if lane.mode == AutomationMode::Off {
         return None;

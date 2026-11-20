@@ -47,7 +47,7 @@ macros-kept = { $n ->
        *[other] { $n } mappings kept
     }
 macros-expand-to-map = Expand to map parameters
-macros-lane-overridden = controlled by { $source }
+macros-lane-overridden = via { $source }
 macros-device-macros = Device Macros
 macros-a11y = Track macro { $n }, { $name }
 macros-a11y-mappings = { $n ->

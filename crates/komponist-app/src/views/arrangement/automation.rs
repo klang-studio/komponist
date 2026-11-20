@@ -275,12 +275,11 @@ impl State {
         mode_width: f32,
     ) {
         let t = ctx.lang;
-        let Some(resolved) =
-            Catalog::new(ctx, row.owner).map(|catalog| catalog.resolve(&lane.target))
-        else {
+        let Some(catalog) = Catalog::new(ctx, row.owner) else {
             return;
         };
-        let (target, warning) = match resolved {
+        let driven = catalog.driven(&lane.target);
+        let (target, warning) = match catalog.resolve(&lane.target) {
             Ok(target) => (Some(target), None),
             Err(warning) => (None, warning),
         };
@@ -307,8 +306,8 @@ impl State {
         );
         group.widget_info(|| WidgetInfo::labeled(Role::Group, true, &access));
         widgets::accesskit(&group, |node| {
-            if let Some(warning) = &warning {
-                node.set_description(warning.as_str());
+            if let Some(description) = warning.as_deref().or(driven.as_deref()) {
+                node.set_description(description);
             }
         });
         let mut child = ui.new_child(
@@ -324,7 +323,8 @@ impl State {
         let fill = palette
             .map_or(color32(color::SURFACE_3), |p| color32(p.body))
             .gamma_multiply(0.5);
-        let curve = if lane.mode == AutomationMode::Off || warning.is_some() {
+        let muted = lane.mode == AutomationMode::Off || driven.is_some();
+        let curve = if muted || warning.is_some() {
             color32(color::TEXT_4)
         } else {
             color
@@ -364,10 +364,21 @@ impl State {
         );
         let heading = child.interact(header, id.with("header-menu"), Sense::click());
         let choice_id = id.with("parameter");
-        if chooser.is_positive()
-            && chooser_button(&mut child, chooser, choice_id, t, label).clicked()
-        {
-            self.chooser.open(choice_id);
+        if chooser.is_positive() {
+            let heading = if header.height() < f32::from(LANE_HEIGHT_DEFAULT) {
+                driven
+                    .as_ref()
+                    .map_or_else(|| label.to_owned(), |reason| format!("{label} · {reason}"))
+            } else {
+                label.to_owned()
+            };
+            let response = chooser_button(&mut child, chooser, choice_id, t, &heading);
+            if let Some(reason) = &driven {
+                response.clone().on_hover_text(reason);
+            }
+            if response.clicked() {
+                self.chooser.open(choice_id);
+            }
         }
         if let Some(mode) = mode_chip(&mut child, chip, id.with("mode"), t, label, lane.mode) {
             ctx.send(Action::Automation(Automation::Mode(
@@ -396,7 +407,7 @@ impl State {
                 || crate::views::automation::percentage(t, effective_now),
                 |target| target.format(effective_now),
             );
-            let detail = warning.as_deref().unwrap_or(&value);
+            let detail = warning.as_deref().or(driven.as_deref()).unwrap_or(&value);
             let style = typography::SMALL;
             let mut right = header.right() - space::SPACE_1;
             if writing {
@@ -424,6 +435,8 @@ impl State {
                 text,
                 color32(if warning.is_some() {
                     color::STATE_ERROR
+                } else if muted {
+                    color::TEXT_3
                 } else {
                     color::TEXT_2
                 }),
@@ -451,20 +464,18 @@ impl State {
             Some(Choice::Add) => self.request(row.owner),
             None => {}
         }
-        let overrides = track
-            .filter(|_| lane.mode != AutomationMode::Off)
-            .map_or_else(Vec::new, |track| {
-                automation::clip_override_spans(track, &lane.target)
-                    .into_iter()
-                    .filter_map(|span| {
-                        let (left, right) = g.visible_ticks();
-                        (span.end > left && span.start < right).then_some(Override {
-                            start: span.start,
-                            end: span.end,
-                        })
+        let overrides = track.filter(|_| !muted).map_or_else(Vec::new, |track| {
+            automation::clip_override_spans(track, &lane.target)
+                .into_iter()
+                .filter_map(|span| {
+                    let (left, right) = g.visible_ticks();
+                    (span.end > left && span.start < right).then_some(Override {
+                        start: span.start,
+                        end: span.end,
                     })
-                    .collect()
-            });
+                })
+                .collect()
+        });
         let effective = track
             .filter(|_| !overrides.is_empty())
             .map_or_else(Vec::new, |track| {

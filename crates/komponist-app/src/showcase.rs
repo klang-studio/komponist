@@ -295,12 +295,12 @@ fn add_routing(project: &mut Project) {
         .expect("the demo routing is valid: sidechain");
 }
 
-/// The Pad macro opens its Hall send. Its base matches the original send level.
+/// The Pad macro automates its Hall send. A clip envelope drives the Lead delay mix.
 fn add_track_macros(project: &mut Project) {
-    use komponist_model::automation::AutomationTarget;
-    use komponist_model::edits::macros;
+    use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points};
+    use komponist_model::edits::{automation, macros};
     use komponist_model::macros::Mapping;
-    use komponist_model::params::db_to_p;
+    use komponist_model::params::{ParamId, db_to_p};
 
     let pad = project
         .tracks
@@ -313,18 +313,105 @@ fn add_track_macros(project: &mut Project) {
         .find(|t| t.name == REVERB_BUS_NAME)
         .expect("Hall");
     let send = pad.send_to(hall.id).expect("Pad Hall send");
+    let send_target = AutomationTarget::Send { send: send.id };
+    let send_base = 1.0 - db_to_p(send.level_db);
     let mapping = Mapping {
-        target: AutomationTarget::Send { send: send.id },
+        target: send_target.clone(),
         label: "Send · Hall".into(),
         min: 1.0 - db_to_p(-18.0),
-        max: 1.0 - db_to_p(send.level_db),
+        max: send_base,
         invert: false,
         bend: 0.0,
     };
     let pad = pad.id;
     let named = macros::rename_macro(project, pad, 0, "Open".into()).expect("Pad macro name");
     let open = macros::set_macro_value(&named, pad, 0, 1.0).expect("Pad macro value");
-    *project = macros::add_mapping(&open, pad, 0, mapping).expect("Pad Hall mapping");
+    let mapped = macros::add_mapping(&open, pad, 0, mapping).expect("Pad Hall mapping");
+    let target = AutomationTarget::Macro { index: 0 };
+    let owner = AutomationOwner::Track(pad);
+    // Keep a direct envelope on the send so the demo shows how it resumes after unmapping.
+    let (with_send, send_lane) =
+        automation::add_lane(&mapped, owner, send_target, "Send · Hall".into())
+            .expect("Pad Hall lane");
+    let with_send = automation::set_lane_points(
+        &with_send,
+        owner,
+        send_lane,
+        Points::new(vec![
+            Point::linear(Tick::ZERO, send_base),
+            Point::linear(Tick::from_steps(8 * 16), 1.0 - db_to_p(-18.0)),
+        ]),
+    )
+    .expect("Pad Hall curve");
+    let label = "Track macro 1 · Open";
+    let (with_lane, lane) = automation::add_lane(&with_send, owner, target.clone(), label.into())
+        .expect("Pad macro lane");
+    *project = automation::set_lane_points(
+        &with_lane,
+        owner,
+        lane,
+        Points::new(vec![
+            Point::linear(Tick::ZERO, 1.0),
+            Point::linear(Tick::from_steps(4 * 16), 0.35),
+            Point::linear(Tick::from_steps(8 * 16), 1.0),
+        ]),
+    )
+    .expect("Pad macro curve");
+    let lead = project
+        .tracks
+        .iter()
+        .find(|t| t.name == "Lead")
+        .expect("Lead");
+    let clip = lead
+        .clips
+        .iter()
+        .find(|clip| clip.name == "Lead B")
+        .expect("Lead B")
+        .id;
+    let delay = lead
+        .channel
+        .devices
+        .iter()
+        .find(|device| Internal::from_plugin(&device.plugin) == Some(Internal::Delay))
+        .expect("Lead delay");
+    let mix = ParamId::new("mix");
+    let wire = Internal::Delay.wire(&mix).expect("Delay mix") as usize;
+    let base = Internal::Delay
+        .decode_state(delay.state.as_deref())
+        .expect("Delay state")[wire];
+    let base = Internal::Delay.params()[wire].to_normalized(base) as f32;
+    let mapping = Mapping {
+        target: AutomationTarget::Param {
+            device: delay.id,
+            param: mix,
+        },
+        label: "Delay · Mix".into(),
+        min: base * 0.6,
+        max: base,
+        invert: false,
+        bend: 0.0,
+    };
+    let lead = lead.id;
+    let named = macros::rename_macro(project, lead, 0, "Echo".into()).expect("Lead macro name");
+    let base = macros::set_macro_value(&named, lead, 0, 1.0).expect("Lead macro value");
+    let mapped = macros::add_mapping(&base, lead, 0, mapping).expect("Lead delay mapping");
+    let with_clip = automation::add_clip_automation(
+        &mapped,
+        clip,
+        target.clone(),
+        "Track macro 1 · Echo".into(),
+    )
+    .expect("Lead clip macro envelope");
+    *project = automation::set_clip_points(
+        &with_clip,
+        clip,
+        &target,
+        Points::new(vec![
+            Point::linear(Tick::ZERO, 0.25),
+            Point::linear(Tick::from_steps(16), 1.0),
+        ]),
+    )
+    .expect("Lead clip macro points");
 }
 
 /// The song demonstrates track, clip and master curves.

@@ -1233,3 +1233,112 @@ fn track_macro_range_handles_support_collapsed_drags_and_accesskit() {
     assert!((new_low - low - 0.02).abs() < 1e-6);
     assert_eq!(new_high, high);
 }
+
+#[test]
+fn macro_automation_chooser_disables_driven_targets_and_retains_their_lanes() {
+    use komponist_app::views::automation::Action as Automation;
+    use komponist_app::views::track_macros::Action as Macro;
+    use komponist_model::Tick;
+    use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points};
+
+    let (mut app, track, _) = app_with_hall();
+    let owner = AutomationOwner::Track(track);
+    let pan = AutomationTarget::Pan;
+    app.dispatch(Action::Automation(Automation::ShowTarget {
+        owner,
+        replace: None,
+        target: pan.clone(),
+        label: Lang::De.param_pan().to_owned(),
+    }));
+    let track_name = app.project().track(track).unwrap().name.clone();
+    let lane = app
+        .project()
+        .track(track)
+        .unwrap()
+        .automation
+        .lane(&pan)
+        .unwrap()
+        .id;
+    let points = Points::new(vec![Point::linear(Tick::ZERO, 0.7)]);
+    app.dispatch(Action::Automation(Automation::Points(
+        komponist_app::views::automation::Source::Lane(owner, lane),
+        points.clone(),
+        "undo-automation-add-point",
+    )));
+    app.dispatch(Action::Macro(Macro::Map {
+        track,
+        index: 0,
+        target: pan.clone(),
+    }));
+    app.dispatch(Action::Macro(Macro::Rename {
+        track,
+        index: 0,
+        name: "Breite".into(),
+    }));
+    let mut h = harness(app);
+    let heading = Lang::De.a11y_automation_lane(Lang::De.param_pan(), track_name);
+    let group = h
+        .get_all_by_role_and_label(Role::Group, &heading)
+        .find(|node| node.accesskit_node().description().is_some())
+        .unwrap();
+    let reason = Lang::De.macros_lane_overridden(Lang::De.macros_ref(1, "Breite"));
+    assert_eq!(
+        group.accesskit_node().description().as_deref(),
+        Some(reason.as_str())
+    );
+    let chooser = group
+        .get_by_role_and_label(Role::ComboBox, Lang::De.a11y_automation_chooser())
+        .rect()
+        .center();
+    click(&mut h, chooser);
+
+    let driven = format!("{} · {reason}", Lang::De.param_pan());
+    let row = h.get_by_role_and_label(Role::ListBoxOption, &driven);
+    assert!(row.accesskit_node().is_disabled());
+    let macro_label = Lang::De.macros_slot_named(1, "Breite");
+    let rect = h
+        .get_by_role_and_label(Role::ListBoxOption, &macro_label)
+        .rect();
+    click(&mut h, rect.center());
+    let track_state = h.state().project().track(track).unwrap();
+    let target = AutomationTarget::Macro { index: 0 };
+    assert_eq!(
+        track_state.automation.lane(&target).unwrap().label,
+        macro_label
+    );
+    assert_eq!(track_state.automation.lane(&pan).unwrap().points, points);
+    assert!(
+        h.state()
+            .engine()
+            .program()
+            .unwrap()
+            .automation_target(owner, &pan)
+            .is_none()
+    );
+
+    h.state_mut().dispatch(Action::Macro(Macro::Remove {
+        track,
+        index: 0,
+        target: pan.clone(),
+    }));
+    h.run_steps(3);
+    assert!(
+        h.state()
+            .engine()
+            .program()
+            .unwrap()
+            .automation_target(owner, &pan)
+            .is_some()
+    );
+    assert_eq!(
+        h.state()
+            .project()
+            .track(track)
+            .unwrap()
+            .automation
+            .lane(&pan)
+            .unwrap()
+            .points,
+        points
+    );
+}
