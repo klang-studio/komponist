@@ -35,9 +35,9 @@ use super::meter;
 use super::metrics::fader as metrics;
 use super::metrics::meter as meter_metrics;
 use super::number_field::{
-    absolute_drag_gesture, accesskit_requests, caption, column, entry, expose_value, galley,
-    is_still, key_steps, paint_entry_ring, sense, snap_to, text_pos, text_width,
-    update_pointer_focus, value_label, value_tooltip_live, wheel_steps,
+    DoubleClick, absolute_drag_gesture, accesskit_requests, caption, column, entry, expose_value,
+    galley, is_still, key_steps, paint_entry_ring, sense, snap_to, text_pos, text_width,
+    value_control_click, value_label, value_tooltip_live, wheel_steps,
 };
 use crate::drag::ClickAction;
 use crate::state::State;
@@ -446,8 +446,7 @@ impl Widget for Fader<'_> {
         let live = !is_still(ui) && response.enabled();
 
         if live && !entry::is_open(&ctx, id) {
-            update_pointer_focus(&response);
-            if ClickAction::of_control(&response) == ClickAction::Reset {
+            if value_control_click(&response, DoubleClick::Reset) == ClickAction::Reset {
                 db = 0.0;
             }
             let (top, len) = (layout.track.top(), layout.track.height());

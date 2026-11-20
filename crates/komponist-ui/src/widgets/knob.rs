@@ -33,10 +33,10 @@ use komponist_tokens::{color, size, space};
 
 use super::metrics::knob as metrics;
 use super::number_field::{
-    self, Formatter, GetSet, Parser, accesskit_requests, caption, clamp_finite, column,
-    drag_gesture, entry, expose_value, format_number, get_set, is_still, key_steps, normalized,
-    range_bounds, sample_row, sense, text_width, update_pointer_focus, value_tooltip_live,
-    wheel_steps,
+    self, DoubleClick, Formatter, GetSet, Parser, accesskit_requests, caption, clamp_finite,
+    column, drag_gesture, entry, expose_value, format_number, get_set, is_still, key_steps,
+    normalized, range_bounds, sample_row, sense, text_width, value_control_click,
+    value_tooltip_live, wheel_steps,
 };
 use crate::drag::{ClickAction, ValueDrag};
 use crate::state::State;
@@ -415,8 +415,7 @@ impl Widget for Knob<'_> {
             }
         }
         if live && !entry::is_open(&ctx, id) {
-            update_pointer_focus(&response);
-            if ClickAction::of_control(&response) == ClickAction::Reset {
+            if value_control_click(&response, DoubleClick::Reset) == ClickAction::Reset {
                 value = self.default;
             }
             if let Some(v) = drag_gesture(&response, || ValueDrag::knob(value, min, max)) {
