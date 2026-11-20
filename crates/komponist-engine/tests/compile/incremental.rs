@@ -315,7 +315,7 @@ fn demo_notes_are_sorted_and_valid() {
     for t in &program.tracks {
         total += t.notes.len();
         assert!(
-            t.notes.is_sorted_by_key(|n| (n.start, n.key)),
+            t.notes.iter().is_sorted_by_key(|n| (n.start, n.key)),
             "{}",
             t.source.name
         );

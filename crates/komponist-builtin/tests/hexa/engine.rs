@@ -63,7 +63,7 @@ fn program(bpm: f64, notes: Vec<SeqNote>) -> Program {
         chain_latency: 0,
         id: TrackId(1),
         source,
-        notes: notes.into(),
+        notes: Arc::new(komponist_engine::program::NoteSchedule::from_sorted(notes)),
         chain: vec![ChainSlot {
             device: DeviceId(1000),
             slot: SlotId(0),

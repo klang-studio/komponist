@@ -40,6 +40,7 @@ mod graph;
 mod macros;
 mod metronome;
 mod mixer;
+mod note_schedule;
 pub mod processor;
 pub mod program;
 pub mod recording;
