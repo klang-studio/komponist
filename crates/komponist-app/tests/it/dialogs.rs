@@ -1756,6 +1756,46 @@ fn a_pending_recent_project_is_actionable_in_both_languages() {
     }
 }
 
+#[test]
+fn a_late_matching_summary_cannot_steal_the_selected_recent_project() {
+    for key in [Key::Enter, Key::Delete] {
+        let mut model = s09_model();
+        model.recent.truncate(2);
+        model.recent[0].meta = Lang::De.start_file_loading().into();
+        model.recent[1].name = "Treffer: Hafenlicht".into();
+        let path = model.recent[1].path.clone();
+        let view = StartView {
+            filter: "Treffer".into(),
+            ..Default::default()
+        };
+        let mut h =
+            komponist_ui::snapshot::builder::<(start::Model, StartView, Vec<start::Output>)>(1.0)
+                .with_size(vec2(W, H))
+                .build_ui_state(
+                    |ui, (model, view, output)| {
+                        let rect = ui.ctx().content_rect();
+                        output.extend(start::show(ui, rect, model, view, true));
+                    },
+                    (model, view, Vec::new()),
+                );
+        assert_eq!(h.state().1.selected, 0);
+        assert_eq!(h.state().1.selected_path.as_ref(), Some(&path));
+
+        // The earlier pending row now matches the filter and enters just before the user's
+        // selection. Deliver the late summary and the keystroke to the same frame.
+        h.state_mut().0.recent[0].name = "Treffer: Night Drive".into();
+        h.key_press(key);
+        h.run_steps(2);
+        assert_eq!(h.state().1.selected, 1);
+        let expected = if key == Key::Enter {
+            start::Output::OpenRecent(path)
+        } else {
+            start::Output::RemoveRecent(path)
+        };
+        assert_eq!(h.state().2, [expected]);
+    }
+}
+
 /// S09 in English (#5): the same list, English texts and dates.
 #[test]
 fn snapshot_of_s09_in_english() {

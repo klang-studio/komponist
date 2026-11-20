@@ -451,9 +451,14 @@ fn right_column(
     let inner = rect.shrink2(vec2(pad_x, pad_y));
     let width = inner.width().min(m::RECENT_MAX_WIDTH);
     let shown = filtered(&model.recent, &view.filter);
-    if view.selected >= shown.len() {
-        view.selected = shown.len().saturating_sub(1);
-    }
+    let remembered_index = view.selected_path.as_ref().and_then(|path| {
+        shown
+            .iter()
+            .position(|&index| model.recent[index].path == *path)
+    });
+    let selection_disappeared = view.selected_path.is_some() && remembered_index.is_none();
+    view.selected =
+        remembered_index.unwrap_or_else(|| view.selected.min(shown.len().saturating_sub(1)));
 
     // Keys before the filter field sees them: ↑ ↓ Enter work while typing in it, too.
     let filter_id = egui::Id::unique("komponist_start_filter");
@@ -473,7 +478,9 @@ fn right_column(
         if down && view.selected + 1 < shown.len() {
             view.selected += 1;
         }
-        if let Some(&i) = shown.get(view.selected) {
+        // A disappearing row may change the fallback selection. Do not act on that replacement
+        // before it has been shown to the user.
+        if !selection_disappeared && let Some(&i) = shown.get(view.selected) {
             if enter {
                 out.push(Output::OpenRecent(model.recent[i].path.clone()));
             }
@@ -516,7 +523,7 @@ fn right_column(
             .width(m::FILTER_WIDTH),
     );
     if filter.changed() {
-        view.selected = 0;
+        view.reset_selection();
     }
     col.add_space(m::RIGHT_GAP);
 
@@ -544,6 +551,9 @@ fn right_column(
             }
         }
     });
+    view.selected_path = shown
+        .get(view.selected)
+        .map(|&index| model.recent[index].path.clone());
     col.add_space(m::RIGHT_GAP + m::HINT_TOP);
     let g = styled(
         &col,
