@@ -174,6 +174,16 @@ pub fn missing(state: Option<&[u8]>, project_dir: Option<&Path>) -> Vec<(usize, 
 /// resolves (against `old_dir`, the folder of the file the project was loaded from) gets its
 /// absolute path and a relative path to `new_dir`. `None` if nothing changes.
 pub fn rebase(state: Option<&[u8]>, old_dir: Option<&Path>, new_dir: &Path) -> Option<Vec<u8>> {
+    rebase_with(state, old_dir, new_dir, |path| path)
+}
+
+/// Rebases links and redirects resolved sources that have been copied into the project.
+pub fn rebase_with(
+    state: Option<&[u8]>,
+    old_dir: Option<&Path>,
+    new_dir: &Path,
+    destination: impl Fn(PathBuf) -> PathBuf,
+) -> Option<Vec<u8>> {
     let links = read(state);
     if links.is_empty() {
         return None;
@@ -182,11 +192,14 @@ pub fn rebase(state: Option<&[u8]>, old_dir: Option<&Path>, new_dir: &Path) -> O
         .iter()
         .map(|(pad, link)| {
             let moved = match link.resolve(old_dir) {
-                Some(found) => SampleLink {
-                    rel: relative(&found, new_dir),
-                    abs: found,
-                    name: link.name.clone(),
-                },
+                Some(found) => {
+                    let path = destination(found);
+                    SampleLink {
+                        rel: relative(&path, new_dir),
+                        abs: path,
+                        name: link.name.clone(),
+                    }
+                }
                 None => link.clone(),
             };
             (*pad, moved)
