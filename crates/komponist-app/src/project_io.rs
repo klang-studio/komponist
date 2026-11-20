@@ -141,6 +141,51 @@ pub fn with_extension(path: &Path) -> PathBuf {
     }
 }
 
+/// Resolve parent steps through the filesystem before using this file's folder as a link base.
+fn resolve_project_parent(path: PathBuf) -> Result<PathBuf, ProjectIoError> {
+    let Some(parent) = path.parent().filter(|parent| {
+        parent
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
+    }) else {
+        return Ok(path);
+    };
+    let Some(name) = path.file_name() else {
+        return Ok(path);
+    };
+    let directory =
+        std::fs::canonicalize(parent).map_err(|error| ProjectIoError::Io(path.clone(), error))?;
+    #[cfg(windows)]
+    let directory = project_directory_without_verbatim(directory);
+    Ok(directory.join(name))
+}
+
+#[cfg(windows)]
+fn project_directory_without_verbatim(directory: PathBuf) -> PathBuf {
+    let Some(text) = directory.to_str() else {
+        return directory;
+    };
+    let ordinary = if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{unc}"))
+    } else if let Some(drive) = text
+        .strip_prefix(r"\\?\")
+        .filter(|path| path.as_bytes().get(1) == Some(&b':'))
+    {
+        PathBuf::from(drive)
+    } else {
+        return directory;
+    };
+    // Some names can only be opened with a verbatim prefix; keep it when required.
+    if std::fs::canonicalize(&ordinary)
+        .as_ref()
+        .is_ok_and(|path| *path == directory)
+    {
+        ordinary
+    } else {
+        directory
+    }
+}
+
 /// Whether `path` names a project file (by its extension).
 pub fn is_project_file(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == FILE_EXTENSION)
@@ -410,8 +455,10 @@ impl App {
     /// checks the plugins (S06). A file that cannot be read leaves everything as it was and says
     /// why.
     pub(crate) fn open_path(&mut self, path: PathBuf) {
-        match load_project(&path) {
-            Ok(project) => {
+        let loaded = resolve_project_parent(path.clone())
+            .and_then(|resolved| load_project(&resolved).map(|project| (resolved, project)));
+        match loaded {
+            Ok((path, project)) => {
                 self.open_document(Document::new(project), Some(path.clone()));
                 self.remember(path);
                 self.check_missing_plugins();
@@ -477,7 +524,10 @@ impl App {
     /// renames the project after a new file, remembers the file. A running take goes into the
     /// file without ending (module docs). `false` if writing failed (the status bar says why).
     pub(crate) fn save_to(&mut self, path: &Path) -> bool {
-        let path = with_extension(path);
+        let path = match resolve_project_parent(with_extension(path)) {
+            Ok(path) => path,
+            Err(error) => return self.report_project_save_error(error),
+        };
         if !self.await_audio_take() {
             return false;
         }
@@ -501,23 +551,36 @@ impl App {
         for (device, state) in &snapshots {
             self.store_snapshot_for_save(*device, state);
         }
-        if self.migrate_recordings_for_save(&path).is_err() {
-            return false;
-        }
-        // The sample links get the paths for this file's folder.
-        self.rebase_samples(&path);
-        // A running take so far, with the notes still in flight, on top of all that (#85).
-        let mut for_file = match self.project_with_take() {
-            Ok(project) => project,
+        self.drain_events();
+        let playhead = self.engine.playhead();
+        let old_dir = self
+            .project_dir()
+            .map(|directory| komponist_model::paths::absolute(&directory));
+        let new_dir =
+            komponist_model::paths::absolute(path.parent().unwrap_or_else(|| Path::new("")));
+        let mut recordings = match self.stage_recordings_for_save(&new_dir) {
+            Ok(recordings) => recordings,
             Err(()) => return false,
         };
+        let mut document = self.doc.clone();
+        document.rewrite_untracked(|project| {
+            crate::samples::rebase_project_links(project, old_dir.as_deref(), &new_dir, |source| {
+                recordings.destination(source)
+            })
+        });
+        // A running take so far, with the notes still in flight, on top of all that (#85).
+        let mut for_file =
+            match self.project_with_take(document.project(), playhead, &mut recordings) {
+                Ok(project) => project,
+                Err(()) => return false,
+            };
         // Undo may defer a snapshot until an unrelated gesture ends. The file still needs it.
         let deferred = self
             .deferred_plugin_states()
             .iter()
             .filter(|(device, _)| !snapshots.iter().any(|(captured, _)| captured == device));
         for (device, state) in deferred.chain(&snapshots) {
-            let project = for_file.as_ref().unwrap_or_else(|| self.project());
+            let project = for_file.as_ref().unwrap_or_else(|| document.project());
             if project
                 .find_device(*device)
                 .is_some_and(|(_, _, d)| d.state.as_ref() != Some(state))
@@ -540,14 +603,15 @@ impl App {
                 save_project(&path, &project)
             }
             (None, Some(name)) => {
-                let mut renamed = Project::clone(self.project());
+                let mut renamed = Project::clone(document.project());
                 renamed.name = name.clone();
                 save_project(&path, &renamed)
             }
-            (None, None) => save_project(&path, self.project()),
+            (None, None) => save_project(&path, document.project()),
         };
         match written {
             Ok(()) => {
+                self.doc = document;
                 if let Some(name) = rename {
                     self.untracked(ProjectProp::Name(name));
                 }
@@ -566,18 +630,20 @@ impl App {
                     StatusKind::Success,
                 );
                 self.remember(path);
-                self.recordings_saved();
+                self.recordings_saved(recordings);
                 true
             }
-            Err(e) => {
-                eprintln!("komponist: {e}");
-                self.set_status(
-                    self.lang.project_save_failed(e.reason(self.lang)),
-                    StatusKind::Error,
-                );
-                false
-            }
+            Err(error) => self.report_project_save_error(error),
         }
+    }
+
+    fn report_project_save_error(&mut self, error: ProjectIoError) -> bool {
+        eprintln!("komponist: {error}");
+        self.set_status(
+            self.lang.project_save_failed(error.reason(self.lang)),
+            StatusKind::Error,
+        );
+        false
     }
 
     /// Puts `path` at the front of the recent list and saves the list.
@@ -823,6 +889,118 @@ mod tests {
         assert_eq!(summary.meta(komponist_i18n::Lang::De), "124 BPM · 6 Spuren");
         assert!(summary.modified.is_some());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_as_only_rebases_clip_and_sampler_links_after_the_write() {
+        use komponist_builtin::sampler::links::{self, SampleLink};
+        use komponist_model::edits::{self, NewAudioTrack, NewClip, NewClipContent};
+        use komponist_model::{AudioFile, ClipContent, Tick};
+
+        let dir = scratch("save-as-links");
+        let old_dir = dir.join("old");
+        let new_dir = old_dir.join("new");
+        std::fs::create_dir_all(&new_dir).unwrap();
+        // A link rebased as ../kick.wav would resolve to the wrong file from the old folder.
+        let old_sample = old_dir.join("kick.wav");
+        for (path, value) in [(&old_sample, 100_i16), (&dir.join("kick.wav"), 200)] {
+            let mut wav = hound::WavWriter::create(
+                path,
+                hound::WavSpec {
+                    channels: 1,
+                    sample_rate: 48_000,
+                    bits_per_sample: 16,
+                    sample_format: hound::SampleFormat::Int,
+                },
+            )
+            .unwrap();
+            for _ in 0..480 {
+                wav.write_sample(value).unwrap();
+            }
+            wav.finalize().unwrap();
+        }
+        let project = demo_project();
+        let sampler = project.tracks[0].channel.devices[0].id;
+        let state = links::write(None, 0, Some(&SampleLink::new(&old_sample, Some(&old_dir))));
+        let project = edits::set_device_state(&project, sampler, Some(state.into())).unwrap();
+        let (project, track) = edits::add_audio_track(&project, NewAudioTrack::default()).unwrap();
+        let (project, clip) = edits::add_clip(
+            &project,
+            track,
+            NewClip {
+                name: "Kick".into(),
+                start: Tick::ZERO,
+                length: Tick(1),
+                content: NewClipContent::Audio {
+                    file: AudioFile::new(&old_sample, Some(&old_dir), 480, 48_000, 1),
+                    offset: 0,
+                },
+            },
+        )
+        .unwrap();
+        let mut app = App::headless(project);
+        let old_project = old_dir.join("Song.komponist");
+        assert!(app.save_to(&old_project));
+        // Give the document both an undo and a redo snapshot containing the links.
+        for tempo in [110.0, 115.0] {
+            app.doc
+                .apply("Tempo", |p| {
+                    edits::set_project_prop(
+                        p,
+                        ProjectProp::Tempo(komponist_model::Tempo::new(tempo)),
+                    )
+                })
+                .unwrap();
+        }
+        assert!(app.doc.undo());
+
+        let check_links = |project: &Project, directory: &Path, relative: &Path| {
+            let (_, _, device) = project.find_device(sampler).unwrap();
+            let sample = &links::read(device.state.as_deref())[0].1;
+            assert_eq!(sample.rel, relative);
+            assert_eq!(
+                sample.resolve(Some(directory)).as_deref(),
+                Some(old_sample.as_path())
+            );
+            let (_, clip) = project.find_clip(clip).unwrap();
+            let ClipContent::Audio(audio) = &clip.content else {
+                panic!("audio clip");
+            };
+            assert_eq!(audio.file.rel, relative);
+            assert_eq!(
+                audio.file.resolve(Some(directory)).as_deref(),
+                Some(old_sample.as_path())
+            );
+        };
+
+        let destination = new_dir.join("Copy.komponist");
+        std::fs::create_dir(&destination).unwrap();
+        let revision = app.doc.revision();
+        assert!(!app.save_to(&destination));
+        assert_eq!(app.doc.revision(), revision);
+        assert_eq!(app.project_path(), Some(old_project.as_path()));
+        check_links(app.project(), &old_dir, Path::new("kick.wav"));
+        assert!(app.doc.undo());
+        check_links(app.project(), &old_dir, Path::new("kick.wav"));
+        assert!(app.doc.redo());
+        assert!(app.doc.redo());
+        check_links(app.project(), &old_dir, Path::new("kick.wav"));
+        assert!(app.doc.undo());
+
+        std::fs::remove_dir(&destination).unwrap();
+        assert!(app.save_to(&destination));
+        assert_eq!(app.project_path(), Some(destination.as_path()));
+        let relative = Path::new("../kick.wav");
+        check_links(&load_project(&destination).unwrap(), &new_dir, relative);
+        check_links(app.project(), &new_dir, relative);
+        assert!(!app.doc.is_dirty());
+        assert!(app.doc.undo());
+        check_links(app.project(), &new_dir, relative);
+        assert!(app.doc.redo());
+        assert!(app.doc.redo());
+        check_links(app.project(), &new_dir, relative);
+        drop(app);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -704,16 +704,20 @@ impl App {
     }
 
     /// The project as a save writes it while capturing (#85): the document with the running take
-    /// as Stop would commit it now. Events in flight are drained first. Capture goes on.
-    pub(crate) fn project_with_take(&mut self) -> Result<Option<Project>, ()> {
-        self.drain_events();
-        let mut project = Project::clone(self.project());
+    /// as Stop would commit it now. Call after draining capture events. Capture goes on.
+    pub(crate) fn project_with_take(
+        &mut self,
+        project: &Project,
+        playhead: Tick,
+        recordings: &mut crate::audio_record::StagedRecordings,
+    ) -> Result<Option<Project>, ()> {
+        let mut project = project.clone();
         let mut changed = false;
         if let Some(rec) = self
             .recording
             .as_ref()
             .filter(|recording| recording.has_material())
-            && let Some(commit) = rec.commit(&project, self.engine.playhead())
+            && let Some(commit) = rec.commit(&project, playhead)
         {
             match commit.apply(&project) {
                 Ok((next, _)) => {
@@ -728,7 +732,7 @@ impl App {
         }
         if let Some(next) = self
             .automation_capture
-            .project_at(&project, self.engine.playhead())
+            .project_at(&project, playhead)
             .map_err(|error| {
                 self.record_edit_error(error);
             })?
@@ -736,7 +740,12 @@ impl App {
             project = next;
             changed = true;
         }
-        if let Some(next) = self.project_with_audio_take(&project)? {
+        if let Some(next) = recordings
+            .project_with_audio_take(&project, self.lang)
+            .map_err(|error| {
+                self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
+            })?
+        {
             project = next;
             changed = true;
         }
