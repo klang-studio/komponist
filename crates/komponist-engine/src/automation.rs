@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use komponist_model::automation::{
-    AutomationMode, AutomationTarget, Point, RepeatingPoints, Shape, TrackAutomation,
-    value_at_fractional,
+    AutomationMode, AutomationOwner, AutomationTarget, Point, RepeatingPoints, Shape,
+    TrackAutomation, value_at_fractional,
 };
 use komponist_model::params::{ParamKind, Scale, db_to_p, p_to_db, to_normalized, to_plain};
 use komponist_model::{SendId, Tick};
@@ -388,6 +388,7 @@ pub struct PluginParamBatch {
     events: [PluginParam; 8],
     len: u8,
     temporary: u8,
+    write_start: Option<AutomationOwner>,
 }
 
 impl PluginParamBatch {
@@ -402,6 +403,7 @@ impl PluginParamBatch {
             }; 8],
             len: 0,
             temporary: 0,
+            write_start: None,
         }
     }
 
@@ -410,13 +412,21 @@ impl PluginParamBatch {
         &self.events[..usize::from(self.len)]
     }
 
-    /// Appends an event and reports when the batch is full.
     /// Changes in order, paired with whether the change is a temporary automation override.
     pub fn iter(&self) -> impl Iterator<Item = (&PluginParam, bool)> {
         self.as_slice()
             .iter()
             .enumerate()
             .map(|(index, event)| (event, self.temporary & (1 << index) != 0))
+    }
+
+    /// The last edit in this batch opened an automation write at its tick.
+    pub fn write_start(&self) -> Option<(AutomationOwner, &PluginParam)> {
+        self.write_start.zip(self.as_slice().last())
+    }
+
+    pub(crate) fn mark_write_start(&mut self, owner: AutomationOwner) {
+        self.write_start = Some(owner);
     }
 
     pub(crate) fn push(&mut self, event: PluginParam, temporary: bool) -> bool {

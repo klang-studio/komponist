@@ -1,6 +1,8 @@
 //! Applies track macro gestures and mapping changes to the document.
 
-use komponist_engine::Command;
+use komponist_engine::automation::PluginParamBatch;
+use komponist_engine::processor::ParameterEditKind;
+use komponist_engine::{Command, SlotId};
 use komponist_model::automation::{AutomationOwner, AutomationTarget};
 use komponist_model::edits::{self, ChannelProp, EditError, SendProp, TrackProp, macros};
 use komponist_model::macros::{MAX_MAPPINGS, Mapping, initial_range};
@@ -67,11 +69,9 @@ impl App {
                 });
                 let after = self.doc.revision();
                 if after != before {
-                    let command = Command::SetMacro {
-                        track,
-                        index,
-                        value: value.clamp(0.0, 1.0),
-                    };
+                    let command =
+                        self.engine
+                            .macro_value_command(track, index, value.clamp(0.0, 1.0));
                     if self.doc.in_gesture() {
                         self.engine.fast_path(command, before, after);
                     } else {
@@ -322,23 +322,66 @@ impl App {
         Some(mapped)
     }
 
-    /// Native plugins edit their own controls before sending the gesture back to the host.
-    pub(super) fn map_native_plugin_input(
+    pub(super) fn native_plugin_params(
         &mut self,
-        device: DeviceId,
-        id: u32,
-        previous: Option<f64>,
+        slot: SlotId,
+        events: &PluginParamBatch,
+        capture: bool,
     ) {
+        let Some(device) = self.engine.plugin_parameter_device(slot) else {
+            return;
+        };
+        let mapping = self.ui.track_macros.mapping.is_some_and(|track| {
+            self.project()
+                .find_device(device)
+                .is_some_and(|(owner, _, _)| owner == komponist_model::ChannelRef::Track(track))
+        });
+        let write_start = events.write_start();
+        for (edit, temporary) in events.iter() {
+            let id = match edit.kind {
+                ParameterEditKind::Value { id, .. }
+                | ParameterEditKind::Gesture { id, begin: true } => Some(id),
+                ParameterEditKind::Gesture { begin: false, .. } => None,
+            };
+            let candidate = id.filter(|&id| {
+                mapping
+                    && !self.automation_capture.plugin_parameter_writing(device, id)
+                    && self.engine.plugin_mapping_parameter(device, id)
+            });
+            let previous = self.engine.update_plugin_parameter(
+                device,
+                edit.kind,
+                temporary,
+                candidate.is_some(),
+            );
+            if let Some(id) = candidate {
+                self.map_native_plugin_input(device, id, previous);
+            }
+            if capture
+                && let Some((owner, start)) = write_start
+                && std::ptr::eq(edit, start)
+                && let Some(id) = id
+            {
+                let target = komponist_engine::automation::EngineTarget::Slot { slot, wire_id: id };
+                self.capture_native_automation(
+                    device,
+                    id,
+                    owner,
+                    target,
+                    edit.tick,
+                    candidate.is_some(),
+                );
+            }
+        }
+    }
+
+    /// Native plugins edit their own controls before sending the gesture back to the host.
+    fn map_native_plugin_input(&mut self, device: DeviceId, id: u32, previous: Option<f64>) {
         let Some((AutomationOwner::Track(track), target)) =
             self.device_automation_target(device, id)
         else {
             return;
         };
-        if self.ui.track_macros.mapping != Some(track)
-            || self.automation_capture.plugin_parameter_writing(device, id)
-        {
-            return;
-        }
         let index = self.ui.track_macros.selected(track);
         let before = self.doc.revision();
         match self.map_track_macro(track, index, target.clone(), previous) {
@@ -479,6 +522,46 @@ mod tests {
     use komponist_builtin::Internal;
 
     #[test]
+    fn a_mapping_uses_a_macro_edit_that_has_not_reached_the_engine() {
+        let (project, track) = edits::add_track(
+            &Project::new("Macro test"),
+            edits::NewTrack {
+                name: None,
+                instrument: None,
+                hue: None,
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        let mut app = App::headless(project);
+        app.engine_mut().hold_engine().unwrap();
+        app.step();
+        assert!(app.engine_mut().run_held(128, &[], 0));
+        app.dispatch(AppAction::Macro(Action::SetValue {
+            track,
+            index: 0,
+            value: 0.75,
+        }));
+        assert_eq!(
+            app.engine().telemetry().macro_values(track).unwrap()[0],
+            0.0
+        );
+
+        app.dispatch(AppAction::Macro(Action::Map {
+            track,
+            index: 0,
+            target: AutomationTarget::Pan,
+        }));
+        app.step();
+        assert!(app.engine_mut().run_held(128, &[], 0));
+        let position = app.engine().telemetry().macro_values(track).unwrap()[0];
+        assert_eq!(position, 0.75);
+        let mapping = &app.project().track(track).unwrap().macros.0[0].mappings[0];
+        assert!((mapping.value_at(position) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
     fn mapping_edits_preserve_the_effective_macro_positions() {
         let (project, track) = edits::add_track(
             &Project::new("Macro test"),
@@ -501,6 +584,7 @@ mod tests {
                     track,
                     index,
                     value,
+                    edit: 0,
                 });
             }
             app.engine_mut().run_held_capture(128, &[], 0).unwrap();

@@ -326,7 +326,7 @@ fn wait(
             .into_iter()
             .filter_map(|e| match e {
                 SyncEvent::Device(e) => Some(e),
-                SyncEvent::Engine(_) | SyncEvent::PluginParameterInput { .. } => None,
+                SyncEvent::Engine(_) => None,
             })
             .collect();
         if done(sync, &events) {

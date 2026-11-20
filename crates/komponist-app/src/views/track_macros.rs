@@ -126,10 +126,15 @@ pub(crate) fn effective_value(
     track: &Track,
     index: u8,
 ) -> f32 {
+    let base = track.macros.0[usize::from(index)].value;
     engine
-        .telemetry()
-        .macro_values(track.id)
-        .map(|values| values[usize::from(index)])
+        .pending_macro_value(track.id, index, base)
+        .or_else(|| {
+            engine
+                .telemetry()
+                .macro_values(track.id)
+                .map(|values| values[usize::from(index)])
+        })
         .or_else(|| {
             crate::views::automation::automation_control_value(
                 project,
@@ -138,7 +143,7 @@ pub(crate) fn effective_value(
                 &AutomationTarget::Macro { index },
             )
         })
-        .unwrap_or(track.macros.0[usize::from(index)].value)
+        .unwrap_or(base)
 }
 
 /// Color, range and driver for a mapped control.

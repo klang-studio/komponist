@@ -28,7 +28,7 @@
 //! wait in the pending queue and no engine events arrive; [`EngineSync::attach`] gives both back
 //! and sends what waited.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -39,6 +39,7 @@ use komponist_audio::{
     StreamStats,
 };
 use komponist_engine::compile::{self, CompileEnv};
+use komponist_engine::processor::ParameterEditKind;
 use komponist_engine::workers::{
     WorkerRt, WorkerStats, WorkerStatus, auto_workers, cap_to_workgroup,
 };
@@ -260,15 +261,6 @@ pub enum MidiSetup {
 pub enum SyncEvent {
     /// An engine event (recorded notes, loop wraps, count-in end, failed processors).
     Engine(EngineEvent),
-    /// The first native edit of an eligible parameter in the track currently in mapping mode.
-    PluginParameterInput {
-        /// Device whose native GUI reported the edit.
-        device: DeviceId,
-        /// Stable parameter wire id.
-        id: u32,
-        /// The last plain value observed before the edit.
-        previous: Option<f64>,
-    },
     /// A device host event (status, state snapshot, latency, …).
     Device(PluginManagerEvent),
 }
@@ -424,6 +416,8 @@ pub struct EngineSync {
     carried: Vec<PluginManagerEvent>,
     /// Last plain macro outputs passed to the plugin snapshot verifier.
     macro_params: Vec<(DeviceId, u32, f64)>,
+    macro_edit: u64,
+    pending_macro_edits: HashMap<(TrackId, u8), (u64, f32)>,
     rate: Arc<AtomicU32>,
     telemetry: Arc<Telemetry>,
     /// The engine taken out of the stream ([`EngineSync::hold_engine`]).
@@ -508,6 +502,8 @@ impl EngineSync {
             pending: VecDeque::new(),
             carried: Vec::new(),
             macro_params: Vec::new(),
+            macro_edit: 0,
+            pending_macro_edits: HashMap::new(),
             rate,
             telemetry,
             held: None,
@@ -805,6 +801,26 @@ impl EngineSync {
         }
     }
 
+    /// Starts tracking a manual value edit until the engine publishes its effect.
+    pub(crate) fn macro_value_command(&mut self, track: TrackId, index: u8, value: f32) -> Command {
+        self.macro_edit += 1;
+        let edit = self.macro_edit;
+        self.pending_macro_edits
+            .insert((track, index), (edit, value));
+        Command::SetMacro {
+            track,
+            index,
+            value,
+            edit,
+        }
+    }
+
+    pub(crate) fn pending_macro_value(&self, track: TrackId, index: u8, base: f32) -> Option<f32> {
+        let &(edit, value) = self.pending_macro_edits.get(&(track, index))?;
+        // Undo or cancellation may have already replaced the pending base in the document.
+        (value == base && edit > self.telemetry.applied_macro_edit()).then_some(value)
+    }
+
     /// A fast-path command for a change the dispatcher just applied inside a gesture
     /// (`SetTrackGain`, `SetTrackPan`, `SetTrackMute`, `SetTrackSolo`, `SetGates`,
     /// `SetMasterGain`):
@@ -853,10 +869,29 @@ impl EngineSync {
     /// Call every UI frame: polls the audio system, retries queued commands, drains the engine's
     /// events (dropping garbage here) and the device host's events.
     pub fn poll(&mut self) -> Vec<SyncEvent> {
-        self.poll_with_macro_mapping(None, |_, _| false)
+        let mut events: Vec<_> = self
+            .poll_engine_events()
+            .into_iter()
+            .map(|event| {
+                if let EngineEvent::PluginParams { slot, ref events } = event
+                    && let Some(device) = self.plugin_parameter_device(slot)
+                {
+                    for (change, temporary) in events.iter() {
+                        self.update_plugin_parameter(device, change.kind, temporary, false);
+                    }
+                }
+                SyncEvent::Engine(event)
+            })
+            .collect();
+        events.extend(self.poll_device_events().into_iter().map(SyncEvent::Device));
+        events
     }
 
-    fn plugin_mapping_parameter(&self, device: DeviceId, id: u32) -> bool {
+    pub(crate) fn plugin_parameter_device(&self, slot: SlotId) -> Option<DeviceId> {
+        self.program()?.slots.device(slot)
+    }
+
+    pub(crate) fn plugin_mapping_parameter(&self, device: DeviceId, id: u32) -> bool {
         self.host.params(device).is_some_and(|params| {
             params
                 .iter()
@@ -864,15 +899,37 @@ impl EngineSync {
         })
     }
 
-    /// Also routes native edits from `mapping` as prospective macro mappings. The live plugin
-    /// has already received the edit. Its persisted parameter base is kept until mapping wins.
-    pub(crate) fn poll_with_macro_mapping(
+    pub(crate) fn update_plugin_parameter(
         &mut self,
-        mapping: Option<TrackId>,
-        writing: impl Fn(DeviceId, u32) -> bool,
-    ) -> Vec<SyncEvent> {
-        use komponist_engine::processor::ParameterEditKind;
+        device: DeviceId,
+        edit: ParameterEditKind,
+        temporary: bool,
+        learning: bool,
+    ) -> Option<f64> {
+        let id = match edit {
+            ParameterEditKind::Value { id, .. } | ParameterEditKind::Gesture { id, .. } => id,
+        };
+        let previous = if learning {
+            self.macro_params
+                .iter()
+                .find(|&&(target, wire, _)| target == device && wire == id)
+                .map(|&(_, _, value)| value)
+                .or_else(|| self.host.param_value(device, id).map(|p| p.value))
+                .or_else(|| self.host.param_base(device, id))
+        } else {
+            None
+        };
+        if let ParameterEditKind::Value { value, .. } = edit {
+            if temporary || learning {
+                self.host.preview_param(device, id, value);
+            } else {
+                self.host.edited_param(device, id, value);
+            }
+        }
+        previous
+    }
 
+    pub(crate) fn poll_engine_events(&mut self) -> Vec<EngineEvent> {
         let before = self.sample_rate();
         self.audio.poll();
         if self.sample_rate() != before {
@@ -883,67 +940,28 @@ impl EngineSync {
             self.scan_midi();
         }
         self.flush_pending();
+        let applied_edit = self.telemetry.applied_macro_edit();
+        self.pending_macro_edits
+            .retain(|_, (edit, _)| *edit > applied_edit);
         self.sync_macro_params();
         let mut out = Vec::new();
-        let mut inputs = HashSet::new();
         while let Some(event) = self.handle.as_mut().and_then(EngineHandle::poll) {
-            match event {
-                // Dropped here, on the UI thread.
-                EngineEvent::Retired(garbage) => drop(garbage),
-                EngineEvent::PluginParams { slot, ref events } => {
-                    if let Some(device) = self.program().and_then(|p| p.slots.device(slot)) {
-                        let mapping_owner = mapping.is_some_and(|track| {
-                            self.program()
-                                .and_then(|program| program.track(track))
-                                .is_some_and(|track| {
-                                    track.chain.iter().any(|item| item.slot == slot)
-                                })
-                        });
-                        for (change, temporary) in events.iter() {
-                            let id = match change.kind {
-                                ParameterEditKind::Value { id, .. }
-                                | ParameterEditKind::Gesture { id, begin: true } => id,
-                                ParameterEditKind::Gesture { begin: false, .. } => continue,
-                            };
-                            let candidate = mapping_owner
-                                && !writing(device, id)
-                                && self.plugin_mapping_parameter(device, id);
-                            if candidate && inputs.insert((device, id)) {
-                                let previous = self
-                                    .macro_params
-                                    .iter()
-                                    .find(|&&(target, wire, _)| target == device && wire == id)
-                                    .map(|&(_, _, value)| value)
-                                    .or_else(|| self.host.param_value(device, id).map(|p| p.value))
-                                    .or_else(|| self.host.param_base(device, id));
-                                out.push(SyncEvent::PluginParameterInput {
-                                    device,
-                                    id,
-                                    previous,
-                                });
-                            }
-                            if let ParameterEditKind::Value { id, value } = change.kind {
-                                if temporary || candidate {
-                                    self.host.preview_param(device, id, value);
-                                } else {
-                                    self.host.edited_param(device, id, value);
-                                }
-                            }
-                        }
-                    }
-                    out.push(SyncEvent::Engine(event));
-                }
-                other => out.push(SyncEvent::Engine(other)),
+            if !matches!(event, EngineEvent::Retired(_)) {
+                out.push(event);
             }
-        }
-        let carried = std::mem::take(&mut self.carried);
-        for event in carried.into_iter().chain(self.host.poll()) {
-            if let PluginManagerEvent::StateApplied { device } = event {
-                self.reassert_device_macros(device);
-            }
-            out.push(SyncEvent::Device(event));
         }
         out
+    }
+
+    pub(crate) fn poll_device_events(&mut self) -> Vec<PluginManagerEvent> {
+        let mut events = std::mem::take(&mut self.carried);
+        events.extend(self.host.poll());
+        for event in &events {
+            if let PluginManagerEvent::StateApplied { device } = *event {
+                self.reassert_device_macros(device);
+            }
+        }
+        events
     }
 
     /// Looks for MIDI devices that appeared or vanished and connects new ones (hot-plug), then
@@ -1250,6 +1268,7 @@ impl EngineSync {
         self.synced = None;
         self.fast = None;
         self.macro_params.clear();
+        self.pending_macro_edits.clear();
         let events = self.host.poll();
         self.carried.extend(events.into_iter().filter(|e| {
             matches!(

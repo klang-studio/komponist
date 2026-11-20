@@ -62,7 +62,7 @@ use crate::dialogs::DialogState;
 use crate::dialogs::new_track::default_names;
 use crate::dialogs::settings::midi_label;
 use crate::dialogs::settings::{AudioDevices, FixedDevices, SystemDevices};
-use crate::engine_sync::{EngineSync, MidiChange, SyncEvent};
+use crate::engine_sync::{EngineSync, MidiChange};
 use crate::keymap::{self, Key, KeyChord, Keymap};
 use crate::meters::Meters;
 use crate::metrics;
@@ -563,20 +563,7 @@ impl App {
     }
 
     fn drain_events_with_automation(&mut self, capture: bool) {
-        let automation = &self.automation_capture;
-        let events = self
-            .engine
-            .poll_with_macro_mapping(self.ui.track_macros.mapping, |device, id| {
-                automation.plugin_parameter_writing(device, id)
-            });
-        // Automation touch events can precede the corresponding native edit in the batch.
-        let mapping_inputs = events
-            .iter()
-            .filter_map(|event| match event {
-                SyncEvent::PluginParameterInput { device, id, .. } => Some((*device, *id)),
-                _ => None,
-            })
-            .collect();
+        let events = self.engine.poll_engine_events();
         // Only a device stream can drop out; on the null backend (tests, `--null-audio`, CI runners
         // without RTKit) the missing priority is not worth a notice.
         let device_stream = matches!(
@@ -594,35 +581,24 @@ impl App {
         self.report_midi_changes();
         // Read after the drain: at least as new as every event drained (`record` docs).
         let playhead = self.engine.playhead();
-        let mut recompile = false;
         for event in events {
-            match event {
-                // Garbage is dropped inside `EngineSync::poll`; a failed processor's device
-                // reports its own status.
-                SyncEvent::Engine(event) => {
-                    if capture {
-                        self.capture_automation(&event, &mapping_inputs);
-                    }
-                    self.engine_event(&event, playhead);
-                }
-                SyncEvent::PluginParameterInput {
-                    device,
-                    id,
-                    previous,
-                } => {
-                    self.map_native_plugin_input(device, id, previous);
-                }
-                SyncEvent::Device(event) => {
-                    recompile |= matches!(
-                        event,
-                        PluginManagerEvent::LatencyChanged { .. }
-                            | PluginManagerEvent::ParamsChanged { .. }
-                            | PluginManagerEvent::StatusChanged { .. }
-                    );
-                    self.handle_device_event(&event);
-                    self.shell.device_events.push(event);
-                }
+            if let EngineEvent::PluginParams { slot, ref events } = event {
+                self.native_plugin_params(slot, events, capture);
+            } else if capture {
+                self.capture_automation(&event);
             }
+            self.engine_event(&event, playhead);
+        }
+        let mut recompile = false;
+        for event in self.engine.poll_device_events() {
+            recompile |= matches!(
+                event,
+                PluginManagerEvent::LatencyChanged { .. }
+                    | PluginManagerEvent::ParamsChanged { .. }
+                    | PluginManagerEvent::StatusChanged { .. }
+            );
+            self.handle_device_event(&event);
+            self.shell.device_events.push(event);
         }
         if let Some(rec) = &mut self.recording {
             rec.update(playhead);

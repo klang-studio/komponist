@@ -131,7 +131,10 @@ impl View for Inspector {
 
         let max_scroll = (self.content_height - body.height()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max_scroll);
-        if max_scroll > 0.0 && ui.rect_contains_pointer(body) {
+        if max_scroll > 0.0
+            && ui.rect_contains_pointer(body)
+            && !number_field::wheel_over_control(ui.ctx())
+        {
             let d = ui.input(|i| i.smooth_scroll_delta.y);
             if d != 0.0 {
                 self.scroll = (self.scroll - d).clamp(0.0, max_scroll);
