@@ -68,6 +68,9 @@ pub struct HeaderModel {
     pub keep_on_top: bool,
     /// The close shortcut shown in the tooltip ("Esc").
     pub close_shortcut: String,
+    /// Localized status while the track's parameters can be mapped to a macro.
+    #[serde(default)]
+    pub mapping_chip: Option<String>,
 }
 
 impl HeaderModel {
@@ -415,6 +418,7 @@ mod tests {
             has_gui: false,
             keep_on_top: false,
             close_shortcut: "Esc".into(),
+            mapping_chip: None,
         };
         assert_eq!(
             model.preset_items(),

@@ -59,6 +59,7 @@ use crate::actions::{
 use crate::ui_state::Reveal;
 use crate::views::browser::model::selected_track;
 use crate::views::late::LateTracker;
+use crate::views::track_macros;
 use crate::views::{View, ViewCtx, group_bounds};
 
 /// The drag payload of a frame being reordered or copied.
@@ -105,12 +106,27 @@ impl View for Devices {
         let ink = komponist_tokens::egui_support::color32(base);
         for c in &mut cards {
             c.automation_owner = Some(owner);
+            c.macro_mapping = ctx.ui.track_macros.mapping == Some(track.id);
+            c.macro_mappings = track.macros.0.iter().flat_map(|slot| slot.mappings.iter())
+                .filter(|mapping| matches!(&mapping.target, komponist_model::automation::AutomationTarget::Param { device, .. } if *device == c.device))
+                .count();
             for param in &mut c.params {
                 let target = komponist_model::automation::AutomationTarget::Param {
                     device: c.device,
                     param: param.info.id.clone(),
                 };
-                if let Some(value) = ctx.automation_value(owner, &target) {
+                let control = param
+                    .info
+                    .automatable
+                    .then(|| track_macros::Control::new(ctx, owner, target.clone()))
+                    .flatten();
+                let driven = control.as_ref().and_then(|control| control.driver.as_ref());
+                if let Some(driver) = driven {
+                    param.value = param
+                        .info
+                        .snap(param.info.to_plain(f64::from(driver.value)));
+                    param.text = param.info.format(param.value);
+                } else if let Some(value) = ctx.automation_value(owner, &target) {
                     param.value = param.info.to_plain(f64::from(value));
                     param.text = param.info.format(param.value);
                     let ink = if ctx
@@ -125,6 +141,9 @@ impl View for Devices {
                         ink
                     };
                     c.automation.insert(param.info.id.clone(), ink);
+                }
+                if let Some(control) = control {
+                    c.macros.insert(param.info.id.clone(), control);
                 }
             }
             c.page = ctx.ui.devices.page(c.device);
@@ -149,7 +168,14 @@ impl View for Devices {
         clipboard_events(ui, ctx);
         let rect = ui.max_rect();
         let header = Rect::from_min_size(rect.min, vec2(rect.width(), metrics::HEADER_HEIGHT));
-        let body = Rect::from_min_max(pos2(rect.left(), header.bottom()), rect.max);
+        let dock_body = Rect::from_min_max(pos2(rect.left(), header.bottom()), rect.max);
+        let pinned = (track_macros::card_width(ctx, track.id) + metrics::BODY_PAD * 2.0)
+            .min((dock_body.width() - metrics::DROP_AREA_WIDTH).max(dock_body.width() / 2.0));
+        let macro_area = Rect::from_min_max(
+            dock_body.min,
+            pos2(dock_body.left() + pinned, dock_body.bottom()),
+        );
+        let body = Rect::from_min_max(pos2(macro_area.right(), dock_body.top()), dock_body.max);
 
         // Geometry and scroll.
         let widths: Vec<f32> = cards.iter().map(|c| c.width).collect();
@@ -195,11 +221,11 @@ impl View for Devices {
             if header.contains(pos) && max_x > 0.0 && delta != egui::Vec2::ZERO {
                 scroll_x = (scroll_x - (delta.x + delta.y)).clamp(0.0, max_x);
                 ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
-            } else if body.contains(pos)
+            } else if dock_body.contains(pos)
                 && !komponist_ui::widgets::number_field::wheel_over_control(ui.ctx())
             {
                 let mut used = egui::Vec2::ZERO;
-                if max_x > 0.0 && delta.x != 0.0 {
+                if body.contains(pos) && max_x > 0.0 && delta.x != 0.0 {
                     scroll_x = (scroll_x - delta.x).clamp(0.0, max_x);
                     used.x = delta.x;
                 }
@@ -225,6 +251,13 @@ impl View for Devices {
             }
         }
         header_row(ui, ctx, header, track, &cards, &visible);
+        track_macros::card(ui, ctx, macro_area, track, scroll_y);
+        px::vline(
+            ui.painter(),
+            macro_area.right(),
+            macro_area.y_range(),
+            color32(color::LINE_2),
+        );
         let view = ChainView {
             body,
             scroll_x,
@@ -295,18 +328,6 @@ fn header_row(
     );
     x = mark.right() + metrics::HEADER_GAP;
     let style = typography::UI;
-    let g = w::galley(
-        ui,
-        &track.name,
-        w::font_at(&style, wm::SEMIBOLD),
-        style.line_height,
-    );
-    let pos = w::text_pos(rect, &g, x, ppp);
-    let r = ui.allocate_rect(Rect::from_min_size(pos, g.size()), Sense::hover());
-    r.widget_info(|| WidgetInfo::labeled(Role::Label, true, &track.name));
-    x = pos.x + g.size().x + metrics::HEADER_GAP;
-    ui.painter().galley(pos, g, color32(color::TEXT_1));
-
     let button_width = {
         let g = w::galley(
             ui,
@@ -317,6 +338,49 @@ fn header_row(
         g.size().x.ceil() + 2.0 * wm::BUTTON_PADDING_X
     };
     let right_edge = rect.right() - metrics::HEADER_PAD_X - button_width;
+    let g = w::galley(
+        ui,
+        &track.name,
+        w::font_at(&style, wm::SEMIBOLD),
+        style.line_height,
+    );
+    let pos = w::text_pos(rect, &g, x, ppp);
+    let r = ui.allocate_rect(Rect::from_min_size(pos, g.size()), Sense::hover());
+    r.widget_info(|| WidgetInfo::labeled(Role::Label, true, &track.name));
+    x = pos.x + g.size().x + metrics::HEADER_GAP;
+    let chip_width = (right_edge - x - 2.0 * metrics::HEADER_GAP) / 2.0 - 2.0 * metrics::CHIP_PAD_X;
+    if ctx.ui.track_macros.mapping == Some(track.id) && chip_width > 0.0 {
+        let index = ctx.ui.track_macros.selected(track.id);
+        let source = track_macros::reference(t, index, &track.macros.0[usize::from(index)]);
+        let chip = t.macros_map_chip(source);
+        let style = typography::SMALL;
+        let g = crate::views::elided_galley(
+            ui,
+            &chip,
+            fonts::font_id(&style),
+            style.line_height,
+            chip_width,
+        );
+        let at = w::text_pos(rect, &g, x + metrics::CHIP_PAD_X, ppp);
+        let chip_rect = Rect::from_min_size(at, g.size()).expand2(vec2(metrics::CHIP_PAD_X, 0.0));
+        px::fill(
+            ui.painter(),
+            chip_rect,
+            radius::S,
+            color32(color::ACCENT_SURFACE),
+        );
+        ui.painter().galley(at, g, color32(color::TEXT_1));
+        let response = ui.interact(
+            chip_rect,
+            ui.scope_id().with("macro-map-chip"),
+            Sense::hover(),
+        );
+        response.widget_info(|| WidgetInfo::labeled(Role::Label, true, &chip));
+        response.on_hover_text(chip);
+        x = chip_rect.right() + metrics::HEADER_GAP;
+    }
+    ui.painter().galley(pos, g, color32(color::TEXT_1));
+
     let right = Rect::from_min_max(
         pos2(right_edge, rect.top()),
         pos2(rect.right() - metrics::HEADER_PAD_X, rect.bottom()),

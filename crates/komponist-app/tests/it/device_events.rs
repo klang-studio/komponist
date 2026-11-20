@@ -55,12 +55,16 @@ struct Script {
 }
 
 /// A synthetic GUI with one parameter and an RT-safe handoff to its processor.
+#[derive(Clone)]
 struct GuiEditSource {
     device: DeviceId,
     info: ParamInfo,
     pending: Arc<AtomicU64>,
     applied: Arc<AtomicU64>,
 }
+
+const GUI_TOUCH_BEGIN: u64 = u64::MAX;
+const GUI_TOUCH_END: u64 = u64::MAX - 1;
 
 struct GuiProcessor {
     id: u32,
@@ -93,15 +97,21 @@ impl Processor for GuiProcessor {
 
     fn pop_parameter_edit(&mut self) -> Option<ParameterEdit> {
         let bits = self.pending.swap(f64::NAN.to_bits(), Ordering::Relaxed);
-        let value = f64::from_bits(bits);
-        if !value.is_finite() {
-            return None;
-        }
-        self.applied.store(bits, Ordering::Relaxed);
-        Some(ParameterEdit {
-            offset: 0,
-            kind: ParameterEditKind::Value { id: self.id, value },
-        })
+        let kind = match bits {
+            GUI_TOUCH_BEGIN | GUI_TOUCH_END => ParameterEditKind::Gesture {
+                id: self.id,
+                begin: bits == GUI_TOUCH_BEGIN,
+            },
+            _ => {
+                let value = f64::from_bits(bits);
+                if !value.is_finite() {
+                    return None;
+                }
+                self.applied.store(bits, Ordering::Relaxed);
+                ParameterEditKind::Value { id: self.id, value }
+            }
+        };
+        Some(ParameterEdit { offset: 0, kind })
     }
 
     fn latency(&self) -> u32 {
@@ -801,15 +811,18 @@ fn workers_without_workgroup_reach_the_status_bar() {
     assert_eq!(status_text(&app), None);
 }
 
-#[test]
-fn plugin_gui_read_override_remains_temporary_and_off_restores_the_old_base() {
-    use komponist_app::views::automation::Action as Automation;
+fn plugin_gui_automation(
+    mode: komponist_model::automation::AutomationMode,
+) -> (
+    App,
+    Rc<RefCell<Script>>,
+    GuiEditSource,
+    komponist_model::automation::LaneId,
+) {
     use komponist_ipc::control::param_flags;
     use komponist_model::Tick;
-    use komponist_model::automation::{
-        AutomationMode, AutomationOwner, AutomationTarget, Point, Points,
-    };
-    use komponist_model::edits::automation::{add_lane, set_lane_points};
+    use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points};
+    use komponist_model::edits::automation::{add_lane, set_lane_mode, set_lane_points};
     use komponist_model::params::ParamId;
 
     let project = demo_project();
@@ -839,32 +852,50 @@ fn plugin_gui_read_override_remains_temporary_and_off_restores_the_old_base() {
         Points::new(vec![Point::linear(Tick::ZERO, 0.75)]),
     )
     .unwrap();
+    let project = set_lane_mode(&project, owner, lane, mode).unwrap();
     let script = Rc::new(RefCell::new(Script::default()));
     let pending = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
     let applied = Arc::new(AtomicU64::new(0.25_f64.to_bits()));
+    let gui = GuiEditSource {
+        device,
+        info: ParamInfo {
+            id,
+            name: "Cutoff".into(),
+            module: String::new(),
+            min: 0.0,
+            max: 1.0,
+            default: 0.25,
+            step_count: 0,
+            flags: param_flags::AUTOMATABLE,
+        },
+        pending,
+        applied,
+    };
     let host = FakeHost {
         script: Rc::clone(&script),
         catalog: Catalog::builtin(),
         statuses: HashMap::new(),
-        gui: Some(GuiEditSource {
-            device,
-            info: ParamInfo {
-                id,
-                name: "Cutoff".into(),
-                module: String::new(),
-                min: 0.0,
-                max: 1.0,
-                default: 0.25,
-                step_count: 0,
-                flags: param_flags::AUTOMATABLE,
-            },
-            pending: Arc::clone(&pending),
-            applied: Arc::clone(&applied),
-        }),
+        gui: Some(gui.clone()),
     };
     let mut app = App::headless(project).with_device_host(Box::new(host));
     app.engine_mut().hold_engine().unwrap();
     app.step();
+    (app, script, gui, lane)
+}
+
+#[test]
+fn plugin_gui_read_override_remains_temporary_and_off_restores_the_old_base() {
+    use komponist_app::views::automation::Action as Automation;
+    use komponist_model::automation::{AutomationMode, AutomationOwner};
+
+    let (mut app, script, gui, lane) = plugin_gui_automation(AutomationMode::Read);
+    let device = gui.device;
+    let id = gui.info.id;
+    let (channel, _, _) = app.project().find_device(device).unwrap();
+    let owner: AutomationOwner = channel.into();
+    let GuiEditSource {
+        pending, applied, ..
+    } = gui;
     let run = |app: &mut App| {
         assert!(app.engine_mut().run_held(256, &[], 0));
         app.step();
@@ -890,4 +921,70 @@ fn plugin_gui_read_override_remains_temporary_and_off_restores_the_old_base() {
     pending.store(0.5_f64.to_bits(), Ordering::Relaxed);
     run(&mut app);
     assert_eq!(script.borrow().gui_edits, [(device, id, 0.5)]);
+}
+
+#[test]
+fn native_macro_learning_observes_a_touch_release_before_the_next_gesture() {
+    use komponist_app::TransportAction;
+    use komponist_app::views::track_macros::Action as Macro;
+    use komponist_model::automation::{AutomationMode, AutomationTarget};
+    use komponist_model::params::ParamId;
+
+    let (mut app, script, gui, _) = plugin_gui_automation(AutomationMode::Touch);
+    let (komponist_model::ChannelRef::Track(track), _, _) =
+        app.project().find_device(gui.device).unwrap()
+    else {
+        unreachable!()
+    };
+    let target = AutomationTarget::Param {
+        device: gui.device,
+        param: ParamId::plugin(gui.info.id),
+    };
+    let send = |app: &mut App, bits| {
+        gui.pending.store(bits, Ordering::Relaxed);
+        assert!(app.engine_mut().run_held(256, &[], 0));
+    };
+    app.dispatch(Action::Transport(TransportAction::TogglePlay));
+    send(&mut app, GUI_TOUCH_BEGIN);
+    send(&mut app, 0.4_f64.to_bits());
+    app.step();
+
+    app.dispatch(Action::Macro(Macro::ToggleMapping { track }));
+    send(&mut app, 0.53_f64.to_bits());
+    app.step();
+    assert_eq!(
+        app.project().track(track).unwrap().macros.driver(&target),
+        None
+    );
+
+    // Both the old release and the next complete native gesture reach the same UI drain.
+    send(&mut app, GUI_TOUCH_END);
+    send(&mut app, GUI_TOUCH_BEGIN);
+    send(&mut app, 0.95_f64.to_bits());
+    send(&mut app, GUI_TOUCH_END);
+    app.step();
+    assert_eq!(
+        app.project().track(track).unwrap().macros.driver(&target),
+        Some(0)
+    );
+    assert!(script.borrow().gui_edits.is_empty());
+    assert!(
+        script
+            .borrow()
+            .gui_previews
+            .contains(&(gui.device, gui.info.id, 0.53))
+    );
+
+    app.dispatch(Action::Transport(TransportAction::Stop));
+    assert!(app.engine_mut().run_held(256, &[], 0));
+    app.step();
+    let owner = app.project().track(track).unwrap();
+    let points = &owner.automation.lane(&target).unwrap().points;
+    assert!(
+        points
+            .as_slice()
+            .iter()
+            .any(|point| (point.value - 0.53).abs() < 1e-6)
+    );
+    assert!(points.as_slice().iter().all(|point| point.value < 0.9));
 }

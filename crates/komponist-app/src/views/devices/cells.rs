@@ -46,6 +46,7 @@ use super::model::{self, Card, Param};
 use crate::actions::{Action, EditAction, PluginAction, UiAction};
 use crate::platform::Platform;
 use crate::views::mixer::{Touch, gesture_actions, gesture_touch};
+use crate::views::track_macros::Pick as ParamMenu;
 use komponist_builtin::sampler::PadStatus;
 use komponist_model::format::note_name;
 
@@ -150,6 +151,9 @@ pub(super) fn draw_cell(
     };
     // The rate knob of a synced LFO shows its divider instead.
     let param = param.map(|p| synced_divider(card, p));
+    if let Some(control) = param.and_then(|p| card.macros.get(&p.info.id)) {
+        control.paint_ground(cu, rect);
+    }
     let drawn = match (cell.widget, param) {
         (WidgetKind::Knob | WidgetKind::KnobLarge, Some(p)) => {
             knob(cu, out, card, cell, p, rect);
@@ -184,6 +188,13 @@ pub(super) fn draw_cell(
 }
 
 fn set(out: &mut Vec<Action>, card: &Card, p: &Param, plain: f64) {
+    if card
+        .macros
+        .get(&p.info.id)
+        .is_some_and(|control| control.driver.is_some())
+    {
+        return;
+    }
     let plain = p.snap(plain);
     if plain != p.value {
         out.push(Action::Plugin(PluginAction::SetParam {
@@ -192,17 +203,6 @@ fn set(out: &mut Vec<Action>, card: &Card, p: &Param, plain: f64) {
             value: plain,
         }));
     }
-}
-
-/// What the right-click menu of a parameter offers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ParamMenu {
-    /// Back to the default value.
-    Default,
-    /// The text entry.
-    Enter,
-    /// Reveal the parameter in the arrangement.
-    Automation,
 }
 
 /// A parameter's control was touched: the inspector and the status line follow (`TouchParam`).
@@ -229,17 +229,30 @@ fn touch(
     change: Option<f64>,
 ) {
     let t = komponist_ui::lang(cu.ctx());
-    gesture_actions(
-        r,
-        change.is_some(),
-        || begin_param(card, p.wire),
-        out,
-        |out| {
-            if let Some(plain) = change {
-                set(out, card, p, plain);
-            }
-        },
-    );
+    let control = card.macros.get(&p.info.id);
+    if let Some(control) = control {
+        let range = control.driver.as_ref().map(|driver| {
+            t.devices_range(
+                p.text_at(p.info.to_plain(f64::from(driver.range.0))),
+                p.text_at(p.info.to_plain(f64::from(driver.range.1))),
+            )
+        });
+        control.decorate(cu, r, r.rect, range.as_deref());
+    }
+    let intercepted = control.is_some_and(|control| control.intercept(r, change.is_some(), out));
+    if !intercepted {
+        gesture_actions(
+            r,
+            change.is_some(),
+            || begin_param(card, p.wire),
+            out,
+            |out| {
+                if let Some(plain) = change {
+                    set(out, card, p, plain);
+                }
+            },
+        );
+    }
     if r.is_pointer_button_down_on() || r.drag_stopped() || r.clicked() {
         out.push(touch_action(card, p, r.dragged()));
     }
@@ -267,7 +280,16 @@ fn touch(
             ParamMenu::Automation,
         ));
     }
-    match ContextMenu::new(t.devices_parameter(), &entries).show_on(r) {
+    let pick = if let Some(control) = control {
+        control.menu(t, &entries, r)
+    } else {
+        ContextMenu::new(t.devices_parameter(), &entries).show_on(r)
+    };
+    if let Some(action) = pick.and_then(|pick| control?.menu_action(pick)) {
+        out.push(action);
+        return;
+    }
+    match pick {
         Some(ParamMenu::Default) => {
             set(out, card, p, p.info.default);
             out.push(touch_action(card, p, false));
@@ -293,7 +315,7 @@ fn touch(
                 ));
             }
         }
-        None => {}
+        _ => {}
     }
 }
 
@@ -338,6 +360,11 @@ fn knob(cu: &mut Ui, out: &mut Vec<Action>, card: &Card, cell: &Cell, p: &Param,
     let mut value = info.to_normalized(p.value);
     let mut w = KnobCell::new(&mut value, p.name().to_owned())
         .default_value(info.default_normalized())
+        .redirect(
+            card.macros
+                .get(&p.info.id)
+                .is_some_and(crate::views::track_macros::Control::redirects),
+        )
         .bipolar(matches!(
             info.kind,
             ParamKind::Float {
@@ -358,6 +385,10 @@ fn knob(cu: &mut Ui, out: &mut Vec<Action>, card: &Card, cell: &Cell, p: &Param,
     w = w.options(KnobCellOptions {
         disabled: unused,
         automation_dot: card.automation.get(&p.info.id).copied(),
+        modulation: card
+            .macros
+            .get(&p.info.id)
+            .and_then(|control| control.modulation()),
         ..KnobCellOptions::default()
     });
     let r = cu.put(rect, w);
@@ -1082,7 +1113,16 @@ fn graph(
                 } else {
                     p.value
                 });
-                infos.push(SlotInfo::from_param(&p.info, normalized));
+                let info = SlotInfo::from_param(&p.info, normalized);
+                let driven = card
+                    .macros
+                    .get(&p.info.id)
+                    .is_some_and(|control| control.driver.is_some());
+                infos.push(if driven || card.macro_mapping {
+                    info.locked()
+                } else {
+                    info
+                });
             }
             None => {
                 let v = fallback(name);
@@ -1131,7 +1171,7 @@ fn graph(
     // presse with an external sidechain source: the detector listens to that source.
     let detector_note = (binding.config == GraphConfig::Compressor && card.sidechain.is_some())
         .then_some((t.devices_detector(), t.devices_detector_external()));
-    let look = if card.bypass {
+    let look = if card.bypass || card.macro_mapping {
         Look::Bypass
     } else {
         Look::Normal
@@ -1152,6 +1192,9 @@ fn graph(
                 .show(gu)
         })
         .inner;
+    if card.macro_mapping {
+        return true;
+    }
     // One undo step per drag of a handle (or burst of wheel notches); the first parameter the
     // handle edits names it.
     let first = shown.selected_slot.or(shown.changed.first().map(|c| c.0));
@@ -1328,6 +1371,9 @@ mod tests {
             device: DeviceId(7),
             automation_owner: None,
             automation: Default::default(),
+            macros: Default::default(),
+            macro_mapping: false,
+            macro_mappings: 0,
             name: "Test".into(),
             tag: "INTERN",
             instrument: false,

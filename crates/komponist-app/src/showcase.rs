@@ -234,6 +234,7 @@ pub fn showcase_project() -> Project {
     add_routing(&mut project);
     audio::add_tracks(&mut project);
     add_automation(&mut project);
+    add_track_macros(&mut project);
     project
 }
 
@@ -292,6 +293,38 @@ fn add_routing(project: &mut Project) {
     };
     *project = edits::set_sidechain(&p, presse, Some(sidechain))
         .expect("the demo routing is valid: sidechain");
+}
+
+/// The Pad macro opens its Hall send. Its base matches the original send level.
+fn add_track_macros(project: &mut Project) {
+    use komponist_model::automation::AutomationTarget;
+    use komponist_model::edits::macros;
+    use komponist_model::macros::Mapping;
+    use komponist_model::params::db_to_p;
+
+    let pad = project
+        .tracks
+        .iter()
+        .find(|t| t.name == "Pad")
+        .expect("Pad");
+    let hall = project
+        .tracks
+        .iter()
+        .find(|t| t.name == REVERB_BUS_NAME)
+        .expect("Hall");
+    let send = pad.send_to(hall.id).expect("Pad Hall send");
+    let mapping = Mapping {
+        target: AutomationTarget::Send { send: send.id },
+        label: "Send · Hall".into(),
+        min: 1.0 - db_to_p(-18.0),
+        max: 1.0 - db_to_p(send.level_db),
+        invert: false,
+        bend: 0.0,
+    };
+    let pad = pad.id;
+    let named = macros::rename_macro(project, pad, 0, "Open".into()).expect("Pad macro name");
+    let open = macros::set_macro_value(&named, pad, 0, 1.0).expect("Pad macro value");
+    *project = macros::add_mapping(&open, pad, 0, mapping).expect("Pad Hall mapping");
 }
 
 /// The song demonstrates track, clip and master curves.

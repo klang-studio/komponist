@@ -162,6 +162,11 @@ pub struct Card {
     pub automation_owner: Option<AutomationOwner>,
     /// Parameters driven by a curve at the playhead, with the colour of their automation dot.
     pub automation: std::collections::BTreeMap<ParamId, egui::Color32>,
+    pub(crate) macros: std::collections::BTreeMap<ParamId, crate::views::track_macros::Control>,
+    /// Whether this track is in macro mapping mode.
+    pub(crate) macro_mapping: bool,
+    /// The number of macro assignments to this plugin (including unresolved parameters).
+    pub(crate) macro_mappings: usize,
     /// Plugin name.
     pub name: String,
     /// "INTERN" / "CLAP" / "VST3".
@@ -410,6 +415,9 @@ fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWin
         device: device.id,
         automation_owner: None,
         automation: Default::default(),
+        macros: Default::default(),
+        macro_mapping: false,
+        macro_mappings: 0,
         name: crate::views::plugin_name(lang, &device.plugin),
         tag: format_tag(lang, device.plugin.format),
         instrument,

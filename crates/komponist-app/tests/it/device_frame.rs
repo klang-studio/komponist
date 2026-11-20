@@ -296,7 +296,8 @@ fn selection_and_the_keys_on_the_chain() {
 
 #[test]
 fn alt_drag_on_a_head_copies_instead_of_moving() {
-    let (app, track, ids) = lead();
+    let (mut app, track, ids) = lead();
+    app.ui_mut().track_macros.collapsed.insert(track);
     let mut h = harness(app);
     let from = head_point(&h, "LSP Para EQ x8");
     let tal = frame(&h, "TAL-Chorus-LX");

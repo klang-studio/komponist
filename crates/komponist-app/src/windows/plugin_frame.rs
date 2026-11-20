@@ -782,6 +782,7 @@ impl App {
                 self.queue
                     .push(Action::Plugin(PluginAction::SetParam { device, id, value }));
             }
+            Output::Body(BodyEvent::MacroAction(action)) => self.queue.push(action),
             Output::Keys(events) => {
                 for event in events {
                     self.frame_key(device, &event);
@@ -903,13 +904,17 @@ impl App {
         self.frame_chord(device, chord, repeat);
     }
 
-    /// Applies `chord` from frame `device`: Esc closes the frame, everything else is a global
-    /// shortcut of the main window (none while a dialog is open there).
+    /// Applies `chord` from frame `device`: Esc first ends mapping mode, or closes the frame.
+    /// Other shortcuts follow the main window (none while a dialog is open there).
     fn frame_chord(&mut self, device: DeviceId, chord: KeyChord, repeat: bool) {
         if chord == KeyChord::plain(Key::Escape) {
             if !repeat {
-                self.queue
-                    .push(Action::Plugin(PluginAction::CloseWindow(device)));
+                let action = if self.ui.track_macros.mapping.is_some() {
+                    Action::Macro(crate::views::track_macros::Action::ExitMapping)
+                } else {
+                    Action::Plugin(PluginAction::CloseWindow(device))
+                };
+                self.queue.push(action);
             }
             return;
         }
@@ -1435,8 +1440,28 @@ impl App {
                 PluginView::Gui => Some(BodyModel::Gui { native, name }),
                 PluginView::Params => {
                     let f = &self.frames.frames[i];
-                    let shown = matches!(lock(&f.shared).body, BodyModel::Params(_));
-                    (f.params_dirty || !shown).then(|| BodyModel::Params(self.param_grid(i)))
+                    let (shown, was_redirecting) = match &lock(&f.shared).body {
+                        BodyModel::Params(grid) => (
+                            true,
+                            grid.macros
+                                .values()
+                                .any(crate::views::track_macros::Control::redirects),
+                        ),
+                        _ => (false, false),
+                    };
+                    let macro_relevant = self
+                        .project()
+                        .find_device(device)
+                        .and_then(|(owner, _, _)| match owner {
+                            ChannelRef::Track(id) => self.project().track(id),
+                            ChannelRef::Master => None,
+                        })
+                        .is_some_and(|track| {
+                            self.ui.track_macros.mapping == Some(track.id)
+                                || !track.macros.is_default()
+                        });
+                    (f.params_dirty || !shown || was_redirecting || macro_relevant)
+                        .then(|| BodyModel::Params(self.param_grid(i)))
                 }
             },
         };
@@ -1548,6 +1573,22 @@ impl App {
         } else {
             Vec::new()
         };
+        let mapping_chip = found.and_then(|(owner, _, _)| {
+            let ChannelRef::Track(id) = owner else {
+                return None;
+            };
+            if self.ui.track_macros.mapping != Some(id) {
+                return None;
+            }
+            let track = project.track(id)?;
+            let index = self.ui.track_macros.selected(id);
+            let source = crate::views::track_macros::reference(
+                self.lang,
+                index,
+                &track.macros.0[usize::from(index)],
+            );
+            Some(self.lang.macros_map_chip(source))
+        });
         HeaderModel {
             name,
             sub,
@@ -1561,6 +1602,7 @@ impl App {
             has_gui: host.has_gui(device) || had_gui,
             keep_on_top,
             close_shortcut: KeyChord::plain(Key::Escape).label(self.lang),
+            mapping_chip,
         }
     }
 
@@ -1570,19 +1612,40 @@ impl App {
     fn param_grid(&self, i: usize) -> ParamGrid {
         let device = self.frames.frames[i].device;
         let host = self.engine.host();
-        if let Some(infos) = host.params(device) {
-            return ParamGrid {
-                params: all_plugin_params(self.lang, infos, |id| host.param_value(device, id)),
-            };
-        }
-        let params = match self.project().find_device(device) {
-            Some((_, _, d)) if is_hexa(d) => hexa_macro_params(self.lang, d),
-            Some((_, _, d)) => crate::device_host::internal_kind(d)
-                .map(|kind| internal_params(self.lang, kind, d))
-                .unwrap_or_default(),
-            None => Vec::new(),
+        let owner = self.project().find_device(device);
+        let params = if let Some(infos) = host.params(device) {
+            all_plugin_params(self.lang, infos, |id| host.param_value(device, id))
+        } else {
+            match owner {
+                Some((_, _, d)) if is_hexa(d) => hexa_macro_params(self.lang, d),
+                Some((_, _, d)) => crate::device_host::internal_kind(d)
+                    .map(|kind| internal_params(self.lang, kind, d))
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            }
         };
-        ParamGrid { params }
+        let mut grid = ParamGrid::new(params);
+        if let Some((ChannelRef::Track(id), _, _)) = owner
+            && let Some(track) = self.project().track(id)
+        {
+            let view = &self.ui().track_macros;
+            let effective = self.engine.telemetry().macro_values(id);
+            for param in grid.params.iter().filter(|param| param.info.automatable) {
+                let target = komponist_model::automation::AutomationTarget::Param {
+                    device,
+                    param: param.info.id.clone(),
+                };
+                let value_at = |index: u8| {
+                    let index = usize::from(index);
+                    effective.map_or(track.macros.0[index].value, |values| values[index])
+                };
+                let control = crate::views::track_macros::Control::for_track(
+                    self.lang, view, track, target, value_at,
+                );
+                grid.macros.insert(param.info.id.clone(), control);
+            }
+        }
+        grid
     }
 
     /// The plugin name of `device` ("Surge XT").

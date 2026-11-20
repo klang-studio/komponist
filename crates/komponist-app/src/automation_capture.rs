@@ -2,7 +2,7 @@
 //! Captured edits stay in a preview until the pass can be applied as one document edit.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use komponist_engine::automation::{AutomationBoundary, EngineTarget};
 use komponist_engine::{Command, EngineEvent, TransportState};
@@ -171,6 +171,8 @@ impl CompletedCurve {
 #[derive(Debug, Clone, Default)]
 pub struct AutomationCapture {
     writing: Vec<Write>,
+    /// Engine writes started by a native edit that was consumed for macro learning.
+    learned: BTreeSet<(DeviceId, u32)>,
     finished: HashMap<Destination, CompletedCurve>,
     completed: usize,
     published: Option<(usize, u64)>,
@@ -190,6 +192,13 @@ impl AutomationCapture {
 
     pub(crate) fn owner_writing(&self, owner: AutomationOwner) -> bool {
         self.writing.iter().any(|write| write.owner == owner)
+    }
+
+    pub(crate) fn plugin_parameter_writing(&self, device: DeviceId, id: u32) -> bool {
+        self.writing.iter().any(|write| {
+            matches!(&write.target, AutomationTarget::Param { device: d, param }
+                if *d == device && param.plugin_id() == Some(id))
+        })
     }
 
     pub(crate) fn current_value(
@@ -642,6 +651,36 @@ impl App {
         });
     }
 
+    pub(crate) fn capture_native_automation(
+        &mut self,
+        device: DeviceId,
+        id: u32,
+        owner: AutomationOwner,
+        target: EngineTarget,
+        tick: Tick,
+        learned: bool,
+    ) {
+        if learned {
+            // Successful mappings already removed this lane from the compiled program.
+            // A rejected mapping can still produce samples and loop restarts.
+            if self
+                .engine
+                .program()
+                .is_some_and(|program| program.automation_model_target(owner, target).is_some())
+            {
+                self.automation_capture.learned.insert((device, id));
+            }
+        } else {
+            self.automation_capture.learned.remove(&(device, id));
+            self.capture_automation(&EngineEvent::AutomationTouch {
+                owner,
+                target,
+                begin: true,
+                tick,
+            });
+        }
+    }
+
     pub(crate) fn capture_automation(&mut self, event: &EngineEvent) {
         let (owner, target, tick) = match *event {
             EngineEvent::AutomationTouch {
@@ -659,6 +698,9 @@ impl App {
             EngineEvent::AutomationBoundary { tick, kind } => {
                 let project = self.project().clone();
                 self.automation_capture.end_segments(&project, tick);
+                if kind != AutomationBoundary::LoopWrap {
+                    self.automation_capture.learned.clear();
+                }
                 if kind == AutomationBoundary::Stop
                     && std::mem::take(&mut self.automation_stop_pending)
                 {
@@ -681,6 +723,17 @@ impl App {
         else {
             return;
         };
+        if let AutomationTarget::Param { device, param } = &model
+            && let Some(id) = param.plugin_id()
+        {
+            let key = (*device, id);
+            if matches!(event, EngineEvent::AutomationTouch { begin: false, .. }) {
+                self.automation_capture.learned.remove(&key);
+            } else if self.automation_capture.learned.contains(&key) {
+                // Ignore samples and automatic loop restarts for this intercepted write.
+                return;
+            }
+        }
         let project = self.project().clone();
         match *event {
             EngineEvent::AutomationTouch { begin: true, .. } => {
@@ -789,12 +842,7 @@ impl App {
     ) -> Option<(AutomationOwner, AutomationTarget)> {
         let (owner, _, d) = self.project().find_device(device)?;
         let param = if crate::device_host::is_hexa(d) {
-            komponist_builtin::device::params()
-                .iter()
-                .find(|p| p.wire == id)?
-                .info
-                .id
-                .clone()
+            ParamId::new(komponist_builtin::device::Field::from_wire(id)?.key())
         } else if let Some(kind) = crate::device_host::internal_kind(d) {
             kind.params().get(id as usize)?.id.clone()
         } else {

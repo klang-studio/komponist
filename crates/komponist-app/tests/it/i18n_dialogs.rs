@@ -574,6 +574,7 @@ fn the_plugin_frame_header_speaks_english() {
         has_gui: true,
         keep_on_top: false,
         close_shortcut: "Esc".into(),
+        mapping_chip: None,
     };
     let h = view_harness(Lang::En, model, |ui, model| {
         let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(900.0, 28.0));

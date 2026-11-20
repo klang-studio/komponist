@@ -233,6 +233,7 @@ fn a_bridge_inside_an_app_bundle_has_no_dock_icon() {
                 has_gui: true,
                 keep_on_top: false,
                 close_shortcut: "Esc".into(),
+                mapping_chip: None,
             },
             lang: "de".into(),
             rect: None,

@@ -88,6 +88,8 @@ pub struct Knob<'a> {
     parse: Option<Parser<'a>>,
     bypassed: bool,
     modulation: Option<ModArc>,
+    arc_color: Option<Color32>,
+    redirect: bool,
 }
 
 /// The modulation arc outside the track (`knob_svg` `mod`, `widget.knob.mod_ring`): the range a
@@ -117,6 +119,8 @@ impl<'a> Knob<'a> {
             parse: None,
             bypassed: false,
             modulation: None,
+            arc_color: None,
+            redirect: false,
         }
     }
 
@@ -169,6 +173,20 @@ impl<'a> Knob<'a> {
     #[must_use]
     pub fn bypassed(mut self, bypassed: bool) -> Self {
         self.bypassed = bypassed;
+        self
+    }
+
+    /// Use a custom value arc colour while keeping the ordinary control states.
+    #[must_use]
+    pub fn arc_color(mut self, color: Color32) -> Self {
+        self.arc_color = Some(color);
+        self
+    }
+
+    /// Report a value gesture to the caller without changing the displayed or stored value.
+    #[must_use]
+    pub fn redirect(mut self, redirect: bool) -> Self {
+        self.redirect = redirect;
         self
     }
 
@@ -389,6 +407,13 @@ impl Widget for Knob<'_> {
         let live = !is_still(ui) && response.enabled();
         let key_step = (max - min) * KEY_STEP;
 
+        if self.redirect && entry::is_open(&ctx, id) {
+            let focused = ctx.memory(|m| m.has_focus(entry::edit_id(id)));
+            entry::discard(&ctx, id);
+            if focused && live {
+                response.request_focus();
+            }
+        }
         if live && !entry::is_open(&ctx, id) {
             update_pointer_focus(&response);
             if ClickAction::of_control(&response) == ClickAction::Reset {
@@ -398,7 +423,10 @@ impl Widget for Knob<'_> {
                 value = v;
             }
             value += (key_steps(ui, &response) + wheel_steps(ui, &response)) * key_step;
-            if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if !self.redirect
+                && response.has_focus()
+                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+            {
                 entry::open(&ctx, id, self.text(value));
             }
             let (ak_steps, ak_set) = accesskit_requests(ui, id);
@@ -410,18 +438,26 @@ impl Widget for Knob<'_> {
                 ui.set_cursor_icon(CursorIcon::ResizeVertical);
             }
         }
-        let value_now = clamp_finite(value, min, max, old);
+        let value_now = if self.redirect {
+            old
+        } else {
+            clamp_finite(value, min, max, old)
+        };
 
         let st = State::of(ui, &response);
+        let mut look = look(st);
+        if let Some(color) = self.arc_color {
+            look.arc = color;
+        }
         paint_with(
             ui.painter(),
             rect,
-            &look(st),
+            &look,
             normalized(value_now, min, max) as f32,
             self.bipolar,
             self.modulation.as_ref(),
         );
-        if live && entry::is_open(&ctx, id) {
+        if live && !self.redirect && entry::is_open(&ctx, id) {
             let min_w = ENTRY_MIN_WIDTH;
             if let entry::Outcome::Commit(t) =
                 entry::show_floating(&ctx, id, rect, &self.name, min_w)
@@ -429,7 +465,7 @@ impl Widget for Knob<'_> {
             {
                 value = v;
             }
-        } else if live && value_tooltip_live(ui, &response) {
+        } else if live && !self.redirect && value_tooltip_live(ui, &response) {
             tooltip::show_value(
                 &ctx,
                 id,
@@ -441,7 +477,9 @@ impl Widget for Knob<'_> {
 
         let value = clamp_finite(value, min, max, old);
         if value != old {
-            (self.get_set)(Some(value));
+            if !self.redirect {
+                (self.get_set)(Some(value));
+            }
             response.mark_changed();
         }
         let value = (self.get_set)(None);

@@ -62,6 +62,7 @@ fn surge_header() -> HeaderModel {
         has_gui: true,
         keep_on_top: false,
         close_shortcut: "Esc".into(),
+        mapping_chip: None,
     }
 }
 
@@ -89,9 +90,7 @@ fn macro_grid() -> ParamGrid {
         .flat_map(|t| t.channel.devices.iter())
         .find(|d| d.plugin.name == "Hexa")
         .unwrap();
-    ParamGrid {
-        params: hexa_macro_params(Lang::De, hexa),
-    }
+    ParamGrid::new(hexa_macro_params(Lang::De, hexa))
 }
 
 /// What a frame harness shows and collects.
@@ -329,12 +328,13 @@ fn knobs_report_plain_values_on_the_step_grid() {
             // The drag is one undo gesture around the values.
             BodyEvent::BeginGesture { id } => assert_eq!(id, algorithm),
             BodyEvent::EndGesture => {}
+            BodyEvent::MacroAction(ref action) => panic!("unexpected macro action {action:?}"),
             BodyEvent::SetParam { id, value } => {
                 assert_eq!(id, algorithm);
                 assert_eq!(value.fract(), 0.0, "stepped: {value}");
                 sets += 1;
             }
-            other => panic!("{other:?}"),
+            ref other => panic!("{other:?}"),
         }
     }
     assert!(sets > 0, "{events:?}");
@@ -968,6 +968,64 @@ fn header_clicks_in_the_bridge_frame_are_decided_by_the_app() {
     h.run_steps(3);
     assert_eq!(script.borrow().targets.len(), 2);
     assert!(h.state().plugin_frame_in_bridge(surge));
+}
+
+#[test]
+fn bridge_frame_shows_mapping_and_escape_first_ends_it() {
+    use komponist_app::views::track_macros::Action as Macro;
+    use komponist_model::ChannelRef;
+
+    let (mut h, script, surge) = bridge_frame_harness();
+    let (ChannelRef::Track(track), _, _) = h.state().project().find_device(surge).unwrap() else {
+        panic!("Surge belongs to a track");
+    };
+    push(
+        &script,
+        PluginManagerEvent::GuiOpened {
+            device: surge,
+            size: GuiSize::default(),
+            resizable: false,
+        },
+    );
+    h.run_steps(3);
+    h.state_mut()
+        .dispatch(Action::Macro(Macro::ToggleMapping { track }));
+    h.run_steps(3);
+    let expected = Lang::De.macros_map_chip(Lang::De.macros_slot(1));
+    assert_eq!(
+        script
+            .borrow()
+            .headers
+            .last()
+            .unwrap()
+            .1
+            .mapping_chip
+            .as_deref(),
+        Some(expected.as_str())
+    );
+    for _ in 0..2 {
+        push(
+            &script,
+            PluginManagerEvent::FrameShortcut {
+                device: surge,
+                chord: FrameChord::plain("Escape"),
+            },
+        );
+    }
+    h.run_steps(3);
+    assert_eq!(h.state().ui().track_macros.mapping, None);
+    assert!(h.state().plugin_frame_in_bridge(surge));
+    assert!(script.borrow().closed.is_empty());
+    assert!(
+        script
+            .borrow()
+            .headers
+            .last()
+            .unwrap()
+            .1
+            .mapping_chip
+            .is_none()
+    );
 }
 
 #[test]

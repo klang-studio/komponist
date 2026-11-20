@@ -443,6 +443,11 @@ impl Keymap {
                 Area(FocusArea::Dialog),
                 u(UiAction::CloseDialog),
             ),
+            (
+                KeyChord::command_shift(Key::M),
+                Global,
+                u(UiAction::ToggleMacroMapping),
+            ),
             // Project.
             (
                 KeyChord::command(Key::T),

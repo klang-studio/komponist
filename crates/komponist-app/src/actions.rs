@@ -42,6 +42,8 @@ pub enum Action {
     Edit(EditAction),
     /// Automation lane, point and clip-envelope edits.
     Automation(crate::views::automation::Action),
+    /// Track macro controls and mappings.
+    Macro(crate::views::track_macros::Action),
     /// View state: panels, focus, zoom, selection, dialogs.
     Ui(UiAction),
     /// Plugins: add from the browser, GUI windows, reload, parameters.
@@ -660,6 +662,8 @@ pub enum UiAction {
     ToggleDockMaximized,
     /// Tab with a canvas focused: mixer maximised ↔ previous layout (ARCHITECTURE §13.1).
     ToggleMixer,
+    /// Ctrl/Command Shift M: toggle mapping mode for the selected track.
+    ToggleMacroMapping,
     /// Click on a dock tab.
     SetDockTab(DockTab),
     /// Ctrl Tab: next tab in the focused area.

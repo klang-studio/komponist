@@ -89,6 +89,20 @@ pub fn model(app: &App, now: Instant) -> StatusModel {
         right: String::new(),
         right_color: color::TEXT_3,
     };
+    let mapping_hint = app
+        .ui()
+        .track_macros
+        .mapping
+        .and_then(|id| app.project().track(id))
+        .map(|track| {
+            let index = app.ui().track_macros.selected(track.id);
+            let source = crate::views::track_macros::reference(
+                t,
+                index,
+                &track.macros.0[usize::from(index)],
+            );
+            t.status_macros_mapping(source)
+        });
     match app.engine().audio_state() {
         // Without real-time priority dropouts are likely: said at the right, in the warning
         // colour (S07 explains it).
@@ -102,6 +116,7 @@ pub fn model(app: &App, now: Instant) -> StatusModel {
             s.left_color = color::STATE_ERROR;
             s.right = t.status_audio_stopped().to_owned();
             s.right_color = color::STATE_ERROR;
+            s.mid = mapping_hint.unwrap_or_default();
             return s;
         }
         AudioState::Stopped => s.right = t.status_audio_stopped().to_owned(),
@@ -122,6 +137,9 @@ pub fn model(app: &App, now: Instant) -> StatusModel {
         s.mid = Platform::current()
             .pick(t.automation_lane_hint(), t.automation_lane_hint_mac())
             .to_owned();
+    }
+    if let Some(hint) = mapping_hint {
+        s.mid = hint;
     }
     if let Some(msg) = &app.ui().status
         && now.saturating_duration_since(msg.since) < STATUS_DURATION

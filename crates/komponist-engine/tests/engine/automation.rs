@@ -685,36 +685,36 @@ fn plugin_gui_edges_and_value_use_the_engine_clock() {
     rig.send(Command::Play);
     rig.process(100, 100);
     let events = rig.take_events();
-    assert!(matches!(
-        &events[0..3],
-        [
-            EngineEvent::AutomationTouch {
-                begin: true,
-                tick: Tick(1),
-                ..
-            },
-            EngineEvent::AutomationValue {
-                value: 0.5,
-                tick: Tick(2),
-                ..
-            },
-            EngineEvent::AutomationTouch {
-                begin: false,
-                tick: Tick(3),
-                ..
-            },
-        ]
-    ));
-    let EngineEvent::PluginParams {
-        slot: captured_slot,
-        events,
-    } = &events[3]
+    let [
+        EngineEvent::PluginParams {
+            slot: captured_slot,
+            events: begin,
+        },
+        EngineEvent::PluginParams { events: value, .. },
+        EngineEvent::AutomationValue {
+            value: 0.5,
+            tick: Tick(2),
+            ..
+        },
+        EngineEvent::AutomationTouch {
+            begin: false,
+            tick: Tick(3),
+            ..
+        },
+        EngineEvent::PluginParams { events: end, .. },
+        ..,
+    ] = events.as_slice()
     else {
-        panic!("expected batched plugin events, got {:?}", events[3]);
+        panic!("expected the native begin and value before the automation release: {events:?}");
     };
     assert_eq!(*captured_slot, slot);
-    assert_eq!(events.iter().count(), edits.len());
-    for (index, (event, temporary)) in events.iter().enumerate() {
+    assert_eq!(begin.write_start(), Some((owner, &begin.as_slice()[0])));
+    assert!(value.write_start().is_none() && end.write_start().is_none());
+    for (index, (event, temporary)) in [begin, value, end]
+        .into_iter()
+        .flat_map(|batch| batch.iter())
+        .enumerate()
+    {
         assert_eq!(event.tick, Tick((index + 1) as i64));
         assert_eq!(event.kind, edits[index].kind);
         assert_eq!(temporary, index == 1);
@@ -1151,16 +1151,17 @@ fn bypass_drains_pending_plugin_edits_at_the_engine_boundary() {
     rig.set_program(&program);
     rig.send(Command::Play);
     rig.process(128, 128);
-    let batch = rig
+    let received: Vec<_> = rig
         .events
         .iter()
-        .find_map(|event| match event {
+        .filter_map(|event| match event {
             EngineEvent::PluginParams { events, .. } => Some(events.as_slice()),
             _ => None,
         })
-        .unwrap();
-    assert_eq!(batch.len(), 3);
-    for (received, edit) in batch.iter().zip(edits) {
+        .flatten()
+        .collect();
+    assert_eq!(received.len(), edits.len());
+    for (received, edit) in received.into_iter().zip(edits) {
         assert_eq!(received.tick, Tick::ZERO);
         assert_eq!(received.kind, edit.kind);
     }
@@ -1458,6 +1459,7 @@ fn macro_picks_up_metadata_and_reasserts_at_resume_and_reinsert() {
         track,
         index: 0,
         value: 0.5,
+        edit: 0,
     });
     rig.process(128, 128);
     assert_eq!(log.pop().unwrap(), (128, 0, 0.5));
@@ -1470,6 +1472,7 @@ fn macro_picks_up_metadata_and_reasserts_at_resume_and_reinsert() {
         track,
         index: 0,
         value: 0.25,
+        edit: 0,
     });
     rig.process(128, 128);
     assert!(log.pop().is_err());
@@ -1479,6 +1482,7 @@ fn macro_picks_up_metadata_and_reasserts_at_resume_and_reinsert() {
         track,
         index: 0,
         value: 0.25,
+        edit: 0,
     });
     rig.process(128, 128);
     assert_eq!(log.pop().unwrap(), (256, 0, 0.25));
@@ -1562,11 +1566,11 @@ fn mapped_native_edit_is_temporary_and_reasserts_after_gesture_end() {
         }),
         _ => false,
     }));
-    assert!(
-        !rig.events
-            .iter()
-            .any(|e| matches!(e, EngineEvent::AutomationTouch { .. }))
-    );
+    assert!(!rig.events.iter().any(|e| match e {
+        EngineEvent::AutomationTouch { .. } => true,
+        EngineEvent::PluginParams { events, .. } => events.write_start().is_some(),
+        _ => false,
+    }));
     rig.process(256, 256);
     assert_eq!(log.pop().unwrap(), (256, 0, 0.25));
 
@@ -1608,6 +1612,7 @@ fn macro_controls_track_volume_pan_and_send_gain() {
         track,
         index: 0,
         value: 0.5,
+        edit: 0,
     });
     rig.process(256, 256);
     let dry = rig.r[511];
@@ -1617,6 +1622,7 @@ fn macro_controls_track_volume_pan_and_send_gain() {
         track,
         index: 2,
         value: 0.5,
+        edit: 0,
     });
     rig.process(256, 256);
     assert_eq!(rig.l[767], 0.0);
@@ -1683,6 +1689,7 @@ fn macro_converts_stepped_and_bool_parameters_at_delivery() {
         track,
         index: 0,
         value: 0.1,
+        edit: 0,
     });
     rig.process(128, 128);
     assert_eq!(log.pop().unwrap(), (128, 0, -2.0));
@@ -1692,6 +1699,7 @@ fn macro_converts_stepped_and_bool_parameters_at_delivery() {
         track,
         index: 0,
         value: 0.11,
+        edit: 0,
     });
     rig.process(256, 128);
     assert!(

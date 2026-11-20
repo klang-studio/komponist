@@ -113,6 +113,9 @@ fn collapsed(
     let label = t.devices_expand_name(&card.name);
     let response = cu.interact(rect, id, Sense::click_and_drag());
     response.widget_info(|| WidgetInfo::labeled(Role::Button, true, &label));
+    if card.macro_mapping {
+        response.clone().on_hover_text(t.macros_expand_to_map());
+    }
     let [pw, ph] = device::frame::POWER;
     let power = Rect::from_min_size(
         pos2(
@@ -268,6 +271,29 @@ fn expanded(
                 color::STATE_ERROR,
             );
         }
+    }
+    if card.macro_mappings > 0 && matches!(card.state, CardState::Missing | CardState::Crashed(_)) {
+        let row = Rect::from_min_max(
+            pos2(
+                body.left() + metrics::MESSAGE_PAD,
+                body.bottom() - size::CONTROL,
+            ),
+            pos2(body.right() - metrics::MESSAGE_PAD, body.bottom()),
+        );
+        let label = t.macros_kept(card.macro_mappings);
+        crate::views::track_macros::text(
+            cu,
+            row,
+            &label,
+            &typography::SMALL,
+            color32(color::STATE_ERROR),
+        );
+        let response = cu.interact(
+            row,
+            cu.scope_id().with("macro-mappings-kept"),
+            Sense::hover(),
+        );
+        response.widget_info(|| WidgetInfo::labeled(Role::Label, true, &label));
     }
     head_response
 }

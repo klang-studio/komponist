@@ -14,7 +14,7 @@ use egui::{Align, Layout, Rect, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
 use komponist_i18n::Lang;
 pub use komponist_ipc::frame::{HeaderEvent, HeaderModel, Mark, PluginView, names};
 use komponist_tokens::egui_support::color32;
-use komponist_tokens::{Icon, color, radius, typography};
+use komponist_tokens::{Icon, color, radius, size, space, typography};
 
 use super::metrics as m;
 use crate::widgets::button::Button;
@@ -92,6 +92,9 @@ fn left_items(ui: &mut Ui, t: Lang, model: &HeaderModel, events: &mut Vec<Header
     ui.label(name);
     let sub = fonts::rich_text(&model.sub, &typography::UI).color(color32(color::TEXT_3));
     ui.label(sub);
+    if let Some(chip) = &model.mapping_chip {
+        mapping_chip(ui, chip);
+    }
     separator(ui);
 
     let has_presets = !model.presets.is_empty();
@@ -137,6 +140,24 @@ fn left_items(ui: &mut Ui, t: Lang, model: &HeaderModel, events: &mut Vec<Header
     });
     // No preset API for CLAP/VST3 and no user presets for hexa yet (report).
     ui.add_enabled(model.can_save, Button::new(t.plugin_frame_save()));
+}
+
+fn mapping_chip(ui: &mut Ui, chip: &str) {
+    let text = crate::widgets::styled_galley(ui, chip, &typography::SMALL);
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(text.size().x + 2.0 * space::SPACE_1, size::CONTROL_COMPACT),
+        Sense::hover(),
+    );
+    px::fill(
+        ui.painter(),
+        rect,
+        radius::S,
+        color32(color::ACCENT_SURFACE),
+    );
+    let left = rect.left() + space::SPACE_1;
+    let position = crate::widgets::text_pos(rect, &text, left, ui.pixels_per_point());
+    ui.painter().galley(position, text, color32(color::TEXT_1));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, chip));
 }
 
 fn right_items(ui: &mut Ui, t: Lang, model: &HeaderModel, events: &mut Vec<HeaderEvent>) {

@@ -23,6 +23,7 @@ mod audio_recording;
 mod audio_takes;
 mod channel;
 mod clip;
+mod macros;
 pub mod metrics;
 pub mod model;
 mod param;
@@ -130,7 +131,10 @@ impl View for Inspector {
 
         let max_scroll = (self.content_height - body.height()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max_scroll);
-        if max_scroll > 0.0 && ui.rect_contains_pointer(body) {
+        if max_scroll > 0.0
+            && ui.rect_contains_pointer(body)
+            && !number_field::wheel_over_control(ui.ctx())
+        {
             let d = ui.input(|i| i.smooth_scroll_delta.y);
             if d != 0.0 {
                 self.scroll = (self.scroll - d).clamp(0.0, max_scroll);
@@ -157,6 +161,7 @@ impl View for Inspector {
         if let Some(track) = sections.track.and_then(|t| project.track(t)) {
             track::section(self, ui, ctx, &project, x, &mut y, track);
             track::devices_section(self, ui, ctx, x, &mut y, track);
+            macros::section(ui, ctx, x, &mut y, track);
             if let Some(touched) = param::touched(ctx, track.id) {
                 param::section(ui, ctx, x, &mut y, &touched);
             }

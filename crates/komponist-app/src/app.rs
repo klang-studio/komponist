@@ -27,6 +27,7 @@
 //! flight first.
 
 mod devices;
+mod track_macro_edits;
 
 use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -61,7 +62,7 @@ use crate::dialogs::DialogState;
 use crate::dialogs::new_track::default_names;
 use crate::dialogs::settings::midi_label;
 use crate::dialogs::settings::{AudioDevices, FixedDevices, SystemDevices};
-use crate::engine_sync::{EngineSync, MidiChange, SyncEvent};
+use crate::engine_sync::{EngineSync, MidiChange};
 use crate::keymap::{self, Key, KeyChord, Keymap};
 use crate::meters::Meters;
 use crate::metrics;
@@ -170,9 +171,8 @@ pub(crate) struct ShellState {
     title: Option<String>,
     /// The device host's events of this frame ([`App::device_events`]).
     device_events: Vec<PluginManagerEvent>,
-    /// A widget wanted the keyboard (a text field had the focus) at the start of the last
-    /// frame; the frame after it lost the focus must not read Esc as a shortcut.
-    keyboard_wanted: bool,
+    /// A text editor had focus at the start of the last frame.
+    text_edit_focused: bool,
     /// Where the last recording started (or starts after its count-in).
     record_from: Option<Tick>,
     /// A `Command::Record` was sent and its `CountInDone` has not arrived: only then does the
@@ -563,7 +563,7 @@ impl App {
     }
 
     fn drain_events_with_automation(&mut self, capture: bool) {
-        let events = self.engine.poll();
+        let events = self.engine.poll_engine_events();
         // Only a device stream can drop out; on the null backend (tests, `--null-audio`, CI runners
         // without RTKit) the missing priority is not worth a notice.
         let device_stream = matches!(
@@ -581,29 +581,24 @@ impl App {
         self.report_midi_changes();
         // Read after the drain: at least as new as every event drained (`record` docs).
         let playhead = self.engine.playhead();
-        let mut recompile = false;
         for event in events {
-            match event {
-                // Garbage is dropped inside `EngineSync::poll`; a failed processor's device
-                // reports its own status.
-                SyncEvent::Engine(event) => {
-                    if capture {
-                        self.capture_automation(&event);
-                    }
-                    self.engine_event(&event, playhead);
-                }
-                SyncEvent::PluginParameterInput { .. } => {}
-                SyncEvent::Device(event) => {
-                    recompile |= matches!(
-                        event,
-                        PluginManagerEvent::LatencyChanged { .. }
-                            | PluginManagerEvent::ParamsChanged { .. }
-                            | PluginManagerEvent::StatusChanged { .. }
-                    );
-                    self.handle_device_event(&event);
-                    self.shell.device_events.push(event);
-                }
+            if let EngineEvent::PluginParams { slot, ref events } = event {
+                self.native_plugin_params(slot, events, capture);
+            } else if capture {
+                self.capture_automation(&event);
             }
+            self.engine_event(&event, playhead);
+        }
+        let mut recompile = false;
+        for event in self.engine.poll_device_events() {
+            recompile |= matches!(
+                event,
+                PluginManagerEvent::LatencyChanged { .. }
+                    | PluginManagerEvent::ParamsChanged { .. }
+                    | PluginManagerEvent::StatusChanged { .. }
+            );
+            self.handle_device_event(&event);
+            self.shell.device_events.push(event);
         }
         if let Some(rec) = &mut self.recording {
             rec.update(playhead);
@@ -991,8 +986,10 @@ impl App {
     /// trigger something are consumed, so widgets do not see them.
     fn handle_keys(&mut self, ctx: &Context) {
         let wants = ctx.egui_wants_keyboard_input();
-        // The Esc that ended a text entry (it surrendered the focus) is not the shortcut's.
-        let focus_just_lost = std::mem::replace(&mut self.shell.keyboard_wanted, wants) && !wants;
+        // An Escape that dismissed a text entry belongs to that editor.
+        let text_focused = ctx.text_edit_focused();
+        let text_focus_just_lost =
+            std::mem::replace(&mut self.shell.text_edit_focused, text_focused) && !wants;
         // Tab always leaves the maximised mixer, even while a widget has the focus (ring) (owner
         // decision Q9, 2026-11-14); a text field or a dialog keeps its Tab, and every other key
         // stays with the focused widget.
@@ -1003,7 +1000,7 @@ impl App {
             && layout.dock_tab == DockTab::Mixer
             && self.ui.dialog.is_none()
             && self.dialogs.overlay.is_none()
-            && !ctx.text_edit_focused();
+            && !text_focused;
         if wants && !tab_only {
             return;
         }
@@ -1082,7 +1079,7 @@ impl App {
                 continue;
             };
             if (floating && k == Key::Escape)
-                || (focus_just_lost && k == Key::Escape)
+                || (text_focus_just_lost && k == Key::Escape)
                 || (self.dialogs.overlay.is_some() && !closes_dialog(&action))
                 || (start && !on_start_screen(&action))
             {
@@ -1123,6 +1120,9 @@ impl App {
             }
             Action::Ui(UiAction::ClearSelection) if self.doc.in_gesture() => {
                 Action::Edit(EditAction::CancelGesture)
+            }
+            Action::Ui(UiAction::ClearSelection) if self.ui.track_macros.mapping.is_some() => {
+                Action::Macro(crate::views::track_macros::Action::ExitMapping)
             }
             other => other,
         }
@@ -1188,14 +1188,30 @@ impl App {
             self.log.pop_front();
         }
         self.log.push_back(action.clone());
+        let mapping_context = self
+            .ui
+            .track_macros
+            .mapping
+            .map(|_| (self.track_macros_track(), self.ui.layout.dock_tab));
         match action {
             Action::Transport(a) => self.transport_action(a),
             Action::Edit(a) => self.edit_action(a),
             Action::Automation(a) => self.automation_action(a),
+            Action::Macro(a) => self.track_macro_action(a),
             Action::Ui(a) => self.ui_action(a),
             Action::Plugin(a) => self.plugin_action(a),
             Action::Project(a) => self.project_action(a),
             Action::Settings(a) => self.settings_action(a),
+        }
+        if mapping_context
+            .is_some_and(|context| context != (self.track_macros_track(), self.ui.layout.dock_tab))
+            || self
+                .ui
+                .track_macros
+                .mapping
+                .is_some_and(|track| self.project().track(track).is_none())
+        {
+            self.ui.track_macros.mapping = None;
         }
         if !self.keyboard_midi_active() {
             self.release_keyboard_notes_if(|_| true);
@@ -2020,7 +2036,9 @@ impl App {
                     _ => None,
                 };
                 !automation.is_some_and(|(target, command)| {
-                    self.manual_automation(AutomationOwner::Track(track), &target, command)
+                    let owner = AutomationOwner::Track(track);
+                    self.handle_macro_target_edit(owner, &target)
+                        || self.manual_automation(owner, &target, command)
                 })
             });
             if tracks.is_empty() {
@@ -2144,14 +2162,19 @@ impl App {
     fn set_send(&mut self, send: komponist_model::SendId, prop: edits::SendProp) {
         if let edits::SendProp::LevelDb(db) = prop
             && let Some((track, _)) = self.project().find_send(send)
-            && self.manual_automation(
-                AutomationOwner::Track(track.id),
-                &AutomationTarget::Send { send },
-                Command::SetSendGain {
-                    send,
-                    gain: fader_gain(db),
-                },
-            )
+            && {
+                let owner = AutomationOwner::Track(track.id);
+                let target = AutomationTarget::Send { send };
+                self.handle_macro_target_edit(owner, &target)
+                    || self.manual_automation(
+                        owner,
+                        &target,
+                        Command::SetSendGain {
+                            send,
+                            gain: fader_gain(db),
+                        },
+                    )
+            }
         {
             return;
         }
@@ -2329,6 +2352,14 @@ impl App {
             self.ui.selection.notes.clear();
             self.ui.selection.step = None;
         }
+        self.ui
+            .track_macros
+            .selected
+            .retain(|id, _| p.track(*id).is_some());
+        self.ui
+            .track_macros
+            .collapsed
+            .retain(|id| p.track(*id).is_some());
         self.update_time_range();
     }
 
@@ -2454,6 +2485,18 @@ impl App {
                 }
             }
             UiAction::SetDockTab(tab) => self.set_dock_tab(tab),
+            UiAction::ToggleMacroMapping => {
+                if let Some(track) = self
+                    .ui
+                    .track_macros
+                    .mapping
+                    .or_else(|| self.track_macros_track())
+                {
+                    self.track_macro_action(crate::views::track_macros::Action::ToggleMapping {
+                        track,
+                    });
+                }
+            }
             UiAction::NextTab => self.next_tab(),
             UiAction::Focus(area) => {
                 if self.ui.dialog.is_none() && self.dialogs.overlay.is_none() {
@@ -2596,6 +2639,9 @@ impl App {
     fn set_dock_tab(&mut self, tab: DockTab) {
         let layout = &mut self.ui.layout;
         layout.dock_open = true;
+        if layout.dock_tab != tab {
+            self.ui.track_macros.mapping = None;
+        }
         layout.dock_tab = tab;
         if tab != DockTab::Mixer
             && layout.dock_maximized
@@ -2901,8 +2947,24 @@ impl App {
             | PluginAction::AuditionPad { .. } => {
                 self.sampler_action(&action);
             }
-            PluginAction::BeginParamGesture { device, id } => self.begin_param_gesture(device, id),
-            PluginAction::SetParam { device, id, value } => self.set_param(device, id, value),
+            PluginAction::BeginParamGesture { device, id } => {
+                let intercept =
+                    self.device_automation_target(device, id)
+                        .is_some_and(|(owner, target)| {
+                            self.macro_target_captures_gesture(owner, &target)
+                        });
+                if !intercept {
+                    self.begin_param_gesture(device, id);
+                }
+            }
+            PluginAction::SetParam { device, id, value } => {
+                let handled = self
+                    .device_automation_target(device, id)
+                    .is_some_and(|(owner, target)| self.handle_macro_target_edit(owner, &target));
+                if !handled {
+                    self.set_param(device, id, value);
+                }
+            }
         }
     }
 
@@ -3046,6 +3108,7 @@ impl App {
         self.meters = Meters::new();
         self.export.forget();
         self.ui.selection = Default::default();
+        self.ui.track_macros = Default::default();
         self.ui.editor = Default::default();
         self.views.arrangement.reset_document();
         self.views.piano_roll.reset_document();

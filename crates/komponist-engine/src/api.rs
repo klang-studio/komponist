@@ -81,6 +81,8 @@ pub enum Command {
         index: u8,
         /// Normalized position.
         value: f32,
+        /// UI edit to acknowledge after publishing the rendered macro values, or zero.
+        edit: u64,
     },
     /// Deliver the current values of the track's mappings after device state has been restored.
     MacroReassert {
@@ -194,11 +196,13 @@ impl fmt::Debug for Command {
                 track,
                 index,
                 value,
+                edit,
             } => f
                 .debug_struct("SetMacro")
                 .field("track", track)
                 .field("index", index)
                 .field("value", value)
+                .field("edit", edit)
                 .finish(),
             Command::MacroReassert { track } => f
                 .debug_struct("MacroReassert")
@@ -303,7 +307,7 @@ pub enum EngineEvent {
         /// The failing slot.
         slot: SlotId,
     },
-    /// A gesture edge on a running automation lane.
+    /// A gesture edge on a running automation lane. Native begins travel with `PluginParams`.
     AutomationTouch {
         /// Channel containing the lane.
         owner: AutomationOwner,
@@ -332,8 +336,8 @@ pub enum EngineEvent {
         /// Why this segment ended.
         kind: AutomationBoundary,
     },
-    /// Plugin GUI edits in order. Temporary automation updates the live parameter cache,
-    /// while ordinary edits also update the base and schedule a snapshot.
+    /// Plugin GUI edits in order. A native automation begin travels with the edit that opened
+    /// it. Temporary automation updates the live cache while ordinary edits update the base.
     PluginParams {
         /// Slot reporting the changes.
         slot: SlotId,
@@ -406,6 +410,7 @@ pub struct Telemetry {
     /// program change just asked for it), as of the last block.
     pub(crate) audio_pending: AtomicU32,
     macro_tracks: Box<[MacroTelemetry]>,
+    pub(crate) macro_edit: AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -428,10 +433,16 @@ impl Telemetry {
             held_input: [AtomicU64::new(0), AtomicU64::new(0)],
             audio_underruns: AtomicU32::new(0),
             audio_pending: AtomicU32::new(0),
+            macro_edit: AtomicU64::new(0),
             macro_tracks: (0..crate::MAX_TRACKS)
                 .map(|_| MacroTelemetry::default())
                 .collect(),
         }
+    }
+
+    /// The last UI macro edit covered by the published telemetry.
+    pub fn applied_macro_edit(&self) -> u64 {
+        self.macro_edit.load(Ordering::Acquire)
     }
 
     /// The last applied positions of a track's eight macro slots.

@@ -366,6 +366,7 @@ impl Engine {
             master_automation: automation::State::new(),
             automation_time: 0,
             automation_pass_started: false,
+            macro_edit: 0,
             offline: false,
             metronome: Metronome::default(),
             cut: None,
@@ -762,6 +763,8 @@ struct Core {
     master_automation: automation::State,
     automation_time: u64,
     automation_pass_started: bool,
+    /// Latest UI macro edit applied by the command drain.
+    macro_edit: u64,
     offline: bool,
     metronome: Metronome,
     /// The fade of a hard cut in progress (`Command::Stop` while stopped).
@@ -1541,6 +1544,9 @@ impl Core {
                 t.publish_macros(index, track.id, self.tracks[index].automation.macros.values);
             }
         }
+        if self.macro_edit != t.macro_edit.load(Ordering::Relaxed) {
+            t.macro_edit.store(self.macro_edit, Ordering::Release);
+        }
         if held != self.held_input {
             self.held_input = held;
             t.held_input[0].store(held as u64, Ordering::Relaxed);
@@ -1780,10 +1786,12 @@ impl Core {
                 track,
                 index,
                 value,
+                edit,
             } => {
                 if let Some(state) = self.state_of(track) {
                     state.automation.macros.set(index, value);
                 }
+                self.macro_edit = self.macro_edit.max(edit);
             }
             Command::MacroReassert { track } => self.reassert_macros(Some(track), None),
             Command::SetTrackGain { track, gain } => {

@@ -420,6 +420,7 @@ impl Capture<'_> {
                         self.clock.window.rate,
                     )
                 });
+                let mut starts_write = false;
                 if !temporary
                     && let Some((cursor, index)) = state.cursor(lanes, target)
                     && lanes[index].mode != AutomationMode::Off
@@ -446,49 +447,44 @@ impl Capture<'_> {
                             let playback_start =
                                 self.clock.time + u64::from(self.clock.window.frames);
                             let notify = cursor.end(lane, fractional_tick, playback_start);
+                            if notify {
+                                // Earlier native edits belong before this write's final sample
+                                // and release, even when the processor reports them together.
+                                self.flush_plugin_params(device.slot, &mut batch);
+                            }
                             flush_value(cursor, owner, target, None, self.outbox, self.telemetry);
                             notify.then_some(false)
                         }
                     };
-                    if let Some(begin) = edge {
-                        *self.pass_started |= begin;
+                    starts_write = edge == Some(true);
+                    if edge == Some(false) {
                         self.outbox.send(
                             EngineEvent::AutomationTouch {
                                 owner,
                                 target,
-                                begin,
+                                begin: false,
                                 tick,
                             },
                             self.telemetry,
                         );
                     }
                 }
-                if batch.push(
+                let full = batch.push(
                     PluginParam {
                         tick,
                         kind: edit.kind,
                     },
                     temporary,
-                ) {
-                    self.outbox.send(
-                        EngineEvent::PluginParams {
-                            slot: device.slot,
-                            events: batch,
-                        },
-                        self.telemetry,
-                    );
-                    batch = PluginParamBatch::new();
+                );
+                if starts_write {
+                    *self.pass_started = true;
+                    batch.mark_write_start(owner);
+                }
+                if full || starts_write {
+                    self.flush_plugin_params(device.slot, &mut batch);
                 }
             }
-            if !batch.as_slice().is_empty() {
-                self.outbox.send(
-                    EngineEvent::PluginParams {
-                        slot: device.slot,
-                        events: batch,
-                    },
-                    self.telemetry,
-                );
-            }
+            self.flush_plugin_params(device.slot, &mut batch);
         }
         let (tick, _, _) = self.clock.at(self.clock.window.frames - 1);
         for (lane, cursor) in lanes.iter().zip(state.cursors()) {
@@ -500,6 +496,18 @@ impl Capture<'_> {
                 lane.target,
                 repeated,
                 self.outbox,
+                self.telemetry,
+            );
+        }
+    }
+
+    fn flush_plugin_params(&mut self, slot: crate::SlotId, batch: &mut PluginParamBatch) {
+        if !batch.as_slice().is_empty() {
+            self.outbox.send(
+                EngineEvent::PluginParams {
+                    slot,
+                    events: std::mem::replace(batch, PluginParamBatch::new()),
+                },
                 self.telemetry,
             );
         }

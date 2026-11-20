@@ -300,15 +300,22 @@ fn loop_recording_makes_a_take_per_lap() {
 
 #[test]
 fn esc_discards_the_take_and_playback_goes_on() {
+    use komponist_app::views::track_macros::Action as Macro;
+
     let (mut h, track) = rig(false);
     press(&mut h, egui::Key::R);
     run(&mut h, 40, &[]);
     run(&mut h, 500, &[(100, on(60, 100)), (300, off(60))]);
     assert!(h.state().recording().is_some());
+    h.state_mut()
+        .dispatch(Action::Macro(Macro::ToggleMapping { track }));
     press(&mut h, egui::Key::Escape);
     assert!(h.state().recording().is_none());
+    assert_eq!(h.state().ui().track_macros.mapping, Some(track));
     run(&mut h, 100, &[(10, on(62, 100))]);
     assert_eq!(h.state().transport(), TransportState::Playing);
+    press(&mut h, egui::Key::Escape);
+    assert_eq!(h.state().ui().track_macros.mapping, None);
     assert!(
         h.state().engine().playhead() > Tick(540),
         "playback goes on"
