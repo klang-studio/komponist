@@ -7,7 +7,7 @@
 //! that land on the same key share one note: it starts with the first and ends with the last
 //! release. Other MIDI messages pass through.
 
-use komponist_engine::{Event, EventKind, EventProcessor, EventSink, ProcessContext};
+use komponist_engine::{Event, EventKind, EventProcessor, EventSink, NOTE_ID_NONE, ProcessContext};
 use komponist_i18n::Lang;
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, WidgetKind};
 use komponist_model::params::{ParamId, ParamInfo, ParamKind};
@@ -184,6 +184,8 @@ struct Scale {
     snap: Snap,
     /// Per channel and input key: the key it was played as, or [`NONE`].
     played_as: Box<[[u8; 128]; 16]>,
+    /// Per channel and input key: the ID of the note currently holding the key.
+    input_ids: Box<[[u32; 128]; 16]>,
     /// Per channel and output key: how many input keys hold it.
     holders: Box<[[u8; 128]; 16]>,
     /// The ID of the note-on forwarded for each held output key.
@@ -197,8 +199,9 @@ impl Scale {
             scale: 0,
             snap: Snap::Nearest,
             played_as: Box::new([[NONE; 128]; 16]),
+            input_ids: Box::new([[NOTE_ID_NONE; 128]; 16]),
             holders: Box::new([[0; 128]; 16]),
-            forwarded_ids: Box::new([[komponist_engine::NOTE_ID_NONE; 128]; 16]),
+            forwarded_ids: Box::new([[NOTE_ID_NONE; 128]; 16]),
         }
     }
 }
@@ -238,6 +241,7 @@ impl EventProcessor for Scale {
                         continue;
                     };
                     self.played_as[ch][k] = mapped;
+                    self.input_ids[ch][k] = note_id;
                     let holders = &mut self.holders[ch][usize::from(mapped)];
                     *holders = holders.saturating_add(1);
                     if *holders == 1 {
@@ -253,9 +257,15 @@ impl EventProcessor for Scale {
                         );
                     }
                 }
-                EventKind::NoteOff { key, channel, .. } => {
+                EventKind::NoteOff {
+                    key,
+                    channel,
+                    note_id,
+                } => {
                     let (ch, k) = (usize::from(channel & 15), usize::from(key & 127));
-                    self.end(ch, k, e.offset, out);
+                    if note_id == NOTE_ID_NONE || note_id == self.input_ids[ch][k] {
+                        self.end(ch, k, e.offset, out);
+                    }
                 }
                 EventKind::AllNotesOff => {
                     self.reset();
@@ -270,9 +280,9 @@ impl EventProcessor for Scale {
 
     fn reset(&mut self) {
         *self.played_as = [[NONE; 128]; 16];
+        self.input_ids.fill([NOTE_ID_NONE; 128]);
         *self.holders = [[0; 128]; 16];
-        self.forwarded_ids
-            .fill([komponist_engine::NOTE_ID_NONE; 128]);
+        self.forwarded_ids.fill([NOTE_ID_NONE; 128]);
     }
 }
 
@@ -283,6 +293,7 @@ impl Scale {
         if mapped == NONE {
             return;
         }
+        self.input_ids[ch][k] = NOTE_ID_NONE;
         let holders = &mut self.holders[ch][usize::from(mapped)];
         *holders = holders.saturating_sub(1);
         if *holders == 0 {

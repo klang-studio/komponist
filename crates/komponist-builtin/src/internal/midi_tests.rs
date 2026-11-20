@@ -39,6 +39,14 @@ fn off(key: u8, offset: u32) -> Event {
     }
 }
 
+fn with_note_id(mut event: Event, id: u32) -> Event {
+    match &mut event.kind {
+        EventKind::NoteOn { note_id, .. } | EventKind::NoteOff { note_id, .. } => *note_id = id,
+        _ => unreachable!(),
+    }
+    event
+}
+
 fn ctx(frames: u32, bpm: f64, playing: bool, position_ticks: f64) -> ProcessContext {
     ProcessContext {
         frames,
@@ -208,21 +216,14 @@ fn two_keys_that_land_on_one_note_share_it() {
     let stage = p.event_processor().unwrap();
     let c = ctx(256, 120.0, true, 0.0);
     // C# and D both become D: one note-on, the off with the last release.
-    let with_id = |mut event: Event, id| {
-        match &mut event.kind {
-            EventKind::NoteOn { note_id, .. } | EventKind::NoteOff { note_id, .. } => *note_id = id,
-            _ => unreachable!(),
-        }
-        event
-    };
     let out = call(
         stage,
         &c,
         &[
-            with_id(on(61, 0), 15),
-            with_id(on(62, 1), 39),
-            with_id(off(61, 10), 15),
-            with_id(off(62, 20), 39),
+            with_note_id(on(61, 0), 15),
+            with_note_id(on(62, 1), 39),
+            with_note_id(off(61, 10), 15),
+            with_note_id(off(62, 20), 39),
         ],
     );
     let ev: Vec<_> = out.iter().map(|e| (e.offset, e.kind)).collect();
@@ -247,6 +248,30 @@ fn two_keys_that_land_on_one_note_share_it() {
             }
         ) && ev[1].0 == 20
     );
+}
+
+#[test]
+fn a_stale_note_off_does_not_release_a_retriggered_scale_note() {
+    let mut p = stage_values(Internal::Tonleiter, &[("mode", 1.0)]); // C major, up
+    let stage = p.event_processor().unwrap();
+    let c = ctx(256, 120.0, true, 0.0);
+    for release_id in [39, NOTE_ID_NONE] {
+        let events = [
+            with_note_id(on(61, 0), 15),
+            with_note_id(on(61, 1), 39),
+            with_note_id(off(61, 10), 15),
+            with_note_id(off(61, 20), release_id),
+        ];
+        assert_eq!(
+            call(stage, &c, &events),
+            [
+                with_note_id(on(62, 0), 15),
+                with_note_id(off(62, 1), 15),
+                with_note_id(on(62, 1), 39),
+                with_note_id(off(62, 20), 39),
+            ]
+        );
+    }
 }
 
 #[test]
