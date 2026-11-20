@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, Weak,
+        atomic::{AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError},
     },
     time::{Duration, Instant},
@@ -15,7 +16,29 @@ use std::{
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const LOOKUP_RETRY: Duration = Duration::from_millis(50);
 const LOOKUP_WORKERS: usize = 2;
+const MAX_LOOKUP_WORKERS: usize = 2 * LOOKUP_WORKERS;
 const LOOKUP_QUEUE: usize = 16;
+// Leave at least half the queue for files whose first metadata has yet to arrive.
+const MAX_REFRESH_REQUESTS: usize = LOOKUP_QUEUE / 2;
+
+struct LookupSlot(Arc<AtomicUsize>);
+
+impl LookupSlot {
+    fn acquire(counter: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
+        counter
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                (used < limit).then_some(used + 1)
+            })
+            .ok()?;
+        Some(Self(Arc::clone(counter)))
+    }
+}
+
+impl Drop for LookupSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 #[derive(Debug)]
 struct PendingLookup {
@@ -30,15 +53,18 @@ struct Lookup {
     result: SyncSender<Option<Arc<PoolFile>>>,
     interest: Weak<()>,
     ctx: egui::Context,
+    refresh_slot: Option<LookupSlot>,
 }
 
 #[derive(Debug)]
 struct LookupWorker {
     queue: SyncSender<Lookup>,
+    refresh_requests: Arc<AtomicUsize>,
 }
 
 impl LookupWorker {
     fn spawn(
+        workers: &Arc<AtomicUsize>,
         resolve: impl Fn(&AudioFile, Option<&Path>) -> Option<Arc<PoolFile>> + Send + Sync + 'static,
     ) -> Option<Self> {
         let (queue, jobs) = mpsc::sync_channel::<Lookup>(LOOKUP_QUEUE);
@@ -46,12 +72,16 @@ impl LookupWorker {
         let resolve = Arc::new(resolve);
         let mut started = false;
         for n in 0..LOOKUP_WORKERS {
+            let Some(thread_slot) = LookupSlot::acquire(workers, MAX_LOOKUP_WORKERS) else {
+                break;
+            };
             let jobs = Arc::clone(&jobs);
             let resolve = Arc::clone(&resolve);
             // A slow mount can hold one lookup without holding the queue mutex or the UI.
             let worker = std::thread::Builder::new()
                 .name(format!("komponist-waveform-file-{n}"))
                 .spawn(move || {
+                    let _thread_slot = thread_slot;
                     loop {
                         let next = jobs.lock().unwrap_or_else(|err| err.into_inner()).recv();
                         let Ok(job) = next else { break };
@@ -59,6 +89,7 @@ impl LookupWorker {
                             continue;
                         }
                         let file = resolve(&job.file, job.dir.as_deref());
+                        drop(job.refresh_slot);
                         if job.result.send(file).is_ok() {
                             job.ctx.request_repaint();
                         }
@@ -66,7 +97,10 @@ impl LookupWorker {
                 });
             started |= worker.is_ok();
         }
-        started.then_some(Self { queue })
+        started.then(|| Self {
+            queue,
+            refresh_requests: Arc::default(),
+        })
     }
 
     fn request(
@@ -74,7 +108,16 @@ impl LookupWorker {
         file: &AudioFile,
         dir: Option<&Path>,
         ctx: &egui::Context,
+        first_lookup: bool,
     ) -> Option<PendingLookup> {
+        let refresh_slot = if first_lookup {
+            None
+        } else {
+            Some(LookupSlot::acquire(
+                &self.refresh_requests,
+                MAX_REFRESH_REQUESTS,
+            )?)
+        };
         let (send, result) = mpsc::sync_channel(1);
         let interest = Arc::new(());
         self.queue
@@ -84,6 +127,7 @@ impl LookupWorker {
                 result: send,
                 interest: Arc::downgrade(&interest),
                 ctx: ctx.clone(),
+                refresh_slot,
             })
             .ok()?;
         Some(PendingLookup {
@@ -169,7 +213,10 @@ pub struct AudioCache {
     files: HashMap<(AudioFile, Option<PathBuf>), FileEntry>,
     waves: HashMap<usize, WaveEntry>,
     worker: Option<LookupWorker>,
+    // Still-running workers from abandoned documents count against the same limit.
+    workers: Arc<AtomicUsize>,
     worker_retry: Option<Instant>,
+    refresh_context: Option<egui::Context>,
     frame: u64,
 }
 impl AudioCache {
@@ -177,6 +224,11 @@ impl AudioCache {
     pub(super) fn clear(&mut self) {
         self.files.clear();
         self.waves.clear();
+        // A blocked filesystem call cannot be cancelled. A fresh queue lets the new document
+        // start work on different threads while the previous generation winds down.
+        self.worker = None;
+        self.worker_retry = None;
+        self.refresh_context = None;
     }
 
     pub fn begin_frame(&mut self) {
@@ -186,7 +238,50 @@ impl AudioCache {
         self.waves.retain(|_, e| e.used == self.frame);
         // Bound file handles to visible clips; the global pool shares active engine handles.
         self.files.retain(|_, file| file.used == self.frame);
+        if let Some(ctx) = self.refresh_context.take()
+            && let Some(worker) = &self.worker
+        {
+            Self::refresh_files(&mut self.files, worker, &ctx);
+        }
     }
+
+    fn refresh_files(
+        files: &mut HashMap<(AudioFile, Option<PathBuf>), FileEntry>,
+        worker: &LookupWorker,
+        ctx: &egui::Context,
+    ) {
+        let slots =
+            MAX_REFRESH_REQUESTS.saturating_sub(worker.refresh_requests.load(Ordering::Relaxed));
+        // The frame has already queued initial lookups, including for clips drawn later.
+        // Select just the oldest visible refreshes that can fit, independent of paint order.
+        let mut due = Vec::with_capacity(slots);
+        if slots == 0 {
+            return;
+        }
+        for ((source, dir), file) in files {
+            let Some(checked) = file.checked else {
+                continue;
+            };
+            if file.pending.is_some() || checked.elapsed() < REFRESH_INTERVAL {
+                continue;
+            }
+            let index = due.partition_point(|(time, _, _, _)| *time <= checked);
+            if index < slots {
+                if due.len() == slots {
+                    due.pop();
+                }
+                due.insert(index, (checked, source, dir, file));
+            }
+        }
+        for (_, source, dir, file) in due {
+            file.pending = worker.request(source, dir.as_deref(), ctx, false);
+            if file.pending.is_none() {
+                ctx.request_repaint_after(LOOKUP_RETRY);
+                break;
+            }
+        }
+    }
+
     pub fn get(
         &mut self,
         clip: &Arc<Clip>,
@@ -215,13 +310,17 @@ impl AudioCache {
                     .worker_retry
                     .is_none_or(|at| at.elapsed() >= REFRESH_INTERVAL)
             {
-                self.worker = LookupWorker::spawn(resolve);
+                self.worker = LookupWorker::spawn(&self.workers, resolve);
                 self.worker_retry = self.worker.is_none().then(Instant::now);
             }
             if let Some(worker) = self.worker.as_ref() {
-                file.pending = worker.request(&a.file, dir, ctx);
-                if file.pending.is_none() {
-                    ctx.request_repaint_after(LOOKUP_RETRY);
+                if file.checked.is_none() {
+                    file.pending = worker.request(&a.file, dir, ctx, true);
+                    if file.pending.is_none() {
+                        ctx.request_repaint_after(LOOKUP_RETRY);
+                    }
+                } else {
+                    self.refresh_context.get_or_insert_with(|| ctx.clone());
                 }
             }
         }
@@ -360,6 +459,8 @@ mod tests {
                 Instant::now() < deadline,
                 "waveform did not reach expected state: {state:?}"
             );
+            cache.end_frame();
+            cache.begin_frame();
             std::thread::sleep(Duration::from_millis(5));
         }
     }
@@ -424,15 +525,12 @@ mod tests {
         assert!(matches!(held_file.peaks(), Err(AudioError::Io(_))));
 
         let lookup_pool = pool.clone();
-        let worker = LookupWorker::spawn(move |file, dir| {
+        let mut cache = AudioCache::default();
+        cache.worker = LookupWorker::spawn(&cache.workers, move |file, dir| {
             file.resolve(dir)
                 .and_then(|path| lookup_pool.open(&path).ok())
-        })
-        .unwrap();
-        let mut cache = AudioCache {
-            worker: Some(worker),
-            ..AudioCache::default()
-        };
+        });
+        assert!(cache.worker.is_some());
         let clip = clip(&path);
         let ctx = egui::Context::default();
         cache.begin_frame();
@@ -448,6 +546,200 @@ mod tests {
             state == AudioFileState::Ready
         });
         assert!(!restored.is_empty());
+    }
+
+    fn block_lookup_workers(cache: &mut AudioCache) -> (Receiver<()>, mpsc::Sender<()>) {
+        let (started, calls) = mpsc::channel();
+        let (resume, held) = mpsc::channel();
+        let held = Mutex::new(held);
+        cache.worker = LookupWorker::spawn(&cache.workers, move |_, _| {
+            let _ = started.send(());
+            let _ = held.lock().unwrap().recv();
+            None
+        });
+        assert!(cache.worker.is_some());
+        (calls, resume)
+    }
+
+    #[test]
+    fn a_new_document_can_load_with_both_old_workers_blocked_and_threads_stay_bounded() {
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("local.wav");
+        write_wav(&path, 48_000, 9_000);
+        let local = clip(&path);
+        let old = [
+            clip(&scratch.path().join("blocked-a.wav")),
+            clip(&scratch.path().join("blocked-b.wav")),
+        ];
+        let ctx = egui::Context::default();
+        let mut cache = AudioCache::default();
+        cache.begin_frame();
+        let (old_calls, resume_old) = block_lookup_workers(&mut cache);
+        for clip in &old {
+            assert_eq!(
+                read_wave(&mut cache, clip, None, &ctx).0,
+                AudioFileState::Pending
+            );
+        }
+        for _ in &old {
+            old_calls.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+
+        cache.clear();
+        let ready = wait_for_wave(&mut cache, &local, None, &ctx, |state, _| {
+            state == AudioFileState::Ready
+        });
+        assert!(!ready.is_empty());
+        assert_eq!(cache.workers.load(Ordering::Relaxed), MAX_LOOKUP_WORKERS);
+
+        cache.clear();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while cache.workers.load(Ordering::Relaxed) != LOOKUP_WORKERS {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let (new_calls, resume_new) = block_lookup_workers(&mut cache);
+        for clip in &old {
+            read_wave(&mut cache, clip, None, &ctx);
+        }
+        for _ in &old {
+            new_calls.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        for _ in 0..3 {
+            cache.clear();
+            assert_eq!(
+                read_wave(&mut cache, &local, None, &ctx).0,
+                AudioFileState::Pending
+            );
+            assert!(cache.worker.is_none());
+            assert_eq!(cache.workers.load(Ordering::Relaxed), MAX_LOOKUP_WORKERS);
+        }
+        for _ in &old {
+            resume_old.send(()).unwrap();
+            resume_new.send(()).unwrap();
+        }
+        let restored = wait_for_wave(&mut cache, &local, None, &ctx, |state, _| {
+            state == AudioFileState::Ready
+        });
+        assert_eq!(restored, ready);
+    }
+
+    #[test]
+    fn periodic_refreshes_cannot_fill_the_slots_for_a_new_visible_file() {
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("first-read.wav");
+        write_wav(&path, 48_000, 9_000);
+        let new_clip = clip(&path);
+        let (started, calls) = mpsc::channel();
+        let (resume, held) = mpsc::channel();
+        let held = Mutex::new(held);
+        let started_reads = AtomicUsize::new(0);
+        let ctx = egui::Context::default();
+        let mut cache = AudioCache::default();
+        cache.worker = LookupWorker::spawn(&cache.workers, move |file, dir| {
+            if started_reads.fetch_add(1, Ordering::Relaxed) < LOOKUP_WORKERS {
+                let _ = started.send(());
+                let _ = held.lock().unwrap().recv();
+            }
+            resolve(file, dir)
+        });
+        cache.begin_frame();
+        for index in 0..LOOKUP_QUEUE + MAX_REFRESH_REQUESTS {
+            let repeated = clip(&scratch.path().join(format!("periodic-{index}.wav")));
+            let ClipContent::Audio(link) = &repeated.content else {
+                panic!("audio clip")
+            };
+            cache.files.insert(
+                (link.file.clone(), None),
+                FileEntry {
+                    checked: Some(Instant::now() - REFRESH_INTERVAL),
+                    ..FileEntry::default()
+                },
+            );
+            read_wave(&mut cache, &repeated, None, &ctx);
+        }
+        cache.end_frame();
+        for _ in 0..LOOKUP_WORKERS {
+            calls.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        assert_eq!(
+            cache
+                .files
+                .values()
+                .filter(|entry| entry.pending.is_some())
+                .count(),
+            MAX_REFRESH_REQUESTS
+        );
+
+        cache.begin_frame();
+        assert_eq!(
+            read_wave(&mut cache, &new_clip, None, &ctx).0,
+            AudioFileState::Pending
+        );
+        let ClipContent::Audio(new_link) = &new_clip.content else {
+            panic!("audio clip")
+        };
+        assert!(
+            cache.files[&(new_link.file.clone(), None)]
+                .pending
+                .is_some()
+        );
+        for _ in 0..LOOKUP_WORKERS {
+            resume.send(()).unwrap();
+        }
+        let ready = wait_for_wave(&mut cache, &new_clip, None, &ctx, |state, _| {
+            state == AudioFileState::Ready
+        });
+        assert!(!ready.is_empty());
+    }
+
+    #[test]
+    fn the_oldest_visible_periodic_checks_get_the_first_refresh_slots() {
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("returning.wav");
+        let returning = clip(&path);
+        let ctx = egui::Context::default();
+        let mut cache = AudioCache::default();
+        cache.begin_frame();
+        let ClipContent::Audio(link) = &returning.content else {
+            panic!("audio clip")
+        };
+        let key = (link.file.clone(), None);
+        cache.files.insert(
+            key.clone(),
+            FileEntry {
+                checked: Some(Instant::now() - 2 * REFRESH_INTERVAL),
+                ..FileEntry::default()
+            },
+        );
+        write_wav(&path, 48_000, 9_000);
+
+        for index in 0..LOOKUP_QUEUE {
+            let clip = clip(&scratch.path().join(format!("early-row-{index}.wav")));
+            let ClipContent::Audio(link) = &clip.content else {
+                panic!("audio clip")
+            };
+            cache.files.insert(
+                (link.file.clone(), None),
+                FileEntry {
+                    checked: Some(Instant::now() - REFRESH_INTERVAL),
+                    ..FileEntry::default()
+                },
+            );
+            read_wave(&mut cache, &clip, None, &ctx);
+        }
+        // This source is encountered only after every much younger periodic candidate.
+        assert_eq!(
+            read_wave(&mut cache, &returning, None, &ctx).0,
+            AudioFileState::Missing
+        );
+        cache.end_frame();
+        assert!(cache.files[&key].pending.is_some());
+        cache.begin_frame();
+        let ready = wait_for_wave(&mut cache, &returning, None, &ctx, |state, _| {
+            state == AudioFileState::Ready
+        });
+        assert!(!ready.is_empty());
     }
 
     #[test]
@@ -466,7 +758,8 @@ mod tests {
         let (resume, blocked) = mpsc::channel();
         let blocked = Mutex::new(blocked);
         let (returned, old_lookup_done) = mpsc::channel();
-        let worker = LookupWorker::spawn(move |_, dir| {
+        let mut cache = AudioCache::default();
+        cache.worker = LookupWorker::spawn(&cache.workers, move |_, dir| {
             let dir = dir.unwrap();
             let old = dir.ends_with("old");
             if old {
@@ -482,12 +775,8 @@ mod tests {
                 returned.send(()).unwrap();
             }
             file
-        })
-        .unwrap();
-        let mut cache = AudioCache {
-            worker: Some(worker),
-            ..AudioCache::default()
-        };
+        });
+        assert!(cache.worker.is_some());
         cache.begin_frame();
         let (state, _) = read_wave(&mut cache, &clip, Some(&old_dir), &ctx);
         assert_eq!(state, AudioFileState::Pending);
