@@ -755,10 +755,10 @@ impl App {
     }
 
     fn automation_stepped(&self, target: EngineTarget) -> bool {
-        let EngineTarget::Slot { slot, wire_id } = target else {
-            return false;
-        };
-        let Some(device) = self.engine.program().and_then(|p| p.slots.device(slot)) else {
+        let EngineTarget::Slot {
+            device, wire_id, ..
+        } = target
+        else {
             return false;
         };
         let Some((_, _, model)) = self.project().find_device(device) else {

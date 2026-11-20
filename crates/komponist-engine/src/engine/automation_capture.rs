@@ -1,7 +1,7 @@
 //! Engine-clock capture for native controls and completed bridge blocks.
 
 use komponist_model::automation::{AutomationMode, AutomationOwner};
-use komponist_model::{SendId, Tick};
+use komponist_model::{DeviceId, SendId, Tick};
 
 use super::Core;
 use crate::api::{EngineEvent, Telemetry};
@@ -18,22 +18,22 @@ use crate::slots::Slot;
 const MAX_PLUGIN_EDITS: usize = 1024;
 
 impl Core {
-    pub(super) fn slot_owner(&self, slot: SlotId) -> Option<AutomationOwner> {
+    pub(super) fn slot_device(&self, slot: SlotId) -> Option<(AutomationOwner, DeviceId)> {
         let program = self.program.as_deref()?;
-        if program
+        if let Some(device) = program
             .master
             .chain
             .iter()
-            .any(|device| device.slot == slot)
+            .find(|device| device.slot == slot)
         {
-            return Some(AutomationOwner::Master);
+            return Some((AutomationOwner::Master, device.device));
         }
         program.tracks.iter().find_map(|track| {
             track
                 .chain
                 .iter()
-                .any(|device| device.slot == slot)
-                .then_some(AutomationOwner::Track(track.id))
+                .find(|device| device.slot == slot)
+                .map(|device| (AutomationOwner::Track(track.id), device.device))
         })
     }
 
@@ -191,7 +191,7 @@ impl Core {
     }
 
     pub(super) fn chase_automation_slot(&mut self, slot: SlotId) {
-        if let Some(owner) = self.slot_owner(slot)
+        if let Some((owner, _)) = self.slot_device(slot)
             && let Some((lanes, state)) = self.locate_automation(owner)
         {
             state.chase_slot(lanes, slot);
@@ -448,6 +448,7 @@ impl Capture<'_> {
                 };
                 let target = EngineTarget::Slot {
                     slot: device.slot,
+                    device: device.device,
                     wire_id,
                 };
                 if matches!(edit.kind, ParameterEditKind::Value { .. }) {
@@ -492,7 +493,7 @@ impl Capture<'_> {
                             if notify {
                                 // Earlier native edits belong before this write's final sample
                                 // and release, even when the processor reports them together.
-                                self.flush_plugin_params(device.slot, &mut batch);
+                                self.flush_plugin_params(device, &mut batch);
                             }
                             flush_value(cursor, owner, target, None, self.outbox, self.telemetry);
                             notify.then_some(false)
@@ -523,10 +524,10 @@ impl Capture<'_> {
                     batch.mark_write_start(owner);
                 }
                 if full || starts_write {
-                    self.flush_plugin_params(device.slot, &mut batch);
+                    self.flush_plugin_params(device, &mut batch);
                 }
             }
-            self.flush_plugin_params(device.slot, &mut batch);
+            self.flush_plugin_params(device, &mut batch);
         }
         let (tick, _, _) = self.clock.at(self.clock.window.frames - 1);
         for (lane, cursor) in lanes.iter().zip(state.cursors()) {
@@ -543,11 +544,12 @@ impl Capture<'_> {
         }
     }
 
-    fn flush_plugin_params(&mut self, slot: crate::SlotId, batch: &mut PluginParamBatch) {
+    fn flush_plugin_params(&mut self, device: &ChainSlot, batch: &mut PluginParamBatch) {
         if !batch.as_slice().is_empty() {
             self.outbox.send(
                 EngineEvent::PluginParams {
-                    slot,
+                    slot: device.slot,
+                    device: device.device,
                     events: std::mem::replace(batch, PluginParamBatch::new()),
                 },
                 self.telemetry,

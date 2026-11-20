@@ -38,6 +38,7 @@ pub(super) fn resolve_parameter(
     Some((
         EngineTarget::Slot {
             slot,
+            device,
             wire_id: parameter.wire_id,
         },
         parameter,
