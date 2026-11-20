@@ -369,6 +369,8 @@ fn next_take_numbers() {
     let (p, _) = ok_with(add_take(&p, f.midi, "Take 12a".into()));
     let (p, _) = ok_with(add_take(&p, f.midi, "● Aufnahme · Take 20".into()));
     assert_eq!(next_take_number(&p), 8);
+    let (p, _) = ok_with(add_take(&p, f.midi, "Take 13 · incomplete".into()));
+    assert_eq!(next_take_number(&p), 14);
 }
 
 // ------------------------------------------------------------------------------------------------

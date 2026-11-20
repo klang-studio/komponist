@@ -275,6 +275,8 @@ pub enum EngineEvent {
         track: TrackId,
         /// Song position.
         tick: Tick,
+        /// Zero-based capture lap the latency-corrected start belongs to.
+        lap: u32,
         /// MIDI key.
         key: u8,
         /// MIDI velocity 1 ..= 127.
@@ -290,6 +292,21 @@ pub enum EngineEvent {
         tick: Tick,
         /// MIDI key.
         key: u8,
+    },
+    /// A full UI queue dropped MIDI for this track in one lap of the current recording.
+    RecordingNoteLoss {
+        /// Track whose take is incomplete.
+        track: TrackId,
+        /// Zero-based lap, after correction for input timing.
+        lap: u32,
+    },
+    /// Recording stopped because the UI could no longer receive its capture transitions.
+    RecordingInterrupted {
+        /// Position where capture stopped.
+        at: Tick,
+        /// Earliest lap affected by the interruption. Latency-corrected input may belong
+        /// to an already closed lap.
+        first_incomplete_lap: u32,
     },
     /// Playback jumped from the loop end back to the loop start. During loop recording each wrap
     /// starts a new take (S02).

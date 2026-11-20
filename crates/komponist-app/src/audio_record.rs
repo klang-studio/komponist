@@ -505,6 +505,8 @@ impl App {
                     }
                     if let Some(notice) = applied.unlinked_notice(self.lang) {
                         self.set_status(notice, StatusKind::Info);
+                    } else if midi.as_ref().is_some_and(record::Commit::incomplete) {
+                        self.set_status(self.lang.record_notes_lost(), StatusKind::Error);
                     } else if applied.linked > 0 {
                         self.set_status(
                             self.lang.audio_record_complete(applied.linked),
