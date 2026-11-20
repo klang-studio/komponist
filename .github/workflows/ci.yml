@@ -243,14 +243,14 @@ jobs:
       - name: Build test plugins
         run: scripts/build-test-plugins.sh
 
-      # DX12/WARP intermittently terminates concurrent kittest renderings (exit 2173, no Rust
-      # panic). Serialize only the UI suite and leave its output visible if the driver exits.
-      # Run both suites even if one fails, and propagate either failure to the step.
+      # DX12/WARP can terminate concurrent kittest renderings in the app and UI suites
+      # (exit 2173, no Rust panic). Keep other workspace tests parallel and run every suite.
       - name: Test
         timeout-minutes: 45
         run: |
           test_status=0
-          cargo test --workspace --exclude komponist-ui --no-fail-fast || test_status=$?
+          cargo test --workspace --exclude komponist-app --exclude komponist-ui --no-fail-fast || test_status=$?
+          cargo test -p komponist-app --no-fail-fast -- --test-threads=1 --nocapture || test_status=$?
           cargo test -p komponist-ui --no-fail-fast -- --test-threads=1 --nocapture || test_status=$?
           exit "$test_status"
 
