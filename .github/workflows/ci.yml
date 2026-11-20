@@ -86,6 +86,10 @@ jobs:
       - name: Build test plugins
         run: scripts/build-test-plugins.sh
 
+      - name: Test plugin fixtures
+        working-directory: test-plugins
+        run: cargo test --workspace --locked --no-fail-fast
+
       - name: Allow small rendering differences in snapshots
         run: |
           cat > kittest.toml <<TOML
@@ -173,6 +177,10 @@ jobs:
       - name: Build test plugins
         run: scripts/build-test-plugins.sh
 
+      - name: Test plugin fixtures
+        working-directory: test-plugins
+        run: cargo test --workspace --locked --no-fail-fast
+
       # No gdb and no /proc on macOS for a watchdog like the Linux job's: the step timeout ends a hang.
       # --no-fail-fast: every test binary runs and a red run lists all its failures, not only the
       # first binary's (until #94 the crates after komponist-app never ran here).
@@ -242,6 +250,10 @@ jobs:
       # Without the bundles the plugin tests skip silently.
       - name: Build test plugins
         run: scripts/build-test-plugins.sh
+
+      - name: Test plugin fixtures
+        working-directory: test-plugins
+        run: cargo test --workspace --locked --no-fail-fast
 
       # DX12/WARP can terminate concurrent kittest renderings in the app and UI suites
       # (exit 2173, no Rust panic). Keep other workspace tests parallel and run every suite.

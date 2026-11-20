@@ -32,8 +32,9 @@ egui = "0.36.2"
 fake-host = { path = "fake-host" }
 # The crate behind nice-plug's `assert_process_allocs`, for `assert_no_alloc` around `process`.
 nice-assert-no-alloc = "1.0.0"
-# `prctl(PR_SET_DUMPABLE)`: no core dumps from the crash tests' child processes.
+# Unix core dump settings and Windows error reporting for the crash tests' child processes.
 libc = "0.2.191"
+windows-sys = "0.61.2"
 
 # klang-studio's forks of baseview and the nice-plug crates (the `klopfer` branches, pinned), so
 # kp-test-synth's embedded GUI draws: the crates.io baseview lacks the X11 Present/MapNotify fix

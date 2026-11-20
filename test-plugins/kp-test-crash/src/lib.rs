@@ -1,7 +1,7 @@
 //! kp-test-crash: the crash fixture for komponist's bridge crash handling (PLAN WP-27).
 //!
 //! A stereo passthrough with a note input that writes through a null pointer, so the hosting
-//! process dies with SIGSEGV, in `process` (the audio thread) when
+//! process dies with SIGSEGV or a Windows access violation, in `process` (the audio thread) when
 //!
 //! - a note-on of key [`CRASH_KEY`] arrives, or
 //! - the `crash` parameter rises past [`CRASH_THRESHOLD`]: it was below the threshold at the
@@ -55,7 +55,7 @@ impl KpTestCrash {
     }
 }
 
-/// Kills the process with SIGSEGV by writing through a null pointer.
+/// Triggers an access fault by writing through a null pointer.
 #[cold]
 #[inline(never)]
 pub fn crash() -> ! {
@@ -154,7 +154,6 @@ nice_export_vst3!(KpTestCrash);
 mod tests {
     use super::*;
     use fake_host::{FakeHost, note_on};
-    use std::os::unix::process::ExitStatusExt;
     use std::process::{Command, ExitStatus, Stdio};
 
     /// Names the scenario [`child`] runs.
@@ -175,14 +174,60 @@ mod tests {
             .unwrap()
     }
 
+    fn prepare_for_crash() {
+        #[cfg(target_os = "linux")]
+        // SAFETY: affects only this child process. The crash must not generate a core dump.
+        unsafe {
+            libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+        }
+        #[cfg(all(unix, not(target_os = "linux")))]
+        // SAFETY: the limit exists for the lifetime of the call and applies only to this child.
+        unsafe {
+            let limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            libc::setrlimit(libc::RLIMIT_CORE, &limit);
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::Diagnostics::Debug::{
+                GetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetErrorMode,
+            };
+            use windows_sys::Win32::System::ErrorReporting::{
+                WER_FAULT_REPORTING_NO_UI, WerSetFlags,
+            };
+            // SAFETY: plain process-wide settings. An expected crash needs no modal dialog.
+            unsafe {
+                SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+                WerSetFlags(WER_FAULT_REPORTING_NO_UI);
+            }
+        }
+    }
+
+    fn assert_access_fault(status: ExitStatus) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(status.signal(), Some(libc::SIGSEGV), "{status}");
+        }
+        #[cfg(windows)]
+        assert_eq!(
+            status.code(),
+            Some(windows_sys::Win32::Foundation::STATUS_ACCESS_VIOLATION),
+            "{status}"
+        );
+        #[cfg(not(any(unix, windows)))]
+        assert!(!status.success(), "{status}");
+    }
+
     #[test]
     #[ignore = "only runs as the child process of the crash tests"]
     fn child() {
         let Ok(scenario) = std::env::var(CHILD_ENV) else {
             return;
         };
-        // SAFETY: plain syscall. No core dump for a crash on purpose.
-        unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
+        prepare_for_crash();
 
         let mut host = FakeHost::<KpTestCrash>::activate();
         match scenario.as_str() {
@@ -203,12 +248,12 @@ mod tests {
 
     #[test]
     fn note_127_segfaults() {
-        assert_eq!(run_child("note").signal(), Some(libc::SIGSEGV));
+        assert_access_fault(run_child("note"));
     }
 
     #[test]
     fn crash_param_rising_past_threshold_segfaults() {
-        assert_eq!(run_child("param").signal(), Some(libc::SIGSEGV));
+        assert_access_fault(run_child("param"));
     }
 
     #[test]
