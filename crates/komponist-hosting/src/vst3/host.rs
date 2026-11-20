@@ -561,7 +561,6 @@ impl IComponentHandlerTrait for ComponentHandler {
         }
         self.notify
             .notify(HostNotification::ParamEdited { id, value });
-        self.notify.notify(HostNotification::StateDirty);
         kResultOk
     }
 
@@ -1112,12 +1111,12 @@ mod tests {
         let (pending, _) = host_loop.notify().take();
         for bit in [
             bits::PARAM_EDITED,
-            bits::STATE_DIRTY,
             bits::LATENCY_CHANGED,
             bits::MAIN_THREAD_CALLBACK,
         ] {
             assert!(pending & bit != 0, "{bit:#x} in {pending:#x}");
         }
+        assert_eq!(pending & bits::STATE_DIRTY, 0);
         assert!(midi.load(Ordering::Acquire));
         let h2: ComPtr<IComponentHandler2> = ptr.cast().unwrap();
         unsafe {

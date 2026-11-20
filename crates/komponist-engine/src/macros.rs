@@ -197,7 +197,11 @@ impl State {
         let value = mapping.normalized(input);
         if state.reassert_at.is_some()
             || !state.value.is_finite()
-            || (state.value - value).abs() > 1e-5
+            || if mapping.map.is_stepped() {
+                mapping.map.plain(state.value) != mapping.map.plain(value)
+            } else {
+                (state.value - value).abs() > 1e-5
+            }
         {
             Some((input, value))
         } else {
