@@ -219,6 +219,8 @@ pub struct Routing {
     pub gates: Option<GateTable>,
     /// Line assignment of the edges. Read by the engine only when the program is installed.
     pub lines: Arc<LineMap>,
+    /// Largest number of frames of requested compensation missing at one delay line.
+    pub pdc_shortfall: u32,
 }
 
 impl Routing {

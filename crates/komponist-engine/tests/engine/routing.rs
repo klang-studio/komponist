@@ -15,8 +15,8 @@ use komponist_builtin::Internal;
 use komponist_engine::compile::{self, CompileEnv};
 use komponist_engine::testing::{TestGain, TestSidechain, TestSidechainMode, TestSine};
 use komponist_engine::{
-    Command, Event, MidiPort, ProcessContext, ProcessStatus, Processor, ProcessorError, Program,
-    StereoIo,
+    Command, Event, MAX_PDC_FRAMES, MidiPort, ProcessContext, ProcessStatus, Processor,
+    ProcessorError, Program, StereoIo,
 };
 use komponist_model::edits::{self, ChannelProp, NewBus, NewDevice, NewTrack, SendProp, TrackProp};
 use komponist_model::fixtures::demo_project;
@@ -706,6 +706,46 @@ fn parallel_paths_with_different_latencies_arrive_together() {
     // t1 → a (200), t2 (7) → master, t3 → b (50) and t3 → send → a (200): one impulse.
     assert_eq!(nonzero(&rig.l), [1200]);
     assert_close(rig.l[1200], 1.0 + 2.0 + 4.0 + 4.0, "sum");
+}
+
+#[test]
+fn compensation_shortfall_matches_impulse_arrivals_around_the_delay_limit() {
+    let pulse = 1000;
+    let limit = MAX_PDC_FRAMES as u32;
+    for routed in [false, true] {
+        for latency in [limit - 1, limit, limit + 37] {
+            let mut song = Song::new();
+            let slow = song.track(Dev::Pulse(pulse, 1.0));
+            let fast = song.track(Dev::Pulse(pulse, 2.0));
+            song.fx(ChannelRef::Track(slow), Dev::Gain(1.0, latency));
+            if routed {
+                // The main outputs of the groups arrive together. Only the send into the
+                // slower group needs compensation, so the diagnostic must include that line.
+                let slow_group = song.group(&[slow]);
+                let fast_group = song.group(&[fast]);
+                song.fx(ChannelRef::Track(fast_group), Dev::Gain(1.0, latency));
+                song.send(fast, slow_group, 0.0, Tap::Pre);
+            }
+            let mut rig = Rig::new(RATE, 256);
+            let program = song.load(&mut rig, None);
+            rig.process(pulse as usize + latency as usize + 1, 256);
+
+            let fast_at = pulse as usize + latency.min(limit) as usize;
+            let slow_at = pulse as usize + latency as usize;
+            let main_sum = if routed { 3.0 } else { 1.0 };
+            assert_eq!(program.routing.is_flat(), !routed);
+            assert_eq!(program.routing.pdc_shortfall as usize, slow_at - fast_at);
+            if fast_at == slow_at {
+                assert_eq!(nonzero(&rig.l), [slow_at]);
+                assert_close(rig.l[slow_at], main_sum + 2.0, "aligned impulses");
+            } else {
+                assert_eq!(nonzero(&rig.l), [fast_at, slow_at]);
+                assert_close(rig.l[fast_at], 2.0, "earlier impulse");
+                assert_close(rig.l[slow_at], main_sum, "later impulse");
+            }
+            assert_eq!(rig.l, rig.r);
+        }
+    }
 }
 
 #[test]
