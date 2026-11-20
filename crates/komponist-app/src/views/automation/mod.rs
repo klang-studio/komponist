@@ -5,10 +5,9 @@ mod clip;
 mod curve;
 mod metrics;
 
-use chooser::Target;
 pub(crate) use chooser::{
-    Catalog, Choice, Chooser, chooser_button, mode_chip, mode_chip_width, mode_names, percentage,
-    toggle,
+    Catalog, Choice, Chooser, Target, chooser_button, mode_chip, mode_chip_width, mode_names,
+    percentage, toggle,
 };
 pub(crate) use clip::{ClipEditor, toolbar_button};
 pub(crate) use curve::{Editor, LaneFrame, Override, Paint};
@@ -77,21 +76,30 @@ pub(crate) fn automation_controls(
     owner: AutomationOwner,
     target: &AutomationTarget,
 ) -> Option<f32> {
-    let lane = lanes(ctx.project, owner)?.lane(target)?;
+    automation_control_value(ctx.project, ctx.engine, owner, target)
+}
+
+/// The current engine override or timeline value shared by views and edits.
+pub(crate) fn automation_control_value(
+    project: &Project,
+    engine: &crate::engine_sync::EngineSync,
+    owner: AutomationOwner,
+    target: &AutomationTarget,
+) -> Option<f32> {
+    let lane = lanes(project, owner)?.lane(target)?;
     if lane.mode == AutomationMode::Off {
         return None;
     }
-    if let Some(value) = ctx
-        .engine
+    if let Some(value) = engine
         .program()
         .and_then(|program| program.automation_override(owner, target))
     {
         return Some(value);
     }
-    let tick = ctx.engine.playhead();
+    let tick = engine.playhead();
     match owner {
         AutomationOwner::Track(id) => {
-            komponist_model::automation::effective_value_at(ctx.project.track(id)?, target, tick)
+            komponist_model::automation::effective_value_at(project.track(id)?, target, tick)
         }
         AutomationOwner::Master => {
             komponist_model::automation::value_at(lane.points.as_slice(), tick)

@@ -86,7 +86,8 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// frame's last rect, `RaiseFrame` and `FrameWindow`). 5 (#67): the engine consumes parameter
 /// edits and a state restore replies with its authoritative parameter values. 8: checked
 /// snapshots distinguish delivered, quantized edits and return the verified parameter values.
-pub const PROTOCOL_VERSION: u32 = 8;
+/// 9 (#75): the shared native frame header carries the track macro mapping chip.
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -1538,6 +1539,7 @@ mod tests {
             has_gui: true,
             keep_on_top: true,
             close_shortcut: "Esc".into(),
+            mapping_chip: Some("Map · Track macro 1".into()),
         }
     }
 

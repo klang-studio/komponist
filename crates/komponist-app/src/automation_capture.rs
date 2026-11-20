@@ -681,6 +681,14 @@ impl App {
         else {
             return;
         };
+        // Native plugin gestures used for learning must not write the direct parameter's lane.
+        // An already-open gesture still receives its release.
+        if matches!(target, EngineTarget::Slot { .. })
+            && matches!(owner, AutomationOwner::Track(track) if self.ui.track_macros.mapping == Some(track))
+            && !matches!(event, EngineEvent::AutomationTouch { begin: false, .. })
+        {
+            return;
+        }
         let project = self.project().clone();
         match *event {
             EngineEvent::AutomationTouch { begin: true, .. } => {
@@ -789,12 +797,7 @@ impl App {
     ) -> Option<(AutomationOwner, AutomationTarget)> {
         let (owner, _, d) = self.project().find_device(device)?;
         let param = if crate::device_host::is_hexa(d) {
-            komponist_builtin::device::params()
-                .iter()
-                .find(|p| p.wire == id)?
-                .info
-                .id
-                .clone()
+            ParamId::new(komponist_builtin::device::Field::from_wire(id)?.key())
         } else if let Some(kind) = crate::device_host::internal_kind(d) {
             kind.params().get(id as usize)?.id.clone()
         } else {

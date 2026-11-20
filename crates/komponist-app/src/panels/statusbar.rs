@@ -123,6 +123,17 @@ pub fn model(app: &App, now: Instant) -> StatusModel {
             .pick(t.automation_lane_hint(), t.automation_lane_hint_mac())
             .to_owned();
     }
+    if let Some(track) = app
+        .ui()
+        .track_macros
+        .mapping
+        .and_then(|id| app.project().track(id))
+    {
+        let index = app.ui().track_macros.selected(track.id);
+        let source =
+            crate::views::track_macros::reference(t, index, &track.macros.0[usize::from(index)]);
+        s.mid = t.status_macros_mapping(source);
+    }
     if let Some(msg) = &app.ui().status
         && now.saturating_duration_since(msg.since) < STATUS_DURATION
     {

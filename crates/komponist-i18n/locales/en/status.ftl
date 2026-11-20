@@ -165,3 +165,13 @@ status-drop-refused-audio = Audio tracks don’t take MIDI clips.
 
 # Linked audio import and browsing (epic #8).
 status-collect-skipped = { $count } files were not collected: unsupported audio files · { $files }
+
+status-macros-mapping = Map: move parameters to map them to { $source } · Click another macro to switch · Esc ends
+status-macros-locked = { $param } is controlled by { $source }
+status-macros-moved = { $param }: now { $source }
+status-macros-not-mappable = { $param } can’t be mapped
+status-macros-full = At most 16 mappings per track macro
+status-macros-dropped = { $n ->
+        [one] 1 mapping removed
+       *[other] { $n } mappings removed
+    }

@@ -465,7 +465,8 @@ fn a_turned_knob_of_a_midi_effect_is_saved_and_reaches_the_engine() {
 
 #[test]
 fn midi_effects_reorder_inside_their_part_and_never_behind_the_instrument() {
-    let (app, track) = app_with_midi_effects();
+    let (mut app, track) = app_with_midi_effects();
+    app.ui_mut().track_macros.collapsed.insert(track);
     let mut h = harness(app);
     h.run_steps(5);
     let head = |h: &Harness<'_, App>, name: &str| {

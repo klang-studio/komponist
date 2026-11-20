@@ -49,3 +49,5 @@ key-home = Home
 
 # End key.
 key-end = End
+
+key-macros-map = Toggle Map Mode

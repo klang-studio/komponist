@@ -47,8 +47,11 @@ pub(super) fn section(
     };
     let resolved = crate::views::automation::Catalog::new(ctx, owner)
         .and_then(|catalog| catalog.resolve(&target).ok());
-    let value = ctx
-        .automation_value(owner, &target)
+    let control = crate::views::track_macros::Control::new(ctx, owner, target.clone());
+    let driver = control.as_ref().and_then(|control| control.driver.as_ref());
+    let value = driver
+        .map(|driver| driver.value)
+        .or_else(|| ctx.automation_value(owner, &target))
         .and_then(|value| resolved.as_ref().map(|target| target.format(value)));
     let lane = crate::views::automation::lanes(ctx.project, owner)
         .and_then(|a| a.lane(&target))
@@ -96,7 +99,28 @@ pub(super) fn section(
             );
             field_key(ui, key, t.inspector_param_range());
             read_only_field(ui, field, t.inspector_param_range(), &param.range, "");
-            if let Some(target) = &resolved {
+            if let (Some(driver), AutomationOwner::Track(track)) = (driver, owner) {
+                let row = col.take(typography::SMALL.line_height);
+                let label_text = t.macros_controlled_tip(&driver.reference);
+                label(
+                    ui,
+                    row,
+                    &label_text,
+                    &typography::SMALL,
+                    None,
+                    color::TEXT_2,
+                );
+                let r = ui.interact(row, ui.scope_id().with("macro-driver"), Sense::click());
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label_text));
+                if r.clicked() {
+                    actions.push(crate::actions::Action::Macro(
+                        crate::views::track_macros::Action::Select {
+                            track,
+                            index: driver.index,
+                        },
+                    ));
+                }
+            } else if let Some(target) = &resolved {
                 let area = col.take(crate::views::automation::CHIP_HEIGHT);
                 let mode_width =
                     lane.map_or(0.0, |_| crate::views::automation::mode_chip_width(ui, t));
@@ -125,12 +149,14 @@ pub(super) fn section(
                     komponist_tokens::egui_support::color32(color::TEXT_2),
                 );
                 if r.clicked() {
-                    actions.push(crate::views::automation::Action::ShowTarget {
-                        owner,
-                        replace: None,
-                        target: target.key.clone(),
-                        label: target.label.clone(),
-                    });
+                    actions.push(crate::actions::Action::Automation(
+                        crate::views::automation::Action::ShowTarget {
+                            owner,
+                            replace: None,
+                            target: target.key.clone(),
+                            label: target.label.clone(),
+                        },
+                    ));
                 }
                 if let Some((id, _, mode)) = lane {
                     let chip = Rect::from_min_max(pos2(left.right(), area.top()), area.max);
@@ -143,13 +169,15 @@ pub(super) fn section(
                         &target.label,
                         mode,
                     ) {
-                        actions.push(crate::views::automation::Action::Mode(owner, id, mode));
+                        actions.push(crate::actions::Action::Automation(
+                            crate::views::automation::Action::Mode(owner, id, mode),
+                        ));
                     }
                 }
             }
         },
     );
     for action in actions {
-        ctx.send(crate::actions::Action::Automation(action));
+        ctx.send(action);
     }
 }

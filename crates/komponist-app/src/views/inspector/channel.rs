@@ -4,6 +4,7 @@
 
 use egui::{Rangef, Rect, Ui, pos2, vec2};
 use komponist_model::Track;
+use komponist_model::automation::{AutomationOwner, AutomationTarget};
 use komponist_model::edits::{ChannelProp, TrackProp};
 use komponist_model::format::{fmt_db, fmt_pan};
 use komponist_tokens::{color, size, typography};
@@ -11,14 +12,13 @@ use komponist_ui::widgets::fader::{Fader, FaderSize, Layout as FaderLayout, db_t
 use komponist_ui::widgets::knob::Knob;
 use komponist_ui::widgets::meter::{Meter, MeterState};
 use komponist_ui::widgets::toggle::{ToggleEvent, ToggleKind, TrackToggle};
-use komponist_ui::widgets::value_menu;
 
 use super::{Meta, access_label, frame, label, metrics as m, place};
 use crate::actions::{Action, EditAction, UiAction};
 use crate::meters::Meters;
 use crate::ui_state::DockTab;
 use crate::views::ViewCtx;
-use crate::views::mixer::send_gesture;
+use crate::views::track_macros::{Control, channel_control};
 
 /// The channel section of `track`.
 pub(super) fn section(ui: &mut Ui, ctx: &mut ViewCtx<'_>, x: Rangef, y: &mut f32, track: &Track) {
@@ -54,7 +54,19 @@ fn strip(ui: &mut Ui, ctx: &mut ViewCtx<'_>, area: Rect, track: &Track) {
     let length = (area.height() - thumb.y).max(1.0);
     let fader_size = FaderLayout::desired_size(FaderSize::Compact, true, length);
     let fader_rect = Rect::from_min_size(area.min, fader_size);
-    let mut db = ch.volume_db;
+    let owner = AutomationOwner::Track(track.id);
+    let control = Control::new(ctx, owner, AutomationTarget::Volume);
+    let current = control
+        .as_ref()
+        .and_then(Control::value)
+        .or_else(|| ctx.automation_value(owner, &AutomationTarget::Volume))
+        .map_or(ch.volume_db, |value| {
+            komponist_model::params::p_to_db(1.0 - value)
+        });
+    let mut db = current;
+    if let Some(control) = &control {
+        control.paint_ground(ui, fader_rect);
+    }
     let r = place(ui, fader_rect, "fader", |ui| {
         ui.add(
             Fader::new(&mut db, t.inspector_channel_volume())
@@ -63,12 +75,20 @@ fn strip(ui: &mut Ui, ctx: &mut ViewCtx<'_>, area: Rect, track: &Track) {
                 .track_length(length),
         )
     });
-    send_gesture(ctx, &r, "undo-volume", || {
+    if !channel_control(ui, ctx, control.as_ref(), &r, "undo-volume", || {
         channel_edit(track, ChannelProp::VolumeDb(db))
-    });
-    if value_menu::show(&r, || fmt_db(db)) {
-        db = 0.0;
-        ctx.send(channel_edit(track, ChannelProp::VolumeDb(db)));
+    }) {
+        db = current;
+    }
+    if let Some(control) = &control
+        && let Some(action) = control.value_menu(
+            t,
+            &r,
+            || fmt_db(db),
+            || channel_edit(track, ChannelProp::VolumeDb(0.0)),
+        )
+    {
+        ctx.send(action);
     }
 
     // Meter: LED and bars over the whole height.
@@ -131,16 +151,37 @@ fn strip(ui: &mut Ui, ctx: &mut ViewCtx<'_>, area: Rect, track: &Track) {
         pos2(column.left() + size::KNOB / 2.0, mid),
         vec2(size::KNOB, size::KNOB),
     );
-    let mut pan = ch.pan;
+    let control = Control::new(ctx, owner, AutomationTarget::Pan);
+    let current = control
+        .as_ref()
+        .and_then(Control::value)
+        .or_else(|| ctx.automation_value(owner, &AutomationTarget::Pan))
+        .map_or(ch.pan, |value| value * 2.0 - 1.0);
+    let mut pan = current;
+    if let Some(control) = &control {
+        control.paint_ground(ui, knob);
+    }
     let r = place(ui, knob, "pan", |ui| {
-        ui.add(Knob::pan(&mut pan, t.inspector_channel_pan()))
+        ui.add(
+            Knob::pan(&mut pan, t.inspector_channel_pan())
+                .modulation(control.as_ref().and_then(Control::modulation))
+                .redirect(control.as_ref().is_some_and(Control::redirects)),
+        )
     });
-    send_gesture(ctx, &r, "undo-pan", || {
+    if !channel_control(ui, ctx, control.as_ref(), &r, "undo-pan", || {
         channel_edit(track, ChannelProp::Pan(pan))
-    });
-    if value_menu::show(&r, || fmt_pan(pan)) {
-        pan = 0.0;
-        ctx.send(channel_edit(track, ChannelProp::Pan(pan)));
+    }) {
+        pan = current;
+    }
+    if let Some(control) = &control
+        && let Some(action) = control.value_menu(
+            t,
+            &r,
+            || fmt_pan(pan),
+            || channel_edit(track, ChannelProp::Pan(0.0)),
+        )
+    {
+        ctx.send(action);
     }
     let text_left = knob.right() + m::PAN_GAP;
     let pan_key = Rect::from_min_size(

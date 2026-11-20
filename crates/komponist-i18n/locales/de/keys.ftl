@@ -49,3 +49,5 @@ key-home = Pos1
 
 # End key.
 key-end = Ende
+
+key-macros-map = Zuordnen ein/aus

@@ -23,6 +23,7 @@ mod audio_recording;
 mod audio_takes;
 mod channel;
 mod clip;
+mod macros;
 pub mod metrics;
 pub mod model;
 mod param;
@@ -157,6 +158,7 @@ impl View for Inspector {
         if let Some(track) = sections.track.and_then(|t| project.track(t)) {
             track::section(self, ui, ctx, &project, x, &mut y, track);
             track::devices_section(self, ui, ctx, x, &mut y, track);
+            macros::section(ui, ctx, x, &mut y, track);
             if let Some(touched) = param::touched(ctx, track.id) {
                 param::section(ui, ctx, x, &mut y, &touched);
             }

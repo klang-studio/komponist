@@ -33,6 +33,7 @@ pub mod mixer;
 pub mod piano_roll;
 pub mod routing;
 pub mod step_seq;
+pub mod track_macros;
 
 use std::sync::Arc;
 

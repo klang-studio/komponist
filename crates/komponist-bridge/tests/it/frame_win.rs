@@ -60,6 +60,7 @@ fn header(name: &str) -> HeaderModel {
         has_gui: true,
         keep_on_top: false,
         close_shortcut: "Esc".into(),
+        mapping_chip: None,
     }
 }
 

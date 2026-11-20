@@ -992,6 +992,11 @@ pub fn open_value_entry(ctx: &Context, id: Id, text: String) {
     entry::open(ctx, id, text);
 }
 
+/// Whether the value control currently shows its text entry.
+pub fn value_entry_open(ctx: &Context, id: Id) -> bool {
+    entry::is_open(ctx, id)
+}
+
 /// Text entry of a value control: a text edit over the value, with the text preselected. Enter
 /// applies, Esc discards, losing the focus otherwise (a click elsewhere) applies. The open entry
 /// and its text live in egui memory under the control's id.

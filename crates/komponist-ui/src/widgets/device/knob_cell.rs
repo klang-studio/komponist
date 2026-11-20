@@ -34,6 +34,7 @@ pub struct KnobCell<'a> {
     format: Option<Formatter<'a>>,
     parse: Option<Parser<'a>>,
     options: KnobCellOptions,
+    redirect: bool,
 }
 
 impl<'a> KnobCell<'a> {
@@ -49,6 +50,7 @@ impl<'a> KnobCell<'a> {
             format: None,
             parse: None,
             options: KnobCellOptions::default(),
+            redirect: false,
         }
     }
 
@@ -102,6 +104,13 @@ impl<'a> KnobCell<'a> {
         self
     }
 
+    /// Suppress stored changes while reporting an attempted knob turn.
+    #[must_use]
+    pub fn redirect(mut self, redirect: bool) -> Self {
+        self.redirect = redirect;
+        self
+    }
+
     /// The size of the cell.
     pub fn size(&self) -> egui::Vec2 {
         vec2(cell_width(if self.large { 2 } else { 1 }), cell_height(1))
@@ -121,6 +130,7 @@ impl Widget for KnobCell<'_> {
             format,
             parse,
             options,
+            redirect,
         } = self;
         let (cell, _) = ui.allocate_exact_size(size, Sense::hover());
         let layout = if large {
@@ -154,6 +164,7 @@ impl Widget for KnobCell<'_> {
                 KnobSize::Normal
             })
             .modulation(options.modulation)
+            .redirect(redirect)
             .format(text_of);
         if let Some(p) = &parse {
             knob = knob.parse(p);

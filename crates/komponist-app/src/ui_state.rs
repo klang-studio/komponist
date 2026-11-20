@@ -93,6 +93,8 @@ pub struct UiState {
     pub mixer: MixerView,
     /// Device chain view.
     pub devices: DevicesView,
+    /// Track macro selection and mapping mode.
+    pub track_macros: TrackMacrosView,
     /// Browser panel.
     pub browser: BrowserView,
     /// Inspector panel.
@@ -126,6 +128,7 @@ impl UiState {
             step_seq: StepSeqView::default(),
             mixer: MixerView::default(),
             devices: DevicesView::default(),
+            track_macros: TrackMacrosView::default(),
             browser: BrowserView::default(),
             inspector: InspectorView::default(),
             start: StartView::default(),
@@ -179,6 +182,28 @@ impl FocusArea {
                 | FocusArea::Devices
                 | FocusArea::Mixer
         )
+    }
+}
+
+/// Transient track macro interaction state.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TrackMacrosView {
+    /// Selected macro slot for each track; defaults to the first slot.
+    pub selected: BTreeMap<TrackId, u8>,
+    /// The track whose parameters are currently mapping candidates.
+    pub mapping: Option<TrackId>,
+    /// Tracks with a collapsed macro card.
+    pub collapsed: BTreeSet<TrackId>,
+    /// The macro knob currently hovered or dragged, and whether it is in the inspector.
+    pub hovered: Option<(TrackId, u8, bool)>,
+    /// A mapping-list target to highlight when the device chain is revealed.
+    pub revealed: Option<(TrackId, komponist_model::automation::AutomationTarget)>,
+}
+
+impl TrackMacrosView {
+    /// The zero-based selected slot of the track.
+    pub fn selected(&self, track: TrackId) -> u8 {
+        self.selected.get(&track).copied().unwrap_or_default()
     }
 }
 

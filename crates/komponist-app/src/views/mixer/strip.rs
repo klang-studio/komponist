@@ -6,6 +6,7 @@ use egui::{
     vec2,
 };
 use komponist_i18n::Lang;
+use komponist_model::automation::AutomationTarget;
 use komponist_model::edits::{ChannelProp, TrackProp};
 use komponist_model::format::{fmt_db, fmt_pan};
 use komponist_model::{ChannelRef, DeviceId, PluginRef};
@@ -23,9 +24,9 @@ use komponist_ui::widgets::value_menu;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px};
 
+use super::Rename;
 use super::metrics::{self as m, Tier};
 use super::model::{Insert, SlotState, Strip, move_target_in, slot_at};
-use super::{Rename, send_gesture};
 use crate::actions::{
     Action, DropTarget, EditAction, PluginAction, SelectMode, SelectionChange, UiAction,
 };
@@ -36,6 +37,7 @@ use crate::views::devices::model::{Placement, place_plugin};
 use crate::views::late;
 use crate::views::routing::widgets as routing_widgets;
 use crate::views::routing::{self, OutputDrop, TrackDrag, metrics as rm};
+use crate::views::track_macros::{Control, channel_control};
 use crate::views::{ViewCtx, elided_galley, group_bounds};
 
 /// The drag payload of an insert slot being reordered.
@@ -1003,17 +1005,42 @@ fn automation_dot(ui: &Ui, at: egui::Pos2, s: &Strip) {
 /// The pan knob ("Ziehen relativ, Shift fein, Doppelklick oder Alt-Klick Standard, Enter oder
 /// Rechtsklick Texteingabe") and its value.
 fn pan(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rows: &Rows, tier: Tier) {
-    let automated = automation_value(ctx, s, &komponist_model::automation::AutomationTarget::Pan);
-    let mut pan = automated.map_or(s.pan, |value| value * 2.0 - 1.0);
+    let target = AutomationTarget::Pan;
+    let control = Control::new(ctx, s.channel.into(), target.clone());
+    let mapped = control.as_ref().and_then(Control::value);
+    let automated = mapped
+        .is_none()
+        .then(|| automation_value(ctx, s, &target))
+        .flatten();
+    let current = mapped
+        .or(automated)
+        .map_or(s.pan, |value| value * 2.0 - 1.0);
+    let mut pan = current;
+    if let Some(control) = &control {
+        control.paint_ground(ui, rows.knob);
+    }
     let name = ctx.lang.mixer_pan(&s.name);
     let response = place(ui, rows.knob, "pan", |ui| {
-        let knob = Knob::pan(&mut pan, name);
+        let knob = Knob::pan(&mut pan, &name)
+            .modulation(control.as_ref().and_then(Control::modulation))
+            .redirect(control.as_ref().is_some_and(Control::redirects));
         ui.add(if tier.lean { knob.small() } else { knob })
     });
-    send_gesture(ctx, &response, "undo-pan", || {
+    if !channel_control(ui, ctx, control.as_ref(), &response, "undo-pan", || {
         channel_edit(s, ChannelProp::Pan(pan))
-    });
-    if value_menu::show(&response, || fmt_pan(pan)) {
+    }) {
+        pan = current;
+    }
+    if let Some(control) = &control {
+        if let Some(action) = control.value_menu(
+            ctx.lang,
+            &response,
+            || fmt_pan(pan),
+            || channel_edit(s, ChannelProp::Pan(0.0)),
+        ) {
+            ctx.send(action);
+        }
+    } else if value_menu::show(&response, || fmt_pan(pan)) {
         pan = 0.0;
         ctx.send(channel_edit(s, ChannelProp::Pan(pan)));
     }
@@ -1154,30 +1181,43 @@ fn fader_and_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, mo
     let left = px::snap(area.center().x - m::fader_group_width(scale) / 2.0, ppp);
     let fader_w = komponist_ui::widgets::fader::Layout::desired_size(m::FADER, scale, length).x;
     let fader_rect = Rect::from_min_size(pos2(left, area.top()), vec2(fader_w, area.height()));
-    let automated = automation_value(
-        ctx,
-        s,
-        &komponist_model::automation::AutomationTarget::Volume,
-    );
-    let mut db = automated.map_or(s.volume_db, |value| {
-        komponist_model::params::p_to_db(1.0 - value)
-    });
+    let control = Control::new(ctx, s.channel.into(), AutomationTarget::Volume);
+    let mapped = control.as_ref().and_then(Control::value);
+    let current = mapped
+        .or_else(|| automation_value(ctx, s, &AutomationTarget::Volume))
+        .map_or(s.volume_db, |value| {
+            komponist_model::params::p_to_db(1.0 - value)
+        });
+    let mut db = current;
+    if let Some(control) = &control {
+        control.paint_ground(ui, fader_rect);
+    }
     let name = ctx.lang.mixer_volume(&s.name);
     let response = place(ui, fader_rect, "fader", |ui| {
         ui.add(
-            Fader::new(&mut db, name)
+            Fader::new(&mut db, &name)
                 .size(m::FADER)
                 .scale(scale)
                 .selected(s.selected)
                 .track_length(length),
         )
     });
-    send_gesture(ctx, &response, "undo-volume", || {
+    if !channel_control(ui, ctx, control.as_ref(), &response, "undo-volume", || {
         channel_edit(s, ChannelProp::VolumeDb(db))
-    });
-    if value_menu::show(&response, || fmt_db(db)) {
-        db = 0.0;
-        ctx.send(channel_edit(s, ChannelProp::VolumeDb(db)));
+    }) {
+        db = current;
+    }
+    if let Some(control) = &control {
+        if let Some(action) = control.value_menu(
+            ctx.lang,
+            &response,
+            || fmt_db(db),
+            || channel_edit(s, ChannelProp::VolumeDb(0.0)),
+        ) {
+            ctx.send(action);
+        }
+    } else if value_menu::show(&response, || fmt_db(db)) {
+        ctx.send(channel_edit(s, ChannelProp::VolumeDb(0.0)));
     }
 
     let meter_left = fader_rect.right() + m::FADER_METER_GAP;
@@ -1224,12 +1264,13 @@ fn fader_and_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, mo
 /// the peak value (click resets peak and clip, Alt-click all strips), red after clipping. The
 /// lean strip has the level only.
 fn values(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, row: Rect, mods: Modifiers, tier: Tier) {
-    let automated = automation_value(
-        ctx,
-        s,
-        &komponist_model::automation::AutomationTarget::Volume,
-    );
-    let mut db = automated.map_or(s.volume_db, |value| {
+    let control = Control::new(ctx, s.channel.into(), AutomationTarget::Volume);
+    let mapped = control.as_ref().and_then(Control::value);
+    let automated = mapped
+        .is_none()
+        .then(|| automation_value(ctx, s, &AutomationTarget::Volume))
+        .flatten();
+    let mut db = mapped.or(automated).map_or(s.volume_db, |value| {
         komponist_model::params::p_to_db(1.0 - value)
     });
     let name = ctx.lang.mixer_volume_value(&s.name);
@@ -1243,10 +1284,21 @@ fn values(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, row: Rect, mods: Modifi
     let widest = format!("{}48.0", komponist_model::format::MINUS);
     let box_w = text_w(&widest) + 2.0 * komponist_tokens::space::SPACE_1;
     let level = Rect::from_min_size(row.min, vec2(box_w, row.height()));
+    if let Some(control) = &control {
+        control.paint_ground(ui, level);
+    }
     let response = place(ui, level, "level", |ui| {
-        ui.add(DbValue::new(&mut db, name).width(box_w).align_left(true))
+        ui.add(DbValue::new(&mut db, &name).width(box_w).align_left(true))
     });
-    if response.changed() {
+    let mut intercepted = Vec::new();
+    let handled = control.as_ref().is_some_and(|control| {
+        control.decorate(ui, &response, level, None);
+        control.intercept(&response, response.changed(), &mut intercepted)
+    });
+    for action in intercepted {
+        ctx.send(action);
+    }
+    if response.changed() && !handled {
         ctx.send(channel_edit(s, ChannelProp::VolumeDb(db)));
     } else if response.clicked() && !mods.alt {
         ctx.send(Action::Ui(UiAction::ResetMeters {

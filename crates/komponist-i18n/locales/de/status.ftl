@@ -165,3 +165,13 @@ status-drop-refused-audio = Audio-Spuren nehmen keine MIDI-Clips auf.
 
 # Linked audio import and browsing (epic #8).
 status-collect-skipped = { $count } Dateien nicht gesammelt: keine unterstützten Audio-Dateien · { $files }
+
+status-macros-mapping = Zuordnen: Parameter bewegen ordnet sie { $source } zu · Klick auf ein anderes Makro wechselt · Esc beendet
+status-macros-locked = { $param } wird von { $source } gesteuert
+status-macros-moved = { $param }: jetzt { $source }
+status-macros-not-mappable = { $param } lässt sich nicht zuordnen
+status-macros-full = Höchstens 16 Zuordnungen pro Spur-Makro
+status-macros-dropped = { $n ->
+        [one] 1 Zuordnung entfernt
+       *[other] { $n } Zuordnungen entfernt
+    }

@@ -20,6 +20,7 @@ use super::metrics as m;
 use crate::actions::{Action, PluginAction};
 use crate::views::devices::model::{Param, failure_texts};
 use crate::views::mixer::gesture_actions;
+use crate::views::track_macros::{Control, Pick};
 use komponist_model::DeviceId;
 use komponist_plugins::FailReason;
 
@@ -29,6 +30,17 @@ use komponist_plugins::FailReason;
 pub struct ParamGrid {
     /// The knobs.
     pub params: Vec<Param>,
+    pub(super) macros: std::collections::BTreeMap<komponist_model::params::ParamId, Control>,
+}
+
+impl ParamGrid {
+    /// The parameter grid outside a track context.
+    pub fn new(params: Vec<Param>) -> Self {
+        Self {
+            params,
+            macros: Default::default(),
+        }
+    }
 }
 
 /// What the body shows.
@@ -56,7 +68,7 @@ pub enum BodyModel {
 }
 
 /// What the user did in the body.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BodyEvent {
     /// "Neu laden".
     Reload,
@@ -67,6 +79,8 @@ pub enum BodyEvent {
     },
     /// The drag or wheel burst ended.
     EndGesture,
+    /// A parameter control mapped or revealed a track macro.
+    MacroAction(Action),
     /// A knob moved.
     SetParam {
         /// Parameter id.
@@ -286,7 +300,7 @@ fn grid(ui: &mut Ui, rect: Rect, model: &mut ParamGrid, events: &mut Vec<BodyEve
                 ui.horizontal_top(|ui| {
                     ui.add_space(m::PARAM_PADDING - m::PARAM_COLUMN_GAP);
                     for p in chunk {
-                        cell(ui, col_w, p, events);
+                        cell(ui, col_w, p, model.macros.get(&p.info.id), events);
                     }
                 });
             }
@@ -294,7 +308,13 @@ fn grid(ui: &mut Ui, rect: Rect, model: &mut ParamGrid, events: &mut Vec<BodyEve
         });
 }
 
-fn cell(ui: &mut Ui, width: f32, p: &mut Param, events: &mut Vec<BodyEvent>) {
+fn cell(
+    ui: &mut Ui,
+    width: f32,
+    p: &mut Param,
+    control: Option<&Control>,
+    events: &mut Vec<BodyEvent>,
+) {
     let name_style = typography::SMALL;
     let value_style = typography::VALUE_S;
     let height =
@@ -306,50 +326,103 @@ fn cell(ui: &mut Ui, width: f32, p: &mut Param, events: &mut Vec<BodyEvent>) {
             ui.set_width(width);
             ui.spacing_mut().item_spacing = vec2(0.0, m::PARAM_ITEM_GAP);
             // Driven in normalised space, so log and dB parameters turn evenly.
-            let mut value = p.info.to_normalized(p.value);
+            let current = control
+                .and_then(Control::value)
+                .map_or_else(|| p.info.to_normalized(p.value), f64::from);
+            let mut value = current;
+            if let Some(control) = control {
+                control.paint_ground(ui, ui.max_rect());
+            }
             let shown = p.clone();
             let knob = Knob::new(&mut value, p.name().to_owned())
                 .range(0.0..=1.0)
                 .default_value(p.info.default_normalized())
+                .modulation(control.and_then(Control::modulation))
+                .redirect(control.is_some_and(Control::redirects))
                 .format(move |n| shown.text_at(shown.info.to_plain(n)));
             let r = ui.add(knob);
             let mut changed = r.changed();
-            let shown = p.clone();
-            if value_menu::show(&r, move || shown.text_at(shown.value)) {
-                value = p.info.default_normalized();
-                changed = true;
-            }
-            let plain = p.info.to_plain(value);
-            let moved = changed && plain != p.value;
-            // A drag or a burst of wheel notches is one undo step; a click or a reset is one by
-            // itself (`gesture_actions`).
             let mut actions = Vec::new();
-            let id = p.wire;
-            gesture_actions(
-                &r,
-                moved,
-                || {
-                    Action::Plugin(PluginAction::BeginParamGesture {
-                        device: DeviceId(0),
-                        id,
-                    })
-                },
-                &mut actions,
-                |_| {},
-            );
-            let (begin, end): (Vec<_>, Vec<_>) = actions
-                .into_iter()
-                .partition(|a| matches!(a, Action::Plugin(_)));
-            events.extend(begin.iter().map(|_| BodyEvent::BeginGesture { id }));
-            if moved {
-                p.text = p.info.format(plain);
-                p.value = plain;
-                events.push(BodyEvent::SetParam { id, value: plain });
+            let intercepted = if let Some(control) = control {
+                let lang = komponist_ui::lang(ui.ctx());
+                let range = control.driver.as_ref().map(|driver| {
+                    lang.devices_range(
+                        p.text_at(p.info.to_plain(f64::from(driver.range.0))),
+                        p.text_at(p.info.to_plain(f64::from(driver.range.1))),
+                    )
+                });
+                control.decorate(ui, &r, ui.max_rect(), range.as_deref());
+                let intercepted = control.intercept(&r, changed, &mut actions);
+                let ordinary = [
+                    komponist_ui::widgets::context_menu::Entry::action(
+                        lang.ui_value_to_default(),
+                        Pick::Default,
+                    ),
+                    komponist_ui::widgets::context_menu::Entry::action(
+                        lang.ui_value_enter(),
+                        Pick::Enter,
+                    ),
+                ];
+                if let Some(pick) = control.menu(lang, &ordinary, &r) {
+                    match pick {
+                        Pick::Default => {
+                            value = p.info.default_normalized();
+                            changed = true;
+                        }
+                        Pick::Enter => komponist_ui::widgets::number_field::open_value_entry(
+                            ui.ctx(),
+                            r.id,
+                            p.text_at(p.info.to_plain(current)),
+                        ),
+                        other => actions.extend(control.menu_action(other)),
+                    }
+                }
+                intercepted
+            } else {
+                if value_menu::show(&r, || p.text_at(p.value)) {
+                    value = p.info.default_normalized();
+                    changed = true;
+                }
+                false
+            };
+            events.extend(actions.drain(..).map(BodyEvent::MacroAction));
+            if !intercepted {
+                let plain = p.info.to_plain(value);
+                let moved = changed && plain != p.value;
+                // A drag or a burst of wheel notches is one undo step; a click or a reset is one by
+                // itself (gesture_actions).
+                let id = p.wire;
+                gesture_actions(
+                    &r,
+                    moved,
+                    || {
+                        Action::Plugin(PluginAction::BeginParamGesture {
+                            device: DeviceId(0),
+                            id,
+                        })
+                    },
+                    &mut actions,
+                    |_| {},
+                );
+                let (begin, end): (Vec<_>, Vec<_>) = actions
+                    .into_iter()
+                    .partition(|a| matches!(a, Action::Plugin(_)));
+                events.extend(begin.iter().map(|_| BodyEvent::BeginGesture { id }));
+                if moved {
+                    p.text = p.info.format(plain);
+                    p.value = plain;
+                    events.push(BodyEvent::SetParam { id, value: plain });
+                }
+                events.extend(end.iter().map(|_| BodyEvent::EndGesture));
             }
-            events.extend(end.iter().map(|_| BodyEvent::EndGesture));
             let name = fonts::rich_text(p.name(), &name_style).color(color32(color::TEXT_2));
             ui.add(egui::Label::new(name).truncate());
-            let value_text = fonts::rich_text(&p.text, &value_style).color(color32(color::TEXT_3));
+            let text = if control.and_then(Control::value).is_some() {
+                p.text_at(p.info.to_plain(current))
+            } else {
+                p.text.clone()
+            };
+            let value_text = fonts::rich_text(&text, &value_style).color(color32(color::TEXT_3));
             ui.add(egui::Label::new(value_text).truncate());
         },
     );

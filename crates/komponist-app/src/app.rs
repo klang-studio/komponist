@@ -27,6 +27,7 @@
 //! flight first.
 
 mod devices;
+mod track_macro_edits;
 
 use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -563,7 +564,9 @@ impl App {
     }
 
     fn drain_events_with_automation(&mut self, capture: bool) {
-        let events = self.engine.poll();
+        let events = self
+            .engine
+            .poll_with_macro_mapping(self.ui.track_macros.mapping);
         // Only a device stream can drop out; on the null backend (tests, `--null-audio`, CI runners
         // without RTKit) the missing priority is not worth a notice.
         let device_stream = matches!(
@@ -592,7 +595,13 @@ impl App {
                     }
                     self.engine_event(&event, playhead);
                 }
-                SyncEvent::PluginParameterInput { .. } => {}
+                SyncEvent::PluginParameterInput {
+                    device,
+                    id,
+                    previous,
+                } => {
+                    self.map_native_plugin_input(device, id, previous);
+                }
                 SyncEvent::Device(event) => {
                     recompile |= matches!(
                         event,
@@ -1111,6 +1120,12 @@ impl App {
                 Action::Ui(UiAction::CloseDialog)
             }
             Action::Ui(UiAction::ClearSelection)
+                if !self.doc.in_gesture() && self.ui.track_macros.mapping.is_some() =>
+            {
+                let track = self.ui.track_macros.mapping.expect("active mapping track");
+                Action::Macro(crate::views::track_macros::Action::ToggleMapping { track })
+            }
+            Action::Ui(UiAction::ClearSelection)
                 if self.recording.is_some()
                     || self.audio_recording.is_active()
                     || self.automation_capture.active()
@@ -1188,14 +1203,30 @@ impl App {
             self.log.pop_front();
         }
         self.log.push_back(action.clone());
+        let mapping_context = self
+            .ui
+            .track_macros
+            .mapping
+            .map(|_| (self.track_macros_track(), self.ui.layout.dock_tab));
         match action {
             Action::Transport(a) => self.transport_action(a),
             Action::Edit(a) => self.edit_action(a),
             Action::Automation(a) => self.automation_action(a),
+            Action::Macro(a) => self.track_macro_action(a),
             Action::Ui(a) => self.ui_action(a),
             Action::Plugin(a) => self.plugin_action(a),
             Action::Project(a) => self.project_action(a),
             Action::Settings(a) => self.settings_action(a),
+        }
+        if mapping_context
+            .is_some_and(|context| context != (self.track_macros_track(), self.ui.layout.dock_tab))
+            || self
+                .ui
+                .track_macros
+                .mapping
+                .is_some_and(|track| self.project().track(track).is_none())
+        {
+            self.ui.track_macros.mapping = None;
         }
         if !self.keyboard_midi_active() {
             self.release_keyboard_notes_if(|_| true);
@@ -2020,7 +2051,9 @@ impl App {
                     _ => None,
                 };
                 !automation.is_some_and(|(target, command)| {
-                    self.manual_automation(AutomationOwner::Track(track), &target, command)
+                    let owner = AutomationOwner::Track(track);
+                    self.handle_macro_target_edit(owner, &target)
+                        || self.manual_automation(owner, &target, command)
                 })
             });
             if tracks.is_empty() {
@@ -2144,14 +2177,19 @@ impl App {
     fn set_send(&mut self, send: komponist_model::SendId, prop: edits::SendProp) {
         if let edits::SendProp::LevelDb(db) = prop
             && let Some((track, _)) = self.project().find_send(send)
-            && self.manual_automation(
-                AutomationOwner::Track(track.id),
-                &AutomationTarget::Send { send },
-                Command::SetSendGain {
-                    send,
-                    gain: fader_gain(db),
-                },
-            )
+            && {
+                let owner = AutomationOwner::Track(track.id);
+                let target = AutomationTarget::Send { send };
+                self.handle_macro_target_edit(owner, &target)
+                    || self.manual_automation(
+                        owner,
+                        &target,
+                        Command::SetSendGain {
+                            send,
+                            gain: fader_gain(db),
+                        },
+                    )
+            }
         {
             return;
         }
@@ -2329,6 +2367,14 @@ impl App {
             self.ui.selection.notes.clear();
             self.ui.selection.step = None;
         }
+        self.ui
+            .track_macros
+            .selected
+            .retain(|id, _| p.track(*id).is_some());
+        self.ui
+            .track_macros
+            .collapsed
+            .retain(|id| p.track(*id).is_some());
         self.update_time_range();
     }
 
@@ -2454,6 +2500,18 @@ impl App {
                 }
             }
             UiAction::SetDockTab(tab) => self.set_dock_tab(tab),
+            UiAction::ToggleMacroMapping => {
+                if let Some(track) = self
+                    .ui
+                    .track_macros
+                    .mapping
+                    .or_else(|| self.track_macros_track())
+                {
+                    self.track_macro_action(crate::views::track_macros::Action::ToggleMapping {
+                        track,
+                    });
+                }
+            }
             UiAction::NextTab => self.next_tab(),
             UiAction::Focus(area) => {
                 if self.ui.dialog.is_none() && self.dialogs.overlay.is_none() {
@@ -2596,6 +2654,9 @@ impl App {
     fn set_dock_tab(&mut self, tab: DockTab) {
         let layout = &mut self.ui.layout;
         layout.dock_open = true;
+        if layout.dock_tab != tab {
+            self.ui.track_macros.mapping = None;
+        }
         layout.dock_tab = tab;
         if tab != DockTab::Mixer
             && layout.dock_maximized
@@ -2901,8 +2962,24 @@ impl App {
             | PluginAction::AuditionPad { .. } => {
                 self.sampler_action(&action);
             }
-            PluginAction::BeginParamGesture { device, id } => self.begin_param_gesture(device, id),
-            PluginAction::SetParam { device, id, value } => self.set_param(device, id, value),
+            PluginAction::BeginParamGesture { device, id } => {
+                let intercept =
+                    self.device_automation_target(device, id)
+                        .is_some_and(|(owner, target)| {
+                            self.macro_target_captures_gesture(owner, &target)
+                        });
+                if !intercept {
+                    self.begin_param_gesture(device, id);
+                }
+            }
+            PluginAction::SetParam { device, id, value } => {
+                let handled = self
+                    .device_automation_target(device, id)
+                    .is_some_and(|(owner, target)| self.handle_macro_target_edit(owner, &target));
+                if !handled {
+                    self.set_param(device, id, value);
+                }
+            }
         }
     }
 
@@ -3046,6 +3123,7 @@ impl App {
         self.meters = Meters::new();
         self.export.forget();
         self.ui.selection = Default::default();
+        self.ui.track_macros = Default::default();
         self.ui.editor = Default::default();
         self.views.arrangement.reset_document();
         self.views.piano_roll.reset_document();

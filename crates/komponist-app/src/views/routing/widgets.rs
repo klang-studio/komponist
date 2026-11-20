@@ -6,6 +6,7 @@ use egui::{
     WidgetInfo, pos2, vec2,
 };
 use komponist_i18n::Lang;
+use komponist_model::automation::{AutomationOwner, AutomationTarget};
 use komponist_model::edits::SendProp;
 use komponist_model::format::fmt_db;
 use komponist_model::project::{SEND_LEVEL_DEFAULT_DB, VOLUME_DB_MAX, VOLUME_DB_MIN};
@@ -24,6 +25,7 @@ use super::{SendInfo, Target};
 use crate::actions::{Action, EditAction};
 use crate::platform::Platform;
 use crate::views::mixer::model::base_color;
+use crate::views::track_macros::{Control, Pick as MacroPick};
 use crate::views::{ViewCtx, elided_galley};
 
 /// The undo label of a send level drag (`undo.ftl`).
@@ -434,6 +436,18 @@ pub fn send_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, info: &SendInfo, rect: Rect,
         0.0
     };
     let body = Rect::from_min_max(rect.min, pos2(rect.right() - tail, rect.bottom()));
+    let owner = AutomationOwner::Track(info.track);
+    let target = AutomationTarget::Send { send: info.id };
+    let control = Control::new(ctx, owner, target.clone());
+    let value = control
+        .as_ref()
+        .and_then(Control::value)
+        .or_else(|| ctx.automation_value(owner, &target));
+    let mapped = value.map(|value| SendInfo {
+        level_db: komponist_model::params::p_to_db(1.0 - value),
+        ..info.clone()
+    });
+    let info = mapped.as_ref().unwrap_or(info);
     let id_salt = ("komponist_send_row", info.id.0, wide);
     let r = ui.interact(body, ui.scope_id().with(id_salt), Sense::click_and_drag());
     let egui_ctx = ui.ctx().clone();
@@ -497,18 +511,33 @@ pub fn send_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, info: &SendInfo, rect: Rect,
             prop: SendProp::LevelDb(v),
         })
     };
-    if r.drag_started() {
-        ctx.send(Action::Edit(EditAction::BeginGesture {
-            label: UNDO_SEND_LEVEL.to_owned(),
-        }));
+    let mut actions = Vec::new();
+    let intercepted = control.as_ref().is_some_and(|control| {
+        control.intercept(
+            &r,
+            reset || new_db.is_some_and(|value| value != db),
+            &mut actions,
+        )
+    });
+    for action in actions {
+        ctx.send(action);
     }
-    if reset {
-        ctx.send(level(SEND_LEVEL_DEFAULT_DB));
-    } else if let Some(v) = new_db.filter(|v| *v != db) {
-        ctx.send(level(v));
+    if !intercepted {
+        if r.drag_started() {
+            ctx.send(Action::Edit(EditAction::BeginGesture {
+                label: UNDO_SEND_LEVEL.to_owned(),
+            }));
+        }
+        if reset {
+            ctx.send(level(SEND_LEVEL_DEFAULT_DB));
+        } else if let Some(v) = new_db.filter(|v| *v != db) {
+            ctx.send(level(v));
+        }
+        if r.drag_stopped() {
+            ctx.send(Action::Edit(EditAction::EndGesture));
+        }
     }
     if r.drag_stopped() {
-        ctx.send(Action::Edit(EditAction::EndGesture));
         egui_ctx.data_mut(|d| d.remove::<LevelDrag>(r.id));
     }
     if r.hovered() || r.dragged() {
@@ -534,6 +563,12 @@ pub fn send_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, info: &SendInfo, rect: Rect,
     }
 
     paint_row(ui, &r, body, info, !wide);
+    if let Some(control) = &control {
+        if control.candidate() {
+            px::outline(ui.painter(), body, radius::S, 0.0, color32(color::ACCENT));
+        }
+        control.decorate(ui, &r, body, None);
+    }
 
     // The bus list.
     if floating::is_open(&egui_ctx, retarget) {
@@ -563,19 +598,40 @@ pub fn send_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, info: &SendInfo, rect: Rect,
         Tap(Tap),
         Enabled(bool),
         Remove,
+        Macro(MacroPick),
     }
     let toggle = if info.enabled {
         t.routing_switch_off()
     } else {
         t.routing_switch_on()
     };
-    let entries = [
+    let mut entries = vec![
         Entry::action(t.routing_pre(), Choice::Tap(Tap::Pre)).checked(info.tap == Tap::Pre),
         Entry::action(t.routing_post(), Choice::Tap(Tap::Post)).checked(info.tap == Tap::Post),
         Entry::separator(),
         Entry::action(toggle, Choice::Enabled(!info.enabled)),
         Entry::action(t.routing_remove(), Choice::Remove),
     ];
+    let slots = control
+        .as_ref()
+        .map(|control| control.slots_as(Choice::Macro));
+    if let Some(slots) = &slots {
+        entries.push(Entry::separator());
+        if control
+            .as_ref()
+            .is_some_and(|control| control.driver.is_some())
+        {
+            entries.push(Entry::action(
+                t.macros_show(),
+                Choice::Macro(MacroPick::Show),
+            ));
+            entries.push(Entry::action(
+                t.macros_remove_menu(),
+                Choice::Macro(MacroPick::Remove),
+            ));
+        }
+        entries.push(Entry::submenu(t.macros_map_to(), slots));
+    }
     match ContextMenu::new(t.routing_sends(), &entries).show_on(&r) {
         Some(Choice::Tap(tap)) => ctx.send(Action::Edit(EditAction::SetSend {
             send: info.id,
@@ -586,6 +642,14 @@ pub fn send_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, info: &SendInfo, rect: Rect,
             prop: SendProp::Enabled(on),
         })),
         Some(Choice::Remove) => ctx.send(Action::Edit(EditAction::RemoveSend(info.id))),
+        Some(Choice::Macro(pick)) => {
+            if let Some(action) = control
+                .as_ref()
+                .and_then(|control| control.menu_action(pick))
+            {
+                ctx.send(action);
+            }
+        }
         None => {}
     }
 

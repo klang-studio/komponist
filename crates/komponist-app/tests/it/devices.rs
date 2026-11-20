@@ -173,6 +173,8 @@ fn s05() -> (App, Chain, fake_host::Statuses, fake_host::SetLog) {
         tracks: vec![c.pad],
         mode: SelectMode::Replace,
     })));
+    // These fixtures show all five device cards at once; collapse the pinned macro card.
+    app.ui_mut().track_macros.collapsed.insert(c.pad);
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
     app.ui_mut()
         .plugin_windows

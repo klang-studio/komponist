@@ -9,7 +9,7 @@ use komponist_i18n::Lang;
 use komponist_model::automation::{AutomationMode, AutomationOwner, AutomationTarget};
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 use komponist_model::project::{VOLUME_DB_MAX, VOLUME_DB_MIN};
-use komponist_model::{Channel, Device, TrackSend};
+use komponist_model::{Channel, Device, Project, TrackSend};
 use komponist_plugins::DeviceStatus;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, radius, size, space, typography};
@@ -19,6 +19,8 @@ use komponist_ui::{focus, icons, px, widgets};
 
 use super::{lanes, metrics as m};
 use crate::device_host::{internal_kind, is_hexa};
+use crate::engine_sync::EngineSync;
+use crate::ui_state::ParamTouch;
 use crate::views::devices::model as devices;
 use crate::views::{ViewCtx, elided_galley, plugin_name};
 
@@ -93,27 +95,44 @@ pub(crate) fn percentage(lang: Lang, value: f32) -> String {
 
 type Section = (String, Vec<Target>);
 
-pub(crate) struct Catalog<'a, 'view> {
-    ctx: &'a ViewCtx<'view>,
+pub(crate) struct Catalog<'a> {
+    project: &'a Project,
+    engine: &'a EngineSync,
+    lang: Lang,
     owner: AutomationOwner,
     channel: &'a Channel,
     sends: &'a [TrackSend],
+    recent: &'a [ParamTouch],
 }
 
-impl<'a, 'view> Catalog<'a, 'view> {
-    pub fn new(ctx: &'a ViewCtx<'view>, owner: AutomationOwner) -> Option<Catalog<'a, 'view>> {
+impl<'a> Catalog<'a> {
+    pub fn new(ctx: &'a ViewCtx<'_>, owner: AutomationOwner) -> Option<Self> {
+        let mut catalog = Self::for_project(ctx.project, ctx.engine, ctx.lang, owner)?;
+        catalog.recent = &ctx.ui.devices.automation_recent;
+        Some(catalog)
+    }
+
+    pub(crate) fn for_project(
+        project: &'a Project,
+        engine: &'a EngineSync,
+        lang: Lang,
+        owner: AutomationOwner,
+    ) -> Option<Self> {
         let (channel, sends) = match owner {
             AutomationOwner::Track(id) => {
-                let track = ctx.project.track(id)?;
+                let track = project.track(id)?;
                 (&track.channel, track.sends.as_slice())
             }
-            AutomationOwner::Master => (ctx.project.master.as_ref(), &[][..]),
+            AutomationOwner::Master => (project.master.as_ref(), &[][..]),
         };
-        Some(Catalog {
-            ctx,
+        Some(Self {
+            project,
+            engine,
+            lang,
             owner,
             channel,
             sends,
+            recent: &[],
         })
     }
 
@@ -134,19 +153,18 @@ impl<'a, 'view> Catalog<'a, 'view> {
 
     fn send(&self, send: &TrackSend) -> Target {
         let bus = self
-            .ctx
             .project
             .track(send.target)
             .map_or("", |track| track.name.as_str());
         self.gain(
             AutomationTarget::Send { send: send.id },
-            self.ctx.lang.automation_send(bus),
+            self.lang.automation_send(bus),
             send.level_db,
         )
     }
 
     fn pan(&self) -> Target {
-        let name = self.ctx.lang.param_pan().to_owned();
+        let name = self.lang.param_pan().to_owned();
         let info = ParamInfo::new(
             "pan",
             name.clone(),
@@ -164,14 +182,14 @@ impl<'a, 'view> Catalog<'a, 'view> {
     fn volume(&self) -> Target {
         self.gain(
             AutomationTarget::Volume,
-            self.ctx.lang.param_volume().to_owned(),
+            self.lang.param_volume().to_owned(),
             self.channel.volume_db,
         )
     }
 
     fn device_params(&self, device: &Device) -> Vec<devices::Param> {
-        let lang = self.ctx.lang;
-        let host = self.ctx.engine.host();
+        let lang = self.lang;
+        let host = self.engine.host();
         if let Some(kind) = internal_kind(device) {
             return devices::internal_params(lang, kind, device);
         }
@@ -187,7 +205,7 @@ impl<'a, 'view> Catalog<'a, 'view> {
 
     /// Resolve just the visible lane's parameter. The full catalog is built when the chooser opens.
     fn device_param(&self, device: &Device, id: &ParamId) -> Option<(ParamInfo, f64)> {
-        let lang = self.ctx.lang;
+        let lang = self.lang;
         if let Some(kind) = internal_kind(device) {
             let wire = kind.wire(id)? as usize;
             let info = &kind.params_in(lang)[wire];
@@ -209,7 +227,7 @@ impl<'a, 'view> Catalog<'a, 'view> {
             return Some((m.param_info_in(lang), m.get(&patch)));
         }
         let wire = id.plugin_id()?;
-        let host = self.ctx.engine.host();
+        let host = self.engine.host();
         let param = host
             .params(device.id)?
             .iter()
@@ -230,7 +248,7 @@ impl<'a, 'view> Catalog<'a, 'view> {
     }
 
     pub fn resolve(&self, target: &AutomationTarget) -> Result<Target, Option<String>> {
-        let lang = self.ctx.lang;
+        let lang = self.lang;
         match target {
             AutomationTarget::Volume => Ok(self.volume()),
             AutomationTarget::Pan => Ok(self.pan()),
@@ -248,7 +266,7 @@ impl<'a, 'view> Catalog<'a, 'view> {
                     .find(|d| d.id == *device)
                     .ok_or_else(|| Some(lang.automation_not_on_track().to_owned()))?;
                 let name = plugin_name(lang, &device.plugin);
-                match self.ctx.engine.device_status(device.id) {
+                match self.engine.device_status(device.id) {
                     DeviceStatus::Missing | DeviceStatus::Crashed(_) => {
                         return Err(Some(lang.arrangement_plugin_missing(&name)));
                     }
@@ -262,8 +280,7 @@ impl<'a, 'view> Catalog<'a, 'view> {
                     return Err(Some(lang.automation_not_automatable().to_owned()));
                 }
                 let hidden = param.plugin_id().is_some_and(|id| {
-                    self.ctx
-                        .engine
+                    self.engine
                         .host()
                         .params(device.id)
                         .is_some_and(|infos| infos.iter().any(|p| p.id == id))
@@ -283,7 +300,7 @@ impl<'a, 'view> Catalog<'a, 'view> {
     }
 
     fn sections(&self, query: &str) -> Vec<Section> {
-        let lang = self.ctx.lang;
+        let lang = self.lang;
         let mut mixer = vec![self.volume(), self.pan()];
         mixer.extend(self.sends.iter().map(|send| self.send(send)));
         let mut sections = vec![(lang.automation_mixer().to_owned(), mixer)];
@@ -295,7 +312,7 @@ impl<'a, 'view> Catalog<'a, 'view> {
                 .filter(|p| p.info.automatable)
                 .map(|param| self.device_target(device, param.info, param.value, &name))
                 .collect::<Vec<_>>();
-            if let Some(infos) = self.ctx.engine.host().params(device.id) {
+            if let Some(infos) = self.engine.host().params(device.id) {
                 let modules: HashMap<_, _> = infos
                     .iter()
                     .filter(|info| !info.module.is_empty())
@@ -310,10 +327,7 @@ impl<'a, 'view> Catalog<'a, 'view> {
             sections.push((name, targets));
         }
         let recent = self
-            .ctx
-            .ui
-            .devices
-            .automation_recent
+            .recent
             .iter()
             .filter_map(|touch| {
                 self.resolve(&AutomationTarget::Param {
@@ -338,7 +352,7 @@ impl<'a, 'view> Catalog<'a, 'view> {
     }
 
     fn already_automated(&self, target: &AutomationTarget) -> bool {
-        lanes(self.ctx.project, self.owner)
+        lanes(self.project, self.owner)
             .is_some_and(|a| a.lanes.iter().any(|lane| &lane.target == target))
     }
 }
@@ -564,13 +578,13 @@ impl Chooser {
         ui: &Ui,
         id: Id,
         anchor: Rect,
-        catalog: &Catalog<'_, '_>,
+        catalog: &Catalog<'_>,
         add: bool,
     ) -> Option<Choice> {
         if self.active != Some(id) {
             return None;
         }
-        let lang = catalog.ctx.lang;
+        let lang = catalog.lang;
         let content = ui.ctx().content_rect();
         let gap = space::SPACE_0_5;
         let below = content.bottom() - anchor.bottom();

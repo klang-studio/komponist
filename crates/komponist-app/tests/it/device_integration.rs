@@ -199,10 +199,7 @@ fn touching_a_parameter_shows_it_in_the_inspector_and_while_dragging_in_the_stat
     let range = range.label().or_else(|| range.value()).unwrap_or_default();
     assert!(range.contains(" bis "), "{range}");
     section.get_by_label("Automation zeigen");
-    // No buttons for what is only prepared.
-    for hidden in ["MIDI lernen", "Makro"] {
-        assert!(h.query_by_label_contains(hidden).is_none(), "{hidden}");
-    }
+    assert!(h.query_by_label_contains("MIDI lernen").is_none());
 }
 
 #[test]
@@ -367,7 +364,12 @@ fn the_context_menu_of_a_parameter_offers_automation_alongside_value_edits() {
         .query_all_by_role(Role::MenuItem)
         .map(|n| n.accesskit_node().label().unwrap_or_default())
         .collect();
-    assert_eq!(labels.len(), 3, "automation and value edits: {labels:?}");
+    assert_eq!(
+        labels.len(),
+        4,
+        "automation, mapping and value edits: {labels:?}"
+    );
+    assert!(labels.iter().any(|l| l.starts_with(de::MACROS_MAP_TO)));
     assert!(labels.iter().any(|l| l.starts_with(de::DEVICES_TO_DEFAULT)));
     assert!(
         labels
@@ -883,4 +885,255 @@ fn snapshot_of_the_fm_display_with_a_cycle() {
     h.snapshot("devices-fm-cycle-1x");
     results.extend_harness(&mut h);
     results.unwrap();
+}
+
+#[test]
+fn track_macro_ui_maps_a_builtin_control_without_moving_it() {
+    use komponist_model::automation::AutomationTarget;
+
+    let (mut app, track, hall) = app_with_hall();
+    app.engine_mut().hold_engine().unwrap();
+    app.step();
+    let base = hall_values(&app, hall)[decay_wire()];
+    let decay_info = &Internal::Hall.params()[decay_wire()];
+    let norm = decay_info.to_normalized(base) as f32;
+    let key = AutomationTarget::Param {
+        device: hall,
+        param: ParamId::new("decay"),
+    };
+    let mut h = harness(app);
+    let map_button = h
+        .query_all_by_label(Lang::De.macros_map())
+        .filter(|node| node.accesskit_node().role() == Role::Button)
+        .max_by(|a, b| a.rect().center().y.total_cmp(&b.rect().center().y))
+        .expect("macro map toggle")
+        .rect()
+        .center();
+    click(&mut h, map_button);
+    assert_eq!(h.state().ui().track_macros.mapping, Some(track));
+    let from = knob(&h, "Decay").center();
+    let to = from - vec2(0.0, 40.0);
+    press_and_move(&mut h, from, to, Modifiers::NONE);
+    release(&mut h, to, Modifiers::NONE);
+
+    let project = h.state().project().track(track).unwrap();
+    let slot = &project.macros.0[0];
+    assert_eq!(slot.mappings.len(), 1);
+    assert_eq!(slot.mappings[0].target, key);
+    assert!((slot.mappings[0].value_at(slot.value) - norm).abs() < 1e-6);
+    assert_eq!(hall_values(h.state(), hall)[decay_wire()], base);
+
+    h.key_press(egui::Key::Escape);
+    h.run_steps(4);
+    assert_eq!(h.state().ui().track_macros.mapping, None);
+    let dial = h
+        .query_all_by_label(&Lang::De.macros_a11y(1, Lang::De.macros_unused()))
+        .filter(|node| node.accesskit_node().role() == Role::Slider)
+        .max_by(|a, b| a.rect().center().y.total_cmp(&b.rect().center().y))
+        .expect("visible macro knob")
+        .rect()
+        .center();
+    let end = dial - vec2(0.0, 80.0);
+    press_and_move(&mut h, dial, end, Modifiers::NONE);
+    release(&mut h, end, Modifiers::NONE);
+    let app = h.state_mut();
+    app.engine_mut().run_held_capture(256, &[], 0).unwrap();
+    let value = app.project().track(track).unwrap().macros.0[0].value;
+    assert!(value > 0.1, "dial should change the macro, got {value}");
+    assert_eq!(
+        app.engine().telemetry().macro_values(track).unwrap()[0],
+        value
+    );
+    assert_eq!(hall_values(app, hall)[decay_wire()], base);
+    h.run_steps(3);
+    let driver = Lang::De.macros_controlled_tip(Lang::De.macros_slot(1));
+    let card_label = Lang::De.devices_card("Hall");
+    let control = h
+        .get_by_role_and_label(Role::Group, &card_label)
+        .get_by_role_and_label(Role::Slider, "Decay")
+        .accesskit_node();
+    assert!(control.is_read_only());
+    assert_eq!(control.description().as_deref(), Some(driver.as_str()));
+
+    press_and_move(&mut h, from, to, Modifiers::NONE);
+    release(&mut h, to, Modifiers::NONE);
+    let status = statusbar::model(h.state(), Instant::now());
+    assert_eq!(
+        status.left,
+        Lang::De.status_macros_locked("Decay", Lang::De.macros_slot(1))
+    );
+    assert_eq!(
+        h.state().project().track(track).unwrap().macros.0[0].value,
+        value
+    );
+}
+
+#[test]
+fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
+    use komponist_app::views::track_macros::Action as Macro;
+    use komponist_model::automation::AutomationTarget;
+    use komponist_model::macros::Mapping;
+
+    let mut results = SnapshotResults::new();
+    for lang in Lang::ALL {
+        let (app, track, hall) = app_with_hall();
+        let mut h = harness(app.with_lang(lang));
+        let snapshot = |h: &mut Harness<'_, App>, name: &str| {
+            let cpu = h
+                .get_by_role_and_label(Role::Status, lang.transport_cpu())
+                .rect();
+            h.mask(cpu.expand(2.0));
+            h.snapshot(format!("track-macro-{name}-{}-1x", lang.code()));
+        };
+        snapshot(&mut h, "card");
+        let knob_target = |id: &str| AutomationTarget::Param {
+            device: hall,
+            param: ParamId::new(id),
+        };
+        h.state_mut().dispatch(Action::Macro(Macro::Rename {
+            track,
+            index: 0,
+            name: "Open".into(),
+        }));
+        h.state_mut()
+            .dispatch(Action::Macro(Macro::ToggleMapping { track }));
+        h.state_mut().dispatch(Action::Macro(Macro::Map {
+            track,
+            index: 0,
+            target: knob_target("decay"),
+        }));
+        h.run_steps(3);
+        snapshot(&mut h, "mapping");
+        h.state_mut()
+            .dispatch(Action::Macro(Macro::ToggleMapping { track }));
+        h.state_mut()
+            .dispatch(Action::Macro(Macro::Select { track, index: 0 }));
+        h.state_mut().dispatch(Action::Macro(Macro::Map {
+            track,
+            index: 0,
+            target: knob_target("mix"),
+        }));
+        h.state_mut().dispatch(Action::Macro(Macro::Bend {
+            track,
+            index: 0,
+            target: knob_target("mix"),
+            bend: 0.4,
+        }));
+        h.run_steps(3);
+        snapshot(&mut h, "list");
+        let name = lang.param_decay();
+        let decay = h
+            .get_by_role_and_label(
+                Role::Group,
+                &lang.devices_card(Internal::Hall.name_in(lang)),
+            )
+            .get_by_role_and_label(Role::Slider, name)
+            .rect()
+            .center();
+        right_click(&mut h, decay);
+        snapshot(&mut h, "driven");
+        results.extend_harness(&mut h);
+
+        let missing = Mapping {
+            target: knob_target("removed-param"),
+            label: "Hall · Former target".into(),
+            min: 0.0,
+            max: 1.0,
+            invert: false,
+            bend: 0.0,
+        };
+        let project = edits::macros::add_mapping(h.state().project(), track, 0, missing).unwrap();
+        let mut app = App::headless(project).with_lang(lang);
+        select_track(&mut app, track);
+        app.dispatch(Action::Macro(Macro::Select { track, index: 0 }));
+        let mut missing = harness(app);
+        snapshot(&mut missing, "missing");
+        results.extend_harness(&mut missing);
+    }
+    results.unwrap();
+}
+
+#[test]
+fn track_macro_mapping_range_inversion_and_bend_are_undoable() {
+    use komponist_app::views::track_macros::Action as Macro;
+    use komponist_model::automation::AutomationTarget;
+
+    let (mut app, track, hall) = app_with_hall();
+    let target = AutomationTarget::Param {
+        device: hall,
+        param: ParamId::new("decay"),
+    };
+    app.dispatch(Action::Macro(Macro::Map {
+        track,
+        index: 0,
+        target: target.clone(),
+    }));
+    app.dispatch(Action::Macro(Macro::Select { track, index: 0 }));
+    let mut h = harness(app);
+    let mapping = |h: &Harness<'_, App>| {
+        h.state().project().track(track).unwrap().macros.0[0].mappings[0].clone()
+    };
+    let edit = |h: &mut Harness<'_, App>, action| {
+        h.state_mut().dispatch(Action::Edit(action));
+        h.run_steps(3);
+    };
+    let original = mapping(&h);
+    let minimum = Lang::De.macros_a11y_min(&original.label);
+    let from = h
+        .get_by_role_and_label(Role::Slider, &minimum)
+        .rect()
+        .center();
+    let to = from + vec2(30.0, 0.0);
+    press_and_move(&mut h, from, to, Modifiers::NONE);
+    release(&mut h, to, Modifiers::NONE);
+    let ranged = mapping(&h);
+    assert!(ranged.min > original.min, "range handle should move");
+    assert_eq!(ranged.max, original.max);
+    edit(&mut h, EditAction::Undo);
+    assert_eq!(mapping(&h), original);
+    edit(&mut h, EditAction::Redo);
+    assert_eq!(mapping(&h), ranged);
+
+    let invert = h
+        .get_by_role_and_label(Role::Button, Lang::De.macros_invert())
+        .rect()
+        .center();
+    click(&mut h, invert);
+    let inverted = mapping(&h);
+    assert!(inverted.invert);
+    edit(&mut h, EditAction::Undo);
+    assert_eq!(mapping(&h), ranged);
+    edit(&mut h, EditAction::Redo);
+    assert_eq!(mapping(&h), inverted);
+
+    let bend_label = Lang::De.macros_a11y_bend(Lang::De.param_decay());
+    let from = h
+        .get_by_role_and_label(Role::Slider, &bend_label)
+        .rect()
+        .center();
+    let to = from - vec2(0.0, 25.0);
+    press_and_move(&mut h, from, to, Modifiers::NONE);
+    release(&mut h, to, Modifiers::NONE);
+    let bent = mapping(&h);
+    assert!(
+        (0.1..1.0).contains(&bent.bend),
+        "expected a partial positive bend: {bent:?}"
+    );
+    edit(&mut h, EditAction::Undo);
+    assert_eq!(mapping(&h), inverted);
+    edit(&mut h, EditAction::Redo);
+    assert_eq!(mapping(&h), bent);
+
+    h.run_steps(30);
+    h.hover_at(from);
+    h.step();
+    h.event(Event::ModifiersChanged(Modifiers::ALT));
+    button(&mut h, from, PointerButton::Primary, true, Modifiers::ALT);
+    h.step();
+    button(&mut h, from, PointerButton::Primary, false, Modifiers::ALT);
+    h.run_steps(3);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    assert_eq!(mapping(&h), inverted);
+    edit(&mut h, EditAction::Undo);
+    assert_eq!(mapping(&h), bent);
 }
