@@ -832,6 +832,7 @@ impl App {
         self.automation_capture = AutomationCapture::default();
         self.automation_controls.clear();
         self.automation_stop_pending = false;
+        self.engine.discard_pending_macro_overrides();
         self.engine.send(Command::CancelAutomationWrite);
     }
 
@@ -905,6 +906,19 @@ impl App {
                 self.automation_controls.push((owner, target));
             }
         }
+        let command = match command {
+            Command::SetMacro {
+                track,
+                index,
+                value,
+                ..
+            } => self.engine.macro_value_command(
+                track,
+                index,
+                crate::engine_sync::MacroValueEdit::AutomationOverride(value.clamp(0.0, 1.0)),
+            ),
+            command => command,
+        };
         self.engine.send(command);
         if !gesture {
             self.engine.send(Command::Touch {

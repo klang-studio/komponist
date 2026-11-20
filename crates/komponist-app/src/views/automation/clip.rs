@@ -174,7 +174,11 @@ impl ClipEditor {
         );
         px::fill(paint, bar, 0.0, color32(color::SURFACE_2));
         let owner = AutomationOwner::Track(track.id);
-        let result = Catalog::new(ctx, owner).map(|catalog| catalog.resolve(&envelope.target));
+        let catalog = Catalog::new(ctx, owner);
+        let driven = catalog
+            .as_ref()
+            .and_then(|catalog| catalog.driven(&envelope.target));
+        let result = catalog.map(|catalog| catalog.resolve(&envelope.target));
         let (target, warning) = match result {
             Some(Ok(target)) => (Some(target), None),
             Some(Err(warning)) => (None, warning),
@@ -187,7 +191,7 @@ impl ClipEditor {
             .automation
             .lane(&envelope.target)
             .map_or(AutomationMode::Read, |lane| lane.mode);
-        let active = mode != AutomationMode::Off && warning.is_none();
+        let active = mode != AutomationMode::Off && warning.is_none() && driven.is_none();
         let shape = if active {
             color32(palette.ink)
         } else {
@@ -198,8 +202,8 @@ impl ClipEditor {
         let group = ui.interact(row.intersect(ui.clip_rect()), id, Sense::hover());
         group.widget_info(|| WidgetInfo::labeled(Role::Group, true, &access));
         widgets::accesskit(&group, |node| {
-            if let Some(warning) = &warning {
-                node.set_description(warning.as_str());
+            if let Some(description) = warning.as_deref().or(driven.as_deref()) {
+                node.set_description(description);
             }
         });
         let mut row_ui = ui.new_child(
@@ -247,6 +251,9 @@ impl ClipEditor {
             ctx.send(Action::Automation(Automation::Mode(owner, lane.id, mode)));
         }
         if let Some(trigger) = trigger {
+            if let Some(reason) = &driven {
+                trigger.clone().on_hover_text(reason);
+            }
             if trigger.clicked() {
                 self.chooser.open(trigger.id);
             }
@@ -261,7 +268,7 @@ impl ClipEditor {
             Tick(-1)
         };
         let base = target.as_ref().map_or(0.0, |target| target.base);
-        let current = (mode != AutomationMode::Off)
+        let current = active
             .then(|| {
                 ctx.automation_capture
                     .and_then(|capture| capture.current_clip_value(clip.id, &envelope.target))
@@ -274,7 +281,7 @@ impl ClipEditor {
             })
             .flatten()
             .unwrap_or(base);
-        let value = warning.clone().unwrap_or_else(|| {
+        let value = warning.clone().or(driven).unwrap_or_else(|| {
             target.as_ref().map_or_else(
                 || percentage(lang, current),
                 |target| target.format(current),

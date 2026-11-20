@@ -47,7 +47,7 @@ macros-kept = { $n ->
        *[other] { $n } Zuordnungen bleiben gespeichert
     }
 macros-expand-to-map = Aufklappen, um Parameter zuzuordnen
-macros-lane-overridden = gesteuert von { $source }
+macros-lane-overridden = über { $source }
 macros-device-macros = Geräte-Makros
 macros-a11y = Spur-Makro { $n }, { $name }
 macros-a11y-mappings = { $n ->

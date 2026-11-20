@@ -386,6 +386,12 @@ pub fn midi_changes(before: &[MidiPortInfo], after: &[MidiPortInfo]) -> Vec<Midi
     vanished.chain(appeared).collect()
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum MacroValueEdit {
+    Base(f32),
+    AutomationOverride(f32),
+}
+
 /// Engine, audio stream and program sync. UI thread.
 pub struct EngineSync {
     audio: AudioSystem<EngineProcess>,
@@ -417,7 +423,7 @@ pub struct EngineSync {
     /// Last plain macro outputs passed to the plugin snapshot verifier.
     macro_params: Vec<(DeviceId, u32, f64)>,
     macro_edit: u64,
-    pending_macro_edits: HashMap<(TrackId, u8), (u64, f32)>,
+    pending_macro_edits: HashMap<(TrackId, u8), (u64, MacroValueEdit)>,
     rate: Arc<AtomicU32>,
     telemetry: Arc<Telemetry>,
     /// The engine taken out of the stream ([`EngineSync::hold_engine`]).
@@ -802,11 +808,19 @@ impl EngineSync {
     }
 
     /// Starts tracking a manual value edit until the engine publishes its effect.
-    pub(crate) fn macro_value_command(&mut self, track: TrackId, index: u8, value: f32) -> Command {
+    pub(crate) fn macro_value_command(
+        &mut self,
+        track: TrackId,
+        index: u8,
+        change: MacroValueEdit,
+    ) -> Command {
         self.macro_edit += 1;
         let edit = self.macro_edit;
         self.pending_macro_edits
-            .insert((track, index), (edit, value));
+            .insert((track, index), (edit, change));
+        let value = match change {
+            MacroValueEdit::Base(value) | MacroValueEdit::AutomationOverride(value) => value,
+        };
         Command::SetMacro {
             track,
             index,
@@ -816,9 +830,20 @@ impl EngineSync {
     }
 
     pub(crate) fn pending_macro_value(&self, track: TrackId, index: u8, base: f32) -> Option<f32> {
-        let &(edit, value) = self.pending_macro_edits.get(&(track, index))?;
-        // Undo or cancellation may have already replaced the pending base in the document.
-        (value == base && edit > self.telemetry.applied_macro_edit()).then_some(value)
+        let &(edit, change) = self.pending_macro_edits.get(&(track, index))?;
+        if edit <= self.telemetry.applied_macro_edit() {
+            return None;
+        }
+        match change {
+            // Undo or cancellation may have already replaced the pending base in the document.
+            MacroValueEdit::Base(value) => (value == base).then_some(value),
+            MacroValueEdit::AutomationOverride(value) => Some(value),
+        }
+    }
+
+    pub(crate) fn discard_pending_macro_overrides(&mut self) {
+        self.pending_macro_edits
+            .retain(|_, (_, change)| matches!(change, MacroValueEdit::Base(_)));
     }
 
     /// A fast-path command for a change the dispatcher just applied inside a gesture

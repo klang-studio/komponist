@@ -1750,3 +1750,172 @@ fn gestureless_plugin_edit_waits_for_quiet_before_macro_reassert() {
         _ => false,
     }));
 }
+
+#[test]
+fn macro_automation_chases_wraps_and_matches_the_offline_render() {
+    use komponist_model::edits::macros::{add_mapping, set_macro_value};
+
+    let (mut project, owner, device) = source();
+    let AutomationOwner::Track(track) = owner else {
+        unreachable!()
+    };
+    project.loop_on = true;
+    project.loop_range = TickRange::new(Tick(7), Tick(45));
+    let project = set_macro_value(&project, track, 0, 0.4).unwrap();
+    let project = add_mapping(&project, track, 0, macro_mapping(parameter(device, 0))).unwrap();
+    let project = add_mapping(&project, track, 0, macro_mapping(AutomationTarget::Pan)).unwrap();
+    let target = AutomationTarget::Macro { index: 0 };
+    let (project, id) = lane(
+        &project,
+        owner,
+        target.clone(),
+        AutomationMode::Read,
+        vec![
+            Point {
+                tick: Tick(7),
+                value: 0.2,
+                shape: Shape::Hold,
+            },
+            Point::linear(Tick(28), 0.85),
+            Point::linear(Tick(45), 0.35),
+        ],
+    );
+
+    let (mut live, _, mut live_log) = rig(&project);
+    let (mut offline, initial, mut offline_log) = rig(&project);
+    live.engine.settle();
+    let rendering = komponist_engine::export::recompile(&mut offline.engine, &project, &initial);
+    offline.set_program(&rendering);
+    for rig in [&mut live, &mut offline] {
+        rig.send(Command::Locate(Tick(7)));
+        rig.send(Command::Play);
+    }
+    let lap = (45 - 7) * 25;
+    live.process(2 * lap + 117, 97);
+    offline.render(2 * lap + 117, 251);
+    assert_eq!(live.l, offline.l);
+    assert_eq!(live.r, offline.r);
+    assert!(live.l[70] > live.r[70] && live.l[650] < live.r[650]);
+
+    let live_events: Vec<_> = std::iter::from_fn(|| live_log.pop().ok()).collect();
+    let offline_events: Vec<_> = std::iter::from_fn(|| offline_log.pop().ok()).collect();
+    assert_eq!(live_events, offline_events);
+    for frame in [0, lap + 1, 2 * lap + 1] {
+        assert!(live_events.contains(&(frame, 0, f64::from(0.2_f32))));
+    }
+    assert!(live_events.contains(&((28 - 7) * 25 + 1, 0, f64::from(0.85_f32))));
+    assert_eq!(live.handle.telemetry().macro_values(track).unwrap()[0], 0.2);
+
+    let at = live.frames() + 1;
+    live.send(Command::Stop);
+    live.send(Command::Locate(Tick(28)));
+    live.process(32, 32);
+    assert_eq!(live_log.pop().unwrap(), (at, 0, f64::from(0.85_f32)));
+    assert_eq!(
+        live.handle.telemetry().macro_values(track).unwrap()[0],
+        0.85
+    );
+
+    let off = set_lane_mode(&project, owner, id, AutomationMode::Off).unwrap();
+    let off = compile::build(&off, None, &Parameters(true));
+    live.set_program(&off);
+    live.process(32, 32);
+    assert_eq!(live_log.pop().unwrap(), (at + 32, 0, f64::from(0.4_f32)));
+}
+
+#[test]
+fn resolved_midi_macro_input_hits_its_exact_sample() {
+    use komponist_engine::{AudioInputBuffer, LiveInput, MacroInput};
+    use komponist_model::edits::macros::add_mapping;
+
+    let (project, owner, device) = source();
+    let AutomationOwner::Track(track) = owner else {
+        unreachable!()
+    };
+    let project = add_mapping(&project, track, 0, macro_mapping(parameter(device, 0))).unwrap();
+    let (mut rig, _, mut log) = rig(&project);
+    let mut l = [0.0; 128];
+    let mut r = [0.0; 128];
+    assert_no_alloc::assert_no_alloc(|| {
+        rig.engine.process_with_macro_input(
+            &mut l,
+            &mut r,
+            &LiveInput {
+                midi: &[],
+                output_latency: 0,
+            },
+            &AudioInputBuffer::empty(),
+            &[
+                MacroInput {
+                    frame: 37,
+                    track,
+                    index: 0,
+                    value: 0.7,
+                },
+                MacroInput {
+                    frame: 89,
+                    track,
+                    index: 0,
+                    value: 0.3,
+                },
+            ],
+        );
+    });
+    assert_eq!(log.pop().unwrap(), (0, 0, 0.0));
+    assert_eq!(log.pop().unwrap(), (37, 0, f64::from(0.7_f32)));
+    assert_eq!(log.pop().unwrap(), (89, 0, f64::from(0.3_f32)));
+    assert_eq!(l[36], 0.0);
+    assert_eq!(l[37], 0.7);
+    assert_eq!(l[88], 0.7);
+    assert_eq!(l[89], 0.3);
+}
+
+#[test]
+fn a_clip_macro_envelope_overrides_the_track_macro_lane_only_inside_the_clip() {
+    use komponist_model::edits::macros::add_mapping;
+    use komponist_model::edits::{NewClip, NewClipContent};
+
+    let (project, owner, device) = source();
+    let AutomationOwner::Track(track) = owner else {
+        unreachable!()
+    };
+    let target = AutomationTarget::Macro { index: 0 };
+    let (project, _) = lane(
+        &project,
+        owner,
+        target.clone(),
+        AutomationMode::Read,
+        vec![Point::linear(Tick::ZERO, 0.1)],
+    );
+    let project = add_mapping(&project, track, 0, macro_mapping(parameter(device, 0))).unwrap();
+    let (project, clip) = edits::add_clip(
+        &project,
+        track,
+        NewClip {
+            name: "Macro envelope".into(),
+            start: Tick(8),
+            length: Tick(8),
+            content: NewClipContent::Midi {
+                notes: Vec::new(),
+                take_name: String::new(),
+            },
+        },
+    )
+    .unwrap();
+    let project = add_clip_automation(&project, clip, target.clone(), "Macro".into()).unwrap();
+    let project = set_clip_points(
+        &project,
+        clip,
+        &target,
+        Points::new(vec![Point::linear(Tick::ZERO, 0.9)]),
+    )
+    .unwrap();
+
+    let (mut rig, _, mut log) = rig(&project);
+    rig.send(Command::Play);
+    rig.process(560, 71);
+    assert_eq!(log.pop().unwrap(), (0, 0, f64::from(0.1_f32)));
+    assert_eq!(log.pop().unwrap(), (200, 0, f64::from(0.9_f32)));
+    assert_eq!(log.pop().unwrap(), (400, 0, f64::from(0.1_f32)));
+    assert!(log.pop().is_err());
+}

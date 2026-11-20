@@ -99,6 +99,9 @@ impl Core {
         } else {
             cursor.end(lane, fractional_tick, time)
         };
+        if matches!(target, EngineTarget::Macro(_)) {
+            cursor.reassert();
+        }
         if let Some((tick, value)) = value {
             self.send(EngineEvent::AutomationValue {
                 owner,
@@ -143,6 +146,9 @@ impl Core {
                 EngineTarget::Macro(_) => plain as f32,
             };
             cursor.manual_value(tick, value.clamp(0.0, 1.0));
+            if matches!(target, EngineTarget::Macro(_)) {
+                cursor.reassert();
+            }
             return true;
         }
         if lane.reads() {
@@ -150,6 +156,38 @@ impl Core {
             cursor.reassert();
         }
         false
+    }
+
+    pub(super) fn macro_input(&mut self, track: komponist_model::TrackId, index: u8, value: f32) {
+        if !value.is_finite() {
+            return;
+        }
+        let owner = AutomationOwner::Track(track);
+        let target = EngineTarget::Macro(index);
+        let rate = self.sample_rate;
+        let time = self.automation_time;
+        let playing = self.transport.playing() && !self.offline;
+        let tick = self.transport.tick(&self.song, f64::from(rate));
+        if let Some((lanes, state)) = self.locate_automation(owner)
+            && let Some((cursor, lane)) = state.cursor(lanes, target)
+            && lanes[lane].mode != AutomationMode::Off
+        {
+            if cursor.implicit_touch(lanes[lane].mode, playing, time, rate) {
+                self.automation_pass_started = true;
+                self.send(EngineEvent::AutomationTouch {
+                    owner,
+                    target,
+                    begin: true,
+                    tick,
+                });
+            }
+            if self.manual_automation(owner, target, f64::from(value)) {
+                return;
+            }
+        }
+        if let Some(state) = self.state_of(track) {
+            state.automation.macros.set(index, value);
+        }
     }
 
     pub(super) fn chase_automation_slot(&mut self, slot: SlotId) {
@@ -256,7 +294,11 @@ impl Core {
                     pos
                 };
                 let tick = map.sample_to_tick(frame, rate);
-                if cursor.end(lane, map.samples_to_ticks(frame as f64, rate), end) {
+                let notify = cursor.end(lane, map.samples_to_ticks(frame as f64, rate), end);
+                if matches!(lane.target, EngineTarget::Macro(_)) {
+                    cursor.reassert();
+                }
+                if notify {
                     flush_value(cursor, owner, lane.target, None, outbox, telemetry);
                     outbox.send(
                         EngineEvent::AutomationTouch {

@@ -7,6 +7,7 @@ use egui::{
 };
 use komponist_i18n::Lang;
 use komponist_model::automation::{AutomationMode, AutomationOwner, AutomationTarget};
+use komponist_model::macros::TrackMacro;
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 use komponist_model::project::{VOLUME_DB_MAX, VOLUME_DB_MIN};
 use komponist_model::{Channel, Device, Project, TrackSend};
@@ -91,6 +92,15 @@ pub(crate) fn percentage(lang: Lang, value: f32) -> String {
         .unit(Unit::Percent)
         .texts(komponist_builtin::value_texts(lang))
         .format(f64::from(value))
+}
+
+pub(crate) fn macro_label(lang: Lang, index: u8, slot: &TrackMacro) -> String {
+    let number = u16::from(index) + 1;
+    if slot.name.is_empty() {
+        lang.macros_slot(number)
+    } else {
+        lang.macros_slot_named(number, &slot.name)
+    }
 }
 
 type Section = (String, Vec<Target>);
@@ -294,9 +304,44 @@ impl<'a> Catalog<'a> {
                     .to_owned(),
                 ))
             }
-            // #76 adds track macros and mapped-target status to the shared chooser.
-            AutomationTarget::Macro { .. } => Err(Some(lang.automation_param_missing().to_owned())),
+            AutomationTarget::Macro { index } => self
+                .track()
+                .and_then(|track| track.macros.0.get(usize::from(*index)))
+                .map(|slot| self.track_macro(*index, slot))
+                .ok_or_else(|| Some(lang.automation_param_missing().to_owned())),
         }
+    }
+
+    fn track(&self) -> Option<&komponist_model::Track> {
+        let AutomationOwner::Track(id) = self.owner else {
+            return None;
+        };
+        self.project.track(id).map(AsRef::as_ref)
+    }
+
+    fn track_macro(&self, index: u8, slot: &TrackMacro) -> Target {
+        let label = macro_label(self.lang, index, slot);
+        let info = ParamInfo::new("track_macro", label.clone(), ParamKind::lin(0.0, 1.0), 0.0)
+            .unit(Unit::Percent)
+            .texts(komponist_builtin::value_texts(self.lang))
+            .flags(true, false);
+        Target::new(
+            AutomationTarget::Macro { index },
+            label,
+            info,
+            f64::from(slot.value),
+        )
+    }
+
+    pub(crate) fn driven(&self, target: &AutomationTarget) -> Option<String> {
+        let track = self.track()?;
+        let index = track.macros.driver(target)?;
+        let source = crate::views::track_macros::reference(
+            self.lang,
+            index,
+            &track.macros.0[usize::from(index)],
+        );
+        Some(self.lang.macros_lane_overridden(source))
     }
 
     fn sections(&self, query: &str) -> Vec<Section> {
@@ -304,6 +349,16 @@ impl<'a> Catalog<'a> {
         let mut mixer = vec![self.volume(), self.pan()];
         mixer.extend(self.sends.iter().map(|send| self.send(send)));
         let mut sections = vec![(lang.automation_mixer().to_owned(), mixer)];
+        if let Some(track) = self.track() {
+            let targets = track
+                .macros
+                .0
+                .iter()
+                .enumerate()
+                .map(|(index, slot)| self.track_macro(index as u8, slot))
+                .collect();
+            sections.push((lang.macros_title().to_owned(), targets));
+        }
         for device in self.channel.devices.iter() {
             let name = plugin_name(lang, &device.plugin);
             let mut targets = self
@@ -639,7 +694,9 @@ impl Chooser {
                     let (highlighted, previous_missing) = {
                         let rows = sections
                             .iter()
-                            .flat_map(|(_, rows)| rows.iter().map(|target| &target.key))
+                            .flat_map(|(_, rows)| rows)
+                            .filter(|target| catalog.driven(&target.key).is_none())
+                            .map(|target| &target.key)
                             .collect::<Vec<_>>();
                         self.highlighted.update(&rows, add, up, down)
                     };
@@ -648,6 +705,7 @@ impl Chooser {
                         .max_height((height - search.rect.height()).max(0.0))
                         .show(ui, |ui| {
                             let mut index = 0;
+                            let mut row = 0;
                             for (name, targets) in sections {
                                 let label_style = typography::LABEL;
                                 ui.label(
@@ -660,32 +718,36 @@ impl Chooser {
                                 }
                                 for target in targets {
                                     let dot = catalog.already_automated(&target.key);
-                                    let response = chooser_row(
-                                        ui,
-                                        index,
-                                        &target.label,
-                                        highlighted == Some(index),
-                                        dot,
+                                    let driven = catalog.driven(&target.key);
+                                    let enabled = driven.is_none();
+                                    let label = driven.map_or_else(
+                                        || target.label.clone(),
+                                        |reason| format!("{} · {reason}", target.label),
                                     );
-                                    if highlighted == Some(index) && (up || down) {
+                                    let selected = enabled && highlighted == Some(index);
+                                    let response =
+                                        chooser_row(ui, row, &label, selected, dot, enabled);
+                                    if selected && (up || down) {
                                         response.scroll_to_me(None);
                                     }
-                                    if response.clicked() || (enter && highlighted == Some(index)) {
+                                    if enabled && (response.clicked() || (enter && selected)) {
                                         result = Some(Choice::Target {
                                             key: target.key,
                                             label: target.label,
                                         });
                                     }
-                                    index += 1;
+                                    index += usize::from(enabled);
+                                    row += 1;
                                 }
                             }
                             if add {
                                 let response = chooser_row(
                                     ui,
-                                    index,
+                                    row,
                                     lang.automation_add_lane(),
                                     highlighted == Some(index),
                                     false,
+                                    true,
                                 );
                                 if highlighted == Some(index) && (up || down) {
                                     response.scroll_to_me(None);
@@ -720,13 +782,28 @@ pub(crate) enum Choice {
     Add,
 }
 
-fn chooser_row(ui: &mut Ui, index: usize, text: &str, highlighted: bool, dot: bool) -> Response {
+fn chooser_row(
+    ui: &mut Ui,
+    index: usize,
+    text: &str,
+    highlighted: bool,
+    dot: bool,
+    enabled: bool,
+) -> Response {
     ui.push_id(index, |ui| {
+        let sense = if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
         let (rect, response) =
-            ui.allocate_exact_size(vec2(ui.available_width(), size::MENU_ROW), Sense::click());
-        response.widget_info(|| WidgetInfo::labeled(Role::ListBoxOption, true, text));
+            ui.allocate_exact_size(vec2(ui.available_width(), size::MENU_ROW), sense);
+        response.widget_info(|| WidgetInfo::labeled(Role::ListBoxOption, enabled, text));
+        if !enabled {
+            Tip::new(text).attach(&response);
+        }
         let look =
-            komponist_ui::widgets::dropdown::row_look(highlighted || response.hovered(), true);
+            komponist_ui::widgets::dropdown::row_look(highlighted || response.hovered(), enabled);
         if let Some(bg) = look.fill {
             px::fill(ui.painter(), rect, radius::S, bg);
         }

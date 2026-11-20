@@ -64,7 +64,7 @@ pub use api::{
 };
 pub use audio::{AudioPlan, ClipSource, Segment, SourceStatus};
 pub use engine::{
-    AudioInputBuffer, AudioInputRoutes, Engine, EngineConfig, LiveInput, MidiInEvent,
+    AudioInputBuffer, AudioInputRoutes, Engine, EngineConfig, LiveInput, MacroInput, MidiInEvent,
 };
 pub use processor::{
     Event, EventBuffer, EventKind, EventProcessor, EventSink, NOTE_ID_NONE, ProcessContext,

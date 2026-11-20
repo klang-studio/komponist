@@ -2,7 +2,7 @@
 
 use egui::{Align, Color32, Rect, Response, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
 use komponist_i18n::Lang;
-use komponist_model::automation::{AutomationOwner, AutomationTarget};
+use komponist_model::automation::{AutomationMode, AutomationOwner, AutomationTarget};
 use komponist_model::macros::{MACRO_COUNT, TrackMacro};
 use komponist_model::{Track, TrackId};
 use komponist_tokens::egui_support::color32;
@@ -692,7 +692,8 @@ pub(super) fn dial(
                 .is_some_and(|catalog| matches!(catalog.resolve(&m.target), Err(Some(_))))
         })
         .count();
-    let description = if missing == 0 {
+    let automation = track.automation.lane(&AutomationTarget::Macro { index });
+    let mut description = if missing == 0 {
         lang.macros_a11y_mappings(slot.mappings.len())
     } else {
         format!(
@@ -701,6 +702,27 @@ pub(super) fn dial(
             lang.macros_targets_missing(missing)
         )
     };
+    if let Some(lane) = automation {
+        let label = super::automation::mode_names(lang)
+            .into_iter()
+            .find_map(|(mode, label)| (mode == lane.mode).then_some(label))
+            .expect("automation mode");
+        description = format!("{description} · {label}");
+        if lane.mode != AutomationMode::Off {
+            let writing = ctx.automation_capture.is_some_and(|capture| {
+                capture.is_writing(AutomationOwner::Track(track.id), lane.id)
+            });
+            ui.painter().circle_filled(
+                knob.left_top(),
+                komponist_tokens::widget::knob::automation_dot::SIZE / 2.0,
+                if writing {
+                    color32(color::STATE_RECORD)
+                } else {
+                    hue
+                },
+            );
+        }
+    }
     widgets::accesskit(&response, |node| {
         node.set_selected(selected);
         node.set_description(description.as_str());
@@ -835,10 +857,12 @@ pub(super) fn dial(
         Enter,
         Rename,
         Clear,
+        Automation,
     }
     let entries = [
         Entry::action(lang.devices_to_default(), MacroPick::Default),
         Entry::action(lang.devices_enter_value(), MacroPick::Enter),
+        Entry::action(lang.automation_show_menu(), MacroPick::Automation),
         Entry::separator(),
         Entry::action(lang.macros_rename(), MacroPick::Rename),
         if slot.mappings.is_empty() {
@@ -862,6 +886,14 @@ pub(super) fn dial(
             index,
             value: 0.0,
         })),
+        Some(MacroPick::Automation) => ctx.send(AppAction::Automation(
+            super::automation::Action::ShowTarget {
+                owner: AutomationOwner::Track(track.id),
+                replace: None,
+                target: AutomationTarget::Macro { index },
+                label: super::automation::macro_label(lang, index, slot),
+            },
+        )),
         Some(MacroPick::Enter) => {
             open_value_entry(ui.ctx(), response.id, percent(lang, f64::from(current)))
         }
