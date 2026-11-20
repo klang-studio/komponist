@@ -11,18 +11,20 @@
 //!    off, no note starting at or after the range end, notes still sounding there cut at it (so
 //!    the tail only lets reverbs, delays and releases ring out), and fresh track meters (the UI's
 //!    meters do not see the export).
-//! 2. Renders with [`Engine::render`] (`offline = true`, no deadline) into an in-memory f32
-//!    buffer: first a pre-roll of less than one tick when the range start lies between two ticks
+//! 2. Renders with [`Engine::render`] (`offline = true`, no deadline) a block at a time: first
+//!    a pre-roll of less than one tick when the range start lies between two ticks
 //!    (`Locate` takes ticks), plus the project latency ([`Engine::project_latency`]: lookahead
 //!    of presse or Limiter, plugin latency, delay compensation), all of it discarded, so the sound
 //!    of song frame `f` is file frame `f − range.start`; then range + tail. A project without
 //!    latency renders exactly as without that skip. After every render
 //!    call it reports [`Progress`]; before every call it checks the cancel flag.
-//! 3. Peak → optional normalisation ([`normalize_gain`]) → TPDF dither ([`tpdf`], 16 and 24 bit
-//!    only; float is never dithered) → quantisation ([`quantize`]) → WAV. The file is written as
-//!    an exclusively created file in a private staging directory next to the target. It is
-//!    renamed onto the target when complete. Cancellation or errors remove the staging directory
-//!    and preserve any existing export. Staging is created before step 1.
+//! 3. Blocks stream to WAV, using TPDF dither ([`tpdf`], 16 and 24 bit only) and quantisation
+//!    ([`quantize`]). When normalising, rendered f32 blocks first go to a scratch file, then feed the
+//!    same WAV writer once the peak is known ([`normalize_gain`]). Track renders retain the full
+//!    range and a short pad after the last audible tail sample. The WAV is written in a private
+//!    staging directory next to the target and renamed onto the target when complete. Cancellation
+//!    or errors remove the staging directory and preserve any existing export. Staging is created
+//!    before step 1.
 //! 4. Queues `Stop` twice (hard cut: the export's tail never rings on), `SetProgram` with the caller's program and `Locate` to the playhead from
 //!    before the export, whatever the outcome. They take effect at the engine's next call, so the
 //!    transport is stopped where it was (ARCHITECTURE §6.7: the transport stops during export).
@@ -58,13 +60,12 @@
 
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use klang_dsp::buffer::scale;
 use klang_dsp::rng::Rng;
 use klang_dsp::units::{MIN_GAIN, db_to_gain, gain_to_db};
 use komponist_model::{DeviceId, Project, TempoMap, Tick, TickRange};
@@ -94,8 +95,12 @@ const TRACK_END_PADDING_SECONDS: f32 = 0.1;
 /// Seed of the dither noise, so the same render always gives the same file.
 const DITHER_SEED: u32 = 0x5eed_d17e;
 
-/// Interleaved samples written between two checks of the cancel flag.
-const WRITE_CHUNK: usize = 1 << 16;
+/// A block of stereo interleaved samples; the float scratch uses four bytes per sample.
+const BLOCK_SAMPLES: usize = 2 * MAX_BLOCK;
+const FLOAT_BYTES: usize = size_of::<f32>();
+
+/// Size of the RIFF tag and its 32-bit size field, excluded from the stored RIFF size.
+const RIFF_PREFIX_BYTES: u64 = 8;
 
 /// Commands one export queues: five before the render, four after it.
 const COMMANDS: usize = 9;
@@ -147,7 +152,10 @@ pub struct ExportJob {
 impl ExportJob {
     /// Frames in the file: range + tail.
     pub fn frames(&self) -> u64 {
-        self.range.end.saturating_sub(self.range.start) + self.tail
+        self.range
+            .end
+            .saturating_sub(self.range.start)
+            .saturating_add(self.tail)
     }
 
     /// The song frames of `ticks` at `sample_rate`: each end at the sample where an event at that
@@ -168,8 +176,8 @@ impl ExportJob {
 /// Progress of the render, reported after every render call.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Progress {
-    /// Rendered share of range + tail, `0.0 ..= 1.0`. Normalising and writing follow at 1.0
-    /// (they take a small fraction of the render time; the cancel flag still counts).
+    /// Rendered share of range + tail, `0.0 ..= 1.0`. The WAV is published after the render
+    /// and the optional normalisation pass. Cancellation remains available during that pass.
     pub fraction: f32,
     /// Highest sample peak rendered so far in dBFS, before normalisation (−120 for silence).
     pub peak_db: f32,
@@ -214,8 +222,8 @@ pub enum ExportError {
         clip: komponist_model::ClipId,
         reason: crate::audio::StretchError,
     },
-    /// The target cannot be created (checked before anything changes), the render does not fit
-    /// into memory, or writing failed. No partial file is left.
+    /// The target cannot be created, the render exceeds WAV's size limit, or I/O failed.
+    /// No partial file is left.
     Io(io::Error),
 }
 
@@ -320,6 +328,21 @@ fn export_inner(
             job: job.sample_rate,
         });
     }
+    let render_end = job
+        .range
+        .end
+        .checked_add(job.tail)
+        .and_then(|end| i64::try_from(end).ok())
+        .ok_or(ExportError::InvalidRange)?;
+    let max_frames = max_wav_frames(job.bit_depth);
+    let untrimmable_frames = if track_render.is_some() {
+        job.range.end - job.range.start
+    } else {
+        job.frames()
+    };
+    if untrimmable_frames > max_frames {
+        return Err(wav_too_long().into());
+    }
     if job.range.is_empty() && job.tail == 0 {
         if cancel.load(Ordering::Relaxed) {
             return Err(ExportError::Cancelled);
@@ -329,7 +352,7 @@ fn export_inner(
             fraction: 1.0,
             peak_db: gain_to_db(0.0),
         });
-        return output.write(job, Vec::new(), 0.0, cancel);
+        return output.publish(job, 0, 0.0, 1.0, cancel);
     }
     if handle.commands.slots() < COMMANDS {
         return Err(ExportError::QueueFull);
@@ -348,12 +371,16 @@ fn export_inner(
     let end = end_tick(map, rate, job.range.end);
     let playhead = handle.telemetry().playhead();
     let exporting = export_program(program, end, job.range.end as i64, track);
-    let render_frames = start as i64..(job.range.end + job.tail) as i64;
+    let render_frames = start as i64..render_end;
     check_audio_files(
         if track.is_some() { &exporting } else { program },
         &render_frames,
     )?;
-    let output = Output::create(job)?;
+    let mut output = Output::create(job)?;
+    let mut scratch = job
+        .normalize
+        .map(|_| tempfile::tempfile_in(output.staging.path()).map(io::BufWriter::new))
+        .transpose()?;
     let devices = track
         .into_iter()
         .flat_map(TrackExport::devices)
@@ -403,6 +430,7 @@ fn export_inner(
             Command::Play,
         ],
     )?;
+    let mut remaining_wav = max_frames;
     let result = render(
         engine,
         job,
@@ -410,9 +438,36 @@ fn export_inner(
         cancel,
         &mut progress,
         check,
-        track.is_some(),
+        |block| {
+            // A track tail can render past the RIFF limit, then trim to a valid length. Keep
+            // only the writable prefix while inspecting the entire tail for further signal.
+            let frames = remaining_wav.min(block.len() as u64 / 2);
+            remaining_wav -= frames;
+            let block = &block[..2 * frames as usize];
+            match &mut scratch {
+                Some(scratch) => write_float_block(scratch, block),
+                None => output.write_samples(block.iter().copied(), 1.0),
+            }
+        },
     )
-    .and_then(|(samples, peak)| output.write(job, samples, peak, cancel));
+    .and_then(|rendered| {
+        let frames = if track.is_some() {
+            let padding = ExportJob::tail_frames(TRACK_END_PADDING_SECONDS, job.sample_rate);
+            job.frames()
+                .min(rendered.last_signal.saturating_add(padding))
+        } else {
+            job.frames()
+        };
+        if frames > max_frames {
+            return Err(wav_too_long().into());
+        }
+        let mut gain = 1.0;
+        if let Some((scratch, db)) = scratch.zip(job.normalize) {
+            gain = normalize_gain(rendered.peak, db);
+            output.write_normalized(scratch, frames, gain, cancel)?;
+        }
+        output.publish(job, frames, rendered.peak, gain, cancel)
+    });
     let restored = send_all(
         handle,
         [
@@ -621,8 +676,21 @@ fn render_block(engine: &mut Engine, frames: usize) -> &[f32] {
     assert_no_alloc::assert_no_alloc(move || engine.render(frames))
 }
 
-/// Renders the pre-roll (discarded), then range + tail. Returns the interleaved samples
-/// (non-finite ones replaced by 0) and their peak.
+struct Rendered {
+    peak: f32,
+    /// Frames through the last nonzero stereo frame, at least the body of the export.
+    last_signal: u64,
+}
+
+fn check_cancel(cancel: &AtomicBool) -> Result<(), ExportError> {
+    if cancel.load(Ordering::Relaxed) {
+        Err(ExportError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+/// Renders the pre-roll (discarded), then writes each sanitized block of the range and tail.
 fn render(
     engine: &mut Engine,
     job: &ExportJob,
@@ -630,57 +698,59 @@ fn render(
     cancel: &AtomicBool,
     progress: &mut impl FnMut(Progress),
     check: impl Fn(&Engine) -> Result<(), ExportError>,
-    track_tail: bool,
-) -> Result<(Vec<f32>, f32), ExportError> {
-    let too_long = || io::Error::new(io::ErrorKind::OutOfMemory, "export too long for memory");
-    let len = usize::try_from(job.frames())
-        .ok()
-        .and_then(|frames| frames.checked_mul(2))
-        .ok_or_else(too_long)?;
-    let mut samples = Vec::new();
-    samples.try_reserve_exact(len).map_err(|_| too_long())?;
+    mut write_block: impl FnMut(&[f32]) -> io::Result<()>,
+) -> Result<Rendered, ExportError> {
     let mut skip = preroll;
     while skip > 0 {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(ExportError::Cancelled);
-        }
+        check_cancel(cancel)?;
         let n = skip.min(MAX_BLOCK as u64) as usize;
         render_block(engine, n);
         check(engine)?;
         skip -= n as u64;
     }
     let mut peak = 0.0_f32;
-    let body = ((job.range.end - job.range.start) as usize) * 2;
-    let mut last_signal = body;
-    while samples.len() < len {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(ExportError::Cancelled);
-        }
-        let n = MAX_BLOCK.min((len - samples.len()) / 2);
-        let first = samples.len();
-        samples.extend_from_slice(render_block(engine, n));
+    let mut last_signal = job.range.end - job.range.start;
+    let total = job.frames();
+    let mut frames = 0;
+    let mut samples = [0.0; BLOCK_SAMPLES];
+    while frames < total {
+        check_cancel(cancel)?;
+        let n = (total - frames).min(MAX_BLOCK as u64) as usize;
+        let block = &mut samples[..2 * n];
+        block.copy_from_slice(render_block(engine, n));
         check(engine)?;
-        for (i, s) in samples[first..].iter_mut().enumerate() {
-            if !s.is_finite() {
-                *s = 0.0;
+        for sample in &mut *block {
+            if !sample.is_finite() {
+                *sample = 0.0;
             }
-            peak = peak.max(s.abs());
-            if track_tail && *s != 0.0 {
-                last_signal = last_signal.max(first + i + 1);
-            }
+            peak = peak.max(sample.abs());
         }
+        if frames + n as u64 > last_signal
+            && let Some(last) = block
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .rposition(|[left, right]| *left != 0.0 || *right != 0.0)
+        {
+            last_signal = last_signal.max(frames + last as u64 + 1);
+        }
+        write_block(block)?;
+        frames += n as u64;
         progress(Progress {
-            fraction: (samples.len() as f64 / len as f64) as f32,
+            fraction: (frames as f64 / total as f64) as f32,
             peak_db: gain_to_db(peak),
         });
     }
-    if track_tail {
-        // Effects can produce sound after a silent gap. Inspect the whole budget before trimming.
-        let padding =
-            ExportJob::tail_frames(TRACK_END_PADDING_SECONDS, job.sample_rate) as usize * 2;
-        samples.truncate(last_signal.next_multiple_of(2).saturating_add(padding));
+    Ok(Rendered { peak, last_signal })
+}
+
+fn write_float_block(writer: &mut io::BufWriter<fs::File>, block: &[f32]) -> io::Result<()> {
+    let mut bytes = [0; BLOCK_SAMPLES * FLOAT_BYTES];
+    let bytes = &mut bytes[..block.len() * FLOAT_BYTES];
+    for (dst, sample) in bytes.as_chunks_mut::<FLOAT_BYTES>().0.iter_mut().zip(block) {
+        *dst = sample.to_le_bytes();
     }
-    Ok((samples, peak))
+    writer.write_all(bytes)
 }
 
 /// The open temporary file of an export.
@@ -688,6 +758,9 @@ struct Output {
     // Dropped first: the writer closes its file before the directory is removed.
     writer: hound::WavWriter<io::BufWriter<fs::File>>,
     staging: tempfile::TempDir,
+    bit_depth: BitDepth,
+    dither: bool,
+    rng: Rng,
 }
 
 const STAGING_WAV: &str = "audio.wav";
@@ -728,61 +801,141 @@ impl Output {
             .create_new(true)
             .open(staging.path().join(STAGING_WAV))?;
         let writer = hound::WavWriter::new(io::BufWriter::new(file), spec).map_err(wav_error)?;
-        Ok(Output { writer, staging })
+        Ok(Output {
+            writer,
+            staging,
+            bit_depth: job.bit_depth,
+            dither: job.dither,
+            rng: Rng::new(DITHER_SEED),
+        })
     }
 
-    /// Normalises, dithers, quantises and writes `samples` (peak `peak`), then renames the staged
-    /// file onto the target.
-    fn write(
-        mut self,
+    fn write_samples(
+        &mut self,
+        samples: impl IntoIterator<Item = f32>,
+        gain: f32,
+    ) -> io::Result<()> {
+        let bits = u32::from(self.bit_depth.bits());
+        for sample in samples {
+            let sample = if gain == 1.0 { sample } else { sample * gain };
+            let written = match self.bit_depth {
+                BitDepth::Float32 => self.writer.write_sample(sample),
+                BitDepth::Int16 | BitDepth::Int24 => {
+                    let dither = if self.dither {
+                        tpdf(&mut self.rng)
+                    } else {
+                        0.0
+                    };
+                    let value = quantize(sample, bits, dither);
+                    if bits == 16 {
+                        self.writer.write_sample(value as i16)
+                    } else {
+                        self.writer.write_sample(value)
+                    }
+                }
+            };
+            written.map_err(wav_error)?;
+        }
+        Ok(())
+    }
+
+    /// Copies the retained frames from the float scratch into the final format in bounded blocks.
+    fn write_normalized(
+        &mut self,
+        scratch: io::BufWriter<fs::File>,
+        frames: u64,
+        gain: f32,
+        cancel: &AtomicBool,
+    ) -> Result<(), ExportError> {
+        check_cancel(cancel)?;
+        let mut scratch = scratch
+            .into_inner()
+            .map_err(io::IntoInnerError::into_error)?;
+        scratch.rewind()?;
+        let mut reader = io::BufReader::new(scratch);
+        let mut bytes = [0; BLOCK_SAMPLES * FLOAT_BYTES];
+        let mut remaining = frames;
+        while remaining > 0 {
+            check_cancel(cancel)?;
+            let n = remaining.min(MAX_BLOCK as u64) as usize;
+            let bytes = &mut bytes[..2 * n * FLOAT_BYTES];
+            reader.read_exact(bytes)?;
+            let samples = bytes
+                .as_chunks::<FLOAT_BYTES>()
+                .0
+                .iter()
+                .copied()
+                .map(f32::from_le_bytes);
+            self.write_samples(samples, gain)?;
+            remaining -= n as u64;
+        }
+        Ok(())
+    }
+
+    fn publish(
+        self,
         job: &ExportJob,
-        mut samples: Vec<f32>,
+        frames: u64,
         peak: f32,
+        gain: f32,
         cancel: &AtomicBool,
     ) -> Result<ExportReport, ExportError> {
-        let frames = samples.len() as u64 / 2;
-        let gain = job.normalize.map_or(1.0, |db| normalize_gain(peak, db));
-        if gain != 1.0 {
-            scale(&mut samples, gain);
-        }
-        let mut rng = Rng::new(DITHER_SEED);
-        let bits = u32::from(job.bit_depth.bits());
-        let writer = &mut self.writer;
-        for chunk in samples.chunks(WRITE_CHUNK) {
-            if cancel.load(Ordering::Relaxed) {
-                return Err(ExportError::Cancelled);
-            }
-            for &s in chunk {
-                let written = match job.bit_depth {
-                    BitDepth::Float32 => writer.write_sample(s),
-                    BitDepth::Int16 | BitDepth::Int24 => {
-                        let dither = if job.dither { tpdf(&mut rng) } else { 0.0 };
-                        let value = quantize(s, bits, dither);
-                        if bits == 16 {
-                            writer.write_sample(value as i16)
-                        } else {
-                            writer.write_sample(value)
-                        }
-                    }
-                };
-                written.map_err(wav_error)?;
-            }
-        }
-        if cancel.load(Ordering::Relaxed) {
-            return Err(ExportError::Cancelled);
-        }
-        let Output { writer, staging } = self;
+        check_cancel(cancel)?;
+        let Output {
+            writer, staging, ..
+        } = self;
+        let written = u64::from(writer.duration());
+        debug_assert!(frames <= written);
         writer.finalize().map_err(wav_error)?;
-        if cancel.load(Ordering::Relaxed) {
-            return Err(ExportError::Cancelled);
+        let path = staging.path().join(STAGING_WAV);
+        if frames < written {
+            truncate_wav(&path, frames * wav_bytes_per_frame(job.bit_depth))?;
         }
-        fs::rename(staging.path().join(STAGING_WAV), &job.path)?;
+        check_cancel(cancel)?;
+        fs::rename(path, &job.path)?;
         Ok(ExportReport {
             frames,
             peak_db: gain_to_db(peak),
             gain_db: if gain == 1.0 { 0.0 } else { gain_to_db(gain) },
         })
     }
+}
+
+fn wav_bytes_per_frame(bit_depth: BitDepth) -> u64 {
+    2 * u64::from(bit_depth.bits() / 8)
+}
+
+fn max_wav_frames(bit_depth: BitDepth) -> u64 {
+    // Hound writes a classic 44-byte PCM header for 16-bit stereo and a 68-byte
+    // WAVE_FORMAT_EXTENSIBLE header for 24-bit stereo and 32-bit float.
+    let header_bytes = match bit_depth {
+        BitDepth::Int16 => 44,
+        BitDepth::Int24 | BitDepth::Float32 => 68,
+    };
+    (u64::from(u32::MAX) - (header_bytes - RIFF_PREFIX_BYTES)) / wav_bytes_per_frame(bit_depth)
+}
+
+fn wav_too_long() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "export exceeds the WAV size limit",
+    )
+}
+
+/// Hound leaves the file at the first sample after reading the header. Its data chunk is last,
+/// so trimming the private file changes only the data length and the outer RIFF length.
+fn truncate_wav(path: &Path, data_bytes: u64) -> io::Result<()> {
+    let file = fs::OpenOptions::new().read(true).write(true).open(path)?;
+    let mut file = hound::WavReader::new(file).map_err(wav_error)?.into_inner();
+    let data_start = file.stream_position()?;
+    let end = data_start + data_bytes;
+    let data_size = u32::try_from(data_bytes).map_err(|_| wav_too_long())?;
+    let riff_size = u32::try_from(end - RIFF_PREFIX_BYTES).map_err(|_| wav_too_long())?;
+    file.seek(SeekFrom::Start(data_start - 4))?;
+    file.write_all(&data_size.to_le_bytes())?;
+    file.seek(SeekFrom::Start(4))?;
+    file.write_all(&riff_size.to_le_bytes())?;
+    file.set_len(end)
 }
 
 /// `hound`'s error as an IO error.
