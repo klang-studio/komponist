@@ -104,13 +104,14 @@ pub(super) fn paint_wave(
     model: &ClipModel<'_>,
 ) {
     let p: &TrackPalette = model.palette;
-    if audio.file != AudioFileState::Missing {
+    let missing = audio.file == AudioFileState::Missing;
+    if !missing || !audio.wave.is_empty() {
         let (peak, core) = if model.recording {
             (
                 color32(color::STATE_RECORD),
                 color32(color::STATE_RECORD_INK),
             )
-        } else if model.muted {
+        } else if model.muted || missing {
             (color32(color::TEXT_3), color32(color::TEXT_3))
         } else {
             (color32(p.wave_peak), color32(p.wave_rms))
@@ -369,6 +370,44 @@ mod tests {
                 if selected { 3 } else { 0 },
                 "selected={selected}, hovered={hovered}"
             );
+        }
+    }
+
+    #[test]
+    fn unavailable_clips_still_draw_cached_waveform_data() {
+        let peaks = komponist_audiofile::PeakData::from_planar(48_000, &[vec![0.5; 2048]]);
+        let wave = WaveMesh::from_peaks(
+            &peaks,
+            &super::super::WaveSpec {
+                width: 100.0,
+                px_per_tick: 0.02,
+                body_height: 36.0,
+                offset: 0,
+                frames: 2048,
+                gain: 1.0,
+                fade_in: 0.0,
+                fade_out: 0.0,
+            },
+        );
+        let flat = WaveMesh::flat(100.0, 0.02, 36.0);
+        let palette = TrackPalette::new(150);
+        let model = ClipModel::new("Verse", &palette);
+        let body = Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 36.0));
+        for (mesh, visible) in [(&wave, true), (&flat, false)] {
+            let audio = AudioLook {
+                file: AudioFileState::Missing,
+                takes: None,
+                wave: mesh,
+                repitch: None,
+                repitch_label: "",
+                message: "",
+                gain_db: 0.0,
+                fade_in: 0.0,
+                fade_out: 0.0,
+            };
+            let mut quads = Quads::new(1.0);
+            paint_wave(&mut quads, body, body.x_range(), &audio, &model);
+            assert_eq!(!quads.mesh.vertices.is_empty(), visible);
         }
     }
 

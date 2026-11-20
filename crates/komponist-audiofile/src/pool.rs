@@ -433,6 +433,15 @@ impl PoolFile {
         }
     }
 
+    /// Allows the next peak request to retry after the caller rechecks file availability.
+    /// Successful and in-progress computations remain shared.
+    pub fn allow_peak_retry(&self) {
+        let mut slot = lock(&self.peaks);
+        if matches!(*slot, PeakSlot::Failed(_)) {
+            *slot = PeakSlot::Idle;
+        }
+    }
+
     /// Asks the pool's worker thread for the peaks (disk cache first, else a streaming decode)
     /// and returns the state now. `on_done` runs on completion, normally on the worker or on this
     /// thread if scheduling fails. Many callers share one computation; the waveform worker handles
