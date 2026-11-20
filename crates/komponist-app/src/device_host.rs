@@ -52,7 +52,8 @@ use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef, Project};
 use komponist_plugins::{
     Catalog, DeviceSnapshots, DeviceStatus, FailReason, MissingPlugin, PluginDirs, PluginError,
-    PluginManager, PluginManagerConfig, PluginManagerEvent, ProcessorSetup, ScanReport,
+    PluginManager, PluginManagerConfig, PluginManagerEvent, ProcessorSetup, SaveSnapshots,
+    ScanReport,
 };
 
 /// Creates processors for devices and reports their runtime status.
@@ -288,8 +289,11 @@ pub trait DeviceHost {
     }
 
     /// Snapshots external devices and rejects a save that would omit a persistent plugin edit.
-    fn snapshot_for_save(&mut self, timeout: Duration) -> Result<DeviceSnapshots, DeviceId> {
-        Ok(self.snapshot_states(timeout))
+    fn snapshot_for_save(&mut self, timeout: Duration) -> SaveSnapshots {
+        SaveSnapshots {
+            captured: self.snapshot_states(timeout),
+            ..Default::default()
+        }
     }
 
     /// Snapshots bridged devices on a MIDI track before replacing its chain. Hosts with running
@@ -834,7 +838,7 @@ impl DeviceHost for PluginHost {
         self.manager.has_pending_state_edits()
     }
 
-    fn snapshot_for_save(&mut self, timeout: Duration) -> Result<DeviceSnapshots, DeviceId> {
+    fn snapshot_for_save(&mut self, timeout: Duration) -> SaveSnapshots {
         self.manager.snapshot_for_save(timeout)
     }
 
