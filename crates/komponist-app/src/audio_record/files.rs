@@ -52,10 +52,18 @@ pub(super) fn directory(root: &Path, name: &str) -> io::Result<PathBuf> {
     ))
 }
 
+/// Creates Takes in an existing project directory. Save must never create the project folder.
+fn ensure_takes_folder(target: &Path) -> io::Result<()> {
+    match fs::create_dir(target) {
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && target.is_dir() => Ok(()),
+        result => result,
+    }
+}
+
 /// Copies only explicitly owned finalized takes, never overwriting another recording. A failed
 /// transaction deletes its own new copies and leaves all source paths usable.
 pub(super) fn stage(paths: &[PathBuf], target: &Path) -> io::Result<BTreeMap<PathBuf, PathBuf>> {
-    fs::create_dir_all(target)?;
+    ensure_takes_folder(target)?;
     let mut copies = BTreeMap::new();
     let result = (|| {
         for source in paths {
@@ -119,7 +127,7 @@ pub(super) fn checkpoint(
     takes: &[komponist_engine::recording::RecordedTake],
     target: &Path,
 ) -> io::Result<Vec<komponist_engine::recording::RecordedTake>> {
-    fs::create_dir_all(target)?;
+    ensure_takes_folder(target)?;
     let mut created = Vec::new();
     let result = (|| {
         let mut snapshots = Vec::new();
