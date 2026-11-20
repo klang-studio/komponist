@@ -534,20 +534,26 @@ impl App {
         // Route queued GUI edits before requesting state, so a temporary parameter cannot be
         // mistaken for a persisted plugin value.
         self.drain_events();
-        let snapshots = match self
+        let outcome = self
             .engine
             .host_mut()
-            .snapshot_for_save(crate::app::SNAPSHOT_TIMEOUT)
-        {
-            Ok(states) => states,
-            Err(device) => {
-                let detail = self
-                    .lang
-                    .project_save_plugin_pending(self.device_name(device));
-                self.set_status(self.lang.project_save_failed(detail), StatusKind::Error);
-                return false;
+            .snapshot_for_save(crate::app::SNAPSHOT_TIMEOUT);
+        let snapshots = outcome.captured;
+        if !outcome.blocked.is_empty() {
+            // Keep successful snapshots as ordinary device updates when no file will be written.
+            for (device, state) in &snapshots {
+                self.store_snapshot(*device, state);
             }
-        };
+            let devices = outcome
+                .blocked
+                .into_iter()
+                .map(|device| self.device_name(device))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let detail = self.lang.project_save_plugin_pending(devices);
+            self.set_status(self.lang.project_save_failed(detail), StatusKind::Error);
+            return false;
+        }
         for (device, state) in &snapshots {
             self.store_snapshot_for_save(*device, state);
         }
@@ -636,9 +642,50 @@ impl App {
                 );
                 self.remember(path);
                 self.recordings_saved(recordings);
+                self.report_missing_save_snapshots(&outcome.unavailable);
                 true
             }
             Err(error) => self.report_project_save_error(error),
+        }
+    }
+
+    /// Reports whether a save retained the document's stored plug-in state or had no state.
+    fn report_missing_save_snapshots(&mut self, devices: &[komponist_model::DeviceId]) {
+        let mut retained = Vec::new();
+        let mut missing = Vec::new();
+        for &device in devices {
+            let Some((_, _, model)) = self.project().find_device(device) else {
+                continue;
+            };
+            let has_state = model.state.is_some()
+                || self
+                    .deferred_plugin_states()
+                    .iter()
+                    .any(|(id, _)| *id == device);
+            let names = if has_state {
+                &mut retained
+            } else {
+                &mut missing
+            };
+            names.push(self.device_name(device));
+        }
+        let mut warnings = Vec::new();
+        if !missing.is_empty() {
+            warnings.push(
+                self.lang
+                    .project_save_plugin_missing_state(missing.join(", ")),
+            );
+        }
+        if !retained.is_empty() {
+            warnings.push(self.lang.project_save_plugin_cached(retained.join(", ")));
+        }
+        if !warnings.is_empty()
+            && let Some(status) = &mut self.ui.status
+        {
+            // The status bar clips from the right; the project path can be arbitrarily long.
+            warnings.push(std::mem::take(&mut status.text));
+            status.text = warnings.join(" · ");
+            status.kind = StatusKind::Error;
         }
     }
 

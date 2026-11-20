@@ -304,14 +304,20 @@ impl App {
                     );
                 }
                 if self.save_to(&file) {
+                    let save_warning = self
+                        .ui
+                        .status
+                        .as_ref()
+                        .filter(|status| status.kind == StatusKind::Error)
+                        .map(|status| status.text.clone());
                     let copied = collector.log.iter().filter(|c| c.copied).count();
                     let folder = sampler::links::samples_folder_name(&file);
                     let text = match copied {
                         0 => self.lang.status_collected_none(&folder),
                         n => self.lang.status_collected(n, &folder),
                     };
-                    if collector.skipped.is_empty() {
-                        self.set_status(text, StatusKind::Success);
+                    let (mut text, mut kind) = if collector.skipped.is_empty() {
+                        (text, StatusKind::Success)
                     } else {
                         let files = collector
                             .skipped
@@ -319,15 +325,20 @@ impl App {
                             .map(|p| p.file_name().unwrap_or(p.as_os_str()).to_string_lossy())
                             .collect::<Vec<_>>()
                             .join(", ");
-                        self.set_status(
+                        (
                             format!(
                                 "{text} · {}",
                                 self.lang
                                     .status_collect_skipped(collector.skipped.len(), files)
                             ),
                             StatusKind::Error,
-                        );
+                        )
+                    };
+                    if let Some(warning) = save_warning {
+                        text = format!("{warning} · {text}");
+                        kind = StatusKind::Error;
                     }
+                    self.set_status(text, kind);
                 }
             }
             Err(e) => {

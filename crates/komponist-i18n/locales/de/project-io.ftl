@@ -24,6 +24,8 @@ project-saved = Gespeichert · { $path }
 # Saving failed; `$reason` is one of the `project-reason-*` texts.
 project-save-failed = Speichern fehlgeschlagen: { $reason }
 project-save-plugin-pending = Zustand von { $device } ist noch nicht verfügbar. Beende gegebenenfalls den temporären Automations-Eingriff und speichere erneut.
+project-save-plugin-cached = Vorheriger Plug-in-Zustand gespeichert: { $devices }
+project-save-plugin-missing-state = Kein Plug-in-Zustand verfügbar: { $devices }
 
 ## Reasons (lower case, they follow a colon). The system's own text goes to the log only.
 
