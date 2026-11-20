@@ -362,7 +362,22 @@ fn track_export_restores_the_other_live_tracks_after_success_and_cancel() {
             (&scoped, &project),
             &job,
             &cancel,
-            |_| cancel.store(should_cancel, Ordering::Relaxed),
+            |progress| {
+                cancel.store(should_cancel, Ordering::Relaxed);
+                if !should_cancel && normalize.is_none() && progress.fraction >= 1.0 {
+                    let staged_bytes = std::fs::read_dir(dir.path())
+                        .unwrap()
+                        .filter_map(Result::ok)
+                        .find_map(|entry| std::fs::metadata(entry.path().join("audio.wav")).ok())
+                        .expect("staged track WAV")
+                        .len();
+                    let body_bytes = 12_000 * 2 * u64::from(depth.bits() / 8);
+                    assert!(
+                        staged_bytes <= body_bytes + 68,
+                        "discardable silence was written"
+                    );
+                }
+            },
         );
         if should_cancel {
             assert!(matches!(result, Err(ExportError::Cancelled)));
@@ -650,10 +665,10 @@ fn invalid_jobs_change_nothing() {
         other => panic!("{other:?}"),
     }
     let too_long = job(path.clone(), RATE, 0..u64::from(u32::MAX), 0);
-    match run(&mut rig, &p, &too_long).0 {
-        Err(ExportError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput),
-        other => panic!("{other:?}"),
-    }
+    assert!(matches!(
+        run(&mut rig, &p, &too_long).0,
+        Err(ExportError::WavTooLarge)
+    ));
     let no_name = job(PathBuf::from("/"), RATE, 0..1000, 0);
     assert!(matches!(
         run(&mut rig, &p, &no_name).0,

@@ -305,6 +305,7 @@ impl App {
                 self.set_status(self.lang.flatten_cancelled(), StatusKind::Info)
             }
             ExportError::InvalidTrack => self.flatten_failed(self.lang.flatten_no_clips()),
+            ExportError::WavTooLarge => self.flatten_failed(self.lang.export_wav_too_large()),
             ExportError::DeviceFailed(id) => {
                 let device = self
                     .project()

@@ -60,7 +60,7 @@
 
 use std::fmt;
 use std::fs;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -201,6 +201,8 @@ pub enum ExportError {
     Cancelled,
     /// The job's range ends before it starts. Nothing was changed.
     InvalidRange,
+    /// The retained audio is too long for the RIFF WAV container.
+    WavTooLarge,
     /// The requested MIDI track has no clips or could not be compiled on its own.
     InvalidTrack,
     /// A device required for a track render was missing or failed while processing.
@@ -222,8 +224,7 @@ pub enum ExportError {
         clip: komponist_model::ClipId,
         reason: crate::audio::StretchError,
     },
-    /// The target cannot be created, the render exceeds WAV's size limit, or I/O failed.
-    /// No partial file is left.
+    /// The target cannot be created, or other I/O failed. No partial file is left.
     Io(io::Error),
 }
 
@@ -232,6 +233,7 @@ impl fmt::Display for ExportError {
         match self {
             ExportError::Cancelled => f.write_str("export cancelled"),
             ExportError::InvalidRange => f.write_str("export range ends before it starts"),
+            ExportError::WavTooLarge => f.write_str("export exceeds the WAV size limit"),
             ExportError::InvalidTrack => f.write_str("MIDI track could not be rendered"),
             ExportError::DeviceFailed(device) => {
                 write!(f, "render processor {} unavailable", device.0)
@@ -328,12 +330,6 @@ fn export_inner(
             job: job.sample_rate,
         });
     }
-    let render_end = job
-        .range
-        .end
-        .checked_add(job.tail)
-        .and_then(|end| i64::try_from(end).ok())
-        .ok_or(ExportError::InvalidRange)?;
     let max_frames = max_wav_frames(job.bit_depth);
     let untrimmable_frames = if track_render.is_some() {
         job.range.end - job.range.start
@@ -341,8 +337,14 @@ fn export_inner(
         job.frames()
     };
     if untrimmable_frames > max_frames {
-        return Err(wav_too_long().into());
+        return Err(ExportError::WavTooLarge);
     }
+    let render_end = job
+        .range
+        .end
+        .checked_add(job.tail)
+        .and_then(|end| i64::try_from(end).ok())
+        .ok_or(ExportError::InvalidRange)?;
     if job.range.is_empty() && job.tail == 0 {
         if cancel.load(Ordering::Relaxed) {
             return Err(ExportError::Cancelled);
@@ -430,43 +432,49 @@ fn export_inner(
             Command::Play,
         ],
     )?;
-    let mut remaining_wav = max_frames;
-    let result = render(
-        engine,
-        job,
-        preroll,
-        cancel,
-        &mut progress,
-        check,
-        |block| {
-            // A track tail can render past the RIFF limit, then trim to a valid length. Keep
-            // only the writable prefix while inspecting the entire tail for further signal.
-            let frames = remaining_wav.min(block.len() as u64 / 2);
-            remaining_wav -= frames;
-            let block = &block[..2 * frames as usize];
-            match &mut scratch {
-                Some(scratch) => write_float_block(scratch, block),
-                None => output.write_samples(block.iter().copied(), 1.0),
+    let mut written_frames = 0;
+    let rendered = {
+        let mut write = |block: &[f32]| -> Result<(), ExportError> {
+            let frames = block.len() as u64 / 2;
+            if frames > max_frames - written_frames {
+                return Err(ExportError::WavTooLarge);
             }
-        },
-    )
-    .and_then(|rendered| {
-        let frames = if track.is_some() {
-            let padding = ExportJob::tail_frames(TRACK_END_PADDING_SECONDS, job.sample_rate);
-            job.frames()
-                .min(rendered.last_signal.saturating_add(padding))
-        } else {
-            job.frames()
+            match &mut scratch {
+                Some(scratch) => write_float_block(scratch, block)?,
+                None => output.write_samples(block.iter().copied(), 1.0)?,
+            }
+            written_frames += frames;
+            Ok(())
         };
-        if frames > max_frames {
-            return Err(wav_too_long().into());
-        }
+        let body_frames = job.range.end - job.range.start;
+        let mut tail = track.is_some().then(|| TrackTail::new(body_frames));
+        render(
+            engine,
+            job,
+            preroll,
+            cancel,
+            &mut progress,
+            check,
+            |block| match &mut tail {
+                Some(tail) => tail.write(block, &mut write, cancel),
+                None => write(block),
+            },
+        )
+        .and_then(|peak| {
+            if let Some(tail) = tail {
+                let padding = ExportJob::tail_frames(TRACK_END_PADDING_SECONDS, job.sample_rate);
+                write_silence(tail.pending.min(padding), &mut write, cancel)?;
+            }
+            Ok(peak)
+        })
+    };
+    let result = rendered.and_then(|peak| {
         let mut gain = 1.0;
         if let Some((scratch, db)) = scratch.zip(job.normalize) {
-            gain = normalize_gain(rendered.peak, db);
-            output.write_normalized(scratch, frames, gain, cancel)?;
+            gain = normalize_gain(peak, db);
+            output.write_normalized(scratch, written_frames, gain, cancel)?;
         }
-        output.publish(job, frames, rendered.peak, gain, cancel)
+        output.publish(job, written_frames, peak, gain, cancel)
     });
     let restored = send_all(
         handle,
@@ -676,10 +684,57 @@ fn render_block(engine: &mut Engine, frames: usize) -> &[f32] {
     assert_no_alloc::assert_no_alloc(move || engine.render(frames))
 }
 
-struct Rendered {
-    peak: f32,
-    /// Frames through the last nonzero stereo frame, at least the body of the export.
-    last_signal: u64,
+/// Keeps the full body and delays writing runs of silent tail frames until a later signal
+/// proves they are inside the export. Only the final short pad is kept if the tail stays silent.
+struct TrackTail {
+    body_remaining: u64,
+    pending: u64,
+}
+
+impl TrackTail {
+    fn new(body_frames: u64) -> Self {
+        Self {
+            body_remaining: body_frames,
+            pending: 0,
+        }
+    }
+
+    fn write(
+        &mut self,
+        block: &[f32],
+        write: &mut impl FnMut(&[f32]) -> Result<(), ExportError>,
+        cancel: &AtomicBool,
+    ) -> Result<(), ExportError> {
+        let frames = block.as_chunks::<2>().0;
+        let body = self.body_remaining.min(frames.len() as u64) as usize;
+        self.body_remaining -= body as u64;
+        let last_signal = frames[body..]
+            .iter()
+            .rposition(|[left, right]| *left != 0.0 || *right != 0.0);
+        let retained = last_signal.map_or(body, |index| body + index + 1);
+        if retained > 0 {
+            write_silence(self.pending, write, cancel)?;
+            write(&block[..2 * retained])?;
+            self.pending = 0;
+        }
+        self.pending += (frames.len() - retained) as u64;
+        Ok(())
+    }
+}
+
+fn write_silence(
+    mut frames: u64,
+    write: &mut impl FnMut(&[f32]) -> Result<(), ExportError>,
+    cancel: &AtomicBool,
+) -> Result<(), ExportError> {
+    const SILENCE: [f32; BLOCK_SAMPLES] = [0.0; BLOCK_SAMPLES];
+    while frames > 0 {
+        check_cancel(cancel)?;
+        let count = frames.min(MAX_BLOCK as u64) as usize;
+        write(&SILENCE[..2 * count])?;
+        frames -= count as u64;
+    }
+    Ok(())
 }
 
 fn check_cancel(cancel: &AtomicBool) -> Result<(), ExportError> {
@@ -698,8 +753,8 @@ fn render(
     cancel: &AtomicBool,
     progress: &mut impl FnMut(Progress),
     check: impl Fn(&Engine) -> Result<(), ExportError>,
-    mut write_block: impl FnMut(&[f32]) -> io::Result<()>,
-) -> Result<Rendered, ExportError> {
+    mut write_block: impl FnMut(&[f32]) -> Result<(), ExportError>,
+) -> Result<f32, ExportError> {
     let mut skip = preroll;
     while skip > 0 {
         check_cancel(cancel)?;
@@ -709,7 +764,6 @@ fn render(
         skip -= n as u64;
     }
     let mut peak = 0.0_f32;
-    let mut last_signal = job.range.end - job.range.start;
     let total = job.frames();
     let mut frames = 0;
     let mut samples = [0.0; BLOCK_SAMPLES];
@@ -725,15 +779,6 @@ fn render(
             }
             peak = peak.max(sample.abs());
         }
-        if frames + n as u64 > last_signal
-            && let Some(last) = block
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .rposition(|[left, right]| *left != 0.0 || *right != 0.0)
-        {
-            last_signal = last_signal.max(frames + last as u64 + 1);
-        }
         write_block(block)?;
         frames += n as u64;
         progress(Progress {
@@ -741,7 +786,7 @@ fn render(
             peak_db: gain_to_db(peak),
         });
     }
-    Ok(Rendered { peak, last_signal })
+    Ok(peak)
 }
 
 fn write_float_block(writer: &mut io::BufWriter<fs::File>, block: &[f32]) -> io::Result<()> {
@@ -884,15 +929,10 @@ impl Output {
         let Output {
             writer, staging, ..
         } = self;
-        let written = u64::from(writer.duration());
-        debug_assert!(frames <= written);
+        debug_assert_eq!(frames, u64::from(writer.duration()));
         writer.finalize().map_err(wav_error)?;
-        let path = staging.path().join(STAGING_WAV);
-        if frames < written {
-            truncate_wav(&path, frames * wav_bytes_per_frame(job.bit_depth))?;
-        }
         check_cancel(cancel)?;
-        fs::rename(path, &job.path)?;
+        fs::rename(staging.path().join(STAGING_WAV), &job.path)?;
         Ok(ExportReport {
             frames,
             peak_db: gain_to_db(peak),
@@ -913,29 +953,6 @@ fn max_wav_frames(bit_depth: BitDepth) -> u64 {
         BitDepth::Int24 | BitDepth::Float32 => 68,
     };
     (u64::from(u32::MAX) - (header_bytes - RIFF_PREFIX_BYTES)) / wav_bytes_per_frame(bit_depth)
-}
-
-fn wav_too_long() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidInput,
-        "export exceeds the WAV size limit",
-    )
-}
-
-/// Hound leaves the file at the first sample after reading the header. Its data chunk is last,
-/// so trimming the private file changes only the data length and the outer RIFF length.
-fn truncate_wav(path: &Path, data_bytes: u64) -> io::Result<()> {
-    let file = fs::OpenOptions::new().read(true).write(true).open(path)?;
-    let mut file = hound::WavReader::new(file).map_err(wav_error)?.into_inner();
-    let data_start = file.stream_position()?;
-    let end = data_start + data_bytes;
-    let data_size = u32::try_from(data_bytes).map_err(|_| wav_too_long())?;
-    let riff_size = u32::try_from(end - RIFF_PREFIX_BYTES).map_err(|_| wav_too_long())?;
-    file.seek(SeekFrom::Start(data_start - 4))?;
-    file.write_all(&data_size.to_le_bytes())?;
-    file.seek(SeekFrom::Start(4))?;
-    file.write_all(&riff_size.to_le_bytes())?;
-    file.set_len(end)
 }
 
 /// `hound`'s error as an IO error.
@@ -979,6 +996,30 @@ mod tests {
     use super::*;
 
     use komponist_model::{Meter, Tempo};
+
+    #[test]
+    fn track_tail_keeps_gaps_before_signal_and_only_pads_final_silence() {
+        let cancel = AtomicBool::new(false);
+        let mut tail = TrackTail::new(2);
+        let mut samples = Vec::new();
+        let mut write = |block: &[f32]| {
+            samples.extend_from_slice(block);
+            Ok(())
+        };
+        tail.write(&[0.2, 0.1, 0.0, 0.0, 0.0, 0.0], &mut write, &cancel)
+            .unwrap();
+        tail.write(&[0.0; 8], &mut write, &cancel).unwrap();
+        tail.write(&[0.0, 0.0, 0.0, -0.5, 0.0, 0.0], &mut write, &cancel)
+            .unwrap();
+        tail.write(&[0.0; 12], &mut write, &cancel).unwrap();
+        write_silence(tail.pending.min(2), &mut write, &cancel).unwrap();
+        // Body two frames, six silent frames before the late right-channel signal, two pad frames.
+        assert_eq!(samples.len(), 2 * (2 + 6 + 1 + 2));
+        assert_eq!(&samples[..2], &[0.2, 0.1]);
+        assert_eq!(samples[2 * 8 + 1], -0.5);
+        assert!(samples[2..2 * 8 + 1].iter().all(|sample| *sample == 0.0));
+        assert!(samples[2 * 9..].iter().all(|sample| *sample == 0.0));
+    }
 
     /// 124 bpm: 48 kHz gives 24.19… samples per tick, so most ticks fall between samples.
     fn map() -> TempoMap {

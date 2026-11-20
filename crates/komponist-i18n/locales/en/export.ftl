@@ -160,6 +160,7 @@ export-dropped-many = { $names } dropped out
 
 # Status: the export failed; `$why` is the cause.
 export-failed = Export failed · { $why }
+export-wav-too-large = The WAV file exceeds the format’s size limit.
 
 # Status: an audio clip's linked file could not be opened; `$file` is its path.
 export-missing-audio = Export failed · Audio file is missing or cannot be opened: { $file }
