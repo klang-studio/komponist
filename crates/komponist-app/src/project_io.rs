@@ -664,24 +664,22 @@ impl App {
             };
             names.push(self.device_name(device));
         }
-        let Some(status) = &mut self.ui.status else {
-            return;
-        };
-        if !retained.is_empty() {
-            status.text.push_str(" · ");
-            status
-                .text
-                .push_str(&self.lang.project_save_plugin_cached(retained.join(", ")));
-        }
+        let mut warnings = Vec::new();
         if !missing.is_empty() {
-            status.text.push_str(" · ");
-            status.text.push_str(
-                &self
-                    .lang
+            warnings.push(
+                self.lang
                     .project_save_plugin_missing_state(missing.join(", ")),
             );
         }
-        if !retained.is_empty() || !missing.is_empty() {
+        if !retained.is_empty() {
+            warnings.push(self.lang.project_save_plugin_cached(retained.join(", ")));
+        }
+        if !warnings.is_empty()
+            && let Some(status) = &mut self.ui.status
+        {
+            // The status bar clips from the right; the project path can be arbitrarily long.
+            warnings.push(std::mem::take(&mut status.text));
+            status.text = warnings.join(" · ");
             status.kind = StatusKind::Error;
         }
     }
