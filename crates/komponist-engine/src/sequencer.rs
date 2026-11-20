@@ -21,7 +21,7 @@
 use klang_dsp::rng::Rng;
 use komponist_model::{TempoMap, Tick, TrackId};
 
-use crate::note_schedule::NoteView;
+use crate::note_schedule::{NoteView, RepeatScratch};
 use crate::processor::{Event, EventKind, NOTE_ID_NONE};
 use crate::program::{PROBABILITY_FOLLOW, SeqNote, SlotId};
 
@@ -373,6 +373,7 @@ impl TrackSeq {
         win: &Window<'_>,
         instrument: Option<SlotId>,
         ids: &mut NoteIds,
+        repeat_scratch: &mut RepeatScratch,
         out: &mut EventList,
         capture: &mut impl FnMut(Captured),
     ) -> u32 {
@@ -394,10 +395,17 @@ impl TrackSeq {
         let mut dropped = 0;
         if win.playing && core::mem::take(&mut self.chase) {
             let floor = win.map.sample_to_tick(start, win.rate);
-            let before = notes.merge(0..lo, Tick::ZERO..ticks.start, Some(floor));
+            let before = notes.merge(
+                0..lo,
+                Tick::ZERO..ticks.start,
+                Some(floor),
+                Some(repeat_scratch),
+            );
             dropped += self.chase_notes(before, win, floor, instrument, ids, out);
         }
-        let mut scheduled = notes.merge(lo..hi, ticks, None).peekable();
+        let mut scheduled = notes
+            .merge(lo..hi, ticks, None, Some(repeat_scratch))
+            .peekable();
         let mut j = 0;
         loop {
             let seq_offset = scheduled
@@ -668,6 +676,7 @@ mod tests {
     struct Run {
         seq: TrackSeq,
         ids: NoteIds,
+        repeat_scratch: RepeatScratch,
         out: EventList,
         map: TempoMap,
         pos: i64,
@@ -679,6 +688,7 @@ mod tests {
             Run {
                 seq: TrackSeq::new(),
                 ids: NoteIds::default(),
+                repeat_scratch: RepeatScratch::new(),
                 out: EventList::new(crate::MAX_EVENTS_PER_BLOCK),
                 map: map(),
                 pos: 0,
@@ -715,6 +725,7 @@ mod tests {
             let Run {
                 seq,
                 ids,
+                repeat_scratch,
                 out,
                 captured,
                 ..
@@ -723,9 +734,16 @@ mod tests {
             let events = assert_no_alloc::assert_no_alloc(|| {
                 out.clear();
                 seq.flushed_offs(instrument, out);
-                seq.sequence(notes, live, &win, instrument, ids, out, &mut |c| {
-                    captured.push((pos, c))
-                });
+                seq.sequence(
+                    notes,
+                    live,
+                    &win,
+                    instrument,
+                    ids,
+                    repeat_scratch,
+                    out,
+                    &mut |c| captured.push((pos, c)),
+                );
                 out.finish()
             });
             let events = events
@@ -1161,6 +1179,7 @@ mod tests {
             &win,
             Some(SLOT),
             &mut run.ids,
+            &mut run.repeat_scratch,
             &mut run.out,
             &mut |_| {},
         );
