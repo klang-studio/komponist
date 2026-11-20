@@ -21,6 +21,7 @@
 use klang_dsp::rng::Rng;
 use komponist_model::{TempoMap, Tick, TrackId};
 
+use crate::note_schedule::NoteView;
 use crate::processor::{Event, EventKind, NOTE_ID_NONE};
 use crate::program::{PROBABILITY_FOLLOW, SeqNote, SlotId};
 
@@ -141,6 +142,24 @@ impl Window<'_> {
 
     fn end(&self) -> i64 {
         self.start + i64::from(self.frames)
+    }
+
+    /// First nonnegative tick whose rounded sample is at or after `sample`, even when
+    /// several ticks round to the same sample.
+    fn first_tick(&self, sample: i64) -> Tick {
+        let (mut low, mut high) = (0, i64::MAX);
+        if sample <= 0 {
+            return Tick::ZERO;
+        }
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if self.sample(Tick(middle)) < sample {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        Tick(low)
     }
 }
 
@@ -349,7 +368,7 @@ impl TrackSeq {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn sequence(
         &mut self,
-        notes: &[SeqNote],
+        notes: NoteView<'_>,
         live: &[LiveMsg],
         win: &Window<'_>,
         instrument: Option<SlotId>,
@@ -359,21 +378,31 @@ impl TrackSeq {
     ) -> u32 {
         let (start, end) = (win.start, win.end());
         let (lo, hi) = if win.playing {
-            let lo = notes.partition_point(|n| win.sample(n.start) < start);
+            let lo = notes.flat.partition_point(|n| win.sample(n.start) < start);
             (
                 lo,
-                lo + notes[lo..].partition_point(|n| win.sample(n.start) < end),
+                lo + notes.flat[lo..].partition_point(|n| win.sample(n.start) < end),
             )
         } else {
             (0, 0)
         };
+        let ticks = if win.playing && notes.has_repeats() {
+            win.first_tick(start)..win.first_tick(end)
+        } else {
+            Tick::ZERO..Tick::ZERO
+        };
         let mut dropped = 0;
         if win.playing && core::mem::take(&mut self.chase) {
-            dropped += self.chase_notes(&notes[..lo], win, instrument, ids, out);
+            let floor = win.map.sample_to_tick(start, win.rate);
+            let before = notes.merge(0..lo, Tick::ZERO..ticks.start, Some(floor));
+            dropped += self.chase_notes(before, win, floor, instrument, ids, out);
         }
-        let (mut i, mut j) = (lo, 0);
+        let mut scheduled = notes.merge(lo..hi, ticks, None).peekable();
+        let mut j = 0;
         loop {
-            let seq_offset = (i < hi).then(|| (win.sample(notes[i].start) - start) as u32);
+            let seq_offset = scheduled
+                .peek()
+                .map(|note| (win.sample(note.start) - start) as u32);
             let live_offset = live.get(j).map(|m| m.offset);
             let take_live = match (seq_offset, live_offset) {
                 (None, None) => break,
@@ -386,8 +415,7 @@ impl TrackSeq {
                 j += 1;
                 continue;
             }
-            let note = notes[i];
-            i += 1;
+            let note = scheduled.next().expect("sequenced note was just peeked");
             let offset = seq_offset.unwrap_or(0);
             if self.roll(&note)
                 && let Some(slot) = instrument
@@ -432,22 +460,22 @@ impl TrackSeq {
     /// first call after a start, locate or wrap.
     fn chase_notes(
         &mut self,
-        before: &[SeqNote],
+        before: impl Iterator<Item = SeqNote>,
         win: &Window<'_>,
+        floor: Tick,
         instrument: Option<SlotId>,
         ids: &mut NoteIds,
         out: &mut EventList,
     ) -> u32 {
         // A note ending at or before this tick cannot sound at `win.start` (tick → sample is
         // monotonic and `floor` maps back to a sample ≤ `win.start`).
-        let floor = win.map.sample_to_tick(win.start, win.rate);
         let mut dropped = 0;
         for note in before {
             let end = note.start + note.length;
             if end <= floor || win.sample(end) <= win.start {
                 continue;
             }
-            if self.roll(note)
+            if self.roll(&note)
                 && let Some(slot) = instrument
                 && note.key <= 127
             {
@@ -666,6 +694,16 @@ mod tests {
             frames: u32,
             instrument: Option<SlotId>,
         ) -> Vec<(i64, EventKind)> {
+            self.call_view(NoteView::from_slice(notes), live, frames, instrument)
+        }
+
+        fn call_view(
+            &mut self,
+            notes: NoteView<'_>,
+            live: &[LiveMsg],
+            frames: u32,
+            instrument: Option<SlotId>,
+        ) -> Vec<(i64, EventKind)> {
             let win = Window {
                 map: &self.map,
                 rate: 48_000.0,
@@ -697,6 +735,103 @@ mod tests {
             self.pos += i64::from(frames);
             events
         }
+    }
+
+    #[test]
+    fn a_seek_near_the_end_of_a_million_repeats_only_sees_the_current_periods() {
+        use crate::note_schedule::{NoteSchedule, RepeatedMidi};
+
+        let end = 1_000_000;
+        let repeated = NoteSchedule::compile(
+            Vec::new(),
+            vec![RepeatedMidi::new(
+                Tick(0),
+                Tick(end),
+                Tick(1),
+                0,
+                vec![note(0, 1, 61)],
+            )],
+        );
+        let expanded_tail = (end - 5..end)
+            .map(|start| note(start, 1, 61))
+            .collect::<Vec<_>>();
+        let mut compressed = Run::new();
+        let mut reference = Run::new();
+        for run in [&mut compressed, &mut reference] {
+            run.pos = 25 * (end - 4) + 12;
+            run.seq.chase();
+        }
+        let actual = compressed.call_view(repeated.view(), &[], 128, Some(SLOT));
+        assert_eq!(actual, reference.call(&expanded_tail, &[], 128, Some(SLOT)));
+        assert_eq!(
+            keys(&actual)
+                .iter()
+                .filter(|(_, kind, _)| *kind == "on")
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn compact_loops_match_expanded_overlap_chase_and_partial_period() {
+        use crate::note_schedule::{NoteSchedule, RepeatedMidi};
+
+        let velocity = |note: SeqNote, velocity| SeqNote { velocity, ..note };
+        let first = vec![
+            velocity(note(0, 6, 60), 40),
+            velocity(note(0, 2, 60), 50),
+            note(3, 7, 64),
+        ];
+        let second = vec![note(0, 3, 59), velocity(note(0, 5, 60), 90), note(4, 4, 62)];
+        let regular = note(10, 12, 60);
+        let compact = NoteSchedule::compile(
+            vec![(regular, 1)],
+            vec![
+                RepeatedMidi::new(Tick(0), Tick(27), Tick(10), 0, first.clone()),
+                RepeatedMidi::new(Tick(2), Tick(25), Tick(8), 2, second.clone()),
+            ],
+        );
+        let expand = |base: i64, end: i64, period: usize, notes: Vec<SeqNote>| {
+            (base..end).step_by(period).flat_map(move |offset| {
+                let notes = notes.clone();
+                notes.into_iter().filter_map(move |mut note| {
+                    note.start.0 += offset;
+                    note.length.0 = note.length.0.min(end - note.start.0);
+                    (note.length.0 > 0).then_some(note)
+                })
+            })
+        };
+        let mut expanded: Vec<_> = expand(0, 27, 10, first)
+            .chain([regular])
+            .chain(expand(2, 27, 8, second))
+            .collect();
+        expanded.sort_by_key(|note| (note.start, note.key));
+        assert_eq!(compact.iter().collect::<Vec<_>>(), expanded);
+        assert_eq!(compact.len(), expanded.len());
+
+        for start_sample in [0, 249, 250, 273, 649, 650] {
+            let mut compressed = Run::new();
+            let mut reference = Run::new();
+            for run in [&mut compressed, &mut reference] {
+                run.pos = start_sample;
+                run.seq.chase();
+            }
+            for _ in 0..10 {
+                assert_eq!(
+                    compressed.call_view(compact.view(), &[], 73, Some(SLOT)),
+                    reference.call(&expanded, &[], 73, Some(SLOT)),
+                    "started at sample {start_sample}",
+                );
+            }
+        }
+
+        let trimmed = compact.trimmed(Tick(25)).unwrap();
+        expanded.retain(|note| note.start.0 < 25);
+        for note in &mut expanded {
+            note.length.0 = note.length.0.min(25 - note.start.0);
+        }
+        assert_eq!(trimmed.iter().collect::<Vec<_>>(), expanded);
+        assert_eq!(trimmed.stored_notes(), compact.stored_notes());
     }
 
     fn keys(events: &[(i64, EventKind)]) -> Vec<(i64, &'static str, u8)> {
@@ -1021,7 +1156,7 @@ mod tests {
             playing: true,
         };
         let dropped = run.seq.sequence(
-            &notes,
+            NoteView::from_slice(&notes),
             &[],
             &win,
             Some(SLOT),

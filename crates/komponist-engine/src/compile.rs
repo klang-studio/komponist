@@ -17,8 +17,8 @@
 //! the program that used it is gone.
 //!
 //! What the compiler does (golden-tested by WP-24):
-//! - MIDI clips: the active take; clip loops expanded (`loop_length`), notes cut at repetition and
-//!   clip ends; clip transpose and velocity applied; muted clips skipped.
+//! - MIDI clips: the active take; long clip loops kept compact, notes cut at repetition and clip
+//!   ends; clip transpose and velocity applied; muted clips skipped.
 //! - Step clips: the pattern repeated from the clip start to the clip end; swing on odd steps;
 //!   ratchets expanded into evenly spaced hits (later hits at 75 % velocity,
 //!   [`crate::program::PROBABILITY_FOLLOW`]); probability kept per note; muted rows and, with any
@@ -50,6 +50,7 @@ use komponist_model::{
 use crate::api::TrackMeter;
 use crate::audio::{PlanEnv, SourceCache, build_plan, plan_matches};
 use crate::automation::Parameter;
+use crate::note_schedule::{NoteSchedule, RepeatedMidi};
 use crate::program::{
     ChainSlot, InputFilter, MasterProgram, MidiPort, PROBABILITY_FOLLOW, Program, SeqNote, SlotId,
     SlotMap, TrackProgram,
@@ -499,74 +500,79 @@ fn balance(pan: f32) -> f32 {
 /// Probability of notes from MIDI clips: they always play.
 const ALWAYS: u8 = 100;
 
-/// All notes of the unmuted `clips`, sorted by start, then key (stable, so equal notes keep clip
-/// order).
-fn compile_notes(clips: &[Arc<Clip>]) -> Arc<[SeqNote]> {
+/// Extra repeated MIDI notes a track can put in the flat table for the usual short loops.
+/// When the budget runs out, each further loop costs only its one-period template.
+const FLAT_MIDI_REPEAT_BUDGET: usize = 16_384;
+
+fn compile_notes(clips: &[Arc<Clip>]) -> Arc<NoteSchedule> {
     let mut notes = Vec::new();
-    for clip in clips.iter().filter(|c| !c.mute) {
+    let mut repeating = Vec::new();
+    let mut budget = FLAT_MIDI_REPEAT_BUDGET;
+    for (origin, clip) in clips.iter().enumerate().filter(|(_, clip)| !clip.mute) {
         match &clip.content {
-            ClipContent::Midi(midi) => midi_notes(clip, midi, &mut notes),
-            ClipContent::Step(steps) => step_notes(clip, steps, &mut notes),
+            ClipContent::Midi(midi) => {
+                if let Some((pattern, extra_notes)) = midi_pattern(clip, midi, origin) {
+                    if extra_notes > budget {
+                        repeating.push(pattern);
+                    } else {
+                        budget -= extra_notes;
+                        pattern.flatten(&mut notes);
+                    }
+                }
+            }
+            ClipContent::Step(steps) => step_notes(clip, steps, origin, &mut notes),
             // Audio clips make no notes; the track's `AudioPlan` plays them.
             ClipContent::Audio(_) => {}
         }
     }
-    notes.sort_by_key(|n| (n.start, n.key));
-    notes.into()
+    Arc::new(NoteSchedule::compile(notes, repeating))
 }
 
 /// The active take, played once or, with a clip loop, every `loop_length` ticks; each note is cut
 /// at its repetition's end and at the clip end. Notes starting at or after `loop_length` never
 /// play in a looped clip.
-fn midi_notes(clip: &Clip, midi: &MidiClip, out: &mut Vec<SeqNote>) {
-    let Some(take) = midi.takes.get(midi.active_take) else {
-        return;
-    };
+fn midi_pattern(clip: &Clip, midi: &MidiClip, origin: usize) -> Option<(RepeatedMidi, usize)> {
+    let take = midi.takes.get(midi.active_take)?;
     let length = clip.length;
     if length <= Tick::ZERO {
-        return;
+        return None;
     }
     let period = match clip.loop_length {
         Some(l) if l > Tick::ZERO => l,
         _ => length,
     };
-    if !take.notes.iter().any(|note| {
-        note.start >= Tick::ZERO && note.start < period.min(length) && note.length > Tick::ZERO
-    }) {
-        return;
-    }
-    let mut offset = Tick::ZERO;
-    while offset < length {
-        for note in take.notes.iter() {
-            let start = offset + note.start;
-            if note.start < Tick::ZERO || note.start >= period || start >= length {
-                continue;
-            }
-            let end = (start + note.length).min(offset + period).min(length);
-            out.extend(place(
+    let notes: Vec<_> = take
+        .notes
+        .iter()
+        .filter(|note| note.start >= Tick::ZERO && note.start < period.min(length))
+        .filter_map(|note| {
+            style_note(
                 clip,
                 SeqNote {
-                    start,
-                    length: end - start,
+                    start: note.start,
+                    length: note.length.min(period - note.start),
                     key: note.pitch,
                     velocity: note.velocity,
                     probability: ALWAYS,
                     channel: 0,
                 },
-            ));
-        }
-        offset += period;
-    }
+            )
+        })
+        .collect();
+    let template_notes = notes.len();
+    let pattern = RepeatedMidi::new(clip.start, length, period, origin, notes);
+    let total = pattern.len();
+    (total > 0).then(|| (pattern, total.saturating_sub(template_notes)))
 }
 
 /// The step pattern over the clip length ([`StepClip::hits`]: repetition, swing, ratchets, row
 /// mute and solo). The first hit of a step carries its probability, later hits follow its roll.
-fn step_notes(clip: &Clip, steps: &StepClip, out: &mut Vec<SeqNote>) {
+fn step_notes(clip: &Clip, steps: &StepClip, origin: usize, out: &mut Vec<(SeqNote, usize)>) {
     for hit in steps.hits(clip.length) {
-        out.extend(place(
+        let note = style_note(
             clip,
             SeqNote {
-                start: hit.start,
+                start: clip.start + hit.start,
                 length: hit.length,
                 key: hit.note,
                 velocity: hit.velocity,
@@ -577,22 +583,16 @@ fn step_notes(clip: &Clip, steps: &StepClip, out: &mut Vec<SeqNote>) {
                 },
                 channel: 0,
             },
-        ));
+        );
+        out.extend(note.filter(|n| n.start >= Tick::ZERO).map(|n| (n, origin)));
     }
 }
 
-/// Moves a clip-local note to the timeline and applies the clip's transposition and velocity
-/// change. `None` for invalid notes: key outside `0 ..= 127` (before or after transposition),
-/// length below 1, start before tick 0.
-fn place(clip: &Clip, local: SeqNote) -> Option<SeqNote> {
+/// Applies clip transposition and velocity, skipping invalid pitches and zero-length notes.
+fn style_note(clip: &Clip, local: SeqNote) -> Option<SeqNote> {
     let key = i16::from(local.key) + i16::from(clip.transpose);
-    let start = clip.start + local.start;
-    let valid = local.key <= 127
-        && (0..=127).contains(&key)
-        && local.length >= Tick(1)
-        && start >= Tick::ZERO;
+    let valid = local.key <= 127 && (0..=127).contains(&key) && local.length >= Tick(1);
     valid.then(|| SeqNote {
-        start,
         key: key as u8,
         velocity: scale_velocity(local.velocity, clip.velocity_pct),
         ..local

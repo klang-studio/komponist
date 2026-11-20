@@ -235,7 +235,9 @@ fn a_stage_without_an_instrument_or_with_a_bypassed_one_plays_nothing_and_holds_
     let mut on = p.clone();
     let mut t = (*on.tracks[0]).clone();
     t.chain[1].bypass = false;
-    t.notes = vec![note(BAR + 960, 960, 60)].into();
+    t.notes = std::sync::Arc::new(komponist_engine::program::NoteSchedule::from_sorted(vec![
+        note(BAR + 960, 960, 60),
+    ]));
     on.tracks[0] = std::sync::Arc::new(t);
     rig.set_program(&on);
     rig.process(96_000, 1000);
