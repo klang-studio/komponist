@@ -341,19 +341,74 @@ fn edge_drag_resizes_all_selected() {
 /// "Strg-Ziehen ↕ auf Note — Velocity ändern, Wert im Tooltip."
 #[test]
 fn ctrl_drag_changes_velocity() {
-    let (app, clip) = lead_a();
-    let mut h = harness(app);
-    let g = geometry(&h, clip);
-    let n = notes_of(h.state(), clip)[0]; // velocity 70
-    let from = note_center(&g, &n);
-    drag(&mut h, from, from + vec2(0.0, -15.0), Modifiers::COMMAND);
-    let after = *notes_of(h.state(), clip)
+    for lang in [komponist_i18n::Lang::De, komponist_i18n::Lang::En] {
+        check_ctrl_drag_velocity(lang);
+    }
+}
+
+fn check_ctrl_drag_velocity(lang: komponist_i18n::Lang) {
+    let (mut app, clip) = lead_a();
+    let notes = notes_of(&app, clip);
+    let first = notes[0];
+    let grabbed = notes
         .iter()
-        .find(|q| q.id == n.id)
+        .skip(1)
+        .find(|note| note.velocity != first.velocity)
+        .copied()
         .unwrap();
-    assert_eq!(after.velocity, n.velocity + 10);
-    assert_eq!((after.start, after.pitch), (n.start, n.pitch));
+    select(&mut app, vec![first.id, grabbed.id]);
+    let mut h = harness(app.with_lang(lang));
+    let g = geometry(&h, clip);
+    let rect = g.note_rect(grabbed.start, grabbed.length, grabbed.pitch);
+    let from = rect.center();
+    let modifiers = Modifiers::COMMAND;
+    h.hover_at(from);
+    h.event(Event::ModifiersChanged(modifiers));
+    h.step();
+    press(&mut h, from, modifiers, true);
+    h.step();
+
+    for (dy, offset) in [(-9.0, 6), (-15.0, 10), (9.0, -6)] {
+        h.hover_at(from + vec2(0.0, dy));
+        h.run_steps(2);
+        let mut expected = notes.clone();
+        for note in expected
+            .iter_mut()
+            .filter(|note| [first.id, grabbed.id].contains(&note.id))
+        {
+            note.velocity = (i16::from(note.velocity) + offset).clamp(1, 127) as u8;
+        }
+        assert_eq!(notes_of(h.state(), clip), expected);
+        let velocity = expected
+            .iter()
+            .find(|note| note.id == grabbed.id)
+            .unwrap()
+            .velocity;
+        let status = h.state().lang().piano_roll_velocity_status(velocity);
+        h.get_by_role_and_label(Role::Label, &status);
+        assert!(
+            h.query_all_by_label(&velocity.to_string()).any(|node| {
+                let bounds = node.rect();
+                bounds.bottom() <= rect.top() && (bounds.center().x - rect.center().x).abs() < 2.0
+            }),
+            "expected a {velocity} tooltip above the grabbed note",
+        );
+        if offset == 10
+            && let Some(dir) = std::env::var_os("KOMPONIST_VELOCITY_PREVIEW")
+        {
+            h.render()
+                .unwrap()
+                .save(PathBuf::from(dir).join(format!("velocity-{}.png", lang.code())))
+                .unwrap();
+        }
+    }
+
+    press(&mut h, from + vec2(0.0, 9.0), modifiers, false);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    h.run_steps(2);
     assert_eq!(h.state().undo_text().as_deref(), Some("Velocity"));
+    undo(&mut h);
+    assert_eq!(notes_of(h.state(), clip), notes);
 }
 
 /// "↑ ↓ / Shift ↑ ↓ — Halbton / Oktave." and "← → / Q — Ein Rasterschritt / quantisieren."
