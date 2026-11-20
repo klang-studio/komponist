@@ -2392,7 +2392,9 @@ impl App {
             PluginAction::LoadSample { .. }
             | PluginAction::ClearSample { .. }
             | PluginAction::PickSample { .. }
-            | PluginAction::AuditionPad { .. } => {
+            | PluginAction::AuditionPad { .. }
+            | PluginAction::PreviewSampler { .. }
+            | PluginAction::SetSamplerSlices { .. } => {
                 self.sampler_action(&action);
             }
             PluginAction::BeginParamGesture { device, id } => {
@@ -2534,6 +2536,7 @@ impl App {
     /// at 1 in every project, [`EngineSync::reset`]), fresh selection, editor, plugin windows,
     /// meters and scroll position.
     pub(crate) fn open_document(&mut self, doc: Document, path: Option<PathBuf>) {
+        self.stop_waveform_preview();
         self.release_keyboard_notes_if(|_| true);
         // Plugin GUIs close in their bridges before the reset releases the bridges.
         self.close_all_plugin_frames();

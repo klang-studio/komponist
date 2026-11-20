@@ -37,7 +37,7 @@ The piano roll has pointer, pencil and eraser tools, a velocity lane, quantize a
 
 ![Drawing four notes with the pencil, moving one, deleting one](docs/media/piano-roll.gif)
 
-The step sequencer is made for drums and Sampler kits. Toggle steps while the pattern plays:
+The step sequencer is made for drums and Klopfer kits. Toggle steps while the pattern plays:
 
 ![Toggling steps in the step sequencer while the pattern loops](docs/media/step-sequencer.gif)
 
@@ -86,10 +86,13 @@ it:
 
 ![Volt, a subtractive synth, with an EQ and Presse](docs/media/device-volt.png)
 
-The **Sampler** is a pad sampler with layers, envelopes, filters and slicing. The demo kit is synthesized, so it needs
+**Klopfer** is the built-in drum sampler. The demo kit is synthesized, so it needs
 no sample files. Next to it, the Presse compressor:
 
-![Sampler with its pads, and the Presse compressor](docs/media/device-sampler-presse.png)
+![Klopfer with its pads, and the Presse compressor](docs/media/device-sampler-presse.png)
+
+The **Sampler** plays pitched phrases and MIDI-triggered slices. Its waveform editor handles playback
+ranges, fades and slice markers. It also supports reverse playback, tempo sync and modulation.
 
 ### Built-in effects
 
@@ -133,7 +136,7 @@ komponist is **early software**. The current development version covers audio an
 play, record, mix, save and export. Expect rough edges and file-format changes; released builds may have fewer features.
 
 What works: audio, MIDI and step clips; waveform, piano roll and step editors; audio and MIDI recording with takes;
-Hexa / Volt / Sampler; built-in effects; sidechains (also into CLAP and VST3 plugins with a sidechain input); CLAP and
+Hexa / Volt / Klopfer / Sampler; built-in effects; sidechains (also into CLAP and VST3 plugins with a sidechain input); CLAP and
 VST3 hosting; mixer with groups, buses and sends; undo and redo; project files, linked audio, Collect and Save, and export.
 
 What is coming: automation.

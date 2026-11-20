@@ -1258,7 +1258,7 @@ mod tests {
             })
             .collect();
         let expected = [
-            ("Drums", "Sampler", "kit of 6"),
+            ("Drums", "Klopfer", "kit of 6"),
             ("Drums", "LSP Compressor", "bypass"),
             ("Bass", "Hexa", "preset \"Analog Bass\""),
             ("Bass", "LSP Para EQ x8", "bypass"),

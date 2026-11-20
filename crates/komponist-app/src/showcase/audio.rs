@@ -14,6 +14,8 @@ use komponist_model::{
     AudioFile, ClipContent, ClipTimeMode, Hue, Project, Tempo, Tick, TrackOutput,
 };
 
+pub(crate) use super::sampler::write_sampler_file;
+
 const RATE: u32 = 48_000;
 const BAR: i64 = 3840;
 const SHAKER: &str = "Shaker Loop.wav";

@@ -60,7 +60,7 @@ The **nice-plug** fixtures in `test-plugins/` export both formats from the same 
 | D2 | cpal and midir, with native JACK routing/capture on Linux |
 | D3 | Own hosting layer on clack-host and vst3 |
 | D4 | One bridge process per external plugin instance |
-| D5 | Internal Sampler backed by `sampler-core`; Klopfer is an ordinary scanned plugin |
+| D5 | Klopfer and the Sampler share `sampler-core` and sample loading. The separate Klopfer CLAP plugin is scanned normally. |
 | D6 | Internal Hexa backed by `hexa-core` with `alloc` and `serde` |
 | D7 | Versioned `*.komponist` JSON project file and linked audio assets |
 | D8 | Immutable document snapshots with `Arc` structural sharing for undo/redo |
@@ -259,7 +259,7 @@ processing audio. `ProcessContext` supplies frame count, sample rate, transport,
 the realtime deadline. Events have sample offsets and include notes, raw MIDI, parameter changes
 and all-notes-off.
 
-Implementations include Hexa, Volt, Sampler, internal audio/MIDI effects and `ExternalProcessor`.
+Implementations include Hexa, Volt, Klopfer, Sampler, internal audio/MIDI effects and `ExternalProcessor`.
 Test processors in `komponist_engine::testing` exercise the same contracts. The metronome belongs
 to the engine rather than a track device.
 
@@ -698,8 +698,11 @@ Built-ins run in process and use the normal document/processor/device-card inter
 - **Hexa:** six-operator FM via `hexa-core`, sample-accurate events, serialized patches, macros and
   factory presets. The persistent plugin ID remains `pisynth` for project compatibility.
 - **Volt:** subtractive synthesis with two oscillators, sub oscillator, filter and modulation.
-- **Sampler:** pad/layer engine via `sampler-core`, shared background sample loading, linked
-  sources, slicing and serialized state. Klopfer is loaded only as an external scanned plugin.
+- **Klopfer:** drum sampler with eight pads on MIDI notes 36–43. The existing built-in ID
+  remains `sampler` for project compatibility.
+- **Sampler:** general-purpose instrument with chromatic and slice modes, waveform regions,
+  fades, tempo sync and modulation. Both instruments share the voice engine, background sample
+  loading and linked-source storage.
 - **Audio effects:** EQ, Delay, Reverb (`Hall` internally), Presse compressor with sidechain and
   Limiter. EQ spectrum and other device visualizations use leased taps, analyzed outside RT.
 - **MIDI effects:** Arpeggiator and Scale (`Tonleiter` internally), run before the instrument.
@@ -834,13 +837,13 @@ editors require platform window/input tooling because their contents are outside
 2. **Computer keyboard MIDI:** the keymap layer tracks held keys and their original destinations.
    Disabling it, deleting a destination or replacing the project clears held notes.
 3. **Step rows:** instrument-provided note names define rows where available; the pad fallback
-   uses notes 36–43. Sampler rows follow its pad layout.
+   uses notes 36–43. Klopfer rows follow its pad layout.
 4. **Track colours:** vermilion (45°) is available for manual assignment and excluded from the
    automatic hue order.
 5. **Export:** rate, format, range, normalization and tail come from the export settings; processor
    activation and PDC use the selected rate.
 6. **Naming:** the product is lowercase **komponist**; **klang-studio** names the project umbrella.
-   Built-in display names include Hexa, Volt, Sampler and Presse.
+   Built-in display names include Hexa, Volt, Klopfer, Sampler and Presse.
 7. **Mixer:** the normal dock uses lean strips with name, toggles, fader and a small pan control;
    the expanded mixer shows devices, sends and routing. Buses precede the master in mixer view.
 8. **Track toggles:** mute/solo retain M/S labels. Record arm uses a record-circle symbol and

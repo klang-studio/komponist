@@ -25,7 +25,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::project::{
-    BUILTIN_HEXA, BUILTIN_VOLT, ClipContent, HEXA_NAME, PRESSE_NAME, Project, VOLT_NAME,
+    BUILTIN_HEXA, BUILTIN_SAMPLER, BUILTIN_VOLT, ClipContent, DRUM_SAMPLER_NAME, HEXA_NAME,
+    PRESSE_NAME, Project, VOLT_NAME,
 };
 use crate::routing;
 use crate::time::Tick;
@@ -151,12 +152,13 @@ struct FileOut<'a> {
 /// without a format version bump, so every view shows the new name and a later save writes it.
 /// "pisynth" became hexa, "knurr" became volt; since 2026-11-16 the names of Hexa, Volt and Presse start with
 /// a capital (the lowercase names of earlier files are replaced).
-const RENAMED_BUILTINS: [(&str, &str, &str); 5] = [
+const RENAMED_BUILTINS: [(&str, &str, &str); 6] = [
     (BUILTIN_HEXA, "pisynth", HEXA_NAME),
     (BUILTIN_VOLT, "knurr", VOLT_NAME),
     (BUILTIN_HEXA, "hexa", HEXA_NAME),
     (BUILTIN_VOLT, "volt", VOLT_NAME),
     ("presse", "presse", PRESSE_NAME),
+    (BUILTIN_SAMPLER, "Sampler", DRUM_SAMPLER_NAME),
 ];
 
 fn rename_builtins(value: &mut Value) {
@@ -786,6 +788,17 @@ mod tests {
         assert_eq!(v["a"][0]["plugin"]["id"], "knurr");
         assert_eq!(v["a"][1]["plugin"]["name"], "knurr");
         assert_eq!(v["a"][2]["plugin"]["name"], "Volt");
+    }
+
+    #[test]
+    fn a_stored_drum_sampler_name_loads_as_klopfer_with_the_same_id() {
+        let mut value = demo_value();
+        value["tracks"][0]["channel"]["devices"][0]["plugin"]["name"] = "Sampler".into();
+        let bytes = file(value);
+        let project = from_json(&bytes).unwrap();
+        let plugin = &project.tracks[0].channel.devices[0].plugin;
+        assert_eq!(plugin.id, BUILTIN_SAMPLER);
+        assert_eq!(plugin.name, DRUM_SAMPLER_NAME);
     }
 
     #[test]

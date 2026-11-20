@@ -71,6 +71,8 @@ pub const VOLT_NAME: &str = "Volt";
 pub const PRESSE_NAME: &str = "Presse";
 /// Catalog id of the built-in drum sampler (`komponist_builtin::sampler`, in process, WP-87).
 pub const BUILTIN_SAMPLER: &str = "sampler";
+/// Display name of the built-in drum sampler, whose catalog ID stays `sampler`.
+pub const DRUM_SAMPLER_NAME: &str = "Klopfer";
 /// Catalog id klopfer had as a built-in ("klopfer · INTERN", the bundled `Klopfer.clap`) before
 /// the sampler replaced it. Only old projects hold it; the catalog resolves it to the scanned
 /// klopfer CLAP plugin.

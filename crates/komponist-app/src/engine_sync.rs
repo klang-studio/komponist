@@ -605,6 +605,7 @@ impl EngineSync {
                 continue;
             };
             if let Some(processor) = self.host.create_processor(device, setup) {
+                self.prepare_sampler_sync(project, device);
                 late_latency |= processor.latency() > 0;
                 self.send(Command::InsertProcessor { slot, processor });
             }
@@ -628,6 +629,15 @@ impl EngineSync {
                 next = self.compile_project(project);
             }
         }
+        if self
+            .previous
+            .as_ref()
+            .is_some_and(|p| p.tempo_map.tempo != project.tempo)
+        {
+            for device in project.tracks.iter().flat_map(|t| &t.channel.devices) {
+                self.prepare_sampler_sync(project, device);
+            }
+        }
         self.send(Command::SetProgram(Box::new(next.clone())));
         self.programs_sent += 1;
         self.previous = Some(next);
@@ -648,9 +658,23 @@ impl EngineSync {
         };
         let setup = self.setup();
         if let Some(processor) = self.host.create_processor(d, setup) {
+            self.prepare_sampler_sync(project, d);
             self.reloads += 1;
             self.send(Command::InsertProcessor { slot, processor });
             self.host.set_macro_params(&self.macro_params);
+        }
+    }
+
+    pub(crate) fn prepare_sampler_sync(&self, project: &Project, device: &komponist_model::Device) {
+        use komponist_builtin::Internal;
+        let kind = Internal::GeneralSampler;
+        if Internal::from_plugin(&device.plugin) != Some(kind) {
+            return;
+        }
+        if let Some(handle) = self.host.sampler(device.id) {
+            let (source_bpm, enabled) =
+                komponist_builtin::general_sampler::sync_settings(device.state.as_deref());
+            handle.prepare_general_sync(source_bpm, project.tempo.bpm, enabled);
         }
     }
 
@@ -757,8 +781,24 @@ impl EngineSync {
             }
             if let Some(handle) = self.host.sampler(device.id) {
                 use komponist_builtin::sampler::links;
-                let old_links = links::read(old.state.as_deref());
-                let new_links = links::read(device.state.as_deref());
+                let general = kind == komponist_builtin::Internal::GeneralSampler;
+                if general {
+                    use komponist_builtin::general_sampler::read_settings;
+                    let settings = read_settings(device.state.as_deref());
+                    if settings != read_settings(old.state.as_deref()) {
+                        handle.set_general_settings(&settings);
+                    }
+                    self.prepare_sampler_sync(project, device);
+                }
+                let device_links = |state: Option<&[u8]>| {
+                    let mut links = links::read(state);
+                    if general {
+                        links.retain(|(pad, _)| *pad == 0);
+                    }
+                    links
+                };
+                let old_links = device_links(old.state.as_deref());
+                let new_links = device_links(device.state.as_deref());
                 for (pad, link) in &new_links {
                     if !old_links.iter().any(|(p, l)| p == pad && l == link) {
                         handle.load_link(*pad, link.clone(), project_dir.map(Into::into));

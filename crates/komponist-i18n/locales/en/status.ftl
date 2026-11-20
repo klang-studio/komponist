@@ -146,6 +146,9 @@ status-fx-need-track = Effects need a track
 # A sample was linked to a pad (`$pad` counts from 1).
 status-sample-on-pad = “{ $name }” is on pad { $pad }
 
+# A sample was linked in the general-purpose Sampler.
+status-sampler-loaded = Loaded “{ $name }” into Sampler
+
 # Name of a sample without a name.
 status-sample-unnamed = Sample
 

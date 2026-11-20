@@ -14,6 +14,12 @@ flatten-worker-failed = Der Rendervorgang wurde unterbrochen.
 flatten-automation-too-large = Wiederholte Clip-Automation würde zu viele Automationspunkte erzeugen.
 flatten-missing-sample = Sample nicht gefunden · { $file }
 flatten-pad-failed = { $device }, Pad { $pad } „{ $sample }“ konnte nicht geladen werden.
+
+# A linked source unavailable before flattening the general-purpose Sampler.
+flatten-sampler-failed = { $device } konnte „{ $sample }“ nicht laden.
+
+# The Sampler cannot prepare a pitch-preserving stretch for the linked source.
+flatten-sampler-sync-failed = { $device } konnte das Sample nicht an das Projekttempo anpassen.
 flatten-state-failed = Der aktuelle Zustand von „{ $device }“ konnte für Rückgängig nicht gesichert werden.
 flatten-warp-failed = Warp im Audioclip „{ $clip }“ · { $reason }
 

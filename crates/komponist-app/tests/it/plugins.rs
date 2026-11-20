@@ -374,7 +374,7 @@ fn the_demo_plays_the_installed_plugins() {
     let mut project = komponist_model::fixtures::demo_project();
     // A state blob for every device that is not installed here, to see it kept.
     let blob: Arc<[u8]> = Arc::from(&b"komponist test state \x00\x01\x02"[..]);
-    let installed = ["Hexa", "Sampler", "Surge XT", "Dexed"];
+    let installed = ["Hexa", "Klopfer", "Surge XT", "Dexed"];
     for track in &mut project.tracks {
         for device in &mut Arc::make_mut(track).channel.devices {
             if !installed.contains(&device.plugin.name.as_str()) {

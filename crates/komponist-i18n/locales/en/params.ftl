@@ -588,3 +588,47 @@ label-volt-lfo = LFO
 
 # Title of volt's envelope graph; `$name` is the name of the chosen envelope.
 graph-title-volt-envelope = { $name } Env.
+
+# General sampler
+param-general-sampler-start = Start
+param-general-sampler-end = End
+param-general-sampler-fade-in = Fade in
+param-general-sampler-fade-out = Fade out
+param-general-sampler-mode = Playback
+param-general-sampler-direction = Direction
+param-general-sampler-forward = Forward
+param-general-sampler-reverse = Reverse
+param-general-sampler-root = Root note
+param-general-sampler-slices = Slices
+param-general-sampler-coarse = Coarse
+param-general-sampler-fine = Fine
+param-general-sampler-sync = Tempo sync
+param-general-sampler-source-bpm = Source tempo (BPM)
+param-general-sampler-gain = Gain
+param-general-sampler-pan = Pan
+param-general-sampler-attack = Attack
+param-general-sampler-decay = Decay
+param-general-sampler-sustain = Sustain
+param-general-sampler-release = Release
+param-general-sampler-filter = Filter
+param-general-sampler-off = Off
+param-general-sampler-low-pass = Low-pass
+param-general-sampler-high-pass = High-pass
+param-general-sampler-band-pass = Band-pass
+param-general-sampler-cutoff = Cutoff
+param-general-sampler-resonance = Resonance
+param-general-sampler-filter-env = Env Amt.
+param-general-sampler-filter-decay = Filter Dec.
+param-general-sampler-lfo-shape = LFO shape
+param-general-sampler-sine = Sine
+param-general-sampler-triangle = Triangle
+param-general-sampler-saw-up = Rising saw
+param-general-sampler-saw-down = Falling saw
+param-general-sampler-square = Square
+param-general-sampler-sample-hold = Sample & hold
+param-general-sampler-lfo-rate = LFO rate
+param-general-sampler-lfo-target = LFO target
+param-general-sampler-lfo-depth = LFO depth
+param-general-sampler-velocity-target = Velocity target
+param-general-sampler-velocity-depth = Velocity depth
+param-general-sampler-pitch = Pitch

@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use komponist_builtin::sampler::PadStatus;
+use komponist_builtin::{
+    Internal,
+    sampler::{PadStatus, SyncStatus},
+};
 use komponist_engine::export::{
     BitDepth, ExportError, ExportJob, ExportReport, TRACK_TAIL_SECONDS, TrackExport,
 };
@@ -107,15 +110,26 @@ impl Flatten {
             let Some(sampler) = app.engine.host().sampler(id) else {
                 continue;
             };
+            if sampler.sync_status() == Some(SyncStatus::Unavailable) {
+                return Some((
+                    id,
+                    app.lang.flatten_sampler_sync_failed(app.device_name(id)),
+                ));
+            }
             for (pad, view) in sampler.views().into_iter().enumerate() {
                 if view.link.is_some()
                     && matches!(view.status, PadStatus::Missing | PadStatus::Failed(_))
                 {
-                    return Some((
-                        id,
-                        app.lang
-                            .flatten_pad_failed(app.device_name(id), pad + 1, view.name),
-                    ));
+                    let name = app.device_name(id);
+                    let general = app.project().find_device(id).is_some_and(|(_, _, device)| {
+                        crate::device_host::internal_kind(device) == Some(Internal::GeneralSampler)
+                    });
+                    let message = if general {
+                        app.lang.flatten_sampler_failed(name, view.name)
+                    } else {
+                        app.lang.flatten_pad_failed(name, pad + 1, view.name)
+                    };
+                    return Some((id, message));
                 }
             }
         }

@@ -13,6 +13,8 @@ pub mod layers;
 pub mod lofi;
 pub mod modulation;
 pub mod pad;
+mod pitch;
+mod playback;
 pub mod sample;
 pub mod slicing;
 pub mod stretch;
@@ -26,4 +28,5 @@ pub use engine::{
 pub use layers::{LayerInfo, LayerMode, NUM_LAYERS, PadLayers};
 pub use modulation::{LfoShape, ModSlot, ModSource, ModTarget};
 pub use pad::{EnvParams, FilterMode, PadParams, PadSettings};
+pub use playback::{PlaybackDirection, PlaybackLoop, PlaybackRegion, SampleTrigger};
 pub use sample::Sample;

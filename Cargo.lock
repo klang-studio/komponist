@@ -2613,6 +2613,7 @@ dependencies = [
  "komponist-engine",
  "komponist-i18n",
  "komponist-model",
+ "komponist-stretch",
  "rtrb",
  "sampler-core",
  "serde_json",

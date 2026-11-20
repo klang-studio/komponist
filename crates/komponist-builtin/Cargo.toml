@@ -10,6 +10,7 @@ komponist-audiofile.workspace = true
 komponist-engine.workspace = true
 komponist-i18n.workspace = true
 komponist-model.workspace = true
+komponist-stretch.workspace = true
 hexa-core.workspace = true
 klang-dsp.workspace = true
 sampler-core.workspace = true

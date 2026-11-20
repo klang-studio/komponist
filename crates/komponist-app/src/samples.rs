@@ -29,8 +29,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egui::Context;
-use komponist_builtin::Internal;
 use komponist_builtin::sampler::{self, Collector, PadField, SampleLink, links};
+use komponist_builtin::{Internal, general_sampler};
 use komponist_engine::Command;
 use komponist_model::edits;
 use komponist_model::{AudioFile, ChannelRef, ClipContent, DeviceId, Project, TrackId};
@@ -69,6 +69,7 @@ pub fn demo_with_kit(
         }
     }
     crate::showcase::audio::write_files(&mut project, dir)?;
+    crate::showcase::audio::write_sampler_file(&mut project, dir)?;
     Ok(project)
 }
 
@@ -88,13 +89,33 @@ pub(crate) struct State {
     pub(crate) collect_after_save: bool,
     /// Held audition notes: when to release, track, key.
     auditions: Vec<(Instant, TrackId, u8)>,
+    /// Waveform preview held by the primary pointer button.
+    waveform_preview: Option<WaveformPreview>,
     /// Per sampler: the pad of the step row, the selected pad and the hit counter of the last
     /// frame.
     pads: std::collections::HashMap<DeviceId, PadSync>,
 }
 
+enum WaveformPreview {
+    Sample { track: TrackId, key: u8 },
+    Slice(DeviceId),
+}
+
 /// A sampler device of the project: id, track (`None`: master), state.
-type SamplerDevice = (DeviceId, Option<TrackId>, Option<Arc<[u8]>>);
+type SamplerDevice = (DeviceId, Option<TrackId>, Internal, Option<Arc<[u8]>>);
+
+fn sample_device_kind(device: &komponist_model::Device) -> Option<Internal> {
+    Internal::from_plugin(&device.plugin)
+        .filter(|kind| matches!(kind, Internal::Sampler | Internal::GeneralSampler))
+}
+
+fn valid_slot(kind: Internal, pad: usize) -> bool {
+    if kind == Internal::GeneralSampler {
+        pad == 0
+    } else {
+        pad < sampler::PADS
+    }
+}
 
 #[derive(Clone, Copy)]
 struct PadSync {
@@ -122,19 +143,17 @@ impl App {
             .chain(std::iter::once((None, &p.master.devices)));
         chains
             .flat_map(|(track, devices)| {
-                devices
-                    .iter()
-                    .filter(|d| Internal::from_plugin(&d.plugin) == Some(Internal::Sampler))
-                    .map(move |d| (d.id, track, d.state.clone()))
+                devices.iter().filter_map(move |d| {
+                    Some((d.id, track, sample_device_kind(d)?, d.state.clone()))
+                })
             })
             .collect()
     }
 
     fn sampler_state(&self, device: DeviceId) -> Option<Option<Arc<[u8]>>> {
-        self.samplers()
-            .into_iter()
-            .find(|(id, ..)| *id == device)
-            .map(|(.., state)| state)
+        let (_, _, found) = self.project().find_device(device)?;
+        sample_device_kind(found)?;
+        Some(found.state.clone())
     }
 
     /// The actions of the sampler's samples; `false` if `action` is not one of them.
@@ -147,6 +166,12 @@ impl App {
                 self.open_file_browser(Purpose::Sample);
             }
             PluginAction::AuditionPad { device, pad } => self.audition(*device, *pad),
+            PluginAction::PreviewSampler { device, slice_time } => {
+                self.preview_sampler(*device, *slice_time);
+            }
+            PluginAction::SetSamplerSlices { device, settings } => {
+                self.set_sampler_slices(*device, settings);
+            }
             _ => return false,
         }
         true
@@ -155,39 +180,54 @@ impl App {
     /// Links `path` to the pad: the pad's start and end return to the whole sample, the link goes
     /// into the device state, the sample loads. One undo step ("Sample laden").
     fn load_sample(&mut self, device: DeviceId, pad: usize, path: &Path) {
-        if pad >= sampler::PADS {
-            return;
-        }
         self.in_one_step("undo-sample-load", |app| app.link_sample(device, pad, path));
     }
 
     fn link_sample(&mut self, device: DeviceId, pad: usize, path: &Path) {
-        let Some(state) = self.sampler_state(device) else {
+        let Some((_, _, found)) = self.project().find_device(device) else {
             return;
         };
+        let Some(kind) = sample_device_kind(found).filter(|kind| valid_slot(*kind, pad)) else {
+            return;
+        };
+        let state = found.state.clone();
         let dir = self.project_dir();
         let link = SampleLink::new(path, dir.as_deref());
-        let values = Internal::Sampler
+        let values = kind
             .decode_state(state.as_deref())
-            .unwrap_or_else(|_| Internal::Sampler.defaults());
-        for field in [PadField::Start, PadField::End] {
-            let wire = field.wire(pad);
-            let default = Internal::Sampler.params()[wire].default;
-            if values
-                .get(wire)
-                .is_some_and(|v| (v - default).abs() > f64::EPSILON)
-            {
-                self.plugin_action(PluginAction::SetParam {
-                    device,
-                    id: wire as u32,
-                    value: default,
-                });
+            .unwrap_or_else(|_| kind.defaults());
+        let relinking = kind == Internal::GeneralSampler
+            && links::missing(state.as_deref(), dir.as_deref())
+                .iter()
+                .any(|(slot, _)| *slot == pad);
+        if !relinking {
+            for (wire, param) in kind.params().iter().enumerate() {
+                let region_parameter = if kind == Internal::GeneralSampler {
+                    matches!(param.id.as_str(), "start" | "end")
+                } else {
+                    [PadField::Start.wire(pad), PadField::End.wire(pad)].contains(&wire)
+                };
+                if region_parameter && values[wire] != param.default {
+                    self.plugin_action(PluginAction::SetParam {
+                        device,
+                        id: wire as u32,
+                        value: param.default,
+                    });
+                }
             }
         }
         let state = self.sampler_state(device).flatten();
-        let new: Arc<[u8]> = links::write(state.as_deref(), pad, Some(&link)).into();
-        self.store_param_state(device, &new, "undo-sample-load");
+        let reset_slices = kind == Internal::GeneralSampler && !relinking;
+        let mut new = links::write(state.as_deref(), pad, Some(&link));
+        if reset_slices {
+            new =
+                general_sampler::write_settings(Some(&new), &general_sampler::Settings::default());
+        }
+        self.store_param_state(device, &new.into(), "undo-sample-load");
         if let Some(handle) = self.engine.host().sampler(device) {
+            if reset_slices {
+                handle.set_general_settings(&general_sampler::Settings::default());
+            }
             handle.load_link(pad, link.clone(), dir);
         }
         let name = if link.name.is_empty() {
@@ -195,29 +235,63 @@ impl App {
         } else {
             &link.name
         };
-        self.set_status(
-            self.lang.status_sample_on_pad(name, pad + 1),
-            StatusKind::Info,
-        );
+        let status = if kind == Internal::GeneralSampler {
+            self.lang.status_sampler_loaded(name)
+        } else {
+            self.lang.status_sample_on_pad(name, pad + 1)
+        };
+        self.set_status(status, StatusKind::Info);
     }
 
     fn clear_sample(&mut self, device: DeviceId, pad: usize) {
-        let Some(state) = self.sampler_state(device) else {
+        let Some((_, _, found)) = self.project().find_device(device) else {
             return;
         };
-        let new: Arc<[u8]> = links::write(state.as_deref(), pad, None).into();
+        let Some(kind) = sample_device_kind(found).filter(|kind| valid_slot(*kind, pad)) else {
+            return;
+        };
+        let mut new = links::write(found.state.as_deref(), pad, None);
+        if kind == Internal::GeneralSampler {
+            new =
+                general_sampler::write_settings(Some(&new), &general_sampler::Settings::default());
+        }
+        let new: Arc<[u8]> = new.into();
         self.store_param_state(device, &new, "undo-sample-clear");
         if let Some(handle) = self.engine.host().sampler(device) {
+            if kind == Internal::GeneralSampler {
+                handle.set_general_settings(&general_sampler::Settings::default());
+            }
             handle.clear(pad);
+        }
+    }
+
+    fn set_sampler_slices(&mut self, device: DeviceId, settings: &general_sampler::Settings) {
+        let Some((_, _, found)) = self.project().find_device(device) else {
+            return;
+        };
+        if sample_device_kind(found) != Some(Internal::GeneralSampler) {
+            return;
+        }
+        let state = found.state.as_deref();
+        let new = general_sampler::write_settings(state, settings);
+        let updated = general_sampler::read_settings(Some(&new));
+        if general_sampler::read_settings(state) == updated {
+            return;
+        }
+        self.store_param_state(device, &new.into(), "undo-sample-slices");
+        if let Some(handle) = self.engine.host().sampler(device) {
+            handle.set_general_settings(&updated);
         }
     }
 
     /// A click on a pad: a live note on the device's track, released shortly after.
     fn audition(&mut self, device: DeviceId, pad: usize) {
-        let track = match self.project().find_device(device) {
-            Some((ChannelRef::Track(t), ..)) => t,
-            _ => return,
+        let Some((ChannelRef::Track(track), _, found)) = self.project().find_device(device) else {
+            return;
         };
+        if sample_device_kind(found) != Some(Internal::Sampler) || pad >= sampler::PADS {
+            return;
+        }
         let key = sampler::note_of_pad(pad);
         self.engine.send(Command::LiveNote {
             track,
@@ -230,8 +304,63 @@ impl App {
             .push((Instant::now() + AUDITION, track, key));
     }
 
+    fn preview_sampler(&mut self, device: DeviceId, slice_time: Option<f64>) {
+        let Some((ChannelRef::Track(track), _, found)) = self.project().find_device(device) else {
+            return;
+        };
+        let kind = Internal::GeneralSampler;
+        if sample_device_kind(found) != Some(kind) {
+            return;
+        }
+        if let Some(time) = slice_time {
+            self.stop_waveform_preview();
+            if let Some(handle) = self.engine.host().sampler(device) {
+                handle.preview_slice(time);
+                self.dialogs.samples.waveform_preview = Some(WaveformPreview::Slice(device));
+            }
+            return;
+        }
+        let values = kind
+            .decode_state(found.state.as_deref())
+            .unwrap_or_else(|_| kind.defaults());
+        let key = kind
+            .params()
+            .iter()
+            .zip(values)
+            .find(|(param, _)| param.id.as_str() == "root")
+            .map_or(60, |(_, value)| value.round() as u8);
+        self.stop_waveform_preview();
+        self.dialogs.samples.waveform_preview = Some(WaveformPreview::Sample { track, key });
+        self.engine.send(Command::LiveNote {
+            track,
+            key,
+            velocity: AUDITION_VELOCITY,
+        });
+    }
+
+    pub(crate) fn stop_waveform_preview(&mut self) {
+        match self.dialogs.samples.waveform_preview.take() {
+            Some(WaveformPreview::Sample { track, key }) => {
+                self.engine.send(Command::LiveNote {
+                    track,
+                    key,
+                    velocity: 0,
+                });
+            }
+            Some(WaveformPreview::Slice(device)) => {
+                if let Some(handle) = self.engine.host().sampler(device) {
+                    handle.release_slice_preview();
+                }
+            }
+            None => {}
+        }
+    }
+
     /// Releases the audition notes that are due; asks for a frame when one is still held.
     pub(crate) fn release_auditions(&mut self, ctx: &Context) {
+        if ctx.input(|input| !input.focused || !input.pointer.primary_down()) {
+            self.stop_waveform_preview();
+        }
         let now = Instant::now();
         let held = &mut self.dialogs.samples.auditions;
         let due: Vec<(TrackId, u8)> = held
@@ -356,7 +485,7 @@ impl App {
     fn collect_samples(&mut self, file: &Path) -> std::io::Result<Collector> {
         let mut collector = Collector::new(file);
         let old_dir = self.project_dir();
-        for (_, _, state) in self.samplers() {
+        for (_, _, _, state) in self.samplers() {
             collector.collect(state.as_deref(), old_dir.as_deref())?;
         }
         for file in audio_files(self.project()) {
@@ -387,7 +516,10 @@ impl App {
     pub(crate) fn sync_pads(&mut self, ctx: &Context) {
         let open = self.ui.editor.clip;
         let cursor = self.ui.selection.step;
-        for (device, track, state) in self.samplers() {
+        for (device, track, kind, state) in self.samplers() {
+            if kind != Internal::Sampler {
+                continue;
+            }
             let Some(handle) = self.engine.host().sampler(device) else {
                 continue;
             };
@@ -533,7 +665,7 @@ fn rewrite_samplers(
         .iter()
         .flat_map(|t| t.channel.devices.iter())
         .chain(project.master.devices.iter())
-        .filter(|d| Internal::from_plugin(&d.plugin) == Some(Internal::Sampler))
+        .filter(|d| sample_device_kind(d).is_some())
         .filter_map(|d| rewrite(d.state.as_deref()).map(|s| (d.id, Arc::from(s))))
         .collect();
     if changes.is_empty() {

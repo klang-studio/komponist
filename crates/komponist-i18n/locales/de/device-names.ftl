@@ -7,7 +7,10 @@ device-name-hexa = Hexa
 device-name-volt = Volt
 
 # Name of the drum sampler.
-device-name-sampler = Sampler
+device-name-sampler = Klopfer
+
+# Name of the general-purpose sampler.
+device-name-general-sampler = Sampler
 
 # Name of the compressor (brand).
 device-name-presse = Presse

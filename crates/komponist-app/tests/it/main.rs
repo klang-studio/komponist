@@ -35,6 +35,7 @@ mod dispatch;
 mod export;
 mod export_bridges;
 mod flatten;
+mod general_sampler_ui;
 // Virtual MIDI ports (ALSA sequencer, CoreMIDI).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod hardware_midi;

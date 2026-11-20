@@ -7,7 +7,7 @@
 //! | Track | Volume | Chain (preset) |
 //! |---|---|---|
 //! | Rhythm | 0 dB | group (folder) of Drums and Bass, outputs to the master |
-//! | Drums | see `VOLUMES_DB` | Sampler (test kit), presse („Tight Drums“) |
+//! | Drums | see `VOLUMES_DB` | Klopfer (test kit), presse („Tight Drums“) |
 //! | Bass | see `VOLUMES_DB` | volt („Fat Saw“), EQ („Warm Bass“), presse („Ducking“, gentler: ratio 3, −20 dB, 120 ms; sidechain: Drums, pre-fader) |
 //! | Shaker | −12 dB | mono audio in Rhythm; Re-Pitch 120 → 124 BPM, clip gain and fades |
 //! | Pulse 90 | −24 dB | synthesized stereo 90 BPM loop; Warp follows the 124 BPM project, bars 5–7 |
@@ -16,6 +16,8 @@
 //! | Pad | see `VOLUMES_DB` | volt („Wide Pad“), EQ („Low Cut 80 Hz“); post-fader send to Reverb |
 //! | Keys | −8 dB | hexa („E-Piano“), Delay („Soft Tape“) |
 //! | Arp | −10 dB | Tonleiter („A Minor Pentatonic“), Arpeggiator („Sixteenths Up/Down“), hexa („Synth Pluck“), Delay („Eighth Ping-Pong“) |
+//! | Glass Pluck | −24 dB | Sampler, tempo-synced melody with filter modulation |
+//! | Glass Slices | −24 dB | Sampler, MIDI-triggered slices of the same recording |
 //! | Hall | 0 dB | effect bus: Hall („Large Hall“), fed by the sends of Lead and Pad |
 //! | Master | 0 dB | Limiter (ceiling −0.3 dB) |
 //!
@@ -40,6 +42,7 @@ use komponist_model::{
 };
 
 pub(crate) mod audio;
+mod sampler;
 
 /// Volumes of the tracks in dB, in track order (Drums, Bass, Lead, Pad, Keys, Arp), set by
 /// render analysis: the built-in instruments are louder than the old plugin chain's.
@@ -233,6 +236,7 @@ pub fn showcase_project() -> Project {
     project.next_id = d.next;
     add_routing(&mut project);
     audio::add_tracks(&mut project);
+    sampler::add_tracks(&mut project);
     add_automation(&mut project);
     add_track_macros(&mut project);
     project

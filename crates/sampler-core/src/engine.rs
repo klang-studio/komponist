@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::layers::{LayerCursor, NUM_LAYERS, PadLayers, select_layers};
 use crate::modulation::Rng;
 use crate::pad::PadSettings;
+use crate::playback::{Playback, SampleTrigger};
 use crate::sample::Sample;
 use crate::voice::{Voice, VoiceStart};
 
@@ -137,9 +138,6 @@ impl Engine {
                 continue;
             };
 
-            let index = self.free_voice();
-            self.next_id += 1;
-            let seed = (self.next_id as u32).wrapping_mul(0x9e37_79b9) ^ 0x5bd1_e995;
             let start = VoiceStart {
                 pad,
                 slot,
@@ -147,9 +145,43 @@ impl Engine {
                 layer_gain: info.gain,
                 layer_tune: info.tune,
                 lfo_phase: self.lfo_phases[pad],
+                playback: None,
             };
-            self.voices[index].start(self.next_id, start, sample, s, seed);
+            self.start_voice(start, sample, s);
         }
+    }
+
+    /// Plays an explicit region of the sample in `trigger.slot`. Supply the same sample
+    /// at that slot during rendering, and kill its voices before replacing the sample.
+    /// Gate mode releases the envelopes on note off, including during looped playback.
+    pub fn trigger(&mut self, trigger: SampleTrigger, sample: &Sample, settings: &PadSettings) {
+        if trigger.pad >= NUM_PADS || trigger.slot >= NUM_SAMPLE_SLOTS || !trigger.tune.is_finite()
+        {
+            return;
+        }
+        let Some(playback) = Playback::new(trigger, sample.len(), settings.gate) else {
+            return;
+        };
+        self.start_voice(
+            VoiceStart {
+                pad: trigger.pad,
+                slot: trigger.slot,
+                velocity: trigger.velocity,
+                layer_gain: 1.0,
+                layer_tune: trigger.tune,
+                lfo_phase: self.lfo_phases[trigger.pad],
+                playback: Some(playback),
+            },
+            sample,
+            settings,
+        );
+    }
+
+    fn start_voice(&mut self, start: VoiceStart, sample: &Sample, settings: &PadSettings) {
+        let index = self.free_voice();
+        self.next_id += 1;
+        let seed = (self.next_id as u32).wrapping_mul(0x9e37_79b9) ^ 0x5bd1_e995;
+        self.voices[index].start(self.next_id, start, sample, settings, seed);
     }
 
     fn free_voice(&self) -> usize {
@@ -170,8 +202,34 @@ impl Engine {
         if !settings[pad].gate {
             return;
         }
-        for v in self.voices.iter_mut().filter(|v| v.active && v.pad == pad) {
+        for v in self
+            .voices
+            .iter_mut()
+            .filter(|v| v.active && v.pad == pad && v.playback.is_none())
+        {
             v.release();
+        }
+    }
+
+    /// Releases the oldest held gate voice for a key from a source without note IDs.
+    pub fn release_key(&mut self, key: u8) {
+        self.release_note(key, None);
+    }
+
+    /// Releases a gate voice by exact note ID, or by key order for raw MIDI.
+    pub fn release_note(&mut self, key: u8, note_id: Option<u32>) {
+        let held = |voice: &&mut Voice| {
+            voice.active
+                && !voice.choking
+                && voice.playback.is_some_and(|playback| {
+                    playback.gate
+                        && !playback.released
+                        && playback.key == key
+                        && playback.note_id == note_id
+                })
+        };
+        if let Some(voice) = self.voices.iter_mut().filter(held).min_by_key(|v| v.id) {
+            voice.release();
         }
     }
 
@@ -179,6 +237,18 @@ impl Engine {
     pub fn choke_all(&mut self) {
         for v in self.voices.iter_mut().filter(|v| v.active) {
             v.choke();
+        }
+    }
+
+    /// Fades out voices belonging to one note ID, including one-shots.
+    pub fn choke_note(&mut self, note_id: u32) {
+        for voice in self.voices.iter_mut().filter(|voice| {
+            voice.active
+                && voice
+                    .playback
+                    .is_some_and(|playing| playing.note_id == Some(note_id))
+        }) {
+            voice.choke();
         }
     }
 
@@ -480,5 +550,210 @@ mod tests {
         assert_eq!(e.active_voices(), 1);
         t.render(&mut e, 20);
         assert_eq!(e.active_voices(), 0);
+    }
+
+    #[test]
+    fn advanced_gate_voices_release_the_matching_note_id() {
+        let mut params = PadParams {
+            gate: true,
+            ..PadParams::default()
+        };
+        params.amp.release_ms = 1.0;
+        let t = setup(&[(0, params)]);
+        let mut e = Engine::new(SR);
+        let slot = slot_index(0, 0);
+        for (key, id) in [(60, 10), (60, 11), (62, 12)] {
+            e.trigger(
+                SampleTrigger {
+                    pad: 0,
+                    slot,
+                    key,
+                    note_id: Some(id),
+                    velocity: 1.0,
+                    tune: 0.0,
+                    independent_pitch: false,
+                    region: crate::PlaybackRegion::default(),
+                },
+                t.samples[slot].as_deref().unwrap(),
+                &t.settings[0],
+            );
+        }
+        t.render(&mut e, 10);
+        e.release_note(60, Some(11));
+        t.render(&mut e, 200);
+        assert_eq!(e.active_voices(), 2);
+        let surviving = e
+            .voices
+            .iter()
+            .filter(|v| v.active)
+            .map(|v| v.playback.unwrap().note_id);
+        assert!(surviving.eq([Some(10), Some(12)]));
+    }
+
+    #[test]
+    fn advanced_start_modulation_and_pitch_are_per_trigger() {
+        let mut params = PadParams::default();
+        params.slots[0] = ModSlot {
+            source: ModSource::Velocity,
+            target: ModTarget::SampleStart,
+            amount: 0.5,
+        };
+        let t = setup(&[(0, params)]);
+        let mut e = Engine::new(SR);
+        let slot = slot_index(0, 0);
+        e.trigger(
+            SampleTrigger {
+                pad: 0,
+                slot,
+                key: 72,
+                note_id: None,
+                velocity: 1.0,
+                tune: 12.0,
+                independent_pitch: false,
+                region: crate::PlaybackRegion {
+                    start: 100.0,
+                    end: 1100.0,
+                    ..crate::PlaybackRegion::default()
+                },
+            },
+            t.samples[slot].as_deref().unwrap(),
+            &t.settings[0],
+        );
+        assert_eq!(e.voices[0].position(), 600.0);
+        t.render(&mut e, 1);
+        assert_eq!(e.voices[0].position(), 602.0);
+    }
+
+    #[test]
+    fn independent_pitch_transposes_a_tone_without_changing_duration() {
+        let mut t = setup(&[]);
+        let slot = slot_index(0, 0);
+        let len = SR as usize;
+        let tone = (0..len)
+            .map(|i| (std::f32::consts::TAU * 220.0 * i as f32 / SR).sin() * 0.5)
+            .collect();
+        t.samples[slot] = Some(Arc::new(Sample::mono(SR, tone)));
+        for (tune, hz) in [(-12.0, 110.0), (0.0, 220.0), (12.0, 440.0)] {
+            let mut e = Engine::new(SR);
+            let sample = t.samples[slot].as_deref().unwrap();
+            e.trigger(
+                SampleTrigger {
+                    pad: 0,
+                    slot,
+                    key: 60,
+                    note_id: None,
+                    velocity: 1.0,
+                    tune,
+                    independent_pitch: true,
+                    region: crate::PlaybackRegion::default(),
+                },
+                sample,
+                &t.settings[0],
+            );
+            let mut output = Vec::with_capacity(len);
+            for _ in 0..len {
+                output.push(t.render(&mut e, 1)[0][0]);
+            }
+            assert_eq!(e.active_voices(), 1);
+            assert_eq!(t.render(&mut e, 1)[0], [0.0, 0.0]);
+            assert_eq!(e.active_voices(), 0);
+            let middle = &output[len / 4..len * 3 / 4];
+            let crossings = middle
+                .windows(2)
+                .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+                .count();
+            let frequency = 2.0 * crossings as f32;
+            assert!(
+                (frequency - hz).abs() <= 4.0,
+                "{tune} semitones: {frequency} Hz"
+            );
+            if tune == 0.0 {
+                assert!(
+                    output
+                        .iter()
+                        .zip(&sample.left)
+                        .all(|(&a, &b)| (a - b).abs() < 1e-6)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn short_transposed_regions_play_the_tail_in_both_directions() {
+        use crate::PlaybackDirection::{Forward, Reverse};
+
+        for direction in [Forward, Reverse] {
+            let mut t = setup(&[]);
+            let slot = slot_index(0, 0);
+            let mut data = vec![0.0; 128];
+            data[96..104].fill(0.5);
+            data[124..].fill(0.7);
+            if direction == Reverse {
+                data.reverse();
+            }
+            t.samples[slot] = Some(Arc::new(Sample::mono(SR, data)));
+            let mut engine = Engine::new(SR);
+            engine.trigger(
+                SampleTrigger {
+                    pad: 0,
+                    slot,
+                    key: 60,
+                    note_id: None,
+                    velocity: 1.0,
+                    tune: -12.0,
+                    independent_pitch: true,
+                    region: crate::PlaybackRegion {
+                        end: 128.0,
+                        direction,
+                        ..Default::default()
+                    },
+                },
+                t.samples[slot].as_deref().unwrap(),
+                &t.settings[0],
+            );
+            let output: Vec<_> = (0..128).map(|_| t.render(&mut engine, 1)[0][0]).collect();
+            assert!(output[106..124].iter().any(|&frame| frame > 0.35));
+            assert!(output[127] > 0.5, "{direction:?}: {}", output[127]);
+            assert_eq!(t.render(&mut engine, 1)[0], [0.0; 2]);
+            assert_eq!(engine.active_voices(), 0);
+        }
+    }
+
+    #[test]
+    fn independent_pitch_respects_slice_bounds_and_reverse_loop_timing() {
+        let mut t = setup(&[]);
+        let slot = slot_index(0, 0);
+        let mut values = vec![1.0; 9600];
+        values[2400..7200].fill(0.0);
+        t.samples[slot] = Some(Arc::new(Sample::mono(SR, values)));
+        let mut e = Engine::new(SR);
+        e.trigger(
+            SampleTrigger {
+                pad: 0,
+                slot,
+                key: 60,
+                note_id: None,
+                velocity: 1.0,
+                tune: 24.0,
+                independent_pitch: true,
+                region: crate::PlaybackRegion {
+                    start: 2400.0,
+                    end: 7200.0,
+                    direction: crate::PlaybackDirection::Reverse,
+                    looping: Some(crate::PlaybackLoop {
+                        start: 2400.0,
+                        end: 7200.0,
+                        crossfade: 100.0,
+                    }),
+                    ..crate::PlaybackRegion::default()
+                },
+            },
+            t.samples[slot].as_deref().unwrap(),
+            &t.settings[0],
+        );
+        for _ in 0..4800 {
+            assert_eq!(t.render(&mut e, 1)[0], [0.0, 0.0]);
+        }
+        assert_eq!(e.voices[0].position(), 7199.0);
     }
 }

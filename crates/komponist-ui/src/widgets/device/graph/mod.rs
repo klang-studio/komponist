@@ -34,7 +34,7 @@ use komponist_tokens::{color, radius, widget};
 
 pub use spec::{
     AreaAction, Axis, AxisKind, Bind, Curve, CurveFn, DataKind, GraphSpec, Grid, Guide, Handle,
-    HandleLook, Layer, Marker, Mode, PosFn, Pred, Region, Tick,
+    HandleLook, Layer, Marker, MarkerHead, Mode, PosFn, Pred, Region, Tick,
 };
 
 use crate::drag::{self, speed};
@@ -162,6 +162,8 @@ pub enum GraphEvent {
 pub struct GraphOutput {
     /// The area's response.
     pub response: Response,
+    /// The x-axis value of the pointer captured by the graph area.
+    pub pointer_x: Option<f64>,
     /// Slots whose value changed this pass, with the new value (already written to `values`).
     pub changed: Vec<(usize, f64)>,
     /// The selected handle.
@@ -178,6 +180,8 @@ pub struct GraphOutput {
 /// The pointer's work on the handles in one pass of [`Graph::show`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GraphTouch {
+    /// A handle was clicked.
+    pub clicked: bool,
     /// A drag of a handle started.
     pub drag_started: bool,
     /// A handle is being dragged.
@@ -524,6 +528,11 @@ impl<'a> Graph<'a> {
         self
     }
 
+    /// Updates the selection of a graph with an explicit id from a related control.
+    pub fn select_handle(ctx: &egui::Context, graph: Id, selected: Option<usize>) {
+        ctx.data_mut(|d| d.insert_temp(graph.with("komponist_graph_selected"), selected));
+    }
+
     /// Draws the graph and handles input.
     pub fn show(self, ui: &mut Ui) -> GraphOutput {
         let Graph {
@@ -608,6 +617,7 @@ impl<'a> Graph<'a> {
                 continue;
             }
             hot.push((i, r.hovered() || r.dragged(), r.dragged()));
+            touch.clicked |= r.clicked();
             touch.drag_started |= r.drag_started();
             touch.dragging |= r.dragged();
             touch.drag_stopped |= r.drag_stopped();
@@ -632,8 +642,12 @@ impl<'a> Graph<'a> {
             }
             // Drag.
             let dkey = hid.with("komponist_graph_drag");
+            let follows_pointer = matches!(h.look, HandleLook::Marker(_));
+            let finishing = follows_pointer && r.drag_stopped();
             if r.drag_started() {
-                drag::grab_pointer(&ctx);
+                if !follows_pointer {
+                    drag::grab_pointer(&ctx);
+                }
                 let moved_px =
                     ctx.input(
                         |i| match (i.pointer.press_origin(), i.pointer.latest_pos()) {
@@ -651,13 +665,16 @@ impl<'a> Graph<'a> {
                     )
                 });
                 drag_step(&ctx, dkey, moved_px, spec, mods);
-            } else if r.dragged() {
-                drag_step(&ctx, dkey, drag::pointer_delta(&ctx), spec, mods);
-            } else if r.drag_stopped() {
-                drag::release_pointer(&ctx);
-                ctx.data_mut(|d| d.remove::<DragState>(dkey));
+            } else if r.dragged() || finishing {
+                // Position markers follow the desktop cursor, including pointer acceleration.
+                let moved_px = if follows_pointer {
+                    ctx.input(|i| i.pointer.delta())
+                } else {
+                    drag::pointer_delta(&ctx)
+                };
+                drag_step(&ctx, dkey, moved_px, spec, mods);
             }
-            if r.dragged()
+            if (r.dragged() || finishing)
                 && let Some(state) = ctx.data(|d| d.get_temp::<DragState>(dkey))
             {
                 let delta = Delta::drag(effective_acc(state.acc, spec, mods), plot.span());
@@ -677,6 +694,12 @@ impl<'a> Graph<'a> {
                     Rect::from_center_size(pos, Vec2::splat(2.0 * widget::graph::handle::R)),
                     tip_text(h, infos, values),
                 ));
+            }
+            if r.drag_stopped() {
+                if !follows_pointer {
+                    drag::release_pointer(&ctx);
+                }
+                ctx.data_mut(|d| d.remove::<DragState>(dkey));
             }
             // Wheel.
             if h.wheel.is_some() {
@@ -744,10 +767,10 @@ impl<'a> Graph<'a> {
             }
             if r.hovered() || r.dragged() {
                 let icon = match h.look {
-                    HandleLook::Edge { .. } => CursorIcon::ResizeHorizontal,
+                    HandleLook::Edge { .. } | HandleLook::Marker(_) => CursorIcon::ResizeHorizontal,
                     _ => CursorIcon::Grab,
                 };
-                if !r.dragged() {
+                if !r.dragged() || follows_pointer {
                     ui.set_cursor_icon(icon);
                 }
             }
@@ -876,6 +899,9 @@ impl<'a> Graph<'a> {
             }
         }
         GraphOutput {
+            pointer_x: area
+                .interact_pointer_pos()
+                .map(|p| plot.value_at(spec, p).0),
             response: area,
             changed: merged,
             selected,
@@ -995,6 +1021,10 @@ fn hit_rect(h: &Handle, pos: Pos2, rect: Rect) -> Rect {
         }
         HandleLook::Edge { .. } => Rect::from_min_max(
             pos2(pos.x - m::EDGE_HIT, rect.top() + m::EDGE_TOP),
+            pos2(pos.x + m::EDGE_HIT, rect.bottom()),
+        ),
+        HandleLook::Marker(_) => Rect::from_min_max(
+            pos2(pos.x - m::EDGE_HIT, rect.top()),
             pos2(pos.x + m::EDGE_HIT, rect.bottom()),
         ),
     }
@@ -1296,14 +1326,76 @@ fn paint_region(
     track: Color32,
     ppp: f32,
 ) {
+    let shade = with_opacity(color32(color::SURFACE_1), m::REGION_OPACITY);
     let (start, end, scale) = match region {
         Region::Outside { start, end, scale } => (start, end, scale),
+        Region::Inside { bounds, scales } => {
+            let [left, right] =
+                [0, 1].map(|i| plot.x(&spec.x, spec.x.clamp(values[bounds[i]] * scales[i])));
+            if right > left {
+                let rect = Rect::from_min_max(
+                    pos2(left, plot.rect.top()),
+                    pos2(right, plot.rect.bottom()),
+                );
+                painter.rect_filled(
+                    px::snap_rect(rect, ppp),
+                    0.0,
+                    with_opacity(track, widget::graph::curve::FILL_OPACITY),
+                );
+            }
+            return;
+        }
+        Region::Fades {
+            bounds,
+            scales,
+            durations,
+        } => {
+            let [start, end] = [0, 1].map(|i| values[bounds[i]] * scales[i]);
+            let length = (end - start).max(0.0);
+            let [left_fade, right_fade] = durations.map(|slot| values[slot].clamp(0.0, length));
+            let left_marker = start + left_fade;
+            let right_marker = end - right_fade;
+            let r = plot.rect;
+            let high = r.top() + r.height() * 0.25;
+            let low = r.bottom() - r.height() * 0.25;
+            let painter = painter.with_clip_rect(r.intersect(painter.clip_rect()));
+            // A sample with overlapping fades is darkened once across the union.
+            let ranges = if left_marker >= right_marker {
+                [(start, end), (end, end)]
+            } else {
+                [(start, left_marker), (right_marker, end)]
+            };
+            for (a, b) in ranges {
+                if b > a {
+                    let part = Rect::from_min_max(
+                        pos2(plot.x(&spec.x, a), r.top()),
+                        pos2(plot.x(&spec.x, b), r.bottom()),
+                    );
+                    painter.rect_filled(px::snap_rect(part, ppp), 0.0, shade);
+                }
+            }
+            let color = color32(color::TEXT_2);
+            for ((a, ay), (b, by), marker) in [
+                ((start, low), (left_marker, high), left_marker),
+                ((right_marker, high), (end, low), right_marker),
+            ] {
+                if b > a {
+                    painter.line_segment(
+                        [pos2(plot.x(&spec.x, a), ay), pos2(plot.x(&spec.x, b), by)],
+                        Stroke::new(px::line_width(ppp), color),
+                    );
+                    if (spec.x.min..=spec.x.max).contains(&marker) {
+                        px::vline(&painter, plot.x(&spec.x, marker), r.y_range(), color);
+                    }
+                }
+            }
+            return;
+        }
         Region::CutoffMod { cutoff, matrix } => {
             paint_cutoff_mod(painter, plot, spec, values, (cutoff, matrix), track, ppp);
             return;
         }
     };
-    let shade = with_opacity(color32(color::SURFACE_1), m::REGION_OPACITY);
     let sx = plot.x(&spec.x, values[start] * scale);
     let ex = plot.x(&spec.x, values[end] * scale);
     let r = plot.rect;
@@ -1455,6 +1547,12 @@ fn paint_marker(
                     color32(color::TEXT_1),
                     ppp,
                 );
+            }
+        }
+        Marker::FullHeightPlayhead => {
+            if let Some(position) = playhead {
+                let x = plot.x(&spec.x, position);
+                px::vline(painter, x, r.y_range(), color32(color::TEXT_1));
             }
         }
         Marker::Level => {
@@ -1621,6 +1719,42 @@ fn paint_handle(
                 focus::paint_ring(
                     painter,
                     Rect::from_min_max(pos2(pos.x - fw, top), pos2(pos.x + fw, r.bottom())),
+                    0.0,
+                );
+            }
+        }
+        HandleLook::Marker(head) => {
+            let col = if selected { accent } else { line_col };
+            let rect = plot.rect;
+            let top = rect.top();
+            let bottom = top + m::EDGE_FLAG[1];
+            let width = m::EDGE_FLAG[0];
+            let mid = (top + bottom) * 0.5;
+            let x = pos.x;
+            let points = match head {
+                MarkerHead::Right => [pos2(x, top), pos2(x + width, mid), pos2(x, bottom)],
+                MarkerHead::Left => [pos2(x, top), pos2(x, bottom), pos2(x - width, mid)],
+                MarkerHead::Down => [
+                    pos2(x - width * 0.5, top),
+                    pos2(x + width * 0.5, top),
+                    pos2(x, bottom),
+                ],
+            };
+            let line_top = if head == MarkerHead::Down {
+                bottom
+            } else {
+                top
+            };
+            px::vline(painter, x, line_top..=rect.bottom(), col);
+            painter.add(egui::Shape::convex_polygon(
+                points.to_vec(),
+                col,
+                Stroke::NONE,
+            ));
+            if focus_ring {
+                focus::paint_ring(
+                    painter,
+                    Rect::from_min_max(pos2(x - width, top), pos2(x + width, rect.bottom())),
                     0.0,
                 );
             }

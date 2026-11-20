@@ -69,8 +69,8 @@ fn every_device_is_built_in_and_resolves_in_the_catalog() {
                 || Internal::from_plugin(&device.plugin) == Some(Internal::Sampler)
         );
     }
-    // Drums 2, Bass 3, Lead 3, Pad 2, Keys 2, Arp 4, the Reverb bus 1, the master 1.
-    assert_eq!(count, 2 + 3 + 3 + 2 + 2 + 4 + 1 + 1);
+    // Drums 2, Bass 3, Lead 3, Pad 2, Keys 2, Arp 4, sampler demos 2, Reverb bus 1, master 1.
+    assert_eq!(count, 2 + 3 + 3 + 2 + 2 + 4 + 2 + 1 + 1);
     // The Arp's MIDI effects come first, the Limiter is on the master.
     let arp = &track_named(&project, "Arp").channel.devices;
     let roles: Vec<_> = arp.iter().map(|d| d.role).collect();
@@ -97,7 +97,10 @@ fn internal_devices_show_their_preset_names() {
         let Some(kind) = Internal::from_plugin(&device.plugin) else {
             continue;
         };
-        if matches!(kind, Internal::Sampler | Internal::Limiter) {
+        if matches!(
+            kind,
+            Internal::Sampler | Internal::GeneralSampler | Internal::Limiter
+        ) {
             continue;
         }
         let (index, changed) = kind
@@ -121,14 +124,18 @@ fn the_song_is_the_design_fixtures_song() {
     assert_eq!(showcase.tempo, fixture.tempo);
     assert!(!showcase.loop_on);
     assert_eq!(showcase.loop_range, Project::new("").loop_range);
-    // The two buses (group and Reverb) are the showcase's own; the tracks are the song's.
+    // Buses, audio tracks and the sampler demonstration are additions to the original song.
     let songs: Vec<&Arc<Track>> = showcase
         .tracks
         .iter()
-        .filter(|t| !t.is_bus() && !t.is_audio())
+        .filter(|t| {
+            !t.is_bus()
+                && !t.is_audio()
+                && !matches!(t.name.as_str(), "Glass Pluck" | "Glass Slices")
+        })
         .collect();
     assert_eq!(songs.len(), fixture.tracks.len());
-    assert_eq!(showcase.tracks.len(), fixture.tracks.len() + 5);
+    assert_eq!(showcase.tracks.len(), fixture.tracks.len() + 7);
     for (i, (a, b)) in songs.iter().zip(&fixture.tracks).enumerate() {
         assert_eq!(
             (&a.name, a.hue, a.channel.pan),
@@ -335,6 +342,48 @@ fn loading_the_demo_synthesizes_deterministic_non_silent_audio_files() {
             );
         }
     }
+}
+
+#[test]
+fn the_demo_plays_one_sample_chromatically_and_as_slices() {
+    use komponist_builtin::general_sampler::read_settings;
+    use komponist_builtin::sampler::links;
+    use komponist_model::params::ParamId;
+
+    let dir = scratch("demo-sampler");
+    let project = komponist_app::samples::demo_with_kit(showcase_project(), &dir).unwrap();
+    let mut files = Vec::new();
+    for (name, slice_mode) in [("Glass Pluck", false), ("Glass Slices", true)] {
+        let track = track_named(&project, name);
+        let device = &track.channel.devices[0];
+        let kind = Internal::GeneralSampler;
+        assert_eq!(Internal::from_plugin(&device.plugin), Some(kind));
+        let state = device.state.as_deref();
+        let values = kind.decode_state(state).expect("sampler state");
+        let value = |id| values[kind.wire(&ParamId::new(id)).unwrap() as usize];
+        assert_eq!(value("root"), 48.0);
+        assert_eq!(value("mode"), if slice_mode { 2.0 } else { 1.0 });
+        assert_eq!(value("sync"), f64::from(u8::from(!slice_mode)));
+        assert_eq!(
+            read_settings(state).slices.len(),
+            if slice_mode { 5 } else { 0 }
+        );
+        let links = links::read(state);
+        let [(0, link)] = links.as_slice() else {
+            panic!("one linked sample in slot zero");
+        };
+        files.push(link.abs.clone());
+        let ClipContent::Midi(midi) = &track.clips[0].content else {
+            panic!("the sampler is played from MIDI");
+        };
+        assert_eq!(midi.takes[0].notes.len(), 4);
+    }
+    assert_eq!(files[0], files[1]);
+    let wav = read(&files[0]);
+    assert_eq!(wav.spec.channels, 1);
+    assert_eq!(wav.spec.sample_rate, 48_000);
+    assert_eq!(wav.frames, 4 * 48_000);
+    assert!(peak_db(&wav.samples) > -12.0);
 }
 
 /// Levels of the demo: renders every track alone and the master with and without the Limiter,

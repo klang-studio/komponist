@@ -61,6 +61,7 @@
 
 pub mod algorithms;
 pub mod device;
+pub mod general_sampler;
 mod i18n;
 pub mod internal;
 pub mod macros;

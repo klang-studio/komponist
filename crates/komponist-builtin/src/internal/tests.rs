@@ -71,7 +71,7 @@ fn the_catalog_data_is_unique_and_resolves_both_ways() {
     assert_eq!(
         names,
         [
-            "Sampler",
+            komponist_model::project::DRUM_SAMPLER_NAME,
             "EQ",
             "Delay",
             "Hall",
@@ -79,7 +79,8 @@ fn the_catalog_data_is_unique_and_resolves_both_ways() {
             "Presse",
             "Arpeggiator",
             "Tonleiter",
-            "Volt"
+            "Volt",
+            "Sampler",
         ]
     );
     for kind in Internal::ALL {

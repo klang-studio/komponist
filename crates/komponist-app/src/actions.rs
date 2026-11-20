@@ -541,6 +541,19 @@ pub enum PluginAction {
         /// The pad, 0-based.
         pad: usize,
     },
+    /// Preview the Sampler from a waveform press.
+    PreviewSampler {
+        device: DeviceId,
+        /// Source position in seconds when choosing a slice.
+        slice_time: Option<f64>,
+    },
+    /// Replace the general Sampler's slice boundaries and playback options.
+    SetSamplerSlices {
+        /// The general Sampler device.
+        device: DeviceId,
+        /// Slice boundaries in source seconds and their playback options.
+        settings: komponist_builtin::general_sampler::Settings,
+    },
 }
 
 /// Project lifecycle actions.
