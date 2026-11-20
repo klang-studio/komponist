@@ -171,6 +171,12 @@ pub struct VelocityDrag {
     rect: Rect,
 }
 
+impl VelocityDrag {
+    fn displayed_velocity(&self) -> i16 {
+        (i16::from(self.velocity) + self.last).clamp(1, 127)
+    }
+}
+
 /// A note being drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PencilDrag {
@@ -545,10 +551,10 @@ impl PianoRoll {
                         notes: d.notes.clone(),
                         change: VelocityChange::Offset(offset),
                     }));
-                    if let Some(n) = f.notes.iter().find(|n| d.notes.contains(&n.id)) {
-                        let v = (i16::from(n.velocity) + offset).clamp(1, 127);
-                        status(ctx, ctx.lang.piano_roll_velocity_status(v));
-                    }
+                    status(
+                        ctx,
+                        ctx.lang.piano_roll_velocity_status(d.displayed_velocity()),
+                    );
                 }
             }
             Some(Gesture::Pencil(d)) => {
@@ -1110,10 +1116,7 @@ impl PianoRoll {
     /// Value tooltips while dragging (`ix.note`: "Wert im Tooltip"; length like the clip edge).
     fn tooltips(&self, ui: &Ui, f: &Frame<'_>) {
         let (rect, text) = match &self.gesture {
-            Some(Gesture::Velocity(d)) => {
-                let v = (i16::from(d.velocity) + d.last).clamp(1, 127);
-                (d.rect, v.to_string())
-            }
+            Some(Gesture::Velocity(d)) => (d.rect, d.displayed_velocity().to_string()),
             Some(Gesture::Resize(d)) => (
                 d.rect,
                 edit::fmt_note_length((d.length + d.last).max(Tick(1)), f.meter),
