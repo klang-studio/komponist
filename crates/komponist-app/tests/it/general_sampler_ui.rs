@@ -369,6 +369,11 @@ fn waveform_wheel_zooms_at_the_pointer_and_pans_without_scrolling_the_device_cha
         waveform.left() + waveform.width() * 0.55,
         waveform.center().y,
     );
+    // A fully fitted waveform has no horizontal travel, so the chain gets Shift-wheel.
+    wheel(&mut harness, anchor, -60.0, Modifiers::SHIFT);
+    assert!(harness.state().ui().devices.scroll_x > 0.0);
+    harness.state_mut().ui_mut().devices.scroll_x = 0.0;
+    harness.run_steps(3);
     let chain_scroll = harness.state().ui().devices.scroll_x;
     let probe = |harness: &mut Harness<'_, App>| {
         let positions = |app: &App| {
@@ -411,6 +416,90 @@ fn waveform_wheel_zooms_at_the_pointer_and_pans_without_scrolling_the_device_cha
 
     wheel(&mut harness, anchor, -60.0, Modifiers::NONE);
     assert!(probe(&mut harness) > shifted);
+}
+
+#[test]
+fn undo_keeps_slice_selection_and_cancels_an_in_progress_marker_drag() {
+    let lang = Lang::De;
+    let (mut harness, device) = harness(lang, "Glass Slices", "slice-undo");
+    let state = |app: &App| {
+        read_settings(
+            app.project()
+                .find_device(device)
+                .unwrap()
+                .2
+                .state
+                .as_deref(),
+        )
+    };
+    let initial = state(harness.state());
+    let mut inserted = initial.clone();
+    inserted.slices.insert(
+        0,
+        komponist_builtin::general_sampler::Slice {
+            time: 0.4,
+            ..Default::default()
+        },
+    );
+    harness
+        .state_mut()
+        .dispatch(Action::Plugin(PluginAction::SetSamplerSlices {
+            device,
+            settings: inserted,
+        }));
+    harness.run_steps(3);
+    let wave = harness
+        .get_by_role_and_label(Role::Group, lang.ui_graph_waveform())
+        .rect();
+    click(
+        &mut harness,
+        pos2(wave.left() + wave.width() * 0.44, wave.center().y),
+    );
+    harness.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    harness.run_steps(3);
+    let selected = harness
+        .get_by_role_and_label(Role::ComboBox, lang.devices_sampler_midi_assignment())
+        .accesskit_node()
+        .value()
+        .unwrap();
+    assert!(selected.contains("1500"), "{selected}");
+
+    let mut edited = initial.clone();
+    edited.slices[1].options.gate = true;
+    harness
+        .state_mut()
+        .dispatch(Action::Plugin(PluginAction::SetSamplerSlices {
+            device,
+            settings: edited,
+        }));
+    harness.run_steps(3);
+    let label = format!(
+        "{} {}",
+        komponist_model::format::note_name(50),
+        lang.ui_graph_position()
+    );
+    let marker = harness
+        .get_by_role_and_label(Role::Slider, &label)
+        .rect()
+        .center();
+    harness.hover_at(marker);
+    harness.step();
+    harness.drag_at(marker);
+    harness.step();
+    let moved = marker + vec2(30.0, 0.0);
+    harness.hover_at(moved);
+    harness.step();
+    harness.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    harness.hover_at(moved + vec2(6.0, 0.0));
+    harness.step();
+    harness.event(Event::PointerButton {
+        pos: moved,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    harness.run_steps(3);
+    assert_eq!(state(harness.state()), initial);
 }
 
 #[test]

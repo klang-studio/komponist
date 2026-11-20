@@ -230,8 +230,7 @@ impl View for Devices {
                         body.left() + left - scroll_x,
                         body.top() + metrics::BODY_PAD + device::frame::HEAD_H - scroll_y,
                     );
-                    general_sampler::wheel_region(card, origin)
-                        .is_some_and(|rect| ui.rect_contains_pointer(rect.intersect(body)))
+                    general_sampler::takes_wheel(ui, card, origin, body)
                 })
             {
                 let mut used = egui::Vec2::ZERO;

@@ -208,11 +208,45 @@ fn two_keys_that_land_on_one_note_share_it() {
     let stage = p.event_processor().unwrap();
     let c = ctx(256, 120.0, true, 0.0);
     // C# and D both become D: one note-on, the off with the last release.
-    let out = call(stage, &c, &[on(61, 0), on(62, 1), off(61, 10), off(62, 20)]);
+    let with_id = |mut event: Event, id| {
+        match &mut event.kind {
+            EventKind::NoteOn { note_id, .. } | EventKind::NoteOff { note_id, .. } => *note_id = id,
+            _ => unreachable!(),
+        }
+        event
+    };
+    let out = call(
+        stage,
+        &c,
+        &[
+            with_id(on(61, 0), 15),
+            with_id(on(62, 1), 39),
+            with_id(off(61, 10), 15),
+            with_id(off(62, 20), 39),
+        ],
+    );
     let ev: Vec<_> = out.iter().map(|e| (e.offset, e.kind)).collect();
     assert_eq!(ev.len(), 2, "{ev:?}");
-    assert!(matches!(ev[0].1, EventKind::NoteOn { key: 62, .. }) && ev[0].0 == 0);
-    assert!(matches!(ev[1].1, EventKind::NoteOff { key: 62, .. }) && ev[1].0 == 20);
+    assert!(
+        matches!(
+            ev[0].1,
+            EventKind::NoteOn {
+                key: 62,
+                note_id: 15,
+                ..
+            }
+        ) && ev[0].0 == 0
+    );
+    assert!(
+        matches!(
+            ev[1].1,
+            EventKind::NoteOff {
+                key: 62,
+                note_id: 15,
+                ..
+            }
+        ) && ev[1].0 == 20
+    );
 }
 
 #[test]

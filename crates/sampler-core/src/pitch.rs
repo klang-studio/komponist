@@ -42,14 +42,34 @@ pub(crate) struct PitchReader {
     hop: u32,
     overlap: u32,
     probe_step: f64,
+    short: bool,
 }
 
 impl PitchReader {
-    pub fn new(playback: &Playback, pos: f64, sample_rate: f32, voice_id: u64) -> Self {
-        let hop = ((sample_rate * HOP_SECONDS) as u32).max(2);
+    pub fn new(
+        playback: &Playback,
+        pos: f64,
+        sample_rate: f32,
+        clock_rate: f64,
+        voice_id: u64,
+    ) -> Self {
+        let normal_hop = ((sample_rate * HOP_SECONDS) as u32).max(2);
+        let short_frames = playback
+            .remaining_frames(pos, clock_rate)
+            .filter(|&n| n <= normal_hop);
+        // Leave room for multiple reads even when the whole slice fits inside a normal hop.
+        let hop = short_frames.map_or(normal_hop, |n| (n / 3).max(1));
         // Spread the first search across half a hop when a chord starts together.
-        let initial_phase =
-            (u64::from(hop) * (voice_id % START_PHASES) / (2 * START_PHASES)) as u32;
+        let initial_phase = if short_frames.is_some() {
+            0
+        } else {
+            (u64::from(hop) * (voice_id % START_PHASES) / (2 * START_PHASES)) as u32
+        };
+        let overlap = if short_frames.is_some() {
+            (hop / 4).max(1)
+        } else {
+            ((sample_rate * OVERLAP_SECONDS) as u32).clamp(1, hop - 1)
+        };
         Self {
             current: Grain {
                 playback: *playback,
@@ -58,7 +78,8 @@ impl PitchReader {
             outgoing: None,
             elapsed: initial_phase,
             hop,
-            overlap: ((sample_rate * OVERLAP_SECONDS) as u32).clamp(1, hop - 1),
+            overlap,
+            short: short_frames.is_some(),
             probe_step: f64::from(sample_rate * PROBE_SECONDS) / (PROBES - 1) as f64,
         }
     }
@@ -69,17 +90,32 @@ impl PitchReader {
         playback: &Playback,
         pos: f64,
         rate: f64,
+        clock_rate: f64,
     ) -> (f32, f32) {
         if self.elapsed == self.hop {
-            self.outgoing = Some(self.current);
-            self.current = self.align(
-                sample,
-                Grain {
-                    playback: *playback,
-                    pos,
-                },
-                rate,
-            );
+            self.outgoing = (self.hop > 1).then_some(self.current);
+            let mut next = Grain {
+                playback: *playback,
+                pos,
+            };
+            if self.short {
+                // Anchor the last grain to the end of the tempo timeline so transposing
+                // down cannot omit the tail. Short hops need no phase search.
+                if let Some(remaining) = playback.remaining_frames(pos, clock_rate)
+                    && remaining <= self.hop
+                {
+                    let steps = f64::from(remaining.saturating_sub(1));
+                    next.pos = playback.offset_in_region(pos, (clock_rate - rate) * steps);
+                    if remaining > 1 {
+                        self.overlap = self.overlap.min(remaining - 1);
+                    } else {
+                        self.outgoing = None;
+                    }
+                }
+                self.current = next;
+            } else {
+                self.current = self.align(sample, next, rate);
+            }
             self.elapsed = 0;
         }
         let (left, right) = self.current.read(sample);

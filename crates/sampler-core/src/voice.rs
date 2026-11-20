@@ -55,7 +55,7 @@ pub(crate) struct Voice {
     own_amp: Option<AhdsrCoeffs>,
     /// `1.0` while playing normally, fades to `0.0` when choked
     choke_gain: f32,
-    choking: bool,
+    pub(crate) choking: bool,
     /// LFO rate modulation from the previous sample (the LFO can't modulate itself instantly)
     lfo_rate_mod: f32,
 
@@ -209,9 +209,10 @@ impl Voice {
             let value =
                 if playback.independent_pitch && (pitch != 0.0 || self.pitch_reader.is_some()) {
                     let phase = self.pitch_reader.get_or_insert_with(|| {
-                        PitchReader::new(playback, self.pos, sample_rate, self.id)
+                        PitchReader::new(playback, self.pos, sample_rate, clock_rate, self.id)
                     });
-                    let (l, r) = phase.render(sample, playback, self.pos, clock_rate * ratio);
+                    let (l, r) =
+                        phase.render(sample, playback, self.pos, clock_rate * ratio, clock_rate);
                     let gain = playback.fade_gain(self.pos);
                     (l * gain, r * gain)
                 } else {

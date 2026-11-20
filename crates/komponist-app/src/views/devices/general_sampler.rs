@@ -202,41 +202,48 @@ fn waveform_rect(body_origin: egui::Pos2) -> Rect {
     )
 }
 
-/// The device chain lays out its scrolling before the cards. Give the visible waveform priority.
-pub(super) fn wheel_region(card: &Card, body_origin: egui::Pos2) -> Option<Rect> {
-    (!card.collapsed
-        && card.page == 0
-        && card.state == super::model::CardState::Ok
-        && card.warning.is_none()
-        && card
-            .general_sampler
-            .as_ref()
-            .and_then(Editor::length)
-            .is_some())
-    .then(|| waveform_rect(body_origin))
+/// Give the waveform priority only when it can act on the wheel input.
+pub(super) fn takes_wheel(ui: &Ui, card: &Card, body_origin: egui::Pos2, clip: Rect) -> bool {
+    let Some(editor) = &card.general_sampler else {
+        return false;
+    };
+    let Some(length) = editor.length() else {
+        return false;
+    };
+    let rect = waveform_rect(body_origin);
+    if card.collapsed
+        || card.page != 0
+        || card.state != super::model::CardState::Ok
+        || card.warning.is_some()
+        || !ui.rect_contains_pointer(rect.intersect(clip))
+    {
+        return false;
+    }
+    let view = view_state(ui, card, editor);
+    wheel_viewport(ui, rect, &view.viewport, length).is_some()
 }
 
-fn wheel(ui: &Ui, graph: Rect, viewport: &mut Viewport, length: f64) {
-    if !ui.rect_contains_pointer(graph) {
-        return;
-    }
+fn wheel_viewport(ui: &Ui, graph: Rect, viewport: &Viewport, length: f64) -> Option<Viewport> {
     let (delta, zoom, pointer) =
         ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
     let plot = graph.shrink2(vec2(WAVEFORM_X_PAD, 0.0));
     let width = viewport.width();
+    let mut next = viewport.clone();
     if zoom != 1.0 {
         let x = pointer.map_or(plot.center().x, |p| p.x);
         let fraction = f64::from(((x - plot.left()) / plot.width()).clamp(0.0, 1.0));
         let anchor = viewport.start + fraction * width;
-        viewport.set_anchored(anchor, fraction, width / f64::from(zoom), length);
-    } else if delta != egui::Vec2::ZERO {
-        // Like the audio clip editor, both wheel axes pan along the waveform's time axis.
-        let seconds = f64::from((delta.x + delta.y) / plot.width()) * width;
-        viewport.set(viewport.centre() - seconds, width, length);
-    } else {
-        return;
+        next.set_anchored(anchor, fraction, width / f64::from(zoom), length);
+        return Some(next);
     }
-    ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+    // Like the audio clip editor, both wheel axes pan along the waveform's time axis.
+    let pixels = delta.x + delta.y;
+    if (pixels > 0.0 && viewport.start > 0.0) || (pixels < 0.0 && viewport.end < length) {
+        let seconds = f64::from(pixels / plot.width()) * width;
+        next.set(viewport.centre() - seconds, width, length);
+        return (next.start != viewport.start).then_some(next);
+    }
+    None
 }
 
 #[derive(Clone, Default)]
@@ -245,9 +252,41 @@ struct ViewState {
     length: f64,
     viewport: Viewport,
     click_preview_disabled: bool,
-    selected: Option<usize>,
-    /// Marker positions are previewed during a drag and committed together on release.
-    pending_slices: Option<Settings>,
+    selected_time: Option<f64>,
+    selected_index: Option<usize>,
+    pending_slices: Option<PendingSlices>,
+}
+
+#[derive(Clone)]
+struct PendingSlices {
+    baseline: Settings,
+    preview: Settings,
+}
+
+fn view_id(card: &Card) -> egui::Id {
+    egui::Id::unique(("general-sampler-view", card.device))
+}
+
+fn view_state(ui: &Ui, card: &Card, editor: &Editor) -> ViewState {
+    let view: ViewState = ui
+        .data(|data| data.get_temp(view_id(card)))
+        .unwrap_or_default();
+    let link = editor
+        .source
+        .as_ref()
+        .and_then(|sample| sample.link.clone());
+    let length = editor.length().unwrap_or(0.0);
+    if view.link == link && view.length == length {
+        view
+    } else {
+        ViewState {
+            link,
+            length,
+            viewport: Viewport::fit(length),
+            click_preview_disabled: view.click_preview_disabled,
+            ..Default::default()
+        }
+    }
 }
 
 pub(super) fn show(
@@ -298,27 +337,15 @@ pub(super) fn show(
         }
     }
 
-    let id = ui.scope_id().with("sample-editor-state");
-    let mut view: ViewState = ui.ctx().data(|data| data.get_temp(id)).unwrap_or_default();
-    let link = editor
-        .source
-        .as_ref()
-        .and_then(|sample| sample.link.clone());
-    let length = editor.length().unwrap_or(0.0);
-    if view.link != link || view.length != length {
-        view = ViewState {
-            link,
-            length,
-            viewport: Viewport::fit(length),
-            click_preview_disabled: view.click_preview_disabled,
-            ..Default::default()
-        };
-    }
-
+    let mut view = view_state(ui, card, editor);
     let toolbar_rect = Rect::from_min_size(left, vec2(wave_width, size::CONTROL_COMPACT));
     let graph_rect = waveform_rect(body.min);
-    if length > 0.0 {
-        wheel(ui, graph_rect, &mut view.viewport, length);
+    if view.length > 0.0
+        && ui.rect_contains_pointer(graph_rect)
+        && let Some(viewport) = wheel_viewport(ui, graph_rect, &view.viewport, view.length)
+    {
+        view.viewport = viewport;
+        ui.input_mut(|input| input.smooth_scroll_delta = egui::Vec2::ZERO);
     }
     toolbar(ui, out, card, editor, &mut view, toolbar_rect);
     sample_drop(ui, out, card, toolbar_rect.union(graph_rect));
@@ -332,7 +359,8 @@ pub(super) fn show(
     playback_wave(
         ui, out, card, editor, palette, graph_rect, tools, body, &mut view,
     );
-    ui.ctx().data_mut(|data| data.insert_temp(id, view));
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(view_id(card), view));
 }
 
 fn heading(ui: &mut Ui, rect: Rect, text: &str) {
@@ -828,28 +856,43 @@ fn playback_wave(
         scale,
     }));
     let slicing = value(card, "mode", 1.0) == 2.0;
+    let pending = view.pending_slices.take();
+    let cancelled = pending
+        .as_ref()
+        .is_some_and(|edit| !slicing || edit.baseline != editor.settings);
+    if cancelled {
+        ui.ctx().stop_dragging();
+    }
     let mut settings = if slicing {
-        view.pending_slices
-            .take()
-            .unwrap_or_else(|| editor.settings.clone())
+        pending
+            .filter(|_| !cancelled)
+            .map_or_else(|| editor.settings.clone(), |edit| edit.preview)
     } else {
-        view.pending_slices = None;
-        if view.selected.take().is_some() {
-            Graph::select_handle(ui.ctx(), ui.scope_id().with(SAMPLE_WAVE), None);
-        }
         Settings::default()
     };
     let interval = (values[0] * scale)..(values[1].max(values[0]) * scale);
+    let mut selected = view.selected_time.and_then(|time| {
+        settings
+            .slices
+            .iter()
+            .position(|slice| (slice.time - time).abs() <= 4.0 * f64::EPSILON * time.abs().max(1.0))
+    });
+    selected = active_boundary(&settings.slices, selected, &interval);
+    if slicing && view.selected_index != selected {
+        Graph::select_handle(
+            ui.ctx(),
+            ui.scope_id().with(SAMPLE_WAVE),
+            selected.map(|i| FIRST_SLICE_HANDLE + i),
+        );
+    } else if !slicing && view.selected_time.take().is_some() {
+        view.selected_index = None;
+        Graph::select_handle(ui.ctx(), ui.scope_id().with(SAMPLE_WAVE), None);
+    }
     let root = value(card, "root", 60.0) as usize;
     let mut bounds = [0, 1];
     let mut scales = [scale; 2];
     let mut reverse = value(card, "direction", 0.0) == 1.0;
     if slicing {
-        let selected = active_boundary(&settings.slices, view.selected, &interval);
-        if selected != view.selected {
-            view.selected = selected;
-            Graph::select_handle(ui.ctx(), ui.scope_id().with(SAMPLE_WAVE), None);
-        }
         if let Some(index) = selected {
             bounds[0] = FIRST_SLICE_SLOT + index;
             scales[0] = 1.0;
@@ -921,7 +964,7 @@ fn playback_wave(
         playhead,
         SAMPLE_WAVE,
     );
-    let previous_selection = view.selected;
+    let previous_selection = selected;
     let preview_time = preview_on_press(
         ui,
         out,
@@ -931,7 +974,7 @@ fn playback_wave(
         !view.click_preview_disabled,
     );
     if let Some(time) = preview_time {
-        view.selected = settings
+        selected = settings
             .slices
             .iter()
             .rposition(|slice| slice.time > interval.start && slice.time <= time);
@@ -944,6 +987,8 @@ fn playback_wave(
             card,
             editor,
             view,
+            &mut selected,
+            cancelled,
             tools,
             &shown,
             &values,
@@ -953,15 +998,17 @@ fn playback_wave(
             playhead,
             &mut settings,
         );
-        if previous_selection != view.selected || preview_time.is_some() {
+        if previous_selection != selected || preview_time.is_some() {
             Graph::select_handle(
                 ui.ctx(),
                 ui.scope_id().with(SAMPLE_WAVE),
-                view.selected.map(|i| FIRST_SLICE_HANDLE + i),
+                selected.map(|i| FIRST_SLICE_HANDLE + i),
             );
             ui.ctx().request_repaint();
         }
-        let selected = selection_settings(&settings, view.selected, &interval);
+        view.selected_index = selected;
+        view.selected_time = selected.map(|index| settings.slices[index].time);
+        let selected = selection_settings(&settings, selected, &interval);
         slice_controls(
             ui,
             out,
@@ -1174,6 +1221,56 @@ fn slice_controls(
     }
 }
 
+fn valid_slice_position(
+    slices: &[Slice],
+    position: f64,
+    interval: &Range<f64>,
+    spacing: f64,
+) -> bool {
+    position > interval.start
+        && position < interval.end
+        && !slices
+            .iter()
+            .any(|slice| (slice.time - position).abs() < spacing)
+}
+
+fn slice_insertion_position(
+    slices: &[Slice],
+    cursor: f64,
+    interval: &Range<f64>,
+    spacing: f64,
+) -> Option<f64> {
+    let valid = |position| valid_slice_position(slices, position, interval, spacing);
+    if valid(cursor) {
+        return Some(cursor);
+    }
+
+    let edges = std::iter::once(f64::NEG_INFINITY)
+        .chain(slices.iter().map(|slice| slice.time))
+        .chain(std::iter::once(f64::INFINITY));
+    edges
+        .clone()
+        .zip(edges.skip(1))
+        .filter_map(|(left, right)| {
+            let start = (left + spacing).max(interval.start);
+            let end = (right - spacing).min(interval.end);
+            if start > end {
+                return None;
+            }
+            let preferred = cursor.clamp(start, end);
+            // The midpoint avoids floating-point roundoff at the edge of the exclusion zone.
+            [
+                preferred,
+                preferred.next_up(),
+                preferred.next_down(),
+                start.midpoint(end),
+            ]
+            .into_iter()
+            .find(|&position| valid(position))
+        })
+        .min_by(|a, b| (a - cursor).abs().total_cmp(&(b - cursor).abs()))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn edit_slices(
     ui: &mut Ui,
@@ -1181,6 +1278,8 @@ fn edit_slices(
     card: &Card,
     editor: &Editor,
     view: &mut ViewState,
+    selection: &mut Option<usize>,
+    cancelled: bool,
     tools: Rect,
     shown: &GraphOutput,
     values: &[f64],
@@ -1195,30 +1294,27 @@ fn edit_slices(
     let length = ready.unwrap_or(1.0);
     let slice_index = shown
         .selected_slot
+        .filter(|_| !cancelled)
         .and_then(|slot| slot.checked_sub(FIRST_SLICE_SLOT));
     if (shown.touch.clicked || shown.touch.dragging) && slice_index.is_some() {
-        view.selected = slice_index;
+        *selection = slice_index;
     }
-    let edited = shown
-        .changed
-        .iter()
-        .any(|(slot, _)| *slot >= FIRST_SLICE_SLOT);
+    let edited = !cancelled
+        && shown
+            .changed
+            .iter()
+            .any(|(slot, _)| *slot >= FIRST_SLICE_SLOT);
     if edited {
         for (slice, &time) in settings.slices.iter_mut().zip(&values[FIRST_SLICE_SLOT..]) {
             slice.time = time;
         }
-        view.selected = slice_index;
+        *selection = slice_index;
     }
     let separation = editor.slice_spacing();
     let mut changed = edited || (shown.touch.drag_stopped && slice_index.is_some());
     let insert = |settings: &mut Settings, position: f64| {
         if settings.slices.len() < MAX_SLICES
-            && position > interval.start
-            && position < interval.end
-            && !settings
-                .slices
-                .iter()
-                .any(|slice| (slice.time - position).abs() < separation)
+            && valid_slice_position(&settings.slices, position, interval, separation)
         {
             let index = settings
                 .slices
@@ -1237,11 +1333,11 @@ fn edit_slices(
             None
         }
     };
-    for &event in &shown.events {
+    for &event in shown.events.iter().filter(|_| !cancelled) {
         match event {
             GraphEvent::AddPoint { x, .. } => {
                 if let Some(i) = insert(settings, x) {
-                    view.selected = Some(i);
+                    *selection = Some(i);
                     changed = true;
                 }
             }
@@ -1251,7 +1347,7 @@ fn edit_slices(
                     .filter(|&i| i < settings.slices.len())
                 {
                     settings.slices.remove(i);
-                    view.selected = active_boundary(&settings.slices, i.checked_sub(1), interval);
+                    *selection = active_boundary(&settings.slices, i.checked_sub(1), interval);
                     changed = true;
                 }
             }
@@ -1286,7 +1382,7 @@ fn edit_slices(
                 Slice { time, options }
             })
             .collect();
-        view.selected = None;
+        *selection = None;
         changed = true;
     }
     if row
@@ -1307,23 +1403,11 @@ fn edit_slices(
                     (interval.start + interval.end) * 0.5
                 }
             });
-        let position = if settings
-            .slices
-            .iter()
-            .any(|slice| (slice.time - cursor).abs() < separation)
+        if let Some(position) =
+            slice_insertion_position(&settings.slices, cursor, interval, separation)
+            && let Some(i) = insert(settings, position)
         {
-            let end = settings
-                .slices
-                .iter()
-                .map(|slice| slice.time)
-                .find(|&time| time > cursor + separation)
-                .unwrap_or(interval.end);
-            (cursor + end) * 0.5
-        } else {
-            cursor
-        };
-        if let Some(i) = insert(settings, position) {
-            view.selected = Some(i);
+            *selection = Some(i);
             if !viewport.contains(position) {
                 view.viewport.set(position, view.viewport.width(), length);
             }
@@ -1332,14 +1416,14 @@ fn edit_slices(
     }
     if row
         .add_enabled(
-            can_edit && view.selected.is_some(),
+            can_edit && selection.is_some(),
             Button::new(t.devices_sampler_remove_slice()).small(),
         )
         .clicked()
-        && let Some(i) = view.selected.filter(|&i| i < settings.slices.len())
+        && let Some(i) = selection.filter(|&i| i < settings.slices.len())
     {
         settings.slices.remove(i);
-        view.selected = active_boundary(&settings.slices, i.checked_sub(1), interval);
+        *selection = active_boundary(&settings.slices, i.checked_sub(1), interval);
         changed = true;
     }
     let mut notes = vec![(None, t.devices_sampler_slice_start(note_name(root as u8)))];
@@ -1355,7 +1439,7 @@ fn edit_slices(
     let items: Vec<_> = notes.iter().map(|(_, label)| Item::new(label)).collect();
     let mut selected = notes
         .iter()
-        .position(|(index, _)| *index == view.selected)
+        .position(|(index, _)| *index == *selection)
         .unwrap_or(0);
     if row
         .add_enabled(
@@ -1366,18 +1450,19 @@ fn edit_slices(
         )
         .changed()
     {
-        view.selected = notes[selected].0;
-        let time = view
-            .selected
-            .map_or(interval.start, |i| settings.slices[i].time);
+        *selection = notes[selected].0;
+        let time = selection.map_or(interval.start, |i| settings.slices[i].time);
         if !viewport.contains(time) {
             view.viewport.set(time, view.viewport.width(), length);
         }
     }
     if shown.touch.dragging && slice_index.is_some() {
-        view.pending_slices = Some(settings.clone());
+        view.pending_slices = Some(PendingSlices {
+            baseline: editor.settings.clone(),
+            preview: settings.clone(),
+        });
     } else if changed && *settings != editor.settings {
-        view.selected = active_boundary(&settings.slices, view.selected, interval);
+        *selection = active_boundary(&settings.slices, *selection, interval);
         out.push(Action::Plugin(PluginAction::SetSamplerSlices {
             device: card.device,
             settings: settings.clone(),
@@ -1437,6 +1522,25 @@ fn filter_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_slice_finds_a_nearby_gap_when_the_preferred_position_is_blocked() {
+        let settings = Settings::from_markers([2.0, 2.00003]);
+        let interval = 0.0..4.0;
+        let spacing = 1.0 / 48_000.0;
+        let position = slice_insertion_position(&settings.slices, 2.0, &interval, spacing).unwrap();
+        assert!(valid_slice_position(
+            &settings.slices,
+            position,
+            &interval,
+            spacing
+        ));
+        assert!((position - 2.0).abs() < 2.0 * spacing);
+        assert_eq!(
+            slice_insertion_position(&settings.slices, 1.0, &interval, spacing),
+            Some(1.0)
+        );
+    }
 
     #[test]
     fn waveform_zoom_keeps_a_sample_in_view_and_pans_to_both_ends() {

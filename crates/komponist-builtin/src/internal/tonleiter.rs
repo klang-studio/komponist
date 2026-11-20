@@ -186,6 +186,8 @@ struct Scale {
     played_as: Box<[[u8; 128]; 16]>,
     /// Per channel and output key: how many input keys hold it.
     holders: Box<[[u8; 128]; 16]>,
+    /// The ID of the note-on forwarded for each held output key.
+    forwarded_ids: Box<[[u32; 128]; 16]>,
 }
 
 impl Scale {
@@ -196,6 +198,7 @@ impl Scale {
             snap: Snap::Nearest,
             played_as: Box::new([[NONE; 128]; 16]),
             holders: Box::new([[0; 128]; 16]),
+            forwarded_ids: Box::new([[komponist_engine::NOTE_ID_NONE; 128]; 16]),
         }
     }
 }
@@ -238,6 +241,7 @@ impl EventProcessor for Scale {
                     let holders = &mut self.holders[ch][usize::from(mapped)];
                     *holders = holders.saturating_add(1);
                     if *holders == 1 {
+                        self.forwarded_ids[ch][usize::from(mapped)] = note_id;
                         out.push(
                             e.offset,
                             EventKind::NoteOn {
@@ -267,6 +271,8 @@ impl EventProcessor for Scale {
     fn reset(&mut self) {
         *self.played_as = [[NONE; 128]; 16];
         *self.holders = [[0; 128]; 16];
+        self.forwarded_ids
+            .fill([komponist_engine::NOTE_ID_NONE; 128]);
     }
 }
 
@@ -285,7 +291,7 @@ impl Scale {
                 EventKind::NoteOff {
                     key: mapped,
                     channel: ch as u8,
-                    note_id: komponist_engine::NOTE_ID_NONE,
+                    note_id: self.forwarded_ids[ch][usize::from(mapped)],
                 },
             );
         }

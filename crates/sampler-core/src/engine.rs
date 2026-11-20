@@ -220,6 +220,7 @@ impl Engine {
     pub fn release_note(&mut self, key: u8, note_id: Option<u32>) {
         let held = |voice: &&mut Voice| {
             voice.active
+                && !voice.choking
                 && voice.playback.is_some_and(|playback| {
                     playback.gate
                         && !playback.released
@@ -674,6 +675,47 @@ mod tests {
                         .all(|(&a, &b)| (a - b).abs() < 1e-6)
                 );
             }
+        }
+    }
+
+    #[test]
+    fn short_transposed_regions_play_the_tail_in_both_directions() {
+        use crate::PlaybackDirection::{Forward, Reverse};
+
+        for direction in [Forward, Reverse] {
+            let mut t = setup(&[]);
+            let slot = slot_index(0, 0);
+            let mut data = vec![0.0; 128];
+            data[96..104].fill(0.5);
+            data[124..].fill(0.7);
+            if direction == Reverse {
+                data.reverse();
+            }
+            t.samples[slot] = Some(Arc::new(Sample::mono(SR, data)));
+            let mut engine = Engine::new(SR);
+            engine.trigger(
+                SampleTrigger {
+                    pad: 0,
+                    slot,
+                    key: 60,
+                    note_id: None,
+                    velocity: 1.0,
+                    tune: -12.0,
+                    independent_pitch: true,
+                    region: crate::PlaybackRegion {
+                        end: 128.0,
+                        direction,
+                        ..Default::default()
+                    },
+                },
+                t.samples[slot].as_deref().unwrap(),
+                &t.settings[0],
+            );
+            let output: Vec<_> = (0..128).map(|_| t.render(&mut engine, 1)[0][0]).collect();
+            assert!(output[106..124].iter().any(|&frame| frame > 0.35));
+            assert!(output[127] > 0.5, "{direction:?}: {}", output[127]);
+            assert_eq!(t.render(&mut engine, 1)[0], [0.0; 2]);
+            assert_eq!(engine.active_voices(), 0);
         }
     }
 

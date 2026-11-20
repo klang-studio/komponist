@@ -134,6 +134,25 @@ impl Playback {
         }
     }
 
+    /// Output frames remaining at the tempo clock, for a finite region.
+    pub fn remaining_frames(&self, pos: f64, clock_rate: f64) -> Option<u32> {
+        self.region.looping.is_none().then(|| {
+            if self.backward {
+                (((pos - self.region.start) / clock_rate).floor() as u32).saturating_add(1)
+            } else {
+                ((self.region.end - pos) / clock_rate).ceil() as u32
+            }
+        })
+    }
+
+    pub fn offset_in_region(&self, pos: f64, distance: f64) -> f64 {
+        let offset = if self.backward { -distance } else { distance };
+        (pos + offset).clamp(
+            self.region.start,
+            (self.region.end - 1.0).max(self.region.start),
+        )
+    }
+
     pub fn contains(&self, pos: f64) -> bool {
         pos >= self.region.start && pos < self.region.end
     }

@@ -167,7 +167,11 @@ fn offline_first_note_uses_prepared_tempo_and_transposition_preserves_its_durati
 
 #[test]
 fn overlapping_gates_follow_note_ids() {
-    let fixture = Fixture::new("overlap", &[0.25; 2048]);
+    let source: Vec<_> = (0..2048)
+        .map(|i| 0.15 + i as f32 * 0.003)
+        .map(|x| x.min(0.65))
+        .collect();
+    let fixture = Fixture::new("overlap", &source);
     let mut processor = ready(
         &fixture.0,
         &[("amp_release", 0.0)],
@@ -181,9 +185,11 @@ fn overlapping_gates_follow_note_ids() {
         note_off(80, 60, 1),
     ];
     let output = render(&mut processor, 120.0, &events, 128);
-    assert!(output[8] > 0.1);
-    assert!((output[32] - 2.0 * output[8]).abs() < 0.01);
-    assert!((output[64] - output[8]).abs() < 0.01);
+    processor.reset();
+    let reference = render(&mut processor, 120.0, &[note_on(0, 60, 1)], 128);
+    assert!(output[32] > reference[32] + 0.1);
+    assert!((output[64] - reference[64]).abs() < 0.001);
+    assert!((reference[64] - reference[48]).abs() > 0.02);
     assert!(output[112].abs() < 1e-4);
 }
 
@@ -261,8 +267,9 @@ fn only_gate_slices_release_on_note_off_or_mouse_release() {
     let handle = sliced.sampler().unwrap();
     handle.preview_slice(0.15);
     assert!(render(&mut sliced, 120.0, &[], 64)[63] > 0.1);
+    handle.preview_slice(0.15);
     handle.release_slice_preview();
-    assert!(render(&mut sliced, 120.0, &[], 64)[63].abs() < 0.001);
+    assert!(render(&mut sliced, 120.0, &[], 256)[255].abs() < 0.001);
     handle.preview_slice(0.15);
     handle.release_slice_preview();
     assert!(render(&mut sliced, 120.0, &[], 64)[63].abs() < 0.001);

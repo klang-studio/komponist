@@ -162,12 +162,17 @@ impl GeneralSamplerDsp {
             }
         }
         while self.audio.garbage.slots() > 0 {
-            let Some(loaded) = self
-                .audio
-                .stretched
-                .as_mut()
-                .and_then(|queue| queue.pop().ok())
-            else {
+            let Some(queue) = self.audio.stretched.as_mut() else {
+                break;
+            };
+            // Keep a current result queued until its source has room to install.
+            if queue.peek().is_ok_and(|loaded| {
+                loaded.generation != self.generation
+                    && self.meters.is_current(PAD, loaded.generation)
+            }) {
+                break;
+            }
+            let Ok(loaded) = queue.pop() else {
                 break;
             };
             let Some(sample) = loaded.sample else {
@@ -423,5 +428,60 @@ impl Dsp for GeneralSamplerDsp {
 
     fn sampler(&self) -> Option<SamplerHandle> {
         Some(self.handle.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_no_alloc::assert_no_alloc;
+
+    #[test]
+    fn stretch_result_waits_for_its_source_when_retirement_is_backed_up() {
+        let mut dsp = GeneralSamplerDsp::new();
+        let (mut source, incoming) = rtrb::RingBuffer::new(2);
+        let (garbage, mut retired) = rtrb::RingBuffer::new(3);
+        let (mut stretch, stretched) = rtrb::RingBuffer::new(2);
+        dsp.audio = AudioSide {
+            incoming,
+            garbage,
+            stretched: Some(stretched),
+        };
+        let generation = 0; // The mock queues use the current generation of the fresh handle.
+        dsp.generation = u64::MAX;
+        let sample = Arc::new(Sample::mono(48_000.0, vec![0.0; 32]));
+        let ratio = 1.5_f32.to_bits();
+        source
+            .push(load::Loaded {
+                pad: PAD,
+                generation,
+                sample: Some(sample.clone()),
+            })
+            .ok()
+            .unwrap();
+        stretch
+            .push(load::Stretched {
+                generation,
+                ratio,
+                sample: Some(sample.clone()),
+            })
+            .ok()
+            .unwrap();
+        dsp.audio.garbage.push(None).unwrap();
+        dsp.audio.garbage.push(None).unwrap();
+        assert_no_alloc(|| dsp.take_loaded());
+        assert_eq!(dsp.generation, u64::MAX);
+        assert!(dsp.audio.stretched.as_ref().unwrap().peek().is_ok());
+        for _ in 0..2 {
+            assert!(retired.pop().is_ok());
+        }
+        assert_no_alloc(|| dsp.take_loaded());
+        assert_eq!(dsp.generation, generation);
+        // Source and both old stretch slots used the available retirement entries.
+        for _ in 0..3 {
+            assert!(retired.pop().is_ok());
+        }
+        assert_no_alloc(|| dsp.take_loaded());
+        assert!(dsp.stretch_slot(ratio).is_some());
     }
 }
