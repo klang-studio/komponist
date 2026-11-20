@@ -384,21 +384,21 @@ impl PianoRoll {
         }
     }
 
-    fn press_grid(&mut self, ctx: &mut ViewCtx<'_>, f: &Frame<'_>, at: Pos2, mods: Modifiers) {
-        if f.tool == Tool::Eraser {
+    fn press_grid(&mut self, ctx: &mut ViewCtx<'_>, frame: &Frame<'_>, at: Pos2, mods: Modifiers) {
+        if frame.tool == Tool::Eraser {
             self.gesture = Some(Gesture::Erase {
                 erased: BTreeSet::new(),
                 begun: false,
             });
             return;
         }
-        if let Some(hit) = edit::hit_note(f.notes, f.window.clone(), &f.geo, at) {
-            let n = f.notes[hit.index];
-            let selected = f.selection.contains(&n.id);
-            let rect = f.geo.note_rect(n.start, n.length, n.pitch);
+        if let Some(hit) = edit::hit_note(frame.notes, frame.window.clone(), &frame.geo, at) {
+            let n = frame.notes[hit.index];
+            let selected = frame.selection.contains(&n.id);
+            let rect = frame.geo.note_rect(n.start, n.length, n.pitch);
             if ctrl(mods) {
                 let notes = if selected {
-                    selected_in_order(f)
+                    selected_in_order(frame)
                 } else {
                     vec![n.id]
                 };
@@ -412,7 +412,7 @@ impl PianoRoll {
                 }));
                 return;
             }
-            let mut selection = f.selection.clone();
+            let mut selection = frame.selection.clone();
             if !selected {
                 let mode = if mods.shift {
                     SelectMode::Add
@@ -427,12 +427,12 @@ impl PianoRoll {
                 self.gesture = Some(Gesture::Held);
                 return;
             }
-            let targets: Vec<&Note> = f
+            let targets: Vec<&Note> = frame
                 .notes
                 .iter()
                 .filter(|q| selection.contains(&q.id))
                 .collect();
-            self.audition(ctx, f.track, Some(n.pitch));
+            self.audition(ctx, frame.track, Some(n.pitch));
             self.gesture = Some(if hit.edge {
                 Gesture::Resize(ResizeDrag {
                     notes: targets.iter().map(|q| q.id).collect(),
@@ -459,25 +459,26 @@ impl PianoRoll {
             });
             return;
         }
-        let Some(pitch) = f.geo.pitch_at(at.y) else {
+        let Some(pitch) = frame.geo.pitch_at(at.y) else {
             self.gesture = Some(Gesture::Held);
             return;
         };
-        if f.tool == Tool::Pencil {
-            let snap = f.snap && !mods.shift;
-            let start = edit::new_note_start(f.geo.tick_at(at.x), f.clip.start, f.grid, snap);
+        if frame.tool == Tool::Pencil {
+            let snap = frame.snap && !mods.shift;
+            let start =
+                edit::new_note_start(frame.geo.tick_at(at.x), frame.clip.start, frame.grid, snap);
             self.gesture = Some(Gesture::Pencil(PencilDrag {
                 start,
                 pitch,
-                length: f.grid,
+                length: frame.grid,
             }));
-            self.audition(ctx, f.track, Some(pitch));
+            self.audition(ctx, frame.track, Some(pitch));
             return;
         }
         let base = if mods.shift {
-            f.selection.clone()
+            frame.selection.clone()
         } else {
-            if !f.selection.is_empty() {
+            if !frame.selection.is_empty() {
                 ctx.send(select(Vec::new(), SelectMode::Replace));
             }
             BTreeSet::new()
@@ -490,28 +491,31 @@ impl PianoRoll {
         }));
     }
 
-    fn update(&mut self, ctx: &mut ViewCtx<'_>, f: &Frame<'_>, at: Pos2, mods: Modifiers) {
-        let snap: Snap = (f.snap && !mods.shift).then_some(f.grid);
-        let clip = f.clip.id;
+    fn update(&mut self, ctx: &mut ViewCtx<'_>, frame: &Frame<'_>, at: Pos2, mods: Modifiers) {
+        let snap: Snap = (frame.snap && !mods.shift).then_some(frame.grid);
+        let clip = frame.clip.id;
         let mut audition = None;
         match &mut self.gesture {
-            Some(Gesture::Move(d)) => {
-                let dx = f64::from(at.x - d.anchor.x) / f64::from(f.geo.axis.px_per_tick);
+            Some(Gesture::Move(move_drag)) => {
+                let dx =
+                    f64::from(at.x - move_drag.anchor.x) / f64::from(frame.geo.axis.px_per_tick);
                 let delta = edit::move_delta(dx, snap);
-                let pitch_delta = edit::pitch_delta(at.y - d.anchor.y, f.geo.key_height);
-                if (delta, pitch_delta) != d.last {
-                    if d.last.1 != pitch_delta {
-                        audition = Some((i32::from(d.pitch) + pitch_delta).clamp(0, 127) as u8);
+                let pitch_delta =
+                    edit::pitch_delta(at.y - move_drag.anchor.y, frame.geo.key_height);
+                if (delta, pitch_delta) != move_drag.last {
+                    if move_drag.last.1 != pitch_delta {
+                        audition =
+                            Some((i32::from(move_drag.pitch) + pitch_delta).clamp(0, 127) as u8);
                     }
-                    d.last = (delta, pitch_delta);
-                    let label = if d.copy {
+                    move_drag.last = (delta, pitch_delta);
+                    let label = if move_drag.copy {
                         "undo-copy-notes"
                     } else {
                         "undo-move-notes"
                     };
-                    begin(ctx, &mut d.begun, label);
-                    let notes = d.notes.clone();
-                    ctx.send(Action::Edit(if d.copy {
+                    begin(ctx, &mut move_drag.begun, label);
+                    let notes = move_drag.notes.clone();
+                    ctx.send(Action::Edit(if move_drag.copy {
                         EditAction::CopyNotes {
                             clip,
                             notes,
@@ -528,42 +532,50 @@ impl PianoRoll {
                     }));
                 }
             }
-            Some(Gesture::Resize(d)) => {
-                let dx = f64::from(at.x - d.anchor_x) / f64::from(f.geo.axis.px_per_tick);
-                let delta = edit::resized_length(d.length, dx, snap) - d.length;
-                if delta != d.last {
-                    d.last = delta;
-                    begin(ctx, &mut d.begun, "undo-note-length");
+            Some(Gesture::Resize(resize_drag)) => {
+                let dx =
+                    f64::from(at.x - resize_drag.anchor_x) / f64::from(frame.geo.axis.px_per_tick);
+                let delta = edit::resized_length(resize_drag.length, dx, snap) - resize_drag.length;
+                if delta != resize_drag.last {
+                    resize_drag.last = delta;
+                    begin(ctx, &mut resize_drag.begun, "undo-note-length");
                     ctx.send(Action::Edit(EditAction::ResizeNotes {
                         clip,
-                        notes: d.notes.clone(),
+                        notes: resize_drag.notes.clone(),
                         delta,
                     }));
                 }
             }
-            Some(Gesture::Velocity(d)) => {
-                let offset = edit::velocity_offset(at.y - d.anchor_y);
-                if offset != d.last {
-                    d.last = offset;
-                    begin(ctx, &mut d.begun, "undo-velocity");
+            Some(Gesture::Velocity(velocity_drag)) => {
+                let offset = edit::velocity_offset(at.y - velocity_drag.anchor_y);
+                if offset != velocity_drag.last {
+                    velocity_drag.last = offset;
+                    begin(ctx, &mut velocity_drag.begun, "undo-velocity");
                     ctx.send(Action::Edit(EditAction::SetNotesVelocity {
                         clip,
-                        notes: d.notes.clone(),
+                        notes: velocity_drag.notes.clone(),
                         change: VelocityChange::Offset(offset),
                     }));
                     status(
                         ctx,
-                        ctx.lang.piano_roll_velocity_status(d.displayed_velocity()),
+                        ctx.lang
+                            .piano_roll_velocity_status(velocity_drag.displayed_velocity()),
                     );
                 }
             }
-            Some(Gesture::Pencil(d)) => {
-                let snap = f.snap && !mods.shift;
-                d.length = edit::pencil_length(d.start, f.geo.local_tick_at(at.x), f.grid, snap);
+            Some(Gesture::Pencil(pencil_drag)) => {
+                let snap = frame.snap && !mods.shift;
+                pencil_drag.length = edit::pencil_length(
+                    pencil_drag.start,
+                    frame.geo.local_tick_at(at.x),
+                    frame.grid,
+                    snap,
+                );
             }
             Some(Gesture::Erase { erased, begun }) => {
-                if let Some(hit) = edit::hit_note(f.notes, f.window.clone(), &f.geo, at) {
-                    let id = f.notes[hit.index].id;
+                if let Some(hit) = edit::hit_note(frame.notes, frame.window.clone(), &frame.geo, at)
+                {
+                    let id = frame.notes[hit.index].id;
                     if erased.insert(id) {
                         begin(ctx, begun, "undo-delete-notes");
                         ctx.send(Action::Edit(EditAction::RemoveNotes {
@@ -573,25 +585,25 @@ impl PianoRoll {
                     }
                 }
             }
-            Some(Gesture::Box(d)) => {
-                d.current = at;
-                let r = Rect::from_two_pos(d.origin, d.current);
+            Some(Gesture::Box(box_drag)) => {
+                box_drag.current = at;
+                let bounds = Rect::from_two_pos(box_drag.origin, box_drag.current);
                 let (t0, t1) = (
-                    f.geo.local_tick_at(r.left()),
-                    f.geo.local_tick_at(r.right()),
+                    frame.geo.local_tick_at(bounds.left()),
+                    frame.geo.local_tick_at(bounds.right()),
                 );
-                let hi = f.geo.pitch_at_clamped(r.top());
-                let lo = f.geo.pitch_at_clamped(r.bottom());
-                let mut ids = d.base.clone();
-                ids.extend(edit::box_notes(f.notes, t0, t1, lo, hi));
+                let hi = frame.geo.pitch_at_clamped(bounds.top());
+                let lo = frame.geo.pitch_at_clamped(bounds.bottom());
+                let mut ids = box_drag.base.clone();
+                ids.extend(edit::box_notes(frame.notes, t0, t1, lo, hi));
                 let ids: Vec<NoteId> = ids.into_iter().collect();
-                if ids != d.last {
-                    d.last = ids.clone();
+                if ids != box_drag.last {
+                    box_drag.last = ids.clone();
                     ctx.send(select(ids, SelectMode::Replace));
                 }
             }
             Some(Gesture::Lane { notes, begun, last }) => {
-                if let Some(lane) = f.geo.lane {
+                if let Some(lane) = frame.geo.lane {
                     let v = edit::lane_velocity(
                         lane.bottom() - m::VELOCITY_BOTTOM - at.y,
                         lane.height(),
@@ -608,10 +620,10 @@ impl PianoRoll {
                     }
                 }
             }
-            Some(Gesture::Key) => audition = Some(f.geo.pitch_at_clamped(at.y)),
+            Some(Gesture::Key) => audition = Some(frame.geo.pitch_at_clamped(at.y)),
             Some(Gesture::Ruler { last }) => {
-                let beat = f.meter.ticks_per_beat() as f64;
-                let tick = Tick(((f.geo.tick_at(at.x) / beat).round() * beat).max(0.0) as i64);
+                let beat = frame.meter.ticks_per_beat() as f64;
+                let tick = Tick(((frame.geo.tick_at(at.x) / beat).round() * beat).max(0.0) as i64);
                 if *last != Some(tick) {
                     *last = Some(tick);
                     ctx.send(Action::Transport(TransportAction::Locate(tick)));
@@ -620,7 +632,7 @@ impl PianoRoll {
             Some(Gesture::Held | Gesture::Cancelled) | None => {}
         }
         if audition.is_some() {
-            self.audition(ctx, f.track, audition);
+            self.audition(ctx, frame.track, audition);
         }
     }
 
@@ -811,17 +823,17 @@ impl PianoRoll {
         );
     }
 
-    fn paint_keys(&self, painter: &egui::Painter, f: &Frame<'_>) {
+    fn paint_keys(&self, painter: &egui::Painter, frame: &Frame<'_>) {
         let ppp = painter.pixels_per_point();
         let w = px::line_width(ppp);
-        let g = &f.geo;
-        let painter = painter.with_clip_rect(g.keys.intersect(painter.clip_rect()));
-        let playing = self.playing_keys(f);
+        let geometry = &frame.geo;
+        let painter = painter.with_clip_rect(geometry.keys.intersect(painter.clip_rect()));
+        let playing = self.playing_keys(frame);
         let mut mesh = Mesh::default();
         let mut labels = Vec::new();
-        let right = g.keys.right() - w;
-        for pitch in g.bottom_key()..=g.top_key {
-            let top = g.row_top(pitch);
+        let right = geometry.keys.right() - w;
+        for pitch in geometry.bottom_key()..=geometry.top_key {
+            let top = geometry.row_top(pitch);
             let black = is_black(pitch);
             let key_right = if black {
                 right - m::BLACK_KEY_INSET
@@ -830,14 +842,14 @@ impl PianoRoll {
             };
             let key = px::snap_rect(
                 Rect::from_min_max(
-                    pos2(g.keys.left(), top),
-                    pos2(key_right, top + g.key_height),
+                    pos2(geometry.keys.left(), top),
+                    pos2(key_right, top + geometry.key_height),
                 ),
                 ppp,
             );
             let on = playing.contains(&pitch);
             let fill = if on {
-                f.palette.key_playing
+                frame.palette.key_playing
             } else if black {
                 color::SURFACE_0
             } else {
@@ -848,7 +860,7 @@ impl PianoRoll {
                 Rect::from_min_max(pos2(key.left(), key.bottom() - w), key.max),
                 color32(color::SURFACE_1),
             );
-            if pitch % 12 == 0 && g.key_height >= typography::VALUE_S.size {
+            if pitch % 12 == 0 && geometry.key_height >= typography::VALUE_S.size {
                 let ink = if on { color::SURFACE_0 } else { color::TEXT_3 };
                 labels.push((key, pitch, ink));
             }
@@ -869,7 +881,12 @@ impl PianoRoll {
                 Color32::PLACEHOLDER,
             );
         }
-        px::vline(&painter, right, g.keys.y_range(), color32(color::SURFACE_0));
+        px::vline(
+            &painter,
+            right,
+            geometry.keys.y_range(),
+            color32(color::SURFACE_0),
+        );
     }
 
     /// The keys that light up: notes under the playhead while playing, the key played by
@@ -895,18 +912,18 @@ impl PianoRoll {
         &self,
         t: Lang,
         painter: &egui::Painter,
-        f: &Frame<'_>,
+        frame: &Frame<'_>,
         hovered: Option<NoteId>,
     ) -> Vec<(usize, Rect, NoteState)> {
         let ppp = painter.pixels_per_point();
         let w = px::line_width(ppp);
-        let g = &f.geo;
-        let painter = painter.with_clip_rect(g.grid.intersect(painter.clip_rect()));
+        let geometry = &frame.geo;
+        let painter = painter.with_clip_rect(geometry.grid.intersect(painter.clip_rect()));
 
         // Rows: black keys darker, a line.2 line under every C.
         let mut mesh = Mesh::default();
-        for pitch in g.bottom_key()..=g.top_key {
-            let row = px::snap_rect(g.row(pitch), ppp);
+        for pitch in geometry.bottom_key()..=geometry.top_key {
+            let row = px::snap_rect(geometry.row(pitch), ppp);
             let fill = if is_black(pitch) {
                 color::CANVAS_BLACK_KEY_ROW
             } else {
@@ -921,15 +938,15 @@ impl PianoRoll {
             }
         }
         painter.add(Shape::mesh(mesh));
-        self.paint_lines(&painter, f, g.grid);
+        self.paint_lines(&painter, frame, geometry.grid);
 
         // Notes.
-        let bottom = g.bottom_key();
+        let bottom = geometry.bottom_key();
         let ghosts: BTreeSet<NoteId> = match &self.gesture {
             Some(Gesture::Move(d)) if d.copy && d.begun => d.notes.iter().copied().collect(),
             _ => BTreeSet::new(),
         };
-        let mut batch = NoteBatch::with_capacity(ppp, f.window.len());
+        let mut batch = NoteBatch::with_capacity(ppp, frame.window.len());
         let mut visible = Vec::new();
         if let Some(Gesture::Move(d)) = &self.gesture
             && d.begun
@@ -940,10 +957,10 @@ impl PianoRoll {
                 ..NoteState::REST
             };
             for (start, length, pitch) in &d.originals {
-                if (bottom..=g.top_key).contains(pitch) {
+                if (bottom..=geometry.top_key).contains(pitch) {
                     batch.add(
-                        g.note_rect(*start, *length, *pitch),
-                        f.palette,
+                        geometry.note_rect(*start, *length, *pitch),
+                        frame.palette,
                         *pitch,
                         0,
                         ghost,
@@ -951,34 +968,34 @@ impl PianoRoll {
                 }
             }
         }
-        for i in f.window.clone() {
-            let n = &f.notes[i];
-            if n.pitch < bottom || n.pitch > g.top_key {
+        for i in frame.window.clone() {
+            let n = &frame.notes[i];
+            if n.pitch < bottom || n.pitch > geometry.top_key {
                 continue;
             }
-            let rect = g.note_rect(n.start, n.length, n.pitch);
-            if rect.right() < g.grid.left() || rect.left() > g.grid.right() {
+            let rect = geometry.note_rect(n.start, n.length, n.pitch);
+            if rect.right() < geometry.grid.left() || rect.left() > geometry.grid.right() {
                 continue;
             }
             let state = NoteState {
                 hovered: hovered == Some(n.id),
-                selected: f.selection.contains(&n.id),
-                playing: f.playing.is_some_and(|at| edit::sounds_at(n, at)),
-                muted: f.muted,
+                selected: frame.selection.contains(&n.id),
+                playing: frame.playing.is_some_and(|at| edit::sounds_at(n, at)),
+                muted: frame.muted,
                 ghost: ghosts.contains(&n.id),
             };
-            batch.add(rect, f.palette, n.pitch, n.velocity, state);
+            batch.add(rect, frame.palette, n.pitch, n.velocity, state);
             visible.push((i, rect, state));
         }
         if let Some(Gesture::Pencil(d)) = &self.gesture {
             let state = NoteState {
                 selected: true,
-                muted: f.muted,
+                muted: frame.muted,
                 ..NoteState::REST
             };
             batch.add(
-                g.note_rect(d.start, d.length, d.pitch),
-                f.palette,
+                geometry.note_rect(d.start, d.length, d.pitch),
+                frame.palette,
                 d.pitch,
                 m::NEW_NOTE_VELOCITY,
                 state,
@@ -987,18 +1004,21 @@ impl PianoRoll {
         batch.paint(&painter);
 
         if let Some(Gesture::Box(d)) = &self.gesture {
-            let r = Rect::from_two_pos(d.origin, d.current).intersect(g.grid);
+            let r = Rect::from_two_pos(d.origin, d.current).intersect(geometry.grid);
             px::fill(&painter, r, 0.0, color32(color::CANVAS_BOX_SELECT));
             px::inner_border(&painter, r, color32(color::ACCENT));
         }
-        self.paint_playhead(&painter, f, g.grid);
-        if f.notes.is_empty() && !f.live && !matches!(self.gesture, Some(Gesture::Pencil(_))) {
+        self.paint_playhead(&painter, frame, geometry.grid);
+        if frame.notes.is_empty()
+            && !frame.live
+            && !matches!(self.gesture, Some(Gesture::Pencil(_)))
+        {
             let galley = painter.layout_job(fonts::layout_job(
                 t.piano_roll_empty_hint(),
                 &typography::UI,
                 color32(color::TEXT_3),
             ));
-            let pos = empty_hint_pos(g.grid, galley.size());
+            let pos = empty_hint_pos(geometry.grid, galley.size());
             painter.galley(
                 pos2(px::snap(pos.x, ppp), px::snap(pos.y, ppp)),
                 galley,
@@ -1114,12 +1134,18 @@ impl PianoRoll {
     }
 
     /// Value tooltips while dragging (`ix.note`: "Wert im Tooltip"; length like the clip edge).
-    fn tooltips(&self, ui: &Ui, f: &Frame<'_>) {
+    fn tooltips(&self, ui: &Ui, frame: &Frame<'_>) {
         let (rect, text) = match &self.gesture {
-            Some(Gesture::Velocity(d)) => (d.rect, d.displayed_velocity().to_string()),
-            Some(Gesture::Resize(d)) => (
-                d.rect,
-                edit::fmt_note_length((d.length + d.last).max(Tick(1)), f.meter),
+            Some(Gesture::Velocity(velocity_drag)) => (
+                velocity_drag.rect,
+                velocity_drag.displayed_velocity().to_string(),
+            ),
+            Some(Gesture::Resize(resize_drag)) => (
+                resize_drag.rect,
+                edit::fmt_note_length(
+                    (resize_drag.length + resize_drag.last).max(Tick(1)),
+                    frame.meter,
+                ),
             ),
             Some(Gesture::Lane { last: Some(v), .. }) => {
                 let at = ui.input(|i| i.pointer.latest_pos()).unwrap_or_default();
@@ -1135,12 +1161,12 @@ impl PianoRoll {
 
     /// AccessKit nodes: the keyboard with its visible keys, the grid with its visible notes
     /// ("Note C4, 9.1.000"), the velocity lane, the empty-clip hint.
-    fn access(&self, ui: &mut Ui, f: &Frame<'_>, visible: &[(usize, Rect, NoteState)]) {
+    fn access(&self, ui: &mut Ui, frame: &Frame<'_>, visible: &[(usize, Rect, NoteState)]) {
         let t = komponist_ui::lang(ui.ctx());
-        let g = &f.geo;
+        let geometry = &frame.geo;
         let mut keys = ui.new_child(
             UiBuilder::new()
-                .max_rect(g.keys)
+                .max_rect(geometry.keys)
                 .id_salt("komponist_piano_roll_keys")
                 .accessibility_role(Role::Group)
                 .accessibility_label(t.piano_roll_keyboard()),
@@ -1148,14 +1174,14 @@ impl PianoRoll {
         if !ui.ctx().has_accesskit_node(keys.unique_id()) {
             return;
         }
-        group_bounds(&keys, g.keys);
-        for pitch in g.bottom_key()..=g.top_key {
-            let top = g.row_top(pitch);
+        group_bounds(&keys, geometry.keys);
+        for pitch in geometry.bottom_key()..=geometry.top_key {
+            let top = geometry.row_top(pitch);
             let r = Rect::from_min_max(
-                pos2(g.keys.left(), top),
-                pos2(g.keys.right(), top + g.key_height),
+                pos2(geometry.keys.left(), top),
+                pos2(geometry.keys.right(), top + geometry.key_height),
             )
-            .intersect(g.keys);
+            .intersect(geometry.keys);
             node(
                 &mut keys,
                 base_id("key").with(pitch),
@@ -1168,37 +1194,38 @@ impl PianoRoll {
 
         let mut notes = ui.new_child(
             UiBuilder::new()
-                .max_rect(g.grid)
+                .max_rect(geometry.grid)
                 .id_salt("komponist_piano_roll_notes")
                 .accessibility_role(Role::Grid)
                 .accessibility_label(t.piano_roll_notes()),
         );
-        group_bounds(&notes, g.grid);
+        group_bounds(&notes, geometry.grid);
         for (i, rect, state) in visible.iter().take(m::MAX_NOTE_NODES) {
-            let n = &f.notes[*i];
+            let n = &frame.notes[*i];
             let access = note_access(
                 komponist_ui::lang(ui.ctx()),
                 n.pitch,
-                f.clip.start + n.start,
-                f.meter,
+                frame.clip.start + n.start,
+                frame.meter,
                 *state,
             );
             node(
                 &mut notes,
                 base_id("note").with(n.id.0),
-                rect.intersect(g.grid),
+                rect.intersect(geometry.grid),
                 access.role,
                 &access.name,
                 access.selected,
             );
         }
-        if f.notes.is_empty() && !f.live {
+        if frame.notes.is_empty() && !frame.live {
             let galley = notes.painter().layout_job(fonts::layout_job(
                 t.piano_roll_empty_hint(),
                 &typography::UI,
                 Color32::PLACEHOLDER,
             ));
-            let r = Rect::from_min_size(empty_hint_pos(g.grid, galley.size()), galley.size());
+            let r =
+                Rect::from_min_size(empty_hint_pos(geometry.grid, galley.size()), galley.size());
             node(
                 &mut notes,
                 base_id("empty"),
@@ -1208,7 +1235,7 @@ impl PianoRoll {
                 None,
             );
         }
-        if let Some(lane) = g.lane {
+        if let Some(lane) = geometry.lane {
             // The group's node is created with the child `Ui`; the lane has no child nodes.
             let group = ui.new_child(
                 UiBuilder::new()

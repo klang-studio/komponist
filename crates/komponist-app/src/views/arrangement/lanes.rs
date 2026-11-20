@@ -9,17 +9,19 @@ use komponist_i18n::Lang;
 use komponist_ipc::NoteName;
 use komponist_model::edits::{NewClip, NewClipContent};
 use komponist_model::format::fmt_length;
-use komponist_model::{ClipContent, ClipId, Grid, Project, TICKS_PER_STEP, Tick, Track};
+use komponist_model::{Clip, ClipContent, ClipId, Grid, Project, TICKS_PER_STEP, Tick, Track};
 use komponist_tokens::egui_support::color32;
-use komponist_tokens::{color, radius};
+use komponist_tokens::{TrackPalette, color, radius};
 use komponist_ui::px;
 use komponist_ui::timeline::clip::{body_height, paint_clip_with_header_reserve};
 use komponist_ui::timeline::{
-    AudioFileState, AudioLook, ClipEdge, ClipModel, ClipState, GridSpec, PreviewMesh, clip_access,
-    grid_lines, paint_clip, paint_clip_ghost, paint_grid, paint_playhead,
+    Access, AudioFileState, AudioLook, ClipEdge, ClipModel, ClipState, GridSpec, PreviewMesh,
+    clip_access, grid_lines, paint_clip, paint_clip_ghost, paint_grid, paint_playhead,
 };
 use komponist_ui::tooltip::{self, Placement};
 
+use super::cache::PreviewCache;
+use super::files::AudioCache;
 use super::geometry::{ClipHit, Geometry, Zone};
 use super::{
     Arrangement, Drag, EdgeDrag, MoveDrag, click_mode, metrics, register, select_clips,
@@ -379,15 +381,15 @@ impl Arrangement {
         &mut self,
         ctx: &mut ViewCtx<'_>,
         project: &Project,
-        g: &Geometry,
+        geometry: &Geometry,
         pos: Pos2,
         free: bool,
     ) {
         let view = ctx.ui.arrangement;
-        let ppt = f64::from(g.axis.px_per_tick);
+        let pixels_per_tick = f64::from(geometry.axis.px_per_tick);
         match &mut self.drag {
             Some(Drag::Move(m)) => {
-                let raw = m.grab_start.0 as f64 + f64::from(pos.x - m.origin.x) / ppt;
+                let raw = m.grab_start.0 as f64 + f64::from(pos.x - m.origin.x) / pixels_per_tick;
                 let audio = m.clips.iter().any(|id| {
                     m.source
                         .find_clip(*id)
@@ -411,7 +413,7 @@ impl Arrangement {
                 } else {
                     snap_tick(raw, &view, free, project) - m.grab_start
                 };
-                let row = g.nearest_row(pos.y).unwrap_or(m.grab_row);
+                let row = geometry.nearest_row(pos.y).unwrap_or(m.grab_row);
                 let track_delta = row as i32 - m.grab_row as i32;
                 if m.clips.iter().any(|id| {
                     m.source.find_clip(*id).is_some_and(|(track, _)| {
@@ -472,7 +474,7 @@ impl Arrangement {
                 start,
                 origin,
             }) => {
-                let raw = start.0 as f64 + f64::from(pos.x - *origin) / ppt;
+                let raw = start.0 as f64 + f64::from(pos.x - *origin) / pixels_per_tick;
                 let start = snap_tick(raw, &view, free, project);
                 ctx.send(Action::Edit(EditAction::TrimAudioClipStart {
                     clip: *clip,
@@ -498,7 +500,7 @@ impl Arrangement {
                                 - 2.0 * komponist_ui::widgets::metrics::timeline::CLIP_INSET_Y,
                             |row| {
                                 body_height(
-                                g.lane(row).height()
+                                geometry.lane(row).height()
                                     - 2.0 * komponist_ui::widgets::metrics::timeline::CLIP_INSET_Y,
                             )
                             },
@@ -516,7 +518,8 @@ impl Arrangement {
                 } else {
                     let sign = if *zone == Zone::FadeIn { 1.0 } else { -1.0 };
                     let ticks = Tick(
-                        (*value as f64 + sign * f64::from(pos.x - origin.x) / ppt).round() as i64,
+                        (*value as f64 + sign * f64::from(pos.x - origin.x) / pixels_per_tick)
+                            .round() as i64,
                     )
                     .max(Tick::ZERO)
                     .min(*length);
@@ -539,7 +542,9 @@ impl Arrangement {
                         None
                     }
                 });
-                if let Some(mut length) = edge_length(e, pos.x, ppt, &view, free, project) {
+                if let Some(mut length) =
+                    edge_length(e, pos.x, pixels_per_tick, &view, free, project)
+                {
                     if let Some(a) = audio {
                         length = length.min(a.max_length(project.tempo));
                         e.length = length;
@@ -551,7 +556,7 @@ impl Arrangement {
                 }
             }
             Some(Drag::Loop(e)) => {
-                if let Some(length) = edge_length(e, pos.x, ppt, &view, free, project) {
+                if let Some(length) = edge_length(e, pos.x, pixels_per_tick, &view, free, project) {
                     // Repetitions of the content period; a drag that stays within one pass keeps
                     // the clip's loop setting. Step clips repeat their pattern by themselves.
                     let loop_length = match e.period {
@@ -569,7 +574,7 @@ impl Arrangement {
             Some(Drag::Box { origin, base, last }) => {
                 let area = Rect::from_two_pos(*origin, pos);
                 let mut ids = base.clone();
-                for c in g.clips_in(project, area) {
+                for c in geometry.clips_in(project, area) {
                     if !ids.contains(&c) {
                         ids.push(c);
                     }
@@ -588,375 +593,91 @@ impl Arrangement {
         ui: &mut Ui,
         painter: &Painter,
         ctx: &mut ViewCtx<'_>,
-        project: &Arc<Project>,
-        g: &Geometry,
+        project: &Project,
+        geometry: &Geometry,
     ) {
-        let any_solo = project.any_solo();
-        let gates = any_solo.then(|| komponist_model::routing::gates(project));
-        let (t0, t1) = g.visible_ticks();
-        let ppt = g.axis.px_per_tick;
-        let hover = if self.drag.is_none() {
-            pointer_over(ui, g.lanes()).and_then(|p| g.clip_at(project, p))
+        let gates = project
+            .any_solo()
+            .then(|| komponist_model::routing::gates(project));
+        let hovered = if self.drag.is_none() {
+            pointer_over(ui, geometry.lanes())
+                .and_then(|pos| geometry.clip_at(project, pos))
+                .map(|hit| hit.clip)
         } else {
             None
         };
         let (copying, trimming) = match &self.drag {
-            Some(Drag::Move(m)) if m.copy => (Some(m.clips.as_slice()), None),
-            Some(Drag::Trim(e) | Drag::Loop(e)) => (None, Some(e.clip)),
+            Some(Drag::Move(drag)) if drag.copy => (Some(drag.clips.as_slice()), None),
+            Some(Drag::Trim(drag) | Drag::Loop(drag)) => (None, Some(drag.clip)),
             _ => (None, None),
         };
-        let lanes = g.lanes().intersect(g.tracks);
+        let frame = ClipFrame {
+            project,
+            geometry,
+            visible_ticks: geometry.visible_ticks(),
+            lanes: geometry.lanes().intersect(geometry.tracks),
+            hovered,
+            trimming,
+            access_language: komponist_ui::lang(ui.ctx()),
+        };
+        let mut caches = ClipCaches {
+            previews: &mut self.previews,
+            audio: &mut self.audio,
+        };
         let mut ghosts = Vec::new();
-        for i in g.visible_rows() {
-            let track = &project.tracks[i];
-            if !g.rows[i].takes_clips() {
+        for row in geometry.visible_rows() {
+            if !geometry.rows[row].takes_clips() {
                 continue;
             }
-            let implied = gates
+            let track = &project.tracks[row];
+            let solo_muted = gates
                 .as_ref()
-                .is_some_and(|gt| !track.channel.solo && gt.output(track.id).solo_muted);
-            let track_muted = track.channel.mute || implied;
-            let palette = self.palettes.get(track.hue.0);
+                .is_some_and(|gates| !track.channel.solo && gates.output(track.id).solo_muted);
+            let lane = ClipLane {
+                row,
+                track,
+                palette: self.palettes.get(track.hue.0),
+                muted: track.channel.mute || solo_muted,
+            };
             for clip in &track.clips {
-                if clip.end() < t0 {
+                if clip.end() < frame.visible_ticks.0 {
                     continue;
                 }
-                if clip.start > t1 {
+                if clip.start > frame.visible_ticks.1 {
                     break;
                 }
-                let rect = g.clip_rect(i, clip);
-                if copying.is_some_and(|c| c.contains(&clip.id)) {
-                    ghosts.push(rect);
+                if copying.is_some_and(|clips| clips.contains(&clip.id)) {
+                    ghosts.push(geometry.clip_rect(row, clip));
                     continue;
                 }
-                let selected = ctx.ui.selection.clips.contains(&clip.id);
-                let state = ClipState {
-                    hovered: hover.is_some_and(|h| h.clip == clip.id),
-                    selected,
-                    trim: (trimming == Some(clip.id)).then_some(ClipEdge::End),
-                };
-                let preview = self.previews.get(clip, ppt, body_height(rect.height()));
-                let audio = self.audio.get(
-                    clip,
-                    project.tempo,
-                    ctx.project_dir,
-                    ppt,
-                    body_height(rect.height()),
-                    ui.ctx(),
-                );
-                let message = audio
-                    .as_ref()
-                    .map_or_else(String::new, |(state, _)| match state {
-                        AudioFileState::Missing => {
-                            if let ClipContent::Audio(a) = &clip.content {
-                                ctx.lang.audio_clip_missing(
-                                    a.file.abs.file_name().unwrap_or_default().to_string_lossy(),
-                                )
-                            } else {
-                                String::new()
-                            }
-                        }
-                        AudioFileState::Pending => ctx.lang.audio_clip_peaks().to_owned(),
-                        AudioFileState::Ready => String::new(),
-                    });
-                let audio_look = audio.and_then(|(file, wave)| {
-                    let ClipContent::Audio(a) = &clip.content else {
-                        return None;
-                    };
-                    Some(AudioLook {
-                        takes: (a.takes.len() > 1).then_some((a.active_take + 1, a.takes.len())),
-                        file,
-                        wave,
-                        repitch: (a.time_mode == komponist_model::ClipTimeMode::RePitch)
-                            .then_some(a.original_tempo.bpm),
-                        repitch_label: ctx.lang.audio_clip_repitch_badge(),
-                        message: &message,
-                        gain_db: a.gain_db,
-                        fade_in: a.fade_in.0 as f32 * ppt,
-                        fade_out: a.fade_out.0 as f32 * ppt,
-                    })
-                });
-                let model = ClipModel {
-                    name: &clip.name,
-                    palette,
-                    muted: clip.mute || track_muted,
-                    recording: false,
-                    loop_mark: clip.loop_length.is_some(),
-                    audio: audio_look.as_ref(),
-                    preview: Some(preview),
-                };
-                let badge = !clip.automation.is_empty()
-                    && rect.width() >= metrics::CLIP_AUTOMATION_THRESHOLD;
-                let reserve = if badge {
-                    metrics::CLIP_LOOP_ICON_INSET + metrics::CLIP_AUTOMATION_ICON / 2.0
-                } else {
-                    0.0
-                };
-                paint_clip_with_header_reserve(painter, rect, &model, state, reserve);
-                if badge {
-                    let icon = Rect::from_center_size(
-                        pos2(
-                            rect.right() - metrics::CLIP_LOOP_ICON_INSET,
-                            rect.top() + komponist_tokens::size::CLIP_HEADER / 2.0,
-                        ),
-                        egui::vec2(metrics::CLIP_AUTOMATION_ICON, metrics::CLIP_AUTOMATION_ICON),
-                    );
-                    let mut badge = ui.new_child(
-                        egui::UiBuilder::new()
-                            .max_rect(icon)
-                            .id_salt(("clip-automation-icon", clip.id)),
-                    );
-                    badge.set_clip_rect(painter.clip_rect().intersect(rect));
-                    komponist_ui::icons::paint_in(
-                        &badge,
-                        icon,
-                        komponist_tokens::Icon::Spline,
-                        color32(color::TEXT_1),
-                    );
-                }
-                if selected {
-                    paint_selected_edge(painter, rect);
-                }
-                let access = clip_access(
-                    komponist_ui::lang(ui.ctx()),
-                    &model,
-                    clip.start,
-                    clip.end(),
-                    project.meter,
-                    state,
-                );
-                let node = ui.interact(
-                    rect.intersect(lanes),
-                    Id::unique(("komponist_arrangement_clip", clip.id.0)),
-                    Sense::hover(),
-                );
-                register(&node, &access);
-                if !clip.automation.is_empty() {
-                    komponist_ui::widgets::accesskit(&node, |node| {
-                        node.set_description(ctx.lang.automation_title())
-                    });
-                }
-                if let ClipContent::Audio(audio) = &clip.content {
-                    audio_clip_menu(ui, ctx, clip, audio, &node);
-                }
-                if let Some(audio) = audio_look.as_ref() {
-                    let parts = komponist_ui::timeline::audio_parts(
-                        rect,
-                        audio.fade_in,
-                        audio.fade_out,
-                        audio.gain_db,
-                    );
-                    if state.selected || state.hovered {
-                        let ms = |px: f32| {
-                            format!(
-                                "{:.0} ms",
-                                f64::from(px / ppt) / komponist_model::PPQ as f64 * 60000.0
-                                    / project.tempo.bpm
-                            )
-                        };
-                        let trim_w = komponist_ui::widgets::metrics::timeline::CLIP_HANDLE_WIDTH
-                            .min(rect.width() / 3.0);
-                        for (key, r, name, value) in [
-                            (
-                                "fade-in",
-                                parts.fade_in,
-                                ctx.lang.audio_clip_fade_in(),
-                                ms(audio.fade_in),
-                            ),
-                            (
-                                "fade-out",
-                                parts.fade_out,
-                                ctx.lang.audio_clip_fade_out(),
-                                ms(audio.fade_out),
-                            ),
-                            (
-                                "gain",
-                                parts.gain_band,
-                                ctx.lang.audio_clip_gain_line(),
-                                format!("{:.1} dB", audio.gain_db).replace('-', "−"),
-                            ),
-                            (
-                                "start",
-                                Rect::from_min_max(
-                                    rect.min,
-                                    pos2(rect.left() + trim_w, rect.bottom()),
-                                ),
-                                ctx.lang.audio_clip_start(),
-                                komponist_model::format::fmt_pos(clip.start, project.meter),
-                            ),
-                            (
-                                "end",
-                                Rect::from_min_max(
-                                    pos2(rect.right() - trim_w, rect.top()),
-                                    rect.max,
-                                ),
-                                ctx.lang.audio_clip_end(),
-                                komponist_model::format::fmt_pos(clip.end(), project.meter),
-                            ),
-                        ] {
-                            let access =
-                                komponist_ui::timeline::Access::new(egui::Role::Slider, name)
-                                    .with_value(value);
-                            let response = ui.interact(
-                                r.intersect(lanes),
-                                Id::unique(("audio-control", clip.id.0, key)),
-                                Sense::hover(),
-                            );
-                            register(&response, &access);
-                        }
-                    }
-                    if hover.is_some_and(|h| h.clip == clip.id)
-                        && ui
-                            .input(|i| i.pointer.hover_pos())
-                            .is_some_and(|p| p.y < parts.body.top())
-                        && let Some(orig) = audio.repitch
-                    {
-                        tooltip::show_value(
-                            ui.ctx(),
-                            Id::unique(("audio-repitch", clip.id.0)),
-                            rect,
-                            Placement::Above,
-                            &ctx.lang.audio_clip_repitch_tip(orig, project.tempo.bpm),
-                        );
-                    }
-                }
+                paint_saved_clip(&mut caches, ui, painter, ctx, &frame, &lane, clip);
             }
-            // Audio capture is drawn directly from bounded writer telemetry. Never request
-            // peaks from an unfinished WAV; the current lap may contain only a partial bucket.
-            for (rec, progress) in ctx
-                .audio_recording
-                .into_iter()
-                .flat_map(|recording| recording.overlays(track.id))
-                .filter(|(rec, _)| rec.end() >= t0 && rec.start <= t1)
-            {
-                let rect = g.clip_rect(i, rec);
-                let foreground = ctx
-                    .audio_recording
-                    .and_then(|recording| recording.clip(track.id))
-                    .filter(|current| current.id != rec.id && current.start == rec.start);
-                let background_clip = foreground.map(|current| g.clip_rect(i, current));
-                let visible = if let Some(covered) = background_clip {
-                    if covered.right() >= rect.right() {
-                        continue;
-                    }
-                    rect.with_min_x(covered.right())
-                } else {
-                    rect
-                };
-                let bounds = visible.intersect(lanes);
-                if !bounds.is_positive() {
-                    continue;
-                }
-                let clipped;
-                let overlay_painter = if background_clip.is_some() {
-                    clipped = painter.with_clip_rect(painter.clip_rect().intersect(visible));
-                    &clipped
-                } else {
-                    painter
-                };
-                let data = crate::views::audio_editor::live::summaries(
-                    &progress.waveform,
-                    progress.channels,
-                );
-                let wave = komponist_ui::timeline::WaveMesh::from_summaries(
-                    &data,
-                    &komponist_ui::timeline::WaveSpec {
-                        width: (rect.width()
-                            - 2.0 * komponist_ui::widgets::metrics::timeline::CLIP_INSET_X)
-                            .max(0.0),
-                        px_per_tick: ppt,
-                        body_height: body_height(rect.height()),
-                        offset: 0,
-                        frames: progress.frames,
-                        gain: 1.0,
-                        fade_in: 0.0,
-                        fade_out: 0.0,
-                    },
-                );
-                let audio = AudioLook {
-                    file: AudioFileState::Ready,
-                    wave: &wave,
-                    takes: None,
-                    repitch: None,
-                    repitch_label: "",
-                    message: "",
-                    gain_db: 0.0,
-                    fade_in: 0.0,
-                    fade_out: 0.0,
-                };
-                let model = ClipModel {
-                    name: if background_clip.is_some() {
-                        ""
-                    } else {
-                        rec.name.trim_start_matches("● ")
-                    },
-                    palette,
-                    muted: false,
-                    recording: true,
-                    loop_mark: false,
-                    audio: Some(&audio),
-                    preview: None,
-                };
-                paint_clip(overlay_painter, rect, &model, ClipState::REST);
-                let model = ClipModel {
-                    name: rec.name.trim_start_matches("● "),
-                    ..model
-                };
-                let access = clip_access(
-                    ctx.lang,
-                    &model,
-                    rec.start,
-                    rec.end(),
-                    project.meter,
-                    ClipState::REST,
-                );
-                let node = ui.interact(
-                    bounds,
-                    Id::unique(("arrangement-audio-recording", rec.id.0)),
-                    Sense::hover(),
-                );
-                register(&node, &access);
-            }
-            // The take being recorded on this track (S02): red head, growing with the playhead.
-            if let Some(rec) = ctx.recording.and_then(|r| r.clip(track.id))
-                && rec.end() >= t0
-                && rec.start <= t1
-            {
-                let rect = g.clip_rect(i, rec);
-                let preview = PreviewMesh::from_clip(rec, ppt, body_height(rect.height()));
-                let model = ClipModel {
-                    name: &rec.name,
-                    palette,
-                    muted: false,
-                    recording: true,
-                    loop_mark: false,
-                    audio: None,
-                    preview: Some(&preview),
-                };
-                paint_clip(painter, rect, &model, ClipState::REST);
-                let access = clip_access(
-                    komponist_ui::lang(ui.ctx()),
-                    &model,
-                    rec.start,
-                    rec.end(),
-                    project.meter,
-                    ClipState::REST,
-                );
-                let node = ui.interact(
-                    rect.intersect(lanes),
-                    Id::unique(("komponist_arrangement_recording", track.id.0)),
-                    Sense::hover(),
-                );
-                register(&node, &access);
-            }
+            paint_recorded_audio_clips(ui, painter, ctx, &frame, &lane);
+            paint_recorded_midi_clip(ui, painter, ctx, &frame, &lane);
         }
-        for r in ghosts {
-            paint_clip_ghost(painter, r);
+        for rect in ghosts {
+            paint_clip_ghost(painter, rect);
         }
+        self.paint_clip_gestures(ui, painter, ctx, &frame);
+    }
 
+    fn paint_clip_gestures(
+        &self,
+        ui: &Ui,
+        painter: &Painter,
+        ctx: &ViewCtx<'_>,
+        frame: &ClipFrame<'_>,
+    ) {
+        let ClipFrame {
+            project,
+            geometry,
+            lanes,
+            ..
+        } = *frame;
+        let pixels_per_tick = geometry.axis.px_per_tick;
         if let Some(Drag::Move(m)) = &self.drag
             && let Some(p) = ui.input(|i| i.pointer.hover_pos())
-            && let Some(row) = g.row_at(p.y)
+            && let Some(row) = geometry.row_at(p.y)
             && let Some(grabbed) = m.source.tracks.get(m.grab_row)
             && project.tracks[row].kind != grabbed.kind
         {
@@ -971,7 +692,7 @@ impl Arrangement {
             tooltip::show_value(
                 ui.ctx(),
                 Id::unique("audio-refused-kind"),
-                g.lane(row),
+                geometry.lane(row),
                 Placement::Above,
                 reason,
             );
@@ -981,13 +702,13 @@ impl Arrangement {
         // says why.
         if let Some(Drag::Move(_)) = &self.drag
             && let Some(p) = ui.input(|i| i.pointer.hover_pos())
-            && let Some(i) = g.bus_row_at(p.y)
+            && let Some(i) = geometry.bus_row_at(p.y)
         {
-            let r = Rect::from_x_y_ranges(Rangef::point(p.x), g.rows[i].y);
+            let tip = Rect::from_x_y_ranges(Rangef::point(p.x), geometry.rows[i].y);
             tooltip::show_value(
                 ui.ctx(),
                 Id::unique("komponist_arrangement_no_clips"),
-                r,
+                tip,
                 Placement::Above,
                 ctx.lang.routing_no_clips(),
             );
@@ -997,7 +718,7 @@ impl Arrangement {
             && let Some((_, clip)) = project.find_clip(e.clip)
             && let ClipContent::Audio(a) = &clip.content
             && let Some(p) = ui.input(|i| i.pointer.hover_pos())
-            && e.end.0 as f64 + f64::from(p.x - e.origin) / f64::from(ppt)
+            && e.end.0 as f64 + f64::from(p.x - e.origin) / f64::from(pixels_per_tick)
                 > (e.start + a.max_length(project.tempo)).0 as f64
         {
             ui.ctx().set_cursor_icon(CursorIcon::NotAllowed);
@@ -1006,7 +727,7 @@ impl Arrangement {
                 .iter()
                 .position(|t| t.clips.iter().any(|c| c.id == e.clip))
             {
-                let r = g.clip_rect(i, clip);
+                let r = geometry.clip_rect(i, clip);
                 px::vline(painter, r.right(), r.y_range(), color32(color::STATE_ERROR));
                 tooltip::show_value(
                     ui.ctx(),
@@ -1019,46 +740,54 @@ impl Arrangement {
         }
 
         // Show the material the move/copy will cut, using the immutable gesture-start document.
-        if let Some(Drag::Move(m)) = &self.drag
-            && let Some((delta, rows)) = m.last
+        if let Some(Drag::Move(move_drag)) = &self.drag
+            && let Some((delta, rows)) = move_drag.last
         {
-            for id in &m.clips {
-                if let Some((from, clip)) = m.source.find_clip(*id)
+            for id in &move_drag.clips {
+                if let Some((from, clip)) = move_drag.source.find_clip(*id)
                     && matches!(clip.content, ClipContent::Audio(_))
-                    && let Some(row) = m
+                    && let Some(row) = move_drag
                         .source
                         .tracks
                         .iter()
                         .position(|t| t.id == from.id)
                         .and_then(|i| usize::try_from(i as i32 + rows).ok())
-                    && let Some(track) = m.source.tracks.get(row)
+                    && let Some(track) = move_drag.source.tracks.get(row)
                 {
                     let start = clip.start + delta;
                     let end = clip.end() + delta;
                     for below in &track.clips {
-                        if m.clips.contains(&below.id) {
+                        if move_drag.clips.contains(&below.id) {
                             continue;
                         }
                         let left = start.max(below.start);
                         let right = end.min(below.end());
                         if left < right {
-                            let r = g.clip_rect(row, below).intersect(Rect::from_x_y_ranges(
-                                Rangef::new(g.axis.x(left), g.axis.x(right)),
-                                g.lane(row).y_range(),
-                            ));
+                            let overlap =
+                                geometry
+                                    .clip_rect(row, below)
+                                    .intersect(Rect::from_x_y_ranges(
+                                        Rangef::new(geometry.axis.x(left), geometry.axis.x(right)),
+                                        geometry.lane(row).y_range(),
+                                    ));
                             px::fill(
                                 painter,
-                                r,
+                                overlap,
                                 0.0,
                                 color32(color::ACCENT).gamma_multiply(
                                     komponist_ui::widgets::metrics::timeline::CUT_SHADE_ALPHA,
                                 ),
                             );
-                            px::vline(painter, r.left(), r.y_range(), color32(color::ACCENT));
+                            px::vline(
+                                painter,
+                                overlap.left(),
+                                overlap.y_range(),
+                                color32(color::ACCENT),
+                            );
                             tooltip::show_value(
                                 ui.ctx(),
                                 Id::unique("audio-overlap"),
-                                r,
+                                overlap,
                                 Placement::Above,
                                 ctx.lang.audio_clip_cuts_below(),
                             );
@@ -1076,7 +805,7 @@ impl Arrangement {
                 .position(|t| t.clips.iter().any(|c| c.id == e.clip))
             && let Some((_, clip)) = project.find_clip(e.clip)
         {
-            let r = g.clip_rect(i, clip);
+            let r = geometry.clip_rect(i, clip);
             let edge = Rect::from_x_y_ranges(Rangef::point(r.right()), r.y_range());
             tooltip::show_value(
                 ui.ctx(),
@@ -1100,17 +829,445 @@ impl Arrangement {
         }
 
         // The playhead over the lanes.
-        let ph = ctx.engine.playhead();
-        if ph >= Tick::ZERO {
-            let x = g.axis.x(ph);
-            if g.lane_x.contains(x) {
+        let playhead = ctx.engine.playhead();
+        if playhead >= Tick::ZERO {
+            let x = geometry.axis.x(playhead);
+            if geometry.lane_x.contains(x) {
                 paint_playhead(
                     painter,
                     x,
-                    Rangef::new(g.tracks.top() - 1.0, g.tracks.bottom()),
+                    Rangef::new(geometry.tracks.top() - 1.0, geometry.tracks.bottom()),
                 );
             }
         }
+    }
+}
+
+struct ClipFrame<'a> {
+    project: &'a Project,
+    geometry: &'a Geometry,
+    visible_ticks: (Tick, Tick),
+    lanes: Rect,
+    hovered: Option<ClipId>,
+    trimming: Option<ClipId>,
+    access_language: Lang,
+}
+
+struct ClipLane<'a> {
+    row: usize,
+    track: &'a Track,
+    palette: &'a TrackPalette,
+    muted: bool,
+}
+
+struct ClipCaches<'a> {
+    previews: &'a mut PreviewCache,
+    audio: &'a mut AudioCache,
+}
+
+struct ClipPresentation<'a> {
+    rect: Rect,
+    state: ClipState,
+    model: ClipModel<'a>,
+    access: Access,
+    automation_badge: bool,
+}
+
+/// Builds the clip model and accessible description while both caches are borrowed.
+fn paint_saved_clip(
+    caches: &mut ClipCaches<'_>,
+    ui: &mut Ui,
+    painter: &Painter,
+    ctx: &mut ViewCtx<'_>,
+    frame: &ClipFrame<'_>,
+    lane: &ClipLane<'_>,
+    clip: &Arc<Clip>,
+) {
+    let rect = frame.geometry.clip_rect(lane.row, clip);
+    let state = ClipState {
+        hovered: frame.hovered == Some(clip.id),
+        selected: ctx.ui.selection.clips.contains(&clip.id),
+        trim: (frame.trimming == Some(clip.id)).then_some(ClipEdge::End),
+    };
+    let height = body_height(rect.height());
+    let pixels_per_tick = frame.geometry.axis.px_per_tick;
+    let preview = caches.previews.get(clip, pixels_per_tick, height);
+    let audio = match &clip.content {
+        ClipContent::Audio(source) => caches
+            .audio
+            .get(
+                clip,
+                frame.project.tempo,
+                ctx.project_dir,
+                pixels_per_tick,
+                height,
+                ui.ctx(),
+            )
+            .map(|(state, wave)| (source, state, wave)),
+        _ => None,
+    };
+    let message = match audio {
+        Some((source, AudioFileState::Missing, _)) => ctx.lang.audio_clip_missing(
+            source
+                .file
+                .abs
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+        ),
+        Some((_, AudioFileState::Pending, _)) => ctx.lang.audio_clip_peaks().to_owned(),
+        _ => String::new(),
+    };
+    let audio = audio.map(|(source, file, wave)| AudioLook {
+        takes: (source.takes.len() > 1).then_some((source.active_take + 1, source.takes.len())),
+        file,
+        wave,
+        repitch: (source.time_mode == komponist_model::ClipTimeMode::RePitch)
+            .then_some(source.original_tempo.bpm),
+        repitch_label: ctx.lang.audio_clip_repitch_badge(),
+        message: &message,
+        gain_db: source.gain_db,
+        fade_in: source.fade_in.0 as f32 * pixels_per_tick,
+        fade_out: source.fade_out.0 as f32 * pixels_per_tick,
+    });
+    let model = ClipModel {
+        name: &clip.name,
+        palette: lane.palette,
+        muted: clip.mute || lane.muted,
+        recording: false,
+        loop_mark: clip.loop_length.is_some(),
+        audio: audio.as_ref(),
+        preview: Some(preview),
+    };
+    let presentation = ClipPresentation {
+        rect,
+        state,
+        access: clip_access(
+            frame.access_language,
+            &model,
+            clip.start,
+            clip.end(),
+            frame.project.meter,
+            state,
+        ),
+        model,
+        automation_badge: !clip.automation.is_empty()
+            && rect.width() >= metrics::CLIP_AUTOMATION_THRESHOLD,
+    };
+    paint_presented_clip(ui, painter, ctx, frame, clip, &presentation);
+}
+
+fn paint_presented_clip(
+    ui: &mut Ui,
+    painter: &Painter,
+    ctx: &mut ViewCtx<'_>,
+    frame: &ClipFrame<'_>,
+    clip: &Clip,
+    presentation: &ClipPresentation<'_>,
+) {
+    let ClipPresentation {
+        rect,
+        state,
+        model,
+        access,
+        automation_badge,
+    } = presentation;
+    let reserve = if *automation_badge {
+        metrics::CLIP_LOOP_ICON_INSET + metrics::CLIP_AUTOMATION_ICON / 2.0
+    } else {
+        0.0
+    };
+    paint_clip_with_header_reserve(painter, *rect, model, *state, reserve);
+    if *automation_badge {
+        let icon = Rect::from_center_size(
+            pos2(
+                rect.right() - metrics::CLIP_LOOP_ICON_INSET,
+                rect.top() + komponist_tokens::size::CLIP_HEADER / 2.0,
+            ),
+            egui::vec2(metrics::CLIP_AUTOMATION_ICON, metrics::CLIP_AUTOMATION_ICON),
+        );
+        let mut badge = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(icon)
+                .id_salt(("clip-automation-icon", clip.id)),
+        );
+        badge.set_clip_rect(painter.clip_rect().intersect(*rect));
+        komponist_ui::icons::paint_in(
+            &badge,
+            icon,
+            komponist_tokens::Icon::Spline,
+            color32(color::TEXT_1),
+        );
+    }
+    if state.selected {
+        paint_selected_edge(painter, *rect);
+    }
+    let node = ui.interact(
+        rect.intersect(frame.lanes),
+        Id::unique(("komponist_arrangement_clip", clip.id.0)),
+        Sense::hover(),
+    );
+    register(&node, access);
+    if !clip.automation.is_empty() {
+        komponist_ui::widgets::accesskit(&node, |node| {
+            node.set_description(ctx.lang.automation_title())
+        });
+    }
+    if let ClipContent::Audio(audio) = &clip.content {
+        audio_clip_menu(ui, ctx, clip, audio, &node);
+    }
+    if let Some(audio) = model.audio {
+        present_audio_controls(ui, ctx.lang, frame, clip, presentation, audio);
+    }
+}
+
+fn present_audio_controls(
+    ui: &mut Ui,
+    language: Lang,
+    frame: &ClipFrame<'_>,
+    clip: &Clip,
+    presentation: &ClipPresentation<'_>,
+    audio: &AudioLook<'_>,
+) {
+    let rect = presentation.rect;
+    let parts =
+        komponist_ui::timeline::audio_parts(rect, audio.fade_in, audio.fade_out, audio.gain_db);
+    let project = frame.project;
+    if presentation.state.selected || presentation.state.hovered {
+        let pixels_per_tick = frame.geometry.axis.px_per_tick;
+        let milliseconds = |pixels: f32| {
+            format!(
+                "{:.0} ms",
+                f64::from(pixels / pixels_per_tick) / komponist_model::PPQ as f64 * 60000.0
+                    / project.tempo.bpm
+            )
+        };
+        let trim_width =
+            komponist_ui::widgets::metrics::timeline::CLIP_HANDLE_WIDTH.min(rect.width() / 3.0);
+        for (key, bounds, name, value) in [
+            (
+                "fade-in",
+                parts.fade_in,
+                language.audio_clip_fade_in(),
+                milliseconds(audio.fade_in),
+            ),
+            (
+                "fade-out",
+                parts.fade_out,
+                language.audio_clip_fade_out(),
+                milliseconds(audio.fade_out),
+            ),
+            (
+                "gain",
+                parts.gain_band,
+                language.audio_clip_gain_line(),
+                format!("{:.1} dB", audio.gain_db).replace('-', "−"),
+            ),
+            (
+                "start",
+                Rect::from_min_max(rect.min, pos2(rect.left() + trim_width, rect.bottom())),
+                language.audio_clip_start(),
+                komponist_model::format::fmt_pos(clip.start, project.meter),
+            ),
+            (
+                "end",
+                Rect::from_min_max(pos2(rect.right() - trim_width, rect.top()), rect.max),
+                language.audio_clip_end(),
+                komponist_model::format::fmt_pos(clip.end(), project.meter),
+            ),
+        ] {
+            let access = Access::new(egui::Role::Slider, name).with_value(value);
+            let response = ui.interact(
+                bounds.intersect(frame.lanes),
+                Id::unique(("audio-control", clip.id.0, key)),
+                Sense::hover(),
+            );
+            register(&response, &access);
+        }
+    }
+    if presentation.state.hovered
+        && ui
+            .input(|input| input.pointer.hover_pos())
+            .is_some_and(|pos| pos.y < parts.body.top())
+        && let Some(original) = audio.repitch
+    {
+        tooltip::show_value(
+            ui.ctx(),
+            Id::unique(("audio-repitch", clip.id.0)),
+            rect,
+            Placement::Above,
+            &language.audio_clip_repitch_tip(original, project.tempo.bpm),
+        );
+    }
+}
+
+fn paint_recorded_audio_clips(
+    ui: &mut Ui,
+    painter: &Painter,
+    ctx: &ViewCtx<'_>,
+    frame: &ClipFrame<'_>,
+    lane: &ClipLane<'_>,
+) {
+    let ClipLane {
+        row,
+        track,
+        palette,
+        ..
+    } = *lane;
+    let ClipFrame {
+        geometry,
+        lanes,
+        visible_ticks: (visible_start, visible_end),
+        ..
+    } = *frame;
+    let pixels_per_tick = geometry.axis.px_per_tick;
+    // Audio capture is drawn directly from bounded writer telemetry. Never request
+    // peaks from an unfinished WAV; the current lap may contain only a partial bucket.
+    for (clip, progress) in ctx
+        .audio_recording
+        .into_iter()
+        .flat_map(|recording| recording.overlays(track.id))
+        .filter(|(clip, _)| clip.end() >= visible_start && clip.start <= visible_end)
+    {
+        let rect = geometry.clip_rect(row, clip);
+        let foreground = ctx
+            .audio_recording
+            .and_then(|recording| recording.clip(track.id))
+            .filter(|current| current.id != clip.id && current.start == clip.start);
+        let background_clip = foreground.map(|current| geometry.clip_rect(row, current));
+        let visible = if let Some(covered) = background_clip {
+            if covered.right() >= rect.right() {
+                continue;
+            }
+            rect.with_min_x(covered.right())
+        } else {
+            rect
+        };
+        let bounds = visible.intersect(lanes);
+        if !bounds.is_positive() {
+            continue;
+        }
+        let clipped;
+        let overlay_painter = if background_clip.is_some() {
+            clipped = painter.with_clip_rect(painter.clip_rect().intersect(visible));
+            &clipped
+        } else {
+            painter
+        };
+        let data =
+            crate::views::audio_editor::live::summaries(&progress.waveform, progress.channels);
+        let wave = komponist_ui::timeline::WaveMesh::from_summaries(
+            &data,
+            &komponist_ui::timeline::WaveSpec {
+                width: (rect.width()
+                    - 2.0 * komponist_ui::widgets::metrics::timeline::CLIP_INSET_X)
+                    .max(0.0),
+                px_per_tick: pixels_per_tick,
+                body_height: body_height(rect.height()),
+                offset: 0,
+                frames: progress.frames,
+                gain: 1.0,
+                fade_in: 0.0,
+                fade_out: 0.0,
+            },
+        );
+        let audio = AudioLook {
+            file: AudioFileState::Ready,
+            wave: &wave,
+            takes: None,
+            repitch: None,
+            repitch_label: "",
+            message: "",
+            gain_db: 0.0,
+            fade_in: 0.0,
+            fade_out: 0.0,
+        };
+        let model = ClipModel {
+            name: if background_clip.is_some() {
+                ""
+            } else {
+                clip.name.trim_start_matches("● ")
+            },
+            palette,
+            muted: false,
+            recording: true,
+            loop_mark: false,
+            audio: Some(&audio),
+            preview: None,
+        };
+        paint_clip(overlay_painter, rect, &model, ClipState::REST);
+        let model = ClipModel {
+            name: clip.name.trim_start_matches("● "),
+            ..model
+        };
+        let access = clip_access(
+            ctx.lang,
+            &model,
+            clip.start,
+            clip.end(),
+            frame.project.meter,
+            ClipState::REST,
+        );
+        let node = ui.interact(
+            bounds,
+            Id::unique(("arrangement-audio-recording", clip.id.0)),
+            Sense::hover(),
+        );
+        register(&node, &access);
+    }
+}
+
+fn paint_recorded_midi_clip(
+    ui: &mut Ui,
+    painter: &Painter,
+    ctx: &ViewCtx<'_>,
+    frame: &ClipFrame<'_>,
+    lane: &ClipLane<'_>,
+) {
+    let ClipLane {
+        row,
+        track,
+        palette,
+        ..
+    } = *lane;
+    let ClipFrame {
+        geometry,
+        lanes,
+        visible_ticks: (visible_start, visible_end),
+        ..
+    } = *frame;
+    let pixels_per_tick = geometry.axis.px_per_tick;
+    // The take being recorded on this track (S02): red head, growing with the playhead.
+    if let Some(clip) = ctx.recording.and_then(|r| r.clip(track.id))
+        && clip.end() >= visible_start
+        && clip.start <= visible_end
+    {
+        let rect = geometry.clip_rect(row, clip);
+        let preview = PreviewMesh::from_clip(clip, pixels_per_tick, body_height(rect.height()));
+        let model = ClipModel {
+            name: &clip.name,
+            palette,
+            muted: false,
+            recording: true,
+            loop_mark: false,
+            audio: None,
+            preview: Some(&preview),
+        };
+        paint_clip(painter, rect, &model, ClipState::REST);
+        let access = clip_access(
+            frame.access_language,
+            &model,
+            clip.start,
+            clip.end(),
+            frame.project.meter,
+            ClipState::REST,
+        );
+        let node = ui.interact(
+            rect.intersect(lanes),
+            Id::unique(("komponist_arrangement_recording", track.id.0)),
+            Sense::hover(),
+        );
+        register(&node, &access);
     }
 }
 
