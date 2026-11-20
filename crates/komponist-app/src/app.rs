@@ -290,7 +290,7 @@ impl App {
     pub fn show_start_screen(&mut self) {
         self.ui.screen = Screen::Start;
         self.ui.focus = FocusArea::default();
-        self.ui.start.selected = 0;
+        self.ui.start.reset_selection();
     }
 
     /// The recent projects, newest first.
