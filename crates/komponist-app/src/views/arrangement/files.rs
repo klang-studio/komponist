@@ -561,6 +561,37 @@ mod tests {
         (calls, resume)
     }
 
+    fn receive_metadata(
+        cache: &mut AudioCache,
+        clip: &Arc<Clip>,
+        ctx: &egui::Context,
+    ) -> Arc<PoolFile> {
+        let ClipContent::Audio(source) = &clip.content else {
+            panic!("audio clip");
+        };
+        assert_eq!(read_wave(cache, clip, None, ctx).0, AudioFileState::Pending);
+        // Wait for this file's metadata job, independently of the shared peak decoder.
+        cache.files[&(source.file.clone(), None)]
+            .pending
+            .as_ref()
+            .expect("local metadata job scheduled")
+            .result
+            .recv_timeout(Duration::from_secs(5))
+            .expect("local metadata worker replied")
+            .expect("local WAV was found")
+    }
+
+    fn wait_for_worker_count(cache: &AudioCache, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while cache.workers.load(Ordering::Relaxed) != count {
+            assert!(
+                Instant::now() < deadline,
+                "abandoned metadata workers did not exit"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn a_new_document_can_load_with_both_old_workers_blocked_and_threads_stay_bounded() {
         let scratch = tempfile::tempdir().unwrap();
@@ -586,18 +617,12 @@ mod tests {
         }
 
         cache.clear();
-        let ready = wait_for_wave(&mut cache, &local, None, &ctx, |state, _| {
-            state == AudioFileState::Ready
-        });
-        assert!(!ready.is_empty());
+        let local_file = receive_metadata(&mut cache, &local, &ctx);
+        assert_eq!(local_file.path(), path.canonicalize().unwrap());
         assert_eq!(cache.workers.load(Ordering::Relaxed), MAX_LOOKUP_WORKERS);
 
         cache.clear();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while cache.workers.load(Ordering::Relaxed) != LOOKUP_WORKERS {
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        wait_for_worker_count(&cache, LOOKUP_WORKERS);
         let (new_calls, resume_new) = block_lookup_workers(&mut cache);
         for clip in &old {
             read_wave(&mut cache, clip, None, &ctx);
@@ -618,10 +643,11 @@ mod tests {
             resume_old.send(()).unwrap();
             resume_new.send(()).unwrap();
         }
-        let restored = wait_for_wave(&mut cache, &local, None, &ctx, |state, _| {
-            state == AudioFileState::Ready
-        });
-        assert_eq!(restored, ready);
+        wait_for_worker_count(&cache, 0);
+        assert!(cache.worker_retry.is_some());
+        cache.worker_retry = Some(Instant::now() - REFRESH_INTERVAL);
+        let retried = receive_metadata(&mut cache, &local, &ctx);
+        assert_eq!(retried.id(), local_file.id());
     }
 
     #[test]
