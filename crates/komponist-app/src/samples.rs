@@ -7,7 +7,7 @@
 //!   "Sample laden …" or found with "Suchen …" becomes a link in the device state
 //!   (`komponist_builtin::sampler::links`: absolute path and path relative to the project file);
 //!   the device host loads it in the background.
-//! - **Saving** rewrites the links that resolve for the file being written ([`App::rebase_samples`]),
+//! - **Saving** rewrites the links that resolve for the file being written ([`rebase_project_links`]),
 //!   so "Speichern unter" into another folder keeps relative paths right. The rewrite is outside the
 //!   history and reaches every undo and redo step, each from its own state: undo after a save
 //!   still restores that step's parameters and samples, with paths for the new folder (#86).
@@ -287,25 +287,6 @@ impl App {
         });
     }
 
-    /// Before saving to `file`: every link that resolves gets its absolute path refreshed and its
-    /// relative path computed for `file`'s folder.
-    pub(crate) fn rebase_samples(&mut self, file: &Path) {
-        let Some(new_dir) = file.parent() else { return };
-        let new_dir = if new_dir.as_os_str().is_empty() {
-            sampler::links::absolute(Path::new(""))
-        } else {
-            sampler::links::absolute(new_dir)
-        };
-        let old_dir = self.project_dir();
-        self.doc.rewrite_untracked(|p| {
-            rewrite_links(
-                p,
-                |state| links::rebase(state, old_dir.as_deref(), &new_dir),
-                |file| Some(file.rebased(old_dir.as_deref(), &new_dir)),
-            )
-        });
-    }
-
     /// "Sammeln und speichern": collects into the samples folder of the project file, then saves.
     pub(crate) fn collect_and_save(&mut self) {
         let Some(file) = self.project_path.clone() else {
@@ -506,6 +487,24 @@ fn relink_audio_file(
     let found = file.resolve(old_dir)?;
     let to = collector.placed(&found).unwrap_or(found);
     Some(file.moved_to(&to, project_dir))
+}
+
+/// Rewrites a project or history entry for the destination folder while it still resolves
+/// through the current project directory. Recording copies already have their final paths.
+pub(crate) fn rebase_project_links(
+    project: &Project,
+    old_dir: Option<&Path>,
+    new_dir: &Path,
+    destination: impl Fn(PathBuf) -> PathBuf,
+) -> Option<Project> {
+    rewrite_links(
+        project,
+        |state| links::rebase_with(state, old_dir, new_dir, &destination),
+        |file| {
+            let path = destination(file.resolve(old_dir)?);
+            Some(file.moved_to(&path, new_dir))
+        },
+    )
 }
 
 /// `project` with the Sampler links rewritten by `samplers` and the audio clip files by `audio`
