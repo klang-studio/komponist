@@ -409,17 +409,22 @@ fn reselecting_the_same_input_retries_saving_settings() {
     settings.audio.host = HostKind::Null;
     settings.audio_input = Some(previous.clone());
     settings.save(&path).unwrap();
-    // A directory at the temporary-write path fails on all platforms, independent of user IDs.
-    let blocked = path.with_extension("json.tmp");
-    std::fs::create_dir(&blocked).unwrap();
+    // A directory at the destination blocks promotion while preserving the previous file.
+    let previous_file = path.with_extension("backup");
+    std::fs::rename(&path, &previous_file).unwrap();
+    std::fs::create_dir(&path).unwrap();
     let engine = EngineSync::null(Box::new(BuiltinHost::new()));
     let (project, _) = audio(AudioInput::None);
     let mut app = App::new(Document::new(project), engine, settings, Some(path.clone()));
     let choose = || Action::Settings(SettingsAction::SetAudioInput(Some(other.clone())));
     app.dispatch(choose());
     assert_eq!(app.settings().audio_input, Some(other.clone()));
-    assert_eq!(Settings::load(&path).unwrap().audio_input, Some(previous));
-    std::fs::remove_dir(blocked).unwrap();
+    assert_eq!(
+        Settings::load(&previous_file).unwrap().audio_input,
+        Some(previous)
+    );
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::rename(previous_file, &path).unwrap();
     app.dispatch(choose());
     assert_eq!(Settings::load(&path).unwrap().audio_input, Some(other));
     std::fs::remove_dir_all(dir).unwrap();

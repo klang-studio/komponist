@@ -27,6 +27,7 @@
 //! Thread: UI thread (files are small; reading the recent projects' summaries happens once when
 //! the start screen shows).
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -112,21 +113,37 @@ pub fn load_project(path: &Path) -> Result<Project, ProjectIoError> {
 /// exist: saving never creates folders (a mistyped name must not leave folders behind).
 pub fn save_project(path: &Path, project: &Project) -> Result<(), ProjectIoError> {
     let json = persist::to_json(project).map_err(|e| ProjectIoError::Format(path.to_owned(), e))?;
-    write_atomic(path, &json, false)
+    write_atomic(path, &json, false).map_err(|error| ProjectIoError::Io(path.to_owned(), error))
 }
 
-/// Writes `text` to `path` via `<path>.tmp` and a rename; `create_dir` creates the folder first
-/// (the config folder of the recent list).
-fn write_atomic(path: &Path, text: &str, create_dir: bool) -> Result<(), ProjectIoError> {
-    let io = |e| ProjectIoError::Io(path.to_owned(), e);
-    if create_dir && let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir).map_err(io)?;
+/// Writes and closes a file in an exclusive staging directory on the destination filesystem.
+/// Renaming publishes the whole file at once, and dropping the temporary directory cleans up
+/// staging after either a success or an error. Only config writers create a missing parent.
+pub(crate) fn write_atomic(path: &Path, text: &str, create_dir: bool) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if create_dir {
+        std::fs::create_dir_all(parent)?;
     }
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, text).map_err(io)?;
-    std::fs::rename(&tmp, path).map_err(io)
+
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".komponist-save-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    let staging = builder.tempdir_in(parent)?;
+    let staged_file = staging.path().join("document");
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&staged_file)?;
+    file.write_all(text.as_bytes())?;
+    drop(file);
+    std::fs::rename(staged_file, path)
 }
 
 /// `path` with the `.komponist` extension (added if it has another one or none).
@@ -228,7 +245,7 @@ impl RecentList {
     pub fn save(&self, path: &Path) -> Result<(), ProjectIoError> {
         let text = serde_json::to_string_pretty(self)
             .map_err(|e| ProjectIoError::Recent(path.to_owned(), e))?;
-        write_atomic(path, &text, true)
+        write_atomic(path, &text, true).map_err(|error| ProjectIoError::Io(path.to_owned(), error))
     }
 
     /// Puts `path` at the front (once), keeping [`RECENT_LIMIT`] entries.
@@ -932,7 +949,10 @@ mod tests {
         assert!(!dir.join("sub").exists());
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         save_project(&path, &project).unwrap();
-        assert!(!dir.join("sub/Night Drive.komponist.tmp").exists());
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1
+        );
         assert_eq!(load_project(&path).unwrap(), project);
         let summary = ProjectSummary::read(&path).unwrap();
         assert_eq!(summary.name, "Night Drive");
@@ -941,6 +961,67 @@ mod tests {
         assert_eq!(summary.meta(komponist_i18n::Lang::De), "124 BPM · 6 Spuren");
         assert!(summary.modified.is_some());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_project_writers_each_publish_a_complete_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Song.komponist");
+        let projects = [
+            Project::new("First project"),
+            Project::new("Second project"),
+        ];
+        let legacy_tmp = path.with_extension("komponist.tmp");
+        std::fs::create_dir(&legacy_tmp).unwrap();
+        let ready = std::sync::Barrier::new(projects.len());
+        std::thread::scope(|scope| {
+            for project in &projects {
+                let path = &path;
+                let ready = &ready;
+                scope.spawn(move || {
+                    ready.wait();
+                    save_project(path, project).unwrap();
+                });
+            }
+        });
+        assert!(projects.contains(&load_project(&path).unwrap()));
+        assert!(legacy_tmp.is_dir());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn a_failed_promotion_keeps_the_destination_and_removes_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Blocked.komponist");
+        std::fs::create_dir(&path).unwrap();
+
+        let error = save_project(&path, &Project::new("Song")).unwrap_err();
+        assert!(matches!(error, ProjectIoError::Io(destination, _) if destination == path));
+        assert!(path.is_dir());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_and_promotion_use_the_same_physical_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let chosen = dir.path().join("chosen");
+        let actual = dir.path().join("actual");
+        let child = actual.join("child");
+        std::fs::create_dir(&chosen).unwrap();
+        std::fs::create_dir_all(&child).unwrap();
+        let link = chosen.join("link");
+        std::os::unix::fs::symlink(&child, &link).unwrap();
+
+        let project = Project::new("Song");
+        save_project(&link.join("../Song.komponist"), &project).unwrap();
+        assert_eq!(
+            load_project(&actual.join("Song.komponist")).unwrap(),
+            project
+        );
+        assert_eq!(std::fs::read_dir(chosen).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(actual).unwrap().count(), 2);
     }
 
     #[test]
