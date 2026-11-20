@@ -415,6 +415,7 @@ fn a_prolonged_queue_stall_interrupts_capture_and_can_recover() {
         Some(EngineEvent::RecordingInterrupted {
             at: Tick(SHORT_LOOP),
             first_incomplete_lap,
+            triggering_track: None,
         }) if *first_incomplete_lap as usize == recording.len() - 2
     ));
     rig.process_with(50, &[midi(0, 1, [0x90, 64, 100])], 0);

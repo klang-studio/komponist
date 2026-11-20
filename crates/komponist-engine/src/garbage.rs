@@ -26,7 +26,8 @@ pub(crate) struct Outbox {
     queue: rtrb::Producer<EngineEvent>,
     hold: Vec<Garbage>,
     capture_reserve: usize,
-    capture_overrun: Option<u32>,
+    /// Earliest incomplete lap and the track whose note first exhausted the reserve.
+    capture_overrun: Option<(u32, TrackId)>,
 }
 
 impl Outbox {
@@ -68,7 +69,7 @@ impl Outbox {
         noted_loss: &mut [Option<u32>; 2],
         telemetry: &Telemetry,
     ) {
-        if let Some(first) = &mut self.capture_overrun {
+        if let Some((first, _)) = &mut self.capture_overrun {
             *first = (*first).min(lap);
             telemetry.dropped_events.fetch_add(1, Ordering::Relaxed);
             return;
@@ -81,7 +82,7 @@ impl Outbox {
             if self.send_capture(EngineEvent::RecordingNoteLoss { track, lap }) {
                 *seen = Some(lap);
             } else {
-                self.capture_overrun = Some(lap);
+                self.capture_overrun = Some((lap, track));
             }
         }
     }
@@ -92,13 +93,14 @@ impl Outbox {
 
     /// RT. Called only when a capture event could not fit. The final slot is reserved for this.
     pub(crate) fn interrupt_capture(&mut self, at: Tick, lap: u32) {
-        let first_incomplete_lap = self
+        let (first_incomplete_lap, triggering_track) = self
             .capture_overrun
             .take()
-            .map_or(lap, |lost| lost.min(lap));
+            .map_or((lap, None), |(lost, track)| (lost.min(lap), Some(track)));
         let result = self.queue.push(EngineEvent::RecordingInterrupted {
             at,
             first_incomplete_lap,
+            triggering_track,
         });
         debug_assert!(result.is_ok());
     }
@@ -211,6 +213,47 @@ mod tests {
         slots.sort_unstable();
         assert_eq!(slots, [0, 1, 2, 3, 4]);
         assert_eq!(outbox.held(), 0);
+    }
+
+    #[test]
+    fn the_terminal_event_names_a_track_whose_first_loss_cannot_fit() {
+        let (producer, mut consumer) = rtrb::RingBuffer::new(3);
+        let mut outbox = Outbox::new(producer, 2);
+        let telemetry = Telemetry::new();
+        assert!(outbox.send(EngineEvent::LoopWrapped { to: Tick::ZERO }, &telemetry));
+        assert!(outbox.send_capture(EngineEvent::CountInDone { at: Tick::ZERO }));
+        let track = TrackId(7);
+        outbox.send_recorded(
+            EngineEvent::RecordedNoteOn {
+                track,
+                tick: Tick(1),
+                lap: 0,
+                key: 60,
+                velocity: 100,
+            },
+            track,
+            0,
+            &mut [None; 2],
+            &telemetry,
+        );
+        assert!(outbox.capture_overrun());
+        outbox.interrupt_capture(Tick(5), 1);
+        assert!(matches!(
+            consumer.pop().unwrap(),
+            EngineEvent::LoopWrapped { .. }
+        ));
+        assert!(matches!(
+            consumer.pop().unwrap(),
+            EngineEvent::CountInDone { .. }
+        ));
+        assert!(matches!(
+            consumer.pop().unwrap(),
+            EngineEvent::RecordingInterrupted {
+                at: Tick(5),
+                first_incomplete_lap: 0,
+                triggering_track: Some(TrackId(7)),
+            }
+        ));
     }
 
     #[test]

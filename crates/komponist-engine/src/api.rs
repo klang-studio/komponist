@@ -307,6 +307,9 @@ pub enum EngineEvent {
         /// Earliest lap affected by the interruption. Latency-corrected input may belong
         /// to an already closed lap.
         first_incomplete_lap: u32,
+        /// The track whose note loss exhausted the reserve, if any. It may have been
+        /// armed during recording and have no previous note events.
+        triggering_track: Option<TrackId>,
     },
     /// Playback jumped from the loop end back to the loop start. During loop recording each wrap
     /// starts a new take (S02).

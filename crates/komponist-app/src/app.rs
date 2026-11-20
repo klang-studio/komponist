@@ -622,9 +622,28 @@ impl App {
             EngineEvent::RecordingInterrupted {
                 at,
                 first_incomplete_lap,
+                triggering_track,
             } => {
+                if self.recording.is_none()
+                    && triggering_track.is_some()
+                    && let Some(audio) = self.audio_recording.running()
+                {
+                    // An audio recording can gain its first MIDI input after capture starts.
+                    let project = self.doc.project();
+                    let start = if first_incomplete_lap == 0 {
+                        audio.start
+                    } else {
+                        project.loop_range.start
+                    };
+                    self.recording = Some(Recording::new(project, start, self.lang));
+                }
                 if let Some(recording) = &mut self.recording {
-                    recording.interrupt(at, first_incomplete_lap);
+                    recording.interrupt(
+                        at,
+                        first_incomplete_lap,
+                        triggering_track,
+                        self.doc.project(),
+                    );
                 }
                 if self.recording.is_some() || self.audio_recording.is_active() {
                     self.finish_take_at(at);
@@ -3645,6 +3664,7 @@ mod tests {
         app.engine_event(&EngineEvent::RecordingInterrupted {
             at: Tick(20),
             first_incomplete_lap: 0,
+            triggering_track: None,
         });
         assert!(app.recording().is_none());
         assert_eq!(app.project().track(track).unwrap().clips[0].name, name);
@@ -3659,6 +3679,32 @@ mod tests {
         assert!(app.recording().is_some());
         assert!(!app.shell.take_expected);
         assert!(!app.has_unsaved_take());
+    }
+
+    #[test]
+    fn an_interrupted_take_includes_the_track_whose_first_loss_overflowed() {
+        let mut app = recording_app();
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO });
+        let first = app.recording().unwrap().first().unwrap().0;
+        app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+        let added = app
+            .project()
+            .tracks
+            .iter()
+            .find(|track| track.id != first)
+            .unwrap()
+            .id;
+        assert!(app.recording().unwrap().clip(added).is_none());
+        app.engine_event(&EngineEvent::RecordingInterrupted {
+            at: Tick(20),
+            first_incomplete_lap: 0,
+            triggering_track: Some(added),
+        });
+        assert_eq!(
+            app.project().track(added).unwrap().clips[0].name,
+            app.lang.record_take_incomplete(2)
+        );
     }
 
     #[test]

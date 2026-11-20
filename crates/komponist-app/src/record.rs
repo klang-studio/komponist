@@ -179,7 +179,21 @@ impl Recording {
     }
 
     /// A prolonged queue stall stopped capture before more transitions could be reported.
-    pub fn interrupt(&mut self, at: Tick, first_incomplete_lap: u32) {
+    pub fn interrupt(
+        &mut self,
+        at: Tick,
+        first_incomplete_lap: u32,
+        triggering_track: Option<TrackId>,
+        project: &Project,
+    ) {
+        if let Some(triggering_track) = triggering_track {
+            for track in project.tracks.iter().filter(|track| {
+                track.kind == komponist_model::TrackKind::Midi
+                    && (track.arm || track.id == triggering_track)
+            }) {
+                self.lane_mut(track.id);
+            }
+        }
         let current = self.laps.len() - 1;
         let first = (first_incomplete_lap as usize).min(current);
         for lane in &mut self.lanes {
