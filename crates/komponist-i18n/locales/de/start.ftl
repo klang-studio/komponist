@@ -36,6 +36,9 @@ start-no-recent = Noch keine Projekte geöffnet.
 # S09 list with a filter that matches nothing.
 start-no-match = Kein Projekt passt zum Filter.
 
+# S09 recent row while its summary is read.
+start-file-loading = Lädt …
+
 # S09 recent row of a file that is gone.
 start-file-missing = Datei fehlt
 

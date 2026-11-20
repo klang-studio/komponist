@@ -24,8 +24,7 @@
 //! - Saving under a new path renames the project after the file ("Unbenannt" saved as
 //!   `Hafenlicht.komponist` becomes "Hafenlicht"), outside the undo history.
 //!
-//! Thread: UI thread (files are small; reading the recent projects' summaries happens once when
-//! the start screen shows).
+//! Explicit opens and writes run on the UI thread. The start screen reads summaries on a worker.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
