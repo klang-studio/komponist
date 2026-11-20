@@ -8,7 +8,7 @@ use komponist_model::automation::{
     TrackAutomation, value_at_fractional,
 };
 use komponist_model::params::{ParamKind, Scale, db_to_p, p_to_db, to_normalized, to_plain};
-use komponist_model::{SendId, Tick};
+use komponist_model::{DeviceId, SendId, Tick};
 
 use crate::macros::{self, CompiledMapping, MacroProgram};
 use crate::processor::{Event, EventKind, ParameterEditKind};
@@ -22,6 +22,8 @@ pub enum EngineTarget {
     Slot {
         /// Processor slot.
         slot: SlotId,
+        /// Device whose parameter this targets, even if the slot is later reused.
+        device: DeviceId,
         /// Processor parameter id.
         wire_id: u32,
     },
@@ -851,8 +853,8 @@ impl State {
         source: &TrackAutomation,
     ) {
         let ongoing = |target| {
-            matches!(target, EngineTarget::Slot { slot, .. }
-            if chain.iter().any(|device| device.slot == slot))
+            matches!(target, EngineTarget::Slot { slot, device, .. }
+            if chain.iter().any(|entry| entry.slot == slot && entry.device == device))
         };
         self.restores.retain(|restore| {
             !restore.delivered && ongoing(restore.target) && index(new, restore.target).is_none()
@@ -964,7 +966,7 @@ impl State {
         let mut sequence = 0u32;
         self.restores.retain(|restore| !restore.delivered);
         for (index, restore) in self.restores.iter().enumerate() {
-            if let EngineTarget::Slot { slot, wire_id } = restore.target
+            if let EngineTarget::Slot { slot, wire_id, .. } = restore.target
                 && running(slot)
             {
                 dropped += push_event(
@@ -987,7 +989,7 @@ impl State {
             }
         }
         for (index, (lane, cursor)) in lanes.iter().zip(&mut self.cursors).enumerate() {
-            let EngineTarget::Slot { slot, wire_id } = lane.target else {
+            let EngineTarget::Slot { slot, wire_id, .. } = lane.target else {
                 continue;
             };
             if !running(slot) {
@@ -1205,7 +1207,7 @@ impl State {
         let mut dropped = 0;
         let mut sequence = FIRST_MACRO_EVENT;
         for (index, mapping) in program.targets.iter().copied().enumerate() {
-            let EngineTarget::Slot { slot, wire_id } = mapping.target else {
+            let EngineTarget::Slot { slot, wire_id, .. } = mapping.target else {
                 continue;
             };
             if !running(slot) {
@@ -1594,6 +1596,7 @@ mod tests {
         CompiledTarget::new(
             EngineTarget::Slot {
                 slot: SlotId(0),
+                device: DeviceId(1),
                 wire_id: 0,
             },
             AutomationTarget::Param {
@@ -1696,6 +1699,7 @@ mod tests {
         let mapping = CompiledMapping::new(
             EngineTarget::Slot {
                 slot: SlotId(0),
+                device: DeviceId(1),
                 wire_id: 0,
             },
             PlainMap::linear(0.0, 1.0, 0),
