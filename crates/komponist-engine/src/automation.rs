@@ -10,7 +10,7 @@ use komponist_model::automation::{
 use komponist_model::params::{ParamKind, Scale, db_to_p, p_to_db, to_normalized, to_plain};
 use komponist_model::{SendId, Tick};
 
-use crate::macros::{self, MacroProgram};
+use crate::macros::{self, CompiledMapping, MacroProgram};
 use crate::processor::{Event, EventKind, ParameterEditKind};
 use crate::program::{ChainSlot, SlotId};
 use crate::sequencer::{EventList, Window};
@@ -1179,44 +1179,133 @@ impl State {
     pub(crate) fn prepare_macros(
         &mut self,
         program: &MacroProgram,
+        lanes: &[CompiledTarget],
+        window: Window<'_>,
         time: u64,
-        rate: f64,
         mut running: impl FnMut(SlotId) -> bool,
     ) -> u32 {
-        if program.targets.is_empty() {
-            return 0;
-        }
-        let next_reassert = time + macros::reassert_frames(rate);
-        let mut dropped = 0;
-        let mut staged = false;
-        for (index, mapping) in program.targets.iter().copied().enumerate() {
-            if let EngineTarget::Slot { slot, wire_id } = mapping.target
-                && running(slot)
-                && let Some((input, value)) = self.macros.slot_value(index, mapping, time)
+        let clock = MixerClock {
+            window,
+            time,
+            delay: 0,
+            wrapped_loop: None,
+        };
+        self.macros.values = self.macros.base;
+        for (lane, cursor) in lanes.iter().zip(&self.cursors) {
+            if let EngineTarget::Macro(index) = lane.target
+                && let Some(mut values) = MixerValues::from_lane(lane, cursor, clock)
             {
-                let event = SlotEvent {
-                    slot,
-                    event: Event {
-                        offset: 0,
-                        kind: EventKind::Param {
-                            id: wire_id,
-                            value: mapping.map.plain(value),
-                        },
-                    },
-                    important: true,
-                    sequence: u32::MAX - (program.targets.len() - index) as u32,
-                    delivery: Delivery::Macro {
-                        index,
-                        input,
-                        value,
-                        next_reassert,
-                    },
-                };
-                dropped += push_event(&mut self.params, event);
-                staged = true;
+                let base = self.macros.base[usize::from(index)];
+                self.macros.values[usize::from(index)] = values.at(window.frames - 1, base);
             }
         }
-        if staged {
+
+        // Order macros after any direct lane restore at the same offset.
+        const FIRST_MACRO_EVENT: u32 = 1 << 31;
+        let mut dropped = 0;
+        let mut sequence = FIRST_MACRO_EVENT;
+        for (index, mapping) in program.targets.iter().copied().enumerate() {
+            let EngineTarget::Slot { slot, wire_id } = mapping.target else {
+                continue;
+            };
+            if !running(slot) {
+                continue;
+            }
+            let base = self.macros.base[usize::from(mapping.driver)];
+            let lane = lanes
+                .binary_search_by_key(&EngineTarget::Macro(mapping.driver), |lane| lane.target)
+                .ok();
+            let mut values =
+                lane.and_then(|i| MixerValues::from_lane(&lanes[i], &self.cursors[i], clock));
+            let mut preview = self.macros.slot_state(index);
+            let chase = preview.needs_value() || lane.is_some_and(|i| self.cursors[i].chase);
+            let mut last = None;
+            let mut emit = |offset: u32, input: f32, important: bool| {
+                let elapsed = time + u64::from(offset);
+                if let Some(value) = preview.slot_value(mapping, input, elapsed) {
+                    let next_reassert = elapsed + macros::reassert_frames(window.rate);
+                    preview.delivered(input, value, next_reassert);
+                    let event = SlotEvent {
+                        slot,
+                        event: Event {
+                            offset,
+                            kind: EventKind::Param {
+                                id: wire_id,
+                                value: mapping.map.plain(value),
+                            },
+                        },
+                        important,
+                        sequence,
+                        delivery: Delivery::Macro {
+                            index,
+                            input,
+                            value,
+                            next_reassert,
+                        },
+                    };
+                    sequence += 1;
+                    last = Some(event);
+                    dropped += push_event(&mut self.params, event);
+                }
+            };
+            if let Some(values) = &mut values {
+                if !window.playing || chase {
+                    emit(0, values.at(0, base), true);
+                }
+                if window.playing
+                    && !matches!(
+                        values.cursor.playback_gesture(),
+                        Gesture::Held { .. } | Gesture::Latch
+                    )
+                {
+                    let lane = values.lane;
+                    let frame = |tick| window.map.tick_to_sample(tick, window.rate);
+                    let mut point = lane.point_bound(|tick| frame(tick) < window.start);
+                    let step = ramp_step(window.rate);
+                    let end = window.start + i64::from(window.frames);
+                    let mut grid = window.start + (-window.start).rem_euclid(step);
+                    while grid < end || lane.point(point).is_some_and(|p| frame(p.tick) < end) {
+                        let next = lane.point(point).map_or(end, |p| frame(p.tick));
+                        let sample = grid.min(next);
+                        let offset = (sample - window.start) as u32;
+                        emit(offset, values.at(offset, base), sample == next);
+                        if sample == next {
+                            point = lane.point_bound(|tick| frame(tick) <= sample);
+                        }
+                        if sample == grid {
+                            grid += step;
+                        }
+                    }
+                }
+            } else {
+                emit(0, base, true);
+            }
+            // Keep the last value of each mapping if the event list runs out of room.
+            if let Some(last) = last {
+                if let Some(event) = self
+                    .params
+                    .iter_mut()
+                    .rev()
+                    .find(|e| e.sequence == last.sequence)
+                {
+                    event.important = true;
+                } else {
+                    dropped += push_event(
+                        &mut self.params,
+                        SlotEvent {
+                            important: true,
+                            ..last
+                        },
+                    );
+                }
+            }
+        }
+        for (lane, cursor) in lanes.iter().zip(&mut self.cursors) {
+            if matches!(lane.target, EngineTarget::Macro(_)) {
+                cursor.chase = false;
+            }
+        }
+        if sequence != FIRST_MACRO_EVENT {
             self.params
                 .sort_unstable_by_key(|entry| (entry.slot, entry.event.offset, entry.sequence));
         }
@@ -1337,6 +1426,7 @@ pub(crate) struct MixerValues<'a> {
     offset: u32,
     left: f32,
     right: f32,
+    mapping: Option<(CompiledMapping, f32)>,
 }
 
 impl<'a> MixerValues<'a> {
@@ -1347,6 +1437,34 @@ impl<'a> MixerValues<'a> {
         clock: MixerClock<'a>,
     ) -> Option<Self> {
         let (lane, cursor) = state.mixer_lane(lanes, target)?;
+        Self::from_lane(lane, cursor, clock)
+    }
+
+    pub(crate) fn for_track(
+        state: &'a State,
+        track: &'a crate::program::TrackProgram,
+        target: EngineTarget,
+        clock: MixerClock<'a>,
+    ) -> Option<Self> {
+        if let Some((_, mapping)) = track.macros.mapping(target) {
+            let mut values = Self::new(
+                state,
+                &track.automation,
+                EngineTarget::Macro(mapping.driver),
+                clock,
+            )?;
+            values.mapping = Some((mapping, state.macros.base[usize::from(mapping.driver)]));
+            Some(values)
+        } else {
+            Self::new(state, &track.automation, target, clock)
+        }
+    }
+
+    fn from_lane(
+        lane: &'a CompiledTarget,
+        cursor: &'a Cursor,
+        clock: MixerClock<'a>,
+    ) -> Option<Self> {
         if lane.mode == AutomationMode::Off
             || (!lane.reads()
                 && cursor.manual().is_none()
@@ -1364,6 +1482,7 @@ impl<'a> MixerValues<'a> {
             offset: 0,
             left: 0.0,
             right: 0.0,
+            mapping: None,
         })
     }
 
@@ -1376,14 +1495,30 @@ impl<'a> MixerValues<'a> {
     }
 
     pub(crate) fn value(&mut self, fallback: f32) -> f32 {
-        let sample = self.clock.sample(self.offset);
-        let time = self.clock.time + u64::from(self.offset);
+        let offset = self.offset;
         self.offset += 1;
-        if !self.clock.window.playing {
+        if let Some((mapping, base)) = self.mapping {
+            return mapping
+                .mixer_value(self.at(offset, base))
+                .unwrap_or(fallback);
+        }
+        self.at(offset, fallback)
+    }
+
+    fn at(&mut self, offset: u32, fallback: f32) -> f32 {
+        let sample = self.clock.sample(offset);
+        let time = self.clock.time + u64::from(offset);
+        if !self.clock.window.playing && !matches!(self.lane.target, EngineTarget::Macro(_)) {
             return self
                 .cursor
                 .mixer_value(self.lane, self.clock.window, sample, time)
                 .map_or(fallback, |v| self.scale(v));
+        }
+        if !self.clock.window.playing && !matches!(self.cursor.playback_gesture(), Gesture::Idle) {
+            return self
+                .cursor
+                .mixer_value(self.lane, self.clock.window, sample, time)
+                .unwrap_or(fallback);
         }
         if sample < self.left_sample || sample >= self.right_sample {
             self.prepare_interval(sample, time, fallback);

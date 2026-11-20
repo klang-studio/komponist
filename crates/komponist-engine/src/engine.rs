@@ -147,6 +147,19 @@ pub struct MidiInEvent {
     pub data: [u8; 3],
 }
 
+/// A controller event resolved by the caller to a stable track macro slot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MacroInput {
+    /// Frame offset within the callback.
+    pub frame: u32,
+    /// Owning track.
+    pub track: TrackId,
+    /// Zero-based macro slot, independent of its name and mappings.
+    pub index: u8,
+    /// Normalized controller value.
+    pub value: f32,
+}
+
 /// Live input of one `process` call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveInput<'a> {
@@ -586,8 +599,20 @@ impl Engine {
         input: &LiveInput<'_>,
         audio: &AudioInputBuffer<'_>,
     ) {
-        self.core
-            .run(out_l, out_r, input.midi, input.output_latency, audio, false);
+        self.process_with_macro_input(out_l, out_r, input, audio, &[]);
+    }
+
+    /// RT. As [`Engine::process_with_audio`], with resolved macro controller input sorted by
+    /// frame. The caller owns MIDI-learn bindings and converts matching messages to macro input.
+    pub fn process_with_macro_input(
+        &mut self,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        input: &LiveInput<'_>,
+        audio: &AudioInputBuffer<'_>,
+        macros: &[MacroInput],
+    ) {
+        self.core.run(out_l, out_r, input, audio, macros, false);
     }
 
     /// RT-safe, for offline use. Processes `frames` (1 ..= [`crate::MAX_BLOCK`]) frames with
@@ -600,8 +625,12 @@ impl Engine {
             "render: {frames} frames, expected 1 ..= {MAX_BLOCK}"
         );
         let (l, r) = (&mut self.render_l[..frames], &mut self.render_r[..frames]);
+        let input = LiveInput {
+            midi: &[],
+            output_latency: 0,
+        };
         self.core
-            .run(l, r, &[], 0, &AudioInputBuffer::empty(), true);
+            .run(l, r, &input, &AudioInputBuffer::empty(), &[], true);
         let out = &mut self.render_out[..2 * frames];
         let (frames_out, _) = out.as_chunks_mut::<2>();
         for (frame, (l, r)) in frames_out.iter_mut().zip(l.iter().zip(r.iter())) {
@@ -1110,22 +1139,8 @@ impl TrackJobs<'_> {
         let clock = self
             .mixer_clock
             .delayed(track.chain_latency.max(route.latency_out));
-        let volume = || {
-            MixerValues::new(
-                &state.automation,
-                &track.automation,
-                EngineTarget::Gain,
-                clock,
-            )
-        };
-        let balance = || {
-            MixerValues::new(
-                &state.automation,
-                &track.automation,
-                EngineTarget::Pan,
-                clock,
-            )
-        };
+        let volume = || MixerValues::for_track(&state.automation, track, EngineTarget::Gain, clock);
+        let balance = || MixerValues::for_track(&state.automation, track, EngineTarget::Pan, clock);
         if route.post {
             let target = targets(gain, pan, !muted);
             if !state.post_on {
@@ -1343,12 +1358,7 @@ impl TrackJobs<'_> {
                 .flatten()
                 .and_then(|&id| {
                     let track = &self.tracks[usize::from(input.from)];
-                    MixerValues::new(
-                        &source.automation,
-                        &track.automation,
-                        EngineTarget::Send(id),
-                        clock,
-                    )
+                    MixerValues::for_track(&source.automation, track, EngineTarget::Send(id), clock)
                 });
             if let Some(mut auto) = auto {
                 edge.add_automated_send(sum, tap, scratch, send.delay.frames, gain, &mut auto);
@@ -1431,11 +1441,13 @@ impl Core {
         &mut self,
         out_l: &mut [f32],
         out_r: &mut [f32],
-        midi: &[MidiInEvent],
-        latency: u32,
+        input: &LiveInput<'_>,
         audio: &AudioInputBuffer<'_>,
+        mut macros: &[MacroInput],
         offline: bool,
     ) {
+        let midi = input.midi;
+        let latency = input.output_latency;
         // Taken once per callback; every segment and processor shares it.
         let entered = std::time::Instant::now();
         self.offline = offline;
@@ -1465,7 +1477,17 @@ impl Core {
                 }
                 self.send(EngineEvent::CountInDone { at });
             }
-            let max = (n - done).min(self.max_block);
+            while let Some((event, rest)) = macros.split_first() {
+                if event.frame as usize > done {
+                    break;
+                }
+                self.macro_input(event.track, event.index, event.value);
+                macros = rest;
+            }
+            let until_macro = macros
+                .first()
+                .map_or(n - done, |event| event.frame as usize - done);
+            let max = (n - done).min(self.max_block).min(until_macro);
             let max = self.expire_automation_touches(max);
             let (len, end) = self.transport.next_segment(max, &self.song, rate);
             let seg_end = done + len;
@@ -1788,7 +1810,14 @@ impl Core {
                 value,
                 edit,
             } => {
-                if let Some(state) = self.state_of(track) {
+                if value.is_finite()
+                    && !self.manual_automation(
+                        AutomationOwner::Track(track),
+                        EngineTarget::Macro(index),
+                        f64::from(value),
+                    )
+                    && let Some(state) = self.state_of(track)
+                {
                     state.automation.macros.set(index, value);
                 }
                 self.macro_edit = self.macro_edit.max(edit);
@@ -2453,8 +2482,9 @@ impl Core {
                             .prepare(&track.automation, win, *automation_time, running);
                     *dropped += state.automation.prepare_macros(
                         &track.macros,
+                        &track.automation,
+                        win,
                         *automation_time,
-                        rate,
                         running,
                     );
                     if let Some(plan) = &track.audio {

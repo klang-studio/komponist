@@ -82,11 +82,16 @@ fn resolve<'a>(
                         Some(parameter),
                     )
                 }
-                AutomationTarget::Macro { index } if track.is_some() && *index < 8 => (
-                    EngineTarget::Macro(*index),
-                    macros?.base[usize::from(*index)],
-                    None,
-                ),
+                AutomationTarget::Macro { index }
+                    if track.is_some()
+                        && usize::from(*index) < komponist_model::macros::MACRO_COUNT =>
+                {
+                    (
+                        EngineTarget::Macro(*index),
+                        macros?.base[usize::from(*index)],
+                        None,
+                    )
+                }
                 AutomationTarget::Macro { .. } => return None,
             };
             if macros.is_some_and(|program| program.mapping(target).is_some()) {

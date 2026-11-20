@@ -79,7 +79,7 @@ impl MacroProgram {
 }
 
 #[derive(Clone, Copy)]
-struct TargetState {
+pub(crate) struct TargetState {
     input: f32,
     value: f32,
     gesture: bool,
@@ -100,6 +100,8 @@ impl TargetState {
 }
 
 pub(crate) struct State {
+    pub(crate) base: [f32; MACRO_COUNT],
+    /// Effective positions at the end of the last rendered segment.
     pub(crate) values: [f32; MACRO_COUNT],
     targets: [TargetState; CAPACITY],
 }
@@ -107,12 +109,14 @@ pub(crate) struct State {
 impl State {
     pub(crate) fn new() -> Self {
         Self {
+            base: [0.0; MACRO_COUNT],
             values: [0.0; MACRO_COUNT],
             targets: [TargetState::new(); CAPACITY],
         }
     }
 
     pub(crate) fn install(&mut self, old: Option<&MacroProgram>, new: &MacroProgram) {
+        self.base = new.base;
         self.values = new.base;
         if old.is_some_and(|old| old.targets == new.targets) {
             return;
@@ -129,7 +133,7 @@ impl State {
     }
 
     pub(crate) fn set(&mut self, index: u8, value: f32) {
-        if let Some(current) = self.values.get_mut(usize::from(index))
+        if let Some(current) = self.base.get_mut(usize::from(index))
             && value.is_finite()
         {
             *current = value.clamp(0.0, 1.0);
@@ -175,59 +179,69 @@ impl State {
         true
     }
 
-    pub(crate) fn slot_value(
-        &mut self,
-        index: usize,
-        mapping: CompiledMapping,
-        time: u64,
-    ) -> Option<(f32, f32)> {
-        let state = &mut self.targets[index];
-        if state.gesture {
-            return None;
-        }
-        if let Some(at) = state.reassert_at
-            && time < at.max(state.next_reassert)
-        {
-            return None;
-        }
-        let input = self.values[usize::from(mapping.driver)];
-        if state.reassert_at.is_none() && state.input == input {
-            return None;
-        }
-        let value = mapping.normalized(input);
-        if state.reassert_at.is_some()
-            || !state.value.is_finite()
-            || if mapping.map.is_stepped() {
-                mapping.map.plain(state.value) != mapping.map.plain(value)
-            } else {
-                (state.value - value).abs() > 1e-5
-            }
-        {
-            Some((input, value))
-        } else {
-            // Remember the evaluation, leaving the delivered value available for the next delta.
-            state.input = input;
-            None
-        }
+    pub(crate) fn slot_state(&self, index: usize) -> TargetState {
+        self.targets[index]
     }
 
     pub(crate) fn delivered(&mut self, index: usize, input: f32, value: f32, next_reassert: u64) {
-        let state = &mut self.targets[index];
-        state.input = input;
-        state.value = value;
-        if state.reassert_at.take().is_some() {
-            state.next_reassert = next_reassert;
-        }
+        self.targets[index].delivered(input, value, next_reassert);
     }
 
     pub(crate) fn mixer_value(&self, program: &MacroProgram, target: EngineTarget) -> Option<f32> {
         let (_, mapping) = program.mapping(target)?;
-        let value = mapping.normalized(self.values[usize::from(mapping.driver)]);
-        Some(match target {
+        mapping.mixer_value(self.base[usize::from(mapping.driver)])
+    }
+}
+
+impl CompiledMapping {
+    pub(crate) fn mixer_value(self, input: f32) -> Option<f32> {
+        let value = self.normalized(input);
+        Some(match self.target {
             EngineTarget::Gain | EngineTarget::Send(_) => normalized_to_gain(value),
             EngineTarget::Pan => value.mul_add(2.0, -1.0),
             _ => return None,
         })
+    }
+}
+
+impl TargetState {
+    pub(crate) fn needs_value(self) -> bool {
+        !self.input.is_finite() || self.reassert_at.is_some()
+    }
+
+    pub(crate) fn slot_value(
+        &self,
+        mapping: CompiledMapping,
+        input: f32,
+        time: u64,
+    ) -> Option<f32> {
+        if self.gesture
+            || self
+                .reassert_at
+                .is_some_and(|at| time < at.max(self.next_reassert))
+        {
+            return None;
+        }
+        if self.reassert_at.is_none() && self.input == input {
+            return None;
+        }
+        let value = mapping.normalized(input);
+        (self.reassert_at.is_some()
+            || !self.value.is_finite()
+            || if mapping.map.is_stepped() {
+                mapping.map.plain(self.value) != mapping.map.plain(value)
+            } else {
+                (self.value - value).abs() > 1e-5
+            })
+        .then_some(value)
+    }
+
+    pub(crate) fn delivered(&mut self, input: f32, value: f32, next_reassert: u64) {
+        self.input = input;
+        self.value = value;
+        if self.reassert_at.take().is_some() {
+            self.next_reassert = next_reassert;
+        }
     }
 }
 
