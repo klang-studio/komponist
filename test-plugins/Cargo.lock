@@ -983,6 +983,7 @@ dependencies = [
  "fake-host",
  "libc",
  "nice-plug",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
