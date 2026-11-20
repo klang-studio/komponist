@@ -85,6 +85,7 @@ use crate::garbage::Outbox;
 use crate::graph::EdgeState;
 use crate::metronome::Metronome;
 use crate::mixer::{DelayLine, Fader, audible, targets};
+use crate::note_schedule::RepeatScratch;
 use crate::processor::{DEADLINE_SHARE, Event, EventKind, ProcessContext, ProcessorError};
 use crate::program::{ChainSlot, InputFilter, MidiPort, Program, SlotId, TrackProgram};
 use crate::route::{Delay, GateTable, MAX_LINES, MAX_SENDS, NodeRoute, Routing, SidechainRoute};
@@ -388,6 +389,7 @@ impl Engine {
             fx_events: EventList::new(MAX_EVENTS_PER_BLOCK),
             live: Vec::with_capacity(MAX_EVENTS_PER_BLOCK),
             live_notes: Vec::with_capacity(MAX_COMMANDS_PER_BLOCK),
+            repeat_scratch: RepeatScratch::new(),
             note_ids: NoteIds::default(),
             unreported: false,
             dropped: 0,
@@ -807,6 +809,7 @@ struct Core {
     live: Vec<LiveMsg>,
     /// `LiveNote` commands for the next block: track, key, velocity.
     live_notes: Vec<(TrackId, u8, u8)>,
+    repeat_scratch: RepeatScratch,
     note_ids: NoteIds,
     /// A processor failed and `ProcessorFailed` has not gone out yet.
     unreported: bool,
@@ -2413,6 +2416,7 @@ impl Core {
             fx_events,
             live,
             live_notes,
+            repeat_scratch,
             note_ids,
             outbox,
             telemetry,
@@ -2606,6 +2610,7 @@ impl Core {
                         &win,
                         target,
                         note_ids,
+                        repeat_scratch,
                         events,
                         &mut |captured| {
                             let event = match captured {
