@@ -846,6 +846,10 @@ impl App {
             Err(ExportError::Cancelled) => {
                 self.set_status(self.lang.export_cancelled(), StatusKind::Info)
             }
+            Err(ExportError::WavTooLarge) => self.set_status(
+                self.lang.export_failed(self.lang.export_wav_too_large()),
+                StatusKind::Error,
+            ),
             Err(ExportError::MissingAudio(path)) => self.set_status(
                 self.lang.export_missing_audio(path.display()),
                 StatusKind::Error,
