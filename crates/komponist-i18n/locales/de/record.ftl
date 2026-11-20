@@ -8,6 +8,9 @@ record-no-track = Keine Spur scharfgeschaltet · R im Spur-Header
 
 # Name of a take. Made in the current language when the take is recorded, content afterwards.
 record-take = Take { $number }
+record-take-incomplete = Take { $number } · unvollständig
+record-notes-lost = MIDI-Noten verloren · Betroffene Takes sind unvollständig
+record-interrupted = Aufnahme wegen zu vieler ausstehender MIDI-Ereignisse beendet
 
 # Name of the clip being recorded (S02 `mc(…, '● Aufnahme · Take 1', …)`); `$take` is the take's name.
 record-clip = ● Aufnahme · { $take }

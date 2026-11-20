@@ -418,10 +418,14 @@ pub fn unique_track_name(project: &Project, base: &str) -> String {
 }
 
 /// Number for the next recorded take: one more than the highest `n` of any clip or take named
-/// `"Take n"` in the project, starting at 1. The caller formats the UI name "Take n".
+/// `"Take n"` in the project, starting at 1. An annotation after " · " does not affect
+/// the number. The caller formats the UI name "Take n".
 pub fn next_take_number(project: &Project) -> u32 {
     fn number(name: &str) -> Option<u32> {
-        let digits = name.strip_prefix("Take ")?;
+        let number = name.strip_prefix("Take ")?;
+        let digits = number
+            .split_once(" · ")
+            .map_or(number, |(digits, _)| digits);
         if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }

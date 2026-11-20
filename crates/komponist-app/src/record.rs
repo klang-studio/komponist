@@ -11,8 +11,8 @@
 //!    the first lane's take ("● Aufnahme", "Piano Roll · live").
 //! 3. `RecordedNoteOn` / `RecordedNoteOff` add notes to the lane's current lap, `LoopWrapped`
 //!    closes the lap at the loop end and starts the next one ([`Recording::handle`]). A note-on
-//!    whose tick lies after the playhead arrived late from before the wrap (latency correction):
-//!    it belongs to the previous lap and ends at that lap's end at the latest.
+//!    whose latency correction puts it before the wrap belongs to the previous lap and ends
+//!    at that lap's end at the latest.
 //! 4. Every frame [`Recording::update`] moves the head to the playhead and rebuilds the clips the
 //!    arrangement and the piano roll draw ([`Recording::clip`]): the clip grows with the head,
 //!    held notes reach it.
@@ -23,6 +23,7 @@
 //!    names the clip (what plays is what the clip says), its length is whole bars (`finishRec`:
 //!    `Math.ceil(bars − 0.05)`, at least one). Esc throws the overlay away while playback goes on.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use komponist_engine::EngineEvent;
@@ -35,6 +36,14 @@ use komponist_model::{
 /// `finishRec`: a take shorter than a whole bar by less than this share of a bar does not get
 /// another bar (`Math.ceil((pos − recAt)/16 − 0.05)`).
 const BAR_TOLERANCE: f64 = 0.05;
+
+fn take_name(lang: Lang, number: u32, incomplete: bool) -> String {
+    if incomplete {
+        lang.record_take_incomplete(number)
+    } else {
+        lang.record_take(number)
+    }
+}
 
 /// Id of the drawn clip of lane `index` (not in the document; never sent in an edit).
 fn live_clip_id(index: usize) -> ClipId {
@@ -73,6 +82,7 @@ struct Lane {
     /// Notes per lap, in arrival order.
     laps: Vec<Vec<Captured>>,
     open: Vec<Open>,
+    incomplete: BTreeSet<usize>,
     /// The clip the views draw ([`Recording::update`]).
     live: Arc<Clip>,
 }
@@ -137,11 +147,11 @@ impl Recording {
         self.laps.len()
     }
 
-    /// Whether any note was captured: a take with notes is unsaved material (#85).
-    pub fn has_notes(&self) -> bool {
+    /// Whether there are notes or an incomplete take to preserve (#85).
+    pub fn has_material(&self) -> bool {
         self.lanes
             .iter()
-            .any(|l| l.laps.iter().any(|lap| !lap.is_empty()))
+            .any(|l| !l.incomplete.is_empty() || l.laps.iter().any(|lap| !lap.is_empty()))
     }
 
     /// The clip being recorded on `track` as the views draw it: named "● Aufnahme · Take n", from
@@ -164,26 +174,51 @@ impl Recording {
         let lane = self.lanes.iter().position(|l| l.track == track)?;
         let numbers = self.numbers(self.base, true);
         let lap = self.laps.len() - 1;
-        numbers[lane][lap].map(|n| self.lang.record_take(n))
+        numbers[lane][lap]
+            .map(|n| take_name(self.lang, n, self.lanes[lane].incomplete.contains(&lap)))
     }
 
-    /// Handles a captured note or a loop wrap. `playhead` is the engine's position after the event
-    /// arrived; `project` gives the loop end.
-    pub fn handle(&mut self, event: &EngineEvent, playhead: Tick, project: &Project) {
+    /// A prolonged queue stall stopped capture before more transitions could be reported.
+    pub fn interrupt(
+        &mut self,
+        at: Tick,
+        first_incomplete_lap: u32,
+        triggering_track: Option<TrackId>,
+        project: &Project,
+    ) {
+        if let Some(triggering_track) = triggering_track {
+            for track in project.tracks.iter().filter(|track| {
+                track.kind == komponist_model::TrackKind::Midi
+                    && (track.arm || track.id == triggering_track)
+            }) {
+                self.lane_mut(track.id);
+            }
+        }
+        let current = self.laps.len() - 1;
+        let first = (first_incomplete_lap as usize).min(current);
+        for lane in &mut self.lanes {
+            lane.incomplete.extend(first..=current);
+            for open in lane.open.drain(..) {
+                let note = &mut lane.laps[open.lap][open.index];
+                note.end = Some(close(note.start, at, self.laps[open.lap].end));
+            }
+        }
+    }
+
+    /// Handles a captured note or a loop wrap; `project` gives the loop end.
+    pub fn handle(&mut self, event: &EngineEvent, project: &Project) {
         match *event {
             EngineEvent::RecordedNoteOn {
                 track,
                 tick,
+                lap,
                 key,
                 velocity,
             } => {
-                let current = self.laps.len() - 1;
-                // Heard before the wrap, arrived after it.
-                let lap = if current > 0 && tick > playhead {
-                    current - 1
-                } else {
-                    current
-                };
+                let lap = lap as usize;
+                if lap >= self.laps.len() {
+                    return;
+                }
                 let lane = self.lane_mut(track);
                 let notes = &mut lane.laps[lap];
                 notes.push(Captured {
@@ -207,6 +242,12 @@ impl Recording {
                 let open = lane.open.remove(i);
                 let note = &mut lane.laps[open.lap][open.index];
                 note.end = Some(close(note.start, tick, ends[open.lap]));
+            }
+            EngineEvent::RecordingNoteLoss { track, lap } => {
+                let lap = lap as usize;
+                if lap < self.laps.len() {
+                    self.lane_mut(track).incomplete.insert(lap);
+                }
             }
             EngineEvent::LoopWrapped { .. } => {
                 let end = project.loop_range.end;
@@ -237,7 +278,7 @@ impl Recording {
         let numbers = self.numbers(self.base, true);
         for (index, lane) in self.lanes.iter_mut().enumerate() {
             let take = numbers[index][lap]
-                .map(|n| self.lang.record_take(n))
+                .map(|n| take_name(self.lang, n, lane.incomplete.contains(&lap)))
                 .unwrap_or_default();
             let mut notes: Vec<Note> = lane.laps[lap]
                 .iter()
@@ -276,6 +317,7 @@ impl Recording {
         let numbers = self.numbers(edits::next_take_number(project), false);
         let end = self.extent_end(head).max(head);
         let mut clips = Vec::new();
+        let mut incomplete = false;
         for (lane, numbers) in self.lanes.iter().zip(&numbers) {
             if project.track(lane.track).is_none() {
                 continue;
@@ -301,7 +343,9 @@ impl Recording {
                         })
                     })
                     .collect();
-                takes.push((self.lang.record_take(number), notes));
+                let lost = lane.incomplete.contains(&lap);
+                incomplete |= lost;
+                takes.push((take_name(self.lang, *number, lost), notes));
             }
             let span = (end.max(last) - self.start).0.max(0) as f64 / self.bar as f64;
             let bars = (span - BAR_TOLERANCE).ceil().max(1.0) as i64;
@@ -313,7 +357,11 @@ impl Recording {
             });
         }
         let label = clips.first()?.takes.last()?.0.clone();
-        Some(Commit { label, clips })
+        Some(Commit {
+            label,
+            clips,
+            incomplete,
+        })
     }
 
     /// The lane of `track`, created (with empty laps) if it is new: a track armed while recording
@@ -326,6 +374,7 @@ impl Recording {
                     track,
                     laps: vec![Vec::new(); self.laps.len()],
                     open: Vec::new(),
+                    incomplete: BTreeSet::new(),
                     live: Arc::new(placeholder_clip(live_clip_id(self.lanes.len()))),
                 });
                 self.lanes.len() - 1
@@ -346,8 +395,9 @@ impl Recording {
         let current = self.laps.len() - 1;
         let kept = |lane: &Lane, lap: usize| {
             !lane.laps[lap].is_empty()
+                || lane.incomplete.contains(&lap)
                 || (running && lap == current)
-                || (lap == 0 && lane.laps.iter().all(Vec::is_empty))
+                || (lap == 0 && lane.incomplete.is_empty() && lane.laps.iter().all(Vec::is_empty))
         };
         let mut numbers = vec![vec![None; self.laps.len()]; self.lanes.len()];
         let mut next = base;
@@ -368,6 +418,7 @@ impl Recording {
 pub struct Commit {
     label: String,
     clips: Vec<CommitClip>,
+    incomplete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -383,6 +434,10 @@ impl Commit {
     /// The undo label: the name of the first clip ("Take 1"), its last take.
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    pub fn incomplete(&self) -> bool {
+        self.incomplete
     }
 
     /// Name and note count of the first clip's last (active) take, for the status message.
@@ -504,10 +559,11 @@ mod tests {
         (p, a, b)
     }
 
-    fn on(track: TrackId, tick: i64, key: u8) -> EngineEvent {
+    fn on(track: TrackId, tick: i64, key: u8, lap: u32) -> EngineEvent {
         EngineEvent::RecordedNoteOn {
             track,
             tick: Tick(tick),
+            lap,
             key,
             velocity: 90,
         }
@@ -545,7 +601,7 @@ mod tests {
         assert_eq!(r.start(), Tick(BAR + 960));
         assert_eq!(r.tracks().collect::<Vec<_>>(), [a]);
         assert!(r.clip(b).is_none());
-        r.handle(&on(a, BAR + 1100, 60), Tick(BAR + 1100), &p);
+        r.handle(&on(a, BAR + 1100, 60, 0), &p);
         r.update(Tick(BAR + 1500));
         let clip = r.clip(a).unwrap();
         assert_eq!(clip.name, "● Aufnahme · Take 1");
@@ -564,11 +620,11 @@ mod tests {
     fn stop_writes_one_take_with_whole_bars() {
         let (p, a, _) = project();
         let mut r = Recording::new(&p, Tick(BAR), Lang::De);
-        assert!(!r.has_notes());
-        r.handle(&on(a, BAR + 100, 60), Tick(BAR + 100), &p);
-        assert!(r.has_notes(), "a held note is material too");
-        r.handle(&off(a, BAR + 580, 60), Tick(BAR + 580), &p);
-        r.handle(&on(a, BAR + 960, 64), Tick(BAR + 960), &p);
+        assert!(!r.has_material());
+        r.handle(&on(a, BAR + 100, 60, 0), &p);
+        assert!(r.has_material(), "a held note is material too");
+        r.handle(&off(a, BAR + 580, 60), &p);
+        r.handle(&on(a, BAR + 960, 64, 0), &p);
         // Stopped 1.04 bars in: still one bar; the held note ends at the head.
         let head = Tick(BAR + BAR + 150);
         let commit = r.commit(&p, head).unwrap();
@@ -594,17 +650,17 @@ mod tests {
         p.loop_on = true;
         p.loop_range = TickRange::new(Tick::ZERO, Tick(BAR));
         let mut r = Recording::new(&p, Tick::ZERO, Lang::De);
-        r.handle(&on(a, 480, 60), Tick(480), &p);
-        r.handle(&off(a, 960, 60), Tick(960), &p);
+        r.handle(&on(a, 480, 60, 0), &p);
+        r.handle(&off(a, 960, 60), &p);
         // Held across the wrap: the engine ends it at the loop end.
-        r.handle(&on(a, 3000, 62), Tick(3000), &p);
-        r.handle(&off(a, BAR, 62), Tick(BAR - 10), &p);
-        r.handle(&wrap(), Tick(20), &p);
+        r.handle(&on(a, 3000, 62, 0), &p);
+        r.handle(&off(a, BAR, 62), &p);
+        r.handle(&wrap(), &p);
         // Heard at 3824 before the wrap, arrived after it; released in the new lap.
-        r.handle(&on(a, 3824, 67), Tick(40), &p);
-        r.handle(&on(a, 1440, 64), Tick(1440), &p);
-        r.handle(&off(a, 100, 67), Tick(1450), &p);
-        r.handle(&off(a, 1920, 64), Tick(1920), &p);
+        r.handle(&on(a, 3824, 67, 0), &p);
+        r.handle(&on(a, 1440, 64, 1), &p);
+        r.handle(&off(a, 100, 67), &p);
+        r.handle(&off(a, 1920, 64), &p);
         assert_eq!(r.laps(), 2);
         r.update(Tick(2000));
         // The drawn clip spans the loop and shows the running lap.
@@ -639,16 +695,16 @@ mod tests {
         let mut r = Recording::new(&p, Tick::ZERO, Lang::De);
         assert_eq!(r.tracks().collect::<Vec<_>>(), [a, b]);
         // Lap 1: only a; lap 2: nothing; lap 3: a again.
-        r.handle(&on(a, 100, 60), Tick(100), &p);
-        r.handle(&off(a, 200, 60), Tick(200), &p);
-        r.handle(&wrap(), Tick(10), &p);
+        r.handle(&on(a, 100, 60, 0), &p);
+        r.handle(&off(a, 200, 60), &p);
+        r.handle(&wrap(), &p);
         r.update(Tick(10));
         // While running, the running lap counts: a → Take 3, b → Take 4.
         assert_eq!(r.take_name(a).as_deref(), Some("Take 3"));
         assert_eq!(r.take_name(b).as_deref(), Some("Take 4"));
-        r.handle(&wrap(), Tick(10), &p);
-        r.handle(&on(a, 300, 61), Tick(300), &p);
-        r.handle(&off(a, 400, 61), Tick(400), &p);
+        r.handle(&wrap(), &p);
+        r.handle(&on(a, 300, 61, 2), &p);
+        r.handle(&off(a, 400, 61), &p);
         let commit = r.commit(&p, Tick(500)).unwrap();
         let (q, ids) = commit.apply(&p).unwrap();
         assert_eq!(ids.len(), 2);
@@ -666,12 +722,43 @@ mod tests {
     }
 
     #[test]
+    fn note_loss_marks_only_the_matching_track_and_lap_even_without_notes() {
+        let (mut p, a, b) = project();
+        p.loop_on = true;
+        p.loop_range = TickRange::new(Tick::ZERO, Tick(BAR));
+        p = edits::set_track_prop(&p, &[b], edits::TrackProp::Arm(true)).unwrap();
+        let mut r = Recording::new(&p, Tick::ZERO, Lang::En);
+        r.handle(&wrap(), &p);
+        // A late input can only be assigned to the correct closed lap using the engine's lap.
+        r.handle(&EngineEvent::RecordingNoteLoss { track: a, lap: 0 }, &p);
+        assert!(
+            r.has_material(),
+            "save must preserve a lap whose notes were all lost"
+        );
+        assert_eq!(r.take_name(a).as_deref(), Some("Take 3"));
+        r.handle(&on(a, 100, 60, 1), &p);
+        r.handle(&off(a, 200, 60), &p);
+        let commit = r.commit(&p, Tick(300)).unwrap();
+        assert!(commit.incomplete());
+        let (q, ids) = commit.apply(&p).unwrap();
+        let first = q.find_clip(ids[0]).unwrap().1;
+        let ClipContent::Midi(midi) = &first.content else {
+            panic!("expected recorded MIDI clip");
+        };
+        assert_eq!(midi.takes[0].name, "Take 1 · incomplete");
+        assert!(midi.takes[0].notes.is_empty());
+        // The other track's empty take and the later lap both recorded without a loss.
+        assert_eq!(q.find_clip(ids[1]).unwrap().1.name, "Take 2");
+        assert_eq!(midi.takes[1].name, "Take 3");
+    }
+
+    #[test]
     fn deleted_tracks_drop_their_take_and_new_ones_join() {
         let (p, a, b) = project();
         let mut r = Recording::new(&p, Tick::ZERO, Lang::De);
         // b was armed meanwhile; its first note brings it in.
-        r.handle(&on(b, 100, 60), Tick(100), &p);
-        r.handle(&off(b, 200, 60), Tick(200), &p);
+        r.handle(&on(b, 100, 60, 0), &p);
+        r.handle(&off(b, 200, 60), &p);
         assert_eq!(r.tracks().collect::<Vec<_>>(), [a, b]);
         let without_a = edits::remove_tracks(&p, &[a]).unwrap();
         let commit = r.commit(&without_a, Tick(300)).unwrap();
@@ -687,11 +774,11 @@ mod tests {
         let (p, a, _) = project();
         let mut r = Recording::new(&p, Tick(BAR), Lang::De);
         // Latency correction put it 20 ticks before the capture start.
-        r.handle(&on(a, BAR - 20, 60), Tick(BAR), &p);
-        r.handle(&off(a, BAR + 100, 60), Tick(BAR + 100), &p);
+        r.handle(&on(a, BAR - 20, 60, 0), &p);
+        r.handle(&off(a, BAR + 100, 60), &p);
         // Played after a jump back before the clip: gone.
-        r.handle(&on(a, 100, 62), Tick(100), &p);
-        r.handle(&off(a, 200, 62), Tick(200), &p);
+        r.handle(&on(a, 100, 62, 0), &p);
+        r.handle(&off(a, 200, 62), &p);
         let (q, ids) = r.commit(&p, Tick(BAR + 200)).unwrap().apply(&p).unwrap();
         assert_eq!(notes(&q, ids[0], 0), [(0, 100, 60)]);
     }

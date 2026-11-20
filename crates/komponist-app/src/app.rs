@@ -579,7 +579,6 @@ impl App {
             self.report_workers_without_workgroup();
         }
         self.report_midi_changes();
-        // Read after the drain: at least as new as every event drained (`record` docs).
         let playhead = self.engine.playhead();
         for event in events {
             if let EngineEvent::PluginParams {
@@ -592,7 +591,7 @@ impl App {
             } else if capture {
                 self.capture_automation(&event);
             }
-            self.engine_event(&event, playhead);
+            self.engine_event(&event);
         }
         let mut recompile = false;
         for event in self.engine.poll_device_events() {
@@ -618,18 +617,49 @@ impl App {
 
     /// The recording's part of an engine event: the count-in's end starts the take, captured
     /// notes and loop wraps go into it.
-    fn engine_event(&mut self, event: &EngineEvent, playhead: Tick) {
+    fn engine_event(&mut self, event: &EngineEvent) {
         match *event {
             EngineEvent::CountInDone { at } => {
                 if std::mem::take(&mut self.shell.take_expected) {
                     self.begin_take(at);
                 }
             }
+            EngineEvent::RecordingInterrupted {
+                at,
+                first_incomplete_lap,
+                triggering_track,
+            } => {
+                if self.recording.is_none()
+                    && triggering_track.is_some()
+                    && let Some(audio) = self.audio_recording.running()
+                {
+                    // An audio recording can gain its first MIDI input after capture starts.
+                    let project = self.doc.project();
+                    let start = if first_incomplete_lap == 0 {
+                        audio.start
+                    } else {
+                        project.loop_range.start
+                    };
+                    self.recording = Some(Recording::new(project, start, self.lang));
+                }
+                if let Some(recording) = &mut self.recording {
+                    recording.interrupt(
+                        at,
+                        first_incomplete_lap,
+                        triggering_track,
+                        self.doc.project(),
+                    );
+                }
+                if self.recording.is_some() || self.audio_recording.is_active() {
+                    self.finish_take_at(at);
+                    self.set_status(self.lang.record_interrupted(), StatusKind::Error);
+                }
+            }
             // A device that dropped out of an export's render (its status says the rest).
             EngineEvent::ProcessorFailed { slot } => self.export.processor_failed(slot),
             _ => {
                 if let Some(rec) = &mut self.recording {
-                    rec.handle(event, playhead, self.doc.project());
+                    rec.handle(event, self.doc.project());
                 }
             }
         }
@@ -665,10 +695,9 @@ impl App {
         }
     }
 
-    /// Whether a running take holds captured notes: material that is not in the document yet, so
-    /// leaving the project asks first (#85).
+    /// Whether capture has unsaved material that should trigger a prompt when leaving (#85).
     pub(crate) fn has_unsaved_take(&self) -> bool {
-        self.recording.as_ref().is_some_and(Recording::has_notes)
+        self.recording.as_ref().is_some_and(Recording::has_material)
             || self.audio_recording.has_material()
             || self.automation_capture.has_points()
             || (self.audio_recording.is_active() && self.transport() == TransportState::Recording)
@@ -687,7 +716,7 @@ impl App {
         if let Some(rec) = self
             .recording
             .as_ref()
-            .filter(|recording| recording.has_notes())
+            .filter(|recording| recording.has_material())
             && let Some(commit) = rec.commit(&project, playhead)
         {
             match commit.apply(&project) {
@@ -725,10 +754,14 @@ impl App {
 
     /// Commits the running take from the already-drained events.
     pub(crate) fn finish_take(&mut self) {
+        self.finish_take_at(self.engine.playhead());
+    }
+
+    fn finish_take_at(&mut self, at: Tick) {
         let commit = self
             .recording
             .take()
-            .and_then(|recording| recording.commit(self.doc.project(), self.engine.playhead()));
+            .and_then(|recording| recording.commit(self.doc.project(), at));
         let automation = self.take_automation_capture();
         if self.audio_recording.is_active() {
             self.audio_recording.defer_midi(commit);
@@ -755,7 +788,9 @@ impl App {
         if let Some(&first) = clips.first() {
             self.ui_action(UiAction::OpenClip(first));
         }
-        if let Some((take, notes)) = commit.summary() {
+        if commit.incomplete() {
+            self.set_status(self.lang.record_notes_lost(), StatusKind::Error);
+        } else if let Some((take, notes)) = commit.summary() {
             self.set_status(self.lang.record_recorded(take, notes), StatusKind::Success);
         }
     }
@@ -1518,11 +1553,11 @@ impl App {
     /// goes back to where the recording would have started (prototype `finishRec`: `recPend` →
     /// `pos = recAt`).
     fn cancel_count_in(&mut self) {
-        // A count-in that just ended may have started its take; it goes.
-        self.drain_events();
+        // Ignore a count-in completion or capture interruption that arrived since the last poll.
+        self.shell.take_expected = false;
         self.recording = None;
         self.audio_recording.cancel();
-        self.shell.take_expected = false;
+        self.drain_events();
         self.engine.send(Command::Stop);
         if let Some(from) = self.shell.record_from {
             self.engine.send(Command::Locate(from));
@@ -3594,7 +3629,7 @@ mod tests {
         assert!(app.shell.take_expected);
         app.open_document(Document::new(empty_project()), None);
         assert!(!app.shell.take_expected);
-        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO }, Tick::ZERO);
+        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO });
         assert!(app.recording().is_none());
     }
 
@@ -3603,7 +3638,7 @@ mod tests {
         let mut app = recording_app();
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         app.cancel_count_in();
-        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO }, Tick::ZERO);
+        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO });
         assert!(app.recording().is_none());
     }
 
@@ -3627,10 +3662,73 @@ mod tests {
     }
 
     #[test]
+    fn a_checkpoint_and_interruption_preserve_an_incomplete_midi_take() {
+        let mut app = recording_app();
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO });
+        let track = app.recording().unwrap().first().unwrap().0;
+        app.engine_event(&EngineEvent::RecordingNoteLoss { track, lap: 0 });
+        assert!(app.has_unsaved_take());
+
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("Checkpoint.komponist");
+        assert!(app.save_to(&path));
+        let checkpoint = crate::project_io::load_project(&path).unwrap();
+        let name = app.lang.record_take_incomplete(1);
+        assert_eq!(checkpoint.track(track).unwrap().clips[0].name, name);
+        assert!(app.project().track(track).unwrap().clips.is_empty());
+
+        app.engine_event(&EngineEvent::RecordingInterrupted {
+            at: Tick(20),
+            first_incomplete_lap: 0,
+            triggering_track: None,
+        });
+        assert!(app.recording().is_none());
+        assert_eq!(app.project().track(track).unwrap().clips[0].name, name);
+        assert_eq!(
+            app.ui.status.as_ref().unwrap().text,
+            app.lang.record_interrupted()
+        );
+
+        // A new request consumes only its own count-in and starts a clean take.
+        app.shell.take_expected = true;
+        app.engine_event(&EngineEvent::CountInDone { at: Tick(40) });
+        assert!(app.recording().is_some());
+        assert!(!app.shell.take_expected);
+        assert!(!app.has_unsaved_take());
+    }
+
+    #[test]
+    fn an_interrupted_take_includes_the_track_whose_first_loss_overflowed() {
+        let mut app = recording_app();
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO });
+        let first = app.recording().unwrap().first().unwrap().0;
+        app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+        let added = app
+            .project()
+            .tracks
+            .iter()
+            .find(|track| track.id != first)
+            .unwrap()
+            .id;
+        assert!(app.recording().unwrap().clip(added).is_none());
+        app.engine_event(&EngineEvent::RecordingInterrupted {
+            at: Tick(20),
+            first_incomplete_lap: 0,
+            triggering_track: Some(added),
+        });
+        assert_eq!(
+            app.project().track(added).unwrap().clips[0].name,
+            app.lang.record_take_incomplete(2)
+        );
+    }
+
+    #[test]
     fn count_in_ending_after_a_record_starts_the_take() {
         let mut app = recording_app();
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
-        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO }, Tick::ZERO);
+        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO });
         assert!(app.recording().is_some());
         assert!(!app.shell.take_expected);
     }

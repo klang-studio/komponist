@@ -153,6 +153,7 @@ fn recording_captures_after_the_count_in_with_latency_correction() {
                 tick,
                 key,
                 velocity,
+                ..
             } => format!("on {} {} {key} {velocity}", track.0, tick.0),
             EngineEvent::RecordedNoteOff { track, tick, key } => {
                 format!("off {} {} {key}", track.0, tick.0)
@@ -211,6 +212,7 @@ fn loop_recording_corrects_latency_back_over_the_loop_start() {
             events[2],
             EngineEvent::RecordedNoteOn {
                 tick: Tick(3824),
+                lap: 0,
                 key: 60,
                 ..
             }
@@ -255,6 +257,7 @@ fn live_notes_are_captured_only_on_armed_tracks_while_recording() {
         EngineEvent::RecordedNoteOn {
             track: TrackId(1),
             tick: Tick(40),
+            lap: 0,
             key: 60,
             velocity: 100
         }
@@ -305,6 +308,124 @@ fn keys_held_across_a_loop_wrap_end_with_the_lap() {
         ),
         "{events:?}"
     );
+}
+
+// 120 BPM gives 25 samples per tick and allows enough wraps to fill the queue quickly.
+const SHORT_LOOP: i64 = 4;
+const SHORT_LAP_FRAMES: usize = SHORT_LOOP as usize * 25;
+
+fn undrained_recording_rig() -> Rig {
+    let mut armed = track(1, 0, vec![]);
+    armed.arm = true;
+    let mut p = program(120.0, vec![armed]);
+    p.loop_on = true;
+    p.loop_range = TickRange::new(Tick::ZERO, Tick(SHORT_LOOP));
+    p.count_in_bars = 0;
+    let mut rig = Rig::new(RATE, SHORT_LAP_FRAMES);
+    rig.set_program(&p);
+    rig.send(Command::Play);
+    for _ in 0..komponist_engine::EVENT_CAPACITY {
+        process_without_draining(&mut rig, &[]);
+    }
+    rig.send(Command::Stop);
+    rig.send(Command::Record { from: Tick::ZERO });
+    rig
+}
+
+fn process_without_draining(rig: &mut Rig, midi: &[MidiInEvent]) {
+    let mut left = [0.0; SHORT_LAP_FRAMES];
+    let mut right = [0.0; SHORT_LAP_FRAMES];
+    let input = komponist_engine::LiveInput {
+        midi,
+        output_latency: 0,
+    };
+    assert_no_alloc::assert_no_alloc(|| rig.engine.process(&mut left, &mut right, &input));
+}
+
+#[test]
+fn saturated_queue_preserves_capture_order_and_marks_lost_notes_once_per_lap() {
+    let mut rig = undrained_recording_rig();
+    let notes = [
+        midi(0, 1, [0x90, 60, 100]),
+        midi(10, 1, [0x80, 60, 0]),
+        midi(20, 1, [0x90, 62, 100]),
+    ];
+    process_without_draining(&mut rig, &notes);
+    process_without_draining(&mut rig, &notes);
+    assert!(rig.handle.telemetry().dropped_events() >= 6);
+    rig.poll();
+    let all = rig.take_events();
+    assert!(
+        matches!(
+            &all[komponist_engine::EVENT_CAPACITY..],
+            [
+                EngineEvent::CountInDone { at: Tick::ZERO },
+                EngineEvent::RecordingNoteLoss {
+                    track: TrackId(1),
+                    lap: 0
+                },
+                EngineEvent::LoopWrapped { to: Tick::ZERO },
+                EngineEvent::RecordingNoteLoss {
+                    track: TrackId(1),
+                    lap: 1
+                },
+                EngineEvent::LoopWrapped { to: Tick::ZERO },
+            ]
+        ),
+        "{:?}",
+        &all[komponist_engine::EVENT_CAPACITY..]
+    );
+    rig.process_with(50, &[midi(0, 1, [0x90, 64, 100])], 0);
+    assert!(matches!(
+        rig.take_events()[..],
+        [EngineEvent::RecordedNoteOn { key: 64, .. }]
+    ));
+}
+
+#[test]
+fn a_prolonged_queue_stall_interrupts_capture_and_can_recover() {
+    let mut rig = undrained_recording_rig();
+    // Even the reserved capture slots eventually fill if the UI never drains.
+    for _ in 0..komponist_engine::EVENT_CAPACITY {
+        process_without_draining(&mut rig, &[]);
+        if rig.handle.telemetry().transport() == komponist_engine::TransportState::Playing {
+            break;
+        }
+    }
+    assert_eq!(
+        rig.handle.telemetry().transport(),
+        komponist_engine::TransportState::Playing
+    );
+    rig.send(Command::Record { from: Tick::ZERO });
+    process_without_draining(&mut rig, &[]);
+    rig.poll();
+    let all = rig.take_events();
+    let recording = &all[komponist_engine::EVENT_CAPACITY..];
+    assert!(matches!(
+        recording.first(),
+        Some(EngineEvent::CountInDone { at: Tick::ZERO })
+    ));
+    assert!(
+        recording[1..recording.len() - 1]
+            .iter()
+            .all(|event| matches!(event, EngineEvent::LoopWrapped { to: Tick::ZERO }))
+    );
+    assert!(matches!(
+        recording.last(),
+        Some(EngineEvent::RecordingInterrupted {
+            at: Tick(SHORT_LOOP),
+            first_incomplete_lap,
+            triggering_track: None,
+        }) if *first_incomplete_lap as usize == recording.len() - 2
+    ));
+    rig.process_with(50, &[midi(0, 1, [0x90, 64, 100])], 0);
+    assert!(matches!(
+        rig.take_events()[..],
+        [
+            EngineEvent::CountInDone { at: Tick::ZERO },
+            EngineEvent::RecordedNoteOn { key: 64, .. },
+        ]
+    ));
 }
 
 #[test]
