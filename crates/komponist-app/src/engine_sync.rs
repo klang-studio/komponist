@@ -6,7 +6,8 @@
 //! against the program it actually sent (WP-24 note: `compile::build` and `slot_changes` must see
 //! the same `previous`), inserts the processors of new slots, installs the program, then removes
 //! the processors of vanished slots — in that order, so a slot is filled before a program uses it
-//! and emptied only after the program that used it is gone.
+//! and emptied only after the program that used it is gone. If a replacement needs a slot freed
+//! by the first program, a second program installs it after the removal.
 //!
 //! During a gesture, fader, pan, mute and solo go to the engine as fast-path commands
 //! ([`EngineSync::fast_path`]); the recompile waits for the gesture's end. A device parameter
@@ -45,7 +46,7 @@ use komponist_engine::workers::{
 };
 use komponist_engine::{
     Command, Engine, EngineConfig, EngineEvent, EngineHandle, LiveInput, MAX_BLOCK,
-    MAX_EVENTS_PER_BLOCK, MidiInEvent, MidiPort, Program, SlotId, Telemetry, TrackMeter,
+    MAX_EVENTS_PER_BLOCK, MAX_SLOTS, MidiInEvent, MidiPort, Program, SlotId, Telemetry, TrackMeter,
     TransportState,
 };
 use komponist_model::{DeviceId, Document, Project, Tick, TrackId};
@@ -566,15 +567,37 @@ impl EngineSync {
     /// Compiles `project` against the program last sent and sends it (steps of the module docs).
     pub fn send_project(&mut self, project: &Project) {
         self.sync_macro_params();
-        let mut next = {
-            let env = Env {
-                midi: self.midi.as_ref(),
-                host: &*self.host,
-                rate: f64::from(self.sample_rate()),
-            };
-            compile::build(project, self.previous.as_ref(), &env)
-        };
+        let next = self.compile_project(project);
         let changes = compile::slot_changes(self.previous.as_ref(), &next);
+        // The first build reserves the slots it removes. If that exhausts the table, see
+        // whether the released slots can now take devices excluded from the first program.
+        let check_freed_slots = !changes.removed.is_empty()
+            && next.slots.entries().len() + changes.removed.len() == MAX_SLOTS;
+        self.send_compiled_project(project, next, changes);
+        if check_freed_slots {
+            let next = self.compile_project(project);
+            let changes = compile::slot_changes(self.previous.as_ref(), &next);
+            if !changes.added.is_empty() {
+                self.send_compiled_project(project, next, changes);
+            }
+        }
+    }
+
+    fn compile_project(&self, project: &Project) -> Program {
+        let env = Env {
+            midi: self.midi.as_ref(),
+            host: &*self.host,
+            rate: f64::from(self.sample_rate()),
+        };
+        compile::build(project, self.previous.as_ref(), &env)
+    }
+
+    fn send_compiled_project(
+        &mut self,
+        project: &Project,
+        mut next: Program,
+        changes: compile::SlotChanges,
+    ) {
         let setup = self.setup();
         let mut late_latency = false;
         for (device, slot) in changes.added {
@@ -588,13 +611,9 @@ impl EngineSync {
         }
         if late_latency {
             // The host knows a new processor's latency only once it exists (WP-91): compile again
-            // so the delay compensation counts it. The slots stay as they are.
-            let env = Env {
-                midi: self.midi.as_ref(),
-                host: &*self.host,
-                rate: f64::from(self.sample_rate()),
-            };
-            next = compile::build(project, Some(&next), &env);
+            // so the delay compensation counts it. Compile against the last sent program so
+            // slots whose removals are still to be queued stay reserved.
+            next = self.compile_project(project);
         }
         let values = self.macro_parameters(&next);
         if values != self.macro_params {
@@ -606,12 +625,7 @@ impl EngineSync {
             if released {
                 // Unmapping makes the last controlled value the plugin's ordinary base. Any
                 // automation lane that becomes active again must compile against that base.
-                let env = Env {
-                    midi: self.midi.as_ref(),
-                    host: &*self.host,
-                    rate: f64::from(self.sample_rate()),
-                };
-                next = compile::build(project, Some(&next), &env);
+                next = self.compile_project(project);
             }
         }
         self.send(Command::SetProgram(Box::new(next.clone())));
@@ -898,8 +912,12 @@ impl EngineSync {
             .poll_engine_events()
             .into_iter()
             .map(|event| {
-                if let EngineEvent::PluginParams { slot, ref events } = event
-                    && let Some(device) = self.plugin_parameter_device(slot)
+                if let EngineEvent::PluginParams {
+                    slot,
+                    device,
+                    ref events,
+                } = event
+                    && self.plugin_parameter_slot_matches(slot, device)
                 {
                     for (change, temporary) in events.iter() {
                         self.update_plugin_parameter(device, change.kind, temporary, false);
@@ -912,8 +930,9 @@ impl EngineSync {
         events
     }
 
-    pub(crate) fn plugin_parameter_device(&self, slot: SlotId) -> Option<DeviceId> {
-        self.program()?.slots.device(slot)
+    pub(crate) fn plugin_parameter_slot_matches(&self, slot: SlotId, device: DeviceId) -> bool {
+        self.program()
+            .is_some_and(|program| program.slots.slot(device) == Some(slot))
     }
 
     pub(crate) fn plugin_mapping_parameter(&self, device: DeviceId, id: u32) -> bool {
@@ -1736,6 +1755,121 @@ mod tests {
         assert_eq!(sync.device_status(lead_synth), DeviceStatus::Ok);
         let surge = doc.project().tracks[2].channel.devices[0].id;
         assert_eq!(sync.device_status(surge), DeviceStatus::Missing);
+    }
+
+    #[test]
+    fn sync_reuses_full_processor_slots_after_retiring_the_old_device() {
+        use edits::NewDevice;
+        use komponist_builtin::Internal;
+        use komponist_model::automation::{AutomationOwner, AutomationTarget};
+        use komponist_model::params::ParamId;
+        use komponist_model::{ChannelRef, DeviceRole};
+
+        let effect = |kind: Internal| NewDevice {
+            role: DeviceRole::Effect,
+            plugin: kind.plugin_ref(),
+            state: None,
+            sidechain: None,
+        };
+        let owner = AutomationOwner::Master;
+        let parameter = |device| AutomationTarget::Param {
+            device,
+            param: ParamId::new("gain"),
+        };
+        let lookahead = Internal::Limiter.wire(&ParamId::new("lookahead")).unwrap();
+        let zero_latency_limiter = NewDevice {
+            state: Some(Internal::Limiter.with_value(None, lookahead, 0.0).unwrap()),
+            ..effect(Internal::Limiter)
+        };
+        // With one initial spare, the first new limiter causes a latency recompile while
+        // the second limiter still needs to wait for the removed device's slot.
+        for spare in [0, 1] {
+            let (mut project, removed) = edits::insert_device(
+                &Project::new("Full processor table"),
+                ChannelRef::Master,
+                0,
+                zero_latency_limiter.clone(),
+            )
+            .unwrap();
+            for index in 1..MAX_SLOTS - spare {
+                (project, _) =
+                    edits::insert_device(&project, ChannelRef::Master, index, effect(Internal::Eq))
+                        .unwrap();
+            }
+            (project, _) =
+                edits::automation::add_lane(&project, owner, parameter(removed), "Gain".into())
+                    .unwrap();
+            let mut doc = Document::new(project);
+            let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
+            sync.hold_engine().unwrap();
+            sync.sync(&doc);
+            let original = sync.program().unwrap();
+            let old_slot = original.slots.slot(removed).unwrap();
+            let old_target = original
+                .automation_target(owner, &parameter(removed))
+                .unwrap();
+            // Finish all initial insertions, including any program install waiting for room
+            // in the command queue.
+            sync.held.as_mut().unwrap().engine.settle();
+            sync.poll();
+            sync.held.as_mut().unwrap().engine.settle();
+            let initial_programs = sync.programs_sent();
+
+            let replacements = doc
+                .apply_with("Replace devices", |project| {
+                    let mut project = edits::remove_device(project, removed)?;
+                    let mut replacements = Vec::new();
+                    for index in 0..=spare {
+                        let id;
+                        (project, id) = edits::insert_device(
+                            &project,
+                            ChannelRef::Master,
+                            index,
+                            effect(Internal::Limiter),
+                        )?;
+                        replacements.push(id);
+                    }
+                    let (project, _) = edits::automation::add_lane(
+                        &project,
+                        owner,
+                        parameter(replacements[spare]),
+                        "Gain".into(),
+                    )?;
+                    Ok((project, replacements))
+                })
+                .unwrap();
+            sync.sync(&doc);
+            sync.sync(&doc);
+            assert_eq!(sync.programs_sent(), initial_programs + 2);
+            sync.held.as_mut().unwrap().engine.settle();
+            let program = sync.program().unwrap();
+            assert_eq!(program.slots.entries().len(), MAX_SLOTS);
+            assert_eq!(program.slots.slot(removed), None);
+            assert_eq!(program.slots.slot(replacements[spare]), Some(old_slot));
+            assert!(!sync.plugin_parameter_slot_matches(old_slot, removed));
+            assert!(sync.plugin_parameter_slot_matches(old_slot, replacements[spare]));
+            let replacement_target = parameter(replacements[spare]);
+            let new_target = program
+                .automation_target(owner, &replacement_target)
+                .unwrap();
+            assert_eq!(program.automation_model_target(owner, old_target), None);
+            assert_eq!(
+                program.automation_model_target(owner, new_target),
+                Some(&replacement_target)
+            );
+            let mut total_latency = 0;
+            for replacement in replacements {
+                let slot = program.slots.slot(replacement).unwrap();
+                let latency = sync.host.latency(replacement);
+                assert!(latency > 0);
+                assert_eq!(
+                    sync.held.as_ref().unwrap().engine.processor_latency(slot),
+                    latency
+                );
+                total_latency += latency;
+            }
+            assert_eq!(program.master.chain_latency, total_latency);
+        }
     }
 
     #[test]
