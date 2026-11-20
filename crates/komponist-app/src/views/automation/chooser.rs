@@ -90,7 +90,7 @@ impl Target {
 pub(crate) fn percentage(lang: Lang, value: f32) -> String {
     ParamInfo::new("automation", String::new(), ParamKind::lin(0.0, 1.0), 0.0)
         .unit(Unit::Percent)
-        .texts(komponist_builtin::value_texts(lang))
+        .texts(komponist_device_core::value_texts(lang))
         .format(f64::from(value))
 }
 
@@ -226,12 +226,12 @@ impl<'a> Catalog<'a> {
             return Some((info.clone(), value));
         }
         if is_hexa(device) {
-            let patch = komponist_builtin::decode_state(device.state.as_deref())
-                .unwrap_or_else(|_| komponist_builtin::default_patch());
-            if let Some(param) = komponist_builtin::device::param_in(lang, id) {
+            let patch = komponist_hexa::decode_state(device.state.as_deref())
+                .unwrap_or_else(|_| komponist_hexa::default_patch());
+            if let Some(param) = komponist_hexa::device::param_in(lang, id) {
                 return Some((param.info.clone(), param.field.get(&patch)));
             }
-            let m = komponist_builtin::Macro::ALL
+            let m = komponist_hexa::Macro::ALL
                 .into_iter()
                 .find(|m| m.key() == id.as_str())?;
             return Some((m.param_info_in(lang), m.get(&patch)));
@@ -243,7 +243,7 @@ impl<'a> Catalog<'a> {
             .iter()
             .find(|param| param.id == wire && komponist_plugins::params::is_listed(param))?;
         let info = komponist_plugins::params::param_info(param)
-            .texts(komponist_builtin::value_texts(lang));
+            .texts(komponist_device_core::value_texts(lang));
         let value = host.param_base(device.id, wire).unwrap_or(param.default);
         Some((info, value))
     }
@@ -323,7 +323,7 @@ impl<'a> Catalog<'a> {
         let label = macro_label(self.lang, index, slot);
         let info = ParamInfo::new("track_macro", label.clone(), ParamKind::lin(0.0, 1.0), 0.0)
             .unit(Unit::Percent)
-            .texts(komponist_builtin::value_texts(self.lang))
+            .texts(komponist_device_core::value_texts(self.lang))
             .flags(true, false);
         Target::new(
             AutomationTarget::Macro { index },

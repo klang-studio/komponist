@@ -1,72 +1,23 @@
-//! The texts of the built-in devices that come from the catalog (`komponist-i18n`): value words
-//! and preset categories. Device, parameter and page names are built per language by the devices
-//! themselves ([`crate::Internal::params_in`], [`crate::device::params_in`]).
-
-use komponist_i18n::Lang;
-use komponist_model::project::BUILTIN_HEXA;
-use komponist_model::{PluginFormat, PluginRef};
-
-use crate::Internal;
-
-/// The name a built-in device is shown under in `lang`: hexa, volt, presse and the Sampler keep
-/// their names, "Hall" is "Reverb" and "Tonleiter" is "Scale" in English. `None` for a plugin
-/// that is not a built-in device. The reference stores the German name ([`PluginRef::name`]),
-/// which stays in the project; this is what the browser, the cards and messages show.
-pub fn device_name(lang: Lang, plugin: &PluginRef) -> Option<&'static str> {
-    if plugin.format != PluginFormat::Builtin {
-        return None;
-    }
-    if plugin.id == BUILTIN_HEXA {
-        return Some(lang.device_name_hexa());
-    }
-    Internal::from_plugin(plugin).map(|kind| kind.name_in(lang))
-}
-
-/// The name of preset category `category` in `lang`. Categories are stored as their German
-/// names (`hexa_core::categories`, [`crate::internal::Preset::category`]); a category the catalog
-/// does not know is returned as it is. Preset names are English everywhere and not translated.
-pub fn category_text(lang: Lang, category: &str) -> &str {
-    match category {
-        "Init" => lang.preset_category_init(),
-        "Tasten" => lang.preset_category_keys(),
-        "Mallets & Glocken" => lang.preset_category_mallets(),
-        "Gezupft" => lang.preset_category_plucked(),
-        "Bass" => lang.preset_category_bass(),
-        "Blech & Holz" => lang.preset_category_winds(),
-        "Streicher & Pads" => lang.preset_category_strings_pads(),
-        "Leads" => lang.preset_category_leads(),
-        "Synth" => lang.preset_category_synth(),
-        "Effekte & Perkussion" => lang.preset_category_fx_percussion(),
-        "Verzerrt & Lo-Fi" => lang.preset_category_distorted(),
-        "Wavefolder" => lang.preset_category_wavefolder(),
-        "Rhythmisch" => lang.preset_category_rhythmic(),
-        "Filter-Operatoren" => lang.preset_category_filter_operators(),
-        "Matrix" => lang.preset_category_matrix(),
-        "Techno & House" => lang.preset_category_techno_house(),
-        "Trance & Rave" => lang.preset_category_trance_rave(),
-        "Synthbass" => lang.preset_category_synthbass(),
-        "Chiptune" => lang.preset_category_chiptune(),
-        "Ambient & Glitch" => lang.preset_category_ambient(),
-        "Lead" => lang.preset_category_lead(),
-        "Pad" => lang.preset_category_pad(),
-        "Pluck" => lang.preset_category_pluck(),
-        "Brass" => lang.preset_category_brass(),
-        "FX" => lang.preset_category_fx(),
-        other => other,
-    }
-}
+//! Cross-device tests for localized catalog metadata, parameters, layouts and presets.
 
 #[cfg(test)]
 mod tests {
-    use komponist_device_core::value_texts;
+    use komponist_device_core::{category_text, value_texts};
+    use komponist_hexa::{
+        Macro, categories,
+        device::{self, Field, OpField},
+    };
+    use komponist_i18n::Lang;
+    use komponist_model::PluginFormat;
     use komponist_model::params::layout::{CellParam, DeviceLayout};
     use komponist_model::params::va_curve::{FILTER_TYPES, LFO_DIVS, LFO_SHAPES, WAVES, dst, src};
     use komponist_model::params::{ParamInfo, ParamKind, ValueTexts};
 
-    use super::*;
-    use crate::device::{self, Field, OpField};
-    use crate::internal::{arpeggiator, eq, tonleiter, volt};
-    use crate::macros::Macro;
+    use crate::{Internal, device_name};
+    use {
+        komponist_arpeggiator as arpeggiator, komponist_eq as eq, komponist_scale as tonleiter,
+        komponist_volt as volt,
+    };
 
     fn find<'a>(list: &'a [ParamInfo], id: &str) -> &'a ParamInfo {
         list.iter()
@@ -186,8 +137,7 @@ mod tests {
         assert_eq!(hall.name, "Hall");
         assert_eq!(device_name(Lang::En, &hall), Some("Reverb"));
         assert_eq!(device_name(Lang::De, &hall), Some("Hall"));
-        let mut hexa = Internal::Sampler.plugin_ref();
-        hexa.id = BUILTIN_HEXA.into();
+        let hexa = komponist_hexa::CATALOG.plugin_ref();
         assert_eq!(device_name(Lang::En, &hexa), Some("Hexa"));
         let mut clap = hall;
         clap.format = PluginFormat::Clap;
@@ -251,17 +201,20 @@ mod tests {
         assert_eq!(find(sampler, "pad1_end").name, "End 1");
         assert_eq!(choices(find(sampler, "pad2_mode")), ["1×", "Gate"]);
         let end = find(sampler, "pad1_end");
-        assert_eq!(end.format(crate::sampler::MAX_MS), "End");
+        assert_eq!(end.format(komponist_sampler::MAX_MS), "End");
         assert_eq!(end.format(375.0), "375 ms");
         assert_eq!(
-            find(sampler, "pad1_decay").format(crate::sampler::MAX_DECAY_S),
+            find(sampler, "pad1_decay").format(komponist_sampler::MAX_DECAY_S),
             "Off"
         );
         let de = Internal::Sampler.params_in(Lang::De);
         assert_eq!(find(de, "follow").name, "Pad folgt Eingang");
-        assert_eq!(find(de, "pad1_end").format(crate::sampler::MAX_MS), "Ende");
         assert_eq!(
-            find(de, "pad1_decay").format(crate::sampler::MAX_DECAY_S),
+            find(de, "pad1_end").format(komponist_sampler::MAX_MS),
+            "Ende"
+        );
+        assert_eq!(
+            find(de, "pad1_decay").format(komponist_sampler::MAX_DECAY_S),
             "Aus"
         );
     }
@@ -409,7 +362,7 @@ mod tests {
         let internal = Internal::ALL
             .into_iter()
             .flat_map(|k| k.presets().iter().filter_map(|p| p.category));
-        for category in crate::categories().chain(internal) {
+        for category in categories().chain(internal) {
             for lang in Lang::ALL {
                 let text = category_text(lang, category);
                 assert!(
@@ -420,7 +373,7 @@ mod tests {
             }
         }
         // English texts never keep a German word of the source.
-        for category in crate::categories() {
+        for category in categories() {
             let en = category_text(Lang::En, category);
             assert!(
                 ![

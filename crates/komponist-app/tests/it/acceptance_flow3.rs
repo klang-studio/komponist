@@ -21,13 +21,13 @@ use egui::pos2;
 use egui_kittest::kittest::Queryable as _;
 use komponist_app::device_host::PluginHost;
 use komponist_builtin::Internal;
-use komponist_builtin::sampler::{SampleLink, links, testkit};
 use komponist_engine::TransportState;
 use komponist_i18n::de;
 use komponist_model::edits::{self, NewTrack};
 use komponist_model::project::DEFAULT_PROJECT_NAME;
 use komponist_model::{ClipContent, Project, Tick};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
+use komponist_sampler::{SampleLink, links, testkit};
 
 const BAR: i64 = 3840;
 

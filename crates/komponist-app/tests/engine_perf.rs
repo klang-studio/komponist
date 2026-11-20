@@ -26,8 +26,8 @@ use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::settings::Settings;
 use komponist_app::{Action, App, TransportAction};
 use komponist_audio::{HostKind, StreamConfig};
-use komponist_builtin::{encode_state, preset_patch, presets};
 use komponist_engine::TransportState;
+use komponist_hexa::{encode_state, preset_patch, presets};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewNote, NewTrack};
 use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{

@@ -6,11 +6,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use komponist_builtin::Internal;
-use komponist_builtin::general_sampler::{Settings, write_settings};
-use komponist_builtin::sampler::{SampleLink, links};
+use komponist_general_sampler::{Settings, write_settings};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewNote, NewTrack};
 use komponist_model::params::ParamId;
 use komponist_model::{Hue, Project, Tick};
+use komponist_sampler::{SampleLink, links};
 
 const SAMPLE_FILE: &str = "Glass Pluck.wav";
 const RATE: u32 = 48_000;

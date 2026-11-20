@@ -360,7 +360,7 @@ fn hexa_shows_its_card_and_turning_a_knob_is_saved() {
     ] {
         assert!(names.iter().any(|n| n == name), "{name} in {names:?}");
     }
-    let glide = komponist_builtin::device::param(&ParamId::new("glide")).unwrap();
+    let glide = komponist_hexa::device::param(&ParamId::new("glide")).unwrap();
 
     // Drag "Glide" up: the engine gets SetParam and the device state the new value.
     let before = glide.field.get(&patch_of(h.state(), device));
@@ -388,14 +388,14 @@ fn hexa_shows_its_card_and_turning_a_knob_is_saved() {
     let loaded =
         komponist_model::persist::from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let (_, _, d) = loaded.find_device(device).unwrap();
-    let patch = komponist_builtin::decode_state(d.state.as_deref()).unwrap();
+    let patch = komponist_hexa::decode_state(d.state.as_deref()).unwrap();
     assert!((glide.field.get(&patch) - after).abs() < 1e-6);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn patch_of(app: &App, device: DeviceId) -> komponist_builtin::Patch {
+fn patch_of(app: &App, device: DeviceId) -> komponist_hexa::Patch {
     let (_, _, d) = app.project().find_device(device).unwrap();
-    komponist_builtin::decode_state(d.state.as_deref()).unwrap()
+    komponist_hexa::decode_state(d.state.as_deref()).unwrap()
 }
 
 // ------------------------------------------------------------------------------------------------

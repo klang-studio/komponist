@@ -1407,7 +1407,7 @@ mod tests {
     #[test]
     fn saving_during_capture_keeps_live_sources_referenced_in_redo() {
         use komponist_builtin::Internal;
-        use komponist_builtin::sampler::links::{self, SampleLink};
+        use komponist_sampler::links::{self, SampleLink};
 
         let (root, mut app, track) = rig();
         begin(&mut app, track);

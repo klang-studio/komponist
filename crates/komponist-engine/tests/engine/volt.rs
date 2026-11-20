@@ -1,12 +1,12 @@
-//! volt (WP-95, `komponist_builtin::internal::volt`) on the real engine: sequenced and live
+//! volt (WP-95, `komponist_volt`) on the real engine: sequenced and live
 //! notes, pitch bend, mod wheel and pressure from the live input reach the instrument, and the
 //! output is bit-exact with and without workers (WP-65).
 
 use komponist_builtin::Internal;
-use komponist_builtin::internal::volt::presets::presets;
 use komponist_engine::{Command, MidiInEvent, MidiPort};
 use komponist_model::params::ParamId;
 use komponist_model::{Tick, TickRange};
+use komponist_volt::presets::presets;
 
 use crate::common::*;
 

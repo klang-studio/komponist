@@ -3,7 +3,7 @@ mod dsp;
 #[cfg(test)]
 mod tests;
 
-use komponist_device_core::{CatalogSpec, Dsp, Spec, SpecCache, no_presets};
+use komponist_device_core::{CatalogSpec, Dsp, InternalProcessor, Spec, SpecCache, no_presets};
 use komponist_i18n::Lang;
 use komponist_model::params::layout::DeviceLayout;
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
@@ -390,6 +390,16 @@ pub fn dsp_with_handle() -> (Box<dyn Dsp>, SamplerHandle) {
     let dsp = dsp::GeneralSamplerDsp::new();
     let handle = dsp.handle();
     (Box::new(dsp), handle)
+}
+
+/// Creates a processor and its UI handle from a project state, falling back to parameter defaults
+/// if the state cannot be decoded. The handle also receives the saved slicing settings.
+pub fn processor_from_state(state: Option<&[u8]>) -> (InternalProcessor, SamplerHandle) {
+    let values = SPEC.decode_state(state).unwrap_or_else(|_| SPEC.defaults());
+    let (dsp, handle) = dsp_with_handle();
+    let processor = InternalProcessor::from_dsp(&SPEC, &values, dsp);
+    handle.set_general_settings(&read_settings(state));
+    (processor, handle)
 }
 
 #[cfg(test)]

@@ -552,7 +552,7 @@ pub enum PluginAction {
         /// The general Sampler device.
         device: DeviceId,
         /// Slice boundaries in source seconds and their playback options.
-        settings: komponist_builtin::general_sampler::Settings,
+        settings: komponist_general_sampler::Settings,
     },
 }
 

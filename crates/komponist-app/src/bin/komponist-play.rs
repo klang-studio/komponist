@@ -41,13 +41,13 @@ use komponist_audio::{
     AudioProcess, AudioState, AudioSystem, CallbackInfo, HostKind, MidiIn, MidiReceiver,
     OutputBuffer, StreamConfig, StreamParams,
 };
-use komponist_builtin::{HexaProcessor, Patch, preset_patch, presets};
 use komponist_engine::compile::{self, CompileEnv};
 use komponist_engine::{
     Command, Engine, EngineConfig, EngineEvent, EngineHandle, Event, EventKind, LiveInput,
     MAX_BLOCK, MAX_EVENTS_PER_BLOCK, MidiPort, ProcessContext, ProcessStatus, Processor,
     ProcessorError, Program, StereoIo,
 };
+use komponist_hexa::{HexaProcessor, Patch, preset_patch, presets};
 use komponist_model::format::{fmt_db, fmt_pos, fmt_time, note_name};
 use komponist_model::project::{BUILTIN_HEXA, BUILTIN_SAMPLER};
 use komponist_model::{
@@ -312,7 +312,7 @@ fn instrument_stand_in(track: &Track, device: &Device) -> StandIn {
     let plugin = &device.plugin;
     let is_hexa = plugin.format == PluginFormat::Builtin && plugin.id == BUILTIN_HEXA;
     if is_hexa && let Some(state) = device.state.as_deref() {
-        match komponist_builtin::decode_state(Some(state)) {
+        match komponist_hexa::decode_state(Some(state)) {
             Ok(patch) => {
                 return StandIn::Synth {
                     patch: Box::new(patch),
@@ -448,7 +448,7 @@ fn preset_by_name(name: &str) -> Patch {
     presets()
         .find(|p| p.name == name)
         .and_then(|p| preset_patch(p.index))
-        .unwrap_or_else(komponist_builtin::default_patch)
+        .unwrap_or_else(komponist_hexa::default_patch)
 }
 
 /// The patch of a drum pad.
@@ -1320,7 +1320,7 @@ mod tests {
         let patch = preset_patch(1).unwrap();
         let bass = Arc::make_mut(&mut project.tracks[1]);
         Arc::make_mut(&mut bass.channel.devices[0]).state =
-            Some(komponist_builtin::encode_state(&patch).into());
+            Some(komponist_hexa::encode_state(&patch).into());
         let plans = plan(&project);
         let bass = plans
             .iter()

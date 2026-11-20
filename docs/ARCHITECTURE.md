@@ -117,10 +117,11 @@ Their READMEs record provenance.
 | [`komponist-rt`](../crates/komponist-rt/README.md) | OS realtime scheduling, workgroups and wait primitives |
 | [`komponist-audiofile`](../crates/komponist-audiofile/README.md) | Seekable decoding, resampling, shared file pool, peak cache, source tempo analysis |
 | [`komponist-stretch`](../crates/komponist-stretch/README.md) | Worker-only Rust/C++ wrapper around vendored Signalsmith Stretch/Linear |
-| [`hexa-core`](../crates/hexa-core/README.md) | Hexa six-operator FM engine |
-| [`sampler-core`](../crates/sampler-core/README.md) | Sampler engine |
+| [`hexa-core`](../crates/builtin-devices/hexa/core/README.md) | Hexa six-operator FM engine |
+| [`sampler-core`](../crates/builtin-devices/sampler/core/README.md) | Shared Klopfer and Sampler engine |
 | [`komponist-device-core`](../crates/builtin-devices/core/src/lib.rs) | Unstable device API: catalog and parameter metadata, layouts, state, presets, processor adapters and shared DSP |
-| [`komponist-builtin`](../crates/komponist-builtin/README.md) | Built-in device definitions, processors, presets and sample loading |
+| [Device crates](../crates/builtin-devices/README.md) | One crate per instrument, audio effect and MIDI effect |
+| [`komponist-builtin`](../crates/builtin-devices/registry/README.md) | Built-in device list, catalog and processor factory |
 | [`komponist-ipc`](../crates/komponist-ipc/README.md) | Shared-memory layout, signalling, control protocol, process watching, frame vocabulary |
 | [`komponist-hosting`](../crates/komponist-hosting/README.md) | CLAP/VST3 loading, processing, state, parameters, GUI and host services |
 | [`komponist-bridge`](../crates/komponist-bridge/README.md) | Bridge library and utility executable; instance and scan modes |
@@ -134,8 +135,9 @@ Their READMEs record provenance.
 The engine knows neither egui nor IPC nor CLAP/VST3. `komponist-audio` defines an `AudioProcess`
 callback interface without depending on the engine; the app supplies the adapter.
 `komponist-device-core` uses the model, i18n catalog and engine processor interfaces.
-`komponist-builtin` depends on this core and exposes the existing built-in API to the app and
-plugin catalog. The device core does not depend on individual devices or their registry.
+Individual device crates build on that API. The `komponist-builtin` registry depends on the
+devices and supplies catalog metadata and processor factories to the app and plugin catalog.
+App code that works with a specific device also depends directly on that device's crate.
 `komponist-audiofile` and `komponist-stretch` have no UI or model dependencies. The bridge is the
 runtime boundary for loading external plugin code, even though it ships in the app executable.
 

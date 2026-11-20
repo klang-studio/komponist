@@ -14,11 +14,11 @@
 
 use std::time::{Duration, Instant};
 
-use komponist_builtin::{HexaProcessor, preset_patch, presets};
 use komponist_engine::program::SeqNote;
 use komponist_engine::{
     Command, Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
+use komponist_hexa::{HexaProcessor, preset_patch, presets};
 use komponist_model::{Tick, TickRange};
 
 use crate::common::*;

@@ -10,8 +10,7 @@
 //! (selected pad, held reduction) in egui memory until the device runtime (WP-85, WP-87) feeds it.
 
 use egui::{Id, Rect, Role, Sense, Ui, WidgetInfo};
-use komponist_builtin::algorithms::ALGORITHMS;
-use komponist_builtin::internal::volt;
+use komponist_hexa::algorithms::ALGORITHMS;
 use komponist_i18n::Lang;
 use komponist_model::DeviceId;
 use komponist_model::params::eq_curve::CURVE_RATE;
@@ -37,6 +36,7 @@ use komponist_ui::widgets::device::pad_grid::{Pad, PadGrid};
 use komponist_ui::widgets::dropdown::Item;
 use komponist_ui::widgets::number_field::{open_value_entry, parse_number};
 use komponist_ui::{fonts, px};
+use komponist_volt as volt;
 
 use super::layout::{
     BAND, Cell, CellParam, ENV_OP, ENV_VIEW, GraphBinding, GraphConfig, LFO_VIEW, SEL, WidgetKind,
@@ -47,8 +47,8 @@ use crate::actions::{Action, EditAction, PluginAction, UiAction};
 use crate::platform::Platform;
 use crate::views::mixer::{Touch, gesture_actions, gesture_touch};
 use crate::views::track_macros::Pick as ParamMenu;
-use komponist_builtin::sampler::PadStatus;
 use komponist_model::format::note_name;
+use komponist_sampler::PadStatus;
 
 /// The memory slot of the context placeholders (`{band}`, `{env_op}`, `{sel}`) of a device.
 fn context_id(device: DeviceId) -> Id {
@@ -829,7 +829,7 @@ fn pads(
             (_, Some(PadStatus::Missing)) => t.devices_pad_missing().to_owned(),
             (_, Some(PadStatus::Loading)) => t.devices_pad_loading().to_owned(),
             (_, Some(PadStatus::Failed(_))) => t.devices_pad_failed().to_owned(),
-            _ => note_name(komponist_builtin::sampler::note_of_pad(i)),
+            _ => note_name(komponist_sampler::note_of_pad(i)),
         })
         .collect();
     let pad_list: Vec<Pad<'_>> = names
@@ -976,9 +976,7 @@ fn axis_of(p: &Param) -> Axis {
 }
 
 /// The status of the pad `sample` is about.
-fn v_status(
-    sample: Option<(&komponist_builtin::sampler::PadView, Option<f32>)>,
-) -> Option<&PadStatus> {
+fn v_status(sample: Option<(&komponist_sampler::PadView, Option<f32>)>) -> Option<&PadStatus> {
     sample.map(|(v, _)| &v.status)
 }
 

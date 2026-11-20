@@ -697,7 +697,7 @@ fn the_limiter_meter_shows_the_reduction_the_engine_measured() {
 
 #[test]
 fn the_fm_display_draws_the_real_routing_for_algorithm_zero() {
-    use komponist_builtin::{algorithms, default_patch, encode_state};
+    use komponist_hexa::{algorithms, default_patch, encode_state};
     use komponist_model::Hue;
     // A patch whose routing no table algorithm has: operator 1 modulates operator 6, and
     // operator 6 modulates operator 1.
@@ -784,7 +784,7 @@ fn snapshot_of_a_touched_parameter_with_its_context_menu() {
 
 #[test]
 fn snapshot_of_the_fm_display_with_free_routing() {
-    use komponist_builtin::{algorithms, default_patch, encode_state};
+    use komponist_hexa::{algorithms, default_patch, encode_state};
     use komponist_model::Hue;
     let mut patch = default_patch();
     // All carriers, then 2 and 3 modulate 1 and 4 modulates 5: no table algorithm has that.
@@ -836,7 +836,7 @@ fn snapshot_of_the_fm_display_with_free_routing() {
 
 #[test]
 fn snapshot_of_the_fm_display_with_a_cycle() {
-    use komponist_builtin::{algorithms, default_patch, encode_state};
+    use komponist_hexa::{algorithms, default_patch, encode_state};
     use komponist_model::Hue;
     let mut patch = default_patch();
     // 1 and 6 modulate each other and are both heard; 2 → 3 → 4 is a chain on the side.

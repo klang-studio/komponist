@@ -10,10 +10,10 @@ use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{EditAction, SelectMode, SelectionChange};
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, PluginAction, UiAction};
-use komponist_builtin::general_sampler::read_settings;
-use komponist_builtin::sampler::{PadStatus, SyncStatus};
+use komponist_general_sampler::read_settings;
 use komponist_i18n::Lang;
 use komponist_model::{DeviceId, params::ParamId};
+use komponist_sampler::{PadStatus, SyncStatus};
 
 use crate::common::{scratch, step_until};
 
@@ -436,7 +436,7 @@ fn undo_keeps_slice_selection_and_cancels_an_in_progress_marker_drag() {
     let mut inserted = initial.clone();
     inserted.slices.insert(
         0,
-        komponist_builtin::general_sampler::Slice {
+        komponist_general_sampler::Slice {
             time: 0.4,
             ..Default::default()
         },

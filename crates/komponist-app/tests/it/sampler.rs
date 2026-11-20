@@ -19,11 +19,11 @@ use komponist_app::device_host::{DeviceHost as _, PluginHost};
 use komponist_app::ui_state::{DockTab, StepCursor};
 use komponist_app::{Action, App, PluginAction, ProjectAction, UiAction};
 use komponist_builtin::Internal;
-use komponist_builtin::general_sampler;
-use komponist_builtin::sampler::{PadStatus, SampleLink, links, testkit};
+use komponist_general_sampler as general_sampler;
 use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack};
 use komponist_model::project::DEFAULT_PROJECT_NAME;
 use komponist_model::{DeviceId, Project, Tick, TickRange, TrackId, persist};
+use komponist_sampler::{PadStatus, SampleLink, links, testkit};
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;

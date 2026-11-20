@@ -5,13 +5,13 @@ use std::sync::Arc;
 
 use egui::{Align, Layout, Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
 use komponist_audiofile::PeakData;
-use komponist_builtin::general_sampler::{
+use komponist_general_sampler::{
     MAX_FADE_MS, MAX_SLICES, Settings, Slice, SliceOptions, read_settings,
 };
-use komponist_builtin::sampler::{PadStatus, PadView, SamplerHandle, SyncStatus};
 use komponist_i18n::Lang;
 use komponist_model::format::note_name;
 use komponist_model::params::ParamId;
+use komponist_sampler::{PadStatus, PadView, SamplerHandle, SyncStatus};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, TrackPalette, color, device, radius, size, space, typography};
 use komponist_ui::widgets::button::Button;
@@ -248,7 +248,7 @@ fn wheel_viewport(ui: &Ui, graph: Rect, viewport: &Viewport, length: f64) -> Opt
 
 #[derive(Clone, Default)]
 struct ViewState {
-    link: Option<komponist_builtin::sampler::SampleLink>,
+    link: Option<komponist_sampler::SampleLink>,
     length: f64,
     viewport: Viewport,
     click_preview_disabled: bool,

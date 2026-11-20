@@ -174,7 +174,7 @@ pub fn missing_samples(
                 continue;
             };
             for (pad, link) in
-                komponist_builtin::sampler::links::missing(device.state.as_deref(), project_dir)
+                komponist_sampler::links::missing(device.state.as_deref(), project_dir)
             {
                 if kind == Internal::GeneralSampler && pad != 0 {
                     continue;

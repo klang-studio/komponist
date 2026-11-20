@@ -1,7 +1,7 @@
 //! The live picture of a compressor (WP-93): the UI side of the [`SampleTap`] of `presse`.
 //!
 //! The device appends pairs `[level in dB, reduction in dB (≥ 0)]` while the UI looks (see
-//! `komponist_builtin::internal::presse`). A [`GainTrace`] reads the latest four seconds of pairs at
+//! `komponist_presse`). A [`GainTrace`] reads the latest four seconds of pairs at
 //! most every [`INTERVAL`] and turns them into what the card draws:
 //!
 //! - the **level point** on the transfer curve: the loudest level of the last interval,
@@ -16,8 +16,8 @@
 
 use std::sync::Arc;
 
-use komponist_builtin::internal::presse::{HISTORY_SECONDS, pair_frames};
 use komponist_engine::SampleTap;
+use komponist_presse::{HISTORY_SECONDS, pair_frames};
 
 /// Columns of the history.
 pub const POINTS: usize = 128;

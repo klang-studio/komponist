@@ -346,9 +346,9 @@ fn loading_the_demo_synthesizes_deterministic_non_silent_audio_files() {
 
 #[test]
 fn the_demo_plays_one_sample_chromatically_and_as_slices() {
-    use komponist_builtin::general_sampler::read_settings;
-    use komponist_builtin::sampler::links;
+    use komponist_general_sampler::read_settings;
     use komponist_model::params::ParamId;
+    use komponist_sampler::links;
 
     let dir = scratch("demo-sampler");
     let project = komponist_app::samples::demo_with_kit(showcase_project(), &dir).unwrap();

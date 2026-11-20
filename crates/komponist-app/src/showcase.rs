@@ -33,7 +33,8 @@
 
 use std::sync::Arc;
 
-use komponist_builtin::{Internal, encode_state, preset_patch, presets as hexa_presets};
+use komponist_builtin::Internal;
+use komponist_hexa::{encode_state, preset_patch, presets as hexa_presets};
 use komponist_model::edits::{self, NewBus, SendProp};
 use komponist_model::fixtures::demo_song;
 use komponist_model::{
@@ -484,8 +485,8 @@ fn add_automation(project: &mut Project) {
     let lead_track = project.track(lead).expect("Lead");
     let hexa = &lead_track.channel.devices[0];
     let feedback = ParamId::new("feedback");
-    let param = komponist_builtin::device::param(&feedback).expect("Hexa feedback");
-    let patch = komponist_builtin::decode_state(hexa.state.as_deref()).expect("Hexa state");
+    let param = komponist_hexa::device::param(&feedback).expect("Hexa feedback");
+    let patch = komponist_hexa::decode_state(hexa.state.as_deref()).expect("Hexa state");
     let base = param.info.to_normalized(param.field.get(&patch)) as f32;
     let target = AutomationTarget::Param {
         device: hexa.id,

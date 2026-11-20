@@ -513,10 +513,10 @@ fn preserve_unmapped_value(
         AutomationTarget::Param { device, param } => {
             let state = project.find_device(*device).and_then(|(_, _, d)| {
                 let wire = if is_hexa(d) {
-                    komponist_builtin::device::param(param)
+                    komponist_hexa::device::param(param)
                         .map(|field| field.wire)
                         .or_else(|| {
-                            komponist_builtin::Macro::ALL
+                            komponist_hexa::Macro::ALL
                                 .into_iter()
                                 .find(|m| m.key() == param.as_str())
                                 .map(|m| m.id())

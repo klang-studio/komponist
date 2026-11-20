@@ -12,7 +12,7 @@
 //!   [`BuiltinHost`], every other device (scanned CLAP and VST3 plugins) in a bridge process of the
 //!   [`PluginManager`] (ARCHITECTURE §8).
 //! - [`BuiltinHost`], for tests and as the fallback: hexa in process
-//!   ([`HexaProcessor`]) and the internal devices ([`Internal`], the Sampler among them); every other device gets no processor, so the engine passes an
+//!   (Hexa) and the internal devices ([`Internal`], the Sampler among them); every other device gets no processor, so the engine passes an
 //!   effect's input through and an instrument stays silent, and its status is
 //!   [`DeviceStatus::Missing`].
 //!
@@ -43,18 +43,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use komponist_builtin::sampler::{self, SamplerHandle};
-use komponist_builtin::{HexaProcessor, Internal};
+use komponist_builtin::{BuiltinKind, BuiltinProcessor, Internal};
 use komponist_engine::{DeviceMeter, Processor};
 use komponist_ipc::frame::HeaderModel;
 use komponist_ipc::{GuiSize, GuiTarget, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode};
-use komponist_model::project::BUILTIN_HEXA;
-use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef, Project};
+use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project};
 use komponist_plugins::{
     Catalog, DeviceSnapshots, DeviceStatus, FailReason, MissingPlugin, PluginDirs, PluginError,
     PluginManager, PluginManagerConfig, PluginManagerEvent, ProcessorSetup, SaveSnapshots,
     ScanReport,
 };
+use komponist_sampler as sampler;
+use komponist_sampler::SamplerHandle;
 
 /// Creates processors for devices and reports their runtime status.
 ///
@@ -321,12 +321,12 @@ pub trait DeviceHost {
 
 /// Whether `plugin` is hexa, the one built-in instrument that is not an internal device.
 pub fn is_builtin_instrument(plugin: &PluginRef) -> bool {
-    plugin.format == PluginFormat::Builtin && plugin.id == BUILTIN_HEXA
+    BuiltinKind::from_plugin(plugin) == Some(BuiltinKind::Hexa)
 }
 
 /// Whether `device` is hexa, the in-process built-in.
 pub fn is_hexa(device: &Device) -> bool {
-    device.plugin.format == PluginFormat::Builtin && device.plugin.id == BUILTIN_HEXA
+    is_builtin_instrument(&device.plugin)
 }
 
 /// The internal device `device` is (Sampler, effects, MIDI effects), if it is one.
@@ -336,7 +336,7 @@ pub fn internal_kind(device: &Device) -> Option<Internal> {
 
 /// Whether `device` runs in process: hexa or an internal device.
 pub fn is_in_process(device: &Device) -> bool {
-    is_hexa(device) || internal_kind(device).is_some()
+    BuiltinKind::from_plugin(&device.plugin).is_some()
 }
 
 /// The pads of a sampler that hold a sample as note names for the step rows: the sample's name.
@@ -447,38 +447,34 @@ impl DeviceHost for BuiltinHost {
         device: &Device,
         setup: ProcessorSetup,
     ) -> Option<Box<dyn Processor>> {
-        // A state that does not load plays "Init" (hexa) or the defaults (internal effects)
-        // rather than nothing; the state stays in the document untouched.
-        let mut processor: Box<dyn Processor> = if is_hexa(device) {
-            Box::new(
-                HexaProcessor::from_state(device.state.as_deref())
-                    .unwrap_or_else(|_| HexaProcessor::new(komponist_builtin::default_patch())),
-            )
-        } else if let Some(kind) = internal_kind(device) {
-            let processor = kind.processor_from_state(device.state.as_deref());
-            self.meters.insert(device.id, processor.meter());
-            if let Some(handle) = processor.sampler() {
-                // The samples the state links load in the background; the pads play as they
-                // arrive.
-                for (pad, link) in sampler::links::read(device.state.as_deref()) {
-                    if kind == Internal::GeneralSampler && pad != 0 {
-                        continue;
-                    }
-                    handle.load_link(pad, link, self.project_dir.clone());
-                }
-                if kind == Internal::Sampler {
-                    self.pad_names
-                        .insert(device.id, pad_note_names(&handle.views()));
-                } else {
-                    self.pad_names.remove(&device.id);
-                }
-                self.samplers.insert(device.id, handle);
-            }
-            Box::new(processor)
-        } else {
+        let Some(kind) = BuiltinKind::from_plugin(&device.plugin) else {
             self.set(device.id, DeviceStatus::Missing, 0);
             return None;
         };
+        let BuiltinProcessor {
+            mut processor,
+            meter,
+            sampler,
+        } = kind.processor_from_state(device.state.as_deref());
+        if let Some(meter) = meter {
+            self.meters.insert(device.id, meter);
+        }
+        if let Some(handle) = sampler {
+            // The samples the state links load in the background; the pads play as they arrive.
+            for (pad, link) in sampler::links::read(device.state.as_deref()) {
+                if kind == BuiltinKind::Internal(Internal::GeneralSampler) && pad != 0 {
+                    continue;
+                }
+                handle.load_link(pad, link, self.project_dir.clone());
+            }
+            if kind == BuiltinKind::Internal(Internal::Sampler) {
+                self.pad_names
+                    .insert(device.id, pad_note_names(&handle.views()));
+            } else {
+                self.pad_names.remove(&device.id);
+            }
+            self.samplers.insert(device.id, handle);
+        }
         match processor.activate(setup.sample_rate, setup.max_block) {
             Ok(()) => {
                 let loading = self
@@ -909,7 +905,7 @@ mod tests {
             }
         }
         for (name, has_processor, status) in &made {
-            if name == "Hexa" || name == komponist_builtin::sampler::NAME {
+            if name == "Hexa" || name == komponist_sampler::NAME {
                 assert!(has_processor);
                 assert_eq!(*status, DeviceStatus::Ok);
             } else {
@@ -990,8 +986,8 @@ mod tests {
 #[cfg(test)]
 mod sampler_tests {
     use super::*;
-    use komponist_builtin::sampler::{SampleLink, links, testkit};
     use komponist_model::DeviceRole;
+    use komponist_sampler::{SampleLink, links, testkit};
 
     const SETUP: ProcessorSetup = ProcessorSetup {
         sample_rate: 48_000.0,

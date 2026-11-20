@@ -2,9 +2,10 @@
 //! playing do not reset), a second Stop is the hard cut (5 ms fade, then reset), and MIDI effects do not play on.
 //! Every `process` call runs inside `assert_no_alloc` (the rig).
 
-use komponist_builtin::{HexaProcessor, Internal, preset_patch, presets};
+use komponist_builtin::Internal;
 use komponist_engine::testing::{Logged, TestSine};
 use komponist_engine::{Command, Processor, Program, SlotId};
+use komponist_hexa::{HexaProcessor, preset_patch, presets};
 use komponist_model::params::ParamId;
 use komponist_model::{Tick, TrackId};
 
@@ -12,7 +13,7 @@ use crate::common::*;
 
 const BLOCK: usize = 512;
 
-fn device(kind: Internal, values: &[(&str, f64)]) -> komponist_builtin::InternalProcessor {
+fn device(kind: Internal, values: &[(&str, f64)]) -> komponist_device_core::InternalProcessor {
     let mut all = kind.defaults();
     for (key, value) in values {
         all[kind.wire(&ParamId::new(*key)).unwrap() as usize] = *value;

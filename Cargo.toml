@@ -21,10 +21,10 @@ komponist-tokens = { path = "crates/komponist-tokens" }
 komponist-model = { path = "crates/komponist-model" }
 komponist-engine = { path = "crates/komponist-engine" }
 komponist-audio = { path = "crates/komponist-audio" }
-komponist-builtin = { path = "crates/komponist-builtin" }
+komponist-arpeggiator = { path = "crates/builtin-devices/arpeggiator" }
+komponist-builtin = { path = "crates/builtin-devices/registry" }
 komponist-delay = { path = "crates/builtin-devices/delay" }
 komponist-device-core = { path = "crates/builtin-devices/core" }
-komponist-arpeggiator = { path = "crates/builtin-devices/arpeggiator" }
 komponist-eq = { path = "crates/builtin-devices/eq" }
 komponist-general-sampler = { path = "crates/builtin-devices/general-sampler" }
 komponist-hexa = { path = "crates/builtin-devices/hexa" }

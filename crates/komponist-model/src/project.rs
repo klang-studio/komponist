@@ -69,7 +69,7 @@ pub const VOLT_NAME: &str = "Volt";
 /// Display name of the built-in compressor (id `"presse"`, `komponist_builtin::Internal::Presse`); files before
 /// 2026-11-16 store it in lowercase and are renamed on load (`persist::from_json`).
 pub const PRESSE_NAME: &str = "Presse";
-/// Catalog id of the built-in drum sampler (`komponist_builtin::sampler`, in process, WP-87).
+/// Catalog id of the built-in drum sampler (`komponist_sampler`, in process, WP-87).
 pub const BUILTIN_SAMPLER: &str = "sampler";
 /// Display name of the built-in drum sampler, whose catalog ID stays `sampler`.
 pub const DRUM_SAMPLER_NAME: &str = "Klopfer";

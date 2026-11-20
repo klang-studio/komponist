@@ -3,7 +3,7 @@
 //! the model existed (Algorithmus 5, Ratio 2 = 3.5, Index 0.6, Sustain 0.25).
 
 use komponist_app::views::devices::model::hexa_macro_params;
-use komponist_builtin::Macro;
+use komponist_hexa::Macro;
 use komponist_model::persist;
 
 const OLD_FILE: &str = include_str!("../fixtures/hexa-macros.komponist");
@@ -78,7 +78,7 @@ fn an_old_file_shows_on_the_new_card_too() {
     assert_eq!(value("algorithm"), 5.0);
     assert_eq!(value("op2_ratio"), 3.5);
     assert!((value("op2_level") - 0.6).abs() < 1e-6);
-    let patch = komponist_builtin::decode_state(hexa.state.as_deref()).unwrap();
+    let patch = komponist_hexa::decode_state(hexa.state.as_deref()).unwrap();
     let first = patch.operators.iter().position(|o| o.output).unwrap_or(0);
     assert!((value(&format!("op{}_sustain", first + 1)) - 0.25).abs() < 1e-6);
     // The first card parameters are the macros that stayed: same keys, same wire ids.

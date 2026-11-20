@@ -765,7 +765,7 @@ impl App {
             return false;
         };
         if crate::device_host::is_hexa(model) {
-            return komponist_builtin::device::params()
+            return komponist_hexa::device::params()
                 .iter()
                 .find(|p| p.wire == wire_id)
                 .is_some_and(|p| p.info.is_stepped());
@@ -843,7 +843,7 @@ impl App {
     ) -> Option<(AutomationOwner, AutomationTarget)> {
         let (owner, _, d) = self.project().find_device(device)?;
         let param = if crate::device_host::is_hexa(d) {
-            ParamId::new(komponist_builtin::device::Field::from_wire(id)?.key())
+            ParamId::new(komponist_hexa::device::Field::from_wire(id)?.key())
         } else if let Some(kind) = crate::device_host::internal_kind(d) {
             kind.params().get(id as usize)?.id.clone()
         } else {

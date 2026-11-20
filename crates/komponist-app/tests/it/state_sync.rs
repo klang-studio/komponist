@@ -17,12 +17,12 @@ use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost, is_hexa};
 use komponist_app::engine_sync::{EngineSync, MidiSetup, SyncEvent};
 use komponist_audio::{HostKind, StreamConfig};
 use komponist_builtin::Internal;
-use komponist_builtin::sampler::{SampleLink, links, testkit};
 use komponist_engine::Command;
 use komponist_model::edits::{self, NewDevice};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, Document, Project, TrackId};
 use komponist_plugins::PluginManagerEvent;
+use komponist_sampler::{SampleLink, links, testkit};
 
 fn null_sync(host: Box<dyn DeviceHost>) -> EngineSync {
     let config = StreamConfig {
@@ -96,7 +96,7 @@ fn hexa_track(project: &Project) -> (TrackId, DeviceId) {
 }
 
 fn hexa_state(preset: usize) -> Vec<u8> {
-    komponist_builtin::encode_state(&komponist_builtin::preset_patch(preset).unwrap())
+    komponist_hexa::encode_state(&komponist_hexa::preset_patch(preset).unwrap())
 }
 
 #[test]
@@ -149,7 +149,7 @@ fn undo_and_redo_of_a_hexa_knob_keep_a_held_note_sounding() {
     sync.hold_engine().expect("engine held");
     let patch = |doc: &Document| {
         let device = doc.project().find_device(synth).unwrap().2;
-        komponist_builtin::decode_state(device.state.as_deref()).unwrap()
+        komponist_hexa::decode_state(device.state.as_deref()).unwrap()
     };
     // A sustaining patch, so the note is heard as long as it is held.
     let before = set_state(&mut doc, synth, hexa_state(0));
@@ -165,12 +165,12 @@ fn undo_and_redo_of_a_hexa_knob_keep_a_held_note_sounding() {
     let reloads = sync.device_reloads();
 
     // A tracked knob change (as a paste over or a cancelled gesture would be), undo, redo.
-    let volume = komponist_builtin::device::param(&komponist_model::params::ParamId::new("volume"))
+    let volume = komponist_hexa::device::param(&komponist_model::params::ParamId::new("volume"))
         .unwrap()
         .field;
     let mut turned = original;
     volume.set(&mut turned, volume.get(&original) * 0.5);
-    let before = set_state(&mut doc, synth, komponist_builtin::encode_state(&turned));
+    let before = set_state(&mut doc, synth, komponist_hexa::encode_state(&turned));
     follow(&mut sync, &doc, &before, None);
     assert!(quietest(&mut sync, 9600) > 1e-3, "sounds after the change");
     undo(&mut sync, &mut doc);

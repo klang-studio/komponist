@@ -494,7 +494,7 @@ fn flatten_keeps_a_wet_only_echo_after_four_seconds_of_silence() {
 
 #[test]
 fn an_unreadable_linked_pad_blocks_flattening() {
-    use komponist_builtin::sampler::links::{self, SampleLink};
+    use komponist_sampler::links::{self, SampleLink};
 
     let dir = tempfile::tempdir().unwrap();
     let sample = dir.path().join("corrupt.wav");

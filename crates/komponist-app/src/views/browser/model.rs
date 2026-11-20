@@ -97,7 +97,7 @@ pub enum RowKind {
         /// Open.
         expanded: bool,
     },
-    /// A factory preset of hexa (index in `komponist_builtin::presets`).
+    /// A factory preset of hexa (index in `komponist_hexa::presets`).
     Preset(usize),
     /// A recorded take.
     Take {
@@ -225,7 +225,7 @@ pub fn default_collapsed() -> Vec<String> {
         .iter()
         .map(|c| folder_key(section::EFFECTS, category_id(*c)))
         .collect();
-    keys.extend(komponist_builtin::categories().map(|c| folder_key(section::PRESETS, c)));
+    keys.extend(komponist_hexa::categories().map(|c| folder_key(section::PRESETS, c)));
     keys.push(folder_key(section::PROJECT, section::TAKES));
     keys.push(folder_key(section::PROJECT, section::EXPORTS));
     keys
@@ -392,12 +392,12 @@ fn presets(lang: Lang, input: &Input<'_>, rows: &mut Vec<Row>) {
         return;
     }
     rows.push(Row::section(lang.browser_presets()));
-    let all: Vec<komponist_builtin::PresetInfo> = komponist_builtin::presets().collect();
-    for category in komponist_builtin::categories() {
-        let members: Vec<&komponist_builtin::PresetInfo> =
+    let all: Vec<komponist_hexa::PresetInfo> = komponist_hexa::presets().collect();
+    for category in komponist_hexa::categories() {
+        let members: Vec<&komponist_hexa::PresetInfo> =
             all.iter().filter(|p| p.category == category).collect();
         let key = folder_key(section::PRESETS, category);
-        let label = komponist_builtin::category_text(lang, category);
+        let label = komponist_device_core::category_text(lang, category);
         if folder(input, key, label, members.len(), rows) {
             rows.extend(
                 members
@@ -506,7 +506,7 @@ fn search(lang: Lang, input: &Input<'_>, query: &str) -> Vec<Row> {
 
     let lower = query.to_lowercase();
     if input.segment != BrowserSegment::Effects {
-        let presets: Vec<Row> = komponist_builtin::presets()
+        let presets: Vec<Row> = komponist_hexa::presets()
             .filter(|p| p.name.to_lowercase().contains(&lower))
             .map(|p| {
                 Row::new(

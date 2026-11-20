@@ -230,7 +230,7 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
     // hexa, the internal devices (WP-85) and the five fixtures.
     assert_eq!(
         app.engine().host().catalog().entries().len(),
-        1 + komponist_builtin::internal::Internal::ALL.len() + 5
+        1 + komponist_builtin::Internal::ALL.len() + 5
     );
 
     // Latencies recompile the program. Lead is the longest chain (hexa and two 64-frame
