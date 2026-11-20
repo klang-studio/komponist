@@ -209,14 +209,18 @@ def open_dock(s, y=DOCK_Y):
     s.pause(0.5)
 
 
-def select_track(s, name):
-    """Selects a track by its header (AccessKit row "Track <name>, <instrument>").
+def track_header(s, name):
+    """Finds a safe click position on a MIDI track's header.
 
     The row's centre is not safe: tracks inside a group are indented and the centre then lands on the M/S
     toggles (it muted Bass and never selected it). Click on the name, 36 px right of the row's left edge.
     """
     b = s.bounds(role="Row", contains=f"Track {name},")
-    s.click_pos({"x": b["x"] + 36, "y": b["y"] + b["h"] / 2})
+    return {"x": b["x"] + 36, "y": b["y"] + b["h"] / 2}
+
+
+def select_track(s, name):
+    s.click_pos(track_header(s, name))
     s.pause(0.3)
 
 
@@ -242,10 +246,15 @@ def dock_top(s):
     return int(s.bounds(role="Tab", label="Devices")["y"]) - 6
 
 
-def shot_dock(s, name):
-    """Capture the dock, including its tabs, without the browser, inspector or status bar."""
+def dock_crop(s):
+    """Bounds of the dock and its tabs, excluding the browser, inspector and status bar."""
     top = dock_top(s) + 4  # exclude the splitter and the last pixels of the arrangement above it
-    s.shot(name, crop=(DOCK_X, top, 1379, H - 22 - top))
+    return DOCK_X, top, 1379, H - 22 - top
+
+
+def device_crop(s, name):
+    card = s.bounds(role="Group", label=f"Device {name}")
+    return tuple(int(card[key]) for key in ("x", "y", "w", "h"))
 
 
 # -- scenarios ---------------------------------------------------------------------------------------------------------
@@ -272,18 +281,37 @@ def arrangement(s):
     stop(s)
 
 
+def automation(s):
+    """Show the Lead and Pad automation lanes and edit the Pad macro curve (PNG + GIF)."""
+    s.click(role="Button", label="Collapse dock")
+    s.click_pos(track_header(s, "Pad"), button="secondary")
+    s.click(role="MenuItem", label="Show Automation")
+    lane = s.bounds(role="Group", label="Automation Track macro 1 · Open, Pad")
+    bottom = int(lane["y"] + lane["h"])
+    s.shot("automation", crop=(DOCK_X, 72, 1379, bottom - 72))
+
+    point = s.center(role="Slider", label="Point 5.1.000, 35%")
+    pad = s.bounds(role="Row", contains="Track Pad,")
+    top = int(pad["y"])
+    s.rec_start()
+    s.pause(0.6)
+    s.drag(point, {"x": point["x"] + 72, "y": point["y"] - 12}, steps=18)
+    s.wait_for(role="Slider", contains="Point 6.1.000,")
+    s.pause(1.1)
+    s.gif("track-macro-automation", (DOCK_X, top, 1100, bottom - top), 1100, trim=(0.4, None))
+
+
 def audio_editor(s):
-    """Linked audio: stereo source waveform, fades and clip properties (PNG)."""
+    """Show the stereo Pulse 90 clip with Warp and linked song/source rulers (PNG)."""
     s.click(role="Button", label="Collapse dock")
     s.pause(0.5)
     # An audio clip's centre is its gain line: double-clicking there resets gain instead of opening it.
-    b = s.bounds(role="GridCell", contains="Clip Riser,")
+    b = s.bounds(role="GridCell", contains="Clip Pulse 90,")
     s.click_pos({"x": b["x"] + b["w"] / 2, "y": b["y"] + 8}, count=2)
-    s.click(role="Tab", label="Riser · Waveform")
+    s.click(role="Tab", label="Pulse 90 · Waveform")
     open_dock(s, 450)
-    s.wait_for(role="Tab", label="Riser · Waveform")
     s.pause(2.0)  # let the background waveform cache finish
-    shot_dock(s, "audio-editor")
+    s.shot("audio-editor", crop=dock_crop(s))
 
 
 def audio_recording(s):
@@ -291,17 +319,20 @@ def audio_recording(s):
     s.click(role="Button", label="Record bus, Rhythm")
     open_dock(s, 450)
     s.click(role="Button", label="Count-in 1")
-    s.click(role="Button", label="Loop")
     s.click(role="Button", label="Record")
     s.wait_for(role="Group", label="Waveform · live")
     s.pause(3.0)
+    s.find(role="Group", label="Waveform · live")
+    track = s.bounds(role="Row", label="Track Rhythm Recording")
+    s.click_pos({"x": track["x"] + 36, "y": track["y"] + track["h"] / 2})
+    s.wait_for(label="Input gain")
     s.find(role="Group", label="Waveform · live")
     s.shot("audio-recording")
     stop(s)
 
 
 def piano_roll(s):
-    """Piano roll: draw four notes with the pencil, move one, delete one (GIF + PNG)."""
+    """Draw four notes with the pencil, move one and delete one (GIF)."""
     s.click(role="GridCell", contains="Clip Bass,", count=2)
     open_dock(s, 480)
     s.pause(0.6)
@@ -327,7 +358,7 @@ def piano_roll(s):
         s.pause(0.45)
     s.click(role="RadioButton", label="Pointer")
     s.pause(0.5)
-    # move the third note down a semitone, then remove the last one
+    # Move the third note down, then remove the last one.
     s.drag({"x": x0 + 2 * beat + 20, "y": key_y("C3")}, {"x": x0 + 2 * beat + 20, "y": key_y("A#2")}, steps=8)
     s.pause(0.8)
     s.click_pos({"x": x0 + 3 * beat + 20, "y": key_y("B2")})
@@ -339,7 +370,7 @@ def piano_roll(s):
 
 
 def step_sequencer(s):
-    """Step sequencer: toggle steps on three rows while the pattern plays (GIF + PNG)."""
+    """Toggle steps on three rows while the pattern plays (GIF)."""
     s.click(role="GridCell", contains="Clip Beat A, bars 1", count=2)
     open_dock(s, 380)
     s.pause(0.6)
@@ -357,29 +388,75 @@ def step_sequencer(s):
 
 
 def devices(s):
-    """Device chains: hexa, volt, Sampler + presse with the SC chip (PNGs)."""
+    """Device chains: Hexa, Volt and Klopfer with Presse (PNGs)."""
     s.click(role="Button", label="Browser")  # fold the browser: the dock gets its full width
+    s.click(role="Button", label="Inspector")
     open_dock(s, 380)
-    for track, name in (("Lead", "device-hexa"), ("Bass", "device-volt"), ("Drums", "device-sampler-presse")):
+    for track, first, last, name in (
+        ("Lead", "Hexa", "Delay", "device-hexa"),
+        ("Bass", "Volt", "Presse", "device-volt"),
+        ("Drums", "Klopfer", "Presse", "device-sampler-presse"),
+    ):
         open_devices(s, track)
-        top = dock_top(s)
-        s.shot(name, crop=(26, top + 28, 1612, 300))
+        left = s.bounds(role="Group", label=f"Device {first}")
+        right = s.bounds(role="Group", label=f"Device {last}")
+        s.shot(name, crop=(int(left["x"]) - 8, int(left["y"]) - 8,
+                           int(right["x"] + right["w"] - left["x"]) + 16,
+                           int(max(left["h"], right["h"])) + 16))
+
+
+def sampler(s):
+    """Capture pitched playback on Glass Pluck and edit slices on Glass Slices (PNG + GIF)."""
+    s.click(role="Button", label="Collapse dock")
+    s.click(role="Button", label="Browser")
+    select_track(s, "Glass Pluck")
+    s.click(role="Button", label="Expand dock")
+    s.click(role="Tab", label="Devices")
+    open_dock(s, 680)
+    s.wait_for(role="Group", label="Waveform")
+    s.shot("device-sampler", crop=device_crop(s, "Sampler"))
+
+    s.click(role="Button", label="Collapse dock")
+    fill = s.bounds(role="GridCell", contains="Clip Glass Fill,")
+    s.click_pos({"x": fill["x"], "y": 83})  # ruler, at the start of the demo's slice fill
+    select_track(s, "Glass Slices")
+    s.click(role="Button", label="Expand dock")
+    s.click(role="Tab", label="Devices")
+    open_dock(s, 520)
+    crop = device_crop(s, "Sampler")
+    s.rec_start()
+    s.pause(0.6)
+    s.click(role="Button", label="Add Slice Marker")
+    s.pause(0.8)
+    play(s)
+    s.pause(2.1)
+    stop(s)
+    s.gif("sampler-slices", crop, crop[2], trim=(0.4, None))
+
+
+def flatten_to_audio(s):
+    """Render the Bass MIDI track to audio and undo the operation (GIF)."""
+    s.click(role="Button", label="Collapse dock")
+    s.rec_start()
+    s.pause(0.6)
+    s.click_pos(track_header(s, "Bass"), button="secondary")
+    s.pause(0.9)
+    s.click(role="MenuItem", label="Flatten to Audio")
+    s.wait_for(role="Row", label="Track Bass")
+    s.pause(1.2)
+    s.key("Z", ctrl=True, command=True)
+    s.wait_for(role="Row", contains="Track Bass, Volt")
+    s.pause(1.1)
+    s.gif("flatten-to-audio", (DOCK_X, 72, 1379, 520), 1120, trim=(0.4, None))
 
 
 def sidechain(s):
-    """Sidechain: presse on the bass keyed by the drums (SC popover PNG), then play and record the pumping (GIF)."""
+    """Show Presse on Bass responding to the Drums sidechain (GIF)."""
     s.click(role="Button", label="Browser")  # fold the browser: the whole presse fits in the dock
+    s.click(role="Button", label="Inspector")
     open_dock(s, 380)
     open_devices(s, "Bass")
-    top = dock_top(s)
-    s.pause(0.4)
-    # The demo already has presse on the Bass, keyed by the Drums (pre-fader): open the SC chip's popover briefly.
-    s.click(role="Button", label="Sidechain: Drums")
-    s.wait_for(role="Menu", label="Sidechain source")
-    s.pause(0.5)
-    chip = s.bounds(role="Button", label="Sidechain: Drums")
-    s.key("Escape")
-    s.pause(0.5)
+    crop = device_crop(s, "Presse")
     s.click_pos({"x": 553, "y": 83})  # ruler, bar 5 (browser folded): drums and bass play
     s.pause(0.3)
     s.rec_start()
@@ -388,7 +465,7 @@ def sidechain(s):
     s.pause(1.5)
     s.pause(4.0)
     stop(s)
-    s.gif("sidechain", (650, top + 28, 880, 300), 880, fps=12, trim=(0.5, 6.0))
+    s.gif("sidechain", crop, crop[2], trim=(0.5, 6.0))
 
 
 def eq_spectrum(s):
@@ -396,30 +473,31 @@ def eq_spectrum(s):
     s.click_pos({"x": 1068, "y": 83})  # ruler, bar 9: the lead starts there
     open_dock(s, 380)
     open_devices(s, "Lead")
-    top = dock_top(s)
-    s.pause(0.5)
+    crop = device_crop(s, "EQ")
     s.rec_start()
     play(s)
     s.pause(5.5)
     stop(s)
-    s.gif("eq-spectrum", (DOCK_X + 620, top + 60, 760, 262), 760, fps=12, trim=(0.6, None))
+    s.gif("eq-spectrum", crop, crop[2], trim=(0.6, None))
 
 
 def mixer(s):
-    """Only the mixer dock, playing (PNG)."""
+    """Show the mixer meters during playback (GIF)."""
     open_dock(s, 380)
     s.click(role="Tab", label="Mixer")
-    s.click_pos({"x": 1068, "y": 83})
+    s.click_pos({"x": 1068, "y": 83})  # ruler, bar 9: several tracks play together
+    crop = dock_crop(s)
     play(s)
-    s.pause(4.0)
-    shot_dock(s, "mixer")
+    s.rec_start()
+    s.pause(4.5)
+    s.gif("mixer", crop, 1120, trim=(0.5, 4.0))
     stop(s)
 
 
 def add_device(s):
     """Add-device menu: search, pick an effect (GIF)."""
-    open_dock(s, 450)
     open_devices(s, "Keys")
+    open_dock(s, 450)
     top = dock_top(s)
     s.rec_start()
     s.pause(0.8)
@@ -434,8 +512,8 @@ def add_device(s):
     s.gif("add-device", (DOCK_X + 300, top, 1340, 330), 1040, fps=12, trim=(0.4, None))
 
 
-SCENARIOS = [hero, arrangement, audio_editor, audio_recording, piano_roll, step_sequencer, devices,
-             sidechain, eq_spectrum, mixer, add_device]
+SCENARIOS = [hero, arrangement, automation, audio_editor, audio_recording, piano_roll, step_sequencer,
+             devices, sampler, flatten_to_audio, sidechain, eq_spectrum, mixer, add_device]
 
 
 def main():
