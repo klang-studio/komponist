@@ -95,6 +95,10 @@ impl PlainMap {
         ) as f32
     }
 
+    pub(crate) fn is_stepped(self) -> bool {
+        self.steps != 0
+    }
+
     /// Plain value of a normalised position, snapped to a step where applicable.
     pub fn plain(self, value: f32) -> f64 {
         if !value.is_finite() || self.max <= self.min {

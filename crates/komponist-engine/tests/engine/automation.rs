@@ -1659,7 +1659,10 @@ fn macro_converts_stepped_and_bool_parameters_at_delivery() {
     };
     project = set_macro_value(&project, track, 0, 0.7).unwrap();
     project = add_mapping(&project, track, 0, macro_mapping(parameter(device, 0))).unwrap();
-    project = add_mapping(&project, track, 0, macro_mapping(parameter(device, 1))).unwrap();
+    let mut boolean = macro_mapping(parameter(device, 1));
+    boolean.min = 0.499_999;
+    boolean.max = 0.500_001;
+    project = add_mapping(&project, track, 0, boolean).unwrap();
     let program = compile::build(&project, None, &Quantized);
     let (writer, mut log) = rtrb::RingBuffer::new(16);
     let mut rig = Rig::new(RATE, 256);
@@ -1684,6 +1687,17 @@ fn macro_converts_stepped_and_bool_parameters_at_delivery() {
     rig.process(128, 128);
     assert_eq!(log.pop().unwrap(), (128, 0, -2.0));
     assert_eq!(log.pop().unwrap(), (128, 1, 0.0));
+
+    rig.send(Command::SetMacro {
+        track,
+        index: 0,
+        value: 0.11,
+    });
+    rig.process(256, 128);
+    assert!(
+        log.pop().is_err(),
+        "unchanged steps should not be sent again"
+    );
 }
 
 #[test]

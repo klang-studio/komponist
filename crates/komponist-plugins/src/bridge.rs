@@ -237,6 +237,8 @@ pub(crate) struct Bridge {
     /// Last macro values that became the ordinary parameter base on unmapping.
     released_macro_params: BTreeSet<u32>,
     macro_changed: bool,
+    /// An explicit plugin state change is independent of the verified macro outputs.
+    plugin_state_dirty: bool,
     macro_snapshots: Vec<Weak<[u8]>>,
     pub note_names: Vec<NoteName>,
     pub has_gui: bool,
@@ -363,6 +365,7 @@ impl Bridge {
             macro_params: BTreeMap::new(),
             released_macro_params: BTreeSet::new(),
             macro_changed: false,
+            plugin_state_dirty: false,
             macro_snapshots: Vec::new(),
             note_names: Vec::new(),
             has_gui: false,
@@ -568,9 +571,15 @@ impl Bridge {
         }
         let previous = std::mem::replace(&mut self.macro_params, values);
         for (id, value) in previous {
-            if self.phase == Phase::Running && !self.macro_params.contains_key(&id) {
-                self.base_values.insert(id, value);
+            if self.phase == Phase::Running
+                && !self.macro_params.contains_key(&id)
+                && self.base_values.insert(id, value) != Some(value)
+            {
+                for restore in &mut self.state_restores {
+                    restore.later_edits.insert(id);
+                }
                 self.released_macro_params.insert(id);
+                self.user_changed();
                 self.snapshot_soon();
             }
         }
@@ -850,7 +859,9 @@ impl Bridge {
                     self.snapshot_soon();
                     return;
                 }
-                let macro_snapshot = self.macro_changed && self.pending_params.is_empty();
+                let macro_snapshot = self.macro_changed
+                    && !self.plugin_state_dirty
+                    && self.pending_params.is_empty();
                 if pending.as_ref().is_some_and(|pending| pending.checked) {
                     let mut changed = false;
                     for (id, value) in verified {
@@ -875,6 +886,7 @@ impl Bridge {
                 }
                 let state: Arc<[u8]> = state.into();
                 self.macro_changed = false;
+                self.plugin_state_dirty = false;
                 if macro_snapshot {
                     self.macro_snapshots
                         .retain(|snapshot| snapshot.strong_count() != 0);
@@ -962,6 +974,8 @@ impl Bridge {
                 // While loading, "dirty" comes from the plugin itself, not from the user.
                 if self.phase == Phase::Running {
                     self.user_changed();
+                    self.plugin_state_dirty = true;
+                    self.invalidate_state_requests();
                 }
                 self.snapshot_soon();
             }

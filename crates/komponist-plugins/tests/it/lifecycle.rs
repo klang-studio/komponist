@@ -586,6 +586,47 @@ fn parameter_changes_are_snapshotted_once_debounced() {
 }
 
 #[test]
+fn unmapping_a_persistent_macro_value_allows_saving_after_a_failed_restore() {
+    let dir = scratch("bad-state-unmap");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let device = DeviceId(10);
+    let blob = b"not a state of kp-test-synth";
+    let synth = self::device(10, DeviceRole::Instrument, clap_plugin(SYNTH), Some(blob));
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(device.0, DeviceStatus::Ok);
+    let gain = param_id(&rig.manager, device.0, "Gain");
+    let base = rig.manager.param_base(device, gain).unwrap();
+    assert!(rig.manager.state_warning(device).is_some());
+
+    // Removing a no-op mapping leaves the rejected bytes alone.
+    rig.manager.set_macro_params(&[(device, gain, base)]);
+    rig.manager.set_macro_params(&[]);
+    assert!(rig.manager.state_warning(device).is_some());
+    assert!(rig.manager.snapshot_for_save(PATIENCE).unwrap().is_empty());
+
+    let value = 0.5;
+    assert_ne!(base, value);
+    rig.manager.set_macro_params(&[(device, gain, value)]);
+    rig.send(Command::SetParam {
+        slot: rig.slots[&device],
+        id: gain,
+        value,
+    });
+    rig.run(4);
+    assert!(rig.manager.state_warning(device).is_some());
+
+    rig.manager.set_macro_params(&[]);
+    assert_eq!(rig.manager.state_warning(device), None);
+    let states = rig.manager.snapshot_for_save(PATIENCE).unwrap();
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].0, device);
+    assert_ne!(&*states[0].1, blob);
+    assert_eq!(rig.manager.param_base(device, gain), Some(value));
+}
+
+#[test]
 fn a_state_that_fails_to_load_is_kept_until_the_user_changes_something() {
     let dir = scratch("bad-state");
     let Some(manager) = scanned_manager(&dir) else {
