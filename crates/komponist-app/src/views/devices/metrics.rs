@@ -36,6 +36,17 @@ pub const CHAIN_MIN_HEIGHT: f32 = HEADER_HEIGHT + 2.0 * BODY_PAD + device::frame
 
 /// Parameter columns of the auto-layout (`foreign()` `cols=4`; `params::AUTO_COLUMNS`).
 pub const COLUMNS: usize = 4;
+/// The 14-column Sampler proposal gives ten columns to the waveform and four to controls.
+pub const SAMPLER_COLUMNS: u8 = 14;
+pub const SAMPLER_WAVE_COLUMNS: u8 = 10;
+pub const SAMPLER_ROW: f32 = device::grid::CELL[1] + device::grid::GAP;
+/// The file selector and time readout share the waveform toolbar with navigation.
+pub const SAMPLER_FILE_WIDTH: f32 = 144.0;
+pub const SAMPLER_FILE_INFO_WIDTH: f32 = 144.0;
+/// A 20 ms waveform window is narrow enough to place transient and loop markers by eye.
+pub const SAMPLER_MIN_ZOOM: f64 = 0.020;
+/// Four divisions across the proposed waveform.
+pub const SAMPLER_TICK_COUNT: u8 = 4;
 /// Columns of a frame that shows a message (loading, crashed, missing): `foreign()`'s 252 px.
 pub const MESSAGE_COLUMNS: u8 = 4;
 

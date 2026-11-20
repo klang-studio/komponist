@@ -41,12 +41,12 @@ use komponist_model::params::layout::{
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 
 pub use links::{Collector, SampleLink};
-pub use load::{PadStatus, PadView, SamplerHandle};
+pub use load::{PadStatus, PadView, SamplerHandle, SyncStatus};
 
 use crate::internal::{Dsp, Spec};
 
 /// The device's name in the browser and on the card. The only place it is written.
-pub const NAME: &str = "Sampler";
+pub const NAME: &str = komponist_model::project::DRUM_SAMPLER_NAME;
 
 /// Pads of the sampler.
 pub const PADS: usize = 8;

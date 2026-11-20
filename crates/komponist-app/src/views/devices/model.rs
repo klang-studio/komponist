@@ -221,6 +221,8 @@ pub struct Card {
     pub levels: Option<DeviceLevels>,
     /// The sampler's pads (only a running sampler has them).
     pub sampler: Option<SamplerView>,
+    /// Editor data of the general-purpose Sampler.
+    pub(super) general_sampler: Option<super::general_sampler::Editor>,
     /// The device's sample rate and live spectrum (WP-92, set by the view from `Meters`); `None`
     /// for a device without a sample tap.
     pub analysis: Option<Analysis>,
@@ -355,6 +357,8 @@ pub fn cards(
 
 fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Card {
     let state = CardState::from(host.status(device.id));
+    let general_sampler =
+        internal_kind(device) == Some(komponist_builtin::Internal::GeneralSampler);
     let params = if state == CardState::Ok {
         if is_hexa(device) {
             hexa_params(lang, device)
@@ -374,6 +378,8 @@ fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWin
     // auto-layout.
     let layout = if is_hexa(device) {
         komponist_builtin::device::layout_in(lang)
+    } else if general_sampler {
+        super::general_sampler::layout(lang)
     } else {
         internal_kind(device).map_or_else(
             || {
@@ -441,6 +447,9 @@ fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWin
         late: None,
         levels: None,
         sampler: sampler_view(host, device.id),
+        general_sampler: general_sampler.then(|| {
+            super::general_sampler::Editor::new(device.state.as_deref(), host.sampler(device.id))
+        }),
         analysis: None,
         dynamics: None,
         routing: hexa.then(|| {

@@ -955,7 +955,7 @@ fn the_master_plus_offers_audio_effects_only_and_adds_to_the_master_chain() {
     h.run_steps(3);
     let listed = option_names(&h);
     assert!(!listed.is_empty());
-    for name in ["Hexa", "Arpeggiator", "Sampler"] {
+    for name in ["Hexa", "Arpeggiator", "Klopfer", "Sampler"] {
         assert!(!listed.iter().any(|n| n == name), "{name} in {listed:?}");
     }
     assert!(listed.iter().any(|n| n == "LSP Delay"), "{listed:?}");

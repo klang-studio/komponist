@@ -10,6 +10,8 @@ use crate::modulation::{
     PITCH_RANGE_SEMIS, Rng, Sources, TIME_RANGE_OCT,
 };
 use crate::pad::PadSettings;
+use crate::pitch::PitchReader;
+use crate::playback::Playback;
 use crate::sample::Sample;
 use crate::svf::Svf;
 
@@ -23,6 +25,7 @@ pub(crate) struct VoiceStart {
     pub layer_gain: f32,
     pub layer_tune: f32,
     pub lfo_phase: f32,
+    pub playback: Option<Playback>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -32,8 +35,10 @@ pub(crate) struct Voice {
     pub slot: usize,
     /// Monotonic trigger counter, used to find the oldest voice when stealing
     pub id: u64,
+    pub playback: Option<Playback>,
 
     pos: f64,
+    pitch_reader: Option<PitchReader>,
     velocity: f32,
     velocity_gain: f32,
     layer_gain: f32,
@@ -74,6 +79,7 @@ impl Voice {
             pad: v.pad,
             slot: v.slot,
             id,
+            playback: v.playback,
             velocity: v.velocity.clamp(0.0, 1.0),
             velocity_gain: 1.0 - s.velocity_sens * (1.0 - v.velocity.clamp(0.0, 1.0)),
             layer_gain: v.layer_gain,
@@ -106,7 +112,9 @@ impl Voice {
         }
 
         let len = sample.len() as f64;
-        self.pos = if s.reverse {
+        self.pos = if let Some(playback) = &self.playback {
+            playback.start(self.start_offset)
+        } else if s.reverse {
             s.end as f64 * len - 1.0
         } else {
             (s.start + self.start_offset).clamp(0.0, 1.0) as f64 * len
@@ -125,6 +133,9 @@ impl Voice {
     }
 
     pub fn release(&mut self) {
+        if let Some(playback) = &mut self.playback {
+            playback.released = true;
+        }
         self.amp.release();
         self.env1.release();
         self.env2.release();
@@ -180,25 +191,50 @@ impl Voice {
             ModValues::default()
         };
 
-        let len = sample.len() as f64;
-        let start = (s.start + self.start_offset).clamp(0.0, 1.0) as f64 * len;
-        let end = (s.end + m.end).clamp(0.0, 1.0) as f64 * len;
-        if self.pos < start || self.pos >= end || end - start < 1.0 {
-            self.active = false;
-            return (0.0, 0.0);
-        }
-
-        let mut x = sample.read(self.pos);
-
         let pitch = self.tune + self.layer_tune - sample.baked_pitch
             + s.pitch_env_semis * self.pitch_env.next(s.pitch_env_coeff)
             + m.pitch * PITCH_RANGE_SEMIS;
-        let rate = (sample.sample_rate / sample_rate) as f64 * semitones_to_ratio(pitch) as f64;
-        if s.reverse {
-            self.pos -= rate;
+        let ratio = f64::from(semitones_to_ratio(pitch));
+        let rate = f64::from(sample.sample_rate / sample_rate) * ratio;
+        let mut x = if let Some(playback) = &mut self.playback {
+            if !playback.contains(self.pos) {
+                self.active = false;
+                return (0.0, 0.0);
+            }
+            let clock_rate = if playback.independent_pitch {
+                f64::from(sample.sample_rate) / f64::from(sample_rate)
+            } else {
+                rate
+            };
+            let value =
+                if playback.independent_pitch && (pitch != 0.0 || self.pitch_reader.is_some()) {
+                    let phase = self.pitch_reader.get_or_insert_with(|| {
+                        PitchReader::new(playback, self.pos, sample_rate, self.id)
+                    });
+                    let (l, r) = phase.render(sample, playback, self.pos, clock_rate * ratio);
+                    let gain = playback.fade_gain(self.pos);
+                    (l * gain, r * gain)
+                } else {
+                    playback.read(sample, self.pos, true)
+                };
+            self.pos = playback.advance(self.pos, clock_rate);
+            value
         } else {
-            self.pos += rate;
-        }
+            let len = sample.len() as f64;
+            let start = (s.start + self.start_offset).clamp(0.0, 1.0) as f64 * len;
+            let end = (s.end + m.end).clamp(0.0, 1.0) as f64 * len;
+            if self.pos < start || self.pos >= end || end - start < 1.0 {
+                self.active = false;
+                return (0.0, 0.0);
+            }
+            let value = sample.read(self.pos);
+            if s.reverse {
+                self.pos -= rate;
+            } else {
+                self.pos += rate;
+            }
+            value
+        };
 
         let bits = (s.bits + m.bits * BITS_RANGE).clamp(2.0, 24.0);
         let downsample =

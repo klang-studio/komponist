@@ -147,6 +147,30 @@ devices-pad-failed = Error
 # The waveform's title for a pad without a sample.
 devices-no-sample = no sample
 
+# Chromatic sampler pages and actions.
+devices-sampler-sample = Sample
+devices-sampler-modulation = Modulation
+devices-sampler-sample-menu = Sample
+devices-sampler-fit = Fit Sample
+devices-sampler-click-preview = Preview by clicking the waveform
+devices-sampler-earlier = Earlier in Sample
+devices-sampler-later = Later in Sample
+devices-sampler-length = { $seconds } s
+devices-sampler-amp-envelope = Amp Envelope
+devices-sampler-filter-envelope = Filter Envelope
+devices-sampler-detect = Detect Transients
+devices-sampler-add-slice = Add Slice Marker
+devices-sampler-remove-slice = Remove Slice Marker
+devices-sampler-slice-trigger = Trigger
+devices-sampler-slice = Slice { $number }
+devices-sampler-slice-row = { $note } · { $time } ms
+devices-sampler-slice-start = { $note } · Playback Start
+devices-sampler-midi-assignment = MIDI Mapping
+devices-sampler-lfo = LFO
+devices-sampler-velocity = Velocity
+devices-sampler-sync-preparing = Preparing stretch…
+devices-sampler-sync-unavailable = Stretch unavailable
+
 # Accessible name of the card's context menu.
 devices-device = Device
 

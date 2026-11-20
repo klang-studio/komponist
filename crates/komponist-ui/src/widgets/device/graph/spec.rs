@@ -437,8 +437,18 @@ pub enum HandleLook {
         /// The flag hangs left of the line (the end, `true`) or right of it (the start, `false`).
         flag_left: bool,
     },
+    /// A vertical line with a triangular marker head.
+    Marker(MarkerHead),
     /// The XY puck: a filled circle in the track colour.
     Puck,
+}
+
+/// Direction of a triangular waveform marker head.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkerHead {
+    Right,
+    Left,
+    Down,
 }
 
 /// A handle: up to three bindings and the way it is drawn.
@@ -567,6 +577,22 @@ pub enum Region {
         /// Axis units per slot unit.
         scale: f64,
     },
+    /// A full-height track-coloured highlight between two positions.
+    Inside {
+        /// Start and end slots.
+        bounds: [usize; 2],
+        /// Axis units per slot unit, one scale per boundary.
+        scales: [f64; 2],
+    },
+    /// Fade ramps with full-height markers and shaded fade regions.
+    Fades {
+        /// Start and end slots in visual order.
+        bounds: [usize; 2],
+        /// Axis units per slot unit, one scale per boundary.
+        scales: [f64; 2],
+        /// Duration slots in visual order (fade-out first for reverse playback).
+        durations: [usize; 2],
+    },
     /// A thin bar under a log frequency axis from `cutoff · 2^lo` to `cutoff · 2^hi`: the
     /// range the modulation matrix moves the cutoff over (volt). `cutoff` is the slot of the
     /// cutoff in Hz, `matrix` the first of the 15 slots `va_curve::cutoff_mod_octaves` reads.
@@ -615,6 +641,8 @@ pub enum Guide {
 pub enum Marker {
     /// The playhead (`Graph::playhead`): 1 px `text.1`, dashed, from y 14 down.
     Playhead,
+    /// A solid playhead covering the full height of the graph.
+    FullHeightPlayhead,
     /// The level point (`Graph::level`): r 3 `text.1` on the first curve at the level's x.
     Level,
     /// IN, OUT and GR of the live level point as three lines of name and value in the strip right

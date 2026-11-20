@@ -588,3 +588,47 @@ label-volt-lfo = LFO
 
 # Title of volt's envelope graph; `$name` is the name of the chosen envelope.
 graph-title-volt-envelope = { $name }-Hk.
+
+# General sampler
+param-general-sampler-start = Start
+param-general-sampler-end = Ende
+param-general-sampler-fade-in = Einblendung
+param-general-sampler-fade-out = Ausblendung
+param-general-sampler-mode = Wiedergabe
+param-general-sampler-direction = Richtung
+param-general-sampler-forward = Vorwärts
+param-general-sampler-reverse = Rückwärts
+param-general-sampler-root = Grundton
+param-general-sampler-slices = Slices
+param-general-sampler-coarse = Grob
+param-general-sampler-fine = Fein
+param-general-sampler-sync = Tempo-Sync
+param-general-sampler-source-bpm = Quelltempo (BPM)
+param-general-sampler-gain = Pegel
+param-general-sampler-pan = Panorama
+param-general-sampler-attack = Attack
+param-general-sampler-decay = Decay
+param-general-sampler-sustain = Sustain
+param-general-sampler-release = Release
+param-general-sampler-filter = Filter
+param-general-sampler-off = Aus
+param-general-sampler-low-pass = Tiefpass
+param-general-sampler-high-pass = Hochpass
+param-general-sampler-band-pass = Bandpass
+param-general-sampler-cutoff = Grenzfrequenz
+param-general-sampler-resonance = Resonanz
+param-general-sampler-filter-env = Hüllkurve
+param-general-sampler-filter-decay = Filterabkl.
+param-general-sampler-lfo-shape = LFO-Form
+param-general-sampler-sine = Sinus
+param-general-sampler-triangle = Dreieck
+param-general-sampler-saw-up = Aufsteigender Sägezahn
+param-general-sampler-saw-down = Absteigender Sägezahn
+param-general-sampler-square = Rechteck
+param-general-sampler-sample-hold = Sample & Hold
+param-general-sampler-lfo-rate = LFO-Frequenz
+param-general-sampler-lfo-target = LFO-Ziel
+param-general-sampler-lfo-depth = LFO-Stärke
+param-general-sampler-velocity-target = Velocity-Ziel
+param-general-sampler-velocity-depth = Velocity-Stärke
+param-general-sampler-pitch = Tonhöhe

@@ -461,10 +461,17 @@ impl DeviceHost for BuiltinHost {
                 // The samples the state links load in the background; the pads play as they
                 // arrive.
                 for (pad, link) in sampler::links::read(device.state.as_deref()) {
+                    if kind == Internal::GeneralSampler && pad != 0 {
+                        continue;
+                    }
                     handle.load_link(pad, link, self.project_dir.clone());
                 }
-                self.pad_names
-                    .insert(device.id, pad_note_names(&handle.views()));
+                if kind == Internal::Sampler {
+                    self.pad_names
+                        .insert(device.id, pad_note_names(&handle.views()));
+                } else {
+                    self.pad_names.remove(&device.id);
+                }
                 self.samplers.insert(device.id, handle);
             }
             Box::new(processor)
@@ -531,9 +538,20 @@ impl DeviceHost for BuiltinHost {
     }
 
     fn status(&self, device: DeviceId) -> DeviceStatus {
-        self.devices
+        let status = self
+            .devices
             .get(&device)
-            .map_or(DeviceStatus::Ok, |k| k.status.clone())
+            .map_or(DeviceStatus::Ok, |k| k.status.clone());
+        if status == DeviceStatus::Ok
+            && self
+                .samplers
+                .get(&device)
+                .is_some_and(|handle| !handle.is_idle())
+        {
+            DeviceStatus::Loading
+        } else {
+            status
+        }
     }
 
     fn latency(&self, device: DeviceId) -> u32 {
@@ -568,9 +586,11 @@ impl DeviceHost for BuiltinHost {
             self.set(device, DeviceStatus::Ok, latency);
         }
         for (device, handle) in &self.samplers {
-            let names = pad_note_names(&handle.views());
-            if self.pad_names.get(device) != Some(&names) {
-                self.pad_names.insert(*device, names);
+            if let Some(previous) = self.pad_names.get_mut(device) {
+                let names = pad_note_names(&handle.views());
+                if *previous != names {
+                    *previous = names;
+                }
             }
         }
         std::mem::take(&mut self.events)
@@ -921,7 +941,7 @@ mod tests {
             names,
             [
                 "Hexa",
-                "Sampler",
+                "Klopfer",
                 "EQ",
                 "Delay",
                 "Hall",
@@ -929,7 +949,8 @@ mod tests {
                 "Presse",
                 "Arpeggiator",
                 "Tonleiter",
-                "Volt"
+                "Volt",
+                "Sampler",
             ]
         );
         let missing = host.missing_plugins(&project);

@@ -39,6 +39,9 @@ missing-place = { $owner } · { $role }
 # Place of a missing sample; `$pad` is the pad number from 1.
 missing-place-pad = { $owner } · Pad { $pad }
 
+# Place of a missing sample in the general-purpose Sampler.
+missing-place-sampler = { $owner } · Sampler
+
 # Title with plugins only (S06).
 missing-title-plugins = { $n ->
         [one] 1 Plugin fehlt

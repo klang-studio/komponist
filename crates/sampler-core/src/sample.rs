@@ -60,10 +60,15 @@ impl Sample {
         if last < 0 {
             return (0.0, 0.0);
         }
+        self.read_between(pos, 0, last)
+    }
 
+    /// Interpolates with taps clamped to an inclusive, valid frame range.
+    #[inline]
+    pub(crate) fn read_between(&self, pos: f64, first: isize, last: isize) -> (f32, f32) {
         let i = pos.floor() as isize;
         let t = (pos - i as f64) as f32;
-        let idx = |o: isize| (i + o).clamp(0, last) as usize;
+        let idx = |o: isize| (i + o).clamp(first, last) as usize;
         let (a, b, c, d) = (idx(-1), idx(0), idx(1), idx(2));
 
         let l = &self.left;

@@ -49,8 +49,8 @@
 use std::sync::{Arc, OnceLock};
 
 use komponist_engine::{
-    DeviceMeter, Event, EventKind, EventProcessor, ProcessContext, ProcessStatus, Processor,
-    ProcessorError, SampleTap, StereoIo,
+    DeviceMeter, Event, EventKind, EventProcessor, NOTE_ID_NONE, ProcessContext, ProcessStatus,
+    Processor, ProcessorError, SampleTap, StereoIo,
 };
 use komponist_i18n::Lang;
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, Page, WidgetKind};
@@ -137,9 +137,19 @@ pub trait Dsp: Send {
         let _ = (key, velocity);
     }
 
+    /// RT, instruments only. A note starts, optionally paired with an engine-assigned id.
+    fn note_on_with_id(&mut self, key: u8, velocity: u8, _note_id: Option<u32>) {
+        self.note_on(key, velocity);
+    }
+
     /// RT, instruments only. A note ends.
     fn note_off(&mut self, key: u8) {
         let _ = key;
+    }
+
+    /// RT, instruments only. A note ends, with its id when the engine paired it.
+    fn note_off_with_id(&mut self, key: u8, _note_id: Option<u32>) {
+        self.note_off(key);
     }
 
     /// RT, instruments only. Every sounding note ends now.
@@ -241,11 +251,13 @@ pub enum Internal {
     Tonleiter,
     /// Virtual-analog synthesizer, an instrument (WP-95).
     Volt,
+    /// Chromatic sampler with waveform editing and slice playback.
+    GeneralSampler,
 }
 
 impl Internal {
     /// All devices, in browser order.
-    pub const ALL: [Internal; 9] = [
+    pub const ALL: [Internal; 10] = [
         Internal::Sampler,
         Internal::Eq,
         Internal::Delay,
@@ -255,11 +267,13 @@ impl Internal {
         Internal::Arpeggiator,
         Internal::Tonleiter,
         Internal::Volt,
+        Internal::GeneralSampler,
     ];
 
     fn spec(self) -> &'static Spec {
         match self {
             Internal::Sampler => &crate::sampler::SPEC,
+            Internal::GeneralSampler => &crate::general_sampler::SPEC,
             Internal::Eq => &eq::SPEC,
             Internal::Delay => &delay::SPEC,
             Internal::Hall => &hall::SPEC,
@@ -300,7 +314,10 @@ impl Internal {
 
     /// Whether this is an instrument (the sampler, volt): notes in, audio out.
     pub fn is_instrument(self) -> bool {
-        matches!(self, Internal::Sampler | Internal::Volt)
+        matches!(
+            self,
+            Internal::Sampler | Internal::GeneralSampler | Internal::Volt
+        )
     }
     fn index(self) -> usize {
         Internal::ALL
@@ -330,6 +347,7 @@ impl Internal {
     pub fn name_in(self, lang: Lang) -> &'static str {
         match self {
             Internal::Sampler => lang.device_name_sampler(),
+            Internal::GeneralSampler => lang.device_name_general_sampler(),
             Internal::Eq => lang.device_name_eq(),
             Internal::Delay => lang.device_name_delay(),
             Internal::Hall => lang.device_name_hall(),
@@ -471,14 +489,33 @@ impl Internal {
             .get("params")
             .and_then(serde_json::Value::as_object)
             .ok_or(StateError::NoParams)?;
+        // Earlier Sampler states stored the mapping separately and used mode 2 for looping.
+        let legacy_sampler = self == Internal::GeneralSampler
+            && (params.contains_key("slicing") || params.contains_key("loop_start"));
         Ok(self
             .params()
             .iter()
             .map(|p| {
-                params
+                let stored = params
                     .get(p.id.as_str())
                     .and_then(serde_json::Value::as_f64)
-                    .map_or(p.default, |v| p.snap(v))
+                    .unwrap_or(p.default);
+                if legacy_sampler {
+                    match p.id.as_str() {
+                        "mode"
+                            if params
+                                .get("slicing")
+                                .and_then(serde_json::Value::as_f64)
+                                .is_some_and(|value| value >= 0.5) =>
+                        {
+                            return 2.0;
+                        }
+                        "mode" if stored == 2.0 => return 1.0,
+                        "direction" if stored == 2.0 => return 0.0,
+                        _ => {}
+                    }
+                }
+                p.snap(stored)
             })
             .collect())
     }
@@ -556,7 +593,13 @@ impl Internal {
     /// plays with the defaults, the state stays in the document untouched.
     pub fn processor_from_state(self, state: Option<&[u8]>) -> InternalProcessor {
         let values = self.decode_state(state).unwrap_or_else(|_| self.defaults());
-        self.processor(&values)
+        let processor = self.processor(&values);
+        if self == Internal::GeneralSampler
+            && let Some(handle) = processor.sampler()
+        {
+            handle.set_general_settings(&crate::general_sampler::read_settings(state));
+        }
+        processor
     }
 }
 
@@ -726,8 +769,19 @@ impl InternalProcessor {
                         self.meter.set_latency(self.dsp.latency());
                     }
                 }
-                EventKind::NoteOn { key, velocity, .. } => self.dsp.note_on(key, velocity),
-                EventKind::NoteOff { key, .. } => self.dsp.note_off(key),
+                EventKind::NoteOn {
+                    key,
+                    velocity,
+                    note_id,
+                    ..
+                } => self.dsp.note_on_with_id(
+                    key,
+                    velocity,
+                    (note_id != NOTE_ID_NONE).then_some(note_id),
+                ),
+                EventKind::NoteOff { key, note_id, .. } => self
+                    .dsp
+                    .note_off_with_id(key, (note_id != NOTE_ID_NONE).then_some(note_id)),
                 EventKind::AllNotesOff => self.dsp.all_notes_off(),
                 EventKind::Midi(bytes) => midi_to_dsp(self.dsp.as_mut(), bytes),
             }

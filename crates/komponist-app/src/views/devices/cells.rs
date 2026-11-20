@@ -187,7 +187,7 @@ pub(super) fn draw_cell(
     }
 }
 
-fn set(out: &mut Vec<Action>, card: &Card, p: &Param, plain: f64) {
+pub(super) fn set(out: &mut Vec<Action>, card: &Card, p: &Param, plain: f64) {
     if card
         .macros
         .get(&p.info.id)
@@ -218,7 +218,7 @@ fn set(out: &mut Vec<Action>, card: &Card, p: &Param, plain: f64) {
 /// The right-click menu: "Auf Standard" (the reset) and, for a control with text entry, "Wert
 /// eingeben" and "Automation zeigen" for automatable parameters.
 #[allow(clippy::too_many_arguments)]
-fn touch(
+pub(super) fn touch(
     cu: &Ui,
     out: &mut Vec<Action>,
     card: &Card,
@@ -320,14 +320,14 @@ fn touch(
 }
 
 /// Opens the undo gesture of parameter `id` of the card's device.
-fn begin_param(card: &Card, id: u32) -> Action {
+pub(super) fn begin_param(card: &Card, id: u32) -> Action {
     Action::Plugin(PluginAction::BeginParamGesture {
         device: card.device,
         id,
     })
 }
 
-fn touch_action(card: &Card, p: &Param, dragging: bool) -> Action {
+pub(super) fn touch_action(card: &Card, p: &Param, dragging: bool) -> Action {
     Action::Ui(UiAction::TouchParam {
         device: card.device,
         param: p.info.id.clone(),
@@ -1368,6 +1368,7 @@ mod tests {
         ];
         Card {
             sampler: None,
+            general_sampler: None,
             device: DeviceId(7),
             automation_owner: None,
             automation: Default::default(),

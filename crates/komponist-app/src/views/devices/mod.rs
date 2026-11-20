@@ -37,6 +37,7 @@ pub(crate) mod add_menu;
 mod cells;
 pub(crate) use cells::{select_pad, selected_pad};
 pub mod frame;
+mod general_sampler;
 pub mod layout;
 pub mod metrics;
 pub mod model;
@@ -221,8 +222,17 @@ impl View for Devices {
             if header.contains(pos) && max_x > 0.0 && delta != egui::Vec2::ZERO {
                 scroll_x = (scroll_x - (delta.x + delta.y)).clamp(0.0, max_x);
                 ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
-            } else if dock_body.contains(pos)
+            } else if delta != egui::Vec2::ZERO
+                && dock_body.contains(pos)
                 && !komponist_ui::widgets::number_field::wheel_over_control(ui.ctx())
+                && !cards.iter().zip(&spans).any(|(card, (left, _))| {
+                    let origin = pos2(
+                        body.left() + left - scroll_x,
+                        body.top() + metrics::BODY_PAD + device::frame::HEAD_H - scroll_y,
+                    );
+                    general_sampler::wheel_region(card, origin)
+                        .is_some_and(|rect| ui.rect_contains_pointer(rect.intersect(body)))
+                })
             {
                 let mut used = egui::Vec2::ZERO;
                 if body.contains(pos) && max_x > 0.0 && delta.x != 0.0 {

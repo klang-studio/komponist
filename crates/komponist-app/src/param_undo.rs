@@ -45,6 +45,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use komponist_builtin::Internal;
 use komponist_engine::Command;
 use komponist_model::automation::AutomationTarget;
 use komponist_model::edits;
@@ -306,6 +307,15 @@ impl App {
         let command = Command::SetParam { slot, id, value };
         if changed {
             self.engine.fast_path(command, before, after);
+            if let Some((_, _, d)) = self.project().find_device(device)
+                && internal_kind(d) == Some(Internal::GeneralSampler)
+                && Internal::GeneralSampler
+                    .params()
+                    .get(id as usize)
+                    .is_some_and(|param| matches!(param.id.as_str(), "sync" | "source_bpm"))
+            {
+                self.engine.prepare_sampler_sync(self.project(), d);
+            }
         } else {
             self.engine.send(command);
         }

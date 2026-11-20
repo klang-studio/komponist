@@ -85,8 +85,10 @@ mod tests {
     fn the_sampler_and_volt_are_instruments_the_effects_are_not() {
         for e in entries() {
             let instrument = e.plugin.name == "Hexa"
-                || e.plugin.name == komponist_builtin::sampler::NAME
-                || e.plugin.name == komponist_builtin::internal::volt::NAME;
+                || matches!(
+                    Internal::from_plugin(&e.plugin),
+                    Some(Internal::Sampler | Internal::GeneralSampler | Internal::Volt)
+                );
             assert_eq!(
                 e.kind == PluginKind::Instrument,
                 instrument,

@@ -14,7 +14,7 @@ tracks: 6
 track 1 "Drums": gain 0.5012, pan +0.00, mute off, solo off, arm off, monitor off
   input: all ports, omni; pdc delay 0
   chain:
-    [0] dev 2 "Sampler" instrument -> slot 0
+    [0] dev 2 "Klopfer" instrument -> slot 0
     [1] dev 3 "LSP Compressor" effect -> slot 1
   notes: 280
     pos         tick length      key  vel   prob  ch

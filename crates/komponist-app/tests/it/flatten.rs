@@ -521,7 +521,7 @@ fn an_unreadable_linked_pad_blocks_flattening() {
     let lang = app.lang();
     assert_eq!(
         app.ui().status.as_ref().unwrap().text,
-        lang.flatten_failed(lang.flatten_pad_failed("Sampler", 1, "corrupt"))
+        lang.flatten_failed(lang.flatten_pad_failed(Internal::Sampler.name(), 1, "corrupt"))
     );
     assert_eq!(app.project().as_ref(), &project);
     assert!(output.read_dir().unwrap().next().is_none());

@@ -483,7 +483,7 @@ fn search(lang: Lang, input: &Input<'_>, query: &str) -> Vec<Row> {
     // The catalog matches the stored (German) names; the shown name counts as well, so "reverb" finds Hall.
     let found = input.catalog.search(query);
     let shown = query.to_lowercase();
-    let hits: Vec<&CatalogEntry> = input
+    let mut hits: Vec<&CatalogEntry> = input
         .catalog
         .entries()
         .iter()
@@ -493,6 +493,14 @@ fn search(lang: Lang, input: &Input<'_>, query: &str) -> Vec<Row> {
         })
         .filter(|e| segment_has(e))
         .collect();
+    // A typed name takes precedence over metadata after the first letter of a search.
+    if shown.chars().nth(1).is_some() {
+        hits.sort_by_cached_key(|e| {
+            !plugin_name(lang, &e.plugin)
+                .to_lowercase()
+                .starts_with(&shown)
+        });
+    }
     let mut rows = vec![Row::section(lang.browser_hits(hits.len(), query))];
     rows.extend(hits.iter().map(|e| plugin_row(lang, input, e, 0)));
 
@@ -789,15 +797,16 @@ mod tests {
         );
         let n = names_of(&rows);
         assert_eq!(
-            &n[..8],
+            &n[..9],
             [
                 "Favoriten",
                 "Hexa",
-                "Sampler",
+                "Klopfer",
                 "Instrumente",
                 "Hexa",
-                "Sampler",
+                "Klopfer",
                 "Volt",
+                "Sampler",
                 "Surge XT"
             ]
         );

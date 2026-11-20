@@ -451,7 +451,7 @@ fn f2_without_a_selection_opens_no_field() {
 fn dragging_a_header_reorders_tracks() {
     let mut h = harness(demo());
     let ids: Vec<TrackId> = (0..6).map(|i| track_id(&h, i)).collect();
-    let drums = header_rect(&h, "Spur Drums, Sampler");
+    let drums = header_rect(&h, "Spur Drums, Klopfer");
     // Lead above Drums: the insert line at the top of the first row.
     drag(
         on_header(lead_header(&h)),
@@ -559,7 +559,8 @@ fn an_instrument_dropped_on_a_header_replaces_the_instrument() {
 /// A browser drag (WP-44): the payload is a `PluginRef` in egui's drag and drop, released at
 /// `at`.
 fn drop_plugin(plugin: komponist_model::PluginRef, at: Pos2, h: &mut Harness<'_, App>) {
-    let from = pos2(100.0, 500.0);
+    // The payload is supplied below. Start on the edge of the window, outside browser rows.
+    let from = pos2(1.0, 1.0);
     h.event(Event::PointerMoved(from));
     h.step();
     press(from, true, Modifiers::NONE, h);

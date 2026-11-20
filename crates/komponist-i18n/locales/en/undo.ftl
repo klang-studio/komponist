@@ -145,6 +145,9 @@ undo-sample-load = Load Sample
 # Undo step: Sample entfernen.
 undo-sample-clear = Remove Sample
 
+# Undo label for changing the sample's slice markers.
+undo-sample-slices = Edit Slices
+
 # Undo step: Tempo.
 undo-tempo = Tempo
 

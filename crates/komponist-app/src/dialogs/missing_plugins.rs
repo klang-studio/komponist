@@ -14,6 +14,7 @@
 //! "1 Sample fehlt" / "n Samples fehlen" and the primary action "Ohne diese Samples fortfahren".
 
 use egui::{Color32, Context, Rect, Role, Sense, Ui, pos2, vec2};
+use komponist_builtin::Internal;
 use komponist_i18n::Lang;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, PluginFormat, PluginRef, Project};
 use komponist_plugins::MissingPlugin;
@@ -167,12 +168,17 @@ pub fn missing_samples(
     let mut out = Vec::new();
     for (track, devices) in chains {
         for device in devices.iter() {
-            if !crate::device_host::internal_kind(device).is_some_and(|k| k.is_instrument()) {
+            let Some(kind @ (Internal::Sampler | Internal::GeneralSampler)) =
+                crate::device_host::internal_kind(device)
+            else {
                 continue;
-            }
+            };
             for (pad, link) in
                 komponist_builtin::sampler::links::missing(device.state.as_deref(), project_dir)
             {
+                if kind == Internal::GeneralSampler && pad != 0 {
+                    continue;
+                }
                 let file = link
                     .abs
                     .file_name()
@@ -255,6 +261,9 @@ pub fn with_samples(
         .iter()
         .map(|s| {
             let owner = owner_label(t, s.track.and_then(|id| project.track(id)).map(|t| &**t));
+            let general = project.find_device(s.device).is_some_and(|(_, _, device)| {
+                crate::device_host::internal_kind(device) == Some(Internal::GeneralSampler)
+            });
             Row {
                 name: if s.name.is_empty() {
                     s.file.clone()
@@ -262,7 +271,11 @@ pub fn with_samples(
                     s.name.clone()
                 },
                 format: t.missing_sample_chip(),
-                place: t.missing_place_pad(owner, s.pad + 1),
+                place: if general {
+                    t.missing_place_sampler(owner)
+                } else {
+                    t.missing_place_pad(owner, s.pad + 1)
+                },
                 module: s.file.clone(),
                 search: Some((s.device, s.pad)),
                 audio: None,

@@ -14,11 +14,12 @@ use egui::accesskit::Role;
 use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::actions::{SelectMode, SelectionChange, TransportAction};
+use komponist_app::actions::{EditAction, SelectMode, SelectionChange, TransportAction};
 use komponist_app::device_host::{DeviceHost as _, PluginHost};
 use komponist_app::ui_state::{DockTab, StepCursor};
 use komponist_app::{Action, App, PluginAction, ProjectAction, UiAction};
 use komponist_builtin::Internal;
+use komponist_builtin::general_sampler;
 use komponist_builtin::sampler::{PadStatus, SampleLink, links, testkit};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack};
 use komponist_model::project::DEFAULT_PROJECT_NAME;
@@ -138,6 +139,198 @@ fn pad_states(app: &App) -> Vec<PadStatus> {
 
 fn state_of(app: &App) -> Option<Arc<[u8]>> {
     app.project().tracks[0].channel.devices[0].state.clone()
+}
+
+#[test]
+fn the_general_sampler_persists_slices_and_parameters_across_undo_and_reopen() {
+    let dir = scratch("general-sampler-roundtrip");
+    let kit = testkit::write_kit(&dir).unwrap();
+    let kind = Internal::GeneralSampler;
+    let (project, _) = edits::add_track(
+        &Project::new("Sampler"),
+        NewTrack {
+            name: Some("Sampler".into()),
+            hue: None,
+            instrument: Some(kind.plugin_ref()),
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let mut app = App::headless(project);
+    let (_, device) = drums(&app);
+    app.dispatch(Action::Plugin(PluginAction::LoadSample {
+        device,
+        pad: 0,
+        path: kit[0].clone(),
+    }));
+    settled(&mut app);
+    assert_eq!(pad_states(&app)[0], PadStatus::Ready);
+    assert!(app.engine().host().note_names(device).is_empty());
+
+    let root = kind
+        .wire(&komponist_model::params::ParamId::new("root"))
+        .unwrap();
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device,
+        id: root,
+        value: 48.0,
+    }));
+    let mut settings = general_sampler::Settings::from_markers([0.04, 0.12]);
+    settings.first.gate = true;
+    settings.slices[0].options = general_sampler::SliceOptions {
+        reverse: Some(true),
+        fade_in_ms: Some(4.0),
+        fade_out_ms: Some(8.0),
+        gate: false,
+    };
+    app.dispatch(Action::Plugin(PluginAction::SetSamplerSlices {
+        device,
+        settings: settings.clone(),
+    }));
+    let slice_settings = |app: &App| general_sampler::read_settings(state_of(app).as_deref());
+    assert_eq!(slice_settings(&app), settings);
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(slice_settings(&app), general_sampler::Settings::default());
+    app.dispatch(Action::Edit(EditAction::Redo));
+    assert_eq!(slice_settings(&app), settings);
+
+    let path = dir.join("Sampler.komponist");
+    std::fs::write(&path, persist::to_json(app.project()).unwrap()).unwrap();
+    let mut reopened = App::headless(Project::new("Empty"));
+    reopened.dispatch(Action::Project(ProjectAction::OpenPath(path)));
+    settled(&mut reopened);
+    assert_eq!(pad_states(&reopened)[0], PadStatus::Ready);
+    assert_eq!(slice_settings(&reopened), settings);
+    let state = state_of(&reopened);
+    assert_eq!(
+        kind.decode_state(state.as_deref()).unwrap()[root as usize],
+        48.0
+    );
+    assert_eq!(links::read(state.as_deref())[0].1.abs, kit[0]);
+}
+
+#[test]
+fn the_general_sampler_exports_a_tempo_synced_note_from_the_first_beat() {
+    use crate::export;
+    use komponist_app::actions::{BitDepth, ExportRange};
+    use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points, Shape};
+    use komponist_model::params::ParamId;
+    use komponist_model::time::Tempo;
+
+    let dir = scratch("general-sampler-export");
+    let rate = 48_000;
+    let path = dir.join("Tone.wav");
+    let mut writer = hound::WavWriter::create(
+        &path,
+        hound::WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        },
+    )
+    .unwrap();
+    for frame in 0..rate {
+        let phase = std::f32::consts::TAU * 220.0 * frame as f32 / rate as f32;
+        writer.write_sample(0.25 * phase.sin()).unwrap();
+    }
+    writer.finalize().unwrap();
+    let mut project = Project::new("Sampler");
+    project.tempo = Tempo::new(150.0);
+    let kind = Internal::GeneralSampler;
+    let (project, track) = edits::add_track(
+        &project,
+        NewTrack {
+            name: Some("Sampler".into()),
+            hue: None,
+            instrument: Some(kind.plugin_ref()),
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let (mut project, _) = edits::add_clip(
+        &project,
+        track,
+        NewClip {
+            start: Tick::ZERO,
+            length: Tick(3840),
+            name: "Phrase".into(),
+            content: NewClipContent::Midi {
+                notes: vec![edits::NewNote {
+                    start: Tick::ZERO,
+                    length: Tick(1920),
+                    pitch: 72,
+                    velocity: 127,
+                }],
+                take_name: String::new(),
+            },
+        },
+    )
+    .unwrap();
+    let mut state = kind.encode_state(&kind.defaults());
+    for (key, value) in [("sync", 1.0), ("mode", 0.0), ("source_bpm", 120.0)] {
+        let id = kind.wire(&ParamId::new(key)).unwrap();
+        state = kind.with_value(Some(&state), id, value).unwrap();
+    }
+    let device = Arc::make_mut(&mut Arc::make_mut(&mut project.tracks[0]).channel.devices[0]);
+    device.state = Some(links::write(Some(&state), 0, Some(&SampleLink::new(&path, None))).into());
+    let device = device.id;
+    let gain = ParamId::new("gain");
+    let gain_info = &kind.params()[kind.wire(&gain).unwrap() as usize];
+    let owner = AutomationOwner::Track(track);
+    let (project, lane) = edits::automation::add_lane(
+        &project,
+        owner,
+        AutomationTarget::Param {
+            device,
+            param: gain,
+        },
+        "Gain".into(),
+    )
+    .unwrap();
+    let project = edits::automation::set_lane_points(
+        &project,
+        owner,
+        lane,
+        Points::new(vec![
+            Point {
+                tick: Tick::ZERO,
+                value: gain_info.to_normalized(0.0) as f32,
+                shape: Shape::Hold,
+            },
+            Point::linear(Tick(960), gain_info.to_normalized(-12.0) as f32),
+        ]),
+    )
+    .unwrap();
+    let mut app = App::headless(project);
+    let settings = komponist_app::actions::ExportSettings {
+        bit_depth: BitDepth::Float32,
+        normalize: false,
+        sample_rate: rate,
+        tail_seconds: 0.0,
+        ..export::export_settings(&dir, ExportRange::Song)
+    };
+    let output = settings.folder.join(&settings.file_name);
+    export::export(&mut app, settings);
+    let wav = export::read(&output);
+    let (frames, _) = wav.samples.as_chunks::<2>();
+    let audible = |frame: &[f32; 2]| frame[0].abs() > 1e-3;
+    let first = frames.iter().position(audible).unwrap();
+    let last = frames.iter().rposition(audible).unwrap();
+    assert!(first < rate as usize / 20, "first audible frame: {first}");
+    assert!(
+        (last as i64 - 38_400).abs() < 500,
+        "last audible frame: {last}"
+    );
+    let peak = |start: usize, end: usize| {
+        wav.samples[2 * start..2 * end]
+            .iter()
+            .fold(0.0_f32, |peak, value| peak.max(value.abs()))
+    };
+    let ratio = peak(6_000, 15_000) / peak(24_000, 33_000);
+    assert!((3.0..5.0).contains(&ratio), "automated gain ratio: {ratio}");
 }
 
 #[test]

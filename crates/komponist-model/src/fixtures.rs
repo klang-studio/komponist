@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use crate::ids::{ClipId, DeviceId, NoteId, TrackId};
 use crate::project::{
-    BUILTIN_HEXA, BUILTIN_SAMPLER, Channel, Clip, ClipContent, Device, DeviceRole, Hue, MAX_STEPS,
-    MidiChannelSel, MidiClip, MidiInputSel, Note, PluginFormat, PluginRef, Project, Step, StepClip,
-    StepRow, TRACK_HEIGHT_DEFAULT, Take, Track, TrackKind, TrackOutput,
+    BUILTIN_HEXA, BUILTIN_SAMPLER, Channel, Clip, ClipContent, DRUM_SAMPLER_NAME, Device,
+    DeviceRole, Hue, MAX_STEPS, MidiChannelSel, MidiClip, MidiInputSel, Note, PluginFormat,
+    PluginRef, Project, Step, StepClip, StepRow, TRACK_HEIGHT_DEFAULT, Take, Track, TrackKind,
+    TrackOutput,
 };
 use crate::time::{StepResolution, Tempo, Tick, TickRange};
 
@@ -22,7 +23,7 @@ pub const DEMO_PROJECT_NAME: &str = "Night Drive";
 ///
 /// | Track | Hue | dB | Pan | Instrument | Effects |
 /// |---|---|---|---|---|---|
-/// | Drums | 45 | −6 | 0 | Sampler (builtin) | LSP Compressor |
+/// | Drums | 45 | −6 | 0 | Klopfer (builtin) | LSP Compressor |
 /// | Bass | 250 | −4 | 0 | hexa (builtin) | LSP Para EQ x8 |
 /// | Lead | 150 | −3 | 0 | hexa (builtin) | LSP Para EQ x8, TAL-Chorus-LX (bypassed), Dragonfly Hall Reverb |
 /// | Pad | 300 | −9 | −0.1 | Surge XT (CLAP) | LSP Para EQ x8, Dragonfly Hall Reverb |
@@ -426,7 +427,7 @@ const HEXA: DemoPlugin = DemoPlugin {
 const SAMPLER: DemoPlugin = DemoPlugin {
     format: PluginFormat::Builtin,
     id: BUILTIN_SAMPLER,
-    name: "Sampler",
+    name: DRUM_SAMPLER_NAME,
     vendor: "komponist",
     version: "0.1.0",
 };
@@ -651,7 +652,10 @@ mod tests {
                 .map(|d| (d.plugin.name.as_str(), d.bypass))
                 .collect()
         };
-        assert_eq!(chain(0), [("Sampler", false), ("LSP Compressor", false)]);
+        assert_eq!(
+            chain(0),
+            [(DRUM_SAMPLER_NAME, false), ("LSP Compressor", false)]
+        );
         assert_eq!(chain(1), [("Hexa", false), ("LSP Para EQ x8", false)]);
         assert_eq!(
             chain(2),

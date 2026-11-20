@@ -976,11 +976,22 @@ fn cells_body(
     // (no clipped knobs).
     let palette = TrackPalette::new(at.track.hue.0);
     let origin = pos2(body.left(), area.top());
+    if card.general_sampler.is_some() && area.height() >= device::grid::BODY_H {
+        let mut out = Vec::new();
+        super::general_sampler::show(cu, &mut out, card, &palette, body);
+        for action in out {
+            ctx.send(action);
+        }
+    }
     for cell in &page.cells {
         let rect = super::layout::cell_rect(cell).translate(origin.to_vec2());
         if rect.bottom() <= body.bottom() {
             let mut out = Vec::new();
-            super::cells::draw_cell(cu, &mut out, card, &palette, cell, rect);
+            if card.general_sampler.is_none()
+                || !super::general_sampler::sample_cell(cu, &mut out, card, cell, rect)
+            {
+                super::cells::draw_cell(cu, &mut out, card, &palette, cell, rect);
+            }
             for action in out {
                 ctx.send(action);
             }
