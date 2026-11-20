@@ -812,7 +812,7 @@ fn saving_reports_cached_and_missing_plugin_states_without_losing_fresh_states()
         "{status}"
     );
     assert!(
-        status.contains("Kein Plug-in-Zustand verfügbar: Vital"),
+        status.starts_with("Kein Plug-in-Zustand verfügbar: Vital"),
         "{status}"
     );
     let saved = komponist_app::project_io::load_project(&file).unwrap();
@@ -834,7 +834,7 @@ fn saving_reports_cached_and_missing_plugin_states_without_losing_fresh_states()
         "{status}"
     );
     assert!(
-        status.contains("Kein Plug-in-Zustand verfügbar: Vital"),
+        status.starts_with("Kein Plug-in-Zustand verfügbar: Vital"),
         "{status}"
     );
 
