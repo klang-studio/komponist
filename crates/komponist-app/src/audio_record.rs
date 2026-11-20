@@ -461,12 +461,22 @@ impl App {
                                 .pending_removals
                                 .extend(mapping.keys().cloned());
                             if !mapping.is_empty() {
+                                let canonical = files::canonical_copies(&mapping);
                                 self.doc.rewrite_untracked(|project| {
                                     crate::samples::rebase_project_links(
                                         project,
                                         Some(&directory),
                                         &directory,
-                                        |source| mapping.get(&source).cloned().unwrap_or(source),
+                                        |source| {
+                                            mapping
+                                                .get(&source)
+                                                .or_else(|| {
+                                                    canonical
+                                                        .get(&std::fs::canonicalize(&source).ok()?)
+                                                })
+                                                .cloned()
+                                                .unwrap_or(source)
+                                        },
                                     )
                                 });
                             }
@@ -610,7 +620,9 @@ impl App {
         let mut staged = StagedRecordings {
             target,
             mapping: BTreeMap::new(),
+            copied_files: BTreeMap::new(),
             live: BTreeSet::new(),
+            live_files: BTreeSet::new(),
             keep_live_paths: Cell::new(false),
             checkpoints: Vec::new(),
             notice: None,
@@ -625,6 +637,12 @@ impl App {
                         self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
                     })?;
                 staged.live.extend(takes.into_iter().map(|take| take.path));
+                staged.live_files.extend(
+                    staged
+                        .live
+                        .iter()
+                        .filter_map(|path| std::fs::canonicalize(path).ok()),
+                );
             }
         }
         let paths: Vec<_> = self
@@ -636,7 +654,10 @@ impl App {
             .collect();
         if !paths.is_empty() {
             match files::stage(&paths, &staged.target) {
-                Ok(mapping) => staged.mapping = mapping,
+                Ok(mapping) => {
+                    staged.copied_files = files::canonical_copies(&mapping);
+                    staged.mapping = mapping;
+                }
                 Err(error) => {
                     staged.notice =
                         Some((self.lang.audio_record_move_failed(error), StatusKind::Error));
@@ -706,7 +727,9 @@ impl App {
 pub(crate) struct StagedRecordings {
     target: PathBuf,
     mapping: BTreeMap<PathBuf, PathBuf>,
+    copied_files: BTreeMap<PathBuf, PathBuf>,
     live: BTreeSet<PathBuf>,
+    live_files: BTreeSet<PathBuf>,
     keep_live_paths: Cell<bool>,
     checkpoints: Vec<RecordedTake>,
     notice: Option<(String, StatusKind)>,
@@ -716,10 +739,22 @@ impl StagedRecordings {
     /// Selects the saved path for a resolved link. A live WAV already linked in the document
     /// or its history must keep its name until the capture stops and its writer closes.
     pub(crate) fn destination(&self, source: PathBuf) -> PathBuf {
+        if let Some(copy) = self.mapping.get(&source) {
+            return copy.clone();
+        }
         if self.live.contains(&source) {
             self.keep_live_paths.set(true);
+        } else if !(self.live_files.is_empty() && self.copied_files.is_empty())
+            && let Ok(canonical) = std::fs::canonicalize(&source)
+        {
+            if self.live_files.contains(&canonical) {
+                self.keep_live_paths.set(true);
+            }
+            if let Some(copy) = self.copied_files.get(&canonical) {
+                return copy.clone();
+            }
         }
-        self.mapping.get(&source).cloned().unwrap_or(source)
+        source
     }
 
     pub(crate) fn project_with_audio_take(
@@ -1381,6 +1416,14 @@ mod tests {
             .unwrap()
             .path
             .clone();
+        #[cfg(unix)]
+        let linked_source = {
+            let alias = root.join("Alias.wav");
+            std::os::unix::fs::symlink(&source, &alias).unwrap();
+            alias
+        };
+        #[cfg(not(unix))]
+        let linked_source = source.clone();
         let sampler = app
             .doc
             .apply_with("Add Sampler with the live source", |project| {
@@ -1395,7 +1438,7 @@ mod tests {
                     },
                 )?;
                 let device = project.track(track).unwrap().channel.devices[0].id;
-                let state = links::write(None, 0, Some(&SampleLink::new(&source, None)));
+                let state = links::write(None, 0, Some(&SampleLink::new(&linked_source, None)));
                 let project = edits::set_device_state(&project, device, Some(state.into()))?;
                 Ok((project, device))
             })
@@ -1409,10 +1452,7 @@ mod tests {
             let (_, _, sampler) = app.project().find_device(sampler).unwrap();
             links::read(sampler.state.as_deref()).remove(0).1
         };
-        assert_eq!(
-            check_sample(&app).resolve(Some(&root)),
-            Some(source.clone())
-        );
+        assert_eq!(check_sample(&app).resolve(Some(&root)), Some(linked_source));
 
         // Once closed, the source can be copied and all history entries can adopt the new name.
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
@@ -1423,6 +1463,39 @@ mod tests {
         let sample = check_sample(&app).resolve(Some(&root)).unwrap();
         assert!(sample.starts_with(root.join("Takes")));
         assert!(sample.is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_as_uses_the_physical_parent_of_a_symlink_followed_by_dot_dot() {
+        let (root, mut app, track) = rig();
+        begin(&mut app, track);
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(&mut app, |app| !app.audio_recording.is_active());
+
+        let chosen_dir = root.join("selected");
+        let actual_dir = root.join("actual");
+        let symlink = chosen_dir.join("link");
+        let target = actual_dir.join("child");
+        std::fs::create_dir(&chosen_dir).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &symlink).unwrap();
+
+        assert!(app.save_to(&symlink.join("../Song.komponist")));
+        let expected_dir = std::fs::canonicalize(&actual_dir).unwrap();
+        let expected_project = expected_dir.join("Song.komponist");
+        assert_eq!(app.project_path(), Some(expected_project.as_path()));
+        assert!(!chosen_dir.join("Song.komponist").exists());
+        assert!(!chosen_dir.join("Takes").exists());
+
+        let saved = crate::project_io::load_project(&expected_project).unwrap();
+        let ClipContent::Audio(audio) = &saved.track(track).unwrap().clips[0].content else {
+            panic!("saved audio");
+        };
+        assert!(audio.file.rel.starts_with("Takes"));
+        assert_eq!(expected_dir.join(&audio.file.rel), audio.file.abs);
+        assert!(audio.file.abs.is_file());
     }
 
     #[test]

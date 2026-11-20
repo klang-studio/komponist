@@ -674,6 +674,7 @@ impl App {
     pub(crate) fn project_with_take(
         &mut self,
         project: &Project,
+        playhead: Tick,
         recordings: &mut crate::audio_record::StagedRecordings,
     ) -> Result<Option<Project>, ()> {
         let mut project = project.clone();
@@ -682,7 +683,7 @@ impl App {
             .recording
             .as_ref()
             .filter(|recording| recording.has_notes())
-            && let Some(commit) = rec.commit(&project, self.engine.playhead())
+            && let Some(commit) = rec.commit(&project, playhead)
         {
             match commit.apply(&project) {
                 Ok((next, _)) => {
@@ -697,7 +698,7 @@ impl App {
         }
         if let Some(next) = self
             .automation_capture
-            .project_at(&project, self.engine.playhead())
+            .project_at(&project, playhead)
             .map_err(|error| {
                 self.record_edit_error(error);
             })?

@@ -141,6 +141,51 @@ pub fn with_extension(path: &Path) -> PathBuf {
     }
 }
 
+/// Resolve parent steps through the filesystem before using this file's folder as a link base.
+fn resolve_project_parent(path: PathBuf) -> Result<PathBuf, ProjectIoError> {
+    let Some(parent) = path.parent().filter(|parent| {
+        parent
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
+    }) else {
+        return Ok(path);
+    };
+    let Some(name) = path.file_name() else {
+        return Ok(path);
+    };
+    let directory =
+        std::fs::canonicalize(parent).map_err(|error| ProjectIoError::Io(path.clone(), error))?;
+    #[cfg(windows)]
+    let directory = project_directory_without_verbatim(directory);
+    Ok(directory.join(name))
+}
+
+#[cfg(windows)]
+fn project_directory_without_verbatim(directory: PathBuf) -> PathBuf {
+    let Some(text) = directory.to_str() else {
+        return directory;
+    };
+    let ordinary = if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{unc}"))
+    } else if let Some(drive) = text
+        .strip_prefix(r"\\?\")
+        .filter(|path| path.as_bytes().get(1) == Some(&b':'))
+    {
+        PathBuf::from(drive)
+    } else {
+        return directory;
+    };
+    // Some names can only be opened with a verbatim prefix; keep it when required.
+    if std::fs::canonicalize(&ordinary)
+        .as_ref()
+        .is_ok_and(|path| *path == directory)
+    {
+        ordinary
+    } else {
+        directory
+    }
+}
+
 /// Whether `path` names a project file (by its extension).
 pub fn is_project_file(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == FILE_EXTENSION)
@@ -410,8 +455,10 @@ impl App {
     /// checks the plugins (S06). A file that cannot be read leaves everything as it was and says
     /// why.
     pub(crate) fn open_path(&mut self, path: PathBuf) {
-        match load_project(&path) {
-            Ok(project) => {
+        let loaded = resolve_project_parent(path.clone())
+            .and_then(|resolved| load_project(&resolved).map(|project| (resolved, project)));
+        match loaded {
+            Ok((path, project)) => {
                 self.open_document(Document::new(project), Some(path.clone()));
                 self.remember(path);
                 self.check_missing_plugins();
@@ -477,7 +524,10 @@ impl App {
     /// renames the project after a new file, remembers the file. A running take goes into the
     /// file without ending (module docs). `false` if writing failed (the status bar says why).
     pub(crate) fn save_to(&mut self, path: &Path) -> bool {
-        let path = with_extension(path);
+        let path = match resolve_project_parent(with_extension(path)) {
+            Ok(path) => path,
+            Err(error) => return self.report_project_save_error(error),
+        };
         if !self.await_audio_take() {
             return false;
         }
@@ -502,6 +552,7 @@ impl App {
             self.store_snapshot_for_save(*device, state);
         }
         self.drain_events();
+        let playhead = self.engine.playhead();
         let old_dir = self
             .project_dir()
             .map(|directory| komponist_model::paths::absolute(&directory));
@@ -518,10 +569,11 @@ impl App {
             })
         });
         // A running take so far, with the notes still in flight, on top of all that (#85).
-        let mut for_file = match self.project_with_take(document.project(), &mut recordings) {
-            Ok(project) => project,
-            Err(()) => return false,
-        };
+        let mut for_file =
+            match self.project_with_take(document.project(), playhead, &mut recordings) {
+                Ok(project) => project,
+                Err(()) => return false,
+            };
         // Undo may defer a snapshot until an unrelated gesture ends. The file still needs it.
         let deferred = self
             .deferred_plugin_states()
@@ -581,15 +633,17 @@ impl App {
                 self.recordings_saved(recordings);
                 true
             }
-            Err(e) => {
-                eprintln!("komponist: {e}");
-                self.set_status(
-                    self.lang.project_save_failed(e.reason(self.lang)),
-                    StatusKind::Error,
-                );
-                false
-            }
+            Err(error) => self.report_project_save_error(error),
         }
+    }
+
+    fn report_project_save_error(&mut self, error: ProjectIoError) -> bool {
+        eprintln!("komponist: {error}");
+        self.set_status(
+            self.lang.project_save_failed(error.reason(self.lang)),
+            StatusKind::Error,
+        );
+        false
     }
 
     /// Puts `path` at the front of the recent list and saves the list.

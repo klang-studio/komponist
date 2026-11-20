@@ -119,6 +119,14 @@ pub(super) fn stage(paths: &[PathBuf], target: &Path) -> io::Result<BTreeMap<Pat
     Ok(copies)
 }
 
+/// A link may reach an owned source via a symlink rather than the writer's original spelling.
+pub(super) fn canonical_copies(copies: &BTreeMap<PathBuf, PathBuf>) -> BTreeMap<PathBuf, PathBuf> {
+    copies
+        .iter()
+        .filter_map(|(source, copy)| Some((fs::canonicalize(source).ok()?, copy.clone())))
+        .collect()
+}
+
 /// Saves independent checkpoint assets. The capture worker continues appending to its own
 /// files; Esc may delete those files without invalidating an already saved project. Rebuilding
 /// the header and copying exactly the flushed prefix avoids saving a concurrently changing
