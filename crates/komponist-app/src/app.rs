@@ -581,8 +581,13 @@ impl App {
         self.report_midi_changes();
         let playhead = self.engine.playhead();
         for event in events {
-            if let EngineEvent::PluginParams { slot, ref events } = event {
-                self.native_plugin_params(slot, events, capture);
+            if let EngineEvent::PluginParams {
+                slot,
+                device,
+                ref events,
+            } = event
+            {
+                self.native_plugin_params(slot, device, events, capture);
             } else if capture {
                 self.capture_automation(&event);
             }

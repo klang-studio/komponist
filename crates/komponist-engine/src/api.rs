@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 
 use komponist_model::automation::AutomationOwner;
 use komponist_model::macros::MACRO_COUNT;
-use komponist_model::{SendId, Tick, TrackId};
+use komponist_model::{DeviceId, SendId, Tick, TrackId};
 
 use crate::automation::{AutomationBoundary, EngineTarget, PluginParamBatch};
 use crate::processor::Processor;
@@ -361,6 +361,8 @@ pub enum EngineEvent {
     PluginParams {
         /// Slot reporting the changes.
         slot: SlotId,
+        /// Device that occupied the slot when it reported the changes.
+        device: DeviceId,
         /// Changes in the order the plugin produced them.
         events: PluginParamBatch,
     },

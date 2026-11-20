@@ -688,6 +688,7 @@ fn plugin_gui_edges_and_value_use_the_engine_clock() {
     let [
         EngineEvent::PluginParams {
             slot: captured_slot,
+            device: captured_device,
             events: begin,
         },
         EngineEvent::PluginParams { events: value, .. },
@@ -708,6 +709,7 @@ fn plugin_gui_edges_and_value_use_the_engine_clock() {
         panic!("expected the native begin and value before the automation release: {events:?}");
     };
     assert_eq!(*captured_slot, slot);
+    assert_eq!(*captured_device, device);
     assert_eq!(begin.write_start(), Some((owner, &begin.as_slice()[0])));
     assert!(value.write_start().is_none() && end.write_start().is_none());
     for (index, (event, temporary)) in [begin, value, end]

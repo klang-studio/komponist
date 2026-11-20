@@ -1829,8 +1829,12 @@ impl Core {
             Command::CancelAutomationWrite => self.cancel_automation_write(),
             Command::FinishAutomationWrite => self.finish_automation_write(),
             Command::SetParam { slot, id, value } => {
-                if let Some(owner) = self.slot_owner(slot) {
-                    let target = EngineTarget::Slot { slot, wire_id: id };
+                if let Some((owner, device)) = self.slot_device(slot) {
+                    let target = EngineTarget::Slot {
+                        slot,
+                        device,
+                        wire_id: id,
+                    };
                     if let AutomationOwner::Track(track) = owner
                         && self
                             .program

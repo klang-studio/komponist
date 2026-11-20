@@ -88,7 +88,7 @@ impl Program {
             }
             let values = values(track.id).unwrap_or(track.macros.base);
             for mapping in track.macros.targets.iter() {
-                if let EngineTarget::Slot { slot, wire_id } = mapping.target {
+                if let EngineTarget::Slot { slot, wire_id, .. } = mapping.target {
                     let plain = mapping
                         .map
                         .plain(mapping.normalized(values[usize::from(mapping.driver)]));
@@ -361,8 +361,8 @@ pub struct SeqNote {
 /// Which slot each device uses. Owned by a program; built by the compiler from the previous
 /// program's map, so a device keeps its slot as long as it exists.
 ///
-/// Slot ids freed by a build are reused only from the next build on, so `InsertProcessor` for a new
-/// device never meets a `RemoveProcessor` for the same slot within one sync.
+/// Slot ids freed by a build are reused only from the next build on, after callers have queued the
+/// intermediate program and its processor removals.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SlotMap {
     /// Pairs sorted by device id.

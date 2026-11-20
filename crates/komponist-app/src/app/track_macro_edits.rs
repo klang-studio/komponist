@@ -341,12 +341,13 @@ impl App {
     pub(super) fn native_plugin_params(
         &mut self,
         slot: SlotId,
+        device: DeviceId,
         events: &PluginParamBatch,
         capture: bool,
     ) {
-        let Some(device) = self.engine.plugin_parameter_device(slot) else {
+        if !self.engine.plugin_parameter_slot_matches(slot, device) {
             return;
-        };
+        }
         let mapping = self.ui.track_macros.mapping.is_some_and(|track| {
             self.project()
                 .find_device(device)
@@ -378,7 +379,11 @@ impl App {
                 && std::ptr::eq(edit, start)
                 && let Some(id) = id
             {
-                let target = komponist_engine::automation::EngineTarget::Slot { slot, wire_id: id };
+                let target = komponist_engine::automation::EngineTarget::Slot {
+                    slot,
+                    device,
+                    wire_id: id,
+                };
                 self.capture_native_automation(
                     device,
                     id,

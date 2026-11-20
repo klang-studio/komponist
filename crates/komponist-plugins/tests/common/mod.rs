@@ -374,8 +374,12 @@ impl Rig {
     /// Polls the engine and the manager (UI-thread work between callbacks).
     pub fn poll(&mut self) {
         while let Some(event) = self.handle.poll() {
-            if let EngineEvent::PluginParams { slot, ref events } = event
-                && let Some(device) = self.program.slots.device(slot)
+            if let EngineEvent::PluginParams {
+                slot,
+                device,
+                ref events,
+            } = event
+                && self.program.slots.slot(device) == Some(slot)
             {
                 for (event, temporary) in events.iter() {
                     use komponist_engine::processor::ParameterEditKind;
