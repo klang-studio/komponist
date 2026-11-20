@@ -21,6 +21,7 @@ use crate::api::TrackMeter;
 use crate::audio::{AudioPlan, ClipSource};
 use crate::automation::{CompiledTarget, EngineTarget};
 pub use crate::macros::MacroProgram;
+pub use crate::note_schedule::NoteSchedule;
 use crate::route::Routing;
 
 /// [`SeqNote::probability`] value meaning "plays if and only if the last rolled note with the same
@@ -238,10 +239,8 @@ pub struct TrackProgram {
     /// The model track this was compiled from; the compiler reuses this `TrackProgram` while the
     /// track `Arc` is unchanged (`Arc::ptr_eq`). UI thread only.
     pub source: Arc<Track>,
-    /// All notes the track plays, from unmuted clips with loops, active takes, step patterns (swing,
-    /// ratchets) and clip transpose/velocity applied, cut at clip and loop-repetition ends; sorted by
-    /// `start`, then `key`. Absolute timeline ticks.
-    pub notes: Arc<[SeqNote]>,
+    /// All notes the track plays, sorted by start and key, with large MIDI loops kept compact.
+    pub notes: Arc<NoteSchedule>,
     /// The processor chain in order: MIDI effects, the instrument, audio effects.
     pub chain: Vec<ChainSlot>,
     /// Fader gain, linear (from `volume_db`; `VOLUME_DB_MIN` → 0.0). Ramped by the engine.

@@ -74,7 +74,7 @@ use crate::api::{Command, EngineHandle, TrackMeter};
 use crate::audio::SourceStatus;
 use crate::compile::{self, CompileEnv};
 use crate::engine::Engine;
-use crate::program::{MidiPort, Program, SeqNote, TrackProgram};
+use crate::program::{MidiPort, Program, TrackProgram};
 
 mod track;
 pub use track::TrackExport;
@@ -580,20 +580,10 @@ fn export_program(
         .map(|track| {
             // Dependency tracks may continue feeding the target's sidechains during its tail.
             let limit = target.is_none_or(|target| track.id == target.id());
-            let inside = |n: &SeqNote| n.start.0 + n.length.0 <= end.0;
-            let notes = if !limit || track.notes.iter().all(inside) {
-                Arc::clone(&track.notes)
-            } else {
-                track
-                    .notes
-                    .iter()
-                    .filter(|n| n.start < end)
-                    .map(|n| SeqNote {
-                        length: Tick(n.length.0.min(end.0 - n.start.0)),
-                        ..*n
-                    })
-                    .collect()
-            };
+            let notes = limit
+                .then(|| track.notes.trimmed(end))
+                .flatten()
+                .map_or_else(|| Arc::clone(&track.notes), Arc::new);
             // Audio is cut at the exact sample boundary. Its offline plan owns a fresh ring.
             let audio = track
                 .audio
@@ -1065,6 +1055,8 @@ mod tests {
             Channel, Hue, MidiChannelSel, MidiInputSel, Track, TrackId, TrackKind,
         };
 
+        use crate::program::{NoteSchedule, SeqNote};
+
         let note = |start: i64, length: i64, key: u8| SeqNote {
             start: Tick(start),
             length: Tick(length),
@@ -1100,7 +1092,7 @@ mod tests {
                 chain_latency: 0,
                 id: TrackId(1),
                 source: Arc::clone(&source),
-                notes: notes.into(),
+                notes: Arc::new(NoteSchedule::from_sorted(notes)),
                 chain: Vec::new(),
                 gain: 1.0,
                 pan: 0.0,
@@ -1149,8 +1141,8 @@ mod tests {
         assert!(!export.loop_on && !export.metronome);
         assert_eq!(export.song_end, program.song_end);
         assert_eq!(
-            &*export.tracks[0].notes,
-            &[note(0, 100, 60), note(900, 100, 61)]
+            export.tracks[0].notes.iter().collect::<Vec<_>>(),
+            [note(0, 100, 60), note(900, 100, 61)]
         );
         // Untouched notes are shared; meters are new.
         assert!(Arc::ptr_eq(

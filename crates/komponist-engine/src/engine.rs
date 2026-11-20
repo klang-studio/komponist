@@ -2656,7 +2656,7 @@ impl Core {
                     }
                     let id = track.id;
                     *dropped += state.seq.sequence(
-                        &track.notes,
+                        track.notes.view(),
                         live,
                         &win,
                         target,

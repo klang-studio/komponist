@@ -89,6 +89,37 @@ fn looped_clip_golden() {
 /// Swing 50 % at 1/16 (odd steps 60 ticks late) and at 1/8 with a 4-step pattern repeating in the
 /// clip (odd pattern indices 120 ticks late).
 #[test]
+fn long_midi_loops_store_one_period_and_empty_patterns_store_nothing() {
+    const REPEATS: i64 = 1_000_000;
+    let mut repeated = clip(10, 0, REPEATS, midi(&[(0, 1, 60, 100)]));
+    repeated.loop_length = Some(Tick(1));
+    let mut empty = clip(20, 0, REPEATS, midi(&[]));
+    empty.loop_length = Some(Tick(1));
+    let mut invalid = clip(30, 0, REPEATS, midi(&[(0, 1, 127, 100)]));
+    invalid.loop_length = Some(Tick(1));
+    invalid.transpose = 1;
+    let project = project(vec![track(1, "Loop", vec![repeated, empty, invalid])]);
+
+    let started = std::time::Instant::now();
+    let program = compile::build(&project, None, &NoEnv);
+    let elapsed = started.elapsed();
+    let notes = &program.tracks[0].notes;
+    assert_eq!(notes.len(), REPEATS as usize);
+    assert_eq!(notes.stored_notes(), 1);
+    let starts = notes
+        .iter()
+        .take(3)
+        .map(|note| note.start.0)
+        .collect::<Vec<_>>();
+    assert_eq!(starts, [0, 1, 2]);
+    eprintln!(
+        "Compiled {REPEATS} note starts in {elapsed:?}; stored {} template note ({:?} bytes)",
+        notes.stored_notes(),
+        std::mem::size_of::<komponist_engine::program::SeqNote>()
+    );
+}
+
+#[test]
 fn step_swing_50_golden() {
     let mut sixteenths = pattern(
         &[("Kick", 36), ("Hat zu", 42)],
