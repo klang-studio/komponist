@@ -1653,6 +1653,67 @@ mod tests {
         drop(app);
     }
     #[test]
+    fn save_drains_an_interrupted_mixed_take_before_staging() {
+        use komponist_engine::{EVENT_CAPACITY, MAX_TRACKS, MidiInEvent, MidiPort, TransportState};
+        use komponist_model::TickRange;
+
+        let (root, mut app, audio) = rig();
+        let midi = add_midi(&mut app);
+        let range = TickRange::new(Tick::ZERO, Tick(1));
+        app.doc
+            .apply("Set a short loop", |project| {
+                let project =
+                    edits::set_project_prop(project, edits::ProjectProp::LoopRange(range))?;
+                edits::set_project_prop(&project, edits::ProjectProp::LoopOn(true))
+            })
+            .unwrap();
+        app.step();
+        let rate = f64::from(app.engine_mut().sample_rate());
+        let lap = app.project().tempo_map().tick_to_sample(range.end, rate) as usize;
+        assert!(lap > 0);
+        // Playback fills the ordinary queue without creating audio take files.
+        app.dispatch(Action::Transport(TransportAction::TogglePlay));
+        assert!(app.engine_mut().run_held(lap * EVENT_CAPACITY, &[], 0));
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        let notes = [MidiInEvent {
+            frame: 1,
+            port: MidiPort(1),
+            data: [0x90, 60, 100],
+        }];
+        assert!(
+            app.engine_mut()
+                .run_held(lap * (2 * MAX_TRACKS + 16), &notes, 0)
+        );
+        assert_eq!(app.transport(), TransportState::Playing);
+        // The transport stopped recording, but the interruption is still queued for the app.
+        assert!(
+            app.audio_recording
+                .capture
+                .as_ref()
+                .is_some_and(|capture| !capture.stopping)
+        );
+        assert!(app.recording.is_none());
+
+        let path = root.join("Interrupted.komponist");
+        assert!(app.save_to(&path), "{:?}", app.ui.status);
+        let saved = crate::project_io::load_project(&path).unwrap();
+        let audio_clip = &saved.track(audio).unwrap().clips[0];
+        let ClipContent::Audio(audio) = &audio_clip.content else {
+            panic!("saved audio clip")
+        };
+        assert!(audio.file.abs.is_file());
+        let midi_clip = &saved.track(midi).unwrap().clips[0];
+        let ClipContent::Midi(midi) = &midi_clip.content else {
+            panic!("saved MIDI clip")
+        };
+        assert!(
+            midi.takes
+                .iter()
+                .any(|take| take.name == app.lang.record_take_incomplete(1))
+        );
+    }
+
+    #[test]
     fn audio_failure_freezes_and_preserves_the_active_midi_overlay_once() {
         let (_root, mut app, audio) = rig();
         let midi = add_midi(&mut app);

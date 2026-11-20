@@ -3670,7 +3670,10 @@ mod tests {
         app.engine_event(&EngineEvent::RecordingNoteLoss { track, lap: 0 });
         assert!(app.has_unsaved_take());
 
-        let checkpoint = app.project_with_take().unwrap().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("Checkpoint.komponist");
+        assert!(app.save_to(&path));
+        let checkpoint = crate::project_io::load_project(&path).unwrap();
         let name = app.lang.record_take_incomplete(1);
         assert_eq!(checkpoint.track(track).unwrap().clips[0].name, name);
         assert!(app.project().track(track).unwrap().clips.is_empty());

@@ -552,6 +552,11 @@ impl App {
             self.store_snapshot_for_save(*device, state);
         }
         self.drain_events();
+        // A recording interruption can start audio finalization while we drain engine events.
+        // It owns the MIDI commit until the audio take has finished.
+        if !self.await_audio_take() {
+            return false;
+        }
         let playhead = self.engine.playhead();
         let old_dir = self
             .project_dir()
