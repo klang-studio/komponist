@@ -244,6 +244,7 @@ impl Arrangement {
 impl View for Arrangement {
     fn reset_document(&mut self) {
         self.automation = automation::State::default();
+        self.audio.clear();
     }
 
     fn header(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
