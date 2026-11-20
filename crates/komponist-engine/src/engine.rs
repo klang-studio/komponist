@@ -86,7 +86,7 @@ use crate::graph::EdgeState;
 use crate::metronome::Metronome;
 use crate::mixer::{DelayLine, Fader, audible, targets};
 use crate::processor::{DEADLINE_SHARE, Event, EventKind, ProcessContext, ProcessorError};
-use crate::program::{ChainSlot, InputFilter, MidiPort, Program, SlotId, TrackProgram};
+use crate::program::{ChainSlot, MidiPort, Program, SlotId, TrackProgram};
 use crate::route::{Delay, GateTable, MAX_LINES, MAX_SENDS, NodeRoute, Routing, SidechainRoute};
 use crate::sequencer::{Captured, EventList, LiveMsg, NoteIds, TrackSeq, Window, track_seed};
 use crate::slots::{Bufs, ChainHook, SharedSlots, Slot, chains_exclusive, run_chain};
@@ -109,6 +109,9 @@ const PARALLEL_MIN_FRAMES: usize = 32;
 const OFFLINE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 mod automation_capture;
+mod segment_input;
+
+use segment_input::{SegmentCapture, SegmentMidi};
 
 /// Engine settings fixed at creation (the sample rate can change later with
 /// [`Engine::set_sample_rate`]).
@@ -902,7 +905,7 @@ struct TrackJobs<'a> {
     audio: AudioInputBuffer<'a>,
     frame0: usize,
     recorder: Option<&'a crate::recording::Recorder>,
-    capture: Option<(crate::recording::CaptureWindow, usize, Option<u32>)>,
+    capture: Option<SegmentCapture>,
     capture_timing: &'a CaptureTiming,
 }
 
@@ -1189,19 +1192,11 @@ impl TrackJobs<'_> {
         let [l, r] = &mut state.input_audio;
         l[..n].fill(0.0);
         r[..n].fill(0.0);
-        let take = self
-            .recorder
-            .zip(self.capture)
-            .filter(|(rec, (_, _, draining))| {
-                rec.input(track.id).is_some() && (track.arm || draining.is_some())
-            });
-        let remaining = |correction: u32| {
-            take.map_or(0, |(_, (_, frames, draining))| {
-                draining.map_or(frames, |progress| {
-                    frames.min(correction.saturating_sub(progress) as usize)
-                })
-            })
-        };
+        let take = self.recorder.zip(self.capture).filter(|(rec, capture)| {
+            rec.input(track.id).is_some() && (track.arm || capture.draining.is_some())
+        });
+        let remaining =
+            |correction: u32| take.map_or(0, |(_, capture)| capture.frames_remaining(correction));
         let mut available = true;
         let mut correction = 0;
         let mut capture_gap = false;
@@ -1271,13 +1266,14 @@ impl TrackJobs<'_> {
         track.meter.record_input(peak(&l[..n]), peak(&r[..n]));
         let frames = remaining(correction);
         if frames != 0
-            && let Some((rec, (mut window, _, _))) = take
+            && let Some((rec, capture)) = take
         {
             if !available {
                 rec.fail(3);
             } else if capture_gap {
                 rec.fail(2);
             } else {
+                let mut window = capture.window;
                 window.at = window.at.saturating_sub(i64::from(correction));
                 rec.capture(track.id, &l[..frames], &r[..frames], window);
             }
@@ -1423,15 +1419,6 @@ fn held_after(held: u128, data: [u8; 3]) -> u128 {
         0xb0 if data1 == 120 || data1 == 123 => 0,
         _ => held,
     }
-}
-
-/// Whether a track listening with `filter` receives `m`.
-fn accepts(filter: &InputFilter, m: &MidiInEvent) -> bool {
-    let status = m.data[0];
-    !filter.port_missing
-        && (0x80..0xf0).contains(&status)
-        && filter.port.is_none_or(|p| p == m.port)
-        && filter.channel.is_none_or(|c| c == status & 0x0f)
 }
 
 impl Core {
@@ -2408,36 +2395,7 @@ impl Core {
             delay: 0,
             wrapped_loop: loop_samples.filter(|_| transport.wrapped),
         };
-        let capture = if let Some(tail) = self.capture_tail {
-            Some((
-                crate::recording::CaptureWindow {
-                    at: tail.pos,
-                    lap: tail.lap,
-                    lp: tail.cycle,
-                    map: song.map,
-                    loop_range: song.loop_range,
-                },
-                (tail.left as usize).min(n),
-                Some(tail.total - tail.left),
-            ))
-        } else if recording {
-            Some((
-                crate::recording::CaptureWindow {
-                    at: transport.pos,
-                    lap: self.capture_lap,
-                    lp: self
-                        .recorder
-                        .as_ref()
-                        .and_then(|rec| rec.cycle_window(loop_samples)),
-                    map: song.map,
-                    loop_range: song.loop_range,
-                },
-                n,
-                None,
-            ))
-        } else {
-            None
-        };
+        let capture = self.segment_capture(n, loop_samples);
         // Song tick of captured input at `sample`, corrected by the output latency (and back over
         // the loop start after a wrap).
         let capture_lap = self.capture_lap;
@@ -2513,6 +2471,13 @@ impl Core {
                     .any(|(t, &s)| tracks[usize::from(s)].solo.unwrap_or(t.solo));
                 let routing = &*program.routing;
                 let routed = *routed;
+                let segment_midi = SegmentMidi {
+                    hardware: midi,
+                    direct_notes: if frame0 == 0 { live_notes } else { &[] },
+                    first_frame: frame0,
+                    frames: n,
+                    recording,
+                };
                 // 1. Every track's events, on this thread in track order (note ids, probability
                 // rolls and captured input stay deterministic). A bridge instrument at the head of
                 // a chain starts at once (`Processor::begin`), so it works while the chains run;
@@ -2568,61 +2533,7 @@ impl Core {
                         state.events.clear();
                         continue;
                     }
-                    // Live MIDI input of this track.
-                    live.clear();
-                    let capture = track.arm && recording;
-                    for (channel, pending) in state.release_hardware.iter_mut().enumerate() {
-                        while *pending != 0 && live.len() < live.capacity() {
-                            let key = pending.trailing_zeros() as u8;
-                            *pending &= !(1u128 << key);
-                            live.push(LiveMsg {
-                                offset: 0,
-                                data: [0x80 | channel as u8, key, 0],
-                                play: true,
-                                capture: true,
-                            });
-                        }
-                    }
-                    if frame0 == 0 {
-                        for &(id, key, velocity) in live_notes.iter() {
-                            if id == track.id && live.len() < live.capacity() {
-                                let status = if velocity > 0 { 0x90 } else { 0x80 };
-                                live.push(LiveMsg {
-                                    offset: 0,
-                                    data: [status, key, velocity],
-                                    play: true,
-                                    capture,
-                                });
-                            }
-                        }
-                    }
-                    // An armed track monitors on its own ("Auto", owner decision 2026-11-15); I
-                    // monitors without arming.
-                    let play = track.monitor || track.arm;
-                    if play || capture {
-                        for m in midi.iter().filter(|m| accepts(&track.input, m)) {
-                            if live.len() == live.capacity() {
-                                *dropped += 1;
-                                break;
-                            }
-                            let frame = (m.frame as usize).clamp(frame0, frame0 + n - 1);
-                            if play {
-                                let held = &mut state.hardware[usize::from(m.data[0] & 0x0f)];
-                                let bit = 1u128 << (m.data[1] & 0x7f);
-                                match m.data[0] & 0xf0 {
-                                    0x90 if m.data[2] & 0x7f != 0 => *held |= bit,
-                                    0x80 | 0x90 => *held &= !bit,
-                                    _ => {}
-                                }
-                            }
-                            live.push(LiveMsg {
-                                offset: (frame - frame0) as u32,
-                                data: m.data,
-                                play,
-                                capture,
-                            });
-                        }
-                    }
+                    *dropped += segment_midi.prepare(track, state, live);
                     // The instrument's events. On a track with MIDI effects, the sequencer's and
                     // the live notes enter the stage chain instead (tagged with the first stage's
                     // slot), and the track's job (`stage::run`) makes the instrument's events.
