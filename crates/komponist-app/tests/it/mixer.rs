@@ -565,6 +565,31 @@ fn double_click_resets_fader_and_pan_in_one_undo_step() {
 }
 
 #[test]
+fn space_toggles_playback_after_resetting_a_mixer_control() {
+    let mut h = harness(s04());
+    for name in [Lang::De.mixer_volume("Drums"), Lang::De.mixer_pan("Drums")] {
+        let at = in_strip(&h, "Drums", Role::Slider, &name).center();
+        click(&mut h, at);
+        assert!(h.ctx.egui_wants_keyboard_input(), "single click on {name}");
+
+        h.state_mut().clear_dispatched();
+        press(&mut h, at, true, Modifiers::NONE);
+        press(&mut h, at, false, Modifiers::NONE);
+        // The first Space can arrive in the same frame as the reset.
+        for expected in 1..=2 {
+            h.key_press(egui::Key::Space);
+            h.run_steps(2);
+            let toggles = h
+                .state()
+                .dispatched()
+                .filter(|a| matches!(a, Action::Transport(TransportAction::TogglePlay)))
+                .count();
+            assert_eq!(toggles, expected, "Space after resetting {name}");
+        }
+    }
+}
+
+#[test]
 fn space_toggles_playback_after_dragging_a_mixer_control() {
     let mut h = harness(s04());
     for name in [Lang::De.mixer_volume("Drums"), Lang::De.mixer_pan("Drums")] {

@@ -22,9 +22,9 @@ use crate::state::State;
 use crate::widgets::fader::{self, FaderSize};
 use crate::widgets::metrics::device::mini_fader as metrics;
 use crate::widgets::number_field::{
-    Formatter, GetSet, Parser, absolute_drag_gesture, accesskit_requests, clamp_finite, entry,
-    expose_value, format_number, get_set, is_still, key_steps, normalized, range_bounds, sense,
-    update_pointer_focus, value_tooltip_live, wheel_steps,
+    DoubleClick, Formatter, GetSet, Parser, absolute_drag_gesture, accesskit_requests,
+    clamp_finite, entry, expose_value, format_number, get_set, is_still, key_steps, normalized,
+    range_bounds, sense, value_control_click, value_tooltip_live, wheel_steps,
 };
 use crate::{focus, px, tooltip};
 
@@ -248,8 +248,7 @@ impl Widget for MiniFader<'_> {
         let key_step = (max - min) * KEY_STEP;
 
         if live && !entry::is_open(&ctx, id) {
-            update_pointer_focus(&response);
-            if ClickAction::of_control(&response) == ClickAction::Reset {
+            if value_control_click(&response, DoubleClick::Reset) == ClickAction::Reset {
                 value = self.default;
             }
             let fraction = normalized(clamp_finite(value, min, max, old), min, max) as f32;

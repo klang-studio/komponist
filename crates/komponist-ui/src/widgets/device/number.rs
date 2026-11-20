@@ -20,9 +20,9 @@ use crate::drag::{ClickAction, ValueDrag};
 use crate::state::State;
 use crate::widgets::metrics::device as metrics;
 use crate::widgets::number_field::{
-    self, Formatter, GetSet, Parser, Quantise, accesskit_requests, clamp_finite, drag_gesture,
-    drag_gesture_with, entry, expose_value, format_number, get_set, is_still, key_steps,
-    range_bounds, sense, snap_to, update_pointer_focus, wheel_steps,
+    self, DoubleClick, Formatter, GetSet, Parser, Quantise, accesskit_requests, clamp_finite,
+    drag_gesture, drag_gesture_with, entry, expose_value, format_number, get_set, is_still,
+    key_steps, range_bounds, sense, snap_to, value_control_click, wheel_steps,
 };
 use crate::{focus, fonts, px};
 
@@ -210,8 +210,7 @@ impl Widget for Number<'_> {
         let step = self.step.unwrap_or((max - min) * KEY_STEP);
 
         if live && !entry::is_open(&ctx, id) {
-            update_pointer_focus(&response);
-            match ClickAction::of(&response) {
+            match value_control_click(&response, DoubleClick::TextEntry) {
                 ClickAction::Reset => value = self.default,
                 ClickAction::TextEntry => entry::open(&ctx, id, self.text(value)),
                 ClickAction::None => {}

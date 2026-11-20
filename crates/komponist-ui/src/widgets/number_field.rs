@@ -31,8 +31,8 @@ use egui::emath::Numeric;
 use egui::text::CCursorRange;
 use egui::{
     Align, Area, Color32, Context, CornerRadius, CursorIcon, Event, EventFilter, FocusDirection,
-    Frame, Id, IdSet, Key, Margin, MouseWheelUnit, Order, Painter, Rect, Response, Role, Sense,
-    Stroke, StrokeKind, TextEdit, Ui, Vec2, Widget, WidgetInfo, pos2, vec2,
+    Frame, Id, IdMap, Key, Margin, MouseWheelUnit, Order, Painter, PointerButton, Rect, Response,
+    Role, Sense, Stroke, StrokeKind, TextEdit, Ui, Vec2, Widget, WidgetInfo, pos2, vec2,
 };
 use komponist_model::format::MINUS;
 use komponist_tokens::egui_support::color32;
@@ -377,8 +377,7 @@ impl Widget for NumberField<'_> {
         let live = !is_still(ui) && response.enabled();
 
         if live && !entry::is_open(&ctx, id) {
-            update_pointer_focus(&response);
-            match ClickAction::of(&response) {
+            match value_control_click(&response, DoubleClick::TextEntry) {
                 ClickAction::Reset => value = self.default,
                 ClickAction::TextEntry if self.text_entry => {
                     entry::open(&ctx, id, self.text(value));
@@ -694,21 +693,35 @@ pub(crate) fn drag_gesture_with(
     }
 }
 
-/// A click gives the control focus for keyboard editing. Finish a mouse drag by releasing
-/// the focus taken for that gesture so application shortcuts work again.
-pub(crate) fn update_pointer_focus(response: &Response) {
-    if response.drag_stopped() {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DoubleClick {
+    Reset,
+    TextEntry,
+}
+
+/// A click gives the control focus for keyboard editing. Release focus after a drag or a
+/// double-click reset so application shortcuts work again.
+pub(crate) fn value_control_click(response: &Response, double_click: DoubleClick) -> ClickAction {
+    with_value_controls(&response.ctx, |controls| {
+        controls.current.insert(response.id, double_click);
+    });
+    if response.drag_stopped() || (double_click == DoubleClick::Reset && response.double_clicked())
+    {
         response.surrender_focus();
     } else if response.clicked() || response.drag_started() {
         response.request_focus();
+    }
+    match double_click {
+        DoubleClick::Reset => ClickAction::of_control(response),
+        DoubleClick::TextEntry => ClickAction::of(response),
     }
 }
 
 #[derive(Clone, Default)]
 struct ValueControls {
     pass: u64,
-    current: IdSet,
-    previous: IdSet,
+    current: IdMap<DoubleClick>,
+    previous: IdMap<DoubleClick>,
     hovered_steps: Option<(Id, f64)>,
 }
 
@@ -744,7 +757,7 @@ fn hovered_value_control(ctx: &Context) -> Option<Id> {
     let id = with_value_controls(ctx, |controls| {
         hovered
             .into_iter()
-            .find(|id| controls.previous.contains(id))
+            .find(|id| controls.previous.contains_key(id))
     })?;
     let response = ctx.read_response(id)?;
     (response.enabled()
@@ -774,11 +787,18 @@ fn arrow_step(event: &Event) -> Option<f64> {
 /// Updates value control focus and routes hover keys before the app handles shortcuts.
 pub fn prepare_value_control_input(ctx: &Context) {
     // A key press can arrive in the same pass as the mouse release.
-    if let Some(id) = ctx.interaction_snapshot(|i| i.drag_stopped)
-        && ctx.memory(|m| m.has_focus(id))
-        && with_value_controls(ctx, |controls| controls.previous.contains(&id))
+    if let Some(id) = ctx.memory(|m| m.focused())
+        && let Some(double_click) =
+            with_value_controls(ctx, |controls| controls.previous.get(&id).copied())
     {
-        ctx.memory_mut(|m| m.surrender_focus(id));
+        let (clicked, drag_stopped) = ctx.interaction_snapshot(|i| (i.clicked, i.drag_stopped));
+        if drag_stopped == Some(id)
+            || (clicked == Some(id)
+                && double_click == DoubleClick::Reset
+                && ctx.input(|i| i.pointer.button_double_clicked(PointerButton::Primary)))
+        {
+            ctx.memory_mut(|m| m.surrender_focus(id));
+        }
     }
     route_hovered_value_keys(ctx);
 }
@@ -810,10 +830,7 @@ pub(crate) fn key_steps(ui: &Ui, response: &Response) -> f64 {
     let ctx = ui.ctx();
     // Standalone widgets use the same routing even when there is no application shortcut handler.
     route_hovered_value_keys(ctx);
-    let hovered_steps = with_value_controls(ctx, |controls| {
-        controls.current.insert(response.id);
-        controls.hovered_steps
-    });
+    let hovered_steps = with_value_controls(ctx, |controls| controls.hovered_steps);
     let focused = response.has_focus();
     if focused {
         ui.memory_mut(|m| {
