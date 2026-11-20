@@ -495,3 +495,15 @@ with automation across 1,000 callbacks. The added 79.3 µs is 1.49% of a 256-fra
 The dense-lane benchmark measured steady medians of 1.45 ms at 1× and 0.90 ms at 2×, with
 worst steady frames of 2.06 ms and 1.31 ms. The first frames, including layout and mesh
 construction, took 10.46 ms and 10.85 ms.
+
+## Track macros (#74)
+
+| Case | Budget |
+|---|---|
+| Engine, 16 tracks × 8 macros × 4 mappings, 256 frames at 48 kHz | At most 2% of the block period (about 107 µs) added on the calling thread, with no realtime allocations |
+
+Run `cargo test --release -p komponist-app --test engine_perf engine_cpu_16_tracks_with_track_macros -- --ignored --nocapture`.
+The test swaps between two precompiled programs whose macro base values differ. It compares the
+mean callback time with and without 512 bent parameter mappings, changing every macro on each
+block. Program preparation and retirement run outside the measurement. This measures the
+block-rate fan-out. Timeline ramps may emit several values per block and are covered by #76.

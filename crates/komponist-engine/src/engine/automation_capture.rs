@@ -296,7 +296,7 @@ impl Core {
             capture.chain(
                 AutomationOwner::Track(track.id),
                 &track.chain,
-                &track.automation,
+                (&track.automation, Some(&track.macros)),
                 &mut self.tracks[usize::from(index)].automation,
                 &mut self.slots,
             );
@@ -304,7 +304,7 @@ impl Core {
         capture.chain(
             AutomationOwner::Master,
             &program.master.chain,
-            &program.master.automation,
+            (&program.master.automation, None),
             &mut self.master_automation,
             &mut self.slots,
         );
@@ -378,7 +378,7 @@ impl Capture<'_> {
         &mut self,
         owner: AutomationOwner,
         chain: &[ChainSlot],
-        lanes: &[CompiledTarget],
+        (lanes, macros): (&[CompiledTarget], Option<&crate::program::MacroProgram>),
         state: &mut automation::State,
         slots: &mut [Slot],
     ) {
@@ -411,8 +411,17 @@ impl Capture<'_> {
                 if matches!(edit.kind, ParameterEditKind::Value { .. }) {
                     state.cancel_restore(lanes, target);
                 }
-                let mut temporary = false;
-                if let Some((cursor, index)) = state.cursor(lanes, target)
+                let mut temporary = macros.is_some_and(|program| {
+                    state.macros.plugin_edit(
+                        program,
+                        target,
+                        edit.kind,
+                        time,
+                        self.clock.window.rate,
+                    )
+                });
+                if !temporary
+                    && let Some((cursor, index)) = state.cursor(lanes, target)
                     && lanes[index].mode != AutomationMode::Off
                 {
                     let lane = &lanes[index];

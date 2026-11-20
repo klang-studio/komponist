@@ -89,6 +89,7 @@ fn model_track(id: u64) -> Arc<Track> {
 /// Track `id` playing `notes` on the instrument in `slot`, unity gain, centred.
 pub fn track(id: u64, slot: u32, notes: Vec<SeqNote>) -> TrackProgram {
     TrackProgram {
+        macros: Default::default(),
         automation: Default::default(),
         chain_latency: 0,
         id: TrackId(id),

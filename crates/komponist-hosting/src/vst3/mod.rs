@@ -38,8 +38,9 @@
 //! normalized; the plugin's text for a value comes from `getParamStringByValue`.
 //!
 //! GUI edits (`IComponentHandler` on the main thread) become [`HostNotification::ParamEdited`](crate::HostNotification::ParamEdited)
-//! (plus `StateDirty`) for the app, and go to the processor, which applies them in its next block
-//! and echoes them, with their `beginEdit` / `endEdit` gestures, as output events of that block.
+//! for the controller readout, and go to the processor, which applies them in its next block
+//! and reports them, with their `beginEdit` / `endEdit` gestures, to the app. The app tracks
+//! persistent parameter edits through that path. Explicit plugin state changes are reported separately.
 //!
 //! While inactive, `flush_params` and GUI edits update the controller at once and reach the
 //! processor in the first block after the next activation (the VST3 way to hand a value to the

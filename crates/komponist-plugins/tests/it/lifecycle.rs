@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::*;
+use komponist_engine::Command;
 use komponist_ipc::GuiTarget;
 use komponist_ipc::LogLevel;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, TrackId};
@@ -88,9 +89,96 @@ fn restore_updates_parameter_bases_without_overwriting_a_later_edit() {
     assert!(rig.manager.set_state(device_id, &state));
     rig.manager.set_param(device_id, gain, -30.0);
     run_until(&mut rig, "the second restore acknowledgement", |rig| {
-        rig.events[from..].contains(&PluginManagerEvent::ParamsChanged { device: device_id })
+        rig.events[from..].contains(&PluginManagerEvent::StateApplied { device: device_id })
     });
     assert_eq!(rig.manager.param_base(device_id, gain), Some(-30.0));
+}
+
+#[test]
+fn macro_snapshot_preserves_an_independent_plugin_edit() {
+    let dir = scratch("macro-state-provenance");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let gain = param_id(&rig.manager, 10, "Gain");
+    let decay = param_id(&rig.manager, 10, "Decay");
+    let base = rig.manager.param_base(device_id, gain);
+    let slot = rig.slots[&device_id];
+    let output = |rig: &mut Rig, value| {
+        rig.send(Command::SetParam {
+            slot,
+            id: gain,
+            value,
+        });
+        rig.run(4);
+    };
+    // The CLAP adapter exposes the fixture's gain in normalized coordinates, even though
+    // the plugin's editor shows dB. These values lie exactly on its 0.1 dB steps.
+    let mapped = 0.6;
+    let preview = 0.4;
+    let next_mapped = 0.5;
+    let independent = 0.5;
+
+    rig.manager.set_macro_params(&[(device_id, gain, mapped)]);
+    output(&mut rig, mapped);
+    // Simulate a native GUI temporarily taking the processor away from the mapped value.
+    output(&mut rig, preview);
+    rig.manager.preview_param(device_id, gain, preview);
+    assert_eq!(rig.manager.param_base(device_id, gain), base);
+    rig.manager.request_state(device_id);
+    let from = rig.events.len();
+    for _ in 0..5 {
+        rig.process(BLOCK);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        !rig.events[from..]
+            .iter()
+            .any(|event| matches!(event, PluginManagerEvent::StateSnapshot { .. }))
+    );
+
+    output(&mut rig, mapped);
+    rig.manager.request_state(device_id);
+    let state = next_snapshot(&mut rig, 10);
+    assert!(rig.manager.is_macro_snapshot(device_id, &state));
+    assert_eq!(rig.manager.param_base(device_id, gain), base);
+
+    rig.manager
+        .set_macro_params(&[(device_id, gain, next_mapped)]);
+    output(&mut rig, next_mapped);
+    rig.manager.set_param(device_id, decay, independent);
+    rig.manager.request_state(device_id);
+    let edited = next_snapshot(&mut rig, 10);
+    assert!(!rig.manager.is_macro_snapshot(device_id, &edited));
+    assert_eq!(rig.manager.param_base(device_id, decay), Some(independent));
+    assert_eq!(rig.manager.param_base(device_id, gain), base);
+
+    rig.manager.set_macro_params(&[]);
+    assert_eq!(rig.manager.param_base(device_id, gain), Some(next_mapped));
+    rig.manager.request_state(device_id);
+    let state = next_snapshot(&mut rig, 10);
+    assert!(rig.manager.is_macro_snapshot(device_id, &state));
+
+    // Restore the earlier mixed snapshot after changing both parameters. StateApplied reports
+    // values read from the real bridge plugin, rather than the manager's optimistic cache.
+    rig.manager.set_param(device_id, gain, preview);
+    rig.manager.set_param(device_id, decay, 0.75);
+    let from = rig.events.len();
+    assert!(rig.manager.set_state(device_id, &edited));
+    run_until(&mut rig, "the restored macro and independent edit", |rig| {
+        rig.events[from..].contains(&PluginManagerEvent::StateApplied { device: device_id })
+    });
+    for (id, expected) in [(gain, next_mapped), (decay, independent)] {
+        let actual = rig.manager.param_base(device_id, id).unwrap();
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "{id}: {actual} vs {expected}"
+        );
+    }
 }
 
 #[test]
@@ -495,6 +583,47 @@ fn parameter_changes_are_snapshotted_once_debounced() {
     }
     assert_eq!(snapshots(&rig), 1);
     rig.manager.shutdown();
+}
+
+#[test]
+fn unmapping_a_persistent_macro_value_allows_saving_after_a_failed_restore() {
+    let dir = scratch("bad-state-unmap");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let device = DeviceId(10);
+    let blob = b"not a state of kp-test-synth";
+    let synth = self::device(10, DeviceRole::Instrument, clap_plugin(SYNTH), Some(blob));
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(device.0, DeviceStatus::Ok);
+    let gain = param_id(&rig.manager, device.0, "Gain");
+    let base = rig.manager.param_base(device, gain).unwrap();
+    assert!(rig.manager.state_warning(device).is_some());
+
+    // Removing a no-op mapping leaves the rejected bytes alone.
+    rig.manager.set_macro_params(&[(device, gain, base)]);
+    rig.manager.set_macro_params(&[]);
+    assert!(rig.manager.state_warning(device).is_some());
+    assert!(rig.manager.snapshot_for_save(PATIENCE).unwrap().is_empty());
+
+    let value = 0.5;
+    assert_ne!(base, value);
+    rig.manager.set_macro_params(&[(device, gain, value)]);
+    rig.send(Command::SetParam {
+        slot: rig.slots[&device],
+        id: gain,
+        value,
+    });
+    rig.run(4);
+    assert!(rig.manager.state_warning(device).is_some());
+
+    rig.manager.set_macro_params(&[]);
+    assert_eq!(rig.manager.state_warning(device), None);
+    let states = rig.manager.snapshot_for_save(PATIENCE).unwrap();
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].0, device);
+    assert_ne!(&*states[0].1, blob);
+    assert_eq!(rig.manager.param_base(device, gain), Some(value));
 }
 
 #[test]

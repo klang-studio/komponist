@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use komponist_model::automation::AutomationOwner;
+use komponist_model::macros::MACRO_COUNT;
 use komponist_model::{SendId, Tick, TrackId};
 
 use crate::automation::{AutomationBoundary, EngineTarget, PluginParamBatch};
@@ -71,6 +72,20 @@ pub enum Command {
         id: u32,
         /// Plain value.
         value: f64,
+    },
+    /// Fast path during a macro gesture, effective at frame zero of the next block.
+    SetMacro {
+        /// The track.
+        track: TrackId,
+        /// Fixed macro slot.
+        index: u8,
+        /// Normalized position.
+        value: f32,
+    },
+    /// Deliver the current values of the track's mappings after device state has been restored.
+    MacroReassert {
+        /// The track.
+        track: TrackId,
     },
     /// Fast path during a fader gesture: linear gain of a track (ramped), until the next program.
     SetTrackGain {
@@ -174,6 +189,20 @@ impl fmt::Debug for Command {
                 .field("slot", slot)
                 .field("id", id)
                 .field("value", value)
+                .finish(),
+            Command::SetMacro {
+                track,
+                index,
+                value,
+            } => f
+                .debug_struct("SetMacro")
+                .field("track", track)
+                .field("index", index)
+                .field("value", value)
+                .finish(),
+            Command::MacroReassert { track } => f
+                .debug_struct("MacroReassert")
+                .field("track", track)
                 .finish(),
             Command::SetTrackGain { track, gain } => f
                 .debug_struct("SetTrackGain")
@@ -376,6 +405,15 @@ pub struct Telemetry {
     /// Audio tracks whose read-ahead has not caught up with the playhead yet (a locate or a
     /// program change just asked for it), as of the last block.
     pub(crate) audio_pending: AtomicU32,
+    macro_tracks: Box<[MacroTelemetry]>,
+}
+
+#[derive(Debug, Default)]
+struct MacroTelemetry {
+    /// Nonzero even sequences contain a complete row. Odd and zero indicate no readable row.
+    sequence: AtomicU64,
+    track: AtomicU64,
+    values: [AtomicU32; MACRO_COUNT],
 }
 
 impl Telemetry {
@@ -390,6 +428,61 @@ impl Telemetry {
             held_input: [AtomicU64::new(0), AtomicU64::new(0)],
             audio_underruns: AtomicU32::new(0),
             audio_pending: AtomicU32::new(0),
+            macro_tracks: (0..crate::MAX_TRACKS)
+                .map(|_| MacroTelemetry::default())
+                .collect(),
+        }
+    }
+
+    /// The last applied positions of a track's eight macro slots.
+    pub fn macro_values(&self, track: TrackId) -> Option<[f32; MACRO_COUNT]> {
+        self.macro_tracks.iter().find_map(|row| {
+            let sequence = row.sequence.load(Ordering::SeqCst);
+            if sequence == 0
+                || !sequence.is_multiple_of(2)
+                || row.track.load(Ordering::SeqCst) != track.0
+            {
+                return None;
+            }
+            let values = row
+                .values
+                .each_ref()
+                .map(|value| f32::from_bits(value.load(Ordering::SeqCst)));
+            (sequence == row.sequence.load(Ordering::SeqCst)).then_some(values)
+        })
+    }
+
+    pub(crate) fn publish_macros(&self, row: usize, track: TrackId, values: [f32; MACRO_COUNT]) {
+        let row = &self.macro_tracks[row];
+        let sequence = row.sequence.load(Ordering::Relaxed);
+        if sequence != 0
+            && sequence.is_multiple_of(2)
+            && track.0 == row.track.load(Ordering::Relaxed)
+            && row
+                .values
+                .iter()
+                .zip(values)
+                .all(|(old, new)| old.load(Ordering::Relaxed) == new.to_bits())
+        {
+            return;
+        }
+        let sequence = sequence | 1;
+        row.sequence.store(sequence, Ordering::SeqCst);
+        row.track.store(track.0, Ordering::SeqCst);
+        for (cell, value) in row.values.iter().zip(values) {
+            cell.store(value.to_bits(), Ordering::SeqCst);
+        }
+        row.sequence
+            .store(sequence.wrapping_add(1).max(2), Ordering::SeqCst);
+    }
+
+    pub(crate) fn retire_macros(&self, row: usize) {
+        let row = &self.macro_tracks[row];
+        // Keep the sequence progressing across reuse, while a free row stays odd.
+        let sequence = row.sequence.load(Ordering::Relaxed);
+        if sequence.is_multiple_of(2) {
+            row.sequence
+                .store(sequence.wrapping_add(1), Ordering::SeqCst);
         }
     }
 

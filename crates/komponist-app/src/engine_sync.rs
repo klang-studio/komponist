@@ -28,7 +28,7 @@
 //! wait in the pending queue and no engine events arrive; [`EngineSync::attach`] gives both back
 //! and sends what waited.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -47,7 +47,7 @@ use komponist_engine::{
     MAX_EVENTS_PER_BLOCK, MidiInEvent, MidiPort, Program, SlotId, Telemetry, TrackMeter,
     TransportState,
 };
-use komponist_model::{Document, Project, Tick, TrackId};
+use komponist_model::{DeviceId, Document, Project, Tick, TrackId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent, ProcessorSetup};
 
 use crate::device_host::DeviceHost;
@@ -260,6 +260,15 @@ pub enum MidiSetup {
 pub enum SyncEvent {
     /// An engine event (recorded notes, loop wraps, count-in end, failed processors).
     Engine(EngineEvent),
+    /// The first native edit of an eligible parameter in the track currently in mapping mode.
+    PluginParameterInput {
+        /// Device whose native GUI reported the edit.
+        device: DeviceId,
+        /// Stable parameter wire id.
+        id: u32,
+        /// The last plain value observed before the edit.
+        previous: Option<f64>,
+    },
     /// A device host event (status, state snapshot, latency, …).
     Device(PluginManagerEvent),
 }
@@ -287,12 +296,21 @@ impl CompileEnv for Env<'_> {
         param: &komponist_model::params::ParamId,
     ) -> Option<komponist_engine::automation::Parameter> {
         use komponist_engine::automation::{Parameter, PlainMap};
-        use komponist_ipc::control::param_flags;
-
         if crate::device_host::is_hexa(device) {
-            let card = komponist_builtin::device::param(param)?;
             let patch = komponist_builtin::decode_state(device.state.as_deref())
                 .unwrap_or_else(|_| komponist_builtin::default_patch());
+            if let Some(mac) = komponist_builtin::Macro::ALL
+                .into_iter()
+                .find(|mac| mac.key() == param.as_str())
+            {
+                let info = mac.param_info();
+                return info.automatable.then(|| Parameter {
+                    wire_id: mac.id(),
+                    map: PlainMap::from_kind(&info.kind),
+                    base: mac.get(&patch),
+                });
+            }
+            let card = komponist_builtin::device::param(param)?;
             return card.info.automatable.then(|| Parameter {
                 wire_id: card.wire,
                 map: PlainMap::from_kind(&card.info.kind),
@@ -324,16 +342,13 @@ impl CompileEnv for Env<'_> {
             .params(device.id)?
             .iter()
             .find(|p| p.id == wire_id)?;
-        let excluded = param_flags::HIDDEN | param_flags::READ_ONLY | param_flags::BYPASS;
-        (info.flags & param_flags::AUTOMATABLE != 0 && info.flags & excluded == 0).then(|| {
-            Parameter {
-                wire_id,
-                map: PlainMap::linear(info.min, info.max, info.step_count),
-                base: self
-                    .host
-                    .param_base(device.id, wire_id)
-                    .unwrap_or(info.default),
-            }
+        plugin_automatable(info).then(|| Parameter {
+            wire_id,
+            map: PlainMap::linear(info.min, info.max, info.step_count),
+            base: self
+                .host
+                .param_base(device.id, wire_id)
+                .unwrap_or(info.default),
         })
     }
 
@@ -344,6 +359,12 @@ impl CompileEnv for Env<'_> {
     fn project_dir(&self) -> Option<std::path::PathBuf> {
         self.host.project_dir()
     }
+}
+
+fn plugin_automatable(info: &komponist_ipc::ParamInfo) -> bool {
+    use komponist_ipc::control::param_flags;
+    let excluded = param_flags::HIDDEN | param_flags::READ_ONLY | param_flags::BYPASS;
+    info.flags & param_flags::AUTOMATABLE != 0 && info.flags & excluded == 0
 }
 
 /// A MIDI input device that appeared or vanished between two scans ([`midi_changes`]).
@@ -401,6 +422,8 @@ pub struct EngineSync {
     pending: VecDeque<Command>,
     /// Device host events that survived a [`EngineSync::reset`], delivered by the next poll.
     carried: Vec<PluginManagerEvent>,
+    /// Last plain macro outputs passed to the plugin snapshot verifier.
+    macro_params: Vec<(DeviceId, u32, f64)>,
     rate: Arc<AtomicU32>,
     telemetry: Arc<Telemetry>,
     /// The engine taken out of the stream ([`EngineSync::hold_engine`]).
@@ -484,6 +507,7 @@ impl EngineSync {
             reloads: 0,
             pending: VecDeque::new(),
             carried: Vec::new(),
+            macro_params: Vec::new(),
             rate,
             telemetry,
             held: None,
@@ -539,6 +563,7 @@ impl EngineSync {
 
     /// Compiles `project` against the program last sent and sends it (steps of the module docs).
     pub fn send_project(&mut self, project: &Project) {
+        self.sync_macro_params();
         let mut next = {
             let env = Env {
                 midi: self.midi.as_ref(),
@@ -569,6 +594,24 @@ impl EngineSync {
             };
             next = compile::build(project, Some(&next), &env);
         }
+        let values = self.macro_parameters(&next);
+        if values != self.macro_params {
+            let retained: HashSet<_> = values.iter().map(|&(device, id, _)| (device, id)).collect();
+            let released = self.macro_params.iter().any(|&(device, id, _)| {
+                next.slots.slot(device).is_some() && !retained.contains(&(device, id))
+            });
+            self.set_macro_params(values);
+            if released {
+                // Unmapping makes the last controlled value the plugin's ordinary base. Any
+                // automation lane that becomes active again must compile against that base.
+                let env = Env {
+                    midi: self.midi.as_ref(),
+                    host: &*self.host,
+                    rate: f64::from(self.sample_rate()),
+                };
+                next = compile::build(project, Some(&next), &env);
+            }
+        }
         self.send(Command::SetProgram(Box::new(next.clone())));
         self.programs_sent += 1;
         self.previous = Some(next);
@@ -591,6 +634,7 @@ impl EngineSync {
         if let Some(processor) = self.host.create_processor(d, setup) {
             self.reloads += 1;
             self.send(Command::InsertProcessor { slot, processor });
+            self.host.set_macro_params(&self.macro_params);
         }
     }
 
@@ -673,6 +717,7 @@ impl EngineSync {
             for (id, value) in changes {
                 self.send(Command::SetParam { slot, id, value });
             }
+            self.reassert_device_macros(device.id);
         } else if let Some(kind) = internal_kind(device) {
             // A state with only sample links has no `params`: its values are the defaults (as
             // the processor made from it has them).
@@ -709,8 +754,54 @@ impl EngineSync {
                     }
                 }
             }
+            self.reassert_device_macros(device.id);
         } else if let Some(state) = &device.state {
             self.host.set_state(device.id, state);
+        }
+    }
+
+    fn reassert_device_macros(&mut self, device: DeviceId) {
+        use komponist_model::automation::AutomationTarget;
+        let owner = self.previous.as_ref().and_then(|program| {
+            program.tracks.iter().find(|track| {
+                track.source.macros.0.iter().any(|mac| {
+                    mac.mappings.iter().any(|mapping| {
+                        matches!(mapping.target, AutomationTarget::Param { device: id, .. } if id == device)
+                    })
+                })
+            })
+        });
+        if let Some(track) = owner.map(|track| track.id) {
+            self.send(Command::MacroReassert { track });
+        }
+    }
+
+    fn sync_macro_params(&mut self) {
+        if let Some(program) = &self.previous {
+            let values = self.macro_parameters(program);
+            self.set_macro_params(values);
+        }
+    }
+
+    fn macro_parameters(&self, program: &Program) -> Vec<(DeviceId, u32, f64)> {
+        let mut values = Vec::new();
+        program.for_each_macro_parameter(
+            |track| self.telemetry.macro_values(track),
+            |slot, id, value| {
+                if let Some(device) = program.slots.device(slot)
+                    && self.host.params(device).is_some()
+                {
+                    values.push((device, id, value));
+                }
+            },
+        );
+        values
+    }
+
+    fn set_macro_params(&mut self, values: Vec<(DeviceId, u32, f64)>) {
+        if values != self.macro_params {
+            self.host.set_macro_params(&values);
+            self.macro_params = values;
         }
     }
 
@@ -762,6 +853,14 @@ impl EngineSync {
     /// Call every UI frame: polls the audio system, retries queued commands, drains the engine's
     /// events (dropping garbage here) and the device host's events.
     pub fn poll(&mut self) -> Vec<SyncEvent> {
+        self.poll_with_macro_mapping(None)
+    }
+
+    /// Also routes native edits from `mapping` as prospective macro mappings. The live plugin
+    /// has already received the edit. Its persisted parameter base is kept until mapping wins.
+    pub(crate) fn poll_with_macro_mapping(&mut self, mapping: Option<TrackId>) -> Vec<SyncEvent> {
+        use komponist_engine::processor::ParameterEditKind;
+
         let before = self.sample_rate();
         self.audio.poll();
         if self.sample_rate() != before {
@@ -772,17 +871,50 @@ impl EngineSync {
             self.scan_midi();
         }
         self.flush_pending();
+        self.sync_macro_params();
         let mut out = Vec::new();
+        let mut inputs = HashSet::new();
         while let Some(event) = self.handle.as_mut().and_then(EngineHandle::poll) {
             match event {
                 // Dropped here, on the UI thread.
                 EngineEvent::Retired(garbage) => drop(garbage),
                 EngineEvent::PluginParams { slot, ref events } => {
                     if let Some(device) = self.program().and_then(|p| p.slots.device(slot)) {
+                        let mapping_owner = mapping.is_some_and(|track| {
+                            self.program()
+                                .and_then(|program| program.track(track))
+                                .is_some_and(|track| {
+                                    track.chain.iter().any(|item| item.slot == slot)
+                                })
+                        });
                         for (change, temporary) in events.iter() {
-                            use komponist_engine::processor::ParameterEditKind;
+                            let id = match change.kind {
+                                ParameterEditKind::Value { id, .. }
+                                | ParameterEditKind::Gesture { id, begin: true } => id,
+                                ParameterEditKind::Gesture { begin: false, .. } => continue,
+                            };
+                            let candidate = mapping_owner
+                                && self.host.params(device).is_some_and(|params| {
+                                    params
+                                        .iter()
+                                        .any(|info| info.id == id && plugin_automatable(info))
+                                });
+                            if candidate && inputs.insert((device, id)) {
+                                let previous = self
+                                    .macro_params
+                                    .iter()
+                                    .find(|&&(target, wire, _)| target == device && wire == id)
+                                    .map(|&(_, _, value)| value)
+                                    .or_else(|| self.host.param_value(device, id).map(|p| p.value))
+                                    .or_else(|| self.host.param_base(device, id));
+                                out.push(SyncEvent::PluginParameterInput {
+                                    device,
+                                    id,
+                                    previous,
+                                });
+                            }
                             if let ParameterEditKind::Value { id, value } = change.kind {
-                                if temporary {
+                                if temporary || candidate {
                                     self.host.preview_param(device, id, value);
                                 } else {
                                     self.host.edited_param(device, id, value);
@@ -796,12 +928,12 @@ impl EngineSync {
             }
         }
         let carried = std::mem::take(&mut self.carried);
-        out.extend(
-            carried
-                .into_iter()
-                .chain(self.host.poll())
-                .map(SyncEvent::Device),
-        );
+        for event in carried.into_iter().chain(self.host.poll()) {
+            if let PluginManagerEvent::StateApplied { device } = event {
+                self.reassert_device_macros(device);
+            }
+            out.push(SyncEvent::Device(event));
+        }
         out
     }
 
@@ -1084,6 +1216,7 @@ impl EngineSync {
         self.host = host;
         self.synced = None;
         self.fast = None;
+        self.macro_params.clear();
     }
 
     /// Forgets the project: every processor leaves the engine and the host releases every device
@@ -1107,6 +1240,7 @@ impl EngineSync {
         }
         self.synced = None;
         self.fast = None;
+        self.macro_params.clear();
         let events = self.host.poll();
         self.carried.extend(events.into_iter().filter(|e| {
             matches!(
@@ -1499,6 +1633,36 @@ mod tests {
         let first = sync.program().unwrap().tracks[0].clone();
         sync.sync(&doc);
         assert!(Arc::ptr_eq(&first, &sync.program().unwrap().tracks[0]));
+    }
+
+    #[test]
+    fn hexa_compiler_resolves_device_macros_outside_the_parameter_grid() {
+        use komponist_builtin::Macro;
+        use komponist_model::params::ParamId;
+
+        let project = demo_project();
+        let device = project
+            .tracks
+            .iter()
+            .flat_map(|track| &track.channel.devices)
+            .find(|device| crate::device_host::is_hexa(device))
+            .unwrap();
+        let host = BuiltinHost::new();
+        let env = Env {
+            midi: None,
+            host: &host,
+            rate: 48_000.0,
+        };
+        let patch = komponist_builtin::decode_state(device.state.as_deref())
+            .unwrap_or_else(|_| komponist_builtin::default_patch());
+        for mac in Macro::ALL {
+            let parameter = env
+                .automation_parameter(device, &ParamId::new(mac.key()))
+                .unwrap();
+            assert_eq!(parameter.wire_id, mac.id());
+            assert_eq!(parameter.base, mac.get(&patch));
+            assert_eq!(parameter.map.plain(1.0), mac.max());
+        }
     }
 
     #[test]

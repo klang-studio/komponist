@@ -103,7 +103,7 @@ pub enum HostNotification {
     },
     /// The latency changed (CLAP `latency.changed`, VST3 `kLatencyChanged`). Main thread.
     LatencyChanged,
-    /// The state changed (CLAP `state.mark_dirty`, VST3 `setDirty` / edits). Main thread.
+    /// The plugin explicitly reported a state change (CLAP `state.mark_dirty`, VST3 `setDirty` or a rescan).
     StateDirty,
     /// Note names changed (CLAP `note_name.changed`). Main thread.
     NoteNamesChanged,

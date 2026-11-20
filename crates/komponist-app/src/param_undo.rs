@@ -46,8 +46,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_engine::Command;
+use komponist_model::automation::AutomationTarget;
 use komponist_model::edits;
-use komponist_model::{DeviceId, Project};
+use komponist_model::macros::MAX_MAPPINGS;
+use komponist_model::{Device, DeviceId, Project, TrackId};
 
 use crate::app::App;
 use crate::device_host::{internal_kind, is_hexa};
@@ -75,6 +77,10 @@ pub(crate) struct ParamUndo {
     gesture_device: Option<DeviceId>,
     /// Bridged devices a parameter was turned on inside the open gesture.
     gesture_bridged: BTreeSet<DeviceId>,
+    /// Bridges that receive macro-driven parameter values during this gesture.
+    macro_gesture: BTreeSet<DeviceId>,
+    /// Recently closed macro gestures to which a verified macro snapshot can still be attached.
+    macro_steps: HashMap<DeviceId, (u64, Instant)>,
     /// The label and time of the last card parameter turned on a bridged device.
     turned: HashMap<DeviceId, (String, Instant)>,
     /// The undo step the last snapshot of a device made, and when it was last amended.
@@ -101,6 +107,8 @@ impl Default for ParamUndo {
             window: COALESCE,
             gesture_device: None,
             gesture_bridged: BTreeSet::new(),
+            macro_gesture: BTreeSet::new(),
+            macro_steps: HashMap::new(),
             turned: HashMap::new(),
             steps: HashMap::new(),
             tails: HashMap::new(),
@@ -136,6 +144,32 @@ impl App {
         self.param_undo.gesture_device = Some(device);
     }
 
+    /// Associates a macro's bridged targets with the open gesture, so their verified snapshots
+    /// can amend the gesture rather than making separate undo steps.
+    pub fn note_macro_gesture(&mut self, track: TrackId, index: u8) {
+        if !self.doc.in_gesture() {
+            return;
+        }
+        let Some(track) = self.doc.project().track(track) else {
+            return;
+        };
+        let Some(mac) = track.macros.0.get(usize::from(index)) else {
+            return;
+        };
+        self.param_undo
+            .macro_gesture
+            .extend(mac.mappings.iter().take(MAX_MAPPINGS).filter_map(
+                |mapping| match mapping.target {
+                    AutomationTarget::Param { device, .. }
+                        if self.engine.host().params(device).is_some() =>
+                    {
+                        Some(device)
+                    }
+                    _ => None,
+                },
+            ));
+    }
+
     /// `Edit(EndGesture)`: pushes the gesture's undo step. After a gesture that turned a bridged
     /// plugin's parameter the plugin's state is asked for at once, so the step has it when the
     /// pointer is released.
@@ -146,6 +180,12 @@ impl App {
         self.param_undo.gesture_device = None;
         let pushed = self.doc.top_step() != top;
         let now = Instant::now();
+        for device in std::mem::take(&mut self.param_undo.macro_gesture) {
+            if let Some(step) = self.doc.top_step().filter(|_| pushed) {
+                self.param_undo.macro_steps.insert(device, (step, now));
+                self.engine.host_mut().request_state(device);
+            }
+        }
         for device in std::mem::take(&mut self.param_undo.gesture_bridged) {
             self.engine.host_mut().request_state(device);
             match self.doc.top_step() {
@@ -180,6 +220,7 @@ impl App {
         let before = Arc::clone(self.doc.project());
         self.doc.cancel_gesture();
         self.param_undo.gesture_device = None;
+        self.param_undo.macro_gesture.clear();
         self.follow_device_states(&before);
         let now = Instant::now();
         for device in std::mem::take(&mut self.param_undo.gesture_bridged) {
@@ -241,7 +282,11 @@ impl App {
         }
         // hexa and the internal devices: the value goes into the state and to the processor.
         let before = self.doc.revision();
-        let changed = match self.param_state(device, id, value) {
+        let state = self
+            .project()
+            .find_device(device)
+            .and_then(|(_, _, d)| device_param_state(d, id, value));
+        let changed = match state {
             Some(state) => {
                 let label = if self.doc.in_gesture() {
                     String::new()
@@ -262,23 +307,6 @@ impl App {
         } else {
             self.engine.send(command);
         }
-    }
-
-    /// The state of `device` with parameter `id` at `value`; `None` for a device that has none
-    /// (bridged, unknown) or an unknown id.
-    fn param_state(&self, device: DeviceId, id: u32, value: f64) -> Option<Arc<[u8]>> {
-        let (_, _, d) = self.project().find_device(device)?;
-        if is_hexa(d) {
-            // The `Field::set` the processor applies.
-            let field = komponist_builtin::device::Field::from_wire(id)?;
-            let mut patch = komponist_builtin::decode_state(d.state.as_deref())
-                .unwrap_or_else(|_| komponist_builtin::default_patch());
-            field.set(&mut patch, value);
-            return Some(komponist_builtin::encode_state(&patch).into());
-        }
-        let kind = internal_kind(d)?;
-        kind.with_value(d.state.as_deref(), id, value)
-            .map(Into::into)
     }
 
     /// The undo label of a change of parameter `id`: „Cutoff ändern“.
@@ -381,6 +409,10 @@ impl App {
             self.store_root_state(device, state);
             return;
         }
+        if self.engine.host().is_macro_snapshot(device, state) {
+            self.store_macro_snapshot(device, state, now);
+            return;
+        }
         let in_gesture = self.doc.in_gesture();
         if in_gesture && self.param_undo.gesture_device != Some(device) {
             // Not this gesture's change: after it.
@@ -410,6 +442,23 @@ impl App {
         {
             let at = tail.map_or(now, |tail| tail.max(now));
             self.param_undo.steps.insert(device, (step, at));
+        }
+    }
+
+    fn store_macro_snapshot(&mut self, device: DeviceId, state: &Arc<[u8]>, now: Instant) {
+        let set = |p: &Project| edits::set_device_state(p, device, Some(Arc::clone(state)));
+        if self.doc.in_gesture() && self.param_undo.macro_gesture.contains(&device) {
+            let _ = self.doc.apply("", set);
+        } else if !self
+            .param_undo
+            .macro_steps
+            .get(&device)
+            .is_some_and(|&(step, at)| {
+                now.duration_since(at) < self.param_undo.window
+                    && self.doc.amend(step, set).unwrap_or(false)
+            })
+        {
+            self.store_root_state(device, state);
         }
     }
 
@@ -487,4 +536,19 @@ impl App {
             }
         }
     }
+}
+
+/// The document state after setting a built-in parameter, including all eight Hexa device macros.
+/// Apply to the device from the latest edited root when updating several parameters together.
+pub(crate) fn device_param_state(device: &Device, wire: u32, value: f64) -> Option<Arc<[u8]>> {
+    if is_hexa(device) {
+        let field = komponist_builtin::device::Field::from_wire(wire)?;
+        let mut patch = komponist_builtin::decode_state(device.state.as_deref())
+            .unwrap_or_else(|_| komponist_builtin::default_patch());
+        field.set(&mut patch, value);
+        return Some(komponist_builtin::encode_state(&patch).into());
+    }
+    let kind = internal_kind(device)?;
+    kind.with_value(device.state.as_deref(), wire, value)
+        .map(Into::into)
 }

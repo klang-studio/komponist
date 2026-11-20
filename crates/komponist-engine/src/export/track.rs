@@ -77,6 +77,10 @@ impl TrackExport {
                         AutomationTarget::Volume | AutomationTarget::Pan
                     )
                 });
+                for slot in &mut t.macros.0 {
+                    slot.mappings
+                        .retain(|mapping| matches!(mapping.target, AutomationTarget::Param { .. }));
+                }
                 t.channel.mute = false;
                 t.channel.solo = false;
                 t.output = TrackOutput::Master;

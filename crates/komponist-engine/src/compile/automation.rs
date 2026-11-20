@@ -6,13 +6,13 @@ use std::sync::Arc;
 use komponist_model::automation::{
     AutomationTarget, Lane, TrackAutomation, effective_points, effective_repeating_points,
 };
-use komponist_model::params::db_to_p;
+use komponist_model::params::{ParamId, db_to_p};
 use komponist_model::project::Channel;
-use komponist_model::{Project, Track};
+use komponist_model::{DeviceId, Project, Track};
 
 use super::CompileEnv;
 use crate::automation::{CompiledTarget, EngineTarget, MAX_TARGETS, Parameter};
-use crate::program::{ChainSlot, Program, TrackProgram};
+use crate::program::{ChainSlot, MacroProgram, Program, TrackProgram};
 
 #[derive(PartialEq)]
 struct Resolved<'a> {
@@ -22,12 +22,35 @@ struct Resolved<'a> {
     base: f32,
 }
 
+pub(super) fn resolve_parameter(
+    channel: &Channel,
+    chain: &[ChainSlot],
+    env: &dyn CompileEnv,
+    device: DeviceId,
+    param: &ParamId,
+) -> Option<(EngineTarget, Parameter)> {
+    let slot = chain.iter().find(|slot| slot.device == device)?.slot;
+    let state = channel
+        .devices
+        .iter()
+        .find(|candidate| candidate.id == device)?;
+    let parameter = env.automation_parameter(state, param)?;
+    Some((
+        EngineTarget::Slot {
+            slot,
+            wire_id: parameter.wire_id,
+        },
+        parameter,
+    ))
+}
+
 fn resolve<'a>(
     automation: &'a TrackAutomation,
     channel: &Channel,
     track: Option<&Track>,
     chain: &[ChainSlot],
     env: &dyn CompileEnv,
+    macros: Option<&MacroProgram>,
 ) -> Vec<Resolved<'a>> {
     let mut resolved: Vec<_> = automation
         .lanes
@@ -51,27 +74,24 @@ fn resolve<'a>(
                     (EngineTarget::Send(*send), 1.0 - db_to_p(level), None)
                 }
                 AutomationTarget::Param { device, param } => {
-                    let slot = chain.iter().find(|slot| slot.device == *device)?.slot;
-                    let state = channel
-                        .devices
-                        .iter()
-                        .find(|candidate| candidate.id == *device)?;
-                    let parameter = env.automation_parameter(state, param)?;
-                    let target = EngineTarget::Slot {
-                        slot,
-                        wire_id: parameter.wire_id,
-                    };
+                    let (target, parameter) =
+                        resolve_parameter(channel, chain, env, *device, param)?;
                     (
                         target,
                         parameter.map.normalize(parameter.base),
                         Some(parameter),
                     )
                 }
-                AutomationTarget::Macro { index } if track.is_some() && *index < 8 => {
-                    (EngineTarget::Macro(*index), 0.0, None)
-                }
+                AutomationTarget::Macro { index } if track.is_some() && *index < 8 => (
+                    EngineTarget::Macro(*index),
+                    macros?.base[usize::from(*index)],
+                    None,
+                ),
                 AutomationTarget::Macro { .. } => return None,
             };
+            if macros.is_some_and(|program| program.mapping(target).is_some()) {
+                return None;
+            }
             Some(Resolved {
                 target,
                 lane,
@@ -100,9 +120,17 @@ pub(super) fn track(
     track: &Arc<Track>,
     chain: &[ChainSlot],
     env: &dyn CompileEnv,
+    macros: &MacroProgram,
     previous: Option<&TrackProgram>,
 ) -> Arc<[CompiledTarget]> {
-    let resolved = resolve(&track.automation, &track.channel, Some(track), chain, env);
+    let resolved = resolve(
+        &track.automation,
+        &track.channel,
+        Some(track),
+        chain,
+        env,
+        Some(macros),
+    );
     if let Some(previous) = previous
         && (Arc::ptr_eq(&previous.source, track)
             || (previous.automation.is_empty() && resolved.is_empty()))
@@ -158,6 +186,7 @@ pub(super) fn master(
         None,
         chain,
         env,
+        None,
     );
     if let Some(old) = previous.map(|p| &p.master)
         && Arc::ptr_eq(&old.automation_source, &project.master_automation)

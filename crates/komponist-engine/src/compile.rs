@@ -59,6 +59,7 @@ use crate::{MAX_SLOTS, MAX_STAGES, MAX_TRACKS};
 
 mod automation;
 mod graph;
+mod macros;
 
 /// What the compiler needs from outside the document. Implemented by the app (from
 /// `komponist-audio`'s MIDI ports and `komponist-plugins`' latencies); [`NoEnv`] for tests.
@@ -384,7 +385,14 @@ fn track_program(
     let kept_plan = previous
         .and_then(|p| p.audio.as_ref())
         .filter(|plan| plan_matches(plan, &track.clips, plan_env));
-    let automation = automation::track(track, &routing.chain, env, previous.map(Arc::as_ref));
+    let macros = macros::track(track, &routing.chain, env);
+    let automation = automation::track(
+        track,
+        &routing.chain,
+        env,
+        &macros,
+        previous.map(Arc::as_ref),
+    );
     // Only a track with automation needs its own chain latency. The routing graph already
     // computes latency compensation for every track independently of these snapshots.
     let chain_latency = if automation.is_empty() {
@@ -394,6 +402,7 @@ fn track_program(
     };
     if let Some(prev) = previous
         && Arc::ptr_eq(&prev.automation, &automation)
+        && prev.macros == macros
         && prev.chain_latency == chain_latency
         && Arc::ptr_eq(&prev.source, track)
         && prev.chain == routing.chain
@@ -421,6 +430,7 @@ fn track_program(
         id: track.id,
         source: Arc::clone(track),
         notes,
+        macros,
         automation,
         chain_latency,
         chain: routing.chain,

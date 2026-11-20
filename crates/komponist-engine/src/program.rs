@@ -20,6 +20,7 @@ use komponist_model::{TempoMap, Track};
 use crate::api::TrackMeter;
 use crate::audio::{AudioPlan, ClipSource};
 use crate::automation::{CompiledTarget, EngineTarget};
+pub use crate::macros::MacroProgram;
 use crate::route::Routing;
 
 /// [`SeqNote::probability`] value meaning "plays if and only if the last rolled note with the same
@@ -74,7 +75,30 @@ impl Program {
         self.tracks.iter().find(|t| t.id == id)
     }
 
-    /// Resolved target of a lane in the installed program.
+    /// Visit the current plain value of every parameter driven by a track macro.
+    /// Missing telemetry falls back to the macros' stored values.
+    pub fn for_each_macro_parameter(
+        &self,
+        values: impl Fn(TrackId) -> Option<[f32; komponist_model::macros::MACRO_COUNT]>,
+        mut emit: impl FnMut(SlotId, u32, f64),
+    ) {
+        for track in &self.tracks {
+            if track.macros.targets.is_empty() {
+                continue;
+            }
+            let values = values(track.id).unwrap_or(track.macros.base);
+            for mapping in track.macros.targets.iter() {
+                if let EngineTarget::Slot { slot, wire_id } = mapping.target {
+                    let plain = mapping
+                        .map
+                        .plain(mapping.normalized(values[usize::from(mapping.driver)]));
+                    emit(slot, wire_id, plain);
+                }
+            }
+        }
+    }
+
+    /// Resolves a model lane to its runtime identity in this program.
     pub fn automation_target(
         &self,
         owner: AutomationOwner,
@@ -243,6 +267,8 @@ pub struct TrackProgram {
     /// Peak meter after fader, pan, mute and solo (buses too); the same `Arc` survives rebuilds of
     /// the track.
     pub meter: Arc<TrackMeter>,
+    /// Resolved track macros.
+    pub macros: MacroProgram,
     /// Compiled automation lanes, sorted by target.
     pub automation: Arc<[CompiledTarget]>,
     /// Delay to the fader from processors in this track.

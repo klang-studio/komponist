@@ -37,7 +37,7 @@ use std::os::windows::io::AsHandle;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Weak, mpsc};
 use std::time::{Duration, Instant};
 
 use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError, socket_pair};
@@ -232,6 +232,14 @@ pub(crate) struct Bridge {
     pub base_values: BTreeMap<u32, f64>,
     temporary_params: BTreeSet<u32>,
     pending_params: BTreeSet<u32>,
+    /// Macro outputs expected at the processor. The native editor may show a preview meanwhile.
+    macro_params: BTreeMap<u32, f64>,
+    /// Last macro values that became the ordinary parameter base on unmapping.
+    released_macro_params: BTreeSet<u32>,
+    macro_changed: bool,
+    /// An explicit plugin state change is independent of the verified macro outputs.
+    plugin_state_dirty: bool,
+    macro_snapshots: Vec<Weak<[u8]>>,
     pub note_names: Vec<NoteName>,
     pub has_gui: bool,
     /// The plugin has a sidechain input (#6): from the catalog until `Loaded` says so itself.
@@ -354,6 +362,11 @@ impl Bridge {
             base_values: BTreeMap::new(),
             temporary_params: BTreeSet::new(),
             pending_params: BTreeSet::new(),
+            macro_params: BTreeMap::new(),
+            released_macro_params: BTreeSet::new(),
+            macro_changed: false,
+            plugin_state_dirty: false,
+            macro_snapshots: Vec::new(),
             note_names: Vec::new(),
             has_gui: false,
             sidechain: s.sidechain,
@@ -443,16 +456,7 @@ impl Bridge {
         let checked = self.snapshot_needs_verification();
         let request = self.seq();
         let message = if checked {
-            let expected = self
-                .temporary_params
-                .union(&self.pending_params)
-                .map(|id| {
-                    self.base_values.get(id).map(|&value| {
-                        let allow_quantized = !self.temporary_params.contains(id);
-                        (*id, value, allow_quantized)
-                    })
-                })
-                .collect::<Option<Vec<_>>>()?;
+            let expected = self.snapshot_expected()?;
             ControlMsg::GetStateChecked { request, expected }
         } else {
             ControlMsg::GetState { request }
@@ -468,11 +472,35 @@ impl Bridge {
     }
 
     fn snapshot_needs_verification(&self) -> bool {
-        !self.temporary_params.is_empty() || !self.pending_params.is_empty()
+        !self.temporary_params.is_empty()
+            || !self.pending_params.is_empty()
+            || !self.macro_params.is_empty()
+            || !self.released_macro_params.is_empty()
+    }
+
+    fn snapshot_expected(&self) -> Option<Vec<(u32, f64, bool)>> {
+        let ids: BTreeSet<_> = self
+            .temporary_params
+            .iter()
+            .chain(&self.pending_params)
+            .chain(self.macro_params.keys())
+            .chain(&self.released_macro_params)
+            .copied()
+            .collect();
+        ids.into_iter()
+            .map(|id| {
+                let value = self
+                    .macro_params
+                    .get(&id)
+                    .or_else(|| self.base_values.get(&id))?;
+                Some((id, *value, !self.temporary_params.contains(&id)))
+            })
+            .collect()
     }
 
     pub(crate) fn needs_snapshot_for_save(&self) -> bool {
-        self.is_running() && !self.pending_params.is_empty()
+        self.is_running()
+            && (!self.pending_params.is_empty() || !self.released_macro_params.is_empty())
     }
 
     /// Whether this request still awaits a state reply or a state error.
@@ -524,11 +552,46 @@ impl Bridge {
         if !self.params.iter().any(|param| param.id == id) {
             return;
         }
-        if self.base_values.get(&id) != Some(&value) {
+        if let Some(&expected) = self.macro_params.get(&id) {
+            if (expected - value).abs() > 1e-6 * expected.abs().max(1.0) {
+                self.temporary_params.insert(id);
+                self.macro_changed = true;
+                self.invalidate_state_requests();
+            }
+        } else if self.base_values.get(&id) != Some(&value) {
             self.temporary_params.insert(id);
             self.invalidate_state_requests();
         }
         self.update_live_param(id, value);
+    }
+
+    pub(crate) fn set_macro_params(&mut self, values: BTreeMap<u32, f64>) {
+        if self.macro_params == values {
+            return;
+        }
+        let previous = std::mem::replace(&mut self.macro_params, values);
+        for (id, value) in previous {
+            if self.phase == Phase::Running
+                && !self.macro_params.contains_key(&id)
+                && self.base_values.insert(id, value) != Some(value)
+            {
+                for restore in &mut self.state_restores {
+                    restore.later_edits.insert(id);
+                }
+                self.released_macro_params.insert(id);
+                self.user_changed();
+                self.snapshot_soon();
+            }
+        }
+        self.macro_changed = true;
+        self.invalidate_state_requests();
+    }
+
+    pub(crate) fn is_macro_snapshot(&self, state: &Arc<[u8]>) -> bool {
+        let state = Arc::downgrade(state);
+        self.macro_snapshots
+            .iter()
+            .any(|snapshot| snapshot.ptr_eq(&state))
     }
 
     fn update_live_param(&mut self, id: u32, value: f64) {
@@ -553,6 +616,7 @@ impl Bridge {
         self.user_changed();
         self.last_state = Some(Arc::clone(state));
         self.pending_params.clear();
+        self.released_macro_params.clear();
         self.invalidate_state_requests();
         let request = self.seq();
         self.state_restores.push_back(StateRestore::new(request));
@@ -795,10 +859,15 @@ impl Bridge {
                     self.snapshot_soon();
                     return;
                 }
+                let macro_snapshot = self.macro_changed
+                    && !self.plugin_state_dirty
+                    && self.pending_params.is_empty();
                 if pending.as_ref().is_some_and(|pending| pending.checked) {
                     let mut changed = false;
                     for (id, value) in verified {
-                        if self.pending_params.contains(&id)
+                        if (self.pending_params.contains(&id)
+                            || self.released_macro_params.contains(&id))
+                            && !self.macro_params.contains_key(&id)
                             && let Some(base) = self.base_values.get_mut(&id)
                             && (*base - value).abs() > 1e-6 * base.abs().max(1.0)
                         {
@@ -813,8 +882,16 @@ impl Bridge {
                     }
                     self.temporary_params.clear();
                     self.pending_params.clear();
+                    self.released_macro_params.clear();
                 }
                 let state: Arc<[u8]> = state.into();
+                self.macro_changed = false;
+                self.plugin_state_dirty = false;
+                if macro_snapshot {
+                    self.macro_snapshots
+                        .retain(|snapshot| snapshot.strong_count() != 0);
+                    self.macro_snapshots.push(Arc::downgrade(&state));
+                }
                 self.last_state = Some(state.clone());
                 match pending.map(|request| request.purpose) {
                     Some(StatePurpose::Collect) => {
@@ -834,6 +911,8 @@ impl Bridge {
                 let ids: BTreeSet<_> = params.iter().map(|param| param.id).collect();
                 self.temporary_params.retain(|id| ids.contains(id));
                 self.pending_params.retain(|id| ids.contains(id));
+                self.macro_params.retain(|id, _| ids.contains(id));
+                self.released_macro_params.retain(|id| ids.contains(id));
                 self.base_values.retain(|id, _| ids.contains(id));
                 self.values.retain(|id, _| ids.contains(id));
                 self.params = params;
@@ -895,6 +974,8 @@ impl Bridge {
                 // While loading, "dirty" comes from the plugin itself, not from the user.
                 if self.phase == Phase::Running {
                     self.user_changed();
+                    self.plugin_state_dirty = true;
+                    self.invalidate_state_requests();
                 }
                 self.snapshot_soon();
             }
@@ -998,6 +1079,7 @@ impl Bridge {
             // The compiler obtains the plugin's restored base by recompiling the program.
             events.push(PluginManagerEvent::ParamsChanged { device });
             events.push(PluginManagerEvent::ParamValuesChanged { device });
+            events.push(PluginManagerEvent::StateApplied { device });
         }
         if let Some(message) = error {
             if self.phase != Phase::Running {
@@ -1042,6 +1124,10 @@ impl Bridge {
     /// Updates the cached value and schedules a snapshot for a user's edit.
     pub(crate) fn edited_param(&mut self, id: u32, value: f64) {
         if self.phase != Phase::Running || !self.params.iter().any(|param| param.id == id) {
+            return;
+        }
+        if self.macro_params.contains_key(&id) {
+            self.preview_param(id, value);
             return;
         }
         for restore in &mut self.state_restores {
