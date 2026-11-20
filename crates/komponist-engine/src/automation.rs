@@ -1249,15 +1249,16 @@ impl State {
                 }
             };
             if let Some(values) = &mut values {
-                if !window.playing || chase {
+                let held = matches!(
+                    values.cursor.playback_gesture(),
+                    Gesture::Held { .. } | Gesture::Latch
+                );
+                // A held value has no grid events. Probe it again in case the last segment
+                // ran out of room before the destination accepted it.
+                if !window.playing || chase || held {
                     emit(0, values.at(0, base), true);
                 }
-                if window.playing
-                    && !matches!(
-                        values.cursor.playback_gesture(),
-                        Gesture::Held { .. } | Gesture::Latch
-                    )
-                {
+                if window.playing && !held {
                     let lane = values.lane;
                     let frame = |tick| window.map.tick_to_sample(tick, window.rate);
                     let mut point = lane.point_bound(|tick| frame(tick) < window.start);
@@ -1684,5 +1685,125 @@ mod tests {
             state.add_events(SlotId(0), &mut ready);
             assert!(ready.finish().is_empty());
         });
+    }
+
+    #[test]
+    fn held_and_latched_macro_values_are_retried_when_the_event_list_fills() {
+        let key = AutomationTarget::Param {
+            device: DeviceId(1),
+            param: ParamId::plugin(0),
+        };
+        let mapping = CompiledMapping::new(
+            EngineTarget::Slot {
+                slot: SlotId(0),
+                wire_id: 0,
+            },
+            PlainMap::linear(0.0, 1.0, 0),
+            0,
+            &komponist_model::macros::Mapping {
+                target: key,
+                label: "Parameter".into(),
+                min: 0.0,
+                max: 1.0,
+                invert: false,
+                bend: 0.0,
+            },
+        );
+        let program = MacroProgram {
+            targets: Arc::new([mapping]),
+            ..MacroProgram::default()
+        };
+        let map = TempoMap::constant(Tempo::DEFAULT, Meter::FOUR_FOUR);
+        let window = Window {
+            map: &map,
+            rate: 48_000.0,
+            start: 17,
+            frames: 64,
+            playing: true,
+        };
+        for mode in [AutomationMode::Touch, AutomationMode::Latch] {
+            let mut state = State::new();
+            let lanes = [CompiledTarget::new(
+                EngineTarget::Macro(0),
+                AutomationTarget::Macro { index: 0 },
+                None,
+                0.0,
+                mode,
+                Vec::new(),
+            )];
+            state.install(&[], &lanes, &[], &TrackAutomation::default());
+            let mut ready = EventList::new(1);
+            assert_no_alloc::assert_no_alloc(|| {
+                let cursor = &mut state.cursors[0];
+                assert!(cursor.begin(mode, true, None));
+                cursor.manual_value(Tick::ZERO, 0.25);
+                if mode == AutomationMode::Latch {
+                    assert!(cursor.end(&lanes[0], 0.0, 0));
+                }
+                state.prepare_macros(&program, &lanes, window, 0, |_| true);
+                let filler = state.params[0];
+                assert_eq!(state.add_events(SlotId(0), &mut ready), 0);
+                assert!(matches!(
+                    ready.finish(),
+                    [Event {
+                        offset: 0,
+                        kind: EventKind::Param { id: 0, value: 0.25 }
+                    }]
+                ));
+                ready.clear();
+
+                let cursor = &mut state.cursors[0];
+                cursor.manual_value(Tick(3), 0.75);
+                cursor.reassert();
+                state.params.resize(state.params.capacity(), filler);
+                assert!(
+                    state.prepare_macros(
+                        &program,
+                        &lanes,
+                        Window {
+                            start: 81,
+                            ..window
+                        },
+                        64,
+                        |_| true
+                    ) > 0
+                );
+
+                state.params.clear();
+                state.prepare_macros(
+                    &program,
+                    &lanes,
+                    Window {
+                        start: 145,
+                        ..window
+                    },
+                    128,
+                    |_| true,
+                );
+                assert_eq!(state.add_events(SlotId(0), &mut ready), 0);
+                assert!(matches!(
+                    ready.finish(),
+                    [Event {
+                        offset: 0,
+                        kind: EventKind::Param { id: 0, value: 0.75 }
+                    }]
+                ));
+
+                ready.clear();
+                state.params.clear();
+                state.prepare_macros(
+                    &program,
+                    &lanes,
+                    Window {
+                        start: 209,
+                        ..window
+                    },
+                    192,
+                    |_| true,
+                );
+                assert_eq!(state.add_events(SlotId(0), &mut ready), 0);
+                assert!(ready.finish().is_empty());
+            });
+        }
     }
 }
