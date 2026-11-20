@@ -1778,7 +1778,12 @@ mod tests {
         };
         let lookahead = Internal::Limiter.wire(&ParamId::new("lookahead")).unwrap();
         let zero_latency_limiter = NewDevice {
-            state: Some(Internal::Limiter.with_value(None, lookahead, 0.0).unwrap()),
+            state: Some(
+                Internal::Limiter
+                    .with_value(None, lookahead, 0.0)
+                    .unwrap()
+                    .into(),
+            ),
             ..effect(Internal::Limiter)
         };
         // With one initial spare, the first new limiter causes a latency recompile while
