@@ -26,14 +26,28 @@ use super::{Dsp, INITIAL_RATE, Preset, Spec, knob, knob_large, single_page, togg
 
 /// The device.
 pub(super) static SPEC: Spec = Spec {
-    id: "limiter",
-    name: "Limiter",
-    features: &["audio-effect", "limiter", "dynamics"],
+    catalog: komponist_device_core::CatalogSpec {
+        id: "limiter",
+        name: "Limiter",
+        name_in: Lang::device_name_limiter,
+        role: komponist_model::DeviceRole::Effect,
+        features: &["audio-effect", "limiter", "dynamics"],
+        vendor: "komponist",
+        sidechain: false,
+    },
     params,
     layout,
     dsp,
     presets,
-    sidechain: false,
+    event_stage: None,
+    preset_aliases: &[
+        ("Master sanft", "Gentle Master"),
+        ("Master laut", "Loud Master"),
+        ("Spitzenschutz", "Peak Guard"),
+        ("Drums hart", "Hard Drums"),
+    ],
+    migrate_params: None,
+    cache: komponist_device_core::SpecCache::new(),
 };
 
 /// Lookahead (and latency) in milliseconds when `lookahead` is on.

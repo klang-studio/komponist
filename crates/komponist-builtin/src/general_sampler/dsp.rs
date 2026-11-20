@@ -58,6 +58,10 @@ impl GeneralSamplerDsp {
         }
     }
 
+    pub(super) fn handle(&self) -> SamplerHandle {
+        self.handle.clone()
+    }
+
     fn value(&self, param: Param) -> f64 {
         self.values[param as usize]
     }
@@ -424,10 +428,6 @@ impl Dsp for GeneralSamplerDsp {
 
     fn all_notes_off(&mut self) {
         self.engine.choke_all();
-    }
-
-    fn sampler(&self) -> Option<SamplerHandle> {
-        Some(self.handle.clone())
     }
 }
 

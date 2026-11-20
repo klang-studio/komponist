@@ -3,22 +3,10 @@
 //! themselves ([`crate::Internal::params_in`], [`crate::device::params_in`]).
 
 use komponist_i18n::Lang;
-use komponist_model::params::ValueTexts;
 use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{PluginFormat, PluginRef};
 
 use crate::Internal;
-
-/// The words of a value text in `lang`: `On`/`Off` and the percent suffix. Every parameter of
-/// the built-in devices carries them ([`komponist_model::params::ParamInfo::texts`]); the plugin
-/// frame sets them on bridged plugins' parameters the same way.
-pub fn value_texts(lang: Lang) -> ValueTexts {
-    ValueTexts {
-        on: lang.value_on(),
-        off: lang.value_off(),
-        percent: lang.value_percent(),
-    }
-}
 
 /// The name a built-in device is shown under in `lang`: hexa, volt, presse and the Sampler keep
 /// their names, "Hall" is "Reverb" and "Tonleiter" is "Scale" in English. `None` for a plugin
@@ -70,9 +58,10 @@ pub fn category_text(lang: Lang, category: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use komponist_device_core::value_texts;
     use komponist_model::params::layout::{CellParam, DeviceLayout};
     use komponist_model::params::va_curve::{FILTER_TYPES, LFO_DIVS, LFO_SHAPES, WAVES, dst, src};
-    use komponist_model::params::{ParamInfo, ParamKind};
+    use komponist_model::params::{ParamInfo, ParamKind, ValueTexts};
 
     use super::*;
     use crate::device::{self, Field, OpField};

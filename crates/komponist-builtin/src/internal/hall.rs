@@ -32,14 +32,28 @@ use super::{Dsp, INITIAL_RATE, Preset, Spec, knob, knob_large, single_page, togg
 
 /// The device.
 pub(super) static SPEC: Spec = Spec {
-    id: "hall",
-    name: "Hall",
-    features: &["audio-effect", "reverb"],
+    catalog: komponist_device_core::CatalogSpec {
+        id: "hall",
+        name: "Hall",
+        name_in: Lang::device_name_hall,
+        role: komponist_model::DeviceRole::Effect,
+        features: &["audio-effect", "reverb"],
+        vendor: "komponist",
+        sidechain: false,
+    },
     params,
     layout,
     dsp,
     presets,
-    sidechain: false,
+    event_stage: None,
+    preset_aliases: &[
+        ("Kleiner Raum", "Small Room"),
+        ("Studio-Platte", "Studio Plate"),
+        ("Große Halle", "Large Hall"),
+        ("Kirche", "Church"),
+    ],
+    migrate_params: None,
+    cache: komponist_device_core::SpecCache::new(),
 };
 
 /// The factory presets (WP-96): a small starter set.

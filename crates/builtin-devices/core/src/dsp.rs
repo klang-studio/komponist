@@ -2,8 +2,10 @@
 //! construction; the buffers are sized in `activate`.
 //!
 //! Candidates for `klang-dsp` once a second user exists: [`Ring`] (power-of-two delay line with
-//! linear and Hermite reads), [`Smooth`] (control-rate one-pole smoother with settle), the
+//! linear and Hermite reads), [`Glide`] (control-rate one-pole smoother with settle), the
 //! one-pole low/high-pass [`OnePole`], and the sliding minimum [`SlidingMin`].
+
+use komponist_model::params::eq_curve::Coefs;
 
 /// Samples between two control updates (parameter smoothing, coefficient recomputation). The
 /// counter runs across calls, so the output does not depend on how the host splits blocks.
@@ -79,8 +81,9 @@ pub fn smooth_coeff(seconds: f32, step: usize, sample_rate: f32) -> f32 {
 pub struct Glide {
     /// Where the value goes.
     pub target: f32,
-    /// Value at the start of the interval and at its end.
+    /// Value at the start of the interval.
     pub cur: f32,
+    /// Value at the end of the interval.
     pub next: f32,
     /// Change per sample.
     pub step: f32,
@@ -317,6 +320,41 @@ impl SlidingMin {
         }
         self.now += 1;
         self.values[self.head]
+    }
+}
+
+/// Direct form I state for one channel, in `f64`: at 40 Hz and 44.1 kHz the poles sit at radius
+/// 0.994, where `f32` coefficients and state are audibly wrong (3 dB off at 40 Hz with an 80 Hz
+/// cut), and `f64` costs nothing at six bands.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Df1 {
+    x1: f64,
+    x2: f64,
+    y1: f64,
+    y2: f64,
+}
+
+impl Df1 {
+    /// Processes one input sample using the given coefficients.
+    #[inline]
+    pub fn tick(&mut self, x: f32, c: &Coefs) -> f32 {
+        let x = f64::from(x);
+        let y =
+            c.b[0] * x + c.b[1] * self.x1 + c.b[2] * self.x2 - c.a[0] * self.y1 - c.a[1] * self.y2;
+        self.x2 = self.x1;
+        self.x1 = x;
+        self.y2 = self.y1;
+        self.y1 = y;
+        y as f32
+    }
+
+    /// Keeps the recursive state out of the subnormal range.
+    pub fn flush_denormals(&mut self) {
+        for v in [&mut self.y1, &mut self.y2] {
+            if v.abs() < 1e-30 {
+                *v = 0.0;
+            }
+        }
     }
 }
 

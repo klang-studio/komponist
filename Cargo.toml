@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = [
+    "crates/komponist-*",
+    "crates/hexa-core",
+    "crates/sampler-core",
+    "crates/builtin-devices/*",
+]
 # Own workspaces or throwaway code, never part of this build (ARCHITECTURE §4).
 exclude = ["test-plugins"]
 
@@ -17,6 +22,7 @@ komponist-model = { path = "crates/komponist-model" }
 komponist-engine = { path = "crates/komponist-engine" }
 komponist-audio = { path = "crates/komponist-audio" }
 komponist-builtin = { path = "crates/komponist-builtin" }
+komponist-device-core = { path = "crates/builtin-devices/core" }
 komponist-ipc = { path = "crates/komponist-ipc" }
 komponist-rt = { path = "crates/komponist-rt" }
 komponist-audiofile = { path = "crates/komponist-audiofile" }

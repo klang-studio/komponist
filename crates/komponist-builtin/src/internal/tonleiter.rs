@@ -17,14 +17,30 @@ use super::{Preset, Spec, midi, single_page};
 
 /// The device.
 pub(super) static SPEC: Spec = Spec {
-    id: "tonleiter",
-    name: "Tonleiter",
-    features: &["note-effect", "scale"],
+    catalog: komponist_device_core::CatalogSpec {
+        id: "tonleiter",
+        name: "Tonleiter",
+        name_in: Lang::device_name_tonleiter,
+        role: komponist_model::DeviceRole::MidiEffect,
+        features: &["note-effect", "scale"],
+        vendor: "komponist",
+        sidechain: false,
+    },
     params,
     layout,
     dsp: midi::passthrough,
     presets,
-    sidechain: false,
+    event_stage: Some(stage),
+    preset_aliases: &[
+        ("C-Dur", "C Major"),
+        ("A-Moll", "A Minor"),
+        ("D-Dorisch", "D Dorian"),
+        ("A-Moll-Pentatonik", "A Minor Pentatonic"),
+        ("C-Blues", "C Blues"),
+        ("C-Dur filtern", "C Major Filtered"),
+    ],
+    migrate_params: None,
+    cache: komponist_device_core::SpecCache::new(),
 };
 
 /// Wire ids.

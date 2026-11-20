@@ -10,11 +10,7 @@ use komponist_engine::{
 use crate::device::Field;
 use crate::state::{self, StateError};
 
-/// Sample rate a processor is built for before its first [`Processor::activate`].
-const INITIAL_RATE: f32 = 48_000.0;
-
-/// Lowest and highest sample rate [`Processor::activate`] accepts, in Hz.
-pub const SAMPLE_RATES: core::ops::RangeInclusive<f32> = 8_000.0..=384_000.0;
+use komponist_device_core::{INITIAL_RATE, SAMPLE_RATES};
 
 // `reset` and `activate` overwrite the synth in place without dropping it; that is only sound
 // while `Synth` owns nothing that needs dropping (it is plain `no_std` data).

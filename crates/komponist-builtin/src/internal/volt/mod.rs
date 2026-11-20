@@ -84,14 +84,33 @@ pub const ID: &str = "knurr";
 
 /// The device.
 pub(super) static SPEC: Spec = Spec {
-    id: ID,
-    name: NAME,
-    features: &["instrument", "synthesizer", "analog"],
+    catalog: komponist_device_core::CatalogSpec {
+        id: ID,
+        name: NAME,
+        name_in: Lang::device_name_volt,
+        role: komponist_model::DeviceRole::Instrument,
+        features: &["instrument", "synthesizer", "analog"],
+        vendor: "komponist",
+        sidechain: false,
+    },
     params,
     layout,
     dsp,
     presets: presets::presets,
-    sidechain: false,
+    event_stage: None,
+    preset_aliases: &[
+        ("Fette Säge", "Fat Saw"),
+        ("Sub-Brumm", "Sub Rumble"),
+        ("Acid-Zupf", "Acid Pluck"),
+        ("Mono-Lead", "Mono Lead"),
+        ("Breiter Pad", "Wide Pad"),
+        ("Blechstab", "Brass Stab"),
+        ("Zufalls-Zupf", "Random Pluck"),
+        ("Kick-Bass", "Kick Bass"),
+        ("Rauschwind", "Noise Wind"),
+    ],
+    migrate_params: None,
+    cache: komponist_device_core::SpecCache::new(),
 };
 
 fn params(t: Lang) -> Vec<ParamInfo> {

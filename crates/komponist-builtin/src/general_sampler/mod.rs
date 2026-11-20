@@ -10,15 +10,24 @@ use serde_json::Value;
 
 use crate::internal::{Dsp, Spec};
 
-pub(crate) const SPEC: Spec = Spec {
-    id: "general-sampler",
-    name: "Sampler",
-    features: &["instrument", "sampler"],
+pub(crate) static SPEC: Spec = Spec {
+    catalog: komponist_device_core::CatalogSpec {
+        id: "general-sampler",
+        name: "Sampler",
+        name_in: Lang::device_name_general_sampler,
+        role: komponist_model::DeviceRole::Instrument,
+        features: &["instrument", "sampler"],
+        vendor: "komponist",
+        sidechain: false,
+    },
     params,
     layout,
     dsp,
     presets: crate::internal::no_presets,
-    sidechain: false,
+    event_stage: None,
+    preset_aliases: &[],
+    migrate_params: Some(migrate_params),
+    cache: komponist_device_core::SpecCache::new(),
 };
 
 /// At most 127 interior markers fit the 128-note MIDI range.
@@ -403,10 +412,28 @@ fn params(t: Lang) -> Vec<ParamInfo> {
     ]
 }
 
+// Earlier states stored slice mode separately and used mode 2 for looping.
+fn migrate_params(params: &mut komponist_device_core::StateParams) {
+    if !params.contains_key("slicing") && !params.contains_key("loop_start") {
+        return;
+    }
+    if params
+        .get("slicing")
+        .and_then(Value::as_f64)
+        .is_some_and(|slicing| slicing >= 0.5)
+    {
+        params.insert("mode".into(), serde_json::json!(2.0));
+    } else if params.get("mode").and_then(Value::as_f64) == Some(2.0) {
+        params.insert("mode".into(), serde_json::json!(1.0));
+    }
+    if params.get("direction").and_then(Value::as_f64) == Some(2.0) {
+        params.insert("direction".into(), serde_json::json!(0.0));
+    }
+}
+
 /// Source tempo and sync switch stored in project state.
 pub fn sync_settings(state: Option<&[u8]>) -> (f64, bool) {
-    let kind = crate::Internal::GeneralSampler;
-    let values = kind.decode_state(state).unwrap_or_else(|_| kind.defaults());
+    let values = SPEC.decode_state(state).unwrap_or_else(|_| SPEC.defaults());
     (
         values[Param::SourceBpm as usize],
         values[Param::Sync as usize] >= 0.5,
@@ -468,4 +495,11 @@ mod state_tests {
         assert_eq!(read_settings(Some(&edited)), settings);
         assert_eq!(crate::sampler::links::read(Some(&edited)).len(), 1);
     }
+}
+
+/// Creates this device's DSP and its associated non-realtime handle.
+pub(super) fn dsp_with_handle() -> (Box<dyn Dsp>, crate::sampler::SamplerHandle) {
+    let dsp = dsp::GeneralSamplerDsp::new();
+    let handle = dsp.handle();
+    (Box::new(dsp), handle)
 }

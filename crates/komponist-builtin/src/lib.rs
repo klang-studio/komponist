@@ -70,10 +70,11 @@ pub mod sampler;
 pub mod state;
 
 pub use hexa_core::Patch;
-pub use i18n::{category_text, device_name, value_texts};
+pub use i18n::{category_text, device_name};
 pub use internal::{Internal, InternalProcessor, Preset};
+pub use komponist_device_core::{SAMPLE_RATES, value_texts};
 pub use macros::Macro;
-pub use processor::{HexaProcessor, SAMPLE_RATES};
+pub use processor::HexaProcessor;
 pub use state::{
     PRESET_COUNT, PresetInfo, StateError, categories, decode_state, default_patch, encode_state,
     preset_patch, presets,

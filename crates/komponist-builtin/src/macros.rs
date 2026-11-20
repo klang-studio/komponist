@@ -171,11 +171,12 @@ impl Macro {
             }
             Macro::Attack | Macro::Decay | Macro::Release => (ParamKind::lin(0.0, 1.0), Unit::S),
         };
-        ParamInfo::new(self.key(), self.name_in(t), kind, self.default_value())
-            .unit(unit)
-            .texts(crate::value_texts(t))
-            .formatted(move |v| self.text_in(t, v))
-            .flags(true, self != Macro::Algorithm)
+        komponist_device_core::macro_param(
+            ParamInfo::new(self.key(), self.name_in(t), kind, self.default_value()).unit(unit),
+            t,
+            move |v| self.text_in(t, v),
+            self != Macro::Algorithm,
+        )
     }
 
     /// Lowest plain value.

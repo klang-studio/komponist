@@ -2610,12 +2610,23 @@ dependencies = [
  "hound",
  "klang-dsp",
  "komponist-audiofile",
+ "komponist-device-core",
  "komponist-engine",
  "komponist-i18n",
  "komponist-model",
  "komponist-stretch",
  "rtrb",
  "sampler-core",
+ "serde_json",
+]
+
+[[package]]
+name = "komponist-device-core"
+version = "0.2.0"
+dependencies = [
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
  "serde_json",
 ]
 

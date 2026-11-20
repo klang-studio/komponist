@@ -22,14 +22,28 @@ use super::{Dsp, INITIAL_RATE, Preset, Spec, knob, single_page, toggle};
 
 /// The device.
 pub(super) static SPEC: Spec = Spec {
-    id: "delay",
-    name: "Delay",
-    features: &["audio-effect", "delay", "echo"],
+    catalog: komponist_device_core::CatalogSpec {
+        id: "delay",
+        name: "Delay",
+        name_in: Lang::device_name_delay,
+        role: komponist_model::DeviceRole::Effect,
+        features: &["audio-effect", "delay", "echo"],
+        vendor: "komponist",
+        sidechain: false,
+    },
     params,
     layout,
     dsp,
     presets,
-    sidechain: false,
+    event_stage: None,
+    preset_aliases: &[
+        ("Achtel Ping-Pong", "Eighth Ping-Pong"),
+        ("Punktierte Achtel", "Dotted Eighths"),
+        ("Dub-Echo", "Dub Echo"),
+        ("Weiches Band", "Soft Tape"),
+    ],
+    migrate_params: None,
+    cache: komponist_device_core::SpecCache::new(),
 };
 
 /// Longest delay time in milliseconds.

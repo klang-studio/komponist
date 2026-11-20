@@ -1,10 +1,4 @@
-//! What the internal MIDI effects share (WP-88): the placeholder audio side and the wrapper that
-//! gives an [`EventProcessor`] its parameter snapping.
-//!
-//! A MIDI effect is an [`Internal`](super::Internal) like the audio effects: a `Spec` for the
-//! catalog, parameters and layout, plus a stage factory ([`super::Internal::stage`]). Its `Dsp`
-//! is [`PassThrough`], because the engine never runs a MIDI effect as audio
-//! ([`komponist_engine::Processor::event_processor`]).
+//! Shared audio placeholder and parameter handling for MIDI effects.
 
 use komponist_engine::{Event, EventProcessor, EventSink, ProcessContext};
 use komponist_model::params::ParamInfo;
@@ -12,10 +6,10 @@ use komponist_model::params::ParamInfo;
 use super::Dsp;
 
 /// The audio side of a MIDI effect: copies input to output. Never called by the engine.
-pub(super) struct PassThrough;
+struct PassThrough;
 
 /// A [`Spec::dsp`](super::Spec::dsp) for MIDI effects.
-pub(super) fn passthrough() -> Box<dyn Dsp> {
+pub fn passthrough() -> Box<dyn Dsp> {
     Box::new(PassThrough)
 }
 

@@ -20,19 +20,34 @@ use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 
 use komponist_model::params::eq_curve::{self, Coefs};
 
-use super::dsp::{CONTROL, Glide, db_to_gain, finite, smooth_coeff};
+use super::dsp::{CONTROL, Df1, Glide, db_to_gain, finite, smooth_coeff};
 use super::{Dsp, INITIAL_RATE, Preset, Spec, knob, single_page, template};
 
 /// The device.
 pub(super) static SPEC: Spec = Spec {
-    id: "eq",
-    name: "EQ",
-    features: &["audio-effect", "equalizer", "filter"],
+    catalog: komponist_device_core::CatalogSpec {
+        id: "eq",
+        name: "EQ",
+        name_in: Lang::device_name_eq,
+        role: komponist_model::DeviceRole::Effect,
+        features: &["audio-effect", "equalizer", "filter"],
+        vendor: "komponist",
+        sidechain: false,
+    },
     params,
     layout,
     dsp,
     presets,
-    sidechain: false,
+    event_stage: None,
+    preset_aliases: &[
+        ("Flach", "Flat"),
+        ("Gesang Präsenz", "Vocal Presence"),
+        ("Bass Wärme", "Warm Bass"),
+        ("Höhen Glanz", "Treble Sheen"),
+        ("Telefon", "Telephone"),
+    ],
+    migrate_params: None,
+    cache: komponist_device_core::SpecCache::new(),
 };
 
 /// Bands of the EQ.
@@ -214,40 +229,6 @@ fn layout(_: Lang) -> DeviceLayout {
 const GLIDE: f32 = 0.020;
 /// Seconds of the fade of a band that switches on or off or changes its type.
 const FADE: f32 = 0.004;
-
-/// Direct form I state for one channel, in `f64`: at 40 Hz and 44.1 kHz the poles sit at radius
-/// 0.994, where `f32` coefficients and state are audibly wrong (3 dB off at 40 Hz with an 80 Hz
-/// cut), and `f64` costs nothing at six bands.
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct Df1 {
-    x1: f64,
-    x2: f64,
-    y1: f64,
-    y2: f64,
-}
-
-impl Df1 {
-    #[inline]
-    pub(super) fn tick(&mut self, x: f32, c: &Coefs) -> f32 {
-        let x = f64::from(x);
-        let y =
-            c.b[0] * x + c.b[1] * self.x1 + c.b[2] * self.x2 - c.a[0] * self.y1 - c.a[1] * self.y2;
-        self.x2 = self.x1;
-        self.x1 = x;
-        self.y2 = self.y1;
-        self.y1 = y;
-        y as f32
-    }
-
-    /// Keeps the recursive state out of the subnormal range.
-    pub(super) fn flush_denormals(&mut self) {
-        for v in [&mut self.y1, &mut self.y2] {
-            if v.abs() < 1e-30 {
-                *v = 0.0;
-            }
-        }
-    }
-}
 
 /// One band: parameters as set, smoothed values and the filter.
 struct Band {

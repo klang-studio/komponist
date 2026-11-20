@@ -77,14 +77,23 @@ pub const CHOKE_GROUPS: i32 = 8;
 
 /// The device.
 pub(crate) static SPEC: Spec = Spec {
-    id: "sampler",
-    name: NAME,
-    features: &["instrument", "drum", "sampler"],
+    catalog: komponist_device_core::CatalogSpec {
+        id: "sampler",
+        name: NAME,
+        name_in: Lang::device_name_sampler,
+        role: komponist_model::DeviceRole::Instrument,
+        features: &["instrument", "drum", "sampler"],
+        vendor: "komponist",
+        sidechain: false,
+    },
     params,
     layout,
     dsp,
     presets: crate::internal::no_presets,
-    sidechain: false,
+    event_stage: None,
+    preset_aliases: &[],
+    migrate_params: None,
+    cache: komponist_device_core::SpecCache::new(),
 };
 
 /// Wire id of the kit tune.
@@ -347,3 +356,10 @@ fn dsp() -> Box<dyn Dsp> {
 
 #[cfg(test)]
 mod tests;
+
+/// Creates this device's DSP and its associated non-realtime handle.
+pub(super) fn dsp_with_handle() -> (Box<dyn Dsp>, SamplerHandle) {
+    let dsp = dsp::SamplerDsp::new();
+    let handle = dsp.handle();
+    (Box::new(dsp), handle)
+}

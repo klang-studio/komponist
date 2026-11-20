@@ -280,10 +280,6 @@ impl Dsp for SamplerDsp {
     fn all_notes_off(&mut self) {
         self.engine.choke_all();
     }
-
-    fn sampler(&self) -> Option<SamplerHandle> {
-        Some(self.handle())
-    }
 }
 
 #[cfg(test)]

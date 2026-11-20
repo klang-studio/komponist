@@ -119,7 +119,8 @@ Their READMEs record provenance.
 | [`komponist-stretch`](../crates/komponist-stretch/README.md) | Worker-only Rust/C++ wrapper around vendored Signalsmith Stretch/Linear |
 | [`hexa-core`](../crates/hexa-core/README.md) | Hexa six-operator FM engine |
 | [`sampler-core`](../crates/sampler-core/README.md) | Sampler engine |
-| [`komponist-builtin`](../crates/komponist-builtin/README.md) | Built-in processors, device specifications, presets and sample loading |
+| [`komponist-device-core`](../crates/builtin-devices/core/src/lib.rs) | Unstable device API: catalog and parameter metadata, layouts, state, presets, processor adapters and shared DSP |
+| [`komponist-builtin`](../crates/komponist-builtin/README.md) | Built-in device definitions, processors, presets and sample loading |
 | [`komponist-ipc`](../crates/komponist-ipc/README.md) | Shared-memory layout, signalling, control protocol, process watching, frame vocabulary |
 | [`komponist-hosting`](../crates/komponist-hosting/README.md) | CLAP/VST3 loading, processing, state, parameters, GUI and host services |
 | [`komponist-bridge`](../crates/komponist-bridge/README.md) | Bridge library and utility executable; instance and scan modes |
@@ -132,6 +133,9 @@ Their READMEs record provenance.
 `komponist-model` depends on no other komponist crate and receives localized names as arguments.
 The engine knows neither egui nor IPC nor CLAP/VST3. `komponist-audio` defines an `AudioProcess`
 callback interface without depending on the engine; the app supplies the adapter.
+`komponist-device-core` uses the model, i18n catalog and engine processor interfaces.
+`komponist-builtin` depends on this core and exposes the existing built-in API to the app and
+plugin catalog. The device core does not depend on individual devices or their registry.
 `komponist-audiofile` and `komponist-stretch` have no UI or model dependencies. The bridge is the
 runtime boundary for loading external plugin code, even though it ships in the app executable.
 

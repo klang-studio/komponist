@@ -29,14 +29,29 @@ use super::{Preset, Spec, midi, single_page, toggle};
 
 /// The device.
 pub(super) static SPEC: Spec = Spec {
-    id: "arpeggiator",
-    name: "Arpeggiator",
-    features: &["note-effect", "arpeggiator"],
+    catalog: komponist_device_core::CatalogSpec {
+        id: "arpeggiator",
+        name: "Arpeggiator",
+        name_in: Lang::device_name_arpeggiator,
+        role: komponist_model::DeviceRole::MidiEffect,
+        features: &["note-effect", "arpeggiator"],
+        vendor: "komponist",
+        sidechain: false,
+    },
     params,
     layout,
     dsp: midi::passthrough,
     presets,
-    sidechain: false,
+    event_stage: Some(stage),
+    preset_aliases: &[
+        ("Achtel auf", "Eighths Up"),
+        ("Sechzehntel Auf/Ab", "Sixteenths Up/Down"),
+        ("Triolen ab", "Triplets Down"),
+        ("Zufall", "Random"),
+        ("Gespielt weich", "Soft As Played"),
+    ],
+    migrate_params: None,
+    cache: komponist_device_core::SpecCache::new(),
 };
 
 /// Wire ids.

@@ -50,21 +50,38 @@ use komponist_model::params::layout::{
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
 
 use super::dsp::{
-    CONTROL, DB_PER_OCTAVE, Glide, Ring, fast_exp2, fast_log2, finite, flush, smooth_coeff,
+    CONTROL, DB_PER_OCTAVE, Df1, Glide, Ring, fast_exp2, fast_log2, finite, flush, smooth_coeff,
 };
-use super::eq::Df1;
 use super::{Dsp, INITIAL_RATE, Preset, Spec, knob, knob_large, param, toggle};
 
 /// The device. The name is the working name of the proposal; this is the one place it is written.
 pub(super) static SPEC: Spec = Spec {
-    id: "presse",
-    name: "Presse",
-    features: &["audio-effect", "compressor", "dynamics"],
+    catalog: komponist_device_core::CatalogSpec {
+        id: "presse",
+        name: "Presse",
+        name_in: Lang::device_name_presse,
+        role: komponist_model::DeviceRole::Effect,
+        features: &["audio-effect", "compressor", "dynamics"],
+        vendor: "komponist",
+        sidechain: true,
+    },
     params,
     layout,
     dsp,
     presets,
-    sidechain: true,
+    event_stage: None,
+    preset_aliases: &[
+        ("Gesang weich", "Soft Vocal"),
+        ("Gesang vorn", "Forward Vocal"),
+        ("Drums fest", "Tight Drums"),
+        ("Drums parallel", "Parallel Drums"),
+        ("Bass stabil", "Steady Bass"),
+        ("Gitarre/Keys sanft", "Gentle Guitar & Keys"),
+        ("Limitieren (hart)", "Hard Limit"),
+        ("Pumpen", "Pumping"),
+    ],
+    migrate_params: None,
+    cache: komponist_device_core::SpecCache::new(),
 };
 
 /// Lookahead (and latency) in milliseconds when `lookahead` is on.
