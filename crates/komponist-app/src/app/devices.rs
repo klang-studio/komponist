@@ -40,6 +40,12 @@ fn insert_copy(
 }
 
 impl App {
+    pub(super) fn remove_device(&mut self, device: DeviceId) {
+        if self.apply("undo-remove-device", |p| edits::remove_device(p, device)) {
+            self.ui.selection.devices.remove(&device);
+        }
+    }
+
     /// The selected track's chain, if exactly the first selected track exists.
     fn selected_chain(&self) -> Option<(TrackId, Vec<DeviceId>)> {
         let p = self.project();
