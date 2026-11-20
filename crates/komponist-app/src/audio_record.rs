@@ -1695,7 +1695,21 @@ mod tests {
         assert!(app.recording.is_none());
 
         let path = root.join("Interrupted.komponist");
-        assert!(app.save_to(&path), "{:?}", app.ui.status);
+        // Every short lap can create a WAV. On a slow disk the writer may need more than
+        // one save attempt's wait budget. Until it finishes, Save As must leave no project file.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let finalizing = app.lang.audio_record_finalizing();
+        while !app.save_to(&path) {
+            assert_eq!(
+                app.ui.status.as_ref().map(|status| status.text.as_str()),
+                Some(finalizing)
+            );
+            assert!(!path.exists());
+            assert!(
+                Instant::now() < deadline,
+                "interrupted take did not finalize"
+            );
+        }
         let saved = crate::project_io::load_project(&path).unwrap();
         let audio_clip = &saved.track(audio).unwrap().clips[0];
         let ClipContent::Audio(audio) = &audio_clip.content else {
