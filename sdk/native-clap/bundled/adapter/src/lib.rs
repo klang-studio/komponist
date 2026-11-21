@@ -1,6 +1,7 @@
 //! Adapts the shared device specs and DSP to the public native CLAP SDK.
 
 mod instrument;
+mod midi_effect;
 mod parameter;
 
 use std::ffi::{CStr, c_void};
@@ -13,6 +14,7 @@ use komponist_native_clap_sdk::{DeviceLayout, NativeClapLayout, PageLabels, Pane
 use nice_plug::prelude::*;
 
 pub use instrument::Instrument;
+pub use midi_effect::MidiEffect;
 pub use parameter::Binding;
 
 const STEREO: NonZeroU32 = NonZeroU32::new(2).unwrap();

@@ -5,11 +5,14 @@ members = [
     "example",
     "xtask",
     "bundled/adapter",
-    "bundled/hall", "bundled/volt",
+    "bundled/hall",
     "bundled/delay",
     "bundled/eq",
     "bundled/presse",
     "bundled/limiter",
+    "bundled/volt",
+    "bundled/arpeggiator",
+    "bundled/scale",
 ]
 
 [workspace.package]
@@ -22,6 +25,7 @@ publish = false
 clap-sys = "=0.5.0"
 serde_json = "=1.0.154"
 komponist-device-core = { path = "../../crates/builtin-devices/core" }
+komponist-engine = { path = "../../crates/komponist-engine" }
 komponist-i18n = { path = "../../crates/komponist-i18n" }
 komponist-ipc = { path = "../../crates/komponist-ipc" }
 komponist-model = { path = "../../crates/komponist-model" }

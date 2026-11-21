@@ -413,6 +413,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "komponist-arpeggiator"
+version = "0.2.0"
+dependencies = [
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
+]
+
+[[package]]
 name = "komponist-audiofile"
 version = "0.2.0"
 dependencies = [
@@ -423,10 +433,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "komponist-bundled-arpeggiator"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "komponist-arpeggiator",
+ "komponist-bundled-clap-adapter",
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-model",
+ "komponist-native-clap-sdk",
+ "nice-plug",
+ "serde_json",
+]
+
+[[package]]
 name = "komponist-bundled-clap-adapter"
 version = "0.1.0"
 dependencies = [
  "komponist-device-core",
+ "komponist-engine",
  "komponist-i18n",
  "komponist-model",
  "komponist-native-clap-sdk",
@@ -502,6 +528,22 @@ dependencies = [
  "komponist-model",
  "komponist-native-clap-sdk",
  "komponist-presse",
+ "nice-plug",
+ "serde_json",
+]
+
+[[package]]
+name = "komponist-bundled-scale"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "komponist-bundled-clap-adapter",
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-native-clap-sdk",
+ "komponist-scale",
  "nice-plug",
  "serde_json",
 ]
@@ -642,6 +684,16 @@ version = "0.2.0"
 dependencies = [
  "libc",
  "windows-sys",
+]
+
+[[package]]
+name = "komponist-scale"
+version = "0.2.0"
+dependencies = [
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
 ]
 
 [[package]]
