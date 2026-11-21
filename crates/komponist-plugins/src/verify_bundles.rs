@@ -9,7 +9,7 @@ use komponist_engine::processor::EventBuffer;
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, StereoIo, TransportInfo,
 };
-use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind, RenderMode};
+use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind, ProcessExit, RenderMode};
 use komponist_model::{Device, DeviceId, DeviceRole};
 
 use crate::bridge::{Bridge, SpawnSetup, StatePurpose, Timing};
@@ -22,6 +22,7 @@ use crate::manager::{
 };
 use crate::scan::scan_bundle;
 
+const HALL_ID: &str = "org.klang-studio.komponist.hall";
 const PRESSE_ID: &str = "org.klang-studio.komponist.presse";
 const FRAMES: usize = 128;
 const SETUP: ProcessorSetup = ProcessorSetup {
@@ -30,8 +31,8 @@ const SETUP: ProcessorSetup = ProcessorSetup {
 };
 const TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Verify every artifact named by the app-bound manifest. The bridge route scans and opens
-/// the original files from the archive; the direct route loads the verified private snapshot.
+/// Verify every artifact named by the app-bound manifest. Both routes use private snapshots of
+/// the unpacked artifacts so the scan and instance open the same authenticated bytes.
 pub fn verify_bundled_clap(force_bridge: bool) -> Result<(), String> {
     let config = PluginManagerConfig::defaults();
     let cache_dir = config
@@ -47,7 +48,7 @@ pub fn verify_bundled_clap(force_bridge: bool) -> Result<(), String> {
                 .verify(path, id)
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| "bundle was not found in its own manifest".to_owned())?;
-            let descriptor = scan(&config, path, id)?;
+            let descriptor = scan(&config, verified.bundle_path(), id)?;
             let role = match descriptor.kind {
                 PluginKind::Effect => DeviceRole::Effect,
                 PluginKind::Instrument => DeviceRole::Instrument,
@@ -63,7 +64,7 @@ pub fn verify_bundled_clap(force_bridge: bool) -> Result<(), String> {
                 PluginKind::Other => return Err("unsupported bundled plugin role".to_owned()),
             };
             if force_bridge {
-                smoke_bridge(&config, &descriptor, path, role)
+                smoke_bridge(&config, &descriptor, &verified, role)
             } else {
                 smoke_direct(verified, role)
             }
@@ -72,10 +73,7 @@ pub fn verify_bundled_clap(force_bridge: bool) -> Result<(), String> {
         let route = if force_bridge { "bridge" } else { "in-process" };
         println!("verified {id} ({route})");
     }
-    if let Some((path, id)) = bundled
-        .bundle_entries()
-        .find(|(_, id)| *id == "org.klang-studio.komponist.hall")
-    {
+    if let Some((path, id)) = bundled.bundle_entries().find(|(_, id)| *id == HALL_ID) {
         smoke_live_manager(config, path, id, force_bridge)?;
         let route = if force_bridge {
             "forced bridge"
@@ -259,6 +257,7 @@ fn scan(config: &PluginManagerConfig, path: &Path, id: &str) -> Result<PluginDes
 }
 
 fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
+    let hall = bundle.plugin_id() == HALL_ID;
     let presse = bundle.plugin_id() == PRESSE_ID;
     let mut host = DirectClap::load(bundle).map_err(|error| error.to_string())?;
     let can_render =
@@ -269,7 +268,7 @@ fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
     let (mut session, mut audio) =
         DirectSession::start(host, SETUP, role).map_err(|error| error.to_string())?;
     let result = (|| {
-        drive_direct(&mut audio, role, presse)?;
+        drive_direct(&mut audio, role, hall, presse)?;
         audio
             .activate(SETUP.sample_rate, SETUP.max_block * 2)
             .map_err(|error| error.to_string())?;
@@ -277,7 +276,7 @@ fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
         // Let the worker return its current audio half at the next realtime boundary.
         drive_boundary(&mut audio);
         session.poll().map_err(|error| error.to_string())?;
-        drive_direct(&mut audio, role, presse)
+        drive_direct(&mut audio, role, hall, presse)
     })();
     let mut host = session.finish(audio);
     result?;
@@ -292,11 +291,16 @@ fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
     .ok_or_else(|| "direct audio worker did not release the instance".to_owned())?
 }
 
-fn drive_direct(audio: &mut dyn Processor, role: DeviceRole, presse: bool) -> Result<(), String> {
+fn drive_direct(
+    audio: &mut dyn Processor,
+    role: DeviceRole,
+    hall: bool,
+    presse: bool,
+) -> Result<(), String> {
     thread::scope(|scope| {
         scope
             .spawn(|| {
-                process_audio(audio, role)?;
+                process_audio(audio, role, hall)?;
                 if presse {
                     check_presse_sidechain(audio)?;
                 }
@@ -326,7 +330,7 @@ fn drive_boundary(audio: &mut dyn Processor) {
 fn smoke_bridge(
     config: &PluginManagerConfig,
     descriptor: &PluginDescriptor,
-    path: &Path,
+    bundle: &VerifiedClap,
     role: DeviceRole,
 ) -> Result<(), String> {
     let id = DeviceId(1);
@@ -336,7 +340,7 @@ fn smoke_bridge(
         device: id,
         role,
         format: PluginFormat::Clap,
-        bundle: path,
+        bundle: bundle.bundle_path(),
         plugin_id: &descriptor.id,
         state: None,
         setup: SETUP,
@@ -353,7 +357,7 @@ fn smoke_bridge(
         if bridge.native_layout.is_none() || bridge.params.is_empty() {
             return Err("bridge did not report native layout and parameters".to_owned());
         }
-        process_audio(&mut audio, role)?;
+        process_audio(&mut audio, role, descriptor.id == HALL_ID)?;
         if descriptor.id == PRESSE_ID {
             check_presse_sidechain(&mut audio)?;
         }
@@ -366,25 +370,36 @@ fn smoke_bridge(
                 .find(|(seq, _)| *seq == request)
                 .map(|(_, state)| state.clone()))
         })?;
-        if state.is_empty() || !bridge.set_state(&state) {
-            return Err("bridge could not restore the plugin state".to_owned());
+        if state.is_empty() {
+            return Err("bridge saved an empty plugin state".to_owned());
         }
-        wait_for_bridge(&mut bridge, |bridge, events, _| {
-            if let Some(error) = bridge.state_warning.as_ref() {
-                return Err(error.clone());
-            }
-            Ok(events.iter().any(|event| {
-                matches!(event, PluginManagerEvent::StateApplied { device } if *device == id)
-            }).then_some(()))
+        let restore = bridge
+            .request_restore(&state)
+            .ok_or_else(|| "bridge refused the state restore".to_owned())?;
+        wait_for_bridge(&mut bridge, |bridge, _, _| {
+            bridge.restore_result(restore).transpose()
         })
     })();
     drop(audio);
-    bridge.stop(Duration::from_secs(1));
-    if !bridge.wait_exit(Duration::from_secs(1)) {
+    let grace = Duration::from_secs(1);
+    bridge.stop(grace);
+    let shutdown = bridge.wait_exit_status(grace);
+    if !matches!(shutdown, Ok(Some(_))) {
         bridge.kill();
-        let _ = bridge.wait_exit(Duration::from_secs(1));
+        let _ = bridge.wait_exit(grace);
     }
-    result
+    result?;
+    match shutdown {
+        Ok(Some(ProcessExit {
+            code: Some(0),
+            signal: None,
+        })) => Ok(()),
+        Ok(Some(exit)) => Err(format!(
+            "bridge exited abnormally during shutdown: {exit:?}"
+        )),
+        Ok(None) => Err("bridge timed out during shutdown".to_owned()),
+        Err(error) => Err(format!("could not wait for bridge shutdown: {error}")),
+    }
 }
 
 fn wait_for_bridge<T>(
@@ -433,7 +448,11 @@ fn smoke_context() -> ProcessContext {
     }
 }
 
-fn process_audio(processor: &mut dyn Processor, role: DeviceRole) -> Result<(), String> {
+fn process_audio(
+    processor: &mut dyn Processor,
+    role: DeviceRole,
+    hall: bool,
+) -> Result<(), String> {
     let context = smoke_context();
     let note = [Event {
         offset: 0,
@@ -483,19 +502,30 @@ fn process_audio(processor: &mut dyn Processor, role: DeviceRole) -> Result<(), 
     } else {
         &[]
     };
-    let status = processor.process(
-        &context,
-        events,
-        &mut StereoIo {
-            input: [&input, &input],
-            output: [&mut left, &mut right],
-        },
-    );
-    if status != ProcessStatus::Continue
-        || processor.offline_failures() != 0
-        || left.iter().chain(&right).any(|x| !x.is_finite())
-    {
-        return Err("plugin did not render a valid block".to_owned());
+    let blocks = if hall { 128 } else { 1 };
+    let mut has_tail = false;
+    for block in 0..blocks {
+        let status = processor.process(
+            &context,
+            events,
+            &mut StereoIo {
+                input: [&input, &input],
+                output: [&mut left, &mut right],
+            },
+        );
+        if status != ProcessStatus::Continue
+            || processor.offline_failures() != 0
+            || left.iter().chain(&right).any(|x| !x.is_finite())
+        {
+            return Err("plugin did not render a valid block".to_owned());
+        }
+        if block > 0 {
+            has_tail |= left.iter().chain(&right).any(|sample| sample.abs() > 1e-7);
+        }
+        input[0] = 0.0;
+    }
+    if hall && !has_tail {
+        return Err("Hall produced no reverb tail after the input impulse".to_owned());
     }
     Ok(())
 }

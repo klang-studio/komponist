@@ -82,7 +82,7 @@ impl Binding {
                     info.default_normalized() as f32,
                     FloatRange::Linear { min: 0.0, max: 1.0 },
                 )
-                .with_value_to_string(Arc::new(|value| {
+                .with_value_to_string(Arc::new(move |value| {
                     format_continuous(info, info.to_plain(f64::from(value)))
                 }))
                 .with_string_to_value(Arc::new(move |text| {
@@ -221,13 +221,14 @@ fn parse_number(unit: Unit, text: &str) -> Option<f64> {
         Unit::Ratio => &[(":1", 1.0)],
         Unit::Meters => &[("m", 1.0)],
     };
+    let default_factor = if unit == Unit::Percent { 0.01 } else { 1.0 };
     let (number, factor) = suffixes
         .iter()
         .find_map(|(suffix, factor)| {
             text.strip_suffix(suffix)
                 .map(|value| (value.trim(), *factor))
         })
-        .unwrap_or((text, 1.0));
+        .unwrap_or((text, default_factor));
     let value = number.replace('−', "-").parse::<f64>().ok()? * factor;
     value.is_finite().then_some(value)
 }
@@ -354,5 +355,17 @@ unsafe impl Params for Parameters {
             .selected_preset
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = selected;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Unit, parse_number};
+
+    #[test]
+    fn percent_input_uses_display_units_with_or_without_suffix() {
+        assert_eq!(parse_number(Unit::Percent, "50 %"), Some(0.5));
+        assert_eq!(parse_number(Unit::Percent, "50"), Some(0.5));
+        assert_eq!(parse_number(Unit::Hz, "50"), Some(50.0));
     }
 }
