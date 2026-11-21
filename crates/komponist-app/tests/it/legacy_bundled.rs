@@ -76,7 +76,7 @@ fn historical_projects_migrate_and_play() {
 
         let mut config = config(&scratch.path().join(name));
         config.bridge_exe = launcher.clone().into();
-        let mut host = PluginHost::new(config);
+        let mut host = PluginHost::new(config.clone());
         host.start_scan(&PluginDirs {
             clap: Vec::new(),
             vst3: Vec::new(),
@@ -186,7 +186,33 @@ fn historical_projects_migrate_and_play() {
         .unwrap();
         assert_eq!(saved, expected_file);
         assert_eq!(std::fs::read(&fixture).unwrap(), original);
+        // A fresh instance proves Save retained the migrated parameter rather than
+        // comparing the persisted state bytes against themselves.
         app.shutdown();
+        let mut reopened = app_with(Project::new("empty"), PluginHost::new(config));
+        reopened.dispatch(Action::Project(ProjectAction::OpenPath(path)));
+        step_until(
+            &mut reopened,
+            "saved instrument parameter available",
+            |app| {
+                app.engine().device_status(device_id) == DeviceStatus::Ok
+                    && app
+                        .engine()
+                        .host()
+                        .param_base(device_id, parameter)
+                        .is_some()
+            },
+        );
+        let saved_value = reopened
+            .engine()
+            .host()
+            .param_base(device_id, parameter)
+            .unwrap();
+        assert!(
+            (expected - saved_value).abs() < 1e-6,
+            "{name}: saved parameter {saved_value} != {expected}"
+        );
+        reopened.shutdown();
         eprintln!("{name}: state and live audio verified (forced bridge = {force_bridge})");
     }
 }

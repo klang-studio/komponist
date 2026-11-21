@@ -625,13 +625,34 @@ impl App {
             .deferred_plugin_states()
             .iter()
             .filter(|(device, _)| !snapshots.iter().any(|(captured, _)| captured == device));
+        let mut rebased_bundle_states = Vec::new();
         for (device, state) in deferred.chain(&snapshots) {
             let project = for_file.as_ref().unwrap_or_else(|| document.project());
-            if project
-                .find_device(*device)
-                .is_some_and(|(_, _, d)| d.state.as_ref() != Some(state))
+            let Some((_, _, model)) = project.find_device(*device) else {
+                continue;
+            };
+            // The processor captured its state in the old folder, even though the
+            // document and history have already been rebased for the destination.
+            let rebased = if komponist_plugins::bundled_sampler::kind(&model.plugin).is_some() {
+                komponist_plugins::bundled_sampler::rebase_links(
+                    state,
+                    old_dir.as_deref(),
+                    &new_dir,
+                    |source| recordings.destination(source),
+                )
+            } else {
+                None
+            };
+            let state = if let Some(rebased) = rebased {
+                let rebased: std::sync::Arc<[u8]> = rebased.into();
+                rebased_bundle_states.push((*device, rebased.clone()));
+                rebased
+            } else {
+                state.clone()
+            };
+            if model.state.as_ref() != Some(&state)
                 && let Ok(updated) =
-                    komponist_model::edits::set_device_state(project, *device, Some(state.clone()))
+                    komponist_model::edits::set_device_state(project, *device, Some(state))
             {
                 for_file = Some(updated);
             }
@@ -669,7 +690,13 @@ impl App {
                 }
                 self.project_path = Some(path.clone());
                 let dir = self.project_dir();
-                self.engine.host_mut().set_project_dir(dir);
+                let host = self.engine.host_mut();
+                host.set_project_dir(dir);
+                // Future snapshots must use the new link coordinates too. Apply
+                // them only after the file write and directory change succeeded.
+                for (device, state) in rebased_bundle_states {
+                    host.set_state(device, &state);
+                }
                 self.set_status(
                     self.lang
                         .project_saved(crate::dialogs::format::tilde(&path)),

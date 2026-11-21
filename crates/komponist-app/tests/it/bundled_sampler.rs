@@ -4,6 +4,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use egui_kittest::kittest::Queryable as _;
+
+use komponist_app::actions::PluginAction;
 use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::{Action, App, ProjectAction};
@@ -19,6 +22,7 @@ use komponist_plugins::legacy_bundled::{
 use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent};
 use komponist_sampler::links::{self, SampleLink};
 
+use crate::acceptance_support::harness;
 use crate::common::{PATIENCE, app_with, config, step_for, step_until};
 
 #[test]
@@ -130,6 +134,64 @@ fn both_samplers_play_assets_after_the_project_moves() {
     assert!(app.engine_mut().host_mut().set_state(device.id, linked));
     step_until(&mut app, "original sampler state restored", restored);
     assert_audible(&mut app, track.id, 60);
+
+    // Saving into another folder must keep the moved source, even when a silent
+    // sample with the same file name exists next to the new project.
+    let destination = scratch.path().join("destination");
+    std::fs::create_dir(&destination).unwrap();
+    write_wav(&destination.join("tone.wav"), 0);
+    let copy = destination.join("copy.komponist");
+    let mut h = harness(app);
+    h.state_mut()
+        .dispatch(Action::Project(ProjectAction::SaveAs));
+    h.run_steps(3);
+    h.get_by_label("Dateiname").focus();
+    h.run_steps(1);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.get_by_label("Dateiname")
+        .type_text(copy.to_str().unwrap());
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    let app = h.state_mut();
+    assert_eq!(app.project_path(), Some(copy.as_path()));
+    // Capture the live sampler state a second time, after adopting the new folder.
+    app.dispatch(Action::Project(ProjectAction::Save));
+    let saved = load_project(&copy).unwrap();
+    let source = moved.join("tone.wav");
+    for track in &saved.tracks {
+        let device = track.channel.instrument().unwrap().1;
+        let state = device.state.as_deref().unwrap();
+        let wrapper: serde_json::Value = serde_json::from_slice(&state[8..]).unwrap();
+        let assets = wrapper["fields"][pinned_clap_state::SAMPLE_ASSETS_FIELD]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            links::read(Some(assets.as_bytes()))[0]
+                .1
+                .resolve(Some(&destination)),
+            Some(source.clone())
+        );
+    }
+
+    // Both bundled samplers still advertise missing assets and accept a relink.
+    let replacement = scratch.path().join("found.wav");
+    std::fs::rename(&source, &replacement).unwrap();
+    let missing =
+        komponist_app::dialogs::missing_plugins::missing_samples(app.project(), Some(&destination));
+    assert_eq!(missing.len(), 2);
+    for sample in missing {
+        app.dispatch(Action::Plugin(PluginAction::LoadSample {
+            device: sample.device,
+            pad: sample.pad,
+            path: replacement.clone(),
+        }));
+    }
+    assert!(komponist_app::dialogs::missing_plugins::missing_samples(
+        app.project(),
+        Some(&destination),
+    ).is_empty());
+    assert_audible(app, track.id, 60);
     app.shutdown();
 }
 
@@ -160,6 +222,10 @@ fn note_peak(app: &mut App, track: TrackId, key: u8) -> f32 {
 }
 
 fn write_sample(path: &Path) {
+    write_wav(path, 11_000);
+}
+
+fn write_wav(path: &Path, amplitude: i16) {
     let mut writer = hound::WavWriter::create(
         path,
         hound::WavSpec {
@@ -174,7 +240,7 @@ fn write_sample(path: &Path) {
         let sample = if frame / 12 % 2 == 0 {
             11_000_i16
         } else {
-            -11_000
+            -amplitude
         };
         writer.write_sample(sample).unwrap();
     }

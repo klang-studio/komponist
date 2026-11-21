@@ -17,6 +17,7 @@ use komponist_model::project::{Device, DeviceRole, PluginFormat, PluginRef};
 use serde_json::{Map, Value};
 
 use crate::bundled_clap::BundledClap;
+use crate::catalog::bundled_module;
 use crate::direct::DirectClap;
 
 mod project;
@@ -225,7 +226,7 @@ fn prepare(
         name: descriptor.name.clone(),
         vendor: descriptor.vendor.clone(),
         version: descriptor.version.clone(),
-        module: module.into(),
+        module: bundled_module(module),
     };
     replacement.state = payload.map(Into::into);
     Ok(LegacyDevicePlan {

@@ -41,11 +41,11 @@ use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project, TrackId}
 use rustix::event::{PollFd, PollFlags, Timespec};
 
 use crate::bridge::{Bridge, Collected, SpawnSetup, StatePurpose, Timing};
-use crate::bundled_clap::{BundleVerificationError, BundledClap};
+use crate::bundled_clap::{BundleVerificationError, BundledClap, VerifiedClap};
 use crate::bundled_sampler;
 use crate::catalog::{
     Catalog, Platform, PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT, ScanCache,
-    ScanReport, env_path,
+    ScanReport, env_path, requires_bundled,
 };
 use crate::direct_device::DirectDevice;
 use crate::scan::{ScanJob, ScanSetup};
@@ -461,7 +461,7 @@ impl PluginManager {
         // A duplicate scanner result may not replace the verified release artifact in the
         // catalog. Verification still runs at load time; scanner metadata grants no trust.
         descriptors.sort_by_key(|descriptor| !shipped(descriptor));
-        self.catalog.set_scanned(&descriptors);
+        self.catalog.set_scanned_with_bundled(&descriptors, shipped);
     }
 
     /// A processor removed from the engine must be handed back to its main-thread CLAP session.
@@ -635,11 +635,13 @@ impl PluginManager {
         // the engine returns the audio half; external bridge retirement remains asynchronous.
         self.retire(device.id, false);
         let mut verified_sampler = false;
+        let mut verified_bundle = None;
         let mut state = state;
-        if self
-            .private_clap_dir
-            .as_ref()
-            .is_some_and(|root| bundle.starts_with(root))
+        if requires_bundled(&device.plugin)
+            || self
+                .private_clap_dir
+                .as_ref()
+                .is_some_and(|root| bundle.starts_with(root))
         {
             let verified = self
                 .bundled_clap
@@ -703,6 +705,7 @@ impl PluginManager {
                     }
                 };
             }
+            verified_bundle = Some(proof);
         }
         let started = Bridge::spawn(SpawnSetup {
             exe: &self.config.bridge_exe,
@@ -710,7 +713,9 @@ impl PluginManager {
             device: device.id,
             role: device.role,
             format,
-            bundle: &bundle,
+            bundle: verified_bundle
+                .as_ref()
+                .map_or(bundle.as_path(), VerifiedClap::bundle_path),
             plugin_id: &plugin_id,
             state,
             setup,

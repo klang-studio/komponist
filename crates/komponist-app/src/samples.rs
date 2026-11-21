@@ -34,6 +34,7 @@ use komponist_engine::Command;
 use komponist_general_sampler as general_sampler;
 use komponist_model::edits;
 use komponist_model::{AudioFile, ChannelRef, ClipContent, DeviceId, Project, TrackId};
+use komponist_plugins::bundled_sampler;
 use komponist_sampler as sampler;
 use komponist_sampler::{Collector, PadField, SampleLink, links};
 
@@ -189,6 +190,26 @@ impl App {
         let Some((_, _, found)) = self.project().find_device(device) else {
             return;
         };
+        if let Some(kind) = bundled_sampler::kind(&found.plugin) {
+            let dir = self.project_dir();
+            let linked = found.state.as_deref().and_then(|state| {
+                if !valid_slot(kind, pad)
+                    || !bundled_sampler::missing_links(state, dir.as_deref())
+                        .iter()
+                        .any(|(slot, _)| *slot == pad)
+                {
+                    return None;
+                }
+                bundled_sampler::relink(state, pad, &SampleLink::new(path, dir.as_deref()))
+            });
+            if let Some(state) = linked {
+                self.apply_with("undo-sample-load", |project| {
+                    edits::set_device_state(project, device, Some(state.into()))
+                        .map(|next| (next, ()))
+                });
+            }
+            return;
+        }
         let Some(kind) = sample_device_kind(found).filter(|kind| valid_slot(*kind, pad)) else {
             return;
         };
@@ -392,19 +413,16 @@ impl App {
             return;
         };
         let dir = self.project_dir();
-        let was_missing = self
-            .sampler_state(device)
-            .flatten()
-            .map(|s| links::missing(Some(&s), dir.as_deref()))
-            .is_some_and(|m| m.iter().any(|(p, _)| *p == pad));
-        let others = if was_missing {
-            missing_samples(self.project(), dir.as_deref())
-        } else {
-            Vec::new()
-        };
+        let others = missing_samples(self.project(), dir.as_deref());
+        let was_missing = others
+            .iter()
+            .any(|sample| (sample.device, sample.pad) == (device, pad));
         // The chosen sample and the ones it finds with it are one undo step.
         self.in_one_step("undo-sample-load", |app| {
             app.load_sample(device, pad, &path);
+            if !was_missing {
+                return;
+            }
             let Some(folder) = path.parent() else { return };
             for other in others {
                 if (other.device, other.pad) == (device, pad) || other.file.is_empty() {
@@ -499,7 +517,10 @@ impl App {
         self.doc.rewrite_untracked(|p| {
             rewrite_links(
                 p,
-                |state| collector.relink(state, old_dir.as_deref()),
+                |device| {
+                    sample_device_kind(device)?;
+                    collector.relink(device.state.as_deref(), old_dir.as_deref())
+                },
                 |file| relink_audio_file(&collector, file, old_dir.as_deref(), &project_dir),
             )
         });
@@ -633,7 +654,19 @@ pub(crate) fn rebase_project_links(
 ) -> Option<Project> {
     rewrite_links(
         project,
-        |state| links::rebase_with(state, old_dir, new_dir, &destination),
+        |device| {
+            if bundled_sampler::kind(&device.plugin).is_some() {
+                bundled_sampler::rebase_links(
+                    device.state.as_deref()?,
+                    old_dir,
+                    new_dir,
+                    &destination,
+                )
+            } else {
+                sample_device_kind(device)?;
+                links::rebase_with(device.state.as_deref(), old_dir, new_dir, &destination)
+            }
+        },
         |file| {
             let path = destination(file.resolve(old_dir)?);
             Some(file.moved_to(&path, new_dir))
@@ -645,7 +678,7 @@ pub(crate) fn rebase_project_links(
 /// (`None`: unchanged); `None` if nothing changed.
 fn rewrite_links(
     project: &Project,
-    samplers: impl FnMut(Option<&[u8]>) -> Option<Vec<u8>>,
+    samplers: impl FnMut(&komponist_model::Device) -> Option<Vec<u8>>,
     audio: impl FnMut(&AudioFile) -> Option<AudioFile>,
 ) -> Option<Project> {
     let after_samplers = rewrite_samplers(project, samplers);
@@ -660,15 +693,14 @@ fn rewrite_links(
 /// no state changed. `rewrite` returns the new state, `None` for "as it is".
 fn rewrite_samplers(
     project: &Project,
-    mut rewrite: impl FnMut(Option<&[u8]>) -> Option<Vec<u8>>,
+    mut rewrite: impl FnMut(&komponist_model::Device) -> Option<Vec<u8>>,
 ) -> Option<Project> {
     let changes: Vec<(DeviceId, Arc<[u8]>)> = project
         .tracks
         .iter()
         .flat_map(|t| t.channel.devices.iter())
         .chain(project.master.devices.iter())
-        .filter(|d| sample_device_kind(d).is_some())
-        .filter_map(|d| rewrite(d.state.as_deref()).map(|s| (d.id, Arc::from(s))))
+        .filter_map(|d| rewrite(d).map(|s| (d.id, Arc::from(s))))
         .collect();
     if changes.is_empty() {
         return None;

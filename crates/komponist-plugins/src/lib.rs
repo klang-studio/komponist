@@ -19,7 +19,7 @@
 mod bridge;
 pub mod builtin;
 pub mod bundled_clap;
-mod bundled_sampler;
+pub mod bundled_sampler;
 pub mod catalog;
 mod direct;
 mod direct_device;
