@@ -558,16 +558,25 @@ impl Engine {
     /// and deliver pending slot parameters before the export reads processor latencies. Commands
     /// that must retire garbage may have to wait for a later call.
     pub fn settle(&mut self) {
-        for _ in 0..16 {
+        for pass in 0..16 {
             if self.core.commands.is_empty() {
-                // Offline preparation may already have moved SetParam commands into slot queues
-                // without a DSP call. Flush those after the processors have been reactivated.
-                if self
+                // Offline preparation can drain commands before the processors are ready to
+                // render. SetParam leaves slot events; macro mappings generate theirs on render.
+                let pending_params = self
                     .core
                     .slots
                     .iter()
-                    .any(|slot| slot.runs(slot.bypassed) && !slot.params.is_empty())
-                {
+                    .any(|slot| slot.runs(slot.bypassed) && !slot.params.is_empty());
+                let device_macros =
+                    pass == 0
+                        && self.core.program.as_ref().is_some_and(|program| {
+                            program.tracks.iter().any(|track| {
+                                track.macros.targets.iter().any(|mapping| {
+                                    matches!(mapping.target, EngineTarget::Slot { .. })
+                                })
+                            })
+                        });
+                if pending_params || device_macros {
                     self.render(1);
                 }
                 break;

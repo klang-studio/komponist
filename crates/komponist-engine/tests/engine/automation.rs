@@ -1371,6 +1371,68 @@ fn macro_mapping(target: AutomationTarget) -> komponist_model::macros::Mapping {
 }
 
 #[test]
+fn export_recompile_delivers_macro_edits_drained_by_offline_preparation() {
+    use komponist_model::edits::macros::add_mapping;
+
+    #[derive(Default)]
+    struct Lookahead(u32);
+
+    impl Processor for Lookahead {
+        fn activate(&mut self, _: f32, _: usize) -> Result<(), ProcessorError> {
+            Ok(())
+        }
+
+        fn process(
+            &mut self,
+            _: &ProcessContext,
+            events: &[Event],
+            _: &mut StereoIo<'_>,
+        ) -> ProcessStatus {
+            for event in events {
+                if let EventKind::Param { id: 0, value } = event.kind {
+                    self.0 = (480.0 * value).round() as u32;
+                }
+            }
+            ProcessStatus::Continue
+        }
+
+        fn latency(&self) -> u32 {
+            self.0
+        }
+
+        fn reset(&mut self) {}
+    }
+
+    let (project, owner, device) = source();
+    let AutomationOwner::Track(track) = owner else {
+        unreachable!()
+    };
+    let project = add_mapping(&project, track, 0, macro_mapping(parameter(device, 0))).unwrap();
+    let (project, _, _) = add_source(&project);
+    let program = compile::build(&project, None, &Parameters(true));
+    assert_eq!(program.tracks[1].pdc_delay, 0);
+    let slot = program.slots.slot(device).unwrap();
+    let mut rig = Rig::new(RATE, 256);
+    rig.insert(slot.0, Lookahead::default());
+    rig.set_program(&program);
+    rig.process(64, 64);
+    assert_eq!(rig.engine.processor_latency(slot), 0);
+
+    rig.send(Command::SetMacro {
+        track,
+        index: 0,
+        value: 1.0,
+        edit: 1,
+    });
+    rig.engine.prepare_offline(RATE).unwrap();
+    assert_eq!(rig.engine.processor_latency(slot), 0);
+
+    let rendering = komponist_engine::export::recompile(&mut rig.engine, &project, &program);
+    assert_eq!(rig.engine.project_latency(&rendering), 480);
+    assert_eq!(rendering.tracks[1].pdc_delay, 480);
+}
+
+#[test]
 fn macro_fanout_is_bounded_and_uses_the_same_slot_list_in_live_and_offline() {
     use komponist_engine::MAX_BLOCK;
     use komponist_model::edits::macros::{add_mapping, set_macro_value};
