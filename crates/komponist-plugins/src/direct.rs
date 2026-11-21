@@ -1,12 +1,15 @@
 //! Native CLAP audio dispatch for already verified bundles.
 
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
-use komponist_engine::{Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo};
+use komponist_engine::processor::{EventProcessor, EventSink, ParameterEdit, ParameterEditKind};
+use komponist_engine::{
+    Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+};
 use komponist_hosting::host_loop::PollLoop;
 use komponist_hosting::{
     ActivateConfig, EventOut, HostedPlugin, HostedProcessor, HostingError, ProcessBlock,
@@ -16,7 +19,7 @@ use komponist_ipc::{PluginFormat, WireEvent, WireEventKind};
 use komponist_model::DeviceRole;
 
 use crate::bundled_clap::VerifiedClap;
-use crate::external::{to_wire, wire_transport};
+use crate::external::{midi_event_kind, to_wire, wire_transport};
 use crate::manager::ProcessorSetup;
 
 /// The main-thread half of a CLAP instance. Keeping the token alive also keeps the verified
@@ -83,10 +86,13 @@ impl DirectClap {
                 OUTPUT_EVENT_CAPACITY
             ],
             output_len: 0,
+            dropped: 0,
+            delivered: false,
             output_read: 0,
             sample_clock: 0,
             reset_pending: false,
             offline_failures: 0,
+            midi: (role == DeviceRole::MidiEffect).then(|| MidiStage::new(setup.max_block)),
         })
     }
 
@@ -129,10 +135,33 @@ pub(crate) struct DirectProcessor {
     input_events: Vec<WireEvent>,
     output_events: Vec<WireEvent>,
     output_len: usize,
+    dropped: u32,
+    delivered: bool,
     output_read: usize,
     sample_clock: u64,
     reset_pending: bool,
     offline_failures: u64,
+    midi: Option<MidiStage>,
+}
+
+struct MidiStage {
+    audio: [Vec<f32>; 2],
+    params: Vec<WireEvent>,
+    edits: VecDeque<ParameterEdit>,
+    downstream_active: bool,
+    release_due: bool,
+}
+
+impl MidiStage {
+    fn new(max_block: usize) -> Self {
+        Self {
+            audio: std::array::from_fn(|_| vec![0.0; max_block]),
+            params: Vec::with_capacity(INPUT_EVENT_CAPACITY),
+            edits: VecDeque::with_capacity(OUTPUT_EVENT_CAPACITY),
+            downstream_active: false,
+            release_due: false,
+        }
+    }
 }
 
 impl DirectProcessor {
@@ -140,11 +169,14 @@ impl DirectProcessor {
         &mut self,
         ctx: &ProcessContext,
         events: &[Event],
+        params: &[WireEvent],
         io: &mut StereoIo<'_>,
         sidechain: Option<[&[f32]; 2]>,
     ) -> ProcessStatus {
         self.output_read = 0;
         self.output_len = 0;
+        self.dropped = 0;
+        self.delivered = false;
         let start = self.sample_clock;
         self.sample_clock = self.sample_clock.saturating_add(u64::from(ctx.frames));
         let Some(_guard) = ProcessingGuard::try_enter(&self.processing) else {
@@ -160,7 +192,7 @@ impl DirectProcessor {
         if std::mem::take(&mut self.reset_pending) {
             self.audio.reset();
         }
-        if events.len() > self.input_events.capacity() {
+        if events.len().saturating_add(params.len()) > self.input_events.capacity() {
             // A dropped note-off can leave a voice active. Reset and fail the slot rather than
             // send a partial block whose state the engine cannot reproduce.
             self.audio.reset();
@@ -168,6 +200,7 @@ impl DirectProcessor {
             return ProcessStatus::Failed;
         }
         self.input_events.clear();
+        self.input_events.extend_from_slice(params);
         self.input_events.extend(events.iter().map(to_wire));
         let transport = wire_transport(&ctx.transport);
         let [left, right] = &mut io.output;
@@ -183,11 +216,13 @@ impl DirectProcessor {
         };
         let result = self.audio.process(&mut block);
         self.output_len = block.events_out.as_slice().len();
+        self.dropped = block.events_out.dropped();
         if result == komponist_hosting::ProcessStatus::Error {
             self.output_len = 0;
             write_fallback(self.role, io);
             return ProcessStatus::Failed;
         }
+        self.delivered = true;
         ProcessStatus::Continue
     }
 }
@@ -229,7 +264,7 @@ impl Processor for DirectProcessor {
         events: &[Event],
         io: &mut StereoIo<'_>,
     ) -> ProcessStatus {
-        self.process_block(ctx, events, io, None)
+        self.process_block(ctx, events, &[], io, None)
     }
 
     fn process_sidechain(
@@ -239,7 +274,7 @@ impl Processor for DirectProcessor {
         io: &mut StereoIo<'_>,
         sidechain: [&[f32]; 2],
     ) -> ProcessStatus {
-        self.process_block(ctx, events, io, Some(sidechain))
+        self.process_block(ctx, events, &[], io, Some(sidechain))
     }
 
     fn latency(&self) -> u32 {
@@ -257,24 +292,123 @@ impl Processor for DirectProcessor {
     }
 
     fn pop_parameter_edit(&mut self) -> Option<ParameterEdit> {
+        if let Some(midi) = self.midi.as_mut() {
+            return midi.edits.pop_front();
+        }
         while self.output_read < self.output_len {
             let event = self.output_events[self.output_read];
             self.output_read += 1;
-            let kind = match event.decode() {
-                Some(WireEventKind::ParamValue { id, value }) if value.is_finite() => {
-                    ParameterEditKind::Value { id, value }
-                }
-                Some(WireEventKind::ParamGesture { id, begin }) => {
-                    ParameterEditKind::Gesture { id, begin }
-                }
-                _ => continue,
-            };
-            return Some(ParameterEdit {
-                offset: event.offset,
-                kind,
-            });
+            if let Some(edit) = parameter_edit(&event, 0) {
+                return Some(edit);
+            }
         }
         None
+    }
+
+    fn event_processor(&mut self) -> Option<&mut dyn EventProcessor> {
+        self.midi.is_some().then_some(self)
+    }
+}
+
+fn parameter_edit(event: &WireEvent, base: u32) -> Option<ParameterEdit> {
+    let kind = match event.decode()? {
+        WireEventKind::ParamValue { id, value } if value.is_finite() => {
+            ParameterEditKind::Value { id, value }
+        }
+        WireEventKind::ParamGesture { id, begin } => ParameterEditKind::Gesture { id, begin },
+        _ => return None,
+    };
+    Some(ParameterEdit {
+        offset: base.saturating_add(event.offset),
+        kind,
+    })
+}
+
+impl EventProcessor for DirectProcessor {
+    fn set_param(&mut self, id: u32, value: f64) {
+        let Some(midi) = self.midi.as_mut() else {
+            return;
+        };
+        if midi.params.len() < midi.params.capacity() {
+            midi.params
+                .push(WireEvent::new(0, WireEventKind::ParamValue { id, value }));
+        }
+    }
+
+    fn process_events(
+        &mut self,
+        ctx: &ProcessContext,
+        input: &[Event],
+        output: &mut EventSink<'_>,
+    ) {
+        static SILENCE: [f32; MAX_BLOCK] = [0.0; MAX_BLOCK];
+        let len = ctx.frames as usize;
+        if len > self.setup.max_block {
+            return;
+        }
+        let mut midi = self.midi.take().expect("MIDI effect has stage buffers");
+        let [left, right] = &mut midi.audio;
+        self.process_block(
+            ctx,
+            input,
+            &midi.params,
+            &mut StereoIo {
+                input: [&SILENCE[..len]; 2],
+                output: [&mut left[..len], &mut right[..len]],
+            },
+            None,
+        );
+        if self.delivered {
+            midi.params.clear();
+        }
+        let events = &self.output_events[..self.output_len];
+        let mut note_count = 0;
+        for event in events {
+            if let Some(edit) = parameter_edit(event, output.block_offset()) {
+                if midi.edits.len() < midi.edits.capacity() {
+                    midi.edits.push_back(edit);
+                }
+            } else if event.offset < ctx.frames && midi_event_kind(event).is_some() {
+                note_count += 1;
+            }
+        }
+        let complete = self.delivered
+            && self.dropped == 0
+            && note_count + usize::from(midi.release_due) <= output.room();
+        if !complete {
+            midi.release_due |= midi.downstream_active;
+            self.reset_pending = true;
+            if self.delivered && ctx.offline {
+                self.offline_failures += 1;
+            }
+        }
+        if midi.release_due && output.push(0, EventKind::AllNotesOff) {
+            midi.release_due = false;
+            midi.downstream_active = false;
+        }
+        if complete {
+            for event in events {
+                if event.offset < ctx.frames
+                    && let Some(kind) = midi_event_kind(event)
+                {
+                    output.push(event.offset, kind);
+                    match kind {
+                        EventKind::NoteOn { .. } => midi.downstream_active = true,
+                        EventKind::AllNotesOff => midi.downstream_active = false,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        self.midi = Some(midi);
+    }
+
+    fn reset(&mut self) {
+        Processor::reset(self);
+        if let Some(midi) = self.midi.as_mut() {
+            midi.downstream_active = false;
+            midi.release_due = false;
+        }
     }
 }
 

@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use komponist_engine::processor::EventBuffer;
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, StereoIo, TransportInfo,
 };
@@ -46,9 +47,16 @@ pub fn verify_bundled_clap(force_bridge: bool) -> Result<(), String> {
             let role = match descriptor.kind {
                 PluginKind::Effect => DeviceRole::Effect,
                 PluginKind::Instrument => DeviceRole::Instrument,
-                PluginKind::MidiEffect | PluginKind::Other => {
-                    return Err("MIDI-only bundle verification is not yet supported".to_owned());
+                PluginKind::MidiEffect => DeviceRole::MidiEffect,
+                PluginKind::Other
+                    if descriptor
+                        .features
+                        .iter()
+                        .any(|feature| feature == "note-effect") =>
+                {
+                    DeviceRole::MidiEffect
                 }
+                PluginKind::Other => return Err("unsupported bundled plugin role".to_owned()),
             };
             if force_bridge {
                 smoke_bridge(&config, &descriptor, path, role)
@@ -230,6 +238,22 @@ fn process_audio(processor: &mut dyn Processor, role: DeviceRole) -> Result<(), 
             note_id: 1,
         },
     }];
+    if role == DeviceRole::MidiEffect {
+        let mut buffer = EventBuffer::new(128);
+        let stage = processor
+            .event_processor()
+            .ok_or_else(|| "missing MIDI stage adapter".to_owned())?;
+        stage.process_events(&context, &note, &mut buffer.sink(context.frames));
+        if !buffer
+            .events()
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::NoteOn { .. }))
+            || processor.offline_failures() != 0
+        {
+            return Err("MIDI effect did not produce a valid note".to_owned());
+        }
+        return Ok(());
+    }
     let mut input = [0.0; FRAMES];
     input[0] = 0.125;
     let mut left = [f32::NAN; FRAMES];
