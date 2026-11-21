@@ -5,13 +5,19 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost};
+use komponist_audio::HostKind;
 use komponist_builtin::Internal;
 use komponist_model::{Device, DeviceId, Project};
 use komponist_plugins::bundled_clap::BundledClap;
-use komponist_plugins::legacy_bundled::plan_legacy_bundled_device;
+use komponist_plugins::legacy_bundled::{
+    migrate_legacy_bundled_project, plan_legacy_bundled_device,
+};
 use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent};
 
-use super::{PATIENCE, app_at_buffer, config, measure, project, step_until, worker_counts};
+use super::{
+    PATIENCE, app_at_buffer, config, measure, project, require_audio_config, step_until,
+    worker_counts,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -84,30 +90,35 @@ fn build_project(workload: Workload) -> Project {
     workload_project
 }
 
-fn migrate(project: &mut Project, inventory: &BundledClap) {
-    let migrate_devices = |devices: &mut [Arc<Device>]| {
-        for device in devices {
-            *device = Arc::new(
-                plan_legacy_bundled_device(inventory, device, None)
-                    .unwrap_or_else(|error| panic!("{}: {error}", device.plugin.id))
-                    .replacement,
-            );
-        }
-    };
-    for track in &mut project.tracks {
-        migrate_devices(&mut Arc::make_mut(track).channel.devices);
-    }
-    migrate_devices(&mut Arc::make_mut(&mut project.master).devices);
-}
-
-fn ids(project: &Project) -> Vec<DeviceId> {
+fn project_devices(project: &Project) -> impl Iterator<Item = &Arc<Device>> {
     project
         .tracks
         .iter()
         .flat_map(|track| &track.channel.devices)
         .chain(&project.master.devices)
-        .map(|device| device.id)
-        .collect()
+}
+
+fn migrate(project: &Project, inventory: &BundledClap) -> Project {
+    let plans = project_devices(project)
+        .map(|device| {
+            plan_legacy_bundled_device(inventory, device, None)
+                .unwrap_or_else(|error| panic!("{}: {error}", device.plugin.id))
+        })
+        .collect::<Vec<_>>();
+    migrate_legacy_bundled_project(project, plans)
+        .expect("translate the complete benchmark project")
+        .project
+}
+
+fn audio_host() -> HostKind {
+    let setting = std::env::var("KOMPONIST_PERF_AUDIO_HOST").unwrap_or_else(|_| "null".into());
+    let host: HostKind = serde_json::from_value(serde_json::Value::String(setting.clone()))
+        .unwrap_or_else(|error| panic!("invalid KOMPONIST_PERF_AUDIO_HOST {setting}: {error}"));
+    assert!(
+        host.is_supported_here(),
+        "{host:?} is unavailable in this build"
+    );
+    host
 }
 
 fn buffer_sizes() -> Vec<u32> {
@@ -141,16 +152,18 @@ fn bundled_clap_workloads() {
         ),
     };
 
+    let audio = audio_host();
     for workload in [
         Workload::ParallelInstruments,
         Workload::SerialEffects,
         Workload::MidiBeforeInstruments,
     ] {
-        let mut source = build_project(workload);
-        if let Some(inventory) = &inventory {
-            migrate(&mut source, inventory);
-        }
-        let ids = ids(&source);
+        let source = build_project(workload);
+        let source = match &inventory {
+            Some(inventory) => migrate(&source, inventory),
+            None => source,
+        };
+        let ids: Vec<_> = project_devices(&source).map(|device| device.id).collect();
         for frames in buffer_sizes() {
             for workers in worker_counts() {
                 let start = Instant::now();
@@ -181,9 +194,11 @@ fn bundled_clap_workloads() {
                     Box::new(host)
                 };
                 run(
-                    &format!("{mode:?} {workload:?} / {frames} frames / {workers} workers"),
+                    &format!(
+                        "{mode:?} {workload:?} / {audio:?} / {frames} frames / {workers} workers"
+                    ),
                     mode,
-                    app_at_buffer(source.clone(), host, workers, frames),
+                    app_at_buffer(source.clone(), host, workers, audio, frames),
                     frames,
                     &ids,
                     start,
@@ -225,6 +240,8 @@ fn run(
         ids.len(),
         started.elapsed().as_secs_f64()
     );
+    let config = app.settings().audio.clone();
     measure(label, &mut app, buffer, ids);
+    require_audio_config(app.engine(), config.host, config.sample_rate, buffer);
     app.shutdown();
 }

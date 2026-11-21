@@ -539,7 +539,11 @@ a one-second warm-up.
 - Counters cover callbacks, callbacks exceeding the period, stream xruns, late bridge blocks,
   and worker batches and late waits during the same window.
 
-The harness uses the real DSP, scheduler, null-backend audio callback and plugin hosts.
-Results characterize the test machine with the null backend. Report the machine, OS, build
-revision and settings when comparing runs. Per-callback p95/p99 and physical audio driver
-latency require separate measurements.
+The harness defaults to the null audio backend and uses the real DSP, scheduler and plugin
+hosts. Set `KOMPONIST_PERF_AUDIO_HOST` to `coreaudio`, `asio`, `wasapi`, `pipewire`, `jack`
+or `alsa` to measure with the default output device on the chosen driver. The benchmark
+plays through that output. Choose periods your device actually supports. A stream error,
+driver fallback, or a negotiated sample rate or period that differs from the request
+fails the case. Report the device, driver, machine, OS, build revision and settings when
+comparing runs. Per-callback p95/p99 and physical round-trip latency require separate
+measurements.

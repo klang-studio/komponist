@@ -38,11 +38,14 @@ def verified_digest(app):
 
 def build_runner(digest):
     environment = dict(os.environ, KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256=digest)
+    command = [
+        "cargo", "test", "--locked", "--release", "-p", "komponist-app",
+        "--test", "engine_perf", "--no-run", "--message-format=json-render-diagnostics",
+    ]
+    if sys.platform == "win32" and environment.get("KOMPONIST_PERF_AUDIO_HOST") == "asio":
+        command.extend(["--features", "asio"])
     with subprocess.Popen(
-        [
-            "cargo", "test", "--locked", "--release", "-p", "komponist-app",
-            "--test", "engine_perf", "--no-run", "--message-format=json-render-diagnostics",
-        ],
+        command,
         cwd=ROOT,
         env=environment,
         stdout=subprocess.PIPE,

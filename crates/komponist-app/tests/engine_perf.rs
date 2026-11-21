@@ -27,7 +27,7 @@ use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost};
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::settings::Settings;
 use komponist_app::{Action, App, TransportAction};
-use komponist_audio::{HostKind, StreamConfig};
+use komponist_audio::{AudioState, HostKind, StreamConfig};
 use komponist_engine::TransportState;
 use komponist_hexa::{encode_state, preset_patch, presets};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewNote, NewTrack};
@@ -146,25 +146,40 @@ fn project(bridges: bool) -> Project {
 }
 
 fn app(project: Project, host: Box<dyn DeviceHost>, workers: u32) -> App {
-    app_at_buffer(project, host, workers, BUFFER)
+    app_at_buffer(project, host, workers, HostKind::Null, BUFFER)
 }
 
 fn app_at_buffer(
     project: Project,
     host: Box<dyn DeviceHost>,
     workers: u32,
+    audio_host: HostKind,
     buffer_frames: u32,
 ) -> App {
     let config = StreamConfig {
-        host: HostKind::Null,
+        host: audio_host,
         buffer_frames,
         ..StreamConfig::default()
     };
     let (mut engine, started) = EngineSync::new(&config, MidiSetup::None, host);
-    started.expect("null backend");
+    started.unwrap_or_else(|error| panic!("could not start {audio_host:?}: {error}"));
+    require_audio_config(&engine, audio_host, config.sample_rate, buffer_frames);
     let status = engine.set_workers(Some(workers)).expect("workers");
     eprintln!("workers: {status:?}");
-    App::new(Document::new(project), engine, Settings::default(), None)
+    let settings = Settings {
+        audio: config,
+        ..Settings::default()
+    };
+    App::new(Document::new(project), engine, settings, None)
+}
+
+fn require_audio_config(engine: &EngineSync, host: HostKind, sample_rate: u32, frames: u32) {
+    let state = engine.audio_state();
+    assert!(
+        matches!(state, AudioState::Running { config, .. }
+            if (config.host, config.sample_rate, config.buffer_frames) == (host, sample_rate, frames)),
+        "{host:?} did not provide {sample_rate} Hz and a {frames}-frame period: {state:?}"
+    );
 }
 
 /// Plays for the configured interval and prints the callback counters.
