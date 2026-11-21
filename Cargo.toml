@@ -33,6 +33,7 @@ komponist-presse = { path = "crates/builtin-devices/presse" }
 komponist-reverb = { path = "crates/builtin-devices/reverb" }
 komponist-sampler = { path = "crates/builtin-devices/sampler" }
 komponist-scale = { path = "crates/builtin-devices/scale" }
+komponist-surf = { path = "crates/builtin-devices/surf" }
 komponist-volt = { path = "crates/builtin-devices/volt" }
 komponist-ipc = { path = "crates/komponist-ipc" }
 komponist-rt = { path = "crates/komponist-rt" }

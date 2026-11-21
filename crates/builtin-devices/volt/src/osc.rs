@@ -12,8 +12,10 @@ use komponist_model::params::va_curve::{MOD_PW, PULSE, SAW, TRIANGLE};
 ///
 /// Per control interval the voice [`prepare`](Oscillators::prepare)s oscillator A and B of
 /// every unison pair from the waveform choice, the phase increment and the *shape* (volt: pulse
-/// width, surf: table position) after the matrix; per sample it calls
-/// [`sample`](Oscillators::sample). Both run on the audio thread: no allocation, no locks.
+/// width, surf: table position) after the matrix, knowing the oscillator of the interval before;
+/// per sample it calls [`sample`](Oscillators::sample) with the time inside the interval, so an
+/// oscillator can glide from the last interval's state to the new one. Both run on the audio
+/// thread: no allocation, no locks.
 pub trait Oscillators: Send + 'static {
     /// One oscillator prepared for a control interval.
     type Osc: Copy + Default + Send;
@@ -21,11 +23,12 @@ pub trait Oscillators: Send + 'static {
     const SHAPE_RANGE: (f32, f32);
     /// How far the matrix moves the shape at 100 %.
     const SHAPE_MOD: f32;
-    /// The oscillator for an interval: waveform choice `wave`, increment `inc` per sample
-    /// (`klang_dsp::phase`), `shape`, sample rate `rate`.
-    fn prepare(wave: usize, inc: u32, shape: f32, rate: f32) -> Self::Osc;
-    /// One sample at `phase`. `wave` is the current choice (volt switches at once, mid-interval).
-    fn sample(osc: &Self::Osc, wave: usize, phase: u32) -> f32;
+    /// The oscillator for an interval after `prev`: waveform choice `wave`, increment `inc` per
+    /// sample (`klang_dsp::phase`), `shape`, sample rate `rate`.
+    fn prepare(prev: &Self::Osc, wave: usize, inc: u32, shape: f32, rate: f32) -> Self::Osc;
+    /// One sample at `phase`, `t` (0 … 1) into the control interval. `wave` is the current
+    /// choice (volt switches at once, mid-interval).
+    fn sample(osc: &Self::Osc, wave: usize, phase: u32, t: f32) -> f32;
     /// The default of every parameter by wire id: volt's table ([`crate::params`]) first, the
     /// instrument's own parameters after it.
     fn defaults() -> Vec<f64>;
@@ -57,12 +60,12 @@ impl Oscillators for Analog {
     const SHAPE_MOD: f32 = MOD_PW as f32;
 
     #[inline]
-    fn prepare(_wave: usize, inc: u32, shape: f32, _rate: f32) -> AnalogOsc {
+    fn prepare(_prev: &AnalogOsc, _wave: usize, inc: u32, shape: f32, _rate: f32) -> AnalogOsc {
         AnalogOsc { inc, pw: shape }
     }
 
     #[inline]
-    fn sample(osc: &AnalogOsc, wave: usize, phase: u32) -> f32 {
+    fn sample(osc: &AnalogOsc, wave: usize, phase: u32, _t: f32) -> f32 {
         sample(wave, phase, osc.inc, osc.pw)
     }
 

@@ -137,11 +137,13 @@ pub mod lfo {
     pub const UNI: usize = 6;
 }
 
-fn names(list: &[&str]) -> ParamKind {
+/// A choice of `list`.
+pub fn names(list: &[&str]) -> ParamKind {
     ParamKind::Enum(list.iter().map(|s| (*s).to_owned()).collect())
 }
 
-fn percent(key: &str, name: &str, min: f64, max: f64, default: f64) -> ParamInfo {
+/// A parameter shown in percent, a fraction from `min` to `max`.
+pub fn percent(key: &str, name: &str, min: f64, max: f64, default: f64) -> ParamInfo {
     ParamInfo::new(key, name, ParamKind::lin(min, max), default).unit(Unit::Percent)
 }
 
@@ -159,7 +161,8 @@ fn whole(v: f64, suffix: &str) -> String {
     }
 }
 
-fn cents_text(v: f64) -> String {
+/// Cents: „7 ct“, „−12 ct“.
+pub fn cents_text(v: f64) -> String {
     whole(v, "ct")
 }
 
@@ -181,7 +184,7 @@ fn off_or_seconds(t: Lang) -> impl Fn(f64) -> String + Send + Sync + 'static {
 }
 
 /// Octave offsets: "−1 Okt." in German, "−1 oct" in English.
-fn octaves_text(t: Lang) -> impl Fn(f64) -> String + Send + Sync + 'static {
+pub fn octaves_text(t: Lang) -> impl Fn(f64) -> String + Send + Sync + 'static {
     let unit = t.value_unit_octave();
     move |v| whole(v, unit)
 }
@@ -238,8 +241,8 @@ fn source_names(t: Lang) -> [&'static str; 9] {
     ]
 }
 
-/// The matrix destinations in `t`, in the order of [`dest::NAMES`].
-fn dest_names(t: Lang) -> [&'static str; dest::COUNT] {
+/// The matrix destinations in `t`, in the order of [`dest::NAMES`] (surf renames the widths).
+pub fn dest_names(t: Lang) -> [&'static str; dest::COUNT] {
     [
         t.value_off(),
         t.choice_volt_dest_pitch(),

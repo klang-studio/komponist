@@ -118,6 +118,9 @@ ui-graph-envelope = Envelope
 # Title and accessible name of the EQ graph.
 ui-graph-eq = Parametric EQ
 
+# Title and accessible name of surf's wavetable graph.
+ui-graph-wavetable = Wavetable
+
 # Title and handle name of the filter graphs.
 ui-graph-filter = Filter
 

@@ -30,6 +30,7 @@ mod format;
 pub mod layout;
 mod scale;
 pub mod va_curve;
+pub mod wavetable;
 
 use std::fmt;
 use std::sync::Arc;

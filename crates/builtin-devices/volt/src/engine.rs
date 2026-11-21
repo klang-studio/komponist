@@ -536,6 +536,7 @@ impl<O: Oscillators> Dsp for Engine<O> {
                     &self.ctl,
                     [&mut out_l[pos..pos + n], &mut out_r[pos..pos + n]],
                     n,
+                    self.ctrl_pos,
                 );
             }
             pos += n;

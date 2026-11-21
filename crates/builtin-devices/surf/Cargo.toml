@@ -1,0 +1,17 @@
+[package]
+name = "komponist-surf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+komponist-device-core.workspace = true
+komponist-i18n.workspace = true
+komponist-model.workspace = true
+komponist-volt.workspace = true
+realfft.workspace = true
+
+[dev-dependencies]
+assert_no_alloc.workspace = true
+komponist-engine.workspace = true

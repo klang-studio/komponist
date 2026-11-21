@@ -130,6 +130,11 @@ pub enum GraphConfig {
     Signal,
     /// One cycle of an LFO shape (WP-95), display only; slot `shape`.
     LfoShape,
+    /// surf's wavetable as a stack of frames (#107), the one at the position highlighted, with a
+    /// handle on the position (↔) and the range the matrix moves it over. Slots `table`,
+    /// `position`, `mod1_src` … `mod4_amt`, `lfo1_uni`, `lfo2_uni`; which oscillator's
+    /// destination the range follows comes from the view's `osc_view` placeholder.
+    Wavetable,
     /// `graph::compressor` (WP-93): `graph::transfer` with a knee width in dB and the IN, OUT and
     /// GR readouts of the live level beside the plot. Slots `threshold`, `ratio`, `knee`.
     Compressor,
@@ -646,7 +651,7 @@ pub fn validate(
 }
 
 /// The placeholder names of the layouts the editors know (re-exported for layout authors).
-pub use super::context::{BAND, ENV_OP, ENV_VIEW, LFO_VIEW, SEL};
+pub use super::context::{BAND, ENV_OP, ENV_VIEW, LFO_VIEW, OSC_VIEW, SEL};
 
 #[cfg(test)]
 mod tests {

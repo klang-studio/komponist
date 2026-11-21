@@ -186,6 +186,9 @@ devices-detector-external = Extern
 # The title of volt's filter graph (followed by the type).
 devices-filter = Filter
 
+# The title of surf's wavetable graph (followed by A or B and the table).
+devices-osc = Osz
+
 # The title of volt's LFO graph (followed by the number and shape).
 devices-lfo = LFO
 

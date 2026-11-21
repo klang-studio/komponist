@@ -135,8 +135,8 @@ fn number(col: u8, row: u8, id: &str) -> Cell {
     half(col, row, 1, Half::Bottom, WidgetKind::Number, id)
 }
 
-/// The graph of the filter: slots and the parameters behind them.
-fn filter_graph(col: u8) -> Cell {
+/// The graph of the filter: slots and the parameters behind them (surf shares it).
+pub fn filter_graph(col: u8) -> Cell {
     let mut binding = GraphBinding::new(GraphConfig::FilterVa)
         .bind("cutoff", "cutoff")
         .bind("resonance", "resonance")
@@ -211,8 +211,9 @@ pub const ENVELOPES: &[(&str, &str)] = &[("amp", "Amp"), ("filt", "Filter"), ("m
 /// The LFOs the right switch chooses between.
 pub const LFOS: &[(&str, &str)] = &[("1", "LFO 1"), ("2", "LFO 2")];
 
-/// Page 2, "Hüllkurven" ("Envelopes"): the chosen envelope and the chosen LFO (8 columns).
-fn page_envelopes(t: Lang) -> Page {
+/// Page 2, "Hüllkurven" ("Envelopes"): the chosen envelope and the chosen LFO (8 columns); surf
+/// shows the same page.
+pub fn page_envelopes(t: Lang) -> Page {
     let envelope = GraphBinding::new(GraphConfig::Envelope)
         .titled(t.graph_title_volt_envelope(format!("{{{ENV_VIEW}_label}}")))
         .bind("attack", format!("{{{ENV_VIEW}}}_a"))
@@ -299,8 +300,8 @@ fn page_envelopes(t: Lang) -> Page {
     }
 }
 
-/// Page 3, "Matrix": four slots, the fixed paths, the voices (8 columns).
-fn page_matrix(t: Lang) -> Page {
+/// Page 3, "Matrix": four slots, the fixed paths, the voices (8 columns); surf shows the same page.
+pub fn page_matrix(t: Lang) -> Page {
     let slot = |n: usize| {
         let (row, h) = [
             (0, Half::Top),

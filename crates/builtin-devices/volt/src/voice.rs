@@ -8,8 +8,8 @@ use klang_dsp::phase::increment;
 use klang_dsp::rng::Rng;
 use klang_dsp::sine::sine;
 use komponist_model::params::va_curve::{
-    ENV_CUTOFF_OCT, MOD_CUTOFF_OCT, MOD_DETUNE_CT, MOD_PITCH_ST, MOD_RATE_OCT, SUB_GAIN,
-    dst, mix_gains, src,
+    ENV_CUTOFF_OCT, MOD_CUTOFF_OCT, MOD_DETUNE_CT, MOD_PITCH_ST, MOD_RATE_OCT, SUB_GAIN, dst,
+    mix_gains, src,
 };
 
 use super::env::{Adsr, Coefs as EnvCoefs};
@@ -440,8 +440,8 @@ impl<O: Oscillators> Voice<O> {
         // Every pair, not only the sounding ones: a pair that joins later starts from its last
         // increment and the current shape.
         for u in 0..MAX_UNISON {
-            self.osc_a[u] = O::prepare(c.wave_a, self.inc_a[u], shape[0], c.rate);
-            self.osc_b[u] = O::prepare(c.wave_b, self.inc_b[u], shape[1], c.rate);
+            self.osc_a[u] = O::prepare(&self.osc_a[u], c.wave_a, self.inc_a[u], shape[0], c.rate);
+            self.osc_b[u] = O::prepare(&self.osc_b[u], c.wave_b, self.inc_b[u], shape[1], c.rate);
         }
         let (ga, gb) = mix_gains(f64::from((c.mix + m[dst::MIX]).clamp(0.0, 1.0)));
         self.gains = [ga as f32, gb as f32];
@@ -475,7 +475,7 @@ impl<O: Oscillators> Voice<O> {
     }
 
     /// Adds `n` samples of this voice to `out`, `done` samples into the control interval.
-    pub fn render(&mut self, c: &Control, out: [&mut [f32]; 2], n: usize) {
+    pub fn render(&mut self, c: &Control, out: [&mut [f32]; 2], n: usize, done: usize) {
         let [out_l, out_r] = out;
         let uni = c.unison;
         let (wave_a, wave_b) = (c.wave_a, c.wave_b);
@@ -484,12 +484,14 @@ impl<O: Oscillators> Voice<O> {
         let noise = c.noise * NOISE_GAIN;
         let hp = c.hp_amount;
         let mut gain = self.gain;
+        let step = 1.0 / CONTROL as f32;
+        let mut t = done as f32 * step;
         for i in 0..n {
             let mut l = 0.0f32;
             let mut r = 0.0f32;
             for u in 0..uni {
-                let a = O::sample(&self.osc_a[u], wave_a, self.phase_a[u]);
-                let b = O::sample(&self.osc_b[u], wave_b, self.phase_b[u]);
+                let a = O::sample(&self.osc_a[u], wave_a, self.phase_a[u], t);
+                let b = O::sample(&self.osc_b[u], wave_b, self.phase_b[u], t);
                 self.phase_a[u] = self.phase_a[u].wrapping_add(self.inc_a[u]);
                 self.phase_b[u] = self.phase_b[u].wrapping_add(self.inc_b[u]);
                 let s = ga * a + gb * b;
@@ -511,6 +513,7 @@ impl<O: Oscillators> Voice<O> {
                 yl
             };
             gain += self.gain_step;
+            t += step;
             out_l[i] += yl * gain;
             out_r[i] += yr * gain;
         }

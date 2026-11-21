@@ -2857,6 +2857,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "komponist-surf"
+version = "0.2.0"
+dependencies = [
+ "assert_no_alloc",
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-volt",
+ "realfft",
+]
+
+[[package]]
 name = "komponist-tokens"
 version = "0.2.0"
 dependencies = [

@@ -632,3 +632,74 @@ param-general-sampler-lfo-depth = LFO-Stärke
 param-general-sampler-velocity-target = Velocity-Ziel
 param-general-sampler-velocity-depth = Velocity-Stärke
 param-general-sampler-pitch = Tonhöhe
+
+## surf (`builtin-devices/surf/`), the wavetable instrument (#107). Oscillator B's octave and fine tune are volt's.
+
+# surf: the wavetable of oscillator A.
+param-surf-table-a = Tabelle A
+
+# surf: the wavetable of oscillator B.
+param-surf-table-b = Tabelle B
+
+# surf: the position in the table of oscillator A; also a matrix destination.
+param-surf-position-a = Position A
+
+# surf: the position in the table of oscillator B; also a matrix destination.
+param-surf-position-b = Position B
+
+# surf: octave of oscillator A.
+param-surf-a-oct = A Okt.
+
+# surf: fine tune of oscillator A.
+param-surf-a-fine = A Fein
+
+# surf: the name above the switch between oscillator A and B.
+label-surf-osc = Oszillator
+
+# surf: factory wavetable.
+choice-surf-table-basic = Grundformen
+
+# surf: factory wavetable.
+choice-surf-table-pulse = Pulsbreite
+
+# surf: factory wavetable.
+choice-surf-table-sync = Sync
+
+# surf: factory wavetable.
+choice-surf-table-harmonics = Obertöne
+
+# surf: factory wavetable.
+choice-surf-table-odd-even = Ungerade–Gerade
+
+# surf: factory wavetable.
+choice-surf-table-organ = Orgel
+
+# surf: factory wavetable.
+choice-surf-table-vowels = Vokale
+
+# surf: factory wavetable.
+choice-surf-table-choir = Chor
+
+# surf: factory wavetable.
+choice-surf-table-fm = FM
+
+# surf: factory wavetable.
+choice-surf-table-fold = Falten
+
+# surf: factory wavetable.
+choice-surf-table-bits = Bits
+
+# surf: factory wavetable.
+choice-surf-table-comb = Kamm
+
+# surf: factory wavetable.
+choice-surf-table-glass = Glas
+
+# surf: factory wavetable.
+choice-surf-table-hollow = Hohl
+
+# surf: factory wavetable.
+choice-surf-table-resonance = Resonanz
+
+# surf: factory wavetable.
+choice-surf-table-random = Zufall
