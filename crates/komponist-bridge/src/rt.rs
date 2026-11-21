@@ -35,7 +35,10 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use komponist_hosting::{EventOut, HostedProcessor, HostingError, ProcessBlock, ProcessStatus};
-use komponist_ipc::shm::{BLOCK_FLAG_RESET, INPUT_EVENT_CAPACITY, OUTPUT_EVENT_CAPACITY};
+use komponist_ipc::shm::{
+    BLOCK_FLAG_EFFECT_DETECTOR, BLOCK_FLAG_EFFECT_METER, BLOCK_FLAG_RESET, INPUT_EVENT_CAPACITY,
+    OUTPUT_EVENT_CAPACITY,
+};
 use komponist_ipc::{
     BlockRequest, BlockResult, BlockStatus, BridgeServer, WireEvent, WireEventKind,
 };
@@ -829,6 +832,10 @@ fn serve(
         processor.reset();
     }
 
+    let capture_meter = request.flags & BLOCK_FLAG_EFFECT_METER != 0;
+    if capture_meter {
+        processor.begin_effect_meter(request.flags & BLOCK_FLAG_EFFECT_DETECTOR != 0);
+    }
     let (status, produced, mut dropped) = {
         let (input, sidechain, output) = server.audio_with_sidechain(frames);
         let mut block = ProcessBlock {
@@ -848,6 +855,9 @@ fn serve(
             block.events_out.dropped(),
         )
     };
+    let meter = capture_meter
+        .then(|| processor.end_effect_meter())
+        .flatten();
     for event in &scratch.events_out[..produced] {
         if !server.push_output_event(WireEvent {
             reserved: request.seq,
@@ -886,7 +896,7 @@ fn serve(
             );
         }
     }
-    server.finish(result(status, dropped));
+    server.finish_with_meter(result(status, dropped), meter);
 }
 
 #[cfg(test)]

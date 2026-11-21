@@ -701,6 +701,7 @@ impl DeviceHost for PluginHost {
 
     fn for_each_meter(&self, f: &mut dyn FnMut(DeviceId, &DeviceMeter)) {
         self.builtin.for_each_meter(f);
+        self.manager.for_each_effect_meter(f);
     }
 
     fn status(&self, device: DeviceId) -> DeviceStatus {

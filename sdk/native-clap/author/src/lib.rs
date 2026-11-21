@@ -27,6 +27,7 @@ use nice_plug::wrapper::clap::Wrapper;
 use serde_json::{Value, json};
 
 pub use komponist_device_core::layout;
+pub use komponist_ipc::effect_meter;
 pub use komponist_ipc::native_layout::Labels;
 pub use komponist_model::params::{
     ParamId,

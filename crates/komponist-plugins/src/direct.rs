@@ -19,6 +19,7 @@ use komponist_ipc::{PluginFormat, WireEvent, WireEventKind};
 use komponist_model::DeviceRole;
 
 use crate::bundled_clap::VerifiedClap;
+use crate::bundled_effects;
 use crate::external::{midi_event_kind, to_wire, wire_transport};
 use crate::manager::ProcessorSetup;
 
@@ -188,6 +189,7 @@ impl DirectProcessor {
         controls: ControlEvents<'_>,
         io: &mut StereoIo<'_>,
         sidechain: Option<[&[f32]; 2]>,
+        meter: Option<&bundled_effects::Meter>,
     ) -> ProcessStatus {
         self.output_read = 0;
         self.output_len = 0;
@@ -241,13 +243,28 @@ impl DirectProcessor {
             transport: &transport,
             steady_time: start,
         };
+        let meter_requested = meter.is_some_and(|meter| {
+            if meter.requests_reduction() {
+                self.audio
+                    .begin_effect_meter(meter.requests_detector(ctx.frames as usize));
+                true
+            } else {
+                false
+            }
+        });
         let result = self.audio.process(&mut block);
+        let readings = meter_requested
+            .then(|| self.audio.end_effect_meter())
+            .flatten();
         self.output_len = block.events_out.as_slice().len();
         self.dropped = block.events_out.dropped();
         if result == komponist_hosting::ProcessStatus::Error {
             self.output_len = 0;
             write_fallback(self.role, io);
             return ProcessStatus::Failed;
+        }
+        if let Some(meter) = meter {
+            meter.record(io, readings);
         }
         self.delivered = true;
         ProcessStatus::Continue
@@ -291,7 +308,7 @@ impl Processor for DirectProcessor {
         events: &[Event],
         io: &mut StereoIo<'_>,
     ) -> ProcessStatus {
-        self.process_block(ctx, events, ControlEvents::default(), io, None)
+        self.process_block(ctx, events, ControlEvents::default(), io, None, None)
     }
 
     fn process_sidechain(
@@ -301,7 +318,14 @@ impl Processor for DirectProcessor {
         io: &mut StereoIo<'_>,
         sidechain: [&[f32]; 2],
     ) -> ProcessStatus {
-        self.process_block(ctx, events, ControlEvents::default(), io, Some(sidechain))
+        self.process_block(
+            ctx,
+            events,
+            ControlEvents::default(),
+            io,
+            Some(sidechain),
+            None,
+        )
     }
 
     fn latency(&self) -> u32 {
@@ -375,6 +399,7 @@ impl DirectProcessor {
                 input: [&SILENCE[..len]; 2],
                 output: [&mut left[..len], &mut right[..len]],
             },
+            None,
             None,
         );
         let events = &self.output_events[..self.output_len];

@@ -13,6 +13,7 @@
 //! (CLAP thread-check reports it as such), processor methods mark their thread as the audio thread
 //! while they run.
 
+mod effect_meter;
 mod events;
 mod host;
 mod native_layout;
@@ -173,6 +174,7 @@ pub(crate) fn scan(bundle: &Path) -> Result<Vec<PluginDescriptor>, HostingError>
 struct Extensions {
     audio_ports: Option<PluginAudioPorts>,
     sidechain_from_main: bool,
+    effect_meter: Option<effect_meter::EffectMeter>,
     note_ports: Option<PluginNotePorts>,
     params: Option<PluginParams>,
     state: Option<PluginState>,
@@ -190,6 +192,7 @@ impl Extensions {
         Extensions {
             audio_ports: handle.get_extension(),
             sidechain_from_main: sidechain_fallback::configure(handle),
+            effect_meter: effect_meter::EffectMeter::query(handle.as_raw()),
             note_ports: handle.get_extension(),
             params: handle.get_extension(),
             state: handle.get_extension(),
@@ -442,6 +445,7 @@ impl HostedPlugin for ClapPlugin {
             notes,
             note_output,
             config.max_frames,
+            ext.effect_meter,
         )))
     }
 

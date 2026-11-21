@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use komponist_builtin::BuiltinKind;
 use komponist_engine::processor::EventBuffer;
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, StereoIo, TransportInfo,
@@ -14,6 +15,7 @@ use komponist_model::{Device, DeviceId, DeviceRole};
 
 use crate::bridge::{Bridge, SpawnSetup, StatePurpose, Timing};
 use crate::bundled_clap::{BundledClap, VerifiedClap, snapshot_cache};
+use crate::bundled_effects::Meter;
 use crate::catalog::{PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT};
 use crate::direct::DirectClap;
 use crate::direct_session::DirectSession;
@@ -278,6 +280,7 @@ fn scan(config: &PluginManagerConfig, path: &Path, id: &str) -> Result<PluginDes
 }
 
 fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
+    let meter = bundled_meter(&bundle);
     let hall = bundle.plugin_id() == HALL_ID;
     let presse = bundle.plugin_id() == PRESSE_ID;
     let mut host = DirectClap::load(bundle).map_err(|error| error.to_string())?;
@@ -288,8 +291,15 @@ fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
     }
     let (mut session, mut audio) =
         DirectSession::start(host, SETUP, role).map_err(|error| error.to_string())?;
+    if let Some(meter) = &meter {
+        audio.set_effect_meter(meter.clone());
+    }
     let result = (|| {
         drive_direct(&mut audio, role, hall, presse)?;
+        if let Some(meter) = &meter {
+            thread::scope(|scope| scope.spawn(|| check_effect_meter(&mut audio, meter)).join())
+                .map_err(|_| "direct meter audio worker panicked".to_owned())??;
+        }
         audio
             .activate(SETUP.sample_rate, SETUP.max_block * 2)
             .map_err(|error| error.to_string())?;
@@ -355,6 +365,10 @@ fn smoke_bridge(
     .map_err(|error| error.to_string())?;
     let mut bridge = started.bridge;
     let mut audio = started.processor;
+    let meter = bundled_meter(bundle);
+    if let Some(meter) = &meter {
+        audio.set_effect_meter(meter.clone());
+    }
     let result = (|| {
         wait_for_bridge(&mut bridge, |bridge, _, _| {
             Ok((bridge.status() == DeviceStatus::Ok).then_some(()))
@@ -365,6 +379,9 @@ fn smoke_bridge(
         process_audio(&mut audio, role, descriptor.id == HALL_ID)?;
         if descriptor.id == PRESSE_ID {
             check_presse_sidechain(&mut audio)?;
+        }
+        if let Some(meter) = &meter {
+            check_effect_meter(&mut audio, meter)?;
         }
         let request = bridge
             .request_state(StatePurpose::Collect)
@@ -433,6 +450,60 @@ fn wait_for_bridge<T>(
         states.clear();
         thread::sleep(Duration::from_millis(2));
     }
+}
+
+fn bundled_meter(bundle: &VerifiedClap) -> Option<std::sync::Arc<Meter>> {
+    BuiltinKind::all()
+        .find(|kind| crate::legacy_bundled::clap_id(*kind) == bundle.plugin_id())
+        .and_then(|kind| Meter::new(kind, SETUP.sample_rate))
+}
+
+fn check_effect_meter(processor: &mut dyn Processor, meter: &Meter) -> Result<(), String> {
+    let tap = meter.view.tap();
+    if let Some(tap) = tap {
+        tap.want();
+    }
+    let input = [2.0; FRAMES];
+    let mut left = [0.0; FRAMES];
+    let mut right = [0.0; FRAMES];
+    let context = smoke_context();
+    for _ in 0..16 {
+        let status = processor.process(
+            &context,
+            &[],
+            &mut StereoIo {
+                input: [&input, &input],
+                output: [&mut left, &mut right],
+            },
+        );
+        if status == ProcessStatus::Failed {
+            return Err("effect processor failed while feeding its meter".to_owned());
+        }
+    }
+    if meter.requests_reduction() {
+        let (input, reduction, output) = meter.view.take();
+        if input != 2.0 || reduction <= 0.0 || output <= 0.0 {
+            return Err(format!(
+                "effect did not report input, gain reduction and output: {input}, {reduction}, {output}",
+            ));
+        }
+    }
+    if let Some(tap) = tap {
+        let mut samples = [0.0; 16];
+        if tap.read_latest(&mut samples).is_none() {
+            return Err("effect did not expose recent signal for its graph".to_owned());
+        }
+        let has_signal = if meter.requests_reduction() {
+            // Presse reports pairs of detector level in dBFS and reduction in dB.
+            samples.as_chunks::<2>().0.iter().any(|pair| pair[1] > 0.0)
+        } else {
+            samples.iter().any(|sample| sample.abs() > 1e-4)
+        };
+        if !has_signal {
+            return Err("effect graph signal was silent during a non-silent block".to_owned());
+        }
+    }
+    Ok(())
 }
 
 fn smoke_context() -> ProcessContext {

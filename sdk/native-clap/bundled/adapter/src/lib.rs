@@ -1,6 +1,7 @@
 //! Adapts the shared device specs and DSP to the public native CLAP SDK.
 
 mod instrument;
+mod meter;
 mod midi_effect;
 mod parameter;
 mod sampler;
@@ -32,6 +33,8 @@ pub trait DeviceDefinition: Send + 'static {
     const SIDECHAIN_FROM_MAIN: bool = false;
     /// A parameter that can only take effect on reactivation because it changes latency.
     const LATENCY_PARAMETER: Option<&'static str> = None;
+    /// Publish true DSP gain reduction to hosts that request effect meters.
+    const REPORTS_REDUCTION: bool = false;
     const VERSION: &'static str;
     const FEATURES: &'static [ClapFeature];
 
@@ -61,16 +64,20 @@ pub struct Effect<T> {
     input: [Vec<f32>; 2],
     latency_param: Option<usize>,
     restart_requested: bool,
+    meter: Option<Arc<meter::Meter>>,
     definition: std::marker::PhantomData<T>,
 }
 
 impl<T: EffectDefinition> Default for Effect<T> {
     fn default() -> Self {
         let params = parameter::Parameters::new(T::SPEC, T::choice);
+        let dsp = (T::SPEC.dsp)();
+        let meter = T::REPORTS_REDUCTION.then(|| Arc::new(meter::Meter::new(dsp.tap())));
         Self {
             applied: vec![None; params.len()],
             params: Arc::new(params),
-            dsp: (T::SPEC.dsp)(),
+            dsp,
+            meter,
             input: Default::default(),
             latency_param: T::LATENCY_PARAMETER.map(|id| {
                 T::SPEC
@@ -195,6 +202,9 @@ impl<T: EffectDefinition> Plugin for Effect<T> {
         } else {
             self.dsp.process(input, output);
         }
+        if let Some(meter) = &self.meter {
+            meter.record(self.dsp.take_reduction_db());
+        }
         // Keep delay lines and tails running when a quiet block precedes an audible one.
         ProcessStatus::KeepAlive
     }
@@ -207,7 +217,15 @@ impl<T: EffectDefinition> ClapPlugin for Effect<T> {
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = T::FEATURES;
 
+    fn clap_custom_extension_data(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        self.meter.as_ref().map(|meter| meter.clone() as Arc<_>)
+    }
+
     unsafe fn clap_custom_extension(id: &CStr) -> *const c_void {
+        let meter = meter::extension::<T>(id);
+        if !meter.is_null() {
+            return meter;
+        }
         if T::SIDECHAIN && T::SIDECHAIN_FROM_MAIN {
             let fallback = komponist_native_clap_sdk::sidechain_fallback_to_main::<1>(id);
             if !fallback.is_null() {

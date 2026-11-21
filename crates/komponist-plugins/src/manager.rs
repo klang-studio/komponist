@@ -43,13 +43,13 @@ use rustix::event::{PollFd, PollFlags, Timespec};
 
 use crate::bridge::{Bridge, Collected, SpawnSetup, StatePurpose, Timing};
 use crate::bundled_clap::{BundleVerificationError, BundledClap, VerifiedClap};
-use crate::bundled_sampler;
 use crate::catalog::{
     Catalog, Platform, PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT, ScanCache,
     ScanReport, env_path, requires_bundled,
 };
 use crate::direct_device::DirectDevice;
 use crate::scan::{ScanJob, ScanSetup};
+use crate::{bundled_effects, bundled_sampler};
 
 /// How long a released bridge may take for `Shutdown` before it is killed.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
@@ -357,6 +357,7 @@ pub struct PluginManager {
     force_bundled_bridge: bool,
     project_dir: Option<PathBuf>,
     verified_bundles: BTreeMap<DeviceId, BuiltinKind>,
+    effect_meters: BTreeMap<DeviceId, Arc<bundled_effects::Meter>>,
     direct: BTreeMap<DeviceId, DirectDevice>,
     retiring_direct: Vec<DirectDevice>,
     /// Status of devices without a bridge: `Missing`, or `Crashed` when the bridge could not start.
@@ -419,6 +420,7 @@ impl PluginManager {
             force_bundled_bridge,
             project_dir: None,
             verified_bundles: BTreeMap::new(),
+            effect_meters: BTreeMap::new(),
             direct: BTreeMap::new(),
             retiring_direct: Vec::new(),
             statuses: BTreeMap::new(),
@@ -638,6 +640,7 @@ impl PluginManager {
         // the engine returns the audio half; external bridge retirement remains asynchronous.
         self.retire(device.id, false);
         let mut verified_kind = None;
+        let mut effect_meter = None;
         let mut verified_bundle = None;
         let mut state = state;
         if requires_bundled(&device.plugin)
@@ -670,6 +673,8 @@ impl PluginManager {
             };
             verified_kind = BuiltinKind::all()
                 .find(|kind| crate::legacy_bundled::clap_id(*kind) == proof.plugin_id());
+            effect_meter =
+                verified_kind.and_then(|kind| bundled_effects::Meter::new(kind, setup.sample_rate));
             if is_sampler_kind(verified_kind)
                 && let Some(original) = state.as_ref()
                 && let Some(runtime) = self.sampler_runtime_state(original)
@@ -684,7 +689,11 @@ impl PluginManager {
                     state,
                     self.timing.snapshot_debounce,
                 ) {
-                    Ok((mut instance, processor)) => {
+                    Ok((mut instance, mut processor)) => {
+                        if let Some(meter) = effect_meter {
+                            processor.set_effect_meter(Arc::clone(&meter));
+                            self.effect_meters.insert(device.id, meter);
+                        }
                         self.statuses.remove(&device.id);
                         instance.report_warning(device.id, &mut self.pending);
                         DirectDevice::report_metadata(device.id, &mut self.pending);
@@ -727,7 +736,11 @@ impl PluginManager {
             sidechain,
         });
         match started {
-            Ok(started) => {
+            Ok(mut started) => {
+                if let Some(meter) = effect_meter {
+                    started.processor.set_effect_meter(Arc::clone(&meter));
+                    self.effect_meters.insert(device.id, meter);
+                }
                 if self.render_mode != RenderMode::Realtime {
                     started
                         .bridge
@@ -776,6 +789,7 @@ impl PluginManager {
     fn retire(&mut self, device: DeviceId, graceful: bool) {
         self.discard_queued_snapshots(device);
         self.verified_bundles.remove(&device);
+        self.effect_meters.remove(&device);
         if let Some(direct) = self.direct.remove(&device) {
             self.retiring_direct.push(direct);
         }
@@ -794,6 +808,18 @@ impl PluginManager {
     pub fn release(&mut self, device: DeviceId) {
         self.retire(device, true);
         self.statuses.remove(&device);
+    }
+
+    /// Provides the signal feeds of live verified bundled effect instances.
+    pub fn for_each_effect_meter(
+        &self,
+        f: &mut dyn FnMut(DeviceId, &komponist_engine::DeviceMeter),
+    ) {
+        for (&device, meter) in &self.effect_meters {
+            if self.status(device) == DeviceStatus::Ok {
+                f(device, &meter.view);
+            }
+        }
     }
 
     /// The built-in device an active authenticated package instance implements.
@@ -1311,6 +1337,7 @@ impl PluginManager {
     pub fn shutdown(&mut self) {
         self.scan = None;
         self.verified_bundles.clear();
+        self.effect_meters.clear();
         // App shutdown stops the audio stream before shutting down the plugin host.
         self.retiring_direct
             .extend(std::mem::take(&mut self.direct).into_values());

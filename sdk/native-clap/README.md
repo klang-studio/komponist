@@ -109,6 +109,9 @@ Keep the device's nice-plug dependency at the same Git revision as the SDK. The 
 records that revision for the wrapper, core, derive macros, and logging crate. The wrapper
 changes are maintained in the [nice-plug fork](https://github.com/klang-studio/nice-plug/tree/4a376c7f60775da0455ba0c72c1a7b7d2d56dbdc).
 
+Effects can additionally publish gain reduction and bounded detector data through the optional
+[CLAP audio-meter extension](../../docs/clap-device-layout/audio-meter.md).
+
 Define your device's audio processing, parameter declarations and defaults in nice-plug.
 Implement `NativeClapLayout::panel()` to return a `Panel` with the same contents each time.
 The `grid` uses the device core's `DeviceLayout` with fixed parameter bindings. Supply one
