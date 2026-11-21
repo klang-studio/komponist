@@ -832,6 +832,13 @@ impl EngineSync {
             self.reassert_device_macros(device.id);
         } else if let Some(state) = &device.state {
             self.host.set_state(device.id, state);
+        } else if komponist_plugins::packaged_kind(&device.plugin).is_some() {
+            // Undo may restore the new instance's absent state. A regular reload preserves
+            // the previous processor's snapshot, so start a fresh instance at its defaults.
+            let slot = self.slot_of(device.id).expect("checked by the caller");
+            self.send(Command::RemoveProcessor { slot });
+            self.host.release(device.id);
+            self.reload_device(project, device.id);
         }
     }
 

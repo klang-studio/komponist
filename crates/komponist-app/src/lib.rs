@@ -51,6 +51,7 @@ mod audio_controls;
 pub mod audio_import;
 pub mod audio_record;
 mod automation_capture;
+mod bundled_presets;
 pub mod device_host;
 pub mod diagnostics;
 pub mod dialogs;

@@ -68,13 +68,32 @@ pub fn decode_state(state: Option<&[u8]>) -> Result<Patch, StateError> {
 }
 
 /// Convert a complete legacy project patch into the pinned Hexa CLAP state stream.
-/// Older or out-of-slider patch fields remain authoritative for audio.
 pub fn legacy_patch_to_clap_state(legacy: &[u8], version: &str) -> Result<Vec<u8>, StateError> {
+    Ok(encode_clap_patch(decode_state(Some(legacy))?, version))
+}
+
+const CLAP_PATCH_FIELD: &str = "hexa-patch-v1";
+
+/// Read the complete patch from a pinned Hexa CLAP state.
+pub fn decode_clap_patch(state: &[u8]) -> Option<Patch> {
+    let document = komponist_device_core::pinned_clap_state::decode(state)?;
+    let field = document.get("fields")?.get(CLAP_PATCH_FIELD)?.as_str()?;
+    #[derive(serde::Deserialize)]
+    struct SavedPatch {
+        patch: Patch,
+    }
+    let saved: SavedPatch = serde_json::from_str(field).ok()?;
+    Some(saved.patch.sanitized())
+}
+
+/// Encode the complete Hexa patch in a pinned CLAP state stream, including fields not represented
+/// by the wrapper's parameter inventory.
+pub fn encode_clap_patch(patch: Patch, version: &str) -> Vec<u8> {
     use komponist_device_core::pinned_clap_state;
     use komponist_i18n::Lang;
     use serde_json::{Map, Value, json};
 
-    let patch = decode_state(Some(legacy))?;
+    let patch = patch.sanitized();
     let mut applied = Vec::with_capacity(crate::device::WIRE_COUNT);
     let params = (0..crate::device::WIRE_COUNT)
         .map(|wire| {
@@ -86,8 +105,8 @@ pub fn legacy_patch_to_clap_state(legacy: &[u8], version: &str) -> Result<Vec<u8
         })
         .collect();
     let saved_patch = json!({"patch": patch, "applied": applied}).to_string();
-    let fields = Map::from_iter([("hexa-patch-v1".to_owned(), Value::from(saved_patch))]);
-    Ok(pinned_clap_state::encode(version, params, fields))
+    let fields = Map::from_iter([(CLAP_PATCH_FIELD.to_owned(), Value::from(saved_patch))]);
+    pinned_clap_state::encode(version, params, fields)
 }
 
 /// A device state that is not a hexa patch.

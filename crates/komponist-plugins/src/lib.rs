@@ -33,7 +33,7 @@ mod verify_bundles;
 
 pub use catalog::{
     BuiltinKind, Catalog, CatalogEntry, EffectCategory, PluginDirs, PluginLocation, ScanCache,
-    ScanReport,
+    ScanReport, packaged_kind,
 };
 pub use external::ExternalProcessor;
 pub use manager::{

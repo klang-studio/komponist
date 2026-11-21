@@ -39,6 +39,15 @@ pub(crate) fn requires_bundled(plugin: &PluginRef) -> bool {
         && plugin.module.starts_with(BUNDLED_MODULE_PREFIX)
 }
 
+/// The built-in kind requested by a packaged CLAP reference. This identifies the stored
+/// catalog address only; the running instance must still be authenticated by the manager.
+pub fn packaged_kind(plugin: &PluginRef) -> Option<BuiltinKind> {
+    if !requires_bundled(plugin) {
+        return None;
+    }
+    BuiltinKind::all().find(|kind| crate::legacy_bundled::clap_id(*kind) == plugin.id)
+}
+
 /// Where a catalog entry's code comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PluginLocation {
@@ -143,6 +152,13 @@ impl Catalog {
         Catalog {
             entries: crate::builtin::entries(),
         }
+    }
+
+    /// Find the packaged CLAP entry of a built-in, if it was included in the scan.
+    pub fn packaged(&self, kind: BuiltinKind) -> Option<&CatalogEntry> {
+        self.entries
+            .iter()
+            .find(|entry| packaged_kind(&entry.plugin) == Some(kind))
     }
 
     /// All entries: built-ins first, then scanned plugins sorted by name (case-insensitive).

@@ -209,7 +209,11 @@ pub(super) fn set(out: &mut Vec<Action>, card: &Card, p: &Param, plain: f64) {
         out.push(Action::Plugin(PluginAction::SetParam {
             device: card.device,
             id: p.wire,
-            value: plain,
+            value: if card.bundled_editor {
+                komponist_device_core::pinned_clap_state::to_clap(&p.info, plain)
+            } else {
+                plain
+            },
         }));
     }
 }
@@ -242,8 +246,8 @@ pub(super) fn touch(
     if let Some(control) = control {
         let range = control.driver.as_ref().map(|driver| {
             t.devices_range(
-                p.text_at(p.info.to_plain(f64::from(driver.range.0))),
-                p.text_at(p.info.to_plain(f64::from(driver.range.1))),
+                p.text_at(p.value_at_normalized(card.bundled_editor, f64::from(driver.range.0))),
+                p.text_at(p.value_at_normalized(card.bundled_editor, f64::from(driver.range.1))),
             )
         });
         control.decorate(cu, r, r.rect, range.as_deref());
@@ -317,7 +321,7 @@ pub(super) fn touch(
                         replace: None,
                         target: komponist_model::automation::AutomationTarget::Param {
                             device: card.device,
-                            param: p.info.id.clone(),
+                            param: p.project_id(card.bundled_editor),
                         },
                         label: format!("{} · {}", card.name, p.name()),
                     },
@@ -339,7 +343,7 @@ pub(super) fn begin_param(card: &Card, id: u32) -> Action {
 pub(super) fn touch_action(card: &Card, p: &Param, dragging: bool) -> Action {
     Action::Ui(UiAction::TouchParam {
         device: card.device,
-        param: p.info.id.clone(),
+        param: p.project_id(card.bundled_editor),
         dragging,
     })
 }
@@ -1414,6 +1418,7 @@ mod tests {
             sampler: None,
             general_sampler: None,
             native_layout: None,
+            bundled_editor: false,
             device: DeviceId(7),
             automation_owner: None,
             automation: Default::default(),

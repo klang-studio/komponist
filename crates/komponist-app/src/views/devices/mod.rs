@@ -114,7 +114,7 @@ impl View for Devices {
             for param in &mut c.params {
                 let target = komponist_model::automation::AutomationTarget::Param {
                     device: c.device,
-                    param: param.info.id.clone(),
+                    param: param.project_id(c.bundled_editor),
                 };
                 let control = param
                     .info
@@ -123,12 +123,11 @@ impl View for Devices {
                     .flatten();
                 let driven = control.as_ref().and_then(|control| control.driver.as_ref());
                 if let Some(driver) = driven {
-                    param.value = param
-                        .info
-                        .snap(param.info.to_plain(f64::from(driver.value)));
+                    param.value =
+                        param.value_at_normalized(c.bundled_editor, f64::from(driver.value));
                     param.text = param.info.format(param.value);
                 } else if let Some(value) = ctx.automation_value(owner, &target) {
-                    param.value = param.info.to_plain(f64::from(value));
+                    param.value = param.value_at_normalized(c.bundled_editor, f64::from(value));
                     param.text = param.info.format(param.value);
                     let ink = if ctx
                         .automation_capture
