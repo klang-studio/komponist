@@ -118,13 +118,9 @@ pub fn read(state: Option<&[u8]>) -> Vec<(usize, SampleLink)> {
 
 const REVISIONS: &str = "sample_revisions";
 
-/// A per-pad revision for explicit reloads whose links remain the same.
-pub fn revisions(state: &str) -> [u64; PADS] {
+fn read_revisions(state: &Value) -> [u64; PADS] {
     let mut revisions = [0; PADS];
-    if let Some(values) = serde_json::from_str::<Value>(state)
-        .ok()
-        .and_then(|value| value.get(REVISIONS)?.as_array().cloned())
-    {
+    if let Some(values) = state.get(REVISIONS).and_then(Value::as_array) {
         for (revision, value) in revisions.iter_mut().zip(values) {
             *revision = value.as_u64().unwrap_or_default();
         }
@@ -132,19 +128,23 @@ pub fn revisions(state: &str) -> [u64; PADS] {
     revisions
 }
 
+/// A per-pad revision for explicit reloads whose links remain the same.
+pub fn revisions(state: &str) -> [u64; PADS] {
+    serde_json::from_str(state)
+        .ok()
+        .map(|value| read_revisions(&value))
+        .unwrap_or_default()
+}
+
 /// Writes a sample edit revision into the asset document. Save/rebase preserves it.
 pub fn touch(state: &mut Value, pad: usize) {
-    let Some(object) = state.as_object_mut() else {
-        return;
-    };
-    let mut revisions = [0; PADS];
-    if let Some(values) = object.get(REVISIONS).and_then(Value::as_array) {
-        for (revision, value) in revisions.iter_mut().zip(values) {
-            *revision = value.as_u64().unwrap_or_default();
-        }
+    let mut revisions = read_revisions(state);
+    if let Some(revision) = revisions.get_mut(pad)
+        && let Some(object) = state.as_object_mut()
+    {
+        *revision = revision.wrapping_add(1);
+        object.insert(REVISIONS.into(), serde_json::json!(revisions));
     }
-    revisions[pad] = u64::wrapping_add(revisions[pad], 1);
-    object.insert(REVISIONS.into(), serde_json::json!(revisions));
 }
 
 /// `state` with the link of `pad` set to `link` (`None` removes it). Everything else in the state
