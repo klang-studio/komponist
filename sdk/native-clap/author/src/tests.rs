@@ -354,3 +354,6 @@ fn typed_enums_need_nonblank_clap_value_text() {
     );
     assert!(unsafe { compile::<P>(instance.0, &panel) }.is_err());
 }
+
+mod audio_buffers;
+mod transport;

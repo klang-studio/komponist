@@ -134,8 +134,9 @@ collisions before a first release and plan an explicit migration before changing
 
 CLAP supplies values, ranges, defaults, steps and automation. The layout supplies placement
 and labels. For a segment or dropdown, declare a nice-plug `EnumParam`. The patched wrapper
-reports `CLAP_PARAM_IS_ENUM` and `CLAP_PARAM_IS_STEPPED` for typed enums. A plain stepped
-integer reports only the stepped flag, so use a numeric control for it.
+reports `CLAP_PARAM_IS_ENUM` and `CLAP_PARAM_IS_STEPPED` for typed enums with nonblank
+standard CLAP value text for every choice. A plain stepped integer reports only the stepped
+flag, so use a numeric control for it.
 
 Bind the cell to the enum's author ID and add a matching entry in `Panel::choice_labels`.
 V1 allows 2–16 choices. Supply one label map per advertised integer value, in ascending
