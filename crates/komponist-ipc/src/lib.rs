@@ -40,6 +40,7 @@ pub mod native_layout;
 pub mod process;
 pub mod ring;
 pub mod shm;
+pub mod sampler_ui;
 pub mod sidechain_fallback;
 pub mod signal;
 

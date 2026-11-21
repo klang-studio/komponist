@@ -802,6 +802,21 @@ impl Bridge {
                 // Answered in every state (an empty list before `Load`).
                 self.report_params();
             }
+            ControlMsg::GetSamplerUi(request) => {
+                let snapshot = self.plugin.as_ref().and_then(|plugin| plugin.sampler_ui());
+                let encoded = snapshot.and_then(|snapshot| {
+                    let mut bytes = vec![0; komponist_ipc::sampler_ui::MAX_BYTES];
+                    let len = snapshot.encode(&mut bytes)?;
+                    bytes.truncate(len);
+                    Some(bytes)
+                });
+                self.send(BridgeMsg::SamplerUi(request, encoded));
+            }
+            ControlMsg::PreviewSamplerSlice(time) => {
+                if let Some(plugin) = &self.plugin {
+                    plugin.preview_sampler_slice(time);
+                }
+            }
             ControlMsg::SetParam { id, value } => self.set_param(id, value),
             ControlMsg::OpenGui(target) => self.open_gui(target),
             ControlMsg::SetGuiSize(size) => {

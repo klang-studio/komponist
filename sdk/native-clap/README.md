@@ -105,6 +105,8 @@ komponist-native-clap-sdk = { path = "../komponist-source/sdk/native-clap/author
 nice-plug = { git = "https://github.com/klang-studio/nice-plug", rev = "4a376c7f60775da0455ba0c72c1a7b7d2d56dbdc", default-features = false }
 ```
 
+Sampler instruments can advertise the optional [sampler UI extension](../../docs/clap-device-layout/sampler-ui.md) for host-side waveform, pad and slice preview workflows.
+
 Keep the device's nice-plug dependency at the same Git revision as the SDK. The SDK lockfile
 records that revision for the wrapper, core, derive macros, and logging crate. The wrapper
 changes are maintained in the [nice-plug fork](https://github.com/klang-studio/nice-plug/tree/4a376c7f60775da0455ba0c72c1a7b7d2d56dbdc).

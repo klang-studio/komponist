@@ -460,9 +460,11 @@ dependencies = [
 name = "komponist-bundled-clap-adapter"
 version = "0.1.0"
 dependencies = [
+ "clap-sys",
  "komponist-device-core",
  "komponist-engine",
  "komponist-i18n",
+ "komponist-ipc",
  "komponist-model",
  "komponist-native-clap-sdk",
  "komponist-sampler",

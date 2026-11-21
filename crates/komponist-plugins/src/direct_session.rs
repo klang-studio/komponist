@@ -242,6 +242,14 @@ impl DirectSession {
         true
     }
 
+    pub(crate) fn sampler_ui(&self) -> Option<komponist_ipc::sampler_ui::Snapshot> {
+        self.host.sampler_ui()
+    }
+
+    pub(crate) fn preview_sampler_slice(&self, time: Option<f64>) {
+        self.host.preview_sampler_slice(time);
+    }
+
     pub(crate) fn set_render_mode(&mut self, mode: RenderMode) {
         if self.render_mode != mode {
             self.render_mode = mode;

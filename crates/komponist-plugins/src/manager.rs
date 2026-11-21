@@ -850,11 +850,36 @@ impl PluginManager {
         let mut events = std::mem::take(&mut self.pending);
         for (&id, direct) in &mut self.direct {
             direct.poll(id, &mut events);
+            if is_sampler_kind(self.verified_bundles.get(&id).copied()) {
+                direct.poll_sampler_ui();
+                if self.verified_bundles.get(&id) == Some(&BuiltinKind::Internal(Internal::Sampler))
+                {
+                    update_sampler_names(
+                        id,
+                        direct.sampler_ui.as_ref(),
+                        &mut direct.note_names,
+                        &mut events,
+                    );
+                }
+            }
         }
         self.retiring_direct.retain_mut(|direct| !direct.retired());
         let mut collected = Vec::new();
         for (&device, bridge) in &mut self.bridges {
             bridge.poll(&mut events, &mut collected);
+            if is_sampler_kind(self.verified_bundles.get(&device).copied()) {
+                bridge.poll_sampler_ui();
+                if self.verified_bundles.get(&device)
+                    == Some(&BuiltinKind::Internal(Internal::Sampler))
+                {
+                    update_sampler_names(
+                        device,
+                        bridge.sampler_ui.as_ref(),
+                        &mut bridge.note_names,
+                        &mut events,
+                    );
+                }
+            }
             // Answers to a `snapshot_states` that gave up waiting still belong in the document.
             for (_, state) in collected.drain(..) {
                 events.push(PluginManagerEvent::StateSnapshot { device, state });
@@ -901,6 +926,29 @@ impl PluginManager {
             return direct.layout.as_ref();
         }
         self.bridges.get(&device)?.native_layout.as_ref()
+    }
+
+    /// The latest editor snapshot for an authenticated bundled sampler.
+    pub fn sampler_ui(&self, device: DeviceId) -> Option<&komponist_ipc::sampler_ui::Snapshot> {
+        if !is_sampler_kind(self.verified_bundles.get(&device).copied()) {
+            return None;
+        }
+        if let Some(direct) = self.direct.get(&device) {
+            return direct.sampler_ui.as_ref();
+        }
+        self.bridges.get(&device)?.sampler_ui.as_ref()
+    }
+
+    /// Audition a slice of a verified General Sampler through the active host route.
+    pub fn preview_sampler_slice(&self, device: DeviceId, time: Option<f64>) {
+        if !is_sampler_kind(self.verified_bundles.get(&device).copied()) {
+            return;
+        }
+        if let Some(direct) = self.direct.get(&device) {
+            direct.preview_sampler_slice(time);
+        } else if let Some(bridge) = self.bridges.get(&device).filter(|bridge| bridge.running()) {
+            bridge.send(ControlMsg::PreviewSamplerSlice(time));
+        }
     }
 
     /// The last known value and text of parameter `id`.
@@ -1376,6 +1424,21 @@ impl PluginManager {
     #[doc(hidden)]
     pub fn bridge_pid(&self, device: DeviceId) -> Option<u32> {
         self.bridges.get(&device).map(Bridge::pid)
+    }
+}
+
+fn update_sampler_names(
+    device: DeviceId,
+    snapshot: Option<&komponist_ipc::sampler_ui::Snapshot>,
+    names: &mut Vec<NoteName>,
+    events: &mut Vec<PluginManagerEvent>,
+) {
+    if let Some(snapshot) = snapshot {
+        let updated = bundled_sampler::note_names(snapshot);
+        if *names != updated {
+            *names = updated;
+            events.push(PluginManagerEvent::NoteNamesChanged { device });
+        }
     }
 }
 

@@ -159,6 +159,14 @@ pub trait HostedPlugin {
         None
     }
 
+    /// Loader and playback snapshot for a supported sampler editor, callable during processing.
+    fn sampler_ui(&self) -> Option<komponist_ipc::sampler_ui::Snapshot> {
+        None
+    }
+
+    /// Audition or release a slice without changing the plugin's persisted state.
+    fn preview_sampler_slice(&self, _time: Option<f64>) {}
+
     /// Current plain value of parameter `id` (main-thread view; CLAP `params.get_value`, VST3
     /// controller).
     fn param_value(&self, id: u32) -> Option<f64>;

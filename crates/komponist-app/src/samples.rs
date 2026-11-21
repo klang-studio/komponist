@@ -109,6 +109,7 @@ type SamplerDevice = (DeviceId, Option<TrackId>, Internal, Option<Arc<[u8]>>);
 
 fn sample_device_kind(device: &komponist_model::Device) -> Option<Internal> {
     Internal::from_plugin(&device.plugin)
+        .or_else(|| bundled_sampler::kind(&device.plugin))
         .filter(|kind| matches!(kind, Internal::Sampler | Internal::GeneralSampler))
 }
 
@@ -192,21 +193,23 @@ impl App {
         };
         if let Some(kind) = bundled_sampler::kind(&found.plugin) {
             let dir = self.project_dir();
-            let linked = found.state.as_deref().and_then(|state| {
-                if !valid_slot(kind, pad)
-                    || !bundled_sampler::missing_links(state, dir.as_deref())
-                        .iter()
-                        .any(|(slot, _)| *slot == pad)
-                {
-                    return None;
-                }
-                bundled_sampler::relink(state, pad, &SampleLink::new(path, dir.as_deref()))
+            let state = found.state.as_deref();
+            let relinking = state.is_some_and(|state| {
+                bundled_sampler::missing_links(state, dir.as_deref())
+                    .iter()
+                    .any(|(slot, _)| *slot == pad)
             });
-            if let Some(state) = linked {
-                self.apply_with("undo-sample-load", |project| {
-                    edits::set_device_state(project, device, Some(state.into()))
-                        .map(|next| (next, ()))
-                });
+            let link = SampleLink::new(path, dir.as_deref());
+            let edited = bundled_sampler::edit_link(
+                kind,
+                &found.plugin.version,
+                state,
+                pad,
+                Some(&link),
+                relinking,
+            );
+            if self.apply_bundled_sample_edit(device, edited, "undo-sample-load") {
+                self.report_sample_loaded(kind, pad, &link);
             }
             return;
         }
@@ -253,6 +256,25 @@ impl App {
             }
             handle.load_link(pad, link.clone(), dir);
         }
+        self.report_sample_loaded(kind, pad, &link);
+    }
+
+    fn apply_bundled_sample_edit(
+        &mut self,
+        device: DeviceId,
+        state: Option<Vec<u8>>,
+        label: &str,
+    ) -> bool {
+        let Some(state) = state else {
+            return false;
+        };
+        self.apply_with(label, |project| {
+            edits::set_device_state(project, device, Some(state.into())).map(|next| (next, ()))
+        })
+        .is_some()
+    }
+
+    fn report_sample_loaded(&mut self, kind: Internal, pad: usize, link: &SampleLink) {
         let name = if link.name.is_empty() {
             self.lang.status_sample_unnamed()
         } else {
@@ -273,6 +295,21 @@ impl App {
         let Some(kind) = sample_device_kind(found).filter(|kind| valid_slot(*kind, pad)) else {
             return;
         };
+        if bundled_sampler::kind(&found.plugin).is_some() {
+            let Some(state) = found.state.as_deref() else {
+                return;
+            };
+            let edited = bundled_sampler::edit_link(
+                kind,
+                &found.plugin.version,
+                Some(state),
+                pad,
+                None,
+                false,
+            );
+            self.apply_bundled_sample_edit(device, edited, "undo-sample-clear");
+            return;
+        }
         let mut new = links::write(found.state.as_deref(), pad, None);
         if kind == Internal::GeneralSampler {
             new =
@@ -296,6 +333,11 @@ impl App {
             return;
         }
         let state = found.state.as_deref();
+        if bundled_sampler::kind(&found.plugin).is_some() {
+            let edited = state.and_then(|state| bundled_sampler::edit_slices(state, settings));
+            self.apply_bundled_sample_edit(device, edited, "undo-sample-slices");
+            return;
+        }
         let new = general_sampler::write_settings(state, settings);
         let updated = general_sampler::read_settings(Some(&new));
         if general_sampler::read_settings(state) == updated {
@@ -336,22 +378,33 @@ impl App {
             return;
         }
         if let Some(time) = slice_time {
+            let bundled = bundled_sampler::kind(&found.plugin).is_some();
             self.stop_waveform_preview();
-            if let Some(handle) = self.engine.host().sampler(device) {
+            if bundled && self.engine.host().sampler_ui(device).is_some() {
+                self.engine.host().preview_sampler_slice(device, Some(time));
+                self.dialogs.samples.waveform_preview = Some(WaveformPreview::Slice(device));
+            } else if let Some(handle) = self.engine.host().sampler(device) {
                 handle.preview_slice(time);
                 self.dialogs.samples.waveform_preview = Some(WaveformPreview::Slice(device));
             }
             return;
         }
-        let values = kind
-            .decode_state(found.state.as_deref())
-            .unwrap_or_else(|_| kind.defaults());
-        let key = kind
-            .params()
-            .iter()
-            .zip(values)
-            .find(|(param, _)| param.id.as_str() == "root")
-            .map_or(60, |(_, value)| value.round() as u8);
+        let key = if bundled_sampler::kind(&found.plugin).is_some() {
+            let host = self.engine.host();
+            host.native_layout(device)
+                .and_then(|layout| layout.author_ids()?.get("root"))
+                .and_then(|id| host.param_value(device, *id))
+                .map_or(60, |value| value.value.round().clamp(0.0, 127.0) as u8)
+        } else {
+            let values = kind
+                .decode_state(found.state.as_deref())
+                .unwrap_or_else(|_| kind.defaults());
+            kind.params()
+                .iter()
+                .zip(values)
+                .find(|(param, _)| param.id.as_str() == "root")
+                .map_or(60, |(_, value)| value.round() as u8)
+        };
         self.stop_waveform_preview();
         self.dialogs.samples.waveform_preview = Some(WaveformPreview::Sample { track, key });
         self.engine.send(Command::LiveNote {
@@ -373,6 +426,8 @@ impl App {
             Some(WaveformPreview::Slice(device)) => {
                 if let Some(handle) = self.engine.host().sampler(device) {
                     handle.release_slice_preview();
+                } else {
+                    self.engine.host().preview_sampler_slice(device, None);
                 }
             }
             None => {}
@@ -507,10 +562,17 @@ impl App {
             if kind != Internal::Sampler {
                 continue;
             }
-            let Some(handle) = self.engine.host().sampler(device) else {
+            let host = self.engine.host();
+            let hit = host.sampler(device).map_or_else(
+                || {
+                    host.sampler_ui(device)
+                        .map(|data| (data.last_hit.0, usize::from(data.last_hit.1)))
+                },
+                |handle| Some(handle.last_hit()),
+            );
+            let Some((hit_counter, hit_pad)) = hit else {
                 continue;
             };
-            let (hit_counter, hit_pad) = handle.last_hit();
             let sel = crate::views::devices::selected_pad(ctx, device);
             // The pattern of the open step clip, if it is this sampler's track's.
             let pattern = open
@@ -539,11 +601,18 @@ impl App {
                     sel,
                     hit: hit_counter,
                 });
-            let follow = Internal::Sampler
-                .decode_state(state.as_deref())
-                .ok()
-                .and_then(|v| v.get(sampler::FOLLOW).copied())
-                .is_some_and(|v| v >= 0.5);
+            let follow = host
+                .native_layout(device)
+                .and_then(|layout| layout.author_ids()?.get("follow"))
+                .and_then(|id| host.param_value(device, *id))
+                .map(|value| value.value >= 0.5)
+                .unwrap_or_else(|| {
+                    Internal::Sampler
+                        .decode_state(state.as_deref())
+                        .ok()
+                        .and_then(|v| v.get(sampler::FOLLOW).copied())
+                        .is_some_and(|v| v >= 0.5)
+                });
             let mut now = sel;
             if cursor_pad != last.cursor
                 && let Some(pad) = cursor_pad

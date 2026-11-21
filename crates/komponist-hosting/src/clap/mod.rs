@@ -18,6 +18,7 @@ mod events;
 mod host;
 mod native_layout;
 mod processor;
+mod sampler_ui;
 mod sidechain_fallback;
 
 #[cfg(test)]
@@ -375,6 +376,14 @@ impl HostedPlugin for ClapPlugin {
         self.native_layout
             .as_ref()
             .map(|(bytes, layout)| (bytes.as_slice(), layout))
+    }
+
+    fn sampler_ui(&self) -> Option<komponist_ipc::sampler_ui::Snapshot> {
+        sampler_ui::snapshot(self.instance.borrow_mut().plugin_handle().as_raw())
+    }
+
+    fn preview_sampler_slice(&self, time: Option<f64>) {
+        sampler_ui::preview(self.instance.borrow_mut().plugin_handle().as_raw(), time);
     }
 
     fn has_gui(&self) -> bool {

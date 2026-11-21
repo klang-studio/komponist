@@ -6,9 +6,11 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+clap-sys.workspace = true
 komponist-device-core.workspace = true
 komponist-engine.workspace = true
 komponist-i18n.workspace = true
+komponist-ipc.workspace = true
 komponist-model.workspace = true
 komponist-native-clap-sdk.workspace = true
 nice-plug.workspace = true

@@ -41,6 +41,7 @@ mod general_sampler;
 pub mod layout;
 pub mod metrics;
 pub mod model;
+pub(crate) use model::bundled_sampler_view;
 mod sidechain;
 
 use egui::{Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};

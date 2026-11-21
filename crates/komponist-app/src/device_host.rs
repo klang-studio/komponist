@@ -247,6 +247,38 @@ pub trait DeviceHost {
         None
     }
 
+    /// Bounded UI data from an authenticated bundled sampler.
+    fn sampler_ui(&self, _device: DeviceId) -> Option<&komponist_ipc::sampler_ui::Snapshot> {
+        None
+    }
+
+    /// Whether a sampler still needs to hand its decoded samples or stretch to audio.
+    fn sampler_is_loading(&self, device: DeviceId) -> bool {
+        use komponist_builtin::{BuiltinKind, Internal};
+        if let Some(handle) = self.sampler(device) {
+            return !handle.is_idle();
+        }
+        matches!(
+            self.verified_bundled_kind(device),
+            Some(BuiltinKind::Internal(
+                Internal::Sampler | Internal::GeneralSampler
+            ))
+        ) && self
+            .sampler_ui(device)
+            .is_none_or(|snapshot| !snapshot.idle)
+    }
+
+    fn sampler_sync_unavailable(&self, device: DeviceId) -> bool {
+        self.sampler(device).is_some_and(|handle| {
+            handle.sync_status() == Some(komponist_sampler::SyncStatus::Unavailable)
+        }) || self.sampler_ui(device).is_some_and(|snapshot| {
+            snapshot.sync == Some(komponist_ipc::sampler_ui::Sync::Unavailable)
+        })
+    }
+
+    /// Start or release a slice audition in the running bundled sampler.
+    fn preview_sampler_slice(&self, _device: DeviceId, _time: Option<f64>) {}
+
     /// Whether the device's plugin has its own GUI.
     fn has_gui(&self, device: DeviceId) -> bool {
         let _ = device;
@@ -843,6 +875,14 @@ impl DeviceHost for PluginHost {
 
     fn project_dir(&self) -> Option<PathBuf> {
         self.builtin.project_dir()
+    }
+
+    fn sampler_ui(&self, device: DeviceId) -> Option<&komponist_ipc::sampler_ui::Snapshot> {
+        self.manager.sampler_ui(device)
+    }
+
+    fn preview_sampler_slice(&self, device: DeviceId, time: Option<f64>) {
+        self.manager.preview_sampler_slice(device, time);
     }
 
     fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {

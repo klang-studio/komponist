@@ -2830,6 +2830,7 @@ dependencies = [
  "komponist-builtin",
  "komponist-device-core",
  "komponist-engine",
+ "komponist-general-sampler",
  "komponist-hexa",
  "komponist-hosting",
  "komponist-i18n",

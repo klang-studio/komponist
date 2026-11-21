@@ -496,11 +496,10 @@ impl App {
         for (track, devices) in chains {
             for d in devices {
                 let state = match self.engine.device_status(d.id) {
-                    DeviceStatus::Ok
-                        if self.engine.host().sampler(d.id).is_some_and(|handle| {
-                            handle.sync_status() == Some(komponist_sampler::SyncStatus::Unavailable)
-                        }) =>
-                    {
+                    DeviceStatus::Ok if self.engine.host().sampler_is_loading(d.id) => {
+                        DeviceState::Loading
+                    }
+                    DeviceStatus::Ok if self.engine.host().sampler_sync_unavailable(d.id) => {
                         DeviceState::LoadFailed
                     }
                     DeviceStatus::Ok => continue,

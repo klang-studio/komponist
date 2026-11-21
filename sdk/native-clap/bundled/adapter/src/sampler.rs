@@ -4,10 +4,12 @@ use std::collections::BTreeMap;
 use std::ffi::{CStr, c_void};
 use std::sync::{Arc, Mutex};
 
+use clap_sys::plugin::clap_plugin;
 use komponist_device_core::pinned_clap_state::{MAX_SAMPLE_ASSET_BYTES, SAMPLE_ASSETS_FIELD};
 use komponist_device_core::{Dsp, SAMPLE_RATES};
+use komponist_ipc::sampler_ui::{self, EXTENSION_ID, Pad, Snapshot, Status, Sync as WireSync};
 use komponist_native_clap_sdk::{NativeClapLayout, Panel};
-use komponist_sampler::{ManagedLoader, SamplerHandle, links};
+use komponist_sampler::{ManagedLoader, PadStatus, SamplerHandle, SyncStatus, links};
 use nice_plug::prelude::*;
 
 use super::{Effect, EffectDefinition, STEREO};
@@ -47,17 +49,28 @@ unsafe impl<T: SampledDefinition> Params for SampleParameters<T> {
         let assets = fields.get(SAMPLE_ASSETS_FIELD).map_or("{}", String::as_str);
         self.params.deserialize_fields(fields);
         let mut saved = self.assets.lock().unwrap_or_else(|err| err.into_inner());
-        let mut links = links::read(Some(assets.as_bytes()));
-        // The legacy JSON reader accepts numeric aliases such as "01". Resolve duplicates
+        let canonical_links = |assets: &str| {
+            let mut links = links::read(Some(assets.as_bytes()));
+            links.dedup_by_key(|(pad, _)| *pad);
+            links
+        };
+        // The JSON reader accepts numeric aliases (for example "01"). Resolve duplicates
         // before walking the pads so a second entry for one pad cannot hide later pads.
-        links.dedup_by_key(|(pad, _)| *pad);
-        let mut links = links.into_iter().peekable();
+        let old = canonical_links(&saved);
+        let new = canonical_links(assets);
         for pad in 0..T::PADS {
-            if links.peek().is_some_and(|item| item.0 == pad) {
-                let (_, link) = links.next().expect("checked pad");
-                // The CLAP state carries both paths. A generic CLAP host supplies no session
-                // directory with this state callback; the loader uses the absolute fallback.
-                self.samples.load_link(pad, link, None);
+            let link_at = |links: &[(usize, links::SampleLink)]| {
+                links.iter().position(|(index, _)| *index == pad)
+            };
+            let previous = link_at(&old).map(|i| &old[i].1);
+            let link = link_at(&new).map(|i| &new[i].1);
+            if previous == link {
+                continue;
+            }
+            if let Some(link) = link {
+                // The host has already resolved its relative links in the state copy sent to
+                // the plugin. Standalone CLAP hosts can use the absolute fallback as well.
+                self.samples.load_link(pad, link.clone(), None);
             } else {
                 self.samples.clear(pad);
             }
@@ -252,6 +265,86 @@ impl<T: SampledDefinition> Plugin for Sampled<T> {
     }
 }
 
+#[repr(C)]
+struct SamplerUi {
+    snapshot: unsafe extern "C" fn(*const clap_plugin, *mut u8, u32) -> u32,
+    preview: unsafe extern "C" fn(*const clap_plugin, f64),
+}
+
+impl<T: SampledDefinition> Sampled<T> {
+    const SAMPLER_UI: SamplerUi = SamplerUi {
+        snapshot: Self::read_sampler_ui,
+        preview: Self::preview_slice,
+    };
+
+    unsafe extern "C" fn read_sampler_ui(
+        plugin: *const clap_plugin,
+        bytes: *mut u8,
+        capacity: u32,
+    ) -> u32 {
+        if bytes.is_null() || capacity == 0 {
+            return 0;
+        }
+        // SAFETY: The caller supplies a writable buffer and the live CLAP instance.
+        let out = unsafe {
+            std::slice::from_raw_parts_mut(bytes, (capacity as usize).min(sampler_ui::MAX_BYTES))
+        };
+        unsafe {
+            nice_plug::wrapper::clap::Wrapper::<Self>::with_custom_extension_data::<SamplerHandle, _>(plugin, |handle| {
+                let pads = handle.views().into_iter().take(T::PADS).enumerate().map(|(pad, mut view)| {
+                    view.name.truncate(view.name.floor_char_boundary(sampler_ui::MAX_TEXT_BYTES));
+                    Pad {
+                    name: view.name,
+                    status: match view.status {
+                        PadStatus::Empty => Status::Empty,
+                        PadStatus::Loading => Status::Loading,
+                        PadStatus::Ready => Status::Ready,
+                        PadStatus::Missing => Status::Missing,
+                        PadStatus::Failed(mut error) => {
+                            error.truncate(error.floor_char_boundary(sampler_ui::MAX_TEXT_BYTES));
+                            Status::Failed(error)
+                        }
+                    },
+                    length: view.length_s,
+                    peaks: view.peaks.iter().take(sampler_ui::MAX_PEAKS).map(|peak| peak.clamp(0.0, 1.0)).collect(),
+                    playhead: handle.playhead(pad).map(|head| head.clamp(0.0, 1.0)),
+                }}).collect();
+                let (count, hit_pad) = handle.last_hit();
+                Snapshot {
+                    pads,
+                    last_hit: (count, hit_pad as u8),
+                    transients: handle.transients().into_iter().take(sampler_ui::MAX_TRANSIENTS).collect(),
+                    sync: handle.sync_status().map(|status| match status {
+                        SyncStatus::Ready => WireSync::Ready,
+                        SyncStatus::Preparing => WireSync::Preparing,
+                        SyncStatus::Unavailable => WireSync::Unavailable,
+                    }),
+                    source_rate: handle.waveform_peaks().map(|data| data.sample_rate()),
+                    idle: handle.is_idle(),
+                }.encode(out).map_or(0, |len| len as u32)
+            }).unwrap_or(0)
+        }
+    }
+
+    unsafe extern "C" fn preview_slice(plugin: *const clap_plugin, time: f64) {
+        // SAFETY: CLAP host invokes the callback on a live plugin on its main thread.
+        unsafe {
+            nice_plug::wrapper::clap::Wrapper::<Self>::with_custom_extension_data::<SamplerHandle, _>(
+                plugin,
+                |handle| {
+                    if time.is_finite() {
+                        if time >= 0.0 {
+                            handle.preview_slice(time);
+                        } else {
+                            handle.release_slice_preview();
+                        }
+                    }
+                },
+            );
+        }
+    }
+}
+
 impl<T: SampledDefinition> ClapPlugin for Sampled<T> {
     const CLAP_ID: &'static str = T::ID;
     const CLAP_DISTINGUISH_MIDI_NOTE_OFF: bool = true;
@@ -260,8 +353,16 @@ impl<T: SampledDefinition> ClapPlugin for Sampled<T> {
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = T::FEATURES;
 
+    fn clap_custom_extension_data(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        Some(Arc::new(self.params.samples.clone()))
+    }
+
     unsafe fn clap_custom_extension(id: &CStr) -> *const c_void {
-        komponist_native_clap_sdk::extension::<Self>(id)
+        if id == EXTENSION_ID {
+            std::ptr::from_ref(&Self::SAMPLER_UI).cast()
+        } else {
+            komponist_native_clap_sdk::extension::<Self>(id)
+        }
     }
 }
 

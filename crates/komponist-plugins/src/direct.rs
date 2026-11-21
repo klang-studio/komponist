@@ -59,6 +59,14 @@ impl DirectClap {
         Some(control(&mut *self.plugin))
     }
 
+    pub(crate) fn sampler_ui(&self) -> Option<komponist_ipc::sampler_ui::Snapshot> {
+        self.plugin.sampler_ui()
+    }
+
+    pub(crate) fn preview_sampler_slice(&self, time: Option<f64>) {
+        self.plugin.preview_sampler_slice(time);
+    }
+
     pub(crate) fn activate(
         &mut self,
         setup: ProcessorSetup,

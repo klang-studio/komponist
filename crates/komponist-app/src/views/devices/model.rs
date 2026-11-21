@@ -424,12 +424,15 @@ pub(crate) fn card(
                 | Internal::Delay
                 | Internal::Eq
                 | Internal::Presse
-                | Internal::Limiter),
+                | Internal::Limiter
+                | Internal::Sampler
+                | Internal::GeneralSampler),
             ) => bundled_params(device.id, host, native, kind.params_in(lang)),
             _ => None,
         }?;
         let layout = match kind {
             BuiltinKind::Hexa => hexa_editor_layout(lang),
+            BuiltinKind::Internal(Internal::GeneralSampler) => super::general_sampler::layout(lang),
             BuiltinKind::Internal(kind) => kind.layout_in(lang).clone(),
         };
         Some((layout, params))
@@ -536,6 +539,35 @@ pub(crate) fn card(
                 .position(|s| *s == encoded)
         })
         .or(loaded.map(|(index, _)| index));
+    let bundled_sampler = bundled_editor
+        .then_some(bundled_internal)
+        .flatten()
+        .filter(|kind| matches!(kind, Internal::Sampler | Internal::GeneralSampler));
+    let sampler_assets = bundled_sampler
+        .and(device.state.as_deref())
+        .and_then(komponist_plugins::bundled_sampler::assets);
+    let sampler_snapshot = bundled_sampler.and_then(|_| host.sampler_ui(device.id));
+    let sampler = bundled_sampler.map_or_else(
+        || sampler_view(host, device.id),
+        |kind| {
+            Some(bundled_sampler_view(
+                kind,
+                sampler_assets.as_deref(),
+                sampler_snapshot,
+            ))
+        },
+    );
+    let sampler_editor = if bundled_sampler == Some(Internal::GeneralSampler) {
+        Some(super::general_sampler::Editor::from_bundled(
+            sampler_assets.as_deref(),
+            sampler.as_ref().and_then(|view| view.pads.first()).cloned(),
+            sampler_snapshot,
+        ))
+    } else {
+        general_sampler.then(|| {
+            super::general_sampler::Editor::new(device.state.as_deref(), host.sampler(device.id))
+        })
+    };
     Card {
         device: device.id,
         automation_owner: None,
@@ -567,10 +599,8 @@ pub(crate) fn card(
         width: layout::device_width(metrics::COLUMNS as u8),
         late: None,
         levels: None,
-        sampler: sampler_view(host, device.id),
-        general_sampler: general_sampler.then(|| {
-            super::general_sampler::Editor::new(device.state.as_deref(), host.sampler(device.id))
-        }),
+        sampler,
+        general_sampler: sampler_editor,
         analysis: None,
         dynamics: None,
         routing: hexa_patch.as_ref().map(komponist_hexa::algorithms::routing),
@@ -646,6 +676,61 @@ pub fn sampler_view(host: &dyn DeviceHost, device: DeviceId) -> Option<SamplerVi
         last_hit: handle.last_hit(),
         pads,
     })
+}
+
+pub(crate) fn bundled_sampler_view(
+    kind: Internal,
+    assets: Option<&str>,
+    snapshot: Option<&komponist_ipc::sampler_ui::Snapshot>,
+) -> SamplerView {
+    use komponist_ipc::sampler_ui::Status;
+    use komponist_sampler::{PADS, PadStatus, PadView, links};
+    let count = if kind == Internal::GeneralSampler {
+        1
+    } else {
+        PADS
+    };
+    let links = links::read(assets.map(str::as_bytes));
+    let pad_data = |index| snapshot.and_then(|data| data.pads.get(index));
+    SamplerView {
+        pads: (0..count)
+            .map(|index| {
+                let link = links
+                    .iter()
+                    .find(|(pad, _)| *pad == index)
+                    .map(|(_, link)| link.clone());
+                let pad = pad_data(index);
+                let status = match pad.map(|pad| &pad.status) {
+                    Some(Status::Ready) => PadStatus::Ready,
+                    Some(Status::Missing) => PadStatus::Missing,
+                    Some(Status::Failed(reason)) => PadStatus::Failed(reason.clone()),
+                    Some(Status::Loading) => PadStatus::Loading,
+                    Some(Status::Empty) | None if link.is_some() => PadStatus::Loading,
+                    Some(Status::Empty) | None => PadStatus::Empty,
+                };
+                PadView {
+                    status,
+                    name: link
+                        .as_ref()
+                        .map(|link| link.name.clone())
+                        .unwrap_or_default(),
+                    link,
+                    length_s: pad.map_or(0.0, |pad| pad.length),
+                    peaks: pad.map_or_else(
+                        || std::sync::Arc::from([]),
+                        |pad| std::sync::Arc::from(pad.peaks.as_slice()),
+                    ),
+                }
+            })
+            .collect(),
+        playheads: (0..count)
+            .map(|index| pad_data(index).and_then(|pad| pad.playhead))
+            .collect(),
+        last_hit: snapshot.map_or((0, 0), |snapshot| {
+            let (count, pad) = snapshot.last_hit;
+            (count, usize::from(pad))
+        }),
+    }
 }
 
 /// The parameters of an internal effect with the values in its device state (the defaults for a
