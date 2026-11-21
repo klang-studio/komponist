@@ -384,7 +384,7 @@ fn parse_digest(value: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut digest = [0; 32];
-    for (byte, part) in digest.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+    for (byte, part) in digest.iter_mut().zip(value.as_bytes().as_chunks::<2>().0) {
         *byte = u8::from_str_radix(std::str::from_utf8(part).ok()?, 16).ok()?;
     }
     Some(digest)
