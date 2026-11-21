@@ -172,8 +172,12 @@ impl<T: SampledDefinition> Plugin for Sampled<T> {
     fn validate_state(state: &PluginState) -> bool {
         state.fields.get(SAMPLE_ASSETS_FIELD).is_none_or(|assets| {
             assets.len() <= MAX_SAMPLE_ASSET_BYTES
-                && serde_json::from_str::<serde_json::Value>(assets)
-                    .is_ok_and(|value| value.is_object())
+                && serde_json::from_str::<serde_json::Value>(assets).is_ok_and(|value| {
+                    value.is_object()
+                        && ["samples", "sample_edit"]
+                            .iter()
+                            .all(|key| value.get(key).is_none_or(serde_json::Value::is_object))
+                })
         })
     }
 

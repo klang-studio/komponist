@@ -113,13 +113,15 @@ fn check_state_roundtrip<P: ClapPlugin>(instance: &Instance, assets: &str) {
         } else {
             0.75
         });
-        invalid["fields"]["sample_assets"] = "[]".into();
-        assert!(!load(plugin, &invalid));
-        assert_eq!(
-            save(plugin),
-            expected,
-            "an invalid field must leave live state unchanged"
-        );
+        for malformed in ["[]", r#"{"samples":[]}"#, r#"{"sample_edit":[]}"#] {
+            invalid["fields"]["sample_assets"] = malformed.into();
+            assert!(!load(plugin, &invalid), "accepted {malformed}");
+            assert_eq!(
+                save(plugin),
+                expected,
+                "an invalid field must leave live state unchanged"
+            );
+        }
 
         let other = Instance::new::<P>();
         assert!(load(other.0, &expected));
