@@ -11,6 +11,8 @@
 #include <string.h>
 
 #ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
 #include <windows.h>
 typedef HMODULE module_handle;
 #else
@@ -312,6 +314,12 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: %s PLUGIN_PATH PLUGIN_ID | --self-test PLUGIN_PATH\n", argv[0]);
         return EXIT_FAILURE;
     }
+#ifdef _WIN32
+    if (_setmode(_fileno(stdout), _O_BINARY) == -1) {
+        perror("cannot set stdout to binary mode");
+        return EXIT_FAILURE;
+    }
+#endif
     const bool fixture_test = strcmp(argv[1], "--self-test") == 0;
     const char *path = fixture_test ? argv[2] : argv[1];
     struct module module;

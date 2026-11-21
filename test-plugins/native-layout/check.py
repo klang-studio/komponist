@@ -11,12 +11,15 @@ from validate import InvalidLayout, MAX_BYTES, UnsupportedLayout, read_json, req
 FIXTURE_ID = "org.klang-studio.komponist.layout-fixture"
 
 
-def run_probe(probe, plugin, plugin_id):
+def run_probe(probe, plugin, plugin_id, *, expected_payload=None):
     report = subprocess.run(
         [str(probe), str(plugin), plugin_id],
         check=True,
         stdout=subprocess.PIPE,
     )
+    if expected_payload is not None:
+        require(report.stdout.endswith(b'"layout":' + expected_payload + b'}\n'),
+                "probe stdout changed the layout payload bytes")
     return read_json(report.stdout)
 
 
@@ -100,9 +103,9 @@ def main():
     def variant(name):
         return run_probe(probe, fixture, f"{FIXTURE_ID}.{name}")
 
-    valid = variant("valid")
-    require(valid["layout"] == read_json(args.example.read_bytes()),
-            "wire payload differs from the normative example")
+    example = args.example.read_bytes()
+    valid = run_probe(probe, fixture, f"{FIXTURE_ID}.valid", expected_payload=example)
+    require(valid["size"] == len(example), "probe reported the wrong layout size")
     check_descriptors(valid["layout"], valid["params"], valid["size"])
 
     optional = variant("optional-field")
