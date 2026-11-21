@@ -2887,9 +2887,11 @@ dependencies = [
  "komponist-i18n",
  "komponist-model",
  "komponist-stretch",
+ "libc",
  "rtrb",
  "sampler-core",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -16,7 +16,7 @@ pub const MAX_AUTHOR_IDS: usize = 256;
 
 /// Whether a key fits the v1 optional author-ID map.
 pub fn valid_author_id(key: &str) -> bool {
-    !key.trim().is_empty() && key.len() <= 128 && !key.chars().any(char::is_control)
+    !key.is_empty() && key.chars().count() <= 128 && !key.chars().any(char::is_control)
 }
 
 /// A descriptor rejected by the host. Diagnostics contain only host-defined text.

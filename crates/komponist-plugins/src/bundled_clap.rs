@@ -371,7 +371,7 @@ impl BundledClap {
     }
 }
 
-fn snapshot_cache(path: &Path) -> Result<PathBuf, BundleVerificationError> {
+pub(crate) fn snapshot_cache(path: &Path) -> Result<PathBuf, BundleVerificationError> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]

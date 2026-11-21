@@ -48,6 +48,7 @@ pub const MAX_SECONDS: f64 = 600.0;
 
 /// Capacity of the queues between the threads.
 const QUEUE: usize = 64;
+const LOADER_SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
 const NO_SLICE_PREVIEW: u64 = f64::NAN.to_bits();
 const SLICE_PREVIEW_RELEASED: u64 = 1 << 63;
 const RELEASE_SLICE_PREVIEW: u64 = NO_SLICE_PREVIEW | SLICE_PREVIEW_RELEASED;
@@ -364,9 +365,63 @@ impl Drop for ManagedLoader {
         // Wake a loader waiting for work. The flag also stops a loader with queued requests.
         let _ = self.requests.send(Request::Stop);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            finish_worker(thread, LOADER_SHUTDOWN_GRACE, retain_loader_image);
         }
     }
+}
+
+fn finish_worker(
+    thread: std::thread::JoinHandle<()>,
+    grace: Duration,
+    retain_image: impl FnOnce() -> bool,
+) {
+    let deadline = Instant::now() + grace;
+    while !thread.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    if thread.is_finished() || !retain_image() {
+        let _ = thread.join();
+    }
+    // Otherwise the worker owns everything it still uses. It will observe Stop as soon
+    // as the filesystem operation returns, while the operating system retains its code.
+}
+
+// A stalled I/O syscall cannot be interrupted portably. Keep this native image loaded only
+// when a worker outlives plugin destruction. Never load a new image from the resolved path.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn retain_loader_image() -> bool {
+    let mut info = std::mem::MaybeUninit::<libc::Dl_info>::uninit();
+    let address = retain_loader_image as *const ();
+    // SAFETY: The address belongs to this image and the host still holds it during destruction.
+    unsafe {
+        if libc::dladdr(address.cast(), info.as_mut_ptr()) == 0 {
+            return false;
+        }
+        let name = info.assume_init().dli_fname;
+        // Keep the returned reference for process lifetime so the worker can finish safely.
+        !name.is_null() && !libc::dlopen(name, libc::RTLD_NOLOAD | libc::RTLD_LAZY).is_null()
+    }
+}
+
+#[cfg(windows)]
+fn retain_loader_image() -> bool {
+    use windows_sys::Win32::System::LibraryLoader::{
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN, GetModuleHandleExW,
+    };
+    let mut module = std::ptr::null_mut();
+    // SAFETY: FROM_ADDRESS interprets the pointer as an address in this live module.
+    unsafe {
+        GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+            (retain_loader_image as *const ()).cast(),
+            &mut module,
+        ) != 0
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn retain_loader_image() -> bool {
+    false
 }
 
 /// Creates the usual sampler channels and a worker owner for a dynamically loaded plugin.
@@ -710,6 +765,9 @@ fn run_loader(
                     None => (PadStatus::Missing, 0.0, Arc::from([])),
                     Some(path) => match open_sample(&path) {
                         Ok((file, decoded)) => {
+                            if is_stopped(stopped) {
+                                return;
+                            }
                             let length = decoded.duration_secs() as f64;
                             let peaks = peaks_of(&decoded);
                             sample = Some(decoded);
@@ -993,4 +1051,39 @@ fn reason(e: &AudioError) -> String {
 /// is the reason in German.
 pub fn decode(path: &Path) -> Result<Sample, String> {
     open_sample(path).map(|(_, sample)| (*sample).clone())
+}
+
+#[cfg(test)]
+mod managed_worker_tests {
+    use super::*;
+
+    #[test]
+    fn finished_worker_needs_no_retained_module() {
+        let worker = std::thread::spawn(|| {});
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !worker.is_finished() {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        finish_worker(worker, Duration::ZERO, || panic!("worker already stopped"));
+    }
+
+    #[test]
+    fn blocked_worker_can_finish_after_its_owner_is_destroyed() {
+        let (release, blocked) = mpsc::channel();
+        let (done, wait) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = blocked.recv_timeout(Duration::from_secs(5));
+            done.send(()).unwrap();
+        });
+        let retained = AtomicBool::new(false);
+        finish_worker(worker, Duration::ZERO, || {
+            retained.store(true, Ordering::Relaxed);
+            true
+        });
+        assert!(retained.load(Ordering::Relaxed));
+        assert!(matches!(wait.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        release.send(()).unwrap();
+        wait.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
 }

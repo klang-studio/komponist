@@ -7,7 +7,7 @@ use std::sync::Arc;
 use clap_sys::host::clap_host;
 use clap_sys::plugin::clap_plugin;
 use clap_sys::version::CLAP_VERSION;
-use komponist_native_clap_sdk::{NativeClapLayout, compile};
+use komponist_native_clap_sdk::{EXTENSION_ID, NativeClapLayout};
 use nice_plug::prelude::ClapPlugin;
 use nice_plug::wrapper::clap::Wrapper;
 
@@ -50,14 +50,41 @@ impl Drop for Instance {
     }
 }
 
-/// Check the native v1 ABI against two real CLAP parameter inventories and return its layout.
+#[repr(C)]
+struct LayoutV1 {
+    get_layout: unsafe extern "C" fn(*const clap_plugin, *mut u8, u32, *mut u32) -> u32,
+}
+
+fn layout_bytes(instance: &Instance) -> Vec<u8> {
+    let plugin = instance.0;
+    // SAFETY: The plugin is initialized and this table follows the published C layout.
+    unsafe {
+        let extension = ((*plugin).get_extension.unwrap())(plugin, EXTENSION_ID.as_ptr());
+        assert!(!extension.is_null());
+        let layout = &*extension.cast::<LayoutV1>();
+        let mut size = 0;
+        assert_eq!(
+            (layout.get_layout)(plugin, ptr::null_mut(), 0, &mut size),
+            2
+        );
+        assert!((1..=65_536).contains(&size));
+        let mut bytes = vec![0; size as usize];
+        let mut written = 0;
+        assert_eq!(
+            (layout.get_layout)(plugin, bytes.as_mut_ptr(), size, &mut written),
+            0
+        );
+        assert_eq!(written, size);
+        bytes
+    }
+}
+
+/// Check the exported native layout on two instances.
 pub(crate) fn read_layout<P: NativeClapLayout>() -> serde_json::Value {
-    let panel = P::panel();
     let first = Instance::new::<P>();
     let second = Instance::new::<P>();
-    // SAFETY: Both instances are live and initialized on this test thread.
-    let bytes = unsafe { compile::<P>(first.0, &panel).unwrap() };
-    assert_eq!(bytes, unsafe { compile::<P>(second.0, &panel).unwrap() });
+    let bytes = layout_bytes(&first);
+    assert_eq!(bytes, layout_bytes(&second));
     serde_json::from_slice(&bytes).unwrap()
 }
 

@@ -182,6 +182,20 @@ fn require_audio_config(engine: &EngineSync, host: HostKind, sample_rate: u32, f
     );
 }
 
+fn step_for_measurement(app: &mut App, config: &StreamConfig, duration: Duration) {
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        app.step();
+        require_audio_config(
+            app.engine(),
+            config.host,
+            config.sample_rate,
+            config.buffer_frames,
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// Plays for the configured interval and prints the callback counters.
 fn measure(name: &str, app: &mut App, buffer: u32, devices: &[DeviceId]) {
     app.dispatch(Action::Transport(TransportAction::TogglePlay));
@@ -189,7 +203,8 @@ fn measure(name: &str, app: &mut App, buffer: u32, devices: &[DeviceId]) {
         a.transport() == TransportState::Playing
     });
     // Settle (voices up, caches warm), then measure.
-    step_for(app, Duration::from_secs(1));
+    let config = app.settings().audio.clone();
+    step_for_measurement(app, &config, Duration::from_secs(1));
     let stats = app.engine().stats();
     let (callbacks, overruns, xruns) = (stats.callbacks(), stats.overruns(), stats.xruns());
     stats.take_peak_load();
@@ -207,7 +222,7 @@ fn measure(name: &str, app: &mut App, buffer: u32, devices: &[DeviceId]) {
     let mut sampled = Vec::new();
     let measure = measure_time();
     while t0.elapsed() < measure {
-        step_for(app, Duration::from_millis(100));
+        step_for_measurement(app, &config, Duration::from_millis(100));
         sampled.push(app.engine().stats().cpu_load());
     }
     let stats = app.engine().stats();

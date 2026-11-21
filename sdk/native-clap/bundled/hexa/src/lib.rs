@@ -248,13 +248,16 @@ fn layout(lang: Lang) -> DeviceLayout {
         .chain(&params[device::GLOBAL_BASE as usize..])
         .cloned()
         .collect::<Vec<_>>();
-    let mut pages = vec![page("Global".into(), &globals)];
+    let mut pages = vec![page(lang.param_hexa_global_page().into(), &globals)];
     for (pair, fields) in params[device::FIRST_WIRE as usize..device::GLOBAL_BASE as usize]
         .chunks(2 * device::OpField::COUNT)
         .enumerate()
     {
         let first = 2 * pair + 1;
-        pages.push(page(format!("Op {first} / {}", first + 1), fields));
+        pages.push(page(
+            lang.param_hexa_operator_page(first, first + 1),
+            fields,
+        ));
     }
     DeviceLayout { pages }
 }

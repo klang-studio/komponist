@@ -35,4 +35,4 @@ komponist-model = { path = "../../crates/komponist-model" }
 komponist-sampler = { path = "../../crates/builtin-devices/sampler" }
 komponist-bundled-clap-adapter = { path = "bundled/adapter" }
 komponist-native-clap-sdk = { path = "author" }
-nice-plug = { git = "https://github.com/klang-studio/nice-plug", rev = "0960d393d72f9f0be4f5216adad2e370fb552397", default-features = false }
+nice-plug = { git = "https://github.com/klang-studio/nice-plug", rev = "ecb9972aeadb83b9e42ae781da90744cc71cc3a7", default-features = false }

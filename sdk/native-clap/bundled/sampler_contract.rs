@@ -1,6 +1,7 @@
 //! Run the same sample-state and note playback contract through both exported CLAP instruments.
 
 use std::ffi::c_void;
+use std::io::{Cursor, Read};
 use std::ptr;
 use std::time::{Duration, Instant};
 
@@ -9,7 +10,9 @@ use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_ON, clap_event_header, clap_event_note,
     clap_input_events,
 };
+use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
 use clap_sys::process::{CLAP_PROCESS_ERROR, clap_process};
+use clap_sys::stream::{clap_istream, clap_ostream};
 use nice_plug::prelude::ClapPlugin;
 use nice_plug::wrapper::clap::Wrapper;
 use serde_json::json;
@@ -32,6 +35,112 @@ unsafe extern "C" fn input_get(
         unsafe { (*input).ctx.cast() }
     } else {
         ptr::null()
+    }
+}
+
+unsafe extern "C" fn read_state(
+    stream: *const clap_istream,
+    buffer: *mut c_void,
+    size: u64,
+) -> i64 {
+    // SAFETY: The wrapper supplies a writable buffer and the synchronous caller retains Cursor.
+    unsafe {
+        let cursor = &mut *(*stream).ctx.cast::<Cursor<&[u8]>>();
+        let buffer = std::slice::from_raw_parts_mut(buffer.cast(), size as usize);
+        cursor.read(buffer).map_or(-1, |count| count as i64)
+    }
+}
+
+unsafe extern "C" fn write_state(
+    stream: *const clap_ostream,
+    buffer: *const c_void,
+    size: u64,
+) -> i64 {
+    // SAFETY: The wrapper supplies a readable buffer and the synchronous caller retains Vec.
+    unsafe {
+        let state = &mut *(*stream).ctx.cast::<Vec<u8>>();
+        state.extend_from_slice(std::slice::from_raw_parts(buffer.cast(), size as usize));
+        size as i64
+    }
+}
+
+fn check_state_roundtrip<P: ClapPlugin>(instance: &Instance, assets: &str) {
+    let plugin = instance.0;
+    // SAFETY: The instance is initialized and all buffers remain live through each state call.
+    unsafe {
+        let table = ((*plugin).get_extension.unwrap())(plugin, CLAP_EXT_STATE.as_ptr());
+        assert!(!table.is_null());
+        let table = &*table.cast::<clap_plugin_state>();
+        let wrapper = &*(*plugin).plugin_data.cast::<Wrapper<P>>();
+        let mut state = serde_json::to_value(wrapper.get_state_object()).unwrap();
+        let load = |state: &serde_json::Value| {
+            let body = serde_json::to_vec(state).unwrap();
+            let mut record = (body.len() as u64).to_le_bytes().to_vec();
+            record.extend(body);
+            let mut cursor = Cursor::new(record.as_slice());
+            let stream = clap_istream {
+                ctx: ptr::from_mut(&mut cursor).cast(),
+                read: Some(read_state),
+            };
+            (table.load.unwrap())(plugin, &stream)
+        };
+        let save = || {
+            let mut record = Vec::<u8>::new();
+            let stream = clap_ostream {
+                ctx: ptr::from_mut(&mut record).cast(),
+                write: Some(write_state),
+            };
+            assert!((table.save.unwrap())(plugin, &stream));
+            assert_eq!(
+                u64::from_le_bytes(record[..8].try_into().unwrap()) as usize,
+                record.len() - 8
+            );
+            serde_json::from_slice::<serde_json::Value>(&record[8..]).unwrap()
+        };
+
+        state["fields"]["sample_assets"] = assets.into();
+        assert!(load(&state));
+        let expected = save();
+        assert_eq!(expected["fields"]["sample_assets"], assets);
+        let mut invalid = expected.clone();
+        let float_value = invalid["params"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+            .find_map(|parameter| parameter.get_mut("f32"))
+            .expect("a continuous sampler parameter");
+        *float_value = json!(if float_value.as_f64().unwrap() > 0.5 {
+            0.25
+        } else {
+            0.75
+        });
+        invalid["fields"]["sample_assets"] = "[]".into();
+        assert!(!load(&invalid));
+        assert_eq!(
+            save(),
+            expected,
+            "an invalid field must leave live state unchanged"
+        );
+
+        let other = Instance::new::<P>();
+        let mut body = serde_json::to_vec(&expected).unwrap();
+        let mut record = (body.len() as u64).to_le_bytes().to_vec();
+        record.append(&mut body);
+        let mut cursor = Cursor::new(record.as_slice());
+        let stream = clap_istream {
+            ctx: ptr::from_mut(&mut cursor).cast(),
+            read: Some(read_state),
+        };
+        let other_table = ((*other.0).get_extension.unwrap())(other.0, CLAP_EXT_STATE.as_ptr());
+        assert!(!other_table.is_null());
+        assert!(((*other_table.cast::<clap_plugin_state>()).load.unwrap())(
+            other.0, &stream
+        ));
+        let other_wrapper = &*(*other.0).plugin_data.cast::<Wrapper<P>>();
+        assert_eq!(
+            serde_json::to_value(other_wrapper.get_state_object()).unwrap(),
+            expected
+        );
     }
 }
 
@@ -68,6 +177,7 @@ pub(crate) fn sample_asset_roundtrip<P: ClapPlugin>(key: u8) {
         })
         .to_string()
     };
+    check_state_roundtrip::<P>(&instance, &assets(&sample));
     let mut note = clap_event_note {
         header: clap_event_header {
             size: size_of::<clap_event_note>() as u32,

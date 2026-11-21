@@ -13,8 +13,8 @@ use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind, ProcessExit, Ren
 use komponist_model::{Device, DeviceId, DeviceRole};
 
 use crate::bridge::{Bridge, SpawnSetup, StatePurpose, Timing};
-use crate::bundled_clap::{BundledClap, VerifiedClap};
-use crate::catalog::{PluginDirs, PluginLocation, SCAN_TIMEOUT};
+use crate::bundled_clap::{BundledClap, VerifiedClap, snapshot_cache};
+use crate::catalog::{PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT};
 use crate::direct::DirectClap;
 use crate::direct_session::DirectSession;
 use crate::manager::{
@@ -34,12 +34,18 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 /// Verify every artifact named by the app-bound manifest. Both routes use private snapshots of
 /// the unpacked artifacts so the scan and instance open the same authenticated bytes.
 pub fn verify_bundled_clap(force_bridge: bool) -> Result<(), String> {
-    let config = PluginManagerConfig::defaults();
+    let mut config = PluginManagerConfig::defaults();
     let cache_dir = config
         .cache_file
         .parent()
         .ok_or_else(|| "no plugin cache directory".to_owned())?;
-    let bundled = BundledClap::discover(cache_dir)
+    let cache_root = snapshot_cache(cache_dir).map_err(|error| error.to_string())?;
+    let scratch = tempfile::Builder::new()
+        .prefix("bundled-clap-smoke-")
+        .tempdir_in(cache_root)
+        .map_err(|error| format!("could not create a private smoke cache: {error}"))?;
+    config.cache_file = scratch.path().join(SCAN_CACHE_FILE);
+    let bundled = BundledClap::discover(scratch.path())
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "this executable has no embedded bundled CLAP manifest hash".to_owned())?;
     for (path, id) in bundled.bundle_entries() {
@@ -197,6 +203,9 @@ fn smoke_live_manager(
     if !manager.set_state(device_id, &initial) {
         return Err("normal Hall did not accept an undo state".into());
     }
+    if snapshot(&mut manager).as_deref() != Some(initial.as_ref()) {
+        return Err("normal Hall save did not service the pending undo".into());
+    }
     if !manager.poll().iter().any(|event| {
         matches!(event,
         PluginManagerEvent::StateApplied { device } if *device == device_id)
@@ -205,6 +214,18 @@ fn smoke_live_manager(
         return Err("normal Hall undo did not restore its parameter base".into());
     }
 
+    if !manager.set_state(device_id, &edited) {
+        return Err("normal Hall did not queue a restore before reload".into());
+    }
+    let replacement = manager
+        .reload(&device, SETUP)
+        .map_err(|error| error.to_string())?;
+    if manager.param_base(device_id, param_id) != Some(edit) {
+        return Err("normal Hall reload ignored the pending restore".into());
+    }
+    drop(audio);
+    manager.poll();
+    let audio = replacement;
     manager.release(device_id);
     if !manager.has_retiring_direct() {
         return Err("normal Hall dropped its control half before the audio half".into());
@@ -273,8 +294,8 @@ fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
             .activate(SETUP.sample_rate, SETUP.max_block * 2)
             .map_err(|error| error.to_string())?;
         session.set_render_mode(RenderMode::Offline);
-        // Let the worker return its current audio half at the next realtime boundary.
-        drive_boundary(&mut audio);
+        // The detached engine must return the activation even before its first rendered block.
+        audio.prepare_offline();
         session.poll().map_err(|error| error.to_string())?;
         drive_direct(&mut audio, role, hall, presse)
     })();
@@ -309,22 +330,6 @@ fn drive_direct(
             .join()
             .map_err(|_| "direct audio worker panicked".to_owned())?
     })
-}
-
-fn drive_boundary(audio: &mut dyn Processor) {
-    let mut context = smoke_context();
-    context.offline = false;
-    let input = [0.0; FRAMES];
-    let mut left = [0.0; FRAMES];
-    let mut right = [0.0; FRAMES];
-    audio.process(
-        &context,
-        &[],
-        &mut StereoIo {
-            input: [&input, &input],
-            output: [&mut left, &mut right],
-        },
-    );
 }
 
 fn smoke_bridge(
@@ -564,7 +569,7 @@ fn check_presse_sidechain(processor: &mut dyn Processor) -> Result<(), String> {
     };
     let disconnected = render(None)?;
     let connected_silent = render(Some([silent.as_slice(); 2]))?;
-    if connected_silent < 0.70 || disconnected > connected_silent * 0.75 {
+    if connected_silent < 0.70 || disconnected < 1e-6 || disconnected > connected_silent * 0.75 {
         return Err(format!(
             "Presse sidechain did not distinguish disconnection from silence (peaks {disconnected:.3}, {connected_silent:.3})"
         ));

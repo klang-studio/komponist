@@ -16,6 +16,12 @@ serde_json.workspace = true
 hound.workspace = true
 rtrb.workspace = true
 
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
+
 [dev-dependencies]
 assert_no_alloc.workspace = true
 komponist-engine.workspace = true

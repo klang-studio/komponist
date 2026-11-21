@@ -263,7 +263,11 @@ pub fn panel_from_parts(
         .collect();
     let mut parameter_labels = std::collections::BTreeMap::new();
     let mut choice_labels = std::collections::BTreeMap::new();
-    for (en, de) in english_params.iter().zip(german_params) {
+    for en in english_params {
+        let de = german_params
+            .iter()
+            .find(|param| param.id == en.id)
+            .unwrap_or(en);
         parameter_labels.insert(en.id.clone(), label(&en.name, &de.name));
         if let (
             komponist_model::params::ParamKind::Enum(en_choices),

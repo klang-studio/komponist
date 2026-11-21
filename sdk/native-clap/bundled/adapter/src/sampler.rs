@@ -45,16 +45,13 @@ unsafe impl<T: SampledDefinition> Params for SampleParameters<T> {
 
     fn deserialize_fields(&self, fields: &BTreeMap<String, String>) {
         let assets = fields.get(SAMPLE_ASSETS_FIELD).map_or("{}", String::as_str);
-        if assets.len() > MAX_SAMPLE_ASSET_BYTES
-            || !serde_json::from_str::<serde_json::Value>(assets)
-                .is_ok_and(|value| value.is_object())
-        {
-            return;
-        }
-
         self.params.deserialize_fields(fields);
         let mut saved = self.assets.lock().unwrap_or_else(|err| err.into_inner());
-        let mut links = links::read(Some(assets.as_bytes())).into_iter().peekable();
+        let mut links = links::read(Some(assets.as_bytes()));
+        // The legacy JSON reader accepts numeric aliases such as "01". Resolve duplicates
+        // before walking the pads so a second entry for one pad cannot hide later pads.
+        links.dedup_by_key(|(pad, _)| *pad);
+        let mut links = links.into_iter().peekable();
         for pad in 0..T::PADS {
             if links.peek().is_some_and(|item| item.0 == pad) {
                 let (_, link) = links.next().expect("checked pad");
@@ -169,6 +166,14 @@ impl<T: SampledDefinition> Plugin for Sampled<T> {
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
+    }
+
+    fn validate_state(state: &PluginState) -> bool {
+        state.fields.get(SAMPLE_ASSETS_FIELD).is_none_or(|assets| {
+            assets.len() <= MAX_SAMPLE_ASSET_BYTES
+                && serde_json::from_str::<serde_json::Value>(assets)
+                    .is_ok_and(|value| value.is_object())
+        })
     }
 
     fn activate(
