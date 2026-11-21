@@ -434,6 +434,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "komponist-bundled-delay"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "komponist-bundled-clap-adapter",
+ "komponist-delay",
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-native-clap-sdk",
+ "nice-plug",
+ "serde_json",
+]
+
+[[package]]
+name = "komponist-bundled-eq"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "komponist-bundled-clap-adapter",
+ "komponist-device-core",
+ "komponist-eq",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-native-clap-sdk",
+ "nice-plug",
+ "serde_json",
+]
+
+[[package]]
 name = "komponist-bundled-hall"
 version = "0.1.0"
 dependencies = [
@@ -445,6 +475,44 @@ dependencies = [
  "komponist-reverb",
  "nice-plug",
  "serde_json",
+]
+
+[[package]]
+name = "komponist-bundled-limiter"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "komponist-bundled-clap-adapter",
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-limiter",
+ "komponist-native-clap-sdk",
+ "nice-plug",
+ "serde_json",
+]
+
+[[package]]
+name = "komponist-bundled-presse"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "komponist-bundled-clap-adapter",
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-native-clap-sdk",
+ "komponist-presse",
+ "nice-plug",
+ "serde_json",
+]
+
+[[package]]
+name = "komponist-delay"
+version = "0.2.0"
+dependencies = [
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-model",
 ]
 
 [[package]]
@@ -475,6 +543,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "komponist-eq"
+version = "0.2.0"
+dependencies = [
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
+]
+
+[[package]]
 name = "komponist-i18n"
 version = "0.2.0"
 dependencies = [
@@ -491,6 +569,15 @@ dependencies = [
  "serde",
  "serde_json",
  "windows-sys",
+]
+
+[[package]]
+name = "komponist-limiter"
+version = "0.2.0"
+dependencies = [
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-model",
 ]
 
 [[package]]
@@ -513,6 +600,16 @@ dependencies = [
  "komponist-model",
  "nice-plug",
  "serde_json",
+]
+
+[[package]]
+name = "komponist-presse"
+version = "0.2.0"
+dependencies = [
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
 ]
 
 [[package]]

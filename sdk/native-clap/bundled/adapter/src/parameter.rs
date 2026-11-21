@@ -241,6 +241,10 @@ impl Parameters {
         self.0.len()
     }
 
+    pub(crate) fn raw_value(&self, index: usize) -> f64 {
+        self.0[index].binding.0.raw()
+    }
+
     pub(crate) fn changed_value(&self, index: usize, applied: &mut Option<f64>) -> Option<f64> {
         let bound = &self.0[index];
         let raw = bound.binding.0.raw();

@@ -21,6 +21,8 @@ pub trait EffectDefinition: Send + 'static {
     const ID: &'static str;
     const NAME: &'static str;
     const SIDECHAIN: bool = false;
+    /// A parameter that can only take effect on reactivation because it changes latency.
+    const LATENCY_PARAMETER: Option<&'static str> = None;
     const VERSION: &'static str;
     const FEATURES: &'static [ClapFeature];
 
@@ -42,6 +44,8 @@ pub struct Effect<T> {
     dsp: Box<dyn Dsp>,
     applied: Vec<Option<f64>>,
     input: [Vec<f32>; 2],
+    latency_param: Option<usize>,
+    restart_requested: bool,
     definition: std::marker::PhantomData<T>,
 }
 
@@ -53,15 +57,24 @@ impl<T: EffectDefinition> Default for Effect<T> {
             params: Arc::new(params),
             dsp: (T::SPEC.dsp)(),
             input: Default::default(),
+            latency_param: T::LATENCY_PARAMETER.map(|id| {
+                T::SPEC
+                    .wire(&komponist_model::params::ParamId::new(id))
+                    .unwrap_or_else(|| panic!("unknown latency parameter {id}"))
+                    as usize
+            }),
+            restart_requested: false,
             definition: std::marker::PhantomData,
         }
     }
 }
 
 impl<T: EffectDefinition> Effect<T> {
-    fn apply_params(&mut self) {
+    fn apply_params(&mut self, activating: bool) {
         for (index, applied) in self.applied.iter_mut().enumerate() {
-            if let Some(value) = self.params.changed_value(index, applied) {
+            if (activating || self.latency_param != Some(index))
+                && let Some(value) = self.params.changed_value(index, applied)
+            {
                 self.dsp.set_param(index, value);
             }
         }
@@ -119,14 +132,15 @@ impl<T: EffectDefinition> Plugin for Effect<T> {
         for input in &mut self.input {
             input.resize(config.max_buffer_size as usize, 0.0);
         }
-        self.apply_params();
+        self.apply_params(true);
+        self.restart_requested = false;
         self.dsp.activate(config.sample_rate);
         context.set_latency_samples(self.dsp.latency());
         true
     }
 
     fn reset(&mut self) {
-        self.apply_params();
+        self.apply_params(false);
         self.dsp.reset();
     }
 
@@ -136,7 +150,15 @@ impl<T: EffectDefinition> Plugin for Effect<T> {
         aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        self.apply_params();
+        self.apply_params(false);
+        if !self.restart_requested
+            && let Some(index) = self.latency_param
+            && self.applied[index] != Some(self.params.raw_value(index))
+        {
+            // Until the host reactivates us, retain the old DSP delay and advertised latency.
+            self.restart_requested = true;
+            context.request_restart();
+        }
         if let Some(tempo) = context.transport().tempo {
             self.dsp.set_tempo(tempo);
         }

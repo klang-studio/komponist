@@ -1,0 +1,75 @@
+//! Common native-layout ABI checks for the bundled plugins.
+
+use std::ffi::{c_char, c_void};
+use std::ptr;
+use std::sync::Arc;
+
+use clap_sys::host::clap_host;
+use clap_sys::plugin::clap_plugin;
+use clap_sys::version::CLAP_VERSION;
+use komponist_native_clap_sdk::{NativeClapLayout, compile};
+use nice_plug::prelude::ClapPlugin;
+use nice_plug::wrapper::clap::Wrapper;
+
+unsafe extern "C" fn no_extension(_: *const clap_host, _: *const c_char) -> *const c_void {
+    ptr::null()
+}
+
+static HOST: clap_host = clap_host {
+    clap_version: CLAP_VERSION,
+    host_data: ptr::null_mut(),
+    name: c"Bundled CLAP test host".as_ptr(),
+    vendor: c"klang-studio".as_ptr(),
+    url: c"https://github.com/klang-studio/komponist".as_ptr(),
+    version: c"1".as_ptr(),
+    get_extension: Some(no_extension),
+    request_restart: None,
+    request_process: None,
+    request_callback: None,
+};
+
+pub(crate) struct Instance(pub(crate) *const clap_plugin);
+
+impl Instance {
+    pub(crate) fn new<P: ClapPlugin>() -> Self {
+        // SAFETY: The static host remains live for the instance. Transfer the returned Arc to
+        // CLAP; the destroy callback consumes it.
+        unsafe {
+            let wrapper = Arc::into_raw(Wrapper::<P>::new(&HOST).unwrap());
+            let instance = Self((*wrapper).clap_plugin.as_ptr());
+            assert!(((*instance.0).init.unwrap())(instance.0));
+            instance
+        }
+    }
+}
+
+impl Drop for Instance {
+    fn drop(&mut self) {
+        // SAFETY: This Instance owns the reference transferred during construction.
+        unsafe { ((*self.0).destroy.unwrap())(self.0) };
+    }
+}
+
+/// Check the native v1 ABI against two real CLAP parameter inventories and return its layout.
+pub(crate) fn read_layout<P: NativeClapLayout>() -> serde_json::Value {
+    let panel = P::panel();
+    let first = Instance::new::<P>();
+    let second = Instance::new::<P>();
+    // SAFETY: Both instances are live and initialized on this test thread.
+    let bytes = unsafe { compile::<P>(first.0, &panel).unwrap() };
+    assert_eq!(bytes, unsafe { compile::<P>(second.0, &panel).unwrap() });
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+pub(crate) fn assert_localized_bindings<P: NativeClapLayout>(count: usize) {
+    let layout = read_layout::<P>();
+    assert_eq!(layout["locales"], serde_json::json!(["en", "de"]));
+    let ids: std::collections::BTreeSet<_> = layout["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|page| page["cells"].as_array().unwrap())
+        .map(|cell| cell["param_id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(ids.len(), count);
+}

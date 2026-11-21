@@ -1,6 +1,16 @@
 [workspace]
 resolver = "3"
-members = ["author", "example", "xtask", "bundled/adapter", "bundled/hall"]
+members = [
+    "author",
+    "example",
+    "xtask",
+    "bundled/adapter",
+    "bundled/hall",
+    "bundled/delay",
+    "bundled/eq",
+    "bundled/presse",
+    "bundled/limiter",
+]
 
 [workspace.package]
 version = "0.1.0"
