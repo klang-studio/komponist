@@ -444,87 +444,51 @@ impl App {
             self.open_file_browser(Purpose::Save);
             return;
         };
-        match self.collect_samples(&file) {
-            Ok(collector) => {
-                for path in &collector.skipped {
-                    eprintln!(
-                        "komponist: not collected, not an audio file: {}",
-                        path.display()
-                    );
-                }
-                if self.save_to(&file) {
-                    let save_warning = self
-                        .ui
-                        .status
-                        .as_ref()
-                        .filter(|status| status.kind == StatusKind::Error)
-                        .map(|status| status.text.clone());
-                    let copied = collector.log.iter().filter(|c| c.copied).count();
-                    let folder = sampler::links::samples_folder_name(&file);
-                    let text = match copied {
-                        0 => self.lang.status_collected_none(&folder),
-                        n => self.lang.status_collected(n, &folder),
-                    };
-                    let (mut text, mut kind) = if collector.skipped.is_empty() {
-                        (text, StatusKind::Success)
-                    } else {
-                        let files = collector
-                            .skipped
-                            .iter()
-                            .map(|p| p.file_name().unwrap_or(p.as_os_str()).to_string_lossy())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        (
-                            format!(
-                                "{text} · {}",
-                                self.lang
-                                    .status_collect_skipped(collector.skipped.len(), files)
-                            ),
-                            StatusKind::Error,
-                        )
-                    };
-                    if let Some(warning) = save_warning {
-                        text = format!("{warning} · {text}");
-                        kind = StatusKind::Error;
-                    }
-                    self.set_status(text, kind);
-                }
-            }
-            Err(e) => {
-                eprintln!("komponist: collecting samples failed: {e}");
-                self.set_status(self.lang.status_collect_failed(e), StatusKind::Error);
-            }
+        let mut collector = Collector::new(&file);
+        if !self.save_to_collected(&file, &mut collector) {
+            return;
         }
-    }
-
-    /// Copies the samples of every sampler into the samples folder of `file` and points the links
-    /// there; returns the collector (its log says what was copied). The steps of the undo history
-    /// follow, each from its own state: links to collected files point to the copies, the others
-    /// are rebased; a sample only an earlier step uses is not copied (#86). A failed copy leaves
-    /// the document as it was.
-    fn collect_samples(&mut self, file: &Path) -> std::io::Result<Collector> {
-        let mut collector = Collector::new(file);
-        let old_dir = self.project_dir();
-        for (_, _, _, state) in self.samplers() {
-            collector.collect(state.as_deref(), old_dir.as_deref())?;
+        for path in &collector.skipped {
+            eprintln!(
+                "komponist: not collected, not an audio file: {}",
+                path.display()
+            );
         }
-        for file in audio_files(self.project()) {
-            if let Some(found) = file.resolve(old_dir.as_deref()) {
-                collector.collect_file(&found)?;
-            }
-        }
-        let project_dir = collector.project_dir().to_path_buf();
-        self.doc.rewrite_untracked(|p| {
-            rewrite_links(
-                p,
-                |device| {
-                    sample_device_kind(device)?;
-                    collector.relink(device.state.as_deref(), old_dir.as_deref())
-                },
-                |file| relink_audio_file(&collector, file, old_dir.as_deref(), &project_dir),
+        let save_warning = self
+            .ui
+            .status
+            .as_ref()
+            .filter(|status| status.kind == StatusKind::Error)
+            .map(|status| status.text.clone());
+        let copied = collector.log.iter().filter(|c| c.copied).count();
+        let folder = sampler::links::samples_folder_name(&file);
+        let text = match copied {
+            0 => self.lang.status_collected_none(&folder),
+            n => self.lang.status_collected(n, &folder),
+        };
+        let (mut text, mut kind) = if collector.skipped.is_empty() {
+            (text, StatusKind::Success)
+        } else {
+            let files = collector
+                .skipped
+                .iter()
+                .map(|p| p.file_name().unwrap_or(p.as_os_str()).to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(", ");
+            (
+                format!(
+                    "{text} · {}",
+                    self.lang
+                        .status_collect_skipped(collector.skipped.len(), files)
+                ),
+                StatusKind::Error,
             )
-        });
-        Ok(collector)
+        };
+        if let Some(warning) = save_warning {
+            text = format!("{warning} · {text}");
+            kind = StatusKind::Error;
+        }
+        self.set_status(text, kind);
     }
 
     // --------------------------------------------------------------------------------------------
@@ -631,17 +595,32 @@ fn audio_files(project: &Project) -> Vec<&AudioFile> {
         .collect()
 }
 
-/// `file` pointed where `collector` put it (or, for a file this run did not collect, rebased to
-/// the project's folder); `None` if it does not resolve (a missing file keeps its link).
-fn relink_audio_file(
-    collector: &Collector,
-    file: &AudioFile,
-    old_dir: Option<&Path>,
-    project_dir: &Path,
-) -> Option<AudioFile> {
-    let found = file.resolve(old_dir)?;
-    let to = collector.placed(&found).unwrap_or(found);
-    Some(file.moved_to(&to, project_dir))
+/// Collect the current sample and audio-clip sources before rewriting the file or history.
+pub(crate) fn collect_sample_sources<'a>(
+    project: &Project,
+    collector: &mut Collector,
+    project_dir: Option<&Path>,
+    plugin_snapshot: impl Fn(DeviceId) -> Option<&'a [u8]>,
+) -> std::io::Result<()> {
+    for device in project
+        .tracks
+        .iter()
+        .flat_map(|track| track.channel.devices.iter())
+        .chain(project.master.devices.iter())
+    {
+        if bundled_sampler::kind(&device.plugin).is_some() {
+            let state = plugin_snapshot(device.id).or(device.state.as_deref());
+            bundled_sampler::collect_links(collector, state, project_dir)?;
+        } else if sample_device_kind(device).is_some() {
+            collector.collect(device.state.as_deref(), project_dir)?;
+        }
+    }
+    for file in audio_files(project) {
+        if let Some(found) = file.resolve(project_dir) {
+            collector.collect_file(&found)?;
+        }
+    }
+    Ok(())
 }
 
 /// Rewrites a project or history entry for the destination folder while it still resolves

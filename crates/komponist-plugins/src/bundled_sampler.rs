@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use komponist_builtin::Internal;
 use komponist_model::PluginRef;
-use komponist_sampler::links::{self, SampleLink};
+use komponist_sampler::links::{self, Collector, SampleLink};
 
 use komponist_device_core::pinned_clap_state::{MAX_SAMPLE_ASSET_BYTES, SAMPLE_ASSETS_FIELD};
 use serde_json::Value;
@@ -52,6 +52,18 @@ pub fn missing_links(state: &[u8], project_dir: Option<&Path>) -> Vec<(usize, Sa
     };
     let assets = asset_field(&wrapper).map(str::as_bytes);
     links::missing(assets, project_dir)
+}
+
+/// Collect the sample files referenced by the bundled wrapper state.
+pub fn collect_links(
+    collector: &mut Collector,
+    state: Option<&[u8]>,
+    project_dir: Option<&Path>,
+) -> std::io::Result<()> {
+    let wrapper = state.and_then(decode);
+    let assets = wrapper.as_ref().and_then(asset_field).map(str::as_bytes);
+    collector.collect(assets, project_dir)?;
+    Ok(())
 }
 
 /// Replace one missing link while preserving the bundled wrapper's parameters and metadata.

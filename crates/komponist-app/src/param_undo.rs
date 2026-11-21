@@ -260,6 +260,20 @@ impl App {
         &self.param_undo.deferred
     }
 
+    /// Adopt rewritten asset paths after the new project file has been written.
+    pub(crate) fn update_deferred_plugin_states(&mut self, states: Vec<(DeviceId, Arc<[u8]>)>) {
+        for (device, state) in states {
+            if let Some((_, pending)) = self
+                .param_undo
+                .deferred
+                .iter_mut()
+                .find(|(id, _)| *id == device)
+            {
+                *pending = state;
+            }
+        }
+    }
+
     /// Stores the snapshots that waited for a gesture, once none is open.
     pub(crate) fn flush_deferred(&mut self) {
         if self.doc.in_gesture() || self.param_undo.deferred.is_empty() {

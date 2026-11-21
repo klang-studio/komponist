@@ -139,7 +139,14 @@ fn both_samplers_play_assets_after_the_project_moves() {
     // sample with the same file name exists next to the new project.
     let destination = scratch.path().join("destination");
     std::fs::create_dir(&destination).unwrap();
-    write_wav(&destination.join("tone.wav"), 0);
+    let silent = destination.join("tone.wav");
+    write_wav(&silent, 0);
+    assert!(
+        hound::WavReader::open(silent)
+            .unwrap()
+            .samples::<i16>()
+            .all(|sample| sample.unwrap() == 0)
+    );
     let copy = destination.join("copy.komponist");
     let mut h = harness(app);
     h.state_mut()
@@ -157,22 +164,8 @@ fn both_samplers_play_assets_after_the_project_moves() {
     assert_eq!(app.project_path(), Some(copy.as_path()));
     // Capture the live sampler state a second time, after adopting the new folder.
     app.dispatch(Action::Project(ProjectAction::Save));
-    let saved = load_project(&copy).unwrap();
     let source = moved.join("tone.wav");
-    for track in &saved.tracks {
-        let device = track.channel.instrument().unwrap().1;
-        let state = device.state.as_deref().unwrap();
-        let wrapper: serde_json::Value = serde_json::from_slice(&state[8..]).unwrap();
-        let assets = wrapper["fields"][pinned_clap_state::SAMPLE_ASSETS_FIELD]
-            .as_str()
-            .unwrap();
-        assert_eq!(
-            links::read(Some(assets.as_bytes()))[0]
-                .1
-                .resolve(Some(&destination)),
-            Some(source.clone())
-        );
-    }
+    assert_sample_sources(&load_project(&copy).unwrap(), &destination, &source);
 
     // Both bundled samplers still advertise missing assets and accept a relink.
     let replacement = scratch.path().join("found.wav");
@@ -192,7 +185,48 @@ fn both_samplers_play_assets_after_the_project_moves() {
         Some(&destination),
     ).is_empty());
     assert_audible(app, track.id, 60);
+
+    // Both CLAP instances still have the original source in their live state when
+    // collection begins. Their next snapshots must adopt the collected file too.
+    app.dispatch(Action::Project(ProjectAction::CollectAndSave));
+    let collected = destination.join("copy Samples/found.wav");
+    assert!(collected.is_file());
+    assert_eq!(
+        std::fs::read_dir(collected.parent().unwrap())
+            .unwrap()
+            .count(),
+        1
+    );
+    assert_sample_sources(&load_project(&copy).unwrap(), &destination, &collected);
+    std::fs::remove_file(&replacement).unwrap();
+    app.dispatch(Action::Project(ProjectAction::Save));
+    assert_sample_sources(&load_project(&copy).unwrap(), &destination, &collected);
+    for (track, key) in migrated
+        .tracks
+        .iter()
+        .zip([komponist_sampler::note_of_pad(0), 60])
+    {
+        assert_audible(app, track.id, key);
+    }
     app.shutdown();
+}
+
+fn assert_sample_sources(project: &Project, project_dir: &Path, source: &Path) {
+    for track in &project.tracks {
+        let device = track.channel.instrument().unwrap().1;
+        let state = device.state.as_deref().unwrap();
+        let wrapper: serde_json::Value = serde_json::from_slice(&state[8..]).unwrap();
+        let assets = wrapper["fields"][pinned_clap_state::SAMPLE_ASSETS_FIELD]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            links::read(Some(assets.as_bytes()))[0]
+                .1
+                .resolve(Some(project_dir))
+                .as_deref(),
+            Some(source)
+        );
+    }
 }
 
 fn assert_audible(app: &mut App, track: TrackId, key: u8) {
@@ -238,7 +272,7 @@ fn write_wav(path: &Path, amplitude: i16) {
     .unwrap();
     for frame in 0..8192 {
         let sample = if frame / 12 % 2 == 0 {
-            11_000_i16
+            amplitude
         } else {
             -amplitude
         };
