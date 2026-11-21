@@ -102,12 +102,12 @@ device core. For example, with a pinned checkout in a sibling directory named
 [dependencies]
 komponist-device-core = { path = "../komponist-source/crates/builtin-devices/core" }
 komponist-native-clap-sdk = { path = "../komponist-source/sdk/native-clap/author" }
-nice-plug = { git = "https://github.com/klang-studio/nice-plug", rev = "3567fbd8289d587598e55d505e0f7343f1fc2235", default-features = false }
+nice-plug = { git = "https://github.com/klang-studio/nice-plug", rev = "4a376c7f60775da0455ba0c72c1a7b7d2d56dbdc", default-features = false }
 ```
 
 Keep the device's nice-plug dependency at the same Git revision as the SDK. The SDK lockfile
 records that revision for the wrapper, core, derive macros, and logging crate. The wrapper
-changes are maintained in the [nice-plug fork](https://github.com/klang-studio/nice-plug/tree/3567fbd8289d587598e55d505e0f7343f1fc2235).
+changes are maintained in the [nice-plug fork](https://github.com/klang-studio/nice-plug/tree/4a376c7f60775da0455ba0c72c1a7b7d2d56dbdc).
 
 Define your device's audio processing, parameter declarations and defaults in nice-plug.
 Implement `NativeClapLayout::panel()` to return a `Panel` with the same contents each time.
