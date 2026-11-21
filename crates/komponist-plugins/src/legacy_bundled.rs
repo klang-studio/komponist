@@ -1,4 +1,4 @@
-//! Prepare, but never apply, a migration from a legacy built-in to a bundled CLAP.
+//! Plan and transform a project copy for migration from legacy built-ins to bundled CLAPs.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -12,21 +12,22 @@ use komponist_ipc::native_layout::NativeLayout;
 use komponist_ipc::{
     ParamInfo as ClapParamInfo, PluginDescriptor, PluginFormat as ClapFormat, PluginKind,
 };
-use komponist_model::params::{ParamId, ParamInfo};
+use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale};
 use komponist_model::project::{Device, DeviceRole, PluginFormat, PluginRef};
 use serde_json::{Map, Value};
 
 use crate::bundled_clap::BundledClap;
 use crate::direct::DirectClap;
 
-/// Proposed device and parameter-address changes. The app must validate and
-/// commit the complete project migration separately from planning it.
+mod project;
+pub use project::{LegacyProjectMigration, migrate_legacy_bundled_project};
+
+/// A verified migration plan for the exact source device snapshot.
 #[derive(Debug, Clone)]
 pub struct LegacyDevicePlan {
-    /// The replacement retains the old instance ID, bypass, and sidechain.
-    pub replacement: Device,
-    /// Known preset metadata to carry forward when assigning the new device.
-    pub legacy_preset: Option<String>,
+    source: Device,
+    replacement: Device,
+    legacy_preset: Option<String>,
     params: BTreeMap<ParamId, LegacyParameter>,
 }
 
@@ -36,6 +37,7 @@ pub struct LegacyParameter {
     /// The new project parameter address for this bundle.
     pub id: ParamId,
     steps: u32,
+    automation_issue: Option<&'static str>,
 }
 
 impl LegacyParameter {
@@ -52,6 +54,16 @@ impl LegacyParameter {
 }
 
 impl LegacyDevicePlan {
+    /// The replacement retains the source instance ID, bypass, and sidechain.
+    pub fn replacement(&self) -> &Device {
+        &self.replacement
+    }
+
+    /// The preset label read from the legacy device state, if present.
+    pub fn legacy_preset(&self) -> Option<&str> {
+        self.legacy_preset.as_deref()
+    }
+
     /// Resolve a legacy automation or macro target within this device.
     pub fn parameter(&self, id: &ParamId) -> Option<&LegacyParameter> {
         self.params.get(id)
@@ -195,6 +207,7 @@ fn prepare(
             LegacyParameter {
                 id: ParamId::plugin(*id),
                 steps,
+                automation_issue: automation_issue(info, binding),
             },
         );
     }
@@ -216,10 +229,31 @@ fn prepare(
     };
     replacement.state = payload.map(Into::into);
     Ok(LegacyDevicePlan {
+        source: old.clone(),
         replacement,
         legacy_preset,
         params,
     })
+}
+
+fn automation_issue(info: &ParamInfo, binding: &ClapParamInfo) -> Option<&'static str> {
+    if !info.automatable || binding.flags & param_flags::AUTOMATABLE == 0 {
+        return Some("parameter is not automatable");
+    }
+    // Continuous CLAP positions still use the legacy scale in DSP. Stepped CLAP
+    // positions quantize linearly, so a nonlinear legacy scale would move step
+    // boundaries inside curves and macro ranges even if their endpoints matched.
+    if matches!(
+        info.kind,
+        ParamKind::Float {
+            scale: Scale::Log | Scale::Db,
+            steps: 1..,
+            ..
+        }
+    ) {
+        return Some("nonlinear stepped range cannot preserve normalized interpolation");
+    }
+    None
 }
 
 fn convert_state(

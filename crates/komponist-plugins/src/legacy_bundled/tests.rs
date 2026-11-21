@@ -1,5 +1,11 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points, Shape};
+use komponist_model::edits::{self, NewClip, NewClipContent, NewDevice, NewTrack};
+use komponist_model::macros::Mapping;
+use komponist_model::{ChannelRef, DeviceId, Project, Sidechain, Tick};
 
 use serde_json::json;
 
@@ -43,7 +49,12 @@ fn inventory(kind: BuiltinKind) -> (PluginDescriptor, Vec<ClapParamInfo>, Value)
                 max: f64::from(steps.max(1)),
                 default: 0.0,
                 step_count: steps,
-                flags: if steps > 0 { param_flags::STEPPED } else { 0 },
+                flags: (if steps > 0 { param_flags::STEPPED } else { 0 })
+                    | (if info.automatable {
+                        param_flags::AUTOMATABLE
+                    } else {
+                        0
+                    }),
             }
         })
         .collect::<Vec<_>>();
@@ -230,4 +241,228 @@ fn author_aliases_must_cover_the_unique_live_inventory() {
     let mut invalid = document;
     invalid["author_ids"]["cutoff"] = json!(99999);
     assert!(parse(&invalid).unwrap().validate_params(&params).is_err());
+}
+
+fn fixture_plan(device: &Device) -> LegacyDevicePlan {
+    let kind = BuiltinKind::from_plugin(&device.plugin).unwrap();
+    let (descriptor, params, document) = inventory(kind);
+    let layout = NativeLayout::parse(&document.to_string().into_bytes()).unwrap();
+    prepare(
+        device,
+        kind,
+        &descriptor,
+        &layout,
+        &params,
+        "bundle.clap",
+        None,
+    )
+    .unwrap()
+}
+
+fn target(device: DeviceId, param: &str) -> AutomationTarget {
+    AutomationTarget::Param {
+        device,
+        param: ParamId::new(param),
+    }
+}
+
+fn legacy_project() -> (Project, DeviceId, DeviceId) {
+    let volt = historical_volt();
+    let (project, track) = edits::add_track(
+        &Project::new("Historical project"),
+        NewTrack {
+            name: Some("Synth".into()),
+            hue: None,
+            instrument: Some(volt.plugin.clone()),
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let (mut project, master_id) = edits::insert_device(
+        &project,
+        ChannelRef::Master,
+        0,
+        NewDevice {
+            role: DeviceRole::Effect,
+            plugin: BuiltinKind::Internal(Internal::Presse)
+                .catalog()
+                .plugin_ref(),
+            state: None,
+            sidechain: None,
+        },
+    )
+    .unwrap();
+    let master = Arc::make_mut(&mut project.master);
+    Arc::make_mut(&mut master.devices[0]).sidechain = Some(Sidechain::new(track));
+    let instrument = Arc::make_mut(&mut project.tracks[0]);
+    let instrument = Arc::make_mut(&mut instrument.channel.devices[0]);
+    let volt_id = instrument.id;
+    *instrument = Device {
+        id: volt_id,
+        ..volt
+    };
+
+    let (project, clip) = edits::add_clip(
+        &project,
+        track,
+        NewClip {
+            start: Tick(30),
+            length: Tick(960),
+            name: "MIDI".into(),
+            content: NewClipContent::Midi {
+                notes: Vec::new(),
+                take_name: String::new(),
+            },
+        },
+    )
+    .unwrap();
+    let cutoff = target(volt_id, "cutoff");
+    let points = Points::new(vec![
+        Point {
+            tick: Tick(0),
+            value: 0.19,
+            shape: Shape::Curve { tension: 0.4 },
+        },
+        Point::linear(Tick(180), 0.73),
+    ]);
+    let project =
+        edits::automation::add_clip_automation(&project, clip, cutoff.clone(), "Cutoff".into())
+            .unwrap();
+    let mut project =
+        edits::automation::set_clip_points(&project, clip, &cutoff, points.clone()).unwrap();
+    let track = Arc::make_mut(&mut project.tracks[0]);
+    Arc::make_mut(&mut track.automation.lanes[0]).points = points;
+    track.macros.0[0].value = 0.41;
+    track.macros.0[0].mappings.push(Mapping {
+        target: target(volt_id, "octave"),
+        label: "Octave".into(),
+        min: 0.24,
+        max: 0.76,
+        invert: true,
+        bend: -0.2,
+    });
+    let (project, _) = edits::automation::add_lane(
+        &project,
+        AutomationOwner::Master,
+        target(master_id, "threshold"),
+        "Threshold".into(),
+    )
+    .unwrap();
+    (project, volt_id, master_id)
+}
+
+#[test]
+fn migrates_all_project_parameter_references_and_keeps_the_source() {
+    let (source, volt, master) = legacy_project();
+    let volt_plan = fixture_plan(&source.tracks[0].channel.devices[0]);
+    let master_plan = fixture_plan(&source.master.devices[0]);
+    let before = serde_json::to_vec(&source).unwrap();
+    let mut expected = source.clone();
+    let mapped = |id, plan: &LegacyDevicePlan, param| AutomationTarget::Param {
+        device: id,
+        param: plan.parameter(&ParamId::new(param)).unwrap().id.clone(),
+    };
+    let cutoff = mapped(volt, &volt_plan, "cutoff");
+    let track = Arc::make_mut(&mut expected.tracks[0]);
+    track.channel.devices[0] = Arc::new(volt_plan.replacement().clone());
+    Arc::make_mut(&mut track.automation.lanes[0]).target = cutoff.clone();
+    Arc::make_mut(&mut track.clips[0]).automation[0].target = cutoff;
+    track.macros.0[0].mappings[0].target = mapped(volt, &volt_plan, "octave");
+    Arc::make_mut(&mut expected.master_automation).lanes[0] =
+        Arc::new(komponist_model::automation::Lane {
+            target: mapped(master, &master_plan, "threshold"),
+            ..(*source.master_automation.lanes[0]).clone()
+        });
+    Arc::make_mut(&mut expected.master).devices[0] = Arc::new(master_plan.replacement().clone());
+
+    let migration = migrate_legacy_bundled_project(&source, [volt_plan, master_plan]).unwrap();
+    assert_eq!(migration.project, expected);
+    assert_eq!(
+        migration.legacy_presets,
+        BTreeMap::from([(volt, "Fette Säge".into())])
+    );
+    assert_eq!(serde_json::to_vec(&source).unwrap(), before);
+}
+
+#[test]
+fn an_unknown_target_rejects_the_entire_copy() {
+    let (mut source, volt, _) = legacy_project();
+    let track = Arc::make_mut(&mut source.tracks[0]);
+    Arc::make_mut(&mut track.clips[0]).automation[0].target = target(volt, "unknown");
+    let plans = [
+        fixture_plan(&source.master.devices[0]),
+        fixture_plan(&track.channel.devices[0]),
+    ];
+    let before = serde_json::to_vec(&source).unwrap();
+    let error = migrate_legacy_bundled_project(&source, plans).unwrap_err();
+    assert!(error.contains("unknown legacy parameter unknown"));
+    assert_eq!(serde_json::to_vec(&source).unwrap(), before);
+}
+
+#[test]
+fn rejects_stale_missing_duplicate_and_cross_channel_plans() {
+    let (source, volt, _) = legacy_project();
+    let plan = fixture_plan(&source.tracks[0].channel.devices[0]);
+
+    let mut stale = source.clone();
+    let track = Arc::make_mut(&mut stale.tracks[0]);
+    Arc::make_mut(&mut track.channel.devices[0]).state = None;
+    assert!(
+        migrate_legacy_bundled_project(&stale, [plan.clone()])
+            .unwrap_err()
+            .contains("changed")
+    );
+
+    assert!(
+        migrate_legacy_bundled_project(&Project::new("Empty"), [plan.clone()])
+            .unwrap_err()
+            .contains("missing")
+    );
+    assert!(
+        migrate_legacy_bundled_project(&source, [plan.clone(), plan.clone()])
+            .unwrap_err()
+            .contains("duplicate migration plan")
+    );
+
+    let mut cross_channel = source.clone();
+    let lane = &mut Arc::make_mut(&mut cross_channel.master_automation).lanes[0];
+    Arc::make_mut(lane).target = target(volt, "cutoff");
+    assert!(
+        migrate_legacy_bundled_project(&cross_channel, [plan])
+            .unwrap_err()
+            .contains("another channel")
+    );
+}
+
+#[test]
+fn rejects_changes_to_the_automation_domain() {
+    let (source, _, _) = legacy_project();
+    let mut plan = fixture_plan(&source.tracks[0].channel.devices[0]);
+    let octave = ParamId::new("octave");
+    let binding = ClapParamInfo {
+        id: plan.params[&octave].id.plugin_id().unwrap(),
+        name: "Octave".into(),
+        module: String::new(),
+        min: 0.0,
+        max: 4.0,
+        default: 2.0,
+        step_count: 4,
+        flags: param_flags::STEPPED | param_flags::AUTOMATABLE,
+    };
+    let incompatible = ParamInfo::new(
+        octave.clone(),
+        "Octave",
+        ParamKind::Float {
+            min: 1.0,
+            max: 9.0,
+            scale: Scale::Log,
+            steps: 4,
+        },
+        3.0,
+    );
+    plan.params.get_mut(&octave).unwrap().automation_issue =
+        automation_issue(&incompatible, &binding);
+    let error = migrate_legacy_bundled_project(&source, [plan]).unwrap_err();
+    assert!(error.contains("nonlinear stepped range"));
 }
