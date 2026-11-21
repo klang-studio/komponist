@@ -255,7 +255,7 @@ def payload_directory(target, app):
     return directory / "bundled-clap"
 
 
-def check_rejects_altered_bundle(target, app, device):
+def check_rejects_modified_package(target, app, device):
     # Run the same executable from a disposable package. On macOS ditto keeps
     # the app and nested bundle signatures as they were archived.
     with tempfile.TemporaryDirectory(prefix="komponist integrity ") as temporary:
@@ -270,32 +270,39 @@ def check_rejects_altered_bundle(target, app, device):
             shutil.copy2(app, executable)
             shutil.copytree(payload_directory(target, app), payload_directory(target, executable))
 
-        library = payload_directory(target, executable) / bundle_name(device)
+        bundle = payload_directory(target, executable) / bundle_name(device)
+        library = bundle
         if target == "aarch64-apple-darwin":
             library = library / "Contents" / "MacOS" / device.library
         with library.open("ab") as file:
             file.write(b"altered bundled CLAP smoke payload")
+        check_integrity_refusal(executable, device, "altered", "bundle file hash mismatch")
 
-        # Capture both handles to preserve GUI-subsystem stdout/stderr on Windows.
-        refusal = subprocess.run(
-            [executable, "--verify-bundled-clap"],
-            capture_output=True,
-            timeout=60,
+        bundle.rename(directory / "removed.clap")
+        check_integrity_refusal(executable, device, "missing", bundle.name)
+
+
+def check_integrity_refusal(executable, device, problem, expected_detail):
+    # Capture both handles to preserve GUI-subsystem stdout/stderr on Windows.
+    refusal = subprocess.run(
+        [executable, "--verify-bundled-clap"],
+        capture_output=True,
+        timeout=60,
+    )
+    output = refusal.stdout.decode("utf-8", errors="replace")
+    diagnostic = refusal.stderr.decode("utf-8", errors="replace")
+    if (
+        refusal.returncode == 0
+        or f"verified {device.plugin_id} (in-process)" in output.splitlines()
+        or "bundled CLAP verification:" not in diagnostic
+        or expected_detail not in diagnostic
+        or device.plugin_id not in diagnostic
+    ):
+        raise ValueError(
+            f"expected app integrity refusal for {problem} bundle ({refusal.returncode}): "
+            f"{output}{diagnostic}"
         )
-        output = refusal.stdout.decode("utf-8", errors="replace")
-        diagnostic = refusal.stderr.decode("utf-8", errors="replace")
-        if (
-            refusal.returncode == 0
-            or f"verified {device.plugin_id} (in-process)" in output.splitlines()
-            or "bundled CLAP verification:" not in diagnostic
-            or "bundle file hash mismatch" not in diagnostic
-            or device.plugin_id not in diagnostic
-        ):
-            raise ValueError(
-                f"expected app integrity refusal ({refusal.returncode}): "
-                f"{output}{diagnostic}"
-            )
-        print(f"rejected altered bundle {device.plugin_id}")
+    print(f"rejected {problem} bundle {device.plugin_id}")
 
 
 def check_archive(target, app, expected_sha256, devices):
@@ -342,7 +349,7 @@ def check_archive(target, app, expected_sha256, devices):
         if sorted(reports) != sorted(expected):
             raise ValueError(f"unexpected {route} verification reports: {reports}")
 
-    check_rejects_altered_bundle(target, app, devices[0])
+    check_rejects_modified_package(target, app, devices[0])
 
 
 def main():
