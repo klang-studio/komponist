@@ -8,7 +8,7 @@ on:
       inventory:
         description: "Bundle inventory"
         type: choice
-        options: [hall, fixture]
+        options: [hall, effects, fixture]
         default: hall
   pull_request:
     paths:

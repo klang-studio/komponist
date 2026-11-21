@@ -53,6 +53,11 @@ INVENTORIES = {
     ),
 }
 
+INVENTORIES["effects"] = INVENTORIES["hall"] + tuple(
+    Device(f"komponist-bundled-{name}", f"komponist_{name}", f"org.klang-studio.komponist.{name}")
+    for name in ("delay", "eq", "presse", "limiter")
+)
+
 
 def bundle_name(device):
     return f"{device.library}.clap"
