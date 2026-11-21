@@ -1242,6 +1242,33 @@ impl BridgeClient {
             output.iter().all(|ch| ch.len() >= frames),
             "wait_done: output too short"
         );
+        let result = self.wait_done_events(seq, deadline)?;
+        let layout = self.region.layout();
+        let audio_out = layout.audio_out.get().cast::<[f32; MAX_BLOCK]>();
+        for (channel, samples) in output.into_iter().enumerate() {
+            // SAFETY: wait_done_events acquired this request's completion. The bridge
+            // touches its output only after the next request; only this client can publish it.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    audio_out.add(channel).cast::<f32>(),
+                    samples.as_mut_ptr(),
+                    frames,
+                );
+            }
+        }
+        Ok(result)
+    }
+
+    /// Waits for the same completion as [`Self::wait_done`] without copying output audio.
+    /// MIDI effects use the corresponding request sequence to consume their output events.
+    pub fn wait_done_events(
+        &mut self,
+        seq: u32,
+        deadline: Instant,
+    ) -> Result<BlockResult, BlockError> {
+        if seq != self.seq || self.frames == 0 {
+            return Err(BlockError::Late);
+        }
         let layout = self.region.layout();
         let header = &layout.header;
         loop {
@@ -1259,17 +1286,6 @@ impl BridgeClient {
         let result = unsafe { header.result.get().read() };
         if result.seq != seq {
             return Err(BlockError::Late);
-        }
-        let audio_out = layout.audio_out.get().cast::<[f32; MAX_BLOCK]>();
-        for (channel, samples) in output.into_iter().enumerate() {
-            // SAFETY: see above; `frames <= MAX_BLOCK` (checked in `begin_block`).
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    audio_out.add(channel).cast::<f32>(),
-                    samples.as_mut_ptr(),
-                    frames,
-                );
-            }
         }
         Ok(result)
     }
@@ -1468,7 +1484,7 @@ impl BridgeMonitor {
         BridgeMonitor { region }
     }
 
-    /// The next plugin output event (parameter changes and gestures from the plugin GUI).
+    /// The next plugin output event (MIDI or a parameter value/gesture), tagged by block sequence.
     pub fn pop_output_event(&mut self) -> Option<WireEvent> {
         // SAFETY: the `BridgeMonitor` role (one per region) is the only output-ring consumer.
         unsafe { self.region.layout().output_events.pop() }

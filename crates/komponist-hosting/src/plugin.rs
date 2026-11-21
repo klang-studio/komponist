@@ -288,7 +288,7 @@ pub struct ProcessBlock<'a> {
     pub output: [&'a mut [f32]; 2],
     /// Input events sorted by offset (< `frames`).
     pub events_in: &'a [WireEvent],
-    /// Sink for the plugin's output events (parameter values and gestures).
+    /// Sink for the plugin's output events (notes, MIDI, parameter values and gestures).
     pub events_out: EventOut<'a>,
     /// Transport at frame 0.
     pub transport: &'a WireTransport,

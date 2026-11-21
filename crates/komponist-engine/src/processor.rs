@@ -209,6 +209,12 @@ impl<'a> EventSink<'a> {
             .push(self.start + offset.min(self.frames.saturating_sub(1)), kind)
     }
 
+    /// Offset of this call's frame zero within the engine segment. A hosted MIDI effect uses
+    /// this to align plugin parameter edits with the segment when automation subdivides it.
+    pub fn block_offset(&self) -> u32 {
+        self.start
+    }
+
     /// Events that still fit.
     pub fn room(&self) -> usize {
         self.list.room()

@@ -261,6 +261,7 @@ pub(crate) struct ClapProcessor {
     inputs: PortBuffers,
     outputs: PortBuffers,
     notes: NoteTarget,
+    note_output: bool,
     events: InputEventList,
     /// Held notes: bit `c` of `held[key]` = channel `c`.
     held: [u16; 128],
@@ -274,6 +275,7 @@ impl ClapProcessor {
         inputs: &PortLayout,
         outputs: &PortLayout,
         notes: NoteTarget,
+        note_output: bool,
         max_frames: u32,
     ) -> ClapProcessor {
         ClapProcessor {
@@ -281,6 +283,7 @@ impl ClapProcessor {
             inputs: PortBuffers::new(inputs, max_frames as usize),
             outputs: PortBuffers::new(outputs, max_frames as usize),
             notes,
+            note_output,
             events: InputEventList::with_capacity(INPUT_EVENT_CAPACITY + ALL_NOTES_OFF_ROOM),
             held: [0; 128],
             max_frames,
@@ -473,8 +476,8 @@ impl HostedProcessor for ClapProcessor {
                 ),
             );
             let events_out = &mut block.events_out;
-            let mut sink = WireSink(|e| {
-                events_out.push(e);
+            let mut sink = WireSink::process(block.frames, self.note_output, |event| {
+                events_out.push(event)
             });
             let Ok(started) = self.audio.as_started_mut() else {
                 return ProcessStatus::Error;
