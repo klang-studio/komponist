@@ -10,9 +10,12 @@ komponist-builtin.workspace = true
 komponist-model.workspace = true
 komponist-engine.workspace = true
 komponist-ipc.workspace = true
+komponist-hosting.workspace = true
 serde.workspace = true
 # The scan cache file and the JSON output of `komponist-bridge --scan`.
 serde_json.workspace = true
+sha2 = "=0.11.1"
+tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # Workspace features (mm, thread, process, net) plus: event (poll on control sockets, scan pipes

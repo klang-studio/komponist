@@ -455,7 +455,7 @@ impl Processor for ExternalProcessor {
 }
 
 /// RT. An engine event on the wire.
-fn to_wire(event: &Event) -> WireEvent {
+pub(crate) fn to_wire(event: &Event) -> WireEvent {
     let kind = match event.kind {
         EventKind::NoteOn {
             key,
