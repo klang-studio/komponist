@@ -384,6 +384,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hexa-core"
+version = "0.2.0"
+dependencies = [
+ "klang-dsp",
+ "libm",
+ "serde",
+]
+
+[[package]]
 name = "hound"
 version = "3.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -504,6 +513,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "komponist-bundled-hexa"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "crossbeam-queue",
+ "komponist-bundled-clap-adapter",
+ "komponist-engine",
+ "komponist-hexa",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-native-clap-sdk",
+ "nice-plug",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "komponist-bundled-limiter"
 version = "0.1.0"
 dependencies = [
@@ -607,6 +633,18 @@ dependencies = [
  "komponist-engine",
  "komponist-i18n",
  "komponist-model",
+]
+
+[[package]]
+name = "komponist-hexa"
+version = "0.2.0"
+dependencies = [
+ "hexa-core",
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
+ "serde_json",
 ]
 
 [[package]]

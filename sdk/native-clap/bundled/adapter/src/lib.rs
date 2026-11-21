@@ -15,7 +15,7 @@ use nice_plug::prelude::*;
 
 pub use instrument::Instrument;
 pub use midi_effect::MidiEffect;
-pub use parameter::Binding;
+pub use parameter::{Binding, Parameters};
 
 const STEREO: NonZeroU32 = NonZeroU32::new(2).unwrap();
 

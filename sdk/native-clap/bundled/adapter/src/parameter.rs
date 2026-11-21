@@ -214,15 +214,24 @@ struct BoundParameter {
     default_raw: f64,
 }
 
-pub(crate) struct Parameters(Vec<BoundParameter>);
+/// Stable author bindings and model-to-CLAP scaling for a set of device parameters.
+pub struct Parameters(Vec<BoundParameter>);
 
 impl Parameters {
     pub(crate) fn new(
         spec: &'static Spec,
+        choice: impl FnMut(&'static ParamInfo) -> Option<Binding>,
+    ) -> Self {
+        Self::from_infos(spec.params_in(Lang::En), choice)
+    }
+
+    /// Bind independently described device parameters in the supplied wire order.
+    pub fn from_infos(
+        infos: &'static [ParamInfo],
         mut choice: impl FnMut(&'static ParamInfo) -> Option<Binding>,
     ) -> Self {
         Self(
-            spec.params_in(Lang::En)
+            infos
                 .iter()
                 .map(|info| {
                     let binding = choice(info).unwrap_or_else(|| Binding::from_info(info));
@@ -245,7 +254,8 @@ impl Parameters {
         self.0[index].binding.0.raw()
     }
 
-    pub(crate) fn changed_value(&self, index: usize, applied: &mut Option<f64>) -> Option<f64> {
+    /// Returns the new model plain value and records the underlying wrapper value.
+    pub fn changed_value(&self, index: usize, applied: &mut Option<f64>) -> Option<f64> {
         let bound = &self.0[index];
         let raw = bound.binding.0.raw();
         if *applied == Some(raw) {

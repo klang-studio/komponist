@@ -11,6 +11,7 @@ members = [
     "bundled/presse",
     "bundled/limiter",
     "bundled/volt",
+    "bundled/hexa",
     "bundled/arpeggiator",
     "bundled/scale",
 ]

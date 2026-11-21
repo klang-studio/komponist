@@ -203,6 +203,9 @@ const GLOBALS: [Field; 6] = [
     Field::Tune,
 ];
 
+/// All legacy wire slots, including the eight macros.
+pub const WIRE_COUNT: usize = GLOBAL_BASE as usize + GLOBALS.len();
+
 impl Field {
     /// The field with wire id `wire`: a macro (0–7, any of the 8) or one of the card's own.
     pub fn from_wire(wire: u32) -> Option<Field> {
