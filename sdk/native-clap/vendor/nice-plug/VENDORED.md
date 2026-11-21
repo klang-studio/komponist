@@ -10,6 +10,7 @@ extension dispatch and exposes the wrapper's live author-to-CLAP parameter ID ma
 `source-pin.patch` narrows the vendored workspace to the wrapper and rewires its sibling package
 paths to the exact Git pin. `enum-flag.patch` advertises `CLAP_PARAM_IS_ENUM` for the wrapper's
 typed `EnumParam` in addition to its existing `STEPPED` flag.
+`review-186-wave1.patch` hardens the CLAP factory, parameter metadata and state framing.
 
 To reproduce the source in a scratch directory from any clone of the fork, run the following
 commands with `upstream`, `vendor` and `scratch` set to the clone, this directory and an empty
@@ -21,6 +22,7 @@ git -C "$upstream" archive 39e9ad41cf84f98762d86b83abdb9c422fcb58a5 \
 patch -d "$scratch" -p1 < "$vendor/custom-extension.patch"
 patch -d "$scratch" -p1 < "$vendor/source-pin.patch"
 patch -d "$scratch" -p1 < "$vendor/enum-flag.patch"
+patch -d "$scratch" -p1 < "$vendor/review-186-wave1.patch"
 diff -ru "$scratch/crates" "$vendor/crates"
 diff -u "$scratch/Cargo.toml" "$vendor/Cargo.toml"
 ```

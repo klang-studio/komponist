@@ -1,0 +1,977 @@
+--- a/crates/nice-plug/src/wrapper/clap/context.rs
++++ b/crates/nice-plug/src/wrapper/clap/context.rs
+@@ -567 +567 @@
+-                use crate::wrapper::clap::wrapper::OutputParamEvent;
++                use crate::wrapper::clap::wrapper::{OutputParamEvent, clap_plain_from_normalized};
+@@ -575 +575 @@
+-                    normalized as f64 * unsafe { param.step_count().unwrap_or(1) as f64 };
++                    clap_plain_from_normalized(normalized, unsafe { param.step_count() });
+--- a/crates/nice-plug/src/wrapper/clap/util.rs
++++ b/crates/nice-plug/src/wrapper/clap/util.rs
+@@ -4 +3,0 @@
+-use std::os::raw::c_void;
+@@ -123,10 +122,11 @@
+-/// Read from a stream until either the byte slice as been filled, or the stream doesn't contain any
+-/// data anymore. This correctly handles streams that only allow smaller, buffered reads.
+-///
+-/// Returns the total number of bytes that have been read, or `None` if an error occured.
+-pub fn read_stream(stream: &clap_istream, mut slice: impl ByteReadBuffer) -> Option<usize> {
+-    let mut total_bytes_read: usize = 0;
+-
+-    while total_bytes_read < slice.len() {
+-        let bytes_read = unsafe_clap_call! {
+-            stream=>read(
++/// Fill a slice using the host's potentially short reads.
++fn read_stream(stream: &clap_istream, mut slice: impl ByteReadBuffer) -> bool {
++    let Some(read) = stream.read else {
++        return false;
++    };
++    let mut offset = 0;
++    while offset < slice.len() {
++        let remaining = slice.len() - offset;
++        // SAFETY: The slice has `remaining` bytes available after `offset`.
++        let count = unsafe {
++            read(
+@@ -134,2 +134,2 @@
+-                slice.as_mut_ptr().add(total_bytes_read) as *mut c_void,
+-                (slice.len() - total_bytes_read) as u64,
++                slice.as_mut_ptr().add(offset).cast(),
++                remaining as u64,
+@@ -138,30 +138 @@
+-
+-        let Ok(bytes_read) = usize::try_from(bytes_read) else {
+-            return None;
+-        };
+-
+-        if bytes_read == 0 {
+-            break;
+-        }
+-
+-        let total_bytes = total_bytes_read.checked_add(bytes_read)?;
+-        total_bytes_read = total_bytes;
+-    }
+-
+-    Some(total_bytes_read)
+-}
+-
+-/// Write the data from a slice to a stream until either all data has been written, or the stream
+-/// returns an error. This correctly handles streams that only allow smaller, buffered writes. This
+-/// returns `false` if the stream returns an error or doesn't allow any writes anymore.
+-pub fn write_stream(stream: &clap_ostream, slice: &[u8]) -> bool {
+-    let mut write_pos = 0;
+-    while write_pos < slice.len() {
+-        let bytes_written = unsafe_clap_call! {
+-            stream=>write(
+-                stream,
+-                slice.as_ptr().add(write_pos) as *const c_void,
+-                (slice.len() - write_pos) as u64,
+-            )
+-        };
+-        if bytes_written <= 0 {
++        let Ok(count) = usize::try_from(count) else {
+@@ -169,5 +140,6 @@
+-        }
+-
+-        write_pos += bytes_written as usize;
+-    }
+-
++        };
++        if count == 0 || count > remaining {
++            return false;
++        }
++        offset += count;
++    }
+@@ -175,0 +148,217 @@
++
++/// Write a slice using the host's potentially short writes.
++fn write_stream(stream: &clap_ostream, mut slice: &[u8]) -> bool {
++    let Some(write) = stream.write else {
++        return false;
++    };
++    while !slice.is_empty() {
++        // SAFETY: The input points to all `slice.len()` bytes for this call.
++        let count = unsafe { write(stream, slice.as_ptr().cast(), slice.len() as u64) };
++        let Ok(count) = usize::try_from(count) else {
++            return false;
++        };
++        if count == 0 || count > slice.len() {
++            return false;
++        }
++        slice = &slice[count..];
++    }
++    true
++}
++
++/// Read one little-endian length-prefixed CLAP state record.
++pub(super) fn read_state_record(
++    stream: &clap_istream,
++    limit: usize,
++) -> Result<Vec<u8>, &'static str> {
++    let mut length = [0_u8; 8];
++    if !read_stream(stream, length.as_mut_slice()) {
++        return Err("could not read the state length");
++    }
++    let length = usize::try_from(u64::from_le_bytes(length)).map_err(|_| "invalid state length")?;
++    if length > limit {
++        return Err("state length exceeds the limit");
++    }
++
++    let mut payload = Vec::new();
++    payload
++        .try_reserve_exact(length)
++        .map_err(|_| "could not allocate the state buffer")?;
++    if !read_stream(stream, &mut payload.spare_capacity_mut()[..length]) {
++        return Err("could not read the complete state payload");
++    }
++    // SAFETY: The stream initialized all `length` bytes of the reserved capacity above.
++    unsafe { payload.set_len(length) };
++    Ok(payload)
++}
++
++/// Write one little-endian length-prefixed CLAP state record.
++pub(super) fn write_state_record(
++    stream: &clap_ostream,
++    payload: &[u8],
++    limit: usize,
++) -> Result<(), &'static str> {
++    if payload.len() > limit {
++        return Err("state length exceeds the limit");
++    }
++    if !write_stream(stream, &(payload.len() as u64).to_le_bytes()) {
++        return Err("could not write the state length");
++    }
++    if !write_stream(stream, payload) {
++        return Err("could not write the complete state payload");
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use std::cmp;
++    use std::ffi::c_void;
++    use std::ptr;
++
++    use super::*;
++
++    struct ReadState<'a> {
++        input: &'a [u8],
++        max_chunk: u64,
++        invalid_result: Option<i64>,
++    }
++
++    unsafe extern "C" fn read(stream: *const clap_istream, out: *mut c_void, len: u64) -> i64 {
++        // SAFETY: Our test stream holds this live context.
++        let context = unsafe { &mut *((*stream).ctx.cast::<ReadState<'_>>()) };
++        if let Some(result) = context.invalid_result {
++            return result;
++        }
++        let count = cmp::min(
++            cmp::min(len, context.max_chunk) as usize,
++            context.input.len(),
++        );
++        // SAFETY: This host callback writes only the bytes requested by the wrapper.
++        unsafe { ptr::copy_nonoverlapping(context.input.as_ptr(), out.cast(), count) };
++        context.input = &context.input[count..];
++        count as i64
++    }
++
++    impl ReadState<'_> {
++        fn stream(&mut self) -> clap_istream {
++            clap_istream {
++                ctx: ptr::from_mut(self).cast(),
++                read: Some(read),
++            }
++        }
++    }
++
++    struct WriteState {
++        output: Vec<u8>,
++        max_chunk: u64,
++        invalid_result: Option<i64>,
++    }
++
++    unsafe extern "C" fn write(stream: *const clap_ostream, input: *const c_void, len: u64) -> i64 {
++        // SAFETY: Our test stream holds this live context.
++        let context = unsafe { &mut *((*stream).ctx.cast::<WriteState>()) };
++        if let Some(result) = context.invalid_result {
++            return result;
++        }
++        let count = cmp::min(len, context.max_chunk) as usize;
++        // SAFETY: The wrapper flagged these bytes as readable and the test consumes only a prefix.
++        let input = unsafe { std::slice::from_raw_parts(input.cast(), count) };
++        context.output.extend_from_slice(input);
++        count as i64
++    }
++
++    impl WriteState {
++        fn stream(&mut self) -> clap_ostream {
++            clap_ostream {
++                ctx: ptr::from_mut(self).cast(),
++                write: Some(write),
++            }
++        }
++    }
++
++    #[test]
++    fn state_records_allow_short_transfers_and_leave_following_bytes_unread() {
++        let payload = br#"{"params":{},"fields":{}}"#;
++        let mut writer = WriteState {
++            output: Vec::new(),
++            max_chunk: 2,
++            invalid_result: None,
++        };
++        write_state_record(&writer.stream(), payload, payload.len()).unwrap();
++        assert_eq!(&writer.output[..8], &(payload.len() as u64).to_le_bytes());
++        assert_eq!(&writer.output[8..], payload);
++        writer.output.extend_from_slice(b"next record");
++
++        let mut reader = ReadState {
++            input: &writer.output,
++            max_chunk: 3,
++            invalid_result: None,
++        };
++        assert_eq!(
++            read_state_record(&reader.stream(), payload.len()),
++            Ok(payload.to_vec())
++        );
++        assert_eq!(reader.input, b"next record");
++    }
++
++    #[test]
++    fn a_valid_json_prefix_is_not_a_complete_record() {
++        let payload = br#"{"params":{},"fields":{}}"#;
++        let limit = payload.len() + 1;
++        let mut frame = (limit as u64).to_le_bytes().to_vec();
++        frame.extend_from_slice(payload);
++        let mut reader = ReadState {
++            input: &frame,
++            max_chunk: 2,
++            invalid_result: None,
++        };
++        assert!(read_state_record(&reader.stream(), limit).is_err());
++        let mut reader = ReadState {
++            input: &frame[..7],
++            max_chunk: 2,
++            invalid_result: None,
++        };
++        assert!(read_state_record(&reader.stream(), limit).is_err());
++    }
++
++    #[test]
++    fn oversized_records_never_read_or_write_the_body_or_emit_a_header() {
++        let mut frame = 2_u64.to_le_bytes().to_vec();
++        frame.extend_from_slice(b"ab");
++        let mut reader = ReadState {
++            input: &frame,
++            max_chunk: 2,
++            invalid_result: None,
++        };
++        assert!(read_state_record(&reader.stream(), 1).is_err());
++        assert_eq!(reader.input, b"ab");
++
++        let mut writer = WriteState {
++            output: Vec::new(),
++            max_chunk: 2,
++            invalid_result: None,
++        };
++        assert!(write_state_record(&writer.stream(), b"ab", 1).is_err());
++        assert!(writer.output.is_empty());
++    }
++
++    #[test]
++    fn stream_errors_and_overreported_progress_fail() {
++        for result in [-1, 0, 9, i64::MAX] {
++            let mut reader = ReadState {
++                input: b"",
++                max_chunk: 2,
++                invalid_result: Some(result),
++            };
++            assert!(read_state_record(&reader.stream(), 64).is_err());
++
++            let mut writer = WriteState {
++                output: Vec::new(),
++                max_chunk: 2,
++                invalid_result: Some(result),
++            };
++            assert!(write_state_record(&writer.stream(), b"ab", 64).is_err());
++            assert!(writer.output.is_empty());
++        }
++    }
++}
+--- a/crates/nice-plug/src/wrapper/clap/wrapper.rs
++++ b/crates/nice-plug/src/wrapper/clap/wrapper.rs
+@@ -32,4 +32,4 @@
+-    CLAP_EXT_PARAMS, CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_BYPASS, CLAP_PARAM_IS_HIDDEN,
+-    CLAP_PARAM_IS_MODULATABLE, CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID, CLAP_PARAM_IS_READONLY,
+-    CLAP_PARAM_IS_ENUM, CLAP_PARAM_IS_STEPPED, CLAP_PARAM_RESCAN_VALUES, clap_host_params, clap_param_info,
+-    clap_plugin_params,
++    CLAP_EXT_PARAMS, CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_BYPASS, CLAP_PARAM_IS_ENUM,
++    CLAP_PARAM_IS_HIDDEN, CLAP_PARAM_IS_MODULATABLE, CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID,
++    CLAP_PARAM_IS_READONLY, CLAP_PARAM_IS_STEPPED, CLAP_PARAM_RESCAN_VALUES, clap_host_params,
++    clap_param_info, clap_plugin_params,
+@@ -105 +105 @@
+-use crate::wrapper::clap::util::{read_stream, write_stream};
++use crate::wrapper::clap::util::{read_state_record, write_state_record};
+@@ -118 +118 @@
+-const MAX_STATE_BYTES: u64 = 268_435_456;
++const MAX_STATE_BYTES: usize = 268_435_456;
+@@ -227,0 +228,2 @@
++    /// Typed enum parameters whose complete CLAP value text is nonblank.
++    enum_param_hashes: HashSet<u32>,
+@@ -486,0 +489,2 @@
++    /// Creates a CLAP instance with a unique parameter inventory.
++    ///
+@@ -490 +494 @@
+-    pub unsafe fn new(host_callback: *const clap_host) -> Arc<Self> {
++    pub unsafe fn new(host_callback: *const clap_host) -> Option<Arc<Self>> {
+@@ -517,0 +522,17 @@
++            })
++            .collect();
++        let mut seen_hashes = HashSet::new();
++        for (id, hash, _, _) in &param_id_hashes_ptrs_groups {
++            // Duplicate author IDs also have identical hashes. Check before creating any
++            // lookup maps, as an insertion would silently replace the earlier parameter.
++            if !seen_hashes.insert(*hash) {
++                crate::nice_error!("Duplicate or colliding CLAP parameter ID: {:?}", id);
++                return None;
++            }
++        }
++        let enum_param_hashes = param_id_hashes_ptrs_groups
++            .iter()
++            .filter_map(|(_, hash, param, _)| {
++                // The Params Arc keeps the parameter alive for the lifetime of this wrapper.
++                let valid = unsafe { has_enum_value_text(*param) };
++                valid.then_some(*hash)
+@@ -552,12 +572,0 @@
+-            let param_map = params.param_map();
+-            let param_ids: HashSet<_> = param_id_hashes_ptrs_groups
+-                .iter()
+-                .map(|(id, _, _, _)| id.clone())
+-                .collect();
+-            crate::nice_debug_assert_eq!(
+-                param_map.len(),
+-                param_ids.len(),
+-                "The plugin has duplicate parameter IDs, weird things may happen. Consider using \
+-                 6 character parameter IDs to avoid collisions."
+-            );
+-
+@@ -705,0 +715 @@
++            enum_param_hashes,
+@@ -820 +830 @@
+-        wrapper
++        Some(wrapper)
+@@ -1659,3 +1668,0 @@
+-            crate::nice_debug_assert_failure!(
+-                "Deserializing plugin state from a state object failed"
+-            );
+@@ -2307,2 +2314,2 @@
+-    /// Returns None for an unknown ID or an ambiguous inventory (duplicate author IDs or
+-    /// numeric hash collisions). This uses the same maps as the live CLAP parameter wrapper.
++    /// Returns None for an unknown author ID. An initialized wrapper has a unique parameter
++    /// inventory. This uses the same maps as the live CLAP parameter wrapper.
+@@ -2319,4 +2325,0 @@
+-        let count = wrapper.param_hashes.len();
+-        if wrapper.param_id_to_hash.len() != count || wrapper.param_id_by_hash.len() != count {
+-            return None;
+-        }
+@@ -3188 +3191 @@
+-        if param_index > unsafe { Self::ext_params_count(plugin) } {
++        let Some(param_hash) = wrapper.param_hashes.get(param_index as usize) else {
+@@ -3190,3 +3193 @@
+-        }
+-
+-        let param_hash = &wrapper.param_hashes[param_index as usize];
++        };
+@@ -3226 +3227 @@
+-            if matches!(param_ptr, ParamPtr::EnumParam(_)) {
++            if wrapper.enum_param_hashes.contains(param_hash) {
+@@ -3241 +3242 @@
+-        param_info.default_value = default_value as f64 * step_count.unwrap_or(1) as f64;
++        param_info.default_value = clap_plain_from_normalized(default_value, step_count);
+@@ -3257,2 +3258,4 @@
+-                    *value = param_ptr.modulated_normalized_value() as f64
+-                        * param_ptr.step_count().unwrap_or(1) as f64;
++                    *value = clap_plain_from_normalized(
++                        param_ptr.modulated_normalized_value(),
++                        param_ptr.step_count(),
++                    );
+@@ -3286 +3289 @@
+-                            value as f32 / param_ptr.step_count().unwrap_or(1) as f32,
++                            clap_normalized_for_text(value, param_ptr.step_count()),
+@@ -3322 +3325 @@
+-                        Some(v) => v as f64,
++                        Some(v) => v,
+@@ -3326 +3329 @@
+-                    *value = normalized_value * param_ptr.step_count().unwrap_or(1) as f64;
++                    *value = clap_plain_from_normalized(normalized_value, param_ptr.step_count());
+@@ -3422 +3425 @@
+-            state::serialize_json::<P>(
++            state::serialize_json_bounded::<P>(
+@@ -3424,0 +3428 @@
++                MAX_STATE_BYTES,
+@@ -3429,15 +3433,4 @@
+-                // CLAP does not provide a way to tell how much data there is left in a stream, so
+-                // we need to prepend it to our actual state data.
+-                let length_bytes = (serialized.len() as u64).to_le_bytes();
+-                if !write_stream(unsafe { &*stream }, &length_bytes) {
+-                    crate::nice_error!(
+-                        "Failed to save state: Error or end of stream while writing the state \
+-                         length"
+-                    );
+-                    return false;
+-                }
+-                if !write_stream(unsafe { &*stream }, &serialized) {
+-                    crate::nice_error!(
+-                        "Failed to save state: Error or end of stream while writing the state \
+-                         buffer"
+-                    );
++                if let Err(error) =
++                    write_state_record(unsafe { &*stream }, &serialized, MAX_STATE_BYTES)
++                {
++                    crate::nice_error!("Failed to save state: {error}");
+@@ -3465,28 +3458,6 @@
+-        // CLAP does not have a way to tell how much data there is left in a stream, so we've
+-        // prepended the size in front of our JSON state
+-        let mut length_bytes = [0u8; 8];
+-        let bytes_read = read_stream(unsafe { &*stream }, length_bytes.as_mut_slice());
+-        if bytes_read != Some(8) {
+-            crate::nice_error!(
+-                "Failed to load state: Error or end of stream while reading the state length"
+-            );
+-            return false;
+-        }
+-        let length = u64::from_le_bytes(length_bytes);
+-        // Protect against OOM errors if the metadata is malformed.
+-        if length > MAX_STATE_BYTES {
+-            crate::nice_error!("Failed to load state: Malformed length");
+-            return false;
+-        }
+-
+-        let mut read_buffer: Vec<u8> = Vec::new();
+-
+-        if read_buffer.try_reserve_exact(length as usize).is_err() {
+-            crate::nice_error!("Failed to load state: Failed to allocate buffer for state stream");
+-            return false;
+-        }
+-
+-        let bytes_read = read_stream(unsafe { &*stream }, read_buffer.spare_capacity_mut());
+-        let Some(bytes_read) = bytes_read else {
+-            crate::nice_error!("Failed to load state: Error while reading the state buffer");
+-            return false;
++        let read_buffer = match read_state_record(unsafe { &*stream }, MAX_STATE_BYTES) {
++            Ok(buffer) => buffer,
++            Err(error) => {
++                crate::nice_error!("Failed to load state: {error}");
++                return false;
++            }
+@@ -3494,5 +3465,2 @@
+-        unsafe {
+-            read_buffer.set_len(bytes_read);
+-        }
+-
+-        match unsafe { state::deserialize_json(&read_buffer) } {
++
++        match state::deserialize_json_bounded(&read_buffer, MAX_STATE_BYTES) {
+@@ -3555,0 +3524,31 @@
++}
++
++/// Converts the wrapper's normalized parameter representation to CLAP's plain values.
++pub(super) fn clap_plain_from_normalized(normalized: f32, step_count: Option<usize>) -> f64 {
++    match step_count {
++        Some(steps) => (f64::from(normalized) * steps as f64).round(),
++        None => f64::from(normalized),
++    }
++}
++
++fn clap_normalized_for_text(value: f64, step_count: Option<usize>) -> f32 {
++    // An enum with one variant has no steps and always uses its first label.
++    value as f32 / step_count.unwrap_or(1).max(1) as f32
++}
++
++/// The parameter pointer must be kept alive by the author's Params Arc.
++unsafe fn has_enum_value_text(param: ParamPtr) -> bool {
++    if !matches!(param, ParamPtr::EnumParam(_)) {
++        return false;
++    }
++    let Some(steps) = (unsafe { param.step_count() }) else {
++        return false;
++    };
++    (0..=steps).all(|index| {
++        let normalized = clap_normalized_for_text(index as f64, Some(steps));
++        let text = unsafe { param.normalized_value_to_string(normalized, true) };
++        let visible = text
++            .split_once('\0')
++            .map_or(text.as_str(), |(visible, _)| visible);
++        !visible.trim().is_empty()
++    })
+--- a/crates/nice-plug/src/wrapper/clap.rs
++++ b/crates/nice-plug/src/wrapper/clap.rs
+@@ -80 +79,0 @@
+-            use $crate::prelude::nice_debug_assert_eq;
+@@ -103 +102,2 @@
+-            static PLUGIN_DESCRIPTORS: OnceLock<[PluginDescriptor; PLUGIN_COUNT]> = OnceLock::new();
++            static PLUGIN_DESCRIPTORS: OnceLock<Option<[PluginDescriptor; PLUGIN_COUNT]>> =
++                OnceLock::new();
+@@ -105 +105 @@
+-            fn plugin_descriptors() -> &'static [PluginDescriptor; PLUGIN_COUNT] {
++            fn plugin_descriptors() -> &'static [PluginDescriptor] {
+@@ -108,8 +108,6 @@
+-
+-                    if cfg!(debug_assertions) {
+-                        let unique_plugin_ids: HashSet<_> = descriptors.iter().map(|d| d.clap_id()).collect();
+-                        nice_debug_assert_eq!(
+-                            unique_plugin_ids.len(),
+-                            descriptors.len(),
+-                            "Duplicate plugin IDs found in `nice_export_clap!()` call"
+-                        );
++                    let mut ids = HashSet::new();
++                    if descriptors.iter().all(|descriptor| ids.insert(descriptor.clap_id())) {
++                        Some(descriptors)
++                    } else {
++                        $crate::nice_error!("Duplicate plugin IDs in nice_export_clap!()");
++                        None
+@@ -117,3 +115 @@
+-
+-                    descriptors
+-                })
++                }).as_ref().map_or(&[], |descriptors| descriptors.as_slice())
+@@ -141 +137 @@
+-                if plugin_id.is_null() {
++                if plugin_id.is_null() || host.is_null() {
+@@ -150,0 +147,3 @@
++                if descriptors.is_empty() {
++                    return ::std::ptr::null();
++                }
+@@ -158,3 +157,4 @@
+-                        return unsafe {(*Arc::into_raw(Wrapper::<$plugin_ty>::new(host)))
+-                            .clap_plugin
+-                            .as_ptr()};
++                        let Some(instance) = (unsafe { Wrapper::<$plugin_ty>::new(host) }) else {
++                            return ::std::ptr::null();
++                        };
++                        return unsafe { (*Arc::into_raw(instance)).clap_plugin.as_ptr() };
+@@ -171 +171 @@
+-                true
++                !plugin_descriptors().is_empty()
+@@ -177 +177,4 @@
+-                if !factory_id.is_null() && unsafe { CStr::from_ptr(factory_id) } == CLAP_PLUGIN_FACTORY_ID {
++                if !factory_id.is_null()
++                    && unsafe { CStr::from_ptr(factory_id) } == CLAP_PLUGIN_FACTORY_ID
++                    && !plugin_descriptors().is_empty()
++                {
+--- /dev/null
++++ b/crates/nice-plug/src/wrapper/state/tests.rs
+@@ -0,0 +1,189 @@
++use std::sync::Mutex;
++
++use crate::prelude::{
++    AudioIOLayout, AuxiliaryBuffers, Buffer, Enum, EnumParam, FloatParam, FloatRange,
++    ProcessContext, ProcessStatus,
++};
++
++use super::*;
++
++#[derive(Clone, Copy, Enum, PartialEq)]
++enum Mode {
++    #[id = "off"]
++    Off,
++    #[id = "on"]
++    On,
++}
++
++struct StateParams {
++    gain: FloatParam,
++    mode: EnumParam<Mode>,
++    secondary: EnumParam<Mode>,
++    remembered: Mutex<Option<String>>,
++}
++
++impl Default for StateParams {
++    fn default() -> Self {
++        Self {
++            gain: FloatParam::new("Gain", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 }),
++            mode: EnumParam::new("Mode", Mode::Off),
++            secondary: EnumParam::new("Secondary mode", Mode::Off),
++            remembered: Mutex::new(None),
++        }
++    }
++}
++
++// SAFETY: The parameter pointers remain valid as long as the test retains the StateParams Arc.
++unsafe impl Params for StateParams {
++    fn param_map(&self) -> Vec<(String, ParamPtr, String)> {
++        self.lookup()
++            .into_iter()
++            .map(|(id, pointer)| (id.into(), pointer, String::new()))
++            .collect()
++    }
++
++    fn deserialize_fields(&self, fields: &BTreeMap<String, String>) {
++        *self.remembered.lock().unwrap() = fields.get("remembered").cloned();
++    }
++}
++
++impl StateParams {
++    fn lookup(&self) -> [(&str, ParamPtr); 3] {
++        [
++            ("gain", self.gain.as_ptr()),
++            ("mode", self.mode.as_ptr()),
++            ("secondary", self.secondary.as_ptr()),
++        ]
++    }
++}
++
++#[derive(Default)]
++struct StatePlugin(Arc<StateParams>);
++
++impl Plugin for StatePlugin {
++    const NAME: &'static str = "State test";
++    const VENDOR: &'static str = "nice-plug";
++    const URL: &'static str = "";
++    const EMAIL: &'static str = "";
++    const VERSION: &'static str = "1.0.0";
++    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[];
++    type Editor = ();
++    type SysExMessage = ();
++    type BackgroundTask = ();
++
++    fn params(&self) -> Arc<dyn Params> {
++        self.0.clone()
++    }
++
++    fn process(
++        &mut self,
++        _: &mut Buffer,
++        _: &mut AuxiliaryBuffers,
++        _: &mut impl ProcessContext<Self>,
++    ) -> ProcessStatus {
++        ProcessStatus::Normal
++    }
++
++    fn filter_state(state: &mut PluginState) {
++        if state.version.is_empty()
++            && let Some(ParamValue::Bool(enabled)) = state.params.get("gain")
++        {
++            state.params.insert(
++                "gain".into(),
++                ParamValue::F32(if *enabled { 1.0 } else { 0.0 }),
++            );
++        }
++    }
++}
++
++fn apply(state: &mut PluginState, plugin: &StatePlugin) -> bool {
++    // SAFETY: The lookup and Arc both refer to the same live instance's parameters.
++    unsafe {
++        deserialize_object::<StatePlugin>(
++            state,
++            plugin.params(),
++            |id| {
++                plugin
++                    .0
++                    .lookup()
++                    .into_iter()
++                    .find(|(key, _)| *key == id)
++                    .map(|(_, pointer)| pointer)
++            },
++            None,
++        )
++    }
++}
++
++#[test]
++fn legacy_json_is_migrated_and_removed_parameters_are_ignored() {
++    let json = br#"{"params":{"gain":{"bool":true},"mode":{"i32":1},"removed":{"f32":0.3}},"fields":{"remembered":"old"}}"#;
++    let mut state = deserialize_json_bounded(json, json.len()).unwrap();
++    let plugin = StatePlugin::default();
++    assert!(apply(&mut state, &plugin));
++    assert_eq!(plugin.0.gain.value(), 1.0);
++    assert!(plugin.0.mode.value() == Mode::On);
++    assert_eq!(*plugin.0.remembered.lock().unwrap(), Some("old".into()));
++}
++
++#[test]
++fn invalid_typed_value_leaves_the_existing_parameters_and_fields_unchanged() {
++    let plugin = StatePlugin::default();
++    *plugin.0.remembered.lock().unwrap() = Some("existing".into());
++    let json = br#"{"version":"1.0.0","params":{"gain":{"f32":0.25},"mode":{"bool":true}},"fields":{"remembered":"new"}}"#;
++    let mut state = deserialize_json_bounded(json, json.len()).unwrap();
++    assert!(!apply(&mut state, &plugin));
++    assert_eq!(plugin.0.gain.value(), 0.5);
++    assert!(plugin.0.mode.value() == Mode::Off);
++    assert_eq!(
++        *plugin.0.remembered.lock().unwrap(),
++        Some("existing".into())
++    );
++
++    for index in [-1, 2] {
++        state.params.insert("mode".into(), ParamValue::I32(index));
++        assert!(!apply(&mut state, &plugin));
++        assert_eq!(plugin.0.gain.value(), 0.5);
++        assert!(plugin.0.mode.value() == Mode::Off);
++    }
++}
++
++#[test]
++fn unknown_stable_enum_ids_fail_without_applying_other_values_or_fields() {
++    let plugin = StatePlugin::default();
++    let json = br#"{"version":"1.0.0","params":{"gain":{"f32":0.25},"mode":{"string":"on"},"secondary":{"string":"unknown"}},"fields":{"remembered":"new"}}"#;
++    let mut state = deserialize_json_bounded(json, json.len()).unwrap();
++    assert!(!apply(&mut state, &plugin));
++    assert_eq!(plugin.0.gain.value(), 0.5);
++    assert!(plugin.0.secondary.value() == Mode::Off);
++    assert!(plugin.0.remembered.lock().unwrap().is_none());
++
++    // The pinned setter resolves symbolic IDs by applying them. A prior successful setter can
++    // already have changed one enum when another symbolic ID proves invalid.
++    assert!(plugin.0.mode.value() == Mode::On);
++}
++
++#[test]
++fn state_encoding_and_decoding_share_the_payload_limit() {
++    let state = PluginState {
++        version: StatePlugin::VERSION.into(),
++        params: BTreeMap::new(),
++        fields: [("remembered".into(), "a".repeat(1024))].into(),
++    };
++    let json = serde_json::to_vec(&state).unwrap();
++    assert!(encode_json(&state, json.len() - 1).is_err());
++    assert!(deserialize_json_bounded(&json, json.len() - 1).is_none());
++
++    let encoded = encode_json(&state, json.len()).unwrap();
++    let decoded = deserialize_json_bounded(&encoded, json.len()).unwrap();
++    assert_eq!(decoded.fields, state.fields);
++
++    #[cfg(feature = "zstd")]
++    {
++        let limit = json.len() - 1;
++        assert!(encoded.len() < limit);
++        let output = decode_zstd(&encoded, limit - 64).unwrap();
++        assert_eq!(output.len(), limit - 63);
++        assert!(deserialize_json_bounded(&encoded, limit).is_none());
++    }
++}
+--- a/crates/nice-plug/src/wrapper/state.rs
++++ b/crates/nice-plug/src/wrapper/state.rs
+@@ -6 +6 @@
+-use anyhow::{Context, Result};
++use anyhow::{Context, Result, ensure};
+@@ -91,3 +91,2 @@
+-/// Serialize a plugin's state to a vector containing JSON data. This can (and should) be shared
+-/// across plugin formats. If the `zstd` feature is enabled, then the state will be compressed using
+-/// Zstandard.
++/// Serialize a plugin's state as JSON for the VST3 state stream.
++#[cfg(feature = "vst3")]
+@@ -98,2 +97,16 @@
+-    let plugin_state = unsafe { serialize_object::<P>(plugin_params, params_iter) };
+-    let json = serde_json::to_vec(&plugin_state).context("Could not format as JSON")?;
++    unsafe { serialize_json_bounded::<P>(plugin_params, params_iter, usize::MAX) }
++}
++
++/// Serialize state with the same decoded and encoded size limit used on load.
++pub(crate) unsafe fn serialize_json_bounded<'a, P: Plugin>(
++    plugin_params: Arc<dyn Params>,
++    params_iter: impl IntoIterator<Item = (&'a String, ParamPtr)>,
++    limit: usize,
++) -> Result<Vec<u8>> {
++    let state = unsafe { serialize_object::<P>(plugin_params, params_iter) };
++    encode_json(&state, limit)
++}
++
++fn encode_json(state: &PluginState, limit: usize) -> Result<Vec<u8>> {
++    let json = serde_json::to_vec(state).context("Could not format as JSON")?;
++    ensure!(json.len() <= limit, "Decoded state exceeds the size limit");
+@@ -105,7 +118,3 @@
+-
+-        let state_bytes = json.len();
+-        let compressed_state_bytes = compressed.len();
+-        let compression_ratio = compressed_state_bytes as f32 / state_bytes as f32 * 100.0;
+-        nice_plug_core::nice_trace!(
+-            "Compressed {state_bytes} bytes of state to {compressed_state_bytes} bytes \
+-             ({compression_ratio:.1}% compression ratio)"
++        ensure!(
++            compressed.len() <= limit,
++            "Stored state exceeds the size limit"
+@@ -113 +121,0 @@
+-
+@@ -117,3 +125 @@
+-    {
+-        Ok(json)
+-    }
++    Ok(json)
+@@ -142,0 +149,23 @@
++    // Validate after the plugin's migration, before changing any persisted value or field.
++    // IDs removed in a newer version remain compatible.
++    for (param_id, value) in &state.params {
++        let Some(param) = params_getter(param_id) else {
++            continue;
++        };
++        let valid = match (param, value) {
++            (ParamPtr::FloatParam(_), ParamValue::F32(value)) => value.is_finite(),
++            (ParamPtr::IntParam(_), ParamValue::I32(_))
++            | (ParamPtr::BoolParam(_), ParamValue::Bool(_))
++            | (ParamPtr::EnumParam(_), ParamValue::String(_)) => true,
++            (ParamPtr::EnumParam(param), ParamValue::I32(index)) => {
++                // SAFETY: This pointer comes from the live parameter map.
++                usize::try_from(*index).is_ok_and(|index| index < unsafe { (*param).len() })
++            }
++            _ => false,
++        };
++        if !valid {
++            crate::nice_warn!("Invalid serialized value for parameter {param_id:?}");
++            return false;
++        }
++    }
++
+@@ -143,0 +173,18 @@
++    // The pinned enum API only exposes a mutating stable-ID lookup. Resolve these first:
++    // a rejected ID leaves other parameters and fields unchanged, though earlier enum IDs
++    // in this same pass may already have been applied.
++    for (param_id, value) in &state.params {
++        if let (ParamValue::String(id), Some(ParamPtr::EnumParam(param))) =
++            (value, params_getter(param_id))
++        {
++            // SAFETY: This pointer comes from the live parameter map.
++            if !unsafe { (*param).set_from_id(id) } {
++                crate::nice_warn!("Unknown ID {id:?} for enum parameter {param_id:?}");
++                return false;
++            }
++            if let Some(sample_rate) = sample_rate {
++                unsafe { (*param)._internal_update_smoother(sample_rate, true) };
++            }
++        }
++    }
++
+@@ -171,20 +218,3 @@
+-                (ParamPtr::EnumParam(p), ParamValue::String(id)) => {
+-                    let deserialized_enum = (*p).set_from_id(id);
+-                    if !deserialized_enum {
+-                        #[cfg(debug_assertions)]
+-                        crate::nice_warn!(
+-                            "Unknown ID {:?} for enum parameter \"{}\"",
+-                            id,
+-                            param_id_str,
+-                        );
+-                    }
+-                }
+-                (param_ptr, param_value) => {
+-                    #[cfg(debug_assertions)]
+-                    crate::nice_warn!(
+-                        "Invalid serialized value {:?} for parameter \"{}\" ({:?})",
+-                        param_value,
+-                        param_id_str,
+-                        param_ptr,
+-                    );
+-                }
++                // Stable enum IDs were applied above.
++                (ParamPtr::EnumParam(_), ParamValue::String(_)) => continue,
++                _ => continue, // Already checked before applying any values.
+@@ -207,4 +237,2 @@
+-/// Deserialize a plugin's state from a vector containing (compressed) JSON data. Doesn't load the
+-/// plugin state since doing so should be accompanied by calls to `Plugin::init()` and
+-/// `Plugin::reset()`, and this way all of that behavior can be encapsulated so it can be reused in
+-/// multiple places. The returned state object can be passed to [`deserialize_object()`].
++/// Decode VST3 state without applying it.
++#[cfg(feature = "vst3")]
+@@ -211,0 +240,17 @@
++    deserialize_json_bounded(state, usize::MAX)
++}
++
++/// Decode bounded CLAP state without modifying any plugin parameters.
++pub(crate) fn deserialize_json_bounded(state: &[u8], limit: usize) -> Option<PluginState> {
++    match decode_json(state, limit) {
++        Ok(state) => Some(state),
++        Err(error) => {
++            crate::nice_warn!("Error while deserializing plugin state: {error}");
++            None
++        }
++    }
++}
++
++fn decode_json(state: &[u8], limit: usize) -> Result<PluginState> {
++    ensure!(state.len() <= limit, "Stored state exceeds the size limit");
++
+@@ -213,48 +258,34 @@
+-    let result: Option<PluginState> = match zstd::decode_all(state) {
+-        Ok(decompressed) => match serde_json::from_slice(decompressed.as_slice()) {
+-            Ok(s) => {
+-                let state_bytes = decompressed.len();
+-                let compressed_state_bytes = state.len();
+-                let compression_ratio = compressed_state_bytes as f32 / state_bytes as f32 * 100.0;
+-                crate::nice_trace!(
+-                    "Inflated {compressed_state_bytes} bytes of state to {state_bytes} bytes \
+-                     ({compression_ratio:.1}% compression ratio)"
+-                );
+-
+-                Some(s)
+-            }
+-            Err(err) => {
+-                crate::nice_debug_assert_failure!("Error while deserializing state: {}", err);
+-                None
+-            }
+-        },
+-        // Uncompressed state files can still be loaded after enabling this feature to prevent
+-        // breaking existing plugin instances
+-        Err(zstd_err) => match serde_json::from_slice(state) {
+-            Ok(s) => {
+-                crate::nice_trace!("Older uncompressed state found");
+-                Some(s)
+-            }
+-            Err(json_err) => {
+-                crate::nice_debug_assert_failure!(
+-                    "Error while deserializing state as either compressed or uncompressed state: \
+-                     {}, {}",
+-                    zstd_err,
+-                    json_err
+-                );
+-                None
+-            }
+-        },
+-    };
+-
+-    #[cfg(not(feature = "zstd"))]
+-    let result: Option<PluginState> = match serde_json::from_slice(state) {
+-        Ok(s) => Some(s),
+-        Err(err) => {
+-            crate::nice_debug_assert_failure!("Error while deserializing state: {}", err);
+-            None
+-        }
+-    };
+-
+-    result
+-}
++    {
++        // Old plugins could save plain JSON before compression was enabled. Try that format
++        // only if the compressed decoder fails, never after a successful but oversized decode.
++        if let Ok(decompressed) = decode_zstd(state, limit) {
++            ensure!(
++                decompressed.len() <= limit,
++                "Decoded state exceeds the size limit"
++            );
++            return serde_json::from_slice(&decompressed).context("Invalid plugin state JSON");
++        }
++    }
++    serde_json::from_slice(state).context("Invalid plugin state JSON")
++}
++
++#[cfg(feature = "zstd")]
++fn decode_zstd(state: &[u8], limit: usize) -> std::io::Result<Vec<u8>> {
++    use std::io::Read;
++
++    let mut decoder = zstd::stream::read::Decoder::with_buffer(state)?;
++    if limit != usize::MAX {
++        // Preserve the default compressor's working window even for short frames.
++        // Larger windows still cannot exceed the rounded-up state cap.
++        decoder.window_log_max((limit.max(1 << 21) - 1).ilog2() + 1)?;
++    }
++    let mut output = Vec::new();
++    // Read one extra byte to distinguish a document exactly at the cap from a longer one.
++    decoder
++        .take((limit as u64).saturating_add(1))
++        .read_to_end(&mut output)?;
++    Ok(output)
++}
++
++#[cfg(test)]
++mod tests;

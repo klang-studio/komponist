@@ -69,6 +69,8 @@ jobs:
           workspaces: sdk/native-clap -> target
       - name: Test the SDK source
         run: cargo test --workspace --locked
+      - name: Test release source verification
+        run: xtask/tests/release-source.sh
       - name: Build, package, and scan the example
         run: xtask/check-bundle.sh "$TARGET" "$GITHUB_SHA"
       - name: Upload verified package and metadata

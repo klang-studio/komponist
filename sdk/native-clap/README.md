@@ -62,18 +62,33 @@ at a time when testing manually. Quit komponist, replace the installed bundle, t
 rescan. Reopen the project or insert a fresh instance to see the plain build's generic controls.
 [App and plugin installation](../../docs/INSTALL.md).
 
-The automated app check loads both staged bundles directly. From the repository root, point
-`KOMPONIST_SDK_EXAMPLE` at the native bundle and `KOMPONIST_SDK_EXAMPLE_PLAIN` at the plain bundle,
-using absolute paths, and run:
+The automated app check scans each bundle's parent directory recursively. Stage the two
+variants in fresh sibling directories, each containing only its own bundle. Run these commands
+from the repository root in Bash on Linux or macOS:
 
 ```sh
-cargo test --locked -p komponist-app --test it sdk_example_uses_native_layout_and_falls_back
+scratch="$(mktemp -d)"
+sdk=sdk/native-clap/Cargo.toml
+cargo run --locked --manifest-path "$sdk" -p native-clap-xtask -- bundle --release --out-dir "$scratch/native"
+cargo run --locked --manifest-path "$sdk" -p native-clap-xtask -- bundle --release --no-default-features --out-dir "$scratch/plain"
+KOMPONIST_SDK_EXAMPLE="$scratch/native/native_clap_example.clap" \
+  KOMPONIST_SDK_EXAMPLE_PLAIN="$scratch/plain/native_clap_example.clap" \
+  cargo test --locked -p komponist-app --test it sdk_example_uses_native_layout_and_falls_back
 ```
 
-On Linux or macOS, set the variables with `export KOMPONIST_SDK_EXAMPLE=/path/to/native_clap_example.clap`
-and `export KOMPONIST_SDK_EXAMPLE_PLAIN=/path/to/plain/native_clap_example.clap`. In PowerShell, use
-`$env:KOMPONIST_SDK_EXAMPLE = 'C:\path\to\native_clap_example.clap'` and
-`$env:KOMPONIST_SDK_EXAMPLE_PLAIN = 'C:\path\to\plain\native_clap_example.clap'`.
+On Windows, run this in PowerShell from the repository root:
+
+```powershell
+$scratch = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
+$native = Join-Path $scratch 'native'
+$plain = Join-Path $scratch 'plain'
+$sdk = 'sdk/native-clap/Cargo.toml'
+cargo run --locked --manifest-path $sdk -p native-clap-xtask -- bundle --release --out-dir $native
+cargo run --locked --manifest-path $sdk -p native-clap-xtask -- bundle --release --no-default-features --out-dir $plain
+$env:KOMPONIST_SDK_EXAMPLE = Join-Path $native 'native_clap_example.clap'
+$env:KOMPONIST_SDK_EXAMPLE_PLAIN = Join-Path $plain 'native_clap_example.clap'
+cargo test --locked -p komponist-app --test it sdk_example_uses_native_layout_and_falls_back
+```
 
 ## Add a panel to your device
 
@@ -156,25 +171,22 @@ the generated and generic views without an embedded editor.
 
 ## Prepare release metadata
 
-Validate the bundle you intend to ship and keep its CLAP structure in the archive. From this workspace, pass the bundle and the packaged bytes to the metadata
-command. For example, for a Linux x86-64 release:
+Use a clean Git checkout of the reviewed revision. Run the same release script as CI from
+`sdk/native-clap` on the native build host. It uses Bash (Git Bash on Windows) and Python.
+For example, on Linux x86-64:
 
 ```sh
-target=x86_64-unknown-linux-gnu
-archive="target/bundled/native-clap-example-$target.tar.gz"
-cp ../../LICENSE target/bundled/LICENSE
-cp vendor/nice-plug/LICENSE target/bundled/LICENSE-nice-plug
-tar -czf "$archive" -C target/bundled native_clap_example.clap LICENSE LICENSE-nice-plug
-cargo run --locked -p native-clap-xtask -- metadata \
-  target/bundled/native_clap_example.clap "$archive" "$target" \
-  "$(git rev-parse HEAD)" "target/bundled/native-clap-example-$target.json"
+xtask/check-bundle.sh x86_64-unknown-linux-gnu "$(git rev-parse HEAD)"
 ```
 
-Run metadata generation on a native host for each target and supply the reviewed source
-revision as a full Git commit ID. The JSON records the discovered CLAP plugin ID and version,
-the platform target, the layout extension and schema version, the source revision and license,
-and the archive name, size in bytes and SHA-256.
-Store it alongside the corresponding archive. The size and digest describe that exact archive.
+The script checks the revision and worktree before the build and again before generating
+metadata. It builds and validates both variants, packages the native bundle with the license
+files, and scans the extracted bundle. With the default Cargo target directory, the archive
+and JSON metadata are in `target/native-clap-dist/`.
+
+The JSON records the discovered CLAP plugin ID and version, the platform target, the layout
+extension and schema version, the source revision and license, and the archive name, size
+in bytes and SHA-256. Keep the JSON beside the archive it describes.
 
 [#59](https://github.com/klang-studio/komponist/issues/59) owns the community repository and
 distribution. Its platform CI will build from reviewed source, publish artifact URLs and

@@ -9,6 +9,26 @@ fi
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}"
 target="$1"
 revision="$2"
+
+verify_source() {
+    local prefix head status
+    if ! prefix="$(git -C ../.. rev-parse --show-prefix 2>/dev/null)" || [[ -n "$prefix" ]]; then
+        echo "Build release packages from a Git checkout of the reviewed source." >&2
+        return 1
+    fi
+    head="$(git -C ../.. rev-parse --verify HEAD)"
+    if [[ "$head" != "$revision" ]]; then
+        printf 'Requested source revision %s differs from checkout HEAD %s.\n' "$revision" "$head" >&2
+        return 1
+    fi
+    status="$(git --no-optional-locks -C ../.. status --porcelain=v1 --untracked-files=normal)"
+    if [[ -n "$status" ]]; then
+        echo "Release packaging requires a clean checkout." >&2
+        return 1
+    fi
+}
+
+verify_source
 bundle=native_clap_example.clap
 dist="${CARGO_TARGET_DIR:-target}/native-clap-dist"
 scratch="$(mktemp -d)"
@@ -64,6 +84,7 @@ fi
 diff -r "$scratch/native" "$scratch/extracted"
 xtask validate "$scratch/extracted/$bundle" > "$scratch/extracted.json"
 cmp "$scratch/native.json" "$scratch/extracted.json"
+verify_source
 xtask metadata "$scratch/extracted/$bundle" "$archive" "$target" "$revision" \
     "$dist/$stem.json"
 cat "$dist/$stem.json"

@@ -30,7 +30,7 @@ impl Instance {
     fn new<P: ClapPlugin>() -> Self {
         // Keep the wrapper alive using the reference consumed by the plugin's destroy callback,
         // exactly as the nice-plug CLAP factory does.
-        let wrapper = Arc::into_raw(unsafe { Wrapper::<P>::new(&HOST) });
+        let wrapper = Arc::into_raw(unsafe { Wrapper::<P>::new(&HOST).unwrap() });
         let plugin = unsafe { (*wrapper).clap_plugin.as_ptr() };
         let instance = Self(plugin);
         assert!(unsafe { ((*plugin).init.unwrap())(plugin) });
@@ -107,6 +107,11 @@ fn panel(cell: Cell) -> Panel {
 enum Mode {
     Clean,
     Drive,
+    Warm,
+    Bright,
+    Dark,
+    Soft,
+    Hard,
 }
 
 #[derive(Params)]
@@ -115,13 +120,16 @@ struct ChoiceParams {
     mode: EnumParam<Mode>,
     #[id = "count"]
     count: IntParam,
+    #[id = "plain"]
+    plain: FloatParam,
 }
 
 impl Default for ChoiceParams {
     fn default() -> Self {
         Self {
-            mode: EnumParam::new("Mode", Mode::Drive),
+            mode: EnumParam::new("Mode", Mode::Soft),
             count: IntParam::new("Count", 0, IntRange::Linear { min: 0, max: 1 }),
+            plain: FloatParam::new("Plain", 0.375, FloatRange::Linear { min: 0.0, max: 1.0 }),
         }
     }
 }
@@ -139,7 +147,15 @@ impl NativeClapLayout for TestPlugin<ChoiceParams> {
         ));
         panel.choice_labels.insert(
             id,
-            vec![bilingual("Clean", "Klar"), bilingual("Drive", "Verzerrt")],
+            vec![
+                bilingual("Clean", "Klar"),
+                bilingual("Drive", "Verzerrt"),
+                bilingual("Warm", "Warm"),
+                bilingual("Bright", "Hell"),
+                bilingual("Dark", "Dunkel"),
+                bilingual("Soft", "Weich"),
+                bilingual("Hard", "Hart"),
+            ],
         );
         panel
     }
@@ -154,7 +170,7 @@ fn live_enum_ids_and_translations_survive_two_identical_abi_copies() {
     let mode = unsafe { Wrapper::<P>::custom_extension_param_id(plugin, "mode").unwrap() };
     let count = unsafe { Wrapper::<P>::custom_extension_param_id(plugin, "count").unwrap() };
     let info = |id| params.iter().find(|param| param.id == id).unwrap();
-    assert_eq!(info(mode).default, 1.0);
+    assert_eq!(info(mode).default, 5.0);
     assert_ne!(info(mode).flags & param_flags::ENUM, 0);
     assert_ne!(info(count).flags & param_flags::STEPPED, 0);
     assert_eq!(info(count).flags & param_flags::ENUM, 0);
@@ -216,14 +232,125 @@ impl Default for CollisionParams {
     }
 }
 
+struct DuplicateParams {
+    first: FloatParam,
+    second: FloatParam,
+}
+
+// SAFETY: Both pointers refer to parameters owned by the Params Arc. A hand-written map is needed
+// to test duplicate IDs because the derive checks duplicate field IDs at compile time.
+unsafe impl Params for DuplicateParams {
+    fn param_map(&self) -> Vec<(String, ParamPtr, String)> {
+        vec![
+            ("same".into(), self.first.as_ptr(), String::new()),
+            ("same".into(), self.second.as_ptr(), String::new()),
+        ]
+    }
+}
+
+impl Default for DuplicateParams {
+    fn default() -> Self {
+        let range = FloatRange::Linear { min: 0.0, max: 1.0 };
+        Self {
+            first: FloatParam::new("First", 0.5, range),
+            second: FloatParam::new("Second", 0.5, range),
+        }
+    }
+}
+
 #[test]
-fn layout_compilation_rejects_a_live_wrapper_id_collision() {
-    type P = TestPlugin<CollisionParams>;
+fn wrapper_rejects_colliding_hashes_and_duplicate_author_ids_before_publication() {
+    assert!(unsafe { Wrapper::<TestPlugin<CollisionParams>>::new(&HOST) }.is_none());
+    assert!(unsafe { Wrapper::<TestPlugin<DuplicateParams>>::new(&HOST) }.is_none());
+}
+
+// Both test plugin types publish the same descriptor ID.
+nice_export_clap!(TestPlugin<ChoiceParams>, TestPlugin<CollisionParams>);
+
+#[test]
+fn duplicate_descriptor_ids_disable_the_factory() {
+    use clap_sys::factory::plugin_factory::CLAP_PLUGIN_FACTORY_ID;
+
+    assert!(!clap::init(c"duplicate.clap".as_ptr()));
+    assert!(clap::get_factory(CLAP_PLUGIN_FACTORY_ID.as_ptr()).is_null());
+}
+
+fn clap_params(instance: &Instance) -> &clap_plugin_params {
+    let plugin = instance.0;
+    let table = unsafe { ((*plugin).get_extension.unwrap())(plugin, CLAP_EXT_PARAMS.as_ptr()) };
+    assert!(!table.is_null());
+    unsafe { &*table.cast::<clap_plugin_params>() }
+}
+
+#[test]
+fn stepped_values_roundtrip_exactly_and_the_inventory_rejects_its_end_index() {
+    type P = TestPlugin<ChoiceParams>;
     let instance = Instance::new::<P>();
-    let panel = panel(layout::knob(0, 0, "Aa"));
-    assert_eq!(
-        unsafe { Wrapper::<P>::custom_extension_param_id(instance.0, "Aa") },
-        None
+    let plugin = instance.0;
+    let table = clap_params(&instance);
+    let id =
+        |author: &str| unsafe { Wrapper::<P>::custom_extension_param_id(plugin, author) }.unwrap();
+    let mode = id("mode");
+    let plain = id("plain");
+    let mut value = 0.0;
+    assert!(unsafe { table.get_value.unwrap()(plugin, mode, &mut value) });
+    assert_eq!(value, 5.0);
+    assert!(unsafe { table.text_to_value.unwrap()(plugin, mode, c"Soft".as_ptr(), &mut value) });
+    assert_eq!(value, 5.0);
+    assert!(unsafe { table.get_value.unwrap()(plugin, plain, &mut value) });
+    assert_eq!(value, 0.375);
+    let count = unsafe { table.count.unwrap()(plugin) };
+    let mut info = MaybeUninit::uninit();
+    assert!(!unsafe { table.get_info.unwrap()(plugin, count, info.as_mut_ptr()) });
+}
+
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+enum BadLabels {
+    Valid,
+    #[name = "   "]
+    Blank,
+    #[name = "\0Invisible"]
+    LeadingNul,
+}
+
+#[derive(Params)]
+struct BadLabelsParams {
+    #[id = "mode"]
+    mode: EnumParam<BadLabels>,
+}
+
+impl Default for BadLabelsParams {
+    fn default() -> Self {
+        Self {
+            mode: EnumParam::new("Mode", BadLabels::Valid),
+        }
+    }
+}
+
+#[test]
+fn typed_enums_need_nonblank_clap_value_text() {
+    type P = TestPlugin<BadLabelsParams>;
+    let instance = Instance::new::<P>();
+    let params = unsafe { inventory(instance.0).unwrap() };
+    assert_ne!(params[0].flags & param_flags::STEPPED, 0);
+    assert_eq!(params[0].flags & param_flags::ENUM, 0);
+
+    let id = ParamId::new("mode");
+    let mut panel = panel(Cell::half(
+        0,
+        0,
+        2,
+        Half::Top,
+        WidgetKind::Dropdown,
+        CellParam::Id(id.clone()),
+    ));
+    panel.choice_labels.insert(
+        id,
+        vec![
+            bilingual("Valid", "Gültig"),
+            bilingual("Blank", "Leer"),
+            bilingual("Invisible", "Unsichtbar"),
+        ],
     );
     assert!(unsafe { compile::<P>(instance.0, &panel) }.is_err());
 }

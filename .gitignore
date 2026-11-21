@@ -1,5 +1,6 @@
 /target
 /dist
 /test-plugins/target
+/sdk/native-clap/target
 /scripts/local.env
 __pycache__/
