@@ -19,6 +19,14 @@ const DIRECTORY: &str = "bundled-clap";
 const MANIFEST: &str = "manifest.json";
 const MAX_MANIFEST_BYTES: u64 = 1_048_576;
 
+/// Use the same canonical path spelling as the plugin scan cache.
+fn canonical_app_path(path: &Path) -> io::Result<PathBuf> {
+    let canonical = fs::canonicalize(path)?;
+    #[cfg(windows)]
+    let canonical = crate::scan::without_verbatim(canonical);
+    Ok(canonical)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
@@ -118,7 +126,7 @@ impl BundledClap {
             return Ok(None);
         }
         let executable = std::env::current_exe()
-            .and_then(fs::canonicalize)
+            .and_then(|path| canonical_app_path(&path))
             .map_err(|err| BundleVerificationError::new(Path::new("current executable"), err))?;
         root_for_executable(&executable, cfg!(target_os = "macos"))
             .map(Some)
@@ -153,7 +161,7 @@ impl BundledClap {
     ) -> Result<Self, BundleVerificationError> {
         directory(&root)?;
         let canonical =
-            fs::canonicalize(&root).map_err(|err| BundleVerificationError::new(&root, err))?;
+            canonical_app_path(&root).map_err(|err| BundleVerificationError::new(&root, err))?;
         if canonical != root {
             return Err(BundleVerificationError::new(
                 &root,
@@ -579,7 +587,7 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let base = tempfile::tempdir().unwrap();
-            let root = base.path().canonicalize().unwrap().join(DIRECTORY);
+            let root = canonical_app_path(base.path()).unwrap().join(DIRECTORY);
             fs::create_dir(&root).unwrap();
             Self { base, root }
         }
@@ -621,7 +629,7 @@ mod tests {
         let fixture = Fixture::new();
         fixture.write(FILE, PAYLOAD);
         let inventory = fixture.open(&manifest(&[(FILE, PAYLOAD)])).unwrap();
-        let installed = fixture.root.join(FILE);
+        let installed = crate::scan::bundle_key(&fixture.root.join(FILE)).unwrap();
         assert_eq!(
             inventory.bundle_entries().collect::<Vec<_>>(),
             [(&*installed, ID)]
