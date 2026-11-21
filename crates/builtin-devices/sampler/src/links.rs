@@ -116,6 +116,37 @@ pub fn read(state: Option<&[u8]>) -> Vec<(usize, SampleLink)> {
     links
 }
 
+const REVISIONS: &str = "sample_revisions";
+
+/// A per-pad revision for explicit reloads whose links remain the same.
+pub fn revisions(state: &str) -> [u64; PADS] {
+    let mut revisions = [0; PADS];
+    if let Some(values) = serde_json::from_str::<Value>(state)
+        .ok()
+        .and_then(|value| value.get(REVISIONS)?.as_array().cloned())
+    {
+        for (revision, value) in revisions.iter_mut().zip(values) {
+            *revision = value.as_u64().unwrap_or_default();
+        }
+    }
+    revisions
+}
+
+/// Writes a sample edit revision into the asset document. Save/rebase preserves it.
+pub fn touch(state: &mut Value, pad: usize) {
+    let Some(object) = state.as_object_mut() else {
+        return;
+    };
+    let mut revisions = [0; PADS];
+    if let Some(values) = object.get(REVISIONS).and_then(Value::as_array) {
+        for (revision, value) in revisions.iter_mut().zip(values) {
+            *revision = value.as_u64().unwrap_or_default();
+        }
+    }
+    revisions[pad] = u64::wrapping_add(revisions[pad], 1);
+    object.insert(REVISIONS.into(), serde_json::json!(revisions));
+}
+
 /// `state` with the link of `pad` set to `link` (`None` removes it). Everything else in the state
 /// stays; a state that is not a JSON object is replaced by one with only the link.
 pub fn write(state: Option<&[u8]>, pad: usize, link: Option<&SampleLink>) -> Vec<u8> {

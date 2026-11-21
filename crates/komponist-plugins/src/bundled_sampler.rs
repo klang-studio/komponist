@@ -132,7 +132,13 @@ pub fn edit_link(
                 }
             }
         }
-        String::from_utf8(updated).ok()
+        if link.is_some() {
+            let mut updated: Value = serde_json::from_slice(&updated).ok()?;
+            links::touch(&mut updated, pad);
+            Some(updated.to_string())
+        } else {
+            String::from_utf8(updated).ok()
+        }
     })
 }
 
@@ -241,6 +247,7 @@ mod tests {
             decode(&relinked).unwrap()["params"]["start"],
             json!({"f32": 0.25})
         );
+        assert_eq!(links::revisions(&assets(&relinked).unwrap())[0], 2);
         assert_eq!(
             komponist_general_sampler::read_settings(Some(assets(&relinked).unwrap().as_bytes())),
             settings

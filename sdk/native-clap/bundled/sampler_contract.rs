@@ -11,8 +11,10 @@ use clap_sys::events::{
     clap_event_note, clap_input_events,
 };
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
+use clap_sys::plugin::clap_plugin;
 use clap_sys::process::{CLAP_PROCESS_ERROR, clap_process};
 use clap_sys::stream::{clap_istream, clap_ostream};
+use komponist_native_clap_sdk::sampler_ui::{EXTENSION_ID, MAX_BYTES, Snapshot, Status};
 use nice_plug::prelude::ClapPlugin;
 use nice_plug::wrapper::clap::Wrapper;
 use serde_json::json;
@@ -61,6 +63,28 @@ unsafe extern "C" fn write_state(
         state.extend_from_slice(std::slice::from_raw_parts(buffer.cast(), size as usize));
         size as i64
     }
+}
+
+#[repr(C)]
+struct SamplerUi {
+    snapshot: unsafe extern "C" fn(*const clap_plugin, *mut u8, u32) -> u32,
+    preview: unsafe extern "C" fn(*const clap_plugin, f64),
+}
+
+fn read_snapshot(instance: &Instance) -> Snapshot {
+    let plugin = instance.0;
+    let mut bytes = [0; MAX_BYTES];
+    // SAFETY: The test retains the CLAP instance and the writable snapshot buffer.
+    let len = unsafe {
+        let table = ((*plugin).get_extension.unwrap())(plugin, EXTENSION_ID.as_ptr());
+        let table = table
+            .cast::<SamplerUi>()
+            .as_ref()
+            .expect("sampler UI extension");
+        assert_eq!((table.snapshot)(plugin, bytes.as_mut_ptr(), 1), 0);
+        (table.snapshot)(plugin, bytes.as_mut_ptr(), MAX_BYTES as u32)
+    };
+    Snapshot::decode(&bytes[..len as usize]).expect("valid sampler UI data")
 }
 
 fn check_state_roundtrip<P: ClapPlugin>(instance: &Instance, assets: &str) {
@@ -161,6 +185,7 @@ pub(crate) fn sample_asset_roundtrip<P: ClapPlugin>(key: u8, gate_param: &str) {
         })
         .to_string()
     };
+    assert_eq!(read_snapshot(&instance).pads[0].status, Status::Empty);
     check_state_roundtrip::<P>(&instance, &assets(&sample));
     let note = clap_event_note {
         header: clap_event_header {
@@ -263,6 +288,10 @@ pub(crate) fn sample_asset_roundtrip<P: ClapPlugin>(key: u8, gate_param: &str) {
             );
             std::thread::sleep(Duration::from_millis(3));
         }
+        let snapshot = read_snapshot(&instance);
+        assert_eq!(snapshot.pads[0].status, Status::Ready);
+        assert_eq!(snapshot.pads[0].name, "linked");
+        assert!(snapshot.pads[0].peaks.iter().any(|peak| *peak > 0.01));
         let mut release = clap_event_note {
             header: clap_event_header {
                 time: 32,

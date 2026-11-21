@@ -58,13 +58,15 @@ unsafe impl<T: SampledDefinition> Params for SampleParameters<T> {
         // before walking the pads so a second entry for one pad cannot hide later pads.
         let old = canonical_links(&saved);
         let new = canonical_links(assets);
+        let old_revisions = links::revisions(&saved);
+        let new_revisions = links::revisions(assets);
         for pad in 0..T::PADS {
             let link_at = |links: &[(usize, links::SampleLink)]| {
                 links.iter().position(|(index, _)| *index == pad)
             };
             let previous = link_at(&old).map(|i| &old[i].1);
             let link = link_at(&new).map(|i| &new[i].1);
-            if previous == link {
+            if previous == link && old_revisions[pad] == new_revisions[pad] {
                 continue;
             }
             if let Some(link) = link {
