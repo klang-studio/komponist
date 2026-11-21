@@ -4,6 +4,7 @@
 
 use std::collections::BTreeSet;
 
+use komponist_engine::compile::Diagnostic;
 use komponist_i18n::Lang;
 use komponist_model::format::MINUS;
 use komponist_model::{
@@ -120,6 +121,9 @@ pub enum RowStatus {
     Unresponsive,
     /// Missing: red name and "fehlt".
     Missing,
+    /// Left out of the engine's program (#92): red name and "spielt nicht", the reason in the
+    /// tooltip.
+    NotPlayed(Diagnostic),
 }
 
 impl DeviceRow {
@@ -130,27 +134,39 @@ impl DeviceRow {
             RowStatus::LoadFailed => lang.inspector_device_load_failed(),
             RowStatus::Unresponsive => lang.inspector_device_unresponsive(),
             RowStatus::Missing => lang.inspector_device_missing(),
+            RowStatus::NotPlayed(_) => lang.not_played_label(),
             RowStatus::Ok | RowStatus::Loading => format,
         }
     }
 }
 
-/// The rows of `devices` with their status from `host`, and each one's format tag.
+/// The rows of `devices` (the chain of the track at `track` in `Project::tracks`) with their
+/// status from `host`, and each one's format tag. A device the engine leaves out (one of
+/// `diagnostics`, #92), or every device of a track it leaves out, shows that instead of its
+/// runtime state.
 pub fn device_rows(
     lang: Lang,
     devices: &[std::sync::Arc<Device>],
     host: &dyn DeviceHost,
+    track: usize,
+    diagnostics: &[Diagnostic],
 ) -> Vec<(DeviceRow, &'static str)> {
     devices
         .iter()
-        .map(|d| {
-            let status = match host.status(d.id) {
-                DeviceStatus::Ok => RowStatus::Ok,
-                DeviceStatus::Loading => RowStatus::Loading,
-                DeviceStatus::Crashed(FailReason::Exited { .. }) => RowStatus::Crashed,
-                DeviceStatus::Crashed(FailReason::LoadFailed(_)) => RowStatus::LoadFailed,
-                DeviceStatus::Crashed(FailReason::Unresponsive) => RowStatus::Unresponsive,
-                DeviceStatus::Missing => RowStatus::Missing,
+        .enumerate()
+        .map(|(index, d)| {
+            let not_played = crate::diagnostics::for_device(diagnostics, track, index)
+                .or_else(|| crate::diagnostics::for_track(diagnostics, track));
+            let status = match not_played {
+                Some(diagnostic) => RowStatus::NotPlayed(*diagnostic),
+                None => match host.status(d.id) {
+                    DeviceStatus::Ok => RowStatus::Ok,
+                    DeviceStatus::Loading => RowStatus::Loading,
+                    DeviceStatus::Crashed(FailReason::Exited { .. }) => RowStatus::Crashed,
+                    DeviceStatus::Crashed(FailReason::LoadFailed(_)) => RowStatus::LoadFailed,
+                    DeviceStatus::Crashed(FailReason::Unresponsive) => RowStatus::Unresponsive,
+                    DeviceStatus::Missing => RowStatus::Missing,
+                },
             };
             (
                 DeviceRow {
@@ -386,7 +402,7 @@ mod tests {
     fn device_rows_carry_status_and_tag() {
         let p = demo_project();
         let host = host_for(&p);
-        let rows = device_rows(Lang::De, &p.tracks[2].channel.devices, &host);
+        let rows = device_rows(Lang::De, &p.tracks[2].channel.devices, &host, 2, &[]);
         assert_eq!(rows.len(), 4);
         let (hexa, tag) = &rows[0];
         assert!(hexa.instrument && hexa.status == RowStatus::Ok);
@@ -395,6 +411,52 @@ mod tests {
         assert_eq!(eq.status, RowStatus::Missing);
         assert_eq!(eq.tag(Lang::De, tag), "fehlt");
         assert!(rows[2].0.bypass);
+    }
+
+    /// #92: a device the engine leaves out, and every device of a track it leaves out, shows
+    /// "spielt nicht" with its diagnostic instead of its runtime state.
+    #[test]
+    fn device_rows_show_what_the_engine_leaves_out() {
+        use komponist_engine::compile::{Chain, Reason, Subject};
+        let p = demo_project();
+        let host = host_for(&p);
+        let devices = &p.tracks[2].channel.devices;
+        let misplaced = Diagnostic {
+            subject: Subject::Device {
+                chain: Chain::Track {
+                    track: p.tracks[2].id,
+                    index: 2,
+                },
+                device: devices[1].id,
+                index: 1,
+                role: devices[1].role,
+            },
+            reason: Reason::Misplaced,
+        };
+        let rows = device_rows(Lang::De, devices, &host, 2, &[misplaced]);
+        assert_eq!(rows[0].0.status, RowStatus::Ok);
+        assert_eq!(rows[1].0.status, RowStatus::NotPlayed(misplaced));
+        assert_eq!(rows[1].0.tag(Lang::De, rows[1].1), "spielt nicht");
+        assert_eq!(rows[1].0.tag(Lang::En, rows[1].1), "not played");
+        // Another track's position does not match.
+        let rows = device_rows(Lang::De, devices, &host, 3, &[misplaced]);
+        assert!(
+            rows.iter()
+                .all(|(r, _)| r.status != RowStatus::NotPlayed(misplaced))
+        );
+
+        let skipped = Diagnostic {
+            subject: Subject::Track {
+                track: p.tracks[2].id,
+                index: 2,
+            },
+            reason: Reason::TrackLimit,
+        };
+        let rows = device_rows(Lang::De, devices, &host, 2, &[skipped]);
+        assert!(
+            rows.iter()
+                .all(|(r, _)| r.status == RowStatus::NotPlayed(skipped))
+        );
     }
 
     #[test]

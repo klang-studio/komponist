@@ -685,7 +685,13 @@ fn load(
         }
     }
     let env = Latencies(processors.iter().map(|(&d, p)| (d, p.latency())).collect());
-    let program = compile::build(project, None, &env);
+    let compile::CompileResult {
+        program,
+        diagnostics,
+    } = compile::build_with_diagnostics(project, None, &env);
+    for diagnostic in &diagnostics {
+        eprintln!("warning: not played: {diagnostic:?}");
+    }
     let mut send = |command| {
         handle
             .send(command)

@@ -831,8 +831,9 @@ impl App {
                     &file,
                     view::minutes_seconds(run.seconds),
                     run.job.bit_depth.bits(),
-                ) + &view::dropped_text(self.lang, &dropped);
-                let kind = if dropped.is_empty() {
+                ) + &view::dropped_text(self.lang, &dropped)
+                    + &view::not_played_text(self.lang, self.engine.diagnostics());
+                let kind = if dropped.is_empty() && self.engine.diagnostics().is_empty() {
                     StatusKind::Success
                 } else {
                     StatusKind::Error
