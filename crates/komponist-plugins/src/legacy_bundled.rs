@@ -149,6 +149,14 @@ fn prepare(
         PluginKind::Instrument => DeviceRole::Instrument,
         PluginKind::Effect => DeviceRole::Effect,
         PluginKind::MidiEffect => DeviceRole::MidiEffect,
+        PluginKind::Other
+            if descriptor
+                .features
+                .iter()
+                .any(|feature| feature == "note-effect") =>
+        {
+            DeviceRole::MidiEffect
+        }
         PluginKind::Other => return Err("unsupported bundled device role".into()),
     };
     if descriptor.format != ClapFormat::Clap
