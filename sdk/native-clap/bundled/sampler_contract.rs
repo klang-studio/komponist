@@ -71,9 +71,7 @@ fn check_state_roundtrip<P: ClapPlugin>(instance: &Instance, assets: &str) {
         let table = ((*plugin).get_extension.unwrap())(plugin, CLAP_EXT_STATE.as_ptr());
         assert!(!table.is_null());
         let table = &*table.cast::<clap_plugin_state>();
-        let wrapper = &*(*plugin).plugin_data.cast::<Wrapper<P>>();
-        let mut state = serde_json::to_value(wrapper.get_state_object()).unwrap();
-        let load = |state: &serde_json::Value| {
+        let load = |plugin, state: &serde_json::Value| {
             let body = serde_json::to_vec(state).unwrap();
             let mut record = (body.len() as u64).to_le_bytes().to_vec();
             record.extend(body);
@@ -84,7 +82,7 @@ fn check_state_roundtrip<P: ClapPlugin>(instance: &Instance, assets: &str) {
             };
             (table.load.unwrap())(plugin, &stream)
         };
-        let save = || {
+        let save = |plugin| {
             let mut record = Vec::<u8>::new();
             let stream = clap_ostream {
                 ctx: ptr::from_mut(&mut record).cast(),
@@ -98,9 +96,10 @@ fn check_state_roundtrip<P: ClapPlugin>(instance: &Instance, assets: &str) {
             serde_json::from_slice::<serde_json::Value>(&record[8..]).unwrap()
         };
 
+        let mut state = save(plugin);
         state["fields"]["sample_assets"] = assets.into();
-        assert!(load(&state));
-        let expected = save();
+        assert!(load(plugin, &state));
+        let expected = save(plugin);
         assert_eq!(expected["fields"]["sample_assets"], assets);
         let mut invalid = expected.clone();
         let float_value = invalid["params"]
@@ -115,32 +114,16 @@ fn check_state_roundtrip<P: ClapPlugin>(instance: &Instance, assets: &str) {
             0.75
         });
         invalid["fields"]["sample_assets"] = "[]".into();
-        assert!(!load(&invalid));
+        assert!(!load(plugin, &invalid));
         assert_eq!(
-            save(),
+            save(plugin),
             expected,
             "an invalid field must leave live state unchanged"
         );
 
         let other = Instance::new::<P>();
-        let mut body = serde_json::to_vec(&expected).unwrap();
-        let mut record = (body.len() as u64).to_le_bytes().to_vec();
-        record.append(&mut body);
-        let mut cursor = Cursor::new(record.as_slice());
-        let stream = clap_istream {
-            ctx: ptr::from_mut(&mut cursor).cast(),
-            read: Some(read_state),
-        };
-        let other_table = ((*other.0).get_extension.unwrap())(other.0, CLAP_EXT_STATE.as_ptr());
-        assert!(!other_table.is_null());
-        assert!(((*other_table.cast::<clap_plugin_state>()).load.unwrap())(
-            other.0, &stream
-        ));
-        let other_wrapper = &*(*other.0).plugin_data.cast::<Wrapper<P>>();
-        assert_eq!(
-            serde_json::to_value(other_wrapper.get_state_object()).unwrap(),
-            expected
-        );
+        assert!(load(other.0, &expected));
+        assert_eq!(save(other.0), expected);
     }
 }
 
