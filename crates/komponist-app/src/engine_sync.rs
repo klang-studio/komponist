@@ -1376,6 +1376,9 @@ impl EngineSync {
         }
         self.synced = None;
         self.fast = None;
+        // The next project's diagnostics are all new, even those equal to the old project's.
+        self.diagnostics.clear();
+        self.diagnostics_notice = false;
         self.macro_params.clear();
         self.pending_macro_edits.clear();
         let events = self.host.poll();
@@ -1695,6 +1698,19 @@ mod tests {
         sync.sync(&doc);
         assert_eq!(sync.diagnostics(), []);
         assert!(!sync.take_diagnostics_notice());
+
+        // Another project (open, new) that leaves out the same track at the same position: its
+        // diagnostic is new, though equal to one the previous project had.
+        doc.apply_with("Add track", |p| Ok((add(p), ()))).unwrap();
+        sync.sync(&doc);
+        assert!(sync.take_diagnostics_notice());
+        let before = sync.diagnostics().to_vec();
+        sync.reset();
+        assert_eq!(sync.diagnostics(), []);
+        let other = Document::new(doc.project().as_ref().clone());
+        sync.sync(&other);
+        assert_eq!(sync.diagnostics(), before);
+        assert!(sync.take_diagnostics_notice());
         sync.shutdown();
     }
 

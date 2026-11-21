@@ -159,6 +159,9 @@ struct Run {
     phase: Phase,
     /// A project audio asset and a pending track replacement, for a single-track render.
     flatten: Option<Flatten>,
+    /// What the rendered program leaves out of the project (#92), taken with the program at
+    /// launch: the document may change while the worker renders.
+    diagnostics: Vec<komponist_engine::compile::Diagnostic>,
 }
 
 enum Phase {
@@ -462,6 +465,7 @@ impl App {
             seconds,
             phase: Phase::Devices,
             flatten: None,
+            diagnostics: Vec::new(),
         });
         self.poll_export();
     }
@@ -651,6 +655,7 @@ impl App {
             fail(self, &self.lang.flatten_worker_failed());
             return;
         };
+        run.diagnostics = self.engine.diagnostics().to_vec();
         let project = Arc::clone(self.doc.project());
         let track = run
             .flatten
@@ -832,8 +837,8 @@ impl App {
                     view::minutes_seconds(run.seconds),
                     run.job.bit_depth.bits(),
                 ) + &view::dropped_text(self.lang, &dropped)
-                    + &view::not_played_text(self.lang, self.engine.diagnostics());
-                let kind = if dropped.is_empty() && self.engine.diagnostics().is_empty() {
+                    + &view::not_played_text(self.lang, &run.diagnostics);
+                let kind = if dropped.is_empty() && run.diagnostics.is_empty() {
                     StatusKind::Success
                 } else {
                     StatusKind::Error

@@ -294,6 +294,7 @@ impl App {
             seconds: job.frames() as f64 / f64::from(rate),
             job,
             phase: Phase::Devices,
+            diagnostics: Vec::new(),
             flatten: Some(Flatten {
                 id,
                 name,
