@@ -211,6 +211,191 @@ fn both_samplers_play_assets_after_the_project_moves() {
     app.shutdown();
 }
 
+#[test]
+#[ignore = "requires a verified all-device package; run with scripts/measure-bundled-clap.py --current-projects"]
+fn bundled_sampler_panels_edit_and_restore_current_state() {
+    use egui::accesskit::Role;
+    use komponist_app::actions::{
+        EditAction, SelectMode, SelectionChange, SettingsAction, UiAction,
+    };
+    use komponist_app::{settings::Language, ui_state::DockTab};
+    use komponist_builtin::BuiltinKind;
+    use komponist_ipc::sampler_ui::Status;
+
+    let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").expect("packaged launcher");
+    let force_bridge =
+        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
+    let scratch = tempfile::tempdir().unwrap();
+    let sample = scratch.path().join("tone.wav");
+    write_sample(&sample);
+    let mut config = config(scratch.path());
+    config.bridge_exe = launcher.into();
+    let mut host = PluginHost::new(config);
+    host.start_scan(&PluginDirs {
+        clap: Vec::new(),
+        vst3: Vec::new(),
+    });
+    let deadline = Instant::now() + PATIENCE;
+    while !host
+        .poll()
+        .iter()
+        .any(|event| matches!(event, PluginManagerEvent::ScanFinished(_)))
+    {
+        assert!(Instant::now() < deadline, "bundled CLAP scan timed out");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let mut project = Project::new("Packaged samplers");
+    let mut tracks = Vec::new();
+    for kind in [Internal::Sampler, Internal::GeneralSampler] {
+        let instrument = host
+            .catalog()
+            .packaged(BuiltinKind::Internal(kind))
+            .unwrap()
+            .plugin
+            .clone();
+        let (next, track) = edits::add_track(
+            &project,
+            NewTrack {
+                name: None,
+                hue: None,
+                instrument: Some(instrument),
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        let device = next.track(track).unwrap().channel.instrument().unwrap().1;
+        assert!(device.state.is_none());
+        tracks.push((kind, track, device.id));
+        project = next;
+    }
+    let mut app = app_with(project, host).with_lang(komponist_i18n::Lang::De);
+    for (kind, track, device) in &tracks {
+        let pad = usize::from(*kind == Internal::Sampler) * 2;
+        step_until(&mut app, "initial sampler UI", |app| {
+            app.engine()
+                .host()
+                .sampler_ui(*device)
+                .is_some_and(|view| view.idle)
+        });
+        assert_eq!(
+            app.engine().host().bridge_pid(*device).is_some(),
+            force_bridge
+        );
+        app.dispatch(Action::Plugin(PluginAction::LoadSample {
+            device: *device,
+            pad,
+            path: sample.clone(),
+        }));
+        step_until(&mut app, "loaded sampler waveform", |app| {
+            app.engine().host().sampler_ui(*device).is_some_and(|view| {
+                view.idle
+                    && view.pads[pad].status == Status::Ready
+                    && view.pads[pad].peaks.iter().any(|peak| *peak > 0.1)
+            })
+        });
+        let key = if *kind == Internal::Sampler {
+            komponist_sampler::note_of_pad(pad)
+        } else {
+            60
+        };
+        assert_audible(&mut app, *track, key);
+    }
+    let (_, general_track, general) = tracks[1];
+    let settings = komponist_general_sampler::Settings::from_markers([0.04, 0.10]);
+    let slice_state = |app: &App| {
+        let device = app.project().find_device(general).unwrap().2;
+        let assets = device
+            .state
+            .as_deref()
+            .and_then(komponist_plugins::bundled_sampler::assets);
+        komponist_general_sampler::read_settings(assets.as_deref().map(str::as_bytes))
+    };
+    app.dispatch(Action::Plugin(PluginAction::SetSamplerSlices {
+        device: general,
+        settings: settings.clone(),
+    }));
+    assert_eq!(slice_state(&app), settings);
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(
+        slice_state(&app),
+        komponist_general_sampler::Settings::default()
+    );
+    app.dispatch(Action::Edit(EditAction::Redo));
+    assert_eq!(slice_state(&app), settings);
+    step_until(&mut app, "restored slice map", |app| {
+        !app.engine().host().sampler_is_loading(general)
+    });
+    step_for(&mut app, Duration::from_millis(200));
+    app.engine().track_meter(general_track).unwrap().take();
+    app.dispatch(Action::Plugin(PluginAction::PreviewSampler {
+        device: general,
+        slice_time: Some(0.08),
+    }));
+    step_for(&mut app, Duration::from_millis(160));
+    assert!(app.engine().track_meter(general_track).unwrap().take().0 > 1e-4);
+
+    let (_, drum_track, drum) = tracks[0];
+    let select = |app: &mut App, track| {
+        app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+            tracks: vec![track],
+            mode: SelectMode::Replace,
+        })));
+        app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+    };
+    select(&mut app, drum_track);
+    let mut h = harness(app);
+    let save_screenshot = |h: &mut egui_kittest::Harness<'_, App>, device: &str, lang: &str| {
+        if let Some(folder) = std::env::var_os("KOMPONIST_SAMPLER_UI_SCREENSHOTS") {
+            let path = std::path::PathBuf::from(folder);
+            std::fs::create_dir_all(&path).unwrap();
+            let route = if force_bridge { "bridge" } else { "direct" };
+            h.render()
+                .unwrap()
+                .save(path.join(format!("{device}-{route}-{lang}.png")))
+                .unwrap();
+        }
+    };
+    for (lang, code) in [(Language::De, "de"), (Language::En, "en")] {
+        h.state_mut()
+            .dispatch(Action::Settings(SettingsAction::SetLanguage(lang)));
+        select(h.state_mut(), drum_track);
+        h.run_steps(3);
+        let pad = h
+            .get_by_role_and_label(Role::Button, "Pad tone")
+            .rect()
+            .center();
+        crate::acceptance_support::click_at(&mut h, pad);
+        h.get_by_role_and_label(Role::Group, "Pad 3 · tone");
+        h.get_by_role_and_label(Role::Slider, "Tune 3");
+        save_screenshot(&mut h, "drum-sampler", code);
+        select(h.state_mut(), general_track);
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::Button, "tone");
+        save_screenshot(&mut h, "general-sampler", code);
+    }
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::ClearSample {
+            device: drum,
+            pad: 2,
+        }));
+    step_until(h.state_mut(), "cleared pad", |app| {
+        app.engine()
+            .host()
+            .sampler_ui(drum)
+            .is_some_and(|snapshot| snapshot.pads[2].status == Status::Empty)
+    });
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    step_until(h.state_mut(), "restored pad", |app| {
+        app.engine()
+            .host()
+            .sampler_ui(drum)
+            .is_some_and(|snapshot| snapshot.pads[2].status == Status::Ready)
+    });
+    h.state_mut().shutdown();
+}
+
 fn assert_sample_sources(project: &Project, project_dir: &Path, source: &Path) {
     for track in &project.tracks {
         let device = track.channel.instrument().unwrap().1;
