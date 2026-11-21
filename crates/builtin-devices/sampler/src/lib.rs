@@ -42,7 +42,7 @@ use komponist_model::params::layout::{
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 
 pub use links::{Collector, SampleLink};
-pub use load::{PadStatus, PadView, SamplerHandle, SyncStatus};
+pub use load::{ManagedLoader, PadStatus, PadView, SamplerHandle, SyncStatus};
 
 /// The device's name in the browser and on the card. The only place it is written.
 pub const NAME: &str = komponist_model::project::DRUM_SAMPLER_NAME;
@@ -361,4 +361,11 @@ pub fn dsp_with_handle() -> (Box<dyn Dsp>, SamplerHandle) {
     let dsp = dsp::SamplerDsp::new();
     let handle = dsp.handle();
     (Box::new(dsp), handle)
+}
+
+/// Creates the drum sampler and a loader guard for a dynamically loaded CLAP instance.
+pub fn dsp_with_managed_loader() -> (Box<dyn Dsp>, SamplerHandle, ManagedLoader) {
+    let (handle, audio, meters, loader) = load::managed_channel(false);
+    let dsp = dsp::SamplerDsp::with_channels(handle.clone(), audio, meters);
+    (Box::new(dsp), handle, loader)
 }

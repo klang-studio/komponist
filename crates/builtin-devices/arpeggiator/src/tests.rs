@@ -118,6 +118,40 @@ fn chord() -> Vec<Event> {
 }
 
 #[test]
+fn all_notes_off_releases_only_one_channels_held_pattern() {
+    let mut p = processor(&[("hold", 1.0)]);
+    let stage = p.event_processor().unwrap();
+    let on = |channel, note_id| Event {
+        offset: 0,
+        kind: EventKind::NoteOn {
+            channel,
+            key: 60,
+            velocity: 100,
+            note_id,
+        },
+    };
+    let cc = Event {
+        offset: 4,
+        kind: EventKind::Midi([0xb2, 123, 0]),
+    };
+    let output = call(
+        stage,
+        &ctx(6144, 120.0, true, 0.0),
+        &[on(2, 91), on(5, 92), cc],
+    );
+
+    assert!(output.contains(&cc), "the original channel CC is forwarded");
+    let ons: Vec<_> = output
+        .iter()
+        .filter_map(|event| match event.kind {
+            EventKind::NoteOn { channel, .. } => Some((event.offset, channel)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ons, [(0, 2), (6000, 5)]);
+}
+
+#[test]
 fn patterns_walk_the_held_notes() {
     let keys = |mode: &str, octaves: f64, input: &[Event]| -> Vec<u8> {
         let m = MODES.iter().position(|m| *m == mode).unwrap() as f64;

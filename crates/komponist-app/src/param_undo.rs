@@ -129,6 +129,22 @@ impl ParamUndo {
             ..ParamUndo::default()
         };
     }
+
+    fn forget_device(&mut self, device: DeviceId) {
+        if self.gesture_device == Some(device) {
+            self.gesture_device = None;
+        }
+        self.gesture_bridged.remove(&device);
+        self.macro_gesture.remove(&device);
+        self.macro_steps.remove(&device);
+        self.turned.remove(&device);
+        self.steps.remove(&device);
+        self.tails.remove(&device);
+        self.echo.remove(&device);
+        self.deferred.retain(|(id, _)| *id != device);
+        self.awaiting.remove(&device);
+        self.baseline.remove(&device);
+    }
 }
 
 impl App {
@@ -242,6 +258,20 @@ impl App {
 
     pub(crate) fn deferred_plugin_states(&self) -> &[(DeviceId, Arc<[u8]>)] {
         &self.param_undo.deferred
+    }
+
+    /// Adopt rewritten asset paths after the new project file has been written.
+    pub(crate) fn update_deferred_plugin_states(&mut self, states: Vec<(DeviceId, Arc<[u8]>)>) {
+        for (device, state) in states {
+            if let Some((_, pending)) = self
+                .param_undo
+                .deferred
+                .iter_mut()
+                .find(|(id, _)| *id == device)
+            {
+                *pending = state;
+            }
+        }
     }
 
     /// Stores the snapshots that waited for a gesture, once none is open.
@@ -538,6 +568,10 @@ impl App {
             let Some((_, _, old)) = before.find_device(device.id) else {
                 continue;
             };
+            if old.plugin != device.plugin {
+                self.param_undo.forget_device(device.id);
+                continue;
+            }
             if old.state != device.state && !is_hexa(device) && internal_kind(device).is_none() {
                 if device.state.is_none()
                     && let Some(baseline) = self.param_undo.baseline.get(&device.id).cloned()

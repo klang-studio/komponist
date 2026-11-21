@@ -39,6 +39,7 @@ pub mod native_layout;
 pub mod process;
 pub mod ring;
 pub mod shm;
+pub mod sidechain_fallback;
 pub mod signal;
 
 // Unit tests run RT paths inside `assert_no_alloc`, which needs its allocator (debug builds only;

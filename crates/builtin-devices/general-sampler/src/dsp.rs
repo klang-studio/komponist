@@ -39,6 +39,10 @@ pub(super) struct GeneralSamplerDsp {
 impl GeneralSamplerDsp {
     pub(super) fn new() -> Self {
         let (handle, audio, meters) = load::general_channel();
+        Self::with_channels(handle, audio, meters)
+    }
+
+    pub(super) fn with_channels(handle: SamplerHandle, audio: AudioSide, meters: Meters) -> Self {
         let sample_rate = 48_000.0;
         Self {
             engine: Box::new(Engine::new(sample_rate)),
@@ -219,7 +223,14 @@ impl GeneralSamplerDsp {
         }
     }
 
-    fn play_note(&mut self, key: u8, velocity: u8, note_id: Option<u32>, slice_time: Option<f64>) {
+    fn play_note(
+        &mut self,
+        key: u8,
+        velocity: u8,
+        note_id: Option<u32>,
+        channel: Option<u8>,
+        slice_time: Option<f64>,
+    ) {
         let Some(source) = self.samples[SOURCE].as_deref() else {
             return;
         };
@@ -309,6 +320,7 @@ impl GeneralSamplerDsp {
                 slot,
                 key,
                 note_id,
+                channel,
                 velocity: f32::from(velocity.clamp(1, 127)) / 127.0,
                 tune,
                 independent_pitch: self.value(Param::Sync) >= 0.5,
@@ -359,7 +371,13 @@ impl Dsp for GeneralSamplerDsp {
         let released = match self.meters.take_slice_preview() {
             Some(SlicePreview::Start { time, released }) => {
                 self.engine.choke_note(SLICE_PREVIEW_ID);
-                self.play_note(SLICE_PREVIEW_KEY, 100, Some(SLICE_PREVIEW_ID), Some(time));
+                self.play_note(
+                    SLICE_PREVIEW_KEY,
+                    100,
+                    Some(SLICE_PREVIEW_ID),
+                    None,
+                    Some(time),
+                );
                 released
             }
             Some(SlicePreview::Release) => true,
@@ -367,7 +385,7 @@ impl Dsp for GeneralSamplerDsp {
         };
         if released {
             self.engine
-                .release_note(SLICE_PREVIEW_KEY, Some(SLICE_PREVIEW_ID));
+                .release_note(SLICE_PREVIEW_KEY, Some(SLICE_PREVIEW_ID), None);
         }
         let [left, right] = output;
         let mut buses = [[0.0; 2]; NUM_OUTPUTS];
@@ -416,14 +434,29 @@ impl Dsp for GeneralSamplerDsp {
         true
     }
 
-    fn note_on_with_id(&mut self, key: u8, velocity: u8, note_id: Option<u32>) {
+    fn note_on_with_id(
+        &mut self,
+        key: u8,
+        velocity: u8,
+        note_id: Option<u32>,
+        channel: Option<u8>,
+    ) {
         // A note at the beginning of the block comes before Dsp::process.
         self.take_loaded();
-        self.play_note(key, velocity, note_id, None);
+        self.play_note(key, velocity, note_id, channel, None);
     }
 
-    fn note_off_with_id(&mut self, key: u8, note_id: Option<u32>) {
-        self.engine.release_note(key, note_id);
+    fn note_off_with_id(&mut self, key: u8, note_id: Option<u32>, channel: Option<u8>) {
+        self.engine.release_note(key, note_id, channel);
+    }
+
+    fn release_note_gates(&mut self, key: Option<u8>, note_id: Option<u32>, channel: Option<u8>) {
+        self.engine
+            .release_note_gates(key, note_id, channel, &self.settings[..]);
+    }
+
+    fn choke_note(&mut self, key: Option<u8>, note_id: Option<u32>, channel: Option<u8>) {
+        self.engine.choke_matching(None, key, note_id, channel);
     }
 
     fn all_notes_off(&mut self) {

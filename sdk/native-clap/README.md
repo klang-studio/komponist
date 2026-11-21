@@ -102,12 +102,12 @@ device core. For example, with a pinned checkout in a sibling directory named
 [dependencies]
 komponist-device-core = { path = "../komponist-source/crates/builtin-devices/core" }
 komponist-native-clap-sdk = { path = "../komponist-source/sdk/native-clap/author" }
-nice-plug = { git = "https://github.com/klang-studio/nice-plug", rev = "0960d393d72f9f0be4f5216adad2e370fb552397", default-features = false }
+nice-plug = { git = "https://github.com/klang-studio/nice-plug", rev = "3567fbd8289d587598e55d505e0f7343f1fc2235", default-features = false }
 ```
 
 Keep the device's nice-plug dependency at the same Git revision as the SDK. The SDK lockfile
 records that revision for the wrapper, core, derive macros, and logging crate. The wrapper
-changes are maintained on the [SDK branch in the nice-plug fork](https://github.com/klang-studio/nice-plug/tree/wp/182-native-clap-sdk).
+changes are maintained in the [nice-plug fork](https://github.com/klang-studio/nice-plug/tree/3567fbd8289d587598e55d505e0f7343f1fc2235).
 
 Define your device's audio processing, parameter declarations and defaults in nice-plug.
 Implement `NativeClapLayout::panel()` to return a `Panel` with the same contents each time.
@@ -130,6 +130,14 @@ compare the CLAP IDs reported by an independent host to those from your previous
 workspace's `validate` command is specific to Native Gain Example. Its scan code shows how to
 check a bundle against your own expected plugin descriptor, parameter IDs and layout. Resolve ID
 collisions before a first release and plan an explicit migration before changing an existing ID.
+
+### Optional sidechain fallback
+
+A device with a separate auxiliary audio port can call the SDK's
+`sidechain_fallback_to_main::<AUX_CONFIG_ID>(id)` from `ClapPlugin::clap_custom_extension`.
+The ID must match the standard CLAP audio ports configuration that exposes the auxiliary
+input. The host can then feed the main signal to the auxiliary input whenever the sidechain
+has no connected source. [Sidechain fallback v1](../../docs/clap-device-layout/sidechain-fallback.md)
 
 ### Choice controls
 

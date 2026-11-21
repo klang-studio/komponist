@@ -74,6 +74,10 @@ impl SamplerDsp {
     /// Allocates the engine, the slots and the loader thread (UI thread).
     pub(super) fn new() -> SamplerDsp {
         let (handle, audio, meters) = load::channel();
+        Self::with_channels(handle, audio, meters)
+    }
+
+    pub(super) fn with_channels(handle: SamplerHandle, audio: AudioSide, meters: Meters) -> Self {
         let sample_rate = 48_000.0;
         let mut layers = Box::new([PadLayers::default(); NUM_PADS]);
         for pad in layers.iter_mut() {
@@ -254,6 +258,16 @@ impl Dsp for SamplerDsp {
     }
 
     fn note_on(&mut self, key: u8, velocity: u8) {
+        self.note_on_with_id(key, velocity, None, None);
+    }
+
+    fn note_on_with_id(
+        &mut self,
+        key: u8,
+        velocity: u8,
+        note_id: Option<u32>,
+        channel: Option<u8>,
+    ) {
         let Some(pad) = pad_of_note(key) else {
             return;
         };
@@ -262,19 +276,45 @@ impl Dsp for SamplerDsp {
         // load (an export's first beat) is silent (#94).
         self.take_loaded();
         self.meters.hit(pad);
-        self.engine.note_on(
+        self.engine.note_on_with_id(
             pad,
             f32::from(velocity.clamp(1, 127)) / 127.0,
             self.samples.as_slice(),
             &self.settings[..],
             &self.layers[..],
+            (note_id, channel),
         );
     }
 
     fn note_off(&mut self, key: u8) {
+        self.note_off_with_id(key, None, None);
+    }
+
+    fn note_off_with_id(&mut self, key: u8, note_id: Option<u32>, channel: Option<u8>) {
         if let Some(pad) = pad_of_note(key) {
-            self.engine.note_off(pad, &self.settings[..]);
+            self.engine
+                .note_off_with_id(pad, &self.settings[..], note_id, channel);
         }
+    }
+
+    fn release_note_gates(&mut self, key: Option<u8>, note_id: Option<u32>, channel: Option<u8>) {
+        if let Some(key) = key {
+            self.note_off_with_id(key, note_id, channel);
+        } else {
+            self.engine
+                .release_note_gates(None, note_id, channel, &self.settings[..]);
+        }
+    }
+
+    fn choke_note(&mut self, key: Option<u8>, note_id: Option<u32>, channel: Option<u8>) {
+        let pad = match key {
+            Some(key) => match pad_of_note(key) {
+                Some(pad) => Some(pad),
+                None => return,
+            },
+            None => None,
+        };
+        self.engine.choke_matching(pad, None, note_id, channel);
     }
 
     fn all_notes_off(&mut self) {
@@ -287,6 +327,26 @@ mod generation_tests {
     use super::*;
     use crate::load::Loaded;
     use rtrb::RingBuffer;
+
+    #[test]
+    fn wildcard_choke_ends_only_the_addressed_note_id() {
+        let mut dsp = SamplerDsp::new();
+        for pad in 0..2 {
+            assert!(dsp.set_sample(pad, Some(Arc::new(Sample::mono(48_000.0, vec![0.5; 2048])))));
+        }
+        let mut left = [0.0; 512];
+        let mut right = [0.0; 512];
+        let silence = [0.0; 512];
+        assert_no_alloc::assert_no_alloc(|| {
+            dsp.note_on_with_id(crate::note_of_pad(0), 127, Some(91), Some(2));
+            dsp.note_on_with_id(crate::note_of_pad(1), 127, Some(92), Some(3));
+            dsp.choke_note(None, Some(91), Some(2));
+            dsp.process([&silence; 2], [&mut left, &mut right]);
+        });
+        let heads = dsp.engine.playheads(dsp.samples.as_slice());
+        assert!(heads[slot_index(0, 0)] < 0.0);
+        assert!(heads[slot_index(1, 0)] > 0.0);
+    }
 
     #[test]
     fn a_decoded_sample_superseded_by_clear_is_retired_without_becoming_playable() {

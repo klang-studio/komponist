@@ -329,6 +329,7 @@ pub fn params(t: Lang) -> Vec<ParamInfo> {
             ParamKind::lin(-100.0, 100.0),
             7.0,
         )
+        .unit(Unit::Cents)
         .formatted(cents_text)
         .flags(true, true),
         percent("osc_mix", t.param_volt_osc_mix(), 0.0, 1.0, 0.5).flags(true, true),
@@ -421,6 +422,7 @@ pub fn params(t: Lang) -> Vec<ParamInfo> {
             ParamKind::lin(0.0, 200.0),
             50.0,
         )
+        .unit(Unit::Cents)
         .formatted(cents_text),
         percent("at_cut", t.param_volt_at_cut(), -1.0, 1.0, 0.0),
         ParamInfo::new(
@@ -458,6 +460,7 @@ pub fn params(t: Lang) -> Vec<ParamInfo> {
             1.0,
         ),
         ParamInfo::new("detune", t.param_detune(), ParamKind::lin(0.0, 100.0), 14.0)
+            .unit(Unit::Cents)
             .formatted(cents_text)
             .flags(true, true),
         percent("spread", t.param_spread(), 0.0, 1.0, 0.6),

@@ -1,18 +1,23 @@
 name: Bundled CLAP package smoke
 
-# This first-device lane exercises the future release gate without adding partial
-# inventories to published releases. It uses the same macOS and Windows packagers.
+# Exercise app packages with the complete inventory before switching published releases.
+# Use the same macOS and Windows packagers as the release workflow.
 on:
   workflow_dispatch:
     inputs:
       inventory:
         description: "Bundle inventory"
         type: choice
-        options: [hall, fixture]
-        default: hall
+        options: [all, hall, effects, fixture]
+        default: all
   pull_request:
     paths:
-      - "sdk/native-clap/bundled/**"
+      - "sdk/native-clap/**"
+      - "crates/komponist-app/src/main.rs"
+      - "crates/komponist-bridge/**"
+      - "crates/komponist-hosting/**"
+      - "crates/komponist-ipc/**"
+      - "crates/komponist-plugins/**"
       - "scripts/bundled-clap.py"
       - "scripts/bundle-macos.sh"
       - "scripts/package-windows.sh"
@@ -46,7 +51,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       TARGET: ${{ matrix.target }}
-      INVENTORY: ${{ inputs.inventory || 'hall' }}
+      INVENTORY: ${{ inputs.inventory || 'all' }}
       PACKAGE_NAME: komponist-bundled-clap-smoke
     steps:
       - name: Check out

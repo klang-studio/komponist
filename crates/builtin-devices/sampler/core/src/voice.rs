@@ -26,6 +26,8 @@ pub(crate) struct VoiceStart {
     pub layer_tune: f32,
     pub lfo_phase: f32,
     pub playback: Option<Playback>,
+    pub note_id: Option<u32>,
+    pub channel: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -36,6 +38,8 @@ pub(crate) struct Voice {
     /// Monotonic trigger counter, used to find the oldest voice when stealing
     pub id: u64,
     pub playback: Option<Playback>,
+    pub note_id: Option<u32>,
+    pub channel: Option<u8>,
 
     pos: f64,
     pitch_reader: Option<PitchReader>,
@@ -72,6 +76,11 @@ pub(crate) struct Voice {
 }
 
 impl Voice {
+    pub fn matches_note(&self, note_id: Option<u32>, channel: Option<u8>) -> bool {
+        note_id.is_none_or(|id| self.note_id == Some(id))
+            && channel.is_none_or(|ch| self.channel == Some(ch))
+    }
+
     pub fn start(&mut self, id: u64, v: VoiceStart, sample: &Sample, s: &PadSettings, seed: u32) {
         let mut rng = Rng::new(seed);
         *self = Self {
@@ -80,6 +89,8 @@ impl Voice {
             slot: v.slot,
             id,
             playback: v.playback,
+            note_id: v.note_id,
+            channel: v.channel,
             velocity: v.velocity.clamp(0.0, 1.0),
             velocity_gain: 1.0 - s.velocity_sens * (1.0 - v.velocity.clamp(0.0, 1.0)),
             layer_gain: v.layer_gain,

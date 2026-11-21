@@ -11,6 +11,13 @@ use crate::control::{ParamInfo, param_flags};
 
 /// The v1 maximum JSON document size, in bytes.
 pub const MAX_BYTES: u32 = 65_536;
+/// The maximum number of optional author IDs in a layout.
+pub const MAX_AUTHOR_IDS: usize = 256;
+
+/// Whether a key fits the v1 optional author-ID map.
+pub fn valid_author_id(key: &str) -> bool {
+    !key.is_empty() && key.chars().count() <= 128 && !key.chars().any(char::is_control)
+}
 
 /// A descriptor rejected by the host. Diagnostics contain only host-defined text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +98,8 @@ pub struct NativeLayout {
     pub default_locale: String,
     locales: Vec<String>,
     pub pages: Vec<Page>,
+    #[serde(default)]
+    author_ids: Option<BTreeMap<String, u32>>,
 }
 
 fn check(condition: bool, reason: &'static str) -> Result<(), LayoutError> {
@@ -159,10 +168,34 @@ impl NativeLayout {
                 }
             }
         }
+        if let Some(author_ids) = value.get("author_ids") {
+            check(
+                author_ids.as_object().is_some_and(|map| {
+                    (1..=MAX_AUTHOR_IDS).contains(&map.len())
+                        && map.keys().all(|id| valid_author_id(id))
+                }),
+                "author ID map",
+            )?;
+        }
         let layout: Self =
             serde_json::from_value(value).map_err(|_| LayoutError::Invalid("document fields"))?;
         layout.validate_geometry()?;
+        if let Some(author_ids) = &layout.author_ids {
+            let mut seen = BTreeSet::new();
+            check(
+                author_ids
+                    .values()
+                    .all(|id| *id != u32::MAX && seen.insert(id)),
+                "ambiguous author ID map",
+            )?;
+        }
         Ok(layout)
+    }
+
+    /// Optional author IDs to live CLAP parameter numbers. Call after validating
+    /// the layout against the authoritative inventory.
+    pub fn author_ids(&self) -> Option<&BTreeMap<String, u32>> {
+        self.author_ids.as_ref()
     }
 
     fn validate_geometry(&self) -> Result<(), LayoutError> {
@@ -267,6 +300,12 @@ impl NativeLayout {
             check(
                 p.id != u32::MAX && ids.insert(p.id, p).is_none(),
                 "ambiguous parameter IDs",
+            )?;
+        }
+        if let Some(author_ids) = &self.author_ids {
+            check(
+                author_ids.len() == ids.len() && author_ids.values().all(|id| ids.contains_key(id)),
+                "author ID map inventory mismatch",
             )?;
         }
         for cell in self.pages.iter().flat_map(|page| &page.cells) {

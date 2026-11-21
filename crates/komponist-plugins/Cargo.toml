@@ -7,10 +7,15 @@ publish.workspace = true
 
 [dependencies]
 komponist-builtin.workspace = true
+komponist-device-core.workspace = true
+komponist-hexa.workspace = true
+komponist-i18n.workspace = true
+komponist-sampler.workspace = true
 komponist-model.workspace = true
 komponist-engine.workspace = true
 komponist-ipc.workspace = true
 komponist-hosting.workspace = true
+rtrb.workspace = true
 serde.workspace = true
 # The scan cache file and the JSON output of `komponist-bridge --scan`.
 serde_json.workspace = true

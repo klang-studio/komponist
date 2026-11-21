@@ -205,8 +205,8 @@ struct Arp {
     count: usize,
     /// `held` indices sorted by key.
     sorted: [u8; MAX_HELD],
-    /// Keys that are physically down (bit = key).
-    down: u128,
+    /// Keys that are physically down (bit = key), separately for each MIDI channel.
+    down: [u128; 16],
     /// Steps played since the chord started.
     step: u32,
     rng: u32,
@@ -238,7 +238,7 @@ impl Arp {
             }; MAX_HELD],
             count: 0,
             sorted: [0; MAX_HELD],
-            down: 0,
+            down: [0; 16],
             step: 0,
             rng: RNG_SEED,
             sounding: None,
@@ -261,14 +261,15 @@ impl Arp {
             self.sorted[i] = i as u8;
         }
         let held = self.held;
-        self.sorted[..self.count].sort_unstable_by_key(|&i| held[usize::from(i)].key);
+        self.sorted[..self.count].sort_unstable_by_key(|&i| (held[usize::from(i)].key, i));
     }
 
     fn press(&mut self, key: u8, velocity: u8, channel: u8) {
-        if self.hold && self.down == 0 {
+        let channel = channel & 15;
+        if self.hold && self.down.iter().all(|&down| down == 0) {
             self.count = 0;
         }
-        self.down |= 1u128 << (key & 0x7f);
+        self.down[usize::from(channel)] |= 1u128 << (key & 0x7f);
         if self.count == 0 {
             self.step = 0;
         }
@@ -277,7 +278,10 @@ impl Arp {
             velocity,
             channel,
         };
-        match self.held[..self.count].iter().position(|h| h.key == key) {
+        match self.held[..self.count]
+            .iter()
+            .position(|h| h.key == key && h.channel == channel)
+        {
             Some(i) => self.held[i] = entry,
             None if self.count < MAX_HELD => {
                 self.held[self.count] = entry;
@@ -288,8 +292,8 @@ impl Arp {
         self.resort();
     }
 
-    fn release(&mut self, key: u8) {
-        self.down &= !(1u128 << (key & 0x7f));
+    fn release(&mut self, key: u8, channel: u8) {
+        self.down[usize::from(channel & 15)] &= !(1u128 << (key & 0x7f));
         if !self.hold {
             self.drop_released();
         }
@@ -300,8 +304,9 @@ impl Arp {
         let down = self.down;
         let mut kept = 0;
         for i in 0..self.count {
-            if down & (1u128 << self.held[i].key) != 0 {
-                self.held[kept] = self.held[i];
+            let note = self.held[i];
+            if down[usize::from(note.channel)] & (1u128 << (note.key & 0x7f)) != 0 {
+                self.held[kept] = note;
                 kept += 1;
             }
         }
@@ -311,7 +316,24 @@ impl Arp {
 
     fn clear_notes(&mut self) {
         self.count = 0;
-        self.down = 0;
+        self.down.fill(0);
+    }
+
+    fn clear_channel(&mut self, channel: u8) {
+        self.down[usize::from(channel)] = 0;
+        let mut kept = 0;
+        for index in 0..self.count {
+            let note = self.held[index];
+            if note.channel != channel {
+                self.held[kept] = note;
+                kept += 1;
+            }
+        }
+        self.count = kept;
+        self.resort();
+        if self.sounding.is_some_and(|note| note.channel == channel) {
+            self.sounding = None;
+        }
     }
 
     fn random(&mut self) -> u32 {
@@ -481,7 +503,11 @@ impl EventProcessor for Arp {
                         channel,
                         ..
                     } => self.press(key, velocity, channel),
-                    EventKind::NoteOff { key, .. } => self.release(key),
+                    EventKind::NoteOff { key, channel, .. } => self.release(key, channel),
+                    EventKind::Midi(bytes @ [status, 120 | 123, _]) if status & 0xf0 == 0xb0 => {
+                        self.clear_channel(status & 15);
+                        out.push(e.offset, EventKind::Midi(bytes));
+                    }
                     EventKind::AllNotesOff => {
                         self.clear_notes();
                         if let Some(s) = self.sounding.take() {

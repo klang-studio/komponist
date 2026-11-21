@@ -19,9 +19,13 @@
 mod bridge;
 pub mod builtin;
 pub mod bundled_clap;
+pub mod bundled_sampler;
 pub mod catalog;
 mod direct;
+mod direct_device;
+mod direct_session;
 pub mod external;
+pub mod legacy_bundled;
 pub mod manager;
 pub mod params;
 mod scan;

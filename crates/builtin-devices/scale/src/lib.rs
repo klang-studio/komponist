@@ -283,6 +283,14 @@ impl EventProcessor for Scale {
                         self.end(ch, k, e.offset, out);
                     }
                 }
+                EventKind::Midi(bytes @ [status, 120 | 123, _]) if status & 0xf0 == 0xb0 => {
+                    let channel = usize::from(status & 15);
+                    self.played_as[channel].fill(NONE);
+                    self.input_ids[channel].fill(NOTE_ID_NONE);
+                    self.holders[channel].fill(0);
+                    self.forwarded_ids[channel].fill(NOTE_ID_NONE);
+                    out.push(e.offset, EventKind::Midi(bytes));
+                }
                 EventKind::AllNotesOff => {
                     self.reset();
                     out.push(e.offset, EventKind::AllNotesOff);

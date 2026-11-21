@@ -1,69 +1,57 @@
-use std::ffi::c_char;
 use std::ptr;
-use std::sync::Arc;
 
 use clap_sys::audio_buffer::clap_audio_buffer;
-use clap_sys::host::clap_host;
-use clap_sys::plugin::clap_plugin;
 use clap_sys::process::{CLAP_PROCESS_ERROR, clap_process};
-use clap_sys::version::CLAP_VERSION;
-use komponist_native_clap_sdk::{NativeClapLayout, compile};
 use nice_plug::wrapper::clap::Wrapper;
 
+use super::layout_contract::{Instance, assert_localized_bindings, read_layout};
 use super::*;
 
-unsafe extern "C" fn no_extension(
-    _: *const clap_host,
-    _: *const c_char,
-) -> *const std::ffi::c_void {
-    ptr::null()
-}
+#[test]
+fn legacy_factory_selection_survives_adapter_state_callbacks() {
+    use std::collections::BTreeMap;
 
-static HOST: clap_host = clap_host {
-    clap_version: CLAP_VERSION,
-    host_data: ptr::null_mut(),
-    name: c"Bundled Hall test host".as_ptr(),
-    vendor: c"klang-studio".as_ptr(),
-    url: c"https://github.com/klang-studio/komponist".as_ptr(),
-    version: c"1".as_ptr(),
-    get_extension: Some(no_extension),
-    request_restart: None,
-    request_process: None,
-    request_callback: None,
-};
+    use komponist_device_core::pinned_clap_state::FACTORY_PRESET_FIELD;
 
-struct Instance(*const clap_plugin);
+    let params = HallPlugin::default().params();
+    let preset = || {
+        params
+            .serialize_fields()
+            .remove(FACTORY_PRESET_FIELD)
+            .map(|name| serde_json::from_str::<String>(&name).unwrap())
+    };
+    assert_eq!(preset(), None);
+    params.deserialize_fields(&BTreeMap::from([(
+        FACTORY_PRESET_FIELD.into(),
+        serde_json::to_string(Hall::SPEC.presets()[0].name).unwrap(),
+    )]));
+    assert_eq!(preset().as_deref(), Some("Small Room"));
 
-impl Instance {
-    fn new() -> Self {
-        // SAFETY: The static host remains live for the instance. Transfer the returned Arc to
-        // CLAP; the destroy callback consumes it.
-        unsafe {
-            let wrapper = Arc::into_raw(Wrapper::<HallPlugin>::new(&HOST).unwrap());
-            let instance = Self((*wrapper).clap_plugin.as_ptr());
-            assert!(((*instance.0).init.unwrap())(instance.0));
-            instance
-        }
+    let restored = HallPlugin::default().params();
+    restored.deserialize_fields(&params.serialize_fields());
+    assert_eq!(restored.serialize_fields(), params.serialize_fields());
+
+    for invalid in ["\"A missing preset\"", "false"] {
+        params.deserialize_fields(&BTreeMap::from([(
+            FACTORY_PRESET_FIELD.into(),
+            invalid.to_owned(),
+        )]));
+        assert_eq!(preset(), None);
+        params.deserialize_fields(&restored.serialize_fields());
+        assert_eq!(preset().as_deref(), Some("Small Room"));
     }
-}
 
-impl Drop for Instance {
-    fn drop(&mut self) {
-        // SAFETY: This Instance owns the reference transferred during construction.
-        unsafe { ((*self.0).destroy.unwrap())(self.0) };
-    }
+    params.deserialize_fields(&BTreeMap::new());
+    assert_eq!(preset(), None);
 }
 
 #[test]
 fn advertised_layout_contains_every_binding_and_stable_room_ids() {
-    let panel = HallPlugin::panel();
-    let first = Instance::new();
-    let second = Instance::new();
-    // SAFETY: Both instances are live and initialized on this test thread.
+    assert_localized_bindings::<HallPlugin>(Hall::SPEC.params().len());
+    let layout = read_layout::<HallPlugin>();
+    let first = Instance::new::<HallPlugin>();
+    // SAFETY: The instance is live and initialized on this test thread.
     unsafe {
-        let bytes = compile::<HallPlugin>(first.0, &panel).unwrap();
-        assert_eq!(bytes, compile::<HallPlugin>(second.0, &panel).unwrap());
-        let layout: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let cells = layout["pages"][0]["cells"].as_array().unwrap();
         assert_eq!(cells.len(), Hall::SPEC.params().len());
         let room_id = Wrapper::<HallPlugin>::custom_extension_param_id(first.0, "room").unwrap();
@@ -79,7 +67,7 @@ fn advertised_layout_contains_every_binding_and_stable_room_ids() {
 #[test]
 fn impulse_through_the_clap_callbacks_matches_the_existing_hall_dsp() {
     const FRAMES: usize = 512;
-    let instance = Instance::new();
+    let instance = Instance::new::<HallPlugin>();
     let plugin = instance.0;
     let mut reference = (Hall::SPEC.dsp)();
     for (index, parameter) in Hall::SPEC.params().iter().enumerate() {

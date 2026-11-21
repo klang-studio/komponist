@@ -33,6 +33,10 @@ pub trait Processor: Send {
     /// a sample rate change (the engine is then out of the audio callback). May allocate.
     fn activate(&mut self, sample_rate: f32, max_block: usize) -> Result<(), ProcessorError>;
 
+    /// Non-RT, between audio blocks. Performs any engine-side handoff needed before an
+    /// offline render can wait for the plugin host to finish preparing the processor.
+    fn prepare_offline(&mut self) {}
+
     /// RT. Processes one call of `ctx.frames` frames (1 ..= `max_block`).
     ///
     /// `events` are sorted by [`Event::offset`] (all `< ctx.frames`; equal offsets keep their send
@@ -184,6 +188,7 @@ pub struct EventSink<'a> {
     list: &'a mut crate::sequencer::EventList,
     frames: u32,
     start: u32,
+    overflowed: bool,
 }
 
 impl<'a> EventSink<'a> {
@@ -200,13 +205,28 @@ impl<'a> EventSink<'a> {
             list,
             frames,
             start,
+            overflowed: false,
         }
     }
 
     /// RT. Adds an event at `offset` (clamped to the call). `false` when the output is full.
     pub fn push(&mut self, offset: u32, kind: EventKind) -> bool {
-        self.list
-            .push(self.start + offset.min(self.frames.saturating_sub(1)), kind)
+        let accepted = self
+            .list
+            .push(self.start + offset.min(self.frames.saturating_sub(1)), kind);
+        self.overflowed |= !accepted;
+        accepted
+    }
+
+    /// Whether an attempted push was rejected by this sink.
+    pub fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
+    /// Offset of this call's frame zero within the engine segment. A hosted MIDI effect uses
+    /// this to align plugin parameter edits with the segment when automation subdivides it.
+    pub fn block_offset(&self) -> u32 {
+        self.start
     }
 
     /// Events that still fit.
@@ -226,14 +246,22 @@ impl EventBuffer {
         EventBuffer(crate::sequencer::EventList::new(capacity))
     }
 
+    /// Non-RT. A bounded buffer that keeps insertion order for events at the same frame.
+    /// Use it when a host supplies or expects an explicit order for simultaneous note events.
+    pub fn with_insertion_order(capacity: usize) -> EventBuffer {
+        EventBuffer(crate::sequencer::EventList::with_note_off_first(
+            capacity, false,
+        ))
+    }
+
     /// RT. Empties the buffer and opens a sink for a call of `frames` frames.
     pub fn sink(&mut self, frames: u32) -> EventSink<'_> {
         self.0.clear();
         EventSink::new(&mut self.0, frames)
     }
 
-    /// RT. The events pushed since [`EventBuffer::sink`], sorted by offset (note-offs before
-    /// note-ons at one offset, otherwise in push order).
+    /// RT. The events pushed since [`EventBuffer::sink`], sorted by offset. At the same offset
+    /// the default order puts note-offs before note-ons. Insertion-order buffers keep push order.
     pub fn events(&mut self) -> &[Event] {
         self.0.finish()
     }

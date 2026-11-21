@@ -26,6 +26,19 @@ pub const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 /// File name of the scan cache inside the cache directory (`~/.cache/komponist/`).
 pub const SCAN_CACHE_FILE: &str = "plugins.json";
 
+const BUNDLED_MODULE_PREFIX: &str = "bundled-clap/";
+
+pub(crate) fn bundled_module(file_name: &str) -> Box<str> {
+    format!("{BUNDLED_MODULE_PREFIX}{file_name}").into()
+}
+
+/// A bundled reference may resolve only through the packaged catalog. The module
+/// suffix is a file name for diagnostics; it is never interpreted as a load path.
+pub(crate) fn requires_bundled(plugin: &PluginRef) -> bool {
+    plugin.format == komponist_model::PluginFormat::Clap
+        && plugin.module.starts_with(BUNDLED_MODULE_PREFIX)
+}
+
 /// Where a catalog entry's code comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PluginLocation {
@@ -137,13 +150,19 @@ impl Catalog {
         &self.entries
     }
 
-    /// The entry for a device's plugin reference (same format and id), if installed.
+    /// The entry for a device's plugin reference, if installed. A bundled reference
+    /// additionally requires the packaged module, even when a scan finds the same CLAP ID.
     ///
     /// A project saved while klopfer was a built-in (`Builtin` format, id [`BUILTIN_KLOPFER`])
     /// resolves to the scanned klopfer CLAP plugin: the device keeps its state, which is the
     /// plugin's own.
     pub fn resolve(&self, plugin: &PluginRef) -> Option<&CatalogEntry> {
-        let same = |e: &&CatalogEntry| e.plugin.format == plugin.format && e.plugin.id == plugin.id;
+        let bundled = requires_bundled(plugin);
+        let same = |e: &&CatalogEntry| {
+            e.plugin.format == plugin.format
+                && e.plugin.id == plugin.id
+                && (!bundled || e.plugin.module == plugin.module)
+        };
         self.entries.iter().find(same).or_else(|| {
             (plugin.format == komponist_model::PluginFormat::Builtin
                 && plugin.id == BUILTIN_KLOPFER)
@@ -163,13 +182,21 @@ impl Catalog {
     /// The same plugin in several bundles (one per folder) is listed once, from the first
     /// descriptor.
     pub fn set_scanned(&mut self, descriptors: &[PluginDescriptor]) {
+        self.set_scanned_with_bundled(descriptors, |_| false);
+    }
+
+    pub(crate) fn set_scanned_with_bundled(
+        &mut self,
+        descriptors: &[PluginDescriptor],
+        shipped: impl Fn(&PluginDescriptor) -> bool,
+    ) {
         self.entries.retain(CatalogEntry::is_builtin);
         let mut seen = HashSet::new();
         let mut scanned: Vec<CatalogEntry> = descriptors
             .iter()
             .filter(|d| d.kind != PluginKind::Other)
             .filter(|d| seen.insert((d.format, d.id.clone())))
-            .map(scanned_entry)
+            .map(|d| scanned_entry(d, shipped(d)))
             .collect();
         scanned.sort_by_cached_key(|e| e.plugin.name.to_lowercase());
         self.entries.extend(scanned);
@@ -193,7 +220,7 @@ impl Catalog {
 }
 
 /// The catalog entry of a scanned plugin.
-fn scanned_entry(d: &PluginDescriptor) -> CatalogEntry {
+fn scanned_entry(d: &PluginDescriptor, bundled: bool) -> CatalogEntry {
     let format = match d.format {
         BundleFormat::Clap => komponist_model::PluginFormat::Clap,
         BundleFormat::Vst3 => komponist_model::PluginFormat::Vst3,
@@ -205,11 +232,14 @@ fn scanned_entry(d: &PluginDescriptor) -> CatalogEntry {
             name: d.name.clone(),
             vendor: d.vendor.clone(),
             version: d.version.clone(),
-            module: d
-                .bundle
-                .file_name()
-                .map(|n| n.to_string_lossy().into())
-                .unwrap_or_default(),
+            module: d.bundle.file_name().map_or_else(Box::default, |name| {
+                let name = name.to_string_lossy();
+                if bundled {
+                    bundled_module(&name)
+                } else {
+                    name.into()
+                }
+            }),
         },
         kind: d.kind,
         category: (d.kind == PluginKind::Effect)
@@ -586,6 +616,32 @@ mod tests {
         assert_eq!(module("Surge XT").as_deref(), Some("Surge XT.clap"));
         assert_eq!(module("Vital").as_deref(), Some("Vital.vst3"));
         assert_eq!(module("Hexa").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_bundled_reference_rejects_external_copies_until_the_packaged_scan_finishes() {
+        let mut external = descriptor(
+            "org.klang-studio.komponist.volt",
+            "Volt",
+            PluginKind::Instrument,
+            &[],
+        );
+        external.bundle = "/external/komponist_volt.clap".into();
+        let mut bundled = external.clone();
+        bundled.bundle = "/app/bundled-clap/komponist_volt.clap".into();
+        let mut catalog = Catalog::builtin();
+        catalog.set_scanned(std::slice::from_ref(&external));
+        let external_ref = scanned_entry(&external, false).plugin;
+        let bundled_ref = scanned_entry(&bundled, true).plugin;
+        assert!(catalog.resolve(&bundled_ref).is_none());
+        assert!(catalog.resolve(&external_ref).is_some());
+
+        let shipped_path = bundled.bundle.clone();
+        catalog.set_scanned_with_bundled(&[bundled, external], |d| d.bundle == shipped_path);
+        let entry = catalog.resolve(&bundled_ref).unwrap();
+        assert!(
+            matches!(&entry.location, PluginLocation::Bundle { path, .. } if *path == shipped_path)
+        );
     }
 
     #[test]

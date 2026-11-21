@@ -1,6 +1,11 @@
 //! Adapts the shared device specs and DSP to the public native CLAP SDK.
 
+mod instrument;
+mod midi_effect;
 mod parameter;
+mod sampler;
+
+pub use sampler::{Sampled, SampledDefinition};
 
 use std::ffi::{CStr, c_void};
 use std::sync::Arc;
@@ -11,16 +16,22 @@ use komponist_model::params::ParamInfo;
 use komponist_native_clap_sdk::{DeviceLayout, NativeClapLayout, PageLabels, Panel};
 use nice_plug::prelude::*;
 
-pub use parameter::Binding;
+pub use instrument::Instrument;
+pub use midi_effect::MidiEffect;
+pub use parameter::{Binding, Parameters};
 
 const STEREO: NonZeroU32 = NonZeroU32::new(2).unwrap();
 
-/// A spec-based effect and its stable CLAP identity.
-pub trait EffectDefinition: Send + 'static {
+/// A spec-based device and its stable CLAP identity.
+pub trait DeviceDefinition: Send + 'static {
     const SPEC: &'static Spec;
     const ID: &'static str;
     const NAME: &'static str;
     const SIDECHAIN: bool = false;
+    /// Let the host supply the detector signal from the main input without a sidechain source.
+    const SIDECHAIN_FROM_MAIN: bool = false;
+    /// A parameter that can only take effect on reactivation because it changes latency.
+    const LATENCY_PARAMETER: Option<&'static str> = None;
     const VERSION: &'static str;
     const FEATURES: &'static [ClapFeature];
 
@@ -34,7 +45,13 @@ pub trait EffectDefinition: Send + 'static {
     fn layout(lang: Lang) -> DeviceLayout {
         Self::SPEC.layout_in(lang).clone()
     }
+
+    /// Adjust labels when a native device card uses view switches outside public v1.
+    fn configure_panel(_panel: &mut Panel) {}
 }
+
+/// Shared definition for spec-based audio effects.
+pub use DeviceDefinition as EffectDefinition;
 
 /// A regular stereo CLAP effect backed by an existing device processor.
 pub struct Effect<T> {
@@ -42,6 +59,8 @@ pub struct Effect<T> {
     dsp: Box<dyn Dsp>,
     applied: Vec<Option<f64>>,
     input: [Vec<f32>; 2],
+    latency_param: Option<usize>,
+    restart_requested: bool,
     definition: std::marker::PhantomData<T>,
 }
 
@@ -53,15 +72,24 @@ impl<T: EffectDefinition> Default for Effect<T> {
             params: Arc::new(params),
             dsp: (T::SPEC.dsp)(),
             input: Default::default(),
+            latency_param: T::LATENCY_PARAMETER.map(|id| {
+                T::SPEC
+                    .wire(&komponist_model::params::ParamId::new(id))
+                    .unwrap_or_else(|| panic!("unknown latency parameter {id}"))
+                    as usize
+            }),
+            restart_requested: false,
             definition: std::marker::PhantomData,
         }
     }
 }
 
 impl<T: EffectDefinition> Effect<T> {
-    fn apply_params(&mut self) {
+    fn apply_params(&mut self, activating: bool) {
         for (index, applied) in self.applied.iter_mut().enumerate() {
-            if let Some(value) = self.params.changed_value(index, applied) {
+            if (activating || self.latency_param != Some(index))
+                && let Some(value) = self.params.changed_value(index, applied)
+            {
                 self.dsp.set_param(index, value);
             }
         }
@@ -76,26 +104,25 @@ impl<T: EffectDefinition> Plugin for Effect<T> {
     const VERSION: &'static str = T::VERSION;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
-    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = if T::SIDECHAIN {
-        &[
-            AudioIOLayout {
-                main_input_channels: Some(STEREO),
-                main_output_channels: Some(STEREO),
-                aux_input_ports: &[STEREO],
-                ..AudioIOLayout::const_default()
-            },
-            AudioIOLayout {
-                main_input_channels: Some(STEREO),
-                main_output_channels: Some(STEREO),
-                ..AudioIOLayout::const_default()
-            },
-        ]
-    } else {
-        &[AudioIOLayout {
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = {
+        const MAIN: AudioIOLayout = AudioIOLayout {
             main_input_channels: Some(STEREO),
             main_output_channels: Some(STEREO),
             ..AudioIOLayout::const_default()
-        }]
+        };
+        const AUX: AudioIOLayout = AudioIOLayout {
+            aux_input_ports: &[STEREO],
+            ..MAIN
+        };
+        if !T::SIDECHAIN {
+            &[MAIN]
+        } else if T::SIDECHAIN_FROM_MAIN {
+            // The ordinary CLAP host starts with stereo main only. Komponist selects config 1
+            // before activation and manages the detector source when routing changes.
+            &[MAIN, AUX]
+        } else {
+            &[AUX, MAIN]
+        }
     };
 
     type Editor = ();
@@ -119,14 +146,15 @@ impl<T: EffectDefinition> Plugin for Effect<T> {
         for input in &mut self.input {
             input.resize(config.max_buffer_size as usize, 0.0);
         }
-        self.apply_params();
+        self.apply_params(true);
+        self.restart_requested = false;
         self.dsp.activate(config.sample_rate);
         context.set_latency_samples(self.dsp.latency());
         true
     }
 
     fn reset(&mut self) {
-        self.apply_params();
+        self.apply_params(false);
         self.dsp.reset();
     }
 
@@ -136,7 +164,15 @@ impl<T: EffectDefinition> Plugin for Effect<T> {
         aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        self.apply_params();
+        self.apply_params(false);
+        if !self.restart_requested
+            && let Some(index) = self.latency_param
+            && self.applied[index] != Some(self.params.raw_value(index))
+        {
+            // Until the host reactivates us, retain the old DSP delay and advertised latency.
+            self.restart_requested = true;
+            context.request_restart();
+        }
         if let Some(tempo) = context.transport().tempo {
             self.dsp.set_tempo(tempo);
         }
@@ -172,64 +208,88 @@ impl<T: EffectDefinition> ClapPlugin for Effect<T> {
     const CLAP_FEATURES: &'static [ClapFeature] = T::FEATURES;
 
     unsafe fn clap_custom_extension(id: &CStr) -> *const c_void {
+        if T::SIDECHAIN && T::SIDECHAIN_FROM_MAIN {
+            let fallback = komponist_native_clap_sdk::sidechain_fallback_to_main::<1>(id);
+            if !fallback.is_null() {
+                return fallback;
+            }
+        }
         komponist_native_clap_sdk::extension::<Self>(id)
     }
 }
 
 impl<T: EffectDefinition> NativeClapLayout for Effect<T> {
     fn panel() -> Panel {
-        let english = T::layout(Lang::En);
-        let german = T::layout(Lang::De);
-        let label = |en: &str, de: &str| {
-            [("en".into(), en.to_owned()), ("de".into(), de.to_owned())].into()
-        };
-        let pages = english
-            .pages
+        panel_for::<T>()
+    }
+}
+
+fn panel_for<T: DeviceDefinition>() -> Panel {
+    let mut panel = panel_from_parts(
+        T::layout,
+        T::SPEC.params_in(Lang::En),
+        T::SPEC.params_in(Lang::De),
+    );
+    T::configure_panel(&mut panel);
+    panel
+}
+
+/// Construct the bilingual public SDK panel from a device's model metadata.
+pub fn panel_from_parts(
+    layout: impl Fn(Lang) -> DeviceLayout,
+    english_params: &[ParamInfo],
+    german_params: &[ParamInfo],
+) -> Panel {
+    let english = layout(Lang::En);
+    let german = layout(Lang::De);
+    let label =
+        |en: &str, de: &str| [("en".into(), en.to_owned()), ("de".into(), de.to_owned())].into();
+    let pages = english
+        .pages
+        .iter()
+        .zip(&german.pages)
+        .enumerate()
+        .map(|(index, (en, de))| PageLabels {
+            key: format!("page-{index}"),
+            labels: label(
+                if en.name.is_empty() { "Main" } else { &en.name },
+                if de.name.is_empty() {
+                    "Hauptseite"
+                } else {
+                    &de.name
+                },
+            ),
+        })
+        .collect();
+    let mut parameter_labels = std::collections::BTreeMap::new();
+    let mut choice_labels = std::collections::BTreeMap::new();
+    for en in english_params {
+        let de = german_params
             .iter()
-            .zip(&german.pages)
-            .enumerate()
-            .map(|(index, (en, de))| PageLabels {
-                key: format!("page-{index}"),
-                labels: label(
-                    if en.name.is_empty() { "Main" } else { &en.name },
-                    if de.name.is_empty() {
-                        "Hauptseite"
-                    } else {
-                        &de.name
-                    },
-                ),
-            })
-            .collect();
-        let mut parameter_labels = std::collections::BTreeMap::new();
-        let mut choice_labels = std::collections::BTreeMap::new();
-        for (en, de) in T::SPEC
-            .params_in(Lang::En)
-            .iter()
-            .zip(T::SPEC.params_in(Lang::De))
+            .find(|param| param.id == en.id)
+            .unwrap_or(en);
+        parameter_labels.insert(en.id.clone(), label(&en.name, &de.name));
+        if let (
+            komponist_model::params::ParamKind::Enum(en_choices),
+            komponist_model::params::ParamKind::Enum(de_choices),
+        ) = (&en.kind, &de.kind)
         {
-            parameter_labels.insert(en.id.clone(), label(&en.name, &de.name));
-            if let (
-                komponist_model::params::ParamKind::Enum(en_choices),
-                komponist_model::params::ParamKind::Enum(de_choices),
-            ) = (&en.kind, &de.kind)
-            {
-                choice_labels.insert(
-                    en.id.clone(),
-                    en_choices
-                        .iter()
-                        .zip(de_choices)
-                        .map(|(en, de)| label(en, de))
-                        .collect(),
-                );
-            }
+            choice_labels.insert(
+                en.id.clone(),
+                en_choices
+                    .iter()
+                    .zip(de_choices)
+                    .map(|(en, de)| label(en, de))
+                    .collect(),
+            );
         }
-        Panel {
-            default_locale: "en".into(),
-            locales: vec!["en".into(), "de".into()],
-            grid: english,
-            pages,
-            parameter_labels,
-            choice_labels,
-        }
+    }
+    Panel {
+        default_locale: "en".into(),
+        locales: vec!["en".into(), "de".into()],
+        grid: english,
+        pages,
+        parameter_labels,
+        choice_labels,
     }
 }

@@ -1,0 +1,13 @@
+{
+  "id": 71,
+  "role": "instrument",
+  "plugin": {
+    "format": "builtin",
+    "id": "knurr",
+    "name": "Volt",
+    "vendor": "komponist",
+    "version": ""
+  },
+  "bypass": true,
+  "state": "eyJwYXJhbXMiOnsiY3V0b2ZmIjoxMzcwLCJvc2NfYV93YXZlIjoyLCJvY3RhdmUiOi0xfSwicHJlc2V0IjoiRmV0dGUgU8OkZ2UifQ=="
+}

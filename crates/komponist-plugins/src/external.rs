@@ -20,18 +20,19 @@
 //! [`DEADLINE_SHARE`] of its own call's period from its entry. Offline calls (export) wait up to
 //! [`OFFLINE_DEADLINE`] instead, so a render never drops a block for timing reasons.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
+use komponist_engine::processor::{EventProcessor, EventSink, ParameterEdit, ParameterEditKind};
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
     TransportInfo,
 };
 use komponist_ipc::shm::{
-    BLOCK_FLAG_OFFLINE, BLOCK_FLAG_RESET, INPUT_EVENT_CAPACITY, MAX_BLOCK, TRANSPORT_LOOPING,
-    TRANSPORT_PLAYING, TRANSPORT_RECORDING,
+    BLOCK_FLAG_OFFLINE, BLOCK_FLAG_RESET, INPUT_EVENT_CAPACITY, MAX_BLOCK, OUTPUT_EVENT_CAPACITY,
+    TRANSPORT_LOOPING, TRANSPORT_PLAYING, TRANSPORT_RECORDING,
 };
 use komponist_ipc::{
     BlockError, BlockSpec, BlockStatus, BridgeClient, BridgeMonitor, WireEvent, WireEventKind,
@@ -111,6 +112,26 @@ pub struct ExternalProcessor {
     begun: Option<Started>,
     /// Offline fallback blocks, including unsuccessful replies from a plugin that is still alive.
     offline_failures: u64,
+    midi: Option<MidiStage>,
+}
+
+#[derive(Debug)]
+struct MidiStage {
+    events: Vec<Event>,
+    edits: VecDeque<ParameterEdit>,
+    may_have_notes: bool,
+    release_due: bool,
+}
+
+impl MidiStage {
+    fn new() -> Self {
+        Self {
+            events: Vec::with_capacity(OUTPUT_EVENT_CAPACITY),
+            edits: VecDeque::with_capacity(OUTPUT_EVENT_CAPACITY),
+            may_have_notes: false,
+            release_due: false,
+        }
+    }
 }
 
 impl ExternalProcessor {
@@ -135,6 +156,7 @@ impl ExternalProcessor {
             pending_all_off: false,
             begun: None,
             offline_failures: 0,
+            midi: (role == DeviceRole::MidiEffect).then(MidiStage::new),
         }
     }
 
@@ -142,7 +164,6 @@ impl ExternalProcessor {
     fn fallback(&self, io: &mut StereoIo<'_>) {
         match self.role {
             DeviceRole::Instrument => io.silence(),
-            // A MIDI effect is never hosted in a bridge; it would not be run as audio either.
             DeviceRole::Effect | DeviceRole::MidiEffect => io.passthrough(),
         }
     }
@@ -183,17 +204,25 @@ impl ExternalProcessor {
         }
     }
 
-    /// RT. Fills `wire` with the pending events (offset 0) followed by `events`; what does not fit
-    /// is stashed.
-    fn build_wire(&mut self, events: &[Event]) {
+    /// RT. Fills `wire` with pending events (offset 0) and then current input. MIDI effects
+    /// reserve capacity for the complete input so timed notes never spill into the next call.
+    fn build_wire(&mut self, events: &[Event]) -> bool {
         self.wire.clear();
-        if self.pending_all_off {
+        let pending_room = if self.midi.is_some() {
+            let Some(room) = INPUT_EVENT_CAPACITY.checked_sub(events.len()) else {
+                return false;
+            };
+            room
+        } else {
+            INPUT_EVENT_CAPACITY
+        };
+        if self.pending_all_off && pending_room != 0 {
             self.wire
                 .push(WireEvent::new(0, WireEventKind::AllNotesOff));
             self.pending_all_off = false;
         }
-        self.wire.extend_from_slice(&self.pending);
-        self.pending.clear();
+        let pending_count = self.pending.len().min(pending_room - self.wire.len());
+        self.wire.extend(self.pending.drain(..pending_count));
         for event in events {
             let wire = to_wire(event);
             if self.wire.len() < INPUT_EVENT_CAPACITY {
@@ -202,6 +231,7 @@ impl ExternalProcessor {
                 self.stash(wire);
             }
         }
+        true
     }
 
     /// RT. Keeps the events of a call the bridge did not get.
@@ -237,7 +267,10 @@ impl ExternalProcessor {
             RUN_ACTIVE if !self.shared.reactivating.load(Ordering::Acquire) => {}
             RUN_DEAD => return outcome(Outcome::Fallback(ProcessStatus::Failed)),
             _ => {
-                self.forget_pending();
+                // Parameter changes queued by the MIDI stage must survive bridge activation.
+                if self.midi.is_none() {
+                    self.forget_pending();
+                }
                 return outcome(Outcome::Fallback(ProcessStatus::Continue));
             }
         }
@@ -249,7 +282,9 @@ impl ExternalProcessor {
             return outcome(Outcome::Fallback(ProcessStatus::Continue));
         }
 
-        self.build_wire(events);
+        if !self.build_wire(events) {
+            return outcome(Outcome::Fallback(ProcessStatus::Continue));
+        }
         let mut flags = 0;
         if self.reset {
             flags |= BLOCK_FLAG_RESET;
@@ -290,32 +325,46 @@ impl ExternalProcessor {
     }
 
     /// RT. The second half of a call: wait for the bridge's output, or write the fallback.
-    fn finish(&mut self, started: Started, io: &mut StereoIo<'_>, offline: bool) -> ProcessStatus {
+    fn finish(
+        &mut self,
+        started: Started,
+        mut io: Option<&mut StereoIo<'_>>,
+        offline: bool,
+    ) -> (ProcessStatus, bool, u32) {
         self.completed = None;
-        let (status, fallback) = match started.outcome {
+        let (status, fallback, dropped) = match started.outcome {
             Outcome::Fallback(status) => {
-                self.fallback(io);
-                (status, true)
+                if let Some(io) = io {
+                    self.fallback(io);
+                }
+                (status, true, 0)
             }
             Outcome::Sent { seq, deadline } => {
-                let [left, right] = &mut io.output;
-                match self
-                    .client
-                    .wait_done(seq, deadline, [&mut **left, &mut **right])
-                {
-                    // `PluginError` / `Inactive` results carry the bridge's own fallback in the
-                    // output.
+                let result = match io.as_mut() {
+                    Some(io) => {
+                        let [left, right] = &mut io.output;
+                        self.client
+                            .wait_done(seq, deadline, [&mut **left, &mut **right])
+                    }
+                    None => self.client.wait_done_events(seq, deadline),
+                };
+                match result {
+                    // PluginError/Inactive results carry their own audio fallback. Preserve
+                    // output parameter edits, but only route notes from a successful block.
                     Ok(result) => {
                         self.completed = Some(seq);
                         (
                             ProcessStatus::Continue,
                             result.status != BlockStatus::Ok as u32,
+                            result.dropped_events,
                         )
                     }
                     Err(_) => {
                         self.shared.late_blocks.fetch_add(1, Ordering::Relaxed);
-                        self.fallback(io);
-                        (ProcessStatus::Continue, true)
+                        if let Some(io) = io {
+                            self.fallback(io);
+                        }
+                        (ProcessStatus::Continue, true, 0)
                     }
                 }
             }
@@ -323,7 +372,7 @@ impl ExternalProcessor {
         if offline && fallback {
             self.offline_failures = self.offline_failures.wrapping_add(1);
         }
-        status
+        (status, fallback, dropped)
     }
 }
 
@@ -387,7 +436,7 @@ impl Processor for ExternalProcessor {
             // does with that block, its result is stale by sequence number.
             _ => self.start(ctx, events, io.input, None),
         };
-        self.finish(started, io, ctx.offline)
+        self.finish(started, Some(io), ctx.offline).0
     }
 
     /// RT: [`Processor::process`] with the device's sidechain, which goes into the plugin's
@@ -404,7 +453,7 @@ impl Processor for ExternalProcessor {
         // number once this one goes out.
         self.begun = None;
         let started = self.start(ctx, events, io.input, Some(sidechain));
-        self.finish(started, io, ctx.offline)
+        self.finish(started, Some(io), ctx.offline).0
     }
 
     /// RT: starts the block (wire events, `begin_block`, futex wake) so that the bridge works
@@ -415,24 +464,13 @@ impl Processor for ExternalProcessor {
     }
 
     fn pop_parameter_edit(&mut self) -> Option<ParameterEdit> {
+        if let Some(edit) = self.midi.as_mut().and_then(|stage| stage.edits.pop_front()) {
+            return Some(edit);
+        }
         while let Some(event) = self.monitor.pop_output_event() {
-            let kind = match event.decode() {
-                Some(WireEventKind::ParamValue { id, value }) if value.is_finite() => {
-                    ParameterEditKind::Value { id, value }
-                }
-                Some(WireEventKind::ParamGesture { id, begin }) => {
-                    ParameterEditKind::Gesture { id, begin }
-                }
-                _ => continue,
-            };
-            // An edit from a timed-out request was not heard in that block. Keep the edit
-            // and its gesture ordering, but anchor it to the next engine segment.
-            let offset = if self.completed == Some(event.reserved) {
-                event.offset
-            } else {
-                0
-            };
-            return Some(ParameterEdit { offset, kind });
+            if let Some(edit) = parameter_edit(&event, self.completed) {
+                return Some(edit);
+            }
         }
         None
     }
@@ -451,6 +489,133 @@ impl Processor for ExternalProcessor {
         self.reset = true;
         // The plugin silences every voice on reset; old note-offs are moot.
         self.forget_pending();
+    }
+    fn event_processor(&mut self) -> Option<&mut dyn EventProcessor> {
+        self.midi.is_some().then_some(self)
+    }
+}
+
+impl EventProcessor for ExternalProcessor {
+    fn set_param(&mut self, id: u32, value: f64) {
+        self.stash(WireEvent::new(0, WireEventKind::ParamValue { id, value }));
+    }
+
+    fn process_events(&mut self, ctx: &ProcessContext, input: &[Event], out: &mut EventSink<'_>) {
+        static SILENCE: [f32; MAX_BLOCK] = [0.0; MAX_BLOCK];
+        let frames = ctx.frames as usize;
+        let Some(silence) = SILENCE.get(..frames) else {
+            return;
+        };
+        let started = self.start(ctx, input, [silence; 2], None);
+        let (_, fallback, dropped) = self.finish(started, None, ctx.offline);
+        let stage = self
+            .midi
+            .as_mut()
+            .expect("MIDI processor has stage buffers");
+        stage.events.clear();
+
+        while let Some(wire) = self.monitor.pop_output_event() {
+            if let Some(mut edit) = parameter_edit(&wire, self.completed) {
+                // A stage can run multiple subsegments if it has sample-accurate automation.
+                edit.offset += out.block_offset();
+                if stage.edits.len() < stage.edits.capacity() {
+                    stage.edits.push_back(edit);
+                }
+            } else if !fallback
+                && self.completed == Some(wire.reserved)
+                && wire.offset < ctx.frames
+                && let Some(kind) = midi_event_kind(&wire)
+                && stage.events.len() < stage.events.capacity()
+            {
+                stage.events.push(Event {
+                    offset: wire.offset,
+                    kind,
+                });
+            }
+        }
+
+        // A partial result can contain a note-on whose note-off was lost. Drop the partial
+        // output, reset the remote stage on the next block, and release its downstream voices
+        // before allowing new note events. No room in this call leaves the release pending.
+        let required = stage.events.len() + usize::from(stage.release_due);
+        if fallback || dropped != 0 || required > out.room() {
+            if ctx.offline && !fallback {
+                self.offline_failures = self.offline_failures.wrapping_add(1);
+            }
+            self.reset = true;
+            stage.release_due |= stage.may_have_notes;
+            stage.events.clear();
+        }
+        if stage.release_due {
+            if !out.push(0, EventKind::AllNotesOff) {
+                return;
+            }
+            stage.release_due = false;
+            stage.may_have_notes = false;
+        }
+        for event in &stage.events {
+            out.push(event.offset, event.kind);
+            match event.kind {
+                EventKind::NoteOn { .. } => stage.may_have_notes = true,
+                EventKind::AllNotesOff => stage.may_have_notes = false,
+                _ => {}
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        Processor::reset(self);
+    }
+}
+
+fn parameter_edit(event: &WireEvent, completed: Option<u32>) -> Option<ParameterEdit> {
+    let kind = match event.decode()? {
+        WireEventKind::ParamValue { id, value } if value.is_finite() => {
+            ParameterEditKind::Value { id, value }
+        }
+        WireEventKind::ParamGesture { id, begin } => ParameterEditKind::Gesture { id, begin },
+        _ => return None,
+    };
+    // A late request's GUI edit did not sound in that block. Retain its gesture order and
+    // anchor it to the next segment; note messages never use this fallback.
+    let offset = if completed == Some(event.reserved) {
+        event.offset
+    } else {
+        0
+    };
+    Some(ParameterEdit { offset, kind })
+}
+
+/// Decode a hosted MIDI output on the engine's one downstream note port.
+pub(crate) fn midi_event_kind(event: &WireEvent) -> Option<EventKind> {
+    match event.decode()? {
+        WireEventKind::NoteOn {
+            channel,
+            key,
+            velocity,
+            note_id,
+        } if channel < 16 && key < 128 && (1..128).contains(&velocity) => Some(EventKind::NoteOn {
+            channel,
+            key,
+            velocity,
+            note_id,
+        }),
+        WireEventKind::NoteOff {
+            channel,
+            key,
+            note_id,
+        } if channel < 16 && key < 128 => Some(EventKind::NoteOff {
+            channel,
+            key,
+            note_id,
+        }),
+        WireEventKind::Midi([status, data1, data2])
+            if (0x80..0xf0).contains(&status) && data1 < 128 && data2 < 128 =>
+        {
+            Some(EventKind::Midi([status, data1, data2]))
+        }
+        WireEventKind::AllNotesOff => Some(EventKind::AllNotesOff),
+        _ => None,
     }
 }
 
@@ -517,6 +682,183 @@ pub(crate) fn wire_transport(t: &TransportInfo) -> WireTransport {
 mod tests {
     use super::*;
     use komponist_model::{Meter, Tick, TickRange};
+
+    #[test]
+    fn midi_bridge_defers_parameters_to_keep_timed_note_releases_in_their_block() {
+        use komponist_ipc::ShmRegion;
+
+        let region = Arc::new(ShmRegion::create().unwrap());
+        let mut processor = ExternalProcessor::new(
+            BridgeClient::new(region),
+            Arc::new(Shared::new()),
+            DeviceRole::MidiEffect,
+            ProcessorSetup {
+                sample_rate: 48_000.0,
+                max_block: 32,
+            },
+        );
+        EventProcessor::set_param(&mut processor, 7, 0.25);
+        let note_off = Event {
+            offset: 31,
+            kind: EventKind::NoteOff {
+                key: 61,
+                channel: 2,
+                note_id: 91,
+            },
+        };
+        let input = vec![note_off; INPUT_EVENT_CAPACITY + 1];
+        assert_no_alloc::assert_no_alloc(|| {
+            assert!(!processor.build_wire(&input));
+            assert!(processor.wire.is_empty());
+            assert!(processor.build_wire(&input[..INPUT_EVENT_CAPACITY]));
+        });
+        assert_eq!(processor.wire.len(), INPUT_EVENT_CAPACITY);
+        assert_eq!(processor.wire.last(), Some(&to_wire(&note_off)));
+        assert!(processor.build_wire(&[]));
+        assert_eq!(
+            processor.wire[0].decode(),
+            Some(WireEventKind::ParamValue { id: 7, value: 0.25 }),
+        );
+    }
+
+    #[test]
+    fn midi_stage_collects_only_the_current_notes_and_recovers_after_overflow() {
+        use komponist_engine::processor::EventBuffer;
+        use komponist_ipc::{BlockResult, BridgeServer, BridgeState, ShmRegion};
+
+        let region = Arc::new(ShmRegion::create().unwrap());
+        region.set_bridge_state(BridgeState::Active);
+        let shared = Arc::new(Shared::new());
+        shared.run.store(RUN_ACTIVE, Ordering::Release);
+        let mut processor = ExternalProcessor::new(
+            BridgeClient::new(region.clone()),
+            shared,
+            DeviceRole::MidiEffect,
+            ProcessorSetup {
+                sample_rate: 48_000.0,
+                max_block: 32,
+            },
+        );
+        let transport = TransportInfo {
+            playing: true,
+            recording: false,
+            looping: false,
+            tempo_bpm: 120.0,
+            meter: Meter::FOUR_FOUR,
+            position_ticks: 0.0,
+            loop_range: TickRange::new(Tick(0), Tick(3840)),
+        };
+        let context = ProcessContext {
+            frames: 32,
+            sample_rate: 48_000.0,
+            transport,
+            offline: true,
+            deadline: None,
+        };
+        let note = WireEventKind::NoteOn {
+            channel: 2,
+            key: 64,
+            velocity: 100,
+            note_id: 31,
+        };
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let mut server = BridgeServer::new(region);
+                for i in 0..3 {
+                    let req = server
+                        .wait_request(Some(Instant::now() + OFFLINE_DEADLINE))
+                        .unwrap();
+                    let push = |server: &mut BridgeServer, seq, offset, kind| {
+                        assert!(server.push_output_event(WireEvent {
+                            reserved: seq,
+                            ..WireEvent::new(offset, kind)
+                        }));
+                    };
+                    if i == 0 {
+                        let sent = server.pop_event().unwrap();
+                        assert_eq!(
+                            sent.decode(),
+                            Some(WireEventKind::ParamValue { id: 7, value: 0.25 })
+                        );
+                        push(&mut server, req.seq.wrapping_sub(1), 1, note);
+                        push(
+                            &mut server,
+                            req.seq.wrapping_sub(1),
+                            9,
+                            WireEventKind::ParamGesture { id: 7, begin: true },
+                        );
+                        push(&mut server, req.seq, 3, note);
+                        push(
+                            &mut server,
+                            req.seq,
+                            4,
+                            WireEventKind::ParamValue { id: 7, value: 0.5 },
+                        );
+                    } else if i == 1 {
+                        push(&mut server, req.seq, 11, note);
+                    } else {
+                        assert_ne!(req.flags & BLOCK_FLAG_RESET, 0);
+                    }
+                    server.finish(BlockResult {
+                        status: BlockStatus::Ok as u32,
+                        dropped_events: u32::from(i == 1),
+                        ..BlockResult::default()
+                    });
+                }
+            });
+
+            let mut output = EventBuffer::new(16);
+            let stage = processor.event_processor().unwrap();
+            stage.set_param(7, 0.25);
+            stage.process_events(&context, &[], &mut output.sink(context.frames));
+            assert_eq!(
+                output.events(),
+                [Event {
+                    offset: 3,
+                    kind: EventKind::NoteOn {
+                        channel: 2,
+                        key: 64,
+                        velocity: 100,
+                        note_id: 31
+                    },
+                }]
+            );
+            assert_eq!(
+                processor.pop_parameter_edit(),
+                Some(ParameterEdit {
+                    offset: 0,
+                    kind: ParameterEditKind::Gesture { id: 7, begin: true }
+                }),
+            );
+            assert_eq!(
+                processor.pop_parameter_edit(),
+                Some(ParameterEdit {
+                    offset: 4,
+                    kind: ParameterEditKind::Value { id: 7, value: 0.5 }
+                }),
+            );
+
+            processor.event_processor().unwrap().process_events(
+                &context,
+                &[],
+                &mut output.sink(context.frames),
+            );
+            assert_eq!(
+                output.events(),
+                [Event {
+                    offset: 0,
+                    kind: EventKind::AllNotesOff
+                }]
+            );
+            processor.event_processor().unwrap().process_events(
+                &context,
+                &[],
+                &mut output.sink(context.frames),
+            );
+            assert!(output.events().is_empty());
+            assert!(processor.pop_parameter_edit().is_none());
+        });
+    }
 
     #[test]
     fn transport_in_quarter_notes() {

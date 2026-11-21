@@ -41,4 +41,7 @@ type HallPlugin = Effect<Hall>;
 nice_export_clap!(HallPlugin);
 
 #[cfg(test)]
+#[path = "../../layout_contract.rs"]
+mod layout_contract;
+#[cfg(test)]
 mod tests;

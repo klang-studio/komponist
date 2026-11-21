@@ -54,6 +54,8 @@ pub struct SampleTrigger {
     pub key: u8,
     /// Exact note identity when supplied by the sequencer.
     pub note_id: Option<u32>,
+    /// Channel associated with this note, if the source supplied one.
+    pub channel: Option<u8>,
     pub velocity: f32,
     /// Tuning offset in semitones, in addition to the pad's tune.
     pub tune: f32,
@@ -71,7 +73,6 @@ pub(crate) struct Playback {
     wrapped: bool,
     pub gate: bool,
     pub key: u8,
-    pub note_id: Option<u32>,
     pub released: bool,
     pub independent_pitch: bool,
 }
@@ -116,7 +117,6 @@ impl Playback {
             wrapped: false,
             gate,
             key: trigger.key,
-            note_id: trigger.note_id,
             released: false,
             independent_pitch: trigger.independent_pitch,
         })
@@ -298,6 +298,7 @@ mod tests {
                 slot: 0,
                 key: 60,
                 note_id: None,
+                channel: None,
                 velocity: 1.0,
                 tune: 0.0,
                 independent_pitch: false,

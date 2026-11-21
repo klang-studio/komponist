@@ -2828,11 +2828,16 @@ version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "komponist-builtin",
+ "komponist-device-core",
  "komponist-engine",
+ "komponist-hexa",
  "komponist-hosting",
+ "komponist-i18n",
  "komponist-ipc",
  "komponist-model",
  "komponist-rt",
+ "komponist-sampler",
+ "rtrb",
  "rustix 1.1.6",
  "serde",
  "serde_json",
@@ -2882,9 +2887,11 @@ dependencies = [
  "komponist-i18n",
  "komponist-model",
  "komponist-stretch",
+ "libc",
  "rtrb",
  "sampler-core",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

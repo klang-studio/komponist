@@ -24,7 +24,7 @@
 //! here.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -48,6 +48,7 @@ pub const MAX_SECONDS: f64 = 600.0;
 
 /// Capacity of the queues between the threads.
 const QUEUE: usize = 64;
+const LOADER_SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
 const NO_SLICE_PREVIEW: u64 = f64::NAN.to_bits();
 const SLICE_PREVIEW_RELEASED: u64 = 1 << 63;
 const RELEASE_SLICE_PREVIEW: u64 = NO_SLICE_PREVIEW | SLICE_PREVIEW_RELEASED;
@@ -310,6 +311,7 @@ impl Meters {
 }
 
 enum Request {
+    Stop,
     Load {
         pad: usize,
         generation: u64,
@@ -346,6 +348,123 @@ pub fn general_channel() -> (SamplerHandle, AudioSide, Meters) {
 }
 
 fn channel_for(general: bool) -> (SamplerHandle, AudioSide, Meters) {
+    let (handle, audio, meters, _) = channel_with_worker(general, None);
+    (handle, audio, meters)
+}
+
+/// A loader owned by a CLAP instance. Drop on the control thread before unloading the library.
+pub struct ManagedLoader {
+    stopped: Arc<AtomicBool>,
+    requests: Sender<Request>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for ManagedLoader {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::Release);
+        // Wake a loader waiting for work. The flag also stops a loader with queued requests.
+        let _ = self.requests.send(Request::Stop);
+        if let Some(thread) = self.thread.take() {
+            finish_worker(thread, LOADER_SHUTDOWN_GRACE, retain_loader_image);
+        }
+    }
+}
+
+fn finish_worker(
+    thread: std::thread::JoinHandle<()>,
+    grace: Duration,
+    retain_image: impl FnOnce() -> bool,
+) {
+    let deadline = Instant::now() + grace;
+    while !thread.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    if thread.is_finished() || !retain_image() {
+        let _ = thread.join();
+    }
+    // Otherwise the worker owns everything it still uses. It will observe Stop as soon
+    // as the filesystem operation returns, while the operating system retains its code.
+}
+
+// A stalled I/O syscall cannot be interrupted portably. Keep this native image loaded only
+// when a worker outlives plugin destruction. Never load a new image from the resolved path.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn retain_loader_image() -> bool {
+    let mut info = std::mem::MaybeUninit::<libc::Dl_info>::uninit();
+    let address = retain_loader_image as *const ();
+    // SAFETY: The address belongs to this image and the host still holds it during destruction.
+    unsafe {
+        if libc::dladdr(address.cast(), info.as_mut_ptr()) == 0 {
+            return false;
+        }
+        let own = info.assume_init();
+        if own.dli_fname.is_null() {
+            return false;
+        }
+        let handle = libc::dlopen(
+            own.dli_fname,
+            libc::RTLD_NOLOAD | libc::RTLD_LAZY | libc::RTLD_LOCAL,
+        );
+        if handle.is_null() {
+            return false;
+        }
+        let entry = libc::dlsym(handle, c"clap_entry".as_ptr());
+        let mut retained = std::mem::MaybeUninit::<libc::Dl_info>::uninit();
+        if !entry.is_null()
+            && libc::dladdr(entry, retained.as_mut_ptr()) != 0
+            && retained.assume_init().dli_fbase == own.dli_fbase
+        {
+            // Keep the reference for process lifetime so the worker can finish safely.
+            return true;
+        }
+        // A loader search override can return a different image with the same filename.
+        libc::dlclose(handle);
+        false
+    }
+}
+
+#[cfg(windows)]
+fn retain_loader_image() -> bool {
+    use windows_sys::Win32::System::LibraryLoader::{
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN, GetModuleHandleExW,
+    };
+    let mut module = std::ptr::null_mut();
+    // SAFETY: FROM_ADDRESS interprets the pointer as an address in this live module.
+    unsafe {
+        GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+            (retain_loader_image as *const ()).cast(),
+            &mut module,
+        ) != 0
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn retain_loader_image() -> bool {
+    false
+}
+
+/// Creates the usual sampler channels and a worker owner for a dynamically loaded plugin.
+pub fn managed_channel(general: bool) -> (SamplerHandle, AudioSide, Meters, ManagedLoader) {
+    let stopped = Arc::new(AtomicBool::new(false));
+    let (handle, audio, meters, thread) = channel_with_worker(general, Some(stopped.clone()));
+    let loader = ManagedLoader {
+        stopped,
+        requests: handle.requests.clone(),
+        thread: Some(thread),
+    };
+    (handle, audio, meters, loader)
+}
+
+fn channel_with_worker(
+    general: bool,
+    stopped: Option<Arc<AtomicBool>>,
+) -> (
+    SamplerHandle,
+    AudioSide,
+    Meters,
+    std::thread::JoinHandle<()>,
+) {
     let shared = Arc::new(Shared {
         views: Mutex::new(vec![PadView::empty(); PADS]),
         general: general.then(GeneralShared::default),
@@ -364,9 +483,18 @@ fn channel_for(general: bool) -> (SamplerHandle, AudioSide, Meters) {
     };
     let (requests, rx) = mpsc::channel();
     let worker = Arc::clone(&shared);
-    std::thread::Builder::new()
+    let thread = std::thread::Builder::new()
         .name("komponist-sampler-loader".into())
-        .spawn(move || run_loader(&worker, &rx, to_audio, from_audio, stretch_worker))
+        .spawn(move || {
+            run_loader(
+                &worker,
+                &rx,
+                to_audio,
+                from_audio,
+                stretch_worker,
+                stopped.as_deref(),
+            );
+        })
         .expect("the loader thread starts");
     (
         SamplerHandle {
@@ -379,6 +507,7 @@ fn channel_for(general: bool) -> (SamplerHandle, AudioSide, Meters) {
             stretched,
         },
         Meters(shared),
+        thread,
     )
 }
 
@@ -615,26 +744,31 @@ fn run_loader(
     mut to_audio: Producer<Loaded>,
     mut from_audio: Consumer<Option<Arc<Sample>>>,
     mut stretched: Option<Producer<Stretched>>,
+    stopped: Option<&AtomicBool>,
 ) {
     // Keep the shared file-pool entry alive only for each pad's current sample.
     let mut held: Vec<Option<Arc<PoolFile>>> = vec![None; PADS];
     let mut source: Option<(u64, Arc<Sample>)> = None;
 
     let interval = if stretched.is_some() { 8 } else { 100 };
-    loop {
+    while !is_stopped(stopped) {
         // Dropping the old samples is this thread's job.
         while from_audio.pop().is_ok() {}
         if let (Some(sink), Some(general), Some((generation, sample))) =
             (&mut stretched, &shared.general, &source)
         {
-            prepare_stretch(shared, general, *generation, sample, sink);
+            prepare_stretch(shared, general, *generation, sample, sink, stopped);
         }
         let request = match requests.recv_timeout(Duration::from_millis(interval)) {
             Ok(r) => r,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => return,
         };
+        if is_stopped(stopped) {
+            return;
+        }
         let (pad, generation, load) = match request {
+            Request::Stop => return,
             Request::Clear { pad, generation } => (pad, generation, None),
             Request::Load {
                 pad,
@@ -649,8 +783,12 @@ fn run_loader(
             if let Some((link, project_dir)) = load {
                 let (status, length_s, peaks) = match link.resolve(project_dir.as_deref()) {
                     None => (PadStatus::Missing, 0.0, Arc::from([])),
+                    Some(_) if is_stopped(stopped) => return,
                     Some(path) => match open_sample(&path) {
                         Ok((file, decoded)) => {
+                            if is_stopped(stopped) {
+                                return;
+                            }
                             let length = decoded.duration_secs() as f64;
                             let peaks = peaks_of(&decoded);
                             sample = Some(decoded);
@@ -703,6 +841,7 @@ fn run_loader(
                     generation,
                     sample,
                 },
+                stopped,
             );
         }
         shared.pending.fetch_sub(1, Ordering::SeqCst);
@@ -715,8 +854,9 @@ fn send(
     to_audio: &mut Producer<Loaded>,
     from_audio: &mut Consumer<Option<Arc<Sample>>>,
     mut item: Loaded,
+    stopped: Option<&AtomicBool>,
 ) {
-    loop {
+    while !is_stopped(stopped) {
         match to_audio.push(item) {
             Ok(()) => return,
             Err(rtrb::PushError::Full(back)) => {
@@ -729,6 +869,10 @@ fn send(
             }
         }
     }
+}
+
+fn is_stopped(stopped: Option<&AtomicBool>) -> bool {
+    stopped.is_some_and(|flag| flag.load(Ordering::Acquire))
 }
 
 fn transient_markers(sample: &Sample) -> Vec<f64> {
@@ -761,6 +905,7 @@ fn prepare_stretch(
     generation: u64,
     source: &Sample,
     sink: &mut Producer<Stretched>,
+    stopped: Option<&AtomicBool>,
 ) {
     let revision = general.stretch_revision.load(Ordering::Acquire);
     let bits = general.stretch_ratio.load(Ordering::Acquire);
@@ -773,7 +918,8 @@ fn prepare_stretch(
         return;
     }
     let stale = || {
-        sink.is_abandoned()
+        is_stopped(stopped)
+            || sink.is_abandoned()
             || shared.generations[0].load(Ordering::Acquire) != generation
             || general.stretch_ratio.load(Ordering::Acquire) != bits
             || general.stretch_revision.load(Ordering::Acquire) != revision
@@ -926,4 +1072,39 @@ fn reason(e: &AudioError) -> String {
 /// is the reason in German.
 pub fn decode(path: &Path) -> Result<Sample, String> {
     open_sample(path).map(|(_, sample)| (*sample).clone())
+}
+
+#[cfg(test)]
+mod managed_worker_tests {
+    use super::*;
+
+    #[test]
+    fn finished_worker_needs_no_retained_module() {
+        let worker = std::thread::spawn(|| {});
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !worker.is_finished() {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        finish_worker(worker, Duration::ZERO, || panic!("worker already stopped"));
+    }
+
+    #[test]
+    fn blocked_worker_can_finish_after_its_owner_is_destroyed() {
+        let (release, blocked) = mpsc::channel();
+        let (done, wait) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = blocked.recv_timeout(Duration::from_secs(5));
+            done.send(()).unwrap();
+        });
+        let retained = AtomicBool::new(false);
+        finish_worker(worker, Duration::ZERO, || {
+            retained.store(true, Ordering::Relaxed);
+            true
+        });
+        assert!(retained.load(Ordering::Relaxed));
+        assert!(matches!(wait.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        release.send(()).unwrap();
+        wait.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
 }

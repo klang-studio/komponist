@@ -11,6 +11,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from typing import NamedTuple
 
 REPO = Path(__file__).resolve().parent.parent
@@ -51,6 +52,20 @@ INVENTORIES = {
         ),
     ),
 }
+
+INVENTORIES["effects"] = INVENTORIES["hall"] + tuple(
+    Device(f"komponist-bundled-{name}", f"komponist_{name}", f"org.klang-studio.komponist.{name}")
+    for name in ("delay", "eq", "presse", "limiter")
+)
+
+INVENTORIES["all"] = INVENTORIES["effects"] + (
+    Device("komponist-bundled-hexa", "komponist_hexa_clap", "org.klang-studio.komponist.hexa"),
+    Device("komponist-bundled-volt", "komponist_volt", "org.klang-studio.komponist.volt"),
+    Device("komponist-bundled-sampler", "komponist_sampler", "org.klang-studio.komponist.sampler"),
+    Device("komponist-bundled-general-sampler", "komponist_general_sampler", "org.klang-studio.komponist.general-sampler"),
+    Device("komponist-bundled-arpeggiator", "komponist_arpeggiator_clap", "org.klang-studio.komponist.arpeggiator"),
+    Device("komponist-bundled-scale", "komponist_scale_clap", "org.klang-studio.komponist.scale"),
+)
 
 
 def bundle_name(device):
@@ -233,14 +248,68 @@ def manifest_bytes(target, root, devices):
     return (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
 
 
+def payload_directory(target, app):
+    directory = app.parent
+    if target == "aarch64-apple-darwin":
+        directory = directory.parent / "Resources"
+    return directory / "bundled-clap"
+
+
+def check_rejects_modified_package(target, app, device):
+    # Run the same executable from a disposable package. On macOS ditto keeps
+    # the app and nested bundle signatures as they were archived.
+    with tempfile.TemporaryDirectory(prefix="komponist integrity ") as temporary:
+        directory = Path(temporary)
+        if target == "aarch64-apple-darwin":
+            source_app = app.parents[2]
+            copied_app = directory / source_app.name
+            subprocess.run(["ditto", source_app, copied_app], check=True)
+            executable = copied_app / app.relative_to(source_app)
+        else:
+            executable = directory / app.name
+            shutil.copy2(app, executable)
+            shutil.copytree(payload_directory(target, app), payload_directory(target, executable))
+
+        bundle = payload_directory(target, executable) / bundle_name(device)
+        library = bundle
+        if target == "aarch64-apple-darwin":
+            library = library / "Contents" / "MacOS" / device.library
+        with library.open("ab") as file:
+            file.write(b"altered bundled CLAP smoke payload")
+        check_integrity_refusal(executable, device, "altered", "bundle file hash mismatch")
+
+        bundle.rename(directory / "removed.clap")
+        check_integrity_refusal(executable, device, "missing", bundle.name)
+
+
+def check_integrity_refusal(executable, device, problem, expected_detail):
+    # Capture both handles to preserve GUI-subsystem stdout/stderr on Windows.
+    refusal = subprocess.run(
+        [executable, "--verify-bundled-clap"],
+        capture_output=True,
+        timeout=60,
+    )
+    output = refusal.stdout.decode("utf-8", errors="replace")
+    diagnostic = refusal.stderr.decode("utf-8", errors="replace")
+    if (
+        refusal.returncode == 0
+        or f"verified {device.plugin_id} (in-process)" in output.splitlines()
+        or "bundled CLAP verification:" not in diagnostic
+        or expected_detail not in diagnostic
+        or device.plugin_id not in diagnostic
+    ):
+        raise ValueError(
+            f"expected app integrity refusal for {problem} bundle ({refusal.returncode}): "
+            f"{output}{diagnostic}"
+        )
+    print(f"rejected {problem} bundle {device.plugin_id}")
+
+
 def check_archive(target, app, expected_sha256, devices):
     app = app.resolve(strict=True)
     if not app.is_file():
         raise ValueError(f"expected unpacked app executable: {app}")
-    root = app.parent
-    if target == "aarch64-apple-darwin":
-        root = root.parent / "Resources"
-    root /= "bundled-clap"
+    root = payload_directory(target, app)
     manifest = root / MANIFEST
     if not stat.S_ISREG(file_mode(manifest)) or sha256(manifest) != expected_sha256:
         raise ValueError("unpacked bundle manifest digest differs from the build")
@@ -273,8 +342,14 @@ def check_archive(target, app, expected_sha256, devices):
         print(stdout, end="")
         reports = [line for line in stdout.splitlines() if line.startswith("verified ")]
         expected = [f"verified {device.plugin_id} ({route})" for device in devices]
+        hall_id = INVENTORIES["hall"][0].plugin_id
+        if any(device.plugin_id == hall_id for device in devices):
+            lifecycle = "direct lifecycle" if route == "in-process" else "forced bridge"
+            expected.append(f"verified {hall_id} (normal {lifecycle})")
         if sorted(reports) != sorted(expected):
             raise ValueError(f"unexpected {route} verification reports: {reports}")
+
+    check_rejects_modified_package(target, app, devices[0])
 
 
 def main():
