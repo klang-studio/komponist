@@ -18,6 +18,7 @@ pub fn to_clap(info: &ParamInfo, plain: f64) -> f64 {
         ParamKind::Float {
             min, max, steps, ..
         } => ((plain - min) / ((max - min) / f64::from(steps))).round(),
+        ParamKind::Int { min, .. } => plain - f64::from(min),
         _ => plain,
     }
 }
@@ -29,16 +30,14 @@ pub fn from_clap(info: &ParamInfo, raw: f64) -> f64 {
         ParamKind::Float {
             min, max, steps, ..
         } => info.snap(min + raw * ((max - min) / f64::from(steps))),
+        ParamKind::Int { min, .. } => info.snap(f64::from(min) + raw),
         _ => info.snap(raw),
     }
 }
 
 /// The inclusive CLAP plain-value range published by the bundled adapter.
 pub fn clap_range(info: &ParamInfo) -> (f64, f64) {
-    match info.kind {
-        ParamKind::Float { steps, .. } => (0.0, f64::from(steps.max(1))),
-        _ => info.range(),
-    }
+    (0.0, f64::from(info.steps().max(1)))
 }
 
 /// Encode a built-in plain value in the pinned adapter's parameter representation.
@@ -51,6 +50,10 @@ pub fn parameter(info: &ParamInfo, plain: f64) -> (Value, f64) {
             (json!({"f32": value}), f64::from(value))
         }
         ParamKind::Bool => (json!({"bool": raw >= 0.5}), raw),
+        ParamKind::Int { .. } => {
+            let value = info.snap(plain);
+            (json!({"i32": value as i32}), value)
+        }
         _ => (json!({"i32": raw as i32}), raw),
     }
 }
@@ -73,4 +76,24 @@ pub fn encode(version: &str, params: Map<String, Value>, fields: Map<String, Val
     result.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     result.extend_from_slice(&payload);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use komponist_model::params::ParamId;
+
+    #[test]
+    fn nice_plug_uses_zero_based_clap_steps_and_persists_the_model_integer() {
+        let info = ParamInfo::new(
+            ParamId::new("octave"),
+            "Octave".into(),
+            ParamKind::Int { min: -3, max: 3 },
+            0.0,
+        );
+        assert_eq!(clap_range(&info), (0.0, 6.0));
+        assert_eq!(to_clap(&info, -2.0), 1.0);
+        assert_eq!(from_clap(&info, 1.0), -2.0);
+        assert_eq!(parameter(&info, -2.0), (json!({"i32": -2}), -2.0));
+    }
 }

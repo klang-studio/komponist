@@ -501,7 +501,7 @@ pub(crate) fn card(
     let hexa = is_hexa(device);
     let bundled_hexa = verified == Some(BuiltinKind::Hexa);
     let hexa_patch = if hexa {
-        componist_hexa::decode_state(device.state.as_deref()).ok()
+        komponist_hexa::decode_state(device.state.as_deref()).ok()
     } else if bundled_hexa {
         device
             .state
@@ -585,11 +585,13 @@ fn hexa_editor_infos(lang: Lang) -> &'static [ParamInfo] {
         [const { OnceLock::new() }; Lang::ALL.len()];
     INFOS[lang as usize].get_or_init(|| {
         use komponist_hexa::device::{Field, WIRE_COUNT};
+        let patch = komponist_hexa::default_patch();
         (0..WIRE_COUNT)
             .map(|wire| {
-                Field::from_wire(wire as u32)
-                    .expect("valid Hexa wire ID")
-                    .info_in(lang)
+                let field = Field::from_wire(wire as u32).expect("valid Hexa wire ID");
+                let mut info = field.info_in(lang);
+                info.default = info.snap(field.get(&patch));
+                info
             })
             .collect()
     })

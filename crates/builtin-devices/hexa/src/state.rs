@@ -78,12 +78,10 @@ const CLAP_PATCH_FIELD: &str = "hexa-patch-v1";
 pub fn decode_clap_patch(state: &[u8]) -> Option<Patch> {
     let document = komponist_device_core::pinned_clap_state::decode(state)?;
     let field = document.get("fields")?.get(CLAP_PATCH_FIELD)?.as_str()?;
-    #[derive(serde::Deserialize)]
-    struct SavedPatch {
-        patch: Patch,
-    }
-    let saved: SavedPatch = serde_json::from_str(field).ok()?;
-    Some(saved.patch.sanitized())
+    let mut saved: serde_json::Value = serde_json::from_str(field).ok()?;
+    serde_json::from_value::<Patch>(saved.get_mut("patch")?.take())
+        .ok()
+        .map(Patch::sanitized)
 }
 
 /// Encode the complete Hexa patch in a pinned CLAP state stream, including fields not represented
