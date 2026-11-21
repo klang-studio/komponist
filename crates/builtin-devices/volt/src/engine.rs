@@ -1,4 +1,4 @@
-//! The engine of volt: the voice pool, the note logic (poly, mono, legato, glide, stealing), the
+//! The engine of volt and surf (generic over their [`Oscillators`]): the voice pool, the note logic (poly, mono, legato, glide, stealing), the
 //! smoothing and the control-rate step. See the module docs of [`super`] for the signal flow.
 
 use klang_dsp::rng::Rng;
@@ -6,7 +6,8 @@ use komponist_model::params::va_curve::{LFO_DIV_BEATS, dst};
 
 use super::env::pole;
 use super::lfo::Lfo;
-use super::params::{COUNT, MODES, OFF_S, id, lfo, lfo_base, mod_src};
+use super::osc::{Analog, Oscillators};
+use super::params::{MODES, OFF_S, id, lfo, lfo_base, mod_src};
 use super::voice::{Control, LfoControl, MAX_UNISON, Note, Slot, State, Voice};
 use komponist_device_core::Dsp;
 use komponist_device_core::dsp::{CONTROL, db_to_gain, finite};
@@ -37,6 +38,7 @@ struct Smoothed {
     pw_a: f32,
     pw_b: f32,
     b_fine: f32,
+    a_fine: f32,
     sub: f32,
     noise: f32,
     hp_hz: f32,
@@ -51,11 +53,12 @@ fn chase(value: &mut f32, target: f32, amount: f32) {
     klang_dsp::one_pole::chase(value, target, amount);
 }
 
-/// The synthesizer.
-pub struct Volt {
+/// The synthesizer with the oscillators `O`: volt's table of parameters by wire id, then the
+/// instrument's own.
+pub struct Engine<O: Oscillators> {
     rate: f32,
-    values: [f64; COUNT],
-    voices: Vec<Voice>,
+    values: Vec<f64>,
+    voices: Vec<Voice<O>>,
     ctl: Control,
     sm: Smoothed,
     /// The smoothed values jump onto their targets (first step, after a reset).
@@ -76,25 +79,21 @@ pub struct Volt {
     env_gen: u32,
 }
 
-impl Default for Volt {
+/// volt: the engine with the analog oscillators.
+pub type Volt = Engine<Analog>;
+
+impl<O: Oscillators> Default for Engine<O> {
     fn default() -> Self {
-        Volt::new()
+        Engine::new()
     }
 }
 
-impl Volt {
+impl<O: Oscillators> Engine<O> {
     /// A synthesizer with the parameters at their defaults.
-    pub fn new() -> Volt {
-        let mut values = [0.0; COUNT];
-        for (v, info) in values
-            .iter_mut()
-            .zip(super::params::params(komponist_i18n::Lang::De))
-        {
-            *v = info.default;
-        }
-        let mut k = Volt {
+    pub fn new() -> Engine<O> {
+        let mut k = Engine {
             rate: 48_000.0,
-            values,
+            values: O::defaults(),
             voices: (0..VOICES).map(|_| Voice::new()).collect(),
             ctl: blank_control(),
             sm: Smoothed::default(),
@@ -148,6 +147,7 @@ impl Volt {
             pw_a: t(id::OSC_A_PW),
             pw_b: t(id::OSC_B_PW),
             b_fine: t(id::OSC_B_FINE),
+            a_fine: O::tune_a(&self.values).1,
             sub: t(id::SUB_LEVEL),
             noise: t(id::NOISE_LEVEL),
             hp_hz: t(id::HP_FREQ),
@@ -167,6 +167,7 @@ impl Volt {
         chase(&mut s.pw_a, targets.pw_a, a);
         chase(&mut s.pw_b, targets.pw_b, a);
         chase(&mut s.b_fine, targets.b_fine, a);
+        chase(&mut s.a_fine, targets.a_fine, a);
         chase(&mut s.sub, targets.sub, a);
         chase(&mut s.noise, targets.noise, a);
         chase(&mut s.hp_hz, targets.hp_hz, a);
@@ -244,13 +245,15 @@ impl Volt {
             ]
         };
         let s = &self.sm;
+        let a_semi = O::tune_a(&self.values).0 * 12.0 + s.a_fine * 0.01;
         self.ctl = Control {
             rate: self.rate,
             wave_a: self.values[id::OSC_A_WAVE].round() as usize,
             wave_b: self.values[id::OSC_B_WAVE].round() as usize,
             pw_a: s.pw_a,
             pw_b: s.pw_b,
-            b_semi: v(id::OSC_B_OCT) * 12.0 + s.b_fine * 0.01,
+            // B is tuned against the pitch like A, not against A.
+            b_semi: v(id::OSC_B_OCT) * 12.0 + s.b_fine * 0.01 - a_semi,
             mix: s.mix,
             sub: s.sub,
             noise: s.noise,
@@ -270,6 +273,7 @@ impl Volt {
             bend: s.bend * v(id::BEND),
             at_cut: v(id::AT_CUT),
             octave: v(id::OCTAVE) * 12.0,
+            a_semi,
             detune: s.detune,
             analog: v(id::ANALOG),
             volume: s.volume,
@@ -482,6 +486,7 @@ fn blank_control() -> Control {
         bend: 0.0,
         at_cut: 0.0,
         octave: 0.0,
+        a_semi: 0.0,
         detune: 0.0,
         analog: 0.0,
         volume: 1.0,
@@ -499,14 +504,14 @@ fn blank_control() -> Control {
     }
 }
 
-impl Dsp for Volt {
+impl<O: Oscillators> Dsp for Engine<O> {
     fn activate(&mut self, sample_rate: f32) {
         self.set_rate(sample_rate);
         self.reset();
     }
 
     fn set_param(&mut self, index: usize, value: f64) {
-        if index >= COUNT || !value.is_finite() {
+        if index >= self.values.len() || !value.is_finite() {
             return;
         }
         self.values[index] = value;

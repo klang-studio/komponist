@@ -1,4 +1,4 @@
-//! One key of volt: up to [`MAX_UNISON`] pairs of oscillators, sub and noise, the high-pass,
+//! One key of volt or surf: up to [`MAX_UNISON`] pairs of oscillators, sub and noise, the high-pass,
 //! the filter (two channels when the unison is spread), three envelopes, two LFOs, the matrix
 //! and the analog drift. [`Voice::control`] runs once per control interval and turns the
 //! smoothed globals ([`Control`]) into increments, coefficients and gains; [`Voice::render`] is
@@ -8,14 +8,14 @@ use klang_dsp::phase::increment;
 use klang_dsp::rng::Rng;
 use klang_dsp::sine::sine;
 use komponist_model::params::va_curve::{
-    ENV_CUTOFF_OCT, MOD_CUTOFF_OCT, MOD_DETUNE_CT, MOD_PITCH_ST, MOD_PW, MOD_RATE_OCT, SUB_GAIN,
+    ENV_CUTOFF_OCT, MOD_CUTOFF_OCT, MOD_DETUNE_CT, MOD_PITCH_ST, MOD_RATE_OCT, SUB_GAIN,
     dst, mix_gains, src,
 };
 
 use super::env::{Adsr, Coefs as EnvCoefs};
 use super::filter::{Coefs as FilterCoefs, Filter, HighPass};
 use super::lfo::Lfo;
-use super::osc;
+use super::osc::Oscillators;
 use komponist_device_core::dsp::CONTROL;
 
 /// Most unison oscillator pairs per key.
@@ -85,6 +85,8 @@ pub struct Control {
     pub bend: f32,
     pub at_cut: f32,
     pub octave: f32,
+    /// Oscillator A against the pitch in semitones (surf's own tuning of A; 0 for volt).
+    pub a_semi: f32,
     /// Detune in cents, spread, analog 0 … 1, volume as a gain.
     pub detune: f32,
     pub analog: f32,
@@ -156,8 +158,8 @@ pub enum State {
     Released,
 }
 
-/// One key.
-pub struct Voice {
+/// One key, with the oscillators of `O`.
+pub struct Voice<O: Oscillators> {
     pub state: State,
     pub key: u8,
     pub velocity: f32,
@@ -181,7 +183,9 @@ pub struct Voice {
     inc_a: [u32; MAX_UNISON],
     inc_b: [u32; MAX_UNISON],
     inc_sub: u32,
-    pw: [f32; 2],
+    /// Oscillators A and B of every unison pair, prepared for the control interval.
+    osc_a: [O::Osc; MAX_UNISON],
+    osc_b: [O::Osc; MAX_UNISON],
     gains: [f32; 2],
     env: [Adsr; 3],
     env_coefs: [EnvCoefs; 3],
@@ -197,9 +201,9 @@ pub struct Voice {
     gain_step: f32,
 }
 
-impl Voice {
+impl<O: Oscillators> Voice<O> {
     /// A free voice.
-    pub fn new() -> Voice {
+    pub fn new() -> Voice<O> {
         Voice {
             state: State::Off,
             key: 0,
@@ -221,7 +225,8 @@ impl Voice {
             inc_a: [0; MAX_UNISON],
             inc_b: [0; MAX_UNISON],
             inc_sub: 0,
-            pw: [0.5; 2],
+            osc_a: [O::Osc::default(); MAX_UNISON],
+            osc_b: [O::Osc::default(); MAX_UNISON],
             gains: [1.0; 2],
             env: [Adsr::default(); 3],
             env_coefs: [EnvCoefs::new(0.01, 0.1, 0.5, 0.1, 48_000.0, [1.0; 3]); 3],
@@ -398,6 +403,7 @@ impl Voice {
         let drift_cutoff = self.drift[1].step(&mut self.rng, c.rate);
         let vibrato = c.wheel_vib * c.wheel * self.lfo_out[0];
         let semi_a = self.pitch
+            + c.a_semi
             + c.octave
             + c.bend
             + m[dst::PITCH] * MOD_PITCH_ST as f32
@@ -419,11 +425,18 @@ impl Voice {
         }
         self.inc_sub = base_a >> 1;
 
-        // Oscillator shape and balance.
-        self.pw = [
-            (c.pw_a + m[dst::PW_A] * MOD_PW as f32).clamp(0.02, 0.98),
-            (c.pw_b + m[dst::PW_B] * MOD_PW as f32).clamp(0.02, 0.98),
+        // Oscillator shape (volt: pulse width, surf: table position) and balance.
+        let (lo, hi) = O::SHAPE_RANGE;
+        let shape = [
+            (c.pw_a + m[dst::PW_A] * O::SHAPE_MOD).clamp(lo, hi),
+            (c.pw_b + m[dst::PW_B] * O::SHAPE_MOD).clamp(lo, hi),
         ];
+        // Every pair, not only the sounding ones: a pair that joins later starts from its last
+        // increment and the current shape.
+        for u in 0..MAX_UNISON {
+            self.osc_a[u] = O::prepare(c.wave_a, self.inc_a[u], shape[0], c.rate);
+            self.osc_b[u] = O::prepare(c.wave_b, self.inc_b[u], shape[1], c.rate);
+        }
         let (ga, gb) = mix_gains(f64::from((c.mix + m[dst::MIX]).clamp(0.0, 1.0)));
         self.gains = [ga as f32, gb as f32];
 
@@ -469,8 +482,8 @@ impl Voice {
             let mut l = 0.0f32;
             let mut r = 0.0f32;
             for u in 0..uni {
-                let a = osc::sample(wave_a, self.phase_a[u], self.inc_a[u], self.pw[0]);
-                let b = osc::sample(wave_b, self.phase_b[u], self.inc_b[u], self.pw[1]);
+                let a = O::sample(&self.osc_a[u], wave_a, self.phase_a[u]);
+                let b = O::sample(&self.osc_b[u], wave_b, self.phase_b[u]);
                 self.phase_a[u] = self.phase_a[u].wrapping_add(self.inc_a[u]);
                 self.phase_b[u] = self.phase_b[u].wrapping_add(self.inc_b[u]);
                 let s = ga * a + gb * b;

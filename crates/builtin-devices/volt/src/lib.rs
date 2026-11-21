@@ -59,16 +59,17 @@ use komponist_model::params::{ParamId, ParamInfo};
 use komponist_device_core::layout::{knob, knob_large, template};
 use komponist_device_core::{CatalogSpec, Dsp, Spec, SpecCache};
 
-mod engine;
+pub mod engine;
 pub mod env;
 pub mod filter;
 pub mod lfo;
 pub mod osc;
 pub mod params;
 pub mod presets;
-mod voice;
+pub mod voice;
 
-pub use engine::{MAX_GROUPS, VOICES, Volt};
+pub use engine::{Engine, MAX_GROUPS, VOICES, Volt};
+pub use osc::{Analog, Oscillators};
 pub use params::id;
 
 #[cfg(test)]

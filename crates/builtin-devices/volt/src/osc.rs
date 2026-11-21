@@ -4,7 +4,75 @@
 
 use klang_dsp::phase::to_unit;
 use klang_dsp::sine::sine;
-use komponist_model::params::va_curve::{PULSE, SAW, TRIANGLE};
+use komponist_model::params::va_curve::{MOD_PW, PULSE, SAW, TRIANGLE};
+
+/// The oscillators of a voice ([`crate::engine::Engine`]): what makes the shared engine volt
+/// ([`Analog`]) or surf (the wavetable reader). Everything else, the sub, noise, filter,
+/// envelopes, LFOs, matrix and the voice handling, is the same.
+///
+/// Per control interval the voice [`prepare`](Oscillators::prepare)s oscillator A and B of
+/// every unison pair from the waveform choice, the phase increment and the *shape* (volt: pulse
+/// width, surf: table position) after the matrix; per sample it calls
+/// [`sample`](Oscillators::sample). Both run on the audio thread: no allocation, no locks.
+pub trait Oscillators: Send + 'static {
+    /// One oscillator prepared for a control interval.
+    type Osc: Copy + Default + Send;
+    /// The shape after the matrix stays inside this range.
+    const SHAPE_RANGE: (f32, f32);
+    /// How far the matrix moves the shape at 100 %.
+    const SHAPE_MOD: f32;
+    /// The oscillator for an interval: waveform choice `wave`, increment `inc` per sample
+    /// (`klang_dsp::phase`), `shape`, sample rate `rate`.
+    fn prepare(wave: usize, inc: u32, shape: f32, rate: f32) -> Self::Osc;
+    /// One sample at `phase`. `wave` is the current choice (volt switches at once, mid-interval).
+    fn sample(osc: &Self::Osc, wave: usize, phase: u32) -> f32;
+    /// The default of every parameter by wire id: volt's table ([`crate::params`]) first, the
+    /// instrument's own parameters after it.
+    fn defaults() -> Vec<f64>;
+    /// Oscillator A's octave and fine tune in cents (volt has neither: A is the reference).
+    fn tune_a(_values: &[f64]) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+}
+
+/// volt's oscillators: [`sample`] with the pulse width as the shape.
+pub struct Analog;
+
+/// An analog oscillator for an interval: increment and pulse width.
+#[derive(Clone, Copy, Debug)]
+pub struct AnalogOsc {
+    inc: u32,
+    pw: f32,
+}
+
+impl Default for AnalogOsc {
+    fn default() -> Self {
+        AnalogOsc { inc: 0, pw: 0.5 }
+    }
+}
+
+impl Oscillators for Analog {
+    type Osc = AnalogOsc;
+    const SHAPE_RANGE: (f32, f32) = (0.02, 0.98);
+    const SHAPE_MOD: f32 = MOD_PW as f32;
+
+    #[inline]
+    fn prepare(_wave: usize, inc: u32, shape: f32, _rate: f32) -> AnalogOsc {
+        AnalogOsc { inc, pw: shape }
+    }
+
+    #[inline]
+    fn sample(osc: &AnalogOsc, wave: usize, phase: u32) -> f32 {
+        sample(wave, phase, osc.inc, osc.pw)
+    }
+
+    fn defaults() -> Vec<f64> {
+        crate::params::params(komponist_i18n::Lang::De)
+            .iter()
+            .map(|p| p.default)
+            .collect()
+    }
+}
 
 /// The correction of a step of height 2 at phase 0 that lasts one sample on each side (2-point
 /// PolyBLEP). `t` is the phase, `dt` the increment per sample (both in periods).
