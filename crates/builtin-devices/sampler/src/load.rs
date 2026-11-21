@@ -763,6 +763,7 @@ fn run_loader(
             if let Some((link, project_dir)) = load {
                 let (status, length_s, peaks) = match link.resolve(project_dir.as_deref()) {
                     None => (PadStatus::Missing, 0.0, Arc::from([])),
+                    Some(_) if is_stopped(stopped) => return,
                     Some(path) => match open_sample(&path) {
                         Ok((file, decoded)) => {
                             if is_stopped(stopped) {

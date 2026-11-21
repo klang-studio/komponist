@@ -55,7 +55,9 @@ paths stay in the state. When Komponist opens a project or restores a state for 
 bundled sampler, it resolves the relative links against the project directory and refreshes
 their absolute fallbacks for the running instance. In other hosts, the state callback opens
 the saved absolute fallbacks. File decoding and transfer to the DSP run on the loader thread.
-Destroying an instance joins its loader before the CLAP library can be unloaded.
+Destroying an instance signals its loader and waits briefly. If file I/O is still blocked,
+the loader's native module remains loaded until the host exits so cleanup can finish
+as soon as the filesystem responds.
 
 The native v1 control pages expose the pad and instrument parameters. A package suitable
 as the default for existing sample projects still needs an editor or public host integration
