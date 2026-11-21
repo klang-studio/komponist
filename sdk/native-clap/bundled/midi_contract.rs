@@ -131,6 +131,10 @@ pub(crate) fn assert_stage_parity<P: ClapPlugin>(spec: &'static Spec) {
                 key: 61,
                 velocity: 100.0 / 127.0,
             };
+            let retrigger = clap_event_note {
+                note_id: 92,
+                ..note
+            };
             let release = clap_event_note {
                 header: header::<clap_event_note>(4, CLAP_EVENT_NOTE_OFF),
                 note_id: 93,
@@ -162,17 +166,18 @@ pub(crate) fn assert_stage_parity<P: ClapPlugin>(spec: &'static Spec) {
                     },
                 ]);
             } else if block == 1 {
+                // Retrigger the key and then deliver the old note's keyed release.
                 note.header.time = 64;
                 note.header.type_ = CLAP_EVENT_NOTE_OFF;
-                note.key = -1;
                 note.velocity = 0.0;
-                clap_events.push(&note.header as *const _);
+                clap_events.extend([&retrigger.header as *const _, &note.header as *const _]);
                 input_events.push(Event {
-                    offset: 64,
-                    kind: EventKind::NoteOff {
+                    offset: 0,
+                    kind: EventKind::NoteOn {
                         key: 61,
                         channel: 2,
-                        note_id: 91,
+                        velocity: 100,
+                        note_id: 92,
                     },
                 });
             } else if block == 2 {
@@ -201,6 +206,21 @@ pub(crate) fn assert_stage_parity<P: ClapPlugin>(spec: &'static Spec) {
                         },
                     },
                 ]);
+            } else {
+                note.header.time = 64;
+                note.header.type_ = CLAP_EVENT_NOTE_OFF;
+                note.note_id = 92;
+                note.key = -1;
+                note.velocity = 0.0;
+                clap_events.push(&note.header as *const _);
+                input_events.push(Event {
+                    offset: 64,
+                    kind: EventKind::NoteOff {
+                        key: 61,
+                        channel: 2,
+                        note_id: 92,
+                    },
+                });
             }
             let beat = f64::from(block * FRAMES) * TEMPO / (60.0 * f64::from(RATE));
             let transport = clap_event_transport {

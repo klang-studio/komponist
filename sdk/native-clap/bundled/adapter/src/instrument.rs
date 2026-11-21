@@ -141,7 +141,12 @@ fn apply_note(
             if let Some(key) = key.number().filter(|key| *key < 128) {
                 notes[usize::from(key)] = Some((channel, voice_id));
                 let velocity = (velocity.clamp(0.0, 1.0) * 127.0).round().max(1.0) as u8;
-                dsp.note_on_with_id(key, velocity, voice_id.id().map(|id| id as u32));
+                dsp.note_on_with_id(
+                    key,
+                    velocity,
+                    voice_id.id().map(|id| id as u32),
+                    channel.number(),
+                );
             }
         }
         NoteEvent::Choke {
@@ -172,11 +177,19 @@ fn apply_note(
                         && (voice_id.is_wildcard() || voice_id == note_id)
                 }) {
                     if choke {
-                        dsp.choke_note(Some(key), voice_id.id().map(|id| id as u32));
+                        dsp.choke_note(
+                            Some(key),
+                            voice_id.id().map(|id| id as u32),
+                            channel.number(),
+                        );
                         *address = None;
                     } else {
                         // Keep the address during release so a subsequent choke can still target it.
-                        dsp.note_off_with_id(key, voice_id.id().map(|id| id as u32));
+                        dsp.note_off_with_id(
+                            key,
+                            voice_id.id().map(|id| id as u32),
+                            channel.number(),
+                        );
                     }
                 }
             };
@@ -191,9 +204,18 @@ fn apply_note(
             }
         }
         NoteEvent::MidiCC { cc: 1, value, .. } => dsp.mod_wheel(value),
-        NoteEvent::MidiCC { cc: 120 | 123, .. } => {
-            notes.fill(None);
-            dsp.all_notes_off();
+        NoteEvent::MidiCC {
+            channel,
+            cc: 120 | 123,
+            ..
+        } => {
+            for (key, address) in notes.iter_mut().enumerate() {
+                if address.is_some_and(|(note_channel, _)| note_channel == Channel::Number(channel))
+                {
+                    dsp.choke_note(Some(key as u8), None, Some(channel));
+                    *address = None;
+                }
+            }
         }
         NoteEvent::MidiChannelPressure { pressure, .. } => dsp.pressure(pressure),
         NoteEvent::MidiPitchBend { value, .. } => {
@@ -237,11 +259,45 @@ mod tests {
         fn note_off(&mut self, key: u8) {
             self.0.push((key, false));
         }
-        fn choke_note(&mut self, key: Option<u8>, _: Option<u32>) {
+        fn choke_note(&mut self, key: Option<u8>, _: Option<u32>, _: Option<u8>) {
             self.0.push((key.unwrap(), true));
         }
         fn all_notes_off(&mut self) {
             panic!("unexpected global release");
+        }
+    }
+
+    #[test]
+    fn midi_channel_mode_only_chokes_keys_on_that_channel() {
+        for cc in [120, 123] {
+            let mut dsp = NoteProbe::default();
+            let mut held = [None; 128];
+            for (channel, key) in [(2, 60), (3, 67)] {
+                apply_note(
+                    &mut dsp,
+                    &mut held,
+                    NoteEvent::NoteOn {
+                        timing: 0,
+                        channel: Channel::Number(channel),
+                        key: Key::Number(key),
+                        voice_id: VoiceID::ID(i32::from(key)),
+                        velocity: 1.0,
+                    },
+                );
+            }
+            apply_note(
+                &mut dsp,
+                &mut held,
+                NoteEvent::MidiCC {
+                    timing: 5,
+                    channel: 2,
+                    cc,
+                    value: 0.0,
+                },
+            );
+            assert_eq!(dsp.0, [(60, true)]);
+            assert_eq!(held[60], None);
+            assert_eq!(held[67], Some((Channel::Number(3), VoiceID::ID(67))));
         }
     }
 

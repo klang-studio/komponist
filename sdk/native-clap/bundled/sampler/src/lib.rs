@@ -119,5 +119,8 @@ fn all_pads_have_stable_bilingual_bindings_and_restore_sample_links() {
     layout_contract::assert_localized_bindings::<DrumSamplerPlugin>(
         DrumSampler::SPEC.params().len(),
     );
-    sampler_contract::sample_asset_roundtrip::<DrumSamplerPlugin>(komponist_sampler::FIRST_NOTE);
+    sampler_contract::sample_asset_roundtrip::<DrumSamplerPlugin>(
+        komponist_sampler::FIRST_NOTE,
+        "pad1_mode",
+    );
 }

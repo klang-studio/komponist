@@ -108,6 +108,7 @@ impl<T: SampledDefinition> Sampled<T> {
     fn note(&mut self, event: NoteEvent<()>) {
         match event {
             NoteEvent::NoteOn {
+                channel,
                 key,
                 velocity,
                 voice_id,
@@ -118,25 +119,48 @@ impl<T: SampledDefinition> Sampled<T> {
                         key,
                         (velocity.clamp(0.0, 1.0) * 127.0).round().max(1.0) as u8,
                         voice_id.id().map(|id| id as u32),
+                        channel.number(),
                     );
                 }
             }
-            NoteEvent::NoteOff { key, voice_id, .. } => {
+            NoteEvent::NoteOff {
+                channel,
+                key,
+                voice_id,
+                ..
+            } => {
                 if let Some(key) = key.number() {
-                    self.dsp
-                        .note_off_with_id(key, voice_id.id().map(|id| id as u32));
+                    self.dsp.note_off_with_id(
+                        key,
+                        voice_id.id().map(|id| id as u32),
+                        channel.number(),
+                    );
                 } else {
                     self.dsp
-                        .release_note_gates(voice_id.id().map(|id| id as u32));
+                        .release_note_gates(voice_id.id().map(|id| id as u32), channel.number());
                 }
             }
-            NoteEvent::Choke { key, voice_id, .. } => {
-                self.dsp
-                    .choke_note(key.number(), voice_id.id().map(|id| id as u32));
+            NoteEvent::Choke {
+                channel,
+                key,
+                voice_id,
+                ..
+            } => {
+                self.dsp.choke_note(
+                    key.number(),
+                    voice_id.id().map(|id| id as u32),
+                    channel.number(),
+                );
             }
             NoteEvent::MidiPitchBend { value, .. } => self.dsp.pitch_bend(value * 2.0 - 1.0),
             NoteEvent::MidiCC { cc: 1, value, .. } => self.dsp.mod_wheel(value),
-            NoteEvent::MidiCC { cc: 120 | 123, .. } => self.dsp.all_notes_off(),
+            NoteEvent::MidiCC {
+                channel,
+                cc: 120 | 123,
+                ..
+            } => {
+                self.dsp.choke_note(None, None, Some(channel));
+            }
             NoteEvent::MidiChannelPressure { pressure, .. } => self.dsp.pressure(pressure),
             _ => {}
         }

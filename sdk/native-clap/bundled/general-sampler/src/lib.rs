@@ -178,5 +178,5 @@ fn all_controls_have_stable_bilingual_bindings_and_restore_sample_assets() {
     layout_contract::assert_localized_bindings::<GeneralSamplerPlugin>(
         GeneralSampler::SPEC.params().len(),
     );
-    sampler_contract::sample_asset_roundtrip::<GeneralSamplerPlugin>(60);
+    sampler_contract::sample_asset_roundtrip::<GeneralSamplerPlugin>(60, "mode");
 }

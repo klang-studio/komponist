@@ -258,10 +258,16 @@ impl Dsp for SamplerDsp {
     }
 
     fn note_on(&mut self, key: u8, velocity: u8) {
-        self.note_on_with_id(key, velocity, None);
+        self.note_on_with_id(key, velocity, None, None);
     }
 
-    fn note_on_with_id(&mut self, key: u8, velocity: u8, note_id: Option<u32>) {
+    fn note_on_with_id(
+        &mut self,
+        key: u8,
+        velocity: u8,
+        note_id: Option<u32>,
+        channel: Option<u8>,
+    ) {
         let Some(pad) = pad_of_note(key) else {
             return;
         };
@@ -276,35 +282,35 @@ impl Dsp for SamplerDsp {
             self.samples.as_slice(),
             &self.settings[..],
             &self.layers[..],
-            note_id,
+            (note_id, channel),
         );
     }
 
     fn note_off(&mut self, key: u8) {
-        self.note_off_with_id(key, None);
+        self.note_off_with_id(key, None, None);
     }
 
-    fn note_off_with_id(&mut self, key: u8, note_id: Option<u32>) {
+    fn note_off_with_id(&mut self, key: u8, note_id: Option<u32>, channel: Option<u8>) {
         if let Some(pad) = pad_of_note(key) {
             self.engine
-                .note_off_with_id(pad, &self.settings[..], note_id);
+                .note_off_with_id(pad, &self.settings[..], note_id, channel);
         }
     }
 
-    fn release_note_gates(&mut self, note_id: Option<u32>) {
-        self.engine.release_note_gates(note_id, &self.settings[..]);
+    fn release_note_gates(&mut self, note_id: Option<u32>, channel: Option<u8>) {
+        self.engine
+            .release_note_gates(note_id, channel, &self.settings[..]);
     }
 
-    fn choke_note(&mut self, key: Option<u8>, note_id: Option<u32>) {
-        if let Some(note_id) = note_id {
-            self.engine.choke_note(note_id);
-        } else if let Some(key) = key {
-            if let Some(pad) = pad_of_note(key) {
-                self.engine.kill_slot(slot_index(pad, 0));
-            }
-        } else {
-            self.engine.choke_all();
-        }
+    fn choke_note(&mut self, key: Option<u8>, note_id: Option<u32>, channel: Option<u8>) {
+        let pad = match key {
+            Some(key) => match pad_of_note(key) {
+                Some(pad) => Some(pad),
+                None => return,
+            },
+            None => None,
+        };
+        self.engine.choke_matching(pad, None, note_id, channel);
     }
 
     fn all_notes_off(&mut self) {
@@ -328,9 +334,9 @@ mod generation_tests {
         let mut right = [0.0; 512];
         let silence = [0.0; 512];
         assert_no_alloc::assert_no_alloc(|| {
-            dsp.note_on_with_id(crate::note_of_pad(0), 127, Some(91));
-            dsp.note_on_with_id(crate::note_of_pad(1), 127, Some(92));
-            dsp.choke_note(None, Some(91));
+            dsp.note_on_with_id(crate::note_of_pad(0), 127, Some(91), Some(2));
+            dsp.note_on_with_id(crate::note_of_pad(1), 127, Some(92), Some(3));
+            dsp.choke_note(None, Some(91), Some(2));
             dsp.process([&silence; 2], [&mut left, &mut right]);
         });
         let heads = dsp.engine.playheads(dsp.samples.as_slice());

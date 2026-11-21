@@ -591,7 +591,7 @@ impl Dsp for Volt {
         }
     }
 
-    fn choke_note(&mut self, key: Option<u8>, _note_id: Option<u32>) {
+    fn choke_note(&mut self, key: Option<u8>, _note_id: Option<u32>, _channel: Option<u8>) {
         let Some(key) = key else {
             self.all_notes_off();
             return;
@@ -643,7 +643,7 @@ mod tests {
         let mut volt = Volt::new();
         volt.note_on(60, 100);
         volt.note_on(67, 100);
-        volt.choke_note(Some(60), Some(91));
+        volt.choke_note(Some(60), Some(91), None);
         let voice = |key| {
             volt.voices
                 .iter()

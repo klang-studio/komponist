@@ -311,17 +311,17 @@ fn push_input(
             if let (Some(channel), Some(key)) = (channel.number(), key.number()) {
                 if channel < 16 && key < 128 {
                     let slot = &mut held[usize::from(channel)][usize::from(key)];
-                    if voice_id.is_wildcard() || *slot == Some(voice_id) {
+                    if slot.is_some_and(|id| voice_id.is_wildcard() || id == voice_id) {
                         *slot = None;
+                        input.push(
+                            timing,
+                            EventKind::NoteOff {
+                                channel,
+                                key,
+                                note_id: note_id(voice_id),
+                            },
+                        );
                     }
-                    input.push(
-                        timing,
-                        EventKind::NoteOff {
-                            channel,
-                            key,
-                            note_id: note_id(voice_id),
-                        },
-                    );
                 }
             } else {
                 let range = |number: Option<u8>, limit| {

@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::events::{
-    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_ON, clap_event_header, clap_event_note,
-    clap_input_events,
+    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, clap_event_header,
+    clap_event_note, clap_input_events,
 };
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
 use clap_sys::process::{CLAP_PROCESS_ERROR, clap_process};
@@ -22,20 +22,19 @@ use crate::layout_contract::Instance;
 const FRAMES: usize = 128;
 const NOTE_OFFSET: usize = 16;
 
-unsafe extern "C" fn input_size(_: *const clap_input_events) -> u32 {
-    1
+unsafe extern "C" fn input_size(input: *const clap_input_events) -> u32 {
+    // SAFETY: Its caller retains the borrowed note slice through process.
+    (unsafe { &*(*input).ctx.cast::<&[clap_event_note]>() }).len() as u32
 }
 
 unsafe extern "C" fn input_get(
     input: *const clap_input_events,
     index: u32,
 ) -> *const clap_event_header {
-    if index == 0 {
-        // SAFETY: The test's input list stores a live note with a header at offset zero.
-        unsafe { (*input).ctx.cast() }
-    } else {
-        ptr::null()
-    }
+    // SAFETY: Its caller retains the borrowed note slice through process.
+    unsafe { &*(*input).ctx.cast::<&[clap_event_note]>() }
+        .get(index as usize)
+        .map_or(ptr::null(), |note| &note.header)
 }
 
 unsafe extern "C" fn read_state(
@@ -129,7 +128,7 @@ fn check_state_roundtrip<P: ClapPlugin>(instance: &Instance, assets: &str) {
     }
 }
 
-pub(crate) fn sample_asset_roundtrip<P: ClapPlugin>(key: u8) {
+pub(crate) fn sample_asset_roundtrip<P: ClapPlugin>(key: u8, gate_param: &str) {
     let directory = tempfile::tempdir().unwrap();
     let sample = directory.path().join("linked.wav");
     let mut writer = hound::WavWriter::create(
@@ -163,7 +162,7 @@ pub(crate) fn sample_asset_roundtrip<P: ClapPlugin>(key: u8) {
         .to_string()
     };
     check_state_roundtrip::<P>(&instance, &assets(&sample));
-    let mut note = clap_event_note {
+    let note = clap_event_note {
         header: clap_event_header {
             size: size_of::<clap_event_note>() as u32,
             time: NOTE_OFFSET as u32,
@@ -173,21 +172,19 @@ pub(crate) fn sample_asset_roundtrip<P: ClapPlugin>(key: u8) {
         },
         note_id: 13,
         port_index: 0,
-        channel: 0,
+        channel: 2,
         key: i16::from(key),
         velocity: 0.8,
     };
-    let in_events = clap_input_events {
-        ctx: ptr::from_mut(&mut note).cast::<c_void>(),
-        size: Some(input_size),
-        get: Some(input_get),
-    };
-
     // SAFETY: The wrapper, event, and output buffers outlive their calls, and the test owns the
     // whole instance and acts as its control and audio threads sequentially.
     unsafe {
         let wrapper = &*(*plugin).plugin_data.cast::<Wrapper<P>>();
-        let mut state = wrapper.get_state_object();
+        let mut gate_state = serde_json::to_value(wrapper.get_state_object()).unwrap();
+        assert!(gate_state["params"].get(gate_param).is_some());
+        gate_state["params"][gate_param] = json!({"string": "gate"});
+        let mut state: nice_plug::prelude::PluginState =
+            serde_json::from_value(gate_state).unwrap();
         state
             .fields
             .insert("sample_assets".into(), assets(&missing));
@@ -205,8 +202,13 @@ pub(crate) fn sample_asset_roundtrip<P: ClapPlugin>(key: u8) {
         ));
         assert!(((*plugin).start_processing.unwrap())(plugin));
         let mut steady_time = 0;
-        let mut render = || {
+        let mut render = |notes: &[clap_event_note]| {
             ((*plugin).reset.unwrap())(plugin);
+            let in_events = clap_input_events {
+                ctx: ptr::from_ref(&notes).cast_mut().cast::<c_void>(),
+                size: Some(input_size),
+                get: Some(input_get),
+            };
             let mut out = [[0.0f32; FRAMES]; 2];
             let mut output_channels = out.each_mut().map(|samples| samples.as_mut_ptr());
             let mut output = clap_audio_buffer {
@@ -235,7 +237,7 @@ pub(crate) fn sample_asset_roundtrip<P: ClapPlugin>(key: u8) {
             out[0]
         };
 
-        assert!(render().iter().all(|sample| *sample == 0.0));
+        assert!(render(&[note]).iter().all(|sample| *sample == 0.0));
         // Replacing the missing link and preserving the portable metadata does not require
         // another activation. The loader completes when it has decoded the new target.
         state.fields.insert("sample_assets".into(), assets(&sample));
@@ -247,7 +249,7 @@ pub(crate) fn sample_asset_roundtrip<P: ClapPlugin>(key: u8) {
 
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            let rendered = render();
+            let rendered = render(&[note]);
             assert!(rendered[..NOTE_OFFSET].iter().all(|sample| *sample == 0.0));
             if rendered[NOTE_OFFSET..]
                 .iter()
@@ -261,6 +263,27 @@ pub(crate) fn sample_asset_roundtrip<P: ClapPlugin>(key: u8) {
             );
             std::thread::sleep(Duration::from_millis(3));
         }
+        let mut release = clap_event_note {
+            header: clap_event_header {
+                time: 32,
+                type_: CLAP_EVENT_NOTE_OFF,
+                ..note.header
+            },
+            key: -1,
+            note_id: -1,
+            velocity: 0.0,
+            ..note
+        };
+        let matched = render(&[note, release]);
+        release.channel = 3;
+        let other_channel = render(&[note, release]);
+        let level =
+            |samples: [f32; FRAMES]| samples[64..].iter().map(|sample| sample.abs()).sum::<f32>();
+        let (matched, other_channel) = (level(matched), level(other_channel));
+        assert!(
+            matched < other_channel * 0.99,
+            "release must attenuate only its own channel: {matched} vs {other_channel}"
+        );
         ((*plugin).stop_processing.unwrap())(plugin);
         ((*plugin).deactivate.unwrap())(plugin);
     }

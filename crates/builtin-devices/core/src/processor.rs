@@ -83,7 +83,13 @@ pub trait Dsp: Send {
     }
 
     /// RT, instruments only. A note starts, optionally paired with an engine-assigned id.
-    fn note_on_with_id(&mut self, key: u8, velocity: u8, _note_id: Option<u32>) {
+    fn note_on_with_id(
+        &mut self,
+        key: u8,
+        velocity: u8,
+        _note_id: Option<u32>,
+        _channel: Option<u8>,
+    ) {
         self.note_on(key, velocity);
     }
 
@@ -93,20 +99,20 @@ pub trait Dsp: Send {
     }
 
     /// RT, instruments only. A note ends, with its id when the engine paired it.
-    fn note_off_with_id(&mut self, key: u8, _note_id: Option<u32>) {
+    fn note_off_with_id(&mut self, key: u8, _note_id: Option<u32>, _channel: Option<u8>) {
         self.note_off(key);
     }
 
-    /// RT, instruments only. Release gates without a specific key, narrowed to `note_id`
-    /// when supplied. One-shot samples continue playing.
-    fn release_note_gates(&mut self, _note_id: Option<u32>) {}
+    /// RT, instruments only. Release gates without a specific key. Supplied note ID and
+    /// channel restrict the selection. One-shot samples continue playing.
+    fn release_note_gates(&mut self, _note_id: Option<u32>, _channel: Option<u8>) {}
 
-    /// RT, instruments only. Stop a voice immediately by key or note ID. A missing key and ID
-    /// requests a global choke.
-    fn choke_note(&mut self, key: Option<u8>, note_id: Option<u32>) {
+    /// RT, instruments only. Stop voices matching the supplied key, note ID, and channel.
+    /// An entirely wildcard address requests a global choke.
+    fn choke_note(&mut self, key: Option<u8>, note_id: Option<u32>, channel: Option<u8>) {
         if let Some(key) = key {
-            self.note_off_with_id(key, note_id);
-        } else {
+            self.note_off_with_id(key, note_id, channel);
+        } else if note_id.is_none() && channel.is_none() {
             self.all_notes_off();
         }
     }
@@ -306,15 +312,22 @@ impl InternalProcessor {
                     key,
                     velocity,
                     note_id,
-                    ..
+                    channel,
                 } => self.dsp.note_on_with_id(
                     key,
                     velocity,
                     (note_id != NOTE_ID_NONE).then_some(note_id),
+                    Some(channel),
                 ),
-                EventKind::NoteOff { key, note_id, .. } => self
-                    .dsp
-                    .note_off_with_id(key, (note_id != NOTE_ID_NONE).then_some(note_id)),
+                EventKind::NoteOff {
+                    key,
+                    note_id,
+                    channel,
+                } => self.dsp.note_off_with_id(
+                    key,
+                    (note_id != NOTE_ID_NONE).then_some(note_id),
+                    Some(channel),
+                ),
                 EventKind::AllNotesOff => self.dsp.all_notes_off(),
                 EventKind::Midi(bytes) => midi_to_dsp(self.dsp.as_mut(), bytes),
             }
