@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use komponist_builtin::Internal;
-use komponist_ipc::{control::NoteName, sampler_ui::Snapshot};
+use komponist_ipc::sampler_ui::Snapshot;
 use komponist_model::PluginRef;
 use komponist_sampler::links::{self, Collector, SampleLink};
 use komponist_sampler::settings::Settings;
@@ -18,19 +18,13 @@ use crate::catalog::requires_bundled;
 
 pub(crate) const UI_REFRESH: Duration = Duration::from_millis(80);
 
-pub(crate) fn note_names(snapshot: &Snapshot) -> Vec<NoteName> {
+pub(crate) fn note_names(snapshot: &Snapshot) -> impl Iterator<Item = (u8, &str)> {
     snapshot
         .pads
         .iter()
         .enumerate()
-        .filter_map(|(pad, view)| {
-            (!view.name.is_empty()).then(|| NoteName {
-                key: komponist_sampler::note_of_pad(pad),
-                channel: None,
-                name: view.name.clone(),
-            })
-        })
-        .collect()
+        .filter(|(_, view)| !view.name.is_empty())
+        .map(|(pad, view)| (komponist_sampler::note_of_pad(pad), view.name.as_str()))
 }
 
 fn kind_by_id(id: &str) -> Option<Internal> {

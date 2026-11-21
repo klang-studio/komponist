@@ -10,7 +10,11 @@ struct Extension {
 fn extension(plugin: &clap_plugin) -> Option<&Extension> {
     // SAFETY: This live instance is queried on its CLAP main thread. The table, if present, is
     // immutable and valid until the instance is destroyed.
-    unsafe { plugin.get_extension?(plugin, EXTENSION_ID.as_ptr()).cast::<Extension>().as_ref() }
+    unsafe {
+        plugin.get_extension?(plugin, EXTENSION_ID.as_ptr())
+            .cast::<Extension>()
+            .as_ref()
+    }
 }
 
 pub(super) fn snapshot(plugin: &clap_plugin) -> Option<Snapshot> {

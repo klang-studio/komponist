@@ -1433,12 +1433,20 @@ fn update_sampler_names(
     names: &mut Vec<NoteName>,
     events: &mut Vec<PluginManagerEvent>,
 ) {
-    if let Some(snapshot) = snapshot {
-        let updated = bundled_sampler::note_names(snapshot);
-        if *names != updated {
-            *names = updated;
-            events.push(PluginManagerEvent::NoteNamesChanged { device });
-        }
+    if let Some(snapshot) = snapshot
+        && !names
+            .iter()
+            .map(|note| (note.key, note.name.as_str()))
+            .eq(bundled_sampler::note_names(snapshot))
+    {
+        *names = bundled_sampler::note_names(snapshot)
+            .map(|(key, name)| NoteName {
+                key,
+                channel: None,
+                name: name.to_owned(),
+            })
+            .collect();
+        events.push(PluginManagerEvent::NoteNamesChanged { device });
     }
 }
 
