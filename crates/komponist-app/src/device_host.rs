@@ -91,6 +91,11 @@ pub trait DeviceHost {
     /// catalog).
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole>;
 
+    /// Device-specific presentation for an active authenticated bundled CLAP instance.
+    fn verified_bundled_kind(&self, _device: DeviceId) -> Option<BuiltinKind> {
+        None
+    }
+
     /// The plugins the browser offers (built-ins first, then scanned plugins by name).
     fn catalog(&self) -> &Catalog;
 
@@ -735,6 +740,10 @@ impl DeviceHost for PluginHost {
             PluginKind::MidiEffect => Some(DeviceRole::MidiEffect),
             PluginKind::Other => None,
         }
+    }
+
+    fn verified_bundled_kind(&self, device: DeviceId) -> Option<BuiltinKind> {
+        self.manager.verified_bundled_kind(device)
     }
 
     fn catalog(&self) -> &Catalog {

@@ -10,7 +10,6 @@ use komponist_sampler::links::{self, Collector, SampleLink};
 use komponist_device_core::pinned_clap_state::{MAX_SAMPLE_ASSET_BYTES, SAMPLE_ASSETS_FIELD};
 use serde_json::Value;
 
-use crate::bundled_clap::VerifiedClap;
 use crate::catalog::requires_bundled;
 
 fn kind_by_id(id: &str) -> Option<Internal> {
@@ -19,10 +18,6 @@ fn kind_by_id(id: &str) -> Option<Internal> {
         "org.klang-studio.komponist.general-sampler" => Some(Internal::GeneralSampler),
         _ => None,
     }
-}
-
-pub(super) fn is_sampler(bundle: &VerifiedClap) -> bool {
-    kind_by_id(bundle.plugin_id()).is_some()
 }
 
 /// The sampler kind for a project reference that requires the packaged bundle.

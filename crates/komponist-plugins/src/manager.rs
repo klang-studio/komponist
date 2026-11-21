@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use komponist_builtin::{BuiltinKind, Internal};
 use komponist_engine::Processor;
 use komponist_ipc::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderModel};
 use komponist_ipc::shm::MAX_BLOCK;
@@ -355,7 +356,7 @@ pub struct PluginManager {
     bundled_clap: Option<BundledClap>,
     force_bundled_bridge: bool,
     project_dir: Option<PathBuf>,
-    verified_samplers: BTreeSet<DeviceId>,
+    verified_bundles: BTreeMap<DeviceId, BuiltinKind>,
     direct: BTreeMap<DeviceId, DirectDevice>,
     retiring_direct: Vec<DirectDevice>,
     /// Status of devices without a bridge: `Missing`, or `Crashed` when the bridge could not start.
@@ -417,7 +418,7 @@ impl PluginManager {
             bundled_clap,
             force_bundled_bridge,
             project_dir: None,
-            verified_samplers: BTreeSet::new(),
+            verified_bundles: BTreeMap::new(),
             direct: BTreeMap::new(),
             retiring_direct: Vec::new(),
             statuses: BTreeMap::new(),
@@ -636,7 +637,7 @@ impl PluginManager {
         // A project device has one instance. A local instance keeps its control half alive until
         // the engine returns the audio half; external bridge retirement remains asynchronous.
         self.retire(device.id, false);
-        let mut verified_sampler = false;
+        let mut verified_kind = None;
         let mut verified_bundle = None;
         let mut state = state;
         if requires_bundled(&device.plugin)
@@ -667,8 +668,9 @@ impl PluginManager {
                     return Err(error);
                 }
             };
-            verified_sampler = bundled_sampler::is_sampler(&proof);
-            if verified_sampler
+            verified_kind = BuiltinKind::all()
+                .find(|kind| crate::legacy_bundled::clap_id(*kind) == proof.plugin_id());
+            if is_sampler_kind(verified_kind)
                 && let Some(original) = state.as_ref()
                 && let Some(runtime) = self.sampler_runtime_state(original)
             {
@@ -692,8 +694,8 @@ impl PluginManager {
                         });
                         instance.set_render_mode(device.id, self.render_mode, &mut self.pending);
                         self.direct.insert(device.id, instance);
-                        if verified_sampler {
-                            self.verified_samplers.insert(device.id);
+                        if let Some(kind) = verified_kind {
+                            self.verified_bundles.insert(device.id, kind);
                         }
                         Ok(Box::new(processor))
                     }
@@ -733,8 +735,8 @@ impl PluginManager {
                 }
                 self.statuses.remove(&device.id);
                 self.bridges.insert(device.id, started.bridge);
-                if verified_sampler {
-                    self.verified_samplers.insert(device.id);
+                if let Some(kind) = verified_kind {
+                    self.verified_bundles.insert(device.id, kind);
                 }
                 self.pending.push(PluginManagerEvent::StatusChanged {
                     device: device.id,
@@ -773,7 +775,7 @@ impl PluginManager {
     /// SIGKILL. Its process is reaped by later polls.
     fn retire(&mut self, device: DeviceId, graceful: bool) {
         self.discard_queued_snapshots(device);
-        self.verified_samplers.remove(&device);
+        self.verified_bundles.remove(&device);
         if let Some(direct) = self.direct.remove(&device) {
             self.retiring_direct.push(direct);
         }
@@ -792,6 +794,13 @@ impl PluginManager {
     pub fn release(&mut self, device: DeviceId) {
         self.retire(device, true);
         self.statuses.remove(&device);
+    }
+
+    /// The built-in device an active authenticated package instance implements.
+    /// Project references and ordinary scanned plug-ins cannot set this identity.
+    pub fn verified_bundled_kind(&self, device: DeviceId) -> Option<BuiltinKind> {
+        let kind = self.verified_bundles.get(&device).copied()?;
+        (self.status(device) == DeviceStatus::Ok).then_some(kind)
     }
 
     /// Status of a device; `Ok` for devices this manager does not manage (in-process built-ins).
@@ -966,9 +975,7 @@ impl PluginManager {
     /// Restores `state` in the running plugin of `device` (undo or redo changed the device's
     /// state in the document); `false` if the device has no running bridge.
     pub fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
-        let runtime = self
-            .verified_samplers
-            .contains(&device)
+        let runtime = is_sampler_kind(self.verified_bundles.get(&device).copied())
             .then(|| self.sampler_runtime_state(state))
             .flatten();
         let state = runtime.as_ref().unwrap_or(state);
@@ -1303,7 +1310,7 @@ impl PluginManager {
     /// for them to exit, then SIGKILL for the rest. Cancels a running scan. Blocking.
     pub fn shutdown(&mut self) {
         self.scan = None;
-        self.verified_samplers.clear();
+        self.verified_bundles.clear();
         // App shutdown stops the audio stream before shutting down the plugin host.
         self.retiring_direct
             .extend(std::mem::take(&mut self.direct).into_values());
@@ -1343,6 +1350,15 @@ impl PluginManager {
     pub fn bridge_pid(&self, device: DeviceId) -> Option<u32> {
         self.bridges.get(&device).map(Bridge::pid)
     }
+}
+
+fn is_sampler_kind(kind: Option<BuiltinKind>) -> bool {
+    matches!(
+        kind,
+        Some(BuiltinKind::Internal(
+            Internal::Sampler | Internal::GeneralSampler
+        ))
+    )
 }
 
 #[cfg(test)]
