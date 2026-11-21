@@ -102,7 +102,7 @@ device core. For example, with a pinned checkout in a sibling directory named
 [dependencies]
 komponist-device-core = { path = "../komponist-source/crates/builtin-devices/core" }
 komponist-native-clap-sdk = { path = "../komponist-source/sdk/native-clap/author" }
-nice-plug = { git = "https://github.com/klang-studio/nice-plug", rev = "ae293198a5def51d89f82ce8e9ad77f255f32b00", default-features = false }
+nice-plug = { git = "https://github.com/klang-studio/nice-plug", rev = "0960d393d72f9f0be4f5216adad2e370fb552397", default-features = false }
 ```
 
 Keep the device's nice-plug dependency at the same Git revision as the SDK. The SDK lockfile
