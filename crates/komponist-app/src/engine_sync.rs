@@ -606,21 +606,26 @@ impl EngineSync {
         changes: compile::SlotChanges,
     ) {
         let setup = self.setup();
-        let mut late_latency = false;
+        let mut new_processor_metadata = false;
         for (device, slot) in changes.added {
             let Some((_, _, device)) = project.find_device(device) else {
                 continue;
             };
             if let Some(processor) = self.host.create_processor(device, setup) {
                 self.prepare_sampler_sync(project, device);
-                late_latency |= processor.latency() > 0;
+                new_processor_metadata |= processor.latency() > 0
+                    || self
+                        .host
+                        .params(device.id)
+                        .is_some_and(|params| !params.is_empty());
                 self.send(Command::InsertProcessor { slot, processor });
             }
         }
-        if late_latency {
-            // The host knows a new processor's latency only once it exists (WP-91): compile again
-            // so the delay compensation counts it. Compile against the last sent program so
-            // slots whose removals are still to be queued stay reserved.
+        if new_processor_metadata {
+            // Latency and CLAP parameter metadata can first become available on insertion.
+            // Compile the automation and compensation with those descriptors before publishing
+            // the program, including when export detaches it before the next host poll.
+            // Keep slots whose removals have not yet been queued reserved.
             next = self.compile_project(project);
         }
         let values = self.macro_parameters(&next.program);
