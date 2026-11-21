@@ -5,7 +5,7 @@ members = [
     "example",
     "xtask",
     "bundled/adapter",
-    "bundled/hall",
+    "bundled/hall", "bundled/volt",
     "bundled/delay",
     "bundled/eq",
     "bundled/presse",

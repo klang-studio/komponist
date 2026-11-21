@@ -1,5 +1,6 @@
 //! Adapts the shared device specs and DSP to the public native CLAP SDK.
 
+mod instrument;
 mod parameter;
 
 use std::ffi::{CStr, c_void};
@@ -11,12 +12,13 @@ use komponist_model::params::ParamInfo;
 use komponist_native_clap_sdk::{DeviceLayout, NativeClapLayout, PageLabels, Panel};
 use nice_plug::prelude::*;
 
+pub use instrument::Instrument;
 pub use parameter::Binding;
 
 const STEREO: NonZeroU32 = NonZeroU32::new(2).unwrap();
 
-/// A spec-based effect and its stable CLAP identity.
-pub trait EffectDefinition: Send + 'static {
+/// A spec-based device and its stable CLAP identity.
+pub trait DeviceDefinition: Send + 'static {
     const SPEC: &'static Spec;
     const ID: &'static str;
     const NAME: &'static str;
@@ -36,7 +38,13 @@ pub trait EffectDefinition: Send + 'static {
     fn layout(lang: Lang) -> DeviceLayout {
         Self::SPEC.layout_in(lang).clone()
     }
+
+    /// Adjust labels when a native device card uses view switches outside public v1.
+    fn configure_panel(_panel: &mut Panel) {}
 }
+
+/// Shared definition for spec-based audio effects.
+pub use DeviceDefinition as EffectDefinition;
 
 /// A regular stereo CLAP effect backed by an existing device processor.
 pub struct Effect<T> {
@@ -200,58 +208,72 @@ impl<T: EffectDefinition> ClapPlugin for Effect<T> {
 
 impl<T: EffectDefinition> NativeClapLayout for Effect<T> {
     fn panel() -> Panel {
-        let english = T::layout(Lang::En);
-        let german = T::layout(Lang::De);
-        let label = |en: &str, de: &str| {
-            [("en".into(), en.to_owned()), ("de".into(), de.to_owned())].into()
-        };
-        let pages = english
-            .pages
-            .iter()
-            .zip(&german.pages)
-            .enumerate()
-            .map(|(index, (en, de))| PageLabels {
-                key: format!("page-{index}"),
-                labels: label(
-                    if en.name.is_empty() { "Main" } else { &en.name },
-                    if de.name.is_empty() {
-                        "Hauptseite"
-                    } else {
-                        &de.name
-                    },
-                ),
-            })
-            .collect();
-        let mut parameter_labels = std::collections::BTreeMap::new();
-        let mut choice_labels = std::collections::BTreeMap::new();
-        for (en, de) in T::SPEC
-            .params_in(Lang::En)
-            .iter()
-            .zip(T::SPEC.params_in(Lang::De))
+        panel_for::<T>()
+    }
+}
+
+fn panel_for<T: DeviceDefinition>() -> Panel {
+    let mut panel = panel_from_parts(
+        T::layout,
+        T::SPEC.params_in(Lang::En),
+        T::SPEC.params_in(Lang::De),
+    );
+    T::configure_panel(&mut panel);
+    panel
+}
+
+/// Construct the bilingual public SDK panel from a device's model metadata.
+pub fn panel_from_parts(
+    layout: impl Fn(Lang) -> DeviceLayout,
+    english_params: &[ParamInfo],
+    german_params: &[ParamInfo],
+) -> Panel {
+    let english = layout(Lang::En);
+    let german = layout(Lang::De);
+    let label =
+        |en: &str, de: &str| [("en".into(), en.to_owned()), ("de".into(), de.to_owned())].into();
+    let pages = english
+        .pages
+        .iter()
+        .zip(&german.pages)
+        .enumerate()
+        .map(|(index, (en, de))| PageLabels {
+            key: format!("page-{index}"),
+            labels: label(
+                if en.name.is_empty() { "Main" } else { &en.name },
+                if de.name.is_empty() {
+                    "Hauptseite"
+                } else {
+                    &de.name
+                },
+            ),
+        })
+        .collect();
+    let mut parameter_labels = std::collections::BTreeMap::new();
+    let mut choice_labels = std::collections::BTreeMap::new();
+    for (en, de) in english_params.iter().zip(german_params) {
+        parameter_labels.insert(en.id.clone(), label(&en.name, &de.name));
+        if let (
+            komponist_model::params::ParamKind::Enum(en_choices),
+            komponist_model::params::ParamKind::Enum(de_choices),
+        ) = (&en.kind, &de.kind)
         {
-            parameter_labels.insert(en.id.clone(), label(&en.name, &de.name));
-            if let (
-                komponist_model::params::ParamKind::Enum(en_choices),
-                komponist_model::params::ParamKind::Enum(de_choices),
-            ) = (&en.kind, &de.kind)
-            {
-                choice_labels.insert(
-                    en.id.clone(),
-                    en_choices
-                        .iter()
-                        .zip(de_choices)
-                        .map(|(en, de)| label(en, de))
-                        .collect(),
-                );
-            }
+            choice_labels.insert(
+                en.id.clone(),
+                en_choices
+                    .iter()
+                    .zip(de_choices)
+                    .map(|(en, de)| label(en, de))
+                    .collect(),
+            );
         }
-        Panel {
-            default_locale: "en".into(),
-            locales: vec!["en".into(), "de".into()],
-            grid: english,
-            pages,
-            parameter_labels,
-            choice_labels,
-        }
+    }
+    Panel {
+        default_locale: "en".into(),
+        locales: vec!["en".into(), "de".into()],
+        grid: english,
+        pages,
+        parameter_labels,
+        choice_labels,
     }
 }

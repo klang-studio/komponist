@@ -507,6 +507,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "komponist-bundled-volt"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "komponist-bundled-clap-adapter",
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-native-clap-sdk",
+ "komponist-volt",
+ "nice-plug",
+ "serde_json",
+]
+
+[[package]]
 name = "komponist-delay"
 version = "0.2.0"
 dependencies = [
@@ -641,6 +656,16 @@ name = "komponist-tokens"
 version = "0.2.0"
 dependencies = [
  "serde_json",
+]
+
+[[package]]
+name = "komponist-volt"
+version = "0.2.0"
+dependencies = [
+ "klang-dsp",
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-model",
 ]
 
 [[package]]
