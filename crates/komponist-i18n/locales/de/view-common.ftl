@@ -1,4 +1,4 @@
-## Texts that several views share: the grid dropdown, snap and zoom buttons, the "zu spät" indicator (`views/grid.rs`, `views/late.rs`).
+## Texts that several views share: the grid dropdown, snap and zoom buttons, the "zu spät" indicator (`views/grid.rs`, `views/late.rs`), the compile diagnostics (`diagnostics.rs`).
 
 # Accessible name and label of the grid dropdown (arrangement header, piano roll toolbar).
 view-grid = Raster
@@ -51,6 +51,49 @@ late-blocks =
     { $n ->
         [one] 1 Block zu spät
        *[other] { $n } Blöcke zu spät
+    }
+
+## Compile diagnostics: tracks and devices the engine leaves out (#92; `diagnostics.rs`, not in the design)
+
+# Status of a track or device the engine leaves out: the inspector's device row and track section.
+not-played-label = spielt nicht
+
+# Tooltip detail of a track or device the engine leaves out; `$reason` is one of the `not-played-reason-*` texts.
+not-played-detail = Spielt nicht: { $reason }
+
+# Reason: the track comes after the most tracks the engine holds.
+not-played-reason-track-limit = mehr als { $limit } Spuren
+
+# Reason: no processor slot is left (the most devices the engine holds).
+not-played-reason-slot-limit = mehr als { $limit } Geräte
+
+# Reason: more MIDI effects in front of an instrument than the engine runs.
+not-played-reason-midi-effect-limit = mehr als { $limit } MIDI-Effekte vor dem Instrument
+
+# Reason: the project file holds this track or device id twice (the later one is left out).
+not-played-reason-duplicate-id = ID doppelt in der Projektdatei
+
+# Reason: a MIDI effect behind an instrument or audio effect.
+not-played-reason-misplaced-midi-effect = MIDI-Effekt nicht am Anfang der Kette
+
+# Reason: a second instrument, or an instrument behind an audio effect.
+not-played-reason-misplaced-instrument = Instrument nicht direkt hinter den MIDI-Effekten
+
+# Reason: an instrument or MIDI effect on an audio track, a bus or the master.
+not-played-reason-wrong-chain = Instrumente und MIDI-Effekte nur auf MIDI-Spuren
+
+# Status bar and export summary: tracks the engine leaves out, with the reason (a `not-played-reason-*` text).
+not-played-tracks =
+    { $count ->
+        [one] 1 Spur spielt nicht: { $reason }
+       *[other] { $count } Spuren spielen nicht: { $reason }
+    }
+
+# Status bar and export summary: devices the engine leaves out, with the reason.
+not-played-devices =
+    { $count ->
+        [one] 1 Gerät spielt nicht: { $reason }
+       *[other] { $count } Geräte spielen nicht: { $reason }
     }
 
 ## Track hue names (accessible names and tooltips of the colour swatches, in the order of `komponist_tokens::track::HUES`)

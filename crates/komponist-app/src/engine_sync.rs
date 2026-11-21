@@ -407,6 +407,11 @@ pub struct EngineSync {
     host: Box<dyn DeviceHost>,
     /// The program last sent to the engine.
     previous: Option<Program>,
+    /// What `previous` leaves out of its project (#92), in project order.
+    diagnostics: Vec<compile::Diagnostic>,
+    /// A sync left out something the one before did not; the app takes it once
+    /// ([`EngineSync::take_diagnostics_notice`]).
+    diagnostics_notice: bool,
     /// Document revision `previous` was compiled from.
     synced: Option<u64>,
     /// How many programs [`EngineSync::send_project`] compiled and sent (tests: a gesture must not
@@ -502,6 +507,8 @@ impl EngineSync {
             midi_changes: Vec::new(),
             host,
             previous: None,
+            diagnostics: Vec::new(),
+            diagnostics_notice: false,
             synced: None,
             programs_sent: 0,
             fast: None,
@@ -568,34 +575,34 @@ impl EngineSync {
     pub fn send_project(&mut self, project: &Project) {
         self.sync_macro_params();
         let next = self.compile_project(project);
-        let changes = compile::slot_changes(self.previous.as_ref(), &next);
+        let changes = compile::slot_changes(self.previous.as_ref(), &next.program);
         // The first build reserves the slots it removes. If that exhausts the table, see
         // whether the released slots can now take devices excluded from the first program.
         let check_freed_slots = !changes.removed.is_empty()
-            && next.slots.entries().len() + changes.removed.len() == MAX_SLOTS;
+            && next.program.slots.entries().len() + changes.removed.len() == MAX_SLOTS;
         self.send_compiled_project(project, next, changes);
         if check_freed_slots {
             let next = self.compile_project(project);
-            let changes = compile::slot_changes(self.previous.as_ref(), &next);
+            let changes = compile::slot_changes(self.previous.as_ref(), &next.program);
             if !changes.added.is_empty() {
                 self.send_compiled_project(project, next, changes);
             }
         }
     }
 
-    fn compile_project(&self, project: &Project) -> Program {
+    fn compile_project(&self, project: &Project) -> compile::CompileResult {
         let env = Env {
             midi: self.midi.as_ref(),
             host: &*self.host,
             rate: f64::from(self.sample_rate()),
         };
-        compile::build(project, self.previous.as_ref(), &env)
+        compile::build_with_diagnostics(project, self.previous.as_ref(), &env)
     }
 
     fn send_compiled_project(
         &mut self,
         project: &Project,
-        mut next: Program,
+        mut next: compile::CompileResult,
         changes: compile::SlotChanges,
     ) {
         let setup = self.setup();
@@ -616,11 +623,11 @@ impl EngineSync {
             // slots whose removals are still to be queued stay reserved.
             next = self.compile_project(project);
         }
-        let values = self.macro_parameters(&next);
+        let values = self.macro_parameters(&next.program);
         if values != self.macro_params {
             let retained: HashSet<_> = values.iter().map(|&(device, id, _)| (device, id)).collect();
             let released = self.macro_params.iter().any(|&(device, id, _)| {
-                next.slots.slot(device).is_some() && !retained.contains(&(device, id))
+                next.program.slots.slot(device).is_some() && !retained.contains(&(device, id))
             });
             self.set_macro_params(values);
             if released {
@@ -638,9 +645,15 @@ impl EngineSync {
                 self.prepare_sampler_sync(project, device);
             }
         }
+        let compile::CompileResult {
+            program: next,
+            diagnostics,
+        } = next;
         self.send(Command::SetProgram(Box::new(next.clone())));
         self.programs_sent += 1;
         self.previous = Some(next);
+        self.diagnostics_notice |= diagnostics.iter().any(|d| !self.diagnostics.contains(d));
+        self.diagnostics = diagnostics;
         for (device, slot) in changes.removed {
             self.send(Command::RemoveProcessor { slot });
             self.host.release(device);
@@ -1292,6 +1305,19 @@ impl EngineSync {
         self.previous.as_ref()
     }
 
+    /// The tracks and devices the program last sent leaves out of its project, and why (#92), in
+    /// project order; empty before the first sync.
+    pub fn diagnostics(&self) -> &[compile::Diagnostic] {
+        &self.diagnostics
+    }
+
+    /// Whether a sync since the last call left out a track or device that the program before it
+    /// played (or a known one for another reason, or at another position): the app tells it in
+    /// the status bar.
+    pub fn take_diagnostics_notice(&mut self) -> bool {
+        std::mem::take(&mut self.diagnostics_notice)
+    }
+
     /// The level meter of `track` in the program last sent.
     pub fn track_meter(&self, track: TrackId) -> Option<&Arc<TrackMeter>> {
         self.previous.as_ref()?.meter(track)
@@ -1350,6 +1376,9 @@ impl EngineSync {
         }
         self.synced = None;
         self.fast = None;
+        // The next project's diagnostics are all new, even those equal to the old project's.
+        self.diagnostics.clear();
+        self.diagnostics_notice = false;
         self.macro_params.clear();
         self.pending_macro_edits.clear();
         let events = self.host.poll();
@@ -1607,6 +1636,81 @@ mod tests {
             sync.poll();
             sync.telemetry().transport() == TransportState::Stopped
         }));
+        sync.shutdown();
+    }
+
+    /// #92: the diagnostics of the program last sent, and a notice only when a sync leaves out
+    /// something new.
+    #[test]
+    fn diagnostics_follow_the_sent_program_and_notice_only_new_ones() {
+        use komponist_engine::MAX_TRACKS;
+        use komponist_engine::compile::{Reason, Subject};
+        let add = |project: &Project| {
+            let spec = edits::NewTrack {
+                name: None,
+                hue: None,
+                instrument: None,
+                index: None,
+                arm_exclusive: false,
+            };
+            edits::add_track(project, spec).unwrap().0
+        };
+        let mut project = Project::new("Full");
+        for _ in 0..MAX_TRACKS {
+            project = add(&project);
+        }
+        let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
+        let mut doc = Document::new(project);
+        sync.sync(&doc);
+        assert_eq!(sync.diagnostics(), []);
+        assert!(!sync.take_diagnostics_notice());
+
+        doc.apply_with("Add track", |p| Ok((add(p), ()))).unwrap();
+        sync.sync(&doc);
+        let last = doc.project().tracks[MAX_TRACKS].id;
+        assert_eq!(sync.diagnostics().len(), 1);
+        assert_eq!(sync.diagnostics()[0].reason, Reason::TrackLimit);
+        assert_eq!(
+            sync.diagnostics()[0].subject,
+            Subject::Track {
+                track: last,
+                index: MAX_TRACKS
+            }
+        );
+        assert!(sync.take_diagnostics_notice());
+        assert!(!sync.take_diagnostics_notice(), "taken once");
+
+        // A change that leaves out nothing new says nothing.
+        doc.apply_with("Rename", |p| {
+            Ok((
+                edits::set_track_prop(p, &[last], TrackProp::Name("Extra".into()))?,
+                (),
+            ))
+        })
+        .unwrap();
+        sync.sync(&doc);
+        assert_eq!(sync.diagnostics().len(), 1);
+        assert!(!sync.take_diagnostics_notice());
+
+        // Removing the extra track clears the diagnostics without a notice.
+        doc.apply_with("Remove", |p| Ok((edits::remove_tracks(p, &[last])?, ())))
+            .unwrap();
+        sync.sync(&doc);
+        assert_eq!(sync.diagnostics(), []);
+        assert!(!sync.take_diagnostics_notice());
+
+        // Another project (open, new) that leaves out the same track at the same position: its
+        // diagnostic is new, though equal to one the previous project had.
+        doc.apply_with("Add track", |p| Ok((add(p), ()))).unwrap();
+        sync.sync(&doc);
+        assert!(sync.take_diagnostics_notice());
+        let before = sync.diagnostics().to_vec();
+        sync.reset();
+        assert_eq!(sync.diagnostics(), []);
+        let other = Document::new(doc.project().as_ref().clone());
+        sync.sync(&other);
+        assert_eq!(sync.diagnostics(), before);
+        assert!(sync.take_diagnostics_notice());
         sync.shutdown();
     }
 

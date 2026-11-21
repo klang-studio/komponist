@@ -32,6 +32,9 @@ pub(super) fn section(
     let t = ctx.lang;
     let index = project.track_index(track.id).unwrap_or(0);
     let position = model::position(index, project.tracks.len());
+    // A track the engine leaves out says so instead of its position or kind (#92).
+    let not_played = crate::diagnostics::for_track(ctx.engine.diagnostics(), index)
+        .map(|d| crate::diagnostics::detail(t, d));
     let chip = crate::views::mixer::model::base_color(track.hue.0);
     let (title, meta) = if track.is_bus() {
         (
@@ -46,7 +49,11 @@ pub(super) fn section(
     } else {
         (t.inspector_section_track(), position)
     };
-    frame(ui, x, y, title, Meta::Text(&meta), |ui, col| {
+    let meta = match &not_played {
+        Some(detail) => Meta::Error(t.not_played_label(), detail),
+        None => Meta::Text(&meta),
+    };
+    frame(ui, x, y, title, meta, |ui, col| {
         let target = RenameTarget::Track(track.id);
         let (name_rect, rename) =
             super::name_row(ui, col, &track.name, chip, true, !insp.renaming(&target));
@@ -357,12 +364,19 @@ pub(super) fn devices_section(
     insp: &mut Inspector,
     ui: &mut Ui,
     ctx: &mut ViewCtx<'_>,
+    project: &Project,
     x: Rangef,
     y: &mut f32,
     track: &Track,
 ) {
     let t = ctx.lang;
-    let rows = model::device_rows(ctx.lang, &track.channel.devices, ctx.engine.host());
+    let rows = model::device_rows(
+        ctx.lang,
+        &track.channel.devices,
+        ctx.engine.host(),
+        project.track_index(track.id).unwrap_or(0),
+        ctx.engine.diagnostics(),
+    );
     let now = ui.input(|i| i.time);
     let (_, add) = frame(
         ui,
@@ -407,8 +421,9 @@ impl Inspector {
 
 /// One device row (`D`): `surface.3` for the instrument (semibold), `surface.2` for effects; the
 /// power square green when running, `surface.4` with a `text.3` contour when bypassed, `text.3`
-/// while loading, `surface.4` when crashed or missing; the name `text.3` when bypassed, red when
-/// crashed or missing; on the right the format tag in Mono, or the failure, or "zu spät".
+/// while loading, `surface.4` when crashed, missing or left out of the program; the name `text.3`
+/// when bypassed, red when crashed, missing or left out; on the right the format tag in Mono, or
+/// the failure, or "zu spät".
 fn device_row(
     ui: &mut Ui,
     ctx: &mut ViewCtx<'_>,
@@ -506,8 +521,11 @@ fn device_row(
         info.current_text_value = Some(tag_text.to_owned());
         info
     });
-    let late_text = late.map(|n| t.late_blocks(n));
-    match &late_text {
+    let detail = match row.status {
+        RowStatus::NotPlayed(diagnostic) => Some(crate::diagnostics::detail(t, &diagnostic)),
+        _ => late.map(|n| t.late_blocks(n)),
+    };
+    match &detail {
         Some(t) => Tip::new(&row.name).detail(t).attach(&response),
         None => Tip::new(&row.name).attach(&response),
     }

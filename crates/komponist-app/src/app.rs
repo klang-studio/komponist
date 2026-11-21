@@ -414,6 +414,18 @@ impl App {
         self.set_status(self.lang.status_workers_no_workgroup(), StatusKind::Info);
     }
 
+    /// Tells in the status bar what the engine leaves out of the project (#92) when the last
+    /// syncs left out something new: every left-out track and device, counted per reason
+    /// ([`crate::diagnostics::summary`]).
+    pub fn report_compile_diagnostics(&mut self) {
+        if !self.engine.take_diagnostics_notice() {
+            return;
+        }
+        if let Some(text) = crate::diagnostics::summary(self.lang, self.engine.diagnostics()) {
+            self.set_status(text, StatusKind::Error);
+        }
+    }
+
     /// Tells in the status bar which MIDI inputs appeared or vanished in the last scans
     /// (`EngineSync::take_midi_changes`), by the name S07 shows. Several changes make one
     /// message, joined by " · ".
@@ -580,6 +592,7 @@ impl App {
             self.report_workers_without_workgroup();
         }
         self.report_midi_changes();
+        self.report_compile_diagnostics();
         let playhead = self.engine.playhead();
         for event in events {
             if let EngineEvent::PluginParams {

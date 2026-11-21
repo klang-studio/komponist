@@ -276,6 +276,13 @@ audio plans, routing, gates and latency information. Compilation runs outside th
 reuses unchanged shared data and performs no audio-file IO. `EngineSync` installs programs and
 maintains slots as the document changes.
 
+Compilation never fails: what the engine cannot play is left out of the program. The app compiles
+with `compile::build_with_diagnostics`, which also returns one `Diagnostic` per left-out track or
+device (position, id and reason: track, MIDI-effect or slot limit, duplicate id, a device in the
+wrong place or on a chain that takes effects only), in project order (#92). `EngineSync` keeps the
+diagnostics of the program it sent; the status bar reports new ones, the inspector marks the track
+or device "spielt nicht" with the reason, and the export summary lists them.
+
 UI-to-engine commands include transport, program/processor installation, fast parameter and
 mixer changes, live notes and recording setup. Engine-to-UI events include captured MIDI,
 transport transitions, processor failures and retired objects. Atomic telemetry supplies

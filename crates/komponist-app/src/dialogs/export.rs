@@ -74,6 +74,13 @@ pub fn dropped_text(t: Lang, devices: &[String]) -> String {
     }
 }
 
+/// Appended to the finished message when the engine leaves tracks or devices out of the project
+/// (#92): " · 2 Spuren spielen nicht: mehr als 128 Spuren" ([`crate::diagnostics::summary`]);
+/// empty without diagnostics.
+pub fn not_played_text(t: Lang, diagnostics: &[komponist_engine::compile::Diagnostic]) -> String {
+    crate::diagnostics::summary(t, diagnostics).map_or_else(String::new, |s| format!(" · {s}"))
+}
+
 /// The sample rates of the dropdown (ARCHITECTURE §13.5).
 pub const RATES: [u32; 3] = [44_100, 48_000, 96_000];
 
@@ -925,6 +932,19 @@ mod tests {
         assert_eq!(
             dropped_text(t, &["Surge XT".into(), "Dexed".into()]),
             " · Surge XT, Dexed sind ausgefallen"
+        );
+        use komponist_engine::compile::{Diagnostic, Reason, Subject};
+        assert_eq!(not_played_text(t, &[]), "");
+        let skipped = Diagnostic {
+            subject: Subject::Track {
+                track: komponist_model::TrackId(129),
+                index: 128,
+            },
+            reason: Reason::TrackLimit,
+        };
+        assert_eq!(
+            not_played_text(t, &[skipped]),
+            " · 1 Spur spielt nicht: mehr als 128 Spuren"
         );
     }
 

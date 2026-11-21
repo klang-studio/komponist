@@ -59,8 +59,11 @@ use crate::route::GateTable;
 use crate::{MAX_SLOTS, MAX_STAGES, MAX_TRACKS};
 
 mod automation;
+mod diagnostics;
 mod graph;
 mod macros;
+
+pub use diagnostics::{Chain, Diagnostic, Reason, Subject};
 
 /// What the compiler needs from outside the document. Implemented by the app (from
 /// `komponist-audio`'s MIDI ports and `komponist-plugins`' latencies); [`NoEnv`] for tests.
@@ -105,29 +108,65 @@ impl CompileEnv for NoEnv {
     }
 }
 
+/// A program and what it leaves out of the project ([`build_with_diagnostics`]).
+#[derive(Debug, Clone)]
+pub struct CompileResult {
+    /// The program.
+    pub program: Program,
+    /// The tracks and devices of the project the program does not play, in project order.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
 /// Compiles `project` into a program, reusing unchanged track programs and the slot assignment of
-/// `previous`. Pure apart from allocation; never fails. Tracks beyond [`crate::MAX_TRACKS`] are
-/// left out.
+/// `previous`. Pure apart from allocation; never fails. [`build_with_diagnostics`] without the
+/// diagnostics.
+pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv) -> Program {
+    build_with_diagnostics(project, previous, env).program
+}
+
+/// Compiles `project` like [`build`] and reports each track and device it leaves out
+/// ([`Diagnostic`], #92). Tracks beyond [`crate::MAX_TRACKS`] are left out.
 ///
 /// Invalid data is skipped: notes outside `0 ..= 127` after transposition, notes shorter than one
-/// tick or before tick 0, a MIDI clip whose active take does not exist, tracks and devices whose
-/// id appeared before (the first occurrence in project order wins, the master comes last),
-/// instruments anywhere but right behind the MIDI effects of a track chain, MIDI effects anywhere
-/// but at the head of a track chain, instruments on the master, and devices that
-/// find no free slot below [`crate::MAX_SLOTS`].
-pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv) -> Program {
+/// tick or before tick 0, a MIDI clip whose active take does not exist (these silently), and with
+/// a diagnostic: tracks and devices whose id appeared before (the first occurrence in project
+/// order wins, the master comes last), instruments anywhere but right behind the MIDI effects of a
+/// track chain, MIDI effects anywhere but at the head of a track chain or beyond
+/// [`crate::MAX_STAGES`], instruments and MIDI effects on the master, a bus or an audio track, and
+/// devices that find no free slot below [`crate::MAX_SLOTS`].
+pub fn build_with_diagnostics(
+    project: &Project,
+    previous: Option<&Program>,
+    env: &dyn CompileEnv,
+) -> CompileResult {
+    let mut diagnostics = Vec::new();
     let mut track_ids = HashSet::new();
-    let tracks: Vec<&Arc<Track>> = project
-        .tracks
-        .iter()
-        .filter(|t| track_ids.insert(t.id))
-        .take(MAX_TRACKS)
-        .collect();
+    let mut indices = Vec::new();
+    let mut tracks: Vec<&Arc<Track>> = Vec::new();
+    for (index, track) in project.tracks.iter().enumerate() {
+        let reason = if !track_ids.insert(track.id) {
+            Reason::DuplicateId
+        } else if tracks.len() == MAX_TRACKS {
+            Reason::TrackLimit
+        } else {
+            indices.push(index);
+            tracks.push(track);
+            continue;
+        };
+        diagnostics.push(Diagnostic {
+            subject: Subject::Track {
+                track: track.id,
+                index,
+            },
+            reason,
+        });
+    }
 
     let mut device_ids = HashSet::new();
-    let track_chains: Vec<Vec<&Device>> = tracks
+    let track_chains: Vec<(Chain, Vec<(usize, &Device)>)> = tracks
         .iter()
-        .map(|t| {
+        .zip(&indices)
+        .map(|(t, &index)| {
             // A bus runs audio effects only (it never holds an instrument or MIDI effects), and so
             // does an audio track: its source node is the clip playback (`AudioPlan`).
             let kind = if t.is_bus() || t.is_audio() {
@@ -135,11 +174,46 @@ pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv
             } else {
                 ChainKind::Track
             };
-            valid_chain(&t.channel.devices, kind, &mut device_ids)
+            let chain = Chain::Track { track: t.id, index };
+            let devices = valid_chain(
+                &t.channel.devices,
+                kind,
+                chain,
+                &mut device_ids,
+                &mut diagnostics,
+            );
+            (chain, devices)
         })
         .collect();
-    let master_chain = valid_chain(&project.master.devices, ChainKind::Master, &mut device_ids);
+    let master_chain = valid_chain(
+        &project.master.devices,
+        ChainKind::Master,
+        Chain::Master,
+        &mut device_ids,
+        &mut diagnostics,
+    );
     let slots = assign_slots(previous.map(|p| &*p.slots), device_ids);
+    let without_slot = track_chains
+        .iter()
+        .map(|(chain, devices)| (*chain, devices))
+        .chain(std::iter::once((Chain::Master, &master_chain)))
+        .flat_map(|(chain, devices)| {
+            devices
+                .iter()
+                .filter(|(_, d)| slots.slot(d.id).is_none())
+                .map(move |&(index, d)| Diagnostic {
+                    subject: Subject::Device {
+                        chain,
+                        device: d.id,
+                        index,
+                        role: d.role,
+                    },
+                    reason: Reason::SlotLimit,
+                })
+        });
+    diagnostics.extend(without_slot);
+    diagnostics.sort_by_key(Diagnostic::order);
+    let track_chains: Vec<_> = track_chains.into_iter().map(|(_, d)| d).collect();
 
     let chains: Vec<Vec<ChainSlot>> = track_chains
         .iter()
@@ -193,7 +267,7 @@ pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv
         .collect();
 
     let master = &project.master;
-    Program {
+    let program = Program {
         tempo_map: project.tempo_map(),
         loop_range: project.loop_range,
         loop_on: project.loop_on,
@@ -212,6 +286,10 @@ pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv
         },
         slots: Arc::new(slots),
         routing: graph.routing,
+    };
+    CompileResult {
+        program,
+        diagnostics,
     }
 }
 
@@ -265,29 +343,48 @@ enum ChainKind {
     Master,
 }
 
-/// The devices of `devices` that may play: each id once across the project (`seen` collects them);
-/// MIDI effects only at the head of a track chain (at most [`MAX_STAGES`]), an instrument only
-/// right behind them.
+/// The devices of `devices` that may play, with their index in `devices`: each id once across the
+/// project (`seen` collects them); MIDI effects only at the head of a track chain (at most
+/// [`MAX_STAGES`]), an instrument only right behind them. Each device left out gets a diagnostic.
 fn valid_chain<'a>(
     devices: &'a [Arc<Device>],
     kind: ChainKind,
+    chain: Chain,
     seen: &mut HashSet<DeviceId>,
-) -> Vec<&'a Device> {
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<(usize, &'a Device)> {
     let midi = devices
         .iter()
         .take_while(|d| d.role == DeviceRole::MidiEffect)
         .count();
-    devices
-        .iter()
-        .enumerate()
-        .filter(|(index, d)| match d.role {
-            DeviceRole::Effect => true,
-            DeviceRole::MidiEffect => kind == ChainKind::Track && *index < midi.min(MAX_STAGES),
-            DeviceRole::Instrument => kind == ChainKind::Track && *index == midi,
-        })
-        .filter(|(_, d)| seen.insert(d.id))
-        .map(|(_, d)| &**d)
-        .collect()
+    let mut valid = Vec::with_capacity(devices.len());
+    for (index, d) in devices.iter().enumerate() {
+        let reason = match d.role {
+            DeviceRole::Effect => None,
+            DeviceRole::MidiEffect | DeviceRole::Instrument if kind != ChainKind::Track => {
+                Some(Reason::WrongChain)
+            }
+            DeviceRole::MidiEffect if index >= midi => Some(Reason::Misplaced),
+            DeviceRole::MidiEffect if index >= MAX_STAGES => Some(Reason::MidiEffectLimit),
+            DeviceRole::MidiEffect => None,
+            DeviceRole::Instrument if index != midi => Some(Reason::Misplaced),
+            DeviceRole::Instrument => None,
+        };
+        let reason = reason.or_else(|| (!seen.insert(d.id)).then_some(Reason::DuplicateId));
+        match reason {
+            None => valid.push((index, &**d)),
+            Some(reason) => diagnostics.push(Diagnostic {
+                subject: Subject::Device {
+                    chain,
+                    device: d.id,
+                    index,
+                    role: d.role,
+                },
+                reason,
+            }),
+        }
+    }
+    valid
 }
 
 /// The slot map for `devices`: devices of `previous` keep their slot; new devices take the
@@ -335,10 +432,10 @@ fn assign_slots(previous: Option<&SlotMap>, devices: HashSet<DeviceId>) -> SlotM
 }
 
 /// The chain slots of `chain`; devices without a slot are left out.
-fn chain_slots(chain: &[&Device], slots: &SlotMap) -> Vec<ChainSlot> {
+fn chain_slots(chain: &[(usize, &Device)], slots: &SlotMap) -> Vec<ChainSlot> {
     chain
         .iter()
-        .filter_map(|d| {
+        .filter_map(|(_, d)| {
             slots.slot(d.id).map(|slot| ChainSlot {
                 device: d.id,
                 slot,
