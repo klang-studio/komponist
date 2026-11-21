@@ -399,7 +399,8 @@ fn retain_loader_image() -> bool {
         }
         let name = info.assume_init().dli_fname;
         // Keep the returned reference for process lifetime so the worker can finish safely.
-        !name.is_null() && !libc::dlopen(name, libc::RTLD_NOLOAD | libc::RTLD_LAZY).is_null()
+        !name.is_null()
+            && !libc::dlopen(name, libc::RTLD_NOLOAD | libc::RTLD_LAZY | libc::RTLD_LOCAL).is_null()
     }
 }
 
