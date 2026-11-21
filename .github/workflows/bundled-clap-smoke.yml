@@ -14,11 +14,13 @@ on:
     paths:
       - "sdk/native-clap/**"
       - "crates/komponist-app/src/main.rs"
+      - "crates/komponist-app/tests/it/bundled_current.rs"
       - "crates/komponist-bridge/**"
       - "crates/komponist-hosting/**"
       - "crates/komponist-ipc/**"
       - "crates/komponist-plugins/**"
       - "scripts/bundled-clap.py"
+      - "scripts/measure-bundled-clap.py"
       - "scripts/bundle-macos.sh"
       - "scripts/package-windows.sh"
       - ".github/workflows/bundled-clap-smoke.yml"
@@ -124,6 +126,12 @@ jobs:
           if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
           "$python" scripts/bundled-clap.py --target "$TARGET" --inventory "$INVENTORY" \
             check-archive "$APP" --manifest-sha256 "$KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256"
+      - name: Round-trip and export current-format projects on both host paths
+        if: env.INVENTORY == 'all'
+        run: |
+          python=python3
+          if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
+          "$python" scripts/measure-bundled-clap.py --current-projects "$APP"
       - name: Upload the verified smoke archive
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run benchmarks or historical project checks against a verified unpacked app archive."""
+"""Run benchmarks or project acceptance checks against a verified unpacked app archive."""
 
 import argparse
 import hashlib
@@ -69,7 +69,29 @@ def build_runner(digest, test, release):
     return executable
 
 
-def run_staged(app, runner, digest, historical):
+def run_test(runner, environment, *names):
+    subprocess.run(
+        [str(runner), "--ignored", "--nocapture", "--exact", *names],
+        env=environment,
+        check=True,
+    )
+
+
+def reject_unavailable_bundle(runner, payload, environment, scratch):
+    manifest = json.loads((payload / "manifest.json").read_text(encoding="utf-8"))
+    eq = next(entry for entry in manifest["bundles"] if entry["id"].endswith(".eq"))
+    bundle = payload / eq["path"]
+    removed = Path(scratch) / "removed.clap"
+    bundle.rename(removed)
+    test = "bundled_current::unavailable_bundle_keeps_saved_project_intact"
+    run_test(runner, environment, test)
+    removed.rename(bundle)
+    with (payload / eq["files"][0]["path"]).open("ab") as file:
+        file.write(b"modified project test payload")
+    run_test(runner, environment, test)
+
+
+def run_staged(app, runner, digest, projects):
     # Keep the archived app untouched. Stage a separate runner with the same verified payload.
     with tempfile.TemporaryDirectory(prefix="bundled-clap-runner-", dir=runner.parent) as scratch:
         directory = Path(scratch)
@@ -84,48 +106,59 @@ def run_staged(app, runner, digest, historical):
         if hashlib.sha256((destination / "manifest.json").read_bytes()).hexdigest() != digest:
             raise SystemExit("Staged manifest differs from the digest reported by the packaged app")
 
-        modes = ("direct", "bridge") if historical else ("legacy", "direct", "bridge")
-        test_names = (
-            ("legacy_bundled::historical_projects_migrate_and_play",
-             "bundled_sampler::both_samplers_play_assets_after_the_project_moves")
-            if historical else ("bundled::bundled_clap_workloads",)
-        )
+        modes = ("direct", "bridge") if projects else ("legacy", "direct", "bridge")
+        test_names = {
+            None: ("bundled::bundled_clap_workloads",),
+            "historical": (
+                "legacy_bundled::historical_projects_migrate_and_play",
+                "bundled_sampler::both_samplers_play_assets_after_the_project_moves",
+            ),
+            "current": ("bundled_current::current_project_round_trip_and_offline_render",),
+        }[projects]
+        environment = os.environ.copy()
+        environment.pop("KOMPONIST_EXPERIMENTAL_DIRECT_CLAP", None)
+        environment.pop("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE", None)
+        if projects == "historical":
+            environment["KOMPONIST_HISTORICAL_BUNDLED_APP"] = str(app)
+        elif projects == "current":
+            environment["KOMPONIST_CURRENT_BUNDLED_APP"] = str(app)
+            environment["KOMPONIST_CURRENT_BUNDLED_RESULTS"] = scratch
+        else:
+            environment["KOMPONIST_PERF_BUNDLED_APP"] = str(app)
+
         for mode in modes:
-            environment = dict(os.environ)
-            if historical:
-                environment["KOMPONIST_HISTORICAL_BUNDLED_APP"] = str(app)
-            else:
-                environment["KOMPONIST_PERF_BUNDLED_APP"] = str(app)
-                environment["KOMPONIST_PERF_BUNDLED_MODE"] = mode
-            environment.pop("KOMPONIST_EXPERIMENTAL_DIRECT_CLAP", None)
-            environment.pop("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE", None)
+            route = environment.copy()
+            if not projects:
+                route["KOMPONIST_PERF_BUNDLED_MODE"] = mode
             if mode != "legacy":
-                environment["KOMPONIST_EXPERIMENTAL_DIRECT_CLAP"] = "1"
+                route["KOMPONIST_EXPERIMENTAL_DIRECT_CLAP"] = "1"
             if mode == "bridge":
-                environment["KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE"] = "1"
-            subprocess.run(
-                [
-                    str(staged_runner), "--ignored", "--nocapture", "--exact",
-                    *test_names,
-                ],
-                env=environment,
-                check=True,
-            )
+                route["KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE"] = "1"
+            run_test(staged_runner, route, *test_names)
+
+        if projects == "current":
+            environment["KOMPONIST_EXPERIMENTAL_DIRECT_CLAP"] = "1"
+            reject_unavailable_bundle(staged_runner, destination, environment, scratch)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("app", type=Path, help="packaged app executable from the unpacked archive")
-    parser.add_argument(
-        "--historical-projects", action="store_true",
+    projects = parser.add_mutually_exclusive_group()
+    projects.add_argument(
+        "--historical-projects", dest="projects", action="store_const", const="historical",
         help="validate historical project migration and relocated sampler asset playback",
+    )
+    projects.add_argument(
+        "--current-projects", dest="projects", action="store_const", const="current",
+        help="validate current-format project state and offline audio against both host paths",
     )
     options = parser.parse_args()
     app = options.app.resolve(strict=True)
     digest = verified_digest(app)
-    test = "it" if options.historical_projects else "engine_perf"
-    runner = build_runner(digest, test, release=not options.historical_projects)
-    run_staged(app, runner, digest, options.historical_projects)
+    test = "it" if options.projects else "engine_perf"
+    runner = build_runner(digest, test, release=not options.projects)
+    run_staged(app, runner, digest, options.projects)
 
 
 if __name__ == "__main__":

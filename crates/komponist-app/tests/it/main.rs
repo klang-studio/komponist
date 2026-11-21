@@ -26,6 +26,7 @@ mod audio_import;
 mod audio_recording_ui;
 mod bridge_mode;
 mod browser;
+mod bundled_current;
 mod bundled_sampler;
 mod bundled_synth_ui;
 mod device_events;
