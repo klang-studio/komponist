@@ -335,6 +335,10 @@ def check_archive(target, app, expected_sha256, devices):
         print(stdout, end="")
         reports = [line for line in stdout.splitlines() if line.startswith("verified ")]
         expected = [f"verified {device.plugin_id} ({route})" for device in devices]
+        hall_id = INVENTORIES["hall"][0].plugin_id
+        if any(device.plugin_id == hall_id for device in devices):
+            lifecycle = "direct lifecycle" if route == "in-process" else "forced bridge"
+            expected.append(f"verified {hall_id} (normal {lifecycle})")
         if sorted(reports) != sorted(expected):
             raise ValueError(f"unexpected {route} verification reports: {reports}")
 
