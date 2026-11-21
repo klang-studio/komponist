@@ -11,18 +11,21 @@
 //! - [`params`]: bridged plugin parameters as `komponist_model::params::ParamInfo`.
 //! - [`external`]: [`ExternalProcessor`], the engine's `Processor` for a bridge.
 //!
-//! This crate links no plugin format (only `komponist-bridge` does) and no UI.
+//! Verified bundled CLAPs can use the same hosting core without a bridge. No UI is linked.
 //!
 //! Internals: `bridge` (one bridge process: spawn, writer thread, messages, watchdog) and `scan`
 //! (bundle discovery and scan processes).
 
 mod bridge;
 pub mod builtin;
+pub mod bundled_clap;
 pub mod catalog;
+mod direct;
 pub mod external;
 pub mod manager;
 pub mod params;
 mod scan;
+mod verify_bundles;
 
 pub use catalog::{
     BuiltinKind, Catalog, CatalogEntry, EffectCategory, PluginDirs, PluginLocation, ScanCache,
@@ -33,6 +36,7 @@ pub use manager::{
     BRIDGE_FLAG, DeviceSnapshots, DeviceStatus, FailReason, MissingPlugin, PluginError,
     PluginManager, PluginManagerConfig, PluginManagerEvent, ProcessorSetup, SaveSnapshots,
 };
+pub use verify_bundles::verify_bundled_clap;
 
 /// How long a bridged device stays `Loading` after its bridge reported the plugin active (also
 /// after a re-activation for another rate). Audio already flows meanwhile; the time covers plugins

@@ -423,6 +423,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "komponist-bundled-clap-adapter"
+version = "0.1.0"
+dependencies = [
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-native-clap-sdk",
+ "nice-plug",
+]
+
+[[package]]
+name = "komponist-bundled-hall"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "komponist-bundled-clap-adapter",
+ "komponist-device-core",
+ "komponist-model",
+ "komponist-native-clap-sdk",
+ "komponist-reverb",
+ "nice-plug",
+ "serde_json",
+]
+
+[[package]]
 name = "komponist-device-core"
 version = "0.2.0"
 dependencies = [
@@ -488,6 +513,15 @@ dependencies = [
  "komponist-model",
  "nice-plug",
  "serde_json",
+]
+
+[[package]]
+name = "komponist-reverb"
+version = "0.2.0"
+dependencies = [
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-model",
 ]
 
 [[package]]

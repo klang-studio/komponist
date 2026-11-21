@@ -28,6 +28,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
+use std::io;
 #[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 #[cfg(unix)]
@@ -43,7 +44,8 @@ use std::time::{Duration, Instant};
 use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError, socket_pair};
 use komponist_ipc::{
     AppChannel, BridgeClient, BridgeMsg, ChannelError, ControlMsg, ErrorContext, GuiTarget,
-    LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessWatcher, RenderMode, ShmRegion,
+    LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessExit, ProcessWatcher,
+    RenderMode, ShmRegion,
 };
 use komponist_model::{DeviceId, DeviceRole};
 
@@ -224,6 +226,8 @@ pub(crate) struct Bridge {
     /// `GetState` requests without answer, in send order.
     state_requests: VecDeque<StateRequest>,
     state_restores: VecDeque<StateRestore>,
+    // The most recent matched reply, including partial restore failures reported as UI updates.
+    restore_reply: Option<(u32, Result<(), String>)>,
     snapshot_due: Option<Instant>,
     /// The latest state: the last snapshot, or the state the bridge was started with.
     pub last_state: Option<Arc<[u8]>>,
@@ -356,6 +360,7 @@ impl Bridge {
             stop_deadline: None,
             state_requests: VecDeque::new(),
             state_restores,
+            restore_reply: None,
             snapshot_due: None,
             last_state: s.state,
             params: Vec::new(),
@@ -618,8 +623,13 @@ impl Bridge {
     /// plugin's parameter values follow with the bridge's echo. `false` while the bridge is not
     /// running (it then starts with the state it was given).
     pub(crate) fn set_state(&mut self, state: &Arc<[u8]>) -> bool {
+        self.request_restore(state).is_some()
+    }
+
+    /// Queue a restore and return the sequence used by the bridge's reply.
+    pub(crate) fn request_restore(&mut self, state: &Arc<[u8]>) -> Option<u32> {
         if self.phase != Phase::Running {
-            return false;
+            return None;
         }
         self.user_changed();
         self.last_state = Some(Arc::clone(state));
@@ -632,7 +642,14 @@ impl Bridge {
             request,
             state: state.to_vec(),
         });
-        true
+        Some(request)
+    }
+
+    pub(crate) fn restore_result(&self, request: u32) -> Option<Result<(), String>> {
+        self.restore_reply
+            .as_ref()
+            .filter(|(sequence, _)| *sequence == request)
+            .map(|(_, result)| result.clone())
     }
 
     /// Sends `OpenGui`; the watchdog waits while it is outstanding.
@@ -682,10 +699,19 @@ impl Bridge {
 
     /// Blocks up to `timeout` for the process to exit (shutdown).
     pub(crate) fn wait_exit(&mut self, timeout: Duration) -> bool {
-        if !self.exited {
-            self.exited = matches!(self.watcher.wait_exit(Some(timeout)), Ok(Some(_)));
-        }
         self.exited
+            || self
+                .wait_exit_status(timeout)
+                .is_ok_and(|exit| exit.is_some())
+    }
+
+    pub(crate) fn wait_exit_status(
+        &mut self,
+        timeout: Duration,
+    ) -> io::Result<Option<ProcessExit>> {
+        let exit = self.watcher.wait_exit(Some(timeout))?;
+        self.exited |= exit.is_some();
+        Ok(exit)
     }
 
     /// The device failed: status `Crashed`, processor fallback, process killed.
@@ -1108,6 +1134,7 @@ impl Bridge {
             Ok(values) => (values, None),
             Err(error) => (error.changed_values, Some(error.message)),
         };
+        self.restore_reply = Some((request, error.clone().map_or(Ok(()), Err)));
         if error.is_none() || !values.is_empty() {
             for value in values {
                 if !restore.later_edits.contains(&value.id) {
