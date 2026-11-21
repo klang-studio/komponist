@@ -13,6 +13,12 @@ host latency.
 | EQ | `komponist-bundled-eq` | `org.klang-studio.komponist.eq` |
 | Presse | `komponist-bundled-presse` | `org.klang-studio.komponist.presse` |
 | Limiter | `komponist-bundled-limiter` | `org.klang-studio.komponist.limiter` |
+| Hexa | `komponist-bundled-hexa` | `org.klang-studio.komponist.hexa` |
+| Volt | `komponist-bundled-volt` | `org.klang-studio.komponist.volt` |
+| Klopfer | `komponist-bundled-sampler` | `org.klang-studio.komponist.sampler` |
+| General Sampler | `komponist-bundled-general-sampler` | `org.klang-studio.komponist.general-sampler` |
+| Arpeggiator | `komponist-bundled-arpeggiator` | `org.klang-studio.komponist.arpeggiator` |
+| Scale (Tonleiter) | `komponist-bundled-scale` | `org.klang-studio.komponist.scale` |
 
 The public v1 layout describes fixed controls. The Delay UI uses separate time and feedback
 knobs in place of its XY control. EQ exposes all band controls but needs its response graph and
@@ -28,7 +34,13 @@ the detector independently, including when the source is silent.
 
 From the repository root, run
 `cargo test --locked --workspace --manifest-path sdk/native-clap/Cargo.toml` to validate the
-layout metadata against the real CLAP parameter inventory of each effect.
+layout metadata against the real CLAP parameter inventory. The Bundled CLAP package
+workflow tests the eleven-device archive through both host routes. For an unpacked test
+package, start the app with `KOMPONIST_EXPERIMENTAL_DIRECT_CLAP=1` to use the verified
+catalog. Add `KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE=1` to run the same verified devices in
+the bridge. The historical project check is available with
+`python3 scripts/measure-bundled-clap.py --historical-projects /path/to/unpacked/komponist`.
+The migration runs on copies in this check.
 
 ## Sampler instrument state
 
