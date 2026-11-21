@@ -24,6 +24,7 @@ mod direct;
 mod direct_device;
 mod direct_session;
 pub mod external;
+pub mod legacy_bundled;
 pub mod manager;
 pub mod params;
 mod scan;

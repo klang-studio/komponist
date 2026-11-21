@@ -85,6 +85,15 @@ fn layout_uses_stable_ids_and_covers_every_synth_parameter() {
             .collect::<BTreeSet<_>>();
         assert_eq!(expected.len(), Volt::SPEC.params().len());
         assert_eq!(ids, expected);
+        let author_ids = layout["author_ids"].as_object().unwrap();
+        assert_eq!(author_ids.len(), Volt::SPEC.params().len());
+        for info in Volt::SPEC.params() {
+            assert_eq!(
+                author_ids[info.id.as_str()],
+                Wrapper::<VoltPlugin>::custom_extension_param_id(first.0, info.id.as_str())
+                    .unwrap()
+            );
+        }
     }
 }
 

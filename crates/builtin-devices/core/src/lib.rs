@@ -13,6 +13,7 @@ use komponist_model::params::{ParamInfo, ValueTexts};
 pub mod dsp;
 pub mod layout;
 pub mod midi;
+pub mod pinned_clap_state;
 mod processor;
 mod spec;
 

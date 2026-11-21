@@ -111,6 +111,12 @@ For a localized label, look up the requested locale, then its primary language s
 
 ## Compatibility and fallback
 
+An optional `author_ids` object maps stable author keys to the actual numeric CLAP parameter IDs.
+If supplied, it contains one to 256 entries and is a bijection to the live parameter inventory.
+Keys are nonblank UTF-8 strings of at most 128 bytes without control characters. The SDK only emits
+the mapping when the current wrapper can authoritatively resolve every parameter. This mapping can
+help a host migrate project references. It grants no trust or permission to load a bundle.
+
 Unknown optional object fields are ignored. A compatible addition can define new optional
 fields under the same major. A document that requires an added capability lists its identifier
 in `required_capabilities`, an optional array of at most eight unique strings matching

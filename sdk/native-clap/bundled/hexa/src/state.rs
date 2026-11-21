@@ -5,15 +5,10 @@ use std::sync::Mutex;
 
 use crossbeam_queue::ArrayQueue;
 use komponist_bundled_clap_adapter::Parameters;
-use komponist_hexa::device::{Field, WIRE_COUNT};
-use komponist_hexa::{Patch, decode_state, default_patch};
-use komponist_i18n::Lang;
-use komponist_model::params::{ParamInfo, ParamKind};
-use nice_plug::plugin::{ParamValue, PluginState};
+use komponist_hexa::device::WIRE_COUNT;
+use komponist_hexa::{Patch, default_patch};
 use nice_plug::prelude::{ParamPtr, Params};
 use serde::{Deserialize, Serialize};
-
-use crate::{HexaPlugin, infos};
 
 const PATCH_FIELD: &str = "hexa-patch-v1";
 
@@ -113,53 +108,10 @@ unsafe impl Params for HexaParams {
     }
 }
 
-fn wrapper_value(info: &ParamInfo, plain: f64) -> ParamValue {
-    let plain = info.snap(plain);
-    match info.kind {
-        ParamKind::Float { steps: 0, .. } => ParamValue::F32(info.to_normalized(plain) as f32),
-        ParamKind::Float {
-            min, max, steps, ..
-        } => {
-            let step = (max - min) / f64::from(steps);
-            ParamValue::I32(((plain - min) / step).round() as i32)
-        }
-        ParamKind::Int { .. } => ParamValue::I32(plain as i32),
-        ParamKind::Bool => ParamValue::Bool(plain >= 0.5),
-        ParamKind::Enum(_) => unreachable!("Hexa has no enum bindings"),
-    }
-}
-
 /// Produce a CLAP state stream from an existing Hexa patch using the pinned wrapper's
-/// uncompressed format. This retains the full synth patch and supplies the public
-/// author values for hosts that inspect parameters before processing.
+/// uncompressed format. The pure codec is shared with project compatibility.
 pub fn legacy_patch_to_clap_state(
     legacy_state: &[u8],
-) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    let patch = decode_state(Some(legacy_state))?;
-    let mut applied = [0.0; WIRE_COUNT];
-    let params = infos(Lang::En)
-        .iter()
-        .enumerate()
-        .map(|(wire, info)| {
-            let field = Field::from_wire(wire as u32).expect("valid Hexa wire ID");
-            let value = wrapper_value(info, field.get(&patch));
-            applied[wire] = match value {
-                ParamValue::F32(value) => f64::from(value),
-                ParamValue::I32(value) => f64::from(value),
-                ParamValue::Bool(value) => f64::from(u8::from(value)),
-                ParamValue::String(_) => unreachable!("Hexa has no enum bindings"),
-            };
-            (info.id.as_str().to_owned(), value)
-        })
-        .collect();
-    let state = PluginState {
-        version: <HexaPlugin as nice_plug::plugin::Plugin>::VERSION.into(),
-        params,
-        fields: BTreeMap::from([(PATCH_FIELD.into(), Snapshot { patch, applied }.encode())]),
-    };
-    let payload = serde_json::to_vec(&state)?;
-    let mut result = Vec::with_capacity(8 + payload.len());
-    result.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-    result.extend_from_slice(&payload);
-    Ok(result)
+) -> Result<Vec<u8>, komponist_hexa::StateError> {
+    komponist_hexa::state::legacy_patch_to_clap_state(legacy_state, env!("CARGO_PKG_VERSION"))
 }

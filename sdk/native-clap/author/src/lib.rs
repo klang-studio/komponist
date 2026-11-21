@@ -19,7 +19,7 @@ use clap_sys::{
     plugin::clap_plugin,
 };
 use komponist_ipc::control::{ParamInfo, param_flags};
-use komponist_ipc::native_layout::{MAX_BYTES, NativeLayout};
+use komponist_ipc::native_layout::{MAX_AUTHOR_IDS, MAX_BYTES, NativeLayout, valid_author_id};
 use komponist_model::params::ParamContext;
 use komponist_model::params::layout::validate;
 use nice_plug::prelude::ClapPlugin;
@@ -187,13 +187,46 @@ pub unsafe fn compile<P: ClapPlugin>(
     {
         return Err(error(failure.to_string()));
     }
-    let bytes = serde_json::to_vec(&json!({
+    let mut document = json!({
         "schema_version": 1,
         "default_locale": panel.default_locale,
         "locales": panel.locales,
         "pages": pages,
-    }))
-    .map_err(|failure| error(failure.to_string()))?;
+    });
+    // This optional metadata preserves compatibility with layouts naming only
+    // part of the inventory. Emit the map only if the live wrapper resolves a
+    // complete bijection. Invalid decoration should not discard a valid layout.
+    if (1..=MAX_AUTHOR_IDS).contains(&inventory.len()) {
+        for id in panel.parameter_labels.keys() {
+            if valid_author_id(id.as_str()) && !resolved.contains_key(id) {
+                // SAFETY: This is the initialized live wrapper supplied by the caller.
+                if let Some(numeric) =
+                    unsafe { Wrapper::<P>::custom_extension_param_id(plugin, id.as_str()) }
+                {
+                    resolved.insert(id.clone(), numeric);
+                }
+            }
+        }
+        let expected: std::collections::BTreeSet<_> =
+            inventory.iter().map(|info| info.id).collect();
+        if resolved.len() == inventory.len()
+            && resolved
+                .values()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                == expected
+            && resolved.keys().all(|key| valid_author_id(key.as_str()))
+        {
+            document["author_ids"] = json!(resolved);
+            if serde_json::to_vec(&document).is_ok_and(|bytes| bytes.len() > MAX_BYTES as usize) {
+                document
+                    .as_object_mut()
+                    .expect("layout JSON object")
+                    .remove("author_ids");
+            }
+        }
+    }
+    let bytes = serde_json::to_vec(&document).map_err(|failure| error(failure.to_string()))?;
     NativeLayout::parse(&bytes)
         .and_then(|layout| layout.validate_params(&inventory))
         .map_err(|failure| error(failure.to_string()))?;

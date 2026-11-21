@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::ffi::{CStr, c_void};
 use std::sync::{Arc, Mutex};
 
+use komponist_device_core::pinned_clap_state::{MAX_SAMPLE_ASSET_BYTES, SAMPLE_ASSETS_FIELD};
 use komponist_device_core::{Dsp, SAMPLE_RATES};
 use komponist_native_clap_sdk::{NativeClapLayout, Panel};
 use komponist_sampler::{ManagedLoader, SamplerHandle, links};
@@ -11,9 +12,6 @@ use nice_plug::prelude::*;
 
 use super::{Effect, EffectDefinition, STEREO};
 use crate::parameter::Parameters;
-
-const ASSETS_FIELD: &str = "sample_assets";
-const MAX_ASSET_STATE_BYTES: usize = 256 * 1024;
 
 /// A sampler which supplies its existing DSP and optional extra controls over loaded assets.
 pub trait SampledDefinition: EffectDefinition {
@@ -40,12 +38,12 @@ unsafe impl<T: SampledDefinition> Params for SampleParameters<T> {
 
     fn serialize_fields(&self) -> BTreeMap<String, String> {
         let assets = self.assets.lock().unwrap_or_else(|err| err.into_inner());
-        BTreeMap::from([(ASSETS_FIELD.into(), assets.clone())])
+        BTreeMap::from([(SAMPLE_ASSETS_FIELD.into(), assets.clone())])
     }
 
     fn deserialize_fields(&self, fields: &BTreeMap<String, String>) {
-        let assets = fields.get(ASSETS_FIELD).map_or("{}", String::as_str);
-        if assets.len() > MAX_ASSET_STATE_BYTES
+        let assets = fields.get(SAMPLE_ASSETS_FIELD).map_or("{}", String::as_str);
+        if assets.len() > MAX_SAMPLE_ASSET_BYTES
             || !serde_json::from_str::<serde_json::Value>(assets)
                 .is_ok_and(|value| value.is_object())
         {
