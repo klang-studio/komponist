@@ -508,3 +508,83 @@ fn unavailable_bundle_keeps_saved_project_intact() {
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     app.shutdown();
 }
+
+#[test]
+#[ignore = "requires the authenticated release payload; run measure-bundled-clap.py --current-projects"]
+fn packaged_effect_cards_and_presets() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+    use komponist_app::actions::{SelectMode, SelectionChange, UiAction};
+    use komponist_app::ui_state::DockTab;
+    use komponist_i18n::Lang;
+
+    let (launcher, _) = package_env();
+    let work = tempfile::tempdir().unwrap();
+    let host = scan(&launcher, work.path());
+    let bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some();
+    let lang = if bridge { Lang::En } else { Lang::De };
+    let mut project = Project::new("Bundled CLAP effect cards");
+    let mut cards = Vec::new();
+    for (slug, kind) in [
+        ("eq", Internal::Eq),
+        ("presse", Internal::Presse),
+        ("limiter", Internal::Limiter),
+    ] {
+        let (next, track) = edits::add_track(
+            &project,
+            NewTrack {
+                name: Some(slug.into()),
+                hue: None,
+                instrument: Some(shipped(&host, "volt")),
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        let (next, device) = edits::insert_device(
+            &next,
+            ChannelRef::Track(track),
+            1,
+            NewDevice {
+                role: DeviceRole::Effect,
+                plugin: shipped(&host, slug),
+                sidechain: None,
+                state: None,
+            },
+        )
+        .unwrap();
+        project = next;
+        cards.push((slug, kind, track, device));
+    }
+    let expected = devices(&project);
+    let mut app = app_with(project, host).with_lang(lang);
+    assert_ready(&mut app, &expected, bridge);
+    let mut harness = crate::acceptance_support::harness(app);
+    for (slug, kind, track, device) in cards {
+        let app = harness.state_mut();
+        app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+            tracks: vec![track],
+            mode: SelectMode::Replace,
+        })));
+        app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+        app.dispatch(Action::Ui(UiAction::RevealDevice(device)));
+        if kind == Internal::Eq {
+            app.dispatch(Action::Plugin(PluginAction::ApplyInternalPreset {
+                device,
+                index: 1,
+            }));
+            let preset = kind.presets()[1].name;
+            harness.run_steps(3);
+            harness.get_by_role_and_label(Role::Button, &lang.devices_preset_name(preset));
+            harness.get_by_role_and_label(Role::Group, lang.ui_graph_eq());
+        } else {
+            harness.run_steps(3);
+            harness.get_by_role_and_label(Role::Meter, lang.ui_meter_gr_name());
+        }
+        if let Some(dir) = std::env::var_os("KOMPONIST_EFFECT_UI_PNG_DIR") {
+            let path = PathBuf::from(dir).join(format!("{slug}-{}.png", lang.code()));
+            harness.render().unwrap().save(path).unwrap();
+        }
+    }
+    harness.state_mut().shutdown();
+}

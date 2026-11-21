@@ -117,6 +117,7 @@ def run_staged(app, runner, digest, projects):
                 "bundled_current::current_project_round_trip_and_offline_render",
                 "bundled_synth_ui::packaged_synth_editors_and_factory_presets_follow_clap_state",
                 "bundled_sampler::bundled_sampler_panels_edit_and_restore_current_state",
+                "bundled_current::packaged_effect_cards_and_presets",
             ),
         }[projects]
         environment = os.environ.copy()
@@ -139,6 +140,7 @@ def run_staged(app, runner, digest, projects):
             if mode == "bridge":
                 route["KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE"] = "1"
             if projects == "current":
+                route.setdefault("KOMPONIST_SYNTH_UI_LANG", "en" if mode == "bridge" else "de")
                 for test in test_names:
                     run_test(staged_runner, route, test)
             else:
