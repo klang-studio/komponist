@@ -320,8 +320,7 @@ impl BundledClap {
             return Ok(Some(copy.clone()));
         }
 
-        fs::create_dir_all(&self.cache_dir)
-            .map_err(|err| BundleVerificationError::new(&self.cache_dir, err))?;
+        let cache_dir = snapshot_cache(&self.cache_dir)?;
         let mut builder = Builder::new();
         builder.prefix("trusted-clap-");
         #[cfg(unix)]
@@ -330,8 +329,8 @@ impl BundledClap {
             builder.permissions(fs::Permissions::from_mode(0o700));
         }
         let snapshot = builder
-            .tempdir_in(&self.cache_dir)
-            .map_err(|err| BundleVerificationError::new(&self.cache_dir, err))?;
+            .tempdir_in(&cache_dir)
+            .map_err(|err| BundleVerificationError::new(&cache_dir, err))?;
         for (relative, hash) in &bundle.files {
             verify_file(
                 &self.root.join(relative),
@@ -352,6 +351,49 @@ impl BundledClap {
             .insert(path.to_owned(), copy.clone());
         Ok(Some(copy))
     }
+}
+
+fn snapshot_cache(path: &Path) -> Result<PathBuf, BundleVerificationError> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(path)
+        .map_err(|error| BundleVerificationError::new(path, error))?;
+    directory(path)?;
+    let root = fs::canonicalize(path).map_err(|error| BundleVerificationError::new(path, error))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let uid = rustix::process::geteuid().as_raw();
+        let ancestors: Vec<_> = root.ancestors().collect();
+        // Validate from the filesystem root down so each parent protects the next path entry.
+        for ancestor in ancestors.into_iter().rev() {
+            let info = metadata(ancestor)?;
+            let owned_by_user = info.uid() == uid;
+            let trusted_owner = owned_by_user || info.uid() == 0;
+            let writable_by_others = info.mode() & 0o022 != 0;
+            let sticky = info.mode() & 0o1000 != 0;
+            let safe = if ancestor == root {
+                owned_by_user && !writable_by_others
+            } else {
+                // A sticky shared directory such as /tmp still protects entries owned by
+                // root or this user, which is checked on the next iteration.
+                trusted_owner && (!writable_by_others || sticky)
+            };
+            if !safe {
+                return Err(BundleVerificationError::new(
+                    ancestor,
+                    "unsafe owner or permissions for the CLAP snapshot cache",
+                ));
+            }
+        }
+    }
+    Ok(root)
 }
 
 fn root_for_executable(executable: &Path, macos: bool) -> Option<PathBuf> {
@@ -646,6 +688,29 @@ mod tests {
         assert!(inventory.verify(&installed, ID).is_err());
         drop(inventory);
         assert_eq!(fs::read(verified.bundle_path()).unwrap(), PAYLOAD);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_snapshot_cache_below_an_unprotected_shared_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = Fixture::new();
+        fixture.write(FILE, PAYLOAD);
+        let mut inventory = fixture.open(&manifest(&[(FILE, PAYLOAD)])).unwrap();
+        let shared = fixture.base.path().join("shared");
+        fs::create_dir(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+        inventory.cache_dir = shared.join("cache");
+
+        let result = inventory.verify(&fixture.root.join(FILE), ID);
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unsafe owner or permissions")
+        );
+        assert_eq!(fs::read_dir(&inventory.cache_dir).unwrap().count(), 0);
     }
 
     #[test]
