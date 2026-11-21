@@ -1,0 +1,22 @@
+[package]
+name = "komponist-bundled-hall"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "komponist_hall"
+crate-type = ["cdylib"]
+
+[dependencies]
+komponist-bundled-clap-adapter.workspace = true
+komponist-device-core.workspace = true
+komponist-model.workspace = true
+komponist-reverb = { path = "../../../../crates/builtin-devices/reverb" }
+nice-plug.workspace = true
+
+[dev-dependencies]
+clap-sys.workspace = true
+komponist-native-clap-sdk.workspace = true
+serde_json.workspace = true
