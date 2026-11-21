@@ -128,3 +128,8 @@ parameter inventory change. The audio path and normal CLAP editor keep their exi
 
 The [C fixture and nice-plug spike](../../test-plugins/native-layout/README.md) provide executable
 examples of discovery, buffer transfer, validation and stable CLAP parameter IDs.
+
+## Rust author SDK
+
+The [author guide](../../sdk/native-clap/README.md) covers writing a Rust device with the SDK,
+building and validating its CLAP bundle, and installing it in komponist.

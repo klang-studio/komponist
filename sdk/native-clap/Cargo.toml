@@ -1,0 +1,18 @@
+[workspace]
+resolver = "3"
+members = ["author", "example", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace.dependencies]
+clap-sys = "=0.5.0"
+serde_json = "=1.0.154"
+komponist-device-core = { path = "../../crates/builtin-devices/core" }
+komponist-ipc = { path = "../../crates/komponist-ipc" }
+komponist-model = { path = "../../crates/komponist-model" }
+komponist-native-clap-sdk = { path = "author" }
+nice-plug = { git = "https://github.com/klang-studio/nice-plug", rev = "0960d393d72f9f0be4f5216adad2e370fb552397", default-features = false }
