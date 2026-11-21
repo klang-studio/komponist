@@ -360,8 +360,8 @@ fn slot(cu: &Ui, cell: &Cell, what: &str) -> Id {
 }
 
 /// `text` split into the number and its trailing unit: „420 Hz“ → („420“, „Hz“), „L 14“ stays whole.
-fn split_unit(text: &str) -> (&str, &str) {
-    if let Some(number) = text.strip_suffix('%') {
+fn split_unit(text: &str, native: bool) -> (&str, &str) {
+    if native && let Some(number) = text.strip_suffix('%') {
         return (number.trim_end(), "%");
     }
     match text.rsplit_once(' ') {
@@ -440,11 +440,12 @@ fn number(
         ParamKind::Float { .. } => None,
         _ => return false,
     };
+    let native = card.native_layout.is_some();
     let current = p.text_at(p.value);
-    let unit = split_unit(&current).1.to_owned();
+    let unit = split_unit(&current, native).1.to_owned();
     let plain_text = |v: f64| {
         let text = p.text_at(v);
-        let (number, suffix) = split_unit(&text);
+        let (number, suffix) = split_unit(&text, native);
         if !unit.is_empty() && suffix == unit {
             number.to_owned()
         } else {
@@ -475,7 +476,7 @@ fn number(
         }
         None => {
             let mut value = info.to_normalized(p.value);
-            let unit_scale = if unit == "%" && info.unit == Unit::Percent {
+            let unit_scale = if native && unit == "%" && info.unit == Unit::Percent {
                 100.0
             } else {
                 1.0
@@ -1530,13 +1531,25 @@ mod tests {
 
     #[test]
     fn number_entry_uses_the_displayed_units() {
+        let layout = komponist_ipc::native_layout::NativeLayout::parse(
+            br#"{
+            "schema_version":1,"default_locale":"en","locales":["en"],
+            "pages":[{"key":"main","labels":{"en":"Main"},"columns":4,"cells":[
+                {"widget":"number","row":0,"col":0,"rows":1,"cols":1,"half":"top","param_id":1}
+            ]}]
+        }"#,
+        )
+        .unwrap();
+        let layout = std::sync::Arc::new(layout);
         for (display, input, expected) in [
             ("50 %", "25", 0.25),
             ("50%", "75%", 0.75),
             ("0.500", "0.25", 0.25),
         ] {
             let mut h = harness();
-            let p = &mut h.state_mut().0.params[0];
+            let card = &mut h.state_mut().0;
+            card.native_layout = Some(layout.clone());
+            let p = &mut card.params[0];
             p.info.kind = ParamKind::lin(0.0, 1.0);
             p.info.unit = Unit::Percent;
             p.value = 0.5;
