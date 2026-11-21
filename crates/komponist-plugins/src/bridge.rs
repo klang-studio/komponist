@@ -516,10 +516,10 @@ impl Bridge {
                 .pending_params
                 .union(&self.released_macro_params)
                 .filter(|id| {
-                    !self.macro_params.contains_key(id)
-                        && (self.pending_params.contains(id)
-                            || (!self.automated_params.contains_key(id)
-                                && !self.temporary_params.contains(id)))
+                    self.pending_params.contains(id)
+                        || (!self.macro_params.contains_key(id)
+                            && !self.automated_params.contains_key(id)
+                            && !self.temporary_params.contains(id))
                 })
                 .map(|&id| Some((id, *self.base_values.get(&id)?, true)))
                 .collect();
@@ -653,6 +653,14 @@ impl Bridge {
 
     pub(crate) fn set_automated_params(&mut self, params: BTreeMap<u32, Option<f64>>) {
         if self.verified_bundled_kind.is_some() && self.automated_params != params {
+            // A program swap can remove a lane before audio restores the control. Keep
+            // correcting any captured transient value until an explicit edit replaces it.
+            self.temporary_params.extend(
+                self.automated_params
+                    .keys()
+                    .filter(|id| !params.contains_key(id))
+                    .copied(),
+            );
             self.automated_params = params;
             self.invalidate_state_requests();
         }
@@ -663,6 +671,26 @@ impl Bridge {
             return;
         }
         let previous = std::mem::replace(&mut self.macro_params, values);
+        if self.verified_bundled_kind.is_some() {
+            if previous.keys().eq(self.macro_params.keys())
+                && previous.iter().all(|(id, value)| {
+                    self.macro_params.get(id) == Some(value)
+                        || self.automated_params.get(id).is_some_and(Option::is_some)
+                })
+            {
+                // Live macro motion cannot supersede a snapshot which uses the model's output.
+                return;
+            }
+            for id in self
+                .macro_params
+                .keys()
+                .filter(|id| !previous.contains_key(id))
+            {
+                // An explicit new mapping supersedes a manual write to the same target.
+                self.pending_params.remove(id);
+                self.released_macro_params.remove(id);
+            }
+        }
         for (id, value) in previous {
             if self.phase == Phase::Running
                 && !self.macro_params.contains_key(&id)
@@ -998,6 +1026,15 @@ impl Bridge {
                 if pending.as_ref().is_some_and(|pending| pending.superseded)
                     || (self.snapshot_needs_verification()
                         && !pending.as_ref().is_some_and(|pending| pending.checked))
+                {
+                    self.snapshot_soon();
+                    return;
+                }
+                if self.verified_bundled_kind.is_some()
+                    && self
+                        .pending_params
+                        .iter()
+                        .any(|id| !verified.iter().any(|(verified_id, _)| id == verified_id))
                 {
                     self.snapshot_soon();
                     return;
