@@ -113,6 +113,18 @@ impl VerifiedClap {
 }
 
 impl BundledClap {
+    pub(crate) fn installed_directory() -> Result<Option<PathBuf>, BundleVerificationError> {
+        if option_env!("KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256").is_none() {
+            return Ok(None);
+        }
+        let executable = std::env::current_exe()
+            .and_then(fs::canonicalize)
+            .map_err(|err| BundleVerificationError::new(Path::new("current executable"), err))?;
+        root_for_executable(&executable, cfg!(target_os = "macos"))
+            .map(Some)
+            .ok_or_else(|| BundleVerificationError::new(&executable, "no app resource path"))
+    }
+
     /// Discover the app's executable-relative CLAP inventory. Development builds without the
     /// embedded manifest digest do not have an inventory.
     ///
@@ -121,11 +133,9 @@ impl BundledClap {
         let Some(embedded_hash) = option_env!("KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256") else {
             return Ok(None);
         };
-        let executable = std::env::current_exe()
-            .and_then(fs::canonicalize)
-            .map_err(|err| BundleVerificationError::new(Path::new("current executable"), err))?;
-        let root = root_for_executable(&executable, cfg!(target_os = "macos"))
-            .ok_or_else(|| BundleVerificationError::new(&executable, "no app resource path"))?;
+        let Some(root) = Self::installed_directory()? else {
+            return Ok(None);
+        };
         Self::open(
             root,
             cache_dir.to_owned(),

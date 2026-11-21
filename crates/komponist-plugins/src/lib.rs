@@ -21,6 +21,7 @@ pub mod builtin;
 pub mod bundled_clap;
 pub mod catalog;
 mod direct;
+mod direct_device;
 mod direct_session;
 pub mod external;
 pub mod manager;

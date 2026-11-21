@@ -10,14 +10,16 @@ use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, StereoIo, TransportInfo,
 };
 use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind, RenderMode};
-use komponist_model::{DeviceId, DeviceRole};
+use komponist_model::{Device, DeviceId, DeviceRole};
 
 use crate::bridge::{Bridge, SpawnSetup, StatePurpose, Timing};
 use crate::bundled_clap::{BundledClap, VerifiedClap};
-use crate::catalog::SCAN_TIMEOUT;
+use crate::catalog::{PluginDirs, PluginLocation, SCAN_TIMEOUT};
 use crate::direct::DirectClap;
 use crate::direct_session::DirectSession;
-use crate::manager::{DeviceStatus, PluginManagerConfig, PluginManagerEvent, ProcessorSetup};
+use crate::manager::{
+    DeviceStatus, PluginManager, PluginManagerConfig, PluginManagerEvent, ProcessorSetup,
+};
 use crate::scan::scan_bundle;
 
 const FRAMES: usize = 128;
@@ -69,7 +71,137 @@ pub fn verify_bundled_clap(force_bridge: bool) -> Result<(), String> {
         let route = if force_bridge { "bridge" } else { "in-process" };
         println!("verified {id} ({route})");
     }
+    if !force_bridge
+        && let Some((path, id)) = bundled
+            .bundle_entries()
+            .find(|(_, id)| *id == "org.klang-studio.komponist.hall")
+    {
+        smoke_live_manager(config, path, id)?;
+        println!("verified {id} (normal direct lifecycle)");
+    }
     Ok(())
+}
+
+fn smoke_live_manager(config: PluginManagerConfig, path: &Path, id: &str) -> Result<(), String> {
+    let mut manager = PluginManager::new_with_direct(config, true);
+    manager.start_scan(&PluginDirs {
+        clap: Vec::new(),
+        vst3: Vec::new(),
+    });
+    let deadline = Instant::now() + TIMEOUT;
+    while manager.is_scanning() {
+        manager.poll();
+        if Instant::now() >= deadline {
+            return Err("normal bundled catalog scan timed out".into());
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    let entry = manager.catalog().entries().iter().find(|entry| {
+        entry.plugin.id == id
+            && matches!(&entry.location, PluginLocation::Bundle { path: scanned, .. } if scanned == path)
+    }).ok_or_else(|| "Hall is absent from the normal bundled catalog".to_owned())?;
+    let device = Device {
+        id: DeviceId(1),
+        role: DeviceRole::Effect,
+        plugin: entry.plugin.clone(),
+        bypass: false,
+        state: None,
+        sidechain: None,
+    };
+    let device_id = device.id;
+    let mut audio = manager
+        .create_processor(&device, SETUP)
+        .map_err(|error| error.to_string())?;
+    if manager.bridge_pid(device_id).is_some()
+        || manager.status(device_id) != DeviceStatus::Ok
+        || manager.native_layout(device_id).is_none()
+    {
+        return Err(
+            "normal Hall start did not use the verified direct path with native layout".into(),
+        );
+    }
+    let param = manager
+        .params(device_id)
+        .and_then(|params| params.iter().find(|info| info.step_count == 0))
+        .ok_or_else(|| "normal Hall start has no continuous parameters".to_owned())?;
+    let param_id = param.id;
+    let low = param.min;
+    let high = param.max;
+    let baseline = manager
+        .param_base(device_id, param_id)
+        .ok_or_else(|| "normal Hall parameter base is missing".to_owned())?;
+    let edit = if baseline - low < high - baseline {
+        high
+    } else {
+        low
+    };
+    let snapshot = |manager: &mut PluginManager| {
+        manager
+            .snapshot_for_save(Duration::ZERO)
+            .captured
+            .into_iter()
+            .find_map(|(id, state)| (id == device_id).then_some(state))
+    };
+    let initial =
+        snapshot(&mut manager).ok_or_else(|| "could not save Hall before editing".to_owned())?;
+    manager.set_param(device_id, param_id, edit);
+    manager.poll();
+    drive_control(&mut *audio, &[]);
+    let edited = snapshot(&mut manager)
+        .ok_or_else(|| "normal Hall edit was not acknowledged by DSP".to_owned())?;
+    if initial == edited {
+        return Err("normal Hall edit did not change the saved CLAP state".into());
+    }
+
+    drive_control(
+        &mut *audio,
+        &[Event {
+            offset: 0,
+            kind: EventKind::Param {
+                id: param_id,
+                value: baseline,
+            },
+        }],
+    );
+    if snapshot(&mut manager).is_some() {
+        return Err("normal Hall captured a temporary automation value".into());
+    }
+    if !manager.set_state(device_id, &initial) {
+        return Err("normal Hall did not accept an undo state".into());
+    }
+    if !manager.poll().iter().any(|event| {
+        matches!(event,
+        PluginManagerEvent::StateApplied { device } if *device == device_id)
+    }) || manager.param_base(device_id, param_id) != Some(baseline)
+    {
+        return Err("normal Hall undo did not restore its parameter base".into());
+    }
+
+    manager.release(device_id);
+    if !manager.has_retiring_direct() {
+        return Err("normal Hall dropped its control half before the audio half".into());
+    }
+    drop(audio);
+    manager.poll();
+    if manager.has_retiring_direct() {
+        return Err("normal Hall audio half was not deactivated on retirement".into());
+    }
+    Ok(())
+}
+
+fn drive_control(audio: &mut dyn Processor, events: &[Event]) {
+    let context = smoke_context();
+    let input = [0.0; FRAMES];
+    let mut left = [0.0; FRAMES];
+    let mut right = [0.0; FRAMES];
+    audio.process(
+        &context,
+        events,
+        &mut StereoIo {
+            input: [&input, &input],
+            output: [&mut left, &mut right],
+        },
+    );
 }
 
 fn scan(config: &PluginManagerConfig, path: &Path, id: &str) -> Result<PluginDescriptor, String> {

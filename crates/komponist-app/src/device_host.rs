@@ -741,7 +741,9 @@ impl DeviceHost for PluginHost {
     }
 
     fn needs_polling(&self) -> bool {
-        !self.external.is_empty() || self.manager.is_scanning()
+        !self.external.is_empty()
+            || self.manager.is_scanning()
+            || self.manager.has_retiring_direct()
     }
 
     fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {

@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use komponist_engine::processor::{EventProcessor, EventSink, ParameterEdit, ParameterEditKind};
@@ -166,17 +166,22 @@ impl MidiStage {
 }
 
 impl DirectProcessor {
+    pub(crate) fn delivered(&self) -> bool {
+        self.delivered
+    }
+
     pub(crate) fn stop(&mut self) {
         self.audio.stop_processing();
     }
 
-    fn process_block(
+    pub(crate) fn process_block(
         &mut self,
         ctx: &ProcessContext,
         events: &[Event],
         params: &[WireEvent],
         io: &mut StereoIo<'_>,
         sidechain: Option<[&[f32]; 2]>,
+        control_epoch: Option<(&AtomicU64, u64)>,
     ) -> ProcessStatus {
         self.output_read = 0;
         self.output_len = 0;
@@ -194,6 +199,12 @@ impl DirectProcessor {
             write_fallback(self.role, io);
             return ProcessStatus::Continue;
         };
+        let params =
+            if control_epoch.is_some_and(|(epoch, stamp)| epoch.load(Ordering::Acquire) != stamp) {
+                &[]
+            } else {
+                params
+            };
         if std::mem::take(&mut self.reset_pending) {
             self.audio.reset();
         }
@@ -269,7 +280,7 @@ impl Processor for DirectProcessor {
         events: &[Event],
         io: &mut StereoIo<'_>,
     ) -> ProcessStatus {
-        self.process_block(ctx, events, &[], io, None)
+        self.process_block(ctx, events, &[], io, None, None)
     }
 
     fn process_sidechain(
@@ -279,7 +290,7 @@ impl Processor for DirectProcessor {
         io: &mut StereoIo<'_>,
         sidechain: [&[f32]; 2],
     ) -> ProcessStatus {
-        self.process_block(ctx, events, &[], io, Some(sidechain))
+        self.process_block(ctx, events, &[], io, Some(sidechain), None)
     }
 
     fn latency(&self) -> u32 {
@@ -361,6 +372,7 @@ impl EventProcessor for DirectProcessor {
                 input: [&SILENCE[..len]; 2],
                 output: [&mut left[..len], &mut right[..len]],
             },
+            None,
             None,
         );
         if self.delivered {
