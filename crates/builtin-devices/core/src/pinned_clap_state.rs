@@ -7,6 +7,8 @@ use serde_json::{Map, Value, json};
 pub const SAMPLE_ASSETS_FIELD: &str = "sample_assets";
 /// Maximum size accepted by the sampler CLAP state readers.
 pub const MAX_SAMPLE_ASSET_BYTES: usize = 256 * 1024;
+/// The canonical factory preset name retained across edits and CLAP state saves.
+pub const FACTORY_PRESET_FIELD: &str = "factory_preset";
 
 /// Encode a built-in plain value in the pinned adapter's parameter representation.
 /// The second result is the wrapper value used for matching an audio patch snapshot.

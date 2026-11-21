@@ -1,6 +1,8 @@
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
-use komponist_device_core::Spec;
+use komponist_device_core::pinned_clap_state::FACTORY_PRESET_FIELD;
+use komponist_device_core::{Preset, Spec};
 use komponist_i18n::Lang;
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
 use nice_plug::prelude::*;
@@ -237,14 +239,20 @@ struct BoundParameter {
 }
 
 /// Stable author bindings and model-to-CLAP scaling for a set of device parameters.
-pub struct Parameters(Vec<BoundParameter>);
+pub struct Parameters {
+    bindings: Vec<BoundParameter>,
+    factory_presets: &'static [Preset],
+    selected_preset: Mutex<Option<&'static str>>,
+}
 
 impl Parameters {
     pub(crate) fn new(
         spec: &'static Spec,
         choice: impl FnMut(&'static ParamInfo) -> Option<Binding>,
     ) -> Self {
-        Self::from_infos(spec.params_in(Lang::En), choice)
+        let mut params = Self::from_infos(spec.params_in(Lang::En), choice);
+        params.factory_presets = spec.presets();
+        params
     }
 
     /// Bind independently described device parameters in the supplied wire order.
@@ -252,8 +260,8 @@ impl Parameters {
         infos: &'static [ParamInfo],
         mut choice: impl FnMut(&'static ParamInfo) -> Option<Binding>,
     ) -> Self {
-        Self(
-            infos
+        Self {
+            bindings: infos
                 .iter()
                 .map(|info| {
                     let binding = choice(info).unwrap_or_else(|| Binding::from_info(info));
@@ -265,20 +273,22 @@ impl Parameters {
                     }
                 })
                 .collect(),
-        )
+            factory_presets: &[],
+            selected_preset: Mutex::new(None),
+        }
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.0.len()
+        self.bindings.len()
     }
 
     pub(crate) fn raw_value(&self, index: usize) -> f64 {
-        self.0[index].binding.0.raw()
+        self.bindings[index].binding.0.raw()
     }
 
     /// Returns the new model plain value and records the underlying wrapper value.
     pub fn changed_value(&self, index: usize, applied: &mut Option<f64>) -> Option<f64> {
-        let bound = &self.0[index];
+        let bound = &self.bindings[index];
         let raw = bound.binding.0.raw();
         if *applied == Some(raw) {
             return None;
@@ -302,7 +312,7 @@ impl Parameters {
 // retains for the entire plugin instance. The vector and its bindings are immutable after setup.
 unsafe impl Params for Parameters {
     fn param_map(&self) -> Vec<(String, ParamPtr, String)> {
-        self.0
+        self.bindings
             .iter()
             .map(|bound| {
                 (
@@ -312,5 +322,37 @@ unsafe impl Params for Parameters {
                 )
             })
             .collect()
+    }
+
+    fn serialize_fields(&self) -> BTreeMap<String, String> {
+        let preset = self
+            .selected_preset
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        preset
+            .iter()
+            .map(|name| {
+                (
+                    FACTORY_PRESET_FIELD.to_owned(),
+                    serde_json::to_string(name).expect("preset names encode as JSON strings"),
+                )
+            })
+            .collect()
+    }
+
+    fn deserialize_fields(&self, fields: &BTreeMap<String, String>) {
+        let selected = fields
+            .get(FACTORY_PRESET_FIELD)
+            .and_then(|raw| serde_json::from_str::<String>(raw).ok())
+            .and_then(|name| {
+                self.factory_presets
+                    .iter()
+                    .find(|preset| preset.name == name)
+            })
+            .map(|preset| preset.name);
+        *self
+            .selected_preset
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = selected;
     }
 }

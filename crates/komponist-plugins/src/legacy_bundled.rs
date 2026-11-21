@@ -293,6 +293,13 @@ fn convert_state(
     };
 
     let mut fields = Map::new();
+    if let Some((index, _)) = device.loaded_preset(Some(old)) {
+        let name = device.presets()[index].name;
+        fields.insert(
+            pinned_clap_state::FACTORY_PRESET_FIELD.into(),
+            Value::String(Value::String(name.into()).to_string()),
+        );
+    }
     if !raw.is_empty() {
         for (key, value) in &raw {
             let supported = (sampler && key == "samples")

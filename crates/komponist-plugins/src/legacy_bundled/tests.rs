@@ -112,6 +112,9 @@ fn historic_volt_maps_the_same_automation_and_preset_without_mutating_the_source
     assert_eq!(prepared.legacy_preset.as_deref(), Some("Fette Säge"));
 
     let state = decode_state(prepared.replacement.state.as_deref().unwrap());
+    let preset: String =
+        serde_json::from_str(state["fields"]["factory_preset"].as_str().unwrap()).unwrap();
+    assert_eq!(preset, "Fat Saw");
     assert_eq!(state["params"]["osc_a_wave"]["i32"], 2);
     assert_eq!(state["params"]["octave"]["i32"], -1);
     let cutoff_id = ParamId::new("cutoff");

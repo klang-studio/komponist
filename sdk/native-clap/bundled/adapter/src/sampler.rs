@@ -38,7 +38,9 @@ unsafe impl<T: SampledDefinition> Params for SampleParameters<T> {
 
     fn serialize_fields(&self) -> BTreeMap<String, String> {
         let assets = self.assets.lock().unwrap_or_else(|err| err.into_inner());
-        BTreeMap::from([(SAMPLE_ASSETS_FIELD.into(), assets.clone())])
+        let mut fields = self.params.serialize_fields();
+        fields.insert(SAMPLE_ASSETS_FIELD.into(), assets.clone());
+        fields
     }
 
     fn deserialize_fields(&self, fields: &BTreeMap<String, String>) {
@@ -50,6 +52,7 @@ unsafe impl<T: SampledDefinition> Params for SampleParameters<T> {
             return;
         }
 
+        self.params.deserialize_fields(fields);
         let mut saved = self.assets.lock().unwrap_or_else(|err| err.into_inner());
         let mut links = links::read(Some(assets.as_bytes())).into_iter().peekable();
         for pad in 0..T::PADS {
