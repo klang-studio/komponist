@@ -486,6 +486,8 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
     const RATE: u32 = 48_000;
     const BASE_FREQUENCY: f64 = 1_000.0;
     const HIGH_SHELF: f64 = 3.0;
+    const MACRO_BASE: f32 = 0.75;
+    const MACRO_AUTOMATION: f32 = 0.58;
     let (launcher, _) = package_env();
     let bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some();
     let work = tempfile::tempdir().unwrap();
@@ -594,8 +596,23 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
         invert: false,
         bend: 0.25,
     };
+    let gain_base = f64::from(gain_mapping.value_at(MACRO_BASE));
     let project = edits::macros::add_mapping(&project, track, 0, gain_mapping).unwrap();
-    let project = edits::macros::set_macro_value(&project, track, 0, 0.75).unwrap();
+    let project = edits::macros::set_macro_value(&project, track, 0, MACRO_BASE).unwrap();
+    let (project, macro_lane) = edits::automation::add_lane(
+        &project,
+        owner,
+        AutomationTarget::Macro { index: 0 },
+        "Gain macro".into(),
+    )
+    .unwrap();
+    let project = edits::automation::set_lane_points(
+        &project,
+        owner,
+        macro_lane,
+        Points::new(vec![Point::linear(Tick::ZERO, MACRO_AUTOMATION)]),
+    )
+    .unwrap();
     save_project(&path, &project).unwrap();
     open(&mut app, &path);
     assert_ready(&mut app, &expected, bridge);
@@ -604,6 +621,11 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
     step_until(&mut app, "active EQ automation", |app| {
         app.engine().transport() == TransportState::Playing
             && app.engine().playhead() >= Tick(PPQ / 2)
+            && app
+                .engine()
+                .telemetry()
+                .macro_values(track)
+                .is_some_and(|values| (values[0] - MACRO_AUTOMATION).abs() < 1e-6)
     });
     app.dispatch(Action::Plugin(PluginAction::SetParam {
         device: eq,
@@ -625,6 +647,11 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
         (saved_base - base_wire).abs() < 1e-6,
         "saved automation sample as the EQ base value: {saved_base}"
     );
+    let saved_gain = state["params"]["b1_gain"]["f32"].as_f64().unwrap();
+    assert!(
+        (saved_gain - gain_base).abs() < 1e-6,
+        "saved automated macro output as the EQ gain base value: {saved_gain}"
+    );
     let authored_track = project.track(track).unwrap();
     let saved_track = saved.track(track).unwrap();
     assert_eq!(saved_track.automation, authored_track.automation);
@@ -639,6 +666,8 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
     assert_eq!(host.param_base(eq, shape), Some(HIGH_SHELF));
     let reopened_base = host.param_base(eq, frequency).unwrap();
     assert!((reopened_base - base_wire).abs() < 1e-6);
+    let reopened_gain = host.param_base(eq, gain).unwrap();
+    assert!((reopened_gain - gain_base).abs() < 1e-6);
 
     let frequency_target = AutomationTarget::Param {
         device: eq,
