@@ -430,6 +430,10 @@ impl Dsp for GeneralSamplerDsp {
         self.engine.release_note(key, note_id);
     }
 
+    fn release_note_gates(&mut self, note_id: Option<u32>) {
+        self.engine.release_note_gates(note_id, &self.settings[..]);
+    }
+
     fn choke_note(&mut self, key: Option<u8>, note_id: Option<u32>) {
         if let Some(note_id) = note_id {
             self.engine.choke_note(note_id);

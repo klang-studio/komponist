@@ -126,7 +126,8 @@ impl<T: SampledDefinition> Sampled<T> {
                     self.dsp
                         .note_off_with_id(key, voice_id.id().map(|id| id as u32));
                 } else {
-                    self.dsp.choke_note(None, voice_id.id().map(|id| id as u32));
+                    self.dsp
+                        .release_note_gates(voice_id.id().map(|id| id as u32));
                 }
             }
             NoteEvent::Choke { key, voice_id, .. } => {

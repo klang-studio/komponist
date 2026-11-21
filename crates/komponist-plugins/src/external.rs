@@ -204,17 +204,25 @@ impl ExternalProcessor {
         }
     }
 
-    /// RT. Fills `wire` with the pending events (offset 0) followed by `events`; what does not fit
-    /// is stashed.
-    fn build_wire(&mut self, events: &[Event]) {
+    /// RT. Fills `wire` with pending events (offset 0) and then current input. MIDI effects
+    /// reserve capacity for the complete input so timed notes never spill into the next call.
+    fn build_wire(&mut self, events: &[Event]) -> bool {
         self.wire.clear();
-        if self.pending_all_off {
+        let pending_room = if self.midi.is_some() {
+            let Some(room) = INPUT_EVENT_CAPACITY.checked_sub(events.len()) else {
+                return false;
+            };
+            room
+        } else {
+            INPUT_EVENT_CAPACITY
+        };
+        if self.pending_all_off && pending_room != 0 {
             self.wire
                 .push(WireEvent::new(0, WireEventKind::AllNotesOff));
             self.pending_all_off = false;
         }
-        self.wire.extend_from_slice(&self.pending);
-        self.pending.clear();
+        let pending_count = self.pending.len().min(pending_room - self.wire.len());
+        self.wire.extend(self.pending.drain(..pending_count));
         for event in events {
             let wire = to_wire(event);
             if self.wire.len() < INPUT_EVENT_CAPACITY {
@@ -223,6 +231,7 @@ impl ExternalProcessor {
                 self.stash(wire);
             }
         }
+        true
     }
 
     /// RT. Keeps the events of a call the bridge did not get.
@@ -273,7 +282,9 @@ impl ExternalProcessor {
             return outcome(Outcome::Fallback(ProcessStatus::Continue));
         }
 
-        self.build_wire(events);
+        if !self.build_wire(events) {
+            return outcome(Outcome::Fallback(ProcessStatus::Continue));
+        }
         let mut flags = 0;
         if self.reset {
             flags |= BLOCK_FLAG_RESET;
@@ -671,6 +682,44 @@ pub(crate) fn wire_transport(t: &TransportInfo) -> WireTransport {
 mod tests {
     use super::*;
     use komponist_model::{Meter, Tick, TickRange};
+
+    #[test]
+    fn midi_bridge_defers_parameters_to_keep_timed_note_releases_in_their_block() {
+        use komponist_ipc::ShmRegion;
+
+        let region = Arc::new(ShmRegion::create().unwrap());
+        let mut processor = ExternalProcessor::new(
+            BridgeClient::new(region),
+            Arc::new(Shared::new()),
+            DeviceRole::MidiEffect,
+            ProcessorSetup {
+                sample_rate: 48_000.0,
+                max_block: 32,
+            },
+        );
+        EventProcessor::set_param(&mut processor, 7, 0.25);
+        let note_off = Event {
+            offset: 31,
+            kind: EventKind::NoteOff {
+                key: 61,
+                channel: 2,
+                note_id: 91,
+            },
+        };
+        let input = vec![note_off; INPUT_EVENT_CAPACITY + 1];
+        assert_no_alloc::assert_no_alloc(|| {
+            assert!(!processor.build_wire(&input));
+            assert!(processor.wire.is_empty());
+            assert!(processor.build_wire(&input[..INPUT_EVENT_CAPACITY]));
+        });
+        assert_eq!(processor.wire.len(), INPUT_EVENT_CAPACITY);
+        assert_eq!(processor.wire.last(), Some(&to_wire(&note_off)));
+        assert!(processor.build_wire(&[]));
+        assert_eq!(
+            processor.wire[0].decode(),
+            Some(WireEventKind::ParamValue { id: 7, value: 0.25 }),
+        );
+    }
 
     #[test]
     fn midi_stage_collects_only_the_current_notes_and_recovers_after_overflow() {

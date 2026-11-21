@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use komponist_device_core::{Dsp, SAMPLE_RATES};
 use komponist_native_clap_sdk::{NativeClapLayout, Panel};
+use nice_plug::midi::{Channel, Key, VoiceID};
 use nice_plug::prelude::*;
 
 use crate::{DeviceDefinition, STEREO, panel_for, parameter};
@@ -16,6 +17,8 @@ pub struct Instrument<T> {
     dsp: Box<dyn Dsp>,
     applied: Vec<Option<f64>>,
     silence: Vec<f32>,
+    // Volt retriggers voices by key. Track the corresponding CLAP address for each key.
+    notes: [Option<(Channel, VoiceID)>; 128],
     definition: PhantomData<T>,
 }
 
@@ -27,6 +30,7 @@ impl<T: DeviceDefinition> Default for Instrument<T> {
             params: Arc::new(params),
             dsp: (T::SPEC.dsp)(),
             silence: Vec::new(),
+            notes: [None; 128],
             definition: PhantomData,
         }
     }
@@ -81,6 +85,7 @@ impl<T: DeviceDefinition> Plugin for Instrument<T> {
 
     fn reset(&mut self) {
         self.apply_params();
+        self.notes.fill(None);
         self.dsp.reset();
     }
 
@@ -108,7 +113,7 @@ impl<T: DeviceDefinition> Plugin for Instrument<T> {
                 );
                 done = at;
             }
-            apply_note(&mut *self.dsp, event);
+            apply_note(&mut *self.dsp, &mut self.notes, event);
         }
         if done < left.len() {
             self.dsp.process(
@@ -120,28 +125,76 @@ impl<T: DeviceDefinition> Plugin for Instrument<T> {
     }
 }
 
-fn apply_note(dsp: &mut dyn Dsp, event: NoteEvent<()>) {
+fn apply_note(
+    dsp: &mut dyn Dsp,
+    notes: &mut [Option<(Channel, VoiceID)>; 128],
+    event: NoteEvent<()>,
+) {
     match event {
         NoteEvent::NoteOn {
+            channel,
             key,
             voice_id,
             velocity,
             ..
         } => {
-            if let Some(key) = key.number() {
+            if let Some(key) = key.number().filter(|key| *key < 128) {
+                notes[usize::from(key)] = Some((channel, voice_id));
                 let velocity = (velocity.clamp(0.0, 1.0) * 127.0).round().max(1.0) as u8;
                 dsp.note_on_with_id(key, velocity, voice_id.id().map(|id| id as u32));
             }
         }
-        NoteEvent::NoteOff { key, voice_id, .. } | NoteEvent::Choke { key, voice_id, .. } => {
+        NoteEvent::Choke {
+            channel: Channel::Wildcard,
+            key: Key::Wildcard,
+            voice_id: VoiceID::Wildcard,
+            ..
+        } => {
+            notes.fill(None);
+            dsp.all_notes_off();
+        }
+        NoteEvent::NoteOff {
+            channel,
+            key,
+            voice_id,
+            ..
+        }
+        | NoteEvent::Choke {
+            channel,
+            key,
+            voice_id,
+            ..
+        } => {
+            let choke = matches!(event, NoteEvent::Choke { .. });
+            let mut release = |key, address: &mut Option<(Channel, VoiceID)>| {
+                if address.is_some_and(|(note_ch, note_id)| {
+                    (channel.is_wildcard() || channel == note_ch)
+                        && (voice_id.is_wildcard() || voice_id == note_id)
+                }) {
+                    if choke {
+                        dsp.choke_note(Some(key), voice_id.id().map(|id| id as u32));
+                        *address = None;
+                    } else {
+                        // Keep the address during release so a subsequent choke can still target it.
+                        dsp.note_off_with_id(key, voice_id.id().map(|id| id as u32));
+                    }
+                }
+            };
             if let Some(key) = key.number() {
-                dsp.note_off_with_id(key, voice_id.id().map(|id| id as u32));
+                if let Some(address) = notes.get_mut(usize::from(key)) {
+                    release(key, address);
+                }
             } else {
-                dsp.all_notes_off();
+                for (key, address) in notes.iter_mut().enumerate() {
+                    release(key as u8, address);
+                }
             }
         }
         NoteEvent::MidiCC { cc: 1, value, .. } => dsp.mod_wheel(value),
-        NoteEvent::MidiCC { cc: 120 | 123, .. } => dsp.all_notes_off(),
+        NoteEvent::MidiCC { cc: 120 | 123, .. } => {
+            notes.fill(None);
+            dsp.all_notes_off();
+        }
         NoteEvent::MidiChannelPressure { pressure, .. } => dsp.pressure(pressure),
         NoteEvent::MidiPitchBend { value, .. } => {
             let bend = (value * 16383.0).round();
@@ -166,5 +219,70 @@ impl<T: DeviceDefinition> ClapPlugin for Instrument<T> {
 impl<T: DeviceDefinition> NativeClapLayout for Instrument<T> {
     fn panel() -> Panel {
         panel_for::<T>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct NoteProbe(Vec<(u8, bool)>);
+
+    impl Dsp for NoteProbe {
+        fn activate(&mut self, _: f32) {}
+        fn set_param(&mut self, _: usize, _: f64) {}
+        fn process(&mut self, _: [&[f32]; 2], _: [&mut [f32]; 2]) {}
+        fn reset(&mut self) {}
+        fn note_off(&mut self, key: u8) {
+            self.0.push((key, false));
+        }
+        fn choke_note(&mut self, key: Option<u8>, _: Option<u32>) {
+            self.0.push((key.unwrap(), true));
+        }
+        fn all_notes_off(&mut self) {
+            panic!("unexpected global release");
+        }
+    }
+
+    #[test]
+    fn wildcard_note_off_and_keyed_choke_dispatch_only_the_matched_notes() {
+        let mut dsp = NoteProbe::default();
+        let mut held = [None; 128];
+        for (key, id) in [(60, 91), (67, 92)] {
+            apply_note(
+                &mut dsp,
+                &mut held,
+                NoteEvent::NoteOn {
+                    timing: 0,
+                    channel: Channel::Number(2),
+                    key: Key::Number(key),
+                    voice_id: VoiceID::ID(id),
+                    velocity: 1.0,
+                },
+            );
+        }
+        apply_note(
+            &mut dsp,
+            &mut held,
+            NoteEvent::NoteOff {
+                timing: 4,
+                channel: Channel::Number(2),
+                key: Key::Wildcard,
+                voice_id: VoiceID::ID(91),
+                velocity: 0.0,
+            },
+        );
+        apply_note(
+            &mut dsp,
+            &mut held,
+            NoteEvent::Choke {
+                timing: 5,
+                channel: Channel::Number(2),
+                key: Key::Number(67),
+                voice_id: VoiceID::ID(92),
+            },
+        );
+        assert_eq!(dsp.0, [(60, false), (67, true)]);
     }
 }

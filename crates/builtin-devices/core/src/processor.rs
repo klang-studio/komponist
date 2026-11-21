@@ -97,6 +97,10 @@ pub trait Dsp: Send {
         self.note_off(key);
     }
 
+    /// RT, instruments only. Release gates without a specific key, narrowed to `note_id`
+    /// when supplied. One-shot samples continue playing.
+    fn release_note_gates(&mut self, _note_id: Option<u32>) {}
+
     /// RT, instruments only. Stop a voice immediately by key or note ID. A missing key and ID
     /// requests a global choke.
     fn choke_note(&mut self, key: Option<u8>, note_id: Option<u32>) {

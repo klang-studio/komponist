@@ -193,12 +193,25 @@ fn note_output(event: &UnknownEvent) -> Result<Option<WireEvent>, TryPushError> 
     } else if let Some(pressure) = event.as_event::<NoteExpressionEvent>()
         && pressure.expression_type() == Some(NoteExpressionType::Pressure)
     {
-        let (channel, key, _) = note_address(pressure.pckn())?;
+        let address = pressure.pckn();
         let value = pressure.value();
         if !(0.0..=1.0).contains(&value) {
             return Err(TryPushError::new());
         }
-        WireEventKind::Midi([0xa0 | channel, key, (value * 127.0).round() as u8])
+        let value = (value * 127.0).round() as u8;
+        if let Pckn {
+            port_index: Match::Specific(0),
+            channel: Match::Specific(channel),
+            key: Match::All,
+            note_id: Match::All,
+        } = address
+            && channel < 16
+        {
+            WireEventKind::Midi([0xd0 | channel as u8, value, 0])
+        } else {
+            let (channel, key, _) = note_address(address)?;
+            WireEventKind::Midi([0xa0 | channel, key, value])
+        }
     } else if let Some(midi) = event.as_event::<MidiEvent>() {
         let [status, data1, data2] = midi.data();
         if midi.port_index() != 0 || !(0x80..0xf0).contains(&status) || data1 >= 128 || data2 >= 128
@@ -382,6 +395,26 @@ mod tests {
         assert_eq!(
             received,
             Some(WireEvent::new(11, WireEventKind::Midi([0xa2, 61, 71])))
+        );
+    }
+
+    #[test]
+    fn wildcard_key_and_note_id_pressure_routes_to_the_addressed_channel() {
+        let mut received = None;
+        let mut sink = WireSink::process(16, true, |event| {
+            received = Some(event);
+            true
+        });
+        let event = NoteExpressionEvent::new(
+            11,
+            Pckn::from_raw(0, 2, -1, -1),
+            NoteExpressionType::Pressure,
+            71.0 / 127.0,
+        );
+        sink.try_push(event.as_ref()).unwrap();
+        assert_eq!(
+            received,
+            Some(WireEvent::new(11, WireEventKind::Midi([0xd2, 71, 0])))
         );
     }
 

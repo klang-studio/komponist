@@ -38,15 +38,21 @@ pub(crate) struct EventList {
     keyed: Vec<(u64, Event)>,
     sorted: Vec<Event>,
     capacity: usize,
+    note_off_first: bool,
 }
 
 impl EventList {
     /// Non-RT. A list for at most `capacity` events.
     pub(crate) fn new(capacity: usize) -> EventList {
+        Self::with_note_off_first(capacity, true)
+    }
+
+    pub(crate) fn with_note_off_first(capacity: usize, note_off_first: bool) -> EventList {
         EventList {
             keyed: Vec::with_capacity(capacity),
             sorted: Vec::with_capacity(capacity),
             capacity,
+            note_off_first,
         }
     }
 
@@ -66,7 +72,7 @@ impl EventList {
         if self.room() == 0 {
             return false;
         }
-        let rank = u64::from(matches!(kind, EventKind::NoteOn { .. }));
+        let rank = u64::from(self.note_off_first && matches!(kind, EventKind::NoteOn { .. }));
         let key = u64::from(offset) << 32 | rank << 31 | self.keyed.len() as u64;
         self.keyed.push((key, Event { offset, kind }));
         true

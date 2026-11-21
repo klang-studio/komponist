@@ -111,6 +111,19 @@ impl Engine {
         settings: &[PadSettings],
         layers: &[PadLayers],
     ) {
+        self.note_on_with_id(pad, velocity, samples, settings, layers, None);
+    }
+
+    /// Plays `pad` with the note ID used by the host for a later targeted release or choke.
+    pub fn note_on_with_id<S: SampleSource + ?Sized>(
+        &mut self,
+        pad: usize,
+        velocity: f32,
+        samples: &S,
+        settings: &[PadSettings],
+        layers: &[PadLayers],
+        note_id: Option<u32>,
+    ) {
         let mut pad_layers = layers[pad];
         for (layer, info) in pad_layers.layers.iter_mut().enumerate() {
             info.loaded = info.loaded && samples.sample(slot_index(pad, layer)).is_some();
@@ -146,6 +159,7 @@ impl Engine {
                 layer_tune: info.tune,
                 lfo_phase: self.lfo_phases[pad],
                 playback: None,
+                note_id,
             };
             self.start_voice(start, sample, s);
         }
@@ -171,6 +185,7 @@ impl Engine {
                 layer_tune: trigger.tune,
                 lfo_phase: self.lfo_phases[trigger.pad],
                 playback: Some(playback),
+                note_id: trigger.note_id,
             },
             sample,
             settings,
@@ -199,14 +214,20 @@ impl Engine {
 
     /// Releases gate-mode voices of `pad`. One-shot voices ignore note offs.
     pub fn note_off(&mut self, pad: usize, settings: &[PadSettings]) {
+        self.note_off_with_id(pad, settings, None);
+    }
+
+    /// Releases gate-mode pad voices. When supplied, the note ID narrows the release.
+    pub fn note_off_with_id(&mut self, pad: usize, settings: &[PadSettings], note_id: Option<u32>) {
         if !settings[pad].gate {
             return;
         }
-        for v in self
-            .voices
-            .iter_mut()
-            .filter(|v| v.active && v.pad == pad && v.playback.is_none())
-        {
+        for v in self.voices.iter_mut().filter(|v| {
+            v.active
+                && v.pad == pad
+                && v.playback.is_none()
+                && note_id.is_none_or(|id| v.note_id == Some(id))
+        }) {
             v.release();
         }
     }
@@ -225,10 +246,25 @@ impl Engine {
                     playback.gate
                         && !playback.released
                         && playback.key == key
-                        && playback.note_id == note_id
+                        && voice.note_id == note_id
                 })
         };
         if let Some(voice) = self.voices.iter_mut().filter(held).min_by_key(|v| v.id) {
+            voice.release();
+        }
+    }
+
+    /// Releases gates without a specific key, including every matching pad or region voice.
+    /// One-shots continue playing.
+    pub fn release_note_gates(&mut self, note_id: Option<u32>, settings: &[PadSettings]) {
+        for voice in self.voices.iter_mut().filter(|voice| {
+            voice.active
+                && note_id.is_none_or(|id| voice.note_id == Some(id))
+                && voice.playback.map_or_else(
+                    || settings[voice.pad].gate,
+                    |playback| playback.gate && !playback.released,
+                )
+        }) {
             voice.release();
         }
     }
@@ -242,12 +278,11 @@ impl Engine {
 
     /// Fades out voices belonging to one note ID, including one-shots.
     pub fn choke_note(&mut self, note_id: u32) {
-        for voice in self.voices.iter_mut().filter(|voice| {
-            voice.active
-                && voice
-                    .playback
-                    .is_some_and(|playing| playing.note_id == Some(note_id))
-        }) {
+        for voice in self
+            .voices
+            .iter_mut()
+            .filter(|voice| voice.active && voice.note_id == Some(note_id))
+        {
             voice.choke();
         }
     }
@@ -382,6 +417,33 @@ mod tests {
         let bus = t.render(&mut e, 10);
         assert!((bus[0][0] - 0.5).abs() < 1e-3);
         t.render(&mut e, 4800);
+        assert_eq!(e.active_voices(), 0);
+    }
+
+    #[test]
+    fn releasing_a_note_id_without_a_key_keeps_one_shots_playing() {
+        let t = setup(&[]);
+        let mut e = Engine::new(SR);
+        let sample = t.samples[0].as_deref().unwrap();
+        e.trigger(
+            SampleTrigger {
+                pad: 0,
+                slot: 0,
+                key: 60,
+                note_id: Some(91),
+                velocity: 1.0,
+                tune: 0.0,
+                independent_pitch: false,
+                region: crate::PlaybackRegion::default(),
+            },
+            sample,
+            &t.settings[0],
+        );
+        e.release_note_gates(Some(91), &t.settings);
+        t.render(&mut e, 1024);
+        assert_eq!(e.active_voices(), 1);
+        e.choke_note(91);
+        t.render(&mut e, 1024);
         assert_eq!(e.active_voices(), 0);
     }
 
@@ -591,11 +653,7 @@ mod tests {
         e.release_note(60, Some(11));
         t.render(&mut e, 200);
         assert_eq!(e.active_voices(), 2);
-        let surviving = e
-            .voices
-            .iter()
-            .filter(|v| v.active)
-            .map(|v| v.playback.unwrap().note_id);
+        let surviving = e.voices.iter().filter(|v| v.active).map(|v| v.note_id);
         assert!(surviving.eq([Some(10), Some(12)]));
     }
 

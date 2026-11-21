@@ -71,7 +71,6 @@ pub(crate) struct Playback {
     wrapped: bool,
     pub gate: bool,
     pub key: u8,
-    pub note_id: Option<u32>,
     pub released: bool,
     pub independent_pitch: bool,
 }
@@ -116,7 +115,6 @@ impl Playback {
             wrapped: false,
             gate,
             key: trigger.key,
-            note_id: trigger.note_id,
             released: false,
             independent_pitch: trigger.independent_pitch,
         })

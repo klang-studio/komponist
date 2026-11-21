@@ -4,7 +4,7 @@ use std::ffi::{CStr, c_void};
 use std::sync::Arc;
 
 use komponist_device_core::SAMPLE_RATES;
-use komponist_engine::processor::EventBuffer;
+use komponist_engine::processor::{EventBuffer, EventSink};
 use komponist_engine::{
     EventKind, EventProcessor, MAX_EVENTS_PER_BLOCK, NOTE_ID_NONE, ProcessContext as EngineContext,
     TransportInfo,
@@ -23,6 +23,8 @@ pub struct MidiEffect<T> {
     stage: Box<dyn EventProcessor + Send>,
     input: EventBuffer,
     output: EventBuffer,
+    // The bundled stages hold one input note per channel and key.
+    input_notes: [[Option<VoiceID>; 128]; 16],
     active_channels: u16,
     recover_channels: u16,
     offline: bool,
@@ -38,9 +40,10 @@ impl<T: DeviceDefinition> Default for MidiEffect<T> {
             stage: (T::SPEC
                 .event_stage
                 .expect("MIDI device spec needs an event stage"))(),
-            input: EventBuffer::new(MAX_EVENTS_PER_BLOCK),
+            input: EventBuffer::with_insertion_order(MAX_EVENTS_PER_BLOCK),
             // A stage can output an off followed by an on for every repeated input key.
-            output: EventBuffer::new(MAX_EVENTS_PER_BLOCK * 2),
+            output: EventBuffer::with_insertion_order(MAX_EVENTS_PER_BLOCK * 2),
+            input_notes: [[None; 128]; 16],
             active_channels: 0,
             recover_channels: 0,
             offline: false,
@@ -60,6 +63,7 @@ impl<T: DeviceDefinition> MidiEffect<T> {
 
     fn reconcile(&mut self) {
         self.stage.reset();
+        self.input_notes.fill([None; 128]);
         self.recover_channels |= std::mem::take(&mut self.active_channels);
     }
 }
@@ -115,13 +119,10 @@ impl<T: DeviceDefinition> Plugin for MidiEffect<T> {
         release_channels(context, 0, &mut self.recover_channels);
         let engine = engine_context(context.transport(), frames, self.offline);
         let mut input = self.input.sink(frames);
-        let mut overflow = false;
         while let Some(event) = context.next_event() {
-            if let Some(kind) = to_engine_event(&event) {
-                overflow |= !input.push(event.timing(), kind);
-            }
+            push_input(&mut input, &mut self.input_notes, &event);
         }
-        if overflow || self.recover_channels != 0 {
+        if input.overflowed() || self.recover_channels != 0 {
             self.reconcile();
             return if self.offline {
                 ProcessStatus::Error("MIDI effect input or recovery overflowed")
@@ -133,7 +134,7 @@ impl<T: DeviceDefinition> Plugin for MidiEffect<T> {
         let mut output = self.output.sink(frames);
         self.stage
             .process_events(&engine, self.input.events(), &mut output);
-        if output.room() == 0 {
+        if output.overflowed() {
             self.reconcile();
             return if self.offline {
                 ProcessStatus::Error("MIDI effect generated too many events")
@@ -141,6 +142,7 @@ impl<T: DeviceDefinition> Plugin for MidiEffect<T> {
                 ProcessStatus::KeepAlive
             };
         }
+        let mut overflow = false;
         for event in self.output.events() {
             if event.kind == EventKind::AllNotesOff {
                 self.recover_channels |= std::mem::take(&mut self.active_channels);
@@ -253,39 +255,47 @@ fn engine_context(transport: &Transport, frames: u32, offline: bool) -> EngineCo
     }
 }
 
-fn to_engine_event(note: &NoteEvent<()>) -> Option<EventKind> {
-    let address = |channel: Channel, key: Key, voice: VoiceID| {
-        let channel = channel.number().filter(|channel| *channel < 16)?;
-        let key = key.number().filter(|key| *key < 128)?;
-        let note_id = voice
+fn push_input(
+    input: &mut EventSink<'_>,
+    held: &mut [[Option<VoiceID>; 128]; 16],
+    note: &NoteEvent<()>,
+) {
+    let timing = note.timing();
+    let note_id = |voice: VoiceID| {
+        voice
             .id()
             .and_then(|id| u32::try_from(id).ok())
-            .unwrap_or(NOTE_ID_NONE);
-        Some((channel, key, note_id))
+            .unwrap_or(NOTE_ID_NONE)
     };
     match *note {
         NoteEvent::NoteOn {
-            channel,
-            key,
+            channel: Channel::Number(channel),
+            key: Key::Number(key),
             voice_id,
             velocity,
             ..
-        } => {
-            let (channel, key, note_id) = address(channel, key, voice_id)?;
+        } if channel < 16 && key < 128 => {
+            held[usize::from(channel)][usize::from(key)] = Some(voice_id);
             let velocity = (velocity * 127.0).round().clamp(1.0, 127.0) as u8;
-            Some(EventKind::NoteOn {
-                channel,
-                key,
-                note_id,
-                velocity,
-            })
+            input.push(
+                timing,
+                EventKind::NoteOn {
+                    channel,
+                    key,
+                    note_id: note_id(voice_id),
+                    velocity,
+                },
+            );
         }
         NoteEvent::Choke {
             channel: Channel::Wildcard,
             key: Key::Wildcard,
             voice_id: VoiceID::Wildcard,
             ..
-        } => Some(EventKind::AllNotesOff),
+        } => {
+            held.fill([None; 128]);
+            input.push(timing, EventKind::AllNotesOff);
+        }
         NoteEvent::NoteOff {
             channel,
             key,
@@ -298,18 +308,68 @@ fn to_engine_event(note: &NoteEvent<()>) -> Option<EventKind> {
             voice_id,
             ..
         } => {
-            let (channel, key, note_id) = address(channel, key, voice_id)?;
-            Some(EventKind::NoteOff {
-                channel,
-                key,
-                note_id,
-            })
+            if let (Some(channel), Some(key)) = (channel.number(), key.number()) {
+                if channel < 16 && key < 128 {
+                    let slot = &mut held[usize::from(channel)][usize::from(key)];
+                    if voice_id.is_wildcard() || *slot == Some(voice_id) {
+                        *slot = None;
+                    }
+                    input.push(
+                        timing,
+                        EventKind::NoteOff {
+                            channel,
+                            key,
+                            note_id: note_id(voice_id),
+                        },
+                    );
+                }
+            } else {
+                let range = |number: Option<u8>, limit| {
+                    number.map_or(0..limit, |number| {
+                        let index = usize::from(number).min(limit);
+                        index..(index + 1).min(limit)
+                    })
+                };
+                let channels = range(channel.number(), 16);
+                let keys = range(key.number(), 128);
+                for (ch, channel_notes) in held
+                    .iter_mut()
+                    .enumerate()
+                    .take(channels.end)
+                    .skip(channels.start)
+                {
+                    for (k, slot) in channel_notes
+                        .iter_mut()
+                        .enumerate()
+                        .take(keys.end)
+                        .skip(keys.start)
+                    {
+                        if let Some(id) = *slot
+                            && (voice_id.is_wildcard() || voice_id == id)
+                        {
+                            *slot = None;
+                            if !input.push(
+                                timing,
+                                EventKind::NoteOff {
+                                    channel: ch as u8,
+                                    key: k as u8,
+                                    note_id: note_id(id),
+                                },
+                            ) {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
         }
         _ => {
             if let Some(MidiResult::Basic(bytes)) = note.as_midi() {
-                Some(EventKind::Midi(bytes))
-            } else {
-                None
+                let [status, control, _] = bytes;
+                if status & 0xf0 == 0xb0 && matches!(control, 120 | 123) {
+                    held[usize::from(status & 0x0f)].fill(None);
+                }
+                input.push(timing, EventKind::Midi(bytes));
             }
         }
     }
@@ -343,5 +403,82 @@ fn from_engine_event(timing: u32, event: EventKind) -> Option<NoteEvent<()>> {
         }),
         EventKind::Midi(bytes) => NoteEvent::from_midi(timing, &bytes).ok(),
         EventKind::AllNotesOff | EventKind::Param { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note_on(channel: u8, key: u8, id: i32) -> NoteEvent<()> {
+        NoteEvent::NoteOn {
+            timing: 4,
+            channel: Channel::Number(channel),
+            key: Key::Number(key),
+            voice_id: VoiceID::ID(id),
+            velocity: 1.0,
+        }
+    }
+
+    #[test]
+    fn wildcard_release_keeps_same_frame_order_and_channel_scope() {
+        let mut buffer = EventBuffer::with_insertion_order(4);
+        let mut held = [[None; 128]; 16];
+        let mut input = buffer.sink(32);
+        push_input(&mut input, &mut held, &note_on(2, 61, 91));
+        push_input(&mut input, &mut held, &note_on(3, 61, 92));
+        push_input(
+            &mut input,
+            &mut held,
+            &NoteEvent::NoteOff {
+                timing: 4,
+                channel: Channel::Number(2),
+                key: Key::Wildcard,
+                voice_id: VoiceID::ID(91),
+                velocity: 0.0,
+            },
+        );
+
+        let events = buffer.events();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            events[0].kind,
+            EventKind::NoteOn {
+                channel: 2,
+                note_id: 91,
+                ..
+            }
+        ));
+        assert!(matches!(
+            events[1].kind,
+            EventKind::NoteOn {
+                channel: 3,
+                note_id: 92,
+                ..
+            }
+        ));
+        assert!(matches!(
+            events[2].kind,
+            EventKind::NoteOff {
+                channel: 2,
+                key: 61,
+                note_id: 91
+            }
+        ));
+        assert!(events.iter().all(|event| event.offset == 4));
+        assert_eq!(held[2][61], None);
+        assert_eq!(held[3][61], Some(VoiceID::ID(92)));
+    }
+
+    #[test]
+    fn output_is_overflowed_only_if_a_push_is_rejected() {
+        let mut buffer = EventBuffer::with_insertion_order(2);
+        let mut output = buffer.sink(32);
+        assert!(output.push(4, EventKind::Midi([0xb0, 1, 100])));
+        assert!(output.push(4, EventKind::Midi([0xb0, 1, 101])));
+        assert_eq!(output.room(), 0);
+        assert!(!output.overflowed());
+        assert!(!output.push(4, EventKind::Midi([0xb0, 1, 102])));
+        assert!(output.overflowed());
     }
 }

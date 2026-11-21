@@ -117,7 +117,7 @@ pub(crate) fn assert_stage_parity<P: ClapPlugin>(spec: &'static Spec) {
             FRAMES
         ));
         assert!(((*plugin).start_processing.unwrap())(plugin));
-        let mut expected = EventBuffer::new(32);
+        let mut expected = EventBuffer::with_insertion_order(32);
         let mut heard_note_on = false;
         let mut heard_note_off = false;
         for block in 0..4 {
@@ -130,6 +130,14 @@ pub(crate) fn assert_stage_parity<P: ClapPlugin>(spec: &'static Spec) {
                 channel: 2,
                 key: 61,
                 velocity: 100.0 / 127.0,
+            };
+            let release = clap_event_note {
+                header: header::<clap_event_note>(4, CLAP_EVENT_NOTE_OFF),
+                note_id: 93,
+                port_index: 0,
+                channel: 2,
+                key: -1,
+                velocity: 0.0,
             };
             let cc = clap_event_midi {
                 header: header::<clap_event_midi>(3, CLAP_EVENT_MIDI),
@@ -156,6 +164,7 @@ pub(crate) fn assert_stage_parity<P: ClapPlugin>(spec: &'static Spec) {
             } else if block == 1 {
                 note.header.time = 64;
                 note.header.type_ = CLAP_EVENT_NOTE_OFF;
+                note.key = -1;
                 note.velocity = 0.0;
                 clap_events.push(&note.header as *const _);
                 input_events.push(Event {
@@ -166,6 +175,32 @@ pub(crate) fn assert_stage_parity<P: ClapPlugin>(spec: &'static Spec) {
                         note_id: 91,
                     },
                 });
+            } else if block == 2 {
+                // Host order at one frame: press a key, then release that same note by ID.
+                note.header.time = 4;
+                note.key = 63;
+                note.note_id = 93;
+                // The reference consumes the resolved address, without the CLAP wildcard.
+                clap_events.extend([&note.header as *const _, &release.header as *const _]);
+                input_events.extend([
+                    Event {
+                        offset: 4,
+                        kind: EventKind::NoteOn {
+                            key: 63,
+                            channel: 2,
+                            velocity: 100,
+                            note_id: 93,
+                        },
+                    },
+                    Event {
+                        offset: 4,
+                        kind: EventKind::NoteOff {
+                            key: 63,
+                            channel: 2,
+                            note_id: 93,
+                        },
+                    },
+                ]);
             }
             let beat = f64::from(block * FRAMES) * TEMPO / (60.0 * f64::from(RATE));
             let transport = clap_event_transport {
