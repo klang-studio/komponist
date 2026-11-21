@@ -261,20 +261,26 @@ impl Engine {
         }
     }
 
-    /// Releases gates without a specific key, including every matching pad or region voice.
-    /// One-shots continue playing.
+    /// Releases every matching gate voice. A key, if present, restricts the release to region
+    /// voices triggered by that key. One-shots continue playing.
     pub fn release_note_gates(
         &mut self,
+        key: Option<u8>,
         note_id: Option<u32>,
         channel: Option<u8>,
         settings: &[PadSettings],
     ) {
         for voice in self.voices.iter_mut().filter(|voice| {
             voice.active
+                && !voice.choking
                 && voice.matches_note(note_id, channel)
                 && voice.playback.map_or_else(
-                    || settings[voice.pad].gate,
-                    |playback| playback.gate && !playback.released,
+                    || key.is_none() && settings[voice.pad].gate,
+                    |playback| {
+                        playback.gate
+                            && !playback.released
+                            && key.is_none_or(|key| playback.key == key)
+                    },
                 )
         }) {
             voice.release();
@@ -458,7 +464,7 @@ mod tests {
             sample,
             &t.settings[0],
         );
-        e.release_note_gates(Some(91), None, &t.settings);
+        e.release_note_gates(None, Some(91), None, &t.settings);
         t.render(&mut e, 1024);
         assert_eq!(e.active_voices(), 1);
         e.choke_note(91);
@@ -495,7 +501,7 @@ mod tests {
             );
         }
 
-        engine.release_note_gates(None, Some(2), &t.settings);
+        engine.release_note_gates(None, None, Some(2), &t.settings);
         assert!(engine.voices[0].playback.unwrap().released);
         assert!(!engine.voices[1].playback.unwrap().released);
         engine.choke_matching(None, Some(61), Some(91), Some(3));
@@ -714,6 +720,50 @@ mod tests {
         assert_eq!(e.active_voices(), 2);
         let surviving = e.voices.iter().filter(|v| v.active).map(|v| v.note_id);
         assert!(surviving.eq([Some(10), Some(12)]));
+    }
+
+    #[test]
+    fn keyed_clap_wildcard_release_matches_every_id_on_the_key_and_channel() {
+        let t = setup(&[(
+            0,
+            PadParams {
+                gate: true,
+                ..PadParams::default()
+            },
+        )]);
+        let mut engine = Engine::new(SR);
+        let sample = t.samples[0].as_deref().unwrap();
+        for (key, channel, note_id) in [
+            (60, 2, Some(13)),
+            (60, 2, None),
+            (60, 2, None),
+            (61, 2, Some(14)),
+            (60, 3, Some(15)),
+        ] {
+            engine.trigger(
+                SampleTrigger {
+                    pad: 0,
+                    slot: 0,
+                    key,
+                    note_id,
+                    channel: Some(channel),
+                    velocity: 1.0,
+                    tune: 0.0,
+                    independent_pitch: false,
+                    region: crate::PlaybackRegion::default(),
+                },
+                sample,
+                &t.settings[0],
+            );
+        }
+
+        let released = |engine: &Engine| {
+            std::array::from_fn::<_, 5, _>(|i| engine.voices[i].playback.unwrap().released)
+        };
+        engine.release_note(60, None, Some(2));
+        assert_eq!(released(&engine), [false, true, false, false, false]);
+        engine.release_note_gates(Some(60), None, Some(2), &t.settings);
+        assert_eq!(released(&engine), [true, true, true, false, false]);
     }
 
     #[test]

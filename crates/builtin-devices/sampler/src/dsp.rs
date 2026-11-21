@@ -297,9 +297,13 @@ impl Dsp for SamplerDsp {
         }
     }
 
-    fn release_note_gates(&mut self, note_id: Option<u32>, channel: Option<u8>) {
-        self.engine
-            .release_note_gates(note_id, channel, &self.settings[..]);
+    fn release_note_gates(&mut self, key: Option<u8>, note_id: Option<u32>, channel: Option<u8>) {
+        if let Some(key) = key {
+            self.note_off_with_id(key, note_id, channel);
+        } else {
+            self.engine
+                .release_note_gates(None, note_id, channel, &self.settings[..]);
+        }
     }
 
     fn choke_note(&mut self, key: Option<u8>, note_id: Option<u32>, channel: Option<u8>) {

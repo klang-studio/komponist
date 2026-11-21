@@ -128,17 +128,13 @@ impl<T: SampledDefinition> Sampled<T> {
                 key,
                 voice_id,
                 ..
-            } => {
-                if let Some(key) = key.number() {
-                    self.dsp.note_off_with_id(
-                        key,
-                        voice_id.id().map(|id| id as u32),
-                        channel.number(),
-                    );
-                } else {
-                    self.dsp
-                        .release_note_gates(voice_id.id().map(|id| id as u32), channel.number());
-                }
+            } => self.dsp.release_note_gates(
+                key.number(),
+                voice_id.id().map(|id| id as u32),
+                channel.number(),
+            ),
+            NoteEvent::MidiNoteOff { key, channel, .. } => {
+                self.dsp.note_off_with_id(key, None, Some(channel));
             }
             NoteEvent::Choke {
                 channel,
@@ -258,6 +254,7 @@ impl<T: SampledDefinition> Plugin for Sampled<T> {
 
 impl<T: SampledDefinition> ClapPlugin for Sampled<T> {
     const CLAP_ID: &'static str = T::ID;
+    const CLAP_DISTINGUISH_MIDI_NOTE_OFF: bool = true;
     const CLAP_DESCRIPTION: Option<&'static str> = None;
     const CLAP_MANUAL_URL: Option<&'static str> = None;
     const CLAP_SUPPORT_URL: Option<&'static str> = None;

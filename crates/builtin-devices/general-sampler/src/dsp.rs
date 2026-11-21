@@ -450,9 +450,9 @@ impl Dsp for GeneralSamplerDsp {
         self.engine.release_note(key, note_id, channel);
     }
 
-    fn release_note_gates(&mut self, note_id: Option<u32>, channel: Option<u8>) {
+    fn release_note_gates(&mut self, key: Option<u8>, note_id: Option<u32>, channel: Option<u8>) {
         self.engine
-            .release_note_gates(note_id, channel, &self.settings[..]);
+            .release_note_gates(key, note_id, channel, &self.settings[..]);
     }
 
     fn choke_note(&mut self, key: Option<u8>, note_id: Option<u32>, channel: Option<u8>) {

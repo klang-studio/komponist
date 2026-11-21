@@ -103,9 +103,13 @@ pub trait Dsp: Send {
         self.note_off(key);
     }
 
-    /// RT, instruments only. Release gates without a specific key. Supplied note ID and
-    /// channel restrict the selection. One-shot samples continue playing.
-    fn release_note_gates(&mut self, _note_id: Option<u32>, _channel: Option<u8>) {}
+    /// RT, instruments only. Release gates at a CLAP note address. Missing fields match any
+    /// value. One-shot samples continue playing.
+    fn release_note_gates(&mut self, key: Option<u8>, note_id: Option<u32>, channel: Option<u8>) {
+        if let Some(key) = key {
+            self.note_off_with_id(key, note_id, channel);
+        }
+    }
 
     /// RT, instruments only. Stop voices matching the supplied key, note ID, and channel.
     /// An entirely wildcard address requests a global choke.
