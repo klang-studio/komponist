@@ -591,7 +591,7 @@ impl PluginManager {
             .or_else(|| {
                 self.direct
                     .get(&device.id)
-                    .and_then(|direct| direct.last_state.clone())
+                    .and_then(DirectDevice::state_for_reload)
             })
             .or_else(|| device.state.clone());
         if let Some(mut old) = self.bridges.remove(&device.id) {
@@ -774,6 +774,11 @@ impl PluginManager {
     /// The device left the project: shuts its bridge down (after the engine removed the processor;
     /// the processor tolerates a dead bridge either way).
     pub fn release(&mut self, device: DeviceId) {
+        // Undo can replace the plugin while keeping its DeviceId. Queued state from the
+        // retiring instance belongs to the old plugin, even if a blocked save left it here.
+        self.pending.retain(|event| {
+            !matches!(event, PluginManagerEvent::StateSnapshot { device: old, .. } if *old == device)
+        });
         self.retire(device, true);
         self.statuses.remove(&device);
     }
@@ -1089,7 +1094,7 @@ impl PluginManager {
         let mut direct_waiting: BTreeSet<_> = self
             .direct
             .iter()
-            .filter(|&(&device, direct)| include(device) && direct.can_snapshot())
+            .filter(|&(&device, direct)| include(device) && direct.awaits_snapshot())
             .map(|(&device, _)| device)
             .collect();
         let mut states = Vec::new();
@@ -1099,11 +1104,12 @@ impl PluginManager {
                 let Some(direct) = self.direct.get_mut(device) else {
                     return false;
                 };
+                direct.service(*device, &mut self.pending);
                 if let Some(state) = direct.capture() {
                     states.push((*device, state));
                     false
                 } else {
-                    direct.can_snapshot()
+                    direct.awaits_snapshot()
                 }
             });
             for (&device, bridge) in &mut self.bridges {
@@ -1332,6 +1338,31 @@ impl PluginManager {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn release_discards_only_the_retired_devices_queued_snapshots() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = PluginManagerConfig {
+            cache_file: temp.path().join("plugins.json"),
+            ..PluginManagerConfig::defaults()
+        };
+        let mut manager = PluginManager::new_with_bundled_clap(config, false, false);
+        let removed = DeviceId(1);
+        let other = DeviceId(2);
+        for device in [removed, other] {
+            manager.pending.push(PluginManagerEvent::StateSnapshot {
+                device,
+                state: Arc::from([1]),
+            });
+        }
+
+        manager.release(removed);
+
+        assert!(matches!(
+            manager.pending.as_slice(),
+            [PluginManagerEvent::StateSnapshot { device, .. }] if *device == other
+        ));
+    }
 
     #[test]
     fn cache_dir_follows_the_platform() {

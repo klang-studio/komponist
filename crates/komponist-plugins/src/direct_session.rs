@@ -15,7 +15,7 @@ use komponist_ipc::{RenderMode, WireEvent, WireEventKind};
 use komponist_model::DeviceRole;
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
-use crate::direct::{DirectClap, DirectProcessor, write_fallback};
+use crate::direct::{ControlEvents, DirectClap, DirectProcessor, write_fallback};
 use crate::manager::ProcessorSetup;
 
 struct Requested {
@@ -66,6 +66,69 @@ struct Control {
     wire: WireEvent,
 }
 
+struct PendingControls {
+    epoch: u64,
+    persistent: Vec<WireEvent>,
+    stage: Vec<WireEvent>,
+}
+
+impl PendingControls {
+    fn new(role: DeviceRole) -> Self {
+        Self {
+            epoch: 0,
+            persistent: Vec::with_capacity(INPUT_EVENT_CAPACITY),
+            stage: Vec::with_capacity(if role == DeviceRole::MidiEffect {
+                INPUT_EVENT_CAPACITY
+            } else {
+                0
+            }),
+        }
+    }
+
+    fn observe_epoch(&mut self, epoch: u64) {
+        if self.epoch != epoch {
+            self.epoch = epoch;
+            self.persistent.clear();
+            self.stage.clear();
+        }
+    }
+
+    fn collect(&mut self, epoch: u64, commands: &mut Consumer<Control>) {
+        self.observe_epoch(epoch);
+        for _ in 0..INPUT_EVENT_CAPACITY {
+            let Ok(next) = commands.peek() else {
+                break;
+            };
+            // A producer may have published after the epoch was sampled. The queue's acquire
+            // makes that stamp visible and protects a newer edit from the stale sample.
+            if next.epoch > self.epoch {
+                self.observe_epoch(next.epoch);
+            }
+            if next.epoch == self.epoch && self.persistent.len() == self.persistent.capacity() {
+                break;
+            }
+            let command = commands.pop().expect("peeked control is still queued");
+            if command.epoch == self.epoch {
+                self.persistent.push(command.wire);
+            }
+        }
+    }
+
+    fn stage_param(&mut self, epoch: u64, id: u32, value: f64) {
+        self.observe_epoch(epoch);
+        let wire = WireEvent::new(0, WireEventKind::ParamValue { id, value });
+        // Changes waiting for a replacement accumulate by parameter, like the engine's slot
+        // queue. Keep the newest value when automation writes the same ID on several blocks.
+        if let Some(previous) = self.stage.iter_mut().find(|previous| {
+            matches!(previous.decode(), Some(WireEventKind::ParamValue { id: previous, .. }) if previous == id)
+        }) {
+            *previous = wire;
+        } else if self.stage.len() < self.stage.capacity() {
+            self.stage.push(wire);
+        }
+    }
+}
+
 struct Active {
     audio: DirectProcessor,
     revision: u64,
@@ -107,8 +170,7 @@ impl DirectSession {
             incoming,
             retire,
             commands,
-            controls: Vec::with_capacity(INPUT_EVENT_CAPACITY),
-            control_epoch: 0,
+            controls: PendingControls::new(role),
             requested,
             role,
             offline_failures: 0,
@@ -232,8 +294,7 @@ pub(crate) struct DirectEngine {
     incoming: Consumer<Active>,
     retire: Producer<Active>,
     commands: Consumer<Control>,
-    controls: Vec<WireEvent>,
-    control_epoch: u64,
+    controls: PendingControls,
     requested: Arc<Requested>,
     role: DeviceRole,
     offline_failures: u64,
@@ -262,19 +323,10 @@ impl DirectEngine {
     }
 
     fn collect_controls(&mut self) {
-        let epoch = self.requested.control_epoch.load(Ordering::Acquire);
-        if epoch != self.control_epoch {
-            self.controls.clear();
-            self.control_epoch = epoch;
-        }
-        while self.controls.len() < self.controls.capacity() {
-            let Ok(command) = self.commands.pop() else {
-                break;
-            };
-            if command.epoch == self.control_epoch {
-                self.controls.push(command.wire);
-            }
-        }
+        self.controls.collect(
+            self.requested.control_epoch.load(Ordering::Acquire),
+            &mut self.commands,
+        );
     }
 
     fn audio(
@@ -292,22 +344,25 @@ impl DirectEngine {
                 .expect("checked active processor")
                 .audio;
             let controls_fit =
-                self.controls.len().saturating_add(events.len()) <= INPUT_EVENT_CAPACITY;
+                self.controls.persistent.len() + events.len() <= INPUT_EVENT_CAPACITY;
             let controls = if controls_fit {
-                self.controls.as_slice()
+                self.controls.persistent.as_slice()
             } else {
                 &[]
             };
             let status = audio.process_block(
                 ctx,
                 events,
-                controls,
+                ControlEvents {
+                    persistent: controls,
+                    stage: &[],
+                    epoch: Some((&self.requested.control_epoch, self.controls.epoch)),
+                },
                 io,
                 sidechain,
-                Some((&self.requested.control_epoch, self.control_epoch)),
             );
             if audio.delivered() && controls_fit {
-                self.controls.clear();
+                self.controls.persistent.clear();
             }
             return status;
         }
@@ -345,6 +400,10 @@ impl Processor for DirectEngine {
             max_block,
         });
         Ok(())
+    }
+
+    fn prepare_offline(&mut self) {
+        self.current();
     }
 
     fn process(
@@ -396,9 +455,11 @@ impl Processor for DirectEngine {
 
 impl EventProcessor for DirectEngine {
     fn set_param(&mut self, id: u32, value: f64) {
-        if let Some(stage) = self.current().and_then(Processor::event_processor) {
-            stage.set_param(id, value);
-        }
+        self.controls.stage_param(
+            self.requested.control_epoch.load(Ordering::Acquire),
+            id,
+            value,
+        );
     }
 
     fn process_events(&mut self, ctx: &ProcessContext, input: &[Event], out: &mut EventSink<'_>) {
@@ -415,13 +476,22 @@ impl EventProcessor for DirectEngine {
                 .as_mut()
                 .expect("checked active processor")
                 .audio;
-            if let Some(stage) = audio.event_processor() {
-                for event in self.controls.drain(..) {
-                    if let Some(WireEventKind::ParamValue { id, value }) = event.decode() {
-                        stage.set_param(id, value);
-                    }
-                }
-                stage.process_events(ctx, input, out);
+            let room = INPUT_EVENT_CAPACITY.saturating_sub(input.len());
+            let stage = self.controls.stage.len().min(room);
+            let persistent = self.controls.persistent.len().min(room - stage);
+            audio.process_midi_block(
+                ctx,
+                input,
+                out,
+                ControlEvents {
+                    persistent: &self.controls.persistent[..persistent],
+                    stage: &self.controls.stage[..stage],
+                    epoch: Some((&self.requested.control_epoch, self.controls.epoch)),
+                },
+            );
+            if audio.delivered() {
+                self.controls.persistent.drain(..persistent);
+                self.controls.stage.drain(..stage);
             }
         } else {
             self.release_notes = !out.push(0, EventKind::AllNotesOff);
@@ -433,5 +503,80 @@ impl EventProcessor for DirectEngine {
 
     fn reset(&mut self) {
         Processor::reset(self);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collection_preserves_a_control_published_after_the_epoch_sample() {
+        let (mut sender, mut commands) = RingBuffer::new(4);
+        let mut pending = PendingControls::new(DeviceRole::MidiEffect);
+        let wire = |value| WireEvent::new(0, WireEventKind::ParamValue { id: 7, value });
+        let discarded = wire(0.25);
+        let retained = wire(0.75);
+        pending.stage_param(0, 8, 0.5);
+        assert!(
+            sender
+                .push(Control {
+                    epoch: 0,
+                    wire: discarded
+                })
+                .is_ok()
+        );
+        assert!(
+            sender
+                .push(Control {
+                    epoch: 1,
+                    wire: retained
+                })
+                .is_ok()
+        );
+
+        pending.collect(0, &mut commands);
+        assert_eq!(pending.epoch, 1);
+        assert_eq!(pending.persistent[0].decode(), retained.decode());
+        assert_eq!(pending.persistent.len(), 1);
+        assert!(pending.stage.is_empty());
+    }
+
+    #[test]
+    fn stage_parameter_values_survive_until_a_processor_can_receive_them() {
+        let (mut sender, mut commands) = RingBuffer::new(4);
+        let mut pending = PendingControls::new(DeviceRole::MidiEffect);
+        assert!(
+            sender
+                .push(Control {
+                    epoch: 0,
+                    wire: WireEvent::new(
+                        0,
+                        WireEventKind::ParamValue {
+                            id: 5,
+                            value: 0.125
+                        }
+                    ),
+                })
+                .is_ok()
+        );
+
+        // No active processor across these calls. The last synchronous stage value is kept
+        // independently of the queued host control so it can take precedence at the same frame.
+        pending.stage_param(0, 5, 0.25);
+        pending.stage_param(0, 5, 0.75);
+        pending.collect(0, &mut commands);
+        assert_eq!(pending.stage.len(), 1);
+        assert_eq!(
+            pending.stage[0].decode(),
+            Some(WireEventKind::ParamValue { id: 5, value: 0.75 })
+        );
+        assert_eq!(
+            pending.persistent[0].decode(),
+            Some(WireEventKind::ParamValue {
+                id: 5,
+                value: 0.125
+            })
+        );
     }
 }

@@ -472,6 +472,31 @@ impl Engine {
         }
     }
 
+    /// Non-RT, with the engine detached for rendering. Applies queued commands and hands
+    /// processors back to their hosts where needed, without rendering DSP or advancing time.
+    pub fn prepare_offline(
+        &mut self,
+        sample_rate: f32,
+    ) -> Result<(), Vec<(SlotId, ProcessorError)>> {
+        for _ in 0..COMMAND_CAPACITY.div_ceil(MAX_COMMANDS_PER_BLOCK) {
+            if self.core.commands.is_empty() {
+                break;
+            }
+            self.core.drain_commands();
+        }
+        let result = if self.sample_rate() != sample_rate {
+            self.set_sample_rate(sample_rate)
+        } else {
+            Ok(())
+        };
+        for slot in &mut self.core.slots {
+            if let Some(processor) = slot.processor.as_mut() {
+                processor.prepare_offline();
+            }
+        }
+        result
+    }
+
     /// Non-RT (engine out of the audio callback). Processes tracks in parallel from now on: starts
     /// `threads` worker threads (at most [`MAX_WORKERS`]; 0 = none, every track on the calling
     /// thread) in realtime per `rt` (`None`: normal scheduling; see [`WorkerRt`]: `SCHED_FIFO` on

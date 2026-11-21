@@ -23,7 +23,7 @@ pub(crate) struct DirectDevice {
     pub(crate) layout: Option<Arc<NativeLayout>>,
     pub(crate) values: BTreeMap<u32, ParamValue>,
     pub(crate) base: BTreeMap<u32, f64>,
-    pub(crate) last_state: Option<Arc<[u8]>>,
+    last_state: Option<Arc<[u8]>>,
     pub(crate) state_warning: Option<String>,
     pub(crate) note_names: Vec<NoteName>,
     pub(crate) sidechain: bool,
@@ -164,6 +164,15 @@ impl DirectDevice {
     }
 
     pub(crate) fn poll(&mut self, id: DeviceId, events: &mut Vec<PluginManagerEvent>) {
+        self.service(id, events);
+        if self.snapshot_due.is_some_and(|due| Instant::now() >= due)
+            && let Some(state) = self.capture()
+        {
+            events.push(PluginManagerEvent::StateSnapshot { device: id, state });
+        }
+    }
+
+    pub(crate) fn service(&mut self, id: DeviceId, events: &mut Vec<PluginManagerEvent>) {
         if matches!(self.status, DeviceStatus::Crashed(_)) {
             return;
         }
@@ -224,11 +233,6 @@ impl DirectDevice {
         if observed.has(notification_bits::STATE_DIRTY) {
             self.user_edit = true;
             self.snapshot_due = Some(Instant::now() + self.debounce);
-        }
-        if self.snapshot_due.is_some_and(|due| Instant::now() >= due)
-            && let Some(state) = self.capture()
-        {
-            events.push(PluginManagerEvent::StateSnapshot { device: id, state });
         }
     }
 
@@ -311,6 +315,12 @@ impl DirectDevice {
         self.user_edit = false;
     }
 
+    pub(crate) fn state_for_reload(&self) -> Option<Arc<[u8]>> {
+        self.pending_restore
+            .clone()
+            .or_else(|| self.last_state.clone())
+    }
+
     pub(crate) fn request_state(&mut self) {
         if self.state_warning.is_none() {
             self.snapshot_due = Some(Instant::now());
@@ -319,6 +329,11 @@ impl DirectDevice {
 
     pub(crate) fn needs_snapshot(&self) -> bool {
         self.user_edit || self.pending_restore.is_some()
+    }
+
+    pub(crate) fn awaits_snapshot(&self) -> bool {
+        self.can_snapshot()
+            || !matches!(self.status, DeviceStatus::Crashed(_)) && self.needs_snapshot()
     }
 
     pub(crate) fn can_snapshot(&self) -> bool {

@@ -16,7 +16,8 @@
 //!    (`Engine::set_sample_rate` re-activates every processor) and compiles the program again
 //!    against the processors in the engine (`komponist_engine::export::recompile`: delay
 //!    compensation and routing latency in frames of the export rate, from the latencies the export
-//!    skips), then waits for the UI. A bridge
+//!    skips), then waits for the UI. Direct CLAP processors hand back obsolete activations
+//!    without processing audio while the worker waits. A bridge
 //!    re-activates through the plugin manager's poll on the UI thread (and for the switch to
 //!    offline processing in step 3) and renders its silent fallback until the bridge confirms;
 //!    its status is `Loading` from the moment the processor or the render mode asked for it until
@@ -43,7 +44,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -246,7 +247,7 @@ fn work(
     let device_rate = engine.engine().sample_rate();
     let export_rate = job.sample_rate as f32;
     let changed = device_rate != export_rate;
-    if changed && let Err(errors) = engine.engine().set_sample_rate(export_rate) {
+    if let Err(errors) = engine.engine().prepare_offline(export_rate) {
         failed.extend(errors.into_iter().map(|(slot, _)| slot));
     }
     let Input {
@@ -256,23 +257,33 @@ fn work(
     } = input;
     let flattening = track.is_some();
     let _ = to_ui.send(Message::Prepared);
-    let result = go
-        .recv()
-        .unwrap_or(Err(ExportError::Cancelled))
-        .and_then(|()| {
-            // The UI waited until the devices run at the export rate: now the compensation and the
-            // skip come from the same processors, in frames of the export rate.
-            if let Some(track) = track {
-                let (e, h) = engine.parts();
-                export_track(e, h, &program, (&track, &project), &job, &cancel, |p| {
-                    progress.store(p)
-                })
-            } else {
-                let export_program = recompile(engine.engine(), &project, &program);
-                let (e, h) = engine.parts();
-                export(e, h, &export_program, &job, &cancel, |p| progress.store(p))
+    let ready = loop {
+        match go.recv_timeout(Duration::from_millis(5)) {
+            Ok(result) => break result,
+            Err(RecvTimeoutError::Disconnected) => break Err(ExportError::Cancelled),
+            Err(RecvTimeoutError::Timeout) => {
+                // The host can finish preparing an earlier revision while we request a new
+                // sample rate. Return such an activation too, while the engine is detached.
+                if let Err(errors) = engine.engine().prepare_offline(export_rate) {
+                    failed.extend(errors.into_iter().map(|(slot, _)| slot));
+                }
             }
-        });
+        }
+    };
+    let result = ready.and_then(|()| {
+        // The UI waited until the devices run at the export rate: now the compensation and the
+        // skip come from the same processors, in frames of the export rate.
+        if let Some(track) = track {
+            let (e, h) = engine.parts();
+            export_track(e, h, &program, (&track, &project), &job, &cancel, |p| {
+                progress.store(p)
+            })
+        } else {
+            let export_program = recompile(engine.engine(), &project, &program);
+            let (e, h) = engine.parts();
+            export(e, h, &export_program, &job, &cancel, |p| progress.store(p))
+        }
+    });
     if changed && let Err(errors) = engine.engine().set_sample_rate(device_rate) {
         failed.extend(errors.into_iter().map(|(slot, _)| slot));
     }

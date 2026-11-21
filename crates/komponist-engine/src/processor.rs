@@ -33,6 +33,10 @@ pub trait Processor: Send {
     /// a sample rate change (the engine is then out of the audio callback). May allocate.
     fn activate(&mut self, sample_rate: f32, max_block: usize) -> Result<(), ProcessorError>;
 
+    /// Non-RT, between audio blocks. Performs any engine-side handoff needed before an
+    /// offline render can wait for the plugin host to finish preparing the processor.
+    fn prepare_offline(&mut self) {}
+
     /// RT. Processes one call of `ctx.frames` frames (1 ..= `max_block`).
     ///
     /// `events` are sorted by [`Event::offset`] (all `< ctx.frames`; equal offsets keep their send

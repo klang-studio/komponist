@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use komponist_engine::processor::{EventProcessor, EventSink, ParameterEdit, ParameterEditKind};
+use komponist_engine::processor::{EventSink, ParameterEdit, ParameterEditKind};
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
@@ -147,7 +147,6 @@ pub(crate) struct DirectProcessor {
 
 struct MidiStage {
     audio: [Vec<f32>; 2],
-    params: Vec<WireEvent>,
     edits: VecDeque<ParameterEdit>,
     downstream_active: bool,
     release_due: bool,
@@ -157,12 +156,20 @@ impl MidiStage {
     fn new(max_block: usize) -> Self {
         Self {
             audio: std::array::from_fn(|_| vec![0.0; max_block]),
-            params: Vec::with_capacity(INPUT_EVENT_CAPACITY),
             edits: VecDeque::with_capacity(OUTPUT_EVENT_CAPACITY),
             downstream_active: false,
             release_due: false,
         }
     }
+}
+
+/// Host controls go before stage automation at the same frame. Both belong to the
+/// same restore epoch and are checked while holding the processing permission.
+#[derive(Default)]
+pub(crate) struct ControlEvents<'a> {
+    pub(crate) persistent: &'a [WireEvent],
+    pub(crate) stage: &'a [WireEvent],
+    pub(crate) epoch: Option<(&'a AtomicU64, u64)>,
 }
 
 impl DirectProcessor {
@@ -178,10 +185,9 @@ impl DirectProcessor {
         &mut self,
         ctx: &ProcessContext,
         events: &[Event],
-        params: &[WireEvent],
+        controls: ControlEvents<'_>,
         io: &mut StereoIo<'_>,
         sidechain: Option<[&[f32]; 2]>,
-        control_epoch: Option<(&AtomicU64, u64)>,
     ) -> ProcessStatus {
         self.output_read = 0;
         self.output_len = 0;
@@ -199,16 +205,20 @@ impl DirectProcessor {
             write_fallback(self.role, io);
             return ProcessStatus::Continue;
         };
-        let params =
-            if control_epoch.is_some_and(|(epoch, stamp)| epoch.load(Ordering::Acquire) != stamp) {
-                &[]
-            } else {
-                params
-            };
+        let controls = if controls
+            .epoch
+            .is_some_and(|(epoch, stamp)| epoch.load(Ordering::Acquire) != stamp)
+        {
+            ControlEvents::default()
+        } else {
+            controls
+        };
         if std::mem::take(&mut self.reset_pending) {
             self.audio.reset();
         }
-        if events.len().saturating_add(params.len()) > self.input_events.capacity() {
+        if events.len() + controls.persistent.len() + controls.stage.len()
+            > self.input_events.capacity()
+        {
             // A dropped note-off can leave a voice active. Reset and fail the slot rather than
             // send a partial block whose state the engine cannot reproduce.
             self.audio.reset();
@@ -216,7 +226,8 @@ impl DirectProcessor {
             return ProcessStatus::Failed;
         }
         self.input_events.clear();
-        self.input_events.extend_from_slice(params);
+        self.input_events.extend_from_slice(controls.persistent);
+        self.input_events.extend_from_slice(controls.stage);
         self.input_events.extend(events.iter().map(to_wire));
         let transport = wire_transport(&ctx.transport);
         let [left, right] = &mut io.output;
@@ -280,7 +291,7 @@ impl Processor for DirectProcessor {
         events: &[Event],
         io: &mut StereoIo<'_>,
     ) -> ProcessStatus {
-        self.process_block(ctx, events, &[], io, None, None)
+        self.process_block(ctx, events, ControlEvents::default(), io, None)
     }
 
     fn process_sidechain(
@@ -290,7 +301,7 @@ impl Processor for DirectProcessor {
         io: &mut StereoIo<'_>,
         sidechain: [&[f32]; 2],
     ) -> ProcessStatus {
-        self.process_block(ctx, events, &[], io, Some(sidechain), None)
+        self.process_block(ctx, events, ControlEvents::default(), io, Some(sidechain))
     }
 
     fn latency(&self) -> u32 {
@@ -302,6 +313,10 @@ impl Processor for DirectProcessor {
     }
 
     fn reset(&mut self) {
+        if let Some(midi) = self.midi.as_mut() {
+            midi.downstream_active = false;
+            midi.release_due = false;
+        }
         self.reset_pending = true;
         self.output_read = 0;
         self.output_len = 0;
@@ -320,10 +335,6 @@ impl Processor for DirectProcessor {
         }
         None
     }
-
-    fn event_processor(&mut self) -> Option<&mut dyn EventProcessor> {
-        self.midi.is_some().then_some(self)
-    }
 }
 
 fn parameter_edit(event: &WireEvent, base: u32) -> Option<ParameterEdit> {
@@ -340,26 +351,18 @@ fn parameter_edit(event: &WireEvent, base: u32) -> Option<ParameterEdit> {
     })
 }
 
-impl EventProcessor for DirectProcessor {
-    fn set_param(&mut self, id: u32, value: f64) {
-        let Some(midi) = self.midi.as_mut() else {
-            return;
-        };
-        if midi.params.len() < midi.params.capacity() {
-            midi.params
-                .push(WireEvent::new(0, WireEventKind::ParamValue { id, value }));
-        }
-    }
-
-    fn process_events(
+impl DirectProcessor {
+    pub(crate) fn process_midi_block(
         &mut self,
         ctx: &ProcessContext,
         input: &[Event],
         output: &mut EventSink<'_>,
+        controls: ControlEvents<'_>,
     ) {
         static SILENCE: [f32; MAX_BLOCK] = [0.0; MAX_BLOCK];
         let len = ctx.frames as usize;
         if len > self.setup.max_block {
+            self.delivered = false;
             return;
         }
         let mut midi = self.midi.take().expect("MIDI effect has stage buffers");
@@ -367,17 +370,13 @@ impl EventProcessor for DirectProcessor {
         let status = self.process_block(
             ctx,
             input,
-            &midi.params,
+            controls,
             &mut StereoIo {
                 input: [&SILENCE[..len]; 2],
                 output: [&mut left[..len], &mut right[..len]],
             },
             None,
-            None,
         );
-        if self.delivered {
-            midi.params.clear();
-        }
         let events = &self.output_events[..self.output_len];
         let mut note_count = 0;
         for event in events {
@@ -418,14 +417,6 @@ impl EventProcessor for DirectProcessor {
             }
         }
         self.midi = Some(midi);
-    }
-
-    fn reset(&mut self) {
-        Processor::reset(self);
-        if let Some(midi) = self.midi.as_mut() {
-            midi.downstream_active = false;
-            midi.release_due = false;
-        }
     }
 }
 
