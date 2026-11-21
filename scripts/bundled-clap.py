@@ -11,6 +11,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from typing import NamedTuple
 
 REPO = Path(__file__).resolve().parent.parent
@@ -233,14 +234,61 @@ def manifest_bytes(target, root, devices):
     return (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
 
 
+def payload_directory(target, app):
+    directory = app.parent
+    if target == "aarch64-apple-darwin":
+        directory = directory.parent / "Resources"
+    return directory / "bundled-clap"
+
+
+def check_rejects_altered_bundle(target, app, device):
+    # Run the same executable from a disposable package. On macOS ditto keeps
+    # the app and nested bundle signatures as they were archived.
+    with tempfile.TemporaryDirectory(prefix="komponist integrity ") as temporary:
+        directory = Path(temporary)
+        if target == "aarch64-apple-darwin":
+            source_app = app.parents[2]
+            copied_app = directory / source_app.name
+            subprocess.run(["ditto", source_app, copied_app], check=True)
+            executable = copied_app / app.relative_to(source_app)
+        else:
+            executable = directory / app.name
+            shutil.copy2(app, executable)
+            shutil.copytree(payload_directory(target, app), payload_directory(target, executable))
+
+        library = payload_directory(target, executable) / bundle_name(device)
+        if target == "aarch64-apple-darwin":
+            library = library / "Contents" / "MacOS" / device.library
+        with library.open("ab") as file:
+            file.write(b"altered bundled CLAP smoke payload")
+
+        # Capture both handles to preserve GUI-subsystem stdout/stderr on Windows.
+        refusal = subprocess.run(
+            [executable, "--verify-bundled-clap"],
+            capture_output=True,
+            timeout=60,
+        )
+        output = refusal.stdout.decode("utf-8", errors="replace")
+        diagnostic = refusal.stderr.decode("utf-8", errors="replace")
+        if (
+            refusal.returncode == 0
+            or any(line.startswith("verified ") for line in output.splitlines())
+            or "bundled CLAP verification:" not in diagnostic
+            or "bundle file hash mismatch" not in diagnostic
+            or device.plugin_id not in diagnostic
+        ):
+            raise ValueError(
+                f"expected app integrity refusal ({refusal.returncode}): "
+                f"{output}{diagnostic}"
+            )
+        print(f"rejected altered bundle {device.plugin_id}")
+
+
 def check_archive(target, app, expected_sha256, devices):
     app = app.resolve(strict=True)
     if not app.is_file():
         raise ValueError(f"expected unpacked app executable: {app}")
-    root = app.parent
-    if target == "aarch64-apple-darwin":
-        root = root.parent / "Resources"
-    root /= "bundled-clap"
+    root = payload_directory(target, app)
     manifest = root / MANIFEST
     if not stat.S_ISREG(file_mode(manifest)) or sha256(manifest) != expected_sha256:
         raise ValueError("unpacked bundle manifest digest differs from the build")
@@ -275,6 +323,8 @@ def check_archive(target, app, expected_sha256, devices):
         expected = [f"verified {device.plugin_id} ({route})" for device in devices]
         if sorted(reports) != sorted(expected):
             raise ValueError(f"unexpected {route} verification reports: {reports}")
+
+    check_rejects_altered_bundle(target, app, devices[0])
 
 
 def main():

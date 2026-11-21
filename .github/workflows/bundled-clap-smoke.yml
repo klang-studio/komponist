@@ -12,7 +12,12 @@ on:
         default: hall
   pull_request:
     paths:
-      - "sdk/native-clap/bundled/**"
+      - "sdk/native-clap/**"
+      - "crates/komponist-app/src/main.rs"
+      - "crates/komponist-bridge/**"
+      - "crates/komponist-hosting/**"
+      - "crates/komponist-ipc/**"
+      - "crates/komponist-plugins/**"
       - "scripts/bundled-clap.py"
       - "scripts/bundle-macos.sh"
       - "scripts/package-windows.sh"
