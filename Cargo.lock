@@ -2535,6 +2535,7 @@ dependencies = [
  "komponist-plugins",
  "komponist-presse",
  "komponist-sampler",
+ "komponist-surf",
  "komponist-tokens",
  "komponist-ui",
  "komponist-volt",

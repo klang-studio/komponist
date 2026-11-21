@@ -20,13 +20,14 @@
 
 use super::spec::{
     AreaAction, Axis, AxisKind, Bind, Curve, CurveFn, DataKind, GraphSpec, Grid, Guide, Handle,
-    HandleLook, Layer, Marker, PosFn, Pred, Region, Tick,
+    HandleLook, Layer, Marker, PosFn, Pred, RangeFn, Region, Stack, StackFn, Tick,
 };
 use crate::Lang;
 use crate::widgets::metrics::device::graph as m;
 use komponist_model::params::comp_curve;
 use komponist_model::params::eq_curve::CURVE_RATE;
 use komponist_model::params::va_curve;
+use komponist_model::params::wavetable;
 
 /// Slot indices of [`envelope`].
 pub mod env {
@@ -641,6 +642,52 @@ pub fn lfo_shape(t: Lang) -> GraphSpec {
         baseline: Some(0.0),
         fill: true,
     })];
+    spec
+}
+
+// ---------------------------------------------------------------------------------------------
+// surf (#107)
+
+/// surf's wavetable of oscillator `osc` (0 = A, 1 = B) as a stack of frames
+/// (`wavetable::preview_at`), the frame at the position on top, a handle on the position axis
+/// (↔ moves the position) and the range the matrix moves the position over
+/// (`wavetable::position_mod_range`, 100 % = the whole table).
+///
+/// Slots: `table` (index of `wavetable::TABLES`), `position` (0–1), then `mod1_src`, `mod1_dst`,
+/// `mod1_amt` … `mod4_amt`, `lfo1_uni`, `lfo2_uni`.
+pub fn wavetable(t: Lang, osc: usize) -> GraphSpec {
+    let (px, py) = m::pad::STACK;
+    let mut spec = GraphSpec::new(
+        t.ui_graph_wavetable(),
+        padded(Axis::new(AxisKind::Lin, 0.0, 1.0), px).grid(Grid::None),
+        padded(Axis::new(AxisKind::Lin, 0.0, 1.0), py).grid(Grid::None),
+    );
+    spec.slots = slots(&["table", "position"]);
+    for n in 1..=4 {
+        for what in ["src", "dst", "amt"] {
+            spec.slots.push(format!("mod{n}_{what}"));
+        }
+    }
+    spec.slots
+        .extend(["lfo1_uni", "lfo2_uni"].map(str::to_owned));
+    let look = m::STACK;
+    let stack = Stack {
+        f: StackFn::new(|q, phase, p| wavetable::preview_at(p[0].round() as usize, q, phase)),
+        position: 1,
+        range: RangeFn::new(move |p| wavetable::position_mod_range(osc, &p[2..], 1.0)),
+        frames: look.frames,
+        cycle_w: look.cycle_w,
+        amp: look.amp,
+    };
+    let at = stack.clone();
+    spec.handles = vec![
+        Handle::dot(t.ui_graph_wavetable())
+            .x(Bind::axis(1, t.ui_graph_position())
+                .scaled(1.0 - look.cycle_w)
+                .after(&[], look.cycle_w))
+            .at(PosFn::new(move |p| at.handle_at(p[1]))),
+    ];
+    spec.layers = vec![Layer::Stack(stack)];
     spec
 }
 

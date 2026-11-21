@@ -617,6 +617,92 @@ pub struct Curve {
     pub fill: bool,
 }
 
+/// `f(position, phase, slots) -> y`: one cycle of a wavetable frame, −1 … 1.
+#[derive(Clone)]
+pub struct StackFn(Arc<StackClosure>);
+
+type StackClosure = dyn Fn(f64, f64, &[f64]) -> f64 + Send + Sync;
+
+impl StackFn {
+    /// A frame function.
+    pub fn new(f: impl Fn(f64, f64, &[f64]) -> f64 + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+
+    /// `y` at `position` and `phase` for `slots`.
+    pub fn at(&self, position: f64, phase: f64, slots: &[f64]) -> f64 {
+        (self.0)(position, phase, slots)
+    }
+}
+
+impl fmt::Debug for StackFn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("StackFn(..)")
+    }
+}
+
+/// `range(slots) -> (lo, hi)`: offsets from a value (the range the matrix moves it over).
+#[derive(Clone)]
+pub struct RangeFn(Arc<RangeClosure>);
+
+type RangeClosure = dyn Fn(&[f64]) -> (f64, f64) + Send + Sync;
+
+impl RangeFn {
+    /// A range function.
+    pub fn new(f: impl Fn(&[f64]) -> (f64, f64) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+
+    /// The range for `slots`.
+    pub fn at(&self, slots: &[f64]) -> (f64, f64) {
+        (self.0)(slots)
+    }
+}
+
+impl fmt::Debug for RangeFn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RangeFn(..)")
+    }
+}
+
+/// A wavetable as a stack of frames in depth (surf): both axes run 0 … 1 over the plot. Frame
+/// `q` (0 … 1) starts at `x = q · (1 − cycle_w)` on the baseline `y = amp + q · (1 − 2·amp)`, its
+/// cycle `f(q, phase)` spans `cycle_w` and swings `± amp`; the first frame is in front at the
+/// bottom left. The frame at the position slot is drawn on top in the track colour (filled), the
+/// frames inside the modulated range tinted, and the right ends of the baselines form the
+/// position axis with the range on it. [`Stack::handle_at`] is where a handle on the position sits.
+#[derive(Clone, Debug)]
+pub struct Stack {
+    /// One cycle of a frame.
+    pub f: StackFn,
+    /// The slot of the position (0 … 1).
+    pub position: usize,
+    /// The offsets the matrix moves the position by.
+    pub range: RangeFn,
+    /// Frames drawn.
+    pub frames: usize,
+    /// Width of a cycle as a share of the plot.
+    pub cycle_w: f64,
+    /// Half amplitude of a cycle as a share of the plot.
+    pub amp: f64,
+}
+
+impl Stack {
+    /// Where frame `q` starts: the left end of its baseline, in axis units.
+    pub fn origin(&self, q: f64) -> (f64, f64) {
+        (
+            q * (1.0 - self.cycle_w),
+            self.amp + q * (1.0 - 2.0 * self.amp),
+        )
+    }
+
+    /// The point on the position axis at position `q`: the right end of that frame's baseline.
+    pub fn handle_at(&self, q: f64) -> (f64, f64) {
+        let (x, y) = self.origin(q.clamp(0.0, 1.0));
+        (x + self.cycle_w, y)
+    }
+}
+
 /// A guide line (dashed).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Guide {
@@ -668,6 +754,8 @@ pub enum Layer {
     Region(Region),
     /// A curve.
     Curve(Curve),
+    /// A wavetable stack.
+    Stack(Stack),
     /// A guide.
     Guide(Guide),
     /// A marker.
@@ -686,7 +774,7 @@ impl Layer {
         match self {
             Layer::Data(_) => 1,
             Layer::Region(_) => 2,
-            Layer::Curve(_) | Layer::Trace { .. } => 3,
+            Layer::Curve(_) | Layer::Stack(_) | Layer::Trace { .. } => 3,
             Layer::Guide(_) => 4,
             Layer::Marker(_) => 5,
         }
