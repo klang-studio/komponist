@@ -680,10 +680,33 @@ fn mini_fader(
 /// Whether the mini fader of `cell` fills as a carrier (the track colour): the Bool parameter the
 /// cell names says so; without one (or while it is unknown) it does.
 fn carrier(card: &Card, cell: &Cell) -> bool {
-    cell.carrier
-        .as_ref()
-        .and_then(|id| card.param(id))
-        .is_none_or(|p| p.value >= 0.5)
+    let Some(id) = &cell.carrier else {
+        return true;
+    };
+    // Changing Hexa's algorithm edits the patch routing as a group. The separate output
+    // CLAP bindings can still report their last individual edits.
+    if card.bundled_editor
+        && let Some(routing) = card.routing
+        && let Some(op) = id
+            .as_str()
+            .strip_prefix("op")
+            .and_then(|id| id.strip_suffix("_output"))
+            .and_then(|number| number.parse::<usize>().ok())
+            .and_then(|number| number.checked_sub(1))
+            .filter(|&op| op < routing.modulates.len())
+        && let Some(algorithm) = card
+            .params
+            .iter()
+            .find(|p| p.info.id.as_str() == "algorithm")
+    {
+        let number = algorithm.value.round() as usize;
+        return if number == 0 {
+            routing.outputs & (1 << op) != 0
+        } else {
+            komponist_hexa::device::is_carrier(number, op)
+        };
+    }
+    card.param(id).is_none_or(|p| p.value >= 0.5)
 }
 
 /// The selected entry (1-based) of context placeholder `key`, 1 without one.
@@ -1380,6 +1403,26 @@ mod tests {
             value,
             text,
         }
+    }
+
+    #[test]
+    fn bundled_hexa_carriers_follow_the_graph_after_an_algorithm_edit() {
+        let mut card = card();
+        card.bundled_editor = true;
+        let patch = komponist_hexa::preset_patch(1).unwrap();
+        card.routing = Some(komponist_hexa::algorithms::routing(&patch));
+        let info = komponist_hexa::Macro::Algorithm.param_info();
+        card.params.push(Param {
+            wire: 110,
+            info,
+            value: 7.0,
+            text: String::new(),
+        });
+        // E-Piano initially has operator 5 as a carrier. Fixed algorithm 7 uses 1 and 3.
+        let cell = Cell::knob(0, 0, ParamId::new("op5_level")).carrier(ParamId::new("op5_output"));
+        assert!(!carrier(&card, &cell));
+        card.params.last_mut().unwrap().value = 0.0;
+        assert!(carrier(&card, &cell));
     }
 
     /// A card with one cell of every kind that edits a parameter.
