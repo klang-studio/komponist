@@ -539,6 +539,10 @@ a one-second warm-up.
   time as a percentage of the frame period. The smoothed median is sampled every 100 ms.
 - Counters cover callbacks, callbacks exceeding the period, stream xruns, late bridge blocks,
   and worker batches and late waits during the same window.
+- After timing ends and before shutdown, the runner reports resident memory (working set on
+  Windows) for itself and the sum across distinct active bridge processes. Missing readings
+  are marked unavailable. The snapshot includes shared pages in each process that maps them,
+  so the sum can count the same pages more than once. It does not measure peak memory.
 
 The harness defaults to the null audio backend and uses the real DSP, scheduler and plugin
 hosts. Set `KOMPONIST_PERF_AUDIO_HOST` to `coreaudio`, `asio`, `wasapi`, `pipewire`, `jack`

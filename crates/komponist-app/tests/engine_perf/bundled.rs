@@ -1,5 +1,8 @@
 //! Ignored benchmark launched by scripts/measure-bundled-clap.py from a verified package.
 
+#[path = "bundled/memory.rs"]
+mod memory;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -243,5 +246,7 @@ fn run(
     let config = app.settings().audio.clone();
     measure(label, &mut app, buffer, ids);
     require_audio_config(app.engine(), config.host, config.sample_rate, buffer);
+    let host = app.engine().host();
+    memory::report(label, ids.iter().filter_map(|&id| host.bridge_pid(id)));
     app.shutdown();
 }
