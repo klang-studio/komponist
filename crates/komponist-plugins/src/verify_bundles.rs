@@ -84,6 +84,9 @@ pub fn verify_bundled_clap(force_bridge: bool) -> Result<(), String> {
         };
         println!("verified {id} (normal {route})");
     }
+    if let Some(digest) = option_env!("KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256") {
+        println!("manifest sha256 {digest}");
+    }
     Ok(())
 }
 

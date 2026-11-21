@@ -507,3 +507,39 @@ The test swaps between two precompiled programs whose macro base values differ. 
 mean callback time with and without 512 bent parameter mappings, changing every macro on each
 block. Program preparation and retirement run outside the measurement. This measures the
 block-rate fan-out. Timeline ramps may emit several values per block and are covered by #76.
+
+## Bundled CLAP comparison (#197)
+
+Build an archive with the bundled CLAP package workflow and unpack it. From the same source
+revision as the archive, run:
+
+```bash
+KOMPONIST_PERF_WORKERS=4 KOMPONIST_PERF_BUFFERS=64,128,256 KOMPONIST_PERF_SECS=60 \
+  python3 scripts/measure-bundled-clap.py /path/to/unpacked/komponist
+```
+
+Pass `komponist.exe` on Windows or `komponist.app/Contents/MacOS/komponist` on macOS. The script
+asks the packaged app to verify the private CLAP payload, then builds the existing release
+`engine_perf` runner with the authenticated manifest digest. It stages a temporary copy of the
+payload next to the runner, leaves the archive contents untouched, and uses the original
+packaged executable for the bridge subprocesses. The three routes run in separate processes.
+Each case checks device readiness, CLAP layout, state restore warnings and bridge PIDs.
+
+The same generated 48 kHz project runs with legacy built-ins, verified in-process CLAP and
+forced bridge CLAP. Sixteen parallel Hexa instruments play the same four presets and four-bar
+note sequence. The serial variant adds Delay and Hall on four tracks and EQ, Presse and
+Limiter on the master. The MIDI variant adds Arpeggiator and Scale before eight instruments.
+The bundled versions use the legacy device translator for their state. Buffer sizes default
+to 64, 128 and 256 frames, worker counts to 0 and 4, and each measurement to 10 seconds after
+a one-second warm-up.
+
+- Setup time covers the scan (CLAP routes only) and device attachment through readiness.
+- Callback peak measures the largest observed callback time as a percentage of the frame
+  period. The other load number is the median of the smoothed load sampled every 100 ms.
+- Counters cover callbacks, callbacks exceeding the period, stream xruns, late bridge blocks,
+  and worker batches and late waits during the same window.
+
+The harness uses the real DSP, scheduler, null-backend audio callback and plugin hosts.
+Results characterize the test machine with the null backend. Report the machine, OS, build
+revision and settings when comparing runs. Per-callback p95/p99 and physical audio driver
+latency require separate measurements.
