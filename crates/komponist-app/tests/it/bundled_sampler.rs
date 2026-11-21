@@ -303,6 +303,26 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         assert_audible(&mut app, *track, key);
     }
     let (_, general_track, general) = tracks[1];
+    let mode = app
+        .engine()
+        .host()
+        .native_layout(general)
+        .unwrap()
+        .author_ids()
+        .unwrap()["mode"];
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device: general,
+        id: mode,
+        value: 2.0,
+    }));
+    step_until(&mut app, "saved slice mode", |app| {
+        let device = app.project().find_device(general).unwrap().2;
+        device
+            .state
+            .as_deref()
+            .and_then(pinned_clap_state::decode)
+            .is_some_and(|state| state["params"]["mode"]["string"] == "slices")
+    });
     let settings = komponist_general_sampler::Settings::from_markers([0.04, 0.10]);
     let slice_state = |app: &App| {
         let device = app.project().find_device(general).unwrap().2;
