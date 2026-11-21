@@ -1480,8 +1480,8 @@ fn paint_curve(
 }
 
 /// A [`Stack`]: the frames from the back to the front, each filled with the background below its
-/// cycle so it hides the ones behind, then the position axis with the modulated range, then the
-/// frame at the position in the track colour.
+/// cycle so it hides the ones behind; the frame at the position, in the track colour, between the
+/// frames behind and in front of it; then the position axis with the modulated range on top.
 fn paint_stack(
     painter: &Painter,
     plot: &Plot,
@@ -1513,9 +1513,7 @@ fn paint_stack(
         (line, floor)
     };
     let background = color32(color::SURFACE_1);
-    let frames = stack.frames.max(2);
-    for k in (0..frames).rev() {
-        let q = k as f64 / (frames - 1) as f64;
+    let frame = |q: f64| {
         let (line, floor) = cycle(q);
         painter.add(strip(&line, &floor, background));
         let inside = hi - lo > 1e-6 && q >= lo - 1e-9 && q <= hi + 1e-9;
@@ -1529,7 +1527,40 @@ fn paint_stack(
             line,
             Stroke::new(m::STACK.frame_stroke, stroke),
         ));
+    };
+    let highlight = || {
+        let (line, floor) = cycle(pos);
+        let base: Vec<Pos2> = {
+            let (_, b) = stack.origin(pos);
+            line.iter().map(|p| pos2(p.x, plot.y(&spec.y, b))).collect()
+        };
+        painter.add(strip(&line, &floor, background));
+        painter.add(strip(
+            &line,
+            &base,
+            with_opacity(col, widget::graph::curve::FILL_OPACITY),
+        ));
+        painter.add(Shape::line(
+            line,
+            Stroke::new(widget::graph::curve::STROKE, col),
+        ));
+    };
+    // Back to front, the frame at the position in its place in depth: its background hides the
+    // frames behind it, the frames in front of it hide it.
+    let frames = stack.frames.max(2);
+    let mut highlighted = false;
+    for k in (0..frames).rev() {
+        let q = k as f64 / (frames - 1) as f64;
+        if q < pos && !highlighted {
+            highlight();
+            highlighted = true;
+        }
+        frame(q);
     }
+    if !highlighted {
+        highlight();
+    }
+    // The position axis on top, so the range stays visible over the frames in front.
     let axis = |q: f64| {
         let (x, y) = stack.handle_at(q);
         plot.at(spec, x, y)
@@ -1544,21 +1575,6 @@ fn paint_stack(
             Stroke::new(m::STACK.axis_w + 1.0, with_opacity(col, m::MOD_BAR.opacity)),
         );
     }
-    let (line, floor) = cycle(pos);
-    let base: Vec<Pos2> = {
-        let (_, b) = stack.origin(pos);
-        line.iter().map(|p| pos2(p.x, plot.y(&spec.y, b))).collect()
-    };
-    painter.add(strip(&line, &floor, background));
-    painter.add(strip(
-        &line,
-        &base,
-        with_opacity(col, widget::graph::curve::FILL_OPACITY),
-    ));
-    painter.add(Shape::line(
-        line,
-        Stroke::new(widget::graph::curve::STROKE, col),
-    ));
 }
 
 fn dashed(painter: &Painter, a: Pos2, b: Pos2, dash: [f32; 2], color: Color32, ppp: f32) {
