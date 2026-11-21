@@ -946,6 +946,7 @@ mod tests {
                 "Arpeggiator",
                 "Tonleiter",
                 "Volt",
+                "Surf",
                 "Sampler",
             ]
         );

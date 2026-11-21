@@ -806,8 +806,8 @@ mod tests {
                 "Hexa",
                 "Klopfer",
                 "Volt",
-                "Sampler",
-                "Surge XT"
+                "Surf",
+                "Sampler"
             ]
         );
         assert_eq!(rows[1].tag, "INTERN");
