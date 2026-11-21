@@ -201,6 +201,12 @@ pub struct Voice<O: Oscillators> {
     gain_step: f32,
 }
 
+impl<O: Oscillators> Default for Voice<O> {
+    fn default() -> Self {
+        Voice::new()
+    }
+}
+
 impl<O: Oscillators> Voice<O> {
     /// A free voice.
     pub fn new() -> Voice<O> {
