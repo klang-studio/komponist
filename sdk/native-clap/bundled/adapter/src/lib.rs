@@ -28,6 +28,8 @@ pub trait DeviceDefinition: Send + 'static {
     const ID: &'static str;
     const NAME: &'static str;
     const SIDECHAIN: bool = false;
+    /// Let the host supply the detector signal from the main input without a sidechain source.
+    const SIDECHAIN_FROM_MAIN: bool = false;
     /// A parameter that can only take effect on reactivation because it changes latency.
     const LATENCY_PARAMETER: Option<&'static str> = None;
     const VERSION: &'static str;
@@ -102,26 +104,25 @@ impl<T: EffectDefinition> Plugin for Effect<T> {
     const VERSION: &'static str = T::VERSION;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
-    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = if T::SIDECHAIN {
-        &[
-            AudioIOLayout {
-                main_input_channels: Some(STEREO),
-                main_output_channels: Some(STEREO),
-                aux_input_ports: &[STEREO],
-                ..AudioIOLayout::const_default()
-            },
-            AudioIOLayout {
-                main_input_channels: Some(STEREO),
-                main_output_channels: Some(STEREO),
-                ..AudioIOLayout::const_default()
-            },
-        ]
-    } else {
-        &[AudioIOLayout {
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = {
+        const MAIN: AudioIOLayout = AudioIOLayout {
             main_input_channels: Some(STEREO),
             main_output_channels: Some(STEREO),
             ..AudioIOLayout::const_default()
-        }]
+        };
+        const AUX: AudioIOLayout = AudioIOLayout {
+            aux_input_ports: &[STEREO],
+            ..MAIN
+        };
+        if !T::SIDECHAIN {
+            &[MAIN]
+        } else if T::SIDECHAIN_FROM_MAIN {
+            // The ordinary CLAP host starts with stereo main only. Komponist selects config 1
+            // before activation and manages the detector source when routing changes.
+            &[MAIN, AUX]
+        } else {
+            &[AUX, MAIN]
+        }
     };
 
     type Editor = ();
@@ -207,6 +208,12 @@ impl<T: EffectDefinition> ClapPlugin for Effect<T> {
     const CLAP_FEATURES: &'static [ClapFeature] = T::FEATURES;
 
     unsafe fn clap_custom_extension(id: &CStr) -> *const c_void {
+        if T::SIDECHAIN && T::SIDECHAIN_FROM_MAIN {
+            let fallback = komponist_native_clap_sdk::sidechain_fallback_to_main::<1>(id);
+            if !fallback.is_null() {
+                return fallback;
+            }
+        }
         komponist_native_clap_sdk::extension::<Self>(id)
     }
 }

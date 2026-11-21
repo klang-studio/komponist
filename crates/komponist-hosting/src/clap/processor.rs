@@ -5,8 +5,9 @@
 //! - **Input:** the main input port (the first port flagged main, else port 0) gets the stereo
 //!   input; a mono port gets `(L + R) / 2`, a port with more than two channels gets L and R in its
 //!   first two channels and silence in the rest. The sidechain port (the first other input port
-//!   with channels, #6) gets the block's sidechain the same way, or silence without one. Every
-//!   further input port is silent.
+//!   with channels, #6) gets the block's sidechain the same way, or silence without one. A plugin
+//!   may request the main-input fallback for an unconnected sidechain. Every further input port
+//!   is silent.
 //! - **Output:** the main output port is read back; a mono port goes to both channels, a port with
 //!   more channels contributes its first two. Other output ports are rendered and discarded. A
 //!   plugin without output ports passes the input through.
@@ -42,6 +43,7 @@ pub(crate) struct PortLayout {
     /// Inputs only: the sidechain port, the first port besides the main one with at least one
     /// channel (#6). CLAP has no sidechain flag, so the non-main input is taken.
     pub(crate) sidechain: Option<usize>,
+    pub(crate) sidechain_from_main: bool,
 }
 
 impl PortLayout {
@@ -127,6 +129,7 @@ struct PortBuffers {
     channels: Vec<u32>,
     main: Option<usize>,
     sidechain: Option<usize>,
+    sidechain_from_main: bool,
     /// Per port: the index of its first channel in `data` (in channels).
     firsts: Vec<usize>,
     stride: usize,
@@ -150,6 +153,8 @@ impl PortBuffers {
             channels: layout.channels.clone(),
             main: layout.main,
             sidechain: layout.sidechain,
+            sidechain_from_main: layout.sidechain_from_main
+                && layout.main.is_some_and(|main| layout.channels[main] > 0),
             firsts,
             stride: max_frames,
             data: vec![0.0; total * max_frames],
@@ -200,7 +205,8 @@ impl PortBuffers {
     }
 
     /// Input side: silences every port, then writes the stereo `input` into the main port and the
-    /// `sidechain` (if any) into the sidechain port, adapted to their channel counts.
+    /// sidechain into its port, adapted to their channel counts. If disconnected, only a plugin
+    /// that opts into the main-input fallback receives the main signal on that port.
     fn fill_from_stereo(
         &mut self,
         input: [&[f32]; 2],
@@ -211,6 +217,7 @@ impl PortBuffers {
         if let Some(main) = self.main {
             self.write_stereo(main, input, frames);
         }
+        let sidechain = sidechain.or(self.sidechain_from_main.then_some(input));
         if let (Some(port), Some(sidechain)) = (self.sidechain, sidechain) {
             self.write_stereo(port, sidechain, frames);
         }
@@ -562,7 +569,7 @@ mod tests {
         let mut layout = PortLayout {
             channels: channels.to_vec(),
             main,
-            sidechain: None,
+            ..PortLayout::default()
         };
         layout.sidechain = layout.sidechain_port();
         layout
@@ -598,6 +605,23 @@ mod tests {
         let mut ports = PortBuffers::new(&layout(&[2, 1], Some(0)), 3);
         ports.fill_from_stereo([&left, &right], Some([&left, &right]), 3);
         assert_eq!(ports.port_channel(1, 0, 3), &[2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn opted_in_sidechain_uses_main_only_until_a_source_is_connected() {
+        let input = [[1.0, 2.0], [3.0, 4.0]];
+        let mut layout = layout(&[2, 2], Some(0));
+        layout.sidechain_from_main = true;
+        let mut ports = PortBuffers::new(&layout, 2);
+
+        ports.fill_from_stereo([&input[0], &input[1]], None, 2);
+        assert_eq!(ports.port_channel(1, 0, 2), &input[0]);
+        assert_eq!(ports.port_channel(1, 1, 2), &input[1]);
+
+        let silence = [0.0; 2];
+        ports.fill_from_stereo([&input[0], &input[1]], Some([&silence, &silence]), 2);
+        assert_eq!(ports.port_channel(1, 0, 2), &silence);
+        assert_eq!(ports.port_channel(1, 1, 2), &silence);
     }
 
     #[test]

@@ -17,9 +17,14 @@ host latency.
 The public v1 layout describes fixed controls. The Delay UI uses separate time and feedback
 knobs in place of its XY control. EQ exposes all band controls but needs its response graph and
 analyzer. Presse needs its transfer/history graphs and gain-reduction display, and Limiter
-needs its gain-reduction display. Factory preset discovery, legacy project migration and
-Presse's host selection of the sidechain-enabled configuration remain rollout work. The
-bundled DSP accepts the device core's 8–384 kHz sample-rate range.
+needs its gain-reduction display. Factory preset discovery and legacy project migration
+remain rollout work. The bundled DSP accepts the device core's 8–384 kHz sample-rate range.
+
+Presse initially exposes its stereo compressor configuration. Komponist selects its
+standard CLAP sidechain configuration using the public
+[sidechain fallback extension](../../../docs/clap-device-layout/sidechain-fallback.md).
+With no source connected, the detector uses the main input. A connected source drives
+the detector independently, including when the source is silent.
 
 From the repository root, run
 `cargo test --locked --workspace --manifest-path sdk/native-clap/Cargo.toml` to validate the

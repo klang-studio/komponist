@@ -6,6 +6,9 @@ interoperability contract. [The example payload](example.json) is valid for a pl
 Gain parameter at CLAP ID `42` and a stepped enum Mode parameter at CLAP ID `7` with plain values
 `0`, `1` and `2`.
 
+Plugins can also publish an independent [sidechain fallback extension](sidechain-fallback.md)
+to define how the host supplies a disconnected auxiliary input.
+
 ## Discovery and lifetime
 
 After a successful `clap_plugin_t.init`, the host calls `clap_plugin_t.get_extension` on the CLAP

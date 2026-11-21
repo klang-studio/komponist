@@ -25,7 +25,8 @@
 //! per-block request and result, an input event ring (app → bridge), an output event ring
 //! (bridge → app), stereo audio in/out of [`MAX_BLOCK`] frames and, since version 2 (#6), the
 //! stereo sidechain input of the same size. A block carries a sidechain only when its request has
-//! [`BLOCK_FLAG_SIDECHAIN`]; without it the bridge feeds the plugin's sidechain port silence.
+//! [`BLOCK_FLAG_SIDECHAIN`]; without it the bridge applies the plugin format's disconnected-input
+//! behavior.
 //!
 //! RT handshake per block (app audio thread ↔ bridge RT thread):
 //! 1. App ([`BridgeClient::begin_block`]): only if the bridge is idle (`done_seq == request_seq`),
@@ -87,8 +88,8 @@ pub const BLOCK_FLAG_RESET: u32 = 1;
 /// [`BlockRequest::flags`]: the block is part of an offline render.
 pub const BLOCK_FLAG_OFFLINE: u32 = 2;
 /// [`BlockRequest::flags`]: [`ShmLayout::audio_sidechain`] holds this block's sidechain input
-/// (set by [`BridgeClient::begin_block`] when it is given one; #6). Without it the sidechain is
-/// silent.
+/// (set by [`BridgeClient::begin_block`] when it is given one; #6). Without it the source is
+/// disconnected.
 pub const BLOCK_FLAG_SIDECHAIN: u32 = 4;
 
 /// [`WireTransport::flags`]: transport running.
@@ -1149,8 +1150,8 @@ impl BridgeClient {
 
     /// Publishes one block (step 1 of the handshake) and wakes the bridge. Returns the sequence
     /// number to wait for. `input` holds `spec.frames` samples per channel; `sidechain`, if given,
-    /// too (it sets [`BLOCK_FLAG_SIDECHAIN`]; `None` clears it, so the plugin's sidechain port gets
-    /// silence); `events` are sorted by offset.
+    /// too (it sets [`BLOCK_FLAG_SIDECHAIN`]; `None` clears it, so the bridge treats the source as
+    /// disconnected); `events` are sorted by offset.
     ///
     /// # Panics
     ///

@@ -107,6 +107,24 @@ pub fn extension<P: NativeClapLayout>(id: &CStr) -> *const c_void {
     ptr::from_ref(table).cast()
 }
 
+/// Advertises the public v1 sidechain fallback to the main input.
+///
+/// `AUX_CONFIGURATION_ID` is the standard CLAP audio ports config with a main stereo input
+/// and an auxiliary sidechain. Pass `u32::MAX` if the default configuration already has one.
+/// Ordinary hosts can still use the standard audio ports config extension.
+pub fn sidechain_fallback_to_main<const AUX_CONFIGURATION_ID: u32>(id: &CStr) -> *const c_void {
+    use komponist_ipc::sidechain_fallback::{EXTENSION_ID, MAIN_INPUT, SidechainFallback};
+
+    if id != EXTENSION_ID {
+        return ptr::null();
+    }
+    let table: &'static SidechainFallback = &SidechainFallback {
+        mode: MAIN_INPUT,
+        auxiliary_config_id: AUX_CONFIGURATION_ID,
+    };
+    ptr::from_ref(table).cast()
+}
+
 /// Compiles a panel to bounded UTF-8 v1 JSON. Call on the CLAP main thread.
 ///
 /// # Safety

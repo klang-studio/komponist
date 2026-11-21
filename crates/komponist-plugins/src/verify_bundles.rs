@@ -22,6 +22,7 @@ use crate::manager::{
 };
 use crate::scan::scan_bundle;
 
+const PRESSE_ID: &str = "org.klang-studio.komponist.presse";
 const FRAMES: usize = 128;
 const SETUP: ProcessorSetup = ProcessorSetup {
     sample_rate: 48_000.0,
@@ -229,6 +230,7 @@ fn scan(config: &PluginManagerConfig, path: &Path, id: &str) -> Result<PluginDes
 }
 
 fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
+    let presse = bundle.plugin_id() == PRESSE_ID;
     let mut host = DirectClap::load(bundle).map_err(|error| error.to_string())?;
     let can_render =
         host.try_control(|plugin| plugin.native_layout().is_some() && !plugin.params().is_empty());
@@ -238,7 +240,7 @@ fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
     let (mut session, mut audio) =
         DirectSession::start(host, SETUP, role).map_err(|error| error.to_string())?;
     let result = (|| {
-        drive_direct(&mut audio, role)?;
+        drive_direct(&mut audio, role, presse)?;
         audio
             .activate(SETUP.sample_rate, SETUP.max_block * 2)
             .map_err(|error| error.to_string())?;
@@ -246,7 +248,7 @@ fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
         // Let the worker return its current audio half at the next realtime boundary.
         drive_boundary(&mut audio);
         session.poll().map_err(|error| error.to_string())?;
-        drive_direct(&mut audio, role)
+        drive_direct(&mut audio, role, presse)
     })();
     let mut host = session.finish(audio);
     result?;
@@ -261,10 +263,16 @@ fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
     .ok_or_else(|| "direct audio worker did not release the instance".to_owned())?
 }
 
-fn drive_direct(audio: &mut dyn Processor, role: DeviceRole) -> Result<(), String> {
+fn drive_direct(audio: &mut dyn Processor, role: DeviceRole, presse: bool) -> Result<(), String> {
     thread::scope(|scope| {
         scope
-            .spawn(|| process_audio(audio, role))
+            .spawn(|| {
+                process_audio(audio, role)?;
+                if presse {
+                    check_presse_sidechain(audio)?;
+                }
+                Ok(())
+            })
             .join()
             .map_err(|_| "direct audio worker panicked".to_owned())?
     })
@@ -317,6 +325,9 @@ fn smoke_bridge(
             return Err("bridge did not report native layout and parameters".to_owned());
         }
         process_audio(&mut audio, role)?;
+        if descriptor.id == PRESSE_ID {
+            check_presse_sidechain(&mut audio)?;
+        }
         let request = bridge
             .request_state(StatePurpose::Collect)
             .ok_or_else(|| "bridge refused the state snapshot".to_owned())?;
@@ -456,6 +467,48 @@ fn process_audio(processor: &mut dyn Processor, role: DeviceRole) -> Result<(), 
         || left.iter().chain(&right).any(|x| !x.is_finite())
     {
         return Err("plugin did not render a valid block".to_owned());
+    }
+    Ok(())
+}
+
+/// With factory defaults, Presse compresses a loud main input only when the detector sees it.
+/// An attached silent source keeps the same main input at unity.
+fn check_presse_sidechain(processor: &mut dyn Processor) -> Result<(), String> {
+    let context = smoke_context();
+    let input = std::array::from_fn::<_, FRAMES, _>(|i| if i < FRAMES / 2 { 0.75 } else { -0.75 });
+    let silent = [0.0; FRAMES];
+    let mut render = |sidechain| {
+        processor.reset();
+        let mut left = [0.0; FRAMES];
+        let mut right = [0.0; FRAMES];
+        for _ in 0..32 {
+            let mut io = StereoIo {
+                input: [&input, &input],
+                output: [&mut left, &mut right],
+            };
+            let status = match sidechain {
+                Some(sidechain) => processor.process_sidechain(&context, &[], &mut io, sidechain),
+                None => processor.process(&context, &[], &mut io),
+            };
+            if status != ProcessStatus::Continue
+                || processor.offline_failures() != 0
+                || left.iter().chain(&right).any(|x| !x.is_finite())
+            {
+                return Err("Presse sidechain check did not render a valid block".to_owned());
+            }
+        }
+        Ok(left
+            .into_iter()
+            .chain(right)
+            .map(f32::abs)
+            .fold(0.0, f32::max))
+    };
+    let disconnected = render(None)?;
+    let connected_silent = render(Some([silent.as_slice(); 2]))?;
+    if connected_silent < 0.70 || disconnected > connected_silent * 0.75 {
+        return Err(format!(
+            "Presse sidechain did not distinguish disconnection from silence (peaks {disconnected:.3}, {connected_silent:.3})"
+        ));
     }
     Ok(())
 }
