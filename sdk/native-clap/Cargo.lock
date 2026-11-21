@@ -604,7 +604,7 @@ dependencies = [
 [[package]]
 name = "nice-log"
 version = "0.3.1"
-source = "git+https://github.com/klang-studio/nice-plug?rev=7984da02964e27f127b85c2b88c673a197f4b454#7984da02964e27f127b85c2b88c673a197f4b454"
+source = "git+https://github.com/klang-studio/nice-plug?rev=ae293198a5def51d89f82ce8e9ad77f255f32b00#ae293198a5def51d89f82ce8e9ad77f255f32b00"
 dependencies = [
  "tracing-appender",
  "windows",
@@ -613,7 +613,7 @@ dependencies = [
 [[package]]
 name = "nice-plug"
 version = "0.4.2"
-source = "git+https://github.com/klang-studio/nice-plug?rev=7984da02964e27f127b85c2b88c673a197f4b454#7984da02964e27f127b85c2b88c673a197f4b454"
+source = "git+https://github.com/klang-studio/nice-plug?rev=ae293198a5def51d89f82ce8e9ad77f255f32b00#ae293198a5def51d89f82ce8e9ad77f255f32b00"
 dependencies = [
  "anyhow",
  "anymap3",
@@ -640,7 +640,7 @@ dependencies = [
 [[package]]
 name = "nice-plug-core"
 version = "0.4.2"
-source = "git+https://github.com/klang-studio/nice-plug?rev=7984da02964e27f127b85c2b88c673a197f4b454#7984da02964e27f127b85c2b88c673a197f4b454"
+source = "git+https://github.com/klang-studio/nice-plug?rev=ae293198a5def51d89f82ce8e9ad77f255f32b00#ae293198a5def51d89f82ce8e9ad77f255f32b00"
 dependencies = [
  "atomic_float",
  "atomic_refcell",
@@ -659,7 +659,7 @@ dependencies = [
 [[package]]
 name = "nice-plug-derive"
 version = "0.1.2"
-source = "git+https://github.com/klang-studio/nice-plug?rev=7984da02964e27f127b85c2b88c673a197f4b454#7984da02964e27f127b85c2b88c673a197f4b454"
+source = "git+https://github.com/klang-studio/nice-plug?rev=ae293198a5def51d89f82ce8e9ad77f255f32b00#ae293198a5def51d89f82ce8e9ad77f255f32b00"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -12,6 +12,7 @@ use clap_sys::ext::audio_ports_config::{
 use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_host_latency, clap_plugin_latency};
 use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
 use clap_sys::process::{CLAP_PROCESS_ERROR, clap_process};
+use nice_plug::context::process::SendEventError;
 use nice_plug::midi::{Channel, Key, VoiceID};
 
 use super::*;
@@ -38,6 +39,7 @@ struct Observation {
     seconds: Option<f64>,
     bar_start: Option<f64>,
     bar_number: Option<i32>,
+    rejected_out_of_order_note: bool,
 }
 
 thread_local! {
@@ -99,6 +101,21 @@ impl Plugin for Probe {
         _: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
+        let note = |timing| NoteEvent::NoteOn {
+            timing,
+            voice_id: VoiceID::Wildcard,
+            channel: Channel::Number(0),
+            key: Key::Number(60),
+            velocity: 1.0,
+        };
+        let _ = context.try_send_event(note(u32::MAX));
+        let rejected_out_of_order_note = matches!(
+            context.try_send_event(note(0)),
+            Err((
+                NoteEvent::NoteOn { timing: 0, .. },
+                SendEventError::OutOfOrder
+            ))
+        );
         let transport = context.transport();
         SLICES.with_borrow_mut(|slices| {
             *slices.iter_mut().find(|entry| entry.is_none()).unwrap() = Some(Observation {
@@ -108,18 +125,10 @@ impl Plugin for Probe {
                 seconds: transport.pos_seconds,
                 bar_start: transport.bar_start_pos_beats,
                 bar_number: transport.bar_number,
+                rejected_out_of_order_note,
             });
         });
         context.set_latency_samples(128);
-        for timing in [u32::MAX, 0] {
-            let _ = context.try_send_event(NoteEvent::NoteOn {
-                timing,
-                voice_id: VoiceID::Wildcard,
-                channel: Channel::Number(0),
-                key: Key::Number(60),
-                velocity: 1.0,
-            });
-        }
         ProcessStatus::Normal
     }
 }
@@ -427,7 +436,7 @@ fn stopped_song_position_remains_fixed_across_automation_slices() {
 }
 
 #[test]
-fn note_output_is_monotone_and_clamped_to_each_process_slice() {
+fn note_output_clamps_to_each_slice_and_rejects_out_of_order_notes() {
     let stats = HostStats::default();
     let host = host(&stats);
     let instance = instance(&host, &stats);
@@ -435,20 +444,17 @@ fn note_output_is_monotone_and_clamped_to_each_process_slice() {
     activate(plugin);
     let mut output = Output::new(32);
     let split = transport(100, Some((120.0, 0.0)), 0, 0);
-    run_process(
+    let slices = run_process(
         plugin,
         &transport(0, Some((120.0, 0.0)), 0, 0),
         &[&split.header],
         &mut output,
     );
+    assert_eq!(slices.len(), 2);
+    assert!(slices.iter().all(|slice| slice.rejected_out_of_order_note));
     assert_eq!(
         output.events,
-        [
-            (99, CLAP_EVENT_NOTE_ON),
-            (99, CLAP_EVENT_NOTE_ON),
-            (399, CLAP_EVENT_NOTE_ON),
-            (399, CLAP_EVENT_NOTE_ON),
-        ]
+        [(99, CLAP_EVENT_NOTE_ON), (399, CLAP_EVENT_NOTE_ON)]
     );
     unsafe { ((*plugin).deactivate.unwrap())(plugin) };
 }
