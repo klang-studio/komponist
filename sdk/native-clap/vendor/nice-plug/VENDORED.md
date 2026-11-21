@@ -12,6 +12,8 @@ paths to the exact Git pin. `enum-flag.patch` advertises `CLAP_PARAM_IS_ENUM` fo
 typed `EnumParam` in addition to its existing `STEPPED` flag.
 `review-186-wave1.patch` hardens the CLAP factory, parameter metadata and state framing.
 `review-186-wave2.patch` hardens CLAP transport, audio buffers, event delivery, and lifecycle.
+`review-186-round2.patch` preserves input and pending edits around state restoration, rolls back
+rejected enum changes, and keeps the stopped transport position fixed.
 
 To reproduce the source in a scratch directory from any clone of the fork, run the following
 commands with `upstream`, `vendor` and `scratch` set to the clone, this directory and an empty
@@ -25,6 +27,7 @@ patch -d "$scratch" -p1 < "$vendor/source-pin.patch"
 patch -d "$scratch" -p1 < "$vendor/enum-flag.patch"
 patch -d "$scratch" -p1 < "$vendor/review-186-wave1.patch"
 patch -d "$scratch" -p1 < "$vendor/review-186-wave2.patch"
+patch -d "$scratch" -p1 < "$vendor/review-186-round2.patch"
 diff -ru "$scratch/crates" "$vendor/crates"
 diff -u "$scratch/Cargo.toml" "$vendor/Cargo.toml"
 ```

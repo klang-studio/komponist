@@ -198,19 +198,18 @@ fn live_enum_ids_and_translations_survive_two_identical_abi_copies() {
     let cell = &parsed.pages[0].cells[0];
     assert_eq!(cell.param_id, mode);
     let choices = cell.choices.as_ref().unwrap();
+    assert_eq!(choices.len(), 7);
     assert_eq!(choices[1].value, 1);
     assert_eq!(parsed.label(&choices[1].labels, "de-DE"), Some("Verzerrt"));
     assert_eq!(parsed.label(&choices[1].labels, "fr"), Some("Drive"));
 
     let mut integer_segment = P::panel();
     integer_segment.grid.pages[0].cells[0].param = CellParam::Id(ParamId::new("count"));
-    let mode_labels = integer_segment
-        .choice_labels
-        .remove(&ParamId::new("mode"))
-        .unwrap();
-    integer_segment
-        .choice_labels
-        .insert(ParamId::new("count"), mode_labels);
+    integer_segment.choice_labels.remove(&ParamId::new("mode"));
+    integer_segment.choice_labels.insert(
+        ParamId::new("count"),
+        vec![bilingual("Zero", "Null"), bilingual("One", "Eins")],
+    );
     assert!(unsafe { compile::<P>(plugin, &integer_segment) }.is_err());
 }
 
@@ -304,34 +303,40 @@ fn stepped_values_roundtrip_exactly_and_the_inventory_rejects_its_end_index() {
     assert!(!unsafe { table.get_info.unwrap()(plugin, count, info.as_mut_ptr()) });
 }
 
-#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
-enum BadLabels {
+#[derive(Default, Enum, Debug, Clone, Copy, PartialEq, Eq)]
+enum WhitespaceLabel {
+    #[default]
     Valid,
     #[name = "   "]
     Blank,
+}
+
+#[derive(Default, Enum, Debug, Clone, Copy, PartialEq, Eq)]
+enum LeadingNulLabel {
+    #[default]
+    Valid,
     #[name = "\0Invisible"]
     LeadingNul,
 }
 
 #[derive(Params)]
-struct BadLabelsParams {
+struct InvalidLabelParams<E: Enum + Default + Eq + Send + Sync + 'static> {
     #[id = "mode"]
-    mode: EnumParam<BadLabels>,
+    mode: EnumParam<E>,
 }
 
-impl Default for BadLabelsParams {
+impl<E: Enum + Default + Eq + Send + Sync + 'static> Default for InvalidLabelParams<E> {
     fn default() -> Self {
         Self {
-            mode: EnumParam::new("Mode", BadLabels::Valid),
+            mode: EnumParam::new("Mode", E::default()),
         }
     }
 }
 
-#[test]
-fn typed_enums_need_nonblank_clap_value_text() {
-    type P = TestPlugin<BadLabelsParams>;
+fn assert_rejects_invalid_enum_label<P: ClapPlugin>() {
     let instance = Instance::new::<P>();
     let params = unsafe { inventory(instance.0).unwrap() };
+    assert_eq!(params[0].step_count, 1);
     assert_ne!(params[0].flags & param_flags::STEPPED, 0);
     assert_eq!(params[0].flags & param_flags::ENUM, 0);
 
@@ -346,13 +351,19 @@ fn typed_enums_need_nonblank_clap_value_text() {
     ));
     panel.choice_labels.insert(
         id,
-        vec![
-            bilingual("Valid", "Gültig"),
-            bilingual("Blank", "Leer"),
-            bilingual("Invisible", "Unsichtbar"),
-        ],
+        vec![bilingual("First", "Erste"), bilingual("Second", "Zweite")],
     );
     assert!(unsafe { compile::<P>(instance.0, &panel) }.is_err());
+}
+
+#[test]
+fn enum_with_whitespace_only_clap_value_text_is_stepped_only() {
+    assert_rejects_invalid_enum_label::<TestPlugin<InvalidLabelParams<WhitespaceLabel>>>();
+}
+
+#[test]
+fn enum_with_leading_nul_clap_value_text_is_stepped_only() {
+    assert_rejects_invalid_enum_label::<TestPlugin<InvalidLabelParams<LeadingNulLabel>>>();
 }
 
 mod audio_buffers;

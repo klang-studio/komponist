@@ -36,6 +36,8 @@ struct Observation {
     tempo: Option<f64>,
     beats: Option<f64>,
     seconds: Option<f64>,
+    bar_start: Option<f64>,
+    bar_number: Option<i32>,
 }
 
 thread_local! {
@@ -104,6 +106,8 @@ impl Plugin for Probe {
                 tempo: transport.tempo,
                 beats: transport.pos_beats,
                 seconds: transport.pos_seconds,
+                bar_start: transport.bar_start_pos_beats,
+                bar_number: transport.bar_number,
             });
         });
         context.set_latency_samples(128);
@@ -386,6 +390,39 @@ fn split_timeline_uses_the_latest_snapshot_and_latencies_commit_on_activation() 
     activate(plugin);
     assert_eq!(stats.reported_latency.get(), 128);
     assert_eq!(stats.latency_notified.get(), 2);
+    unsafe { ((*plugin).deactivate.unwrap())(plugin) };
+}
+
+#[test]
+fn stopped_song_position_remains_fixed_across_automation_slices() {
+    let stats = HostStats::default();
+    let host = host(&stats);
+    let instance = instance(&host, &stats);
+    let plugin = instance.0;
+    activate(plugin);
+
+    let id = unsafe { Wrapper::<Probe>::custom_extension_param_id(plugin, "gain") }.unwrap();
+    let split = param(240, id);
+    for tempo in [None, Some((120.0, 0.01))] {
+        let mut stopped = transport(0, tempo, 20, 10);
+        stopped.flags &= !CLAP_TRANSPORT_IS_PLAYING;
+        stopped.flags |= CLAP_TRANSPORT_HAS_TIME_SIGNATURE;
+        stopped.tsig_num = 4;
+        stopped.tsig_denom = 4;
+        stopped.bar_start = 19 * CLAP_BEATTIME_FACTOR;
+        stopped.bar_number = 7;
+        let slices = run_process(plugin, &stopped, &[&split.header], &mut Output::new(32));
+        assert_eq!(slices.len(), 2);
+        assert_eq!((slices[0].frames, slices[1].frames), (240, 160));
+        assert_eq!(
+            slices[1].tempo,
+            tempo.map(|(base, increment)| base + 240.0 * increment)
+        );
+        for slice in &slices {
+            assert_eq!((slice.beats, slice.seconds), (Some(20.0), Some(10.0)));
+            assert_eq!((slice.bar_start, slice.bar_number), (Some(19.0), Some(7)));
+        }
+    }
     unsafe { ((*plugin).deactivate.unwrap())(plugin) };
 }
 
