@@ -2637,6 +2637,7 @@ dependencies = [
  "komponist-reverb",
  "komponist-sampler",
  "komponist-scale",
+ "komponist-surf",
  "komponist-volt",
  "serde_json",
 ]
