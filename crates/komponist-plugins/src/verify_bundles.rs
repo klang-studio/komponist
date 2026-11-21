@@ -72,19 +72,28 @@ pub fn verify_bundled_clap(force_bridge: bool) -> Result<(), String> {
         let route = if force_bridge { "bridge" } else { "in-process" };
         println!("verified {id} ({route})");
     }
-    if !force_bridge
-        && let Some((path, id)) = bundled
-            .bundle_entries()
-            .find(|(_, id)| *id == "org.klang-studio.komponist.hall")
+    if let Some((path, id)) = bundled
+        .bundle_entries()
+        .find(|(_, id)| *id == "org.klang-studio.komponist.hall")
     {
-        smoke_live_manager(config, path, id)?;
-        println!("verified {id} (normal direct lifecycle)");
+        smoke_live_manager(config, path, id, force_bridge)?;
+        let route = if force_bridge {
+            "forced bridge"
+        } else {
+            "direct lifecycle"
+        };
+        println!("verified {id} (normal {route})");
     }
     Ok(())
 }
 
-fn smoke_live_manager(config: PluginManagerConfig, path: &Path, id: &str) -> Result<(), String> {
-    let mut manager = PluginManager::new_with_direct(config, true);
+fn smoke_live_manager(
+    config: PluginManagerConfig,
+    path: &Path,
+    id: &str,
+    force_bridge: bool,
+) -> Result<(), String> {
+    let mut manager = PluginManager::new_with_bundled_clap(config, true, force_bridge);
     manager.start_scan(&PluginDirs {
         clap: Vec::new(),
         vst3: Vec::new(),
@@ -113,6 +122,23 @@ fn smoke_live_manager(config: PluginManagerConfig, path: &Path, id: &str) -> Res
     let mut audio = manager
         .create_processor(&device, SETUP)
         .map_err(|error| error.to_string())?;
+    if force_bridge {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            manager.poll();
+            match manager.status(device_id) {
+                DeviceStatus::Ok if manager.bridge_pid(device_id).is_some() => return Ok(()),
+                DeviceStatus::Loading if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                status => {
+                    return Err(format!(
+                        "normal Hall forced bridge did not start: {status:?}"
+                    ));
+                }
+            }
+        }
+    }
     if manager.bridge_pid(device_id).is_some()
         || manager.status(device_id) != DeviceStatus::Ok
         || manager.native_layout(device_id).is_none()

@@ -352,6 +352,7 @@ pub struct PluginManager {
     bridges: BTreeMap<DeviceId, Bridge>,
     private_clap_dir: Option<PathBuf>,
     bundled_clap: Option<BundledClap>,
+    force_bundled_bridge: bool,
     direct: BTreeMap<DeviceId, DirectDevice>,
     retiring_direct: Vec<DirectDevice>,
     /// Status of devices without a bridge: `Missing`, or `Crashed` when the bridge could not start.
@@ -369,10 +370,16 @@ impl PluginManager {
     pub fn new(config: PluginManagerConfig) -> PluginManager {
         let direct = std::env::var_os("KOMPONIST_EXPERIMENTAL_DIRECT_CLAP")
             .is_some_and(|value| value == "1");
-        Self::new_with_direct(config, direct)
+        let force_bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE")
+            .is_some_and(|value| value == "1");
+        Self::new_with_bundled_clap(config, direct, force_bridge)
     }
 
-    pub(crate) fn new_with_direct(config: PluginManagerConfig, direct: bool) -> PluginManager {
+    pub(crate) fn new_with_bundled_clap(
+        config: PluginManagerConfig,
+        enable_bundles: bool,
+        force_bundled_bridge: bool,
+    ) -> PluginManager {
         let cache = ScanCache::load(&config.cache_file);
         let mut pending = Vec::new();
         let mut report = |error: BundleVerificationError| {
@@ -386,7 +393,7 @@ impl PluginManager {
             report(error);
             None
         });
-        let bundled_clap = if direct {
+        let bundled_clap = if enable_bundles {
             config.cache_file.parent().and_then(|path| {
                 BundledClap::discover(path).unwrap_or_else(|error| {
                     report(error);
@@ -405,6 +412,7 @@ impl PluginManager {
             bridges: BTreeMap::new(),
             private_clap_dir,
             bundled_clap,
+            force_bundled_bridge,
             direct: BTreeMap::new(),
             retiring_direct: Vec::new(),
             statuses: BTreeMap::new(),
@@ -593,12 +601,10 @@ impl PluginManager {
             .as_ref()
             .is_some_and(|root| bundle.starts_with(root))
         {
-            let result = self
+            let verified = self
                 .bundled_clap
                 .as_ref()
-                .ok_or_else(|| {
-                    PluginError::Ipc("bundled CLAP is unavailable for direct loading".into())
-                })
+                .ok_or_else(|| PluginError::Ipc("bundled CLAP verification is unavailable".into()))
                 .and_then(|bundled| {
                     bundled
                         .verify(&bundle, &plugin_id)
@@ -606,38 +612,47 @@ impl PluginManager {
                         .ok_or_else(|| {
                             PluginError::Ipc("bundle is not in the app release inventory".into())
                         })
-                })
-                .and_then(|proof| {
-                    DirectDevice::start(
-                        proof,
-                        device.role,
-                        setup,
-                        state.clone(),
-                        self.timing.snapshot_debounce,
-                    )
-                    .map_err(|error| PluginError::Ipc(error.to_string()))
                 });
-            return match result {
-                Ok((mut instance, processor)) => {
-                    self.statuses.remove(&device.id);
-                    instance.report_warning(device.id, &mut self.pending);
-                    DirectDevice::report_metadata(device.id, &mut self.pending);
-                    self.pending.push(PluginManagerEvent::StatusChanged {
-                        device: device.id,
-                        status: DeviceStatus::Ok,
-                    });
-                    instance.set_render_mode(device.id, self.render_mode, &mut self.pending);
-                    self.direct.insert(device.id, instance);
-                    Ok(Box::new(processor))
-                }
+            let proof = match verified {
+                Ok(proof) => proof,
                 Err(error) => {
                     self.set_status(
                         device.id,
                         DeviceStatus::Crashed(FailReason::LoadFailed(error.to_string())),
                     );
-                    Err(error)
+                    return Err(error);
                 }
             };
+            if !self.force_bundled_bridge {
+                return match DirectDevice::start(
+                    proof,
+                    device.role,
+                    setup,
+                    state,
+                    self.timing.snapshot_debounce,
+                ) {
+                    Ok((mut instance, processor)) => {
+                        self.statuses.remove(&device.id);
+                        instance.report_warning(device.id, &mut self.pending);
+                        DirectDevice::report_metadata(device.id, &mut self.pending);
+                        self.pending.push(PluginManagerEvent::StatusChanged {
+                            device: device.id,
+                            status: DeviceStatus::Ok,
+                        });
+                        instance.set_render_mode(device.id, self.render_mode, &mut self.pending);
+                        self.direct.insert(device.id, instance);
+                        Ok(Box::new(processor))
+                    }
+                    Err(error) => {
+                        let error = PluginError::Ipc(error.to_string());
+                        self.set_status(
+                            device.id,
+                            DeviceStatus::Crashed(FailReason::LoadFailed(error.to_string())),
+                        );
+                        Err(error)
+                    }
+                };
+            }
         }
         let started = Bridge::spawn(SpawnSetup {
             exe: &self.config.bridge_exe,
