@@ -2,17 +2,19 @@
 //! `scripts/measure-bundled-clap.py --historical-projects <unpacked app executable>`.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use komponist_app::Action;
-use komponist_app::actions::{EditAction, ProjectAction};
+use komponist_app::actions::{EditAction, ExportRange, ProjectAction};
 use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::project_io::{load_project, save_project};
+use komponist_app::{Action, App};
 use komponist_builtin::Internal;
 use komponist_engine::Command;
 use komponist_hexa::Macro;
+use komponist_model::edits::{self, NewClip, NewClipContent, NewNote};
 use komponist_model::params::ParamId;
-use komponist_model::{PluginFormat, Project};
+use komponist_model::{DeviceId, PPQ, PluginFormat, Project, Tick, TrackId};
 use komponist_plugins::bundled_clap::BundledClap;
 use komponist_plugins::legacy_bundled::{
     migrate_legacy_bundled_project, plan_legacy_bundled_device,
@@ -20,6 +22,7 @@ use komponist_plugins::legacy_bundled::{
 use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent};
 
 use crate::common::{PATIENCE, app_with, config, step_until};
+use crate::export::{export, export_settings, read};
 
 #[test]
 #[ignore = "requires a verified all-device package; run with scripts/measure-bundled-clap.py --historical-projects"]
@@ -212,7 +215,65 @@ fn historical_projects_migrate_and_play() {
             (expected - saved_value).abs() < 1e-6,
             "{name}: saved parameter {saved_value} != {expected}"
         );
+        if legacy_id == "pisynth" {
+            check_offline_export(&mut reopened, saved, track_id, device_id, scratch.path());
+        }
         reopened.shutdown();
         eprintln!("{name}: state and live audio verified (forced bridge = {force_bridge})");
+    }
+}
+
+fn check_offline_export(
+    app: &mut App,
+    mut project: Project,
+    track: TrackId,
+    device: DeviceId,
+    work: &Path,
+) {
+    let channel = &mut Arc::make_mut(&mut project.tracks[0]).channel;
+    channel.devices.retain(|entry| entry.id == device);
+    let (project, _) = edits::add_clip(
+        &project,
+        track,
+        NewClip {
+            start: Tick::ZERO,
+            length: Tick(PPQ),
+            name: "Offline note".into(),
+            content: NewClipContent::Midi {
+                notes: vec![NewNote {
+                    start: Tick::ZERO,
+                    length: Tick(PPQ / 2),
+                    pitch: 60,
+                    velocity: 100,
+                }],
+                take_name: String::new(),
+            },
+        },
+    )
+    .unwrap();
+    let path = work.join("offline.komponist");
+    save_project(&path, &project).unwrap();
+    app.dispatch(Action::Project(ProjectAction::OpenPath(path)));
+    step_until(app, "packaged Hexa ready for export", |app| {
+        app.engine().device_status(device) == DeviceStatus::Ok
+            && app.engine().host().native_layout(device).is_some()
+    });
+    for rate in [48_000, 44_100] {
+        let mut settings = export_settings(work, ExportRange::Song);
+        settings.sample_rate = rate;
+        settings.file_name = format!("offline-{rate}.wav");
+        settings.normalize = false;
+        settings.tail_seconds = 0.0;
+        let path = work.join("out").join(&settings.file_name);
+        export(app, settings);
+        let wav = read(&path);
+        assert_eq!(wav.spec.sample_rate, rate);
+        assert!(
+            wav.samples
+                .iter()
+                .take(rate as usize / 5)
+                .any(|sample| sample.abs() > 1e-4),
+            "{rate} Hz export lost the first note"
+        );
     }
 }
