@@ -554,13 +554,22 @@ impl Engine {
             .map(|processor| processor.offline_failures())
     }
 
-    /// Non-RT (engine out of the audio callback). Applies the queued commands: renders single
-    /// frames until the queue is empty (at most a few rounds: a command that retires garbage waits
-    /// while nobody collects it), so processors report the latency their parameters give them and
-    /// the program is the one sent last. The export calls it before it reads latencies.
+    /// Non-RT (engine out of the audio callback). Renders single frames to apply queued commands
+    /// and deliver pending slot parameters before the export reads processor latencies. Commands
+    /// that must retire garbage may have to wait for a later call.
     pub fn settle(&mut self) {
         for _ in 0..16 {
             if self.core.commands.is_empty() {
+                // Offline preparation may already have moved SetParam commands into slot queues
+                // without a DSP call. Flush those after the processors have been reactivated.
+                if self
+                    .core
+                    .slots
+                    .iter()
+                    .any(|slot| slot.runs(slot.bypassed) && !slot.params.is_empty())
+                {
+                    self.render(1);
+                }
                 break;
             }
             self.render(1);

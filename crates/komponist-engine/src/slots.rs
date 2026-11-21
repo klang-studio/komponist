@@ -22,6 +22,11 @@ pub(crate) struct ParamQueue {
 }
 
 impl ParamQueue {
+    /// Whether there are parameter changes still to deliver to the processor.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Queues `id = value`; `false` when the queue is full.
     pub(crate) fn set(&mut self, id: u32, value: f64) -> bool {
         if let Some(item) = self.items[..self.len].iter_mut().find(|(i, _)| *i == id) {
