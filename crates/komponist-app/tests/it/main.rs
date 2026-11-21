@@ -47,6 +47,7 @@ mod inspector;
 mod internal_devices;
 mod internal_presets;
 mod keyboard_notes;
+mod legacy_bundled;
 mod master_scope;
 mod mixer;
 mod packaging;
