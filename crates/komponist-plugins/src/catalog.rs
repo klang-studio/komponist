@@ -45,7 +45,7 @@ pub fn packaged_kind(plugin: &PluginRef) -> Option<BuiltinKind> {
     if !requires_bundled(plugin) {
         return None;
     }
-    BuiltinKind::all().find(|kind| crate::legacy_bundled::clap_id(*kind) == plugin.id)
+    crate::bundled_state::kind_for_id(&plugin.id)
 }
 
 /// Where a catalog entry's code comes from.

@@ -189,6 +189,9 @@ pub trait DeviceHost {
     /// Update the bridge's verified snapshot expectations for current track-macro outputs.
     fn set_macro_params(&mut self, _values: &[(DeviceId, u32, f64)]) {}
 
+    /// Publish the runtime parameter IDs whose live values can come from automation.
+    fn set_automated_params(&mut self, _values: &[(DeviceId, u32, Option<f64>)]) {}
+
     /// Whether a snapshot was caused by a track macro and contained no independent edit.
     fn is_macro_snapshot(&self, _device: DeviceId, _state: &Arc<[u8]>) -> bool {
         false
@@ -834,6 +837,10 @@ impl DeviceHost for PluginHost {
 
     fn set_macro_params(&mut self, values: &[(DeviceId, u32, f64)]) {
         self.manager.set_macro_params(values);
+    }
+
+    fn set_automated_params(&mut self, values: &[(DeviceId, u32, Option<f64>)]) {
+        self.manager.set_automated_params(values);
     }
 
     fn is_macro_snapshot(&self, device: DeviceId, state: &Arc<[u8]>) -> bool {

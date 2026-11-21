@@ -70,8 +70,12 @@ pub fn decode(state: &[u8]) -> Option<Value> {
 /// Write the pinned wrapper's uncompressed CLAP state stream.
 /// Persisted fields contain JSON strings, as required by the wrapper.
 pub fn encode(version: &str, params: Map<String, Value>, fields: Map<String, Value>) -> Vec<u8> {
-    let state = json!({"version": version, "params": params, "fields": fields});
-    let payload = serde_json::to_vec(&state).expect("wrapper state JSON value encodes");
+    encode_document(&json!({"version": version, "params": params, "fields": fields}))
+}
+
+/// Preserve the entire pinned state document when updating selected parameter entries.
+pub fn encode_document(document: &Value) -> Vec<u8> {
+    let payload = serde_json::to_vec(document).expect("wrapper state JSON value encodes");
     let mut result = Vec::with_capacity(8 + payload.len());
     result.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     result.extend_from_slice(&payload);

@@ -99,6 +99,39 @@ impl Program {
         }
     }
 
+    /// Visit compiled plug-in parameter lanes and parameters driven by automated macros.
+    /// For a macro target, the value is its output at the stored macro position.
+    pub fn for_each_automated_parameter(&self, mut emit: impl FnMut(DeviceId, u32, Option<f64>)) {
+        for lane in self
+            .tracks
+            .iter()
+            .flat_map(|track| track.automation.iter())
+            .chain(self.master.automation.iter())
+        {
+            if let EngineTarget::Slot {
+                device, wire_id, ..
+            } = lane.target
+            {
+                emit(device, wire_id, None);
+            }
+        }
+        for track in &self.tracks {
+            for mapping in track.macros.targets.iter() {
+                if let EngineTarget::Slot {
+                    device, wire_id, ..
+                } = mapping.target
+                    && track.automation.iter().any(|lane| {
+                        lane.target == EngineTarget::Macro(mapping.driver) && lane.reads()
+                    })
+                {
+                    let base = track.macros.base[usize::from(mapping.driver)];
+                    let value = mapping.map.plain(mapping.normalized(base));
+                    emit(device, wire_id, Some(value));
+                }
+            }
+        }
+    }
+
     /// Resolves a model lane to its runtime identity in this program.
     pub fn automation_target(
         &self,

@@ -649,6 +649,8 @@ impl EngineSync {
             program: next,
             diagnostics,
         } = next;
+        self.host
+            .set_automated_params(&Self::automated_parameters(&next));
         self.send(Command::SetProgram(Box::new(next.clone())));
         self.programs_sent += 1;
         self.previous = Some(next);
@@ -675,6 +677,10 @@ impl EngineSync {
             self.reloads += 1;
             self.send(Command::InsertProcessor { slot, processor });
             self.host.set_macro_params(&self.macro_params);
+            if let Some(program) = &self.previous {
+                self.host
+                    .set_automated_params(&Self::automated_parameters(program));
+            }
         }
     }
 
@@ -863,6 +869,12 @@ impl EngineSync {
             let values = self.macro_parameters(program);
             self.set_macro_params(values);
         }
+    }
+
+    fn automated_parameters(program: &Program) -> Vec<(DeviceId, u32, Option<f64>)> {
+        let mut values = Vec::new();
+        program.for_each_automated_parameter(|device, id, base| values.push((device, id, base)));
+        values
     }
 
     fn macro_parameters(&self, program: &Program) -> Vec<(DeviceId, u32, f64)> {
