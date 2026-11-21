@@ -1,0 +1,81 @@
+name: Native CLAP SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdk/native-clap/**"
+      - "docs/clap-device-layout/**"
+      - "crates/builtin-devices/core/**"
+      - "crates/komponist-ipc/**"
+      - "crates/komponist-model/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+      - "LICENSE"
+      - ".github/workflows/native-clap-sdk.yml"
+  pull_request:
+    paths:
+      - "sdk/native-clap/**"
+      - "docs/clap-device-layout/**"
+      - "crates/builtin-devices/core/**"
+      - "crates/komponist-ipc/**"
+      - "crates/komponist-model/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+      - "LICENSE"
+      - ".github/workflows/native-clap-sdk.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-clap-sdk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    name: Bundle and scan (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: sdk/native-clap
+    env:
+      CARGO_TERM_COLOR: always
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: sdk/native-clap -> target
+      - name: Test the SDK source
+        run: cargo test --workspace --locked
+      - name: Build, package, and scan the example
+        run: xtask/check-bundle.sh "$TARGET" "$GITHUB_SHA"
+      - name: Upload verified package and metadata
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-clap-example-${{ matrix.target }}
+          path: |
+            sdk/native-clap/target/native-clap-dist/native-clap-example-${{ matrix.target }}.tar.gz
+            sdk/native-clap/target/native-clap-dist/native-clap-example-${{ matrix.target }}.json
+          if-no-files-found: error

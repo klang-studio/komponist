@@ -644,3 +644,170 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
     }
     app.shutdown();
 }
+
+#[test]
+fn sdk_example_uses_native_layout_and_falls_back() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+    use komponist_app::UiAction;
+    use komponist_app::views::devices::model::cards;
+    use komponist_i18n::Lang;
+    use komponist_model::ChannelRef;
+    use komponist_model::edits::{NewDevice, NewTrack, add_track, insert_device};
+    use komponist_model::params::ParamId;
+    use std::path::{Path, PathBuf};
+
+    const PLUGIN_ID: &str = "org.klang-studio.komponist.native-clap-example";
+    let Some(native) = std::env::var_os("KOMPONIST_SDK_EXAMPLE") else {
+        eprintln!(
+            "set KOMPONIST_SDK_EXAMPLE and KOMPONIST_SDK_EXAMPLE_PLAIN to the bundled SDK example builds"
+        );
+        return;
+    };
+    let native = PathBuf::from(native);
+    let plain = PathBuf::from(
+        std::env::var_os("KOMPONIST_SDK_EXAMPLE_PLAIN")
+            .expect("the fallback check needs the SDK example built without native-layout"),
+    );
+    assert!(native.exists() && plain.exists());
+    assert_ne!(
+        native.parent(),
+        plain.parent(),
+        "each variant needs a separate CLAP scan folder",
+    );
+
+    let dir = scratch("sdk-clap-example");
+    let file = dir.join("SDK example.komponist");
+    let plugin = clap_plugin(PLUGIN_ID);
+    let (project, track) = add_track(
+        &Project::new("SDK example"),
+        NewTrack {
+            name: None,
+            hue: None,
+            instrument: None,
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let (project, device) = insert_device(
+        &project,
+        ChannelRef::Track(track),
+        0,
+        NewDevice {
+            plugin: plugin.clone(),
+            role: DeviceRole::Effect,
+            state: None,
+            sidechain: None,
+        },
+    )
+    .unwrap();
+    std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
+
+    let open = |bundle: &Path, run: &str| {
+        let mut host = PluginHost::new(config(&dir.join(run)));
+        host.start_scan(&PluginDirs {
+            clap: vec![bundle.parent().unwrap().to_owned()],
+            vst3: Vec::new(),
+        });
+        poll_until(&mut host, "SDK example scan", |event| {
+            matches!(event, PluginManagerEvent::ScanFinished(_))
+        });
+        let descriptor = host
+            .catalog()
+            .resolve(&plugin)
+            .expect("scanned SDK example");
+        let komponist_plugins::catalog::PluginLocation::Bundle { path, .. } = &descriptor.location
+        else {
+            panic!("the SDK example must be a scanned CLAP bundle");
+        };
+        assert_eq!(
+            std::fs::canonicalize(path).unwrap(),
+            std::fs::canonicalize(bundle).unwrap(),
+        );
+        let mut app = app_with(Project::new("Empty"), host);
+        app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
+        step_until(&mut app, "SDK example loaded", |app| {
+            app.engine().host().status(device) == DeviceStatus::Ok
+        });
+        app
+    };
+
+    let mut app = open(&native, "native");
+    let host = app.engine().host();
+    let layout = host.native_layout(device).expect("SDK native layout");
+    let params = host.params(device).unwrap();
+    layout.validate_params(params).unwrap();
+    let gain = params.iter().find(|p| p.name == "Gain").unwrap();
+    let mix = params.iter().find(|p| p.name == "Mix").unwrap();
+    let gain_id = gain.id;
+    let mix_id = mix.id;
+    assert_eq!(
+        layout.pages[0]
+            .cells
+            .iter()
+            .map(|c| c.param_id)
+            .collect::<Vec<_>>(),
+        [gain_id, mix_id],
+    );
+    assert_eq!(host.param_base(device, gain_id), Some(gain.default));
+    let german = cards(Lang::De, app.project().track(track).unwrap(), host, &[]);
+    let english = cards(Lang::En, app.project().track(track).unwrap(), host, &[]);
+    assert_eq!(german[0].layout.pages[0].name, "Hauptseite");
+    assert_eq!(english[0].layout.pages[0].name, "Main");
+    assert_eq!(
+        german[0].param(&ParamId::plugin(gain_id)).unwrap().wire,
+        gain_id
+    );
+
+    app.dispatch(Action::Ui(UiAction::RevealDevice(device)));
+    let mut h = komponist_ui::snapshot::builder::<App>(1.0)
+        .with_size(egui::vec2(1920.0, 1080.0))
+        .build_ui_state(|ui, app| app.show(ui), app);
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Slider, "Pegel")
+        .set_value_accesskit(0.5);
+    h.run_steps(3);
+    let app = h.state_mut();
+    step_until(app, "SDK Gain changed and snapshotted", |app| {
+        app.engine().host().param_base(device, gain_id) == Some(0.5)
+            && app.project().find_device(device).unwrap().2.state.is_some()
+    });
+    app.dispatch(Action::Project(ProjectAction::Save));
+    let saved = persist::from_json(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert!(saved.find_device(device).unwrap().2.state.is_some());
+    app.shutdown();
+    drop(h);
+
+    let mut reopened = open(&native, "reopen");
+    step_until(&mut reopened, "native SDK example state restored", |app| {
+        let host = app.engine().host();
+        host.native_layout(device).is_some() && host.param_base(device, gain_id) == Some(0.5)
+    });
+    reopened.shutdown();
+
+    // The same project and author IDs must remain usable in an ordinary CLAP build.
+    let mut fallback = open(&plain, "standard");
+    step_until(
+        &mut fallback,
+        "standard SDK example state restored",
+        |app| app.engine().host().param_base(device, gain_id) == Some(0.5),
+    );
+    let host = fallback.engine().host();
+    assert!(host.native_layout(device).is_none());
+    let generic = cards(
+        Lang::De,
+        fallback.project().track(track).unwrap(),
+        host,
+        &[],
+    );
+    assert_eq!(
+        generic[0].param(&ParamId::plugin(gain_id)).unwrap().wire,
+        gain_id
+    );
+    assert_eq!(
+        generic[0].param(&ParamId::plugin(mix_id)).unwrap().wire,
+        mix_id
+    );
+    fallback.shutdown();
+}
