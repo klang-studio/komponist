@@ -87,7 +87,7 @@ mod tests {
     fn nice_plug_uses_zero_based_clap_steps_and_persists_the_model_integer() {
         let info = ParamInfo::new(
             ParamId::new("octave"),
-            "Octave".into(),
+            "Octave",
             ParamKind::Int { min: -3, max: 3 },
             0.0,
         );
