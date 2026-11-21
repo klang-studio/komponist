@@ -465,7 +465,9 @@ dependencies = [
  "komponist-i18n",
  "komponist-model",
  "komponist-native-clap-sdk",
+ "komponist-sampler",
  "nice-plug",
+ "serde_json",
 ]
 
 [[package]]
@@ -496,6 +498,24 @@ dependencies = [
  "komponist-native-clap-sdk",
  "nice-plug",
  "serde_json",
+]
+
+[[package]]
+name = "komponist-bundled-general-sampler"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "hound",
+ "komponist-bundled-clap-adapter",
+ "komponist-device-core",
+ "komponist-general-sampler",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-native-clap-sdk",
+ "komponist-sampler",
+ "nice-plug",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -556,6 +576,23 @@ dependencies = [
  "komponist-presse",
  "nice-plug",
  "serde_json",
+]
+
+[[package]]
+name = "komponist-bundled-sampler"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "hound",
+ "komponist-bundled-clap-adapter",
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-native-clap-sdk",
+ "komponist-sampler",
+ "nice-plug",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -633,6 +670,19 @@ dependencies = [
  "komponist-engine",
  "komponist-i18n",
  "komponist-model",
+]
+
+[[package]]
+name = "komponist-general-sampler"
+version = "0.2.0"
+dependencies = [
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-sampler",
+ "sampler-core",
+ "serde_json",
 ]
 
 [[package]]
@@ -722,6 +772,21 @@ version = "0.2.0"
 dependencies = [
  "libc",
  "windows-sys",
+]
+
+[[package]]
+name = "komponist-sampler"
+version = "0.2.0"
+dependencies = [
+ "hound",
+ "komponist-audiofile",
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-stretch",
+ "rtrb",
+ "sampler-core",
+ "serde_json",
 ]
 
 [[package]]
@@ -1148,6 +1213,13 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "windows-sys",
+]
+
+[[package]]
+name = "sampler-core"
+version = "0.2.0"
+dependencies = [
+ "klang-dsp",
 ]
 
 [[package]]

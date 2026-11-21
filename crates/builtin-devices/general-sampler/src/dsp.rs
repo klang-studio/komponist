@@ -39,6 +39,10 @@ pub(super) struct GeneralSamplerDsp {
 impl GeneralSamplerDsp {
     pub(super) fn new() -> Self {
         let (handle, audio, meters) = load::general_channel();
+        Self::with_channels(handle, audio, meters)
+    }
+
+    pub(super) fn with_channels(handle: SamplerHandle, audio: AudioSide, meters: Meters) -> Self {
         let sample_rate = 48_000.0;
         Self {
             engine: Box::new(Engine::new(sample_rate)),
@@ -424,6 +428,16 @@ impl Dsp for GeneralSamplerDsp {
 
     fn note_off_with_id(&mut self, key: u8, note_id: Option<u32>) {
         self.engine.release_note(key, note_id);
+    }
+
+    fn choke_note(&mut self, key: Option<u8>, note_id: Option<u32>) {
+        if let Some(note_id) = note_id {
+            self.engine.choke_note(note_id);
+        } else if let Some(key) = key {
+            self.engine.choke_key(key);
+        } else {
+            self.engine.choke_all();
+        }
     }
 
     fn all_notes_off(&mut self) {

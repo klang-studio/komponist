@@ -9,8 +9,8 @@ use komponist_model::params::layout::DeviceLayout;
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
 use serde_json::Value;
 
-use komponist_sampler::SamplerHandle;
 pub use komponist_sampler::settings::{MAX_FADE_MS, MAX_SLICES, Settings, Slice, SliceOptions};
+use komponist_sampler::{ManagedLoader, SamplerHandle};
 
 /// The device.
 pub static SPEC: Spec = Spec {
@@ -390,6 +390,13 @@ pub fn dsp_with_handle() -> (Box<dyn Dsp>, SamplerHandle) {
     let dsp = dsp::GeneralSamplerDsp::new();
     let handle = dsp.handle();
     (Box::new(dsp), handle)
+}
+
+/// Creates the General Sampler and a loader guard for a dynamically loaded CLAP instance.
+pub fn dsp_with_managed_loader() -> (Box<dyn Dsp>, SamplerHandle, ManagedLoader) {
+    let (handle, audio, meters, loader) = komponist_sampler::load::managed_channel(true);
+    let dsp = dsp::GeneralSamplerDsp::with_channels(handle.clone(), audio, meters);
+    (Box::new(dsp), handle, loader)
 }
 
 /// Creates a processor and its UI handle from a project state, falling back to parameter defaults

@@ -3,6 +3,9 @@
 mod instrument;
 mod midi_effect;
 mod parameter;
+mod sampler;
+
+pub use sampler::{Sampled, SampledDefinition};
 
 use std::ffi::{CStr, c_void};
 use std::sync::Arc;

@@ -97,6 +97,16 @@ pub trait Dsp: Send {
         self.note_off(key);
     }
 
+    /// RT, instruments only. Stop a voice immediately by key or note ID. A missing key and ID
+    /// requests a global choke.
+    fn choke_note(&mut self, key: Option<u8>, note_id: Option<u32>) {
+        if let Some(key) = key {
+            self.note_off_with_id(key, note_id);
+        } else {
+            self.all_notes_off();
+        }
+    }
+
     /// RT, instruments only. Every sounding note ends now.
     fn all_notes_off(&mut self) {}
 

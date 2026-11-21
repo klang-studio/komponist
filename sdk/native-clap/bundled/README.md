@@ -24,3 +24,19 @@ bundled DSP accepts the device core's 8–384 kHz sample-rate range.
 From the repository root, run
 `cargo test --locked --workspace --manifest-path sdk/native-clap/Cargo.toml` to validate the
 layout metadata against the real CLAP parameter inventory of each effect.
+
+## Sampler instrument state
+
+Klopfer (`komponist-bundled-sampler`, `org.klang-studio.komponist.sampler`) and Sampler
+(`komponist-bundled-general-sampler`, `org.klang-studio.komponist.general-sampler`)
+use the existing sampler DSP and the shared device file decoder. Their CLAP state stores
+the file links and slice metadata under the nice-plug persistent field `sample_assets`.
+The field contains the existing project's `samples` and `sample_edit` JSON objects. Relative
+paths stay in the state. The generic CLAP state callback has no project directory, so it
+opens the absolute fallback. File decoding and transfer to the DSP run on the loader thread.
+Destroying an instance joins its loader before the CLAP library can be unloaded.
+
+The native v1 control pages expose the pad and instrument parameters. A package suitable
+as the default for existing sample projects still needs an editor or public host integration
+for file picking, waveform and pad or slice editing, project-relative resolution, and waiting
+for asset/tempo preparation before offline rendering.
