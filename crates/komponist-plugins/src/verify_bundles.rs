@@ -89,26 +89,31 @@ fn scan(config: &PluginManagerConfig, path: &Path, id: &str) -> Result<PluginDes
 
 fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
     let mut host = DirectClap::load(bundle).map_err(|error| error.to_string())?;
-    if host.plugin().native_layout().is_none() || host.plugin().params().is_empty() {
+    let can_render =
+        host.try_control(|plugin| plugin.native_layout().is_some() && !plugin.params().is_empty());
+    if can_render != Some(true) {
         return Err("native layout or parameters unavailable".to_owned());
     }
     let mut audio = host
         .activate(SETUP, role)
         .map_err(|error| error.to_string())?;
-    let result = process_audio(&mut audio, role);
+    let result = thread::scope(|scope| {
+        scope
+            .spawn(|| process_audio(&mut audio, role))
+            .join()
+            .map_err(|_| "direct audio worker panicked".to_owned())?
+    });
     host.deactivate(audio);
     result?;
     host.poll();
-    let state = host
-        .plugin_mut()
-        .save_state()
-        .map_err(|error| error.to_string())?;
-    if state.is_empty() {
-        return Err("plugin saved an empty state".to_owned());
-    }
-    host.plugin_mut()
-        .load_state(&state)
-        .map_err(|error| error.to_string())
+    host.try_control(|plugin| {
+        let state = plugin.save_state().map_err(|error| error.to_string())?;
+        if state.is_empty() {
+            return Err("plugin saved an empty state".to_owned());
+        }
+        plugin.load_state(&state).map_err(|error| error.to_string())
+    })
+    .ok_or_else(|| "direct audio worker did not release the instance".to_owned())?
 }
 
 fn smoke_bridge(

@@ -1,6 +1,8 @@
 //! Native CLAP audio dispatch for already verified bundles.
 
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
@@ -22,6 +24,7 @@ use crate::manager::ProcessorSetup;
 pub(crate) struct DirectClap {
     plugin: Box<dyn HostedPlugin>,
     callbacks: Rc<PollLoop>,
+    processing: Arc<AtomicBool>,
     _bundle: VerifiedClap,
 }
 
@@ -37,16 +40,19 @@ impl DirectClap {
         Ok(Self {
             plugin,
             callbacks,
+            processing: Arc::new(AtomicBool::new(false)),
             _bundle: bundle,
         })
     }
 
-    pub(crate) fn plugin(&self) -> &dyn HostedPlugin {
-        &*self.plugin
-    }
-
-    pub(crate) fn plugin_mut(&mut self) -> &mut dyn HostedPlugin {
-        &mut *self.plugin
+    /// Main-thread operations that cannot overlap processing. The owner can retry on its next
+    /// tick if an engine worker is in a plugin call.
+    pub(crate) fn try_control<T>(
+        &mut self,
+        control: impl FnOnce(&mut dyn HostedPlugin) -> T,
+    ) -> Option<T> {
+        let _guard = ProcessingGuard::try_enter(&self.processing)?;
+        Some(control(&mut *self.plugin))
     }
 
     pub(crate) fn activate(
@@ -67,6 +73,7 @@ impl DirectClap {
         }
         Ok(DirectProcessor {
             audio,
+            processing: self.processing.clone(),
             setup,
             role,
             latency: self.plugin.latency(),
@@ -78,6 +85,8 @@ impl DirectClap {
             output_len: 0,
             output_read: 0,
             sample_clock: 0,
+            reset_pending: false,
+            offline_failures: 0,
         })
     }
 
@@ -92,10 +101,28 @@ impl DirectClap {
     }
 }
 
+struct ProcessingGuard<'a>(&'a AtomicBool);
+
+impl<'a> ProcessingGuard<'a> {
+    fn try_enter(processing: &'a AtomicBool) -> Option<Self> {
+        processing
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| Self(processing))
+    }
+}
+
+impl Drop for ProcessingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 /// The audio half of the instance can move to an engine worker. The main-thread instance
 /// must remain active until this processor is returned to it for deactivation.
 pub(crate) struct DirectProcessor {
     audio: Box<dyn HostedProcessor>,
+    processing: Arc<AtomicBool>,
     setup: ProcessorSetup,
     role: DeviceRole,
     latency: u32,
@@ -104,6 +131,8 @@ pub(crate) struct DirectProcessor {
     output_len: usize,
     output_read: usize,
     sample_clock: u64,
+    reset_pending: bool,
+    offline_failures: u64,
 }
 
 impl DirectProcessor {
@@ -116,11 +145,27 @@ impl DirectProcessor {
     ) -> ProcessStatus {
         self.output_read = 0;
         self.output_len = 0;
+        let start = self.sample_clock;
+        self.sample_clock = self.sample_clock.saturating_add(u64::from(ctx.frames));
+        let Some(_guard) = ProcessingGuard::try_enter(&self.processing) else {
+            // A main-thread state operation owns the plugin. Missing a note-off must not leave
+            // voices held when processing resumes.
+            self.reset_pending |= self.role == DeviceRole::Instrument;
+            if ctx.offline {
+                self.offline_failures += 1;
+            }
+            write_fallback(self.role, io);
+            return ProcessStatus::Continue;
+        };
+        if std::mem::take(&mut self.reset_pending) {
+            self.audio.reset();
+        }
         if events.len() > self.input_events.capacity() {
             // A dropped note-off can leave a voice active. Reset and fail the slot rather than
             // send a partial block whose state the engine cannot reproduce.
             self.audio.reset();
-            return self.failed(io);
+            write_fallback(self.role, io);
+            return ProcessStatus::Failed;
         }
         self.input_events.clear();
         self.input_events.extend(events.iter().map(to_wire));
@@ -134,27 +179,26 @@ impl DirectProcessor {
             events_in: &self.input_events,
             events_out: EventOut::new(&mut self.output_events),
             transport: &transport,
-            steady_time: self.sample_clock,
+            steady_time: start,
         };
         let result = self.audio.process(&mut block);
-        self.sample_clock = self.sample_clock.saturating_add(u64::from(ctx.frames));
         self.output_len = block.events_out.as_slice().len();
         if result == komponist_hosting::ProcessStatus::Error {
             self.output_len = 0;
-            return self.failed(io);
+            write_fallback(self.role, io);
+            return ProcessStatus::Failed;
         }
         ProcessStatus::Continue
     }
+}
 
-    fn failed(&self, io: &mut StereoIo<'_>) -> ProcessStatus {
-        if self.role == DeviceRole::Instrument {
-            for channel in &mut io.output {
-                channel.fill(0.0);
-            }
-        } else {
-            io.passthrough();
+fn write_fallback(role: DeviceRole, io: &mut StereoIo<'_>) {
+    if role == DeviceRole::Instrument {
+        for channel in &mut io.output {
+            channel.fill(0.0);
         }
-        ProcessStatus::Failed
+    } else {
+        io.passthrough();
     }
 }
 
@@ -202,8 +246,12 @@ impl Processor for DirectProcessor {
         self.latency
     }
 
+    fn offline_failures(&self) -> u64 {
+        self.offline_failures
+    }
+
     fn reset(&mut self) {
-        self.audio.reset();
+        self.reset_pending = true;
         self.output_read = 0;
         self.output_len = 0;
     }
@@ -227,5 +275,24 @@ impl Processor for DirectProcessor {
             });
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn processing_permission_never_blocks_the_other_caller() {
+        let processing = AtomicBool::new(false);
+        let guard = ProcessingGuard::try_enter(&processing).unwrap();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| assert!(ProcessingGuard::try_enter(&processing).is_none()))
+                .join()
+                .unwrap();
+        });
+        drop(guard);
+        assert!(ProcessingGuard::try_enter(&processing).is_some());
     }
 }
