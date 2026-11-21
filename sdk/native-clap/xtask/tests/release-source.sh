@@ -7,11 +7,11 @@ scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 repo="$scratch/checkout"
 sdk_dir="$repo/sdk/native-clap"
-mkdir -p "$sdk_dir/xtask" "$sdk_dir/vendor/nice-plug" "$scratch/bin"
+mkdir -p "$sdk_dir/xtask" "$sdk_dir/licenses" "$scratch/bin"
 cp "$sdk/../../.gitignore" "$repo/.gitignore"
 cp "$sdk/xtask/check-bundle.sh" "$sdk_dir/xtask/check-bundle.sh"
 printf 'Fixture license\n' > "$repo/LICENSE"
-printf 'Fixture ISC license\n' > "$sdk_dir/vendor/nice-plug/LICENSE"
+printf 'Fixture ISC license\n' > "$sdk_dir/licenses/nice-plug.txt"
 printf 'Tracked source\n' > "$repo/source"
 git -C "$repo" init --quiet --template=
 git -C "$repo" add .

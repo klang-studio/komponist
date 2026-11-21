@@ -59,7 +59,7 @@ if native["plugin"] != plain["plugin"] or native["params"] != plain["params"]:
 PY
 
 cp ../../LICENSE "$scratch/native/LICENSE"
-cp vendor/nice-plug/LICENSE "$scratch/native/LICENSE-nice-plug"
+cp licenses/nice-plug.txt "$scratch/native/LICENSE-nice-plug"
 stem="native-clap-example-$target"
 archive="$(cd "$dist" && pwd)/$stem.tar.gz"
 COPYFILE_DISABLE=1 tar -czf "$archive" -C "$scratch/native" "$bundle" LICENSE LICENSE-nice-plug

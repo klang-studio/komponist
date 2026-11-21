@@ -1,7 +1,6 @@
 [workspace]
 resolver = "3"
 members = ["author", "example", "xtask"]
-exclude = ["vendor/nice-plug"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,4 +15,4 @@ komponist-device-core = { path = "../../crates/builtin-devices/core" }
 komponist-ipc = { path = "../../crates/komponist-ipc" }
 komponist-model = { path = "../../crates/komponist-model" }
 komponist-native-clap-sdk = { path = "author" }
-nice-plug = { path = "vendor/nice-plug/crates/nice-plug", default-features = false }
+nice-plug = { git = "https://github.com/klang-studio/nice-plug", rev = "7984da02964e27f127b85c2b88c673a197f4b454", default-features = false }
