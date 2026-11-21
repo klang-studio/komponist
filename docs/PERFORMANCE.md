@@ -534,8 +534,9 @@ to 64, 128 and 256 frames, worker counts to 0 and 4, and each measurement to 10 
 a one-second warm-up.
 
 - Setup time covers the scan (CLAP routes only) and device attachment through readiness.
-- Callback peak measures the largest observed callback time as a percentage of the frame
-  period. The other load number is the median of the smoothed load sampled every 100 ms.
+- Callback p95 and p99 use unsmoothed per-callback loads in one-percentage-point bins.
+  The last bin includes all loads of 400% and higher. The peak is the largest observed callback
+  time as a percentage of the frame period. The smoothed median is sampled every 100 ms.
 - Counters cover callbacks, callbacks exceeding the period, stream xruns, late bridge blocks,
   and worker batches and late waits during the same window.
 
@@ -545,5 +546,4 @@ or `alsa` to measure with the default output device on the chosen driver. The be
 plays through that output. Choose periods your device actually supports. A stream error,
 driver fallback, or a negotiated sample rate or period that differs from the request
 fails the case. Report the device, driver, machine, OS, build revision and settings when
-comparing runs. Per-callback p95/p99 and physical round-trip latency require separate
-measurements.
+comparing runs. Physical round-trip latency requires a separate measurement.

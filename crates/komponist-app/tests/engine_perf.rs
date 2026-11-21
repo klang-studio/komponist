@@ -193,6 +193,7 @@ fn measure(name: &str, app: &mut App, buffer: u32, devices: &[DeviceId]) {
     let stats = app.engine().stats();
     let (callbacks, overruns, xruns) = (stats.callbacks(), stats.overruns(), stats.xruns());
     stats.take_peak_load();
+    stats.start_callback_timing();
     let worker_stats = app.engine().worker_stats();
     let (batches, late) = (worker_stats.batches(), worker_stats.late());
     let missed = |app: &App| {
@@ -211,6 +212,9 @@ fn measure(name: &str, app: &mut App, buffer: u32, devices: &[DeviceId]) {
     }
     let stats = app.engine().stats();
     let peak = stats.take_peak_load();
+    let [p95, p99] = stats
+        .callback_percentiles()
+        .expect("recorded audio callbacks");
     assert!(
         !sampled.is_empty(),
         "the measurement interval must be positive"
@@ -218,7 +222,8 @@ fn measure(name: &str, app: &mut App, buffer: u32, devices: &[DeviceId]) {
     sampled.sort_by(f32::total_cmp);
     eprintln!(
         "{name}: {} callbacks of {buffer} frames, load {:.1} % (median of smoothed 100 ms samples), \
-         callback peak {:.1} %, overruns {}, xruns {}, late bridge blocks {}",
+         callback p95/p99 {p95}/{p99} % (400 % includes overflow), peak {:.1} %, \
+         overruns {}, xruns {}, late bridge blocks {}",
         stats.callbacks() - callbacks,
         sampled[sampled.len() / 2] * 100.0,
         peak * 100.0,
