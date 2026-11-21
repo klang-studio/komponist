@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "komponist CLAP device layout v1",
+  "description": "Structural schema only. The README specifies byte limits, cross-field constraints, compatible capabilities and validation against the CLAP parameter inventory.",
+  "type": "object",
+  "required": ["schema_version", "default_locale", "locales", "pages"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "default_locale": { "$ref": "#/$defs/locale" },
+    "locales": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/locale" }
+    },
+    "pages": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/page" }
+    },
+    "required_capabilities": {
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9._-]{0,31}(?![\\s\\S])"
+      }
+    }
+  },
+  "$defs": {
+    "locale": {
+      "type": "string",
+      "pattern": "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}(?![\\s\\S])"
+    },
+    "labels": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 8,
+      "propertyNames": { "$ref": "#/$defs/locale" },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "not": { "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]" }
+      }
+    },
+    "page": {
+      "type": "object",
+      "required": ["key", "labels", "columns", "cells"],
+      "properties": {
+        "key": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}(?![\\s\\S])" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "columns": { "type": "integer", "minimum": 1, "maximum": 12 },
+        "cells": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 72,
+          "items": { "$ref": "#/$defs/cell" }
+        }
+      }
+    },
+    "choice": {
+      "type": "object",
+      "required": ["value", "labels"],
+      "properties": {
+        "value": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+        "labels": { "$ref": "#/$defs/labels" }
+      }
+    },
+    "cell": {
+      "type": "object",
+      "required": ["widget", "col", "row", "cols", "rows", "param_id"],
+      "properties": {
+        "widget": {
+          "enum": ["knob", "knob_large", "number", "toggle_button", "segment", "dropdown"]
+        },
+        "col": { "type": "integer", "minimum": 0, "maximum": 11 },
+        "row": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "cols": { "type": "integer", "minimum": 1, "maximum": 12 },
+        "rows": { "const": 1 },
+        "half": { "enum": ["top", "bottom"] },
+        "param_id": { "type": "integer", "minimum": 0, "maximum": 4294967294 },
+        "labels": { "$ref": "#/$defs/labels" },
+        "choices": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/choice" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "widget": { "enum": ["knob", "knob_large"] } } },
+          "then": { "not": { "required": ["half"] } },
+          "else": { "required": ["half"] }
+        },
+        {
+          "if": { "properties": { "widget": { "enum": ["knob", "number"] } } },
+          "then": { "properties": { "cols": { "const": 1 } } }
+        },
+        {
+          "if": { "properties": { "widget": { "enum": ["knob_large", "dropdown"] } } },
+          "then": { "properties": { "cols": { "const": 2 } } }
+        },
+        {
+          "if": { "properties": { "widget": { "enum": ["segment", "dropdown"] } } },
+          "then": { "required": ["choices"] },
+          "else": { "not": { "required": ["choices"] } }
+        }
+      ]
+    }
+  }
+}
