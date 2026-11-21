@@ -277,7 +277,7 @@ def check_rejects_altered_bundle(target, app, device):
         diagnostic = refusal.stderr.decode("utf-8", errors="replace")
         if (
             refusal.returncode == 0
-            or any(line.startswith("verified ") for line in output.splitlines())
+            or f"verified {device.plugin_id} (in-process)" in output.splitlines()
             or "bundled CLAP verification:" not in diagnostic
             or "bundle file hash mismatch" not in diagnostic
             or device.plugin_id not in diagnostic

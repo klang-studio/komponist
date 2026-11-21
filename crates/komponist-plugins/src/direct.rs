@@ -10,7 +10,7 @@ use komponist_engine::processor::{EventProcessor, EventSink, ParameterEdit, Para
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
-use komponist_hosting::host_loop::PollLoop;
+use komponist_hosting::host_loop::{Observed, PollLoop};
 use komponist_hosting::{
     ActivateConfig, EventOut, HostedPlugin, HostedProcessor, HostingError, ProcessBlock,
 };
@@ -102,8 +102,9 @@ impl DirectClap {
         self.plugin.deactivate(audio);
     }
 
-    pub(crate) fn poll(&mut self) {
+    pub(crate) fn poll(&mut self) -> Observed {
         self.callbacks.run_once(&mut *self.plugin, Duration::ZERO);
+        self.callbacks.take_observed()
     }
 }
 
@@ -165,6 +166,10 @@ impl MidiStage {
 }
 
 impl DirectProcessor {
+    pub(crate) fn stop(&mut self) {
+        self.audio.stop_processing();
+    }
+
     fn process_block(
         &mut self,
         ctx: &ProcessContext,
@@ -227,7 +232,7 @@ impl DirectProcessor {
     }
 }
 
-fn write_fallback(role: DeviceRole, io: &mut StereoIo<'_>) {
+pub(crate) fn write_fallback(role: DeviceRole, io: &mut StereoIo<'_>) {
     if role == DeviceRole::Instrument {
         for channel in &mut io.output {
             channel.fill(0.0);

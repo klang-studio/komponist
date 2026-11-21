@@ -9,13 +9,14 @@ use komponist_engine::processor::EventBuffer;
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, StereoIo, TransportInfo,
 };
-use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind};
+use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind, RenderMode};
 use komponist_model::{DeviceId, DeviceRole};
 
 use crate::bridge::{Bridge, SpawnSetup, StatePurpose, Timing};
 use crate::bundled_clap::{BundledClap, VerifiedClap};
 use crate::catalog::SCAN_TIMEOUT;
 use crate::direct::DirectClap;
+use crate::direct_session::DirectSession;
 use crate::manager::{DeviceStatus, PluginManagerConfig, PluginManagerEvent, ProcessorSetup};
 use crate::scan::scan_bundle;
 
@@ -102,16 +103,20 @@ fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
     if can_render != Some(true) {
         return Err("native layout or parameters unavailable".to_owned());
     }
-    let mut audio = host
-        .activate(SETUP, role)
-        .map_err(|error| error.to_string())?;
-    let result = thread::scope(|scope| {
-        scope
-            .spawn(|| process_audio(&mut audio, role))
-            .join()
-            .map_err(|_| "direct audio worker panicked".to_owned())?
-    });
-    host.deactivate(audio);
+    let (mut session, mut audio) =
+        DirectSession::start(host, SETUP, role).map_err(|error| error.to_string())?;
+    let result = (|| {
+        drive_direct(&mut audio, role)?;
+        audio
+            .activate(SETUP.sample_rate, SETUP.max_block * 2)
+            .map_err(|error| error.to_string())?;
+        session.set_render_mode(RenderMode::Offline);
+        // Let the worker return its current audio half at the next realtime boundary.
+        drive_boundary(&mut audio);
+        session.poll().map_err(|error| error.to_string())?;
+        drive_direct(&mut audio, role)
+    })();
+    let mut host = session.finish(audio);
     result?;
     host.poll();
     host.try_control(|plugin| {
@@ -122,6 +127,31 @@ fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
         plugin.load_state(&state).map_err(|error| error.to_string())
     })
     .ok_or_else(|| "direct audio worker did not release the instance".to_owned())?
+}
+
+fn drive_direct(audio: &mut dyn Processor, role: DeviceRole) -> Result<(), String> {
+    thread::scope(|scope| {
+        scope
+            .spawn(|| process_audio(audio, role))
+            .join()
+            .map_err(|_| "direct audio worker panicked".to_owned())?
+    })
+}
+
+fn drive_boundary(audio: &mut dyn Processor) {
+    let mut context = smoke_context();
+    context.offline = false;
+    let input = [0.0; FRAMES];
+    let mut left = [0.0; FRAMES];
+    let mut right = [0.0; FRAMES];
+    audio.process(
+        &context,
+        &[],
+        &mut StereoIo {
+            input: [&input, &input],
+            output: [&mut left, &mut right],
+        },
+    );
 }
 
 fn smoke_bridge(
@@ -213,8 +243,8 @@ fn wait_for_bridge<T>(
     }
 }
 
-fn process_audio(processor: &mut dyn Processor, role: DeviceRole) -> Result<(), String> {
-    let context = ProcessContext {
+fn smoke_context() -> ProcessContext {
+    ProcessContext {
         frames: FRAMES as u32,
         sample_rate: SETUP.sample_rate,
         transport: TransportInfo {
@@ -228,7 +258,11 @@ fn process_audio(processor: &mut dyn Processor, role: DeviceRole) -> Result<(), 
         },
         offline: true,
         deadline: None,
-    };
+    }
+}
+
+fn process_audio(processor: &mut dyn Processor, role: DeviceRole) -> Result<(), String> {
+    let context = smoke_context();
     let note = [Event {
         offset: 0,
         kind: EventKind::NoteOn {

@@ -11,6 +11,7 @@ komponist-model.workspace = true
 komponist-engine.workspace = true
 komponist-ipc.workspace = true
 komponist-hosting.workspace = true
+rtrb.workspace = true
 serde.workspace = true
 # The scan cache file and the JSON output of `komponist-bridge --scan`.
 serde_json.workspace = true
