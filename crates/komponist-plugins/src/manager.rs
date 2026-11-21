@@ -595,6 +595,8 @@ impl PluginManager {
             })
             .or_else(|| device.state.clone());
         if let Some(mut old) = self.bridges.remove(&device.id) {
+            // A bridge reload retires the old process even if start rejects the setup.
+            self.discard_queued_snapshots(device.id);
             old.kill();
             self.retiring.push(old);
         }
@@ -759,9 +761,18 @@ impl PluginManager {
         }
     }
 
+    fn discard_queued_snapshots(&mut self, device: DeviceId) {
+        // Reload and Undo can replace the plugin while keeping its DeviceId. A blocked save
+        // can leave queued state from the retiring instance under that same ID.
+        self.pending.retain(|event| {
+            !matches!(event, PluginManagerEvent::StateSnapshot { device: old, .. } if *old == device)
+        });
+    }
+
     /// Takes the bridge of `device` out: `Shutdown` with a grace period if `graceful`, else
     /// SIGKILL. Its process is reaped by later polls.
     fn retire(&mut self, device: DeviceId, graceful: bool) {
+        self.discard_queued_snapshots(device);
         self.verified_samplers.remove(&device);
         if let Some(direct) = self.direct.remove(&device) {
             self.retiring_direct.push(direct);
@@ -779,11 +790,6 @@ impl PluginManager {
     /// The device left the project: shuts its bridge down (after the engine removed the processor;
     /// the processor tolerates a dead bridge either way).
     pub fn release(&mut self, device: DeviceId) {
-        // Undo can replace the plugin while keeping its DeviceId. Queued state from the
-        // retiring instance belongs to the old plugin, even if a blocked save left it here.
-        self.pending.retain(|event| {
-            !matches!(event, PluginManagerEvent::StateSnapshot { device: old, .. } if *old == device)
-        });
         self.retire(device, true);
         self.statuses.remove(&device);
     }
@@ -1367,6 +1373,65 @@ mod tests {
             manager.pending.as_slice(),
             [PluginManagerEvent::StateSnapshot { device, .. }] if *device == other
         ));
+    }
+
+    #[test]
+    fn reload_discards_the_retired_snapshot_even_if_the_replacement_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = PluginManagerConfig {
+            cache_file: temp.path().join("plugins.json"),
+            ..PluginManagerConfig::defaults()
+        };
+        let mut manager = PluginManager::new_with_bundled_clap(config, false, false);
+        let device = Device {
+            id: DeviceId(1),
+            role: DeviceRole::Effect,
+            plugin: PluginRef {
+                format: komponist_model::PluginFormat::Clap,
+                id: "org.komponist.missing-test-plugin".into(),
+                name: "Missing test plugin".into(),
+                vendor: String::new(),
+                version: String::new(),
+                module: Box::default(),
+            },
+            bypass: false,
+            state: Some(Arc::from([2])),
+            sidechain: None,
+        };
+        let other = DeviceId(2);
+        let other_snapshot = PluginManagerEvent::StateSnapshot {
+            device: other,
+            state: Arc::from([3]),
+        };
+        let metadata = PluginManagerEvent::ParamsChanged { device: device.id };
+        manager.pending.extend([
+            metadata.clone(),
+            PluginManagerEvent::StateSnapshot {
+                device: device.id,
+                state: Arc::from([1]),
+            },
+            other_snapshot.clone(),
+        ]);
+
+        let result = manager.reload(
+            &device,
+            ProcessorSetup {
+                sample_rate: 48_000.0,
+                max_block: 128,
+            },
+        );
+        assert!(matches!(result, Err(PluginError::NotInstalled(_))));
+        assert_eq!(
+            manager.poll(),
+            vec![
+                metadata,
+                other_snapshot,
+                PluginManagerEvent::StatusChanged {
+                    device: device.id,
+                    status: DeviceStatus::Missing,
+                },
+            ]
+        );
     }
 
     #[test]

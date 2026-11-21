@@ -114,6 +114,15 @@ impl PendingControls {
         }
     }
 
+    fn midi_batch_sizes(&self, input_len: usize) -> (usize, usize) {
+        let room = INPUT_EVENT_CAPACITY.saturating_sub(input_len);
+        // Keep frame-zero automation after host edits even when the two queues drain in
+        // different blocks. Otherwise an older edit may overwrite automation later.
+        let persistent = self.persistent.len().min(room);
+        let stage = self.stage.len().min(room - persistent);
+        (persistent, stage)
+    }
+
     fn stage_param(&mut self, epoch: u64, id: u32, value: f64) {
         self.observe_epoch(epoch);
         let wire = WireEvent::new(0, WireEventKind::ParamValue { id, value });
@@ -476,9 +485,7 @@ impl EventProcessor for DirectEngine {
                 .as_mut()
                 .expect("checked active processor")
                 .audio;
-            let room = INPUT_EVENT_CAPACITY.saturating_sub(input.len());
-            let stage = self.controls.stage.len().min(room);
-            let persistent = self.controls.persistent.len().min(room - stage);
+            let (persistent, stage) = self.controls.midi_batch_sizes(input.len());
             audio.process_midi_block(
                 ctx,
                 input,
@@ -578,5 +585,15 @@ mod tests {
                 value: 0.125
             })
         );
+
+        // The same ID occurs in both queues. A nearly full input block can only carry
+        // the old host edit. The newer stage value must survive for the next block.
+        assert_eq!(pending.midi_batch_sizes(INPUT_EVENT_CAPACITY), (0, 0));
+        assert_eq!(pending.midi_batch_sizes(INPUT_EVENT_CAPACITY - 2), (1, 1));
+        let (persistent, stage) = pending.midi_batch_sizes(INPUT_EVENT_CAPACITY - 1);
+        assert_eq!((persistent, stage), (1, 0));
+        pending.persistent.drain(..persistent);
+        pending.stage.drain(..stage);
+        assert_eq!(pending.midi_batch_sizes(INPUT_EVENT_CAPACITY - 1), (0, 1));
     }
 }
