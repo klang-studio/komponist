@@ -85,9 +85,10 @@ def run_staged(app, runner, digest, historical):
             raise SystemExit("Staged manifest differs from the digest reported by the packaged app")
 
         modes = ("direct", "bridge") if historical else ("legacy", "direct", "bridge")
-        test_name = (
-            "legacy_bundled::historical_projects_migrate_and_play"
-            if historical else "bundled::bundled_clap_workloads"
+        test_names = (
+            ("legacy_bundled::historical_projects_migrate_and_play",
+             "bundled_sampler::both_samplers_play_assets_after_the_project_moves")
+            if historical else ("bundled::bundled_clap_workloads",)
         )
         for mode in modes:
             environment = dict(os.environ)
@@ -105,7 +106,7 @@ def run_staged(app, runner, digest, historical):
             subprocess.run(
                 [
                     str(staged_runner), "--ignored", "--nocapture", "--exact",
-                    test_name,
+                    *test_names,
                 ],
                 env=environment,
                 check=True,
@@ -117,7 +118,7 @@ def main():
     parser.add_argument("app", type=Path, help="packaged app executable from the unpacked archive")
     parser.add_argument(
         "--historical-projects", action="store_true",
-        help="validate migration, persistence and playback of both historical project fixtures",
+        help="validate historical project migration and relocated sampler asset playback",
     )
     options = parser.parse_args()
     app = options.app.resolve(strict=True)

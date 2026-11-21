@@ -42,6 +42,7 @@ use rustix::event::{PollFd, PollFlags, Timespec};
 
 use crate::bridge::{Bridge, Collected, SpawnSetup, StatePurpose, Timing};
 use crate::bundled_clap::{BundleVerificationError, BundledClap};
+use crate::bundled_sampler;
 use crate::catalog::{
     Catalog, Platform, PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT, ScanCache,
     ScanReport, env_path,
@@ -353,6 +354,8 @@ pub struct PluginManager {
     private_clap_dir: Option<PathBuf>,
     bundled_clap: Option<BundledClap>,
     force_bundled_bridge: bool,
+    project_dir: Option<PathBuf>,
+    verified_samplers: BTreeSet<DeviceId>,
     direct: BTreeMap<DeviceId, DirectDevice>,
     retiring_direct: Vec<DirectDevice>,
     /// Status of devices without a bridge: `Missing`, or `Crashed` when the bridge could not start.
@@ -413,6 +416,8 @@ impl PluginManager {
             private_clap_dir,
             bundled_clap,
             force_bundled_bridge,
+            project_dir: None,
+            verified_samplers: BTreeSet::new(),
             direct: BTreeMap::new(),
             retiring_direct: Vec::new(),
             statuses: BTreeMap::new(),
@@ -629,6 +634,8 @@ impl PluginManager {
         // A project device has one instance. A local instance keeps its control half alive until
         // the engine returns the audio half; external bridge retirement remains asynchronous.
         self.retire(device.id, false);
+        let mut verified_sampler = false;
+        let mut state = state;
         if self
             .private_clap_dir
             .as_ref()
@@ -656,6 +663,13 @@ impl PluginManager {
                     return Err(error);
                 }
             };
+            verified_sampler = bundled_sampler::is_sampler(&proof);
+            if verified_sampler
+                && let Some(original) = state.as_ref()
+                && let Some(runtime) = self.sampler_runtime_state(original)
+            {
+                state = Some(runtime);
+            }
             if !self.force_bundled_bridge {
                 return match DirectDevice::start(
                     proof,
@@ -674,6 +688,9 @@ impl PluginManager {
                         });
                         instance.set_render_mode(device.id, self.render_mode, &mut self.pending);
                         self.direct.insert(device.id, instance);
+                        if verified_sampler {
+                            self.verified_samplers.insert(device.id);
+                        }
                         Ok(Box::new(processor))
                     }
                     Err(error) => {
@@ -709,6 +726,9 @@ impl PluginManager {
                 }
                 self.statuses.remove(&device.id);
                 self.bridges.insert(device.id, started.bridge);
+                if verified_sampler {
+                    self.verified_samplers.insert(device.id);
+                }
                 self.pending.push(PluginManagerEvent::StatusChanged {
                     device: device.id,
                     status: DeviceStatus::Loading,
@@ -737,6 +757,7 @@ impl PluginManager {
     /// Takes the bridge of `device` out: `Shutdown` with a grace period if `graceful`, else
     /// SIGKILL. Its process is reaped by later polls.
     fn retire(&mut self, device: DeviceId, graceful: bool) {
+        self.verified_samplers.remove(&device);
         if let Some(direct) = self.direct.remove(&device) {
             self.retiring_direct.push(direct);
         }
@@ -917,9 +938,24 @@ impl PluginManager {
             .is_some_and(|bridge| bridge.is_macro_snapshot(state))
     }
 
+    /// Set the project's directory before loading or restoring devices.
+    pub fn set_project_dir(&mut self, dir: Option<PathBuf>) {
+        self.project_dir = dir;
+    }
+
+    fn sampler_runtime_state(&self, state: &[u8]) -> Option<Arc<[u8]>> {
+        bundled_sampler::runtime_state(state, self.project_dir.as_deref()?).map(Arc::from)
+    }
+
     /// Restores `state` in the running plugin of `device` (undo or redo changed the device's
     /// state in the document); `false` if the device has no running bridge.
     pub fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        let runtime = self
+            .verified_samplers
+            .contains(&device)
+            .then(|| self.sampler_runtime_state(state))
+            .flatten();
+        let state = runtime.as_ref().unwrap_or(state);
         if let Some(direct) = self.direct.get_mut(&device) {
             direct.set_state(state.clone());
             return true;
@@ -1250,6 +1286,7 @@ impl PluginManager {
     /// for them to exit, then SIGKILL for the rest. Cancels a running scan. Blocking.
     pub fn shutdown(&mut self) {
         self.scan = None;
+        self.verified_samplers.clear();
         // App shutdown stops the audio stream before shutting down the plugin host.
         self.retiring_direct
             .extend(std::mem::take(&mut self.direct).into_values());

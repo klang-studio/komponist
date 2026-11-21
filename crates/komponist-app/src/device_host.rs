@@ -827,6 +827,7 @@ impl DeviceHost for PluginHost {
     }
 
     fn set_project_dir(&mut self, dir: Option<PathBuf>) {
+        self.manager.set_project_dir(dir.clone());
         self.builtin.set_project_dir(dir);
     }
 

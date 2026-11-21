@@ -51,11 +51,13 @@ Klopfer (`komponist-bundled-sampler`, `org.klang-studio.komponist.sampler`) and 
 use the existing sampler DSP and the shared device file decoder. Their CLAP state stores
 the file links and slice metadata under the nice-plug persistent field `sample_assets`.
 The field contains the existing project's `samples` and `sample_edit` JSON objects. Relative
-paths stay in the state. The generic CLAP state callback has no project directory, so it
-opens the absolute fallback. File decoding and transfer to the DSP run on the loader thread.
+paths stay in the state. When Komponist opens a project or restores a state for a verified
+bundled sampler, it resolves the relative links against the project directory and refreshes
+their absolute fallbacks for the running instance. In other hosts, the state callback opens
+the saved absolute fallbacks. File decoding and transfer to the DSP run on the loader thread.
 Destroying an instance joins its loader before the CLAP library can be unloaded.
 
 The native v1 control pages expose the pad and instrument parameters. A package suitable
 as the default for existing sample projects still needs an editor or public host integration
-for file picking, waveform and pad or slice editing, project-relative resolution, and waiting
-for asset/tempo preparation before offline rendering.
+for file picking, waveform and pad or slice editing, rebasing links on Save As, Collect and
+Save, and waiting for asset/tempo preparation before offline rendering.
