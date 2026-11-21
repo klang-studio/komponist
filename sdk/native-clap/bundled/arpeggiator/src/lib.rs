@@ -97,4 +97,8 @@ mod tests {
     fn clap_note_ports_match_the_builtin_stage() {
         midi_contract::assert_stage_parity::<ArpeggiatorPlugin>(Arpeggiator::SPEC);
     }
+    #[test]
+    fn restores_the_same_parameter_id_and_value_in_another_instance() {
+        midi_contract::assert_state_round_trip::<ArpeggiatorPlugin>("mode");
+    }
 }

@@ -1,21 +1,26 @@
 //! Common CLAP event-only ABI and DSP parity check for the bundled MIDI processors.
 
-use std::{ffi::c_void, ptr};
+use std::{ffi::c_void, io::Read, ptr};
 
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
-    CLAP_EVENT_TRANSPORT, CLAP_TRANSPORT_HAS_BEATS_TIMELINE, CLAP_TRANSPORT_HAS_TEMPO,
-    CLAP_TRANSPORT_HAS_TIME_SIGNATURE, CLAP_TRANSPORT_IS_PLAYING, clap_event_header,
-    clap_event_midi, clap_event_note, clap_event_transport, clap_input_events, clap_output_events,
+    CLAP_EVENT_PARAM_VALUE, CLAP_EVENT_TRANSPORT, CLAP_TRANSPORT_HAS_BEATS_TIMELINE,
+    CLAP_TRANSPORT_HAS_TEMPO, CLAP_TRANSPORT_HAS_TIME_SIGNATURE, CLAP_TRANSPORT_IS_PLAYING,
+    clap_event_header, clap_event_midi, clap_event_note, clap_event_param_value,
+    clap_event_transport, clap_input_events, clap_output_events,
 };
 use clap_sys::ext::note_ports::{CLAP_EXT_NOTE_PORTS, clap_plugin_note_ports};
+use clap_sys::ext::params::{CLAP_EXT_PARAMS, clap_plugin_params};
+use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
 use clap_sys::fixedpoint::CLAP_BEATTIME_FACTOR;
 use clap_sys::process::{CLAP_PROCESS_ERROR, clap_process};
+use clap_sys::stream::{clap_istream, clap_ostream};
 use komponist_device_core::Spec;
 use komponist_engine::processor::EventBuffer;
 use komponist_engine::{Event, EventKind, NOTE_ID_NONE, ProcessContext, TransportInfo};
 use komponist_model::{Meter, PPQ, Tick, TickRange};
 use nice_plug::prelude::ClapPlugin;
+use nice_plug::wrapper::clap::Wrapper;
 
 use super::layout_contract::Instance;
 
@@ -238,5 +243,100 @@ pub(crate) fn assert_stage_parity<P: ClapPlugin>(spec: &'static Spec) {
             heard_note_on && heard_note_off,
             "parity must cover a complete note"
         );
+    }
+}
+
+unsafe extern "C" fn write_state(
+    stream: *const clap_ostream,
+    buffer: *const c_void,
+    size: u64,
+) -> i64 {
+    if size == 0 {
+        return 0;
+    }
+    // SAFETY: The stream's context is its caller's Vec. CLAP lends size readable bytes.
+    let (bytes, output) = unsafe {
+        (
+            std::slice::from_raw_parts(buffer.cast::<u8>(), size as usize),
+            &mut *(*stream).ctx.cast::<Vec<u8>>(),
+        )
+    };
+    output.extend_from_slice(bytes);
+    size as i64
+}
+
+unsafe extern "C" fn read_state(
+    stream: *const clap_istream,
+    buffer: *mut c_void,
+    size: u64,
+) -> i64 {
+    if size == 0 {
+        return 0;
+    }
+    // SAFETY: The CLAP plugin lends a buffer of size writable bytes, and the input cursor lives
+    // for the entire load_state call.
+    let (input, bytes) = unsafe {
+        (
+            &mut *(*stream).ctx.cast::<std::io::Cursor<&[u8]>>(),
+            std::slice::from_raw_parts_mut(buffer.cast::<u8>(), size as usize),
+        )
+    };
+    input.read(bytes).map_or(-1, |read| read as i64)
+}
+
+pub(crate) fn assert_state_round_trip<P: ClapPlugin>(param: &str) {
+    let first = Instance::new::<P>();
+    let second = Instance::new::<P>();
+    // SAFETY: The static host owns two initialized, inactive CLAP instances. All stream and
+    // input-event storage lives until the corresponding callback returns.
+    unsafe {
+        let id = Wrapper::<P>::custom_extension_param_id(first.0, param).unwrap();
+        assert_eq!(
+            Wrapper::<P>::custom_extension_param_id(second.0, param),
+            Some(id)
+        );
+        let extension = (*first.0).get_extension.unwrap();
+        let params = extension(first.0, CLAP_EXT_PARAMS.as_ptr()).cast::<clap_plugin_params>();
+        let state = extension(first.0, CLAP_EXT_STATE.as_ptr()).cast::<clap_plugin_state>();
+        assert!(!params.is_null() && !state.is_null());
+
+        let mut value = f64::NAN;
+        let get_value = (*params).get_value.unwrap();
+        assert!(get_value(second.0, id, &mut value));
+        assert_eq!(value, 0.0);
+        let param = clap_event_param_value {
+            header: header::<clap_event_param_value>(0, CLAP_EVENT_PARAM_VALUE),
+            param_id: id,
+            cookie: ptr::null_mut(),
+            note_id: -1,
+            port_index: -1,
+            channel: -1,
+            key: -1,
+            value: 2.0,
+        };
+        let headers: &[*const clap_event_header] = &[&param.header];
+        let input = clap_input_events {
+            ctx: ptr::from_ref(&headers).cast_mut().cast::<c_void>(),
+            size: Some(size),
+            get: Some(get),
+        };
+        ((*params).flush.unwrap())(first.0, &input, ptr::null());
+        assert!(get_value(first.0, id, &mut value));
+        assert_eq!(value, 2.0);
+
+        let mut bytes: Vec<u8> = Vec::new();
+        let stream = clap_ostream {
+            ctx: ptr::from_mut(&mut bytes).cast(),
+            write: Some(write_state),
+        };
+        assert!(((*state).save.unwrap())(first.0, &stream));
+        let mut cursor = std::io::Cursor::new(bytes.as_slice());
+        let stream = clap_istream {
+            ctx: ptr::from_mut(&mut cursor).cast(),
+            read: Some(read_state),
+        };
+        assert!(((*state).load.unwrap())(second.0, &stream));
+        assert!(get_value(second.0, id, &mut value));
+        assert_eq!(value, 2.0);
     }
 }
