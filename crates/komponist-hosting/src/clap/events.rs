@@ -8,8 +8,8 @@
 //!   [`WireEvent`]s as the plugin pushes them.
 
 use clack_host::events::event_types::{
-    MidiEvent, NoteOffEvent, NoteOnEvent, ParamGestureBeginEvent, ParamGestureEndEvent,
-    ParamValueEvent,
+    MidiEvent, NoteExpressionEvent, NoteExpressionType, NoteOffEvent, NoteOnEvent,
+    ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent,
 };
 use clack_host::events::io::{InputEventBuffer, OutputEventBuffer, TryPushError};
 use clack_host::events::{Match, Pckn};
@@ -190,6 +190,15 @@ fn note_output(event: &UnknownEvent) -> Result<Option<WireEvent>, TryPushError> 
             key,
             note_id,
         }
+    } else if let Some(pressure) = event.as_event::<NoteExpressionEvent>()
+        && pressure.expression_type() == Some(NoteExpressionType::Pressure)
+    {
+        let (channel, key, _) = note_address(pressure.pckn())?;
+        let value = pressure.value();
+        if !(0.0..=1.0).contains(&value) {
+            return Err(TryPushError::new());
+        }
+        WireEventKind::Midi([0xa0 | channel, key, (value * 127.0).round() as u8])
     } else if let Some(midi) = event.as_event::<MidiEvent>() {
         let [status, data1, data2] = midi.data();
         if midi.port_index() != 0 || !(0x80..0xf0).contains(&status) || data1 >= 128 || data2 >= 128
@@ -353,6 +362,26 @@ mod tests {
                     }
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn midi_note_pressure_survives_the_clap_expression_encoding() {
+        let mut received = None;
+        let mut sink = WireSink::process(16, true, |event| {
+            received = Some(event);
+            true
+        });
+        let event = NoteExpressionEvent::new(
+            11,
+            Pckn::from_raw(0, 2, 61, -1),
+            NoteExpressionType::Pressure,
+            71.0 / 127.0,
+        );
+        sink.try_push(event.as_ref()).unwrap();
+        assert_eq!(
+            received,
+            Some(WireEvent::new(11, WireEventKind::Midi([0xa2, 61, 71])))
         );
     }
 
