@@ -274,16 +274,30 @@ fn process_audio(processor: &mut dyn Processor, role: DeviceRole) -> Result<(), 
     }];
     if role == DeviceRole::MidiEffect {
         let mut buffer = EventBuffer::new(128);
+        let mut current = context;
+        // Hold the note across one beat so a sequenced MIDI processor can reach a grid boundary.
+        let frames_per_beat = f64::from(current.sample_rate) * 60.0 / current.transport.tempo_bpm;
+        let blocks = (frames_per_beat / f64::from(current.frames)).ceil() as u32 + 1;
+        let baseline_failures = processor.offline_failures();
         let stage = processor
             .event_processor()
             .ok_or_else(|| "missing MIDI stage adapter".to_owned())?;
-        stage.process_events(&context, &note, &mut buffer.sink(context.frames));
-        if !buffer
-            .events()
-            .iter()
-            .any(|event| matches!(event.kind, EventKind::NoteOn { .. }))
-            || processor.offline_failures() != 0
-        {
+        let mut heard_note = false;
+        for block in 0..blocks {
+            current.transport.position_ticks =
+                f64::from(block * current.frames) * komponist_model::PPQ as f64 / frames_per_beat;
+            let events = if block == 0 { &note[..] } else { &[] };
+            stage.process_events(&current, events, &mut buffer.sink(current.frames));
+            if buffer
+                .events()
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::NoteOn { .. }))
+            {
+                heard_note = true;
+                break;
+            }
+        }
+        if !heard_note || processor.offline_failures() != baseline_failures {
             return Err("MIDI effect did not produce a valid note".to_owned());
         }
         return Ok(());

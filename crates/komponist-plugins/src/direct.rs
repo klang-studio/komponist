@@ -353,7 +353,7 @@ impl EventProcessor for DirectProcessor {
         }
         let mut midi = self.midi.take().expect("MIDI effect has stage buffers");
         let [left, right] = &mut midi.audio;
-        self.process_block(
+        let status = self.process_block(
             ctx,
             input,
             &midi.params,
@@ -383,7 +383,7 @@ impl EventProcessor for DirectProcessor {
         if !complete {
             midi.release_due |= midi.downstream_active;
             self.reset_pending = true;
-            if self.delivered && ctx.offline {
+            if (self.delivered || status == ProcessStatus::Failed) && ctx.offline {
                 self.offline_failures += 1;
             }
         }

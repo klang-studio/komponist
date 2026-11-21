@@ -176,7 +176,10 @@ impl DirectEngine {
             old.audio.stop();
             let missed = old.audio.offline_failures();
             match self.retire.push(old) {
-                Ok(()) => self.offline_failures = self.offline_failures.saturating_add(missed),
+                Ok(()) => {
+                    self.offline_failures = self.offline_failures.saturating_add(missed);
+                    self.release_notes |= self.role == DeviceRole::MidiEffect;
+                }
                 Err(PushError::Full(old)) => self.active = Some(old),
             }
             return None;

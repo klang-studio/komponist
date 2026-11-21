@@ -475,6 +475,19 @@ impl HostedProcessor for ClapProcessor {
                     },
                 ),
             );
+            let in_buffers = if in_buffers.frames_count().is_none()
+                && out_buffers.frames_count().is_none()
+            {
+                // Without audio channels Clack has no channel length to infer the process
+                // frame count from. Event-only CLAPs still need the engine's block length.
+                // SAFETY: The already validated port descriptors remain live, and no channel
+                // buffer in either direction has a frame count to bound.
+                unsafe {
+                    InputAudioBuffers::from_raw_buffers(in_buffers.as_raw_buffers(), block.frames)
+                }
+            } else {
+                in_buffers
+            };
             let events_out = &mut block.events_out;
             let mut sink = WireSink::process(block.frames, self.note_output, |event| {
                 events_out.push(event)
