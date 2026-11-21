@@ -1,7 +1,7 @@
 //! Access to the optional bounded CLAP effect-meter extension.
 
 use clap_sys::plugin::clap_plugin;
-use componist_ipc::effect_meter::{BlockMeter, EXTENSION_ID, Extension};
+use komponist_ipc::effect_meter::{BlockMeter, EXTENSION_ID, Extension};
 
 #[derive(Clone, Copy)]
 pub(super) struct EffectMeter {
