@@ -15,7 +15,7 @@ pub const TRACK: &str = "Vowel Pad";
 /// The factory preset it plays.
 pub const PRESET: &str = "Vowel Pad";
 /// Its volume in dB (set by `render_levels`).
-const VOLUME_DB: f32 = -14.0;
+const VOLUME_DB: f32 = -10.0;
 /// The voicings over the Pad's chords, two bars each from bar 9: G4 + C5 over C, E4 + A4 over Am.
 const VOICINGS: [[u8; 2]; 4] = [[67, 72], [64, 69], [67, 72], [64, 69]];
 /// Position B: from almost closed at bar 9 to wide open at bar 16 (normalized, the parameter runs
