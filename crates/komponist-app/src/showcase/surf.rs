@@ -1,6 +1,6 @@
-//! surf in the demo (#107): a „Vowel Pad“ voice over the Pad's chords in the second half, whose
-//! LFOs move both table positions and whose automation opens oscillator B's position from bar 9
-//! to bar 16.
+//! surf in the demo (#107): a „Vowel Pad“ voice over the Pad's chords in the second half. Its LFOs
+//! move both table positions a little; automation morphs oscillator A once through the whole vowel
+//! table (A, E, I, O, U and back towards E) and opens oscillator B's position from bar 9 to bar 16.
 
 use std::sync::Arc;
 
@@ -21,6 +21,9 @@ const VOICINGS: [[u8; 2]; 4] = [[67, 72], [64, 69], [67, 72], [64, 69]];
 /// Position B: from almost closed at bar 9 to wide open at bar 16 (normalized, the parameter runs
 /// 0 … 1).
 const POSITION_B: [f32; 2] = [0.15, 0.85];
+/// Position A (the oscillator the graph shows first): bar and value, from „A“ at bar 9 through
+/// the whole vowel table to „U“ at bar 13, then back towards „E“ by the end of bar 16.
+const POSITION_A: [(i64, f32); 3] = [(8, 0.0), (12, 1.0), (16, 0.3)];
 
 pub(super) fn add_track(project: &mut Project) {
     let kind = Internal::Surf;
@@ -80,11 +83,28 @@ pub(super) fn add_track(project: &mut Project) {
         device.state = Some(state.into());
         device.id
     };
+    let owner = AutomationOwner::Track(track);
+    let target = AutomationTarget::Param {
+        device,
+        param: ParamId::new("osc_a_pos"),
+    };
+    let (with_lane, lane) =
+        edits::automation::add_lane(&next, owner, target, "Surf · Position A".into())
+            .expect("showcase surf lane A");
+    let points = POSITION_A
+        .iter()
+        .map(|&(bar, value)| Point {
+            tick: Tick::from_steps(bar * 16),
+            value,
+            shape: Shape::Curve { tension: 0.2 },
+        })
+        .collect();
+    next = edits::automation::set_lane_points(&with_lane, owner, lane, Points::new(points))
+        .expect("showcase surf curve A");
     let target = AutomationTarget::Param {
         device,
         param: ParamId::new("osc_b_pos"),
     };
-    let owner = AutomationOwner::Track(track);
     let (with_lane, lane) =
         edits::automation::add_lane(&next, owner, target, "Surf · Position B".into())
             .expect("showcase surf lane");

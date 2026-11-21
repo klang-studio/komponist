@@ -18,7 +18,7 @@
 //! | Arp | −10 dB | Tonleiter („A Minor Pentatonic“), Arpeggiator („Sixteenths Up/Down“), hexa („Synth Pluck“), Delay („Eighth Ping-Pong“) |
 //! | Glass Pluck | −24 dB | Sampler, tempo-synced melody with filter modulation |
 //! | Glass Slices | −24 dB | Sampler, MIDI-triggered slices of the same recording |
-//! | Vowel Pad | −10 dB | surf („Vowel Pad“): a voice over the Pad from bar 9, LFOs on both table positions, automation of Position B |
+//! | Vowel Pad | −10 dB | surf („Vowel Pad“): a voice over the Pad from bar 9, LFOs on both table positions, automation of Position A (through the whole table) and Position B |
 //! | Hall | 0 dB | effect bus: Hall („Large Hall“), fed by the sends of Lead and Pad |
 //! | Master | 0 dB | Limiter (ceiling −0.3 dB) |
 //!

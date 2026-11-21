@@ -566,7 +566,7 @@ fn the_demo_has_track_clip_and_master_automation() {
 }
 
 #[test]
-fn surf_plays_over_the_pad_and_its_position_b_opens() {
+fn surf_plays_over_the_pad_and_its_positions_morph() {
     use komponist_model::Tick;
     use komponist_model::automation::{AutomationTarget, effective_value_at};
     use komponist_model::params::ParamId;
@@ -594,4 +594,12 @@ fn surf_plays_over_the_pad_and_its_position_b_opens() {
     };
     let at = |bar: i64| effective_value_at(track, &target, Tick::from_steps(bar * 16)).unwrap();
     assert!(at(8) < 0.2 && at(16) > 0.8 && at(12) > at(9));
+    // Position A runs through the whole table and back.
+    let a = AutomationTarget::Param {
+        device: device.id,
+        param: ParamId::new("osc_a_pos"),
+    };
+    let at = |bar: i64| effective_value_at(track, &a, Tick::from_steps(bar * 16)).unwrap();
+    assert_eq!((at(8), at(12)), (0.0, 1.0));
+    assert!(at(10) > 0.2 && at(10) < 0.8 && at(16) < 0.5);
 }
