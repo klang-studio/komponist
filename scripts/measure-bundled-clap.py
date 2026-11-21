@@ -113,7 +113,11 @@ def run_staged(app, runner, digest, projects):
                 "legacy_bundled::historical_projects_migrate_and_play",
                 "bundled_sampler::both_samplers_play_assets_after_the_project_moves",
             ),
-            "current": ("bundled_current::current_project_round_trip_and_offline_render",),
+            "current": (
+                "bundled_current::current_project_round_trip_and_offline_render",
+                "bundled_synth_ui::packaged_synth_editors_and_factory_presets_follow_clap_state",
+                "bundled_sampler::bundled_sampler_panels_edit_and_restore_current_state",
+            ),
         }[projects]
         environment = os.environ.copy()
         environment.pop("KOMPONIST_EXPERIMENTAL_DIRECT_CLAP", None)
@@ -134,7 +138,11 @@ def run_staged(app, runner, digest, projects):
                 route["KOMPONIST_EXPERIMENTAL_DIRECT_CLAP"] = "1"
             if mode == "bridge":
                 route["KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE"] = "1"
-            run_test(staged_runner, route, *test_names)
+            if projects == "current":
+                for test in test_names:
+                    run_test(staged_runner, route, test)
+            else:
+                run_test(staged_runner, route, *test_names)
 
         if projects == "current":
             environment["KOMPONIST_EXPERIMENTAL_DIRECT_CLAP"] = "1"
