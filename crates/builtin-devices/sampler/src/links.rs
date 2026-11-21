@@ -162,6 +162,37 @@ fn write_all(state: Option<&[u8]>, links: &[(usize, SampleLink)]) -> Vec<u8> {
     out
 }
 
+/// Refresh the absolute fallbacks in a sampler asset object for a host that can only pass
+/// absolute sample paths at runtime. Keep the relative paths, unresolved links and all other
+/// asset metadata in the state. Returns a new asset object only when a link changes.
+pub fn refresh_absolute_fallbacks(assets: &str, project_dir: &Path) -> Option<String> {
+    if !project_dir.is_absolute() {
+        return None;
+    }
+    let mut assets: Value = serde_json::from_str(assets).ok()?;
+    let mut changed = false;
+    for (key, value) in assets.get_mut(KEY)?.as_object_mut()? {
+        if !key
+            .parse::<usize>()
+            .is_ok_and(|pad| (1..=PADS).contains(&pad))
+        {
+            continue;
+        }
+        let Some(link) = SampleLink::from_json(value) else {
+            continue;
+        };
+        if let Some(found) = link.resolve(Some(project_dir))
+            && found.is_absolute()
+            && found != link.abs
+            && let Some(fields) = value.as_object_mut()
+        {
+            fields.insert("abs".into(), Value::String(found.to_str()?.to_owned()));
+            changed = true;
+        }
+    }
+    changed.then(|| assets.to_string())
+}
+
 /// The links of `state` that do not resolve against `project_dir`, by pad.
 pub fn missing(state: Option<&[u8]>, project_dir: Option<&Path>) -> Vec<(usize, SampleLink)> {
     read(state)

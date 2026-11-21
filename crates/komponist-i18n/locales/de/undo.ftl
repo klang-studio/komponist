@@ -242,3 +242,6 @@ undo-macro-clear = Alle Zuordnungen entfernen
 undo-macro-range = Zuordnungsbereich ändern
 undo-macro-invert = Zuordnung umkehren
 undo-macro-bend = Zuordnungskurve ändern
+
+# Migration from a legacy built-in to the verified bundled CLAP device.
+undo-migrate-bundled-devices = Geräte zu CLAP migrieren

@@ -131,6 +131,14 @@ workspace's `validate` command is specific to Native Gain Example. Its scan code
 check a bundle against your own expected plugin descriptor, parameter IDs and layout. Resolve ID
 collisions before a first release and plan an explicit migration before changing an existing ID.
 
+### Optional sidechain fallback
+
+A device with a separate auxiliary audio port can call the SDK's
+`sidechain_fallback_to_main::<AUX_CONFIG_ID>(id)` from `ClapPlugin::clap_custom_extension`.
+The ID must match the standard CLAP audio ports configuration that exposes the auxiliary
+input. The host can then feed the main signal to the auxiliary input whenever the sidechain
+has no connected source. [Sidechain fallback v1](../../docs/clap-device-layout/sidechain-fallback.md)
+
 ### Choice controls
 
 CLAP supplies values, ranges, defaults, steps and automation. The layout supplies placement

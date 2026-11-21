@@ -1,7 +1,7 @@
 //! Audio hosts, devices and the stream lifecycle (ARCHITECTURE §7, R1, S07).
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,10 @@ use crate::{JackCaptureChannel, JackRoutes, workgroup};
 
 /// Weight of one callback's load in the smoothed CPU load (time constant ≈ 20 callbacks).
 const LOAD_SMOOTHING: f32 = 0.05;
+
+/// Histogram bins are percentage points of a buffer period. The last bin includes overflow.
+const CALLBACK_TIMING_OVERFLOW: usize = 400;
+type CallbackHistogram = [AtomicU64; CALLBACK_TIMING_OVERFLOW + 1];
 
 /// How long a stream teardown may take to hand the engine back.
 const TEARDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -266,6 +270,8 @@ pub struct StreamStats {
     /// Highest load of a single callback since the last [`StreamStats::take_peak_load`], as `f32`
     /// bits (non-negative floats order like their bits).
     peak_load: AtomicU32,
+    /// Allocated on the control thread when a callback benchmark requests timing percentiles.
+    callback_timing: OnceLock<Box<CallbackHistogram>>,
     /// Callbacks whose own work took longer than their buffer period (an xrun the app caused,
     /// whatever the scheduler did), since the system was created.
     overruns: AtomicU32,
@@ -300,6 +306,40 @@ impl StreamStats {
         f32::from_bits(self.peak_load.swap(0, Ordering::Relaxed))
     }
 
+    /// Starts collecting individual loads in one-percentage-point buckets for benchmarking.
+    /// Call from the control thread. Starting another measurement clears the previous buckets.
+    pub fn start_callback_timing(&self) {
+        let buckets = self
+            .callback_timing
+            .get_or_init(|| Box::new(std::array::from_fn(|_| AtomicU64::new(0))));
+        for count in buckets.iter() {
+            count.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// Approximate p95 and p99 of individual callback loads, as whole percentages of the
+    /// buffer period. A value of 400 includes all loads at or above 400%.
+    pub fn callback_percentiles(&self) -> Option<[usize; 2]> {
+        let buckets = self.callback_timing.get()?;
+        let counts: [u64; CALLBACK_TIMING_OVERFLOW + 1] =
+            std::array::from_fn(|bucket| buckets[bucket].load(Ordering::Relaxed));
+        let total = counts.iter().sum::<u64>();
+        if total == 0 {
+            return None;
+        }
+        Some([95, 99].map(|percentile| {
+            let rank = (total * percentile).div_ceil(100);
+            let mut seen = 0;
+            counts
+                .iter()
+                .position(|count| {
+                    seen += count;
+                    seen >= rank
+                })
+                .expect("nonempty histogram contains its percentile")
+        }))
+    }
+
     /// Callbacks so far whose own work took longer than their buffer period (load above 1.0).
     /// Unlike [`StreamStats::xruns`] this does not count late wake-ups of the audio thread.
     pub fn overruns(&self) -> u32 {
@@ -313,6 +353,10 @@ impl StreamStats {
     pub fn record_callback(&self, load: f32) {
         let load = if load.is_finite() { load.max(0.0) } else { 0.0 };
         self.peak_load.fetch_max(load.to_bits(), Ordering::Relaxed);
+        if let Some(buckets) = self.callback_timing.get() {
+            let bucket = ((load * 100.0) as usize).min(CALLBACK_TIMING_OVERFLOW);
+            buckets[bucket].fetch_add(1, Ordering::Relaxed);
+        }
         if load > 1.0 {
             self.overruns.fetch_add(1, Ordering::Relaxed);
         }
@@ -1401,6 +1445,26 @@ mod tests {
         stats.record_callback(1.0);
         assert_eq!(stats.overruns(), 1, "only above the whole period");
         assert_eq!(stats.take_peak_load(), 1.5);
+    }
+
+    #[test]
+    fn callback_timing_uses_unsmoothed_load_and_can_restart() {
+        let stats = StreamStats::new();
+        stats.record_callback(20.0);
+        assert_eq!(stats.callback_percentiles(), None);
+        stats.start_callback_timing();
+        for _ in 0..94 {
+            stats.record_callback(0.25);
+        }
+        for _ in 0..4 {
+            stats.record_callback(1.5);
+        }
+        for _ in 0..2 {
+            stats.record_callback(5.0);
+        }
+        assert_eq!(stats.callback_percentiles(), Some([150, 400]));
+        stats.start_callback_timing();
+        assert_eq!(stats.callback_percentiles(), None);
     }
 
     #[test]

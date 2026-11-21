@@ -7,7 +7,10 @@ publish.workspace = true
 
 [dependencies]
 komponist-device-core.workspace = true
+komponist-engine.workspace = true
 komponist-i18n.workspace = true
 komponist-model.workspace = true
 komponist-native-clap-sdk.workspace = true
 nice-plug.workspace = true
+komponist-sampler.workspace = true
+serde_json.workspace = true

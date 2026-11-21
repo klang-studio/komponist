@@ -74,6 +74,10 @@ impl SamplerDsp {
     /// Allocates the engine, the slots and the loader thread (UI thread).
     pub(super) fn new() -> SamplerDsp {
         let (handle, audio, meters) = load::channel();
+        Self::with_channels(handle, audio, meters)
+    }
+
+    pub(super) fn with_channels(handle: SamplerHandle, audio: AudioSide, meters: Meters) -> Self {
         let sample_rate = 48_000.0;
         let mut layers = Box::new([PadLayers::default(); NUM_PADS]);
         for pad in layers.iter_mut() {
@@ -274,6 +278,16 @@ impl Dsp for SamplerDsp {
     fn note_off(&mut self, key: u8) {
         if let Some(pad) = pad_of_note(key) {
             self.engine.note_off(pad, &self.settings[..]);
+        }
+    }
+
+    fn choke_note(&mut self, key: Option<u8>, _note_id: Option<u32>) {
+        if let Some(key) = key {
+            if let Some(pad) = pad_of_note(key) {
+                self.engine.kill_slot(slot_index(pad, 0));
+            }
+        } else {
+            self.engine.choke_all();
         }
     }
 

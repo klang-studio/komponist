@@ -15,6 +15,8 @@
 //! The bridge case needs the WP-27 fixtures (`scripts/build-test-plugins.sh`) and skips without
 //! them. Debug builds run too, but their numbers mean little (hexa unoptimised).
 
+#[path = "engine_perf/bundled.rs"]
+mod bundled;
 mod common;
 
 use std::sync::Arc;
@@ -25,7 +27,7 @@ use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost};
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::settings::Settings;
 use komponist_app::{Action, App, TransportAction};
-use komponist_audio::{HostKind, StreamConfig};
+use komponist_audio::{AudioState, HostKind, StreamConfig};
 use komponist_engine::TransportState;
 use komponist_hexa::{encode_state, preset_patch, presets};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewNote, NewTrack};
@@ -144,20 +146,44 @@ fn project(bridges: bool) -> Project {
 }
 
 fn app(project: Project, host: Box<dyn DeviceHost>, workers: u32) -> App {
+    app_at_buffer(project, host, workers, HostKind::Null, BUFFER)
+}
+
+fn app_at_buffer(
+    project: Project,
+    host: Box<dyn DeviceHost>,
+    workers: u32,
+    audio_host: HostKind,
+    buffer_frames: u32,
+) -> App {
     let config = StreamConfig {
-        host: HostKind::Null,
-        buffer_frames: BUFFER,
+        host: audio_host,
+        buffer_frames,
         ..StreamConfig::default()
     };
     let (mut engine, started) = EngineSync::new(&config, MidiSetup::None, host);
-    started.expect("null backend");
+    started.unwrap_or_else(|error| panic!("could not start {audio_host:?}: {error}"));
+    require_audio_config(&engine, audio_host, config.sample_rate, buffer_frames);
     let status = engine.set_workers(Some(workers)).expect("workers");
     eprintln!("workers: {status:?}");
-    App::new(Document::new(project), engine, Settings::default(), None)
+    let settings = Settings {
+        audio: config,
+        ..Settings::default()
+    };
+    App::new(Document::new(project), engine, settings, None)
 }
 
-/// Plays for [`MEASURE`] and prints the callback load.
-fn measure(name: &str, app: &mut App) {
+fn require_audio_config(engine: &EngineSync, host: HostKind, sample_rate: u32, frames: u32) {
+    let state = engine.audio_state();
+    assert!(
+        matches!(state, AudioState::Running { config, .. }
+            if (config.host, config.sample_rate, config.buffer_frames) == (host, sample_rate, frames)),
+        "{host:?} did not provide {sample_rate} Hz and a {frames}-frame period: {state:?}"
+    );
+}
+
+/// Plays for the configured interval and prints the callback counters.
+fn measure(name: &str, app: &mut App, buffer: u32, devices: &[DeviceId]) {
     app.dispatch(Action::Transport(TransportAction::TogglePlay));
     step_until(app, "playback", |a| {
         a.transport() == TransportState::Playing
@@ -167,26 +193,43 @@ fn measure(name: &str, app: &mut App) {
     let stats = app.engine().stats();
     let (callbacks, overruns, xruns) = (stats.callbacks(), stats.overruns(), stats.xruns());
     stats.take_peak_load();
+    stats.start_callback_timing();
     let worker_stats = app.engine().worker_stats();
     let (batches, late) = (worker_stats.batches(), worker_stats.late());
+    let missed = |app: &App| {
+        devices
+            .iter()
+            .map(|&id| app.engine().host().late_blocks(id))
+            .sum::<u64>()
+    };
+    let missed_before = missed(app);
     let t0 = Instant::now();
-    let mut mean = Vec::new();
+    let mut sampled = Vec::new();
     let measure = measure_time();
     while t0.elapsed() < measure {
         step_for(app, Duration::from_millis(100));
-        mean.push(app.engine().stats().cpu_load());
+        sampled.push(app.engine().stats().cpu_load());
     }
     let stats = app.engine().stats();
     let peak = stats.take_peak_load();
-    mean.sort_by(f32::total_cmp);
+    let [p95, p99] = stats
+        .callback_percentiles()
+        .expect("recorded audio callbacks");
+    assert!(
+        !sampled.is_empty(),
+        "the measurement interval must be positive"
+    );
+    sampled.sort_by(f32::total_cmp);
     eprintln!(
-        "{name}: {} callbacks of {BUFFER} frames, load mean {:.1} % (median of 100 ms samples), \
-         peak {:.1} %, overruns {}, xruns {}",
+        "{name}: {} callbacks of {buffer} frames, load {:.1} % (median of smoothed 100 ms samples), \
+         callback p95/p99 {p95}/{p99} % (400 % includes overflow), peak {:.1} %, \
+         overruns {}, xruns {}, late bridge blocks {}",
         stats.callbacks() - callbacks,
-        mean[mean.len() / 2] * 100.0,
+        sampled[sampled.len() / 2] * 100.0,
         peak * 100.0,
         stats.overruns() - overruns,
         stats.xruns() - xruns,
+        missed(app).saturating_sub(missed_before),
     );
     let worker_stats = app.engine().worker_stats();
     eprintln!(
@@ -203,7 +246,12 @@ fn measure(name: &str, app: &mut App) {
 fn engine_cpu_16_hexa_tracks() {
     for workers in worker_counts() {
         let mut app = app(project(false), Box::new(BuiltinHost::new()), workers);
-        measure(&format!("16 hexa tracks, {workers} workers"), &mut app);
+        measure(
+            &format!("16 hexa tracks, {workers} workers"),
+            &mut app,
+            BUFFER,
+            &[],
+        );
         app.shutdown();
     }
 }
@@ -235,15 +283,13 @@ fn bridges_case(dirs: &komponist_plugins::PluginDirs, workers: u32) {
     }
     let mut app = app(project(true), Box::new(host), workers);
     step_until(&mut app, "bridges", all_ok);
+    let ids = bridged(app.project());
     measure(
         &format!("16 hexa tracks + 8 kp-test-fx bridges, {workers} workers"),
         &mut app,
+        BUFFER,
+        &ids,
     );
-    let late: u64 = bridged(app.project())
-        .iter()
-        .map(|&d| app.engine().host().late_blocks(d))
-        .sum();
-    eprintln!("late bridge blocks: {late}");
     app.shutdown();
 }
 

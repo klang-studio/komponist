@@ -5,20 +5,25 @@ use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use komponist_engine::processor::EventBuffer;
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, StereoIo, TransportInfo,
 };
-use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind, ProcessExit};
-use komponist_model::{DeviceId, DeviceRole};
+use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind, ProcessExit, RenderMode};
+use komponist_model::{Device, DeviceId, DeviceRole};
 
 use crate::bridge::{Bridge, SpawnSetup, StatePurpose, Timing};
 use crate::bundled_clap::{BundledClap, VerifiedClap};
-use crate::catalog::SCAN_TIMEOUT;
+use crate::catalog::{PluginDirs, PluginLocation, SCAN_TIMEOUT};
 use crate::direct::DirectClap;
-use crate::manager::{DeviceStatus, PluginManagerConfig, PluginManagerEvent, ProcessorSetup};
+use crate::direct_session::DirectSession;
+use crate::manager::{
+    DeviceStatus, PluginManager, PluginManagerConfig, PluginManagerEvent, ProcessorSetup,
+};
 use crate::scan::scan_bundle;
 
 const HALL_ID: &str = "org.klang-studio.komponist.hall";
+const PRESSE_ID: &str = "org.klang-studio.komponist.presse";
 const FRAMES: usize = 128;
 const SETUP: ProcessorSetup = ProcessorSetup {
     sample_rate: 48_000.0,
@@ -47,9 +52,16 @@ pub fn verify_bundled_clap(force_bridge: bool) -> Result<(), String> {
             let role = match descriptor.kind {
                 PluginKind::Effect => DeviceRole::Effect,
                 PluginKind::Instrument => DeviceRole::Instrument,
-                PluginKind::MidiEffect | PluginKind::Other => {
-                    return Err("MIDI-only bundle verification is not yet supported".to_owned());
+                PluginKind::MidiEffect => DeviceRole::MidiEffect,
+                PluginKind::Other
+                    if descriptor
+                        .features
+                        .iter()
+                        .any(|feature| feature == "note-effect") =>
+                {
+                    DeviceRole::MidiEffect
                 }
+                PluginKind::Other => return Err("unsupported bundled plugin role".to_owned()),
             };
             if force_bridge {
                 smoke_bridge(&config, &descriptor, &verified, role)
@@ -61,7 +73,163 @@ pub fn verify_bundled_clap(force_bridge: bool) -> Result<(), String> {
         let route = if force_bridge { "bridge" } else { "in-process" };
         println!("verified {id} ({route})");
     }
+    if let Some((path, id)) = bundled.bundle_entries().find(|(_, id)| *id == HALL_ID) {
+        smoke_live_manager(config, path, id, force_bridge)?;
+        let route = if force_bridge {
+            "forced bridge"
+        } else {
+            "direct lifecycle"
+        };
+        println!("verified {id} (normal {route})");
+    }
+    if let Some(digest) = option_env!("KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256") {
+        println!("manifest sha256 {digest}");
+    }
     Ok(())
+}
+
+fn smoke_live_manager(
+    config: PluginManagerConfig,
+    path: &Path,
+    id: &str,
+    force_bridge: bool,
+) -> Result<(), String> {
+    let mut manager = PluginManager::new_with_bundled_clap(config, true, force_bridge);
+    manager.start_scan(&PluginDirs {
+        clap: Vec::new(),
+        vst3: Vec::new(),
+    });
+    let deadline = Instant::now() + TIMEOUT;
+    while manager.is_scanning() {
+        manager.poll();
+        if Instant::now() >= deadline {
+            return Err("normal bundled catalog scan timed out".into());
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    let entry = manager.catalog().entries().iter().find(|entry| {
+        entry.plugin.id == id
+            && matches!(&entry.location, PluginLocation::Bundle { path: scanned, .. } if scanned == path)
+    }).ok_or_else(|| "Hall is absent from the normal bundled catalog".to_owned())?;
+    let device = Device {
+        id: DeviceId(1),
+        role: DeviceRole::Effect,
+        plugin: entry.plugin.clone(),
+        bypass: false,
+        state: None,
+        sidechain: None,
+    };
+    let device_id = device.id;
+    let mut audio = manager
+        .create_processor(&device, SETUP)
+        .map_err(|error| error.to_string())?;
+    if force_bridge {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            manager.poll();
+            match manager.status(device_id) {
+                DeviceStatus::Ok if manager.bridge_pid(device_id).is_some() => return Ok(()),
+                DeviceStatus::Loading if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                status => {
+                    return Err(format!(
+                        "normal Hall forced bridge did not start: {status:?}"
+                    ));
+                }
+            }
+        }
+    }
+    if manager.bridge_pid(device_id).is_some()
+        || manager.status(device_id) != DeviceStatus::Ok
+        || manager.native_layout(device_id).is_none()
+    {
+        return Err(
+            "normal Hall start did not use the verified direct path with native layout".into(),
+        );
+    }
+    let param = manager
+        .params(device_id)
+        .and_then(|params| params.iter().find(|info| info.step_count == 0))
+        .ok_or_else(|| "normal Hall start has no continuous parameters".to_owned())?;
+    let param_id = param.id;
+    let low = param.min;
+    let high = param.max;
+    let baseline = manager
+        .param_base(device_id, param_id)
+        .ok_or_else(|| "normal Hall parameter base is missing".to_owned())?;
+    let edit = if baseline - low < high - baseline {
+        high
+    } else {
+        low
+    };
+    let snapshot = |manager: &mut PluginManager| {
+        manager
+            .snapshot_for_save(Duration::ZERO)
+            .captured
+            .into_iter()
+            .find_map(|(id, state)| (id == device_id).then_some(state))
+    };
+    let initial =
+        snapshot(&mut manager).ok_or_else(|| "could not save Hall before editing".to_owned())?;
+    manager.set_param(device_id, param_id, edit);
+    manager.poll();
+    drive_control(&mut *audio, &[]);
+    let edited = snapshot(&mut manager)
+        .ok_or_else(|| "normal Hall edit was not acknowledged by DSP".to_owned())?;
+    if initial == edited {
+        return Err("normal Hall edit did not change the saved CLAP state".into());
+    }
+
+    drive_control(
+        &mut *audio,
+        &[Event {
+            offset: 0,
+            kind: EventKind::Param {
+                id: param_id,
+                value: baseline,
+            },
+        }],
+    );
+    if snapshot(&mut manager).is_some() {
+        return Err("normal Hall captured a temporary automation value".into());
+    }
+    if !manager.set_state(device_id, &initial) {
+        return Err("normal Hall did not accept an undo state".into());
+    }
+    if !manager.poll().iter().any(|event| {
+        matches!(event,
+        PluginManagerEvent::StateApplied { device } if *device == device_id)
+    }) || manager.param_base(device_id, param_id) != Some(baseline)
+    {
+        return Err("normal Hall undo did not restore its parameter base".into());
+    }
+
+    manager.release(device_id);
+    if !manager.has_retiring_direct() {
+        return Err("normal Hall dropped its control half before the audio half".into());
+    }
+    drop(audio);
+    manager.poll();
+    if manager.has_retiring_direct() {
+        return Err("normal Hall audio half was not deactivated on retirement".into());
+    }
+    Ok(())
+}
+
+fn drive_control(audio: &mut dyn Processor, events: &[Event]) {
+    let context = smoke_context();
+    let input = [0.0; FRAMES];
+    let mut left = [0.0; FRAMES];
+    let mut right = [0.0; FRAMES];
+    audio.process(
+        &context,
+        events,
+        &mut StereoIo {
+            input: [&input, &input],
+            output: [&mut left, &mut right],
+        },
+    );
 }
 
 fn scan(config: &PluginManagerConfig, path: &Path, id: &str) -> Result<PluginDescriptor, String> {
@@ -90,27 +258,73 @@ fn scan(config: &PluginManagerConfig, path: &Path, id: &str) -> Result<PluginDes
 
 fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
     let hall = bundle.plugin_id() == HALL_ID;
+    let presse = bundle.plugin_id() == PRESSE_ID;
     let mut host = DirectClap::load(bundle).map_err(|error| error.to_string())?;
-    if host.plugin().native_layout().is_none() || host.plugin().params().is_empty() {
+    let can_render =
+        host.try_control(|plugin| plugin.native_layout().is_some() && !plugin.params().is_empty());
+    if can_render != Some(true) {
         return Err("native layout or parameters unavailable".to_owned());
     }
-    let mut audio = host
-        .activate(SETUP, role)
-        .map_err(|error| error.to_string())?;
-    let result = process_audio(&mut audio, role, hall);
-    host.deactivate(audio);
+    let (mut session, mut audio) =
+        DirectSession::start(host, SETUP, role).map_err(|error| error.to_string())?;
+    let result = (|| {
+        drive_direct(&mut audio, role, hall, presse)?;
+        audio
+            .activate(SETUP.sample_rate, SETUP.max_block * 2)
+            .map_err(|error| error.to_string())?;
+        session.set_render_mode(RenderMode::Offline);
+        // Let the worker return its current audio half at the next realtime boundary.
+        drive_boundary(&mut audio);
+        session.poll().map_err(|error| error.to_string())?;
+        drive_direct(&mut audio, role, hall, presse)
+    })();
+    let mut host = session.finish(audio);
     result?;
     host.poll();
-    let state = host
-        .plugin_mut()
-        .save_state()
-        .map_err(|error| error.to_string())?;
-    if state.is_empty() {
-        return Err("plugin saved an empty state".to_owned());
-    }
-    host.plugin_mut()
-        .load_state(&state)
-        .map_err(|error| error.to_string())
+    host.try_control(|plugin| {
+        let state = plugin.save_state().map_err(|error| error.to_string())?;
+        if state.is_empty() {
+            return Err("plugin saved an empty state".to_owned());
+        }
+        plugin.load_state(&state).map_err(|error| error.to_string())
+    })
+    .ok_or_else(|| "direct audio worker did not release the instance".to_owned())?
+}
+
+fn drive_direct(
+    audio: &mut dyn Processor,
+    role: DeviceRole,
+    hall: bool,
+    presse: bool,
+) -> Result<(), String> {
+    thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                process_audio(audio, role, hall)?;
+                if presse {
+                    check_presse_sidechain(audio)?;
+                }
+                Ok(())
+            })
+            .join()
+            .map_err(|_| "direct audio worker panicked".to_owned())?
+    })
+}
+
+fn drive_boundary(audio: &mut dyn Processor) {
+    let mut context = smoke_context();
+    context.offline = false;
+    let input = [0.0; FRAMES];
+    let mut left = [0.0; FRAMES];
+    let mut right = [0.0; FRAMES];
+    audio.process(
+        &context,
+        &[],
+        &mut StereoIo {
+            input: [&input, &input],
+            output: [&mut left, &mut right],
+        },
+    );
 }
 
 fn smoke_bridge(
@@ -143,7 +357,10 @@ fn smoke_bridge(
         if bridge.native_layout.is_none() || bridge.params.is_empty() {
             return Err("bridge did not report native layout and parameters".to_owned());
         }
-        process_audio(&mut audio, role, bundle.plugin_id() == HALL_ID)?;
+        process_audio(&mut audio, role, descriptor.id == HALL_ID)?;
+        if descriptor.id == PRESSE_ID {
+            check_presse_sidechain(&mut audio)?;
+        }
         let request = bridge
             .request_state(StatePurpose::Collect)
             .ok_or_else(|| "bridge refused the state snapshot".to_owned())?;
@@ -213,12 +430,8 @@ fn wait_for_bridge<T>(
     }
 }
 
-fn process_audio(
-    processor: &mut dyn Processor,
-    role: DeviceRole,
-    hall: bool,
-) -> Result<(), String> {
-    let context = ProcessContext {
+fn smoke_context() -> ProcessContext {
+    ProcessContext {
         frames: FRAMES as u32,
         sample_rate: SETUP.sample_rate,
         transport: TransportInfo {
@@ -232,7 +445,15 @@ fn process_audio(
         },
         offline: true,
         deadline: None,
-    };
+    }
+}
+
+fn process_audio(
+    processor: &mut dyn Processor,
+    role: DeviceRole,
+    hall: bool,
+) -> Result<(), String> {
+    let context = smoke_context();
     let note = [Event {
         offset: 0,
         kind: EventKind::NoteOn {
@@ -242,6 +463,36 @@ fn process_audio(
             note_id: 1,
         },
     }];
+    if role == DeviceRole::MidiEffect {
+        let mut buffer = EventBuffer::new(128);
+        let mut current = context;
+        // Hold the note across one beat so a sequenced MIDI processor can reach a grid boundary.
+        let frames_per_beat = f64::from(current.sample_rate) * 60.0 / current.transport.tempo_bpm;
+        let blocks = (frames_per_beat / f64::from(current.frames)).ceil() as u32 + 1;
+        let baseline_failures = processor.offline_failures();
+        let stage = processor
+            .event_processor()
+            .ok_or_else(|| "missing MIDI stage adapter".to_owned())?;
+        let mut heard_note = false;
+        for block in 0..blocks {
+            current.transport.position_ticks =
+                f64::from(block * current.frames) * komponist_model::PPQ as f64 / frames_per_beat;
+            let events = if block == 0 { &note[..] } else { &[] };
+            stage.process_events(&current, events, &mut buffer.sink(current.frames));
+            if buffer
+                .events()
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::NoteOn { .. }))
+            {
+                heard_note = true;
+                break;
+            }
+        }
+        if !heard_note || processor.offline_failures() != baseline_failures {
+            return Err("MIDI effect did not produce a valid note".to_owned());
+        }
+        return Ok(());
+    }
     let mut input = [0.0; FRAMES];
     input[0] = 0.125;
     let mut left = [f32::NAN; FRAMES];
@@ -275,6 +526,48 @@ fn process_audio(
     }
     if hall && !has_tail {
         return Err("Hall produced no reverb tail after the input impulse".to_owned());
+    }
+    Ok(())
+}
+
+/// With factory defaults, Presse compresses a loud main input only when the detector sees it.
+/// An attached silent source keeps the same main input at unity.
+fn check_presse_sidechain(processor: &mut dyn Processor) -> Result<(), String> {
+    let context = smoke_context();
+    let input = std::array::from_fn::<_, FRAMES, _>(|i| if i < FRAMES / 2 { 0.75 } else { -0.75 });
+    let silent = [0.0; FRAMES];
+    let mut render = |sidechain| {
+        processor.reset();
+        let mut left = [0.0; FRAMES];
+        let mut right = [0.0; FRAMES];
+        for _ in 0..32 {
+            let mut io = StereoIo {
+                input: [&input, &input],
+                output: [&mut left, &mut right],
+            };
+            let status = match sidechain {
+                Some(sidechain) => processor.process_sidechain(&context, &[], &mut io, sidechain),
+                None => processor.process(&context, &[], &mut io),
+            };
+            if status != ProcessStatus::Continue
+                || processor.offline_failures() != 0
+                || left.iter().chain(&right).any(|x| !x.is_finite())
+            {
+                return Err("Presse sidechain check did not render a valid block".to_owned());
+            }
+        }
+        Ok(left
+            .into_iter()
+            .chain(right)
+            .map(f32::abs)
+            .fold(0.0, f32::max))
+    };
+    let disconnected = render(None)?;
+    let connected_silent = render(Some([silent.as_slice(); 2]))?;
+    if connected_silent < 0.70 || disconnected > connected_silent * 0.75 {
+        return Err(format!(
+            "Presse sidechain did not distinguish disconnection from silence (peaks {disconnected:.3}, {connected_silent:.3})"
+        ));
     }
     Ok(())
 }

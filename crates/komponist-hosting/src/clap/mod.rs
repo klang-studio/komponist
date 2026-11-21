@@ -17,6 +17,7 @@ mod events;
 mod host;
 mod native_layout;
 mod processor;
+mod sidechain_fallback;
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -171,6 +172,7 @@ pub(crate) fn scan(bundle: &Path) -> Result<Vec<PluginDescriptor>, HostingError>
 #[derive(Clone, Copy)]
 struct Extensions {
     audio_ports: Option<PluginAudioPorts>,
+    sidechain_from_main: bool,
     note_ports: Option<PluginNotePorts>,
     params: Option<PluginParams>,
     state: Option<PluginState>,
@@ -187,6 +189,7 @@ impl Extensions {
     fn query(handle: &PluginMainThreadHandle) -> Extensions {
         Extensions {
             audio_ports: handle.get_extension(),
+            sidechain_from_main: sidechain_fallback::configure(handle),
             note_ports: handle.get_extension(),
             params: handle.get_extension(),
             state: handle.get_extension(),
@@ -393,7 +396,7 @@ impl HostedPlugin for ClapPlugin {
         }
         let ext = self.ext;
         let mut instance = self.instance.borrow_mut();
-        let (inputs, outputs, notes) = {
+        let (inputs, outputs, notes, note_output) = {
             let handle = instance.plugin_handle();
             if let Some(render) = ext.render {
                 let mode = match self.render_mode {
@@ -407,10 +410,19 @@ impl HostedPlugin for ClapPlugin {
                     );
                 }
             }
+            let mut inputs = PortLayout::query(ext.audio_ports, &handle, true);
+            inputs.sidechain_from_main = ext.sidechain_from_main;
             (
-                PortLayout::query(ext.audio_ports, &handle, true),
+                inputs,
                 PortLayout::query(ext.audio_ports, &handle, false),
                 NoteTarget::query(ext.note_ports, &handle),
+                self.descriptor
+                    .features
+                    .iter()
+                    .any(|feature| feature == "note-effect")
+                    && ext
+                        .note_ports
+                        .is_some_and(|ports| ports.count(&handle, false) != 0),
             )
         };
         let stopped = instance
@@ -428,6 +440,7 @@ impl HostedPlugin for ClapPlugin {
             &inputs,
             &outputs,
             notes,
+            note_output,
             config.max_frames,
         )))
     }
@@ -513,7 +526,10 @@ impl HostedPlugin for ClapPlugin {
         let Some(mut handle) = instance.inactive_plugin_handle() else {
             return;
         };
-        let mut sink = WireSink(|e| output.push(e));
+        let mut sink = WireSink::flush(|event| {
+            output.push(event);
+            true
+        });
         params.flush(
             &mut handle,
             &InputEvents::from_buffer(&list),

@@ -129,6 +129,22 @@ impl ParamUndo {
             ..ParamUndo::default()
         };
     }
+
+    fn forget_device(&mut self, device: DeviceId) {
+        if self.gesture_device == Some(device) {
+            self.gesture_device = None;
+        }
+        self.gesture_bridged.remove(&device);
+        self.macro_gesture.remove(&device);
+        self.macro_steps.remove(&device);
+        self.turned.remove(&device);
+        self.steps.remove(&device);
+        self.tails.remove(&device);
+        self.echo.remove(&device);
+        self.deferred.retain(|(id, _)| *id != device);
+        self.awaiting.remove(&device);
+        self.baseline.remove(&device);
+    }
 }
 
 impl App {
@@ -538,6 +554,10 @@ impl App {
             let Some((_, _, old)) = before.find_device(device.id) else {
                 continue;
             };
+            if old.plugin != device.plugin {
+                self.param_undo.forget_device(device.id);
+                continue;
+            }
             if old.state != device.state && !is_hexa(device) && internal_kind(device).is_none() {
                 if device.state.is_none()
                     && let Some(baseline) = self.param_undo.baseline.get(&device.id).cloned()

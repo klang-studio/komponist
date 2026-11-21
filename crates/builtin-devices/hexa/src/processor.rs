@@ -94,6 +94,33 @@ impl HexaProcessor {
         unsafe { Synth::write_new(place, self.sample_rate, patch) };
     }
 
+    /// Replace the complete patch, retaining values outside the device card's controls.
+    /// Uses the existing synth's patch-update semantics and is allocation-free.
+    pub fn replace_patch(&mut self, patch: Patch) {
+        self.dirty = false;
+        self.synth.set_patch(patch);
+    }
+
+    /// Render one ordered span for either the built-in engine or the CLAP adapter.
+    /// An empty span applies its frame-zero events without advancing the synth.
+    pub fn render_events(&mut self, events: &[Event], [left, right]: [&mut [f32]; 2]) {
+        let frames = left.len();
+        let mut done = 0;
+        for event in events {
+            let at = (event.offset as usize).clamp(done, frames);
+            if at > done {
+                self.flush();
+                self.synth.render(&mut left[done..at], &mut right[done..at]);
+                done = at;
+            }
+            self.apply(event.kind);
+        }
+        self.flush();
+        if done < frames {
+            self.synth.render(&mut left[done..], &mut right[done..]);
+        }
+    }
+
     /// Applies collected parameter changes.
     fn flush(&mut self) {
         if self.dirty {
@@ -154,22 +181,8 @@ impl Processor for HexaProcessor {
         events: &[Event],
         io: &mut StereoIo<'_>,
     ) -> ProcessStatus {
-        let frames = io.frames();
         let [left, right] = &mut io.output;
-        let mut done = 0;
-        for event in events {
-            let at = (event.offset as usize).clamp(done, frames);
-            if at > done {
-                self.flush();
-                self.synth.render(&mut left[done..at], &mut right[done..at]);
-                done = at;
-            }
-            self.apply(event.kind);
-        }
-        self.flush();
-        if done < frames {
-            self.synth.render(&mut left[done..], &mut right[done..]);
-        }
+        self.render_events(events, [left, right]);
         ProcessStatus::Continue
     }
 

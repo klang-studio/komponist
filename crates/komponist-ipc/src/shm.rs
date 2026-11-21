@@ -25,7 +25,8 @@
 //! per-block request and result, an input event ring (app → bridge), an output event ring
 //! (bridge → app), stereo audio in/out of [`MAX_BLOCK`] frames and, since version 2 (#6), the
 //! stereo sidechain input of the same size. A block carries a sidechain only when its request has
-//! [`BLOCK_FLAG_SIDECHAIN`]; without it the bridge feeds the plugin's sidechain port silence.
+//! [`BLOCK_FLAG_SIDECHAIN`]; without it the bridge applies the plugin format's disconnected-input
+//! behavior.
 //!
 //! RT handshake per block (app audio thread ↔ bridge RT thread):
 //! 1. App ([`BridgeClient::begin_block`]): only if the bridge is idle (`done_seq == request_seq`),
@@ -87,8 +88,8 @@ pub const BLOCK_FLAG_RESET: u32 = 1;
 /// [`BlockRequest::flags`]: the block is part of an offline render.
 pub const BLOCK_FLAG_OFFLINE: u32 = 2;
 /// [`BlockRequest::flags`]: [`ShmLayout::audio_sidechain`] holds this block's sidechain input
-/// (set by [`BridgeClient::begin_block`] when it is given one; #6). Without it the sidechain is
-/// silent.
+/// (set by [`BridgeClient::begin_block`] when it is given one; #6). Without it the source is
+/// disconnected.
 pub const BLOCK_FLAG_SIDECHAIN: u32 = 4;
 
 /// [`WireTransport::flags`]: transport running.
@@ -1149,8 +1150,8 @@ impl BridgeClient {
 
     /// Publishes one block (step 1 of the handshake) and wakes the bridge. Returns the sequence
     /// number to wait for. `input` holds `spec.frames` samples per channel; `sidechain`, if given,
-    /// too (it sets [`BLOCK_FLAG_SIDECHAIN`]; `None` clears it, so the plugin's sidechain port gets
-    /// silence); `events` are sorted by offset.
+    /// too (it sets [`BLOCK_FLAG_SIDECHAIN`]; `None` clears it, so the bridge treats the source as
+    /// disconnected); `events` are sorted by offset.
     ///
     /// # Panics
     ///
@@ -1242,6 +1243,33 @@ impl BridgeClient {
             output.iter().all(|ch| ch.len() >= frames),
             "wait_done: output too short"
         );
+        let result = self.wait_done_events(seq, deadline)?;
+        let layout = self.region.layout();
+        let audio_out = layout.audio_out.get().cast::<[f32; MAX_BLOCK]>();
+        for (channel, samples) in output.into_iter().enumerate() {
+            // SAFETY: wait_done_events acquired this request's completion. The bridge
+            // touches its output only after the next request; only this client can publish it.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    audio_out.add(channel).cast::<f32>(),
+                    samples.as_mut_ptr(),
+                    frames,
+                );
+            }
+        }
+        Ok(result)
+    }
+
+    /// Waits for the same completion as [`Self::wait_done`] without copying output audio.
+    /// MIDI effects use the corresponding request sequence to consume their output events.
+    pub fn wait_done_events(
+        &mut self,
+        seq: u32,
+        deadline: Instant,
+    ) -> Result<BlockResult, BlockError> {
+        if seq != self.seq || self.frames == 0 {
+            return Err(BlockError::Late);
+        }
         let layout = self.region.layout();
         let header = &layout.header;
         loop {
@@ -1259,17 +1287,6 @@ impl BridgeClient {
         let result = unsafe { header.result.get().read() };
         if result.seq != seq {
             return Err(BlockError::Late);
-        }
-        let audio_out = layout.audio_out.get().cast::<[f32; MAX_BLOCK]>();
-        for (channel, samples) in output.into_iter().enumerate() {
-            // SAFETY: see above; `frames <= MAX_BLOCK` (checked in `begin_block`).
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    audio_out.add(channel).cast::<f32>(),
-                    samples.as_mut_ptr(),
-                    frames,
-                );
-            }
         }
         Ok(result)
     }
@@ -1468,7 +1485,7 @@ impl BridgeMonitor {
         BridgeMonitor { region }
     }
 
-    /// The next plugin output event (parameter changes and gestures from the plugin GUI).
+    /// The next plugin output event (MIDI or a parameter value/gesture), tagged by block sequence.
     pub fn pop_output_event(&mut self) -> Option<WireEvent> {
         // SAFETY: the `BridgeMonitor` role (one per region) is the only output-ring consumer.
         unsafe { self.region.layout().output_events.pop() }

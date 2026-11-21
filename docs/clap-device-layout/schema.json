@@ -20,6 +20,18 @@
       "maxItems": 4,
       "items": { "$ref": "#/$defs/page" }
     },
+    "author_ids": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 256,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "not": { "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]" }
+      },
+      "additionalProperties": { "type": "integer", "minimum": 0, "maximum": 4294967294 }
+    },
     "required_capabilities": {
       "type": "array",
       "maxItems": 8,

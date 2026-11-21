@@ -67,6 +67,29 @@ pub fn decode_state(state: Option<&[u8]>) -> Result<Patch, StateError> {
     }
 }
 
+/// Convert a complete legacy project patch into the pinned Hexa CLAP state stream.
+/// Older or out-of-slider patch fields remain authoritative for audio.
+pub fn legacy_patch_to_clap_state(legacy: &[u8], version: &str) -> Result<Vec<u8>, StateError> {
+    use komponist_device_core::pinned_clap_state;
+    use komponist_i18n::Lang;
+    use serde_json::{Map, Value, json};
+
+    let patch = decode_state(Some(legacy))?;
+    let mut applied = Vec::with_capacity(crate::device::WIRE_COUNT);
+    let params = (0..crate::device::WIRE_COUNT)
+        .map(|wire| {
+            let field = crate::device::Field::from_wire(wire as u32).expect("valid Hexa wire ID");
+            let info = field.info_in(Lang::En);
+            let (value, raw) = pinned_clap_state::parameter(&info, field.get(&patch));
+            applied.push(raw);
+            (info.id.as_str().to_owned(), value)
+        })
+        .collect();
+    let saved_patch = json!({"patch": patch, "applied": applied}).to_string();
+    let fields = Map::from_iter([("hexa-patch-v1".to_owned(), Value::from(saved_patch))]);
+    Ok(pinned_clap_state::encode(version, params, fields))
+}
+
 /// A device state that is not a hexa patch.
 #[derive(Debug)]
 pub struct StateError(serde_json::Error);

@@ -252,6 +252,15 @@ impl Engine {
         }
     }
 
+    /// Fades out all voices belonging to one MIDI key, including one-shots.
+    pub fn choke_key(&mut self, key: u8) {
+        for voice in self.voices.iter_mut().filter(|voice| {
+            voice.active && voice.playback.is_some_and(|playing| playing.key == key)
+        }) {
+            voice.choke();
+        }
+    }
+
     /// Immediately stops all voices playing sample `slot`. Needed before the sample gets replaced.
     pub fn kill_slot(&mut self, slot: usize) {
         for v in self.voices.iter_mut().filter(|v| v.slot == slot) {

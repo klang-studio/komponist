@@ -1,6 +1,8 @@
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
-use komponist_device_core::Spec;
+use komponist_device_core::pinned_clap_state::FACTORY_PRESET_FIELD;
+use komponist_device_core::{Preset, Spec};
 use komponist_i18n::Lang;
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
 use nice_plug::prelude::*;
@@ -87,7 +89,7 @@ impl Binding {
                     let plain = if scale == Scale::Pan {
                         komponist_model::format::parse_pan(text).map(f64::from)
                     } else {
-                        parse_number(info.unit, text)
+                        parse_parameter_text(info, text)
                     }?;
                     Some(info.to_normalized(plain) as f32)
                 }));
@@ -143,7 +145,7 @@ fn integer_param(info: &'static ParamInfo, default: i32, min: i32, max: i32) -> 
             info.format(f64::from(value) * multiplier + offset)
         }))
         .with_string_to_value(Arc::new(move |text| {
-            parse_number(info.unit, text)
+            parse_parameter_text(info, text)
                 .map(|value| ((value - offset) / multiplier).round() as i32)
         }));
     if !info.automatable {
@@ -164,7 +166,10 @@ fn format_continuous(info: &ParamInfo, value: f64) -> String {
             }
         )
     {
-        return info.format(value);
+        let custom = info.format(value);
+        if !matches!(info.unit, Unit::Ms | Unit::S) || parse_number(info.unit, &custom).is_none() {
+            return custom;
+        }
     }
     let (scale, decimals, suffix) = match info.unit {
         Unit::None => (1.0, 3, ""),
@@ -180,6 +185,25 @@ fn format_continuous(info: &ParamInfo, value: f64) -> String {
         Unit::Meters => (1.0, 1, " m"),
     };
     format!("{:.decimals$}{suffix}", value * scale)
+}
+
+fn parse_parameter_text(info: &ParamInfo, text: &str) -> Option<f64> {
+    if let Some(value) = parse_number(info.unit, text) {
+        return Some(value);
+    }
+    info.format.as_ref()?;
+    let text = text.trim();
+    let matches_text = |value| info.format(value).eq_ignore_ascii_case(text);
+    if let ParamKind::Int { min, max } = info.kind
+        && max.saturating_sub(min) < 128
+    {
+        // Small named integer ranges include the sampler's MIDI root note.
+        return (min..=max)
+            .map(f64::from)
+            .find(|value| matches_text(*value));
+    }
+    let (min, max) = info.range();
+    [min, max].into_iter().find(|value| matches_text(*value))
 }
 
 fn parse_number(unit: Unit, text: &str) -> Option<f64> {
@@ -215,15 +239,30 @@ struct BoundParameter {
     default_raw: f64,
 }
 
-pub(crate) struct Parameters(Vec<BoundParameter>);
+/// Stable author bindings and model-to-CLAP scaling for a set of device parameters.
+pub struct Parameters {
+    bindings: Vec<BoundParameter>,
+    factory_presets: &'static [Preset],
+    selected_preset: Mutex<Option<&'static str>>,
+}
 
 impl Parameters {
     pub(crate) fn new(
         spec: &'static Spec,
+        choice: impl FnMut(&'static ParamInfo) -> Option<Binding>,
+    ) -> Self {
+        let mut params = Self::from_infos(spec.params_in(Lang::En), choice);
+        params.factory_presets = spec.presets();
+        params
+    }
+
+    /// Bind independently described device parameters in the supplied wire order.
+    pub fn from_infos(
+        infos: &'static [ParamInfo],
         mut choice: impl FnMut(&'static ParamInfo) -> Option<Binding>,
     ) -> Self {
-        Self(
-            spec.params_in(Lang::En)
+        Self {
+            bindings: infos
                 .iter()
                 .map(|info| {
                     let binding = choice(info).unwrap_or_else(|| Binding::from_info(info));
@@ -235,15 +274,22 @@ impl Parameters {
                     }
                 })
                 .collect(),
-        )
+            factory_presets: &[],
+            selected_preset: Mutex::new(None),
+        }
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.0.len()
+        self.bindings.len()
     }
 
-    pub(crate) fn changed_value(&self, index: usize, applied: &mut Option<f64>) -> Option<f64> {
-        let bound = &self.0[index];
+    pub(crate) fn raw_value(&self, index: usize) -> f64 {
+        self.bindings[index].binding.0.raw()
+    }
+
+    /// Returns the new model plain value and records the underlying wrapper value.
+    pub fn changed_value(&self, index: usize, applied: &mut Option<f64>) -> Option<f64> {
+        let bound = &self.bindings[index];
         let raw = bound.binding.0.raw();
         if *applied == Some(raw) {
             return None;
@@ -267,7 +313,7 @@ impl Parameters {
 // retains for the entire plugin instance. The vector and its bindings are immutable after setup.
 unsafe impl Params for Parameters {
     fn param_map(&self) -> Vec<(String, ParamPtr, String)> {
-        self.0
+        self.bindings
             .iter()
             .map(|bound| {
                 (
@@ -277,6 +323,38 @@ unsafe impl Params for Parameters {
                 )
             })
             .collect()
+    }
+
+    fn serialize_fields(&self) -> BTreeMap<String, String> {
+        let preset = self
+            .selected_preset
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        preset
+            .iter()
+            .map(|name| {
+                (
+                    FACTORY_PRESET_FIELD.to_owned(),
+                    serde_json::to_string(name).expect("preset names encode as JSON strings"),
+                )
+            })
+            .collect()
+    }
+
+    fn deserialize_fields(&self, fields: &BTreeMap<String, String>) {
+        let selected = fields
+            .get(FACTORY_PRESET_FIELD)
+            .and_then(|raw| serde_json::from_str::<String>(raw).ok())
+            .and_then(|name| {
+                self.factory_presets
+                    .iter()
+                    .find(|preset| preset.name == name)
+            })
+            .map(|preset| preset.name);
+        *self
+            .selected_preset
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = selected;
     }
 }
 

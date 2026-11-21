@@ -1,0 +1,26 @@
+[package]
+name = "komponist-bundled-general-sampler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "komponist_general_sampler"
+crate-type = ["cdylib"]
+
+[dependencies]
+komponist-bundled-clap-adapter.workspace = true
+komponist-device-core.workspace = true
+komponist-i18n.workspace = true
+komponist-model.workspace = true
+komponist-sampler.workspace = true
+komponist-general-sampler = { path = "../../../../crates/builtin-devices/general-sampler" }
+nice-plug.workspace = true
+
+[dev-dependencies]
+clap-sys.workspace = true
+komponist-native-clap-sdk.workspace = true
+serde_json.workspace = true
+hound = "=3.5.1"
+tempfile = "=3.27.0"
