@@ -113,7 +113,7 @@ pub(super) fn set_context(
 
 /// One cell: the widget of its kind bound to its parameter; the placeholder for a widget the
 /// parameter's kind does not fit.
-pub(super) fn draw_cell(
+pub(crate) fn draw_cell(
     cu: &mut Ui,
     out: &mut Vec<Action>,
     card: &Card,
@@ -149,6 +149,15 @@ pub(super) fn draw_cell(
         CellParam::Template(t) => resolve(t, &ctx).ok().and_then(|id| card.param(&id)),
         _ => None,
     };
+    let localized = param.and_then(|param| {
+        let layout = card.native_layout.as_ref()?;
+        let labels = card.native_cell(cell)?.labels.as_ref()?;
+        let label = layout.label(labels, komponist_ui::lang(cu.ctx()).code())?;
+        let mut localized = param.clone();
+        localized.info.name = label.to_owned();
+        Some(localized)
+    });
+    let param = localized.as_ref().or(param);
     // The rate knob of a synced LFO shows its divider instead.
     let param = param.map(|p| synced_divider(card, p));
     if let Some(control) = param.and_then(|p| card.macros.get(&p.info.id)) {
@@ -341,7 +350,11 @@ fn slot(cu: &Ui, cell: &Cell, what: &str) -> Id {
         "komponist_cell",
         cell.col,
         cell.row,
-        cell.half.is_some(),
+        match cell.half {
+            None => 0,
+            Some(super::layout::Half::Top) => 1,
+            Some(super::layout::Half::Bottom) => 2,
+        },
         what,
     ))
 }
@@ -419,17 +432,21 @@ fn number(
     let steps = info.steps();
     let plain_step = match &info.kind {
         ParamKind::Int { .. } => Some(1.0),
+        ParamKind::Bool if card.native_layout.is_some() => Some(1.0),
         ParamKind::Float { .. } if steps > 0 => Some((max - min) / f64::from(steps)),
         ParamKind::Float { .. } => None,
         _ => return false,
     };
     let current = p.text_at(p.value);
     let unit = split_unit(&current).1.to_owned();
-    let unit_len = if unit.is_empty() { 0 } else { unit.len() + 1 };
     let plain_text = |v: f64| {
-        let t = p.text_at(v);
-        let end = t.len() - unit_len.min(t.len());
-        t[..end].to_owned()
+        let text = p.text_at(v);
+        let (number, suffix) = split_unit(&text);
+        if !unit.is_empty() && suffix == unit {
+            number.to_owned()
+        } else {
+            text
+        }
     };
     match plain_step {
         Some(step) => {
@@ -438,7 +455,7 @@ fn number(
                 .range(min..=max)
                 .step(step)
                 .default_value(info.default)
-                .unit(unit)
+                .unit(unit.clone())
                 .cols(cell.cols)
                 .format(plain_text);
             let r = cu.put(rect, w);
@@ -477,15 +494,35 @@ fn number(
     true
 }
 
-fn choices(p: &Param) -> Option<&Vec<String>> {
+fn choices<'a>(
+    card: &Card,
+    cell: &Cell,
+    p: &'a Param,
+    lang: Lang,
+) -> Option<(std::borrow::Cow<'a, [String]>, f64)> {
+    use std::borrow::Cow;
+    if let Some(layout) = &card.native_layout
+        && let Some(choices) = &card.native_cell(cell)?.choices
+    {
+        let names = choices
+            .iter()
+            .map(|choice| {
+                layout
+                    .label(&choice.labels, lang.code())
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect();
+        return Some((Cow::Owned(names), f64::from(choices.first()?.value)));
+    }
     match &p.info.kind {
-        ParamKind::Enum(names) if !names.is_empty() => Some(names),
+        ParamKind::Enum(names) if !names.is_empty() => Some((Cow::Borrowed(names), 0.0)),
         _ => None,
     }
 }
 
-fn index_of(p: &Param, n: usize) -> usize {
-    (p.value.round().max(0.0) as usize).min(n.saturating_sub(1))
+fn index_of(value: f64, first: f64, n: usize) -> usize {
+    ((value - first).round().max(0.0) as usize).min(n.saturating_sub(1))
 }
 
 fn segment(
@@ -496,7 +533,7 @@ fn segment(
     p: &Param,
     rect: Rect,
 ) -> bool {
-    let Some(names) = choices(p) else {
+    let Some((names, first)) = choices(card, cell, p, komponist_ui::lang(cu.ctx())) else {
         return false;
     };
     // The four oscillator waves are drawn as their icons (their names stay the accessible ones).
@@ -508,7 +545,7 @@ fn segment(
             None => SegmentOption::text(n),
         })
         .collect();
-    let mut selected = index_of(p, names.len());
+    let mut selected = index_of(p.value, first, names.len());
     let r = cu.put(
         rect,
         Segment::new(p.name(), &options, &mut selected).cols(cell.cols),
@@ -521,7 +558,7 @@ fn segment(
         &r,
         None,
         false,
-        r.changed().then_some(selected as f64),
+        r.changed().then_some(first + selected as f64),
     );
     true
 }
@@ -546,7 +583,7 @@ fn toggle(
     p: &Param,
     rect: Rect,
 ) -> bool {
-    if !matches!(p.info.kind, ParamKind::Bool) {
+    if card.native_layout.is_none() && !matches!(p.info.kind, ParamKind::Bool) {
         return false;
     }
     let mut on = p.value >= 0.5;
@@ -572,11 +609,11 @@ fn dropdown(
     p: &Param,
     rect: Rect,
 ) -> bool {
-    let Some(names) = choices(p) else {
+    let Some((names, first)) = choices(card, cell, p, komponist_ui::lang(cu.ctx())) else {
         return false;
     };
     let items: Vec<Item<'_>> = names.iter().map(|n| Item::new(n)).collect();
-    let mut selected = index_of(p, names.len());
+    let mut selected = index_of(p.value, first, names.len());
     let r = cu.put(
         rect,
         DropdownCell::new(p.name(), &items, &mut selected).cols(cell.cols),
@@ -589,7 +626,7 @@ fn dropdown(
         &r,
         None,
         false,
-        r.changed().then_some(selected as f64),
+        r.changed().then_some(first + selected as f64),
     );
     true
 }
@@ -1367,6 +1404,7 @@ mod tests {
         Card {
             sampler: None,
             general_sampler: None,
+            native_layout: None,
             device: DeviceId(7),
             automation_owner: None,
             automation: Default::default(),

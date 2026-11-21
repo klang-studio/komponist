@@ -228,6 +228,7 @@ pub(crate) struct Bridge {
     /// The latest state: the last snapshot, or the state the bridge was started with.
     pub last_state: Option<Arc<[u8]>>,
     pub params: Vec<ParamInfo>,
+    pub native_layout: Option<Arc<komponist_ipc::native_layout::NativeLayout>>,
     pub values: BTreeMap<u32, ParamValue>,
     pub base_values: BTreeMap<u32, f64>,
     temporary_params: BTreeSet<u32>,
@@ -358,6 +359,7 @@ impl Bridge {
             snapshot_due: None,
             last_state: s.state,
             params: Vec::new(),
+            native_layout: None,
             values: BTreeMap::new(),
             base_values: BTreeMap::new(),
             temporary_params: BTreeSet::new(),
@@ -693,11 +695,37 @@ impl Bridge {
         }
         self.kill();
         self.gui_open = false;
+        self.native_layout = None;
         self.gui_requests = 0;
         self.state_requests.clear();
         self.state_restores.clear();
         self.snapshot_due = None;
         self.set_status(DeviceStatus::Crashed(reason), events);
+    }
+
+    fn update_native_layout(
+        &mut self,
+        bytes: Option<Vec<u8>>,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        self.native_layout = bytes.and_then(|bytes| {
+            let layout =
+                komponist_ipc::native_layout::NativeLayout::parse(&bytes).and_then(|layout| {
+                    layout.validate_params(&self.params)?;
+                    Ok(layout)
+                });
+            match layout {
+                Ok(layout) => Some(Arc::new(layout)),
+                Err(error) => {
+                    events.push(PluginManagerEvent::Log {
+                        device: Some(self.device),
+                        level: LogLevel::Warning,
+                        message: error.to_string(),
+                    });
+                    None
+                }
+            }
+        });
     }
 
     fn set_status(&mut self, status: DeviceStatus, events: &mut Vec<PluginManagerEvent>) {
@@ -828,6 +856,7 @@ impl Bridge {
             BridgeMsg::Loaded(info) => {
                 let info = *info;
                 self.params = info.params;
+                self.update_native_layout(info.native_layout, events);
                 self.base_values = info.values.iter().map(|v| (v.id, v.value)).collect();
                 self.values = info.values.into_iter().map(|v| (v.id, v)).collect();
                 self.note_names = info.note_names;
@@ -913,7 +942,10 @@ impl Bridge {
                     self.snapshot_soon();
                 }
             }
-            BridgeMsg::Params(params) => {
+            BridgeMsg::Params {
+                params,
+                native_layout,
+            } => {
                 let ids: BTreeSet<_> = params.iter().map(|param| param.id).collect();
                 self.temporary_params.retain(|id| ids.contains(id));
                 self.pending_params.retain(|id| ids.contains(id));
@@ -922,6 +954,7 @@ impl Bridge {
                 self.base_values.retain(|id, _| ids.contains(id));
                 self.values.retain(|id, _| ids.contains(id));
                 self.params = params;
+                self.update_native_layout(native_layout, events);
                 events.push(PluginManagerEvent::ParamsChanged { device });
             }
             BridgeMsg::ParamValues(values) => {

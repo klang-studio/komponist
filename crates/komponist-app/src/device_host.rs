@@ -144,6 +144,14 @@ pub trait DeviceHost {
         None
     }
 
+    /// Native device presentation validated against the device's current parameter inventory.
+    fn native_layout(
+        &self,
+        _device: DeviceId,
+    ) -> Option<&Arc<komponist_ipc::native_layout::NativeLayout>> {
+        None
+    }
+
     /// The last known value and text of parameter `id`. Values from the plugin's own GUI arrive
     /// without text; format them in the view.
     fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {
@@ -738,6 +746,13 @@ impl DeviceHost for PluginHost {
 
     fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
         self.manager.params(device)
+    }
+
+    fn native_layout(
+        &self,
+        device: DeviceId,
+    ) -> Option<&Arc<komponist_ipc::native_layout::NativeLayout>> {
+        self.manager.native_layout(device)
     }
 
     fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {

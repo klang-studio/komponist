@@ -34,7 +34,7 @@
 //! | Neu laden | `Reload` |
 
 pub(crate) mod add_menu;
-mod cells;
+pub(crate) mod cells;
 pub(crate) use cells::{select_pad, selected_pad};
 pub mod frame;
 mod general_sampler;

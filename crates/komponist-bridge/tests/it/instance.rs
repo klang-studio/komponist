@@ -20,6 +20,34 @@ use komponist_ipc::{
     PluginFormat, PluginKind, ProcessExit, RenderMode,
 };
 
+#[cfg(x11_embed)]
+#[test]
+fn failed_editor_does_not_invalidate_the_native_layout() {
+    let Some(bundle) = std::env::var_os("KOMPONIST_LAYOUT_FIXTURE") else {
+        return;
+    };
+    let mut bridge = Bridge::spawn();
+    let loaded = bridge.load(
+        std::path::Path::new(&bundle),
+        "org.klang-studio.komponist.layout-fixture.optional-field",
+    );
+    assert!(loaded.has_gui);
+    assert!(loaded.native_layout.is_some());
+    bridge.activate();
+    bridge.send(ControlMsg::OpenGui(komponist_ipc::GuiTarget::X11Child {
+        xid: 1,
+        scale: 1.0,
+    }));
+    bridge.expect_error(ErrorContext::Gui);
+
+    bridge.send(ControlMsg::ListParams);
+    let layout = bridge.expect("Params with the native layout", |msg| match msg {
+        BridgeMsg::Params { native_layout, .. } => Some(native_layout.clone()),
+        _ => None,
+    });
+    assert_eq!(layout, loaded.native_layout);
+}
+
 /// Waits until the bridge publishes `state` (it changes asynchronously to control messages).
 fn wait_state(bridge: &Bridge, state: BridgeState) {
     let deadline = Instant::now() + ANSWER_TIMEOUT;
@@ -40,7 +68,7 @@ fn protocol_errors_keep_the_bridge_alive() {
     bridge.heartbeat();
     bridge.send(ControlMsg::ListParams);
     let params = bridge.expect("Params", |m| match m {
-        BridgeMsg::Params(p) => Some(p.clone()),
+        BridgeMsg::Params { params, .. } => Some(params.clone()),
         _ => None,
     });
     assert!(params.is_empty());

@@ -2727,6 +2727,7 @@ dependencies = [
  "assert_no_alloc",
  "clack-extensions",
  "clack-host",
+ "clap-sys",
  "komponist-ipc",
  "libc",
  "rtrb",
@@ -2753,6 +2754,7 @@ dependencies = [
  "postcard",
  "rustix 1.1.6",
  "serde",
+ "serde_json",
  "windows-sys 0.61.2",
 ]
 

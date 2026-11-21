@@ -153,6 +153,12 @@ pub trait HostedPlugin {
     /// The parameter list (may be long; call on load and after `ParamsChanged`).
     fn params(&self) -> Vec<ParamInfo>;
 
+    /// The immutable descriptor read once after plugin initialization. The bridge checks the
+    /// parameter bindings again whenever it publishes a parameter inventory.
+    fn native_layout(&self) -> Option<(&[u8], &komponist_ipc::native_layout::NativeLayout)> {
+        None
+    }
+
     /// Current plain value of parameter `id` (main-thread view; CLAP `params.get_value`, VST3
     /// controller).
     fn param_value(&self, id: u32) -> Option<f64>;

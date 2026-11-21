@@ -87,7 +87,7 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// edits and a state restore replies with its authoritative parameter values. 8: checked
 /// snapshots distinguish delivered, quantized edits and return the verified parameter values.
 /// 9 (#75): the shared native frame header carries the track macro mapping chip.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -433,7 +433,12 @@ pub enum BridgeMsg {
         request: u32,
     },
     /// Answer to `ListParams`, or unsolicited after the plugin rescanned its parameters.
-    Params(Vec<ParamInfo>),
+    Params {
+        /// The current parameter inventory.
+        params: Vec<ParamInfo>,
+        /// Bounded native-layout descriptor revalidated against this inventory.
+        native_layout: Option<Vec<u8>>,
+    },
     /// Parameter values with the plugin's text, coalesced to at most one message per 33 ms: values
     /// that changed on the bridge's main thread, including automation playback, parameter
     /// rescans and the echo of `SetParam`. GUI edits during processing also arrive as output
@@ -544,6 +549,8 @@ pub struct LoadedInfo {
     pub note_names: Vec<NoteName>,
     /// Whether the plugin has its own GUI this build embeds (X11 on Linux, Cocoa on macOS).
     pub has_gui: bool,
+    /// Bounded native CLAP layout descriptor, when available.
+    pub native_layout: Option<Vec<u8>>,
 }
 
 /// The request a [`BridgeMsg::Error`] refers to.
@@ -1657,6 +1664,7 @@ mod tests {
                 latency: 64,
                 note_names: vec![note.clone()],
                 has_gui: true,
+                native_layout: Some(b"{}".to_vec()),
             })),
             BridgeMsg::Activated { latency: 64 },
             BridgeMsg::State {
@@ -1665,7 +1673,10 @@ mod tests {
                 verified: vec![(1, 0.4)],
             },
             BridgeMsg::StateDeferred { request: 11 },
-            BridgeMsg::Params(vec![param]),
+            BridgeMsg::Params {
+                params: vec![param],
+                native_layout: None,
+            },
             BridgeMsg::ParamValues(vec![value.clone()]),
             BridgeMsg::StateApplied {
                 request: 8,

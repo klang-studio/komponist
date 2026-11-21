@@ -35,6 +35,7 @@
 
 pub mod control;
 pub mod frame;
+pub mod native_layout;
 pub mod process;
 pub mod ring;
 pub mod shm;

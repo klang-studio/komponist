@@ -53,13 +53,14 @@ use komponist_hosting::FdEvents;
 use komponist_hosting::GuiParent;
 use komponist_hosting::host_loop::notification_bits as bits;
 use komponist_hosting::{
-    ActivateConfig, HostContext, HostedPlugin, HostingError, PluginKind, RenderMode, TimerId,
+    ActivateConfig, HostContext, HostNotify, HostedPlugin, HostingError, PluginKind, RenderMode,
+    TimerId,
 };
 use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError};
 use komponist_ipc::shm::MAX_BLOCK;
 use komponist_ipc::{
     BridgeChannel, BridgeMsg, BridgeServer, BridgeState, ChannelError, ControlMsg, ErrorContext,
-    GuiTarget, LoadedInfo, LogLevel, ParamValue, ShmRegion, WireEvent, WireEventKind,
+    GuiTarget, LoadedInfo, LogLevel, ParamInfo, ParamValue, ShmRegion, WireEvent, WireEventKind,
 };
 #[cfg(target_os = "linux")]
 use rustix::event::{PollFd, PollFlags};
@@ -910,6 +911,7 @@ impl Bridge {
                 }
             })
             .collect();
+        let native_layout = self.layout_for_params(plugin.as_ref(), &params);
         let info = LoadedInfo {
             descriptor: plugin.descriptor().clone(),
             params,
@@ -917,11 +919,27 @@ impl Bridge {
             latency: plugin.latency(),
             note_names: plugin.note_names(),
             has_gui: plugin.has_gui(),
+            native_layout,
         };
         self.region.set_latency(info.latency);
         self.plugin = Some(plugin);
         self.region.set_bridge_state(BridgeState::Loaded);
         self.send(BridgeMsg::Loaded(Box::new(info)));
+    }
+
+    fn layout_for_params(
+        &self,
+        plugin: &dyn HostedPlugin,
+        params: &[ParamInfo],
+    ) -> Option<Vec<u8>> {
+        let (bytes, layout) = plugin.native_layout()?;
+        match layout.validate_params(params) {
+            Ok(()) => Some(bytes.to_vec()),
+            Err(error) => {
+                self.notify.log(LogLevel::Warning, &error.to_string());
+                None
+            }
+        }
     }
 
     fn report_params(&mut self) -> bool {
@@ -936,7 +954,14 @@ impl Bridge {
             return false;
         }
         self.params_due = None;
-        self.send(BridgeMsg::Params(params));
+        let native_layout = self
+            .plugin
+            .as_ref()
+            .and_then(|plugin| self.layout_for_params(plugin.as_ref(), &params));
+        self.send(BridgeMsg::Params {
+            params,
+            native_layout,
+        });
         true
     }
 

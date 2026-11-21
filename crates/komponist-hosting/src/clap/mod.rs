@@ -15,6 +15,7 @@
 
 mod events;
 mod host;
+mod native_layout;
 mod processor;
 
 #[cfg(test)]
@@ -224,6 +225,7 @@ pub(crate) struct ClapPlugin {
     ext: Extensions,
     context: HostContext,
     has_gui: bool,
+    native_layout: Option<(Vec<u8>, komponist_ipc::native_layout::NativeLayout)>,
     gui: Option<OpenGui>,
     render_mode: RenderMode,
 }
@@ -278,6 +280,14 @@ impl ClapPlugin {
             ..descriptor
         };
 
+        let native_layout = match native_layout::read(handle.as_raw()) {
+            Ok(layout) => layout,
+            Err(error) => {
+                context.notify.log(LogLevel::Warning, &error.to_string());
+                None
+            }
+        };
+
         Ok(ClapPlugin {
             instance: RefCell::new(instance),
             _entry: entry,
@@ -285,6 +295,7 @@ impl ClapPlugin {
             ext,
             context,
             has_gui,
+            native_layout,
             gui: None,
             render_mode: RenderMode::Realtime,
         })
@@ -352,6 +363,12 @@ fn param_info(info: &clack_extensions::params::ParamInfo) -> ParamInfo {
 impl HostedPlugin for ClapPlugin {
     fn descriptor(&self) -> &PluginDescriptor {
         &self.descriptor
+    }
+
+    fn native_layout(&self) -> Option<(&[u8], &komponist_ipc::native_layout::NativeLayout)> {
+        self.native_layout
+            .as_ref()
+            .map(|(bytes, layout)| (bytes.as_slice(), layout))
     }
 
     fn has_gui(&self) -> bool {
