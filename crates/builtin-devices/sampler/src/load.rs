@@ -397,10 +397,29 @@ fn retain_loader_image() -> bool {
         if libc::dladdr(address.cast(), info.as_mut_ptr()) == 0 {
             return false;
         }
-        let name = info.assume_init().dli_fname;
-        // Keep the returned reference for process lifetime so the worker can finish safely.
-        !name.is_null()
-            && !libc::dlopen(name, libc::RTLD_NOLOAD | libc::RTLD_LAZY | libc::RTLD_LOCAL).is_null()
+        let own = info.assume_init();
+        if own.dli_fname.is_null() {
+            return false;
+        }
+        let handle = libc::dlopen(
+            own.dli_fname,
+            libc::RTLD_NOLOAD | libc::RTLD_LAZY | libc::RTLD_LOCAL,
+        );
+        if handle.is_null() {
+            return false;
+        }
+        let entry = libc::dlsym(handle, c"clap_entry".as_ptr());
+        let mut retained = std::mem::MaybeUninit::<libc::Dl_info>::uninit();
+        if !entry.is_null()
+            && libc::dladdr(entry, retained.as_mut_ptr()) != 0
+            && retained.assume_init().dli_fbase == own.dli_fbase
+        {
+            // Keep the reference for process lifetime so the worker can finish safely.
+            return true;
+        }
+        // A loader search override can return a different image with the same filename.
+        libc::dlclose(handle);
+        false
     }
 }
 
