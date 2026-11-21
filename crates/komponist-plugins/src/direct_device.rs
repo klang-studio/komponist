@@ -41,6 +41,7 @@ pub(crate) struct DirectDevice {
     macro_params: BTreeMap<u32, f64>,
     /// A direct lane retains the host base. An automated macro retains its saved output.
     automated_params: BTreeMap<u32, Option<f64>>,
+    released_automation: BTreeSet<u32>,
     snapshot_due: Option<Instant>,
     macro_snapshot: Option<Weak<[u8]>>,
     user_edit: bool,
@@ -137,6 +138,7 @@ impl DirectDevice {
             pending_restore: None,
             macro_params: BTreeMap::new(),
             automated_params: BTreeMap::new(),
+            released_automation: BTreeSet::new(),
             snapshot_due: None,
             macro_snapshot: None,
             user_edit: false,
@@ -293,6 +295,7 @@ impl DirectDevice {
                 self.pending_writes.insert(id, value);
             }
             self.base.insert(id, value);
+            self.released_automation.remove(&id);
             self.unconfirmed_writes.insert(id);
             self.state_warning = None;
             self.user_edit = true;
@@ -317,6 +320,15 @@ impl DirectDevice {
     }
 
     pub(crate) fn set_automated_params(&mut self, params: BTreeMap<u32, Option<f64>>) {
+        // SetProgram and the base-value restore arrive on the audio thread asynchronously.
+        self.released_automation.extend(
+            self.automated_params
+                .keys()
+                .filter(|id| !params.contains_key(id))
+                .copied(),
+        );
+        self.released_automation
+            .retain(|id| !params.contains_key(id));
         self.automated_params = params;
     }
 
@@ -325,6 +337,9 @@ impl DirectDevice {
             return;
         }
         let previous = std::mem::replace(&mut self.macro_params, values);
+        // A newly mapped parameter takes its persistent value from the macro.
+        self.unconfirmed_writes
+            .retain(|id| !self.macro_params.contains_key(id));
         for (id, value) in previous {
             if !self.macro_params.contains_key(&id) && self.base.contains_key(&id) {
                 self.base.insert(id, value);
@@ -345,6 +360,7 @@ impl DirectDevice {
         self.pending_restore = Some(state);
         self.pending_writes.clear();
         self.unconfirmed_writes.clear();
+        self.released_automation.clear();
         self.snapshot_due = None;
         self.user_edit = false;
     }
@@ -383,16 +399,19 @@ impl DirectDevice {
         let macros = &self.macro_params;
         let automated = &self.automated_params;
         let unconfirmed = &self.unconfirmed_writes;
+        let released = &self.released_automation;
         let bundle = self.bundled_kind.zip(self.layout.as_deref());
         let (state, corrections) = self
             .session
             .try_control(|plugin| {
                 let mut corrections = Vec::new();
                 for (&id, &base) in base {
-                    let expected = match automated.get(&id) {
-                        Some(saved) => saved.unwrap_or(base),
-                        None => macros.get(&id).copied().unwrap_or(base),
-                    };
+                    let expected = automated
+                        .get(&id)
+                        .copied()
+                        .flatten()
+                        .or_else(|| macros.get(&id).copied())
+                        .unwrap_or(base);
                     let actual = plugin.param_value(id)?;
                     if !actual.is_finite() || !expected.is_finite() {
                         return None;
@@ -405,7 +424,9 @@ impl DirectDevice {
                     // and can be repaired on the detached copy of the known bundle's state.
                     if unconfirmed.contains(&id)
                         || bundle.is_none()
-                        || !(automated.contains_key(&id) || macros.contains_key(&id))
+                        || !(automated.contains_key(&id)
+                            || macros.contains_key(&id)
+                            || released.contains(&id))
                     {
                         return None;
                     }

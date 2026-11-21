@@ -1028,7 +1028,7 @@ impl PluginManager {
     }
 
     /// Publish the compiled automation targets to authenticated bundled snapshot handlers.
-    /// A value is present when a macro lane drives the target. It is the model's macro output.
+    /// A value is present for a mapped parameter. It is the model's macro output.
     pub fn set_automated_params(&mut self, values: &[(DeviceId, u32, Option<f64>)]) {
         let mut by_device = BTreeMap::<DeviceId, BTreeMap<u32, Option<f64>>>::new();
         for &(device, id, base) in values {

@@ -650,7 +650,7 @@ impl EngineSync {
             diagnostics,
         } = next;
         self.host
-            .set_automated_params(&Self::automated_parameters(&next));
+            .set_automated_params(&Self::automated_parameters(&next, project));
         self.send(Command::SetProgram(Box::new(next.clone())));
         self.programs_sent += 1;
         self.previous = Some(next);
@@ -679,7 +679,7 @@ impl EngineSync {
             self.host.set_macro_params(&self.macro_params);
             if let Some(program) = &self.previous {
                 self.host
-                    .set_automated_params(&Self::automated_parameters(program));
+                    .set_automated_params(&Self::automated_parameters(program, project));
             }
         }
     }
@@ -871,9 +871,23 @@ impl EngineSync {
         }
     }
 
-    fn automated_parameters(program: &Program) -> Vec<(DeviceId, u32, Option<f64>)> {
+    /// Refresh the model positions used for state snapshots after a fast-path macro edit.
+    pub(crate) fn refresh_snapshot_automation(&mut self, project: &Project) {
+        if let Some(program) = &self.previous {
+            self.host
+                .set_automated_params(&Self::automated_parameters(program, project));
+        }
+    }
+
+    fn automated_parameters(
+        program: &Program,
+        project: &Project,
+    ) -> Vec<(DeviceId, u32, Option<f64>)> {
         let mut values = Vec::new();
-        program.for_each_automated_parameter(|device, id, base| values.push((device, id, base)));
+        program.for_each_automated_parameter(
+            |track, index| Some(project.track(track)?.macros.0[usize::from(index)].value),
+            |device, id, base| values.push((device, id, base)),
+        );
         values
     }
 

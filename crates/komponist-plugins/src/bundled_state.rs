@@ -55,3 +55,40 @@ pub(crate) fn restore_param_bases(
 
     Some(pinned_clap_state::encode_document(&document))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use komponist_builtin::Internal;
+    use serde_json::json;
+
+    #[test]
+    fn only_known_automation_parameters_are_replaced_in_the_saved_state() {
+        let layout = NativeLayout::parse(
+            br#"{
+                "schema_version":1, "default_locale":"en", "locales":["en"],
+                "author_ids":{"b1_freq":42,"b1_type":7},
+                "pages":[{"key":"main","labels":{"en":"Main"},"columns":1,
+                          "cells":[{"col":0,"row":0,"cols":1,"rows":1,"widget":"knob","param_id":42}]}]
+            }"#,
+        )
+        .unwrap();
+        let document = json!({
+            "version":"0.1.0",
+            "params":{
+                "b1_type":{"string":"high-shelf"}, "b1_freq":{"f32":0.19}, "b2_gain":{"f32":0.75}
+            },
+            "fields":{"factory_preset":"\"Telephone\"","other":"{\"authored\":true}"}
+        });
+        let state = pinned_clap_state::encode_document(&document);
+        let kind = BuiltinKind::Internal(Internal::Eq);
+        let corrected =
+            restore_param_bases(kind, &layout, &state, [(42, 0.625), (7, 2.0)]).unwrap();
+        let mut expected = document;
+        expected["params"]["b1_type"] = json!({"i32":2});
+        expected["params"]["b1_freq"] = json!({"f32":0.625});
+        assert_eq!(pinned_clap_state::decode(&corrected), Some(expected));
+        assert!(restore_param_bases(kind, &layout, &state, [(99, 0.4)]).is_none());
+        assert!(restore_param_bases(kind, &layout, &state, [(42, f64::NAN)]).is_none());
+    }
+}

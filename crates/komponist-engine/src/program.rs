@@ -99,9 +99,14 @@ impl Program {
         }
     }
 
-    /// Visit compiled plug-in parameter lanes and parameters driven by automated macros.
-    /// For a macro target, the value is its output at the stored macro position.
-    pub fn for_each_automated_parameter(&self, mut emit: impl FnMut(DeviceId, u32, Option<f64>)) {
+    /// Visit compiled plug-in parameter lanes and macro mappings for persistent snapshots.
+    /// Mapped parameters use the macro's document position, which can be newer than the
+    /// compiled program during a fast-path gesture.
+    pub fn for_each_automated_parameter(
+        &self,
+        macro_position: impl Fn(TrackId, u8) -> Option<f32>,
+        mut emit: impl FnMut(DeviceId, u32, Option<f64>),
+    ) {
         for lane in self
             .tracks
             .iter()
@@ -120,11 +125,9 @@ impl Program {
                 if let EngineTarget::Slot {
                     device, wire_id, ..
                 } = mapping.target
-                    && track.automation.iter().any(|lane| {
-                        lane.target == EngineTarget::Macro(mapping.driver) && lane.reads()
-                    })
                 {
-                    let base = track.macros.base[usize::from(mapping.driver)];
+                    let base = macro_position(track.id, mapping.driver)
+                        .unwrap_or(track.macros.base[usize::from(mapping.driver)]);
                     let value = mapping.map.plain(mapping.normalized(base));
                     emit(device, wire_id, Some(value));
                 }
