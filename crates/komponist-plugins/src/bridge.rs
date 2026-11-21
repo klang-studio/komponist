@@ -521,7 +521,7 @@ impl Bridge {
                             || (!self.automated_params.contains_key(id)
                                 && !self.temporary_params.contains(id)))
                 })
-                .map(|&id| Some((id, *self.base_values.get(&id)?, false)))
+                .map(|&id| Some((id, *self.base_values.get(&id)?, true)))
                 .collect();
         }
         let ids: BTreeSet<_> = self
