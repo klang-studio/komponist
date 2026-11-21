@@ -2,7 +2,7 @@
 # Builds komponist (release) and packs the Windows zip: dist/komponist-<version>-windows-x86_64.zip with its .sha256.
 # Windows only, run from Git Bash (MSVC toolchain, bsdtar from Windows 10+). Used by the release job and by hand.
 #
-#   scripts/package-windows.sh [--skip-build] [--no-asio] [--out DIR] [--name NAME]
+#   scripts/package-windows.sh [--skip-build] [--no-asio] [--out DIR] [--name NAME] [--bundled-clap DIR]
 #
 # The build has ASIO (cargo feature `asio`, W8) unless --no-asio is given. ASIO needs LLVM's libclang for bindgen
 # (LIBCLANG_PATH, or "C:\Program Files\LLVM\bin", where the LLVM installer and the windows-2025 runner put it). The
@@ -31,12 +31,14 @@ skip_build=0
 asio=1
 out=dist
 name=
+bundled_clap=
 while [ $# -gt 0 ]; do
     case "$1" in
         --skip-build) skip_build=1 ;;
         --no-asio) asio=0 ;;
         --out) shift; out="${1:?--out needs a folder}" ;;
         --name) shift; name="${1:?--name needs a name}" ;;
+        --bundled-clap) shift; bundled_clap="${1:?--bundled-clap needs a folder}" ;;
         -h | --help) sed -n '2,26p' "$0"; exit 0 ;;
         *) echo "package-windows.sh: unknown argument $1" >&2; exit 2 ;;
     esac
@@ -111,6 +113,9 @@ dir="$out/$name"
 rm -rf "$dir" "$out/$name.zip" "$out/$name.zip.sha256"
 mkdir -p "$dir"
 cp "$exe" "$dir/komponist.exe"
+if [ -n "$bundled_clap" ]; then
+    cp -R "$bundled_clap" "$dir/bundled-clap"
+fi
 rm -rf "$out/.signing"
 cp LICENSE "$dir/LICENSE"
 cat >"$dir/README.txt" <<README

@@ -2,7 +2,7 @@
 # Builds komponist (release) and assembles the macOS app bundle dist/komponist.app (#53).
 # macOS only (iconutil, codesign, plutil). Runs with the stock bash 3.2. Used by the release job and by hand.
 #
-#   scripts/bundle-macos.sh [--skip-build] [--out DIR]
+#   scripts/bundle-macos.sh [--skip-build] [--out DIR] [--bundled-clap DIR]
 #
 # The bundle is signed with the hardened runtime and the entitlements in assets/macos/komponist.entitlements.
 # Default: ad-hoc (`codesign -s -`), which is what v0.3 ships; macOS then asks for the Gatekeeper override
@@ -21,10 +21,12 @@ cd "$(dirname "$0")/.."
 
 skip_build=0
 out=dist
+bundled_clap=
 while [ $# -gt 0 ]; do
     case "$1" in
         --skip-build) skip_build=1 ;;
         --out) shift; out="${1:?--out needs a folder}" ;;
+        --bundled-clap) shift; bundled_clap="${1:?--bundled-clap needs a folder}" ;;
         -h | --help) sed -n '2,19p' "$0"; exit 0 ;;
         *) echo "bundle-macos.sh: unknown argument $1" >&2; exit 2 ;;
     esac
@@ -59,6 +61,10 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 # The plugin bridge is this executable (`komponist --bridge`): nothing else to bundle. Fonts and the window
 # icon are compiled in.
 install -m755 "$exe" "$app/Contents/MacOS/komponist"
+if [ -n "$bundled_clap" ]; then
+    # Nested signatures already exist and are part of the manifest's file hashes.
+    ditto "$bundled_clap" "$app/Contents/Resources/bundled-clap"
+fi
 sed "s/@VERSION@/$version/g" assets/macos/Info.plist.in >"$app/Contents/Info.plist"
 for lang in de en; do
     mkdir -p "$app/Contents/Resources/$lang.lproj"
