@@ -381,6 +381,35 @@ spread) per key; the numbers below are better, on a machine that was busy.
 cargo test --release -p komponist-volt --lib bench -- --ignored --nocapture
 ```
 
+### 8.1 Surf (#107)
+
+Surf is Volt's engine with wavetable oscillators, so the bench compares the two with the same
+settings. Measured 2026-11-21 on `wp/107-surf-wavetable`, release profile, 48 kHz, calls of 128
+frames (2.67 ms period), keys held, one thread, `voices` at 16. The budget of the proposal was at
+most 1.5 × Volt.
+
+| Case | Keys | Surf | Share of 2.67 ms | Volt | Surf / Volt |
+|---|---|---|---|---|---|
+| Unison 1 | 8 | 47 µs | 1.8 % | 32 µs | 1.49 |
+| Unison 1 | 16 | 102 µs | 3.8 % | 67 µs | 1.52 |
+| Unison 3 + spread | 8 | 82 µs | 3.1 % | 61 µs | 1.35 |
+| Unison 3 + spread | 16 | 172 µs | 6.4 % | 134 µs | 1.28 |
+| Unison 7 + spread (cap: 6 keys) | 6 | 94–103 µs | 3.5–3.9 % | 65–66 µs | 1.44–1.56 |
+| Unison 3, LFOs on both positions | 16 | 167 µs | 6.2 % | 122 µs | 1.37 |
+
+- A wavetable oscillator reads four slices per sample (two frames, two band-limited levels) and
+  blends them; volt's PolyBLEP oscillators are cheaper per sample, the rest of the voice is the
+  same code. Moving positions cost nothing extra while the frames stay the same (the weights glide
+  inside the control interval); crossing a frame or a level fades for one interval.
+- The tables are built once per process when the first Surf is created (16 tables × 32 frames × 10
+  levels, about 11 MB, inverse FFTs of `realfft`), off the audio thread.
+- No allocation: `process` in the unit tests runs inside `assert_no_alloc`, including table
+  switches, stealing and unison 7.
+
+```bash
+cargo test --release -p komponist-surf --lib bench -- --ignored --nocapture
+```
+
 ## 9. Routing graph (WP-102)
 
 Measured 2026-11-15 on the branch `wp/WP-102`, same machine as §1, **not idle**: other agents built and tested in

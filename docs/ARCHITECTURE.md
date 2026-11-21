@@ -265,7 +265,7 @@ processing audio. `ProcessContext` supplies frame count, sample rate, transport,
 the realtime deadline. Events have sample offsets and include notes, raw MIDI, parameter changes
 and all-notes-off.
 
-Implementations include Hexa, Volt, Klopfer, Sampler, internal audio/MIDI effects and `ExternalProcessor`.
+Implementations include Hexa, Volt, Surf, Klopfer, Sampler, internal audio/MIDI effects and `ExternalProcessor`.
 Test processors in `komponist_engine::testing` exercise the same contracts. The metronome belongs
 to the engine rather than a track device.
 
@@ -704,6 +704,11 @@ Built-ins run in process and use the normal document/processor/device-card inter
 - **Hexa:** six-operator FM via `hexa-core`, sample-accurate events, serialized patches, macros and
   factory presets. The persistent plugin ID remains `pisynth` for project compatibility.
 - **Volt:** subtractive synthesis with two oscillators, sub oscillator, filter and modulation.
+- **Surf:** wavetable synthesis on Volt's engine: the voice, filter, envelopes, LFOs, matrix and
+  voice modes are shared (`Engine<O: Oscillators>`), only the two oscillators differ. Sixteen
+  original factory tables are generated at first use from recipes in
+  `komponist_model::params::wavetable`, which the 3D graph reads too, into ten band-limited
+  levels each. User tables are a later issue (#184).
 - **Klopfer:** drum sampler with eight pads on MIDI notes 36–43. The existing built-in ID
   remains `sampler` for project compatibility.
 - **Sampler:** general-purpose instrument with chromatic and slice modes, waveform regions,
@@ -849,7 +854,7 @@ editors require platform window/input tooling because their contents are outside
 5. **Export:** rate, format, range, normalization and tail come from the export settings; processor
    activation and PDC use the selected rate.
 6. **Naming:** the product is lowercase **komponist**; **klang-studio** names the project umbrella.
-   Built-in display names include Hexa, Volt, Klopfer, Sampler and Presse.
+   Built-in display names include Hexa, Volt, Surf, Klopfer, Sampler and Presse.
 7. **Mixer:** the normal dock uses lean strips with name, toggles, fader and a small pan control;
    the expanded mixer shows devices, sends and routing. Buses precede the master in mixer view.
 8. **Track toggles:** mute/solo retain M/S labels. Record arm uses a record-circle symbol and
