@@ -501,7 +501,7 @@ impl Bridge {
     }
 
     fn snapshot_needs_verification(&self) -> bool {
-        self.verified_bundled_kind.is_some()
+        !self.automated_params.is_empty()
             || !self.temporary_params.is_empty()
             || !self.pending_params.is_empty()
             || !self.macro_params.is_empty()
