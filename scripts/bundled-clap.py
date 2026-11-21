@@ -58,6 +58,15 @@ INVENTORIES["effects"] = INVENTORIES["hall"] + tuple(
     for name in ("delay", "eq", "presse", "limiter")
 )
 
+INVENTORIES["all"] = INVENTORIES["effects"] + (
+    Device("komponist-bundled-hexa", "komponist_hexa_clap", "org.klang-studio.komponist.hexa"),
+    Device("komponist-bundled-volt", "komponist_volt", "org.klang-studio.komponist.volt"),
+    Device("komponist-bundled-sampler", "komponist_sampler", "org.klang-studio.komponist.sampler"),
+    Device("komponist-bundled-general-sampler", "komponist_general_sampler", "org.klang-studio.komponist.general-sampler"),
+    Device("komponist-bundled-arpeggiator", "komponist_arpeggiator_clap", "org.klang-studio.komponist.arpeggiator"),
+    Device("komponist-bundled-scale", "komponist_scale_clap", "org.klang-studio.komponist.scale"),
+)
+
 
 def bundle_name(device):
     return f"{device.library}.clap"
