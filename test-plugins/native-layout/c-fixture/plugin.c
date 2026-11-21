@@ -3,9 +3,12 @@
 #include <clap/entry.h>
 #include <clap/ext/audio-ports.h>
 #include <clap/ext/params.h>
+#include <clap/ext/gui.h>
+#include <clap/ext/state.h>
 #include <clap/factory/plugin-factory.h>
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -75,7 +78,9 @@ static const char *const mode_labels[] = {"Clean", "Warm", "Drive"};
 struct instance {
     clap_plugin_t plugin;
     enum variant variant;
-    double values[PARAM_COUNT];
+    _Atomic double values[PARAM_COUNT];
+    bool hide_mode;
+    const clap_host_t *host;
 };
 
 static struct instance *instance(const clap_plugin_t *plugin) {
@@ -100,6 +105,8 @@ static bool CLAP_ABI param_info(const clap_plugin_t *plugin, uint32_t index, cla
     if (index >= PARAM_COUNT || !out)
         return false;
     *out = parameter_info[index];
+    if (index == MODE && instance(plugin)->hide_mode)
+        out->flags |= CLAP_PARAM_IS_HIDDEN;
     return true;
 }
 
@@ -276,11 +283,75 @@ static clap_process_status CLAP_ABI process(const clap_plugin_t *plugin, const c
     return CLAP_PROCESS_CONTINUE;
 }
 
+/* The persisted inventory flag lets host tests exercise a rescan on state restore. */
+static bool CLAP_ABI save(const clap_plugin_t *plugin, const clap_ostream_t *stream) {
+    const struct instance *self = instance(plugin);
+    const double values[] = {self->values[GAIN], self->values[MODE], self->hide_mode ? 1 : 0};
+    const uint8_t *bytes = (const uint8_t *)values;
+    for (size_t offset = 0; offset < sizeof(values);) {
+        const int64_t count = stream->write(stream, bytes + offset, sizeof(values) - offset);
+        if (count <= 0 || (uint64_t)count > sizeof(values) - offset)
+            return false;
+        offset += (size_t)count;
+    }
+    return true;
+}
+
+static bool CLAP_ABI restore(const clap_plugin_t *plugin, const clap_istream_t *stream) {
+    double values[PARAM_COUNT + 1];
+    uint8_t *bytes = (uint8_t *)values;
+    for (size_t offset = 0; offset < sizeof(values);) {
+        const int64_t count = stream->read(stream, bytes + offset, sizeof(values) - offset);
+        if (count <= 0 || (uint64_t)count > sizeof(values) - offset)
+            return false;
+        offset += (size_t)count;
+    }
+    if (!isfinite(values[GAIN]) || values[GAIN] < 0 || values[GAIN] > 1 ||
+        !isfinite(values[MODE]) || values[MODE] < 0 || values[MODE] > 2 ||
+        (values[PARAM_COUNT] != 0 && values[PARAM_COUNT] != 1))
+        return false;
+    struct instance *self = instance(plugin);
+    self->values[GAIN] = values[GAIN];
+    self->values[MODE] = (int)values[MODE];
+    const bool hide = values[PARAM_COUNT] != 0;
+    if (self->hide_mode != hide) {
+        self->hide_mode = hide;
+        const clap_host_params_t *host_params =
+            self->host->get_extension(self->host, CLAP_EXT_PARAMS);
+        if (host_params)
+            host_params->rescan(self->host, CLAP_PARAM_RESCAN_INFO);
+    }
+    return true;
+}
+
+static const clap_plugin_state_t state_extension = {.save = save, .load = restore};
+
+/* Simulate an advertised embedded editor that fails creation. */
+static bool CLAP_ABI gui_supported(const clap_plugin_t *plugin, const char *api, bool floating) {
+    (void)plugin;
+    return !floating && (strcmp(api, CLAP_WINDOW_API_X11) == 0 ||
+                         strcmp(api, CLAP_WINDOW_API_COCOA) == 0 ||
+                         strcmp(api, CLAP_WINDOW_API_WIN32) == 0);
+}
+
+static bool CLAP_ABI gui_create(const clap_plugin_t *plugin, const char *api, bool floating) {
+    (void)plugin;
+    (void)api;
+    (void)floating;
+    return false;
+}
+
+static const clap_plugin_gui_t failing_gui = {.is_api_supported = gui_supported, .create = gui_create};
+
 static const void *CLAP_ABI get_extension(const clap_plugin_t *plugin, const char *id) {
     if (strcmp(id, CLAP_EXT_PARAMS) == 0)
         return &params;
     if (strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0)
         return &audio_ports;
+    if (strcmp(id, CLAP_EXT_STATE) == 0)
+        return &state_extension;
+    if (instance(plugin)->variant == OPTIONAL_FIELD && strcmp(id, CLAP_EXT_GUI) == 0)
+        return &failing_gui;
     const enum variant variant = instance(plugin)->variant;
     if (variant == MISSING)
         return NULL;
@@ -312,8 +383,9 @@ static const clap_plugin_t *CLAP_ABI create_plugin(const clap_plugin_factory_t *
         if (!state)
             return NULL;
         state->variant = (enum variant)i;
+        state->host = host;
         for (int j = 0; j < PARAM_COUNT; ++j)
-            state->values[j] = parameter_info[j].default_value;
+            atomic_init(&state->values[j], parameter_info[j].default_value);
         state->plugin = (clap_plugin_t){.desc = &descriptors[i],
                                        .plugin_data = state,
                                        .init = plugin_init,

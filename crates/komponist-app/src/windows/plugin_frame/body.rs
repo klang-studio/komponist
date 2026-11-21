@@ -9,7 +9,7 @@
 use egui::{Align, Layout, Rect, ScrollArea, Sense, Ui, UiBuilder, Vec2, vec2};
 use komponist_i18n::Lang;
 use komponist_tokens::egui_support::color32;
-use komponist_tokens::{color, radius, size, typography};
+use komponist_tokens::{TrackPalette, color, device, radius, size, typography};
 use komponist_ui::widgets::button::Button;
 use komponist_ui::widgets::knob::Knob;
 use komponist_ui::widgets::value_menu;
@@ -18,7 +18,10 @@ use komponist_ui::{fonts, px};
 
 use super::metrics as m;
 use crate::actions::{Action, PluginAction};
-use crate::views::devices::model::{Param, failure_texts};
+use crate::views::devices::{
+    cells::draw_cell,
+    model::{Card, Param, failure_texts},
+};
 use crate::views::mixer::gesture_actions;
 use crate::views::track_macros::{Control, Pick};
 use komponist_model::DeviceId;
@@ -65,6 +68,8 @@ pub enum BodyModel {
     },
     /// The generic parameter grid.
     Params(ParamGrid),
+    /// The plugin's validated v1 device card in the parameter view.
+    Native(Box<Card>),
 }
 
 /// What the user did in the body.
@@ -79,8 +84,8 @@ pub enum BodyEvent {
     },
     /// The drag or wheel burst ended.
     EndGesture,
-    /// A parameter control mapped or revealed a track macro.
-    MacroAction(Action),
+    /// An action emitted by a parameter control.
+    ControlAction(Action),
     /// A knob moved.
     SetParam {
         /// Parameter id.
@@ -120,8 +125,47 @@ pub fn show(ui: &mut Ui, rect: Rect, model: &mut BodyModel) -> Vec<BodyEvent> {
             message(&mut body, t, rect, Message::Missing(name));
         }
         BodyModel::Params(grid_model) => grid(&mut body, rect, grid_model, &mut events),
+        BodyModel::Native(card) => native_card(&mut body, card, &mut events),
     }
     events
+}
+
+fn native_card(ui: &mut Ui, card: &mut Card, events: &mut Vec<BodyEvent>) {
+    let page_id = ui.make_persistent_id(("native_clap_page", card.device.0));
+    card.page = ui
+        .ctx()
+        .data(|data| data.get_temp::<usize>(page_id))
+        .unwrap_or(0)
+        .min(card.layout.pages.len().saturating_sub(1));
+    if card.layout.pages.len() > 1 {
+        ui.horizontal(|ui| {
+            for (index, page) in card.layout.pages.iter().enumerate() {
+                if ui
+                    .selectable_label(index == card.page, &page.name)
+                    .clicked()
+                {
+                    card.page = index;
+                    ui.ctx().data_mut(|data| data.insert_temp(page_id, index));
+                }
+            }
+        });
+    }
+    let Some(page) = card.current_page() else {
+        return;
+    };
+    ScrollArea::both().show(ui, |ui| {
+        let (_, body) = ui.allocate_space(vec2(page.width(), device::grid::BODY_H));
+        let palette = TrackPalette::new(150);
+        let mut actions = Vec::new();
+        for (index, cell) in page.cells.iter().enumerate() {
+            let [x, y, width, height] = cell.bounds();
+            let rect = Rect::from_min_size(body.min + vec2(x, y), vec2(width, height));
+            let mut cell_ui =
+                ui.new_child(UiBuilder::new().id_salt((card.page, index)).max_rect(rect));
+            draw_cell(&mut cell_ui, &mut actions, card, &palette, cell, rect);
+        }
+        events.extend(actions.into_iter().map(BodyEvent::ControlAction));
+    });
 }
 
 enum Message<'a> {
@@ -385,7 +429,7 @@ fn cell(
                 }
                 false
             };
-            events.extend(actions.drain(..).map(BodyEvent::MacroAction));
+            events.extend(actions.drain(..).map(BodyEvent::ControlAction));
             if !intercepted {
                 let plain = p.info.to_plain(value);
                 let moved = changed && plain != p.value;

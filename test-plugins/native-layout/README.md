@@ -28,5 +28,14 @@ python3 -B test-plugins/native-layout/check.py \
 ```
 
 Omit `--nice-plug-artifacts` to run the C transfer and JSON checks alone. The prototype verifier
-cross-checks IDs, flags, ranges, slot occupancy, localized labels and schema fallback. Bridge and
-application integration use this contract in [#181](https://github.com/klang-studio/komponist/issues/181).
+cross-checks IDs, flags, ranges, slot occupancy, localized labels and schema fallback. Build the same C fixture to run the live host tests.
+
+```sh
+export KOMPONIST_LAYOUT_FIXTURE="$scratch/c/layout-fixture.clap"
+cargo test -p komponist-app -p komponist-bridge --test it native_layout
+```
+
+The app test installs the fixture into an empty scan folder, verifies native and generic cards,
+drives automation and direct edits, then exercises undo, redo, save, reopen, parameter rescan, and
+bridge recovery. On Linux, the bridge test also verifies that a plugin editor which fails to
+open leaves the native layout available. Run these alongside the standard plugin fixture tests.

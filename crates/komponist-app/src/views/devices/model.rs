@@ -187,7 +187,8 @@ pub struct Card {
     pub has_gui: bool,
     /// Its plugin window is open ("Geöffnet").
     pub open: bool,
-    /// The declarative layout of the body (WP-82): foreign plugins get the auto-layout.
+    pub(crate) native_layout: Option<std::sync::Arc<komponist_ipc::native_layout::NativeLayout>>,
+    /// The declarative layout of the body, with an automatic layout for generic plugins.
     pub layout: DeviceLayout,
     /// The page shown (set by the view from the view state).
     pub page: usize,
@@ -235,6 +236,23 @@ impl Card {
     /// The parameter `id` of the body's cells.
     pub fn param(&self, id: &ParamId) -> Option<&Param> {
         self.params.iter().find(|p| p.info.id == *id)
+    }
+
+    pub(super) fn native_cell(
+        &self,
+        cell: &layout::Cell,
+    ) -> Option<&komponist_ipc::native_layout::Cell> {
+        let layout = self.native_layout.as_ref()?;
+        let page = layout
+            .pages
+            .get(self.page.min(layout.pages.len().saturating_sub(1)))?;
+        let half = cell.half.map(|half| match half {
+            layout::Half::Top => komponist_ipc::native_layout::Half::Top,
+            layout::Half::Bottom => komponist_ipc::native_layout::Half::Bottom,
+        });
+        page.cells
+            .iter()
+            .find(|native| native.row == cell.row && native.col == cell.col && native.half == half)
     }
 
     /// The layout page shown (the last one if `page` is out of range).
@@ -355,10 +373,21 @@ pub fn cards(
         .collect()
 }
 
-fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Card {
+pub(crate) fn card(
+    lang: Lang,
+    device: &Device,
+    host: &dyn DeviceHost,
+    windows: &[PluginWindow],
+) -> Card {
     let state = CardState::from(host.status(device.id));
     let general_sampler =
         internal_kind(device) == Some(komponist_builtin::Internal::GeneralSampler);
+    let native_layout =
+        if state == CardState::Ok && device.plugin.format == komponist_model::PluginFormat::Clap {
+            host.native_layout(device.id).cloned()
+        } else {
+            None
+        };
     let params = if state == CardState::Ok {
         if is_hexa(device) {
             hexa_params(lang, device)
@@ -366,7 +395,23 @@ fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWin
             internal_params(lang, kind, device)
         } else {
             host.params(device.id)
-                .map(|infos| plugin_params(lang, infos, |id| host.param_value(device.id, id)))
+                .map(|infos| {
+                    let value = |id| host.param_value(device.id, id);
+                    if let Some(native) = &native_layout {
+                        let ids: std::collections::BTreeSet<_> = native
+                            .pages
+                            .iter()
+                            .flat_map(|page| page.cells.iter().map(|cell| cell.param_id))
+                            .collect();
+                        infos
+                            .iter()
+                            .filter(|info| ids.contains(&info.id))
+                            .map(|info| plugin_param(info, plugin_info(lang, info), value(info.id)))
+                            .collect()
+                    } else {
+                        plugin_params(lang, infos, value)
+                    }
+                })
                 .unwrap_or_default()
         }
     } else {
@@ -374,9 +419,9 @@ fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWin
     };
     let instrument = device.role == DeviceRole::Instrument;
     let midi_effect = device.role == DeviceRole::MidiEffect;
-    // hexa and the internal devices bring their own layout; everything else gets the
-    // auto-layout.
-    let layout = if is_hexa(device) {
+    let layout = if let Some(native) = &native_layout {
+        native_card_layout(native, lang)
+    } else if is_hexa(device) {
         komponist_hexa::device::layout_in(lang)
     } else if general_sampler {
         super::general_sampler::layout(lang)
@@ -434,6 +479,7 @@ fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWin
         has_gui: host.has_gui(device.id),
         open: windows.iter().any(|w| w.device == device.id),
         layout,
+        native_layout,
         page: 0,
         collapsed: false,
         presets,
@@ -531,6 +577,59 @@ pub fn hexa_macro_params(lang: Lang, device: &Device) -> Vec<Param> {
             }
         })
         .collect()
+}
+
+fn native_card_layout(
+    native: &komponist_ipc::native_layout::NativeLayout,
+    lang: Lang,
+) -> DeviceLayout {
+    use komponist_ipc::native_layout::{Half, Widget};
+    use layout::{Cell, CellParam, Page, WidgetKind};
+    DeviceLayout {
+        pages: native
+            .pages
+            .iter()
+            .map(|page| Page {
+                name: native
+                    .label(&page.labels, lang.code())
+                    .unwrap_or_default()
+                    .to_owned(),
+                cols: page.columns,
+                cells: page
+                    .cells
+                    .iter()
+                    .map(|cell| {
+                        let widget = match cell.widget {
+                            Widget::Knob => WidgetKind::Knob,
+                            Widget::KnobLarge => WidgetKind::KnobLarge,
+                            Widget::Number => WidgetKind::Number,
+                            Widget::ToggleButton => WidgetKind::ToggleButton,
+                            Widget::Segment => WidgetKind::Segment,
+                            Widget::Dropdown => WidgetKind::Dropdown,
+                        };
+                        let param = CellParam::Id(ParamId::plugin(cell.param_id));
+                        match cell.half {
+                            Some(half) => Cell::half(
+                                cell.col,
+                                cell.row,
+                                cell.cols,
+                                match half {
+                                    Half::Top => layout::Half::Top,
+                                    Half::Bottom => layout::Half::Bottom,
+                                },
+                                widget,
+                                param,
+                            ),
+                            None => {
+                                Cell::span(cell.col, cell.row, cell.cols, cell.rows, widget, param)
+                            }
+                        }
+                    })
+                    .collect(),
+                dividers: Vec::new(),
+            })
+            .collect(),
+    }
 }
 
 /// The knobs of a foreign plugin's card: the auto-layout of the parameters a generic view lists

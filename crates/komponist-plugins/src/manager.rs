@@ -618,6 +618,14 @@ impl PluginManager {
         self.bridges.get(&device).map(|b| b.params.as_slice())
     }
 
+    /// The validated native layout for a running bridge.
+    pub fn native_layout(
+        &self,
+        device: DeviceId,
+    ) -> Option<&Arc<komponist_ipc::native_layout::NativeLayout>> {
+        self.bridges.get(&device)?.native_layout.as_ref()
+    }
+
     /// The last known value and text of parameter `id`.
     pub fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {
         self.bridges.get(&device)?.values.get(&id)

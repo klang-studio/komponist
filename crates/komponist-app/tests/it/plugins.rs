@@ -442,3 +442,205 @@ fn the_demo_plays_the_installed_plugins() {
     }
     app.shutdown();
 }
+
+#[test]
+fn native_layout_is_discovered_edited_saved_and_revalidated() {
+    use egui_kittest::kittest::Queryable as _;
+    use komponist_app::actions::{EditAction, UiAction};
+    use komponist_app::views::devices::model::cards;
+    use komponist_i18n::Lang;
+    use komponist_model::ChannelRef;
+    use komponist_model::edits::{NewDevice, NewTrack, add_track, insert_device};
+    use komponist_model::params::ParamId;
+    use std::path::PathBuf;
+
+    let Some(bundle) = std::env::var_os("KOMPONIST_LAYOUT_FIXTURE") else {
+        eprintln!("set KOMPONIST_LAYOUT_FIXTURE to the standalone C CLAP fixture");
+        return;
+    };
+    let dir = scratch("native-clap-layout");
+    let installed = dir.join("installed");
+    std::fs::create_dir_all(&installed).unwrap();
+    let dirs = PluginDirs {
+        clap: vec![installed.clone()],
+        vst3: Vec::new(),
+    };
+    let (mut project, track) = add_track(
+        &Project::new("Native layout"),
+        NewTrack {
+            name: None,
+            hue: None,
+            instrument: None,
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let mut device_ids = Vec::new();
+    for (index, name) in ["valid", "missing", "unknown-param"]
+        .into_iter()
+        .enumerate()
+    {
+        let (modified, id) = insert_device(
+            &project,
+            ChannelRef::Track(track),
+            index,
+            NewDevice {
+                plugin: clap_plugin(&format!("org.klang-studio.komponist.layout-fixture.{name}")),
+                role: DeviceRole::Effect,
+                state: None,
+                sidechain: None,
+            },
+        )
+        .unwrap();
+        project = modified;
+        device_ids.push(id);
+    }
+    let [valid, missing, invalid] = device_ids.try_into().unwrap();
+    let owner = komponist_model::automation::AutomationOwner::Track(track);
+    let (project, lane) = komponist_model::edits::automation::add_lane(
+        &project,
+        owner,
+        komponist_model::automation::AutomationTarget::Param {
+            device: valid,
+            param: ParamId::plugin(42),
+        },
+        "Gain".into(),
+    )
+    .unwrap();
+    let project = komponist_model::edits::automation::set_lane_points(
+        &project,
+        owner,
+        lane,
+        komponist_model::automation::Points::new(vec![komponist_model::automation::Point::linear(
+            Tick::ZERO,
+            0.75,
+        )]),
+    )
+    .unwrap();
+    let file = dir.join("Layout.komponist");
+    std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
+    let mut app = app_with(Project::new("Empty"), PluginHost::new(config(&dir)));
+    app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
+    app.engine_mut().host_mut().start_scan(&dirs);
+    step_until(&mut app, "empty scan", |app| {
+        app.device_events()
+            .iter()
+            .any(|e| matches!(e, PluginManagerEvent::ScanFinished(_)))
+    });
+    assert_eq!(app.engine().host().status(valid), DeviceStatus::Missing);
+
+    let bundle = PathBuf::from(bundle);
+    std::fs::copy(&bundle, installed.join(bundle.file_name().unwrap())).unwrap();
+    app.engine_mut().host_mut().start_scan(&dirs);
+    step_until(&mut app, "all fixture instances ready", |app| {
+        [valid, missing, invalid]
+            .into_iter()
+            .all(|id| app.engine().host().status(id) == DeviceStatus::Ok)
+    });
+    let host = app.engine().host();
+    assert!(host.native_layout(valid).is_some());
+    assert!(host.native_layout(missing).is_none());
+    assert!(host.native_layout(invalid).is_none());
+    let cards = cards(Lang::De, app.project().track(track).unwrap(), host, &[]);
+    assert_eq!(cards[0].layout.pages[0].name, "Übersicht");
+    assert_eq!(cards[0].param(&ParamId::plugin(7)).unwrap().wire, 7);
+    assert!(
+        cards[0]
+            .param(&ParamId::plugin(7))
+            .unwrap()
+            .info
+            .automatable
+    );
+    assert_eq!(cards[1].layout.pages[0].cells.len(), 2);
+
+    app.dispatch(Action::Project(ProjectAction::ContinueWithMissing));
+    app.dispatch(Action::Transport(TransportAction::TogglePlay));
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        app.step();
+        // Automation is sent through the render queue. Ask the bridge for the fixture's
+        // actual value instead of relying on the timing of its initial state snapshot.
+        let state = app
+            .engine_mut()
+            .host_mut()
+            .snapshot_selected_states(&[valid], Duration::from_millis(250));
+        if state.is_ok_and(|states| {
+            states
+                .iter()
+                .any(|(id, state)| *id == valid && state.get(..8) == Some(&0.75f64.to_ne_bytes()))
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "automation did not reach CLAP ID 42"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    app.dispatch(Action::Transport(TransportAction::Stop));
+
+    app.dispatch(Action::Ui(UiAction::RevealDevice(valid)));
+    let mut h = komponist_ui::snapshot::builder::<App>(1.0)
+        .with_size(egui::vec2(1920.0, 1080.0))
+        .build_ui_state(|ui, app| app.show(ui), app);
+    h.run_steps(3);
+    h.get_by_label("Modus: Warm").click_accesskit();
+    h.run_steps(3);
+    let app = h.state_mut();
+    step_until(app, "choice snapshot", |app| {
+        app.project().find_device(valid).unwrap().2.state.is_some()
+            && app.engine().host().param_base(valid, 7) == Some(1.0)
+    });
+    app.dispatch(Action::Edit(EditAction::Undo));
+    step_until(app, "undo restored mode", |app| {
+        app.engine().host().param_base(valid, 7) == Some(0.0)
+    });
+    app.dispatch(Action::Edit(EditAction::Redo));
+    step_until(app, "redo restored mode", |app| {
+        app.engine().host().param_base(valid, 7) == Some(1.0)
+    });
+    app.dispatch(Action::Project(ProjectAction::Save));
+    app.dispatch(Action::Project(ProjectAction::OpenPath(file)));
+    step_until(app, "reopened native layout and state", |app| {
+        app.engine().host().native_layout(valid).is_some()
+            && app.engine().host().param_base(valid, 7) == Some(1.0)
+    });
+
+    let state = |hidden| -> Arc<[u8]> {
+        [0.5f64, 1.0, hidden]
+            .into_iter()
+            .flat_map(f64::to_ne_bytes)
+            .collect::<Vec<_>>()
+            .into()
+    };
+    assert!(app.engine_mut().host_mut().set_state(valid, &state(1.0)));
+    step_until(app, "incompatible rescan removes layout", |app| {
+        app.engine().host().native_layout(valid).is_none()
+    });
+    assert!(app.engine_mut().host_mut().set_state(valid, &state(0.0)));
+    step_until(app, "compatible rescan restores layout", |app| {
+        app.engine().host().native_layout(valid).is_some()
+    });
+
+    #[cfg(unix)]
+    {
+        let bridge = app.engine().host().bridge_pid(valid).unwrap();
+        assert!(
+            std::process::Command::new("kill")
+                .args(["-KILL", &bridge.to_string()])
+                .status()
+                .unwrap()
+                .success()
+        );
+        step_until(app, "bridge exit", |app| {
+            matches!(app.engine().host().status(valid), DeviceStatus::Crashed(_))
+        });
+        assert!(app.engine().host().native_layout(valid).is_none());
+        app.dispatch(Action::Plugin(PluginAction::Reload(valid)));
+        step_until(app, "layout restored by new bridge", |app| {
+            app.engine().host().native_layout(valid).is_some()
+        });
+    }
+    app.shutdown();
+}

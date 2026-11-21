@@ -782,7 +782,7 @@ impl App {
                 self.queue
                     .push(Action::Plugin(PluginAction::SetParam { device, id, value }));
             }
-            Output::Body(BodyEvent::MacroAction(action)) => self.queue.push(action),
+            Output::Body(BodyEvent::ControlAction(action)) => self.queue.push(action),
             Output::Keys(events) => {
                 for event in events {
                     self.frame_key(device, &event);
@@ -1438,6 +1438,18 @@ impl App {
             DeviceStatus::Missing => Some(BodyModel::Missing { name }),
             DeviceStatus::Ok => match window.view {
                 PluginView::Gui => Some(BodyModel::Gui { native, name }),
+                PluginView::Params if self.engine.host().native_layout(device).is_some() => {
+                    self.project().find_device(device).map(|(_, _, device)| {
+                        let mut card = crate::views::devices::model::card(
+                            self.lang,
+                            device,
+                            self.engine.host(),
+                            &self.ui.plugin_windows,
+                        );
+                        card.macros = self.param_grid(i).macros;
+                        BodyModel::Native(Box::new(card))
+                    })
+                }
                 PluginView::Params => {
                     let f = &self.frames.frames[i];
                     let (shown, was_redirecting) = match &lock(&f.shared).body {

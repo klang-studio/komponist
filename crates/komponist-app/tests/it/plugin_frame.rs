@@ -328,7 +328,7 @@ fn knobs_report_plain_values_on_the_step_grid() {
             // The drag is one undo gesture around the values.
             BodyEvent::BeginGesture { id } => assert_eq!(id, algorithm),
             BodyEvent::EndGesture => {}
-            BodyEvent::MacroAction(ref action) => panic!("unexpected macro action {action:?}"),
+            BodyEvent::ControlAction(ref action) => panic!("unexpected macro action {action:?}"),
             BodyEvent::SetParam { id, value } => {
                 assert_eq!(id, algorithm);
                 assert_eq!(value.fract(), 0.0, "stepped: {value}");
@@ -417,6 +417,7 @@ struct Script {
 struct FakeHost {
     script: Rc<RefCell<Script>>,
     catalog: Catalog,
+    native_layout: Option<std::sync::Arc<komponist_ipc::native_layout::NativeLayout>>,
     params: Vec<ParamInfo>,
     values: HashMap<u32, ParamValue>,
 }
@@ -472,6 +473,13 @@ impl DeviceHost for FakeHost {
     fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
         self.known(device).then_some(self.params.as_slice())
     }
+    fn native_layout(
+        &self,
+        device: DeviceId,
+    ) -> Option<&std::sync::Arc<komponist_ipc::native_layout::NativeLayout>> {
+        self.known(device).then_some(())?;
+        self.native_layout.as_ref()
+    }
     fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {
         self.known(device).then(|| self.values.get(&id)).flatten()
     }
@@ -514,6 +522,10 @@ impl DeviceHost for FakeHost {
 
 /// The demo with Surge XT "installed" (two parameters) on the scripted host.
 fn app() -> (App, Rc<RefCell<Script>>, DeviceId) {
+    scripted_app(None)
+}
+
+fn scripted_app(layout: Option<&[u8]>) -> (App, Rc<RefCell<Script>>, DeviceId) {
     let project = demo_project();
     let surge = project
         .tracks
@@ -567,6 +579,9 @@ fn app() -> (App, Rc<RefCell<Script>>, DeviceId) {
     let host = FakeHost {
         script: Rc::clone(&script),
         catalog,
+        native_layout: layout.map(|bytes| {
+            std::sync::Arc::new(komponist_ipc::native_layout::NativeLayout::parse(bytes).unwrap())
+        }),
         params,
         values,
     };
@@ -1337,4 +1352,55 @@ fn a_window_picked_in_a_menu_comes_to_the_front() {
     h.run_steps(2);
     assert!(h.state().ui().plugin_windows.is_empty());
     assert_eq!(script.borrow().activated.len(), 2);
+}
+
+#[test]
+fn failure_to_open_the_plugin_editor_shows_the_native_layout_instead() {
+    let layout = br#"{
+        "schema_version":1, "default_locale":"en","locales":["en"],
+        "pages":[
+            {"key":"main","labels":{"en":"Main"},"columns":4,"cells":[
+                {"widget":"number","row":0,"col":0,"rows":1,"cols":1,"half":"top","param_id":7,
+                 "labels":{"en":"Native cutoff"}}
+            ]},
+            {"key":"other","labels":{"en":"Other"},"columns":4,"cells":[
+                {"widget":"number","row":0,"col":0,"rows":1,"cols":1,"half":"top","param_id":7,
+                 "labels":{"en":"Alternate cutoff"}}
+            ]}
+        ]
+    }"#;
+    let (mut app, script, device) = scripted_app(Some(layout));
+    app.use_bridge_frames(true);
+    let mut h = harness(app);
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::OpenWindow(device)));
+    h.run_steps(3);
+    assert_eq!(script.borrow().targets.len(), 1);
+    push(
+        &script,
+        PluginManagerEvent::GuiClosed { device, rect: None },
+    );
+    h.run_steps(4);
+    let window = h
+        .state()
+        .ui()
+        .plugin_windows
+        .iter()
+        .find(|w| w.device == device)
+        .unwrap();
+    assert_eq!(window.view, PluginView::Params);
+    let first = h
+        .get_by_role_and_label(Role::SpinButton, "Native cutoff")
+        .accesskit_node()
+        .id();
+    h.get_by_label("Other").click_accesskit();
+    h.run_steps(3);
+    let second = h
+        .get_by_role_and_label(Role::SpinButton, "Alternate cutoff")
+        .accesskit_node()
+        .id();
+    assert_ne!(
+        first, second,
+        "number entry state must be scoped to the page"
+    );
 }
