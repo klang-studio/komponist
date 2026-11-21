@@ -640,6 +640,17 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
     let reopened_base = host.param_base(eq, frequency).unwrap();
     assert!((reopened_base - base_wire).abs() < 1e-6);
 
+    let frequency_target = AutomationTarget::Param {
+        device: eq,
+        param: ParamId::plugin(frequency),
+    };
+    assert!(
+        app.engine()
+            .program()
+            .is_some_and(|program| program.automation_reads(owner, &frequency_target)),
+        "the reopened EQ lane must be compiled as soon as the device is ready for export",
+    );
+
     let mut settings = export_settings(work.path(), ExportRange::Song);
     settings.file_name = "automated-eq.wav".into();
     settings.sample_rate = RATE;
