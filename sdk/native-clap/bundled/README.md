@@ -40,7 +40,9 @@ package, start the app with `KOMPONIST_EXPERIMENTAL_DIRECT_CLAP=1` to use the ve
 catalog. Add `KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE=1` to run the same verified devices in
 the bridge. The historical project check is available with
 `python3 scripts/measure-bundled-clap.py --historical-projects /path/to/unpacked/komponist`.
-The migration runs on copies in this check.
+The experimental runtime attempts the migration when opening a project. If a device
+cannot be verified or translated, the original project opens with its legacy devices.
+A successful migration is one undoable edit. The test uses disposable project copies.
 
 ## Sampler instrument state
 

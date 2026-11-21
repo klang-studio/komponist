@@ -475,7 +475,26 @@ impl App {
             .and_then(|resolved| load_project(&resolved).map(|project| (resolved, project)));
         match loaded {
             Ok((path, project)) => {
-                self.open_document(Document::new(project), Some(path.clone()));
+                let project_dir =
+                    komponist_model::paths::absolute(path.parent().unwrap_or(Path::new("")));
+                let migration = self
+                    .engine
+                    .host()
+                    .migrate_project_for_open(&project, &project_dir);
+                let mut doc = Document::new(project);
+                match migration {
+                    Ok(Some(project)) => doc
+                        .apply("undo-migrate-bundled-devices", |_| Ok(project))
+                        .expect("apply a fully planned migration"),
+                    Ok(None) => {}
+                    Err(error) => {
+                        eprintln!(
+                            "komponist: {}: bundled CLAP migration: {error}",
+                            path.display()
+                        );
+                    }
+                }
+                self.open_document(doc, Some(path.clone()));
                 self.remember(path);
                 self.check_missing_plugins();
             }

@@ -729,11 +729,18 @@ impl EngineSync {
             let Some((_, _, old)) = before.find_device(device.id) else {
                 continue;
             };
-            if Arc::ptr_eq(old, device) || old.state == device.state {
+            if Arc::ptr_eq(old, device) {
                 continue;
             }
-            if self.slot_of(device.id).is_some() {
-                self.follow_state(old, device, after, project_dir);
+            if let Some(slot) = self.slot_of(device.id) {
+                if old.plugin != device.plugin {
+                    // Migration can retain the device ID while changing its host and state format.
+                    self.send(Command::RemoveProcessor { slot });
+                    self.host.release(device.id);
+                    self.reload_device(after, device.id);
+                } else if old.state != device.state {
+                    self.follow_state(old, device, after, project_dir);
+                }
             }
         }
     }

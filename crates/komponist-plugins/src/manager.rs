@@ -26,7 +26,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -462,6 +462,39 @@ impl PluginManager {
     /// A processor removed from the engine must be handed back to its main-thread CLAP session.
     pub fn has_retiring_direct(&self) -> bool {
         !self.retiring_direct.is_empty()
+    }
+
+    /// Prepare a migrated copy of a loaded project when the verified bundled catalog is enabled.
+    ///
+    /// The source stays intact if any bundled device or parameter cannot be translated.
+    pub fn migrate_project_for_open(
+        &self,
+        source: &Project,
+        project_dir: &Path,
+    ) -> Result<Option<Project>, String> {
+        use crate::legacy_bundled::{
+            bundled_clap_id, migrate_legacy_bundled_project, plan_legacy_bundled_device,
+        };
+
+        let Some(inventory) = &self.bundled_clap else {
+            return Ok(None);
+        };
+        let plans = source
+            .tracks
+            .iter()
+            .flat_map(|track| &track.channel.devices)
+            .chain(&source.master.devices)
+            .filter(|device| bundled_clap_id(&device.plugin).is_some())
+            .map(|device| {
+                plan_legacy_bundled_device(inventory, device, Some(project_dir)).map_err(|error| {
+                    format!("device {} ({}): {error}", device.id.0, device.plugin.id)
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if plans.is_empty() {
+            return Ok(None);
+        }
+        migrate_legacy_bundled_project(source, plans).map(|migration| Some(migration.project))
     }
 
     /// The catalog.

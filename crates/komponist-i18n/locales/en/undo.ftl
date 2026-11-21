@@ -242,3 +242,6 @@ undo-macro-clear = Remove All Mappings
 undo-macro-range = Change Mapping Range
 undo-macro-invert = Invert Mapping
 undo-macro-bend = Change Mapping Curve
+
+# Migration from a legacy built-in to the verified bundled CLAP device.
+undo-migrate-bundled-devices = Migrate Devices to CLAP

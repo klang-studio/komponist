@@ -39,7 +39,7 @@
 //! Thread: UI thread.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -97,6 +97,15 @@ pub trait DeviceHost {
     /// Devices of `project` whose plugin is not in the catalog (S06 dialog on open).
     fn missing_plugins(&self, project: &Project) -> Vec<MissingPlugin> {
         missing_in(self.catalog(), project)
+    }
+
+    /// Prepare a migration on opening a project when the host has enabled bundled CLAP.
+    fn migrate_project_for_open(
+        &self,
+        _source: &Project,
+        _project_dir: &Path,
+    ) -> Result<Option<Project>, String> {
+        Ok(None)
     }
 
     /// Starts a background scan of `dirs`; ends with [`PluginManagerEvent::ScanFinished`]. A
@@ -709,6 +718,14 @@ impl DeviceHost for PluginHost {
         let mut events = self.builtin.poll();
         events.extend(self.manager.poll());
         events
+    }
+
+    fn migrate_project_for_open(
+        &self,
+        source: &Project,
+        project_dir: &Path,
+    ) -> Result<Option<Project>, String> {
+        self.manager.migrate_project_for_open(source, project_dir)
     }
 
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
