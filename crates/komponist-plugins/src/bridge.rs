@@ -41,6 +41,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak, mpsc};
 use std::time::{Duration, Instant};
 
+use komponist_builtin::BuiltinKind;
 use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError, socket_pair};
 use komponist_ipc::{
     AppChannel, BridgeClient, BridgeMsg, ChannelError, ControlMsg, ErrorContext, GuiTarget,
@@ -238,6 +239,8 @@ pub(crate) struct Bridge {
     pub native_layout: Option<Arc<komponist_ipc::native_layout::NativeLayout>>,
     pub values: BTreeMap<u32, ParamValue>,
     pub base_values: BTreeMap<u32, f64>,
+    verified_bundled_kind: Option<BuiltinKind>,
+    automated_params: BTreeMap<u32, Option<f64>>,
     temporary_params: BTreeSet<u32>,
     pending_params: BTreeSet<u32>,
     /// Macro outputs expected at the processor. The native editor may show a preview meanwhile.
@@ -278,6 +281,7 @@ pub(crate) struct SpawnSetup<'a> {
     pub format: PluginFormat,
     pub bundle: &'a Path,
     pub plugin_id: &'a str,
+    pub verified_bundled_kind: Option<BuiltinKind>,
     pub state: Option<Arc<[u8]>>,
     pub setup: ProcessorSetup,
     pub timing: Timing,
@@ -373,6 +377,8 @@ impl Bridge {
             native_layout: None,
             values: BTreeMap::new(),
             base_values: BTreeMap::new(),
+            verified_bundled_kind: s.verified_bundled_kind,
+            automated_params: BTreeMap::new(),
             temporary_params: BTreeSet::new(),
             pending_params: BTreeSet::new(),
             macro_params: BTreeMap::new(),
@@ -495,13 +501,29 @@ impl Bridge {
     }
 
     fn snapshot_needs_verification(&self) -> bool {
-        !self.temporary_params.is_empty()
+        self.verified_bundled_kind.is_some()
+            || !self.temporary_params.is_empty()
             || !self.pending_params.is_empty()
             || !self.macro_params.is_empty()
             || !self.released_macro_params.is_empty()
     }
 
     fn snapshot_expected(&self) -> Option<Vec<(u32, f64, bool)>> {
+        if self.verified_bundled_kind.is_some() {
+            // Automation and macro outputs are written into the saved state from the host's
+            // persistent values. Independent user edits still need delivery verification.
+            return self
+                .pending_params
+                .union(&self.released_macro_params)
+                .filter(|id| {
+                    !self.macro_params.contains_key(id)
+                        && (self.pending_params.contains(id)
+                            || (!self.automated_params.contains_key(id)
+                                && !self.temporary_params.contains(id)))
+                })
+                .map(|&id| Some((id, *self.base_values.get(&id)?, false)))
+                .collect();
+        }
         let ids: BTreeSet<_> = self
             .temporary_params
             .iter()
@@ -521,10 +543,42 @@ impl Bridge {
             .collect()
     }
 
-    /// A running device normally owes a fresh snapshot. A temporary override may deliberately
-    /// delay it, and a failed restore must preserve the original stored bytes.
+    /// Reinsert persistent values for controls whose live values may differ during automation.
+    fn snapshot_with_param_bases(&self, state: Vec<u8>) -> Option<Vec<u8>> {
+        let Some(kind) = self.verified_bundled_kind else {
+            return Some(state);
+        };
+        let mut corrections = self
+            .base_values
+            .iter()
+            .filter_map(|(&id, &base)| {
+                let persistent = self
+                    .automated_params
+                    .get(&id)
+                    .map(|value| value.unwrap_or(base));
+                persistent
+                    .or_else(|| self.macro_params.get(&id).copied())
+                    .or_else(|| self.temporary_params.contains(&id).then_some(base))
+                    .map(|value| (id, value))
+            })
+            .peekable();
+        if corrections.peek().is_none() {
+            return Some(state);
+        }
+        crate::bundled_state::restore_param_bases(
+            kind,
+            self.native_layout.as_deref()?,
+            &state,
+            corrections,
+        )
+    }
+
+    /// A running device normally owes a fresh snapshot. An opaque plug-in state's temporary
+    /// override may delay it. Failed restores preserve the original stored bytes.
     pub(crate) fn expects_snapshot_for_save(&self) -> bool {
-        self.is_running() && !self.keep_stored_state && self.temporary_params.is_empty()
+        self.is_running()
+            && !self.keep_stored_state
+            && (self.verified_bundled_kind.is_some() || self.temporary_params.is_empty())
     }
 
     pub(crate) fn needs_snapshot_for_save(&self) -> bool {
@@ -581,17 +635,27 @@ impl Bridge {
         if !self.params.iter().any(|param| param.id == id) {
             return;
         }
-        if let Some(&expected) = self.macro_params.get(&id) {
-            if (expected - value).abs() > 1e-6 * expected.abs().max(1.0) {
-                self.temporary_params.insert(id);
-                self.macro_changed = true;
+        let temporary = if let Some(&expected) = self.macro_params.get(&id) {
+            let temporary = (expected - value).abs() > 1e-6 * expected.abs().max(1.0);
+            self.macro_changed |= temporary;
+            temporary
+        } else {
+            self.base_values.get(&id) != Some(&value)
+        };
+        if temporary {
+            self.temporary_params.insert(id);
+            if self.verified_bundled_kind.is_none() {
                 self.invalidate_state_requests();
             }
-        } else if self.base_values.get(&id) != Some(&value) {
-            self.temporary_params.insert(id);
-            self.invalidate_state_requests();
         }
         self.update_live_param(id, value);
+    }
+
+    pub(crate) fn set_automated_params(&mut self, params: BTreeMap<u32, Option<f64>>) {
+        if self.verified_bundled_kind.is_some() && self.automated_params != params {
+            self.automated_params = params;
+            self.invalidate_state_requests();
+        }
     }
 
     pub(crate) fn set_macro_params(&mut self, values: BTreeMap<u32, f64>) {
@@ -938,6 +1002,10 @@ impl Bridge {
                     self.snapshot_soon();
                     return;
                 }
+                let Some(state) = self.snapshot_with_param_bases(state) else {
+                    self.snapshot_soon();
+                    return;
+                };
                 let macro_snapshot = self.macro_changed
                     && !self.plugin_state_dirty
                     && self.pending_params.is_empty();
@@ -959,7 +1027,9 @@ impl Bridge {
                         events.push(PluginManagerEvent::ParamsChanged { device });
                         events.push(PluginManagerEvent::ParamValuesChanged { device });
                     }
-                    self.temporary_params.clear();
+                    if self.verified_bundled_kind.is_none() {
+                        self.temporary_params.clear();
+                    }
                     self.pending_params.clear();
                     self.released_macro_params.clear();
                 }
