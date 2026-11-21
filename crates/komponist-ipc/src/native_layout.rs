@@ -133,17 +133,28 @@ impl NativeLayout {
                 return Err(LayoutError::Unsupported);
             }
         }
-        // Optional cell properties may be omitted. Explicit JSON null has no meaning in v1.
+        // Serde also accepts positional structs and externally tagged enum objects. V1
+        // requires named objects and string tags, while allowing unknown object members.
         if let Some(pages) = value["pages"].as_array() {
             for page in pages {
+                check(page.is_object(), "page object")?;
                 if let Some(cells) = page["cells"].as_array() {
                     for cell in cells {
+                        check(cell.is_object(), "cell object")?;
+                        check(cell["widget"].is_string(), "widget tag")?;
+                        check(cell.get("half").is_none_or(Value::is_string), "half tag")?;
                         check(
-                            ["half", "labels", "choices"]
-                                .iter()
-                                .all(|key| cell.get(key).is_none_or(|v| !v.is_null())),
-                            "null cell property",
+                            cell.get("labels").is_none_or(Value::is_object),
+                            "cell labels",
                         )?;
+                        if let Some(choices) = cell.get("choices") {
+                            check(
+                                choices
+                                    .as_array()
+                                    .is_some_and(|choices| choices.iter().all(Value::is_object)),
+                                "choice objects",
+                            )?;
+                        }
                     }
                 }
             }
@@ -279,12 +290,15 @@ impl NativeLayout {
                 )?;
             }
             if let Some(choices) = &cell.choices {
+                check((2..=16).contains(&choices.len()), "choice count")?;
                 let steps = choices.len() as u32 - 1;
                 check(
                     p.flags & (param_flags::STEPPED | param_flags::ENUM)
                         == param_flags::STEPPED | param_flags::ENUM
                         && p.step_count == steps
-                        && p.max - p.min == f64::from(steps)
+                        && choices
+                            .last()
+                            .is_some_and(|choice| p.max == f64::from(choice.value))
                         && choices
                             .iter()
                             .enumerate()
@@ -426,6 +440,68 @@ mod tests {
         let labels = &layout.pages[0].labels;
         assert_eq!(layout.label(labels, "de-CH"), Some("Übersicht"));
         assert_eq!(layout.label(labels, "fr"), Some("Main"));
+    }
+
+    #[test]
+    fn rejects_positional_objects_and_non_string_tags() {
+        use serde_json::json;
+        let example: Value = serde_json::from_slice(EXAMPLE).unwrap();
+        let mut modified = example.clone();
+        modified["pages"][0]["future"] = json!(true);
+        modified["pages"][0]["cells"][0]["future"] = json!([]);
+        modified["pages"][0]["cells"][1]["choices"][0]["future"] = json!({});
+        assert!(NativeLayout::parse(&serde_json::to_vec(&modified).unwrap()).is_ok());
+
+        for (pointer, invalid) in [
+            (
+                "/pages/0",
+                json!(["main", {"en": "Main"}, 4, example["pages"][0]["cells"]]),
+            ),
+            (
+                "/pages/0/cells/0",
+                json!(["knob", 0, 0, 1, 1, null, 42, null, null]),
+            ),
+            ("/pages/0/cells/0/widget", json!({"knob": null})),
+            ("/pages/0/cells/1/half", json!({"top": null})),
+            ("/pages/0/cells/1/half", Value::Null),
+            ("/pages/0/cells/1/choices/0", json!([0, {"en": "Clean"}])),
+        ] {
+            let mut modified = example.clone();
+            *modified.pointer_mut(pointer).unwrap() = invalid;
+            assert!(
+                NativeLayout::parse(&serde_json::to_vec(&modified).unwrap()).is_err(),
+                "{pointer}",
+            );
+        }
+    }
+
+    #[test]
+    fn enum_bounds_match_the_choices_exactly() {
+        let mut layout = NativeLayout::parse(EXAMPLE).unwrap();
+        let choices = layout.pages[0].cells[1].choices.as_mut().unwrap();
+        choices.truncate(2);
+        choices[0].value = -1;
+        choices[1].value = 0;
+        let mut mode = parameter(7, 0.0, 1, param_flags::STEPPED | param_flags::ENUM);
+        mode.min = -1.0;
+        let gain = parameter(42, 1.0, 0, 0);
+        assert!(
+            layout
+                .validate_params(&[gain.clone(), mode.clone()])
+                .is_ok()
+        );
+        mode.max = 1e-20;
+        assert!(
+            layout
+                .validate_params(&[gain.clone(), mode.clone()])
+                .is_err()
+        );
+        mode.max = 0.0;
+        layout.pages[0].cells[1].choices.as_mut().unwrap().clear();
+        assert_eq!(
+            layout.validate_params(&[gain, mode]),
+            Err(LayoutError::Invalid("choice count"))
+        );
     }
 
     #[test]

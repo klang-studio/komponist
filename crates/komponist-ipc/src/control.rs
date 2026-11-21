@@ -1674,8 +1674,16 @@ mod tests {
             },
             BridgeMsg::StateDeferred { request: 11 },
             BridgeMsg::Params {
-                params: vec![param],
+                params: vec![param.clone()],
                 native_layout: None,
+            },
+            BridgeMsg::Params {
+                params: vec![param],
+                native_layout: Some(
+                    (0..crate::native_layout::MAX_BYTES)
+                        .map(|i| (i * 7 + i / 251) as u8)
+                        .collect(),
+                ),
             },
             BridgeMsg::ParamValues(vec![value.clone()]),
             BridgeMsg::StateApplied {
@@ -1755,10 +1763,16 @@ mod tests {
                 detail: "Operation not permitted (os error 1)".into(),
             },
         ];
-        for msg in &messages {
-            bridge.send(msg).unwrap();
-            assert_eq!(&app.recv().unwrap(), msg);
-        }
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for msg in &messages {
+                    bridge.send(msg).unwrap();
+                }
+            });
+            for msg in &messages {
+                assert_eq!(&app.recv().unwrap(), msg);
+            }
+        });
     }
 
     #[test]

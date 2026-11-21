@@ -1358,10 +1358,16 @@ fn a_window_picked_in_a_menu_comes_to_the_front() {
 fn failure_to_open_the_plugin_editor_shows_the_native_layout_instead() {
     let layout = br#"{
         "schema_version":1, "default_locale":"en","locales":["en"],
-        "pages":[{"key":"main","labels":{"en":"Main"},"columns":4,"cells":[
-            {"widget":"knob","row":0,"col":0,"rows":1,"cols":1,"param_id":7,
-             "labels":{"en":"Native cutoff"}}
-        ]}]
+        "pages":[
+            {"key":"main","labels":{"en":"Main"},"columns":4,"cells":[
+                {"widget":"number","row":0,"col":0,"rows":1,"cols":1,"half":"top","param_id":7,
+                 "labels":{"en":"Native cutoff"}}
+            ]},
+            {"key":"other","labels":{"en":"Other"},"columns":4,"cells":[
+                {"widget":"number","row":0,"col":0,"rows":1,"cols":1,"half":"top","param_id":7,
+                 "labels":{"en":"Alternate cutoff"}}
+            ]}
+        ]
     }"#;
     let (mut app, script, device) = scripted_app(Some(layout));
     app.use_bridge_frames(true);
@@ -1383,5 +1389,18 @@ fn failure_to_open_the_plugin_editor_shows_the_native_layout_instead() {
         .find(|w| w.device == device)
         .unwrap();
     assert_eq!(window.view, PluginView::Params);
-    assert!(h.query_by_label("Native cutoff").is_some());
+    let first = h
+        .get_by_role_and_label(Role::SpinButton, "Native cutoff")
+        .accesskit_node()
+        .id();
+    h.get_by_label("Other").click_accesskit();
+    h.run_steps(3);
+    let second = h
+        .get_by_role_and_label(Role::SpinButton, "Alternate cutoff")
+        .accesskit_node()
+        .id();
+    assert_ne!(
+        first, second,
+        "number entry state must be scoped to the page"
+    );
 }

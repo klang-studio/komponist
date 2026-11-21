@@ -14,7 +14,7 @@ use komponist_hexa::algorithms::ALGORITHMS;
 use komponist_i18n::Lang;
 use komponist_model::DeviceId;
 use komponist_model::params::eq_curve::CURVE_RATE;
-use komponist_model::params::{ParamContext, ParamKind, Scale, resolve};
+use komponist_model::params::{ParamContext, ParamKind, Scale, Unit, resolve};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
 use komponist_tokens::{TrackPalette, color, device, radius};
@@ -361,6 +361,9 @@ fn slot(cu: &Ui, cell: &Cell, what: &str) -> Id {
 
 /// `text` split into the number and its trailing unit: „420 Hz“ → („420“, „Hz“), „L 14“ stays whole.
 fn split_unit(text: &str) -> (&str, &str) {
+    if let Some(number) = text.strip_suffix('%') {
+        return (number.trim_end(), "%");
+    }
     match text.rsplit_once(' ') {
         Some((number, unit)) if unit.starts_with(|c: char| !c.is_ascii_digit()) => (number, unit),
         _ => (text, ""),
@@ -472,12 +475,17 @@ fn number(
         }
         None => {
             let mut value = info.to_normalized(p.value);
+            let unit_scale = if unit == "%" && info.unit == Unit::Percent {
+                100.0
+            } else {
+                1.0
+            };
             let w = Number::new(&mut value, p.name().to_owned())
                 .default_value(info.default_normalized())
                 .unit(unit.clone())
                 .cols(cell.cols)
                 .format(|n| plain_text(info.to_plain(n)))
-                .parse(|t| parse_number(t, &unit).map(|v| info.to_normalized(v)));
+                .parse(|t| parse_number(t, &unit).map(|v| info.to_normalized(v / unit_scale)));
             let r = cu.put(rect, w);
             touch(
                 cu,
@@ -1518,6 +1526,32 @@ mod tests {
         h.get_by_role_and_label(Role::Button, "Loop").click();
         h.run();
         assert_eq!(set_params(&h).last(), Some(&(3, 1.0)));
+    }
+
+    #[test]
+    fn number_entry_uses_the_displayed_units() {
+        for (display, input, expected) in [
+            ("50 %", "25", 0.25),
+            ("50%", "75%", 0.75),
+            ("0.500", "0.25", 0.25),
+        ] {
+            let mut h = harness();
+            let p = &mut h.state_mut().0.params[0];
+            p.info.kind = ParamKind::lin(0.0, 1.0);
+            p.info.unit = Unit::Percent;
+            p.value = 0.5;
+            p.text = display.into();
+            h.run();
+            h.get_by_role_and_label(Role::SpinButton, "Stimmen").click();
+            h.run();
+            h.key_press(egui::Key::Enter);
+            h.run();
+            h.event(egui::Event::Text(input.into()));
+            h.run();
+            h.key_press(egui::Key::Enter);
+            h.run();
+            assert_eq!(set_params(&h), vec![(1, expected)], "{display}");
+        }
     }
 
     /// A card with an EQ graph of two bands (band 2 off) and an envelope graph.

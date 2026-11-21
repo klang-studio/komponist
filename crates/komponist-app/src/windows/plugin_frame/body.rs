@@ -157,10 +157,12 @@ fn native_card(ui: &mut Ui, card: &mut Card, events: &mut Vec<BodyEvent>) {
         let (_, body) = ui.allocate_space(vec2(page.width(), device::grid::BODY_H));
         let palette = TrackPalette::new(150);
         let mut actions = Vec::new();
-        for cell in &page.cells {
+        for (index, cell) in page.cells.iter().enumerate() {
             let [x, y, width, height] = cell.bounds();
             let rect = Rect::from_min_size(body.min + vec2(x, y), vec2(width, height));
-            draw_cell(ui, &mut actions, card, &palette, cell, rect);
+            let mut cell_ui =
+                ui.new_child(UiBuilder::new().id_salt((card.page, index)).max_rect(rect));
+            draw_cell(&mut cell_ui, &mut actions, card, &palette, cell, rect);
         }
         events.extend(actions.into_iter().map(BodyEvent::ControlAction));
     });
