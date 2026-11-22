@@ -1371,6 +1371,41 @@ fn macro_mapping(target: AutomationTarget) -> komponist_model::macros::Mapping {
 }
 
 #[test]
+fn export_reasserts_held_device_automation_at_the_existing_rate() {
+    use komponist_engine::export::{BitDepth, ExportJob};
+
+    let (project, owner, device) = source();
+    let (project, _) = lane(
+        &project,
+        owner,
+        parameter(device, 0),
+        AutomationMode::Read,
+        vec![Point::linear(Tick::ZERO, 0.5)],
+    );
+    let (mut rig, program, mut log) = rig(&project);
+    rig.send(Command::Play);
+    rig.process(64, 64);
+    assert_eq!(log.pop().unwrap(), (0, 0, 0.5));
+    assert!(log.pop().is_err());
+
+    let job = ExportJob {
+        path: super::export::dir("reassert-held-automation").join("held.wav"),
+        sample_rate: RATE as u32,
+        range: 0..1024,
+        tail: 0,
+        bit_depth: BitDepth::Float32,
+        normalize: None,
+        dither: false,
+    };
+    super::export::run(&mut rig, &program, &job).0.unwrap();
+    assert_eq!(
+        log.pop()
+            .expect("first export block must re-send the held value"),
+        (64, 0, 0.5)
+    );
+}
+
+#[test]
 fn export_recompile_delivers_macro_edits_drained_by_offline_preparation() {
     use komponist_model::edits::macros::add_mapping;
 
