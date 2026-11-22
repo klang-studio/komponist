@@ -728,6 +728,116 @@ fn packaged_midi_effects_preserve_instrument_notes() {
 
 #[test]
 #[ignore = "requires the authenticated release payload; run measure-bundled-clap.py --current-projects"]
+fn bundled_presse_lookahead_updates_delay_compensation_during_playback() {
+    let (launcher, _) = package_env();
+    let cache = tempfile::tempdir().unwrap();
+    let host = scan(&launcher, cache.path());
+    let mut project = Project::new("Bundled Presse latency");
+    let [with_presse, plain] = ["Presse", "Plain"].map(|name| {
+        let (next, track) = edits::add_track(
+            &project,
+            NewTrack {
+                name: Some(name.into()),
+                hue: None,
+                instrument: Some(shipped(&host, "hexa")),
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        (project, _) = edits::add_clip(
+            &next,
+            track,
+            NewClip {
+                start: Tick::ZERO,
+                length: Tick(PPQ * 64),
+                name: name.into(),
+                content: NewClipContent::Midi {
+                    notes: vec![NewNote {
+                        start: Tick::ZERO,
+                        length: Tick(PPQ * 64),
+                        pitch: 60,
+                        velocity: 76,
+                    }],
+                    take_name: String::new(),
+                },
+            },
+        )
+        .unwrap();
+        track
+    });
+    let (project, presse) = edits::insert_device(
+        &project,
+        ChannelRef::Track(with_presse),
+        1,
+        NewDevice {
+            role: DeviceRole::Effect,
+            plugin: shipped(&host, "presse"),
+            sidechain: None,
+            state: None,
+        },
+    )
+    .unwrap();
+    let expected = devices(&project);
+    let mut app = app_with(project, host);
+    let bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some();
+    assert_ready(&mut app, &expected, bridge);
+    step_until(&mut app, "Presse running", |app| {
+        app.engine().device_status(presse) == DeviceStatus::Ok
+    });
+    let lookahead = app
+        .engine()
+        .host()
+        .native_layout(presse)
+        .unwrap()
+        .author_ids()
+        .unwrap()["lookahead"];
+    let pdc = |app: &App, track: TrackId| {
+        app.engine()
+            .program()
+            .unwrap()
+            .tracks
+            .iter()
+            .find(|candidate| candidate.id == track)
+            .unwrap()
+            .pdc_delay
+    };
+    app.dispatch(Action::Transport(
+        komponist_app::TransportAction::TogglePlay,
+    ));
+    step_until(&mut app, "Presse track audible during playback", |app| {
+        let (left, right) = app.engine().track_meter(with_presse).unwrap().take();
+        app.transport() == TransportState::Playing && left.max(right) > 1e-4
+    });
+    assert_eq!(app.engine().host().latency(presse), 0);
+    assert_eq!(pdc(&app, plain), 0);
+
+    let lookahead_frames = (f64::from(app.engine().sample_rate()) * komponist_presse::LOOKAHEAD_MS
+        / 1000.0)
+        .round() as u32;
+    for (value, delay) in [(1.0, lookahead_frames), (0.0, 0)] {
+        app.dispatch(Action::Plugin(PluginAction::SetParam {
+            device: presse,
+            id: lookahead,
+            value,
+        }));
+        step_until(
+            &mut app,
+            "Presse reactivated with matching track delay",
+            |app| {
+                app.engine().device_status(presse) == DeviceStatus::Ok
+                    && app.engine().host().latency(presse) == delay
+                    && pdc(app, plain) == delay
+            },
+        );
+        assert_eq!(pdc(&app, with_presse), 0);
+        assert_eq!(app.transport(), TransportState::Playing);
+    }
+    app.shutdown();
+}
+
+#[test]
+#[ignore = "requires the authenticated release payload; run measure-bundled-clap.py --current-projects"]
 fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
     const RATE: u32 = 48_000;
     const BASE_FREQUENCY: f64 = 1_000.0;
