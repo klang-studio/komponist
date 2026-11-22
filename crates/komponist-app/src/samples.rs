@@ -55,15 +55,11 @@ pub fn demo_with_kit(
 ) -> std::io::Result<komponist_model::Project> {
     std::fs::create_dir_all(dir)?;
     let kit = sampler::testkit::write_kit(dir)?;
-    let mut state: Option<Vec<u8>> = None;
+    let mut state = Internal::Sampler.encode_state(&Internal::Sampler.defaults());
     for (pad, path) in kit.iter().enumerate() {
-        state = Some(links::write(
-            state.as_deref(),
-            pad,
-            Some(&SampleLink::new(path, None)),
-        ));
+        state = links::write(Some(&state), pad, Some(&SampleLink::new(path, None)));
     }
-    let state: Option<Arc<[u8]>> = state.map(Arc::from);
+    let state = Some(Arc::<[u8]>::from(state));
     for track in &mut project.tracks {
         for device in &mut Arc::make_mut(track).channel.devices {
             if Internal::from_plugin(&device.plugin) == Some(Internal::Sampler) {

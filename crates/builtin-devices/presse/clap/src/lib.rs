@@ -1,6 +1,6 @@
 //! Presse exported through the native CLAP adapter.
 
-use komponist_bundled_clap_adapter::{Binding, Effect, EffectDefinition};
+use komponist_bundled_clap_adapter::{Binding, DeviceDefinition, Effect};
 use komponist_device_core::Spec;
 use komponist_i18n::Lang;
 use komponist_model::params::ParamInfo;
@@ -18,7 +18,7 @@ enum Detector {
     Rms,
 }
 
-impl EffectDefinition for Presse {
+impl DeviceDefinition for Presse {
     const SPEC: &'static Spec = &komponist_presse::SPEC;
     const NAME: &'static str = "Presse";
     const ID: &'static str = "org.klang-studio.komponist.presse";
@@ -53,6 +53,12 @@ impl EffectDefinition for Presse {
 }
 
 type PressePlugin = Effect<Presse>;
+
+impl komponist_bundled_clap_adapter::AudioDefinition for Presse {
+    fn dsp() -> Box<dyn komponist_device_core::Dsp> {
+        komponist_presse::dsp()
+    }
+}
 
 nice_export_clap!(PressePlugin);
 

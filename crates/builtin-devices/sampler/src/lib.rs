@@ -86,9 +86,7 @@ pub static SPEC: Spec = Spec {
     },
     params,
     layout,
-    dsp,
     presets: no_presets,
-    event_stage: None,
     preset_aliases: &[],
     migrate_params: None,
     cache: SpecCache::new(),
@@ -348,7 +346,7 @@ fn layout(t: Lang) -> DeviceLayout {
     })
 }
 
-fn dsp() -> Box<dyn Dsp> {
+pub fn dsp() -> Box<dyn Dsp> {
     Box::new(dsp::SamplerDsp::new())
 }
 

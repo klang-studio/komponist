@@ -46,9 +46,7 @@ pub static SPEC: Spec = Spec {
     },
     params,
     layout,
-    dsp,
     presets,
-    event_stage: None,
     preset_aliases: &[
         ("Kleiner Raum", "Small Room"),
         ("Studio-Platte", "Studio Plate"),
@@ -315,7 +313,7 @@ struct Hall {
     countdown: usize,
 }
 
-fn dsp() -> Box<dyn Dsp> {
+pub fn dsp() -> Box<dyn Dsp> {
     let mut h = Hall {
         rate: INITIAL_RATE,
         size_m: 28.0,

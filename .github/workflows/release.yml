@@ -3,8 +3,7 @@
 # to try this workflow. It builds komponist, checks that it starts headless and attaches
 # komponist-<tag>-linux-x86_64.tar.gz, komponist-<tag>-macos-arm64.zip (ad-hoc signed app bundle, #53) and
 # komponist-<tag>-windows-x86_64.zip (unsigned, untested, with ASIO) with their .sha256 files to that same release.
-# Set KOMPONIST_RELEASE_BUNDLED_CLAP=1 in repository variables after the #188 rollout gates pass.
-# The bundle phase then authenticates and exercises the extracted artifacts before any release upload.
+# Each archive includes all eleven bundled CLAP devices and is verified before upload.
 name: Release
 
 on:
@@ -21,7 +20,6 @@ jobs:
     timeout-minutes: 60
     env:
       BUNDLED_CLAP_TARGET: x86_64-unknown-linux-gnu
-      RELEASE_BUNDLED_CLAP: ${{ vars.KOMPONIST_RELEASE_BUNDLED_CLAP }}
       TAG: ${{ github.event.release.tag_name }}
       GH_TOKEN: ${{ github.token }}
       CARGO_TERM_COLOR: always
@@ -55,7 +53,6 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       - name: Stage bundled CLAP payloads before linking the app
-        if: env.RELEASE_BUNDLED_CLAP == '1'
         run: |
           python=python3
           if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
@@ -75,9 +72,7 @@ jobs:
           cp assets/io.github.klang_studio.komponist.desktop assets/io.github.klang_studio.komponist.metainfo.xml assets/komponist-mime.xml "dist/$name/assets/"
           install -m755 scripts/install-desktop.sh "dist/$name/scripts/"
           cp LICENSE README.md "dist/$name/"
-          if [ "$RELEASE_BUNDLED_CLAP" = 1 ]; then
-            cp -R dist/.bundled-clap-stage "dist/$name/bundled-clap"
-          fi
+          cp -R dist/.bundled-clap-stage "dist/$name/bundled-clap"
           tar -C dist -czf "$name.tar.gz" "$name"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
           cat "$name.tar.gz.sha256"
@@ -106,7 +101,6 @@ jobs:
           fi
 
       - name: Verify and host all CLAP bundles from the release archive
-        if: env.RELEASE_BUNDLED_CLAP == '1'
         run: |
           python=python3
           if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
@@ -125,7 +119,6 @@ jobs:
     timeout-minutes: 75
     env:
       BUNDLED_CLAP_TARGET: aarch64-apple-darwin
-      RELEASE_BUNDLED_CLAP: ${{ vars.KOMPONIST_RELEASE_BUNDLED_CLAP }}
       TAG: ${{ github.event.release.tag_name }}
       GH_TOKEN: ${{ github.token }}
       CARGO_TERM_COLOR: always
@@ -149,7 +142,6 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       - name: Stage bundled CLAP payloads before linking the app
-        if: env.RELEASE_BUNDLED_CLAP == '1'
         run: |
           python=python3
           if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
@@ -159,11 +151,7 @@ jobs:
 
       - name: Bundle
         run: |
-          if [ "$RELEASE_BUNDLED_CLAP" = 1 ]; then
-            scripts/bundle-macos.sh --bundled-clap dist/.bundled-clap-stage
-          else
-            scripts/bundle-macos.sh
-          fi
+          scripts/bundle-macos.sh --bundled-clap dist/.bundled-clap-stage
 
       # ditto keeps the signature, the resource forks and the symlinks of the bundle (zip(1) does not).
       - name: Package
@@ -191,7 +179,6 @@ jobs:
           "$app/Contents/MacOS/komponist" --bridge --help
 
       - name: Verify and host all CLAP bundles from the release archive
-        if: env.RELEASE_BUNDLED_CLAP == '1'
         run: |
           python=python3
           if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
@@ -214,7 +201,6 @@ jobs:
         shell: bash
     env:
       BUNDLED_CLAP_TARGET: x86_64-pc-windows-msvc
-      RELEASE_BUNDLED_CLAP: ${{ vars.KOMPONIST_RELEASE_BUNDLED_CLAP }}
       TAG: ${{ github.event.release.tag_name }}
       GH_TOKEN: ${{ github.token }}
       CARGO_TERM_COLOR: always
@@ -238,7 +224,6 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       - name: Stage bundled CLAP payloads before linking the app
-        if: env.RELEASE_BUNDLED_CLAP == '1'
         run: |
           python=python3
           if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
@@ -256,11 +241,7 @@ jobs:
           LIBCLANG_PATH: C:\Program Files\LLVM\bin
         run: |
           name="komponist-${TAG}-windows-x86_64"
-          if [ "$RELEASE_BUNDLED_CLAP" = 1 ]; then
-            scripts/package-windows.sh --name "$name" --bundled-clap dist/.bundled-clap-stage
-          else
-            scripts/package-windows.sh --name "$name"
-          fi
+          scripts/package-windows.sh --name "$name" --bundled-clap dist/.bundled-clap-stage
           mv "dist/$name.zip" "dist/$name.zip.sha256" .
           echo "NAME=$name" >> "$GITHUB_ENV"
 
@@ -285,7 +266,6 @@ jobs:
           test -n "$bridge_help"
 
       - name: Verify and host all CLAP bundles from the release archive
-        if: env.RELEASE_BUNDLED_CLAP == '1'
         run: |
           python=python3
           if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi

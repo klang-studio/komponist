@@ -21,7 +21,7 @@
 //! The engine keeps notes from hanging whatever this stage does (`komponist_engine::EventProcessor`).
 
 use komponist_device_core::layout::{single_page, toggle};
-use komponist_device_core::{CatalogSpec, Preset, Spec, SpecCache, midi};
+use komponist_device_core::{CatalogSpec, Preset, Spec, SpecCache};
 use komponist_engine::{Event, EventKind, EventProcessor, EventSink, NOTE_ID_NONE, ProcessContext};
 use komponist_i18n::Lang;
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, WidgetKind};
@@ -40,9 +40,7 @@ pub static SPEC: Spec = Spec {
     },
     params,
     layout,
-    dsp: midi::passthrough,
     presets,
-    event_stage: Some(stage),
     preset_aliases: &[
         ("Achtel auf", "Eighths Up"),
         ("Sechzehntel Auf/Ab", "Sixteenths Up/Down"),
@@ -158,7 +156,7 @@ fn layout(_: Lang) -> DeviceLayout {
 }
 
 /// The stage with the parameters at their defaults.
-fn stage() -> Box<dyn EventProcessor + Send> {
+pub fn stage() -> Box<dyn EventProcessor + Send> {
     Box::new(Arp::new())
 }
 

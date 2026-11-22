@@ -142,6 +142,12 @@ enum Mode {
 
 type ScalePlugin = MidiEffect<Scale>;
 
+impl komponist_bundled_clap_adapter::MidiDefinition for Scale {
+    fn event_stage() -> Box<dyn komponist_engine::EventProcessor + Send> {
+        komponist_scale::stage()
+    }
+}
+
 nice_export_clap!(ScalePlugin);
 
 #[cfg(test)]
@@ -163,7 +169,7 @@ mod tests {
 
     #[test]
     fn clap_note_ports_match_the_builtin_stage() {
-        midi_contract::assert_stage_parity::<ScalePlugin>(Scale::SPEC);
+        midi_contract::assert_stage_parity::<ScalePlugin>(Scale::SPEC, komponist_scale::stage);
     }
     #[test]
     fn restores_the_same_parameter_id_and_value_in_another_instance() {

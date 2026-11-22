@@ -430,6 +430,24 @@ impl App {
             }
             Pending::Template => {
                 let project = new_project::template(self.lang, crate::app::hexa_ref());
+                let host = self.engine.host();
+                let has_reference_devices =
+                    host.catalog().resolve(&crate::app::hexa_ref()).is_some();
+                let project = match host.migrate_project_for_open(&project, Path::new(".")) {
+                    Ok(Some(migrated)) => migrated,
+                    Ok(None) if has_reference_devices => project,
+                    Ok(None) => {
+                        self.set_status(
+                            "Bundled CLAP devices are unavailable".to_owned(),
+                            StatusKind::Error,
+                        );
+                        return;
+                    }
+                    Err(error) => {
+                        self.set_status(error, StatusKind::Error);
+                        return;
+                    }
+                };
                 self.open_document(Document::new(project), None);
                 self.check_missing_plugins();
             }
@@ -477,15 +495,16 @@ impl App {
             Ok((path, project)) => {
                 let project_dir =
                     komponist_model::paths::absolute(path.parent().unwrap_or(Path::new("")));
-                let migration = self
-                    .engine
-                    .host()
-                    .migrate_project_for_open(&project, &project_dir);
+                let host = self.engine.host();
+                let migration = host.migrate_project_for_open(&project, &project_dir);
+                let has_reference_devices =
+                    host.catalog().resolve(&crate::app::hexa_ref()).is_some();
                 let mut doc = Document::new(project);
                 match migration {
-                    Ok(Some(project)) => doc
+                    Ok(Some(project)) if has_reference_devices => doc
                         .apply("undo-migrate-bundled-devices", |_| Ok(project))
                         .expect("apply a fully planned migration"),
+                    Ok(Some(project)) => doc = Document::new(project),
                     Ok(None) => {}
                     Err(error) => {
                         eprintln!(

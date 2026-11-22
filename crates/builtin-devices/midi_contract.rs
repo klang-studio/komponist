@@ -94,10 +94,13 @@ unsafe extern "C" fn receive(
     true
 }
 
-pub(crate) fn assert_stage_parity<P: ClapPlugin>(spec: &'static Spec) {
+pub(crate) fn assert_stage_parity<P: ClapPlugin>(
+    spec: &'static Spec,
+    stage: impl FnOnce() -> Box<dyn komponist_engine::EventProcessor + Send>,
+) {
     let instance = Instance::new::<P>();
     let plugin = instance.0;
-    let mut reference = (spec.event_stage.unwrap())();
+    let mut reference = stage();
     for (index, parameter) in spec.params().iter().enumerate() {
         reference.set_param(index as u32, parameter.default);
     }

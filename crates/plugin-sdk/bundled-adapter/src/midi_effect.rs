@@ -14,7 +14,7 @@ use komponist_native_clap_sdk::{NativeClapLayout, Panel};
 use nice_plug::midi::{Channel, Key, MidiResult, VoiceID};
 use nice_plug::prelude::*;
 
-use super::{DeviceDefinition, panel_for, parameter};
+use super::{MidiDefinition, panel_for, parameter};
 
 /// Bounded event-only CLAP plugin backed by a device spec's existing MIDI stage.
 pub struct MidiEffect<T> {
@@ -31,15 +31,13 @@ pub struct MidiEffect<T> {
     definition: std::marker::PhantomData<T>,
 }
 
-impl<T: DeviceDefinition> Default for MidiEffect<T> {
+impl<T: MidiDefinition> Default for MidiEffect<T> {
     fn default() -> Self {
         let params = parameter::Parameters::new(T::SPEC, T::choice);
         Self {
             applied: vec![None; params.len()],
             params: Arc::new(params),
-            stage: (T::SPEC
-                .event_stage
-                .expect("MIDI device spec needs an event stage"))(),
+            stage: T::event_stage(),
             input: EventBuffer::with_insertion_order(MAX_EVENTS_PER_BLOCK),
             // A stage can output an off followed by an on for every repeated input key.
             output: EventBuffer::with_insertion_order(MAX_EVENTS_PER_BLOCK * 2),
@@ -52,7 +50,7 @@ impl<T: DeviceDefinition> Default for MidiEffect<T> {
     }
 }
 
-impl<T: DeviceDefinition> MidiEffect<T> {
+impl<T: MidiDefinition> MidiEffect<T> {
     fn apply_params(&mut self) {
         for (index, applied) in self.applied.iter_mut().enumerate() {
             if let Some(value) = self.params.changed_value(index, applied) {
@@ -68,7 +66,7 @@ impl<T: DeviceDefinition> MidiEffect<T> {
     }
 }
 
-impl<T: DeviceDefinition> Plugin for MidiEffect<T> {
+impl<T: MidiDefinition> Plugin for MidiEffect<T> {
     const NAME: &'static str = T::NAME;
     const VENDOR: &'static str = "klang-studio";
     const URL: &'static str = "https://github.com/klang-studio/komponist";
@@ -172,7 +170,7 @@ impl<T: DeviceDefinition> Plugin for MidiEffect<T> {
     }
 }
 
-impl<T: DeviceDefinition> ClapPlugin for MidiEffect<T> {
+impl<T: MidiDefinition> ClapPlugin for MidiEffect<T> {
     const CLAP_ID: &'static str = T::ID;
     const CLAP_DESCRIPTION: Option<&'static str> = None;
     const CLAP_MANUAL_URL: Option<&'static str> = None;
@@ -184,7 +182,7 @@ impl<T: DeviceDefinition> ClapPlugin for MidiEffect<T> {
     }
 }
 
-impl<T: DeviceDefinition> NativeClapLayout for MidiEffect<T> {
+impl<T: MidiDefinition> NativeClapLayout for MidiEffect<T> {
     fn panel() -> Panel {
         panel_for::<T>()
     }

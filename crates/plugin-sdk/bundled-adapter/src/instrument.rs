@@ -9,7 +9,7 @@ use komponist_native_clap_sdk::{NativeClapLayout, Panel};
 use nice_plug::midi::{Channel, Key, VoiceID};
 use nice_plug::prelude::*;
 
-use crate::{DeviceDefinition, STEREO, panel_for, parameter};
+use crate::{AudioDefinition, STEREO, panel_for, parameter};
 
 /// A stereo instrument backed by an existing spec DSP.
 pub struct Instrument<T> {
@@ -22,13 +22,13 @@ pub struct Instrument<T> {
     definition: PhantomData<T>,
 }
 
-impl<T: DeviceDefinition> Default for Instrument<T> {
+impl<T: AudioDefinition> Default for Instrument<T> {
     fn default() -> Self {
         let params = parameter::Parameters::new(T::SPEC, T::choice);
         Self {
             applied: vec![None; params.len()],
             params: Arc::new(params),
-            dsp: (T::SPEC.dsp)(),
+            dsp: T::dsp(),
             silence: Vec::new(),
             notes: [None; 128],
             definition: PhantomData,
@@ -36,7 +36,7 @@ impl<T: DeviceDefinition> Default for Instrument<T> {
     }
 }
 
-impl<T: DeviceDefinition> Instrument<T> {
+impl<T: AudioDefinition> Instrument<T> {
     fn apply_params(&mut self) {
         for (index, applied) in self.applied.iter_mut().enumerate() {
             if let Some(value) = self.params.changed_value(index, applied) {
@@ -46,7 +46,7 @@ impl<T: DeviceDefinition> Instrument<T> {
     }
 }
 
-impl<T: DeviceDefinition> Plugin for Instrument<T> {
+impl<T: AudioDefinition> Plugin for Instrument<T> {
     const NAME: &'static str = T::NAME;
     const VENDOR: &'static str = "klang-studio";
     const URL: &'static str = "https://github.com/klang-studio/komponist";
@@ -226,7 +226,7 @@ fn apply_note(
     }
 }
 
-impl<T: DeviceDefinition> ClapPlugin for Instrument<T> {
+impl<T: AudioDefinition> ClapPlugin for Instrument<T> {
     const CLAP_ID: &'static str = T::ID;
     const CLAP_DESCRIPTION: Option<&'static str> = None;
     const CLAP_MANUAL_URL: Option<&'static str> = None;
@@ -238,7 +238,7 @@ impl<T: DeviceDefinition> ClapPlugin for Instrument<T> {
     }
 }
 
-impl<T: DeviceDefinition> NativeClapLayout for Instrument<T> {
+impl<T: AudioDefinition> NativeClapLayout for Instrument<T> {
     fn panel() -> Panel {
         panel_for::<T>()
     }

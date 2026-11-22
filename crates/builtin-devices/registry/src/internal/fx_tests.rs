@@ -16,7 +16,14 @@ pub(super) const RATE: f32 = 48_000.0;
 
 /// A DSP of `kind` at `rate` with all parameters at their defaults except `set`, activated.
 pub(super) fn make(kind: Internal, rate: f32, set: &[(&str, f64)]) -> Box<dyn Dsp> {
-    let mut d = (kind.spec().dsp)();
+    let mut d = match kind {
+        Internal::Delay => komponist_delay::dsp(),
+        Internal::Eq => komponist_eq::dsp(),
+        Internal::Hall => komponist_reverb::dsp(),
+        Internal::Limiter => komponist_limiter::dsp(),
+        Internal::Presse => komponist_presse::dsp(),
+        _ => panic!("expected an audio effect"),
+    };
     for (i, p) in kind.params().iter().enumerate() {
         d.set_param(i, p.default);
     }

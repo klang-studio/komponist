@@ -39,7 +39,7 @@ fn ctx(rate: f32) -> ProcessContext {
 /// An activated EQ, its tap, and a function that runs one block of the stereo ramp
 /// (left 0.25, right 0.75) and returns the EQ's output.
 fn eq_at(rate: f32, values: &[f64]) -> (InternalProcessor, Arc<SampleTap>) {
-    let mut p = InternalProcessor::new(&SPEC, values);
+    let mut p = InternalProcessor::from_dsp(&SPEC, values, crate::dsp());
     p.activate(rate, BLOCK).unwrap();
     let tap = Arc::clone(p.meter().tap().expect("the EQ has a tap"));
     (p, tap)

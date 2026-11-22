@@ -31,6 +31,7 @@
 //! ([`Internal::preset_state`]); hexa's state is the factory patch.
 //! The audio links are metadata until `samples::demo_with_kit` synthesizes their WAVs at load.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use komponist_builtin::Internal;
@@ -44,6 +45,19 @@ use komponist_model::{
 
 pub(crate) mod audio;
 mod sampler;
+
+/// Builds the demo with its generated samples and serializes its devices for the installed CLAPs.
+pub fn bundled_demo(
+    host: &dyn crate::device_host::DeviceHost,
+    kit_dir: &Path,
+) -> Result<Project, String> {
+    let source = crate::samples::demo_with_kit(showcase_project(), kit_dir)
+        .map_err(|error| error.to_string())?;
+    host.migrate_project_for_open(&source, kit_dir)?
+        .ok_or_else(|| {
+            "the demo requires the packaged CLAP inventory; run scripts/run.sh --demo".to_owned()
+        })
+}
 
 /// Volumes of the tracks in dB, in track order (Drums, Bass, Lead, Pad, Keys, Arp), set by
 /// render analysis: the built-in instruments are louder than the old plugin chain's.

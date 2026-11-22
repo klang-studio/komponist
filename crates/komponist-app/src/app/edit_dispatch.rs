@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use komponist_model::{Document, edits};
 
-use super::{App, hexa_ref};
+use super::App;
 use crate::actions::EditAction;
 use crate::ui_state::FocusArea;
 
@@ -158,7 +158,7 @@ impl App {
                 self.apply("undo-change-project", |p| edits::set_project_prop(p, prop));
             }
             EditAction::SetMasterProp(prop) => self.set_master_prop(prop),
-            EditAction::NewMidiTrack => self.new_midi_track(None, hexa_ref()),
+            EditAction::NewMidiTrack => self.new_midi_track(None, self.default_hexa()),
             EditAction::NewAudioTrack => self.open_new_audio_track_dialog(),
             EditAction::AddTrack(spec) => self.add_track(spec),
             EditAction::RemoveTracks(tracks) => self.remove_tracks(tracks),

@@ -37,9 +37,7 @@ pub static SPEC: Spec = Spec {
     },
     params,
     layout,
-    dsp,
     presets,
-    event_stage: None,
     preset_aliases: &[
         ("Flach", "Flat"),
         ("Gesang Präsenz", "Vocal Presence"),
@@ -345,7 +343,7 @@ struct Eq {
     analyse: bool,
 }
 
-fn dsp() -> Box<dyn Dsp> {
+pub fn dsp() -> Box<dyn Dsp> {
     let mut eq = Eq {
         rate: INITIAL_RATE,
         bands: core::array::from_fn(Band::new),

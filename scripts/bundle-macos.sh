@@ -45,11 +45,30 @@ if [ -z "$version" ]; then
     exit 1
 fi
 
+source scripts/bundled-clap-build.sh
+stage_bundled_clap=0
+if [ -z "$bundled_clap" ]; then
+    if [ "$skip_build" = 1 ]; then
+        echo "bundle-macos.sh: --skip-build requires the matching --bundled-clap directory" >&2
+        exit 2
+    fi
+    staging="$(mktemp -d)"
+    trap 'rm -rf -- "$staging"' EXIT
+    bundled_clap="$staging/bundled-clap"
+    stage_bundled_clap=1
+fi
+
 if [ "$skip_build" = 0 ]; then
     # One heavy build at a time across worktrees, at low priority (CLAUDE.md, "Build load").
     (
         source scripts/build-lock.sh
-        lowprio cargo build --release -p komponist-app --bin komponist
+        if [ "$stage_bundled_clap" = 1 ]; then
+            digest="$(stage_native_bundled_clap "$bundled_clap")"
+        else
+            digest="$(bundled_clap_manifest_digest "$bundled_clap")"
+        fi
+        export KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256="$digest"
+        lowprio cargo build --locked --release -p komponist-app --bin komponist
     )
 fi
 exe=target/release/komponist
@@ -61,10 +80,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 # The plugin bridge is this executable (`komponist --bridge`): nothing else to bundle. Fonts and the window
 # icon are compiled in.
 install -m755 "$exe" "$app/Contents/MacOS/komponist"
-if [ -n "$bundled_clap" ]; then
-    # Nested signatures already exist and are part of the manifest's file hashes.
-    ditto "$bundled_clap" "$app/Contents/Resources/bundled-clap"
-fi
+# Nested signatures already exist and are part of the manifest's file hashes.
+ditto "$bundled_clap" "$app/Contents/Resources/bundled-clap"
 sed "s/@VERSION@/$version/g" assets/macos/Info.plist.in >"$app/Contents/Info.plist"
 for lang in de en; do
     mkdir -p "$app/Contents/Resources/$lang.lproj"
@@ -96,6 +113,7 @@ else
         --entitlements assets/macos/komponist.entitlements --sign - "$app"
 fi
 codesign --verify --deep --strict --verbose=2 "$app"
+"$app/Contents/MacOS/komponist" --verify-bundled-clap
 
 if [ -n "$identity" ]; then
     notary=()

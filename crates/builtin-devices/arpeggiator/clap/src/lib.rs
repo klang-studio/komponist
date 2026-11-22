@@ -72,6 +72,12 @@ enum Rate {
 
 type ArpeggiatorPlugin = MidiEffect<Arpeggiator>;
 
+impl komponist_bundled_clap_adapter::MidiDefinition for Arpeggiator {
+    fn event_stage() -> Box<dyn komponist_engine::EventProcessor + Send> {
+        komponist_arpeggiator::stage()
+    }
+}
+
 nice_export_clap!(ArpeggiatorPlugin);
 
 #[cfg(test)]
@@ -95,7 +101,10 @@ mod tests {
 
     #[test]
     fn clap_note_ports_match_the_builtin_stage() {
-        midi_contract::assert_stage_parity::<ArpeggiatorPlugin>(Arpeggiator::SPEC);
+        midi_contract::assert_stage_parity::<ArpeggiatorPlugin>(
+            Arpeggiator::SPEC,
+            komponist_arpeggiator::stage,
+        );
     }
     #[test]
     fn restores_the_same_parameter_id_and_value_in_another_instance() {

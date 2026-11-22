@@ -3,7 +3,7 @@
 #
 #   scripts/readme-media.sh               everything
 #   scripts/readme-media.sh hero mixer    only these scenarios (names: scripts/readme-media/capture.py)
-#   SKIP_BUILD=1 scripts/readme-media.sh  use the existing target/release/komponist
+#   SKIP_BUILD=1 KOMPONIST_BIN=/path/to/packaged/komponist scripts/readme-media.sh
 #
 # Builds komponist (release, under the shared build lock like run.sh), starts it with
 # `--demo --null-audio --no-plugin-scan --lang en` (the media are English) under a private Xvfb (1920x1080, no window
@@ -20,17 +20,21 @@ for tool in xvfb-run ffmpeg python3 egui-mcp; do
     command -v "$tool" >/dev/null || { echo "readme-media: missing tool: $tool" >&2; exit 1; }
 done
 
+work="$(mktemp -d "${TMPDIR:-/tmp}/komponist-readme-media.XXXXXX")"
+package=""
+cleanup() {
+    rm -rf -- "$work"
+    if [[ -n "$package" ]]; then rm -rf -- "$package"; fi
+}
+trap cleanup EXIT
 if [ -z "${SKIP_BUILD:-}" ]; then
-    (
-        source scripts/build-lock.sh
-        lowprio cargo build --release -p komponist-app --bin komponist
-    )
+    bin="$(scripts/run.sh --build-only)"
+    package="$(dirname "$(dirname "$bin")")"
+else
+    bin="${KOMPONIST_BIN:?set KOMPONIST_BIN to the executable in a packaged app}"
 fi
-bin="$PWD/target/release/komponist"
 [ -x "$bin" ] || { echo "readme-media: $bin not found" >&2; exit 1; }
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/komponist-readme-media.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
 mkdir -p docs/media
 
 echo "writing to docs/media/ (scratch: $work)"

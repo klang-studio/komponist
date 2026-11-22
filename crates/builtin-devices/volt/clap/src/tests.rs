@@ -118,7 +118,7 @@ fn sample_offset_note_events_preserve_the_original_synth_audio() {
 
     let instance = Instance::new();
     let plugin = instance.0;
-    let mut reference = (Volt::SPEC.dsp)();
+    let mut reference = komponist_volt::dsp();
     for (index, info) in Volt::SPEC.params().iter().enumerate() {
         reference.set_param(index, info.default);
     }

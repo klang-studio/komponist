@@ -821,7 +821,10 @@ fn undo_after_collect_and_save_keeps_each_steps_samples_and_copies_only_the_curr
 fn bridged_app(name: &str) -> Option<(App, DeviceId, u32)> {
     let dirs = fixture_dirs()?;
     let dir = scratch(name);
-    let mut app = app_with(Project::new("Bridge"), PluginHost::new(config(&dir)));
+    let mut app = app_with(
+        Project::new("Bridge"),
+        PluginHost::with_reference_devices(config(&dir)),
+    );
     app.engine_mut().host_mut().start_scan(&dirs);
     step_until(&mut app, "scan", |a| {
         a.engine()

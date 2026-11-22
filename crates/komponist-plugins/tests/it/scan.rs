@@ -91,9 +91,7 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     };
 
     let mut manager = PluginManager::new(config(&dir));
-    // The built-in entries (hexa and the internal devices of WP-85) come before any scan.
-    let builtins = names(&manager);
-    assert_eq!(builtins[0], "Hexa");
+    assert!(names(&manager).is_empty());
     assert!(!manager.is_scanning());
     let t0 = Instant::now();
     manager.start_scan(&dirs);
@@ -128,17 +126,15 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     );
     assert!(report.finished <= SystemTime::now());
 
-    let mut expected = builtins.clone();
-    expected.extend(
+    assert_eq!(
+        names(&manager),
         [
             "kp-test-crash",
             "kp-test-fx",
             "kp-test-slow",
             "kp-test-synth",
         ]
-        .map(String::from),
     );
-    assert_eq!(names(&manager), expected);
     let catalog = manager.catalog();
     let synth = catalog.resolve(&clap_plugin(SYNTH)).unwrap();
     assert_eq!(synth.kind, PluginKind::Instrument);

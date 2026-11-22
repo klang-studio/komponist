@@ -146,6 +146,7 @@ def run_staged(app, runner, digest, projects):
                 "bundled_sampler::both_samplers_play_assets_after_the_project_moves",
             ),
             "current": (
+                "bundled_current::demo_and_new_tracks_use_verified_clap_only",
                 "bundled_current::current_project_round_trip_and_offline_render",
                 "bundled_current::packaged_midi_effects_preserve_instrument_notes",
                 "bundled_current::bundled_presse_lookahead_updates_delay_compensation_during_playback",
@@ -156,7 +157,6 @@ def run_staged(app, runner, digest, projects):
             ),
         }[projects]
         environment = os.environ.copy()
-        environment.pop("KOMPONIST_EXPERIMENTAL_DIRECT_CLAP", None)
         environment.pop("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE", None)
         if projects == "historical":
             environment["KOMPONIST_HISTORICAL_BUNDLED_APP"] = str(app)
@@ -171,8 +171,6 @@ def run_staged(app, runner, digest, projects):
             route = environment.copy()
             if not projects:
                 route["KOMPONIST_PERF_BUNDLED_MODE"] = mode
-            if mode != "legacy":
-                route["KOMPONIST_EXPERIMENTAL_DIRECT_CLAP"] = "1"
             if mode == "bridge":
                 route["KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE"] = "1"
             if not projects:
@@ -185,7 +183,6 @@ def run_staged(app, runner, digest, projects):
                 run_test(staged_runner, route, *test_names)
 
         if projects == "current":
-            environment["KOMPONIST_EXPERIMENTAL_DIRECT_CLAP"] = "1"
             reject_unavailable_bundle(staged_runner, destination, environment, scratch)
         if benchmark_failures:
             raise SystemExit("Failed benchmark cases: " + ", ".join(benchmark_failures))

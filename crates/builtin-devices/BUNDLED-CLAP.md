@@ -20,11 +20,8 @@ host latency.
 | Arpeggiator | `komponist-bundled-arpeggiator` | `org.klang-studio.komponist.arpeggiator` |
 | Scale (Tonleiter) | `komponist-bundled-scale` | `org.klang-studio.komponist.scale` |
 
-The public v1 layout describes fixed controls. The Delay UI uses separate time and feedback
-knobs in place of its XY control. EQ exposes all band controls but needs its response graph and
-analyzer. Presse needs its transfer/history graphs and gain-reduction display, and Limiter
-needs its gain-reduction display. Factory preset discovery and legacy project migration
-remain rollout work. The bundled DSP accepts the device core's 8–384 kHz sample-rate range.
+The public v1 layout describes fixed controls. The bundled DSP accepts the device core's
+8–384 kHz sample-rate range. Release packages include all eleven bundles.
 
 Presse initially exposes its stereo compressor configuration. Komponist selects its
 standard CLAP sidechain configuration using the public
@@ -36,13 +33,13 @@ From the repository root, run
 `cargo test --locked --workspace -p 'komponist-bundled-*'` to validate the
 layout metadata against the real CLAP parameter inventory. The Bundled CLAP package
 workflow tests the eleven-device archive through both host routes. For an unpacked test
-package, start the app with `KOMPONIST_EXPERIMENTAL_DIRECT_CLAP=1` to use the verified
-catalog. Add `KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE=1` to run the same verified devices in
+package, the app loads verified devices in-process by default. Add
+`KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE=1` to run the same verified devices in
 the bridge. The historical project check is available with
 `python3 scripts/measure-bundled-clap.py --historical-projects /path/to/unpacked/komponist`.
-The experimental runtime attempts the migration when opening a project. If a device
-cannot be verified or translated, the original project opens with its legacy devices.
-A successful migration is one undoable edit. The test uses disposable project copies.
+The app attempts migration when opening a project with legacy devices. If a device cannot
+be verified or translated, its legacy reference is left intact and reported as unavailable.
+The test uses disposable project copies.
 
 ## Sampler instrument state
 

@@ -1,6 +1,6 @@
 //! Limiter exported through the native CLAP adapter.
 
-use komponist_bundled_clap_adapter::{Effect, EffectDefinition};
+use komponist_bundled_clap_adapter::{DeviceDefinition, Effect};
 use komponist_device_core::Spec;
 use komponist_i18n::Lang;
 use komponist_native_clap_sdk::{DeviceLayout, WidgetKind};
@@ -8,7 +8,7 @@ use nice_plug::prelude::*;
 
 struct Limiter;
 
-impl EffectDefinition for Limiter {
+impl DeviceDefinition for Limiter {
     const SPEC: &'static Spec = &komponist_limiter::SPEC;
     const NAME: &'static str = "Limiter";
     const ID: &'static str = "org.klang-studio.komponist.limiter";
@@ -32,6 +32,12 @@ impl EffectDefinition for Limiter {
 }
 
 type LimiterPlugin = Effect<Limiter>;
+
+impl komponist_bundled_clap_adapter::AudioDefinition for Limiter {
+    fn dsp() -> Box<dyn komponist_device_core::Dsp> {
+        komponist_limiter::dsp()
+    }
+}
 
 nice_export_clap!(LimiterPlugin);
 

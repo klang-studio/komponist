@@ -51,8 +51,8 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Threading",
 ] }
 
-[target.'cfg(target_os = "macos")'.dev-dependencies]
-# The deadline test runs its callback on a time-constraint thread, as the audio device's is.
+[target.'cfg(any(target_os = "macos", windows))'.dev-dependencies]
+# The deadline test uses the audio callback's realtime scheduling policy.
 komponist-rt.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

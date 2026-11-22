@@ -452,8 +452,7 @@ impl Engine {
         core.telemetry.master_tap.set_rate(sample_rate);
         core.finish_cut();
         core.metronome.silence();
-        core.reassert_automation();
-        core.reassert_macros(None, None);
+        core.reassert_parameter_controls();
         let mut errors = Vec::new();
         for (index, slot) in core.slots.iter_mut().enumerate() {
             if let Some(processor) = slot.processor.as_mut()
@@ -583,6 +582,11 @@ impl Engine {
             }
             self.render(1);
         }
+    }
+
+    /// Re-sends the current automation and macro values on the next render block.
+    pub(crate) fn reassert_parameter_controls(&mut self) {
+        self.core.reassert_parameter_controls();
     }
 
     /// Non-RT. The project latency of `program` in frames: the delay at which a note's sound

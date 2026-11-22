@@ -371,17 +371,37 @@ pub struct PluginManager {
 }
 
 impl PluginManager {
-    /// Loads the scan cache into the catalog (built-ins plus cached plugins). Starts no process.
+    /// Opens the installed bundled inventory and the cached external plugin catalog.
     pub fn new(config: PluginManagerConfig) -> PluginManager {
-        let direct = std::env::var_os("KOMPONIST_EXPERIMENTAL_DIRECT_CLAP")
-            .is_some_and(|value| value == "1");
         let force_bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE")
             .is_some_and(|value| value == "1");
-        Self::new_with_bundled_clap(config, direct, force_bridge)
+        Self::with_catalog(config, Catalog::default(), true, force_bridge)
     }
 
     pub(crate) fn new_with_bundled_clap(
         config: PluginManagerConfig,
+        enable_bundles: bool,
+        force_bundled_bridge: bool,
+    ) -> PluginManager {
+        Self::with_catalog(
+            config,
+            Catalog::default(),
+            enable_bundles,
+            force_bundled_bridge,
+        )
+    }
+
+    /// Includes the legacy catalog for tests and benchmark comparisons.
+    #[doc(hidden)]
+    pub fn with_reference_devices(config: PluginManagerConfig) -> PluginManager {
+        let force_bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE")
+            .is_some_and(|value| value == "1");
+        Self::with_catalog(config, Catalog::builtin(), true, force_bridge)
+    }
+
+    fn with_catalog(
+        config: PluginManagerConfig,
+        catalog: Catalog,
         enable_bundles: bool,
         force_bundled_bridge: bool,
     ) -> PluginManager {
@@ -410,7 +430,7 @@ impl PluginManager {
         };
         let mut manager = PluginManager {
             config,
-            catalog: Catalog::builtin(),
+            catalog,
             cache,
             scan: None,
             last_scan: None,
@@ -511,6 +531,24 @@ impl PluginManager {
     /// Starts a background scan of `dirs` (bundles unchanged since the cache are not rescanned);
     /// ends with [`PluginManagerEvent::ScanFinished`]. A running scan is restarted.
     pub fn start_scan(&mut self, dirs: &PluginDirs) {
+        self.start_scan_in(dirs, None);
+    }
+
+    /// Discovers the installed bundle inventory while keeping the external scan cache intact.
+    pub fn start_bundled_scan(&mut self) {
+        if let Some(bundled) = &self.bundled_clap {
+            let root = bundled.directory().to_owned();
+            self.start_scan_in(
+                &PluginDirs {
+                    clap: Vec::new(),
+                    vst3: Vec::new(),
+                },
+                Some(root),
+            );
+        }
+    }
+
+    fn start_scan_in(&mut self, dirs: &PluginDirs, bundled_only: Option<PathBuf>) {
         // Dropping a running job cancels it and kills its scan processes.
         self.scan = None;
         let mut dirs = dirs.clone();
@@ -526,6 +564,7 @@ impl PluginManager {
             dirs,
             cache: self.cache.clone(),
             cache_file: self.config.cache_file.clone(),
+            bundled_only,
             parallel: self.config.parallel_scans,
             timeout: SCAN_TIMEOUT,
         }));
@@ -1653,7 +1692,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_manager_lists_the_builtins_and_manages_nothing() {
+    fn a_new_manager_has_no_devices_before_discovery() {
         let dir = std::env::temp_dir().join(format!("kp-manager-new-{}", std::process::id()));
         let manager = PluginManager::new(PluginManagerConfig {
             bridge_exe: "/nonexistent/komponist-bridge".into(),
@@ -1661,11 +1700,7 @@ mod tests {
             cache_file: dir.join("plugins.json"),
             parallel_scans: 1,
         });
-        assert_eq!(
-            manager.catalog().entries().len(),
-            1 + komponist_builtin::Internal::ALL.len(),
-            "hexa and the internal devices"
-        );
+        assert!(manager.catalog().entries().is_empty());
         assert!(!manager.is_scanning());
         assert_eq!(manager.last_scan(), None);
         assert_eq!(manager.status(DeviceId(1)), DeviceStatus::Ok);

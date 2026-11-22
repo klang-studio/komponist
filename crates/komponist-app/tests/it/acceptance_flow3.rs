@@ -85,7 +85,7 @@ fn a_drum_beat_built_in_the_step_sequencer_plays() {
     let project = project_with_kit(&dir);
     let track = project.tracks[0].id;
     let device = project.tracks[0].channel.devices[0].id;
-    let host = PluginHost::new(config(&dir));
+    let host = PluginHost::with_reference_devices(config(&dir));
     let mut app = app_with(project, host);
     step_until(&mut app, "the instrument is loaded", |a| {
         a.engine().device_status(device) == DeviceStatus::Ok

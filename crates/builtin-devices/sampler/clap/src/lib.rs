@@ -1,6 +1,6 @@
 //! The eight-pad drum sampler packaged as a native CLAP instrument.
 
-use komponist_bundled_clap_adapter::{Binding, EffectDefinition};
+use komponist_bundled_clap_adapter::{Binding, DeviceDefinition};
 use komponist_device_core::layout::{knob, param, toggle};
 use komponist_device_core::{Dsp, Spec};
 use komponist_i18n::Lang;
@@ -22,7 +22,7 @@ enum Mode {
     Gate,
 }
 
-impl EffectDefinition for DrumSampler {
+impl DeviceDefinition for DrumSampler {
     const SPEC: &'static Spec = &komponist_sampler::SPEC;
     const NAME: &'static str = komponist_sampler::NAME;
     const ID: &'static str = "org.klang-studio.komponist.sampler";

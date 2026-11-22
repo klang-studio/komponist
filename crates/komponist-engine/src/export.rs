@@ -421,6 +421,10 @@ fn export_inner(
         Ok(())
     };
     check(engine)?;
+    // Switching to offline mode can reactivate a plugin at the same sample rate.
+    // The first export block must send held automation again even if playback
+    // already queued that value before the switch.
+    engine.reassert_parameter_controls();
     send_all(
         handle,
         [

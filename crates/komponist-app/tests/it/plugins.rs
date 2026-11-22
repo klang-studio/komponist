@@ -76,7 +76,7 @@ fn the_demo_with_test_plugins_sounds_through_bridges_in_an_offline_render() {
         return;
     };
     let dir = scratch("offline");
-    let mut host = PluginHost::new(config(&dir));
+    let mut host = PluginHost::with_reference_devices(config(&dir));
     host.start_scan(&dirs);
     poll_until(&mut host, "ScanFinished", |e| {
         matches!(e, PluginManagerEvent::ScanFinished(_))
@@ -196,7 +196,7 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
     std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
     let mut app = app_with(
         komponist_model::fixtures::empty_project(),
-        PluginHost::new(config(&dir)),
+        PluginHost::with_reference_devices(config(&dir)),
     );
     app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
     assert_eq!(app.project_path(), Some(file.as_path()));
@@ -386,7 +386,7 @@ fn the_demo_plays_the_installed_plugins() {
     std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
     let mut app = app_with(
         komponist_model::fixtures::empty_project(),
-        PluginHost::new(config),
+        PluginHost::with_reference_devices(config),
     );
     app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
     app.step();
@@ -520,7 +520,10 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
     .unwrap();
     let file = dir.join("Layout.komponist");
     std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
-    let mut app = app_with(Project::new("Empty"), PluginHost::new(config(&dir)));
+    let mut app = app_with(
+        Project::new("Empty"),
+        PluginHost::with_reference_devices(config(&dir)),
+    );
     app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
     app.engine_mut().host_mut().start_scan(&dirs);
     step_until(&mut app, "empty scan", |app| {
@@ -705,7 +708,7 @@ fn sdk_example_uses_native_layout_and_falls_back() {
     std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
 
     let open = |bundle: &Path, run: &str| {
-        let mut host = PluginHost::new(config(&dir.join(run)));
+        let mut host = PluginHost::with_reference_devices(config(&dir.join(run)));
         host.start_scan(&PluginDirs {
             clap: vec![bundle.parent().unwrap().to_owned()],
             vst3: Vec::new(),
