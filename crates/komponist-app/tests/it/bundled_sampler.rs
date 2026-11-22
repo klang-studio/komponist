@@ -536,6 +536,39 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         .as_f64()
         .unwrap();
     assert!((stored_gain - raw(-22.0)).abs() < 1e-6);
+    step_until(h.state_mut(), "sample undo completed", |app| {
+        app.engine()
+            .host()
+            .sampler_ui(general)
+            .is_some_and(|ui| ui.idle)
+    });
+
+    let gain_saved = |app: &App, db| {
+        hosted_state(app)["params"]["gain"]["f32"]
+            .as_f64()
+            .is_some_and(|gain| (gain - raw(db)).abs() < 1e-6)
+    };
+    set_gain(h.state_mut(), -28.0);
+    h.state_mut().engine_mut().host_mut().request_state(general);
+    step_until(h.state_mut(), "the card's gain was saved", |app| {
+        gain_saved(app, -28.0)
+    });
+
+    // Simulate a newer change from the host, bypassing the application's card actions.
+    let host = h.state_mut().engine_mut().host_mut();
+    assert!(host.set_param(general, gain, raw(-9.0)));
+    host.request_state(general);
+    step_until(h.state_mut(), "the newer hosted gain was saved", |app| {
+        gain_saved(app, -9.0)
+    });
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::LoadSample {
+            device: general,
+            pad: 0,
+            path: replacement,
+        }));
+    assert_eq!(sample_name(h.state()), "replacement");
+    assert!(gain_saved(h.state(), -9.0));
     h.state_mut().shutdown();
 }
 

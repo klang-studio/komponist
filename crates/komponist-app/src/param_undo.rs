@@ -307,7 +307,7 @@ impl App {
             self.engine.host_mut().set_param(device, id, value)
         };
         if bridged {
-            self.remember_sampler_param(device, id, value);
+            self.remember_sampler_param(device, id);
             let label = self.param_label(device, id);
             self.param_undo
                 .turned
@@ -443,6 +443,13 @@ impl App {
     /// document as a tracked change, coalesced (module docs). A state equal to the stored one is
     /// skipped.
     pub(crate) fn store_snapshot(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+        self.apply_device_snapshot(device, state);
+        if self.has_state(device, state) {
+            self.reconcile_sampler_params(device, state);
+        }
+    }
+
+    fn apply_device_snapshot(&mut self, device: DeviceId, state: &Arc<[u8]>) {
         if self.has_state(device, state) {
             return;
         }

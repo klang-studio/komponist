@@ -354,6 +354,15 @@ impl DirectDevice {
         }
     }
 
+    pub(crate) fn is_current_param_snapshot(&self, state: &Arc<[u8]>) -> bool {
+        !self.needs_snapshot()
+            && !self.is_macro_snapshot(state)
+            && self
+                .last_state
+                .as_ref()
+                .is_some_and(|last| Arc::ptr_eq(last, state))
+    }
+
     pub(crate) fn needs_snapshot(&self) -> bool {
         self.user_edit || self.pending_restore.is_some()
     }

@@ -91,6 +91,25 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
         &Field::Op(4, OpField::Attack).info_in(lang).name,
     );
     snapshot(&mut h, "hexa-envelopes", lang);
+    // The card reacts to the host's optimistic value. Commit Hexa's actual edit before
+    // testing Volt's history so a late Hexa snapshot cannot become the next undo step.
+    h.state_mut().engine_mut().host_mut().request_state(hexa);
+    step_until(
+        h.state_mut(),
+        "Hexa algorithm captured in project history",
+        |app| {
+            let recorded = app.device_events().iter().any(|event| {
+            matches!(event, PluginManagerEvent::StateSnapshot { device, .. } if *device == hexa)
+        });
+            recorded
+                && app
+                    .project()
+                    .find_device(hexa)
+                    .and_then(|(_, _, device)| device.state.as_deref())
+                    .and_then(komponist_hexa::state::decode_clap_patch)
+                    .is_some_and(|patch| komponist_hexa::Macro::Algorithm.get(&patch) == 7.0)
+        },
+    );
 
     let volt_kind = BuiltinKind::Internal(Internal::Volt);
     let plugin = h

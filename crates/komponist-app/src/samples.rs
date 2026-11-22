@@ -97,7 +97,8 @@ pub(crate) struct State {
     /// Per sampler: the pad of the step row, the selected pad and the hit counter of the last
     /// frame.
     pads: std::collections::HashMap<DeviceId, PadSync>,
-    pending_params: std::collections::HashMap<DeviceId, std::collections::BTreeMap<u32, f64>>,
+    /// Parameters with edits awaiting the document's next accepted snapshot. Values live in the host.
+    pending_params: std::collections::HashMap<DeviceId, std::collections::BTreeSet<u32>>,
 }
 
 impl State {
@@ -168,7 +169,7 @@ impl App {
         Some(found.state.clone())
     }
 
-    pub(crate) fn remember_sampler_param(&mut self, device: DeviceId, wire: u32, value: f64) {
+    pub(crate) fn remember_sampler_param(&mut self, device: DeviceId, wire: u32) {
         if self
             .project()
             .find_device(device)
@@ -179,12 +180,22 @@ impl App {
                 .pending_params
                 .entry(device)
                 .or_default()
-                .insert(wire, value);
+                .insert(wire);
         }
     }
 
     pub(crate) fn forget_sampler_params(&mut self, device: DeviceId) {
         self.dialogs.samples.pending_params.remove(&device);
+    }
+
+    /// A snapshot can retire the edit journal once it is in the document and the host
+    /// certifies that it still represents the current parameter bases.
+    pub(crate) fn reconcile_sampler_params(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+        if self.dialogs.samples.pending_params.contains_key(&device)
+            && self.engine.host().is_current_param_snapshot(device, state)
+        {
+            self.forget_sampler_params(device);
+        }
     }
 
     pub(crate) fn reset_sampler_hit(&mut self, device: DeviceId) {
@@ -196,7 +207,7 @@ impl App {
     /// Commit knob edits independently so undoing an asset edit restores the previous link
     /// with the current settings, including controls still waiting for a plugin snapshot.
     pub(crate) fn flush_sampler_params(&mut self, device: DeviceId) {
-        let Some(values) = self.dialogs.samples.pending_params.get(&device) else {
+        let Some(wires) = self.dialogs.samples.pending_params.get(&device) else {
             return;
         };
         let Some((_, _, d)) = self.project().find_device(device) else {
@@ -205,17 +216,17 @@ impl App {
         let Some(kind) = bundled_sampler::kind(&d.plugin) else {
             return;
         };
-        let Some(ids) = self
-            .engine
-            .host()
+        let host = self.engine.host();
+        let Some(ids) = host
             .native_layout(device)
             .and_then(|layout| layout.author_ids())
         else {
             return;
         };
         let params = kind.params().iter().filter_map(|info| {
-            let value = *values.get(ids.get(info.id.as_str())?)?;
-            Some((info, value))
+            let id = *ids.get(info.id.as_str()).filter(|id| wires.contains(id))?;
+            // The host orders plugin-side and application-side edits on one parameter base.
+            Some((info, host.param_base(device, id)?))
         });
         if let Some(state) =
             bundled_sampler::edit_params(&d.plugin.version, d.state.as_deref(), params)

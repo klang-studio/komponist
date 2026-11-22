@@ -194,6 +194,11 @@ pub trait DeviceHost {
         false
     }
 
+    /// Whether the host captured this state and has no later edits awaiting capture.
+    fn is_current_param_snapshot(&self, _device: DeviceId, _state: &Arc<[u8]>) -> bool {
+        false
+    }
+
     /// Sets a parameter of a bridged device; `false` if this host does not handle `device` (the
     /// caller then sends the engine's `SetParam` to the device's slot, as for hexa).
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
@@ -841,6 +846,10 @@ impl DeviceHost for PluginHost {
 
     fn is_macro_snapshot(&self, device: DeviceId, state: &Arc<[u8]>) -> bool {
         self.manager.is_macro_snapshot(device, state)
+    }
+
+    fn is_current_param_snapshot(&self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        self.manager.is_current_param_snapshot(device, state)
     }
 
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {

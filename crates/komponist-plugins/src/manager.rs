@@ -1051,6 +1051,22 @@ impl PluginManager {
             .is_some_and(|bridge| bridge.is_macro_snapshot(state))
     }
 
+    /// A current snapshot acknowledges the captured parameter bases. Pointer identity also
+    /// excludes a deferred snapshot superseded by a newer restore or capture.
+    pub fn is_current_param_snapshot(&self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        if let Some(direct) = self.direct.get(&device) {
+            return direct.is_current_param_snapshot(state);
+        }
+        self.bridges.get(&device).is_some_and(|bridge| {
+            bridge
+                .last_state
+                .as_ref()
+                .is_some_and(|last| Arc::ptr_eq(last, state))
+                && !bridge.needs_snapshot_for_save()
+                && !bridge.is_macro_snapshot(state)
+        })
+    }
+
     /// Set the project's directory before loading or restoring devices.
     pub fn set_project_dir(&mut self, dir: Option<PathBuf>) {
         self.project_dir = dir;
