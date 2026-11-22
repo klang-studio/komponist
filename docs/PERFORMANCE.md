@@ -522,7 +522,9 @@ Pass `komponist.exe` on Windows or `komponist.app/Contents/MacOS/komponist` on m
 asks the packaged app to verify the private CLAP payload, then builds the existing release
 `engine_perf` runner with the authenticated manifest digest. It stages a temporary copy of the
 payload next to the runner, leaves the archive contents untouched, and uses the original
-packaged executable for the bridge subprocesses. The three routes run in separate processes.
+packaged executable for the bridge subprocesses. Each route, workload, buffer size and worker
+count combination starts in a fresh process so allocator and library state from earlier cases
+does not affect its startup and memory measurements.
 Each case checks device readiness, CLAP layout, state restore warnings and bridge PIDs.
 
 The same generated 48 kHz project runs with legacy built-ins, verified in-process CLAP and
@@ -531,7 +533,8 @@ note sequence. The serial variant adds Delay and Hall on four tracks and EQ, Pre
 Limiter on the master. The MIDI variant adds Arpeggiator and Scale before eight instruments.
 The bundled versions use the legacy device translator for their state. Buffer sizes default
 to 64, 128 and 256 frames, worker counts to 0 and 4, and each measurement to 10 seconds after
-a one-second warm-up.
+a one-second warm-up. Set `KOMPONIST_PERF_WORKLOAD` to a comma-separated subset of
+`instruments,effects,midi` to focus a sustained run.
 
 - Setup time covers the scan (CLAP routes only) and device attachment through readiness.
 - Callback p95 and p99 use unsmoothed per-callback loads in one-percentage-point bins.

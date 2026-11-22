@@ -48,6 +48,22 @@ enum Workload {
     MidiBeforeInstruments,
 }
 
+impl Workload {
+    fn selected() -> Vec<Self> {
+        match std::env::var("KOMPONIST_PERF_WORKLOAD").as_deref() {
+            Ok("instruments") => vec![Self::ParallelInstruments],
+            Ok("effects") => vec![Self::SerialEffects],
+            Ok("midi") => vec![Self::MidiBeforeInstruments],
+            Err(std::env::VarError::NotPresent) => vec![
+                Self::ParallelInstruments,
+                Self::SerialEffects,
+                Self::MidiBeforeInstruments,
+            ],
+            _ => panic!("KOMPONIST_PERF_WORKLOAD must select instruments, effects or midi"),
+        }
+    }
+}
+
 fn install(project: &mut Project, kind: Internal) -> Arc<Device> {
     let id = DeviceId(project.alloc_id().expect("workload device ID"));
     Arc::new(Device {
@@ -156,11 +172,7 @@ fn bundled_clap_workloads() {
     };
 
     let audio = audio_host();
-    for workload in [
-        Workload::ParallelInstruments,
-        Workload::SerialEffects,
-        Workload::MidiBeforeInstruments,
-    ] {
+    for workload in Workload::selected() {
         let source = build_project(workload);
         let source = match &inventory {
             Some(inventory) => migrate(&source, inventory),
