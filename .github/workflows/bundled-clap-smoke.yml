@@ -1,6 +1,6 @@
 name: Bundled CLAP package smoke
 
-# Exercise app packages with the complete inventory before switching published releases.
+# Exercise app packages with the complete inventory on every supported platform.
 # Use the same macOS and Windows packagers as the release workflow.
 on:
   workflow_dispatch:
@@ -18,6 +18,9 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "crates/komponist-app/src/main.rs"
+      - "crates/komponist-app/src/device_host.rs"
+      - "crates/komponist-app/src/project_io.rs"
+      - "crates/komponist-app/src/showcase.rs"
       - "crates/komponist-app/src/samples.rs"
       - "crates/komponist-app/src/export.rs"
       - "crates/komponist-app/src/export/**"
@@ -30,10 +33,13 @@ on:
       - "crates/komponist-ipc/**"
       - "crates/komponist-plugins/**"
       - "scripts/bundled-clap.py"
+      - "scripts/bundled-clap-build.sh"
+      - "scripts/run.sh"
       - "scripts/measure-bundled-clap.py"
       - "scripts/bundle-macos.sh"
       - "scripts/package-windows.sh"
       - ".github/workflows/bundled-clap-smoke.yml"
+      - ".github/workflows/release.yml"
 
 permissions:
   contents: read

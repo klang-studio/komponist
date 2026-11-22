@@ -178,22 +178,31 @@ pub struct InternalProcessor {
 }
 
 impl InternalProcessor {
-    /// Creates a processor from the device's DSP factory and values by wire id.
-    /// Call [`Processor::activate`] before handing it to the engine. Allocates off the audio thread.
-    pub fn new(spec: &'static Spec, values: &[f64]) -> Self {
-        Self::from_dsp(spec, values, (spec.dsp)())
+    /// Creates an audio processor. Call `Processor::activate` before handing it to the engine.
+    pub fn from_dsp(spec: &'static Spec, values: &[f64], dsp: Box<dyn Dsp>) -> Self {
+        Self::with_dsp_and_stage(spec, values, dsp, None)
     }
 
-    /// Like [`Self::new`], with an already constructed DSP. A device may create a UI handle
-    /// alongside its DSP and keep that handle outside the processor.
-    pub fn from_dsp(spec: &'static Spec, values: &[f64], mut dsp: Box<dyn Dsp>) -> Self {
+    /// Creates a MIDI-only processor with a passthrough audio path.
+    pub fn from_event_stage(
+        spec: &'static Spec,
+        values: &[f64],
+        stage: Box<dyn EventProcessor + Send>,
+    ) -> Self {
+        Self::with_dsp_and_stage(spec, values, midi::passthrough(), Some(stage))
+    }
+
+    fn with_dsp_and_stage(
+        spec: &'static Spec,
+        values: &[f64],
+        mut dsp: Box<dyn Dsp>,
+        stage: Option<Box<dyn EventProcessor + Send>>,
+    ) -> Self {
         let params = spec.params();
         for (i, p) in params.iter().enumerate() {
             dsp.set_param(i, p.snap(values.get(i).copied().unwrap_or(p.default)));
         }
-        let mut stage = spec
-            .event_stage
-            .map(|stage| midi::Stage::new(params, stage()));
+        let mut stage = stage.map(|stage| midi::Stage::new(params, stage));
         if let Some(stage) = &mut stage {
             for (i, p) in params.iter().enumerate() {
                 stage.set_param(i as u32, values.get(i).copied().unwrap_or(p.default));

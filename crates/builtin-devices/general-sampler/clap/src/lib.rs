@@ -1,6 +1,6 @@
 //! The chromatic sampler packaged as a native CLAP instrument.
 
-use komponist_bundled_clap_adapter::{Binding, EffectDefinition};
+use komponist_bundled_clap_adapter::{Binding, DeviceDefinition};
 use komponist_device_core::layout::{knob_large, param, toggle};
 use komponist_device_core::{Dsp, Spec};
 use komponist_i18n::Lang;
@@ -77,7 +77,7 @@ enum Target {
     Start,
 }
 
-impl EffectDefinition for GeneralSampler {
+impl DeviceDefinition for GeneralSampler {
     const SPEC: &'static Spec = &komponist_general_sampler::SPEC;
     const NAME: &'static str = "Sampler";
     const ID: &'static str = "org.klang-studio.komponist.general-sampler";

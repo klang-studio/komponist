@@ -185,11 +185,10 @@ with komponist).
 ```bash
 git clone https://github.com/klang-studio/komponist
 cd komponist
-cargo build --release -p komponist-app --bin komponist
-target/release/komponist --demo
+scripts/run.sh --demo
 ```
 
-You need the Rust toolchain from [`rust-toolchain.toml`](rust-toolchain.toml) (`rustup` picks it up) and the system
+You need the Rust toolchain from [`rust-toolchain.toml`](rust-toolchain.toml) (`rustup` picks it up), Python 3, and the system
 development packages behind the audio and window crates. On Debian or Ubuntu these are typically:
 
 ```bash

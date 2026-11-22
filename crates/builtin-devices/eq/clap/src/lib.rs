@@ -1,6 +1,6 @@
 //! Parametric EQ exported through the native CLAP adapter.
 
-use komponist_bundled_clap_adapter::{Binding, Effect, EffectDefinition};
+use komponist_bundled_clap_adapter::{Binding, DeviceDefinition, Effect};
 use komponist_device_core::Spec;
 use komponist_device_core::layout::{knob, param, toggle};
 use komponist_i18n::Lang;
@@ -28,7 +28,7 @@ enum Shape {
     HighCut,
 }
 
-impl EffectDefinition for Eq {
+impl DeviceDefinition for Eq {
     const SPEC: &'static Spec = &komponist_eq::SPEC;
     const NAME: &'static str = "EQ";
     const ID: &'static str = "org.klang-studio.komponist.eq";
@@ -91,6 +91,12 @@ impl EffectDefinition for Eq {
 }
 
 type EqPlugin = Effect<Eq>;
+
+impl komponist_bundled_clap_adapter::AudioDefinition for Eq {
+    fn dsp() -> Box<dyn komponist_device_core::Dsp> {
+        komponist_eq::dsp()
+    }
+}
 
 nice_export_clap!(EqPlugin);
 

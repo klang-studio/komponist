@@ -68,7 +68,7 @@ fn ctx(frames: u32, bpm: f64, playing: bool, position_ticks: f64) -> ProcessCont
 }
 
 fn processor(values: &[(&str, f64)]) -> InternalProcessor {
-    let mut processor = InternalProcessor::new(&SPEC, &[]);
+    let mut processor = InternalProcessor::from_event_stage(&SPEC, &[], crate::stage());
     processor.activate(RATE, 256).unwrap();
     for (key, value) in values {
         let wire = SPEC.wire(&ParamId::new(*key)).unwrap();

@@ -5,7 +5,7 @@ use std::ffi::{CStr, c_void};
 use std::sync::{Arc, Mutex};
 
 use clap_sys::plugin::clap_plugin;
-use komponist_bundled_clap_adapter::{Effect, EffectDefinition, Parameters};
+use komponist_bundled_clap_adapter::{DeviceDefinition, Parameters, panel_for};
 use komponist_device_core::pinned_clap_state::{MAX_SAMPLE_ASSET_BYTES, SAMPLE_ASSETS_FIELD};
 use komponist_device_core::{Dsp, SAMPLE_RATES};
 use komponist_ipc::sampler_ui::{self, EXTENSION_ID, Pad, Snapshot, Status, Sync as WireSync};
@@ -16,7 +16,7 @@ use nice_plug::prelude::*;
 const STEREO: NonZeroU32 = NonZeroU32::new(2).unwrap();
 
 /// A sampler which supplies its existing DSP and optional extra controls over loaded assets.
-pub trait SampledDefinition: EffectDefinition {
+pub trait SampledDefinition: DeviceDefinition {
     const PADS: usize;
 
     fn sampler() -> (Box<dyn Dsp>, SamplerHandle, ManagedLoader);
@@ -404,6 +404,6 @@ impl<T: SampledDefinition> ClapPlugin for Sampled<T> {
 
 impl<T: SampledDefinition> NativeClapLayout for Sampled<T> {
     fn panel() -> Panel {
-        Effect::<T>::panel()
+        panel_for::<T>()
     }
 }

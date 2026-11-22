@@ -495,7 +495,7 @@ fn the_presets_are_valid_and_play() {
             let (lo, hi) = p.range();
             assert!((lo..=hi).contains(v), "{name}: {} = {v}", p.id.as_str());
         }
-        let mut d = (KIND.spec().dsp)();
+        let mut d = komponist_presse::dsp();
         for (w, v) in values.iter().enumerate() {
             d.set_param(w, *v);
         }
@@ -596,7 +596,7 @@ fn the_ducking_preset_pushes_a_pad_down_by_a_kick() {
         .position(|p| p.name == "Ducking")
         .expect("a Ducking preset");
     let values = KIND.preset_values(index).unwrap();
-    let mut d = (KIND.spec().dsp)();
+    let mut d = komponist_presse::dsp();
     for (i, v) in values.iter().enumerate() {
         d.set_param(i, *v);
     }

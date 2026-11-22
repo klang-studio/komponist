@@ -68,9 +68,7 @@ pub static SPEC: Spec = Spec {
     },
     params,
     layout,
-    dsp,
     presets,
-    event_stage: None,
     preset_aliases: &[
         ("Gesang weich", "Soft Vocal"),
         ("Gesang vorn", "Forward Vocal"),
@@ -478,7 +476,7 @@ struct Presse {
     pair_reduction: f32,
 }
 
-fn dsp() -> Box<dyn Dsp> {
+pub fn dsp() -> Box<dyn Dsp> {
     let mut p = Presse {
         rate: INITIAL_RATE,
         threshold: Glide::new(-18.0),

@@ -2,13 +2,10 @@
 
 use std::sync::OnceLock;
 
-use komponist_engine::EventProcessor;
 use komponist_i18n::Lang;
 use komponist_model::params::layout::DeviceLayout;
 use komponist_model::params::{ParamId, ParamInfo};
 use komponist_model::{DeviceRole, PluginFormat, PluginRef};
-
-use crate::Dsp;
 
 /// The `"params"` object of a saved parameter-map device state.
 pub type StateParams = serde_json::Map<String, serde_json::Value>;
@@ -45,7 +42,7 @@ impl CatalogSpec {
     }
 }
 
-/// Catalog metadata and factories for a built-in using the shared processor.
+/// Catalog metadata, layout, presets and state for a device.
 pub struct Spec {
     /// The catalog entry for the device.
     pub catalog: CatalogSpec,
@@ -54,10 +51,6 @@ pub struct Spec {
     pub params: fn(Lang) -> Vec<ParamInfo>,
     /// The body of the device frame in a language (page names, graph titles, choice labels).
     pub layout: fn(Lang) -> DeviceLayout,
-    /// The DSP with its parameters at their defaults.
-    pub dsp: fn() -> Box<dyn Dsp>,
-    /// The event-stage factory for a MIDI effect, if any.
-    pub event_stage: Option<fn() -> Box<dyn EventProcessor + Send>>,
     /// The factory presets in menu order (WP-96); none for [`no_presets`].
     pub presets: fn() -> &'static [Preset],
     /// Earlier preset names and the names they resolve to today.
@@ -335,8 +328,6 @@ mod tests {
             )]
         },
         layout: |_| DeviceLayout::knob_grid([ParamId::new("level")], 1),
-        dsp: crate::midi::passthrough,
-        event_stage: None,
         presets: || {
             static PRESETS: [Preset; 1] = [Preset::new("Loud", &[("level", 1.0)])];
             &PRESETS

@@ -25,7 +25,10 @@ fn a_plugin_loads_by_double_click_and_by_drag_and_offers_its_gui() {
         return;
     };
     let dir = scratch("flow4");
-    let mut app = app_with(empty_project(), PluginHost::new(config(&dir)));
+    let mut app = app_with(
+        empty_project(),
+        PluginHost::with_reference_devices(config(&dir)),
+    );
     app.engine_mut().host_mut().start_scan(&dirs);
     step_until(&mut app, "the scan", |a| {
         !a.engine().host().is_scanning() && a.engine().host().last_scan().is_some()

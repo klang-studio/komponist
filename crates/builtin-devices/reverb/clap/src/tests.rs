@@ -69,7 +69,7 @@ fn impulse_through_the_clap_callbacks_matches_the_existing_hall_dsp() {
     const FRAMES: usize = 512;
     let instance = Instance::new::<HallPlugin>();
     let plugin = instance.0;
-    let mut reference = (Hall::SPEC.dsp)();
+    let mut reference = komponist_reverb::dsp();
     for (index, parameter) in Hall::SPEC.params().iter().enumerate() {
         reference.set_param(index, parameter.default);
     }

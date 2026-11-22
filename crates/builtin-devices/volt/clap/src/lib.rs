@@ -195,6 +195,12 @@ fn volt_layout(lang: Lang) -> DeviceLayout {
 
 type VoltPlugin = Instrument<Volt>;
 
+impl komponist_bundled_clap_adapter::AudioDefinition for Volt {
+    fn dsp() -> Box<dyn komponist_device_core::Dsp> {
+        komponist_volt::dsp()
+    }
+}
+
 nice_export_clap!(VoltPlugin);
 
 #[cfg(test)]

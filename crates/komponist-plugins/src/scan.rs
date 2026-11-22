@@ -79,6 +79,8 @@ pub(crate) struct ScanSetup {
     pub dirs: PluginDirs,
     pub cache: ScanCache,
     pub cache_file: PathBuf,
+    /// A scan limited to the private bundle directory keeps cached external plugins.
+    pub bundled_only: Option<PathBuf>,
     pub parallel: usize,
     pub timeout: Duration,
 }
@@ -241,6 +243,16 @@ fn run(setup: &ScanSetup, cancel: &AtomicBool) -> Option<ScanOutcome> {
     }
 
     let mut cache = ScanCache::default();
+    if let Some(root) = &setup.bundled_only {
+        cache.bundles.extend(
+            setup
+                .cache
+                .bundles
+                .iter()
+                .filter(|bundle| !bundle.path.starts_with(root))
+                .cloned(),
+        );
+    }
     let mut per_dir: Vec<DirCount> = folders
         .iter()
         .map(|(format, dir)| DirCount {

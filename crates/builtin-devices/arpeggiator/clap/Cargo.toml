@@ -12,12 +12,12 @@ crate-type = ["cdylib"]
 [dependencies]
 komponist-bundled-clap-adapter.workspace = true
 komponist-device-core.workspace = true
+komponist-engine.workspace = true
 komponist-model.workspace = true
 komponist-arpeggiator.workspace = true
 nice-plug.workspace = true
 
 [dev-dependencies]
 clap-sys.workspace = true
-komponist-engine.workspace = true
 komponist-native-clap-sdk.workspace = true
 serde_json.workspace = true

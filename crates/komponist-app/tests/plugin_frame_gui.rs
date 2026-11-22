@@ -56,7 +56,10 @@ fn test_plugins_in_real_frames() {
         return;
     };
     let dir = scratch("frame-gui");
-    let mut app = app_with(empty_project(), PluginHost::new(config(&dir)));
+    let mut app = app_with(
+        empty_project(),
+        PluginHost::with_reference_devices(config(&dir)),
+    );
     open_scratch_project(&mut app, &dir);
     app.engine_mut().host_mut().start_scan(&dirs);
 

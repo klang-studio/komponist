@@ -1,6 +1,6 @@
 //! Stereo Delay exported through the native CLAP adapter.
 
-use komponist_bundled_clap_adapter::{Binding, Effect, EffectDefinition};
+use komponist_bundled_clap_adapter::{Binding, DeviceDefinition, Effect};
 use komponist_device_core::Spec;
 use komponist_device_core::layout::{knob, param, single_page, toggle};
 use komponist_i18n::Lang;
@@ -53,7 +53,7 @@ enum SyncNote {
     Whole,
 }
 
-impl EffectDefinition for Delay {
+impl DeviceDefinition for Delay {
     const SPEC: &'static Spec = &komponist_delay::SPEC;
     const NAME: &'static str = "Delay";
     const ID: &'static str = "org.klang-studio.komponist.delay";
@@ -88,6 +88,12 @@ impl EffectDefinition for Delay {
 }
 
 type DelayPlugin = Effect<Delay>;
+
+impl komponist_bundled_clap_adapter::AudioDefinition for Delay {
+    fn dsp() -> Box<dyn komponist_device_core::Dsp> {
+        komponist_delay::dsp()
+    }
+}
 
 nice_export_clap!(DelayPlugin);
 

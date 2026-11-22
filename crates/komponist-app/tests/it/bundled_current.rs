@@ -258,6 +258,41 @@ fn assert_ready(app: &mut App, expected: &[(TrackId, komponist_model::Device)], 
     }
 }
 
+#[test]
+#[ignore = "requires the authenticated release payload; run measure-bundled-clap.py --current-projects"]
+fn demo_and_new_tracks_use_verified_clap_only() {
+    let (launcher, _) = package_env();
+    let work = tempfile::tempdir().unwrap();
+    let host = scan(&launcher, work.path());
+    assert!(
+        host.catalog()
+            .entries()
+            .iter()
+            .all(|entry| !entry.is_builtin())
+    );
+    let bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some();
+    let project = komponist_app::showcase::bundled_demo(&host, &work.path().join("kit")).unwrap();
+    let expected = devices(&project);
+    assert!(!expected.is_empty());
+    assert!(
+        expected
+            .iter()
+            .all(|(_, device)| device.plugin.format == PluginFormat::Clap)
+    );
+    let mut app = app_with(project, host);
+    assert_ready(&mut app, &expected, bridge);
+
+    let count = app.project().tracks.len();
+    app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+    assert_eq!(app.project().tracks.len(), count + 1);
+    let track = app.project().tracks.last().unwrap();
+    let (_, instrument) = track.channel.instrument().unwrap();
+    assert_eq!(instrument.plugin.id, format!("{DEVICE_PREFIX}hexa"));
+    let added = [(track.id, instrument.as_ref().clone())];
+    assert_ready(&mut app, &added, bridge);
+    app.shutdown();
+}
+
 fn assert_audible(app: &mut App, track: TrackId, key: u8) {
     let deadline = Instant::now() + PATIENCE;
     loop {

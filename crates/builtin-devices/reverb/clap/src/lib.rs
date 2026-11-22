@@ -1,6 +1,6 @@
 //! Hall packaged as a conventional CLAP bundle with its bilingual native layout.
 
-use komponist_bundled_clap_adapter::{Binding, Effect, EffectDefinition};
+use komponist_bundled_clap_adapter::{Binding, DeviceDefinition, Effect};
 use komponist_device_core::Spec;
 use komponist_model::params::ParamInfo;
 use nice_plug::prelude::*;
@@ -20,7 +20,7 @@ enum Room {
     Church,
 }
 
-impl EffectDefinition for Hall {
+impl DeviceDefinition for Hall {
     const SPEC: &'static Spec = &komponist_reverb::SPEC;
     const NAME: &'static str = "Hall";
     const ID: &'static str = "org.klang-studio.komponist.hall";
@@ -37,6 +37,12 @@ impl EffectDefinition for Hall {
 }
 
 type HallPlugin = Effect<Hall>;
+
+impl komponist_bundled_clap_adapter::AudioDefinition for Hall {
+    fn dsp() -> Box<dyn komponist_device_core::Dsp> {
+        komponist_reverb::dsp()
+    }
+}
 
 nice_export_clap!(HallPlugin);
 

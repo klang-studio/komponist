@@ -50,8 +50,15 @@ pub trait DeviceDefinition: Send + 'static {
     fn configure_panel(_panel: &mut Panel) {}
 }
 
-/// Shared definition for spec-based audio effects.
-pub use DeviceDefinition as EffectDefinition;
+/// Builds the DSP for an effect or instrument.
+pub trait AudioDefinition: DeviceDefinition {
+    fn dsp() -> Box<dyn Dsp>;
+}
+
+/// Builds the event processor for a MIDI effect.
+pub trait MidiDefinition: DeviceDefinition {
+    fn event_stage() -> Box<dyn komponist_engine::EventProcessor + Send>;
+}
 
 /// A regular stereo CLAP effect backed by an existing device processor.
 pub struct Effect<T> {
@@ -65,10 +72,10 @@ pub struct Effect<T> {
     definition: std::marker::PhantomData<T>,
 }
 
-impl<T: EffectDefinition> Default for Effect<T> {
+impl<T: AudioDefinition> Default for Effect<T> {
     fn default() -> Self {
         let params = parameter::Parameters::new(T::SPEC, T::choice);
-        let dsp = (T::SPEC.dsp)();
+        let dsp = T::dsp();
         let meter = T::REPORTS_REDUCTION.then(|| Arc::new(meter::Meter::new(dsp.tap())));
         Self {
             applied: vec![None; params.len()],
@@ -88,7 +95,7 @@ impl<T: EffectDefinition> Default for Effect<T> {
     }
 }
 
-impl<T: EffectDefinition> Effect<T> {
+impl<T: AudioDefinition> Effect<T> {
     fn apply_params(&mut self, activating: bool) {
         for (index, applied) in self.applied.iter_mut().enumerate() {
             if (activating || self.latency_param != Some(index))
@@ -100,7 +107,7 @@ impl<T: EffectDefinition> Effect<T> {
     }
 }
 
-impl<T: EffectDefinition> Plugin for Effect<T> {
+impl<T: AudioDefinition> Plugin for Effect<T> {
     const NAME: &'static str = T::NAME;
     const VENDOR: &'static str = "klang-studio";
     const URL: &'static str = "https://github.com/klang-studio/komponist";
@@ -207,7 +214,7 @@ impl<T: EffectDefinition> Plugin for Effect<T> {
     }
 }
 
-impl<T: EffectDefinition> ClapPlugin for Effect<T> {
+impl<T: AudioDefinition> ClapPlugin for Effect<T> {
     const CLAP_ID: &'static str = T::ID;
     const CLAP_DESCRIPTION: Option<&'static str> = None;
     const CLAP_MANUAL_URL: Option<&'static str> = None;
@@ -233,13 +240,13 @@ impl<T: EffectDefinition> ClapPlugin for Effect<T> {
     }
 }
 
-impl<T: EffectDefinition> NativeClapLayout for Effect<T> {
+impl<T: AudioDefinition> NativeClapLayout for Effect<T> {
     fn panel() -> Panel {
         panel_for::<T>()
     }
 }
 
-fn panel_for<T: DeviceDefinition>() -> Panel {
+pub fn panel_for<T: DeviceDefinition>() -> Panel {
     let mut panel = panel_from_parts(
         T::layout,
         T::SPEC.params_in(Lang::En),

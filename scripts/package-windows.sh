@@ -71,11 +71,30 @@ if [ "$skip_build" = 0 ] && [ "$asio" = 1 ]; then
     features=(--features asio)
 fi
 
+source scripts/bundled-clap-build.sh
+stage_bundled_clap=0
+if [ -z "$bundled_clap" ]; then
+    if [ "$skip_build" = 1 ]; then
+        echo "package-windows.sh: --skip-build requires the matching --bundled-clap directory" >&2
+        exit 2
+    fi
+    staging="$(mktemp -d)"
+    trap 'rm -rf -- "$staging"' EXIT
+    bundled_clap="$staging/bundled-clap"
+    stage_bundled_clap=1
+fi
+
 if [ "$skip_build" = 0 ]; then
     # One heavy build at a time across worktrees, at low priority (CLAUDE.md, "Build load").
     (
         source scripts/build-lock.sh
-        lowprio cargo build --release -p komponist-app --bin komponist ${features[@]+"${features[@]}"}
+        if [ "$stage_bundled_clap" = 1 ]; then
+            digest="$(stage_native_bundled_clap "$bundled_clap")"
+        else
+            digest="$(bundled_clap_manifest_digest "$bundled_clap")"
+        fi
+        export KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256="$digest"
+        lowprio cargo build --locked --release -p komponist-app --bin komponist ${features[@]+"${features[@]}"}
     )
 fi
 exe=target/release/komponist.exe
@@ -113,9 +132,8 @@ dir="$out/$name"
 rm -rf "$dir" "$out/$name.zip" "$out/$name.zip.sha256"
 mkdir -p "$dir"
 cp "$exe" "$dir/komponist.exe"
-if [ -n "$bundled_clap" ]; then
-    cp -R "$bundled_clap" "$dir/bundled-clap"
-fi
+cp -R "$bundled_clap" "$dir/bundled-clap"
+"$dir/komponist.exe" --verify-bundled-clap
 rm -rf "$out/.signing"
 cp LICENSE "$dir/LICENSE"
 cat >"$dir/README.txt" <<README

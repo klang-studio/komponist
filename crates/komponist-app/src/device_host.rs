@@ -8,10 +8,9 @@
 //! and warnings go to the status bar.
 //!
 //! Two implementations:
-//! - [`PluginHost`], the app's: hexa and the internal devices in process through
-//!   [`BuiltinHost`], every other device (scanned CLAP and VST3 plugins) in a bridge process of the
-//!   [`PluginManager`] (ARCHITECTURE §8).
-//! - [`BuiltinHost`], for tests and as the fallback: hexa in process
+//! - [`PluginHost`], the app's: verified bundled CLAPs in process and external CLAP and VST3
+//!   plugins through the bridge, managed by [`PluginManager`] (ARCHITECTURE §8).
+//! - [`BuiltinHost`], for tests and comparisons: hexa in process
 //!   (Hexa) and the internal devices ([`Internal`], the Sampler among them); every other device gets no processor, so the engine passes an
 //!   effect's input through and an instrument stays silent, and its status is
 //!   [`DeviceStatus::Missing`].
@@ -675,17 +674,16 @@ impl DeviceHost for BuiltinHost {
 // PluginHost
 // ------------------------------------------------------------------------------------------------
 
-/// The app's device host: hexa in process through [`BuiltinHost`], every other device
-/// (klopfer, CLAP, VST3) in a bridge process of the [`PluginManager`].
+/// Loads verified bundled CLAP in-process and external plugins through the bridge.
 ///
 /// A device the manager cannot resolve plays without processor and stays `Missing` with its
 /// state; after a scan the app asks again ([`DeviceHost::create_processor`] for a device that
 /// still has a slot). Dropping the host kills every bridge (the manager's drop);
 /// [`DeviceHost::shutdown`] is the graceful way at app exit.
-#[derive(Debug)]
 pub struct PluginHost {
     manager: PluginManager,
-    builtin: BuiltinHost,
+    reference: Option<Box<dyn DeviceHost>>,
+    project_dir: Option<PathBuf>,
     /// Devices handed to the manager and not released since.
     external: HashSet<DeviceId>,
 }
@@ -696,7 +694,19 @@ impl PluginHost {
     pub fn new(config: PluginManagerConfig) -> PluginHost {
         PluginHost {
             manager: PluginManager::new(config),
-            builtin: BuiltinHost::new(),
+            reference: None,
+            project_dir: None,
+            external: HashSet::new(),
+        }
+    }
+
+    /// Supplies the legacy processors to integration tests and performance comparisons.
+    #[doc(hidden)]
+    pub fn with_reference_devices(config: PluginManagerConfig) -> Self {
+        Self {
+            manager: PluginManager::with_reference_devices(config),
+            reference: Some(Box::new(BuiltinHost::new())),
+            project_dir: None,
             external: HashSet::new(),
         }
     }
@@ -705,6 +715,10 @@ impl PluginHost {
     /// [`DeviceHost::create_processor`]).
     pub fn manager(&self) -> &PluginManager {
         &self.manager
+    }
+
+    pub fn start_bundled_scan(&mut self) {
+        self.manager.start_bundled_scan();
     }
 
     /// Whether `device` is handled by the manager (a bridge, or `Missing` / `Crashed` without
@@ -720,8 +734,10 @@ impl DeviceHost for PluginHost {
         device: &Device,
         setup: ProcessorSetup,
     ) -> Option<Box<dyn Processor>> {
-        if is_in_process(device) {
-            return self.builtin.create_processor(device, setup);
+        if is_in_process(device)
+            && let Some(reference) = &mut self.reference
+        {
+            return reference.create_processor(device, setup);
         }
         // A device seen before ("Neu laden", found by a scan) starts a fresh bridge with its last
         // known state; the manager kills an old bridge that is still alive.
@@ -737,13 +753,15 @@ impl DeviceHost for PluginHost {
     fn release(&mut self, device: DeviceId) {
         if self.external.remove(&device) {
             self.manager.release(device);
-        } else {
-            self.builtin.release(device);
+        } else if let Some(reference) = &mut self.reference {
+            reference.release(device);
         }
     }
 
     fn for_each_meter(&self, f: &mut dyn FnMut(DeviceId, &DeviceMeter)) {
-        self.builtin.for_each_meter(f);
+        if let Some(reference) = &self.reference {
+            reference.for_each_meter(f);
+        }
         self.manager.for_each_effect_meter(f);
     }
 
@@ -751,7 +769,9 @@ impl DeviceHost for PluginHost {
         if self.is_external(device) {
             self.manager.status(device)
         } else {
-            self.builtin.status(device)
+            self.reference
+                .as_ref()
+                .map_or(DeviceStatus::Ok, |host| host.status(device))
         }
     }
 
@@ -759,12 +779,17 @@ impl DeviceHost for PluginHost {
         if self.is_external(device) {
             self.manager.latency(device)
         } else {
-            self.builtin.latency(device)
+            self.reference
+                .as_ref()
+                .map_or(0, |host| host.latency(device))
         }
     }
 
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
-        let mut events = self.builtin.poll();
+        let mut events = self
+            .reference
+            .as_mut()
+            .map_or_else(Vec::new, |host| host.poll());
         events.extend(self.manager.poll());
         events
     }
@@ -883,17 +908,22 @@ impl DeviceHost for PluginHost {
         if self.is_external(device) {
             self.manager.note_names(device)
         } else {
-            self.builtin.note_names(device)
+            self.reference
+                .as_ref()
+                .map_or(&[], |host| host.note_names(device))
         }
     }
 
     fn set_project_dir(&mut self, dir: Option<PathBuf>) {
         self.manager.set_project_dir(dir.clone());
-        self.builtin.set_project_dir(dir);
+        if let Some(reference) = &mut self.reference {
+            reference.set_project_dir(dir.clone());
+        }
+        self.project_dir = dir;
     }
 
     fn project_dir(&self) -> Option<PathBuf> {
-        self.builtin.project_dir()
+        self.project_dir.clone()
     }
 
     fn sampler_ui(&self, device: DeviceId) -> Option<&komponist_ipc::sampler_ui::Snapshot> {
@@ -905,7 +935,7 @@ impl DeviceHost for PluginHost {
     }
 
     fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {
-        self.builtin.sampler(device)
+        self.reference.as_ref()?.sampler(device)
     }
 
     fn has_gui(&self, device: DeviceId) -> bool {

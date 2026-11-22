@@ -939,7 +939,10 @@ impl App {
                 entry.plugin.clone(),
                 komponist_hexa::state::encode_clap_patch(patch, &entry.plugin.version),
             ),
-            None => (hexa_ref(), komponist_hexa::encode_state(&patch)),
+            None if self.default_hexa().is_some() => {
+                (hexa_ref(), komponist_hexa::encode_state(&patch))
+            }
+            None => return,
         };
         let spec = NewTrack {
             name: None,
@@ -1759,11 +1762,11 @@ impl App {
 
     /// Ctrl T and instrument drops: a new MIDI track with `instrument`, armed exclusively,
     /// selected (S10).
-    fn new_midi_track(&mut self, index: Option<usize>, instrument: PluginRef) {
+    fn new_midi_track(&mut self, index: Option<usize>, instrument: Option<PluginRef>) {
         let spec = NewTrack {
             name: None,
             hue: None,
-            instrument: Some(instrument),
+            instrument,
             index,
             arm_exclusive: true,
         };
@@ -1841,6 +1844,14 @@ impl App {
         }
     }
 
+    fn default_hexa(&self) -> Option<PluginRef> {
+        let catalog = self.engine.host().catalog();
+        catalog
+            .packaged(komponist_builtin::BuiltinKind::Hexa)
+            .or_else(|| catalog.resolve(&hexa_ref()))
+            .map(|entry| entry.plugin.clone())
+    }
+
     /// Opens the "Neue Spur" dialog with the instrument of the last one (hexa the first time).
     fn open_new_track_dialog(&mut self) {
         if self.ui.dialog.is_some() || self.dialogs.overlay.is_some() {
@@ -1850,7 +1861,7 @@ impl App {
             .dialogs
             .last_instrument
             .clone()
-            .unwrap_or_else(|| Some(hexa_ref()));
+            .unwrap_or_else(|| self.default_hexa());
         let mut state = crate::dialogs::new_track::State::new(instrument);
         state.choose_default_input(self.project(), &self.engine);
         self.open_overlay(crate::dialogs::Overlay::NewTrack(state));
@@ -2490,7 +2501,7 @@ impl App {
         let selected = self.ui.selection.tracks.iter().next().copied();
         match (role, target) {
             (DeviceRole::Instrument, DropTarget::NewTrack { index }) => {
-                self.new_midi_track(index, plugin);
+                self.new_midi_track(index, Some(plugin));
             }
             (DeviceRole::Instrument, DropTarget::Track(track))
             | (

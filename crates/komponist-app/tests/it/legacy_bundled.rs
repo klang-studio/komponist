@@ -79,7 +79,7 @@ fn historical_projects_migrate_and_play() {
 
         let mut config = config(&scratch.path().join(name));
         config.bridge_exe = launcher.clone().into();
-        let mut host = PluginHost::new(config.clone());
+        let mut host = PluginHost::with_reference_devices(config.clone());
         host.start_scan(&PluginDirs {
             clap: Vec::new(),
             vst3: Vec::new(),

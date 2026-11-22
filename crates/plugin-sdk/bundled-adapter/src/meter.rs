@@ -10,7 +10,7 @@ use komponist_native_clap_sdk::effect_meter::{
 };
 use nice_plug::wrapper::clap::{Wrapper, clap_plugin};
 
-use super::{Effect, EffectDefinition};
+use super::{AudioDefinition, Effect};
 
 pub(super) struct Meter {
     enabled: AtomicBool,
@@ -71,14 +71,14 @@ impl Meter {
 
 struct Table<T>(std::marker::PhantomData<T>);
 
-impl<T: EffectDefinition> Table<T> {
+impl<T: AudioDefinition> Table<T> {
     const VALUE: Extension = Extension {
         begin: Some(begin::<T>),
         read: Some(read::<T>),
     };
 }
 
-pub(super) fn extension<T: EffectDefinition>(id: &CStr) -> *const c_void {
+pub(super) fn extension<T: AudioDefinition>(id: &CStr) -> *const c_void {
     if T::REPORTS_REDUCTION && id == EXTENSION_ID {
         (&Table::<T>::VALUE as *const Extension).cast()
     } else {
@@ -86,7 +86,7 @@ pub(super) fn extension<T: EffectDefinition>(id: &CStr) -> *const c_void {
     }
 }
 
-unsafe extern "C" fn begin<T: EffectDefinition>(plugin: *const c_void, detector: u32) {
+unsafe extern "C" fn begin<T: AudioDefinition>(plugin: *const c_void, detector: u32) {
     // SAFETY: The extension is only queried from Effect<T> and its instance outlives the call.
     unsafe {
         Wrapper::<Effect<T>>::with_custom_extension_data::<Meter, _>(
@@ -96,10 +96,7 @@ unsafe extern "C" fn begin<T: EffectDefinition>(plugin: *const c_void, detector:
     };
 }
 
-unsafe extern "C" fn read<T: EffectDefinition>(
-    plugin: *const c_void,
-    data: *mut BlockMeter,
-) -> u32 {
+unsafe extern "C" fn read<T: AudioDefinition>(plugin: *const c_void, data: *mut BlockMeter) -> u32 {
     // SAFETY: The host supplies a writable, unique pointer to one BlockMeter or null.
     let Some(data) = (unsafe { data.as_mut() }) else {
         return 0;

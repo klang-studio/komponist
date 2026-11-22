@@ -284,7 +284,7 @@ fn engine_cpu_16_hexa_tracks_and_8_bridges() {
 
 fn bridges_case(dirs: &komponist_plugins::PluginDirs, workers: u32) {
     let dir = scratch(&format!("engine-perf-{workers}"));
-    let mut host = PluginHost::new(config(&dir));
+    let mut host = PluginHost::with_reference_devices(config(&dir));
     host.start_scan(dirs);
     let deadline = Instant::now() + PATIENCE;
     'scan: loop {
