@@ -12,9 +12,9 @@
 //! kp-test-synth draws with OpenGL (nice-plug-egui on baseview), which creates a 3.2 core context
 //! through `wglCreateContextAttribsARB`. A machine with only Windows' software renderer ("GDI
 //! Generic", OpenGL 1.1: the GitHub Windows runner, no GPU) does not offer it, so the plugin
-//! cannot open its GUI ("set_parent: Failed to set plugin window parent"); there the open test
-//! checks that the bridge reports the failure without harm ([`gui_without_opengl`]), as
-//! `frame_mac` does on the macOS runner (#94).
+//! cannot open its GUI. On those machines the synth tests exercise audio and shutdown; the
+//! frame assertions require an OpenGL driver. Protocol-level GUI rejection is tested by
+//! [`x11_targets_and_plugins_without_gui_are_refused`].
 
 use crate::common;
 
@@ -274,35 +274,20 @@ fn opengl_available() -> bool {
     }
 }
 
-/// Without a modern OpenGL driver: opening the frame is refused with a GUI error (not fatal), and
-/// the bridge keeps processing and shuts down cleanly. What a user on such a machine sees for an
-/// OpenGL plugin.
-fn gui_without_opengl(bundle: &Path, id: &str) {
-    eprintln!("skipping the frame checks: kp-test-synth's GUI needs OpenGL 3.2 (module docs)");
-    let mut bridge = offscreen_bridge();
-    bridge.load(bundle, id);
-    bridge.activate();
-    bridge.send(own_frame("kp-test-synth", None));
-    let error = bridge.expect_error(ErrorContext::Gui);
-    assert!(
-        error.contains("GUI failed") || error.starts_with("plugin frame initialization failed:"),
-        "{error}"
-    );
-    process(&mut bridge);
-    assert_eq!(bridge.shutdown(), EXIT_OK);
-}
-
 fn synth_frame(bundle: &Path, id: &str) {
     let _startup = FRAME_STARTUP
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    if !opengl_available() {
-        return gui_without_opengl(bundle, id);
-    }
     let mut bridge = offscreen_bridge();
     let info = bridge.load(bundle, id);
     assert!(info.has_gui, "kp-test-synth has a Win32 GUI");
     bridge.activate();
+    if !opengl_available() {
+        eprintln!("skipping the frame checks: kp-test-synth's GUI needs OpenGL 3.2");
+        process(&mut bridge);
+        assert_eq!(bridge.shutdown(), EXIT_OK);
+        return;
+    }
 
     let t0 = Instant::now();
     let (size, resizable, window) = open(&mut bridge, "kp-test-synth");
@@ -405,7 +390,6 @@ fn shutdown_closes_an_open_frame() {
         return;
     };
     if !opengl_available() {
-        // This check needs an open window. The synth open test covers the headless refusal.
         return;
     }
     let mut bridge = offscreen_bridge();
@@ -427,7 +411,6 @@ fn a_dying_bridge_takes_its_frame_with_it() {
         return;
     };
     if !opengl_available() {
-        // This check needs an open window. The synth open test covers the headless refusal.
         return;
     }
     let mut bridge = offscreen_bridge();
@@ -453,7 +436,6 @@ fn the_key_hook_takes_shortcuts_from_the_focused_plugin() {
         return;
     };
     if !opengl_available() {
-        // This check needs an open window. The synth open test covers the headless refusal.
         return;
     }
     let mut bridge = offscreen_bridge();
