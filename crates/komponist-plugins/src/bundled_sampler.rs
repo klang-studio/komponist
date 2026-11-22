@@ -81,6 +81,33 @@ pub fn assets(state: &[u8]) -> Option<String> {
     Some(asset_field(&decode(state)?)?.to_owned())
 }
 
+/// Merge manual parameter edits into an asset-bearing state before editing its links.
+pub fn edit_params<'a>(
+    version: &str,
+    state: Option<&[u8]>,
+    edits: impl Iterator<Item = (&'a komponist_model::params::ParamInfo, f64)>,
+) -> Option<Vec<u8>> {
+    let mut changes = edits.filter(|(_, value)| value.is_finite()).peekable();
+    changes.peek()?;
+    let (mut params, fields) = if let Some(state) = state {
+        let mut state = decode(state)?;
+        (
+            std::mem::take(state.get_mut("params")?.as_object_mut()?),
+            std::mem::take(state.get_mut("fields")?.as_object_mut()?),
+        )
+    } else {
+        (Map::new(), Map::new())
+    };
+    for (info, raw) in changes {
+        let value = pinned_clap_state::from_clap(info, raw);
+        params.insert(
+            info.id.as_str().into(),
+            pinned_clap_state::parameter(info, value).0,
+        );
+    }
+    Some(pinned_clap_state::encode(version, params, fields))
+}
+
 /// Replace or clear a pad's link. A new recording resets its playback region. Relinking an
 /// existing General Sampler source preserves its slice map, as in the original device.
 pub fn edit_link(

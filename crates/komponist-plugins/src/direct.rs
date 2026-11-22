@@ -59,8 +59,16 @@ impl DirectClap {
         Some(control(&mut *self.plugin))
     }
 
-    pub(crate) fn sampler_ui(&self) -> Option<komponist_ipc::sampler_ui::Snapshot> {
-        self.plugin.sampler_ui()
+    pub(crate) fn sampler_ui(
+        &self,
+        export_tempo: Option<f64>,
+    ) -> Option<komponist_ipc::sampler_ui::Snapshot> {
+        if export_tempo.is_some() {
+            let _guard = ProcessingGuard::try_enter(&self.processing)?;
+            self.plugin.sampler_ui(export_tempo)
+        } else {
+            self.plugin.sampler_ui(None)
+        }
     }
 
     pub(crate) fn preview_sampler_slice(&self, time: Option<f64>) {

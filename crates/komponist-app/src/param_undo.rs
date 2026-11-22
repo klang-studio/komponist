@@ -156,6 +156,7 @@ impl App {
     /// `PluginAction::BeginParamGesture`: opens the gesture named after the parameter.
     pub(crate) fn begin_param_gesture(&mut self, device: DeviceId, id: u32) {
         self.end_gesture();
+        self.flush_sampler_params(device);
         let label = self.param_label(device, id);
         self.doc.begin_gesture(label);
         self.param_undo.gesture_device = Some(device);
@@ -243,10 +244,12 @@ impl App {
         self.follow_device_states(&before);
         let now = Instant::now();
         for device in std::mem::take(&mut self.param_undo.gesture_bridged) {
+            self.forget_sampler_params(device);
             let state = self
                 .project()
                 .find_device(device)
-                .and_then(|(_, _, d)| d.state.clone());
+                .and_then(|(_, _, d)| d.state.clone())
+                .or_else(|| self.param_undo.baseline.get(&device).cloned());
             if let Some(state) = state
                 && self.engine.host_mut().set_state(device, &state)
             {
@@ -304,6 +307,7 @@ impl App {
             self.engine.host_mut().set_param(device, id, value)
         };
         if bridged {
+            self.remember_sampler_param(device, id);
             let label = self.param_label(device, id);
             self.param_undo
                 .turned
@@ -420,10 +424,32 @@ impl App {
         self.end_gesture();
     }
 
+    /// An asset edit supersedes outstanding snapshots. Commit the latest manual knob changes
+    /// as their own undo step before queuing the new state.
+    pub(crate) fn store_sampler_knob_state(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+        self.param_undo.awaiting.remove(&device);
+        self.param_undo.echo.remove(&device);
+        self.param_undo
+            .deferred
+            .retain(|(pending, _)| *pending != device);
+        if self.doc.in_gesture() {
+            let _ = self.store_param_state(device, state, "");
+        } else {
+            self.store_snapshot(device, state);
+        }
+    }
+
     /// A state snapshot of a bridged plugin (its GUI, a card parameter, saving) goes into the
     /// document as a tracked change, coalesced (module docs). A state equal to the stored one is
     /// skipped.
     pub(crate) fn store_snapshot(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+        self.apply_device_snapshot(device, state);
+        if self.has_state(device, state) {
+            self.reconcile_sampler_params(device, state);
+        }
+    }
+
+    fn apply_device_snapshot(&mut self, device: DeviceId, state: &Arc<[u8]>) {
         if self.has_state(device, state) {
             return;
         }
@@ -570,10 +596,20 @@ impl App {
             };
             if old.plugin != device.plugin {
                 self.param_undo.forget_device(device.id);
+                self.forget_sampler_params(device.id);
+                self.reset_sampler_hit(device.id);
                 continue;
             }
             if old.state != device.state && !is_hexa(device) && internal_kind(device).is_none() {
+                self.forget_sampler_params(device.id);
+                if komponist_plugins::packaged_kind(&device.plugin).is_some() {
+                    self.param_undo.awaiting.remove(&device.id);
+                    if device.state.is_none() {
+                        self.reset_sampler_hit(device.id);
+                    }
+                }
                 if device.state.is_none()
+                    && komponist_plugins::packaged_kind(&device.plugin).is_none()
                     && let Some(baseline) = self.param_undo.baseline.get(&device.id).cloned()
                 {
                     self.engine.host_mut().set_state(device.id, &baseline);

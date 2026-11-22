@@ -197,6 +197,11 @@ pub trait DeviceHost {
         false
     }
 
+    /// Whether the host captured this state and has no later edits awaiting capture.
+    fn is_current_param_snapshot(&self, _device: DeviceId, _state: &Arc<[u8]>) -> bool {
+        false
+    }
+
     /// Sets a parameter of a bridged device; `false` if this host does not handle `device` (the
     /// caller then sends the engine's `SetParam` to the device's slot, as for hexa).
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
@@ -254,6 +259,9 @@ pub trait DeviceHost {
     fn sampler_ui(&self, _device: DeviceId) -> Option<&komponist_ipc::sampler_ui::Snapshot> {
         None
     }
+
+    /// Request a General Sampler stretch at the detached engine's offline tempo.
+    fn set_sampler_export_tempo(&mut self, _device: DeviceId, _tempo: Option<f64>) {}
 
     /// Whether a sampler still needs to hand its decoded samples or stretch to audio.
     fn sampler_is_loading(&self, device: DeviceId) -> bool {
@@ -847,6 +855,10 @@ impl DeviceHost for PluginHost {
         self.manager.is_macro_snapshot(device, state)
     }
 
+    fn is_current_param_snapshot(&self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        self.manager.is_current_param_snapshot(device, state)
+    }
+
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
         if !self.is_external(device) {
             return false;
@@ -964,6 +976,10 @@ impl DeviceHost for PluginHost {
 
     fn set_selected_render_mode(&mut self, devices: &[DeviceId], mode: RenderMode) {
         self.manager.set_selected_render_mode(devices, mode);
+    }
+
+    fn set_sampler_export_tempo(&mut self, device: DeviceId, tempo: Option<f64>) {
+        self.manager.set_sampler_export_tempo(device, tempo);
     }
 
     fn shutdown(&mut self) {

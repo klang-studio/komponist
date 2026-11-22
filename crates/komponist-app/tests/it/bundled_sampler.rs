@@ -23,7 +23,9 @@ use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent};
 use komponist_sampler::links::{self, SampleLink};
 
 use crate::acceptance_support::harness;
-use crate::common::{PATIENCE, app_with, config, step_for, step_until};
+use crate::common::{NULL_BUFFER, PATIENCE, app_with, config, step_for, step_until};
+
+const SAMPLE_FRAMES: u32 = 8192;
 
 #[test]
 #[ignore = "requires a verified all-device package; run with scripts/measure-bundled-clap.py --historical-projects"]
@@ -227,7 +229,15 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
     let scratch = tempfile::tempdir().unwrap();
     let sample = scratch.path().join("tone.wav");
-    write_sample(&sample);
+    write_wav_with_region(&sample, |frame| {
+        // Only the 40–100 ms slice contains sound. Leave silence at both cuts so
+        // interpolation near a slice boundary cannot read into the tone.
+        if (2_400..4_320).contains(&frame) {
+            11_000
+        } else {
+            0
+        }
+    });
     let mut config = config(scratch.path());
     config.bridge_exe = launcher.into();
     let mut host = PluginHost::new(config);
@@ -270,7 +280,10 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         tracks.push((kind, track, device.id));
         project = next;
     }
-    let mut app = app_with(project, host).with_lang(komponist_i18n::Lang::De);
+    let project_path = scratch.path().join("samplers.komponist");
+    save_project(&project_path, &project).unwrap();
+    let mut app = app_with(Project::new("Empty"), host).with_lang(komponist_i18n::Lang::De);
+    app.dispatch(Action::Project(ProjectAction::OpenPath(project_path)));
     for (kind, track, device) in &tracks {
         let pad = usize::from(*kind == Internal::Sampler) * 2;
         step_until(&mut app, "initial sampler UI", |app| {
@@ -283,12 +296,41 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             app.engine().host().bridge_pid(*device).is_some(),
             force_bridge
         );
+        // Turn a knob and replace the sample before the host has captured the knob turn.
+        let edited = if *kind == Internal::GeneralSampler {
+            let wire = app
+                .engine()
+                .host()
+                .native_layout(*device)
+                .unwrap()
+                .author_ids()
+                .unwrap()["gain"];
+            let info = kind
+                .params()
+                .iter()
+                .find(|param| param.id.as_str() == "gain")
+                .unwrap();
+            let value = komponist_device_core::pinned_clap_state::to_clap(info, -12.0);
+            app.dispatch(Action::Plugin(PluginAction::SetParam {
+                device: *device,
+                id: wire,
+                value,
+            }));
+            Some((wire, value))
+        } else {
+            None
+        };
         app.dispatch(Action::Plugin(PluginAction::LoadSample {
             device: *device,
             pad,
             path: sample.clone(),
         }));
         step_until(&mut app, "loaded sampler waveform", |app| {
+            if let Some((wire, value)) = edited {
+                assert!(
+                    (app.engine().host().param_base(*device, wire).unwrap() - value).abs() < 1e-6
+                );
+            }
             app.engine().host().sampler_ui(*device).is_some_and(|view| {
                 view.idle
                     && view.pads[pad].status == Status::Ready
@@ -347,14 +389,40 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     step_until(&mut app, "restored slice map", |app| {
         !app.engine().host().sampler_is_loading(general)
     });
-    step_for(&mut app, Duration::from_millis(200));
-    app.engine().track_meter(general_track).unwrap().take();
-    app.dispatch(Action::Plugin(PluginAction::PreviewSampler {
-        device: general,
-        slice_time: Some(0.08),
-    }));
-    step_for(&mut app, Duration::from_millis(160));
-    assert!(app.engine().track_meter(general_track).unwrap().take().0 > 1e-4);
+    // Count real callbacks so a delayed bridge block cannot spill into the next measurement.
+    let drain_render = |app: &mut App| {
+        let blocks = u64::from(SAMPLE_FRAMES.div_ceil(NULL_BUFFER) + 1);
+        let complete = app.engine().stats().callbacks() + blocks;
+        step_until(app, "sampler preview render window completed", |app| {
+            app.engine().stats().callbacks() >= complete
+        });
+    };
+    drain_render(&mut app); // Let the earlier whole-sample audition finish.
+    let meter = app.engine().track_meter(general_track).unwrap().clone();
+    let hits = |app: &App| {
+        app.engine()
+            .host()
+            .sampler_ui(general)
+            .map(|view| view.last_hit.0)
+    };
+    let preview_peak = |app: &mut App, time| {
+        let previous_hit = hits(app).expect("sampler UI after restoring slices");
+        meter.take();
+        app.dispatch(Action::Plugin(PluginAction::PreviewSampler {
+            device: general,
+            slice_time: Some(time),
+        }));
+        step_until(app, "preview triggered a sampler voice", |app| {
+            hits(app).is_some_and(|count| count != previous_hit)
+        });
+        drain_render(app);
+        let (left, right) = meter.take();
+        left.max(right)
+    };
+    let quiet_peak = preview_peak(&mut app, 0.02);
+    assert!(quiet_peak < 1e-4, "first slice peak: {quiet_peak}");
+    let tone_peak = preview_peak(&mut app, 0.08);
+    assert!(tone_peak > 1e-3, "second slice peak: {tone_peak}");
 
     let (_, drum_track, drum) = tracks[0];
     let select = |app: &mut App, track| {
@@ -413,6 +481,116 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             .sampler_ui(drum)
             .is_some_and(|snapshot| snapshot.pads[2].status == Status::Ready)
     });
+    let host = h.state().engine().host();
+    let gain = host.native_layout(general).unwrap().author_ids().unwrap()["gain"];
+    let info = Internal::GeneralSampler
+        .params()
+        .iter()
+        .find(|p| p.id.as_str() == "gain")
+        .unwrap();
+    let raw = |db| pinned_clap_state::to_clap(info, db);
+    let set_gain = |app: &mut App, db| {
+        app.dispatch(Action::Plugin(PluginAction::SetParam {
+            device: general,
+            id: gain,
+            value: raw(db),
+        }))
+    };
+    set_gain(h.state_mut(), -18.0);
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::BeginParamGesture {
+            device: general,
+            id: gain,
+        }));
+    set_gain(h.state_mut(), -36.0);
+    h.state_mut()
+        .dispatch(Action::Edit(EditAction::CancelGesture));
+    // Force a full state restore before the cancelled knob can be captured.
+    let changed_slices = komponist_general_sampler::Settings::from_markers([0.02, 0.10]);
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::SetSamplerSlices {
+            device: general,
+            settings: changed_slices,
+        }));
+    step_until(
+        h.state_mut(),
+        "the cancelled turn stays cancelled after a slice edit",
+        |app| {
+            let host = app.engine().host();
+            host.sampler_ui(general).is_some_and(|view| view.idle)
+                && host
+                    .param_base(general, gain)
+                    .is_some_and(|value| (value - raw(-18.0)).abs() < 1e-6)
+        },
+    );
+
+    let replacement = scratch.path().join("replacement.wav");
+    write_sample(&replacement);
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::PickSample {
+            device: general,
+            pad: 0,
+        }));
+    h.run_steps(3);
+    let row = h
+        .get_by_role_and_label(Role::ListItem, "replacement.wav")
+        .rect()
+        .center();
+    crate::acceptance_support::click_at(&mut h, row);
+    set_gain(h.state_mut(), -22.0);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let hosted_state = |app: &App| {
+        let (_, _, d) = app.project().find_device(general).unwrap();
+        pinned_clap_state::decode(d.state.as_deref().unwrap()).unwrap()
+    };
+    let sample_name = |app: &App| {
+        let state = hosted_state(app);
+        let assets = state["fields"][pinned_clap_state::SAMPLE_ASSETS_FIELD]
+            .as_str()
+            .unwrap();
+        links::read(Some(assets.as_bytes()))[0].1.name.clone()
+    };
+    assert_eq!(sample_name(h.state()), "replacement");
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(sample_name(h.state()), "tone");
+    let stored_gain = hosted_state(h.state())["params"]["gain"]["f32"]
+        .as_f64()
+        .unwrap();
+    assert!((stored_gain - raw(-22.0)).abs() < 1e-6);
+    step_until(h.state_mut(), "sample undo completed", |app| {
+        app.engine()
+            .host()
+            .sampler_ui(general)
+            .is_some_and(|ui| ui.idle)
+    });
+
+    let gain_saved = |app: &App, db| {
+        hosted_state(app)["params"]["gain"]["f32"]
+            .as_f64()
+            .is_some_and(|gain| (gain - raw(db)).abs() < 1e-6)
+    };
+    set_gain(h.state_mut(), -28.0);
+    h.state_mut().engine_mut().host_mut().request_state(general);
+    step_until(h.state_mut(), "the card's gain was saved", |app| {
+        gain_saved(app, -28.0)
+    });
+
+    // Simulate a newer change from the host, bypassing the application's card actions.
+    let host = h.state_mut().engine_mut().host_mut();
+    assert!(host.set_param(general, gain, raw(-9.0)));
+    host.request_state(general);
+    step_until(h.state_mut(), "the newer hosted gain was saved", |app| {
+        gain_saved(app, -9.0)
+    });
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::LoadSample {
+            device: general,
+            pad: 0,
+            path: replacement,
+        }));
+    assert_eq!(sample_name(h.state()), "replacement");
+    assert!(gain_saved(h.state(), -9.0));
     h.state_mut().shutdown();
 }
 
@@ -465,6 +643,10 @@ fn write_sample(path: &Path) {
 }
 
 fn write_wav(path: &Path, amplitude: i16) {
+    write_wav_with_region(path, |_| amplitude);
+}
+
+fn write_wav_with_region(path: &Path, amplitude: impl Fn(usize) -> i16) {
     let mut writer = hound::WavWriter::create(
         path,
         hound::WavSpec {
@@ -475,7 +657,8 @@ fn write_wav(path: &Path, amplitude: i16) {
         },
     )
     .unwrap();
-    for frame in 0..8192 {
+    for frame in 0..SAMPLE_FRAMES as usize {
+        let amplitude = amplitude(frame);
         let sample = if frame / 12 % 2 == 0 {
             amplitude
         } else {

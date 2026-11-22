@@ -468,6 +468,7 @@ fn check_effect_meter(processor: &mut dyn Processor, meter: &Meter) -> Result<()
     let mut left = [0.0; FRAMES];
     let mut right = [0.0; FRAMES];
     let context = smoke_context();
+    let baseline_failures = processor.offline_failures();
     for _ in 0..16 {
         let status = processor.process(
             &context,
@@ -480,6 +481,9 @@ fn check_effect_meter(processor: &mut dyn Processor, meter: &Meter) -> Result<()
         if status == ProcessStatus::Failed {
             return Err("effect processor failed while feeding its meter".to_owned());
         }
+    }
+    if processor.offline_failures() != baseline_failures {
+        return Err("effect processor used offline fallback while feeding its meter".to_owned());
     }
     if meter.requests_reduction() {
         let (input, reduction, output) = meter.view.take();

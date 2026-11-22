@@ -14,6 +14,9 @@ on:
     paths:
       - "sdk/native-clap/**"
       - "crates/komponist-app/src/main.rs"
+      - "crates/komponist-app/src/samples.rs"
+      - "crates/komponist-app/src/export.rs"
+      - "crates/komponist-app/src/export/**"
       - "crates/komponist-app/tests/it/bundled_current.rs"
       - "crates/komponist-app/tests/it/bundled_sampler.rs"
       - "crates/komponist-app/tests/it/bundled_synth_ui.rs"

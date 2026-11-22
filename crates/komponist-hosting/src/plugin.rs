@@ -159,8 +159,11 @@ pub trait HostedPlugin {
         None
     }
 
-    /// Loader and playback snapshot for a supported sampler editor, callable during processing.
-    fn sampler_ui(&self) -> Option<komponist_ipc::sampler_ui::Snapshot> {
+    /// Loader and playback snapshot. A tempo requests preparation while audio is detached.
+    fn sampler_ui(
+        &self,
+        _export_tempo: Option<f64>,
+    ) -> Option<komponist_ipc::sampler_ui::Snapshot> {
         None
     }
 

@@ -236,6 +236,7 @@ pub(crate) struct Bridge {
     pub sampler_ui: Option<komponist_ipc::sampler_ui::Snapshot>,
     sampler_ui_request: Option<u32>,
     sampler_ui_at: Instant,
+    sampler_export_tempo: Option<f64>,
     pub native_layout: Option<Arc<komponist_ipc::native_layout::NativeLayout>>,
     pub values: BTreeMap<u32, ParamValue>,
     pub base_values: BTreeMap<u32, f64>,
@@ -374,6 +375,7 @@ impl Bridge {
             sampler_ui: None,
             sampler_ui_request: None,
             sampler_ui_at: Instant::now(),
+            sampler_export_tempo: None,
             native_layout: None,
             values: BTreeMap::new(),
             base_values: BTreeMap::new(),
@@ -443,13 +445,26 @@ impl Bridge {
         }
     }
 
+    pub(crate) fn set_sampler_export_tempo(&mut self, tempo: Option<f64>) {
+        self.sampler_export_tempo = tempo;
+        if tempo.is_some() {
+            self.sampler_ui = None;
+        }
+        self.sampler_ui_request = None;
+        self.sampler_ui_at = Instant::now();
+    }
+
     pub(crate) fn poll_sampler_ui(&mut self) {
         let now = Instant::now();
-        if self.running() && self.sampler_ui_request.is_none() && now >= self.sampler_ui_at {
+        if self.running()
+            && self.state_restores.is_empty()
+            && self.sampler_ui_request.is_none()
+            && now >= self.sampler_ui_at
+        {
             let request = self.seq();
             self.sampler_ui_request = Some(request);
             self.sampler_ui_at = now + crate::bundled_sampler::UI_REFRESH;
-            self.send(ControlMsg::GetSamplerUi(request));
+            self.send(ControlMsg::GetSamplerUi(request, self.sampler_export_tempo));
         }
     }
 

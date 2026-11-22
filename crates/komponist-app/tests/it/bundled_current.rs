@@ -19,11 +19,11 @@ use komponist_model::{
     AudioFile, ChannelRef, DeviceId, DeviceRole, PPQ, PluginFormat, PluginRef, Project, Sidechain,
     Tick, TrackId,
 };
-use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent};
+use komponist_plugins::{DeviceStatus, FailReason, PluginDirs, PluginManagerEvent};
 use serde_json::{Value, json};
 
 use crate::common::{PATIENCE, app_with, config, devices, step_for, step_until};
-use crate::export::{export, export_settings, read};
+use crate::export::{export_settings, read};
 
 const DEVICE_PREFIX: &str = "org.klang-studio.komponist.";
 
@@ -183,7 +183,14 @@ fn project(host: &PluginHost, sample: &Path) -> Fixture {
         )]
         .into_iter()
         .collect();
-        let state = pinned_clap_state::encode(&device.plugin.version, Default::default(), fields);
+        let params = if track == general {
+            [("sync".into(), json!({"bool": true}))]
+                .into_iter()
+                .collect()
+        } else {
+            Default::default()
+        };
+        let state = pinned_clap_state::encode(&device.plugin.version, params, fields);
         project = edits::set_device_state(&project, device.id, Some(state.into())).unwrap();
     }
 
@@ -292,7 +299,35 @@ fn write_sample(path: &Path) {
     writer.finalize().unwrap();
 }
 
-fn assert_export_parity(direct: &Path, bridged: &Path) {
+fn export_packaged(app: &mut App, settings: komponist_app::actions::ExportSettings) {
+    let file_name = settings.file_name.clone();
+    app.dispatch(Action::Project(ProjectAction::StartExport(settings)));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while app.is_exporting() {
+        app.step();
+        assert!(
+            Instant::now() < deadline,
+            "{file_name}: {:?}; devices (name, bypass, status, sampler idle/sync): {:?}",
+            app.ui().dialog,
+            devices(app.project())
+                .iter()
+                .map(|(_, device)| {
+                    let host = app.engine().host();
+                    let ui = host.sampler_ui(device.id);
+                    (
+                        &device.plugin.name,
+                        device.bypass,
+                        host.status(device.id),
+                        ui.map(|ui| (ui.idle, ui.sync)),
+                    )
+                })
+                .collect::<Vec<_>>()
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn assert_export_parity(direct: &Path, bridged: &Path, compare_waveform: bool) {
     let direct = read(direct);
     let bridged = read(bridged);
     assert_eq!(direct.frames, bridged.frames);
@@ -309,9 +344,20 @@ fn assert_export_parity(direct: &Path, bridged: &Path) {
         let floor = 0.002;
         let left = rms(direct);
         let right = rms(bridged);
+        let difference = if compare_waveform {
+            (direct
+                .iter()
+                .zip(bridged)
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f32>()
+                / direct.len() as f32)
+                .sqrt()
+        } else {
+            (left - right).abs()
+        };
         assert!(
-            (left - right).abs() <= floor + left.max(right) * 0.07,
-            "{left} vs {right}"
+            difference <= floor + left.max(right) * 0.07,
+            "difference {difference}, direct RMS {left}, bridge RMS {right}"
         );
     }
 }
@@ -470,12 +516,39 @@ fn current_project_round_trip_and_offline_render() {
     settings.sample_rate = 48_000;
     settings.normalize = false;
     settings.tail_seconds = 0.0;
-    export(&mut app, settings);
+    export_packaged(&mut app, settings.clone());
     let wav = read(&output);
     assert!(wav.samples.iter().all(|sample| sample.is_finite()));
     assert!(wav.samples.iter().any(|sample| sample.abs() > 0.01));
     if bridge {
-        assert_export_parity(&results.join("direct/out/bundled.wav"), &output);
+        assert_export_parity(&results.join("direct/out/bundled.wav"), &output, false);
+    }
+    // The General Sampler renders deterministically and changes tempo immediately before
+    // export. The effect is bypassed so a delay tail cannot satisfy the stretch check.
+    app.dispatch(Action::Edit(EditAction::SetExclusive {
+        track: fixture.sampler_tracks[1].0,
+        flag: edits::ExclusiveFlag::Solo,
+    }));
+    app.dispatch(Action::Edit(EditAction::SetDeviceBypass {
+        device: fixture.delay,
+        bypass: true,
+    }));
+    let mut tempo = app.project().tempo;
+    tempo.bpm = 60.0;
+    app.dispatch(Action::Edit(EditAction::SetProjectProp(
+        edits::ProjectProp::Tempo(tempo),
+    )));
+    settings.file_name = "sampler.wav".into();
+    settings.dither = false;
+    export_packaged(&mut app, settings);
+    let output = work.join("out/sampler.wav");
+    let wav = read(&output);
+    assert!(wav.samples.iter().all(|value| value.is_finite()));
+    // The note starts at 375 ms and the original recording lasts 250 ms.
+    let stretched_tail = &wav.samples[2 * 34_080..2 * 37_920];
+    assert!(stretched_tail.iter().any(|value| value.abs() > 0.01));
+    if bridge {
+        assert_export_parity(&results.join("direct/out/sampler.wav"), &output, true);
     }
     app.shutdown();
 }
@@ -726,6 +799,16 @@ fn unavailable_bundle_keeps_saved_project_intact() {
             DeviceStatus::Crashed(_) | DeviceStatus::Missing
         )
     });
+    let status = app.engine().device_status(eq.id);
+    match std::env::var("KOMPONIST_CURRENT_EQ_CASE").as_deref() {
+        Ok("missing") => assert_eq!(status, DeviceStatus::Missing),
+        Ok("altered") => assert!(
+            matches!(&status, DeviceStatus::Crashed(FailReason::LoadFailed(reason))
+                if reason.contains("bundle file hash mismatch")),
+            "expected the EQ verifier to identify the modified file, got {status:?}"
+        ),
+        _ => panic!("expected missing or altered EQ case"),
+    }
     let host = app.engine().host();
     assert!(host.verified_bundled_kind(eq.id).is_none());
     assert!(host.bridge_pid(eq.id).is_none());

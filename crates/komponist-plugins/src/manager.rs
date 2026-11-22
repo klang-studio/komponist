@@ -928,6 +928,20 @@ impl PluginManager {
         self.bridges.get(&device)?.native_layout.as_ref()
     }
 
+    /// Apply a temporary export tempo to an authenticated General Sampler.
+    pub fn set_sampler_export_tempo(&mut self, device: DeviceId, tempo: Option<f64>) {
+        if self.verified_bundles.get(&device)
+            != Some(&BuiltinKind::Internal(Internal::GeneralSampler))
+        {
+            return;
+        }
+        if let Some(direct) = self.direct.get_mut(&device) {
+            direct.set_sampler_export_tempo(tempo);
+        } else if let Some(bridge) = self.bridges.get_mut(&device) {
+            bridge.set_sampler_export_tempo(tempo);
+        }
+    }
+
     /// The latest editor snapshot for an authenticated bundled sampler.
     pub fn sampler_ui(&self, device: DeviceId) -> Option<&komponist_ipc::sampler_ui::Snapshot> {
         if !is_sampler_kind(self.verified_bundles.get(&device).copied()) {
@@ -1056,6 +1070,22 @@ impl PluginManager {
             .is_some_and(|bridge| bridge.is_macro_snapshot(state))
     }
 
+    /// A current snapshot acknowledges the captured parameter bases. Pointer identity also
+    /// excludes a deferred snapshot superseded by a newer restore or capture.
+    pub fn is_current_param_snapshot(&self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        if let Some(direct) = self.direct.get(&device) {
+            return direct.is_current_param_snapshot(state);
+        }
+        self.bridges.get(&device).is_some_and(|bridge| {
+            bridge
+                .last_state
+                .as_ref()
+                .is_some_and(|last| Arc::ptr_eq(last, state))
+                && !bridge.needs_snapshot_for_save()
+                && !bridge.is_macro_snapshot(state)
+        })
+    }
+
     /// Set the project's directory before loading or restoring devices.
     pub fn set_project_dir(&mut self, dir: Option<PathBuf>) {
         self.project_dir = dir;
@@ -1073,6 +1103,9 @@ impl PluginManager {
             .flatten();
         let state = runtime.as_ref().unwrap_or(state);
         if let Some(direct) = self.direct.get_mut(&device) {
+            if matches!(direct.status, DeviceStatus::Crashed(_)) {
+                return false;
+            }
             direct.set_state(state.clone());
             return true;
         }
