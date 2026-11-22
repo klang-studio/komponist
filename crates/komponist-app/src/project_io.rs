@@ -585,6 +585,7 @@ impl App {
         // Route queued GUI edits before requesting state, so a temporary parameter cannot be
         // mistaken for a persisted plugin value.
         self.drain_events();
+        self.engine.refresh_snapshot_automation(self.doc.project());
         let outcome = self
             .engine
             .host_mut()

@@ -21,6 +21,7 @@ pub mod builtin;
 pub mod bundled_clap;
 mod bundled_effects;
 pub mod bundled_sampler;
+mod bundled_state;
 pub mod catalog;
 mod direct;
 mod direct_device;

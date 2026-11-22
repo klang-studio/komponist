@@ -355,6 +355,7 @@ fn smoke_bridge(
         device: id,
         role,
         format: PluginFormat::Clap,
+        verified_bundled_kind: crate::bundled_state::kind_for_id(bundle.plugin_id()),
         bundle: bundle.bundle_path(),
         plugin_id: &descriptor.id,
         state: None,

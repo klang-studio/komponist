@@ -123,6 +123,7 @@ def run_staged(app, runner, digest, projects):
             ),
             "current": (
                 "bundled_current::current_project_round_trip_and_offline_render",
+                "bundled_current::saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve",
                 "bundled_synth_ui::packaged_synth_editors_and_factory_presets_follow_clap_state",
                 "bundled_sampler::bundled_sampler_panels_edit_and_restore_current_state",
                 "bundled_current::packaged_effect_cards_and_presets",

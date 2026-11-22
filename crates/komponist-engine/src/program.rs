@@ -99,6 +99,42 @@ impl Program {
         }
     }
 
+    /// Visit compiled plug-in parameter lanes and macro mappings for persistent snapshots.
+    /// Mapped parameters use the macro's document position, which can be newer than the
+    /// compiled program during a fast-path gesture.
+    pub fn for_each_automated_parameter(
+        &self,
+        macro_position: impl Fn(TrackId, u8) -> Option<f32>,
+        mut emit: impl FnMut(DeviceId, u32, Option<f64>),
+    ) {
+        for lane in self
+            .tracks
+            .iter()
+            .flat_map(|track| track.automation.iter())
+            .chain(self.master.automation.iter())
+        {
+            if let EngineTarget::Slot {
+                device, wire_id, ..
+            } = lane.target
+            {
+                emit(device, wire_id, None);
+            }
+        }
+        for track in &self.tracks {
+            for mapping in track.macros.targets.iter() {
+                if let EngineTarget::Slot {
+                    device, wire_id, ..
+                } = mapping.target
+                {
+                    let base = macro_position(track.id, mapping.driver)
+                        .unwrap_or(track.macros.base[usize::from(mapping.driver)]);
+                    let value = mapping.map.plain(mapping.normalized(base));
+                    emit(device, wire_id, Some(value));
+                }
+            }
+        }
+    }
+
     /// Resolves a model lane to its runtime identity in this program.
     pub fn automation_target(
         &self,

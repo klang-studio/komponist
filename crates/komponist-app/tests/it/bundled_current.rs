@@ -4,20 +4,20 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use komponist_app::actions::{EditAction, ExportRange, PluginAction, ProjectAction};
+use komponist_app::actions::{BitDepth, EditAction, ExportRange, PluginAction, ProjectAction};
 use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::{Action, App};
 use komponist_builtin::{BuiltinKind, Internal};
 use komponist_device_core::pinned_clap_state;
-use komponist_engine::Command;
-use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points};
+use komponist_engine::{Command, TransportState};
+use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points, Shape};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewDevice, NewNote, NewTrack};
 use komponist_model::macros::Mapping;
 use komponist_model::params::ParamId;
 use komponist_model::{
-    ChannelRef, DeviceId, DeviceRole, PPQ, PluginFormat, PluginRef, Project, Sidechain, Tick,
-    TrackId,
+    AudioFile, ChannelRef, DeviceId, DeviceRole, PPQ, PluginFormat, PluginRef, Project, Sidechain,
+    Tick, TrackId,
 };
 use komponist_plugins::{DeviceStatus, FailReason, PluginDirs, PluginManagerEvent};
 use serde_json::{Value, json};
@@ -233,7 +233,7 @@ fn open(app: &mut App, path: &Path) {
 }
 
 fn assert_ready(app: &mut App, expected: &[(TrackId, komponist_model::Device)], bridge: bool) {
-    step_until(app, "all eleven authenticated CLAP instances", |app| {
+    step_until(app, "authenticated packaged CLAP instances", |app| {
         expected.iter().all(|(_, device)| {
             let host = app.engine().host();
             host.verified_bundled_kind(device.id).is_some()
@@ -550,6 +550,250 @@ fn current_project_round_trip_and_offline_render() {
     if bridge {
         assert_export_parity(&results.join("direct/out/sampler.wav"), &output, true);
     }
+    app.shutdown();
+}
+
+#[test]
+#[ignore = "requires the authenticated release payload; run measure-bundled-clap.py --current-projects"]
+fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
+    const RATE: u32 = 48_000;
+    const BASE_FREQUENCY: f64 = 1_000.0;
+    const HIGH_SHELF: f64 = 3.0;
+    const MACRO_BASE: f32 = 0.75;
+    const MACRO_AUTOMATION: f32 = 0.58;
+    let (launcher, _) = package_env();
+    let bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some();
+    let work = tempfile::tempdir().unwrap();
+    let host = scan(&launcher, work.path());
+    let (project, track) = edits::add_audio_track(
+        &Project::new("EQ automation and manual edit"),
+        edits::NewAudioTrack::default(),
+    )
+    .unwrap();
+    let sample = work.path().join("tone.wav");
+    let mut tone = hound::WavWriter::create(
+        &sample,
+        hound::WavSpec {
+            channels: 1,
+            sample_rate: RATE,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        },
+    )
+    .unwrap();
+    for frame in 0..RATE * 4 {
+        let phase = std::f64::consts::TAU * f64::from(frame % 48) / 48.0;
+        tone.write_sample((4_096.0 * phase.sin()) as i16).unwrap();
+    }
+    tone.finalize().unwrap();
+    let (project, _) = edits::add_clip(
+        &project,
+        track,
+        NewClip {
+            start: Tick::ZERO,
+            length: Tick(8 * PPQ),
+            name: "1 kHz tone".into(),
+            content: NewClipContent::Audio {
+                file: AudioFile::new(&sample, Some(work.path()), u64::from(RATE) * 4, RATE, 1),
+                offset: 0,
+            },
+        },
+    )
+    .unwrap();
+    let plugin = shipped(&host, "eq");
+    let info = Internal::Eq
+        .params()
+        .iter()
+        .find(|info| info.id.as_str() == "b1_freq")
+        .unwrap();
+    let (base_state, base_wire) = pinned_clap_state::parameter(info, BASE_FREQUENCY);
+    let state = pinned_clap_state::encode(
+        &plugin.version,
+        [("b1_freq".into(), base_state)].into_iter().collect(),
+        Default::default(),
+    );
+    let (project, eq) = edits::insert_device(
+        &project,
+        ChannelRef::Track(track),
+        0,
+        NewDevice {
+            role: DeviceRole::Effect,
+            plugin,
+            sidechain: None,
+            state: Some(state.into()),
+        },
+    )
+    .unwrap();
+    let path = work.path().join("automated.komponist");
+    save_project(&path, &project).unwrap();
+    let expected = devices(&project);
+    let mut app = app_with(Project::new("Empty"), host);
+    open(&mut app, &path);
+    assert_ready(&mut app, &expected, bridge);
+    let ids = app
+        .engine()
+        .host()
+        .native_layout(eq)
+        .unwrap()
+        .author_ids()
+        .unwrap();
+    let (frequency, gain, shape) = (ids["b1_freq"], ids["b1_gain"], ids["b1_type"]);
+    let owner = AutomationOwner::Track(track);
+    let (project, lane) = edits::automation::add_lane(
+        &project,
+        owner,
+        AutomationTarget::Param {
+            device: eq,
+            param: ParamId::plugin(frequency),
+        },
+        "Shelf frequency".into(),
+    )
+    .unwrap();
+    let points = Points::new(vec![
+        Point {
+            tick: Tick::ZERO,
+            value: 0.22,
+            shape: Shape::Hold,
+        },
+        Point {
+            tick: Tick(2 * PPQ),
+            value: 0.9,
+            shape: Shape::Hold,
+        },
+        Point::linear(Tick(4 * PPQ), 0.22),
+    ]);
+    let project = edits::automation::set_lane_points(&project, owner, lane, points).unwrap();
+    let gain_mapping = Mapping {
+        target: AutomationTarget::Param {
+            device: eq,
+            param: ParamId::plugin(gain),
+        },
+        label: "Shelf gain".into(),
+        min: 0.65,
+        max: 0.8,
+        invert: false,
+        bend: 0.25,
+    };
+    let gain_base = f64::from(gain_mapping.value_at(MACRO_BASE));
+    let project = edits::macros::add_mapping(&project, track, 0, gain_mapping).unwrap();
+    let project = edits::macros::set_macro_value(&project, track, 0, MACRO_BASE).unwrap();
+    let (project, macro_lane) = edits::automation::add_lane(
+        &project,
+        owner,
+        AutomationTarget::Macro { index: 0 },
+        "Gain macro".into(),
+    )
+    .unwrap();
+    let project = edits::automation::set_lane_points(
+        &project,
+        owner,
+        macro_lane,
+        Points::new(vec![
+            Point {
+                tick: Tick::ZERO,
+                value: MACRO_AUTOMATION,
+                shape: Shape::Hold,
+            },
+            Point::linear(Tick(6 * PPQ), 0.05),
+        ]),
+    )
+    .unwrap();
+    save_project(&path, &project).unwrap();
+    open(&mut app, &path);
+    assert_ready(&mut app, &expected, bridge);
+    assert_eq!(app.engine().host().param_base(eq, shape), Some(2.0));
+    app.engine_mut().send(Command::Play);
+    step_until(&mut app, "active EQ automation", |app| {
+        app.engine().transport() == TransportState::Playing
+            && app.engine().playhead() >= Tick(PPQ / 2)
+            && app
+                .engine()
+                .telemetry()
+                .macro_values(track)
+                .is_some_and(|values| (values[0] - MACRO_AUTOMATION).abs() < 1e-6)
+    });
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device: eq,
+        id: shape,
+        value: HIGH_SHELF,
+    }));
+    app.dispatch(Action::Project(ProjectAction::Save));
+
+    let saved = load_project(&path).unwrap();
+    let saved_device = saved.find_device(eq).unwrap().2;
+    assert_ne!(
+        saved_device.state,
+        project.find_device(eq).unwrap().2.state,
+        "saving with an automated parameter and a pending edit must update the file",
+    );
+    let state = pinned_clap_state::decode(saved_device.state.as_deref().unwrap()).unwrap();
+    let saved_base = state["params"]["b1_freq"]["f32"].as_f64().unwrap();
+    assert!(
+        (saved_base - base_wire).abs() < 1e-6,
+        "saved automation sample as the EQ base value: {saved_base}"
+    );
+    let saved_gain = state["params"]["b1_gain"]["f32"].as_f64().unwrap();
+    assert!(
+        (saved_gain - gain_base).abs() < 1e-6,
+        "saved automated macro output as the EQ gain base value: {saved_gain}"
+    );
+    let authored_track = project.track(track).unwrap();
+    let saved_track = saved.track(track).unwrap();
+    assert_eq!(saved_track.automation, authored_track.automation);
+    assert_eq!(saved_track.macros, authored_track.macros);
+
+    app.shutdown();
+    let mut app = app_with(Project::new("Empty"), scan(&launcher, work.path()));
+    open(&mut app, &path);
+    assert_eq!(app.project().as_ref(), &saved);
+    assert_ready(&mut app, &expected, bridge);
+    let host = app.engine().host();
+    assert_eq!(host.param_base(eq, shape), Some(HIGH_SHELF));
+    let reopened_base = host.param_base(eq, frequency).unwrap();
+    assert!((reopened_base - base_wire).abs() < 1e-6);
+    let reopened_gain = host.param_base(eq, gain).unwrap();
+    assert!((reopened_gain - gain_base).abs() < 1e-6);
+
+    let frequency_target = AutomationTarget::Param {
+        device: eq,
+        param: ParamId::plugin(frequency),
+    };
+    assert!(
+        app.engine()
+            .program()
+            .is_some_and(|program| program.automation_reads(owner, &frequency_target)),
+        "the reopened EQ lane must be compiled as soon as the device is ready for export",
+    );
+
+    let mut settings = export_settings(work.path(), ExportRange::Song);
+    settings.file_name = "automated-eq.wav".into();
+    settings.sample_rate = RATE;
+    settings.bit_depth = BitDepth::Float32;
+    settings.normalize = false;
+    settings.tail_seconds = 0.0;
+    let output = settings.folder.join(&settings.file_name);
+    export_packaged(&mut app, settings);
+    let wav = read(&output);
+    let channels = usize::from(wav.spec.channels);
+    let rms = |first: usize, last: usize| {
+        let window = &wav.samples[first * channels..last * channels];
+        (window.iter().map(|value| value * value).sum::<f32>() / window.len() as f32).sqrt()
+    };
+    // The tone is unchanged. The shelf boosts it before the automation step at 1 s,
+    // then leaves it alone once the cutoff is above 1 kHz. Both windows avoid the glide.
+    let boosted = rms(12_000, 36_000);
+    let unboosted = rms(60_000, 84_000);
+    assert!(
+        unboosted > 0.03 && boosted > 2.0 * unboosted,
+        "reopened EQ automation did not change the rendered tone: {boosted} vs {unboosted}"
+    );
+    // The shelf is back below the tone in both windows. The macro lowers the gain at 3 s.
+    let before_gain_step = rms(108_000, 132_000);
+    let after_gain_step = rms(156_000, 180_000);
+    assert!(
+        before_gain_step > 1.3 * after_gain_step && after_gain_step > 0.03,
+        "reopened macro automation did not lower the rendered shelf gain: {before_gain_step} vs {after_gain_step}"
+    );
     app.shutdown();
 }
 

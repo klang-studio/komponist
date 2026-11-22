@@ -1,9 +1,10 @@
 //! Control-plane state for an opted-in direct CLAP device.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
+use komponist_builtin::BuiltinKind;
 use komponist_hosting::host_loop::notification_bits;
 use komponist_hosting::{HostedPlugin, HostingError};
 use komponist_ipc::native_layout::NativeLayout;
@@ -11,6 +12,7 @@ use komponist_ipc::{LogLevel, NoteName, ParamInfo, ParamValue, RenderMode};
 use komponist_model::{DeviceId, DeviceRole};
 
 use crate::bundled_clap::VerifiedClap;
+use crate::bundled_state;
 use crate::direct::DirectClap;
 use crate::direct_session::{DirectEngine, DirectSession};
 use crate::manager::{
@@ -19,6 +21,7 @@ use crate::manager::{
 
 pub(crate) struct DirectDevice {
     session: DirectSession,
+    bundled_kind: Option<BuiltinKind>,
     pub(crate) params: Vec<ParamInfo>,
     pub(crate) sampler_ui: Option<komponist_ipc::sampler_ui::Snapshot>,
     sampler_ui_at: Instant,
@@ -33,8 +36,13 @@ pub(crate) struct DirectDevice {
     pub(crate) latency: u32,
     pub(crate) status: DeviceStatus,
     pending_writes: BTreeMap<u32, f64>,
+    /// Persistent edits that still need to reach the plugin before a snapshot can replace state.
+    unconfirmed_writes: BTreeSet<u32>,
     pending_restore: Option<Arc<[u8]>>,
     macro_params: BTreeMap<u32, f64>,
+    /// A direct lane retains the host base. An automated macro retains its saved output.
+    automated_params: BTreeMap<u32, Option<f64>>,
+    released_automation: BTreeSet<u32>,
     snapshot_due: Option<Instant>,
     macro_snapshot: Option<Weak<[u8]>>,
     user_edit: bool,
@@ -93,6 +101,7 @@ impl DirectDevice {
         state: Option<Arc<[u8]>>,
         debounce: Duration,
     ) -> Result<(Self, DirectEngine), HostingError> {
+        let bundled_kind = bundled_state::kind_for_id(proof.plugin_id());
         let mut host = DirectClap::load(proof)?;
         let (warning, inventory, sidechain) = host
             .try_control(|plugin| {
@@ -113,6 +122,7 @@ impl DirectDevice {
         let mut device = Self {
             latency: session.latency(),
             session,
+            bundled_kind,
             params: Vec::new(),
             sampler_ui: None,
             sampler_ui_at: Instant::now(),
@@ -126,8 +136,11 @@ impl DirectDevice {
             sidechain,
             status: DeviceStatus::Ok,
             pending_writes: BTreeMap::new(),
+            unconfirmed_writes: BTreeSet::new(),
             pending_restore: None,
             macro_params: BTreeMap::new(),
+            automated_params: BTreeMap::new(),
+            released_automation: BTreeSet::new(),
             snapshot_due: None,
             macro_snapshot: None,
             user_edit: false,
@@ -292,6 +305,8 @@ impl DirectDevice {
                 self.pending_writes.insert(id, value);
             }
             self.base.insert(id, value);
+            self.released_automation.remove(&id);
+            self.unconfirmed_writes.insert(id);
             self.state_warning = None;
             self.user_edit = true;
             self.snapshot_due = Some(Instant::now() + self.debounce);
@@ -314,11 +329,27 @@ impl DirectDevice {
         }
     }
 
+    pub(crate) fn set_automated_params(&mut self, params: BTreeMap<u32, Option<f64>>) {
+        // SetProgram and the base-value restore arrive on the audio thread asynchronously.
+        self.released_automation.extend(
+            self.automated_params
+                .keys()
+                .filter(|id| !params.contains_key(id))
+                .copied(),
+        );
+        self.released_automation
+            .retain(|id| !params.contains_key(id));
+        self.automated_params = params;
+    }
+
     pub(crate) fn set_macro_params(&mut self, values: BTreeMap<u32, f64>) {
         if self.macro_params == values {
             return;
         }
         let previous = std::mem::replace(&mut self.macro_params, values);
+        // A newly mapped parameter takes its persistent value from the macro.
+        self.unconfirmed_writes
+            .retain(|id| !self.macro_params.contains_key(id));
         for (id, value) in previous {
             if !self.macro_params.contains_key(&id) && self.base.contains_key(&id) {
                 self.base.insert(id, value);
@@ -338,6 +369,8 @@ impl DirectDevice {
         self.sampler_ui = None;
         self.pending_restore = Some(state);
         self.pending_writes.clear();
+        self.unconfirmed_writes.clear();
+        self.released_automation.clear();
         self.snapshot_due = None;
         self.user_edit = false;
     }
@@ -383,23 +416,51 @@ impl DirectDevice {
         }
         let base = &self.base;
         let macros = &self.macro_params;
-        let captured = self
+        let automated = &self.automated_params;
+        let unconfirmed = &self.unconfirmed_writes;
+        let released = &self.released_automation;
+        let bundle = self.bundled_kind.zip(self.layout.as_deref());
+        let (state, corrections) = self
             .session
             .try_control(|plugin| {
-                // A save must not capture a transient automated value or overwrite an edit that
-                // is still in flight to the audio processor.
+                let mut corrections = Vec::new();
                 for (&id, &base) in base {
-                    let expected = macros.get(&id).copied().unwrap_or(base);
+                    let expected = automated
+                        .get(&id)
+                        .copied()
+                        .flatten()
+                        .or_else(|| macros.get(&id).copied())
+                        .unwrap_or(base);
                     let actual = plugin.param_value(id)?;
-                    if !actual.is_finite()
-                        || (actual - expected).abs() > 1e-6 * expected.abs().max(1.0)
+                    if !actual.is_finite() || !expected.is_finite() {
+                        return None;
+                    }
+                    if (actual - expected).abs() <= 1e-6 * expected.abs().max(1.0) {
+                        continue;
+                    }
+                    // Do not acknowledge a persistent hand edit until the processor received
+                    // it. Differences on playback-owned parameters have an authoritative base
+                    // and can be repaired on the detached copy of the known bundle's state.
+                    if unconfirmed.contains(&id)
+                        || bundle.is_none()
+                        || !(automated.contains_key(&id)
+                            || macros.contains_key(&id)
+                            || released.contains(&id))
                     {
                         return None;
                     }
+                    corrections.push((id, expected));
                 }
-                plugin.save_state().ok().map(Arc::<[u8]>::from)
+                Some((plugin.save_state().ok()?, corrections))
             })
             .flatten()?;
+        let captured: Arc<[u8]> = if corrections.is_empty() {
+            state.into()
+        } else {
+            let (kind, layout) = bundle?;
+            bundled_state::restore_param_bases(kind, layout, &state, corrections)?.into()
+        };
+        self.unconfirmed_writes.clear();
         self.macro_snapshot =
             (!self.user_edit && !self.macro_params.is_empty()).then(|| Arc::downgrade(&captured));
         self.user_edit = false;

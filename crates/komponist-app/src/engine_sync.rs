@@ -606,21 +606,26 @@ impl EngineSync {
         changes: compile::SlotChanges,
     ) {
         let setup = self.setup();
-        let mut late_latency = false;
+        let mut new_processor_metadata = false;
         for (device, slot) in changes.added {
             let Some((_, _, device)) = project.find_device(device) else {
                 continue;
             };
             if let Some(processor) = self.host.create_processor(device, setup) {
                 self.prepare_sampler_sync(project, device);
-                late_latency |= processor.latency() > 0;
+                new_processor_metadata |= processor.latency() > 0
+                    || self
+                        .host
+                        .params(device.id)
+                        .is_some_and(|params| !params.is_empty());
                 self.send(Command::InsertProcessor { slot, processor });
             }
         }
-        if late_latency {
-            // The host knows a new processor's latency only once it exists (WP-91): compile again
-            // so the delay compensation counts it. Compile against the last sent program so
-            // slots whose removals are still to be queued stay reserved.
+        if new_processor_metadata {
+            // Latency and CLAP parameter metadata can first become available on insertion.
+            // Compile the automation and compensation with those descriptors before publishing
+            // the program, including when export detaches it before the next host poll.
+            // Keep slots whose removals have not yet been queued reserved.
             next = self.compile_project(project);
         }
         let values = self.macro_parameters(&next.program);
@@ -649,6 +654,8 @@ impl EngineSync {
             program: next,
             diagnostics,
         } = next;
+        self.host
+            .set_automated_params(&Self::automated_parameters(&next, project));
         self.send(Command::SetProgram(Box::new(next.clone())));
         self.programs_sent += 1;
         self.previous = Some(next);
@@ -675,6 +682,10 @@ impl EngineSync {
             self.reloads += 1;
             self.send(Command::InsertProcessor { slot, processor });
             self.host.set_macro_params(&self.macro_params);
+            if let Some(program) = &self.previous {
+                self.host
+                    .set_automated_params(&Self::automated_parameters(program, project));
+            }
         }
     }
 
@@ -871,6 +882,26 @@ impl EngineSync {
             let values = self.macro_parameters(program);
             self.set_macro_params(values);
         }
+    }
+
+    /// Refresh the model positions used for state snapshots after a fast-path macro edit.
+    pub(crate) fn refresh_snapshot_automation(&mut self, project: &Project) {
+        if let Some(program) = &self.previous {
+            self.host
+                .set_automated_params(&Self::automated_parameters(program, project));
+        }
+    }
+
+    fn automated_parameters(
+        program: &Program,
+        project: &Project,
+    ) -> Vec<(DeviceId, u32, Option<f64>)> {
+        let mut values = Vec::new();
+        program.for_each_automated_parameter(
+            |track, index| Some(project.track(track)?.macros.0[usize::from(index)].value),
+            |device, id, base| values.push((device, id, base)),
+        );
+        values
     }
 
     fn macro_parameters(&self, program: &Program) -> Vec<(DeviceId, u32, f64)> {

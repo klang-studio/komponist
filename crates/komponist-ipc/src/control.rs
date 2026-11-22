@@ -88,7 +88,8 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// snapshots distinguish delivered, quantized edits and return the verified parameter values.
 /// 9 (#75): the shared native frame header carries the track macro mapping chip.
 /// 11 adds bounded sampler front-panel data and the slice audition command.
-pub const PROTOCOL_VERSION: u32 = 12;
+/// 13 distinguishes plugin-originated parameter flushes from value telemetry.
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -451,6 +452,9 @@ pub enum BridgeMsg {
     /// rescans and the echo of `SetParam`. GUI edits during processing also arrive as output
     /// events in shared memory.
     ParamValues(Vec<ParamValue>),
+    /// Parameter edits emitted by a plugin-requested flush with no host input while
+    /// inactive. Edits emitted during processing use the shared output ring.
+    PluginParamEdits(Vec<(u32, f64)>),
     /// Answer to `SetState`. Successful values represent the newly restored base state,
     /// independently of any controller updates from automation playback.
     StateApplied {
@@ -1693,6 +1697,7 @@ mod tests {
                 ),
             },
             BridgeMsg::ParamValues(vec![value.clone()]),
+            BridgeMsg::PluginParamEdits(vec![(value.id, value.value)]),
             BridgeMsg::StateApplied {
                 request: 8,
                 result: Ok(vec![value.clone()]),

@@ -671,8 +671,7 @@ impl PluginManager {
                     return Err(error);
                 }
             };
-            verified_kind = BuiltinKind::all()
-                .find(|kind| crate::legacy_bundled::clap_id(*kind) == proof.plugin_id());
+            verified_kind = crate::bundled_state::kind_for_id(proof.plugin_id());
             effect_meter =
                 verified_kind.and_then(|kind| bundled_effects::Meter::new(kind, setup.sample_rate));
             if is_sampler_kind(verified_kind)
@@ -726,6 +725,7 @@ impl PluginManager {
             device: device.id,
             role: device.role,
             format,
+            verified_bundled_kind: verified_kind,
             bundle: verified_bundle
                 .as_ref()
                 .map_or(bundle.as_path(), VerifiedClap::bundle_path),
@@ -1038,6 +1038,25 @@ impl PluginManager {
         }
         for (&device, bridge) in &mut self.bridges {
             bridge.set_macro_params(by_device.remove(&device).unwrap_or_default());
+        }
+    }
+
+    /// Publish the compiled automation targets to authenticated bundled snapshot handlers.
+    /// A value is present for a mapped parameter. It is the model's macro output.
+    pub fn set_automated_params(&mut self, values: &[(DeviceId, u32, Option<f64>)]) {
+        let mut by_device = BTreeMap::<DeviceId, BTreeMap<u32, Option<f64>>>::new();
+        for &(device, id, base) in values {
+            if self.verified_bundles.contains_key(&device) {
+                by_device.entry(device).or_default().insert(id, base);
+            }
+        }
+        for (&device, direct) in &mut self.direct {
+            direct.set_automated_params(by_device.remove(&device).unwrap_or_default());
+        }
+        for (&device, bridge) in &mut self.bridges {
+            if self.verified_bundles.contains_key(&device) {
+                bridge.set_automated_params(by_device.remove(&device).unwrap_or_default());
+            }
         }
     }
 
