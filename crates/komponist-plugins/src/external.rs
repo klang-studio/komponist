@@ -748,7 +748,9 @@ mod tests {
     }
 
     #[test]
-    fn midi_stage_collects_only_the_current_notes_and_recovers_after_overflow() {
+    fn midi_stage_discards_stale_and_partial_notes_and_resets_after_loss() {
+        use std::sync::mpsc;
+
         use komponist_engine::processor::EventBuffer;
         use komponist_ipc::{BlockResult, BridgeServer, BridgeState, ShmRegion};
 
@@ -758,7 +760,7 @@ mod tests {
         shared.run.store(RUN_ACTIVE, Ordering::Release);
         let mut processor = ExternalProcessor::new(
             BridgeClient::new(region.clone()),
-            shared,
+            shared.clone(),
             DeviceRole::MidiEffect,
             ProcessorSetup {
                 sample_rate: 48_000.0,
@@ -787,10 +789,21 @@ mod tests {
             velocity: 100,
             note_id: 31,
         };
+        let expected_note = |offset| Event {
+            offset,
+            kind: EventKind::NoteOn {
+                channel: 2,
+                key: 64,
+                velocity: 100,
+                note_id: 31,
+            },
+        };
+        let (timed_out, allow_late_reply) = mpsc::channel();
+        let (published_late_reply, late_reply_ready) = mpsc::channel();
         std::thread::scope(|scope| {
             scope.spawn(move || {
                 let mut server = BridgeServer::new(region);
-                for i in 0..3 {
+                for i in 0..5 {
                     let req = server
                         .wait_request(Some(Instant::now() + OFFLINE_DEADLINE))
                         .unwrap();
@@ -822,14 +835,22 @@ mod tests {
                         );
                     } else if i == 1 {
                         push(&mut server, req.seq, 11, note);
-                    } else {
+                    } else if i == 2 || i == 4 {
                         assert_ne!(req.flags & BLOCK_FLAG_RESET, 0);
+                        push(&mut server, req.seq, if i == 2 { 7 } else { 13 }, note);
+                    } else {
+                        // Publish only after the client has fallen back, regardless of scheduling.
+                        allow_late_reply.recv_timeout(OFFLINE_DEADLINE).unwrap();
+                        push(&mut server, req.seq, 11, note);
                     }
                     server.finish(BlockResult {
                         status: BlockStatus::Ok as u32,
                         dropped_events: u32::from(i == 1),
                         ..BlockResult::default()
                     });
+                    if i == 3 {
+                        published_late_reply.send(()).unwrap();
+                    }
                 }
             });
 
@@ -837,18 +858,7 @@ mod tests {
             let stage = processor.event_processor().unwrap();
             stage.set_param(7, 0.25);
             stage.process_events(&context, &[], &mut output.sink(context.frames));
-            assert_eq!(
-                output.events(),
-                [Event {
-                    offset: 3,
-                    kind: EventKind::NoteOn {
-                        channel: 2,
-                        key: 64,
-                        velocity: 100,
-                        note_id: 31
-                    },
-                }]
-            );
+            assert_eq!(output.events(), [expected_note(3)]);
             assert_eq!(
                 processor.pop_parameter_edit(),
                 Some(ParameterEdit {
@@ -881,7 +891,34 @@ mod tests {
                 &[],
                 &mut output.sink(context.frames),
             );
-            assert!(output.events().is_empty());
+            assert_eq!(output.events(), [expected_note(7)]);
+
+            let expired = ProcessContext {
+                offline: false,
+                deadline: Some(Instant::now()),
+                ..context
+            };
+            processor.event_processor().unwrap().process_events(
+                &expired,
+                &[],
+                &mut output.sink(expired.frames),
+            );
+            assert_eq!(shared.late_blocks.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                output.events(),
+                [Event {
+                    offset: 0,
+                    kind: EventKind::AllNotesOff
+                }]
+            );
+            timed_out.send(()).unwrap();
+            late_reply_ready.recv_timeout(OFFLINE_DEADLINE).unwrap();
+            processor.event_processor().unwrap().process_events(
+                &context,
+                &[],
+                &mut output.sink(context.frames),
+            );
+            assert_eq!(output.events(), [expected_note(13)]);
             assert!(processor.pop_parameter_edit().is_none());
         });
     }
