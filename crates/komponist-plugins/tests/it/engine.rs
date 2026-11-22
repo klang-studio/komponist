@@ -322,6 +322,7 @@ fn sample_rate_change_reactivates_the_bridge() {
 struct ProbeLog {
     /// `ctx.deadline` in nanoseconds after the test's base instant; `u64::MAX` for `None`.
     deadline_ns: AtomicU64,
+    finished_ns: AtomicU64,
     calls: AtomicU32,
 }
 
@@ -347,6 +348,9 @@ impl Processor for DeadlineProbe {
             d.saturating_duration_since(self.base).as_nanos() as u64
         });
         self.log.deadline_ns.store(ns, Ordering::Relaxed);
+        self.log
+            .finished_ns
+            .store(self.base.elapsed().as_nanos() as u64, Ordering::Relaxed);
         self.log.calls.fetch_add(1, Ordering::Relaxed);
         ProcessStatus::Continue
     }
@@ -417,6 +421,9 @@ fn bridges_in_series_share_the_callback_deadline() {
         std::thread::sleep(Duration::from_millis(1));
     };
 
+    for log in &logs {
+        log.calls.store(0, Ordering::Relaxed);
+    }
     // One callback of 2048 frames (42.7 ms): the deadline is 25.6 ms after its start. Both
     // bridges sleep 50 ms. With one shared deadline the callback returns after about 25.6 ms;
     // with a budget per processor it would take at least 51.2 ms.
@@ -436,6 +443,8 @@ fn bridges_in_series_share_the_callback_deadline() {
         frames as f64 / f64::from(RATE),
     ))
     .expect("time-constraint policy");
+    #[cfg(windows)]
+    komponist_rt::policy::set_current_thread_mmcss().expect("audio thread priority");
     let engine = &mut rig.engine;
     let before = Instant::now();
     assert_no_alloc(|| engine.process(&mut l, &mut r, &input));
@@ -458,9 +467,14 @@ fn bridges_in_series_share_the_callback_deadline() {
     );
     eprintln!("two late bridges in series: callback took {took:.1?}, deadline {offset:.1?}");
     assert!(took >= share - Duration::from_millis(1), "{took:?}");
+    // Measure the time between the two post-bridge probes. If Windows schedules the
+    // callback late after the first wait, that delay is already included in both
+    // timestamps. A fresh budget for the second bridge would still add another wait.
+    let finished = |log: &ProbeLog| log.finished_ns.load(Ordering::Relaxed);
+    let between_waits = Duration::from_nanos(finished(&logs[0]).abs_diff(finished(&logs[1])));
     assert!(
-        took < share * 3 / 2,
-        "both waited their own budget: {took:?}"
+        between_waits < share / 2,
+        "second bridge added a separate wait: {between_waits:?}"
     );
     assert_eq!(
         late_blocks(&rig),
