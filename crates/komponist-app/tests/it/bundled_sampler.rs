@@ -23,7 +23,9 @@ use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent};
 use komponist_sampler::links::{self, SampleLink};
 
 use crate::acceptance_support::harness;
-use crate::common::{PATIENCE, app_with, config, step_for, step_until};
+use crate::common::{NULL_BUFFER, PATIENCE, app_with, config, step_for, step_until};
+
+const SAMPLE_FRAMES: u32 = 8192;
 
 #[test]
 #[ignore = "requires a verified all-device package; run with scripts/measure-bundled-clap.py --historical-projects"]
@@ -228,8 +230,9 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     let scratch = tempfile::tempdir().unwrap();
     let sample = scratch.path().join("tone.wav");
     write_wav_with_region(&sample, |frame| {
-        // Only the slice that spans 40–100 ms contains sound.
-        if (1_920..4_800).contains(&frame) {
+        // Only the 40–100 ms slice contains sound. Leave silence at both cuts so
+        // interpolation near a slice boundary cannot read into the tone.
+        if (2_400..4_320).contains(&frame) {
             11_000
         } else {
             0
@@ -386,21 +389,40 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     step_until(&mut app, "restored slice map", |app| {
         !app.engine().host().sampler_is_loading(general)
     });
-    step_for(&mut app, Duration::from_millis(200));
-    app.engine().track_meter(general_track).unwrap().take();
-    app.dispatch(Action::Plugin(PluginAction::PreviewSampler {
-        device: general,
-        slice_time: Some(0.08),
-    }));
-    step_for(&mut app, Duration::from_millis(160));
-    assert!(app.engine().track_meter(general_track).unwrap().take().0 > 1e-3);
-    // The first slice is silent. Confirm that its preview cannot produce the same peak.
-    app.dispatch(Action::Plugin(PluginAction::PreviewSampler {
-        device: general,
-        slice_time: Some(0.02),
-    }));
-    step_for(&mut app, Duration::from_millis(160));
-    assert!(app.engine().track_meter(general_track).unwrap().take().0 < 1e-4);
+    // Count real callbacks so a delayed bridge block cannot spill into the next measurement.
+    let drain_render = |app: &mut App| {
+        let blocks = u64::from(SAMPLE_FRAMES.div_ceil(NULL_BUFFER) + 1);
+        let complete = app.engine().stats().callbacks() + blocks;
+        step_until(app, "sampler preview render window completed", |app| {
+            app.engine().stats().callbacks() >= complete
+        });
+    };
+    drain_render(&mut app); // Let the earlier whole-sample audition finish.
+    let meter = app.engine().track_meter(general_track).unwrap().clone();
+    let hits = |app: &App| {
+        app.engine()
+            .host()
+            .sampler_ui(general)
+            .map(|view| view.last_hit.0)
+    };
+    let preview_peak = |app: &mut App, time| {
+        let previous_hit = hits(app).expect("sampler UI after restoring slices");
+        meter.take();
+        app.dispatch(Action::Plugin(PluginAction::PreviewSampler {
+            device: general,
+            slice_time: Some(time),
+        }));
+        step_until(app, "preview triggered a sampler voice", |app| {
+            hits(app).is_some_and(|count| count != previous_hit)
+        });
+        drain_render(app);
+        let (left, right) = meter.take();
+        left.max(right)
+    };
+    let quiet_peak = preview_peak(&mut app, 0.02);
+    assert!(quiet_peak < 1e-4, "first slice peak: {quiet_peak}");
+    let tone_peak = preview_peak(&mut app, 0.08);
+    assert!(tone_peak > 1e-3, "second slice peak: {tone_peak}");
 
     let (_, drum_track, drum) = tracks[0];
     let select = |app: &mut App, track| {
@@ -635,7 +657,7 @@ fn write_wav_with_region(path: &Path, amplitude: impl Fn(usize) -> i16) {
         },
     )
     .unwrap();
-    for frame in 0..8192 {
+    for frame in 0..SAMPLE_FRAMES as usize {
         let amplitude = amplitude(frame);
         let sample = if frame / 12 % 2 == 0 {
             amplitude
