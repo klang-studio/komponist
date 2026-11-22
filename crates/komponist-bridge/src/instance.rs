@@ -649,6 +649,16 @@ impl Bridge {
             // GUI edits while inactive. While active, the plugin flushes in the next block.
             let mut out = Vec::new();
             plugin.flush_params(&[], &mut out);
+            let edits: Vec<_> = out
+                .iter()
+                .filter_map(|event| match event.decode() {
+                    Some(WireEventKind::ParamValue { id, value }) => Some((id, value)),
+                    _ => None,
+                })
+                .collect();
+            if !edits.is_empty() {
+                self.send(BridgeMsg::PluginParamEdits(edits));
+            }
             self.queue_flushed(&out);
         }
         if pending & bits::PARAM_EDITED != 0 {

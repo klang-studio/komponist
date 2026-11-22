@@ -335,7 +335,7 @@ fn gui_surge_xt() {
 }
 
 /// GUI edits reach the app on both paths: while inactive through `request_flush` → `flush_params`
-/// → `ParamValues` on the control socket, while processing as output events of `process` through
+/// → `PluginParamEdits` on the control socket, while processing as output events of `process` through
 /// the shared output ring.
 #[test]
 #[ignore = "GUI: run under Xvfb with KP_GUI_TESTS=1"]
@@ -369,14 +369,17 @@ fn gui_dexed_edits_reach_the_app() {
         .seen
         .iter()
         .filter_map(|m| match m {
-            BridgeMsg::ParamValues(values) => Some(values.iter().map(|v| (v.id, v.value))),
+            BridgeMsg::PluginParamEdits(edits) => Some(edits.iter().copied()),
             _ => None,
         })
         .flatten()
         .collect();
-    let (id, value) = *flushed
-        .last()
-        .unwrap_or_else(|| panic!("no ParamValues from the GUI edit; seen {:?}", bridge.seen));
+    let (id, value) = *flushed.last().unwrap_or_else(|| {
+        panic!(
+            "no PluginParamEdits from the GUI edit; seen {:?}",
+            bridge.seen
+        )
+    });
     let param = info.params.iter().find(|p| p.id == id).unwrap();
 
     // Active: the edit arrives with the blocks, as gesture and values.
@@ -406,6 +409,11 @@ fn gui_dexed_edits_reach_the_app() {
         .iter()
         .filter(|m| matches!(m, BridgeMsg::ParamValues(_)))
         .count();
+    assert!(
+        !bridge.seen[seen_before..]
+            .iter()
+            .any(|m| { matches!(m, BridgeMsg::PluginParamEdits(_)) })
+    );
 
     bridge.send(ControlMsg::CloseGui);
     bridge.expect("GuiClosed", |m| {
@@ -413,7 +421,7 @@ fn gui_dexed_edits_reach_the_app() {
     });
     assert_eq!(bridge.shutdown(), EXIT_OK);
     eprintln!(
-        "GUI edits through the bridge (Dexed): inactive {} ParamValues entries, last {} = \
+        "GUI edits through the bridge (Dexed): inactive {} PluginParamEdits entries, last {} = \
          {value:.3}; active {} output events ({processed} values), ParamValues messages while active \
          {values_while_active}",
         flushed.len(),

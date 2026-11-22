@@ -581,7 +581,7 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
         },
     )
     .unwrap();
-    for frame in 0..RATE * 2 {
+    for frame in 0..RATE * 4 {
         let phase = std::f64::consts::TAU * f64::from(frame % 48) / 48.0;
         tone.write_sample((4_096.0 * phase.sin()) as i16).unwrap();
     }
@@ -591,10 +591,10 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
         track,
         NewClip {
             start: Tick::ZERO,
-            length: Tick(4 * PPQ),
+            length: Tick(8 * PPQ),
             name: "1 kHz tone".into(),
             content: NewClipContent::Audio {
-                file: AudioFile::new(&sample, Some(work.path()), u64::from(RATE) * 2, RATE, 1),
+                file: AudioFile::new(&sample, Some(work.path()), u64::from(RATE) * 4, RATE, 1),
                 offset: 0,
             },
         },
@@ -655,7 +655,12 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
             value: 0.22,
             shape: Shape::Hold,
         },
-        Point::linear(Tick(2 * PPQ), 0.9),
+        Point {
+            tick: Tick(2 * PPQ),
+            value: 0.9,
+            shape: Shape::Hold,
+        },
+        Point::linear(Tick(4 * PPQ), 0.22),
     ]);
     let project = edits::automation::set_lane_points(&project, owner, lane, points).unwrap();
     let gain_mapping = Mapping {
@@ -683,7 +688,14 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
         &project,
         owner,
         macro_lane,
-        Points::new(vec![Point::linear(Tick::ZERO, MACRO_AUTOMATION)]),
+        Points::new(vec![
+            Point {
+                tick: Tick::ZERO,
+                value: MACRO_AUTOMATION,
+                shape: Shape::Hold,
+            },
+            Point::linear(Tick(6 * PPQ), 0.05),
+        ]),
     )
     .unwrap();
     save_project(&path, &project).unwrap();
@@ -774,6 +786,13 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
     assert!(
         unboosted > 0.03 && boosted > 2.0 * unboosted,
         "reopened EQ automation did not change the rendered tone: {boosted} vs {unboosted}"
+    );
+    // The shelf is back below the tone in both windows. The macro lowers the gain at 3 s.
+    let before_gain_step = rms(108_000, 132_000);
+    let after_gain_step = rms(156_000, 180_000);
+    assert!(
+        before_gain_step > 1.3 * after_gain_step && after_gain_step > 0.03,
+        "reopened macro automation did not lower the rendered shelf gain: {before_gain_step} vs {after_gain_step}"
     );
     app.shutdown();
 }

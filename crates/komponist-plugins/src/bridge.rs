@@ -1133,6 +1133,15 @@ impl Bridge {
                 }
                 events.push(PluginManagerEvent::ParamValuesChanged { device });
             }
+            BridgeMsg::PluginParamEdits(edits) => {
+                if self.verified_bundled_kind.is_some() && self.phase == Phase::Running {
+                    for (id, value) in edits {
+                        if value.is_finite() && !self.automated_params.contains_key(&id) {
+                            self.edited_param(id, value);
+                        }
+                    }
+                }
+            }
             BridgeMsg::StateApplied { request, result } => {
                 self.finish_restore(request, result, events);
             }

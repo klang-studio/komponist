@@ -32,21 +32,25 @@ pub(crate) fn restore_param_bases(
         };
         let param = ParamId::new(author);
         let info = match kind {
-            BuiltinKind::Hexa => &komponist_hexa::device::param(&param)?.info,
+            BuiltinKind::Hexa => komponist_hexa::Macro::ALL
+                .into_iter()
+                .find(|mac| mac.key() == author)
+                .map(komponist_hexa::Macro::param_info)
+                .or_else(|| komponist_hexa::device::param(&param).map(|card| card.info.clone()))?,
             BuiltinKind::Internal(kind) => {
-                &kind.params()[usize::try_from(kind.wire(&param)?).ok()?]
+                kind.params()[usize::try_from(kind.wire(&param)?).ok()?].clone()
             }
         };
-        let (min, max) = pinned_clap_state::clap_range(info);
+        let (min, max) = pinned_clap_state::clap_range(&info);
         if !(min..=max).contains(&value) {
             return None;
         }
-        let persistent = pinned_clap_state::from_clap(info, value);
+        let persistent = pinned_clap_state::from_clap(&info, value);
         // The pinned wrapper also accepts ordinal values for enums with stable string IDs.
         // The live snapshot's enum string cannot be reused when it names an automated value.
         params.insert(
             author.clone(),
-            pinned_clap_state::parameter(info, persistent).0,
+            pinned_clap_state::parameter(&info, persistent).0,
         );
     }
     if !corrections.is_empty() {
@@ -90,5 +94,35 @@ mod tests {
         assert_eq!(pinned_clap_state::decode(&corrected), Some(expected));
         assert!(restore_param_bases(kind, &layout, &state, [(99, 0.4)]).is_none());
         assert!(restore_param_bases(kind, &layout, &state, [(42, f64::NAN)]).is_none());
+    }
+    #[test]
+    fn persistent_state_repairs_every_exposed_hexa_macro() {
+        use komponist_hexa::Macro;
+
+        let author_ids: BTreeMap<_, _> = Macro::ALL
+            .into_iter()
+            .map(|mac| (mac.key(), mac.id()))
+            .collect();
+        let layout = NativeLayout::parse(&serde_json::to_vec(&json!({
+            "schema_version":1, "default_locale":"en", "locales":["en"],
+            "author_ids":author_ids,
+            "pages":[{"key":"main","labels":{"en":"Main"},"columns":1,
+                      "cells":[{"col":0,"row":0,"cols":1,"rows":1,"widget":"knob","param_id":0}]}]
+        })).unwrap()).unwrap();
+        let applied = Macro::ALL.map(|mac| (mac.id(), 1.0));
+        let state =
+            komponist_hexa::state::encode_clap_patch(komponist_hexa::default_patch(), "0.1.0");
+        let restored = restore_param_bases(BuiltinKind::Hexa, &layout, &state, applied).unwrap();
+        let document = pinned_clap_state::decode(&restored).unwrap();
+        for mac in Macro::ALL {
+            let info = mac.param_info();
+            let plain = pinned_clap_state::from_clap(&info, 1.0);
+            assert_eq!(
+                document["params"][mac.key()],
+                pinned_clap_state::parameter(&info, plain).0,
+                "{}",
+                mac.key()
+            );
+        }
     }
 }
