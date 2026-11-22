@@ -166,8 +166,9 @@ impl Catalog {
         &self.entries
     }
 
-    /// The entry for a device's plugin reference, if installed. A bundled reference
-    /// additionally requires the packaged module, even when a scan finds the same CLAP ID.
+    /// The entry for a device's plugin reference, if installed. Bundled and external CLAP
+    /// references resolve separately even when they use the same plugin ID. A bundled reference
+    /// also requires the exact packaged module.
     ///
     /// A project saved while klopfer was a built-in (`Builtin` format, id [`BUILTIN_KLOPFER`])
     /// resolves to the scanned klopfer CLAP plugin: the device keeps its state, which is the
@@ -177,6 +178,7 @@ impl Catalog {
         let same = |e: &&CatalogEntry| {
             e.plugin.format == plugin.format
                 && e.plugin.id == plugin.id
+                && requires_bundled(&e.plugin) == bundled
                 && (!bundled || e.plugin.module == plugin.module)
         };
         self.entries.iter().find(same).or_else(|| {
@@ -211,8 +213,11 @@ impl Catalog {
         let mut scanned: Vec<CatalogEntry> = descriptors
             .iter()
             .filter(|d| d.kind != PluginKind::Other)
-            .filter(|d| seen.insert((d.format, d.id.clone())))
-            .map(|d| scanned_entry(d, shipped(d)))
+            .filter_map(|d| {
+                let bundled = shipped(d);
+                seen.insert((d.format, d.id.clone(), bundled))
+                    .then(|| scanned_entry(d, bundled))
+            })
             .collect();
         scanned.sort_by_cached_key(|e| e.plugin.name.to_lowercase());
         self.entries.extend(scanned);
@@ -635,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bundled_reference_rejects_external_copies_until_the_packaged_scan_finishes() {
+    fn bundled_and_external_references_with_the_same_id_resolve_separately() {
         let mut external = descriptor(
             "org.klang-studio.komponist.volt",
             "Volt",
@@ -652,12 +657,20 @@ mod tests {
         assert!(catalog.resolve(&bundled_ref).is_none());
         assert!(catalog.resolve(&external_ref).is_some());
 
-        let shipped_path = bundled.bundle.clone();
-        catalog.set_scanned_with_bundled(&[bundled, external], |d| d.bundle == shipped_path);
-        let entry = catalog.resolve(&bundled_ref).unwrap();
+        let shipped_path = &bundled.bundle;
+        let shipped = |d: &PluginDescriptor| &d.bundle == shipped_path;
+        catalog.set_scanned_with_bundled(&[external.clone(), bundled.clone()], shipped);
+        let location = |plugin| &catalog.resolve(plugin).unwrap().location;
         assert!(
-            matches!(&entry.location, PluginLocation::Bundle { path, .. } if *path == shipped_path)
+            matches!(location(&bundled_ref), PluginLocation::Bundle { path, .. } if path == shipped_path)
         );
+        assert!(
+            matches!(location(&external_ref), PluginLocation::Bundle { path, .. } if *path == external.bundle)
+        );
+
+        catalog.set_scanned_with_bundled(std::slice::from_ref(&bundled), shipped);
+        assert!(catalog.resolve(&external_ref).is_none());
+        assert!(catalog.resolve(&bundled_ref).is_some());
     }
 
     #[test]
