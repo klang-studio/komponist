@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 use komponist_i18n::Lang;
 use komponist_ipc::PluginKind;
 use komponist_model::{ClipContent, ClipId, DeviceRole, PluginRef, Project, TrackId};
-use komponist_plugins::{Catalog, CatalogEntry, EffectCategory};
+use komponist_plugins::{BuiltinKind, Catalog, CatalogEntry, EffectCategory, packaged_kind};
 
 use crate::actions::{Action, DropTarget, EditAction, PluginAction, UiAction};
 use crate::device_host::is_hexa;
@@ -383,11 +383,12 @@ fn effects(
 
 /// hexa's factory presets in category folders, if hexa is in the catalog.
 fn presets(lang: Lang, input: &Input<'_>, rows: &mut Vec<Row>) {
-    let has_hexa = input
-        .catalog
-        .entries()
-        .iter()
-        .any(|e| e.plugin.id == komponist_model::project::BUILTIN_HEXA);
+    let has_hexa = input.catalog.packaged(BuiltinKind::Hexa).is_some()
+        || input
+            .catalog
+            .entries()
+            .iter()
+            .any(|entry| BuiltinKind::from_plugin(&entry.plugin) == Some(BuiltinKind::Hexa));
     if !has_hexa {
         return;
     }
@@ -687,7 +688,10 @@ pub fn hexa_of(project: &Project, track: Option<TrackId>) -> Option<komponist_mo
         .channel
         .devices
         .iter()
-        .find(|d| d.role == DeviceRole::Instrument && is_hexa(d))
+        .find(|device| {
+            device.role == DeviceRole::Instrument
+                && (is_hexa(device) || packaged_kind(&device.plugin) == Some(BuiltinKind::Hexa))
+        })
         .map(|d| d.id)
 }
 

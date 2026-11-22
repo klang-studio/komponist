@@ -91,6 +91,11 @@ pub trait DeviceHost {
     /// catalog).
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole>;
 
+    /// Device-specific presentation for an active authenticated bundled CLAP instance.
+    fn verified_bundled_kind(&self, _device: DeviceId) -> Option<BuiltinKind> {
+        None
+    }
+
     /// The plugins the browser offers (built-ins first, then scanned plugins by name).
     fn catalog(&self) -> &Catalog;
 
@@ -189,6 +194,11 @@ pub trait DeviceHost {
         false
     }
 
+    /// Whether the host captured this state and has no later edits awaiting capture.
+    fn is_current_param_snapshot(&self, _device: DeviceId, _state: &Arc<[u8]>) -> bool {
+        false
+    }
+
     /// Sets a parameter of a bridged device; `false` if this host does not handle `device` (the
     /// caller then sends the engine's `SetParam` to the device's slot, as for hexa).
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
@@ -241,6 +251,41 @@ pub trait DeviceHost {
         let _ = device;
         None
     }
+
+    /// Bounded UI data from an authenticated bundled sampler.
+    fn sampler_ui(&self, _device: DeviceId) -> Option<&komponist_ipc::sampler_ui::Snapshot> {
+        None
+    }
+
+    /// Request a General Sampler stretch at the detached engine's offline tempo.
+    fn set_sampler_export_tempo(&mut self, _device: DeviceId, _tempo: Option<f64>) {}
+
+    /// Whether a sampler still needs to hand its decoded samples or stretch to audio.
+    fn sampler_is_loading(&self, device: DeviceId) -> bool {
+        use komponist_builtin::{BuiltinKind, Internal};
+        if let Some(handle) = self.sampler(device) {
+            return !handle.is_idle();
+        }
+        matches!(
+            self.verified_bundled_kind(device),
+            Some(BuiltinKind::Internal(
+                Internal::Sampler | Internal::GeneralSampler
+            ))
+        ) && self
+            .sampler_ui(device)
+            .is_none_or(|snapshot| !snapshot.idle)
+    }
+
+    fn sampler_sync_unavailable(&self, device: DeviceId) -> bool {
+        self.sampler(device).is_some_and(|handle| {
+            handle.sync_status() == Some(komponist_sampler::SyncStatus::Unavailable)
+        }) || self.sampler_ui(device).is_some_and(|snapshot| {
+            snapshot.sync == Some(komponist_ipc::sampler_ui::Sync::Unavailable)
+        })
+    }
+
+    /// Start or release a slice audition in the running bundled sampler.
+    fn preview_sampler_slice(&self, _device: DeviceId, _time: Option<f64>) {}
 
     /// Whether the device's plugin has its own GUI.
     fn has_gui(&self, device: DeviceId) -> bool {
@@ -696,6 +741,7 @@ impl DeviceHost for PluginHost {
 
     fn for_each_meter(&self, f: &mut dyn FnMut(DeviceId, &DeviceMeter)) {
         self.builtin.for_each_meter(f);
+        self.manager.for_each_effect_meter(f);
     }
 
     fn status(&self, device: DeviceId) -> DeviceStatus {
@@ -735,6 +781,10 @@ impl DeviceHost for PluginHost {
             PluginKind::MidiEffect => Some(DeviceRole::MidiEffect),
             PluginKind::Other => None,
         }
+    }
+
+    fn verified_bundled_kind(&self, device: DeviceId) -> Option<BuiltinKind> {
+        self.manager.verified_bundled_kind(device)
     }
 
     fn catalog(&self) -> &Catalog {
@@ -798,6 +848,10 @@ impl DeviceHost for PluginHost {
         self.manager.is_macro_snapshot(device, state)
     }
 
+    fn is_current_param_snapshot(&self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        self.manager.is_current_param_snapshot(device, state)
+    }
+
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
         if !self.is_external(device) {
             return false;
@@ -833,6 +887,14 @@ impl DeviceHost for PluginHost {
 
     fn project_dir(&self) -> Option<PathBuf> {
         self.builtin.project_dir()
+    }
+
+    fn sampler_ui(&self, device: DeviceId) -> Option<&komponist_ipc::sampler_ui::Snapshot> {
+        self.manager.sampler_ui(device)
+    }
+
+    fn preview_sampler_slice(&self, device: DeviceId, time: Option<f64>) {
+        self.manager.preview_sampler_slice(device, time);
     }
 
     fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {
@@ -907,6 +969,10 @@ impl DeviceHost for PluginHost {
 
     fn set_selected_render_mode(&mut self, devices: &[DeviceId], mode: RenderMode) {
         self.manager.set_selected_render_mode(devices, mode);
+    }
+
+    fn set_sampler_export_tempo(&mut self, device: DeviceId, tempo: Option<f64>) {
+        self.manager.set_sampler_export_tempo(device, tempo);
     }
 
     fn shutdown(&mut self) {

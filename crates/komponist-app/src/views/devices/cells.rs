@@ -209,7 +209,11 @@ pub(super) fn set(out: &mut Vec<Action>, card: &Card, p: &Param, plain: f64) {
         out.push(Action::Plugin(PluginAction::SetParam {
             device: card.device,
             id: p.wire,
-            value: plain,
+            value: if card.bundled_editor {
+                komponist_device_core::pinned_clap_state::to_clap(&p.info, plain)
+            } else {
+                plain
+            },
         }));
     }
 }
@@ -242,8 +246,8 @@ pub(super) fn touch(
     if let Some(control) = control {
         let range = control.driver.as_ref().map(|driver| {
             t.devices_range(
-                p.text_at(p.info.to_plain(f64::from(driver.range.0))),
-                p.text_at(p.info.to_plain(f64::from(driver.range.1))),
+                p.text_at(p.value_at_normalized(card.bundled_editor, f64::from(driver.range.0))),
+                p.text_at(p.value_at_normalized(card.bundled_editor, f64::from(driver.range.1))),
             )
         });
         control.decorate(cu, r, r.rect, range.as_deref());
@@ -317,7 +321,7 @@ pub(super) fn touch(
                         replace: None,
                         target: komponist_model::automation::AutomationTarget::Param {
                             device: card.device,
-                            param: p.info.id.clone(),
+                            param: p.project_id(card.bundled_editor),
                         },
                         label: format!("{} · {}", card.name, p.name()),
                     },
@@ -339,7 +343,7 @@ pub(super) fn begin_param(card: &Card, id: u32) -> Action {
 pub(super) fn touch_action(card: &Card, p: &Param, dragging: bool) -> Action {
     Action::Ui(UiAction::TouchParam {
         device: card.device,
-        param: p.info.id.clone(),
+        param: p.project_id(card.bundled_editor),
         dragging,
     })
 }
@@ -676,10 +680,33 @@ fn mini_fader(
 /// Whether the mini fader of `cell` fills as a carrier (the track colour): the Bool parameter the
 /// cell names says so; without one (or while it is unknown) it does.
 fn carrier(card: &Card, cell: &Cell) -> bool {
-    cell.carrier
-        .as_ref()
-        .and_then(|id| card.param(id))
-        .is_none_or(|p| p.value >= 0.5)
+    let Some(id) = &cell.carrier else {
+        return true;
+    };
+    // Changing Hexa's algorithm edits the patch routing as a group. The separate output
+    // CLAP bindings can still report their last individual edits.
+    if card.bundled_editor
+        && let Some(routing) = card.routing
+        && let Some(op) = id
+            .as_str()
+            .strip_prefix("op")
+            .and_then(|id| id.strip_suffix("_output"))
+            .and_then(|number| number.parse::<usize>().ok())
+            .and_then(|number| number.checked_sub(1))
+            .filter(|&op| op < routing.modulates.len())
+        && let Some(algorithm) = card
+            .params
+            .iter()
+            .find(|p| p.info.id.as_str() == "algorithm")
+    {
+        let number = algorithm.value.round() as usize;
+        return if number == 0 {
+            routing.outputs & (1 << op) != 0
+        } else {
+            komponist_hexa::device::is_carrier(number, op)
+        };
+    }
+    card.param(id).is_none_or(|p| p.value >= 0.5)
 }
 
 /// The selected entry (1-based) of context placeholder `key`, 1 without one.
@@ -1378,6 +1405,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn bundled_hexa_carriers_follow_the_graph_after_an_algorithm_edit() {
+        let mut card = card();
+        card.bundled_editor = true;
+        let patch = komponist_hexa::preset_patch(1).unwrap();
+        card.routing = Some(komponist_hexa::algorithms::routing(&patch));
+        let info = komponist_hexa::Macro::Algorithm.param_info();
+        card.params.push(Param {
+            wire: 110,
+            info,
+            value: 7.0,
+            text: String::new(),
+        });
+        // E-Piano initially has operator 5 as a carrier. Fixed algorithm 7 uses 1 and 3.
+        let cell = Cell::knob(0, 0, ParamId::new("op5_level")).carrier(ParamId::new("op5_output"));
+        assert!(!carrier(&card, &cell));
+        card.params.last_mut().unwrap().value = 0.0;
+        assert!(carrier(&card, &cell));
+    }
+
     /// A card with one cell of every kind that edits a parameter.
     fn card() -> Card {
         let id = |w: u32| ParamId::new(format!("p{w}"));
@@ -1414,6 +1461,7 @@ mod tests {
             sampler: None,
             general_sampler: None,
             native_layout: None,
+            bundled_editor: false,
             device: DeviceId(7),
             automation_owner: None,
             automation: Default::default(),

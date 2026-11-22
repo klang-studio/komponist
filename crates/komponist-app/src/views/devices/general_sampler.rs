@@ -41,6 +41,7 @@ pub(super) struct Editor {
     source: Option<PadView>,
     peaks: Option<Arc<PeakData>>,
     playhead: Option<f32>,
+    source_rate: Option<u32>,
     transients: Vec<f64>,
     settings: Settings,
     sync_status: Option<SyncStatus>,
@@ -52,9 +53,35 @@ impl Editor {
             source: handle.map(|handle| handle.view(0)),
             peaks: handle.and_then(SamplerHandle::waveform_peaks),
             playhead: handle.and_then(|handle| handle.playhead(0)),
+            source_rate: None,
             transients: handle.map(SamplerHandle::transients).unwrap_or_default(),
             settings: read_settings(device_state),
             sync_status: handle.and_then(SamplerHandle::sync_status),
+        }
+    }
+
+    pub(super) fn from_bundled(
+        assets: Option<&str>,
+        source: Option<PadView>,
+        snapshot: Option<&komponist_ipc::sampler_ui::Snapshot>,
+    ) -> Self {
+        use komponist_ipc::sampler_ui::Sync;
+        Self {
+            source,
+            peaks: None,
+            playhead: snapshot.and_then(|snapshot| snapshot.pads.first()?.playhead),
+            source_rate: snapshot.and_then(|snapshot| snapshot.source_rate),
+            transients: snapshot
+                .map(|snapshot| snapshot.transients.clone())
+                .unwrap_or_default(),
+            settings: read_settings(assets.map(str::as_bytes)),
+            sync_status: snapshot
+                .and_then(|snapshot| snapshot.sync)
+                .map(|sync| match sync {
+                    Sync::Ready => SyncStatus::Ready,
+                    Sync::Preparing => SyncStatus::Preparing,
+                    Sync::Unavailable => SyncStatus::Unavailable,
+                }),
         }
     }
 
@@ -68,7 +95,9 @@ impl Editor {
         1.0 / f64::from(
             self.peaks
                 .as_ref()
-                .map_or(48_000, |peaks| peaks.sample_rate()),
+                .map_or(self.source_rate.unwrap_or(48_000), |peaks| {
+                    peaks.sample_rate()
+                }),
         )
     }
 }
@@ -1563,6 +1592,7 @@ mod tests {
             source: None,
             peaks: Some(Arc::new(PeakData::from_planar(48_000, &[samples]))),
             playhead: None,
+            source_rate: None,
             transients: Vec::new(),
             settings: Settings::default(),
             sync_status: None,

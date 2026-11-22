@@ -831,7 +831,22 @@ impl EngineSync {
             }
             self.reassert_device_macros(device.id);
         } else if let Some(state) = &device.state {
-            self.host.set_state(device.id, state);
+            if !self.host.set_state(device.id, state)
+                && komponist_plugins::packaged_kind(&device.plugin).is_some()
+                && self.host.status(device.id) == DeviceStatus::Loading
+            {
+                // A replacement bridge is still loading the previous revision (for example
+                // Redo immediately after Undo recreated the default instance).
+                self.host.release(device.id);
+                self.reload_device(project, device.id);
+            }
+        } else if komponist_plugins::packaged_kind(&device.plugin).is_some() {
+            // Undo may restore the new instance's absent state. A regular reload preserves
+            // the previous processor's snapshot, so start a fresh instance at its defaults.
+            let slot = self.slot_of(device.id).expect("checked by the caller");
+            self.send(Command::RemoveProcessor { slot });
+            self.host.release(device.id);
+            self.reload_device(project, device.id);
         }
     }
 

@@ -34,10 +34,12 @@
 //! This crate links no plugin format and no audio backend.
 
 pub mod control;
+pub mod effect_meter;
 pub mod frame;
 pub mod native_layout;
 pub mod process;
 pub mod ring;
+pub mod sampler_ui;
 pub mod shm;
 pub mod sidechain_fallback;
 pub mod signal;

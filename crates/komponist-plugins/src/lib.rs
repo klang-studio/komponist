@@ -19,6 +19,7 @@
 mod bridge;
 pub mod builtin;
 pub mod bundled_clap;
+mod bundled_effects;
 pub mod bundled_sampler;
 pub mod catalog;
 mod direct;
@@ -33,7 +34,7 @@ mod verify_bundles;
 
 pub use catalog::{
     BuiltinKind, Catalog, CatalogEntry, EffectCategory, PluginDirs, PluginLocation, ScanCache,
-    ScanReport,
+    ScanReport, packaged_kind,
 };
 pub use external::ExternalProcessor;
 pub use manager::{

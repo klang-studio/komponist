@@ -26,6 +26,7 @@ impl EffectDefinition for Presse {
     const SIDECHAIN: bool = true;
     const SIDECHAIN_FROM_MAIN: bool = true;
     const LATENCY_PARAMETER: Option<&'static str> = Some("lookahead");
+    const REPORTS_REDUCTION: bool = true;
     const FEATURES: &'static [ClapFeature] = &[
         ClapFeature::AudioEffect,
         ClapFeature::Stereo,

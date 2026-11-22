@@ -20,6 +20,9 @@ use crate::manager::{
 pub(crate) struct DirectDevice {
     session: DirectSession,
     pub(crate) params: Vec<ParamInfo>,
+    pub(crate) sampler_ui: Option<komponist_ipc::sampler_ui::Snapshot>,
+    sampler_ui_at: Instant,
+    sampler_export_tempo: Option<f64>,
     pub(crate) layout: Option<Arc<NativeLayout>>,
     pub(crate) values: BTreeMap<u32, ParamValue>,
     pub(crate) base: BTreeMap<u32, f64>,
@@ -111,6 +114,9 @@ impl DirectDevice {
             latency: session.latency(),
             session,
             params: Vec::new(),
+            sampler_ui: None,
+            sampler_ui_at: Instant::now(),
+            sampler_export_tempo: None,
             layout: None,
             values: BTreeMap::new(),
             base: BTreeMap::new(),
@@ -161,6 +167,26 @@ impl DirectDevice {
                 message: format!("{STATE_LOG_PREFIX} {reason}"),
             });
         }
+    }
+
+    pub(crate) fn set_sampler_export_tempo(&mut self, tempo: Option<f64>) {
+        self.sampler_export_tempo = tempo;
+        if tempo.is_some() {
+            self.sampler_ui = None;
+        }
+        self.sampler_ui_at = Instant::now();
+    }
+
+    pub(crate) fn poll_sampler_ui(&mut self) {
+        let now = Instant::now();
+        if self.pending_restore.is_none() && now >= self.sampler_ui_at {
+            self.sampler_ui_at = now + crate::bundled_sampler::UI_REFRESH;
+            self.sampler_ui = self.session.sampler_ui(self.sampler_export_tempo);
+        }
+    }
+
+    pub(crate) fn preview_sampler_slice(&self, time: Option<f64>) {
+        self.session.preview_sampler_slice(time);
     }
 
     pub(crate) fn poll(&mut self, id: DeviceId, events: &mut Vec<PluginManagerEvent>) {
@@ -309,6 +335,7 @@ impl DirectDevice {
     }
 
     pub(crate) fn set_state(&mut self, state: Arc<[u8]>) {
+        self.sampler_ui = None;
         self.pending_restore = Some(state);
         self.pending_writes.clear();
         self.snapshot_due = None;
@@ -325,6 +352,15 @@ impl DirectDevice {
         if self.state_warning.is_none() {
             self.snapshot_due = Some(Instant::now());
         }
+    }
+
+    pub(crate) fn is_current_param_snapshot(&self, state: &Arc<[u8]>) -> bool {
+        !self.needs_snapshot()
+            && !self.is_macro_snapshot(state)
+            && self
+                .last_state
+                .as_ref()
+                .is_some_and(|last| Arc::ptr_eq(last, state))
     }
 
     pub(crate) fn needs_snapshot(&self) -> bool {

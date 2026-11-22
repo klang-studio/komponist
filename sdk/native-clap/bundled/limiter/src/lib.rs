@@ -14,6 +14,7 @@ impl EffectDefinition for Limiter {
     const ID: &'static str = "org.klang-studio.komponist.limiter";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
     const LATENCY_PARAMETER: Option<&'static str> = Some("lookahead");
+    const REPORTS_REDUCTION: bool = true;
     const FEATURES: &'static [ClapFeature] = &[
         ClapFeature::AudioEffect,
         ClapFeature::Stereo,

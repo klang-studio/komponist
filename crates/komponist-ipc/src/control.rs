@@ -87,7 +87,8 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// edits and a state restore replies with its authoritative parameter values. 8: checked
 /// snapshots distinguish delivered, quantized edits and return the verified parameter values.
 /// 9 (#75): the shared native frame header carries the track macro mapping chip.
-pub const PROTOCOL_VERSION: u32 = 10;
+/// 11 adds bounded sampler front-panel data and the slice audition command.
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -314,6 +315,10 @@ pub enum LogLevel {
 /// App → bridge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ControlMsg {
+    /// Query the current sampler UI snapshot from a running plugin.
+    GetSamplerUi(u32, Option<f64>),
+    /// Start a held slice audition at the source position, or release it with `None`.
+    PreviewSamplerSlice(Option<f64>),
     /// Load plugin `plugin_id` from `bundle`. Answer: `Loaded` or `Error`.
     Load {
         /// Bundle format.
@@ -404,6 +409,8 @@ pub enum ControlMsg {
 /// Bridge → app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BridgeMsg {
+    /// Bounded sampler UI data encoded with the public extension's current schema.
+    SamplerUi(u32, Option<Vec<u8>>),
     /// First message after start.
     Hello {
         /// [`PROTOCOL_VERSION`] of the bridge.

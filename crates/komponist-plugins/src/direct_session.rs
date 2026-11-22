@@ -15,6 +15,7 @@ use komponist_ipc::{RenderMode, WireEvent, WireEventKind};
 use komponist_model::DeviceRole;
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
+use crate::bundled_effects;
 use crate::direct::{ControlEvents, DirectClap, DirectProcessor, write_fallback};
 use crate::manager::ProcessorSetup;
 
@@ -184,6 +185,7 @@ impl DirectSession {
             role,
             offline_failures: 0,
             release_notes: false,
+            effect_meter: None,
         };
         Ok((session, engine))
     }
@@ -238,6 +240,17 @@ impl DirectSession {
             self.host.deactivate(active.audio);
         }
         true
+    }
+
+    pub(crate) fn sampler_ui(
+        &self,
+        export_tempo: Option<f64>,
+    ) -> Option<komponist_ipc::sampler_ui::Snapshot> {
+        self.host.sampler_ui(export_tempo)
+    }
+
+    pub(crate) fn preview_sampler_slice(&self, time: Option<f64>) {
+        self.host.preview_sampler_slice(time);
     }
 
     pub(crate) fn set_render_mode(&mut self, mode: RenderMode) {
@@ -308,9 +321,14 @@ pub(crate) struct DirectEngine {
     role: DeviceRole,
     offline_failures: u64,
     release_notes: bool,
+    effect_meter: Option<Arc<bundled_effects::Meter>>,
 }
 
 impl DirectEngine {
+    pub(crate) fn set_effect_meter(&mut self, meter: Arc<bundled_effects::Meter>) {
+        self.effect_meter = Some(meter);
+    }
+
     fn current(&mut self) -> Option<&mut DirectProcessor> {
         if self.active.is_none() {
             self.active = self.incoming.pop().ok();
@@ -369,6 +387,7 @@ impl DirectEngine {
                 },
                 io,
                 sidechain,
+                self.effect_meter.as_deref(),
             );
             if audio.delivered() && controls_fit {
                 self.controls.persistent.clear();
@@ -403,6 +422,9 @@ impl Processor for DirectEngine {
         }
         if !(1..=MAX_BLOCK).contains(&max_block) {
             return Err(ProcessorError::BlockTooLarge(max_block));
+        }
+        if let Some(meter) = &self.effect_meter {
+            meter.set_rate(sample_rate);
         }
         self.requested.request_setup(ProcessorSetup {
             sample_rate,

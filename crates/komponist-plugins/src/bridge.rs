@@ -232,6 +232,10 @@ pub(crate) struct Bridge {
     /// The latest state: the last snapshot, or the state the bridge was started with.
     pub last_state: Option<Arc<[u8]>>,
     pub params: Vec<ParamInfo>,
+    pub sampler_ui: Option<komponist_ipc::sampler_ui::Snapshot>,
+    sampler_ui_request: Option<u32>,
+    sampler_ui_at: Instant,
+    sampler_export_tempo: Option<f64>,
     pub native_layout: Option<Arc<komponist_ipc::native_layout::NativeLayout>>,
     pub values: BTreeMap<u32, ParamValue>,
     pub base_values: BTreeMap<u32, f64>,
@@ -364,6 +368,10 @@ impl Bridge {
             snapshot_due: None,
             last_state: s.state,
             params: Vec::new(),
+            sampler_ui: None,
+            sampler_ui_request: None,
+            sampler_ui_at: Instant::now(),
+            sampler_export_tempo: None,
             native_layout: None,
             values: BTreeMap::new(),
             base_values: BTreeMap::new(),
@@ -428,6 +436,29 @@ impl Bridge {
             && let Some(writer) = &self.writer
         {
             let _ = writer.send(msg);
+        }
+    }
+
+    pub(crate) fn set_sampler_export_tempo(&mut self, tempo: Option<f64>) {
+        self.sampler_export_tempo = tempo;
+        if tempo.is_some() {
+            self.sampler_ui = None;
+        }
+        self.sampler_ui_request = None;
+        self.sampler_ui_at = Instant::now();
+    }
+
+    pub(crate) fn poll_sampler_ui(&mut self) {
+        let now = Instant::now();
+        if self.running()
+            && self.state_restores.is_empty()
+            && self.sampler_ui_request.is_none()
+            && now >= self.sampler_ui_at
+        {
+            let request = self.seq();
+            self.sampler_ui_request = Some(request);
+            self.sampler_ui_at = now + crate::bundled_sampler::UI_REFRESH;
+            self.send(ControlMsg::GetSamplerUi(request, self.sampler_export_tempo));
         }
     }
 
@@ -632,6 +663,8 @@ impl Bridge {
             return None;
         }
         self.user_changed();
+        self.sampler_ui = None;
+        self.sampler_ui_request = None;
         self.last_state = Some(Arc::clone(state));
         self.pending_params.clear();
         self.released_macro_params.clear();
@@ -1060,6 +1093,14 @@ impl Bridge {
                 message,
                 fatal,
             } => self.handle_error(context, message, fatal, events),
+            BridgeMsg::SamplerUi(request, bytes) => {
+                if self.sampler_ui_request == Some(request) {
+                    self.sampler_ui_request = None;
+                    self.sampler_ui = bytes
+                        .as_deref()
+                        .and_then(komponist_ipc::sampler_ui::Snapshot::decode);
+                }
+            }
             BridgeMsg::Pong { seq } => {
                 if self.ping_waiting.is_some_and(|(s, _)| s == seq) {
                     self.ping_waiting = None;

@@ -71,7 +71,7 @@ impl LegacyDevicePlan {
     }
 }
 
-fn clap_id(kind: BuiltinKind) -> &'static str {
+pub(crate) fn clap_id(kind: BuiltinKind) -> &'static str {
     match kind {
         BuiltinKind::Hexa => "org.klang-studio.komponist.hexa",
         BuiltinKind::Internal(Internal::Sampler) => "org.klang-studio.komponist.sampler",

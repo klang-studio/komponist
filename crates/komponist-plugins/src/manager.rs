@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use komponist_builtin::{BuiltinKind, Internal};
 use komponist_engine::Processor;
 use komponist_ipc::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderModel};
 use komponist_ipc::shm::MAX_BLOCK;
@@ -42,13 +43,13 @@ use rustix::event::{PollFd, PollFlags, Timespec};
 
 use crate::bridge::{Bridge, Collected, SpawnSetup, StatePurpose, Timing};
 use crate::bundled_clap::{BundleVerificationError, BundledClap, VerifiedClap};
-use crate::bundled_sampler;
 use crate::catalog::{
     Catalog, Platform, PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT, ScanCache,
     ScanReport, env_path, requires_bundled,
 };
 use crate::direct_device::DirectDevice;
 use crate::scan::{ScanJob, ScanSetup};
+use crate::{bundled_effects, bundled_sampler};
 
 /// How long a released bridge may take for `Shutdown` before it is killed.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
@@ -355,7 +356,8 @@ pub struct PluginManager {
     bundled_clap: Option<BundledClap>,
     force_bundled_bridge: bool,
     project_dir: Option<PathBuf>,
-    verified_samplers: BTreeSet<DeviceId>,
+    verified_bundles: BTreeMap<DeviceId, BuiltinKind>,
+    effect_meters: BTreeMap<DeviceId, Arc<bundled_effects::Meter>>,
     direct: BTreeMap<DeviceId, DirectDevice>,
     retiring_direct: Vec<DirectDevice>,
     /// Status of devices without a bridge: `Missing`, or `Crashed` when the bridge could not start.
@@ -417,7 +419,8 @@ impl PluginManager {
             bundled_clap,
             force_bundled_bridge,
             project_dir: None,
-            verified_samplers: BTreeSet::new(),
+            verified_bundles: BTreeMap::new(),
+            effect_meters: BTreeMap::new(),
             direct: BTreeMap::new(),
             retiring_direct: Vec::new(),
             statuses: BTreeMap::new(),
@@ -636,7 +639,8 @@ impl PluginManager {
         // A project device has one instance. A local instance keeps its control half alive until
         // the engine returns the audio half; external bridge retirement remains asynchronous.
         self.retire(device.id, false);
-        let mut verified_sampler = false;
+        let mut verified_kind = None;
+        let mut effect_meter = None;
         let mut verified_bundle = None;
         let mut state = state;
         if requires_bundled(&device.plugin)
@@ -667,8 +671,11 @@ impl PluginManager {
                     return Err(error);
                 }
             };
-            verified_sampler = bundled_sampler::is_sampler(&proof);
-            if verified_sampler
+            verified_kind = BuiltinKind::all()
+                .find(|kind| crate::legacy_bundled::clap_id(*kind) == proof.plugin_id());
+            effect_meter =
+                verified_kind.and_then(|kind| bundled_effects::Meter::new(kind, setup.sample_rate));
+            if is_sampler_kind(verified_kind)
                 && let Some(original) = state.as_ref()
                 && let Some(runtime) = self.sampler_runtime_state(original)
             {
@@ -682,7 +689,11 @@ impl PluginManager {
                     state,
                     self.timing.snapshot_debounce,
                 ) {
-                    Ok((mut instance, processor)) => {
+                    Ok((mut instance, mut processor)) => {
+                        if let Some(meter) = effect_meter {
+                            processor.set_effect_meter(Arc::clone(&meter));
+                            self.effect_meters.insert(device.id, meter);
+                        }
                         self.statuses.remove(&device.id);
                         instance.report_warning(device.id, &mut self.pending);
                         DirectDevice::report_metadata(device.id, &mut self.pending);
@@ -692,8 +703,8 @@ impl PluginManager {
                         });
                         instance.set_render_mode(device.id, self.render_mode, &mut self.pending);
                         self.direct.insert(device.id, instance);
-                        if verified_sampler {
-                            self.verified_samplers.insert(device.id);
+                        if let Some(kind) = verified_kind {
+                            self.verified_bundles.insert(device.id, kind);
                         }
                         Ok(Box::new(processor))
                     }
@@ -725,7 +736,11 @@ impl PluginManager {
             sidechain,
         });
         match started {
-            Ok(started) => {
+            Ok(mut started) => {
+                if let Some(meter) = effect_meter {
+                    started.processor.set_effect_meter(Arc::clone(&meter));
+                    self.effect_meters.insert(device.id, meter);
+                }
                 if self.render_mode != RenderMode::Realtime {
                     started
                         .bridge
@@ -733,8 +748,8 @@ impl PluginManager {
                 }
                 self.statuses.remove(&device.id);
                 self.bridges.insert(device.id, started.bridge);
-                if verified_sampler {
-                    self.verified_samplers.insert(device.id);
+                if let Some(kind) = verified_kind {
+                    self.verified_bundles.insert(device.id, kind);
                 }
                 self.pending.push(PluginManagerEvent::StatusChanged {
                     device: device.id,
@@ -773,7 +788,8 @@ impl PluginManager {
     /// SIGKILL. Its process is reaped by later polls.
     fn retire(&mut self, device: DeviceId, graceful: bool) {
         self.discard_queued_snapshots(device);
-        self.verified_samplers.remove(&device);
+        self.verified_bundles.remove(&device);
+        self.effect_meters.remove(&device);
         if let Some(direct) = self.direct.remove(&device) {
             self.retiring_direct.push(direct);
         }
@@ -792,6 +808,25 @@ impl PluginManager {
     pub fn release(&mut self, device: DeviceId) {
         self.retire(device, true);
         self.statuses.remove(&device);
+    }
+
+    /// Provides the signal feeds of live verified bundled effect instances.
+    pub fn for_each_effect_meter(
+        &self,
+        f: &mut dyn FnMut(DeviceId, &komponist_engine::DeviceMeter),
+    ) {
+        for (&device, meter) in &self.effect_meters {
+            if self.status(device) == DeviceStatus::Ok {
+                f(device, &meter.view);
+            }
+        }
+    }
+
+    /// The built-in device an active authenticated package instance implements.
+    /// Project references and ordinary scanned plug-ins cannot set this identity.
+    pub fn verified_bundled_kind(&self, device: DeviceId) -> Option<BuiltinKind> {
+        let kind = self.verified_bundles.get(&device).copied()?;
+        (self.status(device) == DeviceStatus::Ok).then_some(kind)
     }
 
     /// Status of a device; `Ok` for devices this manager does not manage (in-process built-ins).
@@ -815,11 +850,36 @@ impl PluginManager {
         let mut events = std::mem::take(&mut self.pending);
         for (&id, direct) in &mut self.direct {
             direct.poll(id, &mut events);
+            if is_sampler_kind(self.verified_bundles.get(&id).copied()) {
+                direct.poll_sampler_ui();
+                if self.verified_bundles.get(&id) == Some(&BuiltinKind::Internal(Internal::Sampler))
+                {
+                    update_sampler_names(
+                        id,
+                        direct.sampler_ui.as_ref(),
+                        &mut direct.note_names,
+                        &mut events,
+                    );
+                }
+            }
         }
         self.retiring_direct.retain_mut(|direct| !direct.retired());
         let mut collected = Vec::new();
         for (&device, bridge) in &mut self.bridges {
             bridge.poll(&mut events, &mut collected);
+            if is_sampler_kind(self.verified_bundles.get(&device).copied()) {
+                bridge.poll_sampler_ui();
+                if self.verified_bundles.get(&device)
+                    == Some(&BuiltinKind::Internal(Internal::Sampler))
+                {
+                    update_sampler_names(
+                        device,
+                        bridge.sampler_ui.as_ref(),
+                        &mut bridge.note_names,
+                        &mut events,
+                    );
+                }
+            }
             // Answers to a `snapshot_states` that gave up waiting still belong in the document.
             for (_, state) in collected.drain(..) {
                 events.push(PluginManagerEvent::StateSnapshot { device, state });
@@ -866,6 +926,43 @@ impl PluginManager {
             return direct.layout.as_ref();
         }
         self.bridges.get(&device)?.native_layout.as_ref()
+    }
+
+    /// Apply a temporary export tempo to an authenticated General Sampler.
+    pub fn set_sampler_export_tempo(&mut self, device: DeviceId, tempo: Option<f64>) {
+        if self.verified_bundles.get(&device)
+            != Some(&BuiltinKind::Internal(Internal::GeneralSampler))
+        {
+            return;
+        }
+        if let Some(direct) = self.direct.get_mut(&device) {
+            direct.set_sampler_export_tempo(tempo);
+        } else if let Some(bridge) = self.bridges.get_mut(&device) {
+            bridge.set_sampler_export_tempo(tempo);
+        }
+    }
+
+    /// The latest editor snapshot for an authenticated bundled sampler.
+    pub fn sampler_ui(&self, device: DeviceId) -> Option<&komponist_ipc::sampler_ui::Snapshot> {
+        if !is_sampler_kind(self.verified_bundles.get(&device).copied()) {
+            return None;
+        }
+        if let Some(direct) = self.direct.get(&device) {
+            return direct.sampler_ui.as_ref();
+        }
+        self.bridges.get(&device)?.sampler_ui.as_ref()
+    }
+
+    /// Audition a slice of a verified General Sampler through the active host route.
+    pub fn preview_sampler_slice(&self, device: DeviceId, time: Option<f64>) {
+        if !is_sampler_kind(self.verified_bundles.get(&device).copied()) {
+            return;
+        }
+        if let Some(direct) = self.direct.get(&device) {
+            direct.preview_sampler_slice(time);
+        } else if let Some(bridge) = self.bridges.get(&device).filter(|bridge| bridge.running()) {
+            bridge.send(ControlMsg::PreviewSamplerSlice(time));
+        }
     }
 
     /// The last known value and text of parameter `id`.
@@ -954,6 +1051,22 @@ impl PluginManager {
             .is_some_and(|bridge| bridge.is_macro_snapshot(state))
     }
 
+    /// A current snapshot acknowledges the captured parameter bases. Pointer identity also
+    /// excludes a deferred snapshot superseded by a newer restore or capture.
+    pub fn is_current_param_snapshot(&self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        if let Some(direct) = self.direct.get(&device) {
+            return direct.is_current_param_snapshot(state);
+        }
+        self.bridges.get(&device).is_some_and(|bridge| {
+            bridge
+                .last_state
+                .as_ref()
+                .is_some_and(|last| Arc::ptr_eq(last, state))
+                && !bridge.needs_snapshot_for_save()
+                && !bridge.is_macro_snapshot(state)
+        })
+    }
+
     /// Set the project's directory before loading or restoring devices.
     pub fn set_project_dir(&mut self, dir: Option<PathBuf>) {
         self.project_dir = dir;
@@ -966,13 +1079,14 @@ impl PluginManager {
     /// Restores `state` in the running plugin of `device` (undo or redo changed the device's
     /// state in the document); `false` if the device has no running bridge.
     pub fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
-        let runtime = self
-            .verified_samplers
-            .contains(&device)
+        let runtime = is_sampler_kind(self.verified_bundles.get(&device).copied())
             .then(|| self.sampler_runtime_state(state))
             .flatten();
         let state = runtime.as_ref().unwrap_or(state);
         if let Some(direct) = self.direct.get_mut(&device) {
+            if matches!(direct.status, DeviceStatus::Crashed(_)) {
+                return false;
+            }
             direct.set_state(state.clone());
             return true;
         }
@@ -1303,7 +1417,8 @@ impl PluginManager {
     /// for them to exit, then SIGKILL for the rest. Cancels a running scan. Blocking.
     pub fn shutdown(&mut self) {
         self.scan = None;
-        self.verified_samplers.clear();
+        self.verified_bundles.clear();
+        self.effect_meters.clear();
         // App shutdown stops the audio stream before shutting down the plugin host.
         self.retiring_direct
             .extend(std::mem::take(&mut self.direct).into_values());
@@ -1343,6 +1458,38 @@ impl PluginManager {
     pub fn bridge_pid(&self, device: DeviceId) -> Option<u32> {
         self.bridges.get(&device).map(Bridge::pid)
     }
+}
+
+fn update_sampler_names(
+    device: DeviceId,
+    snapshot: Option<&komponist_ipc::sampler_ui::Snapshot>,
+    names: &mut Vec<NoteName>,
+    events: &mut Vec<PluginManagerEvent>,
+) {
+    if let Some(snapshot) = snapshot
+        && !names
+            .iter()
+            .map(|note| (note.key, note.name.as_str()))
+            .eq(bundled_sampler::note_names(snapshot))
+    {
+        *names = bundled_sampler::note_names(snapshot)
+            .map(|(key, name)| NoteName {
+                key,
+                channel: None,
+                name: name.to_owned(),
+            })
+            .collect();
+        events.push(PluginManagerEvent::NoteNamesChanged { device });
+    }
+}
+
+fn is_sampler_kind(kind: Option<BuiltinKind>) -> bool {
+    matches!(
+        kind,
+        Some(BuiltinKind::Internal(
+            Internal::Sampler | Internal::GeneralSampler
+        ))
+    )
 }
 
 #[cfg(test)]

@@ -10,7 +10,8 @@ parameter bindings. `legacy_patch_to_clap_state` converts a project patch or
 factory preset into a standard CLAP state stream accepted by the pinned
 wrapper.
 
-The public v1 layout provides fixed controls for every parameter. Hexa's
-interactive operator selection and routing diagram still need a public layout
-capability or a supported editor before the default device presentation can
-change.
+The public v1 layout provides fixed controls for every parameter. For an
+authenticated installed Hexa bundle, komponist's device editor additionally
+provides the interactive FM routing diagram and operator selector. It binds the
+existing controls to the authoritative author-to-CLAP IDs. The Presets browser
+and device menu load factory patches as ordinary CLAP state.
