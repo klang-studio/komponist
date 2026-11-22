@@ -143,6 +143,7 @@ fn all_notes_off_releases_keys_and_pedal() {
 #[test]
 fn reset_silences_at_once_and_clears_effect_tails() {
     let mut patch = default_patch();
+    patch.effects.chorus.mix = 0.5;
     patch.effects.delay.mix = 0.5;
     patch.effects.reverb.mix = 0.5;
     let mut p = activated(patch);
@@ -168,11 +169,14 @@ fn reset_silences_at_once_and_clears_effect_tails() {
     let _ = play(&mut p, 1000, 256, &[(0, note_on(50))]);
     reset(&mut p);
     assert_eq!(p.active_voices(), 0);
-    let out = play(&mut p, 2000, 256, &[(300, note_on(62))]);
+    let events = [(300, note_on(62)), (frames(0.1), note_off(62))];
+    let out = play(&mut p, frames(0.7), 256, &events);
     assert!(
         out.onset(AUDIBLE)
             .is_some_and(|onset| onset.abs_diff(300 + 17) <= 1)
     );
+    let fresh = play(&mut activated(patch), frames(0.7), 256, &events);
+    assert_eq!(out.first_difference(&fresh), None);
 }
 
 #[test]

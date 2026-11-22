@@ -284,6 +284,10 @@ impl Engine {
         &self.patch
     }
 
+    pub(crate) fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+
     /// Changes the patch. Ratios, levels and volume glide to the new values.
     /// Out-of-range values are clamped, see [`Patch::sanitized`].
     pub(crate) fn set_patch(&mut self, patch: Patch) {

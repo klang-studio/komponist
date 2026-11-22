@@ -11,7 +11,7 @@ use komponist_engine::{
 use crate::device::Field;
 use crate::state::{self, StateError};
 
-// `reset` and `activate` overwrite the synth in place without dropping it; that is only sound
+// `activate` overwrites the synth in place without dropping it; that is only sound
 // while `Synth` owns nothing that needs dropping (it is plain `no_std` data).
 const _: () = assert!(!core::mem::needs_drop::<Synth<1>>());
 
@@ -33,8 +33,8 @@ const _: () = assert!(!core::mem::needs_drop::<Synth<1>>());
 ///   voices go through their release (the engine contract: "release all sounding notes").
 ///
 /// [`Processor::reset`] silences at once: voices, keys, pedal, effect tails and the
-/// oversampling filter, by rebuilding the synth in place with its current patch (no allocation;
-/// it rewrites the 2 MB, see the crate docs for the cost).
+/// oversampling filter. It keeps the patch and invalidates the effect delay lines without
+/// writing their sample buffers.
 ///
 /// [`Processor::latency`] is the delay of hexa's 2× oversampling filter,
 /// [`hexa_core::oversampling::DELAY`] = 17 frames at any sample rate: a note-on at offset `n`
@@ -83,8 +83,7 @@ impl HexaProcessor {
         self.synth.active_voices()
     }
 
-    /// Rebuilds the synth in place at `self.sample_rate` with its current patch: silent, with
-    /// no voice, key, pedal, effect tail or filter state left. RT-safe (no allocation).
+    /// Initializes all storage at the new sample rate during activation.
     fn rebuild(&mut self) {
         let patch = *self.synth.patch();
         let place: *mut Synth<1> = &mut *self.synth;
@@ -196,6 +195,6 @@ impl Processor for HexaProcessor {
 
     fn reset(&mut self) {
         self.flush();
-        self.rebuild();
+        self.synth.reset();
     }
 }
