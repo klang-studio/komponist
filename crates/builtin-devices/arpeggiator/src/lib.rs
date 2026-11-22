@@ -190,6 +190,9 @@ struct Sounding {
 /// Ticks of the quarter note.
 const PPQ: f64 = 960.0;
 
+/// Half the least significant bit of CLAP's beat position, expressed in project ticks.
+const CLAP_POSITION_ROUNDING_TICKS: f64 = PPQ / (1u64 << 32) as f64;
+
 /// A deterministic xorshift32 for the random pattern.
 const RNG_SEED: u32 = 0x9e37_79b9;
 
@@ -251,9 +254,10 @@ impl Arp {
         }
     }
 
-    /// First grid tick at or after `pos`.
+    /// First grid tick at or after `pos`, including a grid position rounded up by the host.
     fn grid_from(&self, pos: f64) -> f64 {
-        ((pos / self.step_ticks) - 1e-9).ceil() * self.step_ticks
+        let tolerance = (self.step_ticks * 1e-9).max(CLAP_POSITION_ROUNDING_TICKS);
+        ((pos - tolerance) / self.step_ticks).ceil() * self.step_ticks
     }
 
     fn resort(&mut self) {
@@ -373,10 +377,11 @@ impl Arp {
 }
 
 /// The offset of tick `t` in a call that starts at tick `pos` with `spt` samples per tick: the
-/// sample the sequencer would use (round half up), relative to the call. Ties are biased up by a
-/// millionth of a sample so block boundaries cannot move a step by float noise.
+/// sample the sequencer would use (round half up), relative to the call. Allow for rounding
+/// of a hosted position and floating-point noise so both paths resolve half-sample ties upwards.
 fn offset(t: f64, pos: f64, spt: f64) -> i64 {
-    (((t - pos) * spt) + 0.5 + 1e-6).floor() as i64
+    let tolerance = CLAP_POSITION_ROUNDING_TICKS * spt + 1e-6;
+    ((t - pos) * spt + 0.5 + tolerance).floor() as i64
 }
 
 impl EventProcessor for Arp {

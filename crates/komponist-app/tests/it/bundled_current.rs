@@ -5,21 +5,23 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use komponist_app::actions::{BitDepth, EditAction, ExportRange, PluginAction, ProjectAction};
-use komponist_app::device_host::{DeviceHost, PluginHost};
+use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::{Action, App};
 use komponist_builtin::{BuiltinKind, Internal};
 use komponist_device_core::pinned_clap_state;
-use komponist_engine::{Command, TransportState};
+use komponist_engine::compile::{self, NoEnv};
+use komponist_engine::testing::{Logged, TestSine};
+use komponist_engine::{Command, Engine, EngineConfig, EventKind, Processor, TransportState};
 use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points, Shape};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewDevice, NewNote, NewTrack};
 use komponist_model::macros::Mapping;
 use komponist_model::params::ParamId;
 use komponist_model::{
     AudioFile, ChannelRef, DeviceId, DeviceRole, PPQ, PluginFormat, PluginRef, Project, Sidechain,
-    Tick, TrackId,
+    Tick, TickRange, TrackId,
 };
-use komponist_plugins::{DeviceStatus, FailReason, PluginDirs, PluginManagerEvent};
+use komponist_plugins::{DeviceStatus, FailReason, PluginDirs, PluginManagerEvent, ProcessorSetup};
 use serde_json::{Value, json};
 
 use crate::common::{PATIENCE, app_with, config, devices, step_for, step_until};
@@ -549,6 +551,287 @@ fn current_project_round_trip_and_offline_render() {
     assert!(stretched_tail.iter().any(|value| value.abs() > 0.01));
     if bridge {
         assert_export_parity(&results.join("direct/out/sampler.wav"), &output, true);
+    }
+    app.shutdown();
+}
+
+/// Drive the production pre-instrument MIDI chain and log what reaches the instrument.
+fn midi_chain_events(
+    host: &mut dyn DeviceHost,
+    plugins: [PluginRef; 2],
+    bridge: Option<bool>,
+) -> Vec<(u64, EventKind)> {
+    const RATE: f32 = 48_000.0;
+    const BLOCK: usize = 64;
+
+    let mut project = Project::new("Packaged MIDI effects");
+    project.tempo.bpm = 120.0;
+    project.loop_range = TickRange::new(Tick(80), Tick(240));
+    project.loop_on = true;
+    let (mut project, track) = edits::add_track(
+        &project,
+        NewTrack {
+            name: None,
+            hue: None,
+            instrument: Some(BuiltinKind::Hexa.catalog().plugin_ref()),
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let (next, _) = edits::add_clip(
+        &project,
+        track,
+        NewClip {
+            start: Tick::ZERO,
+            length: Tick(PPQ),
+            name: "Held C sharp".into(),
+            content: NewClipContent::Midi {
+                notes: vec![NewNote {
+                    start: Tick(80),
+                    length: Tick(480),
+                    pitch: 61,
+                    velocity: 100,
+                }],
+                take_name: String::new(),
+            },
+        },
+    )
+    .unwrap();
+    project = next;
+
+    for (index, plugin) in plugins.into_iter().enumerate() {
+        (project, _) = edits::insert_device(
+            &project,
+            ChannelRef::Track(track),
+            index,
+            NewDevice {
+                role: DeviceRole::MidiEffect,
+                plugin,
+                state: None,
+                sidechain: None,
+            },
+        )
+        .unwrap();
+    }
+    let program = compile::build(&project, None, &NoEnv);
+    let (mut engine, mut handle) = Engine::new(EngineConfig {
+        sample_rate: RATE,
+        max_block: BLOCK,
+        seed: 1,
+    });
+    let setup = ProcessorSetup {
+        sample_rate: RATE,
+        max_block: BLOCK,
+    };
+    let (mut instrument, mut log) = TestSine::logged(512);
+    instrument.activate(RATE, BLOCK).unwrap();
+    let chain = &project.track(track).unwrap().channel.devices;
+    let [arpeggiator, scale, instrument_model] = &chain[..] else {
+        panic!("expected both MIDI effects before the instrument");
+    };
+
+    for device in [arpeggiator, scale] {
+        let processor = host.create_processor(device, setup).unwrap();
+        handle
+            .send(Command::InsertProcessor {
+                slot: program.slots.slot(device.id).unwrap(),
+                processor,
+            })
+            .unwrap();
+    }
+    let deadline = Instant::now() + PATIENCE;
+    while [arpeggiator, scale]
+        .iter()
+        .any(|device| host.status(device.id) != DeviceStatus::Ok)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "MIDI processors did not activate"
+        );
+        host.poll();
+        thread::sleep(Duration::from_millis(2));
+    }
+    let rate_id = if let Some(bridge) = bridge {
+        for device in [arpeggiator, scale] {
+            assert_eq!(host.bridge_pid(device.id).is_some(), bridge);
+            assert!(host.verified_bundled_kind(device.id).is_some());
+        }
+        host.native_layout(arpeggiator.id)
+            .unwrap()
+            .author_ids()
+            .unwrap()["rate"]
+    } else {
+        Internal::Arpeggiator.wire(&ParamId::new("rate")).unwrap()
+    };
+    handle
+        .send(Command::InsertProcessor {
+            slot: program.slots.slot(instrument_model.id).unwrap(),
+            processor: Box::new(instrument),
+        })
+        .unwrap();
+    let arp_slot = program.slots.slot(arpeggiator.id).unwrap();
+    handle.send(Command::SetProgram(Box::new(program))).unwrap();
+    handle
+        .send(Command::SetParam {
+            slot: arp_slot,
+            id: rate_id,
+            value: 7.0,
+        })
+        .unwrap();
+    handle.send(Command::Locate(Tick(80))).unwrap();
+    handle.send(Command::Play).unwrap();
+    // The loop wraps at 4,000 samples. Visit both sides of that boundary.
+    for _ in 0..80 {
+        assert_no_alloc::assert_no_alloc(|| {
+            engine.render(BLOCK);
+        });
+    }
+    handle.send(Command::Stop).unwrap();
+    assert_no_alloc::assert_no_alloc(|| {
+        engine.render(BLOCK);
+    });
+    assert_eq!(log.lost(), 0);
+    log.drain()
+        .into_iter()
+        .filter_map(|entry| match entry {
+            Logged::Event {
+                frame,
+                kind: kind @ (EventKind::NoteOn { .. } | EventKind::NoteOff { .. }),
+            } => Some((frame, kind)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "requires the authenticated release payload; run measure-bundled-clap.py --current-projects"]
+fn packaged_midi_effects_preserve_instrument_notes() {
+    let (launcher, _) = package_env();
+    let bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some();
+    let cache = tempfile::tempdir().unwrap();
+    let mut host = scan(&launcher, cache.path());
+    let plugins = [shipped(&host, "arpeggiator"), shipped(&host, "scale")];
+    let actual = midi_chain_events(&mut host, plugins, Some(bridge));
+    let legacy = [Internal::Arpeggiator, Internal::Tonleiter].map(Internal::plugin_ref);
+    let expected = midi_chain_events(&mut BuiltinHost::new(), legacy, None);
+    assert!(matches!(
+        expected.first(),
+        Some((0, EventKind::NoteOn { key: 60, .. }))
+    ));
+    assert!(matches!(
+        expected.last(),
+        Some((5120, EventKind::NoteOff { key: 60, .. }))
+    ));
+    assert_eq!(actual, expected, "notes and identities at the instrument");
+}
+
+#[test]
+#[ignore = "requires the authenticated release payload; run measure-bundled-clap.py --current-projects"]
+fn bundled_presse_lookahead_updates_delay_compensation_during_playback() {
+    let (launcher, _) = package_env();
+    let cache = tempfile::tempdir().unwrap();
+    let host = scan(&launcher, cache.path());
+    let mut project = Project::new("Bundled Presse latency");
+    let [with_presse, plain] = ["Presse", "Plain"].map(|name| {
+        let (next, track) = edits::add_track(
+            &project,
+            NewTrack {
+                name: Some(name.into()),
+                hue: None,
+                instrument: Some(shipped(&host, "hexa")),
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        (project, _) = edits::add_clip(
+            &next,
+            track,
+            NewClip {
+                start: Tick::ZERO,
+                length: Tick(PPQ * 64),
+                name: name.into(),
+                content: NewClipContent::Midi {
+                    notes: vec![NewNote {
+                        start: Tick::ZERO,
+                        length: Tick(PPQ * 64),
+                        pitch: 60,
+                        velocity: 76,
+                    }],
+                    take_name: String::new(),
+                },
+            },
+        )
+        .unwrap();
+        track
+    });
+    let (project, presse) = edits::insert_device(
+        &project,
+        ChannelRef::Track(with_presse),
+        1,
+        NewDevice {
+            role: DeviceRole::Effect,
+            plugin: shipped(&host, "presse"),
+            sidechain: None,
+            state: None,
+        },
+    )
+    .unwrap();
+    let expected = devices(&project);
+    let mut app = app_with(project, host);
+    let bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some();
+    assert_ready(&mut app, &expected, bridge);
+    step_until(&mut app, "Presse running", |app| {
+        app.engine().device_status(presse) == DeviceStatus::Ok
+    });
+    let lookahead = app
+        .engine()
+        .host()
+        .native_layout(presse)
+        .unwrap()
+        .author_ids()
+        .unwrap()["lookahead"];
+    let pdc = |app: &App, track: TrackId| {
+        app.engine()
+            .program()
+            .unwrap()
+            .tracks
+            .iter()
+            .find(|candidate| candidate.id == track)
+            .unwrap()
+            .pdc_delay
+    };
+    app.dispatch(Action::Transport(
+        komponist_app::TransportAction::TogglePlay,
+    ));
+    step_until(&mut app, "Presse track audible during playback", |app| {
+        let (left, right) = app.engine().track_meter(with_presse).unwrap().take();
+        app.transport() == TransportState::Playing && left.max(right) > 1e-4
+    });
+    assert_eq!(app.engine().host().latency(presse), 0);
+    assert_eq!(pdc(&app, plain), 0);
+
+    let lookahead_frames = (f64::from(app.engine().sample_rate()) * komponist_presse::LOOKAHEAD_MS
+        / 1000.0)
+        .round() as u32;
+    for (value, delay) in [(1.0, lookahead_frames), (0.0, 0)] {
+        app.dispatch(Action::Plugin(PluginAction::SetParam {
+            device: presse,
+            id: lookahead,
+            value,
+        }));
+        step_until(
+            &mut app,
+            "Presse reactivated with matching track delay",
+            |app| {
+                app.engine().device_status(presse) == DeviceStatus::Ok
+                    && app.engine().host().latency(presse) == delay
+                    && pdc(app, plain) == delay
+            },
+        );
+        assert_eq!(pdc(&app, with_presse), 0);
+        assert_eq!(app.transport(), TransportState::Playing);
     }
     app.shutdown();
 }

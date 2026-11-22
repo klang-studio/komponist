@@ -461,9 +461,7 @@ impl PluginManager {
                 descriptor.kind = komponist_ipc::PluginKind::MidiEffect;
             }
         }
-        // A duplicate scanner result may not replace the verified release artifact in the
-        // catalog. Verification still runs at load time; scanner metadata grants no trust.
-        descriptors.sort_by_key(|descriptor| !shipped(descriptor));
+        // Verification still runs at load time; scanner metadata grants no trust.
         self.catalog.set_scanned_with_bundled(&descriptors, shipped);
     }
 

@@ -22,7 +22,7 @@ use crate::direct_session::DirectSession;
 use crate::manager::{
     DeviceStatus, PluginManager, PluginManagerConfig, PluginManagerEvent, ProcessorSetup,
 };
-use crate::scan::scan_bundle;
+use crate::scan::{bundle_key, scan_bundle};
 
 const HALL_ID: &str = "org.klang-studio.komponist.hall";
 const PRESSE_ID: &str = "org.klang-studio.komponist.presse";
@@ -82,7 +82,18 @@ pub fn verify_bundled_clap(force_bridge: bool) -> Result<(), String> {
         println!("verified {id} ({route})");
     }
     if let Some((path, id)) = bundled.bundle_entries().find(|(_, id)| *id == HALL_ID) {
-        smoke_live_manager(config, path, id, force_bridge)?;
+        // The same loadable bytes and CLAP ID outside the app inventory are an external plugin.
+        let copy = bundled
+            .verify(path, id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Hall is absent from its own manifest".to_owned())?;
+        smoke_live_manager(
+            config,
+            path,
+            &bundle_key(copy.bundle_path())?,
+            id,
+            force_bridge,
+        )?;
         let route = if force_bridge {
             "forced bridge"
         } else {
@@ -99,12 +110,18 @@ pub fn verify_bundled_clap(force_bridge: bool) -> Result<(), String> {
 fn smoke_live_manager(
     config: PluginManagerConfig,
     path: &Path,
+    external: &Path,
     id: &str,
     force_bridge: bool,
 ) -> Result<(), String> {
     let mut manager = PluginManager::new_with_bundled_clap(config, true, force_bridge);
     manager.start_scan(&PluginDirs {
-        clap: Vec::new(),
+        clap: vec![
+            external
+                .parent()
+                .expect("external bundle has a parent directory")
+                .into(),
+        ],
         vst3: Vec::new(),
     });
     let deadline = Instant::now() + TIMEOUT;
@@ -115,38 +132,42 @@ fn smoke_live_manager(
         }
         thread::sleep(Duration::from_millis(5));
     }
-    let entry = manager.catalog().entries().iter().find(|entry| {
-        entry.plugin.id == id
-            && matches!(&entry.location, PluginLocation::Bundle { path: scanned, .. } if scanned == path)
-    }).ok_or_else(|| "Hall is absent from the normal bundled catalog".to_owned())?;
-    let device = Device {
-        id: DeviceId(1),
-        role: DeviceRole::Effect,
-        plugin: entry.plugin.clone(),
-        bypass: false,
-        state: None,
-        sidechain: None,
+    let resolve_device = |path: &Path, device_id| {
+        let entry = manager.catalog().entries().iter().find(|entry| {
+            entry.plugin.id == id
+                && matches!(&entry.location, PluginLocation::Bundle { path: scanned, .. } if scanned == path)
+        }).ok_or_else(|| format!("Hall is absent from the catalog at {}", path.display()))?;
+        Ok::<_, String>(Device {
+            id: device_id,
+            role: DeviceRole::Effect,
+            plugin: entry.plugin.clone(),
+            bypass: false,
+            state: None,
+            sidechain: None,
+        })
     };
+    let device = resolve_device(path, DeviceId(1))?;
+    let duplicate = resolve_device(external, DeviceId(2))?;
+    let external_audio = manager
+        .create_processor(&duplicate, SETUP)
+        .map_err(|error| format!("external Hall with bundled CLAP ID did not load: {error}"))?;
+    wait_for_manager_bridge(
+        &mut manager,
+        duplicate.id,
+        "external Hall with bundled CLAP ID",
+    )?;
+    if manager.verified_bundled_kind(duplicate.id).is_some() {
+        return Err("external Hall with bundled CLAP ID was granted bundle trust".into());
+    }
+    drop(external_audio);
+    manager.release(duplicate.id);
+
     let device_id = device.id;
     let mut audio = manager
         .create_processor(&device, SETUP)
         .map_err(|error| error.to_string())?;
     if force_bridge {
-        let deadline = Instant::now() + TIMEOUT;
-        loop {
-            manager.poll();
-            match manager.status(device_id) {
-                DeviceStatus::Ok if manager.bridge_pid(device_id).is_some() => return Ok(()),
-                DeviceStatus::Loading if Instant::now() < deadline => {
-                    thread::sleep(Duration::from_millis(5));
-                }
-                status => {
-                    return Err(format!(
-                        "normal Hall forced bridge did not start: {status:?}"
-                    ));
-                }
-            }
-        }
+        return wait_for_manager_bridge(&mut manager, device_id, "normal Hall forced bridge");
     }
     if manager.bridge_pid(device_id).is_some()
         || manager.status(device_id) != DeviceStatus::Ok
@@ -238,6 +259,24 @@ fn smoke_live_manager(
         return Err("normal Hall audio half was not deactivated on retirement".into());
     }
     Ok(())
+}
+
+fn wait_for_manager_bridge(
+    manager: &mut PluginManager,
+    device: DeviceId,
+    label: &str,
+) -> Result<(), String> {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        manager.poll();
+        match manager.status(device) {
+            DeviceStatus::Ok if manager.bridge_pid(device).is_some() => return Ok(()),
+            DeviceStatus::Loading if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            status => return Err(format!("{label} did not start in the bridge: {status:?}")),
+        }
+    }
 }
 
 fn drive_control(audio: &mut dyn Processor, events: &[Event]) {

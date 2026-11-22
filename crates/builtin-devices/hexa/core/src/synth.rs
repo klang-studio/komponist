@@ -48,15 +48,33 @@ impl<const N: usize> Synth<N> {
         // SAFETY: guaranteed by the caller; every field is written.
         unsafe {
             for k in 0..N {
-                let mut engine = Engine::with_patch(sample_rate, patch);
-                if k > 0 {
-                    engine.seed(0x9e37_79b9u32.wrapping_mul(k as u32 + 1));
-                }
-                addr_of_mut!((*this).engines[k]).write(engine);
+                addr_of_mut!((*this).engines[k]).write(Self::new_engine(k, sample_rate, patch));
             }
             addr_of_mut!((*this).voicing).write(Voicing::new());
             Effects::write_new(addr_of_mut!((*this).effects), sample_rate);
         }
+    }
+
+    fn new_engine(index: usize, sample_rate: f32, patch: Patch) -> Engine {
+        let mut engine = Engine::with_patch(sample_rate, patch);
+        if index > 0 {
+            engine.seed(0x9e37_79b9u32.wrapping_mul(index as u32 + 1));
+        }
+        engine
+    }
+
+    /// Silences the voices and effects while keeping the current patch and configuration.
+    /// Effect delay lines are cleared logically, without rewriting their sample storage.
+    pub fn reset(&mut self) {
+        let patch = *self.patch();
+        let sample_rate = self.engines[0].sample_rate();
+        let oversampling = self.oversampling();
+        for (index, engine) in self.engines.iter_mut().enumerate() {
+            *engine = Self::new_engine(index, sample_rate, patch);
+            engine.set_oversampling(oversampling);
+        }
+        self.voicing = Voicing::new();
+        self.effects.reset();
     }
 
     /// A new synth with `patch` on the heap, built in place.

@@ -110,6 +110,10 @@ impl Chorus {
     fn swing(&self, params: &ChorusParams) -> f32 {
         params.depth.clamp(0.0, 1.0) * MAX_DEPTH * self.rate
     }
+
+    pub(crate) fn reset_phase(&mut self) {
+        self.lfo = 0;
+    }
 }
 
 impl Effect for Chorus {

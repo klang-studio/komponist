@@ -10,7 +10,7 @@ use komponist_engine::processor::{EventSink, ParameterEdit, ParameterEditKind};
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
-use komponist_hosting::host_loop::{Observed, PollLoop};
+use komponist_hosting::host_loop::{Observed, PollLoop, notification_bits};
 use komponist_hosting::{
     ActivateConfig, EventOut, HostedPlugin, HostedProcessor, HostingError, ProcessBlock,
 };
@@ -23,12 +23,17 @@ use crate::bundled_effects;
 use crate::external::{midi_event_kind, to_wire, wire_transport};
 use crate::manager::ProcessorSetup;
 
+pub(crate) const METADATA_REFRESH: u32 =
+    notification_bits::PARAMS_CHANGED | notification_bits::NOTE_NAMES_CHANGED;
+const CONTROL_REFRESH: u32 = METADATA_REFRESH | notification_bits::LATENCY_CHANGED;
+
 /// The main-thread half of a CLAP instance. Keeping the token alive also keeps the verified
 /// bundle available to the plugin while its library and resources are in use.
 pub(crate) struct DirectClap {
     plugin: Box<dyn HostedPlugin>,
     callbacks: Rc<PollLoop>,
     processing: Arc<AtomicBool>,
+    refresh: PendingRefresh,
     _bundle: VerifiedClap,
 }
 
@@ -45,6 +50,7 @@ impl DirectClap {
             plugin,
             callbacks,
             processing: Arc::new(AtomicBool::new(false)),
+            refresh: PendingRefresh::default(),
             _bundle: bundle,
         })
     }
@@ -57,6 +63,20 @@ impl DirectClap {
     ) -> Option<T> {
         let _guard = ProcessingGuard::try_enter(&self.processing)?;
         Some(control(&mut *self.plugin))
+    }
+
+    pub(crate) fn try_refresh<T>(
+        &mut self,
+        mask: u32,
+        read: impl FnOnce(&mut dyn HostedPlugin, u32) -> T,
+    ) -> Option<T> {
+        self.refresh.try_read(&self.processing, mask, |pending| {
+            read(&mut *self.plugin, pending)
+        })
+    }
+
+    pub(crate) fn clear_refresh(&mut self, mask: u32) {
+        self.refresh.0 &= !mask;
     }
 
     pub(crate) fn sampler_ui(
@@ -91,12 +111,14 @@ impl DirectClap {
             self.plugin.deactivate(audio);
             return Err(error);
         }
+        let latency = self.plugin.latency();
+        self.clear_refresh(notification_bits::LATENCY_CHANGED);
         Ok(DirectProcessor {
             audio,
             processing: self.processing.clone(),
             setup,
             role,
-            latency: self.plugin.latency(),
+            latency,
             input_events: Vec::with_capacity(INPUT_EVENT_CAPACITY),
             output_events: vec![
                 WireEvent::new(0, WireEventKind::AllNotesOff);
@@ -121,7 +143,31 @@ impl DirectClap {
 
     pub(crate) fn poll(&mut self) -> Observed {
         self.callbacks.run_once(&mut *self.plugin, Duration::ZERO);
-        self.callbacks.take_observed()
+        let observed = self.callbacks.take_observed();
+        self.refresh.0 |= observed.notifications & CONTROL_REFRESH;
+        observed
+    }
+}
+
+#[derive(Default)]
+struct PendingRefresh(u32);
+
+impl PendingRefresh {
+    fn try_read<T>(
+        &mut self,
+        processing: &AtomicBool,
+        mask: u32,
+        read: impl FnOnce(u32) -> T,
+    ) -> Option<T> {
+        let pending = self.0 & mask;
+        if pending == 0 {
+            return None;
+        }
+        // The host loop has already drained this notification. Retain it while audio is busy.
+        let _guard = ProcessingGuard::try_enter(processing)?;
+        let result = read(pending);
+        self.0 &= !pending;
+        Some(result)
     }
 }
 
@@ -464,6 +510,7 @@ impl DirectProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notification_bits::{LATENCY_CHANGED, NOTE_NAMES_CHANGED, PARAMS_CHANGED};
 
     #[test]
     fn processing_permission_never_blocks_the_other_caller() {
@@ -477,5 +524,50 @@ mod tests {
         });
         drop(guard);
         assert!(ProcessingGuard::try_enter(&processing).is_some());
+    }
+
+    #[test]
+    fn metadata_and_latency_refreshes_survive_a_busy_audio_worker() {
+        let processing = &AtomicBool::new(false);
+        let mut refresh = PendingRefresh(PARAMS_CHANGED | LATENCY_CHANGED);
+        std::thread::scope(|scope| {
+            let (entered, wait_for_worker) = std::sync::mpsc::sync_channel(0);
+            let (release, wait_for_host) = std::sync::mpsc::sync_channel(0);
+            scope.spawn(move || {
+                let _guard = ProcessingGuard::try_enter(processing).unwrap();
+                entered.send(()).unwrap();
+                let _ = wait_for_host.recv();
+            });
+            wait_for_worker.recv().unwrap();
+            assert_eq!(
+                refresh.try_read(processing, METADATA_REFRESH, |bits| bits),
+                None
+            );
+            assert_eq!(
+                refresh.try_read(processing, LATENCY_CHANGED, |bits| bits),
+                None
+            );
+            refresh.0 |= NOTE_NAMES_CHANGED;
+            release.send(()).unwrap();
+        });
+
+        assert_eq!(
+            refresh.try_read(processing, METADATA_REFRESH, |bits| bits),
+            Some(PARAMS_CHANGED | NOTE_NAMES_CHANGED),
+        );
+        assert_eq!(
+            refresh.try_read(processing, LATENCY_CHANGED, |bits| bits),
+            Some(LATENCY_CHANGED)
+        );
+        assert_eq!(
+            refresh.try_read(processing, CONTROL_REFRESH, |bits| bits),
+            None
+        );
+
+        refresh.0 = NOTE_NAMES_CHANGED;
+        assert_eq!(
+            refresh.try_read(processing, METADATA_REFRESH, |bits| bits),
+            Some(NOTE_NAMES_CHANGED)
+        );
     }
 }

@@ -7,7 +7,7 @@ use komponist_engine::{
     TransportInfo,
 };
 use komponist_model::params::ParamId;
-use komponist_model::{Meter, Tempo, TempoMap, Tick, TickRange};
+use komponist_model::{Meter, PPQ, Tempo, TempoMap, Tick, TickRange};
 
 use super::{HOLD, MODES, RATES, SPEC};
 
@@ -345,6 +345,42 @@ fn hold_keeps_released_keys_until_a_new_chord_starts() {
     stage.set_param(HOLD, 0.0);
     assert_eq!(step(stage, &[]), [67], "still held down");
     assert_eq!(step(stage, &[off(67, 0)]), Vec::<u8>::new());
+}
+
+/// The shared CLAP host rounds song position to a signed beat time with 31 fractional bits.
+fn clap_position_ticks(ticks: f64) -> f64 {
+    let scale = f64::from(1u32 << 31);
+    (ticks / PPQ as f64 * scale).round() / scale * PPQ as f64
+}
+
+#[test]
+fn a_clap_triplet_grid_start_plays_in_the_first_block() {
+    for position in [80.0, 320.0] {
+        let mut p = processor(&[("rate", 7.0)]);
+        let stage = p.event_processor().unwrap();
+        let context = ctx(64, 120.0, true, clap_position_ticks(position));
+        assert_eq!(call(stage, &context, &[on(60, 0)]), [on(60, 0)]);
+    }
+}
+
+#[test]
+fn a_clap_position_preserves_rounding_up_at_half_a_sample() {
+    let mut p = processor(&[("rate", 7.0)]);
+    let stage = p.event_processor().unwrap();
+    let map = TempoMap::constant(Tempo::new(64.0), Meter::FOUR_FOUR);
+    let start = 27_520;
+    let sample_rate = 44_100.0;
+    let position = map.samples_to_ticks(f64::from(start), sample_rate);
+    let context = ProcessContext {
+        sample_rate: sample_rate as f32,
+        ..ctx(64, 64.0, true, clap_position_ticks(position))
+    };
+    // Tick 640 (the next 1/32 triplet step) is 42.5 samples after the block start.
+    assert_eq!(
+        map.tick_to_sample(Tick(640), sample_rate) - i64::from(start),
+        43
+    );
+    assert_eq!(call(stage, &context, &[on(60, 0)]), [on(60, 43)]);
 }
 
 #[test]

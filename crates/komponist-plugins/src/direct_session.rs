@@ -16,7 +16,7 @@ use komponist_model::DeviceRole;
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::bundled_effects;
-use crate::direct::{ControlEvents, DirectClap, DirectProcessor, write_fallback};
+use crate::direct::{ControlEvents, DirectClap, DirectProcessor, METADATA_REFRESH, write_fallback};
 use crate::manager::ProcessorSetup;
 
 struct Requested {
@@ -197,19 +197,28 @@ impl DirectSession {
         self.host.try_control(f)
     }
 
+    pub(crate) fn refresh_metadata<T>(
+        &mut self,
+        read: impl FnOnce(&mut dyn HostedPlugin, u32) -> T,
+    ) -> Option<T> {
+        self.host.try_refresh(METADATA_REFRESH, read)
+    }
+
     pub(crate) fn restore<T>(
         &mut self,
         state: &[u8],
         inventory: impl FnOnce(&mut dyn HostedPlugin) -> T,
     ) -> Option<(Result<(), HostingError>, T)> {
         let requested = &self.requested;
-        self.host.try_control(|plugin| {
+        let restored = self.host.try_control(|plugin| {
             let result = plugin.load_state(state);
             if result.is_ok() {
                 requested.control_epoch.fetch_add(1, Ordering::Release);
             }
             (result, inventory(plugin))
-        })
+        })?;
+        self.host.clear_refresh(METADATA_REFRESH);
+        Some(restored)
     }
 
     pub(crate) fn set_param(&mut self, id: u32, value: f64) -> bool {
@@ -265,8 +274,11 @@ impl DirectSession {
         if observed.has(notification_bits::RESTART_REQUESTED) {
             self.requested.restart();
         }
-        if observed.has(notification_bits::LATENCY_CHANGED)
-            && let Some(latency) = self.host.try_control(|plugin| plugin.latency())
+        if let Some(latency) = self
+            .host
+            .try_refresh(notification_bits::LATENCY_CHANGED, |plugin, _| {
+                plugin.latency()
+            })
         {
             self.requested.latency.store(latency, Ordering::Release);
         }

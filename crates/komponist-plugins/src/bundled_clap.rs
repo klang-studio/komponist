@@ -761,7 +761,17 @@ mod tests {
     fn rejects_unanchored_manifest_wrong_target_and_invalid_entries() {
         let fixture = Fixture::new();
         let mut valid = manifest(&[(FILE, PAYLOAD)]);
-        fixture.write(MANIFEST, &serde_json::to_vec(&valid).unwrap());
+        let bytes = serde_json::to_vec(&valid).unwrap();
+        assert!(
+            BundledClap::open(
+                fixture.root.clone(),
+                fixture.root.clone(),
+                &digest(&bytes),
+                TARGET
+            )
+            .is_err()
+        );
+        fixture.write(MANIFEST, &bytes);
         assert!(
             BundledClap::open(
                 fixture.root.clone(),

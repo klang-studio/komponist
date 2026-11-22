@@ -24,7 +24,7 @@ use crate::actions::{Action, DropTarget, EditAction, PluginAction, UiAction};
 use crate::device_host::is_hexa;
 use crate::settings::Favorites;
 use crate::ui_state::{BrowserSegment, DockTab};
-use crate::views::{format_tag, plugin_name};
+use crate::views::{catalog_plugin_tag, plugin_name};
 
 /// Hint in the search field while it has text (`searchHint`): a key name.
 pub const SEARCH_CLEAR: &str = "Esc";
@@ -144,11 +144,14 @@ impl Row {
         Row::new(RowKind::Plain, name, "", level)
     }
 
-    /// A key unique within its section (egui ids, tests): the same plugin name can come as CLAP
-    /// and VST3 ("Dexed"), so plugins are keyed by format and id.
+    /// A key unique within its section (egui ids, tests). The origin distinguishes a bundled
+    /// CLAP from an external CLAP with the same ID.
     pub fn key(&self) -> String {
         match &self.kind {
-            RowKind::Plugin { plugin, .. } => format!("plugin:{:?}:{}", plugin.format, plugin.id),
+            RowKind::Plugin { plugin, .. } => {
+                let bundled = packaged_kind(plugin).is_some();
+                format!("plugin:{:?}:{bundled}:{}", plugin.format, plugin.id)
+            }
             RowKind::Folder { key, .. } => format!("folder:{key}"),
             RowKind::Preset(i) => format!("preset:{i}"),
             RowKind::Directory(path) => format!("dir:{}", path.display()),
@@ -262,7 +265,7 @@ fn plugin_row(lang: Lang, input: &Input<'_>, entry: &CatalogEntry, level: u8) ->
             favorite: input.favorites.contains(&entry.plugin),
         },
         plugin_name(lang, &entry.plugin),
-        format_tag(lang, entry.plugin.format),
+        catalog_plugin_tag(lang, &entry.plugin),
         level,
     )
 }
@@ -1013,6 +1016,47 @@ mod tests {
             );
         }
         assert_eq!(rows.iter().filter(|r| r.name == "Surge XT").count(), 2);
+    }
+
+    #[test]
+    fn bundled_and_external_clap_rows_with_the_same_id_have_separate_identity() {
+        let mut c = Catalog::builtin();
+        c.set_scanned(&[descriptor(
+            "org.klang-studio.komponist.hall",
+            "Hall",
+            PluginKind::Effect,
+            &["reverb"],
+        )]);
+        let external = c.entries().iter().find(|e| !e.is_builtin()).unwrap();
+        let mut bundled = external.clone();
+        bundled.plugin.module = format!("bundled-clap/{}", external.plugin.module).into();
+        let mut favorites = Favorites(Vec::new());
+        favorites.toggle(&external.plugin);
+        let collapsed = BTreeSet::new();
+        let project = demo_project();
+        let input = input(
+            &c,
+            &favorites,
+            &collapsed,
+            &project,
+            BrowserSegment::All,
+            "",
+        );
+        let external = plugin_row(Lang::En, &input, external, 0);
+        let bundled = plugin_row(Lang::En, &input, &bundled, 0);
+        assert_ne!(external.key(), bundled.key());
+        assert_ne!(external.tag, bundled.tag);
+        assert!(matches!(
+            external.kind,
+            RowKind::Plugin { favorite: true, .. }
+        ));
+        assert!(matches!(
+            bundled.kind,
+            RowKind::Plugin {
+                favorite: false,
+                ..
+            }
+        ));
     }
 
     #[test]

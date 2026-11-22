@@ -30,7 +30,7 @@ use super::metrics::dialog as m;
 use super::metrics::new_track as nm;
 use super::{ActionButton, button_row, header, modal, styled};
 use crate::views::browser::model::{Row, RowKind};
-use crate::views::format_tag;
+use crate::views::catalog_plugin_tag;
 
 /// The names of the track types the dialog offers, in segment order; a later wave adds "Audio"
 /// here.
@@ -696,7 +696,13 @@ fn list(ui: &mut Ui, t: Lang, s: &mut State, rows: &[Row], width: f32) {
                             continue;
                         };
                         let selected = s.instrument.as_ref() == Some(plugin);
-                        let r = entry(ui, inner, &row.name, format_tag(t, plugin.format), selected);
+                        let r = entry(
+                            ui,
+                            inner,
+                            &row.name,
+                            catalog_plugin_tag(t, plugin),
+                            selected,
+                        );
                         if scroll_to && selected {
                             r.scroll_to_me(None);
                         }

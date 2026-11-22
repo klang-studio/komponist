@@ -64,6 +64,11 @@ struct Inventory {
     note_names: Vec<NoteName>,
 }
 
+enum MetadataUpdate {
+    Inventory(Inventory),
+    NoteNames(Vec<NoteName>),
+}
+
 impl Inventory {
     fn read(plugin: &mut dyn HostedPlugin) -> Self {
         let params = plugin.params();
@@ -263,11 +268,23 @@ impl DirectDevice {
             self.pending_writes
                 .retain(|&param, value| !self.session.set_param(param, *value));
         }
-        if observed.has(notification_bits::PARAMS_CHANGED)
-            && let Some(inventory) = self.session.try_control(Inventory::read)
-        {
-            self.accept_inventory(inventory, false);
-            Self::report_metadata(id, events);
+        let metadata = self.session.refresh_metadata(|plugin, pending| {
+            if pending & notification_bits::PARAMS_CHANGED != 0 {
+                MetadataUpdate::Inventory(Inventory::read(plugin))
+            } else {
+                MetadataUpdate::NoteNames(plugin.note_names())
+            }
+        });
+        match metadata {
+            Some(MetadataUpdate::Inventory(inventory)) => {
+                self.accept_inventory(inventory, false);
+                Self::report_metadata(id, events);
+            }
+            Some(MetadataUpdate::NoteNames(note_names)) => {
+                self.note_names = note_names;
+                events.push(PluginManagerEvent::NoteNamesChanged { device: id });
+            }
+            None => {}
         }
         if observed.has(notification_bits::STATE_DIRTY) {
             self.user_edit = true;

@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+from itertools import product
 import json
 import os
 from pathlib import Path
@@ -85,6 +86,29 @@ def run_test(runner, environment, *names):
     )
 
 
+def run_benchmarks(runner, environment, test):
+    workloads = environment.get("KOMPONIST_PERF_WORKLOAD", "instruments,effects,midi").split(",")
+    buffers = environment.get("KOMPONIST_PERF_BUFFERS", "64,128,256").split(",")
+    workers = environment.get("KOMPONIST_PERF_WORKERS", "0,4").split(",")
+    failures = []
+    # A previous case can leave allocator pages and loaded libraries resident.
+    for workload, frames, threads in product(workloads, buffers, workers):
+        workload = workload.strip()
+        case = dict(
+            environment,
+            KOMPONIST_PERF_WORKLOAD=workload,
+            KOMPONIST_PERF_BUFFERS=frames,
+            KOMPONIST_PERF_WORKERS=threads,
+        )
+        try:
+            run_test(runner, case, test)
+        except subprocess.CalledProcessError as error:
+            label = f"{environment['KOMPONIST_PERF_BUNDLED_MODE']}/{workload}/{frames}/{threads}"
+            print(f"Benchmark failed: {label}: {error}", file=sys.stderr)
+            failures.append(label)
+    return failures
+
+
 def reject_unavailable_bundle(runner, payload, environment, scratch):
     manifest = json.loads((payload / "manifest.json").read_text(encoding="utf-8"))
     eq = next(entry for entry in manifest["bundles"] if entry["id"].endswith(".eq"))
@@ -123,6 +147,8 @@ def run_staged(app, runner, digest, projects):
             ),
             "current": (
                 "bundled_current::current_project_round_trip_and_offline_render",
+                "bundled_current::packaged_midi_effects_preserve_instrument_notes",
+                "bundled_current::bundled_presse_lookahead_updates_delay_compensation_during_playback",
                 "bundled_current::saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve",
                 "bundled_synth_ui::packaged_synth_editors_and_factory_presets_follow_clap_state",
                 "bundled_sampler::bundled_sampler_panels_edit_and_restore_current_state",
@@ -140,6 +166,7 @@ def run_staged(app, runner, digest, projects):
         else:
             environment["KOMPONIST_PERF_BUNDLED_APP"] = str(app)
 
+        benchmark_failures = []
         for mode in modes:
             route = environment.copy()
             if not projects:
@@ -148,7 +175,9 @@ def run_staged(app, runner, digest, projects):
                 route["KOMPONIST_EXPERIMENTAL_DIRECT_CLAP"] = "1"
             if mode == "bridge":
                 route["KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE"] = "1"
-            if projects == "current":
+            if not projects:
+                benchmark_failures.extend(run_benchmarks(staged_runner, route, test_names[0]))
+            elif projects == "current":
                 route.setdefault("KOMPONIST_SYNTH_UI_LANG", "en" if mode == "bridge" else "de")
                 for test in test_names:
                     run_test(staged_runner, route, test)
@@ -158,6 +187,8 @@ def run_staged(app, runner, digest, projects):
         if projects == "current":
             environment["KOMPONIST_EXPERIMENTAL_DIRECT_CLAP"] = "1"
             reject_unavailable_bundle(staged_runner, destination, environment, scratch)
+        if benchmark_failures:
+            raise SystemExit("Failed benchmark cases: " + ", ".join(benchmark_failures))
 
 
 def main():
