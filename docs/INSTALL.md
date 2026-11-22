@@ -33,7 +33,7 @@ some WebView GUIs) could fail under komponist's hardened runtime; please report 
 (`settings.json`, `recent.json`), the plugin scan cache in `~/Library/Caches/komponist/plugins.json`. Delete the cache
 file to force a full rescan; remove the folders to reset komponist.
 
-**Building the app bundle yourself:** `scripts/bundle-macos.sh` builds `dist/komponist.app` (executable, eleven bundled CLAP devices,
+**Building the app bundle yourself:** `scripts/bundle-macos.sh` builds `dist/komponist.app` (executable, twelve bundled CLAP devices,
 `Info.plist`, icon, hardened-runtime signature; ad-hoc unless `KOMPONIST_SIGN_IDENTITY` is set, see the header of the script).
 `ARCHITECTURE.md` §8.7 describes the bundle.
 
@@ -78,7 +78,7 @@ submenu of the "⋯" menu lists every open plugin window.
 attaches to that console for `--help` and error messages; the terminal does not wait for it, so the output can appear
 after the next prompt. Piping it (`komponist.exe --help | more`) makes the shell wait.
 
-**Building the zip yourself:** `scripts/package-windows.sh` (Git Bash) builds `komponist.exe` and the eleven bundled CLAP devices, then writes
+**Building the zip yourself:** `scripts/package-windows.sh` (Git Bash) builds `komponist.exe` and the twelve bundled CLAP devices, then writes
 `dist/komponist-<version>-windows-x86_64.zip` with its `.sha256`; signing is optional, see the header of the script.
 `ARCHITECTURE.md` §8.8 describes the package. The script builds with ASIO and stops with an error when LLVM's
 `libclang.dll` is missing (`--no-asio` builds without ASIO).
@@ -139,7 +139,7 @@ dependencies that are pinned by `rev`. Bump them by hand:
 scripts/run.sh --demo
 ```
 
-The script uses Python 3 to stage the eleven CLAP bundles, builds the app with their manifest hash, and launches
+The script uses Python 3 to stage the twelve CLAP bundles, builds the app with their manifest hash, and launches
 them together. For a permanent installation from a release archive, keep the executable and its
 `bundled-clap/` directory together. On Linux, a symlink to that executable can put it on your PATH.
 The plugin bridge runs through the same executable (`komponist --bridge`).

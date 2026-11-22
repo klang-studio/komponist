@@ -1,4 +1,4 @@
-//! Current-format projects exercised against the eleven verified release bundles.
+//! Current-format projects exercised against the twelve verified release bundles.
 
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -86,6 +86,7 @@ fn project(host: &PluginHost, sample: &Path) -> Fixture {
     for (index, (name, note)) in [
         ("hexa", 60),
         ("volt", 64),
+        ("surf", 62),
         ("sampler", sampler_key),
         ("general-sampler", 67),
     ]
@@ -418,7 +419,7 @@ fn current_project_round_trip_and_offline_render() {
     let mut authored = fixture.project;
     let path = project_folder.join("bundled.komponist");
     let expected = devices(&authored);
-    assert_eq!(expected.len(), 11);
+    assert_eq!(expected.len(), 12);
     save_project(&path, &authored).unwrap();
     let mut app = app_with(Project::new("Empty"), host);
     open(&mut app, &path);

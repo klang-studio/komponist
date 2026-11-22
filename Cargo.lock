@@ -2945,6 +2945,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "komponist-bundled-surf"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "komponist-bundled-clap-adapter",
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-native-clap-sdk",
+ "komponist-surf",
+ "komponist-volt",
+ "nice-plug",
+ "serde_json",
+]
+
+[[package]]
 name = "komponist-bundled-volt"
 version = "0.1.0"
 dependencies = [

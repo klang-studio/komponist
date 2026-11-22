@@ -3,7 +3,7 @@
 # to try this workflow. It builds komponist, checks that it starts headless and attaches
 # komponist-<tag>-linux-x86_64.tar.gz, komponist-<tag>-macos-arm64.zip (ad-hoc signed app bundle, #53) and
 # komponist-<tag>-windows-x86_64.zip (unsigned, untested, with ASIO) with their .sha256 files to that same release.
-# Each archive includes all eleven bundled CLAP devices and is verified before upload.
+# Each archive includes all twelve bundled CLAP devices and is verified before upload.
 name: Release
 
 on:
