@@ -760,7 +760,7 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
     settings.normalize = false;
     settings.tail_seconds = 0.0;
     let output = settings.folder.join(&settings.file_name);
-    export(&mut app, settings);
+    export_packaged(&mut app, settings);
     let wav = read(&output);
     let channels = usize::from(wav.spec.channels);
     let rms = |first: usize, last: usize| {
