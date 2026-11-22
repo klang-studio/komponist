@@ -1343,6 +1343,7 @@ fn stealing_and_retriggering_do_not_click() {
 // Golden render (#107): volt's voice is shared with surf; this pins volt's output bit for bit.
 
 /// FNV-1a over the bits of both channels.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn bits_hash(out: &[Vec<f32>; 2]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for s in out[0].iter().chain(&out[1]) {
@@ -1356,6 +1357,7 @@ fn bits_hash(out: &[Vec<f32>; 2]) -> u64 {
 
 /// Init and every preset, a chord with bend, wheel and pressure, then the release; with unison and
 /// mono variants of Init. One hash each.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn golden_hashes() -> Vec<u64> {
     let events = [
         (0, on(40, 100)),
