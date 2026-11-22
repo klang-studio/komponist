@@ -597,6 +597,26 @@ impl<O: Oscillators> Dsp for Engine<O> {
         }
     }
 
+    fn choke_note(&mut self, key: Option<u8>, _note_id: Option<u32>, _channel: Option<u8>) {
+        let Some(key) = key else {
+            self.all_notes_off();
+            return;
+        };
+        if self.mode() != 0 {
+            // Remove the key from the mono stack first. If another key takes over the voice,
+            // it should continue playing rather than inheriting a panic fade.
+            self.mono_off(key, self.mode() == 2);
+        }
+        for voice in self
+            .voices
+            .iter_mut()
+            .filter(|v| v.key == key && v.sounds())
+        {
+            voice.release();
+            voice.panic = true;
+        }
+    }
+
     fn all_notes_off(&mut self) {
         self.stack_len = 0;
         for v in &mut self.voices {
@@ -617,5 +637,28 @@ impl<O: Oscillators> Dsp for Engine<O> {
 
     fn pressure(&mut self, value: f32) {
         self.pressure = value.clamp(0.0, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keyed_choke_fades_only_the_target_voice_quickly() {
+        let mut volt = Volt::new();
+        volt.note_on(60, 100);
+        volt.note_on(67, 100);
+        volt.choke_note(Some(60), Some(91), None);
+        let voice = |key| {
+            volt.voices
+                .iter()
+                .find(|voice| voice.key == key && voice.sounds())
+                .unwrap()
+        };
+        assert!(voice(60).panic);
+        assert_eq!(voice(60).state, State::Released);
+        assert!(!voice(67).panic);
+        assert_eq!(voice(67).state, State::Held);
     }
 }

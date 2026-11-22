@@ -39,7 +39,6 @@ use crate::actions::{Action, DropTarget, PluginAction};
 use crate::ui_state::BrowserSegment;
 use crate::views::ViewCtx;
 use crate::views::browser::model::{Input, Row, RowKind, picker_rows};
-use crate::views::format_tag;
 
 /// Where the popup sits relative to its trigger.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -365,9 +364,8 @@ fn list(ui: &mut Ui, rows: &[Row], mem: &mut Memory, choose: &mut Option<PluginR
                 let g = w::galley(ui, &row.name, fonts::font_id(&style), style.line_height);
                 let pos = w::text_pos(rect, &g, left, ppp);
                 ui.painter().galley(pos, g, look.text);
-                let tag = format_tag(t, plugin.format);
                 let small = typography::SMALL;
-                let g = w::galley(ui, tag, fonts::font_id(&small), small.line_height);
+                let g = w::galley(ui, &row.tag, fonts::font_id(&small), small.line_height);
                 let x = rect.right() - space::SPACE_2 - g.size().x;
                 let ink = if highlighted {
                     look.text

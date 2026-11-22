@@ -7,7 +7,7 @@ use komponist_engine::{Event, EventKind, ProcessContext, Processor, StereoIo, Tr
 use komponist_model::params::ParamId;
 use komponist_model::{Meter, Tick, TickRange};
 
-use komponist_sampler::{SampleLink, SamplerHandle, SyncStatus, testkit};
+use komponist_sampler_shared::{SampleLink, SamplerHandle, SyncStatus, testkit};
 
 use super::{SPEC, Settings, dsp_with_handle, read_settings, sync_settings, write_settings};
 

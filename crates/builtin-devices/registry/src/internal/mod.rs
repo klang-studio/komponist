@@ -219,7 +219,32 @@ impl Internal {
 
     /// A processor with the plain values by wire ID. Activate it before sending it to the engine.
     pub fn processor(self, values: &[f64]) -> InternalProcessor {
-        InternalProcessor::new(self.spec(), values)
+        let dsp = match self {
+            Self::Arpeggiator => {
+                return InternalProcessor::from_event_stage(
+                    self.spec(),
+                    values,
+                    komponist_arpeggiator::stage(),
+                );
+            }
+            Self::Tonleiter => {
+                return InternalProcessor::from_event_stage(
+                    self.spec(),
+                    values,
+                    komponist_scale::stage(),
+                );
+            }
+            Self::Delay => komponist_delay::dsp(),
+            Self::Eq => komponist_eq::dsp(),
+            Self::GeneralSampler => komponist_general_sampler::dsp(),
+            Self::Hall => komponist_reverb::dsp(),
+            Self::Limiter => komponist_limiter::dsp(),
+            Self::Presse => komponist_presse::dsp(),
+            Self::Sampler => komponist_sampler::dsp(),
+            Self::Volt => komponist_volt::dsp(),
+            Self::Surf => komponist_surf::dsp(),
+        };
+        InternalProcessor::from_dsp(self.spec(), values, dsp)
     }
 
     pub(crate) fn processor_from_state(

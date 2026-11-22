@@ -160,7 +160,7 @@ impl View for Inspector {
         }
         if let Some(track) = sections.track.and_then(|t| project.track(t)) {
             track::section(self, ui, ctx, &project, x, &mut y, track);
-            track::devices_section(self, ui, ctx, x, &mut y, track);
+            track::devices_section(self, ui, ctx, &project, x, &mut y, track);
             macros::section(ui, ctx, x, &mut y, track);
             if let Some(touched) = param::touched(ctx, track.id) {
                 param::section(ui, ctx, x, &mut y, &touched);
@@ -234,6 +234,8 @@ enum Meta<'a> {
     Action(&'a str),
     /// The recording state in `state.record` ("nimmt auf").
     Record(&'a str),
+    /// A problem in `state.error` with its explanation as tooltip ("spielt nicht", #92).
+    Error(&'a str, &'a str),
 }
 
 /// One section at `*y` across `x`: a group named `title` with its title row, `content` below,
@@ -291,6 +293,7 @@ fn meta_text(ui: &mut Ui, row: Rect, meta: Meta<'_>) -> Option<Response> {
         Meta::Text(t) => (t, color::TEXT_3, false),
         Meta::Action(t) => (t, color::TEXT_2, true),
         Meta::Record(t) => (t, color::STATE_RECORD, false),
+        Meta::Error(t, _) => (t, color::STATE_ERROR, false),
     };
     let style = typography::VALUE_S;
     let g = w::galley(ui, text, fonts::font_id(&style), style.line_height);
@@ -315,6 +318,9 @@ fn meta_text(ui: &mut Ui, row: Rect, meta: Meta<'_>) -> Option<Response> {
     }
     let role = if action { Role::Link } else { Role::Label };
     response.widget_info(|| WidgetInfo::labeled(role, true, text));
+    if let Meta::Error(_, detail) = meta {
+        komponist_ui::widgets::tooltip::Tip::new(detail).attach(&response);
+    }
     if action && response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }

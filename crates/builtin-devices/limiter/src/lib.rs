@@ -40,9 +40,7 @@ pub static SPEC: Spec = Spec {
     },
     params,
     layout,
-    dsp,
     presets,
-    event_stage: None,
     preset_aliases: &[
         ("Master sanft", "Gentle Master"),
         ("Master laut", "Loud Master"),
@@ -151,7 +149,7 @@ struct Limiter {
     over: f32,
 }
 
-fn dsp() -> Box<dyn Dsp> {
+pub fn dsp() -> Box<dyn Dsp> {
     let mut l = Limiter {
         rate: INITIAL_RATE,
         gain: Glide::new(1.0),

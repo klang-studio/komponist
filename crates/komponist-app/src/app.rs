@@ -414,6 +414,18 @@ impl App {
         self.set_status(self.lang.status_workers_no_workgroup(), StatusKind::Info);
     }
 
+    /// Tells in the status bar what the engine leaves out of the project (#92) when the last
+    /// syncs left out something new: every left-out track and device, counted per reason
+    /// ([`crate::diagnostics::summary`]).
+    pub fn report_compile_diagnostics(&mut self) {
+        if !self.engine.take_diagnostics_notice() {
+            return;
+        }
+        if let Some(text) = crate::diagnostics::summary(self.lang, self.engine.diagnostics()) {
+            self.set_status(text, StatusKind::Error);
+        }
+    }
+
     /// Tells in the status bar which MIDI inputs appeared or vanished in the last scans
     /// (`EngineSync::take_midi_changes`), by the name S07 shows. Several changes make one
     /// message, joined by " · ".
@@ -580,6 +592,7 @@ impl App {
             self.report_workers_without_workgroup();
         }
         self.report_midi_changes();
+        self.report_compile_diagnostics();
         let playhead = self.engine.playhead();
         for event in events {
             if let EngineEvent::PluginParams {
@@ -873,10 +886,13 @@ impl App {
         let Some((_, _, d)) = self.project().find_device(device) else {
             return;
         };
-        let Some(kind) = crate::device_host::internal_kind(d) else {
-            return;
+        use komponist_builtin::BuiltinKind;
+        let state = match self.engine.host().verified_bundled_kind(device) {
+            Some(BuiltinKind::Internal(kind)) => crate::bundled_presets::state(kind, d, index),
+            _ => crate::device_host::internal_kind(d)
+                .and_then(|kind| kind.preset_state(d.state.as_deref(), index)),
         };
-        let Some(state) = kind.preset_state(d.state.as_deref(), index) else {
+        let Some(state) = state else {
             return;
         };
         let state: Arc<[u8]> = state.into();
@@ -884,6 +900,69 @@ impl App {
         self.apply("undo-load-preset", |p| {
             edits::set_device_state(p, device, Some(Arc::clone(&state)))
         });
+    }
+
+    fn apply_hexa_preset(&mut self, device: DeviceId, preset: usize) {
+        let Some(patch) = komponist_hexa::preset_patch(preset) else {
+            return;
+        };
+        let Some((_, _, target)) = self.project().find_device(device) else {
+            return;
+        };
+        let state: Arc<[u8]> = if crate::device_host::is_hexa(target) {
+            komponist_hexa::encode_state(&patch)
+        } else if self.engine.host().verified_bundled_kind(device)
+            == Some(komponist_builtin::BuiltinKind::Hexa)
+        {
+            komponist_hexa::state::encode_clap_patch(patch, &target.plugin.version)
+        } else {
+            return;
+        }
+        .into();
+        self.apply("undo-load-preset", |p| {
+            edits::set_device_state(p, device, Some(state))
+        });
+    }
+
+    /// Start the instrument with its preset in the first processor activation.
+    fn new_hexa_preset_track(&mut self, preset: usize) {
+        let Some(patch) = komponist_hexa::preset_patch(preset) else {
+            return;
+        };
+        let packaged = self
+            .engine
+            .host()
+            .catalog()
+            .packaged(komponist_builtin::BuiltinKind::Hexa);
+        let (instrument, state) = match packaged {
+            Some(entry) => (
+                entry.plugin.clone(),
+                komponist_hexa::state::encode_clap_patch(patch, &entry.plugin.version),
+            ),
+            None if self.default_hexa().is_some() => {
+                (hexa_ref(), komponist_hexa::encode_state(&patch))
+            }
+            None => return,
+        };
+        let spec = NewTrack {
+            name: None,
+            hue: None,
+            instrument: Some(instrument),
+            index: None,
+            arm_exclusive: true,
+        };
+        let names = default_names(self.lang);
+        if let Some(id) = self.apply_with("undo-load-preset", |p| {
+            let (p, track) = edits::add_track_in(p, spec, &names)?;
+            let instrument = p
+                .track(track)
+                .and_then(|track| track.channel.instrument())
+                .expect("new Hexa track has its instrument");
+            let p = edits::set_device_state(&p, instrument.1.id, Some(state.into()))?;
+            Ok((p, track))
+        }) {
+            self.select_tracks(vec![id], SelectMode::Replace);
+        }
     }
 
     /// After a tracked document change that did not come from the running processors (an edit, undo,
@@ -1683,11 +1762,11 @@ impl App {
 
     /// Ctrl T and instrument drops: a new MIDI track with `instrument`, armed exclusively,
     /// selected (S10).
-    fn new_midi_track(&mut self, index: Option<usize>, instrument: PluginRef) {
+    fn new_midi_track(&mut self, index: Option<usize>, instrument: Option<PluginRef>) {
         let spec = NewTrack {
             name: None,
             hue: None,
-            instrument: Some(instrument),
+            instrument,
             index,
             arm_exclusive: true,
         };
@@ -1765,6 +1844,14 @@ impl App {
         }
     }
 
+    fn default_hexa(&self) -> Option<PluginRef> {
+        let catalog = self.engine.host().catalog();
+        catalog
+            .packaged(komponist_builtin::BuiltinKind::Hexa)
+            .or_else(|| catalog.resolve(&hexa_ref()))
+            .map(|entry| entry.plugin.clone())
+    }
+
     /// Opens the "Neue Spur" dialog with the instrument of the last one (hexa the first time).
     fn open_new_track_dialog(&mut self) {
         if self.ui.dialog.is_some() || self.dialogs.overlay.is_some() {
@@ -1774,7 +1861,7 @@ impl App {
             .dialogs
             .last_instrument
             .clone()
-            .unwrap_or_else(|| Some(hexa_ref()));
+            .unwrap_or_else(|| self.default_hexa());
         let mut state = crate::dialogs::new_track::State::new(instrument);
         state.choose_default_input(self.project(), &self.engine);
         self.open_overlay(crate::dialogs::Overlay::NewTrack(state));
@@ -2340,27 +2427,13 @@ impl App {
         match action {
             PluginAction::Add { plugin, target } => self.add_plugin(plugin, target),
             PluginAction::ApplyHexaPreset { device, preset } => {
-                let Some(patch) = komponist_hexa::preset_patch(preset) else {
-                    return;
-                };
-                let state: Arc<[u8]> = komponist_hexa::encode_state(&patch).into();
-                self.apply("undo-load-preset", |p| {
-                    edits::set_device_state(p, device, Some(Arc::clone(&state)))
-                });
+                self.apply_hexa_preset(device, preset);
             }
             PluginAction::ApplyInternalPreset { device, index } => {
                 self.apply_internal_preset(device, index);
             }
             PluginAction::NewHexaTrack { preset } => {
-                self.dispatch(Action::Edit(EditAction::BeginGesture {
-                    label: "undo-load-preset".to_owned(),
-                }));
-                self.new_midi_track(None, hexa_ref());
-                let track = self.ui.selection.tracks.iter().next().copied();
-                if let Some(device) = crate::views::browser::model::hexa_of(self.project(), track) {
-                    self.plugin_action(PluginAction::ApplyHexaPreset { device, preset });
-                }
-                self.dispatch(Action::Edit(EditAction::EndGesture));
+                self.new_hexa_preset_track(preset);
             }
             PluginAction::OpenWindow(device) => {
                 if !self.ui.plugin_windows.iter().any(|w| w.device == device) {
@@ -2387,6 +2460,7 @@ impl App {
             PluginAction::CloseWindow(device) => self.close_plugin_window(device),
             PluginAction::FocusWindow(device) => self.focus_plugin_window(device),
             PluginAction::Reload(device) => {
+                self.reset_sampler_hit(device);
                 self.engine.reload_device(self.doc.project(), device);
             }
             PluginAction::LoadSample { .. }
@@ -2427,7 +2501,7 @@ impl App {
         let selected = self.ui.selection.tracks.iter().next().copied();
         match (role, target) {
             (DeviceRole::Instrument, DropTarget::NewTrack { index }) => {
-                self.new_midi_track(index, plugin);
+                self.new_midi_track(index, Some(plugin));
             }
             (DeviceRole::Instrument, DropTarget::Track(track))
             | (
@@ -2551,6 +2625,7 @@ impl App {
         self.engine.reset();
         self.doc = doc;
         self.param_undo.forget();
+        self.dialogs.samples.forget_device_state();
         self.project_path = path;
         // Relative sample paths resolve against the project file's folder, before the devices of
         // the project get their processors.

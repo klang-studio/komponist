@@ -83,7 +83,13 @@ pub trait Dsp: Send {
     }
 
     /// RT, instruments only. A note starts, optionally paired with an engine-assigned id.
-    fn note_on_with_id(&mut self, key: u8, velocity: u8, _note_id: Option<u32>) {
+    fn note_on_with_id(
+        &mut self,
+        key: u8,
+        velocity: u8,
+        _note_id: Option<u32>,
+        _channel: Option<u8>,
+    ) {
         self.note_on(key, velocity);
     }
 
@@ -93,8 +99,26 @@ pub trait Dsp: Send {
     }
 
     /// RT, instruments only. A note ends, with its id when the engine paired it.
-    fn note_off_with_id(&mut self, key: u8, _note_id: Option<u32>) {
+    fn note_off_with_id(&mut self, key: u8, _note_id: Option<u32>, _channel: Option<u8>) {
         self.note_off(key);
+    }
+
+    /// RT, instruments only. Release gates at a CLAP note address. Missing fields match any
+    /// value. One-shot samples continue playing.
+    fn release_note_gates(&mut self, key: Option<u8>, note_id: Option<u32>, channel: Option<u8>) {
+        if let Some(key) = key {
+            self.note_off_with_id(key, note_id, channel);
+        }
+    }
+
+    /// RT, instruments only. Stop voices matching the supplied key, note ID, and channel.
+    /// An entirely wildcard address requests a global choke.
+    fn choke_note(&mut self, key: Option<u8>, note_id: Option<u32>, channel: Option<u8>) {
+        if let Some(key) = key {
+            self.note_off_with_id(key, note_id, channel);
+        } else if note_id.is_none() && channel.is_none() {
+            self.all_notes_off();
+        }
     }
 
     /// RT, instruments only. Every sounding note ends now.
@@ -154,22 +178,31 @@ pub struct InternalProcessor {
 }
 
 impl InternalProcessor {
-    /// Creates a processor from the device's DSP factory and values by wire id.
-    /// Call [`Processor::activate`] before handing it to the engine. Allocates off the audio thread.
-    pub fn new(spec: &'static Spec, values: &[f64]) -> Self {
-        Self::from_dsp(spec, values, (spec.dsp)())
+    /// Creates an audio processor. Call `Processor::activate` before handing it to the engine.
+    pub fn from_dsp(spec: &'static Spec, values: &[f64], dsp: Box<dyn Dsp>) -> Self {
+        Self::with_dsp_and_stage(spec, values, dsp, None)
     }
 
-    /// Like [`Self::new`], with an already constructed DSP. A device may create a UI handle
-    /// alongside its DSP and keep that handle outside the processor.
-    pub fn from_dsp(spec: &'static Spec, values: &[f64], mut dsp: Box<dyn Dsp>) -> Self {
+    /// Creates a MIDI-only processor with a passthrough audio path.
+    pub fn from_event_stage(
+        spec: &'static Spec,
+        values: &[f64],
+        stage: Box<dyn EventProcessor + Send>,
+    ) -> Self {
+        Self::with_dsp_and_stage(spec, values, midi::passthrough(), Some(stage))
+    }
+
+    fn with_dsp_and_stage(
+        spec: &'static Spec,
+        values: &[f64],
+        mut dsp: Box<dyn Dsp>,
+        stage: Option<Box<dyn EventProcessor + Send>>,
+    ) -> Self {
         let params = spec.params();
         for (i, p) in params.iter().enumerate() {
             dsp.set_param(i, p.snap(values.get(i).copied().unwrap_or(p.default)));
         }
-        let mut stage = spec
-            .event_stage
-            .map(|stage| midi::Stage::new(params, stage()));
+        let mut stage = stage.map(|stage| midi::Stage::new(params, stage));
         if let Some(stage) = &mut stage {
             for (i, p) in params.iter().enumerate() {
                 stage.set_param(i as u32, values.get(i).copied().unwrap_or(p.default));
@@ -292,15 +325,22 @@ impl InternalProcessor {
                     key,
                     velocity,
                     note_id,
-                    ..
+                    channel,
                 } => self.dsp.note_on_with_id(
                     key,
                     velocity,
                     (note_id != NOTE_ID_NONE).then_some(note_id),
+                    Some(channel),
                 ),
-                EventKind::NoteOff { key, note_id, .. } => self
-                    .dsp
-                    .note_off_with_id(key, (note_id != NOTE_ID_NONE).then_some(note_id)),
+                EventKind::NoteOff {
+                    key,
+                    note_id,
+                    channel,
+                } => self.dsp.note_off_with_id(
+                    key,
+                    (note_id != NOTE_ID_NONE).then_some(note_id),
+                    Some(channel),
+                ),
                 EventKind::AllNotesOff => self.dsp.all_notes_off(),
                 EventKind::Midi(bytes) => midi_to_dsp(self.dsp.as_mut(), bytes),
             }

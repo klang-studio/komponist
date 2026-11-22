@@ -2,7 +2,7 @@
 # Builds komponist (release) and assembles the macOS app bundle dist/komponist.app (#53).
 # macOS only (iconutil, codesign, plutil). Runs with the stock bash 3.2. Used by the release job and by hand.
 #
-#   scripts/bundle-macos.sh [--skip-build] [--out DIR]
+#   scripts/bundle-macos.sh [--skip-build] [--out DIR] [--bundled-clap DIR]
 #
 # The bundle is signed with the hardened runtime and the entitlements in assets/macos/komponist.entitlements.
 # Default: ad-hoc (`codesign -s -`), which is what v0.3 ships; macOS then asks for the Gatekeeper override
@@ -21,10 +21,12 @@ cd "$(dirname "$0")/.."
 
 skip_build=0
 out=dist
+bundled_clap=
 while [ $# -gt 0 ]; do
     case "$1" in
         --skip-build) skip_build=1 ;;
         --out) shift; out="${1:?--out needs a folder}" ;;
+        --bundled-clap) shift; bundled_clap="${1:?--bundled-clap needs a folder}" ;;
         -h | --help) sed -n '2,19p' "$0"; exit 0 ;;
         *) echo "bundle-macos.sh: unknown argument $1" >&2; exit 2 ;;
     esac
@@ -43,11 +45,30 @@ if [ -z "$version" ]; then
     exit 1
 fi
 
+source scripts/bundled-clap-build.sh
+stage_bundled_clap=0
+if [ -z "$bundled_clap" ]; then
+    if [ "$skip_build" = 1 ]; then
+        echo "bundle-macos.sh: --skip-build requires the matching --bundled-clap directory" >&2
+        exit 2
+    fi
+    staging="$(mktemp -d)"
+    trap 'rm -rf -- "$staging"' EXIT
+    bundled_clap="$staging/bundled-clap"
+    stage_bundled_clap=1
+fi
+
 if [ "$skip_build" = 0 ]; then
     # One heavy build at a time across worktrees, at low priority (CLAUDE.md, "Build load").
     (
         source scripts/build-lock.sh
-        lowprio cargo build --release -p komponist-app --bin komponist
+        if [ "$stage_bundled_clap" = 1 ]; then
+            digest="$(stage_native_bundled_clap "$bundled_clap")"
+        else
+            digest="$(bundled_clap_manifest_digest "$bundled_clap")"
+        fi
+        export KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256="$digest"
+        lowprio cargo build --locked --release -p komponist-app --bin komponist
     )
 fi
 exe=target/release/komponist
@@ -59,6 +80,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 # The plugin bridge is this executable (`komponist --bridge`): nothing else to bundle. Fonts and the window
 # icon are compiled in.
 install -m755 "$exe" "$app/Contents/MacOS/komponist"
+# Nested signatures already exist and are part of the manifest's file hashes.
+ditto "$bundled_clap" "$app/Contents/Resources/bundled-clap"
 sed "s/@VERSION@/$version/g" assets/macos/Info.plist.in >"$app/Contents/Info.plist"
 for lang in de en; do
     mkdir -p "$app/Contents/Resources/$lang.lproj"
@@ -90,6 +113,7 @@ else
         --entitlements assets/macos/komponist.entitlements --sign - "$app"
 fi
 codesign --verify --deep --strict --verbose=2 "$app"
+"$app/Contents/MacOS/komponist" --verify-bundled-clap
 
 if [ -n "$identity" ]; then
     notary=()

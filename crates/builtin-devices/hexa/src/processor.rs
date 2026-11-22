@@ -11,7 +11,7 @@ use komponist_engine::{
 use crate::device::Field;
 use crate::state::{self, StateError};
 
-// `reset` and `activate` overwrite the synth in place without dropping it; that is only sound
+// `activate` overwrites the synth in place without dropping it; that is only sound
 // while `Synth` owns nothing that needs dropping (it is plain `no_std` data).
 const _: () = assert!(!core::mem::needs_drop::<Synth<1>>());
 
@@ -33,8 +33,8 @@ const _: () = assert!(!core::mem::needs_drop::<Synth<1>>());
 ///   voices go through their release (the engine contract: "release all sounding notes").
 ///
 /// [`Processor::reset`] silences at once: voices, keys, pedal, effect tails and the
-/// oversampling filter, by rebuilding the synth in place with its current patch (no allocation;
-/// it rewrites the 2 MB, see the crate docs for the cost).
+/// oversampling filter. It keeps the patch and invalidates the effect delay lines without
+/// writing their sample buffers.
 ///
 /// [`Processor::latency`] is the delay of hexa's 2× oversampling filter,
 /// [`hexa_core::oversampling::DELAY`] = 17 frames at any sample rate: a note-on at offset `n`
@@ -83,8 +83,7 @@ impl HexaProcessor {
         self.synth.active_voices()
     }
 
-    /// Rebuilds the synth in place at `self.sample_rate` with its current patch: silent, with
-    /// no voice, key, pedal, effect tail or filter state left. RT-safe (no allocation).
+    /// Initializes all storage at the new sample rate during activation.
     fn rebuild(&mut self) {
         let patch = *self.synth.patch();
         let place: *mut Synth<1> = &mut *self.synth;
@@ -92,6 +91,33 @@ impl HexaProcessor {
         // nothing else uses the synth meanwhile. The old value is overwritten without being
         // dropped, which leaks nothing: `Synth<1>` has no drop glue (asserted above).
         unsafe { Synth::write_new(place, self.sample_rate, patch) };
+    }
+
+    /// Replace the complete patch, retaining values outside the device card's controls.
+    /// Uses the existing synth's patch-update semantics and is allocation-free.
+    pub fn replace_patch(&mut self, patch: Patch) {
+        self.dirty = false;
+        self.synth.set_patch(patch);
+    }
+
+    /// Render one ordered span for either the built-in engine or the CLAP adapter.
+    /// An empty span applies its frame-zero events without advancing the synth.
+    pub fn render_events(&mut self, events: &[Event], [left, right]: [&mut [f32]; 2]) {
+        let frames = left.len();
+        let mut done = 0;
+        for event in events {
+            let at = (event.offset as usize).clamp(done, frames);
+            if at > done {
+                self.flush();
+                self.synth.render(&mut left[done..at], &mut right[done..at]);
+                done = at;
+            }
+            self.apply(event.kind);
+        }
+        self.flush();
+        if done < frames {
+            self.synth.render(&mut left[done..], &mut right[done..]);
+        }
     }
 
     /// Applies collected parameter changes.
@@ -154,22 +180,8 @@ impl Processor for HexaProcessor {
         events: &[Event],
         io: &mut StereoIo<'_>,
     ) -> ProcessStatus {
-        let frames = io.frames();
         let [left, right] = &mut io.output;
-        let mut done = 0;
-        for event in events {
-            let at = (event.offset as usize).clamp(done, frames);
-            if at > done {
-                self.flush();
-                self.synth.render(&mut left[done..at], &mut right[done..at]);
-                done = at;
-            }
-            self.apply(event.kind);
-        }
-        self.flush();
-        if done < frames {
-            self.synth.render(&mut left[done..], &mut right[done..]);
-        }
+        self.render_events(events, [left, right]);
         ProcessStatus::Continue
     }
 
@@ -183,6 +195,6 @@ impl Processor for HexaProcessor {
 
     fn reset(&mut self) {
         self.flush();
-        self.rebuild();
+        self.synth.reset();
     }
 }

@@ -18,7 +18,12 @@ fn make(spec: &'static komponist_device_core::Spec, changes: &[(&str, f64)]) -> 
             values[w as usize] = *value;
         }
     }
-    let mut p = InternalProcessor::new(spec, &values);
+    let dsp = if std::ptr::eq(spec, &crate::SPEC) {
+        crate::dsp()
+    } else {
+        komponist_volt::dsp()
+    };
+    let mut p = InternalProcessor::from_dsp(spec, &values, dsp);
     p.activate(RATE, 4096).unwrap();
     p
 }

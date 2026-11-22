@@ -21,6 +21,9 @@ browser-segment-files = Dateien
 # Accessible name of the row list.
 browser-list = Browser-Liste
 
+# Format and origin tag for a shipped CLAP in the browser and device pickers.
+browser-bundled-clap = CLAP intern
+
 # Section of the favourites.
 browser-favorites = Favoriten
 

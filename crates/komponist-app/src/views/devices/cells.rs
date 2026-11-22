@@ -14,7 +14,7 @@ use komponist_hexa::algorithms::ALGORITHMS;
 use komponist_i18n::Lang;
 use komponist_model::DeviceId;
 use komponist_model::params::eq_curve::CURVE_RATE;
-use komponist_model::params::{ParamContext, ParamKind, Scale, resolve};
+use komponist_model::params::{ParamContext, ParamKind, Scale, Unit, resolve};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
 use komponist_tokens::{TrackPalette, color, device, radius};
@@ -115,7 +115,7 @@ pub(super) fn set_context(
 
 /// One cell: the widget of its kind bound to its parameter; the placeholder for a widget the
 /// parameter's kind does not fit.
-pub(super) fn draw_cell(
+pub(crate) fn draw_cell(
     cu: &mut Ui,
     out: &mut Vec<Action>,
     card: &Card,
@@ -151,6 +151,15 @@ pub(super) fn draw_cell(
         CellParam::Template(t) => resolve(t, &ctx).ok().and_then(|id| card.param(&id)),
         _ => None,
     };
+    let localized = param.and_then(|param| {
+        let layout = card.native_layout.as_ref()?;
+        let labels = card.native_cell(cell)?.labels.as_ref()?;
+        let label = layout.label(labels, komponist_ui::lang(cu.ctx()).code())?;
+        let mut localized = param.clone();
+        localized.info.name = label.to_owned();
+        Some(localized)
+    });
+    let param = localized.as_ref().or(param);
     // The rate knob of a synced LFO shows its divider instead.
     let param = param.map(|p| synced_divider(card, p));
     if let Some(control) = param.and_then(|p| card.macros.get(&p.info.id)) {
@@ -202,7 +211,11 @@ pub(super) fn set(out: &mut Vec<Action>, card: &Card, p: &Param, plain: f64) {
         out.push(Action::Plugin(PluginAction::SetParam {
             device: card.device,
             id: p.wire,
-            value: plain,
+            value: if card.bundled_editor {
+                komponist_device_core::pinned_clap_state::to_clap(&p.info, plain)
+            } else {
+                plain
+            },
         }));
     }
 }
@@ -235,8 +248,8 @@ pub(super) fn touch(
     if let Some(control) = control {
         let range = control.driver.as_ref().map(|driver| {
             t.devices_range(
-                p.text_at(p.info.to_plain(f64::from(driver.range.0))),
-                p.text_at(p.info.to_plain(f64::from(driver.range.1))),
+                p.text_at(p.value_at_normalized(card.bundled_editor, f64::from(driver.range.0))),
+                p.text_at(p.value_at_normalized(card.bundled_editor, f64::from(driver.range.1))),
             )
         });
         control.decorate(cu, r, r.rect, range.as_deref());
@@ -310,7 +323,7 @@ pub(super) fn touch(
                         replace: None,
                         target: komponist_model::automation::AutomationTarget::Param {
                             device: card.device,
-                            param: p.info.id.clone(),
+                            param: p.project_id(card.bundled_editor),
                         },
                         label: format!("{} · {}", card.name, p.name()),
                     },
@@ -332,7 +345,7 @@ pub(super) fn begin_param(card: &Card, id: u32) -> Action {
 pub(super) fn touch_action(card: &Card, p: &Param, dragging: bool) -> Action {
     Action::Ui(UiAction::TouchParam {
         device: card.device,
-        param: p.info.id.clone(),
+        param: p.project_id(card.bundled_editor),
         dragging,
     })
 }
@@ -343,13 +356,20 @@ fn slot(cu: &Ui, cell: &Cell, what: &str) -> Id {
         "komponist_cell",
         cell.col,
         cell.row,
-        cell.half.is_some(),
+        match cell.half {
+            None => 0,
+            Some(super::layout::Half::Top) => 1,
+            Some(super::layout::Half::Bottom) => 2,
+        },
         what,
     ))
 }
 
 /// `text` split into the number and its trailing unit: „420 Hz“ → („420“, „Hz“), „L 14“ stays whole.
-fn split_unit(text: &str) -> (&str, &str) {
+fn split_unit(text: &str, native: bool) -> (&str, &str) {
+    if native && let Some(number) = text.strip_suffix('%') {
+        return (number.trim_end(), "%");
+    }
     match text.rsplit_once(' ') {
         Some((number, unit)) if unit.starts_with(|c: char| !c.is_ascii_digit()) => (number, unit),
         _ => (text, ""),
@@ -421,17 +441,22 @@ fn number(
     let steps = info.steps();
     let plain_step = match &info.kind {
         ParamKind::Int { .. } => Some(1.0),
+        ParamKind::Bool if card.native_layout.is_some() => Some(1.0),
         ParamKind::Float { .. } if steps > 0 => Some((max - min) / f64::from(steps)),
         ParamKind::Float { .. } => None,
         _ => return false,
     };
+    let native = card.native_layout.is_some();
     let current = p.text_at(p.value);
-    let unit = split_unit(&current).1.to_owned();
-    let unit_len = if unit.is_empty() { 0 } else { unit.len() + 1 };
+    let unit = split_unit(&current, native).1.to_owned();
     let plain_text = |v: f64| {
-        let t = p.text_at(v);
-        let end = t.len() - unit_len.min(t.len());
-        t[..end].to_owned()
+        let text = p.text_at(v);
+        let (number, suffix) = split_unit(&text, native);
+        if !unit.is_empty() && suffix == unit {
+            number.to_owned()
+        } else {
+            text
+        }
     };
     match plain_step {
         Some(step) => {
@@ -440,7 +465,7 @@ fn number(
                 .range(min..=max)
                 .step(step)
                 .default_value(info.default)
-                .unit(unit)
+                .unit(unit.clone())
                 .cols(cell.cols)
                 .format(plain_text);
             let r = cu.put(rect, w);
@@ -457,12 +482,17 @@ fn number(
         }
         None => {
             let mut value = info.to_normalized(p.value);
+            let unit_scale = if native && unit == "%" && info.unit == Unit::Percent {
+                100.0
+            } else {
+                1.0
+            };
             let w = Number::new(&mut value, p.name().to_owned())
                 .default_value(info.default_normalized())
                 .unit(unit.clone())
                 .cols(cell.cols)
                 .format(|n| plain_text(info.to_plain(n)))
-                .parse(|t| parse_number(t, &unit).map(|v| info.to_normalized(v)));
+                .parse(|t| parse_number(t, &unit).map(|v| info.to_normalized(v / unit_scale)));
             let r = cu.put(rect, w);
             touch(
                 cu,
@@ -479,15 +509,35 @@ fn number(
     true
 }
 
-fn choices(p: &Param) -> Option<&Vec<String>> {
+fn choices<'a>(
+    card: &Card,
+    cell: &Cell,
+    p: &'a Param,
+    lang: Lang,
+) -> Option<(std::borrow::Cow<'a, [String]>, f64)> {
+    use std::borrow::Cow;
+    if let Some(layout) = &card.native_layout
+        && let Some(choices) = &card.native_cell(cell)?.choices
+    {
+        let names = choices
+            .iter()
+            .map(|choice| {
+                layout
+                    .label(&choice.labels, lang.code())
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect();
+        return Some((Cow::Owned(names), f64::from(choices.first()?.value)));
+    }
     match &p.info.kind {
-        ParamKind::Enum(names) if !names.is_empty() => Some(names),
+        ParamKind::Enum(names) if !names.is_empty() => Some((Cow::Borrowed(names), 0.0)),
         _ => None,
     }
 }
 
-fn index_of(p: &Param, n: usize) -> usize {
-    (p.value.round().max(0.0) as usize).min(n.saturating_sub(1))
+fn index_of(value: f64, first: f64, n: usize) -> usize {
+    ((value - first).round().max(0.0) as usize).min(n.saturating_sub(1))
 }
 
 fn segment(
@@ -498,7 +548,7 @@ fn segment(
     p: &Param,
     rect: Rect,
 ) -> bool {
-    let Some(names) = choices(p) else {
+    let Some((names, first)) = choices(card, cell, p, komponist_ui::lang(cu.ctx())) else {
         return false;
     };
     // The four oscillator waves are drawn as their icons (their names stay the accessible ones).
@@ -510,7 +560,7 @@ fn segment(
             None => SegmentOption::text(n),
         })
         .collect();
-    let mut selected = index_of(p, names.len());
+    let mut selected = index_of(p.value, first, names.len());
     let r = cu.put(
         rect,
         Segment::new(p.name(), &options, &mut selected).cols(cell.cols),
@@ -523,7 +573,7 @@ fn segment(
         &r,
         None,
         false,
-        r.changed().then_some(selected as f64),
+        r.changed().then_some(first + selected as f64),
     );
     true
 }
@@ -548,7 +598,7 @@ fn toggle(
     p: &Param,
     rect: Rect,
 ) -> bool {
-    if !matches!(p.info.kind, ParamKind::Bool) {
+    if card.native_layout.is_none() && !matches!(p.info.kind, ParamKind::Bool) {
         return false;
     }
     let mut on = p.value >= 0.5;
@@ -574,11 +624,11 @@ fn dropdown(
     p: &Param,
     rect: Rect,
 ) -> bool {
-    let Some(names) = choices(p) else {
+    let Some((names, first)) = choices(card, cell, p, komponist_ui::lang(cu.ctx())) else {
         return false;
     };
     let items: Vec<Item<'_>> = names.iter().map(|n| Item::new(n)).collect();
-    let mut selected = index_of(p, names.len());
+    let mut selected = index_of(p.value, first, names.len());
     let r = cu.put(
         rect,
         DropdownCell::new(p.name(), &items, &mut selected).cols(cell.cols),
@@ -591,7 +641,7 @@ fn dropdown(
         &r,
         None,
         false,
-        r.changed().then_some(selected as f64),
+        r.changed().then_some(first + selected as f64),
     );
     true
 }
@@ -632,10 +682,33 @@ fn mini_fader(
 /// Whether the mini fader of `cell` fills as a carrier (the track colour): the Bool parameter the
 /// cell names says so; without one (or while it is unknown) it does.
 fn carrier(card: &Card, cell: &Cell) -> bool {
-    cell.carrier
-        .as_ref()
-        .and_then(|id| card.param(id))
-        .is_none_or(|p| p.value >= 0.5)
+    let Some(id) = &cell.carrier else {
+        return true;
+    };
+    // Changing Hexa's algorithm edits the patch routing as a group. The separate output
+    // CLAP bindings can still report their last individual edits.
+    if card.bundled_editor
+        && let Some(routing) = card.routing
+        && let Some(op) = id
+            .as_str()
+            .strip_prefix("op")
+            .and_then(|id| id.strip_suffix("_output"))
+            .and_then(|number| number.parse::<usize>().ok())
+            .and_then(|number| number.checked_sub(1))
+            .filter(|&op| op < routing.modulates.len())
+        && let Some(algorithm) = card
+            .params
+            .iter()
+            .find(|p| p.info.id.as_str() == "algorithm")
+    {
+        let number = algorithm.value.round() as usize;
+        return if number == 0 {
+            routing.outputs & (1 << op) != 0
+        } else {
+            komponist_hexa::device::is_carrier(number, op)
+        };
+    }
+    card.param(id).is_none_or(|p| p.value >= 0.5)
 }
 
 /// The selected entry (1-based) of context placeholder `key`, 1 without one.
@@ -1347,6 +1420,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn bundled_hexa_carriers_follow_the_graph_after_an_algorithm_edit() {
+        let mut card = card();
+        card.bundled_editor = true;
+        let patch = komponist_hexa::preset_patch(1).unwrap();
+        card.routing = Some(komponist_hexa::algorithms::routing(&patch));
+        let info = komponist_hexa::Macro::Algorithm.param_info();
+        card.params.push(Param {
+            wire: 110,
+            info,
+            value: 7.0,
+            text: String::new(),
+        });
+        // E-Piano initially has operator 5 as a carrier. Fixed algorithm 7 uses 1 and 3.
+        let cell = Cell::knob(0, 0, ParamId::new("op5_level")).carrier(ParamId::new("op5_output"));
+        assert!(!carrier(&card, &cell));
+        card.params.last_mut().unwrap().value = 0.0;
+        assert!(carrier(&card, &cell));
+    }
+
     /// A card with one cell of every kind that edits a parameter.
     fn card() -> Card {
         let id = |w: u32| ParamId::new(format!("p{w}"));
@@ -1382,6 +1475,8 @@ mod tests {
         Card {
             sampler: None,
             general_sampler: None,
+            native_layout: None,
+            bundled_editor: false,
             device: DeviceId(7),
             automation_owner: None,
             automation: Default::default(),
@@ -1495,6 +1590,44 @@ mod tests {
         h.get_by_role_and_label(Role::Button, "Loop").click();
         h.run();
         assert_eq!(set_params(&h).last(), Some(&(3, 1.0)));
+    }
+
+    #[test]
+    fn number_entry_uses_the_displayed_units() {
+        let layout = komponist_ipc::native_layout::NativeLayout::parse(
+            br#"{
+            "schema_version":1,"default_locale":"en","locales":["en"],
+            "pages":[{"key":"main","labels":{"en":"Main"},"columns":4,"cells":[
+                {"widget":"number","row":0,"col":0,"rows":1,"cols":1,"half":"top","param_id":1}
+            ]}]
+        }"#,
+        )
+        .unwrap();
+        let layout = std::sync::Arc::new(layout);
+        for (display, input, expected) in [
+            ("50 %", "25", 0.25),
+            ("50%", "75%", 0.75),
+            ("0.500", "0.25", 0.25),
+        ] {
+            let mut h = harness();
+            let card = &mut h.state_mut().0;
+            card.native_layout = Some(layout.clone());
+            let p = &mut card.params[0];
+            p.info.kind = ParamKind::lin(0.0, 1.0);
+            p.info.unit = Unit::Percent;
+            p.value = 0.5;
+            p.text = display.into();
+            h.run();
+            h.get_by_role_and_label(Role::SpinButton, "Stimmen").click();
+            h.run();
+            h.key_press(egui::Key::Enter);
+            h.run();
+            h.event(egui::Event::Text(input.into()));
+            h.run();
+            h.key_press(egui::Key::Enter);
+            h.run();
+            assert_eq!(set_params(&h), vec![(1, expected)], "{display}");
+        }
     }
 
     /// A card with an EQ graph of two bands (band 2 off) and an envelope graph.

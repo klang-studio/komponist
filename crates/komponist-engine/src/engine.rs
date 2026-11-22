@@ -452,8 +452,7 @@ impl Engine {
         core.telemetry.master_tap.set_rate(sample_rate);
         core.finish_cut();
         core.metronome.silence();
-        core.reassert_automation();
-        core.reassert_macros(None, None);
+        core.reassert_parameter_controls();
         let mut errors = Vec::new();
         for (index, slot) in core.slots.iter_mut().enumerate() {
             if let Some(processor) = slot.processor.as_mut()
@@ -470,6 +469,31 @@ impl Engine {
         } else {
             Err(errors)
         }
+    }
+
+    /// Non-RT, with the engine detached for rendering. Applies queued commands and hands
+    /// processors back to their hosts where needed, without rendering DSP or advancing time.
+    pub fn prepare_offline(
+        &mut self,
+        sample_rate: f32,
+    ) -> Result<(), Vec<(SlotId, ProcessorError)>> {
+        for _ in 0..COMMAND_CAPACITY.div_ceil(MAX_COMMANDS_PER_BLOCK) {
+            if self.core.commands.is_empty() {
+                break;
+            }
+            self.core.drain_commands();
+        }
+        let result = if self.sample_rate() != sample_rate {
+            self.set_sample_rate(sample_rate)
+        } else {
+            Ok(())
+        };
+        for slot in &mut self.core.slots {
+            if let Some(processor) = slot.processor.as_mut() {
+                processor.prepare_offline();
+            }
+        }
+        result
     }
 
     /// Non-RT (engine out of the audio callback). Processes tracks in parallel from now on: starts
@@ -529,17 +553,40 @@ impl Engine {
             .map(|processor| processor.offline_failures())
     }
 
-    /// Non-RT (engine out of the audio callback). Applies the queued commands: renders single
-    /// frames until the queue is empty (at most a few rounds: a command that retires garbage waits
-    /// while nobody collects it), so processors report the latency their parameters give them and
-    /// the program is the one sent last. The export calls it before it reads latencies.
+    /// Non-RT (engine out of the audio callback). Renders single frames to apply queued commands
+    /// and deliver pending slot parameters before the export reads processor latencies. Commands
+    /// that must retire garbage may have to wait for a later call.
     pub fn settle(&mut self) {
-        for _ in 0..16 {
+        for pass in 0..16 {
             if self.core.commands.is_empty() {
+                // Offline preparation can drain commands before the processors are ready to
+                // render. SetParam leaves slot events; macro mappings generate theirs on render.
+                let pending_params = self
+                    .core
+                    .slots
+                    .iter()
+                    .any(|slot| slot.runs(slot.bypassed) && !slot.params.is_empty());
+                let device_macros =
+                    pass == 0
+                        && self.core.program.as_ref().is_some_and(|program| {
+                            program.tracks.iter().any(|track| {
+                                track.macros.targets.iter().any(|mapping| {
+                                    matches!(mapping.target, EngineTarget::Slot { .. })
+                                })
+                            })
+                        });
+                if pending_params || device_macros {
+                    self.render(1);
+                }
                 break;
             }
             self.render(1);
         }
+    }
+
+    /// Re-sends the current automation and macro values on the next render block.
+    pub(crate) fn reassert_parameter_controls(&mut self) {
+        self.core.reassert_parameter_controls();
     }
 
     /// Non-RT. The project latency of `program` in frames: the delay at which a note's sound

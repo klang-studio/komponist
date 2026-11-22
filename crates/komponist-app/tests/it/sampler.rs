@@ -861,7 +861,7 @@ fn run_for(h: &mut Harness<'_, App>, time: Duration) {
 fn pad_folgt_eingang_selects_the_pad_a_note_hit() {
     let dir = scratch("sampler-follow");
     let project = project(&dir, true);
-    let host = PluginHost::new(config(&dir));
+    let host = PluginHost::with_reference_devices(config(&dir));
     let mut app = app_with(project, host);
     show_devices(&mut app);
     let (track, device) = drums(&app);
@@ -949,7 +949,7 @@ fn render(project: &Project, dir: &Path) -> (Vec<f32>, Vec<usize>) {
     use komponist_engine::export::{BitDepth, ExportJob, export};
     use komponist_engine::{Command, Engine, EngineConfig};
     use komponist_plugins::ProcessorSetup;
-    let mut host = PluginHost::new(config(dir));
+    let mut host = PluginHost::with_reference_devices(config(dir));
     host.set_project_dir(None);
     let (mut engine, mut handle) = Engine::new(EngineConfig {
         sample_rate: RATE as f32,

@@ -97,9 +97,7 @@ pub static SPEC: Spec = Spec {
     },
     params,
     layout,
-    dsp,
     presets: presets::presets,
-    event_stage: None,
     preset_aliases: &[
         ("Fette Säge", "Fat Saw"),
         ("Sub-Brumm", "Sub Rumble"),
@@ -119,7 +117,7 @@ fn params(t: Lang) -> Vec<ParamInfo> {
     params::params(t)
 }
 
-fn dsp() -> Box<dyn Dsp> {
+pub fn dsp() -> Box<dyn Dsp> {
     Box::new(Volt::new())
 }
 

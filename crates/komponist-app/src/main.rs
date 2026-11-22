@@ -18,14 +18,9 @@
 //! opened project (checks of the frame without clicking). With
 //! `EGUI_INSPECTION=127.0.0.1:<port>` the window serves the inspection protocol for `egui-mcp`.
 //!
-//! Plugins: hexa, the Sampler and the internal devices run in process; the CLAP/VST3 plugins run in
-//! bridge processes of their own: this executable started as `komponist --bridge …` (one
-//! executable, nothing to build or keep in step; the bridge process initialises no GUI or audio).
-//! At start a
-//! background scan covers the default plugin folders plus those in the settings; devices whose
-//! plugin it finds load when it ends. `--no-plugin-scan` (or `KOMPONIST_NO_PLUGIN_SCAN=1`) skips that
-//! scan, so the browser lists only the built-in devices (screenshots, checks). Closing the window shuts
-//! every bridge down.
+//! The bundled devices are loaded from the installed, authenticated CLAP inventory. External
+//! plugins run in bridge processes using this executable with `--bridge`. The startup scan
+//! includes the bundled devices even when `--no-plugin-scan` skips external plugin folders.
 
 // Windows release builds: no console window; `attach_parent_console` gives `--help` its output back (§8.8).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
@@ -33,7 +28,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use komponist_app::device_host::PluginHost;
+use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::dialogs::new_project;
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::panels::transport::WORDMARK;
@@ -61,7 +56,7 @@ usage: komponist [PROJECT.komponist] [options]
                    Windows: %APPDATA%\\komponist\\settings.json)
   --open-plugin NAME  open the plugin window of the first device whose plugin is NAME
   --lang de|en     UI language (default: the setting; \"system\" is German on a German desktop, else English)
-  --no-plugin-scan  skip the plugin scan: only the built-in devices (also KOMPONIST_NO_PLUGIN_SCAN=1)";
+  --no-plugin-scan  scan only the bundled devices (also KOMPONIST_NO_PLUGIN_SCAN=1)";
 
 #[derive(Debug, Default)]
 struct Args {
@@ -127,6 +122,20 @@ fn main() -> ExitCode {
         argv.next();
         return komponist_bridge::run(argv);
     }
+    if argv.next_if(|arg| arg == "--verify-bundled-clap").is_some() {
+        let force_bridge = argv.next_if(|arg| arg == BRIDGE_FLAG).is_some();
+        if argv.next().is_some() {
+            eprintln!("usage: komponist --verify-bundled-clap [--bridge]");
+            return ExitCode::from(2);
+        }
+        return match komponist_plugins::verify_bundled_clap(force_bridge) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("bundled CLAP verification: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     match run_app() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -174,7 +183,20 @@ fn run_app() -> eframe::Result {
         (settings.audio.clone(), MidiSetup::System)
     };
     // The plugin bridge is this executable with `--bridge` (see `main`).
-    let host = PluginHost::new(PluginManagerConfig::defaults());
+    let mut host = PluginHost::new(PluginManagerConfig::defaults());
+    let demo = if args.demo {
+        let kit_dir = std::env::temp_dir().join("komponist-demo-kit");
+        let project = komponist_app::showcase::bundled_demo(&host, &kit_dir)
+            .map_err(|error| eframe::Error::AppCreation(std::io::Error::other(error).into()))?;
+        Some(project)
+    } else {
+        None
+    };
+    if args.no_plugin_scan {
+        host.start_bundled_scan();
+    } else {
+        host.start_scan(&settings.plugin_dirs());
+    }
     let (mut engine, started) = EngineSync::new(&config, midi, Box::new(host));
     if let Err(e) = started {
         eprintln!("komponist: audio output not available ({e}); running without device");
@@ -201,17 +223,7 @@ fn run_app() -> eframe::Result {
         settings.language,
         sys_locale::get_locale().as_deref(),
     );
-    let first = if args.demo {
-        // The demo's Sampler plays the synthesized test kit (written to the temporary folder).
-        let demo = komponist_app::showcase::showcase_project();
-        let kit_dir = std::env::temp_dir().join("komponist-demo-kit");
-        komponist_app::samples::demo_with_kit(demo.clone(), &kit_dir).unwrap_or_else(|e| {
-            eprintln!("komponist: demo kit not written ({e}); the Sampler stays empty");
-            demo
-        })
-    } else {
-        new_project::empty_project(lang)
-    };
+    let first = demo.unwrap_or_else(|| new_project::empty_project(lang));
     let title = komponist_app::app::window_title(&first.name);
     let mut options = RunOptions::new(WORDMARK, title);
     options.app_id = APP_ID.to_owned();
@@ -219,9 +231,6 @@ fn run_app() -> eframe::Result {
     let mut app = App::new(Document::new(first), engine, settings, settings_path).with_lang(lang);
     if let Some(input) = app.settings().audio_input.clone() {
         let _ = app.engine_mut().set_audio_input(Some(input));
-    }
-    if !args.no_plugin_scan {
-        app.scan_plugins();
     }
     for name in app.settings().midi_disabled.clone() {
         if let Some(hub) = app.engine_mut().midi_mut() {

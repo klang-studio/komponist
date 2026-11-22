@@ -25,7 +25,8 @@
 //! per-block request and result, an input event ring (app → bridge), an output event ring
 //! (bridge → app), stereo audio in/out of [`MAX_BLOCK`] frames and, since version 2 (#6), the
 //! stereo sidechain input of the same size. A block carries a sidechain only when its request has
-//! [`BLOCK_FLAG_SIDECHAIN`]; without it the bridge feeds the plugin's sidechain port silence.
+//! [`BLOCK_FLAG_SIDECHAIN`]; without it the bridge applies the plugin format's disconnected-input
+//! behavior.
 //!
 //! RT handshake per block (app audio thread ↔ bridge RT thread):
 //! 1. App ([`BridgeClient::begin_block`]): only if the bridge is idle (`done_seq == request_seq`),
@@ -66,7 +67,8 @@ pub const SHM_MAGIC: u32 = u32::from_le_bytes(*b"KPSM");
 
 /// Layout version; both sides must agree. 2 (#6): [`ShmLayout::audio_sidechain`] and
 /// [`BLOCK_FLAG_SIDECHAIN`]. 3 (#45): [`BlockRequest::deadline_ticks`].
-pub const SHM_VERSION: u32 = 3;
+/// 4 (#191): optional bounded effect-meter data from the same completed block.
+pub const SHM_VERSION: u32 = 4;
 
 /// Frames of audio per block the mapping holds. Must equal `komponist_engine::MAX_BLOCK`
 /// (`komponist-plugins` asserts it in a test).
@@ -87,9 +89,15 @@ pub const BLOCK_FLAG_RESET: u32 = 1;
 /// [`BlockRequest::flags`]: the block is part of an offline render.
 pub const BLOCK_FLAG_OFFLINE: u32 = 2;
 /// [`BlockRequest::flags`]: [`ShmLayout::audio_sidechain`] holds this block's sidechain input
-/// (set by [`BridgeClient::begin_block`] when it is given one; #6). Without it the sidechain is
-/// silent.
+/// (set by [`BridgeClient::begin_block`] when it is given one; #6). Without it the source is
+/// disconnected.
 pub const BLOCK_FLAG_SIDECHAIN: u32 = 4;
+/// The client requests gain reduction from the plugin's effect-meter extension.
+pub const BLOCK_FLAG_EFFECT_METER: u32 = 8;
+/// In addition to gain reduction, request detector history for this process call.
+pub const BLOCK_FLAG_EFFECT_DETECTOR: u32 = 16;
+/// `BlockResult.reserved` uses this bit when the bridge wrote effect-meter data.
+const RESULT_EFFECT_METER: u32 = 1;
 
 /// [`WireTransport::flags`]: transport running.
 pub const TRANSPORT_PLAYING: u32 = 1;
@@ -152,6 +160,8 @@ pub struct ShmHeader {
     pub request: UnsafeCell<BlockRequest>,
     /// Result of the latest finished request; written by the bridge before bumping `done_seq`.
     pub result: UnsafeCell<BlockResult>,
+    /// Optional meter readings, written with the matching `result` before the bridge signals.
+    pub meter: UnsafeCell<crate::effect_meter::BlockMeter>,
 }
 
 /// What the app asks for one block.
@@ -187,7 +197,7 @@ pub struct BlockResult {
     pub status: u32,
     /// Plugin output events dropped because the output ring was full.
     pub dropped_events: u32,
-    /// Reserved, 0.
+    /// Result flags (zero unless the bridge returned effect-meter data).
     pub reserved: u32,
 }
 
@@ -1149,8 +1159,8 @@ impl BridgeClient {
 
     /// Publishes one block (step 1 of the handshake) and wakes the bridge. Returns the sequence
     /// number to wait for. `input` holds `spec.frames` samples per channel; `sidechain`, if given,
-    /// too (it sets [`BLOCK_FLAG_SIDECHAIN`]; `None` clears it, so the plugin's sidechain port gets
-    /// silence); `events` are sorted by offset.
+    /// too (it sets [`BLOCK_FLAG_SIDECHAIN`]; `None` clears it, so the bridge treats the source as
+    /// disconnected); `events` are sorted by offset.
     ///
     /// # Panics
     ///
@@ -1242,6 +1252,33 @@ impl BridgeClient {
             output.iter().all(|ch| ch.len() >= frames),
             "wait_done: output too short"
         );
+        let result = self.wait_done_events(seq, deadline)?;
+        let layout = self.region.layout();
+        let audio_out = layout.audio_out.get().cast::<[f32; MAX_BLOCK]>();
+        for (channel, samples) in output.into_iter().enumerate() {
+            // SAFETY: wait_done_events acquired this request's completion. The bridge
+            // touches its output only after the next request; only this client can publish it.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    audio_out.add(channel).cast::<f32>(),
+                    samples.as_mut_ptr(),
+                    frames,
+                );
+            }
+        }
+        Ok(result)
+    }
+
+    /// Waits for the same completion as [`Self::wait_done`] without copying output audio.
+    /// MIDI effects use the corresponding request sequence to consume their output events.
+    pub fn wait_done_events(
+        &mut self,
+        seq: u32,
+        deadline: Instant,
+    ) -> Result<BlockResult, BlockError> {
+        if seq != self.seq || self.frames == 0 {
+            return Err(BlockError::Late);
+        }
         let layout = self.region.layout();
         let header = &layout.header;
         loop {
@@ -1260,18 +1297,24 @@ impl BridgeClient {
         if result.seq != seq {
             return Err(BlockError::Late);
         }
-        let audio_out = layout.audio_out.get().cast::<[f32; MAX_BLOCK]>();
-        for (channel, samples) in output.into_iter().enumerate() {
-            // SAFETY: see above; `frames <= MAX_BLOCK` (checked in `begin_block`).
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    audio_out.add(channel).cast::<f32>(),
-                    samples.as_mut_ptr(),
-                    frames,
-                );
-            }
-        }
         Ok(result)
+    }
+
+    /// Optional meter readings for this client's completed, unretired request.
+    pub fn effect_meter(&self, seq: u32) -> Option<crate::effect_meter::BlockMeter> {
+        let header = &self.region.layout().header;
+        if self.frames == 0 || seq != self.seq || header.done_seq.load(Ordering::Acquire) != seq {
+            return None;
+        }
+        // SAFETY: The matching request is done. Only this client can publish the next request,
+        // and the bridge writes these fields only while processing a new request.
+        let result = unsafe { header.result.get().read() };
+        if result.seq != seq || result.reserved & RESULT_EFFECT_METER == 0 {
+            return None;
+        }
+        // SAFETY: In the matching request the bridge initialized the meter before completing it.
+        let meter = unsafe { header.meter.get().read() };
+        meter.validated().then_some(meter)
     }
 
     /// The region (for state and latency).
@@ -1423,11 +1466,26 @@ impl BridgeServer {
     /// Input events of the request that were not popped are discarded, so the next request starts
     /// on its own events. Without an open request this does nothing.
     pub fn finish(&mut self, result: BlockResult) {
+        self.finish_with_meter(result, None);
+    }
+
+    /// Completes the current request with its optional effect-meter readings.
+    pub fn finish_with_meter(
+        &mut self,
+        mut result: BlockResult,
+        meter: Option<crate::effect_meter::BlockMeter>,
+    ) {
         if !self.busy {
             return;
         }
         while self.pop_event().is_some() {}
         let header = &self.region.layout().header;
+        result.reserved &= !RESULT_EFFECT_METER;
+        if let Some(meter) = meter {
+            result.reserved |= RESULT_EFFECT_METER;
+            // SAFETY: The client can read this meter only after the completion below.
+            unsafe { header.meter.get().write(meter) };
+        }
         // SAFETY: the app reads `result` only after `done_seq == seq`, published below with
         // release ordering.
         unsafe {
@@ -1468,7 +1526,7 @@ impl BridgeMonitor {
         BridgeMonitor { region }
     }
 
-    /// The next plugin output event (parameter changes and gestures from the plugin GUI).
+    /// The next plugin output event (MIDI or a parameter value/gesture), tagged by block sequence.
     pub fn pop_output_event(&mut self) -> Option<WireEvent> {
         // SAFETY: the `BridgeMonitor` role (one per region) is the only output-ring consumer.
         unsafe { self.region.layout().output_events.pop() }
@@ -1858,6 +1916,35 @@ mod tests {
                 .wait_done(seq, Instant::now() + Duration::from_secs(1), [l, r])
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn meter_data_belongs_only_to_its_completed_block() {
+        use crate::effect_meter::BlockMeter;
+
+        let (mut client, mut server, _) = active();
+        let samples = [0.0; 8];
+        let input = [&samples[..]; 2];
+        let spec = BlockSpec {
+            flags: BLOCK_FLAG_EFFECT_METER,
+            ..spec(8)
+        };
+        let seq = client.begin_block(&spec, input, None, &[]).unwrap();
+        assert_eq!(server.wait_request(Some(Instant::now())).unwrap().seq, seq);
+        assert_eq!(client.effect_meter(seq), None);
+        let meter = BlockMeter {
+            reduction_db: 7.0,
+            ..BlockMeter::EMPTY
+        };
+        assert_no_alloc(|| server.finish_with_meter(BlockResult::default(), Some(meter)));
+        assert_eq!(assert_no_alloc(|| client.effect_meter(seq)), Some(meter));
+
+        let next = client.begin_block(&spec, input, None, &[]).unwrap();
+        assert_eq!(server.wait_request(Some(Instant::now())).unwrap().seq, next);
+        assert_eq!(client.effect_meter(seq), None);
+        assert_eq!(client.effect_meter(next), None);
+        server.finish(BlockResult::default());
+        assert_eq!(client.effect_meter(next), None);
     }
 
     #[test]

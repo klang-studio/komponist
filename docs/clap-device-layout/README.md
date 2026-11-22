@@ -6,6 +6,9 @@ interoperability contract. [The example payload](example.json) is valid for a pl
 Gain parameter at CLAP ID `42` and a stepped enum Mode parameter at CLAP ID `7` with plain values
 `0`, `1` and `2`.
 
+Plugins can also publish an independent [sidechain fallback extension](sidechain-fallback.md)
+to define how the host supplies a disconnected auxiliary input.
+
 ## Discovery and lifetime
 
 After a successful `clap_plugin_t.init`, the host calls `clap_plugin_t.get_extension` on the CLAP
@@ -111,6 +114,12 @@ For a localized label, look up the requested locale, then its primary language s
 
 ## Compatibility and fallback
 
+An optional `author_ids` object maps stable author keys to the actual numeric CLAP parameter IDs.
+If supplied, it contains one to 256 entries and is a bijection to the live parameter inventory.
+Keys are nonblank UTF-8 strings of at most 128 bytes without control characters. The SDK only emits
+the mapping when the current wrapper can authoritatively resolve every parameter. This mapping can
+help a host migrate project references. It grants no trust or permission to load a bundle.
+
 Unknown optional object fields are ignored. A compatible addition can define new optional
 fields under the same major. A document that requires an added capability lists its identifier
 in `required_capabilities`, an optional array of at most eight unique strings matching
@@ -128,3 +137,8 @@ parameter inventory change. The audio path and normal CLAP editor keep their exi
 
 The [C fixture and nice-plug spike](../../test-plugins/native-layout/README.md) provide executable
 examples of discovery, buffer transfer, validation and stable CLAP parameter IDs.
+
+## Rust author SDK
+
+The [author guide](../../crates/plugin-sdk/README.md) covers writing a Rust device with the SDK,
+building and validating its CLAP bundle, and installing it in komponist.

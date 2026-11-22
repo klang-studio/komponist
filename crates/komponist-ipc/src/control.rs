@@ -87,7 +87,9 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// edits and a state restore replies with its authoritative parameter values. 8: checked
 /// snapshots distinguish delivered, quantized edits and return the verified parameter values.
 /// 9 (#75): the shared native frame header carries the track macro mapping chip.
-pub const PROTOCOL_VERSION: u32 = 9;
+/// 11 adds bounded sampler front-panel data and the slice audition command.
+/// 13 distinguishes plugin-originated parameter flushes from value telemetry.
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -314,6 +316,10 @@ pub enum LogLevel {
 /// App → bridge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ControlMsg {
+    /// Query the current sampler UI snapshot from a running plugin.
+    GetSamplerUi(u32, Option<f64>),
+    /// Start a held slice audition at the source position, or release it with `None`.
+    PreviewSamplerSlice(Option<f64>),
     /// Load plugin `plugin_id` from `bundle`. Answer: `Loaded` or `Error`.
     Load {
         /// Bundle format.
@@ -404,6 +410,8 @@ pub enum ControlMsg {
 /// Bridge → app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BridgeMsg {
+    /// Bounded sampler UI data encoded with the public extension's current schema.
+    SamplerUi(u32, Option<Vec<u8>>),
     /// First message after start.
     Hello {
         /// [`PROTOCOL_VERSION`] of the bridge.
@@ -433,12 +441,20 @@ pub enum BridgeMsg {
         request: u32,
     },
     /// Answer to `ListParams`, or unsolicited after the plugin rescanned its parameters.
-    Params(Vec<ParamInfo>),
+    Params {
+        /// The current parameter inventory.
+        params: Vec<ParamInfo>,
+        /// Bounded native-layout descriptor revalidated against this inventory.
+        native_layout: Option<Vec<u8>>,
+    },
     /// Parameter values with the plugin's text, coalesced to at most one message per 33 ms: values
     /// that changed on the bridge's main thread, including automation playback, parameter
     /// rescans and the echo of `SetParam`. GUI edits during processing also arrive as output
     /// events in shared memory.
     ParamValues(Vec<ParamValue>),
+    /// Parameter edits emitted by a plugin-requested flush with no host input while
+    /// inactive. Edits emitted during processing use the shared output ring.
+    PluginParamEdits(Vec<(u32, f64)>),
     /// Answer to `SetState`. Successful values represent the newly restored base state,
     /// independently of any controller updates from automation playback.
     StateApplied {
@@ -544,6 +560,8 @@ pub struct LoadedInfo {
     pub note_names: Vec<NoteName>,
     /// Whether the plugin has its own GUI this build embeds (X11 on Linux, Cocoa on macOS).
     pub has_gui: bool,
+    /// Bounded native CLAP layout descriptor, when available.
+    pub native_layout: Option<Vec<u8>>,
 }
 
 /// The request a [`BridgeMsg::Error`] refers to.
@@ -1657,6 +1675,7 @@ mod tests {
                 latency: 64,
                 note_names: vec![note.clone()],
                 has_gui: true,
+                native_layout: Some(b"{}".to_vec()),
             })),
             BridgeMsg::Activated { latency: 64 },
             BridgeMsg::State {
@@ -1665,8 +1684,20 @@ mod tests {
                 verified: vec![(1, 0.4)],
             },
             BridgeMsg::StateDeferred { request: 11 },
-            BridgeMsg::Params(vec![param]),
+            BridgeMsg::Params {
+                params: vec![param.clone()],
+                native_layout: None,
+            },
+            BridgeMsg::Params {
+                params: vec![param],
+                native_layout: Some(
+                    (0..crate::native_layout::MAX_BYTES)
+                        .map(|i| (i * 7 + i / 251) as u8)
+                        .collect(),
+                ),
+            },
             BridgeMsg::ParamValues(vec![value.clone()]),
+            BridgeMsg::PluginParamEdits(vec![(value.id, value.value)]),
             BridgeMsg::StateApplied {
                 request: 8,
                 result: Ok(vec![value.clone()]),
@@ -1744,10 +1775,16 @@ mod tests {
                 detail: "Operation not permitted (os error 1)".into(),
             },
         ];
-        for msg in &messages {
-            bridge.send(msg).unwrap();
-            assert_eq!(&app.recv().unwrap(), msg);
-        }
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for msg in &messages {
+                    bridge.send(msg).unwrap();
+                }
+            });
+            for msg in &messages {
+                assert_eq!(&app.recv().unwrap(), msg);
+            }
+        });
     }
 
     #[test]

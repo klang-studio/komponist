@@ -1,5 +1,6 @@
 /target
 /dist
 /test-plugins/target
+/crates/plugin-sdk/target
 /scripts/local.env
 __pycache__/

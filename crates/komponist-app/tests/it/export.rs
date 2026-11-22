@@ -403,6 +403,35 @@ fn the_song_exports_as_range_plus_tail_normalised_to_minus_one_dbfs() {
     assert!(plays(&mut app));
 }
 
+/// #92: the finished message names what the rendered program left out, as an error.
+#[test]
+fn the_finished_message_names_the_tracks_the_engine_left_out() {
+    let dir = scratch("not-played");
+    let mut project = one_bar_song();
+    while project.tracks.len() <= komponist_engine::MAX_TRACKS {
+        let spec = edits::NewTrack {
+            name: None,
+            hue: None,
+            instrument: None,
+            index: None,
+            arm_exclusive: false,
+        };
+        project = edits::add_track(&project, spec).unwrap().0;
+    }
+    let (mut app, _) = app_in(&dir, project);
+    app.step();
+    export(&mut app, export_settings(&dir, ExportRange::Song));
+    assert_eq!(
+        status(&app),
+        (
+            "Night Drive.wav exportiert · 00:04 · 24 bit · 1 Spur spielt nicht: mehr als 128 \
+             Spuren"
+                .to_owned(),
+            StatusKind::Error
+        )
+    );
+}
+
 #[test]
 fn loop_and_selection_set_the_range() {
     let dir = scratch("ranges");

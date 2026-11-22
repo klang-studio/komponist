@@ -73,6 +73,7 @@ jobs:
           workspaces: |
             . -> target
             test-plugins -> target
+            crates/plugin-sdk -> target
           # Save the dependency builds of a red run too, so a failing test does not make the next run cold.
           cache-on-failure: true
 
@@ -89,6 +90,17 @@ jobs:
       - name: Test plugin fixtures
         working-directory: test-plugins
         run: cargo test --workspace --locked --no-fail-fast
+
+      - name: Exercise the SDK plugin and standard-only fallback in komponist
+        run: |
+          sdk=crates/plugin-sdk/Cargo.toml
+          native="$RUNNER_TEMP/sdk-native-layout"
+          plain="$RUNNER_TEMP/sdk-plain-layout"
+          cargo run --locked --manifest-path "$sdk" -p native-clap-xtask -- bundle --out-dir "$native"
+          cargo run --locked --manifest-path "$sdk" -p native-clap-xtask -- bundle --no-default-features --out-dir "$plain"
+          KOMPONIST_SDK_EXAMPLE="$native/native_clap_example.clap" \
+            KOMPONIST_SDK_EXAMPLE_PLAIN="$plain/native_clap_example.clap" \
+            cargo test --locked -p komponist-app --test it sdk_example_uses_native_layout_and_falls_back
 
       - name: Allow small rendering differences in snapshots
         run: |

@@ -343,7 +343,7 @@ fn undo_and_redo_of_a_bridged_plugins_state_reach_the_plugin() {
         return;
     };
     let dir = scratch("undo-bridge");
-    let mut host = PluginHost::new(config(&dir));
+    let mut host = PluginHost::with_reference_devices(config(&dir));
     host.start_scan(&dirs);
     let deadline = Instant::now() + PATIENCE;
     let mut scanned = false;

@@ -48,7 +48,6 @@
 //! | 8-key chord, "E-Piano" (6 operators, stereo) | 116 µs | 2.2 % |
 //! | 8-key chord, "Supersaw" / "Strings" (unison, all 16 voices) | 300–330 µs | 5.7–6.1 % |
 //! | one macro change (patch copy, `Macro::set`, `Synth::set_patch`) | 1.1 µs | |
-//! | `reset` (rewrites the 2 MB synth in place) | 27 µs | |
 //!
 //! The cost scales linearly with the block length. Every event offset splits the render, and a
 //! split costs one extra control-rate step, so many events at distinct offsets in one call cost

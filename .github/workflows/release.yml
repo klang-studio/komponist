@@ -3,6 +3,7 @@
 # to try this workflow. It builds komponist, checks that it starts headless and attaches
 # komponist-<tag>-linux-x86_64.tar.gz, komponist-<tag>-macos-arm64.zip (ad-hoc signed app bundle, #53) and
 # komponist-<tag>-windows-x86_64.zip (unsigned, untested, with ASIO) with their .sha256 files to that same release.
+# Each archive includes all eleven bundled CLAP devices and is verified before upload.
 name: Release
 
 on:
@@ -18,6 +19,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
+      BUNDLED_CLAP_TARGET: x86_64-unknown-linux-gnu
       TAG: ${{ github.event.release.tag_name }}
       GH_TOKEN: ${{ github.token }}
       CARGO_TERM_COLOR: always
@@ -50,6 +52,14 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
+      - name: Stage bundled CLAP payloads before linking the app
+        run: |
+          python=python3
+          if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
+          digest="$("$python" scripts/bundled-clap.py --target "$BUNDLED_CLAP_TARGET" --inventory all stage dist/.bundled-clap-stage)"
+          test "${#digest}" -eq 64
+          echo "KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256=$digest" >> "$GITHUB_ENV"
+
       - name: Build
         run: cargo build --release -p komponist-app --bin komponist
 
@@ -62,6 +72,7 @@ jobs:
           cp assets/io.github.klang_studio.komponist.desktop assets/io.github.klang_studio.komponist.metainfo.xml assets/komponist-mime.xml "dist/$name/assets/"
           install -m755 scripts/install-desktop.sh "dist/$name/scripts/"
           cp LICENSE README.md "dist/$name/"
+          cp -R dist/.bundled-clap-stage "dist/$name/bundled-clap"
           tar -C dist -czf "$name.tar.gz" "$name"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
           cat "$name.tar.gz.sha256"
@@ -89,6 +100,13 @@ jobs:
             exit 1
           fi
 
+      - name: Verify and host all CLAP bundles from the release archive
+        run: |
+          python=python3
+          if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
+          "$python" scripts/bundled-clap.py --target "$BUNDLED_CLAP_TARGET" --inventory all \
+            check-archive "unpacked/$NAME/komponist" --manifest-sha256 "$KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256"
+
       - name: Upload to the release
         run: gh release upload "$TAG" "$NAME.tar.gz" "$NAME.tar.gz.sha256" --repo "$GITHUB_REPOSITORY"
 
@@ -100,6 +118,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 75
     env:
+      BUNDLED_CLAP_TARGET: aarch64-apple-darwin
       TAG: ${{ github.event.release.tag_name }}
       GH_TOKEN: ${{ github.token }}
       CARGO_TERM_COLOR: always
@@ -122,8 +141,17 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
+      - name: Stage bundled CLAP payloads before linking the app
+        run: |
+          python=python3
+          if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
+          digest="$("$python" scripts/bundled-clap.py --target "$BUNDLED_CLAP_TARGET" --inventory all stage dist/.bundled-clap-stage)"
+          test "${#digest}" -eq 64
+          echo "KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256=$digest" >> "$GITHUB_ENV"
+
       - name: Bundle
-        run: scripts/bundle-macos.sh
+        run: |
+          scripts/bundle-macos.sh --bundled-clap dist/.bundled-clap-stage
 
       # ditto keeps the signature, the resource forks and the symlinks of the bundle (zip(1) does not).
       - name: Package
@@ -150,6 +178,13 @@ jobs:
           "$app/Contents/MacOS/komponist" --help
           "$app/Contents/MacOS/komponist" --bridge --help
 
+      - name: Verify and host all CLAP bundles from the release archive
+        run: |
+          python=python3
+          if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
+          "$python" scripts/bundled-clap.py --target "$BUNDLED_CLAP_TARGET" --inventory all \
+            check-archive "unpacked/komponist.app/Contents/MacOS/komponist" --manifest-sha256 "$KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256"
+
       - name: Upload to the release
         run: gh release upload "$TAG" "$NAME.zip" "$NAME.zip.sha256" --repo "$GITHUB_REPOSITORY"
 
@@ -165,6 +200,7 @@ jobs:
       run:
         shell: bash
     env:
+      BUNDLED_CLAP_TARGET: x86_64-pc-windows-msvc
       TAG: ${{ github.event.release.tag_name }}
       GH_TOKEN: ${{ github.token }}
       CARGO_TERM_COLOR: always
@@ -187,6 +223,14 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
+      - name: Stage bundled CLAP payloads before linking the app
+        run: |
+          python=python3
+          if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
+          digest="$("$python" scripts/bundled-clap.py --target "$BUNDLED_CLAP_TARGET" --inventory all stage dist/.bundled-clap-stage)"
+          test "${#digest}" -eq 64
+          echo "KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256=$digest" >> "$GITHUB_ENV"
+
       # Builds komponist (release), assembles dist/<name>/ (komponist.exe, LICENSE, README.txt) and zips it with bsdtar.
       # ASIO is part of the release build (cargo feature `asio`, set by the script): bindgen needs libclang, which
       # the windows-2025 image has with LLVM 20 (runner-images readme; C:\Program Files\LLVM is its default path,
@@ -197,7 +241,7 @@ jobs:
           LIBCLANG_PATH: C:\Program Files\LLVM\bin
         run: |
           name="komponist-${TAG}-windows-x86_64"
-          scripts/package-windows.sh --name "$name"
+          scripts/package-windows.sh --name "$name" --bundled-clap dist/.bundled-clap-stage
           mv "dist/$name.zip" "dist/$name.zip.sha256" .
           echo "NAME=$name" >> "$GITHUB_ENV"
 
@@ -220,6 +264,13 @@ jobs:
           bridge_help="$("$exe" --bridge --help | cat)"
           echo "$bridge_help"
           test -n "$bridge_help"
+
+      - name: Verify and host all CLAP bundles from the release archive
+        run: |
+          python=python3
+          if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
+          "$python" scripts/bundled-clap.py --target "$BUNDLED_CLAP_TARGET" --inventory all \
+            check-archive "unpacked/$NAME/komponist.exe" --manifest-sha256 "$KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256"
 
       - name: Upload to the release
         run: gh release upload "$TAG" "$NAME.zip" "$NAME.zip.sha256" --repo "$GITHUB_REPOSITORY"

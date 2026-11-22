@@ -2,6 +2,8 @@
 //! parameters its body shows, and the drop arithmetic of reordering. Pure, so the chain is
 //! tested without pixels.
 
+use komponist_builtin::{BuiltinKind, Internal};
+use komponist_device_core::pinned_clap_state;
 use komponist_hexa::Macro;
 use komponist_i18n::Lang;
 use komponist_ipc::ParamValue;
@@ -118,6 +120,25 @@ pub struct Param {
 }
 
 impl Param {
+    /// The project address when this card presents bundled CLAP controls with author IDs.
+    pub(super) fn project_id(&self, bundled_editor: bool) -> ParamId {
+        if bundled_editor {
+            ParamId::plugin(self.wire)
+        } else {
+            self.info.id.clone()
+        }
+    }
+
+    /// The display value at an automation or macro position in the project's parameter domain.
+    pub(super) fn value_at_normalized(&self, bundled_editor: bool, position: f64) -> f64 {
+        if bundled_editor {
+            let (min, max) = pinned_clap_state::clap_range(&self.info);
+            pinned_clap_state::from_clap(&self.info, min + position * (max - min))
+        } else {
+            self.info.to_plain(position)
+        }
+    }
+
     /// Name under the knob.
     pub fn name(&self) -> &str {
         &self.info.name
@@ -187,7 +208,10 @@ pub struct Card {
     pub has_gui: bool,
     /// Its plugin window is open ("Geöffnet").
     pub open: bool,
-    /// The declarative layout of the body (WP-82): foreign plugins get the auto-layout.
+    pub(crate) native_layout: Option<std::sync::Arc<komponist_ipc::native_layout::NativeLayout>>,
+    /// Whether the verified bundle uses the app's full device editor with author-ID bindings.
+    pub(super) bundled_editor: bool,
+    /// The declarative layout of the body, with an automatic layout for generic plugins.
     pub layout: DeviceLayout,
     /// The page shown (set by the view from the view state).
     pub page: usize,
@@ -234,7 +258,26 @@ pub struct Card {
 impl Card {
     /// The parameter `id` of the body's cells.
     pub fn param(&self, id: &ParamId) -> Option<&Param> {
-        self.params.iter().find(|p| p.info.id == *id)
+        self.params
+            .iter()
+            .find(|p| p.info.id == *id || (self.bundled_editor && id.plugin_id() == Some(p.wire)))
+    }
+
+    pub(super) fn native_cell(
+        &self,
+        cell: &layout::Cell,
+    ) -> Option<&komponist_ipc::native_layout::Cell> {
+        let layout = self.native_layout.as_ref()?;
+        let page = layout
+            .pages
+            .get(self.page.min(layout.pages.len().saturating_sub(1)))?;
+        let half = cell.half.map(|half| match half {
+            layout::Half::Top => komponist_ipc::native_layout::Half::Top,
+            layout::Half::Bottom => komponist_ipc::native_layout::Half::Bottom,
+        });
+        page.cells
+            .iter()
+            .find(|native| native.row == cell.row && native.col == cell.col && native.half == half)
     }
 
     /// The layout page shown (the last one if `page` is out of range).
@@ -355,18 +398,73 @@ pub fn cards(
         .collect()
 }
 
-fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Card {
+pub(crate) fn card(
+    lang: Lang,
+    device: &Device,
+    host: &dyn DeviceHost,
+    windows: &[PluginWindow],
+) -> Card {
     let state = CardState::from(host.status(device.id));
     let general_sampler =
         internal_kind(device) == Some(komponist_builtin::Internal::GeneralSampler);
-    let params = if state == CardState::Ok {
+    let native_layout =
+        if state == CardState::Ok && device.plugin.format == komponist_model::PluginFormat::Clap {
+            host.native_layout(device.id).cloned()
+        } else {
+            None
+        };
+    let verified = host.verified_bundled_kind(device.id);
+    let editor = native_layout.as_ref().and_then(|native| {
+        let kind = verified?;
+        let params = match kind {
+            BuiltinKind::Hexa => bundled_params(device.id, host, native, hexa_editor_infos(lang)),
+            BuiltinKind::Internal(
+                kind @ (Internal::Volt
+                | Internal::Hall
+                | Internal::Delay
+                | Internal::Eq
+                | Internal::Presse
+                | Internal::Limiter
+                | Internal::Sampler
+                | Internal::GeneralSampler),
+            ) => bundled_params(device.id, host, native, kind.params_in(lang)),
+            _ => None,
+        }?;
+        let layout = match kind {
+            BuiltinKind::Hexa => hexa_editor_layout(lang),
+            BuiltinKind::Internal(Internal::GeneralSampler) => super::general_sampler::layout(lang),
+            BuiltinKind::Internal(kind) => kind.layout_in(lang).clone(),
+        };
+        Some((layout, params))
+    });
+    let bundled_editor = editor.is_some();
+    let (editor_layout, editor_params) = editor.unzip();
+    let params = if let Some(params) = editor_params {
+        params
+    } else if state == CardState::Ok {
         if is_hexa(device) {
             hexa_params(lang, device)
         } else if let Some(kind) = internal_kind(device) {
             internal_params(lang, kind, device)
         } else {
             host.params(device.id)
-                .map(|infos| plugin_params(lang, infos, |id| host.param_value(device.id, id)))
+                .map(|infos| {
+                    let value = |id| host.param_value(device.id, id);
+                    if let Some(native) = &native_layout {
+                        let ids: std::collections::BTreeSet<_> = native
+                            .pages
+                            .iter()
+                            .flat_map(|page| page.cells.iter().map(|cell| cell.param_id))
+                            .collect();
+                        infos
+                            .iter()
+                            .filter(|info| ids.contains(&info.id))
+                            .map(|info| plugin_param(info, plugin_info(lang, info), value(info.id)))
+                            .collect()
+                    } else {
+                        plugin_params(lang, infos, value)
+                    }
+                })
                 .unwrap_or_default()
         }
     } else {
@@ -374,9 +472,11 @@ fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWin
     };
     let instrument = device.role == DeviceRole::Instrument;
     let midi_effect = device.role == DeviceRole::MidiEffect;
-    // hexa and the internal devices bring their own layout; everything else gets the
-    // auto-layout.
-    let layout = if is_hexa(device) {
+    let layout = if let Some(layout) = editor_layout {
+        layout
+    } else if let Some(native) = &native_layout {
+        native_card_layout(native, lang)
+    } else if is_hexa(device) {
         komponist_hexa::device::layout_in(lang)
     } else if general_sampler {
         super::general_sampler::layout(lang)
@@ -402,21 +502,72 @@ fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWin
         );
     }
     let hexa = is_hexa(device);
-    let internal_presets = internal_kind(device).filter(|k| !k.presets().is_empty());
-    let presets = hexa || internal_presets.is_some();
-    let loaded = internal_presets.and_then(|k| k.loaded_preset(device.state.as_deref()));
+    let bundled_hexa = verified == Some(BuiltinKind::Hexa);
+    let hexa_patch = if hexa {
+        komponist_hexa::decode_state(device.state.as_deref()).ok()
+    } else if bundled_hexa {
+        device
+            .state
+            .as_deref()
+            .and_then(komponist_hexa::state::decode_clap_patch)
+    } else {
+        None
+    };
+    let hexa_patch =
+        (hexa || bundled_hexa).then(|| hexa_patch.unwrap_or_else(komponist_hexa::default_patch));
+    let bundled_internal = match verified {
+        Some(BuiltinKind::Internal(kind)) => Some(kind),
+        _ => None,
+    };
+    let internal_presets = internal_kind(device)
+        .or(bundled_internal)
+        .filter(|kind| !kind.presets().is_empty());
+    let presets = hexa || bundled_hexa || internal_presets.is_some();
+    let loaded = internal_presets.and_then(|kind| {
+        if bundled_internal.is_some() {
+            bundled_preset(device, host, native_layout.as_deref()?, kind)
+        } else {
+            kind.loaded_preset(device.state.as_deref())
+        }
+    });
     let preset_changed = loaded.is_some_and(|(_, changed)| changed);
-    let preset = hexa
-        .then(|| {
-            let patch = komponist_hexa::decode_state(device.state.as_deref())
-                .unwrap_or_else(|_| komponist_hexa::default_patch());
+    let preset = hexa_patch
+        .and_then(|patch| {
             let encoded = komponist_hexa::encode_state(&patch);
             crate::windows::plugin_frame::factory_states()
                 .iter()
                 .position(|s| *s == encoded)
         })
-        .flatten()
         .or(loaded.map(|(index, _)| index));
+    let bundled_sampler = bundled_editor
+        .then_some(bundled_internal)
+        .flatten()
+        .filter(|kind| matches!(kind, Internal::Sampler | Internal::GeneralSampler));
+    let sampler_assets = bundled_sampler
+        .and(device.state.as_deref())
+        .and_then(komponist_plugins::bundled_sampler::assets);
+    let sampler_snapshot = bundled_sampler.and_then(|_| host.sampler_ui(device.id));
+    let sampler = bundled_sampler.map_or_else(
+        || sampler_view(host, device.id),
+        |kind| {
+            Some(bundled_sampler_view(
+                kind,
+                sampler_assets.as_deref(),
+                sampler_snapshot,
+            ))
+        },
+    );
+    let sampler_editor = if bundled_sampler == Some(Internal::GeneralSampler) {
+        Some(super::general_sampler::Editor::from_bundled(
+            sampler_assets.as_deref(),
+            sampler.as_ref().and_then(|view| view.pads.first()).cloned(),
+            sampler_snapshot,
+        ))
+    } else {
+        general_sampler.then(|| {
+            super::general_sampler::Editor::new(device.state.as_deref(), host.sampler(device.id))
+        })
+    };
     Card {
         device: device.id,
         automation_owner: None,
@@ -434,6 +585,8 @@ fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWin
         has_gui: host.has_gui(device.id),
         open: windows.iter().any(|w| w.device == device.id),
         layout,
+        native_layout: if bundled_editor { None } else { native_layout },
+        bundled_editor,
         page: 0,
         collapsed: false,
         presets,
@@ -446,19 +599,72 @@ fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWin
         width: layout::device_width(metrics::COLUMNS as u8),
         late: None,
         levels: None,
-        sampler: sampler_view(host, device.id),
-        general_sampler: general_sampler.then(|| {
-            super::general_sampler::Editor::new(device.state.as_deref(), host.sampler(device.id))
-        }),
+        sampler,
+        general_sampler: sampler_editor,
         analysis: None,
         dynamics: None,
-        routing: hexa.then(|| {
-            let patch = komponist_hexa::decode_state(device.state.as_deref())
-                .unwrap_or_else(|_| komponist_hexa::default_patch());
-            komponist_hexa::algorithms::routing(&patch)
-        }),
+        routing: hexa_patch.as_ref().map(komponist_hexa::algorithms::routing),
         state,
     }
+}
+
+fn hexa_editor_infos(lang: Lang) -> &'static [ParamInfo] {
+    use std::sync::OnceLock;
+
+    static INFOS: [OnceLock<Vec<ParamInfo>>; Lang::ALL.len()] =
+        [const { OnceLock::new() }; Lang::ALL.len()];
+    INFOS[lang as usize].get_or_init(|| {
+        use komponist_hexa::device::{Field, WIRE_COUNT};
+        let patch = komponist_hexa::default_patch();
+        (0..WIRE_COUNT)
+            .map(|wire| {
+                let field = Field::from_wire(wire as u32).expect("valid Hexa wire ID");
+                let mut info = field.info_in(lang);
+                info.default = info.snap(field.get(&patch));
+                info
+            })
+            .collect()
+    })
+}
+
+fn hexa_editor_layout(lang: Lang) -> DeviceLayout {
+    let mut layout = komponist_hexa::device::layout_in(lang);
+    // Keep all of the CLAP controls accessible alongside the full operators and envelopes.
+    let global = &mut layout.pages[3];
+    global.cells.extend(
+        Macro::ALL
+            .into_iter()
+            .filter(|item| !matches!(item, Macro::Algorithm | Macro::Feedback))
+            .enumerate()
+            .map(|(col, item)| layout::Cell::knob(col as u8, 0, ParamId::new(item.key()))),
+    );
+    layout.pages.retain(|page| !page.cells.is_empty());
+    layout
+}
+
+fn bundled_preset(
+    device: &Device,
+    host: &dyn DeviceHost,
+    native: &komponist_ipc::native_layout::NativeLayout,
+    kind: Internal,
+) -> Option<(usize, bool)> {
+    let index = crate::bundled_presets::index(kind, device.state.as_deref()?)?;
+    let aliases = native.author_ids()?;
+    let changed = kind
+        .params()
+        .iter()
+        .zip(kind.preset_values(index)?)
+        .any(|(info, plain)| {
+            let Some(base) = aliases
+                .get(info.id.as_str())
+                .and_then(|wire| host.param_base(device.id, *wire))
+            else {
+                return false;
+            };
+            let expected = pinned_clap_state::to_clap(info, plain);
+            (base - expected).abs() > 1e-6
+        });
+    Some((index, changed))
 }
 
 /// The sampler's pads as the host's handle reports them now; `None` for any other device.
@@ -470,6 +676,61 @@ pub fn sampler_view(host: &dyn DeviceHost, device: DeviceId) -> Option<SamplerVi
         last_hit: handle.last_hit(),
         pads,
     })
+}
+
+pub(crate) fn bundled_sampler_view(
+    kind: Internal,
+    assets: Option<&str>,
+    snapshot: Option<&komponist_ipc::sampler_ui::Snapshot>,
+) -> SamplerView {
+    use komponist_ipc::sampler_ui::Status;
+    use komponist_sampler::{PADS, PadStatus, PadView, links};
+    let count = if kind == Internal::GeneralSampler {
+        1
+    } else {
+        PADS
+    };
+    let links = links::read(assets.map(str::as_bytes));
+    let pad_data = |index| snapshot.and_then(|data| data.pads.get(index));
+    SamplerView {
+        pads: (0..count)
+            .map(|index| {
+                let link = links
+                    .iter()
+                    .find(|(pad, _)| *pad == index)
+                    .map(|(_, link)| link.clone());
+                let pad = pad_data(index);
+                let status = match pad.map(|pad| &pad.status) {
+                    Some(Status::Ready) => PadStatus::Ready,
+                    Some(Status::Missing) => PadStatus::Missing,
+                    Some(Status::Failed(reason)) => PadStatus::Failed(reason.clone()),
+                    Some(Status::Loading) => PadStatus::Loading,
+                    Some(Status::Empty) | None if link.is_some() => PadStatus::Loading,
+                    Some(Status::Empty) | None => PadStatus::Empty,
+                };
+                PadView {
+                    status,
+                    name: link
+                        .as_ref()
+                        .map(|link| link.name.clone())
+                        .unwrap_or_default(),
+                    link,
+                    length_s: pad.map_or(0.0, |pad| pad.length),
+                    peaks: pad.map_or_else(
+                        || std::sync::Arc::from([]),
+                        |pad| std::sync::Arc::from(pad.peaks.as_slice()),
+                    ),
+                }
+            })
+            .collect(),
+        playheads: (0..count)
+            .map(|index| pad_data(index).and_then(|pad| pad.playhead))
+            .collect(),
+        last_hit: snapshot.map_or((0, 0), |snapshot| {
+            let (count, pad) = snapshot.last_hit;
+            (count, usize::from(pad))
+        }),
+    }
 }
 
 /// The parameters of an internal effect with the values in its device state (the defaults for a
@@ -529,6 +790,99 @@ pub fn hexa_macro_params(lang: Lang, device: &Device) -> Vec<Param> {
                 value,
                 text: m.text_in(lang, value),
             }
+        })
+        .collect()
+}
+
+fn native_card_layout(
+    native: &komponist_ipc::native_layout::NativeLayout,
+    lang: Lang,
+) -> DeviceLayout {
+    use komponist_ipc::native_layout::{Half, Widget};
+    use layout::{Cell, CellParam, Page, WidgetKind};
+    DeviceLayout {
+        pages: native
+            .pages
+            .iter()
+            .map(|page| Page {
+                name: native
+                    .label(&page.labels, lang.code())
+                    .unwrap_or_default()
+                    .to_owned(),
+                cols: page.columns,
+                cells: page
+                    .cells
+                    .iter()
+                    .map(|cell| {
+                        let widget = match cell.widget {
+                            Widget::Knob => WidgetKind::Knob,
+                            Widget::KnobLarge => WidgetKind::KnobLarge,
+                            Widget::Number => WidgetKind::Number,
+                            Widget::ToggleButton => WidgetKind::ToggleButton,
+                            Widget::Segment => WidgetKind::Segment,
+                            Widget::Dropdown => WidgetKind::Dropdown,
+                        };
+                        let param = CellParam::Id(ParamId::plugin(cell.param_id));
+                        match cell.half {
+                            Some(half) => Cell::half(
+                                cell.col,
+                                cell.row,
+                                cell.cols,
+                                match half {
+                                    Half::Top => layout::Half::Top,
+                                    Half::Bottom => layout::Half::Bottom,
+                                },
+                                widget,
+                                param,
+                            ),
+                            None => {
+                                Cell::span(cell.col, cell.row, cell.cols, cell.rows, widget, param)
+                            }
+                        }
+                    })
+                    .collect(),
+                dividers: Vec::new(),
+            })
+            .collect(),
+    }
+}
+
+/// Bind an authored device editor to the authoritative CLAP inventory. The editor uses the
+/// device's localized names and units, while events and automation use the live CLAP wire IDs.
+pub(super) fn bundled_params<'a>(
+    device: DeviceId,
+    host: &dyn DeviceHost,
+    native: &komponist_ipc::native_layout::NativeLayout,
+    infos: impl IntoIterator<Item = &'a ParamInfo>,
+) -> Option<Vec<Param>> {
+    let ids = native.author_ids()?;
+    let inventory = host.params(device)?;
+    infos
+        .into_iter()
+        .map(|info| {
+            let id = *ids.get(info.id.as_str())?;
+            let wire = inventory.iter().find(|wire| wire.id == id)?;
+            if !is_listed(wire)
+                || (wire.min, wire.max) != pinned_clap_state::clap_range(info)
+                || wire.step_count != info.steps()
+            {
+                return None;
+            }
+            let raw = host
+                .param_value(device, id)
+                .map_or(wire.default, |p| p.value);
+            // Use the exact device default when the wrapper still has its rounded f32 default.
+            let value = if raw == wire.default {
+                info.default
+            } else {
+                pinned_clap_state::from_clap(info, raw)
+            };
+            Some(Param {
+                wire: id,
+                info: info.clone(),
+                value,
+                text: info.format(value),
+            })
         })
         .collect()
 }

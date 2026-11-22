@@ -430,6 +430,24 @@ impl App {
             }
             Pending::Template => {
                 let project = new_project::template(self.lang, crate::app::hexa_ref());
+                let host = self.engine.host();
+                let has_reference_devices =
+                    host.catalog().resolve(&crate::app::hexa_ref()).is_some();
+                let project = match host.migrate_project_for_open(&project, Path::new(".")) {
+                    Ok(Some(migrated)) => migrated,
+                    Ok(None) if has_reference_devices => project,
+                    Ok(None) => {
+                        self.set_status(
+                            "Bundled CLAP devices are unavailable".to_owned(),
+                            StatusKind::Error,
+                        );
+                        return;
+                    }
+                    Err(error) => {
+                        self.set_status(error, StatusKind::Error);
+                        return;
+                    }
+                };
                 self.open_document(Document::new(project), None);
                 self.check_missing_plugins();
             }
@@ -475,7 +493,27 @@ impl App {
             .and_then(|resolved| load_project(&resolved).map(|project| (resolved, project)));
         match loaded {
             Ok((path, project)) => {
-                self.open_document(Document::new(project), Some(path.clone()));
+                let project_dir =
+                    komponist_model::paths::absolute(path.parent().unwrap_or(Path::new("")));
+                let host = self.engine.host();
+                let migration = host.migrate_project_for_open(&project, &project_dir);
+                let has_reference_devices =
+                    host.catalog().resolve(&crate::app::hexa_ref()).is_some();
+                let mut doc = Document::new(project);
+                match migration {
+                    Ok(Some(project)) if has_reference_devices => doc
+                        .apply("undo-migrate-bundled-devices", |_| Ok(project))
+                        .expect("apply a fully planned migration"),
+                    Ok(Some(project)) => doc = Document::new(project),
+                    Ok(None) => {}
+                    Err(error) => {
+                        eprintln!(
+                            "komponist: {}: bundled CLAP migration: {error}",
+                            path.display()
+                        );
+                    }
+                }
+                self.open_document(doc, Some(path.clone()));
                 self.remember(path);
                 self.check_missing_plugins();
             }
@@ -540,6 +578,22 @@ impl App {
     /// renames the project after a new file, remembers the file. A running take goes into the
     /// file without ending (module docs). `false` if writing failed (the status bar says why).
     pub(crate) fn save_to(&mut self, path: &Path) -> bool {
+        self.save_project_to(path, None)
+    }
+
+    pub(crate) fn save_to_collected(
+        &mut self,
+        path: &Path,
+        collector: &mut komponist_sampler::Collector,
+    ) -> bool {
+        self.save_project_to(path, Some(collector))
+    }
+
+    fn save_project_to(
+        &mut self,
+        path: &Path,
+        mut collector: Option<&mut komponist_sampler::Collector>,
+    ) -> bool {
         let path = match resolve_project_parent(with_extension(path)) {
             Ok(path) => path,
             Err(error) => return self.report_project_save_error(error),
@@ -550,6 +604,7 @@ impl App {
         // Route queued GUI edits before requesting state, so a temporary parameter cannot be
         // mistaken for a persisted plugin value.
         self.drain_events();
+        self.engine.refresh_snapshot_automation(self.doc.project());
         let outcome = self
             .engine
             .host_mut()
@@ -585,14 +640,37 @@ impl App {
             .map(|directory| komponist_model::paths::absolute(&directory));
         let new_dir =
             komponist_model::paths::absolute(path.parent().unwrap_or_else(|| Path::new("")));
+        let plugin_snapshot = |device| {
+            snapshots
+                .iter()
+                .chain(self.deferred_plugin_states())
+                .find_map(|(id, state)| (*id == device).then_some(state.as_ref()))
+        };
+        if let Some(collector) = &mut collector
+            && let Err(error) = crate::samples::collect_sample_sources(
+                self.project(),
+                collector,
+                old_dir.as_deref(),
+                plugin_snapshot,
+            )
+        {
+            eprintln!("komponist: collecting samples failed: {error}");
+            self.set_status(self.lang.status_collect_failed(error), StatusKind::Error);
+            return false;
+        }
         let mut recordings = match self.stage_recordings_for_save(&new_dir) {
             Ok(recordings) => recordings,
             Err(()) => return false,
         };
+        let collected = |source: &Path| {
+            collector
+                .as_ref()
+                .and_then(|collector| collector.placed(source))
+        };
         let mut document = self.doc.clone();
         document.rewrite_untracked(|project| {
             crate::samples::rebase_project_links(project, old_dir.as_deref(), &new_dir, |source| {
-                recordings.destination(source)
+                collected(&source).unwrap_or_else(|| recordings.destination(source))
             })
         });
         // A running take so far, with the notes still in flight, on top of all that (#85).
@@ -601,18 +679,45 @@ impl App {
                 Ok(project) => project,
                 Err(()) => return false,
             };
-        // Undo may defer a snapshot until an unrelated gesture ends. The file still needs it.
+        let rebase_bundled = |device, state: &std::sync::Arc<[u8]>| {
+            let (_, _, model) = document.project().find_device(device)?;
+            komponist_plugins::bundled_sampler::kind(&model.plugin)?;
+            komponist_plugins::bundled_sampler::rebase_links(
+                state,
+                old_dir.as_deref(),
+                &new_dir,
+                |source| collected(&source).unwrap_or_else(|| recordings.destination(source)),
+            )
+            .map(std::sync::Arc::<[u8]>::from)
+        };
+        // The deferred states keep their own snapshots, even if the file uses a newer one.
+        let rebased_deferred = self
+            .deferred_plugin_states()
+            .iter()
+            .filter_map(|(device, state)| Some((*device, rebase_bundled(*device, state)?)))
+            .collect::<Vec<_>>();
         let deferred = self
             .deferred_plugin_states()
             .iter()
             .filter(|(device, _)| !snapshots.iter().any(|(captured, _)| captured == device));
+        let mut rebased_bundle_states = Vec::new();
         for (device, state) in deferred.chain(&snapshots) {
             let project = for_file.as_ref().unwrap_or_else(|| document.project());
-            if project
-                .find_device(*device)
-                .is_some_and(|(_, _, d)| d.state.as_ref() != Some(state))
+            let Some((_, _, model)) = project.find_device(*device) else {
+                continue;
+            };
+            // The processor captured its state in the old folder, even though the
+            // document and history have already been rebased for the destination.
+            let rebased = rebase_bundled(*device, state);
+            let state = if let Some(rebased) = rebased {
+                rebased_bundle_states.push((*device, rebased.clone()));
+                rebased
+            } else {
+                state.clone()
+            };
+            if model.state.as_ref() != Some(&state)
                 && let Ok(updated) =
-                    komponist_model::edits::set_device_state(project, *device, Some(state.clone()))
+                    komponist_model::edits::set_device_state(project, *device, Some(state))
             {
                 for_file = Some(updated);
             }
@@ -649,8 +754,15 @@ impl App {
                     self.doc.mark_saved();
                 }
                 self.project_path = Some(path.clone());
+                self.update_deferred_plugin_states(rebased_deferred);
                 let dir = self.project_dir();
-                self.engine.host_mut().set_project_dir(dir);
+                let host = self.engine.host_mut();
+                host.set_project_dir(dir);
+                // Future snapshots must use the new link coordinates too. Apply
+                // them only after the file write and directory change succeeded.
+                for (device, state) in rebased_bundle_states {
+                    host.set_state(device, &state);
+                }
                 self.set_status(
                     self.lang
                         .project_saved(crate::dialogs::format::tilde(&path)),
@@ -1021,6 +1133,108 @@ mod tests {
         );
         assert_eq!(std::fs::read_dir(chosen).unwrap().count(), 1);
         assert_eq!(std::fs::read_dir(actual).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn save_as_rebases_deferred_bundled_sampler_links_only_on_success() {
+        use komponist_device_core::pinned_clap_state;
+        use komponist_model::edits::{self, NewTrack};
+        use komponist_model::{PluginFormat, PluginRef};
+        use komponist_sampler::links::{self, SampleLink};
+        use serde_json::{Map, Value, json};
+
+        let scratch = tempfile::tempdir().unwrap();
+        let old = scratch.path().join("old");
+        let new = scratch.path().join("new");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::create_dir(&new).unwrap();
+        let sample = old.join("tone.wav");
+        std::fs::write(&sample, b"original").unwrap();
+        std::fs::write(new.join("tone.wav"), b"same name").unwrap();
+
+        let plugin = PluginRef {
+            format: PluginFormat::Clap,
+            id: "org.klang-studio.komponist.sampler".into(),
+            name: "Klopfer".into(),
+            vendor: "klang-studio".into(),
+            version: "0.1.0".into(),
+            module: "bundled-clap/komponist_sampler.clap".into(),
+        };
+        let (project, track) = edits::add_track(
+            &Project::new("Song"),
+            NewTrack {
+                name: None,
+                hue: None,
+                instrument: Some(plugin),
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        let device = project
+            .track(track)
+            .unwrap()
+            .channel
+            .instrument()
+            .unwrap()
+            .1
+            .id;
+        let mut app = App::headless(project);
+        let source_project = old.join("Song.komponist");
+        assert!(app.save_to(&source_project));
+        let assets = links::write(None, 0, Some(&SampleLink::new(&sample, Some(&old))));
+        let state = std::sync::Arc::<[u8]>::from(pinned_clap_state::encode(
+            "0.1.0",
+            Map::new(),
+            Map::from_iter([(
+                pinned_clap_state::SAMPLE_ASSETS_FIELD.into(),
+                json!(String::from_utf8(assets).unwrap()),
+            )]),
+        ));
+        app.doc.begin_gesture("Fader");
+        app.store_snapshot(device, &state);
+        assert_eq!(app.deferred_plugin_states(), &[(device, state.clone())]);
+
+        let destination = new.join("Copy.komponist");
+        std::fs::create_dir(&destination).unwrap();
+        assert!(!app.save_to(&destination));
+        assert_eq!(app.project_path(), Some(source_project.as_path()));
+        assert_eq!(app.deferred_plugin_states(), &[(device, state)]);
+
+        std::fs::remove_dir(&destination).unwrap();
+        assert!(app.save_to(&destination));
+
+        let check = |state: &[u8]| {
+            let wrapper: Value = serde_json::from_slice(&state[8..]).unwrap();
+            let assets = wrapper["fields"][pinned_clap_state::SAMPLE_ASSETS_FIELD]
+                .as_str()
+                .unwrap();
+            let link = &links::read(Some(assets.as_bytes()))[0].1;
+            assert_eq!(link.resolve(Some(&new)).as_deref(), Some(sample.as_path()));
+        };
+        check(&app.deferred_plugin_states()[0].1);
+        assert!(app.doc.in_gesture());
+        assert!(app.save_to(&destination));
+        let saved = load_project(&destination).unwrap();
+        check(
+            saved
+                .find_device(device)
+                .unwrap()
+                .2
+                .state
+                .as_deref()
+                .unwrap(),
+        );
+        app.end_gesture();
+        check(
+            app.project()
+                .find_device(device)
+                .unwrap()
+                .2
+                .state
+                .as_deref()
+                .unwrap(),
+        );
     }
 
     #[test]

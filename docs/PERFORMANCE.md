@@ -536,3 +536,50 @@ The test swaps between two precompiled programs whose macro base values differ. 
 mean callback time with and without 512 bent parameter mappings, changing every macro on each
 block. Program preparation and retirement run outside the measurement. This measures the
 block-rate fan-out. Timeline ramps may emit several values per block and are covered by #76.
+
+## Bundled CLAP comparison (#197)
+
+Build an archive with the bundled CLAP package workflow and unpack it. From the same source
+revision as the archive, run:
+
+```bash
+KOMPONIST_PERF_WORKERS=4 KOMPONIST_PERF_BUFFERS=64,128,256 KOMPONIST_PERF_SECS=60 \
+  python3 scripts/measure-bundled-clap.py /path/to/unpacked/komponist
+```
+
+Pass `komponist.exe` on Windows or `komponist.app/Contents/MacOS/komponist` on macOS. The script
+asks the packaged app to verify the private CLAP payload, then builds the existing release
+`engine_perf` runner with the authenticated manifest digest. It stages a temporary copy of the
+payload next to the runner, leaves the archive contents untouched, and uses the original
+packaged executable for the bridge subprocesses. Each route, workload, buffer size and worker
+count combination starts in a fresh process so allocator and library state from earlier cases
+does not affect its startup and memory measurements.
+Each case checks device readiness, CLAP layout, state restore warnings and bridge PIDs.
+
+The same generated 48 kHz project runs with legacy built-ins, verified in-process CLAP and
+forced bridge CLAP. Sixteen parallel Hexa instruments play the same four presets and four-bar
+note sequence. The serial variant adds Delay and Hall on four tracks and EQ, Presse and
+Limiter on the master. The MIDI variant adds Arpeggiator and Scale before eight instruments.
+The bundled versions use the legacy device translator for their state. Buffer sizes default
+to 64, 128 and 256 frames, worker counts to 0 and 4, and each measurement to 10 seconds after
+a one-second warm-up. Set `KOMPONIST_PERF_WORKLOAD` to a comma-separated subset of
+`instruments,effects,midi` to focus a sustained run.
+
+- Setup time covers the scan (CLAP routes only) and device attachment through readiness.
+- Callback p95 and p99 use unsmoothed per-callback loads in one-percentage-point bins.
+  The last bin includes all loads of 400% and higher. The peak is the largest observed callback
+  time as a percentage of the frame period. The smoothed median is sampled every 100 ms.
+- Counters cover callbacks, callbacks exceeding the period, stream xruns, late bridge blocks,
+  and worker batches and late waits during the same window.
+- After timing ends and before shutdown, the runner reports resident memory (working set on
+  Windows) for itself and the sum across distinct active bridge processes. Missing readings
+  are marked unavailable. The snapshot includes shared pages in each process that maps them,
+  so the sum can count the same pages more than once. It does not measure peak memory.
+
+The harness defaults to the null audio backend and uses the real DSP, scheduler and plugin
+hosts. Set `KOMPONIST_PERF_AUDIO_HOST` to `coreaudio`, `asio`, `wasapi`, `pipewire`, `jack`
+or `alsa` to measure with the default output device on the chosen driver. The benchmark
+plays through that output. Choose periods your device actually supports. A stream error,
+driver fallback, or a negotiated sample rate or period that differs from the request
+fails the case. Report the device, driver, machine, OS, build revision and settings when
+comparing runs. Physical round-trip latency requires a separate measurement.

@@ -305,6 +305,15 @@ impl Effects {
         }
     }
 
+    /// Resets playback state. Each delay line starts from silence on its next use.
+    pub(crate) fn reset(&mut self) {
+        self.stop();
+        self.order = None;
+        self.fade_in = false;
+        self.chorus.effect.reset_phase();
+        self.reverb.effect.reset_phase();
+    }
+
     /// Applies the effects to both channels in place (unclamped). `params`
     /// must be sanitized (each kind once in the order).
     pub fn process(&mut self, params: &EffectParams, left: &mut [f32], right: &mut [f32]) {

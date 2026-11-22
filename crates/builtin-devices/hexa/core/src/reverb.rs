@@ -154,15 +154,25 @@ struct Line {
     len: usize,
     /// Next write position, 0..len.
     pos: usize,
+    /// The line has wrapped since its last clear.
+    filled: bool,
 }
 
 impl Line {
+    fn clear(&mut self) {
+        self.pos = 0;
+        self.filled = false;
+    }
+
     /// The sample written `delay` (1..=len) samples ago.
     #[inline]
     fn read(&self, memory: &[f32], delay: usize) -> f32 {
         let i = if self.pos >= delay {
             self.pos - delay
         } else {
+            if !self.filled {
+                return 0.0;
+            }
             self.pos + self.len - delay
         };
         memory[self.start + i]
@@ -184,6 +194,7 @@ impl Line {
         self.pos += 1;
         if self.pos == self.len {
             self.pos = 0;
+            self.filled = true;
         }
     }
 
@@ -257,7 +268,7 @@ impl Reverb {
             let l = Line {
                 start: next,
                 len,
-                pos: 0,
+                ..Line::default()
             };
             next += len;
             l
@@ -296,6 +307,10 @@ impl Reverb {
             core::ptr::addr_of_mut!((*this).smoothed).write(ReverbParams::DEFAULT);
             core::ptr::addr_of_mut!((*this).rate).write(rate);
         }
+    }
+
+    pub(crate) fn reset_phase(&mut self) {
+        self.osc = (1.0, 0.0);
     }
 
     fn coefs(&self, params: &ReverbParams) -> ReverbCoefs {
@@ -371,8 +386,9 @@ impl Effect for Reverb {
 
     /// Silences the tail and jumps to `params`.
     fn clear(&mut self, params: &ReverbParams) {
-        let used = self.tank[1][3].start + self.tank[1][3].len;
-        self.memory[..used].fill(0.0);
+        self.pre_delay.clear();
+        self.diffusers.iter_mut().for_each(Line::clear);
+        self.tank.iter_mut().flatten().for_each(Line::clear);
         self.band_state = 0.0;
         self.damp_state = [0.0; 2];
         self.feedback = [0.0; 2];

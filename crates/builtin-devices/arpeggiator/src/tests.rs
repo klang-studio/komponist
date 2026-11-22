@@ -7,7 +7,7 @@ use komponist_engine::{
     TransportInfo,
 };
 use komponist_model::params::ParamId;
-use komponist_model::{Meter, Tempo, TempoMap, Tick, TickRange};
+use komponist_model::{Meter, PPQ, Tempo, TempoMap, Tick, TickRange};
 
 use super::{HOLD, MODES, RATES, SPEC};
 
@@ -60,7 +60,7 @@ fn ctx(frames: u32, bpm: f64, playing: bool, position_ticks: f64) -> ProcessCont
 }
 
 fn processor(values: &[(&str, f64)]) -> InternalProcessor {
-    let mut processor = InternalProcessor::new(&SPEC, &[]);
+    let mut processor = InternalProcessor::from_event_stage(&SPEC, &[], crate::stage());
     processor.activate(RATE, 256).unwrap();
     for (key, value) in values {
         let wire = SPEC.wire(&ParamId::new(*key)).unwrap();
@@ -115,6 +115,40 @@ fn run(
 /// The chord C E G held from the start.
 fn chord() -> Vec<Event> {
     vec![on(60, 0), on(64, 0), on(67, 0)]
+}
+
+#[test]
+fn all_notes_off_releases_only_one_channels_held_pattern() {
+    let mut p = processor(&[("hold", 1.0)]);
+    let stage = p.event_processor().unwrap();
+    let on = |channel, note_id| Event {
+        offset: 0,
+        kind: EventKind::NoteOn {
+            channel,
+            key: 60,
+            velocity: 100,
+            note_id,
+        },
+    };
+    let cc = Event {
+        offset: 4,
+        kind: EventKind::Midi([0xb2, 123, 0]),
+    };
+    let output = call(
+        stage,
+        &ctx(6144, 120.0, true, 0.0),
+        &[on(2, 91), on(5, 92), cc],
+    );
+
+    assert!(output.contains(&cc), "the original channel CC is forwarded");
+    let ons: Vec<_> = output
+        .iter()
+        .filter_map(|event| match event.kind {
+            EventKind::NoteOn { channel, .. } => Some((event.offset, channel)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ons, [(0, 2), (6000, 5)]);
 }
 
 #[test]
@@ -311,6 +345,42 @@ fn hold_keeps_released_keys_until_a_new_chord_starts() {
     stage.set_param(HOLD, 0.0);
     assert_eq!(step(stage, &[]), [67], "still held down");
     assert_eq!(step(stage, &[off(67, 0)]), Vec::<u8>::new());
+}
+
+/// The shared CLAP host rounds song position to a signed beat time with 31 fractional bits.
+fn clap_position_ticks(ticks: f64) -> f64 {
+    let scale = f64::from(1u32 << 31);
+    (ticks / PPQ as f64 * scale).round() / scale * PPQ as f64
+}
+
+#[test]
+fn a_clap_triplet_grid_start_plays_in_the_first_block() {
+    for position in [80.0, 320.0] {
+        let mut p = processor(&[("rate", 7.0)]);
+        let stage = p.event_processor().unwrap();
+        let context = ctx(64, 120.0, true, clap_position_ticks(position));
+        assert_eq!(call(stage, &context, &[on(60, 0)]), [on(60, 0)]);
+    }
+}
+
+#[test]
+fn a_clap_position_preserves_rounding_up_at_half_a_sample() {
+    let mut p = processor(&[("rate", 7.0)]);
+    let stage = p.event_processor().unwrap();
+    let map = TempoMap::constant(Tempo::new(64.0), Meter::FOUR_FOUR);
+    let start = 27_520;
+    let sample_rate = 44_100.0;
+    let position = map.samples_to_ticks(f64::from(start), sample_rate);
+    let context = ProcessContext {
+        sample_rate: sample_rate as f32,
+        ..ctx(64, 64.0, true, clap_position_ticks(position))
+    };
+    // Tick 640 (the next 1/32 triplet step) is 42.5 samples after the block start.
+    assert_eq!(
+        map.tick_to_sample(Tick(640), sample_rate) - i64::from(start),
+        43
+    );
+    assert_eq!(call(stage, &context, &[on(60, 0)]), [on(60, 43)]);
 }
 
 #[test]

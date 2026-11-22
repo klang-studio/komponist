@@ -78,7 +78,7 @@ pub(super) fn processor_at(changes: &[(&str, f64)], rate: f32) -> InternalProces
     for (key, value) in changes {
         values[wire(key) as usize] = *value;
     }
-    let mut p = InternalProcessor::new(&SPEC, &values);
+    let mut p = InternalProcessor::from_dsp(&SPEC, &values, crate::dsp());
     p.activate(rate, BLOCK).unwrap();
     p
 }
@@ -282,7 +282,6 @@ fn surf_is_an_instrument_in_the_catalog() {
     assert_eq!(Lang::En.device_name_surf(), "Surf");
     assert_eq!(catalog.role, komponist_model::DeviceRole::Instrument);
     assert!(catalog.features.contains(&"wavetable"));
-    assert!(SPEC.event_stage.is_none());
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -714,7 +713,7 @@ fn the_presets_load_sound_and_move_the_table() {
         let state = presets::state(index).unwrap();
         let values = SPEC.decode_state(Some(&state)).unwrap();
         assert_eq!(Some(values.clone()), SPEC.preset_values(index));
-        let mut p = InternalProcessor::new(&SPEC, &values);
+        let mut p = InternalProcessor::from_dsp(&SPEC, &values, crate::dsp());
         p.activate(RATE, BLOCK).unwrap();
         let chord = [
             (0, on(45, 100)),

@@ -232,6 +232,15 @@ pub fn format_tag(lang: Lang, format: PluginFormat) -> &'static str {
     }
 }
 
+/// The catalog label distinguishes a shipped bundle from an external CLAP with the same ID.
+pub fn catalog_plugin_tag(lang: Lang, plugin: &komponist_model::PluginRef) -> &'static str {
+    if komponist_plugins::packaged_kind(plugin).is_some() {
+        lang.browser_bundled_clap()
+    } else {
+        format_tag(lang, plugin.format)
+    }
+}
+
 /// The name a device is shown under: a built-in device's name in `lang` ("Hall" is "Reverb" in
 /// English), any other plugin's own name. The stored [`komponist_model::PluginRef::name`] stays German.
 pub fn plugin_name(lang: Lang, plugin: &komponist_model::PluginRef) -> String {

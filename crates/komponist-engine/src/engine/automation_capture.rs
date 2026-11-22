@@ -202,12 +202,13 @@ impl Core {
         self.visit_automation(|_, _, state, _, _| state.chase());
     }
 
-    pub(super) fn reassert_automation(&mut self) {
+    pub(super) fn reassert_parameter_controls(&mut self) {
         self.visit_automation(|_, _, state, _, _| {
             for cursor in state.cursors() {
                 cursor.reassert();
             }
         });
+        self.reassert_macros(None, None);
     }
 
     pub(super) fn cancel_automation_write(&mut self) {

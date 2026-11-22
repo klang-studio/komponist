@@ -286,7 +286,7 @@ fn a_bridged_plugin_has_the_chip_only_with_a_sidechain_port() {
     };
     let dir = scratch("sidechain-chip");
     // A scan fills the cache the app's host starts from.
-    let mut scan = PluginHost::new(config(&dir));
+    let mut scan = PluginHost::with_reference_devices(config(&dir));
     scan.start_scan(&dirs);
     let deadline = std::time::Instant::now() + crate::common::PATIENCE;
     while scan.is_scanning() {
@@ -343,7 +343,7 @@ fn a_bridged_plugin_has_the_chip_only_with_a_sidechain_port() {
         p = next;
         ids.push(id);
     }
-    let mut app = app_with(p, PluginHost::new(config(&dir)));
+    let mut app = app_with(p, PluginHost::with_reference_devices(config(&dir)));
     step_until(&mut app, "every device Ok", all_ok);
     assert!(app.engine().host().has_sidechain(ids[0]));
     assert!(!app.engine().host().has_sidechain(ids[1]));

@@ -9,7 +9,7 @@
 
 use komponist_device_core::layout::single_page;
 use komponist_device_core::midi::PITCH_CLASSES;
-use komponist_device_core::{CatalogSpec, Preset, Spec, SpecCache, midi};
+use komponist_device_core::{CatalogSpec, Preset, Spec, SpecCache};
 use komponist_engine::{Event, EventKind, EventProcessor, EventSink, NOTE_ID_NONE, ProcessContext};
 use komponist_i18n::Lang;
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, WidgetKind};
@@ -28,9 +28,7 @@ pub static SPEC: Spec = Spec {
     },
     params,
     layout,
-    dsp: midi::passthrough,
     presets,
-    event_stage: Some(stage),
     preset_aliases: &[
         ("C-Dur", "C Major"),
         ("A-Moll", "A Minor"),
@@ -187,7 +185,7 @@ fn layout(_: Lang) -> DeviceLayout {
 }
 
 /// The stage with the parameters at their defaults (C, Dur, nearest).
-fn stage() -> Box<dyn EventProcessor + Send> {
+pub fn stage() -> Box<dyn EventProcessor + Send> {
     Box::new(Scale::new())
 }
 
@@ -282,6 +280,14 @@ impl EventProcessor for Scale {
                     if note_id == NOTE_ID_NONE || note_id == self.input_ids[ch][k] {
                         self.end(ch, k, e.offset, out);
                     }
+                }
+                EventKind::Midi(bytes @ [status, 120 | 123, _]) if status & 0xf0 == 0xb0 => {
+                    let channel = usize::from(status & 15);
+                    self.played_as[channel].fill(NONE);
+                    self.input_ids[channel].fill(NOTE_ID_NONE);
+                    self.holders[channel].fill(0);
+                    self.forwarded_ids[channel].fill(NOTE_ID_NONE);
+                    out.push(e.offset, EventKind::Midi(bytes));
                 }
                 EventKind::AllNotesOff => {
                     self.reset();

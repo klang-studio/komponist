@@ -668,6 +668,76 @@ fn with_nothing_selected_the_project_shows() {
     assert_eq!(h.state().project().tempo.bpm, 128.0);
 }
 
+// #92: what the engine leaves out.
+
+/// The demo with MIDI tracks appended up to one beyond the engine's limit; the last one holds the
+/// Pad's instrument, so the engine leaves out a track with a device.
+fn over_the_track_limit() -> (Project, TrackId) {
+    let mut p = demo_project();
+    let instrument = p.tracks[3].channel.devices[0].plugin.clone();
+    let mut last = None;
+    while p.tracks.len() <= komponist_engine::MAX_TRACKS {
+        let full = p.tracks.len() == komponist_engine::MAX_TRACKS;
+        let spec = edits::NewTrack {
+            name: full.then(|| "Zu viel".to_owned()),
+            hue: None,
+            instrument: full.then(|| instrument.clone()),
+            index: None,
+            arm_exclusive: false,
+        };
+        let (next, id) = edits::add_track(&p, spec).unwrap();
+        p = next;
+        last = Some(id);
+    }
+    (p, last.unwrap())
+}
+
+#[test]
+fn a_track_beyond_the_limit_says_it_is_not_played() {
+    let mut results = SnapshotResults::new();
+    for lang in [Lang::De, Lang::En] {
+        let (p, last) = over_the_track_limit();
+        let mut app = App::headless(p)
+            .with_device_host(Box::new(FakeHost::new()))
+            .with_lang(lang);
+        app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+            tracks: vec![last],
+            mode: SelectMode::Replace,
+        })));
+        let mut h = harness(app);
+        h.run_steps(2);
+        // The status bar says it once the program is sent.
+        let status = h.state().ui().status.clone().expect("a status message");
+        assert_eq!(status.kind, komponist_app::ui_state::StatusKind::Error);
+        let expected = match lang {
+            Lang::De => "1 Spur spielt nicht: mehr als 128 Spuren",
+            _ => "1 track not played: more than 128 tracks",
+        };
+        assert_eq!(status.text, expected);
+        // The track section says "spielt nicht" instead of its position, with the reason as the
+        // tooltip (the accessible description), and so does its device.
+        let track = section(&h, lang.inspector_section_track())
+            .get_by_role_and_label(Role::Label, lang.not_played_label());
+        assert_eq!(
+            track.accesskit_node().description().as_deref(),
+            Some(match lang {
+                Lang::De => "Spielt nicht: mehr als 128 Spuren",
+                _ => "Not played: more than 128 tracks",
+            })
+        );
+        let row = lang.inspector_device("Surge XT");
+        assert_eq!(
+            value_in(&h, lang.inspector_section_devices(), Role::Button, &row),
+            lang.not_played_label()
+        );
+        mask_cpu(&mut h);
+        let suffix = if lang == Lang::En { "-en" } else { "" };
+        h.snapshot(format!("inspector-not-played{suffix}-1x"));
+        results.extend_harness(&mut h);
+    }
+    results.unwrap();
+}
+
 #[test]
 fn snapshots_next_to_the_s01_inspector() {
     let mut results = SnapshotResults::new();

@@ -16,7 +16,8 @@
 //!    (`Engine::set_sample_rate` re-activates every processor) and compiles the program again
 //!    against the processors in the engine (`komponist_engine::export::recompile`: delay
 //!    compensation and routing latency in frames of the export rate, from the latencies the export
-//!    skips), then waits for the UI. A bridge
+//!    skips), then waits for the UI. Direct CLAP processors hand back obsolete activations
+//!    without processing audio while the worker waits. A bridge
 //!    re-activates through the plugin manager's poll on the UI thread (and for the switch to
 //!    offline processing in step 3) and renders its silent fallback until the bridge confirms;
 //!    its status is `Loading` from the moment the processor or the render mode asked for it until
@@ -43,7 +44,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -54,7 +55,7 @@ use komponist_engine::export::{
 use komponist_engine::{Command, Program, SlotId, TransportState};
 use komponist_ipc::RenderMode;
 use komponist_model::format::fmt_bar_pos;
-use komponist_model::{ClipId, Project, Tick, TickRange};
+use komponist_model::{ClipId, DeviceId, Project, Tick, TickRange};
 use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::actions::{Action, BitDepth, ExportRange, ExportSettings, ProjectAction, UiAction};
@@ -159,6 +160,9 @@ struct Run {
     phase: Phase,
     /// A project audio asset and a pending track replacement, for a single-track render.
     flatten: Option<Flatten>,
+    /// What the rendered program leaves out of the project (#92), taken with the program at
+    /// launch: the document may change while the worker renders.
+    diagnostics: Vec<komponist_engine::compile::Diagnostic>,
 }
 
 enum Phase {
@@ -243,7 +247,7 @@ fn work(
     let device_rate = engine.engine().sample_rate();
     let export_rate = job.sample_rate as f32;
     let changed = device_rate != export_rate;
-    if changed && let Err(errors) = engine.engine().set_sample_rate(export_rate) {
+    if let Err(errors) = engine.engine().prepare_offline(export_rate) {
         failed.extend(errors.into_iter().map(|(slot, _)| slot));
     }
     let Input {
@@ -253,23 +257,33 @@ fn work(
     } = input;
     let flattening = track.is_some();
     let _ = to_ui.send(Message::Prepared);
-    let result = go
-        .recv()
-        .unwrap_or(Err(ExportError::Cancelled))
-        .and_then(|()| {
-            // The UI waited until the devices run at the export rate: now the compensation and the
-            // skip come from the same processors, in frames of the export rate.
-            if let Some(track) = track {
-                let (e, h) = engine.parts();
-                export_track(e, h, &program, (&track, &project), &job, &cancel, |p| {
-                    progress.store(p)
-                })
-            } else {
-                let export_program = recompile(engine.engine(), &project, &program);
-                let (e, h) = engine.parts();
-                export(e, h, &export_program, &job, &cancel, |p| progress.store(p))
+    let ready = loop {
+        match go.recv_timeout(Duration::from_millis(5)) {
+            Ok(result) => break result,
+            Err(RecvTimeoutError::Disconnected) => break Err(ExportError::Cancelled),
+            Err(RecvTimeoutError::Timeout) => {
+                // The host can finish preparing an earlier revision while we request a new
+                // sample rate. Return such an activation too, while the engine is detached.
+                if let Err(errors) = engine.engine().prepare_offline(export_rate) {
+                    failed.extend(errors.into_iter().map(|(slot, _)| slot));
+                }
             }
-        });
+        }
+    };
+    let result = ready.and_then(|()| {
+        // The UI waited until the devices run at the export rate: now the compensation and the
+        // skip come from the same processors, in frames of the export rate.
+        if let Some(track) = track {
+            let (e, h) = engine.parts();
+            export_track(e, h, &program, (&track, &project), &job, &cancel, |p| {
+                progress.store(p)
+            })
+        } else {
+            let export_program = recompile(engine.engine(), &project, &program);
+            let (e, h) = engine.parts();
+            export(e, h, &export_program, &job, &cancel, |p| progress.store(p))
+        }
+    });
     if changed && let Err(errors) = engine.engine().set_sample_rate(device_rate) {
         failed.extend(errors.into_iter().map(|(slot, _)| slot));
     }
@@ -462,11 +476,12 @@ impl App {
             seconds,
             phase: Phase::Devices,
             flatten: None,
+            diagnostics: Vec::new(),
         });
         self.poll_export();
     }
 
-    /// The devices of the project that are not `Ok`, in document order (master last).
+    /// Active devices that are not ready to render, in document order (master last).
     pub(crate) fn devices_not_ready(&self) -> Vec<DeviceRow> {
         let p = self.project();
         let chains = p
@@ -479,13 +494,12 @@ impl App {
             )));
         let mut rows = Vec::new();
         for (track, devices) in chains {
-            for d in devices {
+            for d in devices.iter().filter(|device| !device.bypass) {
                 let state = match self.engine.device_status(d.id) {
-                    DeviceStatus::Ok
-                        if self.engine.host().sampler(d.id).is_some_and(|handle| {
-                            handle.sync_status() == Some(komponist_sampler::SyncStatus::Unavailable)
-                        }) =>
-                    {
+                    DeviceStatus::Ok if self.engine.host().sampler_is_loading(d.id) => {
+                        DeviceState::Loading
+                    }
+                    DeviceStatus::Ok if self.engine.host().sampler_sync_unavailable(d.id) => {
                         DeviceState::LoadFailed
                     }
                     DeviceStatus::Ok => continue,
@@ -651,6 +665,7 @@ impl App {
             fail(self, &self.lang.flatten_worker_failed());
             return;
         };
+        run.diagnostics = self.engine.diagnostics().to_vec();
         let project = Arc::clone(self.doc.project());
         let track = run
             .flatten
@@ -732,7 +747,19 @@ impl App {
         if worker.go.is_none() {
             return;
         }
-        let ready = if let Some(flatten) = flatten {
+        let host = self.engine.host();
+        let unprepared_sampler = self.export_general_samplers(flatten.as_ref()).find(|&id| {
+            host.status(id) == DeviceStatus::Ok
+                && host
+                    .sampler_ui(id)
+                    .is_none_or(|view| view.sync != Some(komponist_ipc::sampler_ui::Sync::Ready))
+        });
+        let ready = if let Some(id) = unprepared_sampler {
+            if prepared.elapsed() < READY_TIMEOUT && !host.sampler_sync_unavailable(id) {
+                return;
+            }
+            Err(ExportError::DeviceFailed(id))
+        } else if let Some(flatten) = flatten {
             match flatten.unavailable(self) {
                 Some((_, DeviceStatus::Loading)) if prepared.elapsed() < READY_TIMEOUT => return,
                 Some((id, _)) => Err(ExportError::DeviceFailed(id)),
@@ -750,6 +777,15 @@ impl App {
             }
             Ok(())
         };
+        // The device has prepared the ratio. Further polls during rendering only read it.
+        let samplers = self
+            .export_general_samplers(flatten.as_ref())
+            .collect::<Vec<_>>();
+        for device in samplers {
+            self.engine
+                .host_mut()
+                .set_sampler_export_tempo(device, None);
+        }
         if let Some(Run {
             phase: Phase::Running(worker),
             ..
@@ -831,8 +867,9 @@ impl App {
                     &file,
                     view::minutes_seconds(run.seconds),
                     run.job.bit_depth.bits(),
-                ) + &view::dropped_text(self.lang, &dropped);
-                let kind = if dropped.is_empty() {
+                ) + &view::dropped_text(self.lang, &dropped)
+                    + &view::not_played_text(self.lang, &run.diagnostics);
+                let kind = if dropped.is_empty() && run.diagnostics.is_empty() {
                     StatusKind::Success
                 } else {
                     StatusKind::Error
@@ -884,13 +921,41 @@ impl App {
     }
 
     fn set_export_render_mode(&mut self, run: &Run, mode: RenderMode) {
+        let tempo = (mode == RenderMode::Offline).then_some(self.project().tempo.bpm);
+        let samplers = self
+            .export_general_samplers(run.flatten.as_ref())
+            .collect::<Vec<_>>();
         let host = self.engine.host_mut();
+        for device in samplers {
+            host.set_sampler_export_tempo(device, tempo);
+        }
         if let Some(flatten) = &run.flatten {
             let ids: Vec<_> = flatten.scope.devices().collect();
             host.set_selected_render_mode(&ids, mode);
         } else {
             host.set_render_mode(mode);
         }
+    }
+
+    fn export_general_samplers<'a>(
+        &'a self,
+        flatten: Option<&'a Flatten>,
+    ) -> impl Iterator<Item = DeviceId> + 'a {
+        use komponist_builtin::Internal;
+        let project = self.project();
+        project
+            .tracks
+            .iter()
+            .flat_map(|track| track.channel.devices.iter())
+            .chain(project.master.devices.iter())
+            .filter(move |device| {
+                !device.bypass
+                    && komponist_plugins::bundled_sampler::kind(&device.plugin)
+                        == Some(Internal::GeneralSampler)
+                    && flatten
+                        .is_none_or(|flatten| flatten.scope.devices().any(|id| id == device.id))
+            })
+            .map(|device| device.id)
     }
 
     /// The plugin names of the devices in `slots`, without repeats.

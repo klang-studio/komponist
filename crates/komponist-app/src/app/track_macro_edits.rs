@@ -83,6 +83,7 @@ impl App {
                 });
                 let after = self.doc.revision();
                 if after != before {
+                    self.engine.refresh_snapshot_automation(self.doc.project());
                     let command = self.engine.macro_value_command(
                         track,
                         index,

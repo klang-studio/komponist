@@ -188,14 +188,16 @@ impl Settings {
     }
 }
 
-/// A browser favourite: a plugin by format and id, the way `Catalog::resolve` matches devices
-/// (name and version may change with an update).
+/// A browser favourite keyed by format, ID and whether the plugin is shipped with the app.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Favorite {
     /// Plugin format.
     pub format: PluginFormat,
     /// Format-specific id.
     pub id: String,
+    /// Whether this marks the packaged CLAP rather than an external copy of the same ID.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bundled: bool,
 }
 
 impl Favorite {
@@ -204,12 +206,15 @@ impl Favorite {
         Favorite {
             format: plugin.format,
             id: plugin.id.clone(),
+            bundled: komponist_plugins::packaged_kind(plugin).is_some(),
         }
     }
 
     /// Whether `plugin` is this favourite.
     pub fn matches(&self, plugin: &PluginRef) -> bool {
-        self.format == plugin.format && self.id == plugin.id
+        self.format == plugin.format
+            && self.id == plugin.id
+            && self.bundled == komponist_plugins::packaged_kind(plugin).is_some()
     }
 }
 
@@ -224,6 +229,7 @@ impl Default for Favorites {
         let builtin = |id: &str| Favorite {
             format: PluginFormat::Builtin,
             id: id.to_owned(),
+            bundled: false,
         };
         Favorites(vec![builtin(BUILTIN_HEXA), builtin(BUILTIN_SAMPLER)])
     }

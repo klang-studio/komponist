@@ -28,6 +28,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
+use std::io;
 #[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 #[cfg(unix)]
@@ -40,10 +41,12 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak, mpsc};
 use std::time::{Duration, Instant};
 
+use komponist_builtin::BuiltinKind;
 use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError, socket_pair};
 use komponist_ipc::{
     AppChannel, BridgeClient, BridgeMsg, ChannelError, ControlMsg, ErrorContext, GuiTarget,
-    LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessWatcher, RenderMode, ShmRegion,
+    LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessExit, ProcessWatcher,
+    RenderMode, ShmRegion,
 };
 use komponist_model::{DeviceId, DeviceRole};
 
@@ -224,12 +227,21 @@ pub(crate) struct Bridge {
     /// `GetState` requests without answer, in send order.
     state_requests: VecDeque<StateRequest>,
     state_restores: VecDeque<StateRestore>,
+    // The most recent matched reply, including partial restore failures reported as UI updates.
+    restore_reply: Option<(u32, Result<(), String>)>,
     snapshot_due: Option<Instant>,
     /// The latest state: the last snapshot, or the state the bridge was started with.
     pub last_state: Option<Arc<[u8]>>,
     pub params: Vec<ParamInfo>,
+    pub sampler_ui: Option<komponist_ipc::sampler_ui::Snapshot>,
+    sampler_ui_request: Option<u32>,
+    sampler_ui_at: Instant,
+    sampler_export_tempo: Option<f64>,
+    pub native_layout: Option<Arc<komponist_ipc::native_layout::NativeLayout>>,
     pub values: BTreeMap<u32, ParamValue>,
     pub base_values: BTreeMap<u32, f64>,
+    verified_bundled_kind: Option<BuiltinKind>,
+    automated_params: BTreeMap<u32, Option<f64>>,
     temporary_params: BTreeSet<u32>,
     pending_params: BTreeSet<u32>,
     /// Macro outputs expected at the processor. The native editor may show a preview meanwhile.
@@ -270,6 +282,7 @@ pub(crate) struct SpawnSetup<'a> {
     pub format: PluginFormat,
     pub bundle: &'a Path,
     pub plugin_id: &'a str,
+    pub verified_bundled_kind: Option<BuiltinKind>,
     pub state: Option<Arc<[u8]>>,
     pub setup: ProcessorSetup,
     pub timing: Timing,
@@ -355,11 +368,19 @@ impl Bridge {
             stop_deadline: None,
             state_requests: VecDeque::new(),
             state_restores,
+            restore_reply: None,
             snapshot_due: None,
             last_state: s.state,
             params: Vec::new(),
+            sampler_ui: None,
+            sampler_ui_request: None,
+            sampler_ui_at: Instant::now(),
+            sampler_export_tempo: None,
+            native_layout: None,
             values: BTreeMap::new(),
             base_values: BTreeMap::new(),
+            verified_bundled_kind: s.verified_bundled_kind,
+            automated_params: BTreeMap::new(),
             temporary_params: BTreeSet::new(),
             pending_params: BTreeSet::new(),
             macro_params: BTreeMap::new(),
@@ -424,6 +445,29 @@ impl Bridge {
         }
     }
 
+    pub(crate) fn set_sampler_export_tempo(&mut self, tempo: Option<f64>) {
+        self.sampler_export_tempo = tempo;
+        if tempo.is_some() {
+            self.sampler_ui = None;
+        }
+        self.sampler_ui_request = None;
+        self.sampler_ui_at = Instant::now();
+    }
+
+    pub(crate) fn poll_sampler_ui(&mut self) {
+        let now = Instant::now();
+        if self.running()
+            && self.state_restores.is_empty()
+            && self.sampler_ui_request.is_none()
+            && now >= self.sampler_ui_at
+        {
+            let request = self.seq();
+            self.sampler_ui_request = Some(request);
+            self.sampler_ui_at = now + crate::bundled_sampler::UI_REFRESH;
+            self.send(ControlMsg::GetSamplerUi(request, self.sampler_export_tempo));
+        }
+    }
+
     /// Switches realtime/offline processing. The bridge deactivates and re-activates the plugin
     /// for it, so a running device is `Loading` (fallback audio) until the bridge confirms, like a
     /// re-activation for another rate.
@@ -472,13 +516,29 @@ impl Bridge {
     }
 
     fn snapshot_needs_verification(&self) -> bool {
-        !self.temporary_params.is_empty()
+        !self.automated_params.is_empty()
+            || !self.temporary_params.is_empty()
             || !self.pending_params.is_empty()
             || !self.macro_params.is_empty()
             || !self.released_macro_params.is_empty()
     }
 
     fn snapshot_expected(&self) -> Option<Vec<(u32, f64, bool)>> {
+        if self.verified_bundled_kind.is_some() {
+            // Automation and macro outputs are written into the saved state from the host's
+            // persistent values. Independent user edits still need delivery verification.
+            return self
+                .pending_params
+                .union(&self.released_macro_params)
+                .filter(|id| {
+                    self.pending_params.contains(id)
+                        || (!self.macro_params.contains_key(id)
+                            && !self.automated_params.contains_key(id)
+                            && !self.temporary_params.contains(id))
+                })
+                .map(|&id| Some((id, *self.base_values.get(&id)?, true)))
+                .collect();
+        }
         let ids: BTreeSet<_> = self
             .temporary_params
             .iter()
@@ -498,10 +558,42 @@ impl Bridge {
             .collect()
     }
 
-    /// A running device normally owes a fresh snapshot. A temporary override may deliberately
-    /// delay it, and a failed restore must preserve the original stored bytes.
+    /// Reinsert persistent values for controls whose live values may differ during automation.
+    fn snapshot_with_param_bases(&self, state: Vec<u8>) -> Option<Vec<u8>> {
+        let Some(kind) = self.verified_bundled_kind else {
+            return Some(state);
+        };
+        let mut corrections = self
+            .base_values
+            .iter()
+            .filter_map(|(&id, &base)| {
+                let persistent = self
+                    .automated_params
+                    .get(&id)
+                    .map(|value| value.unwrap_or(base));
+                persistent
+                    .or_else(|| self.macro_params.get(&id).copied())
+                    .or_else(|| self.temporary_params.contains(&id).then_some(base))
+                    .map(|value| (id, value))
+            })
+            .peekable();
+        if corrections.peek().is_none() {
+            return Some(state);
+        }
+        crate::bundled_state::restore_param_bases(
+            kind,
+            self.native_layout.as_deref()?,
+            &state,
+            corrections,
+        )
+    }
+
+    /// A running device normally owes a fresh snapshot. An opaque plug-in state's temporary
+    /// override may delay it. Failed restores preserve the original stored bytes.
     pub(crate) fn expects_snapshot_for_save(&self) -> bool {
-        self.is_running() && !self.keep_stored_state && self.temporary_params.is_empty()
+        self.is_running()
+            && !self.keep_stored_state
+            && (self.verified_bundled_kind.is_some() || self.temporary_params.is_empty())
     }
 
     pub(crate) fn needs_snapshot_for_save(&self) -> bool {
@@ -558,17 +650,35 @@ impl Bridge {
         if !self.params.iter().any(|param| param.id == id) {
             return;
         }
-        if let Some(&expected) = self.macro_params.get(&id) {
-            if (expected - value).abs() > 1e-6 * expected.abs().max(1.0) {
-                self.temporary_params.insert(id);
-                self.macro_changed = true;
+        let temporary = if let Some(&expected) = self.macro_params.get(&id) {
+            let temporary = (expected - value).abs() > 1e-6 * expected.abs().max(1.0);
+            self.macro_changed |= temporary;
+            temporary
+        } else {
+            self.base_values.get(&id) != Some(&value)
+        };
+        if temporary {
+            self.temporary_params.insert(id);
+            if self.verified_bundled_kind.is_none() {
                 self.invalidate_state_requests();
             }
-        } else if self.base_values.get(&id) != Some(&value) {
-            self.temporary_params.insert(id);
-            self.invalidate_state_requests();
         }
         self.update_live_param(id, value);
+    }
+
+    pub(crate) fn set_automated_params(&mut self, params: BTreeMap<u32, Option<f64>>) {
+        if self.verified_bundled_kind.is_some() && self.automated_params != params {
+            // A program swap can remove a lane before audio restores the control. Keep
+            // correcting any captured transient value until an explicit edit replaces it.
+            self.temporary_params.extend(
+                self.automated_params
+                    .keys()
+                    .filter(|id| !params.contains_key(id))
+                    .copied(),
+            );
+            self.automated_params = params;
+            self.invalidate_state_requests();
+        }
     }
 
     pub(crate) fn set_macro_params(&mut self, values: BTreeMap<u32, f64>) {
@@ -576,6 +686,26 @@ impl Bridge {
             return;
         }
         let previous = std::mem::replace(&mut self.macro_params, values);
+        if self.verified_bundled_kind.is_some() {
+            if previous.keys().eq(self.macro_params.keys())
+                && previous.iter().all(|(id, value)| {
+                    self.macro_params.get(id) == Some(value)
+                        || self.automated_params.get(id).is_some_and(Option::is_some)
+                })
+            {
+                // Live macro motion cannot supersede a snapshot which uses the model's output.
+                return;
+            }
+            for id in self
+                .macro_params
+                .keys()
+                .filter(|id| !previous.contains_key(id))
+            {
+                // An explicit new mapping supersedes a manual write to the same target.
+                self.pending_params.remove(id);
+                self.released_macro_params.remove(id);
+            }
+        }
         for (id, value) in previous {
             if self.phase == Phase::Running
                 && !self.macro_params.contains_key(&id)
@@ -616,10 +746,17 @@ impl Bridge {
     /// plugin's parameter values follow with the bridge's echo. `false` while the bridge is not
     /// running (it then starts with the state it was given).
     pub(crate) fn set_state(&mut self, state: &Arc<[u8]>) -> bool {
+        self.request_restore(state).is_some()
+    }
+
+    /// Queue a restore and return the sequence used by the bridge's reply.
+    pub(crate) fn request_restore(&mut self, state: &Arc<[u8]>) -> Option<u32> {
         if self.phase != Phase::Running {
-            return false;
+            return None;
         }
         self.user_changed();
+        self.sampler_ui = None;
+        self.sampler_ui_request = None;
         self.last_state = Some(Arc::clone(state));
         self.pending_params.clear();
         self.released_macro_params.clear();
@@ -630,7 +767,14 @@ impl Bridge {
             request,
             state: state.to_vec(),
         });
-        true
+        Some(request)
+    }
+
+    pub(crate) fn restore_result(&self, request: u32) -> Option<Result<(), String>> {
+        self.restore_reply
+            .as_ref()
+            .filter(|(sequence, _)| *sequence == request)
+            .map(|(_, result)| result.clone())
     }
 
     /// Sends `OpenGui`; the watchdog waits while it is outstanding.
@@ -680,10 +824,19 @@ impl Bridge {
 
     /// Blocks up to `timeout` for the process to exit (shutdown).
     pub(crate) fn wait_exit(&mut self, timeout: Duration) -> bool {
-        if !self.exited {
-            self.exited = matches!(self.watcher.wait_exit(Some(timeout)), Ok(Some(_)));
-        }
         self.exited
+            || self
+                .wait_exit_status(timeout)
+                .is_ok_and(|exit| exit.is_some())
+    }
+
+    pub(crate) fn wait_exit_status(
+        &mut self,
+        timeout: Duration,
+    ) -> io::Result<Option<ProcessExit>> {
+        let exit = self.watcher.wait_exit(Some(timeout))?;
+        self.exited |= exit.is_some();
+        Ok(exit)
     }
 
     /// The device failed: status `Crashed`, processor fallback, process killed.
@@ -693,11 +846,37 @@ impl Bridge {
         }
         self.kill();
         self.gui_open = false;
+        self.native_layout = None;
         self.gui_requests = 0;
         self.state_requests.clear();
         self.state_restores.clear();
         self.snapshot_due = None;
         self.set_status(DeviceStatus::Crashed(reason), events);
+    }
+
+    fn update_native_layout(
+        &mut self,
+        bytes: Option<Vec<u8>>,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        self.native_layout = bytes.and_then(|bytes| {
+            let layout =
+                komponist_ipc::native_layout::NativeLayout::parse(&bytes).and_then(|layout| {
+                    layout.validate_params(&self.params)?;
+                    Ok(layout)
+                });
+            match layout {
+                Ok(layout) => Some(Arc::new(layout)),
+                Err(error) => {
+                    events.push(PluginManagerEvent::Log {
+                        device: Some(self.device),
+                        level: LogLevel::Warning,
+                        message: error.to_string(),
+                    });
+                    None
+                }
+            }
+        });
     }
 
     fn set_status(&mut self, status: DeviceStatus, events: &mut Vec<PluginManagerEvent>) {
@@ -828,6 +1007,7 @@ impl Bridge {
             BridgeMsg::Loaded(info) => {
                 let info = *info;
                 self.params = info.params;
+                self.update_native_layout(info.native_layout, events);
                 self.base_values = info.values.iter().map(|v| (v.id, v.value)).collect();
                 self.values = info.values.into_iter().map(|v| (v.id, v)).collect();
                 self.note_names = info.note_names;
@@ -865,6 +1045,19 @@ impl Bridge {
                     self.snapshot_soon();
                     return;
                 }
+                if self.verified_bundled_kind.is_some()
+                    && self
+                        .pending_params
+                        .iter()
+                        .any(|id| !verified.iter().any(|(verified_id, _)| id == verified_id))
+                {
+                    self.snapshot_soon();
+                    return;
+                }
+                let Some(state) = self.snapshot_with_param_bases(state) else {
+                    self.snapshot_soon();
+                    return;
+                };
                 let macro_snapshot = self.macro_changed
                     && !self.plugin_state_dirty
                     && self.pending_params.is_empty();
@@ -886,7 +1079,9 @@ impl Bridge {
                         events.push(PluginManagerEvent::ParamsChanged { device });
                         events.push(PluginManagerEvent::ParamValuesChanged { device });
                     }
-                    self.temporary_params.clear();
+                    if self.verified_bundled_kind.is_none() {
+                        self.temporary_params.clear();
+                    }
                     self.pending_params.clear();
                     self.released_macro_params.clear();
                 }
@@ -913,7 +1108,10 @@ impl Bridge {
                     self.snapshot_soon();
                 }
             }
-            BridgeMsg::Params(params) => {
+            BridgeMsg::Params {
+                params,
+                native_layout,
+            } => {
                 let ids: BTreeSet<_> = params.iter().map(|param| param.id).collect();
                 self.temporary_params.retain(|id| ids.contains(id));
                 self.pending_params.retain(|id| ids.contains(id));
@@ -922,6 +1120,7 @@ impl Bridge {
                 self.base_values.retain(|id, _| ids.contains(id));
                 self.values.retain(|id, _| ids.contains(id));
                 self.params = params;
+                self.update_native_layout(native_layout, events);
                 events.push(PluginManagerEvent::ParamsChanged { device });
             }
             BridgeMsg::ParamValues(values) => {
@@ -933,6 +1132,15 @@ impl Bridge {
                     self.values.insert(value.id, value);
                 }
                 events.push(PluginManagerEvent::ParamValuesChanged { device });
+            }
+            BridgeMsg::PluginParamEdits(edits) => {
+                if self.verified_bundled_kind.is_some() && self.phase == Phase::Running {
+                    for (id, value) in edits {
+                        if value.is_finite() && !self.automated_params.contains_key(&id) {
+                            self.edited_param(id, value);
+                        }
+                    }
+                }
             }
             BridgeMsg::StateApplied { request, result } => {
                 self.finish_restore(request, result, events);
@@ -1001,6 +1209,14 @@ impl Bridge {
                 message,
                 fatal,
             } => self.handle_error(context, message, fatal, events),
+            BridgeMsg::SamplerUi(request, bytes) => {
+                if self.sampler_ui_request == Some(request) {
+                    self.sampler_ui_request = None;
+                    self.sampler_ui = bytes
+                        .as_deref()
+                        .and_then(komponist_ipc::sampler_ui::Snapshot::decode);
+                }
+            }
             BridgeMsg::Pong { seq } => {
                 if self.ping_waiting.is_some_and(|(s, _)| s == seq) {
                     self.ping_waiting = None;
@@ -1075,6 +1291,7 @@ impl Bridge {
             Ok(values) => (values, None),
             Err(error) => (error.changed_values, Some(error.message)),
         };
+        self.restore_reply = Some((request, error.clone().map_or(Ok(()), Err)));
         if error.is_none() || !values.is_empty() {
             for value in values {
                 if !restore.later_edits.contains(&value.id) {

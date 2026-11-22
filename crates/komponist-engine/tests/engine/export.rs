@@ -3,17 +3,74 @@
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use komponist_engine::export::{
     BitDepth, ExportError, ExportJob, ExportReport, NORMALIZE_TARGET_DB, Progress, TrackExport,
     export, export_track,
 };
 use komponist_engine::testing::{Logged, TestSine};
-use komponist_engine::{Command, EngineEvent, Program, TransportState};
+use komponist_engine::{
+    Command, Engine, EngineConfig, EngineEvent, Event, ProcessContext, ProcessStatus, Processor,
+    ProcessorError, Program, SlotId, StereoIo, TransportState,
+};
 use komponist_model::{Tick, TickRange};
 
 use crate::common::*;
+
+#[test]
+fn prepare_offline_hands_off_even_at_the_existing_sample_rate() {
+    struct NeedsHandoff {
+        rate: Arc<AtomicU32>,
+        prepared: Arc<AtomicU32>,
+    }
+
+    impl Processor for NeedsHandoff {
+        fn activate(&mut self, rate: f32, _: usize) -> Result<(), ProcessorError> {
+            self.rate.store(rate as u32, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn prepare_offline(&mut self) {
+            self.prepared
+                .store(self.rate.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+
+        fn process(
+            &mut self,
+            _: &ProcessContext,
+            _: &[Event],
+            _: &mut StereoIo<'_>,
+        ) -> ProcessStatus {
+            panic!("offline preparation must not render audio");
+        }
+
+        fn latency(&self) -> u32 {
+            0
+        }
+
+        fn reset(&mut self) {}
+    }
+
+    let (mut engine, mut handle) = Engine::new(EngineConfig::default());
+    let rate = Arc::new(AtomicU32::new(engine.sample_rate() as u32));
+    let prepared = Arc::new(AtomicU32::new(0));
+    handle
+        .send(Command::InsertProcessor {
+            slot: SlotId(0),
+            processor: Box::new(NeedsHandoff {
+                rate: Arc::clone(&rate),
+                prepared: Arc::clone(&prepared),
+            }),
+        })
+        .unwrap();
+
+    for sample_rate in [engine.sample_rate(), 44_100.0] {
+        engine.prepare_offline(sample_rate).unwrap();
+        assert_eq!(prepared.load(Ordering::Relaxed), sample_rate as u32);
+    }
+}
 
 /// A fresh, empty directory `name` below Cargo's temporary directory for integration tests.
 pub fn dir(name: &str) -> PathBuf {

@@ -157,6 +157,9 @@ param-lfo-uni = Uni
 
 ## hexa: macros, globals and the operator parameters (`device.rs`, `macros.rs`).
 
+param-hexa-global-page = Global
+param-hexa-operator-page = Op { $first } / { $second }
+
 # hexa macro: fixed algorithm 1–32, 0 = free routing.
 param-hexa-algorithm = Algorithmus
 

@@ -1,9 +1,14 @@
 # Built-in devices
 
-Each built-in instrument, audio effect and MIDI effect has a crate in this directory. The
-[device core](core/) defines the unstable Rust API for catalog metadata, parameters, layouts,
-state, presets and processor adapters. [Hexa](hexa/) and the [shared sampler engine](sampler/core/)
-have separate DSP cores; [Surf](surf/) runs on [Volt](volt/)'s engine with its own oscillators. The [registry](registry/) supplies the catalog and processor factory.
+Each built-in instrument, audio effect and MIDI effect keeps its implementation, CLAP entry
+and tests in one device directory. The `clap/` package produces the standalone bundle and
+uses the shared adapter in the [Plugin SDK](../plugin-sdk/). See [Bundled CLAP](BUNDLED-CLAP.md)
+for the release inventory and tests.
+
+The [device core](core/) defines the unstable Rust API for catalog metadata, parameters, layouts,
+state, presets and processor adapters. [Hexa](hexa/) and the [shared sampler engine](sampler-shared/core/)
+have separate DSP cores; [Surf](surf/) runs on [Volt](volt/)'s engine with its own oscillators. The
+[registry](registry/) supplies the catalog and processor factory.
 
 ## Add a device
 

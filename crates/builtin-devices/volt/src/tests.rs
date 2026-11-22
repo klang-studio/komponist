@@ -84,7 +84,7 @@ pub(super) fn processor(changes: &[(&str, f64)]) -> InternalProcessor {
     for (key, value) in changes {
         values[wire(key) as usize] = *value;
     }
-    let mut p = InternalProcessor::new(&SPEC, &values);
+    let mut p = InternalProcessor::from_dsp(&SPEC, &values, crate::dsp());
     p.activate(RATE, BLOCK).unwrap();
     p
 }
@@ -340,7 +340,6 @@ fn volt_is_an_instrument_in_the_catalog() {
     assert_eq!(catalog.name, "Volt");
     assert_eq!(catalog.role, komponist_model::DeviceRole::Instrument);
     assert!(catalog.features.contains(&"synthesizer"));
-    assert!(SPEC.event_stage.is_none());
     assert_eq!(catalog.plugin_ref().id, "knurr");
 }
 
@@ -1254,7 +1253,7 @@ fn the_ten_presets_load_and_sound() {
         assert_eq!(Some(values.clone()), SPEC.preset_values(index));
         assert_ne!(values, SPEC.defaults(), "{}", preset.name);
         // A single note and a chord sound, finite and within reach of full scale.
-        let mut p = InternalProcessor::new(&SPEC, &values);
+        let mut p = InternalProcessor::from_dsp(&SPEC, &values, crate::dsp());
         p.activate(RATE, BLOCK).unwrap();
         let chord = [
             (0, on(40, 100)),
@@ -1278,7 +1277,7 @@ fn every_supported_sample_rate_plays_in_tune() {
         for (key, value) in merged(&[("lfo1_rate", 0.02)]) {
             values[wire(key) as usize] = value;
         }
-        let mut p = InternalProcessor::new(&SPEC, &values);
+        let mut p = InternalProcessor::from_dsp(&SPEC, &values, crate::dsp());
         p.activate(rate, BLOCK).unwrap();
         let frames = 16_384 + 4096;
         let input = [vec![0.0f32; frames], vec![0.0f32; frames]];
@@ -1386,7 +1385,7 @@ fn golden_hashes() -> Vec<u64> {
     setups
         .iter()
         .map(|values| {
-            let mut p = InternalProcessor::new(&SPEC, values);
+            let mut p = InternalProcessor::from_dsp(&SPEC, values, crate::dsp());
             p.activate(RATE, BLOCK).unwrap();
             bits_hash(&render(&mut p, 32_000, &events, 120.0))
         })

@@ -1,0 +1,158 @@
+name: Bundled CLAP package smoke
+
+# Exercise app packages with the complete inventory on every supported platform.
+# Use the same macOS and Windows packagers as the release workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      inventory:
+        description: "Bundle inventory"
+        type: choice
+        options: [all, hall, effects, fixture]
+        default: all
+  pull_request:
+    paths:
+      - "crates/plugin-sdk/**"
+      - "crates/builtin-devices/**"
+      - "crates/komponist-engine/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/komponist-app/src/main.rs"
+      - "crates/komponist-app/src/device_host.rs"
+      - "crates/komponist-app/src/project_io.rs"
+      - "crates/komponist-app/src/showcase.rs"
+      - "crates/komponist-app/src/samples.rs"
+      - "crates/komponist-app/src/export.rs"
+      - "crates/komponist-app/src/export/**"
+      - "crates/komponist-app/tests/it/bundled_current.rs"
+      - "crates/komponist-app/tests/it/bundled_sampler.rs"
+      - "crates/komponist-app/tests/it/bundled_synth_ui.rs"
+      - "crates/komponist-app/src/views/devices/**"
+      - "crates/komponist-bridge/**"
+      - "crates/komponist-hosting/**"
+      - "crates/komponist-ipc/**"
+      - "crates/komponist-plugins/**"
+      - "scripts/bundled-clap.py"
+      - "scripts/bundled-clap-build.sh"
+      - "scripts/run.sh"
+      - "scripts/measure-bundled-clap.py"
+      - "scripts/bundle-macos.sh"
+      - "scripts/package-windows.sh"
+      - ".github/workflows/bundled-clap-smoke.yml"
+      - ".github/workflows/release.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bundled-clap-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Package and host (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+      TARGET: ${{ matrix.target }}
+      INVENTORY: ${{ inputs.inventory || 'all' }}
+      PACKAGE_NAME: komponist-bundled-clap-smoke
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang libclang-dev \
+            libasound2-dev libjack-jackd2-dev libpipewire-0.3-dev libspa-0.2-dev \
+            libdbus-1-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-xcb-dev libxcb1-dev \
+            libwayland-dev libfontconfig1-dev libgl1-mesa-dev
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+            crates/plugin-sdk -> target
+          key: bundled-clap-release
+      - name: Build and stage final CLAP payloads
+        run: |
+          python=python3
+          if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
+          digest="$("$python" scripts/bundled-clap.py --target "$TARGET" --inventory "$INVENTORY" stage dist/.bundled-clap-stage)"
+          test "${#digest}" -eq 64
+          echo "KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256=$digest" >> "$GITHUB_ENV"
+      - name: Package and unpack Linux distribution
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked --release -p komponist-app --bin komponist
+          directory="dist/$PACKAGE_NAME"
+          mkdir -p "$directory/scripts" "$directory/assets/icons"
+          install -m755 target/release/komponist "$directory/komponist"
+          cp -R dist/.bundled-clap-stage "$directory/bundled-clap"
+          cp -R assets/icons/hicolor "$directory/assets/icons/"
+          cp assets/io.github.klang_studio.komponist.desktop assets/io.github.klang_studio.komponist.metainfo.xml assets/komponist-mime.xml "$directory/assets/"
+          install -m755 scripts/install-desktop.sh "$directory/scripts/"
+          cp LICENSE README.md "$directory/"
+          mkdir unpacked
+          tar -C dist -czf "$PACKAGE_NAME.tar.gz" "$PACKAGE_NAME"
+          tar -C unpacked -xzf "$PACKAGE_NAME.tar.gz"
+          echo "APP=unpacked/$PACKAGE_NAME/komponist" >> "$GITHUB_ENV"
+      - name: Package and unpack macOS distribution
+        if: runner.os == 'macOS'
+        run: |
+          scripts/bundle-macos.sh --bundled-clap dist/.bundled-clap-stage
+          mkdir unpacked
+          ditto -c -k --keepParent dist/komponist.app "$PACKAGE_NAME.zip"
+          ditto -x -k "$PACKAGE_NAME.zip" unpacked
+          codesign --verify --deep --strict --verbose=2 unpacked/komponist.app
+          echo "APP=unpacked/komponist.app/Contents/MacOS/komponist" >> "$GITHUB_ENV"
+      - name: Package and unpack Windows distribution
+        if: runner.os == 'Windows'
+        env:
+          LIBCLANG_PATH: C:\Program Files\LLVM\bin
+        run: |
+          scripts/package-windows.sh --name "$PACKAGE_NAME" --bundled-clap dist/.bundled-clap-stage
+          mv "dist/$PACKAGE_NAME.zip" .
+          mkdir unpacked
+          /c/Windows/System32/tar.exe -xf "$PACKAGE_NAME.zip" -C unpacked
+          echo "APP=unpacked/$PACKAGE_NAME/komponist.exe" >> "$GITHUB_ENV"
+      - name: Check and host the exact unpacked payloads
+        run: |
+          python=python3
+          if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
+          "$python" scripts/bundled-clap.py --target "$TARGET" --inventory "$INVENTORY" \
+            check-archive "$APP" --manifest-sha256 "$KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256"
+      - name: Round-trip and export current-format projects on both host paths
+        if: env.INVENTORY == 'all'
+        run: |
+          python=python3
+          if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
+          "$python" scripts/measure-bundled-clap.py --current-projects "$APP"
+      - name: Upload the verified smoke archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bundled-clap-smoke-${{ matrix.target }}
+          path: |
+            komponist-bundled-clap-smoke.tar.gz
+            komponist-bundled-clap-smoke.zip
+          if-no-files-found: error

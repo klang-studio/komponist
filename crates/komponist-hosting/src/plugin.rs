@@ -153,6 +153,23 @@ pub trait HostedPlugin {
     /// The parameter list (may be long; call on load and after `ParamsChanged`).
     fn params(&self) -> Vec<ParamInfo>;
 
+    /// The immutable descriptor read once after plugin initialization. The bridge checks the
+    /// parameter bindings again whenever it publishes a parameter inventory.
+    fn native_layout(&self) -> Option<(&[u8], &komponist_ipc::native_layout::NativeLayout)> {
+        None
+    }
+
+    /// Loader and playback snapshot. A tempo requests preparation while audio is detached.
+    fn sampler_ui(
+        &self,
+        _export_tempo: Option<f64>,
+    ) -> Option<komponist_ipc::sampler_ui::Snapshot> {
+        None
+    }
+
+    /// Audition or release a slice without changing the plugin's persisted state.
+    fn preview_sampler_slice(&self, _time: Option<f64>) {}
+
     /// Current plain value of parameter `id` (main-thread view; CLAP `params.get_value`, VST3
     /// controller).
     fn param_value(&self, id: u32) -> Option<f64>;
@@ -241,6 +258,14 @@ pub trait HostedProcessor: Send {
     /// Processes one block.
     fn process(&mut self, block: &mut ProcessBlock<'_>) -> ProcessStatus;
 
+    /// Begin collection of gain reduction for the next process call.
+    fn begin_effect_meter(&mut self, _detector: bool) {}
+
+    /// Return readings after a process call for which effect meters were requested.
+    fn end_effect_meter(&mut self) -> Option<komponist_ipc::effect_meter::BlockMeter> {
+        None
+    }
+
     /// Routes VST3 controller updates through the host. Called before processing starts.
     fn use_host_controller_sync(&mut self) {}
 
@@ -282,7 +307,7 @@ pub struct ProcessBlock<'a> {
     pub output: [&'a mut [f32]; 2],
     /// Input events sorted by offset (< `frames`).
     pub events_in: &'a [WireEvent],
-    /// Sink for the plugin's output events (parameter values and gestures).
+    /// Sink for the plugin's output events (notes, MIDI, parameter values and gestures).
     pub events_out: EventOut<'a>,
     /// Transport at frame 0.
     pub transport: &'a WireTransport,

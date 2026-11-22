@@ -69,9 +69,7 @@ pub static SPEC: Spec = Spec {
     },
     params,
     layout,
-    dsp,
     presets: presets::presets,
-    event_stage: None,
     preset_aliases: &[],
     migrate_params: None,
     cache: SpecCache::new(),
@@ -81,8 +79,9 @@ fn params(t: Lang) -> Vec<ParamInfo> {
     params::params(t)
 }
 
-fn dsp() -> Box<dyn Dsp> {
-    // The tables are built here, off the audio thread, once per process.
+/// surf with its parameters at their defaults. The tables are built here, off the audio thread,
+/// once per process.
+pub fn dsp() -> Box<dyn Dsp> {
     bank::bank();
     Box::new(Surf::new())
 }

@@ -2,7 +2,7 @@
 # Builds komponist (release) and packs the Windows zip: dist/komponist-<version>-windows-x86_64.zip with its .sha256.
 # Windows only, run from Git Bash (MSVC toolchain, bsdtar from Windows 10+). Used by the release job and by hand.
 #
-#   scripts/package-windows.sh [--skip-build] [--no-asio] [--out DIR] [--name NAME]
+#   scripts/package-windows.sh [--skip-build] [--no-asio] [--out DIR] [--name NAME] [--bundled-clap DIR]
 #
 # The build has ASIO (cargo feature `asio`, W8) unless --no-asio is given. ASIO needs LLVM's libclang for bindgen
 # (LIBCLANG_PATH, or "C:\Program Files\LLVM\bin", where the LLVM installer and the windows-2025 runner put it). The
@@ -31,12 +31,14 @@ skip_build=0
 asio=1
 out=dist
 name=
+bundled_clap=
 while [ $# -gt 0 ]; do
     case "$1" in
         --skip-build) skip_build=1 ;;
         --no-asio) asio=0 ;;
         --out) shift; out="${1:?--out needs a folder}" ;;
         --name) shift; name="${1:?--name needs a name}" ;;
+        --bundled-clap) shift; bundled_clap="${1:?--bundled-clap needs a folder}" ;;
         -h | --help) sed -n '2,26p' "$0"; exit 0 ;;
         *) echo "package-windows.sh: unknown argument $1" >&2; exit 2 ;;
     esac
@@ -69,11 +71,30 @@ if [ "$skip_build" = 0 ] && [ "$asio" = 1 ]; then
     features=(--features asio)
 fi
 
+source scripts/bundled-clap-build.sh
+stage_bundled_clap=0
+if [ -z "$bundled_clap" ]; then
+    if [ "$skip_build" = 1 ]; then
+        echo "package-windows.sh: --skip-build requires the matching --bundled-clap directory" >&2
+        exit 2
+    fi
+    staging="$(mktemp -d)"
+    trap 'rm -rf -- "$staging"' EXIT
+    bundled_clap="$staging/bundled-clap"
+    stage_bundled_clap=1
+fi
+
 if [ "$skip_build" = 0 ]; then
     # One heavy build at a time across worktrees, at low priority (CLAUDE.md, "Build load").
     (
         source scripts/build-lock.sh
-        lowprio cargo build --release -p komponist-app --bin komponist ${features[@]+"${features[@]}"}
+        if [ "$stage_bundled_clap" = 1 ]; then
+            digest="$(stage_native_bundled_clap "$bundled_clap")"
+        else
+            digest="$(bundled_clap_manifest_digest "$bundled_clap")"
+        fi
+        export KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256="$digest"
+        lowprio cargo build --locked --release -p komponist-app --bin komponist ${features[@]+"${features[@]}"}
     )
 fi
 exe=target/release/komponist.exe
@@ -111,6 +132,8 @@ dir="$out/$name"
 rm -rf "$dir" "$out/$name.zip" "$out/$name.zip.sha256"
 mkdir -p "$dir"
 cp "$exe" "$dir/komponist.exe"
+cp -R "$bundled_clap" "$dir/bundled-clap"
+"$dir/komponist.exe" --verify-bundled-clap
 rm -rf "$out/.signing"
 cp LICENSE "$dir/LICENSE"
 cat >"$dir/README.txt" <<README

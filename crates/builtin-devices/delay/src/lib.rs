@@ -36,9 +36,7 @@ pub static SPEC: Spec = Spec {
     },
     params,
     layout,
-    dsp,
     presets,
-    event_stage: None,
     preset_aliases: &[
         ("Achtel Ping-Pong", "Eighth Ping-Pong"),
         ("Punktierte Achtel", "Dotted Eighths"),
@@ -253,7 +251,7 @@ struct Delay {
     countdown: usize,
 }
 
-fn dsp() -> Box<dyn Dsp> {
+pub fn dsp() -> Box<dyn Dsp> {
     let mut d = Delay {
         rate: INITIAL_RATE,
         lines: [Ring::default(), Ring::default()],

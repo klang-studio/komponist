@@ -53,13 +53,14 @@ use komponist_hosting::FdEvents;
 use komponist_hosting::GuiParent;
 use komponist_hosting::host_loop::notification_bits as bits;
 use komponist_hosting::{
-    ActivateConfig, HostContext, HostedPlugin, HostingError, PluginKind, RenderMode, TimerId,
+    ActivateConfig, HostContext, HostNotify, HostedPlugin, HostingError, PluginKind, RenderMode,
+    TimerId,
 };
 use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError};
 use komponist_ipc::shm::MAX_BLOCK;
 use komponist_ipc::{
     BridgeChannel, BridgeMsg, BridgeServer, BridgeState, ChannelError, ControlMsg, ErrorContext,
-    GuiTarget, LoadedInfo, LogLevel, ParamValue, ShmRegion, WireEvent, WireEventKind,
+    GuiTarget, LoadedInfo, LogLevel, ParamInfo, ParamValue, ShmRegion, WireEvent, WireEventKind,
 };
 #[cfg(target_os = "linux")]
 use rustix::event::{PollFd, PollFlags};
@@ -648,6 +649,16 @@ impl Bridge {
             // GUI edits while inactive. While active, the plugin flushes in the next block.
             let mut out = Vec::new();
             plugin.flush_params(&[], &mut out);
+            let edits: Vec<_> = out
+                .iter()
+                .filter_map(|event| match event.decode() {
+                    Some(WireEventKind::ParamValue { id, value }) => Some((id, value)),
+                    _ => None,
+                })
+                .collect();
+            if !edits.is_empty() {
+                self.send(BridgeMsg::PluginParamEdits(edits));
+            }
             self.queue_flushed(&out);
         }
         if pending & bits::PARAM_EDITED != 0 {
@@ -801,6 +812,24 @@ impl Bridge {
                 // Answered in every state (an empty list before `Load`).
                 self.report_params();
             }
+            ControlMsg::GetSamplerUi(request, export_tempo) => {
+                let snapshot = self
+                    .plugin
+                    .as_ref()
+                    .and_then(|plugin| plugin.sampler_ui(export_tempo));
+                let encoded = snapshot.and_then(|snapshot| {
+                    let mut bytes = vec![0; komponist_ipc::sampler_ui::MAX_BYTES];
+                    let len = snapshot.encode(&mut bytes)?;
+                    bytes.truncate(len);
+                    Some(bytes)
+                });
+                self.send(BridgeMsg::SamplerUi(request, encoded));
+            }
+            ControlMsg::PreviewSamplerSlice(time) => {
+                if let Some(plugin) = &self.plugin {
+                    plugin.preview_sampler_slice(time);
+                }
+            }
             ControlMsg::SetParam { id, value } => self.set_param(id, value),
             ControlMsg::OpenGui(target) => self.open_gui(target),
             ControlMsg::SetGuiSize(size) => {
@@ -910,6 +939,7 @@ impl Bridge {
                 }
             })
             .collect();
+        let native_layout = self.layout_for_params(plugin.as_ref(), &params);
         let info = LoadedInfo {
             descriptor: plugin.descriptor().clone(),
             params,
@@ -917,11 +947,27 @@ impl Bridge {
             latency: plugin.latency(),
             note_names: plugin.note_names(),
             has_gui: plugin.has_gui(),
+            native_layout,
         };
         self.region.set_latency(info.latency);
         self.plugin = Some(plugin);
         self.region.set_bridge_state(BridgeState::Loaded);
         self.send(BridgeMsg::Loaded(Box::new(info)));
+    }
+
+    fn layout_for_params(
+        &self,
+        plugin: &dyn HostedPlugin,
+        params: &[ParamInfo],
+    ) -> Option<Vec<u8>> {
+        let (bytes, layout) = plugin.native_layout()?;
+        match layout.validate_params(params) {
+            Ok(()) => Some(bytes.to_vec()),
+            Err(error) => {
+                self.notify.log(LogLevel::Warning, &error.to_string());
+                None
+            }
+        }
     }
 
     fn report_params(&mut self) -> bool {
@@ -936,7 +982,14 @@ impl Bridge {
             return false;
         }
         self.params_due = None;
-        self.send(BridgeMsg::Params(params));
+        let native_layout = self
+            .plugin
+            .as_ref()
+            .and_then(|plugin| self.layout_for_params(plugin.as_ref(), &params));
+        self.send(BridgeMsg::Params {
+            params,
+            native_layout,
+        });
         true
     }
 

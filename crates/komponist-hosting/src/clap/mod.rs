@@ -13,9 +13,13 @@
 //! (CLAP thread-check reports it as such), processor methods mark their thread as the audio thread
 //! while they run.
 
+mod effect_meter;
 mod events;
 mod host;
+mod native_layout;
 mod processor;
+mod sampler_ui;
+mod sidechain_fallback;
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -170,6 +174,8 @@ pub(crate) fn scan(bundle: &Path) -> Result<Vec<PluginDescriptor>, HostingError>
 #[derive(Clone, Copy)]
 struct Extensions {
     audio_ports: Option<PluginAudioPorts>,
+    sidechain_from_main: bool,
+    effect_meter: Option<effect_meter::EffectMeter>,
     note_ports: Option<PluginNotePorts>,
     params: Option<PluginParams>,
     state: Option<PluginState>,
@@ -186,6 +192,8 @@ impl Extensions {
     fn query(handle: &PluginMainThreadHandle) -> Extensions {
         Extensions {
             audio_ports: handle.get_extension(),
+            sidechain_from_main: sidechain_fallback::configure(handle),
+            effect_meter: effect_meter::EffectMeter::query(handle.as_raw()),
             note_ports: handle.get_extension(),
             params: handle.get_extension(),
             state: handle.get_extension(),
@@ -224,6 +232,7 @@ pub(crate) struct ClapPlugin {
     ext: Extensions,
     context: HostContext,
     has_gui: bool,
+    native_layout: Option<(Vec<u8>, komponist_ipc::native_layout::NativeLayout)>,
     gui: Option<OpenGui>,
     render_mode: RenderMode,
 }
@@ -278,6 +287,14 @@ impl ClapPlugin {
             ..descriptor
         };
 
+        let native_layout = match native_layout::read(handle.as_raw()) {
+            Ok(layout) => layout,
+            Err(error) => {
+                context.notify.log(LogLevel::Warning, &error.to_string());
+                None
+            }
+        };
+
         Ok(ClapPlugin {
             instance: RefCell::new(instance),
             _entry: entry,
@@ -285,6 +302,7 @@ impl ClapPlugin {
             ext,
             context,
             has_gui,
+            native_layout,
             gui: None,
             render_mode: RenderMode::Realtime,
         })
@@ -354,6 +372,23 @@ impl HostedPlugin for ClapPlugin {
         &self.descriptor
     }
 
+    fn native_layout(&self) -> Option<(&[u8], &komponist_ipc::native_layout::NativeLayout)> {
+        self.native_layout
+            .as_ref()
+            .map(|(bytes, layout)| (bytes.as_slice(), layout))
+    }
+
+    fn sampler_ui(&self, export_tempo: Option<f64>) -> Option<komponist_ipc::sampler_ui::Snapshot> {
+        sampler_ui::snapshot(
+            self.instance.borrow_mut().plugin_handle().as_raw(),
+            export_tempo,
+        )
+    }
+
+    fn preview_sampler_slice(&self, time: Option<f64>) {
+        sampler_ui::preview(self.instance.borrow_mut().plugin_handle().as_raw(), time);
+    }
+
     fn has_gui(&self) -> bool {
         self.has_gui
     }
@@ -376,7 +411,7 @@ impl HostedPlugin for ClapPlugin {
         }
         let ext = self.ext;
         let mut instance = self.instance.borrow_mut();
-        let (inputs, outputs, notes) = {
+        let (inputs, outputs, notes, note_output) = {
             let handle = instance.plugin_handle();
             if let Some(render) = ext.render {
                 let mode = match self.render_mode {
@@ -390,10 +425,19 @@ impl HostedPlugin for ClapPlugin {
                     );
                 }
             }
+            let mut inputs = PortLayout::query(ext.audio_ports, &handle, true);
+            inputs.sidechain_from_main = ext.sidechain_from_main;
             (
-                PortLayout::query(ext.audio_ports, &handle, true),
+                inputs,
                 PortLayout::query(ext.audio_ports, &handle, false),
                 NoteTarget::query(ext.note_ports, &handle),
+                self.descriptor
+                    .features
+                    .iter()
+                    .any(|feature| feature == "note-effect")
+                    && ext
+                        .note_ports
+                        .is_some_and(|ports| ports.count(&handle, false) != 0),
             )
         };
         let stopped = instance
@@ -411,7 +455,9 @@ impl HostedPlugin for ClapPlugin {
             &inputs,
             &outputs,
             notes,
+            note_output,
             config.max_frames,
+            ext.effect_meter,
         )))
     }
 
@@ -496,7 +542,10 @@ impl HostedPlugin for ClapPlugin {
         let Some(mut handle) = instance.inactive_plugin_handle() else {
             return;
         };
-        let mut sink = WireSink(|e| output.push(e));
+        let mut sink = WireSink::flush(|event| {
+            output.push(event);
+            true
+        });
         params.flush(
             &mut handle,
             &InputEvents::from_buffer(&list),

@@ -34,6 +34,7 @@ use komponist_engine::Command;
 use komponist_general_sampler as general_sampler;
 use komponist_model::edits;
 use komponist_model::{AudioFile, ChannelRef, ClipContent, DeviceId, Project, TrackId};
+use komponist_plugins::bundled_sampler;
 use komponist_sampler as sampler;
 use komponist_sampler::{Collector, PadField, SampleLink, links};
 
@@ -54,15 +55,11 @@ pub fn demo_with_kit(
 ) -> std::io::Result<komponist_model::Project> {
     std::fs::create_dir_all(dir)?;
     let kit = sampler::testkit::write_kit(dir)?;
-    let mut state: Option<Vec<u8>> = None;
+    let mut state = Internal::Sampler.encode_state(&Internal::Sampler.defaults());
     for (pad, path) in kit.iter().enumerate() {
-        state = Some(links::write(
-            state.as_deref(),
-            pad,
-            Some(&SampleLink::new(path, None)),
-        ));
+        state = links::write(Some(&state), pad, Some(&SampleLink::new(path, None)));
     }
-    let state: Option<Arc<[u8]>> = state.map(Arc::from);
+    let state = Some(Arc::<[u8]>::from(state));
     for track in &mut project.tracks {
         for device in &mut Arc::make_mut(track).channel.devices {
             if Internal::from_plugin(&device.plugin) == Some(Internal::Sampler) {
@@ -96,6 +93,15 @@ pub(crate) struct State {
     /// Per sampler: the pad of the step row, the selected pad and the hit counter of the last
     /// frame.
     pads: std::collections::HashMap<DeviceId, PadSync>,
+    /// Parameters with edits awaiting the document's next accepted snapshot. Values live in the host.
+    pending_params: std::collections::HashMap<DeviceId, std::collections::BTreeSet<u32>>,
+}
+
+impl State {
+    pub(crate) fn forget_device_state(&mut self) {
+        self.pads.clear();
+        self.pending_params.clear();
+    }
 }
 
 enum WaveformPreview {
@@ -108,6 +114,7 @@ type SamplerDevice = (DeviceId, Option<TrackId>, Internal, Option<Arc<[u8]>>);
 
 fn sample_device_kind(device: &komponist_model::Device) -> Option<Internal> {
     Internal::from_plugin(&device.plugin)
+        .or_else(|| bundled_sampler::kind(&device.plugin))
         .filter(|kind| matches!(kind, Internal::Sampler | Internal::GeneralSampler))
 }
 
@@ -158,6 +165,73 @@ impl App {
         Some(found.state.clone())
     }
 
+    pub(crate) fn remember_sampler_param(&mut self, device: DeviceId, wire: u32) {
+        if self
+            .project()
+            .find_device(device)
+            .is_some_and(|(_, _, d)| bundled_sampler::kind(&d.plugin).is_some())
+        {
+            self.dialogs
+                .samples
+                .pending_params
+                .entry(device)
+                .or_default()
+                .insert(wire);
+        }
+    }
+
+    pub(crate) fn forget_sampler_params(&mut self, device: DeviceId) {
+        self.dialogs.samples.pending_params.remove(&device);
+    }
+
+    /// A snapshot can retire the edit journal once it is in the document and the host
+    /// certifies that it still represents the current parameter bases.
+    pub(crate) fn reconcile_sampler_params(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+        if self.dialogs.samples.pending_params.contains_key(&device)
+            && self.engine.host().is_current_param_snapshot(device, state)
+        {
+            self.forget_sampler_params(device);
+        }
+    }
+
+    pub(crate) fn reset_sampler_hit(&mut self, device: DeviceId) {
+        if let Some(sync) = self.dialogs.samples.pads.get_mut(&device) {
+            sync.hit = 0;
+        }
+    }
+
+    /// Commit knob edits independently so undoing an asset edit restores the previous link
+    /// with the current settings, including controls still waiting for a plugin snapshot.
+    pub(crate) fn flush_sampler_params(&mut self, device: DeviceId) {
+        let Some(wires) = self.dialogs.samples.pending_params.get(&device) else {
+            return;
+        };
+        let Some((_, _, d)) = self.project().find_device(device) else {
+            return;
+        };
+        let Some(kind) = bundled_sampler::kind(&d.plugin) else {
+            return;
+        };
+        let host = self.engine.host();
+        let Some(ids) = host
+            .native_layout(device)
+            .and_then(|layout| layout.author_ids())
+        else {
+            return;
+        };
+        let params = kind.params().iter().filter_map(|info| {
+            let id = *ids.get(info.id.as_str()).filter(|id| wires.contains(id))?;
+            // The host orders plugin-side and application-side edits on one parameter base.
+            Some((info, host.param_base(device, id)?))
+        });
+        if let Some(state) =
+            bundled_sampler::edit_params(&d.plugin.version, d.state.as_deref(), params)
+        {
+            self.store_sampler_knob_state(device, &state.into());
+            self.forget_sampler_params(device);
+        }
+    }
+
     /// The actions of the sampler's samples; `false` if `action` is not one of them.
     pub(crate) fn sampler_action(&mut self, action: &PluginAction) -> bool {
         match action {
@@ -182,6 +256,7 @@ impl App {
     /// Links `path` to the pad: the pad's start and end return to the whole sample, the link goes
     /// into the device state, the sample loads. One undo step ("Sample laden").
     fn load_sample(&mut self, device: DeviceId, pad: usize, path: &Path) {
+        self.flush_sampler_params(device);
         self.in_one_step("undo-sample-load", |app| app.link_sample(device, pad, path));
     }
 
@@ -189,6 +264,28 @@ impl App {
         let Some((_, _, found)) = self.project().find_device(device) else {
             return;
         };
+        if let Some(kind) = bundled_sampler::kind(&found.plugin) {
+            let dir = self.project_dir();
+            let state = found.state.as_deref();
+            let relinking = state.is_some_and(|state| {
+                bundled_sampler::missing_links(state, dir.as_deref())
+                    .iter()
+                    .any(|(slot, _)| *slot == pad)
+            });
+            let link = SampleLink::new(path, dir.as_deref());
+            let edited = bundled_sampler::edit_link(
+                kind,
+                &found.plugin.version,
+                state,
+                pad,
+                Some(&link),
+                relinking,
+            );
+            if self.apply_bundled_sample_edit(device, edited, "undo-sample-load") {
+                self.report_sample_loaded(kind, pad, &link);
+            }
+            return;
+        }
         let Some(kind) = sample_device_kind(found).filter(|kind| valid_slot(*kind, pad)) else {
             return;
         };
@@ -232,6 +329,30 @@ impl App {
             }
             handle.load_link(pad, link.clone(), dir);
         }
+        self.report_sample_loaded(kind, pad, &link);
+    }
+
+    fn apply_bundled_sample_edit(
+        &mut self,
+        device: DeviceId,
+        state: Option<Vec<u8>>,
+        label: &str,
+    ) -> bool {
+        let Some(state) = state else {
+            return false;
+        };
+        let state: Arc<[u8]> = state.into();
+        if !self.engine.host_mut().set_state(device, &state) {
+            let name = self.device_name(device);
+            self.set_status(self.lang.status_state_load_failed(&name), StatusKind::Error);
+            return false;
+        }
+        self.store_param_state(device, &state, label);
+        self.forget_sampler_params(device);
+        true
+    }
+
+    fn report_sample_loaded(&mut self, kind: Internal, pad: usize, link: &SampleLink) {
         let name = if link.name.is_empty() {
             self.lang.status_sample_unnamed()
         } else {
@@ -246,12 +367,28 @@ impl App {
     }
 
     fn clear_sample(&mut self, device: DeviceId, pad: usize) {
+        self.flush_sampler_params(device);
         let Some((_, _, found)) = self.project().find_device(device) else {
             return;
         };
         let Some(kind) = sample_device_kind(found).filter(|kind| valid_slot(*kind, pad)) else {
             return;
         };
+        if bundled_sampler::kind(&found.plugin).is_some() {
+            let Some(state) = found.state.as_deref() else {
+                return;
+            };
+            let edited = bundled_sampler::edit_link(
+                kind,
+                &found.plugin.version,
+                Some(state),
+                pad,
+                None,
+                false,
+            );
+            self.apply_bundled_sample_edit(device, edited, "undo-sample-clear");
+            return;
+        }
         let mut new = links::write(found.state.as_deref(), pad, None);
         if kind == Internal::GeneralSampler {
             new =
@@ -268,6 +405,7 @@ impl App {
     }
 
     fn set_sampler_slices(&mut self, device: DeviceId, settings: &general_sampler::Settings) {
+        self.flush_sampler_params(device);
         let Some((_, _, found)) = self.project().find_device(device) else {
             return;
         };
@@ -275,6 +413,11 @@ impl App {
             return;
         }
         let state = found.state.as_deref();
+        if bundled_sampler::kind(&found.plugin).is_some() {
+            let edited = state.and_then(|state| bundled_sampler::edit_slices(state, settings));
+            self.apply_bundled_sample_edit(device, edited, "undo-sample-slices");
+            return;
+        }
         let new = general_sampler::write_settings(state, settings);
         let updated = general_sampler::read_settings(Some(&new));
         if general_sampler::read_settings(state) == updated {
@@ -315,22 +458,33 @@ impl App {
             return;
         }
         if let Some(time) = slice_time {
+            let bundled = bundled_sampler::kind(&found.plugin).is_some();
             self.stop_waveform_preview();
-            if let Some(handle) = self.engine.host().sampler(device) {
+            if bundled && self.engine.host().sampler_ui(device).is_some() {
+                self.engine.host().preview_sampler_slice(device, Some(time));
+                self.dialogs.samples.waveform_preview = Some(WaveformPreview::Slice(device));
+            } else if let Some(handle) = self.engine.host().sampler(device) {
                 handle.preview_slice(time);
                 self.dialogs.samples.waveform_preview = Some(WaveformPreview::Slice(device));
             }
             return;
         }
-        let values = kind
-            .decode_state(found.state.as_deref())
-            .unwrap_or_else(|_| kind.defaults());
-        let key = kind
-            .params()
-            .iter()
-            .zip(values)
-            .find(|(param, _)| param.id.as_str() == "root")
-            .map_or(60, |(_, value)| value.round() as u8);
+        let key = if bundled_sampler::kind(&found.plugin).is_some() {
+            let host = self.engine.host();
+            host.native_layout(device)
+                .and_then(|layout| layout.author_ids()?.get("root"))
+                .and_then(|id| host.param_value(device, *id))
+                .map_or(60, |value| value.value.round().clamp(0.0, 127.0) as u8)
+        } else {
+            let values = kind
+                .decode_state(found.state.as_deref())
+                .unwrap_or_else(|_| kind.defaults());
+            kind.params()
+                .iter()
+                .zip(values)
+                .find(|(param, _)| param.id.as_str() == "root")
+                .map_or(60, |(_, value)| value.round() as u8)
+        };
         self.stop_waveform_preview();
         self.dialogs.samples.waveform_preview = Some(WaveformPreview::Sample { track, key });
         self.engine.send(Command::LiveNote {
@@ -352,6 +506,8 @@ impl App {
             Some(WaveformPreview::Slice(device)) => {
                 if let Some(handle) = self.engine.host().sampler(device) {
                     handle.release_slice_preview();
+                } else {
+                    self.engine.host().preview_sampler_slice(device, None);
                 }
             }
             None => {}
@@ -392,28 +548,29 @@ impl App {
             return;
         };
         let dir = self.project_dir();
-        let was_missing = self
-            .sampler_state(device)
-            .flatten()
-            .map(|s| links::missing(Some(&s), dir.as_deref()))
-            .is_some_and(|m| m.iter().any(|(p, _)| *p == pad));
-        let others = if was_missing {
-            missing_samples(self.project(), dir.as_deref())
-        } else {
-            Vec::new()
-        };
+        let others = missing_samples(self.project(), dir.as_deref());
+        let was_missing = others
+            .iter()
+            .any(|sample| (sample.device, sample.pad) == (device, pad));
+        let mut links = vec![(device, pad, path.clone())];
+        if let Some(folder) = path.parent().filter(|_| was_missing) {
+            links.extend(others.into_iter().filter_map(|other| {
+                if (other.device, other.pad) == (device, pad) || other.file.is_empty() {
+                    return None;
+                }
+                let candidate = folder.join(other.file);
+                candidate
+                    .is_file()
+                    .then_some((other.device, other.pad, candidate))
+            }));
+        }
+        for &(device, _, _) in &links {
+            self.flush_sampler_params(device);
+        }
         // The chosen sample and the ones it finds with it are one undo step.
         self.in_one_step("undo-sample-load", |app| {
-            app.load_sample(device, pad, &path);
-            let Some(folder) = path.parent() else { return };
-            for other in others {
-                if (other.device, other.pad) == (device, pad) || other.file.is_empty() {
-                    continue;
-                }
-                let candidate = folder.join(&other.file);
-                if candidate.is_file() {
-                    app.load_sample(other.device, other.pad, &candidate);
-                }
+            for (device, pad, path) in links {
+                app.link_sample(device, pad, &path);
             }
         });
     }
@@ -426,84 +583,51 @@ impl App {
             self.open_file_browser(Purpose::Save);
             return;
         };
-        match self.collect_samples(&file) {
-            Ok(collector) => {
-                for path in &collector.skipped {
-                    eprintln!(
-                        "komponist: not collected, not an audio file: {}",
-                        path.display()
-                    );
-                }
-                if self.save_to(&file) {
-                    let save_warning = self
-                        .ui
-                        .status
-                        .as_ref()
-                        .filter(|status| status.kind == StatusKind::Error)
-                        .map(|status| status.text.clone());
-                    let copied = collector.log.iter().filter(|c| c.copied).count();
-                    let folder = sampler::links::samples_folder_name(&file);
-                    let text = match copied {
-                        0 => self.lang.status_collected_none(&folder),
-                        n => self.lang.status_collected(n, &folder),
-                    };
-                    let (mut text, mut kind) = if collector.skipped.is_empty() {
-                        (text, StatusKind::Success)
-                    } else {
-                        let files = collector
-                            .skipped
-                            .iter()
-                            .map(|p| p.file_name().unwrap_or(p.as_os_str()).to_string_lossy())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        (
-                            format!(
-                                "{text} · {}",
-                                self.lang
-                                    .status_collect_skipped(collector.skipped.len(), files)
-                            ),
-                            StatusKind::Error,
-                        )
-                    };
-                    if let Some(warning) = save_warning {
-                        text = format!("{warning} · {text}");
-                        kind = StatusKind::Error;
-                    }
-                    self.set_status(text, kind);
-                }
-            }
-            Err(e) => {
-                eprintln!("komponist: collecting samples failed: {e}");
-                self.set_status(self.lang.status_collect_failed(e), StatusKind::Error);
-            }
+        let mut collector = Collector::new(&file);
+        if !self.save_to_collected(&file, &mut collector) {
+            return;
         }
-    }
-
-    /// Copies the samples of every sampler into the samples folder of `file` and points the links
-    /// there; returns the collector (its log says what was copied). The steps of the undo history
-    /// follow, each from its own state: links to collected files point to the copies, the others
-    /// are rebased; a sample only an earlier step uses is not copied (#86). A failed copy leaves
-    /// the document as it was.
-    fn collect_samples(&mut self, file: &Path) -> std::io::Result<Collector> {
-        let mut collector = Collector::new(file);
-        let old_dir = self.project_dir();
-        for (_, _, _, state) in self.samplers() {
-            collector.collect(state.as_deref(), old_dir.as_deref())?;
+        for path in &collector.skipped {
+            eprintln!(
+                "komponist: not collected, not an audio file: {}",
+                path.display()
+            );
         }
-        for file in audio_files(self.project()) {
-            if let Some(found) = file.resolve(old_dir.as_deref()) {
-                collector.collect_file(&found)?;
-            }
-        }
-        let project_dir = collector.project_dir().to_path_buf();
-        self.doc.rewrite_untracked(|p| {
-            rewrite_links(
-                p,
-                |state| collector.relink(state, old_dir.as_deref()),
-                |file| relink_audio_file(&collector, file, old_dir.as_deref(), &project_dir),
+        let save_warning = self
+            .ui
+            .status
+            .as_ref()
+            .filter(|status| status.kind == StatusKind::Error)
+            .map(|status| status.text.clone());
+        let copied = collector.log.iter().filter(|c| c.copied).count();
+        let folder = sampler::links::samples_folder_name(&file);
+        let text = match copied {
+            0 => self.lang.status_collected_none(&folder),
+            n => self.lang.status_collected(n, &folder),
+        };
+        let (mut text, mut kind) = if collector.skipped.is_empty() {
+            (text, StatusKind::Success)
+        } else {
+            let files = collector
+                .skipped
+                .iter()
+                .map(|p| p.file_name().unwrap_or(p.as_os_str()).to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(", ");
+            (
+                format!(
+                    "{text} · {}",
+                    self.lang
+                        .status_collect_skipped(collector.skipped.len(), files)
+                ),
+                StatusKind::Error,
             )
-        });
-        Ok(collector)
+        };
+        if let Some(warning) = save_warning {
+            text = format!("{warning} · {text}");
+            kind = StatusKind::Error;
+        }
+        self.set_status(text, kind);
     }
 
     // --------------------------------------------------------------------------------------------
@@ -522,10 +646,17 @@ impl App {
             if kind != Internal::Sampler {
                 continue;
             }
-            let Some(handle) = self.engine.host().sampler(device) else {
+            let host = self.engine.host();
+            let hit = host.sampler(device).map_or_else(
+                || {
+                    host.sampler_ui(device)
+                        .map(|data| (data.last_hit.0, usize::from(data.last_hit.1)))
+                },
+                |handle| Some(handle.last_hit()),
+            );
+            let Some((hit_counter, hit_pad)) = hit else {
                 continue;
             };
-            let (hit_counter, hit_pad) = handle.last_hit();
             let sel = crate::views::devices::selected_pad(ctx, device);
             // The pattern of the open step clip, if it is this sampler's track's.
             let pattern = open
@@ -554,17 +685,24 @@ impl App {
                     sel,
                     hit: hit_counter,
                 });
-            let follow = Internal::Sampler
-                .decode_state(state.as_deref())
-                .ok()
-                .and_then(|v| v.get(sampler::FOLLOW).copied())
-                .is_some_and(|v| v >= 0.5);
+            let follow = host
+                .native_layout(device)
+                .and_then(|layout| layout.author_ids()?.get("follow"))
+                .and_then(|id| host.param_value(device, *id))
+                .map(|value| value.value >= 0.5)
+                .unwrap_or_else(|| {
+                    Internal::Sampler
+                        .decode_state(state.as_deref())
+                        .ok()
+                        .and_then(|v| v.get(sampler::FOLLOW).copied())
+                        .is_some_and(|v| v >= 0.5)
+                });
             let mut now = sel;
             if cursor_pad != last.cursor
                 && let Some(pad) = cursor_pad
             {
                 now = pad;
-            } else if follow && hit_counter != last.hit {
+            } else if follow && hit_counter != 0 && hit_counter != last.hit {
                 now = hit_pad;
             }
             if now != sel {
@@ -610,17 +748,32 @@ fn audio_files(project: &Project) -> Vec<&AudioFile> {
         .collect()
 }
 
-/// `file` pointed where `collector` put it (or, for a file this run did not collect, rebased to
-/// the project's folder); `None` if it does not resolve (a missing file keeps its link).
-fn relink_audio_file(
-    collector: &Collector,
-    file: &AudioFile,
-    old_dir: Option<&Path>,
-    project_dir: &Path,
-) -> Option<AudioFile> {
-    let found = file.resolve(old_dir)?;
-    let to = collector.placed(&found).unwrap_or(found);
-    Some(file.moved_to(&to, project_dir))
+/// Collect the current sample and audio-clip sources before rewriting the file or history.
+pub(crate) fn collect_sample_sources<'a>(
+    project: &Project,
+    collector: &mut Collector,
+    project_dir: Option<&Path>,
+    plugin_snapshot: impl Fn(DeviceId) -> Option<&'a [u8]>,
+) -> std::io::Result<()> {
+    for device in project
+        .tracks
+        .iter()
+        .flat_map(|track| track.channel.devices.iter())
+        .chain(project.master.devices.iter())
+    {
+        if bundled_sampler::kind(&device.plugin).is_some() {
+            let state = plugin_snapshot(device.id).or(device.state.as_deref());
+            bundled_sampler::collect_links(collector, state, project_dir)?;
+        } else if sample_device_kind(device).is_some() {
+            collector.collect(device.state.as_deref(), project_dir)?;
+        }
+    }
+    for file in audio_files(project) {
+        if let Some(found) = file.resolve(project_dir) {
+            collector.collect_file(&found)?;
+        }
+    }
+    Ok(())
 }
 
 /// Rewrites a project or history entry for the destination folder while it still resolves
@@ -633,7 +786,19 @@ pub(crate) fn rebase_project_links(
 ) -> Option<Project> {
     rewrite_links(
         project,
-        |state| links::rebase_with(state, old_dir, new_dir, &destination),
+        |device| {
+            if bundled_sampler::kind(&device.plugin).is_some() {
+                bundled_sampler::rebase_links(
+                    device.state.as_deref()?,
+                    old_dir,
+                    new_dir,
+                    &destination,
+                )
+            } else {
+                sample_device_kind(device)?;
+                links::rebase_with(device.state.as_deref(), old_dir, new_dir, &destination)
+            }
+        },
         |file| {
             let path = destination(file.resolve(old_dir)?);
             Some(file.moved_to(&path, new_dir))
@@ -645,7 +810,7 @@ pub(crate) fn rebase_project_links(
 /// (`None`: unchanged); `None` if nothing changed.
 fn rewrite_links(
     project: &Project,
-    samplers: impl FnMut(Option<&[u8]>) -> Option<Vec<u8>>,
+    samplers: impl FnMut(&komponist_model::Device) -> Option<Vec<u8>>,
     audio: impl FnMut(&AudioFile) -> Option<AudioFile>,
 ) -> Option<Project> {
     let after_samplers = rewrite_samplers(project, samplers);
@@ -660,15 +825,14 @@ fn rewrite_links(
 /// no state changed. `rewrite` returns the new state, `None` for "as it is".
 fn rewrite_samplers(
     project: &Project,
-    mut rewrite: impl FnMut(Option<&[u8]>) -> Option<Vec<u8>>,
+    mut rewrite: impl FnMut(&komponist_model::Device) -> Option<Vec<u8>>,
 ) -> Option<Project> {
     let changes: Vec<(DeviceId, Arc<[u8]>)> = project
         .tracks
         .iter()
         .flat_map(|t| t.channel.devices.iter())
         .chain(project.master.devices.iter())
-        .filter(|d| sample_device_kind(d).is_some())
-        .filter_map(|d| rewrite(d.state.as_deref()).map(|s| (d.id, Arc::from(s))))
+        .filter_map(|d| rewrite(d).map(|s| (d.id, Arc::from(s))))
         .collect();
     if changes.is_empty() {
         return None;

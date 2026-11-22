@@ -983,7 +983,7 @@ fn release_shutdown_and_drop_end_the_bridges() {
     for d in &devices {
         manager.create_processor(d, SETUP).unwrap();
     }
-    // In-process and unknown devices.
+    // A legacy device without a verified bundle and an unknown instance.
     let hexa = Device {
         plugin: PluginRef {
             format: PluginFormat::Builtin,
@@ -997,9 +997,9 @@ fn release_shutdown_and_drop_end_the_bridges() {
     };
     assert!(matches!(
         manager.create_processor(&hexa, SETUP),
-        Err(PluginError::InProcess(_))
+        Err(PluginError::NotInstalled(_))
     ));
-    assert_eq!(manager.status(DeviceId(9)), DeviceStatus::Ok);
+    assert_eq!(manager.status(DeviceId(9)), DeviceStatus::Missing);
     assert_eq!(manager.status(DeviceId(99)), DeviceStatus::Ok);
     assert_eq!(
         manager.open_gui(DeviceId(99), GuiTarget::X11Child { xid: 1, scale: 1.0 }),

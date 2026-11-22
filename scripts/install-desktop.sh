@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Installs the icon theme files, desktop entry, mime type and AppStream metainfo of komponist.
-# Does not install the executable (`cargo install --path crates/komponist-app` or copy
-# target/release/komponist to $PREFIX/bin). See docs/INSTALL.md.
+# Install the executable and its bundled-clap directory separately. See docs/INSTALL.md.
 #
 #   PREFIX=/usr scripts/install-desktop.sh        # system-wide (packaging: add DESTDIR=...)
 #   scripts/install-desktop.sh                    # PREFIX defaults to ~/.local
