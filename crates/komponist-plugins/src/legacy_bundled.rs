@@ -86,6 +86,7 @@ pub(crate) fn clap_id(kind: BuiltinKind) -> &'static str {
         BuiltinKind::Internal(Internal::Arpeggiator) => "org.klang-studio.komponist.arpeggiator",
         BuiltinKind::Internal(Internal::Tonleiter) => "org.klang-studio.komponist.scale",
         BuiltinKind::Internal(Internal::Volt) => "org.klang-studio.komponist.volt",
+        BuiltinKind::Internal(Internal::Surf) => "org.klang-studio.komponist.surf",
     }
 }
 

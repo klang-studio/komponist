@@ -1338,3 +1338,85 @@ fn stealing_and_retriggering_do_not_click() {
     assert!(step(23_900, 28_000) < 2.5 * slope);
     assert_eq!(peak(&out[0][30_000..]), 0.0);
 }
+
+// ------------------------------------------------------------------------------------------------
+// Golden render (#107): volt's voice is shared with surf; this pins volt's output bit for bit.
+
+/// FNV-1a over the bits of both channels.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn bits_hash(out: &[Vec<f32>; 2]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for s in out[0].iter().chain(&out[1]) {
+        for b in s.to_bits().to_le_bytes() {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    h
+}
+
+/// Init and every preset, a chord with bend, wheel and pressure, then the release; with unison and
+/// mono variants of Init. One hash each.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn golden_hashes() -> Vec<u64> {
+    let events = [
+        (0, on(40, 100)),
+        (0, on(47, 90)),
+        (300, on(52, 110)),
+        (700, on(59, 70)),
+        (6_000, cc(1, 90)),
+        (9_000, bend(3_000)),
+        (12_000, pressure(80)),
+        (18_000, off(40)),
+        (18_000, off(47)),
+        (20_000, off(52)),
+        (20_000, off(59)),
+        (22_000, on(64, 127)),
+        (26_000, off(64)),
+    ];
+    let mut setups: Vec<Vec<f64>> = vec![SPEC.defaults()];
+    for (key, value) in [("unison", 5.0), ("mode", 2.0), ("glide", 0.2)] {
+        let mut v = SPEC.defaults();
+        v[wire(key) as usize] = value;
+        if key == "glide" {
+            v[wire("mode") as usize] = 1.0;
+        }
+        setups.push(v);
+    }
+    setups.extend((0..presets::presets().len()).map(|i| SPEC.preset_values(i).unwrap()));
+    setups
+        .iter()
+        .map(|values| {
+            let mut p = InternalProcessor::from_dsp(&SPEC, values, crate::dsp());
+            p.activate(RATE, BLOCK).unwrap();
+            bits_hash(&render(&mut p, 32_000, &events, 120.0))
+        })
+        .collect()
+}
+
+/// Recorded before the voice became generic over the oscillator (#107). `libm` differs between
+/// platforms, so the hashes hold on Linux x86_64 only.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const GOLDEN: &[u64] = &[
+    0x383f1855d444e4d5,
+    0x421301a646ae40fb,
+    0x8b663e8295a4a765,
+    0xdd1907f812726eb1,
+    0x42bd62e5947bdfe9,
+    0x612874d0d13f2e45,
+    0x2a635e685574e479,
+    0x4876f0ff1f301ec9,
+    0xa26cf27dbd8725b8,
+    0x1c6b776d8166fbbd,
+    0x5830a2e5718ba971,
+    0xea3a2863456e254d,
+    0x09d1e2889d2c2bc9,
+    0x81aa22dcebceb25d,
+];
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn volt_renders_bit_for_bit_as_before_the_shared_voice() {
+    let hashes = golden_hashes();
+    assert_eq!(hashes, GOLDEN, "volt's output changed: {hashes:#x?}");
+}

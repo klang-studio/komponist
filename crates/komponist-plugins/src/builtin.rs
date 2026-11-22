@@ -79,6 +79,7 @@ mod tests {
             "arpeggiator",
             "tonleiter",
             "knurr",
+            "surf",
             "general-sampler",
         ];
         assert!(
@@ -135,12 +136,17 @@ mod tests {
     }
 
     #[test]
-    fn the_sampler_and_volt_are_instruments_the_effects_are_not() {
+    fn the_samplers_and_synths_are_instruments_the_effects_are_not() {
         for e in entries() {
             let instrument = e.plugin.name == "Hexa"
                 || matches!(
                     Internal::from_plugin(&e.plugin),
-                    Some(Internal::Sampler | Internal::GeneralSampler | Internal::Volt)
+                    Some(
+                        Internal::Sampler
+                            | Internal::GeneralSampler
+                            | Internal::Volt
+                            | Internal::Surf
+                    )
                 );
             assert_eq!(
                 e.kind == PluginKind::Instrument,

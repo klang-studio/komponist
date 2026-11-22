@@ -67,6 +67,7 @@ mod showcase;
 mod sidechain;
 mod state_sync;
 mod step_seq;
+mod surf;
 mod volt;
 
 mod audio_warp;

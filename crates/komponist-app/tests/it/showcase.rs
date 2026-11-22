@@ -69,8 +69,9 @@ fn every_device_is_built_in_and_resolves_in_the_catalog() {
                 || Internal::from_plugin(&device.plugin) == Some(Internal::Sampler)
         );
     }
-    // Drums 2, Bass 3, Lead 3, Pad 2, Keys 2, Arp 4, sampler demos 2, Reverb bus 1, master 1.
-    assert_eq!(count, 2 + 3 + 3 + 2 + 2 + 4 + 2 + 1 + 1);
+    // Drums 2, Bass 3, Lead 3, Pad 2, Keys 2, Arp 4, sampler demos 2, surf 1, Reverb bus 1,
+    // master 1.
+    assert_eq!(count, 2 + 3 + 3 + 2 + 2 + 4 + 2 + 1 + 1 + 1);
     // The Arp's MIDI effects come first, the Limiter is on the master.
     let arp = &track_named(&project, "Arp").channel.devices;
     let roles: Vec<_> = arp.iter().map(|d| d.role).collect();
@@ -131,11 +132,14 @@ fn the_song_is_the_design_fixtures_song() {
         .filter(|t| {
             !t.is_bus()
                 && !t.is_audio()
-                && !matches!(t.name.as_str(), "Glass Pluck" | "Glass Slices")
+                && !matches!(
+                    t.name.as_str(),
+                    "Glass Pluck" | "Glass Slices" | komponist_app::showcase::surf::TRACK
+                )
         })
         .collect();
     assert_eq!(songs.len(), fixture.tracks.len());
-    assert_eq!(showcase.tracks.len(), fixture.tracks.len() + 7);
+    assert_eq!(showcase.tracks.len(), fixture.tracks.len() + 8);
     for (i, (a, b)) in songs.iter().zip(&fixture.tracks).enumerate() {
         assert_eq!(
             (&a.name, a.hue, a.channel.pan),
@@ -559,4 +563,43 @@ fn the_demo_has_track_clip_and_master_automation() {
             .flat_map(|lane| lane.points.as_slice())
             .all(|point| (0.0..=1.0).contains(&point.value))
     );
+}
+
+#[test]
+fn surf_plays_over_the_pad_and_its_positions_morph() {
+    use komponist_model::Tick;
+    use komponist_model::automation::{AutomationTarget, effective_value_at};
+    use komponist_model::params::ParamId;
+
+    let project = showcase_project();
+    let track = track_named(&project, komponist_app::showcase::surf::TRACK);
+    let device = &track.channel.devices[0];
+    assert_eq!(Internal::from_plugin(&device.plugin), Some(Internal::Surf));
+    let (preset, changed) = Internal::Surf
+        .loaded_preset(device.state.as_deref())
+        .expect("a preset");
+    assert!(!changed);
+    assert_eq!(Internal::Surf.presets()[preset].name, "Vowel Pad");
+    let index = project
+        .tracks
+        .iter()
+        .position(|t| t.id == track.id)
+        .unwrap();
+    let notes = notes_of(&project, index);
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].len(), 8);
+    let target = AutomationTarget::Param {
+        device: device.id,
+        param: ParamId::new("osc_b_pos"),
+    };
+    let at = |bar: i64| effective_value_at(track, &target, Tick::from_steps(bar * 16)).unwrap();
+    assert!(at(8) < 0.2 && at(16) > 0.8 && at(12) > at(9));
+    // Position A runs through the whole table and back.
+    let a = AutomationTarget::Param {
+        device: device.id,
+        param: ParamId::new("osc_a_pos"),
+    };
+    let at = |bar: i64| effective_value_at(track, &a, Tick::from_steps(bar * 16)).unwrap();
+    assert_eq!((at(8), at(12)), (0.0, 1.0));
+    assert!(at(10) > 0.2 && at(10) < 0.8 && at(16) < 0.5);
 }

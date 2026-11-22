@@ -2664,6 +2664,7 @@ dependencies = [
  "komponist-plugins",
  "komponist-presse",
  "komponist-sampler",
+ "komponist-surf",
  "komponist-tokens",
  "komponist-ui",
  "komponist-volt",
@@ -2766,6 +2767,7 @@ dependencies = [
  "komponist-reverb",
  "komponist-sampler",
  "komponist-scale",
+ "komponist-surf",
  "komponist-volt",
  "serde_json",
 ]
@@ -2938,6 +2940,22 @@ dependencies = [
  "komponist-model",
  "komponist-native-clap-sdk",
  "komponist-scale",
+ "nice-plug",
+ "serde_json",
+]
+
+[[package]]
+name = "komponist-bundled-surf"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "komponist-bundled-clap-adapter",
+ "komponist-device-core",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-native-clap-sdk",
+ "komponist-surf",
+ "komponist-volt",
  "nice-plug",
  "serde_json",
 ]
@@ -3221,6 +3239,19 @@ name = "komponist-stretch"
 version = "0.2.0"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "komponist-surf"
+version = "0.2.0"
+dependencies = [
+ "assert_no_alloc",
+ "komponist-device-core",
+ "komponist-engine",
+ "komponist-i18n",
+ "komponist-model",
+ "komponist-volt",
+ "realfft",
 ]
 
 [[package]]

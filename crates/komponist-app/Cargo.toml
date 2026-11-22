@@ -26,6 +26,7 @@ komponist-general-sampler.workspace = true
 komponist-hexa.workspace = true
 komponist-presse.workspace = true
 komponist-sampler.workspace = true
+komponist-surf.workspace = true
 komponist-volt.workspace = true
 komponist-plugins.workspace = true
 # `komponist --bridge`: the plugin bridge runs inside this executable, in its own process (WP-94).

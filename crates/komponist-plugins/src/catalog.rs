@@ -828,7 +828,8 @@ mod tests {
         assert_eq!(names("vendor"), ["Big Hall", "Squash"]);
         // The built-in compressor matches by its feature (WP-93).
         assert_eq!(names("compress"), ["Presse", "Squash"]);
-        assert_eq!(names("synth"), ["Hexa", "Volt"]);
+        assert_eq!(names("synth"), ["Hexa", "Volt", "Surf"]);
+        assert_eq!(names("wavetable"), ["Surf"]);
         assert!(names("nothing like this").is_empty());
     }
 

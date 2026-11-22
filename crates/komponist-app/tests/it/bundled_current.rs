@@ -1,4 +1,4 @@
-//! Current-format projects exercised against the eleven verified release bundles.
+//! Current-format projects exercised against the twelve verified release bundles.
 
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -88,6 +88,8 @@ fn project(host: &PluginHost, sample: &Path) -> Fixture {
         ("volt", 64),
         ("sampler", sampler_key),
         ("general-sampler", 67),
+        // Last, so the note starts of the other tracks (and the sampler's stretch window) stay.
+        ("surf", 62),
     ]
     .into_iter()
     .enumerate()
@@ -126,8 +128,8 @@ fn project(host: &PluginHost, sample: &Path) -> Fixture {
         tracks.push(track);
     }
 
-    let [hexa, volt, sampler, general] = tracks[..] else {
-        unreachable!("fixture always creates four tracks");
+    let [hexa, volt, sampler, general, _surf] = tracks[..] else {
+        unreachable!("fixture always creates five tracks");
     };
     let mut insert = |slug, track, role, index, state| {
         let (next, device) = edits::insert_device(
@@ -418,7 +420,7 @@ fn current_project_round_trip_and_offline_render() {
     let mut authored = fixture.project;
     let path = project_folder.join("bundled.komponist");
     let expected = devices(&authored);
-    assert_eq!(expected.len(), 11);
+    assert_eq!(expected.len(), 12);
     save_project(&path, &authored).unwrap();
     let mut app = app_with(Project::new("Empty"), host);
     open(&mut app, &path);

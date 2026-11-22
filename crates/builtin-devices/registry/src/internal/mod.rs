@@ -34,13 +34,15 @@ pub enum Internal {
     Tonleiter,
     /// Virtual-analog synthesizer, an instrument (WP-95).
     Volt,
+    /// Wavetable synthesizer, an instrument on volt's engine (#107).
+    Surf,
     /// Chromatic sampler with waveform editing and slice playback.
     GeneralSampler,
 }
 
 impl Internal {
     /// All devices, in browser order.
-    pub const ALL: [Internal; 10] = [
+    pub const ALL: [Internal; 11] = [
         Internal::Sampler,
         Internal::Eq,
         Internal::Delay,
@@ -50,6 +52,7 @@ impl Internal {
         Internal::Arpeggiator,
         Internal::Tonleiter,
         Internal::Volt,
+        Internal::Surf,
         Internal::GeneralSampler,
     ];
 
@@ -65,6 +68,7 @@ impl Internal {
             Internal::Arpeggiator => &komponist_arpeggiator::SPEC,
             Internal::Tonleiter => &komponist_scale::SPEC,
             Internal::Volt => &komponist_volt::SPEC,
+            Internal::Surf => &komponist_surf::SPEC,
         }
     }
 
@@ -238,6 +242,7 @@ impl Internal {
             Self::Presse => komponist_presse::dsp(),
             Self::Sampler => komponist_sampler::dsp(),
             Self::Volt => komponist_volt::dsp(),
+            Self::Surf => komponist_surf::dsp(),
         };
         InternalProcessor::from_dsp(self.spec(), values, dsp)
     }

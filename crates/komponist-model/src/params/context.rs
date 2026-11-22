@@ -20,6 +20,8 @@ pub const SEL: &str = "sel";
 pub const ENV_VIEW: &str = "env_view";
 /// The LFO a device with several shows, `1` or `2` (`lfo{lfo_view}_rate`).
 pub const LFO_VIEW: &str = "lfo_view";
+/// The oscillator a device with several shows, `a` or `b` (`osc_{osc_view}_pos`, surf).
+pub const OSC_VIEW: &str = "osc_view";
 
 /// The values of the placeholders a view currently has.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

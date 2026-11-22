@@ -583,6 +583,9 @@ page-volt-envelopes = Envelopes
 # volt card, page 3.
 page-volt-matrix = Matrix
 
+# volt and surf: page of both LFOs in the public CLAP layout (bundled devices in other hosts).
+page-volt-lfos = LFOs
+
 # Name above the envelope switch on volt's page 2.
 label-volt-envelope = Envelope
 
@@ -635,3 +638,74 @@ param-general-sampler-lfo-depth = LFO depth
 param-general-sampler-velocity-target = Velocity target
 param-general-sampler-velocity-depth = Velocity depth
 param-general-sampler-pitch = Pitch
+
+## surf (`builtin-devices/surf/`), the wavetable instrument (#107). Oscillator B's octave and fine tune are volt's.
+
+# surf: the wavetable of oscillator A.
+param-surf-table-a = Table A
+
+# surf: the wavetable of oscillator B.
+param-surf-table-b = Table B
+
+# surf: the position in the table of oscillator A; also a matrix destination.
+param-surf-position-a = Position A
+
+# surf: the position in the table of oscillator B; also a matrix destination.
+param-surf-position-b = Position B
+
+# surf: octave of oscillator A.
+param-surf-a-oct = A Oct.
+
+# surf: fine tune of oscillator A.
+param-surf-a-fine = A Fine
+
+# surf: the name above the switch between oscillator A and B.
+label-surf-osc = Oscillator
+
+# surf: factory wavetable.
+choice-surf-table-basic = Basic Shapes
+
+# surf: factory wavetable.
+choice-surf-table-pulse = Pulse Width
+
+# surf: factory wavetable.
+choice-surf-table-sync = Sync
+
+# surf: factory wavetable.
+choice-surf-table-harmonics = Harmonics
+
+# surf: factory wavetable.
+choice-surf-table-odd-even = Odd–Even
+
+# surf: factory wavetable.
+choice-surf-table-organ = Organ
+
+# surf: factory wavetable.
+choice-surf-table-vowels = Vowels
+
+# surf: factory wavetable.
+choice-surf-table-choir = Choir
+
+# surf: factory wavetable.
+choice-surf-table-fm = FM
+
+# surf: factory wavetable.
+choice-surf-table-fold = Fold
+
+# surf: factory wavetable.
+choice-surf-table-bits = Bits
+
+# surf: factory wavetable.
+choice-surf-table-comb = Comb
+
+# surf: factory wavetable.
+choice-surf-table-glass = Glass
+
+# surf: factory wavetable.
+choice-surf-table-hollow = Hollow
+
+# surf: factory wavetable.
+choice-surf-table-resonance = Resonance
+
+# surf: factory wavetable.
+choice-surf-table-random = Random

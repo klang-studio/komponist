@@ -56,19 +56,20 @@ use komponist_model::params::layout::{
 };
 use komponist_model::params::{ParamId, ParamInfo};
 
-use komponist_device_core::layout::{knob, knob_large, template};
+use komponist_device_core::layout::{knob, knob_large, param, template, toggle};
 use komponist_device_core::{CatalogSpec, Dsp, Spec, SpecCache};
 
-mod engine;
+pub mod engine;
 pub mod env;
 pub mod filter;
 pub mod lfo;
 pub mod osc;
 pub mod params;
 pub mod presets;
-mod voice;
+pub mod voice;
 
-pub use engine::{MAX_GROUPS, VOICES, Volt};
+pub use engine::{Engine, MAX_GROUPS, VOICES, Volt};
+pub use osc::{Analog, Oscillators};
 pub use params::id;
 
 #[cfg(test)]
@@ -132,8 +133,8 @@ fn number(col: u8, row: u8, id: &str) -> Cell {
     half(col, row, 1, Half::Bottom, WidgetKind::Number, id)
 }
 
-/// The graph of the filter: slots and the parameters behind them.
-fn filter_graph(col: u8) -> Cell {
+/// The graph of the filter: slots and the parameters behind them (surf shares it).
+pub fn filter_graph(col: u8) -> Cell {
     let mut binding = GraphBinding::new(GraphConfig::FilterVa)
         .bind("cutoff", "cutoff")
         .bind("resonance", "resonance")
@@ -208,8 +209,9 @@ pub const ENVELOPES: &[(&str, &str)] = &[("amp", "Amp"), ("filt", "Filter"), ("m
 /// The LFOs the right switch chooses between.
 pub const LFOS: &[(&str, &str)] = &[("1", "LFO 1"), ("2", "LFO 2")];
 
-/// Page 2, "Hüllkurven" ("Envelopes"): the chosen envelope and the chosen LFO (8 columns).
-fn page_envelopes(t: Lang) -> Page {
+/// Page 2, "Hüllkurven" ("Envelopes"): the chosen envelope and the chosen LFO (8 columns); surf
+/// shows the same page.
+pub fn page_envelopes(t: Lang) -> Page {
     let envelope = GraphBinding::new(GraphConfig::Envelope)
         .titled(t.graph_title_volt_envelope(format!("{{{ENV_VIEW}_label}}")))
         .bind("attack", format!("{{{ENV_VIEW}}}_a"))
@@ -296,8 +298,8 @@ fn page_envelopes(t: Lang) -> Page {
     }
 }
 
-/// Page 3, "Matrix": four slots, the fixed paths, the voices (8 columns).
-fn page_matrix(t: Lang) -> Page {
+/// Page 3, "Matrix": four slots, the fixed paths, the voices (8 columns); surf shows the same page.
+pub fn page_matrix(t: Lang) -> Page {
     let slot = |n: usize| {
         let (row, h) = [
             (0, Half::Top),
@@ -338,6 +340,58 @@ fn page_matrix(t: Lang) -> Page {
         cols: 8,
         cells,
         dividers: vec![4],
+    }
+}
+
+/// The envelope page of the public CLAP v1 layout (bundled Volt and Surf): the public layout has
+/// fixed parameters only, so the three envelopes are rows of A, D, S, R instead of the switch.
+pub fn public_envelope_page(t: Lang) -> Page {
+    let mut cells = Vec::new();
+    for (row, (env, _)) in ENVELOPES.iter().enumerate() {
+        for (col, suffix) in ["a", "d", "s", "r"].into_iter().enumerate() {
+            cells.push(knob(col as u8, row as u8, &format!("{env}_{suffix}")));
+        }
+    }
+    Page {
+        name: t.page_volt_envelopes().into(),
+        cols: 4,
+        cells,
+        dividers: Vec::new(),
+    }
+}
+
+/// The LFO page of the public CLAP v1 layout (bundled Volt and Surf): both LFOs as rows, each with
+/// its tempo division.
+pub fn public_lfo_page(t: Lang) -> Page {
+    let mut cells = Vec::new();
+    for (row, (number, _)) in LFOS.iter().enumerate() {
+        let row = row as u8;
+        let id = |suffix| format!("lfo{number}_{suffix}");
+        let dropdown = |col, suffix| {
+            Cell::half(
+                col,
+                row,
+                2,
+                Half::Top,
+                WidgetKind::Dropdown,
+                param(&id(suffix)),
+            )
+        };
+        cells.extend([
+            dropdown(0, "shape"),
+            toggle(2, row, 1, Half::Top, param(&id("sync"))),
+            dropdown(3, "div"),
+            toggle(5, row, 1, Half::Top, param(&id("key"))),
+            toggle(6, row, 1, Half::Top, param(&id("uni"))),
+            knob(7, row, &id("rate")),
+            knob(8, row, &id("fade")),
+        ]);
+    }
+    Page {
+        name: t.page_volt_lfos().into(),
+        cols: 9,
+        cells,
+        dividers: Vec::new(),
     }
 }
 

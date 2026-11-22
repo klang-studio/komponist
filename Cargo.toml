@@ -38,6 +38,7 @@ komponist-sampler = { path = "crates/builtin-devices/sampler" }
 komponist-sampler-clap = { path = "crates/builtin-devices/sampler-shared/clap" }
 komponist-sampler-shared = { path = "crates/builtin-devices/sampler-shared" }
 komponist-scale = { path = "crates/builtin-devices/scale" }
+komponist-surf = { path = "crates/builtin-devices/surf" }
 komponist-volt = { path = "crates/builtin-devices/volt" }
 komponist-ipc = { path = "crates/komponist-ipc" }
 komponist-rt = { path = "crates/komponist-rt" }

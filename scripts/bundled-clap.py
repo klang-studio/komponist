@@ -61,6 +61,7 @@ INVENTORIES["effects"] = INVENTORIES["hall"] + tuple(
 INVENTORIES["all"] = INVENTORIES["effects"] + (
     Device("komponist-bundled-hexa", "komponist_hexa_clap", "org.klang-studio.komponist.hexa"),
     Device("komponist-bundled-volt", "komponist_volt", "org.klang-studio.komponist.volt"),
+    Device("komponist-bundled-surf", "komponist_surf_clap", "org.klang-studio.komponist.surf"),
     Device("komponist-bundled-sampler", "komponist_sampler", "org.klang-studio.komponist.sampler"),
     Device("komponist-bundled-general-sampler", "komponist_general_sampler", "org.klang-studio.komponist.general-sampler"),
     Device("komponist-bundled-arpeggiator", "komponist_arpeggiator_clap", "org.klang-studio.komponist.arpeggiator"),

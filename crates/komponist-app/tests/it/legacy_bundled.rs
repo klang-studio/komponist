@@ -35,7 +35,7 @@ fn historical_projects_migrate_and_play() {
     let inventory = BundledClap::discover(scratch.path())
         .expect("authenticate the package manifest")
         .expect("runner must embed the release manifest digest");
-    assert_eq!(inventory.bundle_entries().count(), 11);
+    assert_eq!(inventory.bundle_entries().count(), 12);
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
 
     for (name, legacy_id, bundle_id) in [

@@ -3,7 +3,7 @@
 
 use assert_no_alloc::assert_no_alloc;
 use komponist_engine::{Event, EventKind, ProcessContext, Processor, StereoIo, TransportInfo};
-use komponist_model::params::layout::{BAND, ENV_VIEW, LFO_VIEW, SEL, validate};
+use komponist_model::params::layout::{BAND, ENV_VIEW, LFO_VIEW, OSC_VIEW, SEL, validate};
 use komponist_model::params::{ParamContext, ParamId};
 use komponist_model::{Meter, Tick, TickRange};
 
@@ -80,6 +80,7 @@ fn the_catalog_data_is_unique_and_resolves_both_ways() {
             "Arpeggiator",
             "Tonleiter",
             "Volt",
+            "Surf",
             "Sampler",
         ]
     );
@@ -137,7 +138,8 @@ fn layouts_validate_for_every_band() {
                 .with(BAND, band)
                 .with(SEL, band)
                 .with(ENV_VIEW, "amp")
-                .with(LFO_VIEW, "1");
+                .with(LFO_VIEW, "1")
+                .with(OSC_VIEW, if band.is_multiple_of(2) { "b" } else { "a" });
             let errors = validate(kind.layout(), &ctx, &known);
             assert!(errors.is_empty(), "{kind:?} band {band}: {errors:?}");
         }
@@ -385,6 +387,7 @@ fn the_starter_sets_have_the_agreed_sizes() {
     assert_eq!(count(Internal::Sampler), 0);
     assert_eq!(count(Internal::Presse), 11);
     assert_eq!(count(Internal::Volt), 10);
+    assert_eq!(count(Internal::Surf), 24);
     for kind in [
         Internal::Eq,
         Internal::Delay,

@@ -327,6 +327,39 @@ pub mod metrics {
                 opacity: 0.45,
                 radius: 1.0,
             };
+            /// surf's wavetable stack (proposal `107-wavetable`, variant B mockup `b-umschalter`,
+            /// internal notes; owner decision 2026-11-21): nine frames from the front left to the
+            /// back right, a cycle 64 % of the plot wide, a half amplitude of 15 % of its height,
+            /// the frames inside the modulated range in the track colour at 50 %, the position axis
+            /// along the back edge 2 px wide. The frames fade towards the back to 45 % (not in the
+            /// mockup: nine crossing frames read better with depth, checked in the snapshots).
+            pub const STACK: MetricStack = MetricStack {
+                frames: 9,
+                cycle_w: 0.64,
+                amp: 0.15,
+                range_opacity: 0.5,
+                axis_w: 2.0,
+                frame_stroke: 1.0,
+                back_opacity: 0.45,
+            };
+            /// Look of [`STACK`].
+            #[derive(Clone, Copy, Debug)]
+            pub struct MetricStack {
+                /// Frames drawn (the cycle at the position comes on top).
+                pub frames: usize,
+                /// Width of one cycle as a share of the plot width.
+                pub cycle_w: f64,
+                /// Half the height of a cycle as a share of the plot height.
+                pub amp: f64,
+                /// Opacity of the track colour on the frames inside the modulated range.
+                pub range_opacity: f32,
+                /// Width of the position axis and of the range on it.
+                pub axis_w: f32,
+                /// Stroke of the frames behind the one at the position (the mockup's 1 px).
+                pub frame_stroke: f32,
+                /// Opacity of the last frame's stroke; the first is opaque, the ones between fade.
+                pub back_opacity: f32,
+            }
             /// Gap between a readout's name and its value (the space between the spans of `W_xy`).
             pub const READOUT_GAP: f32 = 3.0;
             /// Distance of the XY readouts from the corners (`right:5px;bottom:3px`, `left:5px;top:3px`).
@@ -350,6 +383,9 @@ pub mod metrics {
             pub mod pad {
                 /// `W_env`: `pad = 8`, `top = 18`, `bot = h - 8` (x, y).
                 pub const ENVELOPE: ([f32; 2], [f32; 2]) = ([8.0, 8.0], [8.0, 18.0]);
+                /// surf's wavetable stack (`b-umschalter` mockup): 8 px at the sides and the bottom,
+                /// 18 px at the top under the title.
+                pub const STACK: ([f32; 2], [f32; 2]) = ([8.0, 8.0], [6.0, 18.0]);
                 /// `W_eq`: x over the full width, y `h/2 ∓ (h/2 - 10)`.
                 pub const EQ: ([f32; 2], [f32; 2]) = ([0.0, 0.0], [10.0, 10.0]);
                 /// `W_wave`: amplitude `h/2 - 12` around `h/2 + 4` → 8 below, 16 above.

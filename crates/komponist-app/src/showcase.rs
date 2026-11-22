@@ -18,6 +18,7 @@
 //! | Arp | −10 dB | Tonleiter („A Minor Pentatonic“), Arpeggiator („Sixteenths Up/Down“), hexa („Synth Pluck“), Delay („Eighth Ping-Pong“) |
 //! | Glass Pluck | −24 dB | Sampler, tempo-synced melody with filter modulation |
 //! | Glass Slices | −24 dB | Sampler, MIDI-triggered slices of the same recording |
+//! | Vowel Pad | −10 dB | surf („Vowel Pad“): a voice over the Pad from bar 9, LFOs on both table positions, automation of Position A (through the whole table) and Position B |
 //! | Hall | 0 dB | effect bus: Hall („Large Hall“), fed by the sends of Lead and Pad |
 //! | Master | 0 dB | Limiter (ceiling −0.3 dB) |
 //!
@@ -45,6 +46,7 @@ use komponist_model::{
 
 pub(crate) mod audio;
 mod sampler;
+pub mod surf;
 
 /// Builds the demo with its generated samples and serializes its devices for the installed CLAPs.
 pub fn bundled_demo(
@@ -252,6 +254,7 @@ pub fn showcase_project() -> Project {
     add_routing(&mut project);
     audio::add_tracks(&mut project);
     sampler::add_tracks(&mut project);
+    surf::add_track(&mut project);
     add_automation(&mut project);
     add_track_macros(&mut project);
     project

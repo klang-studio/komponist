@@ -85,9 +85,10 @@ fn legacy_ids_resolve_once_and_cannot_elevate_a_clap_identity() {
             (reference.id, id)
         })
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(all.len(), 11);
-    assert_eq!(all.values().collect::<BTreeSet<_>>().len(), 11);
+    assert_eq!(all.len(), 12);
+    assert_eq!(all.values().collect::<BTreeSet<_>>().len(), 12);
     assert_eq!(all["knurr"], "org.klang-studio.komponist.volt");
+    assert_eq!(all["surf"], "org.klang-studio.komponist.surf");
     assert_eq!(all["pisynth"], "org.klang-studio.komponist.hexa");
     assert_eq!(all["tonleiter"], "org.klang-studio.komponist.scale");
     let mut impostor = historical_volt().plugin;

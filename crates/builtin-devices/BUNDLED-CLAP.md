@@ -15,13 +15,14 @@ host latency.
 | Limiter | `komponist-bundled-limiter` | `org.klang-studio.komponist.limiter` |
 | Hexa | `komponist-bundled-hexa` | `org.klang-studio.komponist.hexa` |
 | Volt | `komponist-bundled-volt` | `org.klang-studio.komponist.volt` |
+| Surf | `komponist-bundled-surf` | `org.klang-studio.komponist.surf` |
 | Klopfer | `komponist-bundled-sampler` | `org.klang-studio.komponist.sampler` |
 | General Sampler | `komponist-bundled-general-sampler` | `org.klang-studio.komponist.general-sampler` |
 | Arpeggiator | `komponist-bundled-arpeggiator` | `org.klang-studio.komponist.arpeggiator` |
 | Scale (Tonleiter) | `komponist-bundled-scale` | `org.klang-studio.komponist.scale` |
 
 The public v1 layout describes fixed controls. The bundled DSP accepts the device core's
-8–384 kHz sample-rate range. Release packages include all eleven bundles.
+8–384 kHz sample-rate range. Release packages include all twelve bundles.
 
 Presse initially exposes its stereo compressor configuration. Komponist selects its
 standard CLAP sidechain configuration using the public
@@ -32,7 +33,7 @@ the detector independently, including when the source is silent.
 From the repository root, run
 `cargo test --locked --workspace -p 'komponist-bundled-*'` to validate the
 layout metadata against the real CLAP parameter inventory. The Bundled CLAP package
-workflow tests the eleven-device archive through both host routes. For an unpacked test
+workflow tests the twelve-device archive through both host routes. For an unpacked test
 package, the app loads verified devices in-process by default. Add
 `KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE=1` to run the same verified devices in
 the bridge. The historical project check is available with

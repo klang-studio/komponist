@@ -39,7 +39,8 @@ use komponist_ui::{fonts, px};
 use komponist_volt as volt;
 
 use super::layout::{
-    BAND, Cell, CellParam, ENV_OP, ENV_VIEW, GraphBinding, GraphConfig, LFO_VIEW, SEL, WidgetKind,
+    BAND, Cell, CellParam, ENV_OP, ENV_VIEW, GraphBinding, GraphConfig, LFO_VIEW, OSC_VIEW, SEL,
+    WidgetKind,
 };
 use super::metrics;
 use super::model::{self, Card, Param};
@@ -62,9 +63,10 @@ pub(super) fn default_context() -> ParamContext {
         .with(ENV_OP, 1)
         .with(BAND, 1)
         .with(SEL, 1);
-    // volt's switches start on their first entry (Amp envelope, LFO 1).
+    // volt's switches start on their first entry (Amp envelope, LFO 1), surf's on oscillator A.
     choose(&mut ctx, ENV_VIEW, volt::ENVELOPES, 0);
     choose(&mut ctx, LFO_VIEW, volt::LFOS, 0);
+    choose(&mut ctx, OSC_VIEW, komponist_surf::OSCILLATORS, 0);
     ctx
 }
 
@@ -1069,6 +1071,7 @@ fn slot_param<'c>(
 fn spec_of<'c>(
     t: Lang,
     binding: &GraphBinding,
+    osc: usize,
     title: &str,
     rate: Option<f32>,
     lookup: &dyn Fn(&str) -> Option<&'c Param>,
@@ -1107,6 +1110,7 @@ fn spec_of<'c>(
         GraphConfig::FilterVa => configs::filter_va(t),
         GraphConfig::Signal => configs::signal(t),
         GraphConfig::LfoShape => configs::lfo_shape(t),
+        GraphConfig::Wavetable => configs::wavetable(t, osc),
     };
     Some(if title.is_empty() {
         spec
@@ -1148,6 +1152,14 @@ fn graph(
                 title = format!("{} {n} · {shape}", t.devices_lfo());
             }
         }
+        // surf: „Osz A · Vokale“.
+        GraphConfig::Wavetable => {
+            if let (Some(table), Some(osc)) =
+                (text_of("table"), ctx.get(&format!("{OSC_VIEW}_label")))
+            {
+                title = format!("{} {osc} · {table}", t.devices_osc());
+            }
+        }
         _ => {}
     }
     // The sampler's waveform: the selected pad's real sample (length, peaks, playhead).
@@ -1163,9 +1175,12 @@ fn graph(
         .map(|(v, _)| v.length_s)
         .filter(|l| *l > 0.0 && matches!(v_status(sample), Some(PadStatus::Ready)));
     let rate = card.analysis.as_ref().map(|a| a.rate).filter(|r| *r > 0.0);
+    // surf: the range on the stack follows the shown oscillator's position.
+    let osc = usize::from(ctx.get(OSC_VIEW) == Some("b"));
     let Some(spec) = spec_of(
         komponist_ui::lang(cu.ctx()),
         binding,
+        osc,
         &title,
         rate,
         &lookup,

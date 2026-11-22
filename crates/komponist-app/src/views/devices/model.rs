@@ -420,6 +420,7 @@ pub(crate) fn card(
             BuiltinKind::Hexa => bundled_params(device.id, host, native, hexa_editor_infos(lang)),
             BuiltinKind::Internal(
                 kind @ (Internal::Volt
+                | Internal::Surf
                 | Internal::Hall
                 | Internal::Delay
                 | Internal::Eq

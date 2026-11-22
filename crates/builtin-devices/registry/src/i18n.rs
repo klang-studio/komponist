@@ -122,6 +122,7 @@ mod tests {
         // Brands and loan words stay.
         for kind in [
             Internal::Volt,
+            Internal::Surf,
             Internal::Presse,
             Internal::Sampler,
             Internal::Eq,

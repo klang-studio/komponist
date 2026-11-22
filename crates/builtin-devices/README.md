@@ -7,7 +7,8 @@ for the release inventory and tests.
 
 The [device core](core/) defines the unstable Rust API for catalog metadata, parameters, layouts,
 state, presets and processor adapters. [Hexa](hexa/) and the [shared sampler engine](sampler-shared/core/)
-have separate DSP cores. The [registry](registry/) supplies the catalog and processor factory.
+have separate DSP cores; [Surf](surf/) runs on [Volt](volt/)'s engine with its own oscillators. The
+[registry](registry/) supplies the catalog and processor factory.
 
 ## Add a device
 

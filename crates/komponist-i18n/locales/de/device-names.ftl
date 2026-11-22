@@ -6,6 +6,9 @@ device-name-hexa = Hexa
 # Name of the virtual-analog synthesizer (brand).
 device-name-volt = Volt
 
+# Name of the wavetable synthesizer (brand).
+device-name-surf = Surf
+
 # Name of the drum sampler.
 device-name-sampler = Klopfer
 
