@@ -9,8 +9,10 @@ use komponist_model::params::layout::DeviceLayout;
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
 use serde_json::Value;
 
-pub use komponist_sampler::settings::{MAX_FADE_MS, MAX_SLICES, Settings, Slice, SliceOptions};
-use komponist_sampler::{ManagedLoader, SamplerHandle};
+pub use komponist_sampler_shared::settings::{
+    MAX_FADE_MS, MAX_SLICES, Settings, Slice, SliceOptions,
+};
+use komponist_sampler_shared::{ManagedLoader, SamplerHandle};
 
 /// The device.
 pub static SPEC: Spec = Spec {
@@ -394,7 +396,7 @@ pub fn dsp_with_handle() -> (Box<dyn Dsp>, SamplerHandle) {
 
 /// Creates the General Sampler and a loader guard for a dynamically loaded CLAP instance.
 pub fn dsp_with_managed_loader() -> (Box<dyn Dsp>, SamplerHandle, ManagedLoader) {
-    let (handle, audio, meters, loader) = komponist_sampler::load::managed_channel(true);
+    let (handle, audio, meters, loader) = komponist_sampler_shared::load::managed_channel(true);
     let dsp = dsp::GeneralSamplerDsp::with_channels(handle.clone(), audio, meters);
     (Box::new(dsp), handle, loader)
 }
@@ -452,6 +454,9 @@ mod state_tests {
             .unwrap();
         let edited = SPEC.with_value(Some(&edited), gain, -6.0).unwrap();
         assert_eq!(read_settings(Some(&edited)), settings);
-        assert_eq!(komponist_sampler::links::read(Some(&edited)).len(), 1);
+        assert_eq!(
+            komponist_sampler_shared::links::read(Some(&edited)).len(),
+            1
+        );
     }
 }

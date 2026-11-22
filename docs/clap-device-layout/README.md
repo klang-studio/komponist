@@ -140,5 +140,5 @@ examples of discovery, buffer transfer, validation and stable CLAP parameter IDs
 
 ## Rust author SDK
 
-The [author guide](../../sdk/native-clap/README.md) covers writing a Rust device with the SDK,
+The [author guide](../../crates/plugin-sdk/README.md) covers writing a Rust device with the SDK,
 building and validating its CLAP bundle, and installing it in komponist.

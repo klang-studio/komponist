@@ -15,7 +15,7 @@ import tempfile
 from typing import NamedTuple
 
 REPO = Path(__file__).resolve().parent.parent
-SDK = REPO / "sdk" / "native-clap"
+SDK = REPO / "crates" / "plugin-sdk"
 MANIFEST = "manifest.json"
 LICENSES = {
     "LICENSE": REPO / "LICENSE",
@@ -81,12 +81,14 @@ def sha256(path):
 
 
 def build(target, devices):
+    workspace = SDK if devices == INVENTORIES["fixture"] else REPO
+    manifest = workspace / "Cargo.toml"
     command = [
         os.environ.get("CARGO", "cargo"),
         "build",
         "--locked",
         "--manifest-path",
-        SDK / "Cargo.toml",
+        manifest,
         "--release",
         "--target",
         target,
@@ -98,7 +100,7 @@ def build(target, devices):
     suffix = TARGET_LIB_SUFFIX[target]
     names = {device.library for device in devices}
     artifacts = {}
-    with subprocess.Popen(command, cwd=REPO, stdout=subprocess.PIPE, text=True, encoding="utf-8") as child:
+    with subprocess.Popen(command, cwd=workspace, stdout=subprocess.PIPE, text=True, encoding="utf-8") as child:
         for line in child.stdout:
             try:
                 message = json.loads(line)
@@ -130,8 +132,8 @@ def build(target, devices):
         return artifacts, {}
     result = subprocess.run(
         [os.environ.get("CARGO", "cargo"), "metadata", "--locked", "--no-deps",
-         "--format-version", "1", "--manifest-path", SDK / "Cargo.toml"],
-        cwd=REPO,
+         "--format-version", "1", "--manifest-path", manifest],
+        cwd=workspace,
         check=True,
         capture_output=True,
     )
