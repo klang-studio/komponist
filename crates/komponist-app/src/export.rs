@@ -55,7 +55,7 @@ use komponist_engine::export::{
 use komponist_engine::{Command, Program, SlotId, TransportState};
 use komponist_ipc::RenderMode;
 use komponist_model::format::fmt_bar_pos;
-use komponist_model::{ClipId, Project, Tick, TickRange};
+use komponist_model::{ClipId, DeviceId, Project, Tick, TickRange};
 use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::actions::{Action, BitDepth, ExportRange, ExportSettings, ProjectAction, UiAction};
@@ -747,7 +747,19 @@ impl App {
         if worker.go.is_none() {
             return;
         }
-        let ready = if let Some(flatten) = flatten {
+        let host = self.engine.host();
+        let unprepared_sampler = self.export_general_samplers(flatten.as_ref()).find(|&id| {
+            host.status(id) == DeviceStatus::Ok
+                && host
+                    .sampler_ui(id)
+                    .is_none_or(|view| view.sync != Some(komponist_ipc::sampler_ui::Sync::Ready))
+        });
+        let ready = if let Some(id) = unprepared_sampler {
+            if prepared.elapsed() < READY_TIMEOUT && !host.sampler_sync_unavailable(id) {
+                return;
+            }
+            Err(ExportError::DeviceFailed(id))
+        } else if let Some(flatten) = flatten {
             match flatten.unavailable(self) {
                 Some((_, DeviceStatus::Loading)) if prepared.elapsed() < READY_TIMEOUT => return,
                 Some((id, _)) => Err(ExportError::DeviceFailed(id)),
@@ -900,13 +912,40 @@ impl App {
     }
 
     fn set_export_render_mode(&mut self, run: &Run, mode: RenderMode) {
+        let tempo = (mode == RenderMode::Offline).then_some(self.project().tempo.bpm);
+        let samplers = self
+            .export_general_samplers(run.flatten.as_ref())
+            .collect::<Vec<_>>();
         let host = self.engine.host_mut();
+        for device in samplers {
+            host.set_sampler_export_tempo(device, tempo);
+        }
         if let Some(flatten) = &run.flatten {
             let ids: Vec<_> = flatten.scope.devices().collect();
             host.set_selected_render_mode(&ids, mode);
         } else {
             host.set_render_mode(mode);
         }
+    }
+
+    fn export_general_samplers<'a>(
+        &'a self,
+        flatten: Option<&'a Flatten>,
+    ) -> impl Iterator<Item = DeviceId> + 'a {
+        use komponist_builtin::Internal;
+        let project = self.project();
+        project
+            .tracks
+            .iter()
+            .flat_map(|track| track.channel.devices.iter())
+            .chain(project.master.devices.iter())
+            .filter(move |device| {
+                komponist_plugins::bundled_sampler::kind(&device.plugin)
+                    == Some(Internal::GeneralSampler)
+                    && flatten
+                        .is_none_or(|flatten| flatten.scope.devices().any(|id| id == device.id))
+            })
+            .map(|device| device.id)
     }
 
     /// The plugin names of the devices in `slots`, without repeats.

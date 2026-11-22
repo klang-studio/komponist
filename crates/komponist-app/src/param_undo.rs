@@ -304,6 +304,7 @@ impl App {
             self.engine.host_mut().set_param(device, id, value)
         };
         if bridged {
+            self.remember_sampler_param(device, id, value);
             let label = self.param_label(device, id);
             self.param_undo
                 .turned
@@ -418,6 +419,21 @@ impl App {
         self.doc.begin_gesture(label);
         edit(self);
         self.end_gesture();
+    }
+
+    /// An asset edit supersedes outstanding snapshots. Commit the latest manual knob changes
+    /// as their own undo step before queuing the new state.
+    pub(crate) fn store_sampler_knob_state(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+        self.param_undo.awaiting.remove(&device);
+        self.param_undo.echo.remove(&device);
+        self.param_undo
+            .deferred
+            .retain(|(pending, _)| *pending != device);
+        if self.doc.in_gesture() {
+            let _ = self.store_param_state(device, state, "");
+        } else {
+            self.store_snapshot(device, state);
+        }
     }
 
     /// A state snapshot of a bridged plugin (its GUI, a card parameter, saving) goes into the
@@ -570,10 +586,20 @@ impl App {
             };
             if old.plugin != device.plugin {
                 self.param_undo.forget_device(device.id);
+                self.forget_sampler_params(device.id);
+                self.reset_sampler_hit(device.id);
                 continue;
             }
             if old.state != device.state && !is_hexa(device) && internal_kind(device).is_none() {
+                self.forget_sampler_params(device.id);
+                if komponist_plugins::packaged_kind(&device.plugin).is_some() {
+                    self.param_undo.awaiting.remove(&device.id);
+                    if device.state.is_none() {
+                        self.reset_sampler_hit(device.id);
+                    }
+                }
                 if device.state.is_none()
+                    && komponist_plugins::packaged_kind(&device.plugin).is_none()
                     && let Some(baseline) = self.param_undo.baseline.get(&device.id).cloned()
                 {
                     self.engine.host_mut().set_state(device.id, &baseline);

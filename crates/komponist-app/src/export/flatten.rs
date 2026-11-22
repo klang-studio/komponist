@@ -91,7 +91,18 @@ impl Flatten {
             .filter_map(|id| {
                 let host = app.engine.host();
                 match host.status(id) {
-                    DeviceStatus::Ok if host.sampler_is_loading(id) => {
+                    DeviceStatus::Ok
+                        if host.sampler_is_loading(id)
+                            || Self::sampler_pads(app, id).is_some_and(|(_, pads)| {
+                                pads.iter().any(|pad| {
+                                    pad.link.is_some()
+                                        && matches!(
+                                            pad.status,
+                                            PadStatus::Loading | PadStatus::Empty
+                                        )
+                                })
+                            }) =>
+                    {
                         Some((id, DeviceStatus::Loading))
                     }
                     DeviceStatus::Ok => None,
@@ -110,25 +121,7 @@ impl Flatten {
                     app.lang.flatten_sampler_sync_failed(app.device_name(id)),
                 ));
             }
-            let device = app.project().find_device(id).map(|(_, _, device)| device);
-            let builtin = device.and_then(|device| crate::device_host::internal_kind(device));
-            let bundled =
-                device.and_then(|device| komponist_plugins::bundled_sampler::kind(&device.plugin));
-            let general = builtin.or(bundled) == Some(Internal::GeneralSampler);
-            let views = if let Some(handle) = host.sampler(id) {
-                handle.views()
-            } else if let Some((kind, device)) = bundled.zip(device) {
-                crate::views::devices::bundled_sampler_view(
-                    kind,
-                    device
-                        .state
-                        .as_deref()
-                        .and_then(komponist_plugins::bundled_sampler::assets)
-                        .as_deref(),
-                    host.sampler_ui(id),
-                )
-                .pads
-            } else {
+            let Some((general, views)) = Self::sampler_pads(app, id) else {
                 continue;
             };
             for (pad, view) in views.into_iter().enumerate() {
@@ -146,6 +139,32 @@ impl Flatten {
             }
         }
         None
+    }
+
+    fn sampler_pads(app: &App, id: DeviceId) -> Option<(bool, Vec<komponist_sampler::PadView>)> {
+        let host = app.engine.host();
+        let device = app.project().find_device(id).map(|(_, _, device)| device);
+        let builtin = device.and_then(|device| crate::device_host::internal_kind(device));
+        let bundled =
+            device.and_then(|device| komponist_plugins::bundled_sampler::kind(&device.plugin));
+        let general = builtin.or(bundled) == Some(Internal::GeneralSampler);
+        let pads = if let Some(handle) = host.sampler(id) {
+            handle.views()
+        } else if let Some((kind, device)) = bundled.zip(device) {
+            crate::views::devices::bundled_sampler_view(
+                kind,
+                device
+                    .state
+                    .as_deref()
+                    .and_then(komponist_plugins::bundled_sampler::assets)
+                    .as_deref(),
+                host.sampler_ui(id),
+            )
+            .pads
+        } else {
+            return None;
+        };
+        Some((general, pads))
     }
 
     pub(super) fn finish(self, app: &mut App, result: Result<ExportReport, ExportError>) {

@@ -2449,6 +2449,7 @@ impl App {
             PluginAction::CloseWindow(device) => self.close_plugin_window(device),
             PluginAction::FocusWindow(device) => self.focus_plugin_window(device),
             PluginAction::Reload(device) => {
+                self.reset_sampler_hit(device);
                 self.engine.reload_device(self.doc.project(), device);
             }
             PluginAction::LoadSample { .. }
@@ -2613,6 +2614,7 @@ impl App {
         self.engine.reset();
         self.doc = doc;
         self.param_undo.forget();
+        self.dialogs.samples.forget_device_state();
         self.project_path = path;
         // Relative sample paths resolve against the project file's folder, before the devices of
         // the project get their processors.

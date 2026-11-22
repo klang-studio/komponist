@@ -269,7 +269,7 @@ impl<T: SampledDefinition> Plugin for Sampled<T> {
 
 #[repr(C)]
 struct SamplerUi {
-    snapshot: unsafe extern "C" fn(*const clap_plugin, *mut u8, u32) -> u32,
+    snapshot: unsafe extern "C" fn(*const clap_plugin, *mut u8, u32, f64) -> u32,
     preview: unsafe extern "C" fn(*const clap_plugin, f64),
 }
 
@@ -283,6 +283,7 @@ impl<T: SampledDefinition> Sampled<T> {
         plugin: *const clap_plugin,
         bytes: *mut u8,
         capacity: u32,
+        export_tempo: f64,
     ) -> u32 {
         if bytes.is_null() || capacity == 0 {
             return 0;
@@ -292,30 +293,59 @@ impl<T: SampledDefinition> Sampled<T> {
             std::slice::from_raw_parts_mut(bytes, (capacity as usize).min(sampler_ui::MAX_BYTES))
         };
         unsafe {
-            nice_plug::wrapper::clap::Wrapper::<Self>::with_custom_extension_data::<SamplerHandle, _>(plugin, |handle| {
-                let pads = handle.views().into_iter().take(T::PADS).enumerate().map(|(pad, mut view)| {
-                    view.name.truncate(view.name.floor_char_boundary(sampler_ui::MAX_TEXT_BYTES));
-                    Pad {
-                    name: view.name,
-                    status: match view.status {
-                        PadStatus::Empty => Status::Empty,
-                        PadStatus::Loading => Status::Loading,
-                        PadStatus::Ready => Status::Ready,
-                        PadStatus::Missing => Status::Missing,
-                        PadStatus::Failed(mut error) => {
-                            error.truncate(error.floor_char_boundary(sampler_ui::MAX_TEXT_BYTES));
-                            Status::Failed(error)
+            nice_plug::wrapper::clap::Wrapper::<Self>::with_custom_extension_data::<
+                SampleParameters<T>,
+                _,
+            >(plugin, |params| {
+                let handle = &params.samples;
+                if export_tempo.is_finite() && export_tempo > 0.0 {
+                    let plain = |id| params.params.plain_value_by_id(id);
+                    if let Some((source_bpm, sync)) = plain("source_bpm").zip(plain("sync")) {
+                        handle.prepare_general_sync(source_bpm, export_tempo, sync >= 0.5);
+                    }
+                }
+                let pads = handle
+                    .views()
+                    .into_iter()
+                    .take(T::PADS)
+                    .enumerate()
+                    .map(|(pad, mut view)| {
+                        view.name
+                            .truncate(view.name.floor_char_boundary(sampler_ui::MAX_TEXT_BYTES));
+                        Pad {
+                            name: view.name,
+                            status: match view.status {
+                                PadStatus::Empty => Status::Empty,
+                                PadStatus::Loading => Status::Loading,
+                                PadStatus::Ready => Status::Ready,
+                                PadStatus::Missing => Status::Missing,
+                                PadStatus::Failed(mut error) => {
+                                    error.truncate(
+                                        error.floor_char_boundary(sampler_ui::MAX_TEXT_BYTES),
+                                    );
+                                    Status::Failed(error)
+                                }
+                            },
+                            length: view.length_s,
+                            peaks: view
+                                .peaks
+                                .iter()
+                                .take(sampler_ui::MAX_PEAKS)
+                                .map(|peak| peak.clamp(0.0, 1.0))
+                                .collect(),
+                            playhead: handle.playhead(pad).map(|head| head.clamp(0.0, 1.0)),
                         }
-                    },
-                    length: view.length_s,
-                    peaks: view.peaks.iter().take(sampler_ui::MAX_PEAKS).map(|peak| peak.clamp(0.0, 1.0)).collect(),
-                    playhead: handle.playhead(pad).map(|head| head.clamp(0.0, 1.0)),
-                }}).collect();
+                    })
+                    .collect();
                 let (count, hit_pad) = handle.last_hit();
                 Snapshot {
                     pads,
                     last_hit: (count, hit_pad as u8),
-                    transients: handle.transients().into_iter().take(sampler_ui::MAX_TRANSIENTS).collect(),
+                    transients: handle
+                        .transients()
+                        .into_iter()
+                        .take(sampler_ui::MAX_TRANSIENTS)
+                        .collect(),
                     sync: handle.sync_status().map(|status| match status {
                         SyncStatus::Ready => WireSync::Ready,
                         SyncStatus::Preparing => WireSync::Preparing,
@@ -323,26 +353,30 @@ impl<T: SampledDefinition> Sampled<T> {
                     }),
                     source_rate: handle.waveform_peaks().map(|data| data.sample_rate()),
                     idle: handle.is_idle(),
-                }.encode(out).map_or(0, |len| len as u32)
-            }).unwrap_or(0)
+                }
+                .encode(out)
+                .map_or(0, |len| len as u32)
+            })
+            .unwrap_or(0)
         }
     }
 
     unsafe extern "C" fn preview_slice(plugin: *const clap_plugin, time: f64) {
         // SAFETY: CLAP host invokes the callback on a live plugin on its main thread.
         unsafe {
-            nice_plug::wrapper::clap::Wrapper::<Self>::with_custom_extension_data::<SamplerHandle, _>(
-                plugin,
-                |handle| {
-                    if time.is_finite() {
-                        if time >= 0.0 {
-                            handle.preview_slice(time);
-                        } else {
-                            handle.release_slice_preview();
-                        }
+            nice_plug::wrapper::clap::Wrapper::<Self>::with_custom_extension_data::<
+                SampleParameters<T>,
+                _,
+            >(plugin, |params| {
+                let handle = &params.samples;
+                if time.is_finite() {
+                    if time >= 0.0 {
+                        handle.preview_slice(time);
+                    } else {
+                        handle.release_slice_preview();
                     }
-                },
-            );
+                }
+            });
         }
     }
 }
@@ -356,7 +390,7 @@ impl<T: SampledDefinition> ClapPlugin for Sampled<T> {
     const CLAP_FEATURES: &'static [ClapFeature] = T::FEATURES;
 
     fn clap_custom_extension_data(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
-        Some(Arc::new(self.params.samples.clone()))
+        Some(self.params.clone())
     }
 
     unsafe fn clap_custom_extension(id: &CStr) -> *const c_void {

@@ -3,7 +3,7 @@ use komponist_ipc::sampler_ui::{EXTENSION_ID, MAX_BYTES, Snapshot};
 
 #[repr(C)]
 struct Extension {
-    snapshot: Option<unsafe extern "C" fn(*const clap_plugin, *mut u8, u32) -> u32>,
+    snapshot: Option<unsafe extern "C" fn(*const clap_plugin, *mut u8, u32, f64) -> u32>,
     preview: Option<unsafe extern "C" fn(*const clap_plugin, f64)>,
 }
 
@@ -17,11 +17,18 @@ fn extension(plugin: &clap_plugin) -> Option<&Extension> {
     }
 }
 
-pub(super) fn snapshot(plugin: &clap_plugin) -> Option<Snapshot> {
+pub(super) fn snapshot(plugin: &clap_plugin, export_tempo: Option<f64>) -> Option<Snapshot> {
     let read = extension(plugin)?.snapshot?;
     let mut bytes = vec![0; MAX_BYTES];
     // SAFETY: The buffer has the advertised capacity and is writable until the call returns.
-    let len = unsafe { read(plugin, bytes.as_mut_ptr(), MAX_BYTES as u32) } as usize;
+    let len = unsafe {
+        read(
+            plugin,
+            bytes.as_mut_ptr(),
+            MAX_BYTES as u32,
+            export_tempo.unwrap_or(0.0),
+        )
+    } as usize;
     Snapshot::decode(bytes.get(..len)?)
 }
 

@@ -378,8 +378,11 @@ impl HostedPlugin for ClapPlugin {
             .map(|(bytes, layout)| (bytes.as_slice(), layout))
     }
 
-    fn sampler_ui(&self) -> Option<komponist_ipc::sampler_ui::Snapshot> {
-        sampler_ui::snapshot(self.instance.borrow_mut().plugin_handle().as_raw())
+    fn sampler_ui(&self, export_tempo: Option<f64>) -> Option<komponist_ipc::sampler_ui::Snapshot> {
+        sampler_ui::snapshot(
+            self.instance.borrow_mut().plugin_handle().as_raw(),
+            export_tempo,
+        )
     }
 
     fn preview_sampler_slice(&self, time: Option<f64>) {

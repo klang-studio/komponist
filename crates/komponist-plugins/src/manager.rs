@@ -928,6 +928,20 @@ impl PluginManager {
         self.bridges.get(&device)?.native_layout.as_ref()
     }
 
+    /// Apply a temporary export tempo to an authenticated General Sampler.
+    pub fn set_sampler_export_tempo(&mut self, device: DeviceId, tempo: Option<f64>) {
+        if self.verified_bundles.get(&device)
+            != Some(&BuiltinKind::Internal(Internal::GeneralSampler))
+        {
+            return;
+        }
+        if let Some(direct) = self.direct.get_mut(&device) {
+            direct.set_sampler_export_tempo(tempo);
+        } else if let Some(bridge) = self.bridges.get_mut(&device) {
+            bridge.set_sampler_export_tempo(tempo);
+        }
+    }
+
     /// The latest editor snapshot for an authenticated bundled sampler.
     pub fn sampler_ui(&self, device: DeviceId) -> Option<&komponist_ipc::sampler_ui::Snapshot> {
         if !is_sampler_kind(self.verified_bundles.get(&device).copied()) {
@@ -1054,6 +1068,9 @@ impl PluginManager {
             .flatten();
         let state = runtime.as_ref().unwrap_or(state);
         if let Some(direct) = self.direct.get_mut(&device) {
+            if matches!(direct.status, DeviceStatus::Crashed(_)) {
+                return false;
+            }
             direct.set_state(state.clone());
             return true;
         }

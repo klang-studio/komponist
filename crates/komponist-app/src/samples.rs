@@ -97,6 +97,14 @@ pub(crate) struct State {
     /// Per sampler: the pad of the step row, the selected pad and the hit counter of the last
     /// frame.
     pads: std::collections::HashMap<DeviceId, PadSync>,
+    pending_params: std::collections::HashMap<DeviceId, std::collections::BTreeMap<u32, f64>>,
+}
+
+impl State {
+    pub(crate) fn forget_device_state(&mut self) {
+        self.pads.clear();
+        self.pending_params.clear();
+    }
 }
 
 enum WaveformPreview {
@@ -160,6 +168,62 @@ impl App {
         Some(found.state.clone())
     }
 
+    pub(crate) fn remember_sampler_param(&mut self, device: DeviceId, wire: u32, value: f64) {
+        if self
+            .project()
+            .find_device(device)
+            .is_some_and(|(_, _, d)| bundled_sampler::kind(&d.plugin).is_some())
+        {
+            self.dialogs
+                .samples
+                .pending_params
+                .entry(device)
+                .or_default()
+                .insert(wire, value);
+        }
+    }
+
+    pub(crate) fn forget_sampler_params(&mut self, device: DeviceId) {
+        self.dialogs.samples.pending_params.remove(&device);
+    }
+
+    pub(crate) fn reset_sampler_hit(&mut self, device: DeviceId) {
+        if let Some(sync) = self.dialogs.samples.pads.get_mut(&device) {
+            sync.hit = 0;
+        }
+    }
+
+    /// Commit knob edits independently so undoing an asset edit restores the previous link
+    /// with the current settings, including controls still waiting for a plugin snapshot.
+    fn flush_sampler_params(&mut self, device: DeviceId) {
+        let Some(values) = self.dialogs.samples.pending_params.get(&device) else {
+            return;
+        };
+        let Some((_, _, d)) = self.project().find_device(device) else {
+            return;
+        };
+        let Some(kind) = bundled_sampler::kind(&d.plugin) else {
+            return;
+        };
+        let Some(ids) = self
+            .engine
+            .host()
+            .native_layout(device)
+            .and_then(|layout| layout.author_ids())
+        else {
+            return;
+        };
+        let params = kind.params().iter().filter_map(|info| {
+            let value = *values.get(ids.get(info.id.as_str())?)?;
+            Some((info, value))
+        });
+        if let Some(state) =
+            bundled_sampler::edit_params(&d.plugin.version, d.state.as_deref(), params)
+        {
+            self.store_sampler_knob_state(device, &state.into());
+        }
+    }
+
     /// The actions of the sampler's samples; `false` if `action` is not one of them.
     pub(crate) fn sampler_action(&mut self, action: &PluginAction) -> bool {
         match action {
@@ -184,6 +248,7 @@ impl App {
     /// Links `path` to the pad: the pad's start and end return to the whole sample, the link goes
     /// into the device state, the sample loads. One undo step ("Sample laden").
     fn load_sample(&mut self, device: DeviceId, pad: usize, path: &Path) {
+        self.flush_sampler_params(device);
         self.in_one_step("undo-sample-load", |app| app.link_sample(device, pad, path));
     }
 
@@ -268,10 +333,15 @@ impl App {
         let Some(state) = state else {
             return false;
         };
-        self.apply_with(label, |project| {
-            edits::set_device_state(project, device, Some(state.into())).map(|next| (next, ()))
-        })
-        .is_some()
+        let state: Arc<[u8]> = state.into();
+        if !self.engine.host_mut().set_state(device, &state) {
+            let name = self.device_name(device);
+            self.set_status(self.lang.status_state_load_failed(&name), StatusKind::Error);
+            return false;
+        }
+        self.store_param_state(device, &state, label);
+        self.forget_sampler_params(device);
+        true
     }
 
     fn report_sample_loaded(&mut self, kind: Internal, pad: usize, link: &SampleLink) {
@@ -289,6 +359,7 @@ impl App {
     }
 
     fn clear_sample(&mut self, device: DeviceId, pad: usize) {
+        self.flush_sampler_params(device);
         let Some((_, _, found)) = self.project().find_device(device) else {
             return;
         };
@@ -326,6 +397,7 @@ impl App {
     }
 
     fn set_sampler_slices(&mut self, device: DeviceId, settings: &general_sampler::Settings) {
+        self.flush_sampler_params(device);
         let Some((_, _, found)) = self.project().find_device(device) else {
             return;
         };
@@ -618,7 +690,7 @@ impl App {
                 && let Some(pad) = cursor_pad
             {
                 now = pad;
-            } else if follow && hit_counter != last.hit {
+            } else if follow && hit_counter != 0 && hit_counter != last.hit {
                 now = hit_pad;
             }
             if now != sel {

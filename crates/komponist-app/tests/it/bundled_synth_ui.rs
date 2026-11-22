@@ -124,15 +124,42 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     let default_cutoff = pinned_clap_state::to_clap(cutoff_info, cutoff_info.default);
     assert!(newest_instrument(h.state()).state.is_none());
     h.state_mut().dispatch(apply_volt);
-    wait_for_value(h.state_mut(), volt, cutoff, preset_cutoff);
+    wait_for_value(
+        h.state_mut(),
+        volt,
+        cutoff,
+        preset_cutoff,
+        "apply Volt preset",
+    );
     h.run_steps(3);
     h.get_by_role_and_label(Role::Button, &lang.devices_preset_name("Acid Pluck"));
     snapshot(&mut h, "volt-sound", lang);
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
-    wait_for_value(h.state_mut(), volt, cutoff, default_cutoff);
+    wait_for_value(
+        h.state_mut(),
+        volt,
+        cutoff,
+        default_cutoff,
+        "undo Volt preset",
+    );
     assert!(newest_instrument(h.state()).state.is_none());
     h.state_mut().dispatch(Action::Edit(EditAction::Redo));
-    wait_for_value(h.state_mut(), volt, cutoff, preset_cutoff);
+    wait_for_value(
+        h.state_mut(),
+        volt,
+        cutoff,
+        preset_cutoff,
+        "redo Volt preset",
+    );
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    h.state_mut().dispatch(Action::Edit(EditAction::Redo));
+    wait_for_value(
+        h.state_mut(),
+        volt,
+        cutoff,
+        preset_cutoff,
+        "immediate redo Volt preset",
+    );
 
     page(&mut h, volt, 1);
     click(
@@ -158,7 +185,28 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
                 .is_some_and(|edited| (edited - two).abs() > 1e-6)
         },
     );
+    let two_edited = h.state().engine().host().param_base(volt, second).unwrap();
     assert_eq!(h.state().engine().host().param_base(volt, first), Some(one));
+    h.state_mut().engine_mut().host_mut().request_state(volt);
+    step_until(h.state_mut(), "Volt saved the LFO 2 edit", |app| {
+        app.device_events().iter().any(|event| {
+            let PluginManagerEvent::StateSnapshot { device, state } = event else {
+                return false;
+            };
+            if *device != volt {
+                return false;
+            }
+            let Some(snapshot) = pinned_clap_state::decode(state) else {
+                return false;
+            };
+            let matches = |id: &str, expected: f64| {
+                snapshot["params"][id]["f32"]
+                    .as_f64()
+                    .is_some_and(|actual| (actual - expected).abs() < 1e-6)
+            };
+            matches("lfo1_rate", one) && matches("lfo2_rate", two_edited)
+        })
+    });
     h.run_steps(3);
     snapshot(&mut h, "volt-envelopes", lang);
     h.state_mut().shutdown();
@@ -193,18 +241,14 @@ fn alias(app: &App, device: DeviceId, author: &str) -> u32 {
         .unwrap()[author]
 }
 
-fn wait_for_value(app: &mut App, device: DeviceId, wire: u32, value: f64) {
-    step_until(
-        app,
-        "hosted factory parameter reached its actual value",
-        |app| {
-            let host = app.engine().host();
-            host.verified_bundled_kind(device).is_some()
-                && host
-                    .param_base(device, wire)
-                    .is_some_and(|actual| (actual - value).abs() < 1e-6)
-        },
-    );
+fn wait_for_value(app: &mut App, device: DeviceId, wire: u32, value: f64, phase: &str) {
+    step_until(app, &format!("{phase} reached cutoff {value}"), |app| {
+        let host = app.engine().host();
+        host.verified_bundled_kind(device).is_some()
+            && host
+                .param_base(device, wire)
+                .is_some_and(|actual| (actual - value).abs() < 1e-6)
+    });
 }
 
 fn page(h: &mut Harness<'_, App>, device: DeviceId, page: usize) {

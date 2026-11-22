@@ -242,8 +242,11 @@ impl DirectSession {
         true
     }
 
-    pub(crate) fn sampler_ui(&self) -> Option<komponist_ipc::sampler_ui::Snapshot> {
-        self.host.sampler_ui()
+    pub(crate) fn sampler_ui(
+        &self,
+        export_tempo: Option<f64>,
+    ) -> Option<komponist_ipc::sampler_ui::Snapshot> {
+        self.host.sampler_ui(export_tempo)
     }
 
     pub(crate) fn preview_sampler_slice(&self, time: Option<f64>) {

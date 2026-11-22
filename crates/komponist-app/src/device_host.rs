@@ -252,6 +252,9 @@ pub trait DeviceHost {
         None
     }
 
+    /// Request a General Sampler stretch at the detached engine's offline tempo.
+    fn set_sampler_export_tempo(&mut self, _device: DeviceId, _tempo: Option<f64>) {}
+
     /// Whether a sampler still needs to hand its decoded samples or stretch to audio.
     fn sampler_is_loading(&self, device: DeviceId) -> bool {
         use komponist_builtin::{BuiltinKind, Internal};
@@ -957,6 +960,10 @@ impl DeviceHost for PluginHost {
 
     fn set_selected_render_mode(&mut self, devices: &[DeviceId], mode: RenderMode) {
         self.manager.set_selected_render_mode(devices, mode);
+    }
+
+    fn set_sampler_export_tempo(&mut self, device: DeviceId, tempo: Option<f64>) {
+        self.manager.set_sampler_export_tempo(device, tempo);
     }
 
     fn shutdown(&mut self) {

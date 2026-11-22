@@ -70,6 +70,14 @@ def build_runner(digest, test, release):
 
 
 def run_test(runner, environment, *names):
+    listing = subprocess.run(
+        [str(runner), "--ignored", "--exact", "--list", *names],
+        env=environment, capture_output=True, encoding="utf-8", check=True,
+    )
+    listed = {line.removesuffix(": test") for line in listing.stdout.splitlines()
+              if line.endswith(": test")}
+    if missing := set(names) - listed:
+        raise SystemExit(f"Missing ignored packaged tests: {', '.join(sorted(missing))}")
     subprocess.run(
         [str(runner), "--ignored", "--nocapture", "--exact", *names],
         env=environment,
@@ -84,11 +92,11 @@ def reject_unavailable_bundle(runner, payload, environment, scratch):
     removed = Path(scratch) / "removed.clap"
     bundle.rename(removed)
     test = "bundled_current::unavailable_bundle_keeps_saved_project_intact"
-    run_test(runner, environment, test)
+    run_test(runner, dict(environment, KOMPONIST_CURRENT_EQ_CASE="missing"), test)
     removed.rename(bundle)
     with (payload / eq["files"][0]["path"]).open("ab") as file:
         file.write(b"modified project test payload")
-    run_test(runner, environment, test)
+    run_test(runner, dict(environment, KOMPONIST_CURRENT_EQ_CASE="altered"), test)
 
 
 def run_staged(app, runner, digest, projects):

@@ -88,7 +88,7 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// snapshots distinguish delivered, quantized edits and return the verified parameter values.
 /// 9 (#75): the shared native frame header carries the track macro mapping chip.
 /// 11 adds bounded sampler front-panel data and the slice audition command.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -316,7 +316,7 @@ pub enum LogLevel {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ControlMsg {
     /// Query the current sampler UI snapshot from a running plugin.
-    GetSamplerUi(u32),
+    GetSamplerUi(u32, Option<f64>),
     /// Start a held slice audition at the source position, or release it with `None`.
     PreviewSamplerSlice(Option<f64>),
     /// Load plugin `plugin_id` from `bundle`. Answer: `Loaded` or `Error`.

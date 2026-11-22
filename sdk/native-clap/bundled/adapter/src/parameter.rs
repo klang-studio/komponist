@@ -287,6 +287,14 @@ impl Parameters {
         self.bindings[index].binding.0.raw()
     }
 
+    pub(crate) fn plain_value_by_id(&self, id: &str) -> Option<f64> {
+        let index = self
+            .bindings
+            .iter()
+            .position(|bound| bound.info.id.as_str() == id)?;
+        self.changed_value(index, &mut None)
+    }
+
     /// Returns the new model plain value and records the underlying wrapper value.
     pub fn changed_value(&self, index: usize, applied: &mut Option<f64>) -> Option<f64> {
         let bound = &self.bindings[index];

@@ -802,8 +802,11 @@ impl Bridge {
                 // Answered in every state (an empty list before `Load`).
                 self.report_params();
             }
-            ControlMsg::GetSamplerUi(request) => {
-                let snapshot = self.plugin.as_ref().and_then(|plugin| plugin.sampler_ui());
+            ControlMsg::GetSamplerUi(request, export_tempo) => {
+                let snapshot = self
+                    .plugin
+                    .as_ref()
+                    .and_then(|plugin| plugin.sampler_ui(export_tempo));
                 let encoded = snapshot.and_then(|snapshot| {
                     let mut bytes = vec![0; komponist_ipc::sampler_ui::MAX_BYTES];
                     let len = snapshot.encode(&mut bytes)?;

@@ -3,7 +3,7 @@ use std::ffi::CStr;
 
 use serde::{Deserialize, Serialize};
 
-pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.sampler-ui/1";
+pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.sampler-ui/2";
 pub const MAX_BYTES: usize = 32 * 1024;
 pub const MAX_PADS: usize = 8;
 pub const MAX_PEAKS: usize = 512;
