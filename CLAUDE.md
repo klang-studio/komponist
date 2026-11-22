@@ -13,7 +13,7 @@ in the internal notes are an archive only.
 repo root and resolve in worktrees too (`.claude/worktrees/.claude` links back to `.claude/`). proposals (with mockups), evaluations,
 spikes and reviews go to the internal notes folder `../.claude/komponist/` next to the repo (`proposals/<topic>/`, …),
 never into `docs/`. `docs/` holds only public documentation
-(`ARCHITECTURE.md`, `I18N.md`, `INSTALL.md`, `PERFORMANCE.md`). In code and public docs, cite such notes without a
+(`ARCHITECTURE.md`, `ARCHITECTURE-GUIDE.md`, `I18N.md`, `INSTALL.md`, `PERFORMANCE.md`). In code and public docs, cite such notes without a
 `docs/` path, e.g. „fader-thumb proposal, variant D (internal notes)“.
 
 **Naming:** the DAW is called **komponist**. *klang-studio* is the umbrella name of the workspace
