@@ -23,7 +23,7 @@ use komponist_plugins::{DeviceStatus, FailReason, PluginDirs, PluginManagerEvent
 use serde_json::{Value, json};
 
 use crate::common::{PATIENCE, app_with, config, devices, step_for, step_until};
-use crate::export::{export, export_settings, read};
+use crate::export::{export_settings, read};
 
 const DEVICE_PREFIX: &str = "org.klang-studio.komponist.";
 
@@ -299,6 +299,34 @@ fn write_sample(path: &Path) {
     writer.finalize().unwrap();
 }
 
+fn export_packaged(app: &mut App, settings: komponist_app::actions::ExportSettings) {
+    let file_name = settings.file_name.clone();
+    app.dispatch(Action::Project(ProjectAction::StartExport(settings)));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while app.is_exporting() {
+        app.step();
+        assert!(
+            Instant::now() < deadline,
+            "{file_name}: {:?}; devices (name, bypass, status, sampler idle/sync): {:?}",
+            app.ui().dialog,
+            devices(app.project())
+                .iter()
+                .map(|(_, device)| {
+                    let host = app.engine().host();
+                    let ui = host.sampler_ui(device.id);
+                    (
+                        &device.plugin.name,
+                        device.bypass,
+                        host.status(device.id),
+                        ui.map(|ui| (ui.idle, ui.sync)),
+                    )
+                })
+                .collect::<Vec<_>>()
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
 fn assert_export_parity(direct: &Path, bridged: &Path, compare_waveform: bool) {
     let direct = read(direct);
     let bridged = read(bridged);
@@ -488,7 +516,7 @@ fn current_project_round_trip_and_offline_render() {
     settings.sample_rate = 48_000;
     settings.normalize = false;
     settings.tail_seconds = 0.0;
-    export(&mut app, settings.clone());
+    export_packaged(&mut app, settings.clone());
     let wav = read(&output);
     assert!(wav.samples.iter().all(|sample| sample.is_finite()));
     assert!(wav.samples.iter().any(|sample| sample.abs() > 0.01));
@@ -512,7 +540,7 @@ fn current_project_round_trip_and_offline_render() {
     )));
     settings.file_name = "sampler.wav".into();
     settings.dither = false;
-    export(&mut app, settings);
+    export_packaged(&mut app, settings);
     let output = work.join("out/sampler.wav");
     let wav = read(&output);
     assert!(wav.samples.iter().all(|value| value.is_finite()));

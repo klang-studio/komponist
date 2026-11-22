@@ -481,7 +481,7 @@ impl App {
         self.poll_export();
     }
 
-    /// The devices of the project that are not `Ok`, in document order (master last).
+    /// Active devices that are not ready to render, in document order (master last).
     pub(crate) fn devices_not_ready(&self) -> Vec<DeviceRow> {
         let p = self.project();
         let chains = p
@@ -494,7 +494,7 @@ impl App {
             )));
         let mut rows = Vec::new();
         for (track, devices) in chains {
-            for d in devices {
+            for d in devices.iter().filter(|device| !device.bypass) {
                 let state = match self.engine.device_status(d.id) {
                     DeviceStatus::Ok if self.engine.host().sampler_is_loading(d.id) => {
                         DeviceState::Loading
@@ -777,6 +777,15 @@ impl App {
             }
             Ok(())
         };
+        // The device has prepared the ratio. Further polls during rendering only read it.
+        let samplers = self
+            .export_general_samplers(flatten.as_ref())
+            .collect::<Vec<_>>();
+        for device in samplers {
+            self.engine
+                .host_mut()
+                .set_sampler_export_tempo(device, None);
+        }
         if let Some(Run {
             phase: Phase::Running(worker),
             ..
@@ -940,8 +949,9 @@ impl App {
             .flat_map(|track| track.channel.devices.iter())
             .chain(project.master.devices.iter())
             .filter(move |device| {
-                komponist_plugins::bundled_sampler::kind(&device.plugin)
-                    == Some(Internal::GeneralSampler)
+                !device.bypass
+                    && komponist_plugins::bundled_sampler::kind(&device.plugin)
+                        == Some(Internal::GeneralSampler)
                     && flatten
                         .is_none_or(|flatten| flatten.scope.devices().any(|id| id == device.id))
             })

@@ -156,6 +156,7 @@ impl App {
     /// `PluginAction::BeginParamGesture`: opens the gesture named after the parameter.
     pub(crate) fn begin_param_gesture(&mut self, device: DeviceId, id: u32) {
         self.end_gesture();
+        self.flush_sampler_params(device);
         let label = self.param_label(device, id);
         self.doc.begin_gesture(label);
         self.param_undo.gesture_device = Some(device);
@@ -243,10 +244,12 @@ impl App {
         self.follow_device_states(&before);
         let now = Instant::now();
         for device in std::mem::take(&mut self.param_undo.gesture_bridged) {
+            self.forget_sampler_params(device);
             let state = self
                 .project()
                 .find_device(device)
-                .and_then(|(_, _, d)| d.state.clone());
+                .and_then(|(_, _, d)| d.state.clone())
+                .or_else(|| self.param_undo.baseline.get(&device).cloned());
             if let Some(state) = state
                 && self.engine.host_mut().set_state(device, &state)
             {

@@ -153,12 +153,18 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     );
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
     h.state_mut().dispatch(Action::Edit(EditAction::Redo));
-    wait_for_value(
-        h.state_mut(),
-        volt,
-        cutoff,
-        preset_cutoff,
-        "immediate redo Volt preset",
+    wait_for_verified(h.state_mut(), volt, volt_kind, force_bridge);
+    let snapshots = h
+        .state_mut()
+        .engine_mut()
+        .host_mut()
+        .snapshot_selected_states(&[volt], PATIENCE)
+        .expect("snapshot after immediate redo");
+    let state = pinned_clap_state::decode(&snapshots[0].1).unwrap();
+    let actual = state["params"]["cutoff"]["f32"].as_f64().unwrap();
+    assert!(
+        (actual - preset_cutoff).abs() < 1e-6,
+        "cutoff after immediate redo: {actual}"
     );
 
     page(&mut h, volt, 1);

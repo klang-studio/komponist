@@ -665,12 +665,20 @@ pub(super) fn run(bridge: &Rc<RefCell<Bridge>>, request: Request) {
             }))
         }),
     );
-    if let Err(e) = result {
-        eprintln!("komponist-bridge: plugin frame: {e}");
-    }
     log("window closed");
-    // The window is gone (or never came): nothing of the plugin may stay attached to it.
+    // A renderer or window failure before the app creator runs still owes OpenGui a reply.
     let mut b = bridge.borrow_mut();
+    if let Err(error) = result {
+        eprintln!("komponist-bridge: plugin frame: {error}");
+        let frame = frame.borrow();
+        if !frame.gui_open && !frame.closing {
+            b.error(
+                ErrorContext::Gui,
+                format!("plugin frame initialization failed: {error}"),
+            );
+        }
+    }
+    // The window is gone (or never came): nothing of the plugin may stay attached to it.
     let still_open = std::mem::take(&mut frame.borrow_mut().gui_open);
     if still_open {
         if let Some(plugin) = b.plugin.as_mut() {

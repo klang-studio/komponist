@@ -195,7 +195,7 @@ impl App {
 
     /// Commit knob edits independently so undoing an asset edit restores the previous link
     /// with the current settings, including controls still waiting for a plugin snapshot.
-    fn flush_sampler_params(&mut self, device: DeviceId) {
+    pub(crate) fn flush_sampler_params(&mut self, device: DeviceId) {
         let Some(values) = self.dialogs.samples.pending_params.get(&device) else {
             return;
         };
@@ -221,6 +221,7 @@ impl App {
             bundled_sampler::edit_params(&d.plugin.version, d.state.as_deref(), params)
         {
             self.store_sampler_knob_state(device, &state.into());
+            self.forget_sampler_params(device);
         }
     }
 
@@ -544,21 +545,25 @@ impl App {
         let was_missing = others
             .iter()
             .any(|sample| (sample.device, sample.pad) == (device, pad));
+        let mut links = vec![(device, pad, path.clone())];
+        if let Some(folder) = path.parent().filter(|_| was_missing) {
+            links.extend(others.into_iter().filter_map(|other| {
+                if (other.device, other.pad) == (device, pad) || other.file.is_empty() {
+                    return None;
+                }
+                let candidate = folder.join(other.file);
+                candidate
+                    .is_file()
+                    .then_some((other.device, other.pad, candidate))
+            }));
+        }
+        for &(device, _, _) in &links {
+            self.flush_sampler_params(device);
+        }
         // The chosen sample and the ones it finds with it are one undo step.
         self.in_one_step("undo-sample-load", |app| {
-            app.load_sample(device, pad, &path);
-            if !was_missing {
-                return;
-            }
-            let Some(folder) = path.parent() else { return };
-            for other in others {
-                if (other.device, other.pad) == (device, pad) || other.file.is_empty() {
-                    continue;
-                }
-                let candidate = folder.join(&other.file);
-                if candidate.is_file() {
-                    app.load_sample(other.device, other.pad, &candidate);
-                }
+            for (device, pad, path) in links {
+                app.link_sample(device, pad, &path);
             }
         });
     }

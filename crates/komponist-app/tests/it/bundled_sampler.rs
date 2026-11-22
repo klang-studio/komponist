@@ -277,7 +277,10 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         tracks.push((kind, track, device.id));
         project = next;
     }
-    let mut app = app_with(project, host).with_lang(komponist_i18n::Lang::De);
+    let project_path = scratch.path().join("samplers.komponist");
+    save_project(&project_path, &project).unwrap();
+    let mut app = app_with(Project::new("Empty"), host).with_lang(komponist_i18n::Lang::De);
+    app.dispatch(Action::Project(ProjectAction::OpenPath(project_path)));
     for (kind, track, device) in &tracks {
         let pad = usize::from(*kind == Internal::Sampler) * 2;
         step_until(&mut app, "initial sampler UI", |app| {
@@ -456,6 +459,83 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             .sampler_ui(drum)
             .is_some_and(|snapshot| snapshot.pads[2].status == Status::Ready)
     });
+    let host = h.state().engine().host();
+    let gain = host.native_layout(general).unwrap().author_ids().unwrap()["gain"];
+    let info = Internal::GeneralSampler
+        .params()
+        .iter()
+        .find(|p| p.id.as_str() == "gain")
+        .unwrap();
+    let raw = |db| pinned_clap_state::to_clap(info, db);
+    let set_gain = |app: &mut App, db| {
+        app.dispatch(Action::Plugin(PluginAction::SetParam {
+            device: general,
+            id: gain,
+            value: raw(db),
+        }))
+    };
+    set_gain(h.state_mut(), -18.0);
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::BeginParamGesture {
+            device: general,
+            id: gain,
+        }));
+    set_gain(h.state_mut(), -36.0);
+    h.state_mut()
+        .dispatch(Action::Edit(EditAction::CancelGesture));
+    // Force a full state restore before the cancelled knob can be captured.
+    let changed_slices = komponist_general_sampler::Settings::from_markers([0.02, 0.10]);
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::SetSamplerSlices {
+            device: general,
+            settings: changed_slices,
+        }));
+    step_until(
+        h.state_mut(),
+        "the cancelled turn stays cancelled after a slice edit",
+        |app| {
+            let host = app.engine().host();
+            host.sampler_ui(general).is_some_and(|view| view.idle)
+                && host
+                    .param_base(general, gain)
+                    .is_some_and(|value| (value - raw(-18.0)).abs() < 1e-6)
+        },
+    );
+
+    let replacement = scratch.path().join("replacement.wav");
+    write_sample(&replacement);
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::PickSample {
+            device: general,
+            pad: 0,
+        }));
+    h.run_steps(3);
+    let row = h
+        .get_by_role_and_label(Role::ListItem, "replacement.wav")
+        .rect()
+        .center();
+    crate::acceptance_support::click_at(&mut h, row);
+    set_gain(h.state_mut(), -22.0);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let hosted_state = |app: &App| {
+        let (_, _, d) = app.project().find_device(general).unwrap();
+        pinned_clap_state::decode(d.state.as_deref().unwrap()).unwrap()
+    };
+    let sample_name = |app: &App| {
+        let state = hosted_state(app);
+        let assets = state["fields"][pinned_clap_state::SAMPLE_ASSETS_FIELD]
+            .as_str()
+            .unwrap();
+        links::read(Some(assets.as_bytes()))[0].1.name.clone()
+    };
+    assert_eq!(sample_name(h.state()), "replacement");
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(sample_name(h.state()), "tone");
+    let stored_gain = hosted_state(h.state())["params"]["gain"]["f32"]
+        .as_f64()
+        .unwrap();
+    assert!((stored_gain - raw(-22.0)).abs() < 1e-6);
     h.state_mut().shutdown();
 }
 
