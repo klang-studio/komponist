@@ -67,7 +67,7 @@ unsafe extern "C" fn write_state(
 
 #[repr(C)]
 struct SamplerUi {
-    snapshot: unsafe extern "C" fn(*const clap_plugin, *mut u8, u32) -> u32,
+    snapshot: unsafe extern "C" fn(*const clap_plugin, *mut u8, u32, f64) -> u32,
     preview: unsafe extern "C" fn(*const clap_plugin, f64),
 }
 
@@ -81,8 +81,8 @@ fn read_snapshot(instance: &Instance) -> Snapshot {
             .cast::<SamplerUi>()
             .as_ref()
             .expect("sampler UI extension");
-        assert_eq!((table.snapshot)(plugin, bytes.as_mut_ptr(), 1), 0);
-        (table.snapshot)(plugin, bytes.as_mut_ptr(), MAX_BYTES as u32)
+        assert_eq!((table.snapshot)(plugin, bytes.as_mut_ptr(), 1, 0.0), 0);
+        (table.snapshot)(plugin, bytes.as_mut_ptr(), MAX_BYTES as u32, 0.0)
     };
     Snapshot::decode(&bytes[..len as usize]).expect("valid sampler UI data")
 }
@@ -185,6 +185,14 @@ pub(crate) fn sample_asset_roundtrip<P: ClapPlugin>(key: u8, gate_param: &str) {
         })
         .to_string()
     };
+    // SAFETY: This is an initialized instance and the versioned ID is NUL-terminated.
+    assert!(unsafe {
+        ((*plugin).get_extension.unwrap())(
+            plugin,
+            c"org.klang-studio.komponist.sampler-ui/1".as_ptr(),
+        )
+        .is_null()
+    });
     assert_eq!(read_snapshot(&instance).pads[0].status, Status::Empty);
     check_state_roundtrip::<P>(&instance, &assets(&sample));
     let note = clap_event_note {
