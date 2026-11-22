@@ -573,7 +573,7 @@ fn midi_chain_events(
         NewTrack {
             name: None,
             hue: None,
-            instrument: Some(Internal::Hexa.plugin_ref()),
+            instrument: Some(BuiltinKind::Hexa.catalog().plugin_ref()),
             index: None,
             arm_exclusive: false,
         },
