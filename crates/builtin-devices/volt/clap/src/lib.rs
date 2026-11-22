@@ -1,13 +1,10 @@
 //! Volt using its existing voice engine and public native CLAP parameter layout.
 
 use komponist_bundled_clap_adapter::{Binding, DeviceDefinition, Instrument};
-use komponist_device_core::{
-    Spec,
-    layout::{knob, param, toggle},
-};
+use komponist_device_core::Spec;
 use komponist_i18n::Lang;
 use komponist_model::params::ParamInfo;
-use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, Page, WidgetKind};
+use komponist_model::params::layout::{CellParam, DeviceLayout, Page};
 use komponist_native_clap_sdk::Panel;
 use nice_plug::prelude::*;
 
@@ -134,7 +131,7 @@ impl DeviceDefinition for Volt {
 }
 
 fn volt_layout(lang: Lang) -> DeviceLayout {
-    let [mut sound, mut envelopes, mut matrix]: [Page; 3] = Volt::SPEC
+    let [mut sound, _, mut matrix]: [Page; 3] = Volt::SPEC
         .layout_in(lang)
         .pages
         .clone()
@@ -148,46 +145,8 @@ fn volt_layout(lang: Lang) -> DeviceLayout {
         .retain(|cell| matches!(cell.param, CellParam::Id(_)));
     sound.dividers.clear();
     matrix.dividers.clear();
-    envelopes.cells.clear();
-    for (row, (env, _)) in komponist_volt::ENVELOPES.iter().enumerate() {
-        for (col, suffix) in ["a", "d", "s", "r"].into_iter().enumerate() {
-            envelopes
-                .cells
-                .push(knob(col as u8, row as u8, &format!("{env}_{suffix}")));
-        }
-    }
-    envelopes.cols = 4;
-    envelopes.dividers.clear();
-
-    let mut lfo = Page {
-        name: "LFOs".into(),
-        cols: 9,
-        cells: Vec::new(),
-        dividers: Vec::new(),
-    };
-    for (row, (number, _)) in komponist_volt::LFOS.iter().enumerate() {
-        let row = row as u8;
-        let id = |suffix| format!("lfo{number}_{suffix}");
-        let dropdown = |col, suffix| {
-            Cell::half(
-                col,
-                row,
-                2,
-                Half::Top,
-                WidgetKind::Dropdown,
-                param(&id(suffix)),
-            )
-        };
-        lfo.cells.extend([
-            dropdown(0, "shape"),
-            toggle(2, row, 1, Half::Top, param(&id("sync"))),
-            dropdown(3, "div"),
-            toggle(5, row, 1, Half::Top, param(&id("key"))),
-            toggle(6, row, 1, Half::Top, param(&id("uni"))),
-            knob(7, row, &id("rate")),
-            knob(8, row, &id("fade")),
-        ]);
-    }
+    let envelopes = komponist_volt::public_envelope_page(lang);
+    let lfo = komponist_volt::public_lfo_page();
     DeviceLayout {
         pages: vec![sound, envelopes, lfo, matrix],
     }
