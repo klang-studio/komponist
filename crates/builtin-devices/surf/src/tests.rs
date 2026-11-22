@@ -28,7 +28,7 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 pub(super) const RATE: f32 = 48_000.0;
 const BLOCK: usize = 4096;
 
-fn ctx(frames: usize, rate: f32) -> ProcessContext {
+pub(super) fn ctx(frames: usize, rate: f32) -> ProcessContext {
     ProcessContext {
         frames: frames as u32,
         sample_rate: rate,

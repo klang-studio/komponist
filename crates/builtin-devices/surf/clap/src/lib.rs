@@ -177,7 +177,7 @@ fn surf_layout(lang: Lang) -> DeviceLayout {
         pages: vec![
             sound,
             komponist_volt::public_envelope_page(lang),
-            komponist_volt::public_lfo_page(),
+            komponist_volt::public_lfo_page(lang),
             matrix,
         ],
     }

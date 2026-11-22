@@ -384,19 +384,24 @@ cargo test --release -p komponist-volt --lib bench -- --ignored --nocapture
 ### 8.1 Surf (#107)
 
 Surf is Volt's engine with wavetable oscillators, so the bench compares the two with the same
-settings. Measured 2026-11-21 on `wp/107-surf-wavetable`, release profile, 48 kHz, calls of 128
-frames (2.67 ms period), keys held, one thread, `voices` at 16. The budget of the proposal was at
-most 1.5 × Volt.
+settings. Measured 2026-11-22 on `wp/107-surf-wavetable`, release profile, 48 kHz, calls of 128
+frames (2.67 ms period), keys held, one thread, `voices` at 16. Only `Processor::process` is timed
+(buffers and context are made before the clock starts). Three runs; the table gives the range. The
+budget of the proposal is at most 1.5 × Volt, without a measurement margin.
 
-| Case | Keys | Surf | Share of 2.67 ms | Volt | Surf / Volt |
-|---|---|---|---|---|---|
-| Unison 1 | 8 | 47 µs | 1.8 % | 32 µs | 1.49 |
-| Unison 1 | 16 | 102 µs | 3.8 % | 67 µs | 1.52 |
-| Unison 3 + spread | 8 | 82 µs | 3.1 % | 61 µs | 1.35 |
-| Unison 3 + spread | 16 | 172 µs | 6.4 % | 134 µs | 1.28 |
-| Unison 7 + spread (cap: 6 keys) | 6 | 94–103 µs | 3.5–3.9 % | 65–66 µs | 1.44–1.56 |
-| Unison 3, LFOs on both positions | 16 | 167 µs | 6.2 % | 122 µs | 1.37 |
+| Case | Keys | Surf | Share of 2.67 ms | Volt | Surf / Volt | Budget |
+|---|---|---|---|---|---|---|
+| Unison 1 | 8 | 44–47 µs | 1.7–1.8 % | 30–32 µs | 1.48–1.54 | exceeded in 1 of 3 runs |
+| Unison 1 | 16 | 89–92 µs | 3.3–3.4 % | 58–62 µs | 1.49–1.56 | exceeded in 2 of 3 runs |
+| Unison 3 + spread | 8 | 75–76 µs | 2.8–2.9 % | 56–59 µs | 1.29–1.34 | met |
+| Unison 3 + spread | 16 | 148–153 µs | 5.5–5.7 % | 111–115 µs | 1.31–1.33 | met |
+| Unison 7 + spread (cap: 6 keys) | 6 | 90–96 µs | 3.4–3.6 % | 59–64 µs | 1.45–1.54 | exceeded in 2 of 3 runs |
+| Unison 3, LFOs on both positions | 8 | 76–79 µs | 2.9–3.0 % | 55 µs | 1.39–1.42 | met |
+| Unison 3, LFOs on both positions | 16 | 151–160 µs | 5.7–6.0 % | 109–112 µs | 1.38–1.42 | met |
 
+- **Budget:** with one oscillator pair per key (Unison 1) and at the unison cap (Unison 7) Surf
+  exceeds the 1.5 × budget by up to 0.06; with Unison 3 it stays below. In absolute terms every
+  case stays at or below 6 % of one core per 2.67 ms block for 16 keys.
 - A wavetable oscillator reads four slices per sample (two frames, two band-limited levels) and
   blends them; volt's PolyBLEP oscillators are cheaper per sample, the rest of the voice is the
   same code. Moving positions cost nothing extra while the frames stay the same (the weights glide

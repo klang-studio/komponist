@@ -362,7 +362,7 @@ pub fn public_envelope_page(t: Lang) -> Page {
 
 /// The LFO page of the public CLAP v1 layout (bundled Volt and Surf): both LFOs as rows, each with
 /// its tempo division.
-pub fn public_lfo_page() -> Page {
+pub fn public_lfo_page(t: Lang) -> Page {
     let mut cells = Vec::new();
     for (row, (number, _)) in LFOS.iter().enumerate() {
         let row = row as u8;
@@ -388,7 +388,7 @@ pub fn public_lfo_page() -> Page {
         ]);
     }
     Page {
-        name: "LFOs".into(),
+        name: t.page_volt_lfos().into(),
         cols: 9,
         cells,
         dividers: Vec::new(),

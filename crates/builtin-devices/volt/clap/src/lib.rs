@@ -146,7 +146,7 @@ fn volt_layout(lang: Lang) -> DeviceLayout {
     sound.dividers.clear();
     matrix.dividers.clear();
     let envelopes = komponist_volt::public_envelope_page(lang);
-    let lfo = komponist_volt::public_lfo_page();
+    let lfo = komponist_volt::public_lfo_page(lang);
     DeviceLayout {
         pages: vec![sound, envelopes, lfo, matrix],
     }

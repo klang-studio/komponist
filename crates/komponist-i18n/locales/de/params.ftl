@@ -583,6 +583,9 @@ page-volt-envelopes = Hüllkurven
 # volt card, page 3.
 page-volt-matrix = Matrix
 
+# volt and surf: page of both LFOs in the public CLAP layout (bundled devices in other hosts).
+page-volt-lfos = LFOs
+
 # Name above the envelope switch on volt's page 2.
 label-volt-envelope = Hüllkurve
 

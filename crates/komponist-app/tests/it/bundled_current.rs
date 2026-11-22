@@ -86,9 +86,10 @@ fn project(host: &PluginHost, sample: &Path) -> Fixture {
     for (index, (name, note)) in [
         ("hexa", 60),
         ("volt", 64),
-        ("surf", 62),
         ("sampler", sampler_key),
         ("general-sampler", 67),
+        // Last, so the note starts of the other tracks (and the sampler's stretch window) stay.
+        ("surf", 62),
     ]
     .into_iter()
     .enumerate()
@@ -127,8 +128,8 @@ fn project(host: &PluginHost, sample: &Path) -> Fixture {
         tracks.push(track);
     }
 
-    let [hexa, volt, sampler, general] = tracks[..] else {
-        unreachable!("fixture always creates four tracks");
+    let [hexa, volt, sampler, general, _surf] = tracks[..] else {
+        unreachable!("fixture always creates five tracks");
     };
     let mut insert = |slug, track, role, index, state| {
         let (next, device) = edits::insert_device(
