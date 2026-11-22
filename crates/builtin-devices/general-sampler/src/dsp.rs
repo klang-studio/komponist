@@ -8,7 +8,7 @@ use sampler_core::{
 };
 
 use komponist_device_core::Dsp;
-use komponist_sampler::load::{self, AudioSide, Meters, SamplerHandle, SlicePreview};
+use komponist_sampler_shared::load::{self, AudioSide, Meters, SamplerHandle, SlicePreview};
 
 use super::{MAX_SLICES, PARAM_COUNT, Param, Slice, SliceOptions};
 

@@ -104,7 +104,8 @@ bridge and worker protocols described below.
 
 ## 4. Workspace and crates
 
-The Cargo workspace uses Rust edition 2024 and resolver 3. `test-plugins/` is a separate workspace.
+The Cargo workspace uses Rust edition 2024 and resolver 3. The [Plugin SDK](../crates/plugin-sdk/README.md)
+and `test-plugins/` have their own workspaces.
 A clone builds without sibling repositories: **klang-dsp** is a git dependency pinned to a commit;
 **hexa-core** and **sampler-core** are vendored engines developed independently in this repository.
 Their READMEs record provenance.
@@ -118,9 +119,9 @@ Their READMEs record provenance.
 | [`komponist-audiofile`](../crates/komponist-audiofile/README.md) | Seekable decoding, resampling, shared file pool, peak cache, source tempo analysis |
 | [`komponist-stretch`](../crates/komponist-stretch/README.md) | Worker-only Rust/C++ wrapper around vendored Signalsmith Stretch/Linear |
 | [`hexa-core`](../crates/builtin-devices/hexa/core/README.md) | Hexa six-operator FM engine |
-| [`sampler-core`](../crates/builtin-devices/sampler/core/README.md) | Shared Klopfer and Sampler engine |
+| [`sampler-core`](../crates/builtin-devices/sampler-shared/core/README.md) | Shared Klopfer and Sampler engine |
 | [`komponist-device-core`](../crates/builtin-devices/core/src/lib.rs) | Unstable device API: catalog and parameter metadata, layouts, state, presets, processor adapters and shared DSP |
-| [Device crates](../crates/builtin-devices/README.md) | One crate per instrument, audio effect and MIDI effect |
+| [Device crates](../crates/builtin-devices/README.md) | One directory per instrument, audio effect and MIDI effect, with a standalone CLAP package alongside its DSP |
 | [`komponist-builtin`](../crates/builtin-devices/registry/README.md) | Built-in device list, catalog and processor factory |
 | [`komponist-ipc`](../crates/komponist-ipc/README.md) | Shared-memory layout, signalling, control protocol, process watching, frame vocabulary |
 | [`komponist-hosting`](../crates/komponist-hosting/README.md) | CLAP/VST3 loading, processing, state, parameters, GUI and host services |

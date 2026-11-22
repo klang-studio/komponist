@@ -73,7 +73,7 @@ pub(super) struct SamplerDsp {
 impl SamplerDsp {
     /// Allocates the engine, the slots and the loader thread (UI thread).
     pub(super) fn new() -> SamplerDsp {
-        let (handle, audio, meters) = load::channel();
+        let (handle, audio, meters) = load::drum_channel();
         Self::with_channels(handle, audio, meters)
     }
 

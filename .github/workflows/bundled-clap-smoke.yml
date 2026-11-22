@@ -12,7 +12,11 @@ on:
         default: all
   pull_request:
     paths:
-      - "sdk/native-clap/**"
+      - "crates/plugin-sdk/**"
+      - "crates/builtin-devices/**"
+      - "crates/komponist-engine/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "crates/komponist-app/src/main.rs"
       - "crates/komponist-app/src/samples.rs"
       - "crates/komponist-app/src/export.rs"
@@ -82,7 +86,7 @@ jobs:
         with:
           workspaces: |
             . -> target
-            sdk/native-clap -> target
+            crates/plugin-sdk -> target
           key: bundled-clap-release
       - name: Build and stage final CLAP payloads
         run: |

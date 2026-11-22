@@ -733,6 +733,8 @@ fn bundled_presse_lookahead_updates_delay_compensation_during_playback() {
     let cache = tempfile::tempdir().unwrap();
     let host = scan(&launcher, cache.path());
     let mut project = Project::new("Bundled Presse latency");
+    project.loop_range = TickRange::new(Tick::ZERO, Tick(PPQ * 4));
+    project.loop_on = true;
     let [with_presse, plain] = ["Presse", "Plain"].map(|name| {
         let (next, track) = edits::add_track(
             &project,
@@ -750,15 +752,19 @@ fn bundled_presse_lookahead_updates_delay_compensation_during_playback() {
             track,
             NewClip {
                 start: Tick::ZERO,
-                length: Tick(PPQ * 64),
+                length: Tick(PPQ * 4),
                 name: name.into(),
                 content: NewClipContent::Midi {
-                    notes: vec![NewNote {
-                        start: Tick::ZERO,
-                        length: Tick(PPQ * 64),
-                        pitch: 60,
-                        velocity: 76,
-                    }],
+                    // A note at transport start can coincide with activation or a control poll.
+                    // Keep delivering notes so the fixture can observe active processing.
+                    notes: (0..4)
+                        .map(|beat| NewNote {
+                            start: Tick(PPQ * beat),
+                            length: Tick(PPQ / 2),
+                            pitch: 60,
+                            velocity: 76,
+                        })
+                        .collect(),
                     take_name: String::new(),
                 },
             },
@@ -805,6 +811,7 @@ fn bundled_presse_lookahead_updates_delay_compensation_during_playback() {
     app.dispatch(Action::Transport(
         komponist_app::TransportAction::TogglePlay,
     ));
+    eprintln!("Waiting for audio on the Presse track (bridge={bridge})");
     step_until(&mut app, "Presse track audible during playback", |app| {
         let (left, right) = app.engine().track_meter(with_presse).unwrap().take();
         app.transport() == TransportState::Playing && left.max(right) > 1e-4
@@ -821,6 +828,7 @@ fn bundled_presse_lookahead_updates_delay_compensation_during_playback() {
             id: lookahead,
             value,
         }));
+        eprintln!("Waiting for Presse lookahead={value} and track delay={delay} (bridge={bridge})");
         step_until(
             &mut app,
             "Presse reactivated with matching track delay",

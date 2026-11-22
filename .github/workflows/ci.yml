@@ -73,7 +73,7 @@ jobs:
           workspaces: |
             . -> target
             test-plugins -> target
-            sdk/native-clap -> target
+            crates/plugin-sdk -> target
           # Save the dependency builds of a red run too, so a failing test does not make the next run cold.
           cache-on-failure: true
 
@@ -93,7 +93,7 @@ jobs:
 
       - name: Exercise the SDK plugin and standard-only fallback in komponist
         run: |
-          sdk=sdk/native-clap/Cargo.toml
+          sdk=crates/plugin-sdk/Cargo.toml
           native="$RUNNER_TEMP/sdk-native-layout"
           plain="$RUNNER_TEMP/sdk-plain-layout"
           cargo run --locked --manifest-path "$sdk" -p native-clap-xtask -- bundle --out-dir "$native"

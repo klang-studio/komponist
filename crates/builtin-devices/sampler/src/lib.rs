@@ -27,9 +27,6 @@
 //! ([`load`]) and handed to the audio thread lock-free. [`dsp_with_handle`] returns the DSP
 //! and its [`SamplerHandle`] for the app.
 
-pub mod links;
-pub mod load;
-pub mod settings;
 pub mod testkit;
 
 mod dsp;
@@ -41,8 +38,10 @@ use komponist_model::params::layout::{
 };
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 
-pub use links::{Collector, SampleLink};
-pub use load::{ManagedLoader, PadStatus, PadView, SamplerHandle, SyncStatus};
+pub use komponist_sampler_shared::{
+    Collector, ManagedLoader, PadStatus, PadView, SampleLink, SamplerHandle, SyncStatus, links,
+    load, settings,
+};
 
 /// The device's name in the browser and on the card. The only place it is written.
 pub const NAME: &str = komponist_model::project::DRUM_SAMPLER_NAME;

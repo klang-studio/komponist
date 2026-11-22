@@ -10,7 +10,7 @@ komponist-device-core.workspace = true
 komponist-engine.workspace = true
 komponist-i18n.workspace = true
 komponist-model.workspace = true
-komponist-sampler.workspace = true
+komponist-sampler-shared.workspace = true
 sampler-core.workspace = true
 serde_json.workspace = true
 

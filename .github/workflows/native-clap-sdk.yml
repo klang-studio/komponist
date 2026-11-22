@@ -1,10 +1,10 @@
-name: Native CLAP SDK
+name: Plugin SDK
 
 on:
   push:
     branches: [main]
     paths:
-      - "sdk/native-clap/**"
+      - "crates/plugin-sdk/**"
       - "docs/clap-device-layout/**"
       - "crates/builtin-devices/core/**"
       - "crates/komponist-ipc/**"
@@ -16,7 +16,7 @@ on:
       - ".github/workflows/native-clap-sdk.yml"
   pull_request:
     paths:
-      - "sdk/native-clap/**"
+      - "crates/plugin-sdk/**"
       - "docs/clap-device-layout/**"
       - "crates/builtin-devices/core/**"
       - "crates/komponist-ipc/**"
@@ -52,7 +52,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: sdk/native-clap
+        working-directory: crates/plugin-sdk
     env:
       CARGO_TERM_COLOR: always
       TARGET: ${{ matrix.target }}
@@ -66,7 +66,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: sdk/native-clap -> target
+          workspaces: crates/plugin-sdk -> target
       - name: Test the SDK source
         run: cargo test --workspace --locked
       - name: Test release source verification
@@ -78,6 +78,6 @@ jobs:
         with:
           name: native-clap-example-${{ matrix.target }}
           path: |
-            sdk/native-clap/target/native-clap-dist/native-clap-example-${{ matrix.target }}.tar.gz
-            sdk/native-clap/target/native-clap-dist/native-clap-example-${{ matrix.target }}.json
+            crates/plugin-sdk/target/native-clap-dist/native-clap-example-${{ matrix.target }}.tar.gz
+            crates/plugin-sdk/target/native-clap-dist/native-clap-example-${{ matrix.target }}.json
           if-no-files-found: error

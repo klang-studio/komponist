@@ -1,0 +1,21 @@
+[package]
+name = "komponist-sampler-shared"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+komponist-audiofile.workspace = true
+komponist-model.workspace = true
+komponist-stretch.workspace = true
+sampler-core.workspace = true
+serde_json.workspace = true
+hound.workspace = true
+rtrb.workspace = true
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
