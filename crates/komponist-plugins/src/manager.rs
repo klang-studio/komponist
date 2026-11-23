@@ -1253,7 +1253,12 @@ impl PluginManager {
             .bridges
             .iter_mut()
             .filter(|&(&device, _)| include(device))
-            .filter_map(|(&device, b)| Some((device, b.request_state(StatePurpose::Collect, Some(deadline))?)))
+            .filter_map(|(&device, b)| {
+                Some((
+                    device,
+                    b.request_state(StatePurpose::Collect, Some(deadline))?,
+                ))
+            })
             .collect();
         let mut direct_waiting: BTreeSet<_> = self
             .direct
