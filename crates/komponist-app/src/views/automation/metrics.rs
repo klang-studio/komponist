@@ -30,3 +30,15 @@ pub const CLIP_HEIGHT_MIN: f32 = 48.0;
 pub const CLIP_HEIGHT_DEFAULT: f32 = 96.0;
 pub const CLIP_HEIGHT_MAX: f32 = 200.0;
 pub const CLIP_CHOOSER_WIDTH: f32 = 142.0;
+
+/// Alpha of the record-preview fill under a freshly written curve: the curve fill, lighter than
+/// the stroke, so the grid stays readable through it.
+pub const RECORD_FILL_ALPHA: f32 = 0.22;
+/// Alpha of the marquee rectangle's fill; the accent border carries the shape.
+pub const MARQUEE_FILL_ALPHA: f32 = 0.15;
+/// Value change of one Up/Down key press or one accessibility increment: 1 % of the range.
+pub const VALUE_STEP: f32 = 0.01;
+/// Value change of Shift+Up/Down: 0.1 % of the range, a tenth of [`VALUE_STEP`].
+pub const VALUE_STEP_FINE: f32 = 0.001;
+/// Factor on the vertical movement of a point drag while Shift is held (fine adjustment).
+pub const FINE_DRAG_FACTOR: f32 = 0.1;
