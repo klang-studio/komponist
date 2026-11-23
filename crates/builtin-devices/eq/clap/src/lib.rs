@@ -13,18 +13,18 @@ struct Eq;
 #[derive(Clone, Copy, Enum, PartialEq)]
 enum Shape {
     #[id = "low-cut"]
-    #[name = "LC"]
+    #[name = "Low cut"]
     LowCut,
     #[id = "low-shelf"]
-    #[name = "LS"]
+    #[name = "Low shelf"]
     LowShelf,
     #[id = "bell"]
     Bell,
     #[id = "high-shelf"]
-    #[name = "HS"]
+    #[name = "High shelf"]
     HighShelf,
     #[id = "high-cut"]
-    #[name = "HC"]
+    #[name = "High cut"]
     HighCut,
 }
 

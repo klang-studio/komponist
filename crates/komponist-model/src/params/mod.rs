@@ -251,6 +251,10 @@ pub struct ParamInfo {
     pub modulatable: bool,
     /// The plugin reports it as a macro: the auto-layout shows these first.
     pub is_macro: bool,
+    /// Shorter names of an [`ParamKind::Enum`]'s choices for switches that cannot fit the full
+    /// ones (one per choice); not saved. Hosts and menus use the full names.
+    #[serde(skip)]
+    pub short_choices: Option<Vec<String>>,
 }
 
 impl ParamInfo {
@@ -272,6 +276,23 @@ impl ParamInfo {
             automatable: true,
             modulatable: false,
             is_macro: false,
+            short_choices: None,
+        }
+    }
+
+    /// Sets the short choice names (one per choice) a narrow switch shows instead of the full ones.
+    #[must_use]
+    pub fn short_choices(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.short_choices = Some(names.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// The choice names a switch shows: the short ones if set, else the full ones.
+    pub fn switch_choices(&self) -> Option<&[String]> {
+        match (&self.short_choices, &self.kind) {
+            (Some(short), ParamKind::Enum(names)) if short.len() == names.len() => Some(short),
+            (_, ParamKind::Enum(names)) => Some(names),
+            _ => None,
         }
     }
 

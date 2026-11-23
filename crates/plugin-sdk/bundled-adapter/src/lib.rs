@@ -299,11 +299,7 @@ pub fn panel_from_parts(
             .find(|param| param.id == en.id)
             .unwrap_or(en);
         parameter_labels.insert(en.id.clone(), label(&en.name, &de.name));
-        if let (
-            komponist_model::params::ParamKind::Enum(en_choices),
-            komponist_model::params::ParamKind::Enum(de_choices),
-        ) = (&en.kind, &de.kind)
-        {
+        if let (Some(en_choices), Some(de_choices)) = (en.switch_choices(), de.switch_choices()) {
             choice_labels.insert(
                 en.id.clone(),
                 en_choices

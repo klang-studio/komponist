@@ -228,17 +228,32 @@ param-eq-analyse = Analyse
 # EQ band type: low cut.
 choice-eq-type-low-cut = LC
 
+# EQ band type, short for the narrow switch of the card: low cut.
+choice-eq-type-low-cut-short = LC
+
 # EQ band type: low shelf.
 choice-eq-type-low-shelf = LS
+
+# EQ band type, short for the narrow switch of the card: low shelf.
+choice-eq-type-low-shelf-short = LS
 
 # EQ band type: bell (German „Glocke“).
 choice-eq-type-bell = Gl.
 
+# EQ band type, short for the narrow switch of the card: bell.
+choice-eq-type-bell-short = Gl.
+
 # EQ band type: high shelf.
 choice-eq-type-high-shelf = HS
 
+# EQ band type, short for the narrow switch of the card: high shelf.
+choice-eq-type-high-shelf-short = HS
+
 # EQ band type: high cut.
 choice-eq-type-high-cut = HC
+
+# EQ band type, short for the narrow switch of the card: high cut.
+choice-eq-type-high-cut-short = HC
 
 ## Delay (`internal/delay.rs`). The note values (1/8, 1/4T …) are notation and stay in code.
 
