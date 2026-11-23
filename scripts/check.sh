@@ -3,6 +3,10 @@
 # all tests of the workspace. Runs under the shared build lock (scripts/build-lock.sh), so it may
 # wait for another worktree's gate: start it in the background or with a long timeout. Compiling
 # runs at low priority; the tests run at normal priority so timing-sensitive tests don't flake.
+#
+# Like the CI jobs (Linux, macOS), it builds the test plugins when this OS's bundles are missing and runs the
+# test-plugins workspace tests and the Warp compatibility check (needs the full Git history). Differences from
+# CI: no `--locked`, no kittest tolerance file, no hang watchdog; the GUI tests are scripts/check-gui.sh.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -17,7 +21,22 @@ case "$(uname -s)" in
 MINGW* | MSYS* | CYGWIN*) export WGPU_BACKEND="${WGPU_BACKEND:-vulkan}" ;;
 esac
 
+# Bundles of this OS (what std::env::consts::OS says); without them the plugin tests fail under REQUIRE_FIXTURES.
+case "$(uname -s)" in
+Darwin) plugin_os=macos ;;
+MINGW* | MSYS* | CYGWIN*) plugin_os=windows ;;
+*) plugin_os=linux ;;
+esac
+if [ ! -d "target/test-plugins/$plugin_os/clap" ] || [ ! -d "target/test-plugins/$plugin_os/vst3" ]; then
+    lowprio scripts/build-test-plugins.sh
+fi
+
 lowprio cargo fmt --all --check
 lowprio cargo clippy --workspace --all-targets -- -D warnings
 lowprio cargo test --workspace --no-run
 cargo test --workspace
+
+# The test plugins are their own workspace; CI runs its tests too.
+(cd test-plugins && cargo test --workspace --no-fail-fast)
+
+scripts/check-warp-compat.sh
