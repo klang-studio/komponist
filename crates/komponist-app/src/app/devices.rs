@@ -5,8 +5,8 @@ use komponist_model::edits::{self, NewDevice};
 use komponist_model::{ChannelRef, Device, DeviceId, DeviceRole, Project, TrackId};
 
 use super::App;
-use crate::actions::{PluginAction, SelectMode, SelectionChange, UiAction};
-use crate::ui_state::{CopiedDevice, DockTab, ParamTouch, Reveal};
+use crate::actions::{PluginAction, SelectMode, SelectionChange};
+use crate::ui_state::{CopiedDevice, DEVICES_CLIPBOARD_MARKER, DockTab, ParamTouch, Reveal};
 
 /// A device as the spec of a copy: plugin, state and sidechain (kept where its source can still
 /// feed the copy, #7), not bypassed.
@@ -151,10 +151,7 @@ impl App {
         if !copied.is_empty() {
             // egui-winit sends `Event::Paste` for Strg V only while the system clipboard holds
             // text: put a short marker there; the devices stay in the app's own clipboard.
-            self.shell.pending_clipboard_text = Some(match copied.len() {
-                1 => "komponist: 1 Gerät".to_owned(),
-                n => format!("komponist: {n} Geräte"),
-            });
+            self.shell.pending_clipboard_text = Some(DEVICES_CLIPBOARD_MARKER.to_owned());
             self.ui.devices.clipboard = copied;
         }
     }
@@ -216,94 +213,87 @@ impl App {
         }
     }
 
-    /// The UI actions of the device chain; `false` if `action` is not one of them.
-    pub(super) fn device_ui_action(&mut self, action: &UiAction) -> bool {
-        match action {
-            UiAction::ToggleDeviceCollapsed { device, all } => {
-                let collapse = !self.ui.devices.collapsed.contains(device);
-                let ids = if *all {
-                    self.chain_of(*device)
-                } else {
-                    vec![*device]
-                };
-                for id in ids {
-                    if collapse {
-                        self.ui.devices.collapsed.insert(id);
-                    } else {
-                        self.ui.devices.collapsed.remove(&id);
-                    }
-                }
+    /// `ToggleDeviceCollapsed`: collapse or expand a device; with `all` every device of its chain.
+    pub(super) fn toggle_device_collapsed(&mut self, device: DeviceId, all: bool) {
+        let collapse = !self.ui.devices.collapsed.contains(&device);
+        let ids = if all {
+            self.chain_of(device)
+        } else {
+            vec![device]
+        };
+        for id in ids {
+            if collapse {
+                self.ui.devices.collapsed.insert(id);
+            } else {
+                self.ui.devices.collapsed.remove(&id);
             }
-            UiAction::SetDevicePage { device, page } => {
-                self.ui.devices.pages.insert(*device, *page);
-            }
-            UiAction::CopyDevices => self.copy_devices(),
-            UiAction::SelectAdjacentDevice(dir) => {
-                let Some((_, chain)) = self.selected_chain() else {
-                    return true;
-                };
-                let current = chain
-                    .iter()
-                    .position(|id| self.ui.selection.devices.contains(id));
-                let next = match current {
-                    Some(i) => i
-                        .saturating_add_signed(*dir as isize)
-                        .min(chain.len().saturating_sub(1)),
-                    None if *dir < 0 => chain.len().saturating_sub(1),
-                    None => 0,
-                };
-                if let Some(device) = chain.get(next).copied() {
-                    self.select(SelectionChange::Devices {
-                        devices: vec![device],
-                        mode: SelectMode::Replace,
-                    });
-                    self.ui.devices.reveal = Some((device, Reveal::Visible));
-                }
-            }
-            UiAction::RevealDevice(device) => {
-                let device = *device;
-                match self.project().find_device(device) {
-                    Some((ChannelRef::Track(track), _, _)) => {
-                        self.select(SelectionChange::Tracks {
-                            tracks: vec![track],
-                            mode: SelectMode::Replace,
-                        });
-                        self.select(SelectionChange::Devices {
-                            devices: vec![device],
-                            mode: SelectMode::Replace,
-                        });
-                        self.set_dock_tab(DockTab::Devices);
-                        self.ui.focus = self.dock_area();
-                        self.ui.devices.reveal = Some((device, Reveal::Center));
-                    }
-                    // The master has no tab in the dock: its plugin window.
-                    Some((ChannelRef::Master, _, _)) => {
-                        self.plugin_action(PluginAction::OpenWindow(device));
-                    }
-                    None => {}
-                }
-            }
-            UiAction::ScrollToDevice(device) => {
-                self.ui.devices.reveal = Some((*device, Reveal::Start));
-            }
-            UiAction::TouchParam {
-                device,
-                param,
-                dragging,
-            } => {
-                let touch = ParamTouch {
-                    device: *device,
-                    param: param.clone(),
-                    dragging: *dragging,
-                };
-                let recent = &mut self.ui.devices.automation_recent;
-                recent.retain(|old| old.device != *device || old.param != *param);
-                recent.insert(0, touch.clone());
-                recent.truncate(crate::views::automation::RECENT_TARGETS);
-                self.ui.devices.touched = Some(touch);
-            }
-            _ => return false,
         }
-        true
+    }
+
+    /// `SelectAdjacentDevice`: select the neighbour of the selected device.
+    pub(super) fn select_adjacent_device(&mut self, dir: i32) {
+        let Some((_, chain)) = self.selected_chain() else {
+            return;
+        };
+        let current = chain
+            .iter()
+            .position(|id| self.ui.selection.devices.contains(id));
+        let next = match current {
+            Some(i) => i
+                .saturating_add_signed(dir as isize)
+                .min(chain.len().saturating_sub(1)),
+            None if dir < 0 => chain.len().saturating_sub(1),
+            None => 0,
+        };
+        if let Some(device) = chain.get(next).copied() {
+            self.select(SelectionChange::Devices {
+                devices: vec![device],
+                mode: SelectMode::Replace,
+            });
+            self.ui.devices.reveal = Some((device, Reveal::Visible));
+        }
+    }
+
+    /// `RevealDevice`: open the Geräte tab on the device's track and scroll it into the middle.
+    pub(super) fn reveal_device(&mut self, device: DeviceId) {
+        match self.project().find_device(device) {
+            Some((ChannelRef::Track(track), _, _)) => {
+                self.select(SelectionChange::Tracks {
+                    tracks: vec![track],
+                    mode: SelectMode::Replace,
+                });
+                self.select(SelectionChange::Devices {
+                    devices: vec![device],
+                    mode: SelectMode::Replace,
+                });
+                self.set_dock_tab(DockTab::Devices);
+                self.ui.focus = self.dock_area();
+                self.ui.devices.reveal = Some((device, Reveal::Center));
+            }
+            // The master has no tab in the dock: its plugin window.
+            Some((ChannelRef::Master, _, _)) => {
+                self.plugin_action(PluginAction::OpenWindow(device));
+            }
+            None => {}
+        }
+    }
+
+    /// `TouchParam`: the inspector and the status line follow the touched parameter.
+    pub(super) fn touch_param(
+        &mut self,
+        device: DeviceId,
+        param: komponist_model::params::ParamId,
+        dragging: bool,
+    ) {
+        let touch = ParamTouch {
+            device,
+            param: param.clone(),
+            dragging,
+        };
+        let recent = &mut self.ui.devices.automation_recent;
+        recent.retain(|old| old.device != device || old.param != param);
+        recent.insert(0, touch.clone());
+        recent.truncate(crate::views::automation::RECENT_TARGETS);
+        self.ui.devices.touched = Some(touch);
     }
 }

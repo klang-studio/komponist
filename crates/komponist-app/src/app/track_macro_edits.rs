@@ -290,8 +290,7 @@ impl App {
             return Some(true);
         }
         if slot.mappings.len() >= MAX_MAPPINGS {
-            self.record_edit_error(EditError::MacroMappingLimit);
-            self.set_status(self.lang.status_macros_full(), StatusKind::Error);
+            self.record_edit_error(EditError::MacroMappingLimit { index });
             return Some(false);
         }
         let old_driver = track.macros.driver(&target);

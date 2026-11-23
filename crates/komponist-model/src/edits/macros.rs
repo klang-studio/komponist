@@ -109,7 +109,7 @@ pub fn add_mapping(
             return Ok(());
         }
         if destination.mappings.len() >= MAX_MAPPINGS {
-            return Err(EditError::MacroMappingLimit);
+            return Err(EditError::MacroMappingLimit { index });
         }
         remove_targets(macros, |target| *target == mapping.target);
         macros.0[usize::from(index)].mappings.push(mapping);

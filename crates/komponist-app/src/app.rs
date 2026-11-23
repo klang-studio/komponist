@@ -405,6 +405,25 @@ impl App {
         });
     }
 
+    /// Tells in the status bar that the saved audio input could not be started (at startup), with
+    /// the shortcut of the settings, and logs the reason.
+    pub fn report_audio_input_failed(&mut self, error: &AudioError) {
+        eprintln!("komponist: audio input not started: {error}");
+        let shortcut = self
+            .keymap
+            .label_for(
+                &Action::Ui(UiAction::OpenSettings(
+                    crate::ui_state::SettingsSection::Audio,
+                )),
+                self.lang,
+            )
+            .unwrap_or_default();
+        self.set_status(
+            self.lang.status_audio_input_failed(&shortcut),
+            StatusKind::Error,
+        );
+    }
+
     /// Tells in the status bar that the engine's worker threads run without realtime priority
     /// (same kind as the bridge's hint, `handle_device_event`). Once per stream start.
     pub fn report_workers_without_realtime(&mut self) {
@@ -1705,10 +1724,37 @@ impl App {
         }
     }
 
-    fn record_edit_error(&mut self, error: EditError) {
-        if error == EditError::IdsExhausted {
-            self.set_status(self.lang.status_id_space_exhausted(), StatusKind::Error);
-        }
+    /// Remembers a rejected edit and tells the user: a message for the errors a user can cause,
+    /// the generic "Bearbeitung nicht möglich" (plus a log line) for those only a bug can cause.
+    pub fn record_edit_error(&mut self, error: EditError) {
+        let t = self.lang;
+        let text = match &error {
+            EditError::IdsExhausted => t.status_id_space_exhausted().to_owned(),
+            EditError::RoutingCycle => t.status_edit_routing_cycle().to_owned(),
+            EditError::NotABus(track) => {
+                let name = self.project().track(*track).map(|t| t.name.clone());
+                t.status_edit_not_a_bus(name.as_deref().unwrap_or_default())
+            }
+            EditError::AutomationExpansionTooLarge => {
+                t.status_edit_automation_too_large().to_owned()
+            }
+            EditError::MacroMappingLimit { index } => {
+                t.status_edit_macro_full(u32::from(*index) + 1)
+            }
+            EditError::TrackNotFound(_)
+            | EditError::ClipNotFound(_)
+            | EditError::NoteNotFound(_)
+            | EditError::DeviceNotFound(_)
+            | EditError::SendNotFound(_)
+            | EditError::ClipNotAllowed { .. }
+            | EditError::WrongClipKind { .. }
+            | EditError::IndexOutOfRange { .. }
+            | EditError::Invalid(_) => {
+                eprintln!("komponist: edit rejected: {error}");
+                t.status_edit_failed().to_owned()
+            }
+        };
+        self.set_status(text, StatusKind::Error);
         self.shell.last_error = Some(error);
     }
 
@@ -2214,9 +2260,23 @@ impl App {
                     size: crate::layout::default_size(panel),
                 });
             }
-            other => {
-                self.device_ui_action(&other);
+            UiAction::ToggleDeviceCollapsed { device, all } => {
+                self.toggle_device_collapsed(device, all);
             }
+            UiAction::SetDevicePage { device, page } => {
+                self.ui.devices.pages.insert(device, page);
+            }
+            UiAction::CopyDevices => self.copy_devices(),
+            UiAction::SelectAdjacentDevice(dir) => self.select_adjacent_device(dir),
+            UiAction::RevealDevice(device) => self.reveal_device(device),
+            UiAction::ScrollToDevice(device) => {
+                self.ui.devices.reveal = Some((device, crate::ui_state::Reveal::Start));
+            }
+            UiAction::TouchParam {
+                device,
+                param,
+                dragging,
+            } => self.touch_param(device, param, dragging),
         }
     }
 
@@ -2834,12 +2894,18 @@ impl App {
                 let config = self.settings.audio.clone();
                 let _ = self.engine.set_audio(&config);
                 // The device list may have changed too.
-                self.dialogs.settings.devices_host = None;
+                self.dialogs.settings.refresh_devices();
                 self.dialogs.settings.invalidate_jack_ports();
             }
             SettingsAction::SetMidiInput { name, enabled } => {
-                if let Some(hub) = self.engine.midi_mut() {
-                    let _ = hub.set_enabled(&name, enabled);
+                if let Some(hub) = self.engine.midi_mut()
+                    && let Err(error) = hub.set_enabled(&name, enabled)
+                {
+                    eprintln!("komponist: MIDI input {name}: {error}");
+                    self.set_status(
+                        self.lang.status_midi_enable_failed(&name),
+                        StatusKind::Error,
+                    );
                 }
                 self.settings.midi_disabled.retain(|n| *n != name);
                 self.settings.midi_enabled.retain(|n| *n != name);

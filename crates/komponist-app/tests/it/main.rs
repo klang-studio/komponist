@@ -68,6 +68,7 @@ mod sidechain;
 mod state_sync;
 mod step_seq;
 mod surf;
+mod surface_errors;
 mod volt;
 
 mod audio_warp;

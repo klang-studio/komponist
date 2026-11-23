@@ -184,4 +184,13 @@ status-collect-skipped = { $count } Dateien nicht gesammelt: keine unterstützte
 status-macros-mapping = Zuordnen: Parameter bewegen ordnet sie { $source } zu · Klick auf ein anderes Makro wechselt · Esc beendet
 status-macros-locked = { $param } wird von { $source } gesteuert
 status-macros-moved = { $param }: jetzt { $source }
-status-macros-full = Höchstens 16 Zuordnungen pro Spur-Makro
+
+# #227: rejected edits and failed device starts reach the status bar.
+status-edit-routing-cycle = Nicht möglich: Das würde eine Schleife im Routing bilden
+status-edit-not-a-bus = Nicht möglich: „{ $track }“ ist kein Bus
+status-edit-automation-too-large = Nicht möglich: Die Automation würde zu viele Punkte erzeugen
+status-edit-macro-full = Nicht möglich: Spur-Makro { $n } hat schon 16 Zuordnungen
+# Errors only a bug can cause; the details go to the log.
+status-edit-failed = Bearbeitung nicht möglich
+status-midi-enable-failed = MIDI-Eingang „{ $device }“ lässt sich nicht öffnen
+status-audio-input-failed = Audio-Eingang lässt sich nicht starten · Einstellungen { $shortcut }

@@ -74,7 +74,10 @@ pub enum EditError {
     /// The rendered automation would exceed the supported arrangement point budget.
     AutomationExpansionTooLarge,
     /// The destination macro has no room for another mapping.
-    MacroMappingLimit,
+    MacroMappingLimit {
+        /// The macro slot (0-based).
+        index: u8,
+    },
     /// No track with this id.
     TrackNotFound(TrackId),
     /// No clip with this id.
@@ -124,7 +127,9 @@ impl fmt::Display for EditError {
             EditError::AutomationExpansionTooLarge => {
                 write!(f, "the edit would create too many automation points")
             }
-            EditError::MacroMappingLimit => write!(f, "the track macro is full"),
+            EditError::MacroMappingLimit { index } => {
+                write!(f, "track macro {} is full", u32::from(*index) + 1)
+            }
             EditError::TrackNotFound(id) => write!(f, "track {} not found", id.0),
             EditError::ClipNotFound(id) => write!(f, "clip {} not found", id.0),
             EditError::NoteNotFound(id) => write!(f, "note {} not found", id.0),
