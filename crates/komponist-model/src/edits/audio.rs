@@ -545,6 +545,10 @@ fn piece(c: &Clip, a: Tick, b: Tick, tempo: Tempo) -> Result<Option<Clip>, EditE
     let ClipContent::Audio(_) = &c.content else {
         return Ok(None);
     };
+    // A fragment that would start behind the document is dropped (the cut that makes it ends there).
+    if a > MAX_DOC_TICK {
+        return Ok(None);
+    }
     let mut out = c.clone();
     let ClipContent::Audio(na) = &mut out.content else {
         unreachable!("a copy of an audio clip");

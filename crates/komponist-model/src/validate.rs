@@ -68,6 +68,8 @@ pub enum RepairKind {
     DuplicateIds,
     /// A macro mapping was dropped, clamped or reordered.
     MacroMappings,
+    /// A macro slot's value was out of range.
+    MacroValues,
     /// A duplicate or unusable automation lane or clip envelope was dropped, or a missing lane added.
     AutomationLanes,
     /// Automation points were put in order, clamped or thinned, or a clip envelope was dropped.
@@ -98,6 +100,7 @@ impl RepairKind {
             RepairKind::StepValues => "step pattern value out of range",
             RepairKind::DuplicateIds => "duplicate object id replaced",
             RepairKind::MacroMappings => "macro mapping repaired or dropped",
+            RepairKind::MacroValues => "macro slot value out of range",
             RepairKind::AutomationLanes => "duplicate automation lane dropped",
             RepairKind::AutomationPoints => "automation points reordered, clamped or thinned",
             RepairKind::Order => "clips or notes put in order",

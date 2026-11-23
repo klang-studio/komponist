@@ -63,7 +63,7 @@ impl TrackMacros {
             let value = unit(slot.value, 0.0, 1.0);
             if value != slot.value {
                 slot.value = value;
-                repairs.add(RepairKind::MacroMappings, 1);
+                repairs.add(RepairKind::MacroValues, 1);
             }
             slot.mappings.retain_mut(|mapping| {
                 if matches!(mapping.target, AutomationTarget::Macro { .. })

@@ -392,11 +392,27 @@ fn macro_repairs_are_reported() {
         ],
     }]);
     let loaded = loaded(value);
-    // The slot value clamped, one range swapped, one duplicate mapping dropped.
-    assert_eq!(loaded.repairs.count(RepairKind::MacroMappings), 3);
+    // One range swapped, one duplicate mapping dropped; the slot value is its own kind.
+    assert_eq!(loaded.repairs.count(RepairKind::MacroMappings), 2);
+    assert_eq!(loaded.repairs.count(RepairKind::MacroValues), 1);
     assert_eq!(loaded.repairs.total(), 3);
     let text = loaded.repairs.to_string();
-    assert!(text.contains("3 × macro mapping"), "{text}");
+    assert!(text.contains("2 × macro mapping"), "{text}");
+    assert!(text.contains("1 × macro slot value"), "{text}");
+}
+
+#[test]
+fn a_macro_slot_value_alone_is_reported_as_a_value() {
+    let mut value = demo_value();
+    value["tracks"][0]["macros"] = json!([{ "value": 3.0 }, { "value": -1.0 }]);
+    let loaded = loaded(value);
+    assert_eq!(loaded.repairs.count(RepairKind::MacroValues), 2);
+    assert_eq!(loaded.repairs.count(RepairKind::MacroMappings), 0);
+    assert_eq!(loaded.project.tracks[0].macros.0[0].value, 1.0);
+    assert_eq!(loaded.project.tracks[0].macros.0[1].value, 0.0);
+    let mut value = demo_value();
+    value["tracks"][0]["macros"] = json!([{ "value": 0.5 }]);
+    assert!(self::loaded(value).repairs.is_empty());
 }
 
 #[test]
@@ -562,4 +578,45 @@ fn validate_checks_lanes_envelopes_and_macros() {
     let mut p = demo_project();
     Arc::make_mut(&mut p.tracks[0]).macros.0[0].value = 2.0;
     assert!(p.validate().unwrap_err().to_string().contains("macro"));
+}
+
+#[test]
+fn an_audio_cut_behind_the_document_end_drops_the_fragment_and_loads() {
+    use crate::audio::AudioFile;
+    use crate::edits::{NewAudioTrack, NewClip, NewClipContent, add_audio_track};
+    let (p, track) = add_audio_track(&Project::new("Audio"), NewAudioTrack::default()).unwrap();
+    let file = AudioFile {
+        abs: "/t/long.wav".into(),
+        rel: "long.wav".into(),
+        frames: 3_000_000_000,
+        sample_rate: 48_000,
+        channels: 2,
+    };
+    let (p, _) = edits::add_clip(
+        &p,
+        track,
+        NewClip {
+            name: "long".into(),
+            start: Tick(1000),
+            length: Tick(7680),
+            content: NewClipContent::Audio { file, offset: 0 },
+        },
+    )
+    .unwrap();
+    let mut value = serde_json::to_value(&p).unwrap();
+    // A: from 1000 to past the document end. B: ends past it too, above A's middle: the cut
+    // leaves a right fragment of A that would start behind the document.
+    let mut a = value["tracks"][0]["clips"][0].clone();
+    a["length"] = MAX_DOC_TICK.0.into();
+    let mut b = a.clone();
+    b["id"] = 990_001.into();
+    b["start"] = (MAX_DOC_TICK.0 - 100).into();
+    b["length"] = 1000.into();
+    value["tracks"][0]["clips"] = json!([a, b]);
+    value["next_id"] = 990_002.into();
+    let loaded = loaded(value);
+    assert!(loaded.repairs.count(RepairKind::AudioOverlaps) >= 1);
+    for clip in &loaded.project.tracks[0].clips {
+        assert!(clip.start <= MAX_DOC_TICK);
+    }
 }
