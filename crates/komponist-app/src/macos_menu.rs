@@ -228,6 +228,9 @@ impl MacMenu {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
         };
+        // SAFETY: `mtm` proves this runs on the main thread, as AppKit requires. The options dictionary
+        // holds only the documented keys `ApplicationName` and `ApplicationVersion`, both with NSString
+        // values, and stays alive for the whole call; AppKit copies what it keeps.
         unsafe {
             NSApplication::sharedApplication(mtm)
                 .orderFrontStandardAboutPanelWithOptions(&about_options())
