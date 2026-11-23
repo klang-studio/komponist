@@ -440,11 +440,11 @@ impl Drop for Activity<'_> {
 }
 
 impl RtParamSync {
-    /// RT never waits for a state restore. The request gets fallback audio instead.
-    fn try_process(&self) -> Option<Activity<'_>> {
+    /// RT never waits for a state restore. The request gets fallback audio instead; the error is
+    /// the activity that refused it, read in the same atomic step (a pause can end right after).
+    fn try_process(&self) -> Result<Activity<'_>, u8> {
         self.activity
             .compare_exchange(0, PROCESSING, Ordering::Acquire, Ordering::Relaxed)
-            .ok()
             .map(|_| Activity {
                 sync: self,
                 bit: PROCESSING,
@@ -815,34 +815,36 @@ fn serve(
     config: &RtConfig,
     sync: &RtParamSync,
 ) {
-    let Some(mut processing) = sync.try_process() else {
-        // A restore replaces the plugin's state, so recovery clears its voices. A snapshot pause
-        // changes nothing: reset only if a note event is discarded with this block (a missed
-        // note-off could leave a voice hanging). Inactive blocks never reach this function.
-        let activity = sync.activity.load(Ordering::Acquire);
-        let snapshot_only = activity != 0 && activity & !SNAPSHOT == 0;
-        // A reset the client asked for with this block is applied by the next processed block
-        // (the client does not repeat it after an `Inactive` reply).
-        scratch.reset_after_restore |= !snapshot_only || request.flags & BLOCK_FLAG_RESET != 0;
-        // The client may already have timed out. Retain the latest parameter values here
-        // so one-shot writes survive even if the client never consumes this reply.
-        while let Some(event) = server.pop_event() {
-            if !matches!(event.decode(), Some(WireEventKind::ParamValue { .. })) {
-                scratch.reset_after_restore = true;
-            }
-            if let Some(WireEventKind::ParamValue { id, .. }) = event.decode() {
-                let event = WireEvent { offset: 0, ..event };
-                if let Some(&index) = scratch.retry_indices.get(&id) {
-                    scratch.retry_params[index] = event;
-                } else if scratch.retry_params.len() < INPUT_EVENT_CAPACITY {
-                    scratch.retry_indices.insert(id, scratch.retry_params.len());
-                    scratch.retry_params.push(event);
+    let mut processing = match sync.try_process() {
+        Ok(processing) => processing,
+        Err(activity) => {
+            // A restore replaces the plugin's state, so recovery clears its voices. A snapshot pause
+            // changes nothing: reset only if a note event is discarded with this block (a missed
+            // note-off could leave a voice hanging). Inactive blocks never reach this function.
+            let snapshot_only = activity != 0 && activity & !SNAPSHOT == 0;
+            // A reset the client asked for with this block is applied by the next processed block
+            // (the client does not repeat it after an `Inactive` reply).
+            scratch.reset_after_restore |= !snapshot_only || request.flags & BLOCK_FLAG_RESET != 0;
+            // The client may already have timed out. Retain the latest parameter values here
+            // so one-shot writes survive even if the client never consumes this reply.
+            while let Some(event) = server.pop_event() {
+                if !matches!(event.decode(), Some(WireEventKind::ParamValue { .. })) {
+                    scratch.reset_after_restore = true;
+                }
+                if let Some(WireEventKind::ParamValue { id, .. }) = event.decode() {
+                    let event = WireEvent { offset: 0, ..event };
+                    if let Some(&index) = scratch.retry_indices.get(&id) {
+                        scratch.retry_params[index] = event;
+                    } else if scratch.retry_params.len() < INPUT_EVENT_CAPACITY {
+                        scratch.retry_indices.insert(id, scratch.retry_params.len());
+                        scratch.retry_params.push(event);
+                    }
                 }
             }
+            write_fallback(server, request.frames as usize, config.fallback);
+            server.finish(result(BlockStatus::Inactive, 0));
+            return;
         }
-        write_fallback(server, request.frames as usize, config.fallback);
-        server.finish(result(BlockStatus::Inactive, 0));
-        return;
     };
     let frames = request.frames as usize;
     if request.frames == 0 || request.frames > config.max_frames {
