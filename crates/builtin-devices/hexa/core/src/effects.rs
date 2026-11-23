@@ -278,7 +278,8 @@ pub struct Effects {
 impl Effects {
     /// Writes silent effects for `sample_rate` to `this` without building
     /// them on the stack. Allocates their buffers, so it belongs in the
-    /// activation, never in the audio callback.
+    /// activation, never in the audio callback. Rates above [`MAX_SAMPLE_RATE`] are clamped to it
+    /// (non-finite ones become 48 kHz).
     ///
     /// # Safety
     /// `this` must be valid for writes and suitably aligned. A previous

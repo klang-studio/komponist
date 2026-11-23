@@ -79,18 +79,12 @@ impl HexaProcessor {
         self.synth.active_voices()
     }
 
-    /// Initializes all storage at the new sample rate during activation.
+    /// Builds the synth again at the new sample rate during activation (non-RT: it allocates the
+    /// effect buffers and frees the old ones). The new synth is complete before the old one is
+    /// dropped by the assignment, so a panic leaves a valid synth behind.
     fn rebuild(&mut self) {
         let patch = *self.synth.patch();
-        let place: *mut Synth<1> = &mut *self.synth;
-        // SAFETY: `place` comes from a live `&mut`, so it is valid for reads, writes and
-        // aligned, and nothing else uses the synth meanwhile. The old value is dropped (freeing
-        // the old effect buffers) and at once written again, so it is never used or dropped
-        // twice; `write_new` does not unwind.
-        unsafe {
-            core::ptr::drop_in_place(place);
-            Synth::write_new(place, self.sample_rate, patch);
-        }
+        self.synth = Synth::boxed(self.sample_rate, patch);
     }
 
     /// Replace the complete patch, retaining values outside the device card's controls.
