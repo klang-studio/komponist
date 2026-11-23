@@ -121,7 +121,8 @@ fn presets() -> &'static [Preset] {
     &LIST
 }
 
-/// The names of the band types in `lang`, in the order of [`TYPES`].
+/// The full names of the band types in `lang`, in the order of [`TYPES`]: what hosts and the
+/// model show. The card's narrow switch shows [`short_type_names`].
 fn type_names(t: Lang) -> [&'static str; 5] {
     [
         t.choice_eq_type_low_cut(),
@@ -129,6 +130,17 @@ fn type_names(t: Lang) -> [&'static str; 5] {
         t.choice_eq_type_bell(),
         t.choice_eq_type_high_shelf(),
         t.choice_eq_type_high_cut(),
+    ]
+}
+
+/// The short names of the band types for the card's five-way switch.
+fn short_type_names(t: Lang) -> [&'static str; 5] {
+    [
+        t.choice_eq_type_low_cut_short(),
+        t.choice_eq_type_low_shelf_short(),
+        t.choice_eq_type_bell_short(),
+        t.choice_eq_type_high_shelf_short(),
+        t.choice_eq_type_high_cut_short(),
     ]
 }
 
@@ -150,12 +162,15 @@ fn params(t: Lang) -> Vec<ParamInfo> {
             ParamKind::Bool,
             f64::from(u8::from(n <= BANDS_ON)),
         ));
-        list.push(ParamInfo::new(
-            id("type"),
-            t.param_eq_band_type(n),
-            ParamKind::Enum(type_names(t).iter().map(|n| (*n).to_owned()).collect()),
-            2.0,
-        ));
+        list.push(
+            ParamInfo::new(
+                id("type"),
+                t.param_eq_band_type(n),
+                ParamKind::Enum(type_names(t).iter().map(|n| (*n).to_owned()).collect()),
+                2.0,
+            )
+            .short_choices(short_type_names(t)),
+        );
         list.push(
             ParamInfo::new(
                 id("freq"),

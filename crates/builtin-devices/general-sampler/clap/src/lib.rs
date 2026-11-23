@@ -15,7 +15,7 @@ struct GeneralSampler;
 #[derive(Clone, Copy, Enum, PartialEq)]
 enum Mode {
     #[id = "one-shot"]
-    #[name = "One shot"]
+    #[name = "1×"]
     OneShot,
     #[id = "gate"]
     Gate,
@@ -36,13 +36,13 @@ enum Filter {
     #[id = "off"]
     Off,
     #[id = "low-pass"]
-    #[name = "Low pass"]
+    #[name = "Low-pass"]
     LowPass,
     #[id = "high-pass"]
-    #[name = "High pass"]
+    #[name = "High-pass"]
     HighPass,
     #[id = "band-pass"]
-    #[name = "Band pass"]
+    #[name = "Band-pass"]
     BandPass,
 }
 
@@ -53,15 +53,15 @@ enum Wave {
     #[id = "triangle"]
     Triangle,
     #[id = "saw-up"]
-    #[name = "Saw up"]
+    #[name = "Rising saw"]
     SawUp,
     #[id = "saw-down"]
-    #[name = "Saw down"]
+    #[name = "Falling saw"]
     SawDown,
     #[id = "square"]
     Square,
     #[id = "sample-hold"]
-    #[name = "Sample and hold"]
+    #[name = "Sample & hold"]
     SampleHold,
 }
 
@@ -180,4 +180,10 @@ fn all_controls_have_stable_bilingual_bindings_and_restore_sample_assets() {
         GeneralSampler::SPEC.params().len(),
     );
     sampler_contract::sample_asset_roundtrip::<GeneralSamplerPlugin>(60, "mode");
+}
+
+#[cfg(test)]
+#[test]
+fn choice_bindings_match_the_model() {
+    komponist_bundled_clap_adapter::assert_choice_bindings::<GeneralSampler>();
 }

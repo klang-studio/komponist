@@ -10,7 +10,7 @@ struct Hall;
 #[derive(Clone, Copy, Enum, PartialEq)]
 enum Room {
     #[id = "chamber"]
-    #[name = "Chamber"]
+    #[name = "Room"]
     Chamber,
     #[id = "hall"]
     #[name = "Hall"]
@@ -51,3 +51,9 @@ nice_export_clap!(HallPlugin);
 mod layout_contract;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[test]
+fn choice_bindings_match_the_model() {
+    komponist_bundled_clap_adapter::assert_choice_bindings::<Hall>();
+}

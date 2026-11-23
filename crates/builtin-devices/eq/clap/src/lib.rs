@@ -109,3 +109,9 @@ mod layout_contract;
 fn localized_fixed_layout_matches_the_exported_clap_parameters() {
     layout_contract::assert_localized_bindings::<EqPlugin>(31);
 }
+
+#[cfg(test)]
+#[test]
+fn choice_bindings_match_the_model() {
+    komponist_bundled_clap_adapter::assert_choice_bindings::<Eq>();
+}

@@ -16,7 +16,7 @@ use nice_plug::prelude::*;
 
 pub use instrument::Instrument;
 pub use midi_effect::MidiEffect;
-pub use parameter::{Binding, Parameters};
+pub use parameter::{Binding, Choice, Parameters, assert_choice_bindings};
 
 const STEREO: NonZeroU32 = NonZeroU32::new(2).unwrap();
 
@@ -40,6 +40,10 @@ pub trait DeviceDefinition: Send + 'static {
     fn choice(_info: &'static ParamInfo) -> Option<Binding> {
         None
     }
+
+    /// Rewrite the saved state of an older release before it is applied, e.g. to rename a stable
+    /// choice ID. Runs on every restore, so the rewrite must not touch current IDs.
+    fn migrate_state(_state: &mut PluginState) {}
 
     /// Override only when a device has additional controls outside the public v1 layout.
     fn layout(lang: Lang) -> DeviceLayout {
@@ -139,6 +143,10 @@ impl<T: AudioDefinition> Plugin for Effect<T> {
     type Editor = ();
     type SysExMessage = ();
     type BackgroundTask = ();
+
+    fn filter_state(state: &mut PluginState) {
+        T::migrate_state(state);
+    }
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
@@ -291,11 +299,7 @@ pub fn panel_from_parts(
             .find(|param| param.id == en.id)
             .unwrap_or(en);
         parameter_labels.insert(en.id.clone(), label(&en.name, &de.name));
-        if let (
-            komponist_model::params::ParamKind::Enum(en_choices),
-            komponist_model::params::ParamKind::Enum(de_choices),
-        ) = (&en.kind, &de.kind)
-        {
+        if let (Some(en_choices), Some(de_choices)) = (en.switch_choices(), de.switch_choices()) {
             choice_labels.insert(
                 en.id.clone(),
                 en_choices

@@ -154,7 +154,7 @@ mod tests {
         assert_eq!(find(eq, "analyse").name, "Analysis");
         assert_eq!(
             choices(find(eq, "b3_type")),
-            ["LC", "LS", "Bell", "HS", "HC"]
+            ["Low cut", "Low shelf", "Bell", "High shelf", "High cut"]
         );
         let delay = Internal::Delay.params_in(Lang::En);
         assert_eq!(find(delay, "note").name, "Note Value");

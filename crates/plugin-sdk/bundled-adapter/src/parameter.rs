@@ -10,6 +10,18 @@ use nice_plug::prelude::*;
 trait ParameterValue: Send + Sync {
     fn ptr(&self) -> ParamPtr;
     fn raw(&self) -> f64;
+
+    /// The typed enum behind a choice: its variant names and stable IDs.
+    fn choice(&self) -> Option<Choice> {
+        None
+    }
+}
+
+/// The names and stable IDs of a typed choice parameter, as the host and saved states see them.
+#[derive(Clone, Copy)]
+pub struct Choice {
+    pub variants: &'static [&'static str],
+    pub ids: Option<&'static [&'static str]>,
 }
 
 impl ParameterValue for FloatParam {
@@ -50,6 +62,13 @@ impl<E: Enum + PartialEq + Send + Sync + 'static> ParameterValue for EnumParam<E
     fn raw(&self) -> f64 {
         self.value().to_index() as f64
     }
+
+    fn choice(&self) -> Option<Choice> {
+        Some(Choice {
+            variants: E::variants(),
+            ids: E::ids(),
+        })
+    }
 }
 
 /// Owns one nice-plug parameter used by the stable author ID of the device spec.
@@ -58,16 +77,20 @@ pub struct Binding(Box<dyn ParameterValue>);
 impl Binding {
     /// Provide a static nice-plug enum for a categorical parameter.
     pub fn choice<E: Enum + PartialEq + Send + Sync + 'static>(info: &ParamInfo) -> Self {
-        let ParamKind::Enum(labels) = &info.kind else {
-            panic!("{} is not a choice", info.id);
-        };
-        assert_eq!(labels.len(), E::variants().len(), "{}", info.id);
-        assert_eq!(
-            info.default,
-            E::from_index(info.default as usize).to_index() as f64
+        assert!(
+            matches!(info.kind, ParamKind::Enum(_)),
+            "{} is not a choice",
+            info.id
         );
+        // `assert_choice_bindings` checks the labels and the default against the enum: a mismatch
+        // must fail in a test, not panic inside the CLAP factory.
         let default = E::from_index(info.default as usize);
         Self(Box::new(EnumParam::new(&info.name, default)))
+    }
+
+    /// The typed enum behind this binding, `None` for continuous, integer and boolean ones.
+    pub fn choice_of(&self) -> Option<Choice> {
+        self.0.choice()
     }
 
     fn from_info(info: &'static ParamInfo) -> Self {
@@ -117,6 +140,51 @@ impl Binding {
             ParamKind::Enum(_) => panic!("{} requires a typed categorical binding", info.id),
         }
     }
+}
+
+/// Contract test for a device's typed choice bindings. For every choice parameter of the spec:
+/// `D::choice` binds it, the English labels equal the enum's variant names in the same order,
+/// the default is a valid index, and the stable IDs are set, unique and one per variant.
+/// Binding by index is only correct while the labels and the enum agree, so a mismatch is a
+/// test failure here rather than a panic when a host creates the plugin.
+pub fn assert_choice_bindings<D: crate::DeviceDefinition>() {
+    let mut problems = Vec::new();
+    for info in D::SPEC.params_in(Lang::En) {
+        let id = info.id.as_str();
+        let bound = D::choice(info);
+        let ParamKind::Enum(labels) = &info.kind else {
+            if bound.is_some() {
+                problems.push(format!("{id} is not a choice but has a typed binding"));
+            }
+            continue;
+        };
+        let Some(choice) = bound.as_ref().and_then(Binding::choice_of) else {
+            problems.push(format!("{id} has no typed choice binding"));
+            continue;
+        };
+        if labels.as_slice() != choice.variants {
+            problems.push(format!(
+                "{id}: enum variants {:?} differ from the model's labels {labels:?}",
+                choice.variants
+            ));
+        }
+        if !((0.0..labels.len() as f64).contains(&info.default) && info.default.fract() == 0.0) {
+            problems.push(format!(
+                "{id}: default {} is not a valid choice index",
+                info.default
+            ));
+        }
+        match choice.ids {
+            Some(ids) if ids.len() == labels.len() => {
+                let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+                if unique.len() != ids.len() {
+                    problems.push(format!("{id}: stable IDs must be unique"));
+                }
+            }
+            _ => problems.push(format!("{id}: the enum needs one stable ID per variant")),
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
 fn integer_multiplier(info: &ParamInfo) -> f64 {

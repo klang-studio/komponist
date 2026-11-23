@@ -530,10 +530,10 @@ fn choices<'a>(
             .collect();
         return Some((Cow::Owned(names), f64::from(choices.first()?.value)));
     }
-    match &p.info.kind {
-        ParamKind::Enum(names) if !names.is_empty() => Some((Cow::Borrowed(names), 0.0)),
-        _ => None,
-    }
+    p.info
+        .switch_choices()
+        .filter(|names| !names.is_empty())
+        .map(|names| (Cow::Borrowed(names), 0.0))
 }
 
 fn index_of(value: f64, first: f64, n: usize) -> usize {

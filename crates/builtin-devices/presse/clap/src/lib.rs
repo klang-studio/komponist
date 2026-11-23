@@ -110,3 +110,9 @@ fn defaults_to_stereo_and_advertises_the_alternate_sidechain_configuration() {
         assert_eq!(count(plugin, false), 1);
     }
 }
+
+#[cfg(test)]
+#[test]
+fn choice_bindings_match_the_model() {
+    komponist_bundled_clap_adapter::assert_choice_bindings::<Presse>();
+}

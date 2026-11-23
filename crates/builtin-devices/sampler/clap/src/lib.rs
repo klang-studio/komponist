@@ -16,7 +16,7 @@ struct DrumSampler;
 #[derive(Clone, Copy, Enum, PartialEq)]
 enum Mode {
     #[id = "one-shot"]
-    #[name = "One shot"]
+    #[name = "1×"]
     OneShot,
     #[id = "gate"]
     Gate,
@@ -125,4 +125,10 @@ fn all_pads_have_stable_bilingual_bindings_and_restore_sample_links() {
         komponist_sampler::FIRST_NOTE,
         "pad1_mode",
     );
+}
+
+#[cfg(test)]
+#[test]
+fn choice_bindings_match_the_model() {
+    komponist_bundled_clap_adapter::assert_choice_bindings::<DrumSampler>();
 }

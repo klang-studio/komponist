@@ -41,9 +41,9 @@ stable_choice!(LfoShape {
     Smooth => "smooth", "Smooth";
 });
 stable_choice!(LfoDivision {
-    FourBars => "4-bars", "4 bars";
-    TwoBars => "2-bars", "2 bars";
-    OneBar => "1-bar", "1 bar";
+    FourBars => "4-bars", "4 Bars";
+    TwoBars => "2-bars", "2 Bars";
+    OneBar => "1-bar", "1 Bar";
     Half => "1-2", "1/2";
     Quarter => "1-4", "1/4";
     Eighth => "1-8", "1/8";
@@ -54,7 +54,7 @@ stable_choice!(ModSource {
     Off => "off", "Off";
     Lfo1 => "lfo-1", "LFO 1";
     Lfo2 => "lfo-2", "LFO 2";
-    Envelope => "env-3", "Env. 3";
+    Envelope => "env-3", "Env 3";
     Velocity => "velocity", "Velocity";
     Key => "key", "Key";
     Wheel => "wheel", "Mod Wheel";
@@ -164,3 +164,9 @@ nice_export_clap!(VoltPlugin);
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[test]
+fn choice_bindings_match_the_model() {
+    komponist_bundled_clap_adapter::assert_choice_bindings::<Volt>();
+}
