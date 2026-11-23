@@ -442,6 +442,13 @@ pub struct EngineSync {
     frozen: Option<Tick>,
     /// Worker threads asked for while an export had the engine (applied at [`EngineSync::attach`]).
     workers_after_export: Option<Option<u32>>,
+    /// The worker setting last asked for ([`EngineSync::set_workers`]; `None` is automatic), kept
+    /// here because a replacement engine that is not derived from a surviving one needs it
+    /// ([`EngineSync::recover`]).
+    worker_setting: Option<u32>,
+    /// A replacement engine's worker start is not reported: the crash message outranks it
+    /// ([`EngineSync::recover`]). Ends once the new engine has prepared.
+    quiet_worker_notices: std::cell::Cell<bool>,
     /// The engine came back poisoned and a new one replaced it; the app takes it once
     /// ([`EngineSync::take_rebuild_notice`]): the playhead when it happened.
     rebuild_notice: Option<Tick>,
@@ -535,6 +542,8 @@ impl EngineSync {
             held: None,
             frozen: None,
             workers_after_export: None,
+            worker_setting: None,
+            quiet_worker_notices: std::cell::Cell::new(false),
             rebuild_notice: None,
             locate_after_rebuild: None,
             stranded: Vec::new(),
@@ -1009,6 +1018,13 @@ impl EngineSync {
     /// Queues `command`; if the engine's queue is full (or an export has the engine) it is
     /// retried at the next [`EngineSync::poll`], keeping the order.
     pub fn send(&mut self, command: Command) {
+        if let Command::Locate(at) = command
+            && self.locate_after_rebuild.is_some()
+        {
+            // A newer position wins over the one a rebuilt engine returns to. It is still sent
+            // now, but only the one after the first program (which knows the tempo map) holds.
+            self.locate_after_rebuild = Some(at);
+        }
         let Some(handle) = self.handle.as_mut().filter(|_| self.pending.is_empty()) else {
             self.pending.push_back(command);
             return;
@@ -1279,6 +1295,7 @@ impl EngineSync {
         &mut self,
         setting: Option<u32>,
     ) -> Result<Option<WorkerStatus>, AudioError> {
+        self.worker_setting = setting;
         if self.handle.is_none() {
             self.workers_after_export = Some(setting);
             return Ok(None);
@@ -1309,13 +1326,22 @@ impl EngineSync {
     /// True once per stream start whose workers run without realtime priority (the status bar
     /// says so; [`lacks_realtime`]).
     pub fn take_worker_notice(&self) -> bool {
-        self.worker_notice.swap(false, Ordering::Relaxed)
+        let notice = self.worker_notice.swap(false, Ordering::Relaxed);
+        notice && !self.quiet_worker_notices.get()
     }
 
     /// True once per stream start whose workers could not join the audio workgroup (the status
     /// bar says so; [`lacks_workgroup`]).
+    ///
+    /// Called after [`EngineSync::take_worker_notice`]; ends the quiet period of a replacement
+    /// engine once it has prepared.
     pub fn take_workgroup_notice(&self) -> bool {
-        self.workgroup_notice.swap(false, Ordering::Relaxed)
+        let notice = self.workgroup_notice.swap(false, Ordering::Relaxed);
+        let quiet = self.quiet_worker_notices.get();
+        if quiet && self.worker_status().is_some() {
+            self.quiet_worker_notices.set(false);
+        }
+        notice && !quiet
     }
 
     /// The engine's worker pool counters (batches, jobs on workers, late waits).
@@ -1489,7 +1515,7 @@ impl EngineSync {
     /// app reports it once and ends a running take there ([`EngineSync::take_rebuild_notice`]).
     ///
     /// `None`: the engine is lost altogether (its export worker died, [`EngineSync::recover`]);
-    /// the new one runs at the stream's rate with the default worker setting.
+    /// the new one runs at the stream's rate with the worker setting last asked for.
     fn rebuild_engine(&mut self, poisoned: Option<EngineProcess>) {
         let sample_rate = poisoned.as_ref().map_or_else(
             || self.rate.load(Ordering::Relaxed) as f32,
@@ -1518,8 +1544,15 @@ impl EngineSync {
                 workgroup_notice,
                 ..fresh
             },
-            None => fresh,
+            None => {
+                let mut fresh = fresh;
+                fresh.apply_worker_setting(self.worker_setting);
+                fresh
+            }
         };
+        self.worker_status = Arc::clone(&process.worker_status);
+        self.worker_notice = Arc::clone(&process.worker_notice);
+        self.workgroup_notice = Arc::clone(&process.workgroup_notice);
         // A worker setting asked for during an export applies to the new engine, as at `attach`.
         if let Some(setting) = self.workers_after_export.take() {
             process.apply_worker_setting(setting);
@@ -1558,6 +1591,10 @@ impl EngineSync {
     /// Reported through [`EngineSync::take_rebuild_notice`].
     pub fn recover(&mut self, engine: Option<DetachedEngine>) {
         self.held = None;
+        // The new pool's start is silent until the engine has prepared (`worker_status` is set by
+        // that); the caller reports the crash.
+        *self.worker_status.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.quiet_worker_notices.set(true);
         match engine {
             Some(DetachedEngine {
                 process, handle, ..
@@ -1916,6 +1953,83 @@ mod tests {
             sync.poll();
             sync.playhead() > at
         }));
+        sync.shutdown();
+    }
+
+    /// #211 review: a replacement engine keeps the worker setting the user chose.
+    #[test]
+    fn a_replacement_engine_keeps_the_worker_setting() {
+        let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
+        sync.set_workers(Some(0)).unwrap();
+        let detached = sync.detach().unwrap();
+        drop(detached);
+        sync.recover(None);
+        assert!(wait_until(|| sync.worker_status().is_some()));
+        assert_eq!(sync.worker_status().unwrap().threads, 0);
+        // A setting changed during the export wins.
+        let detached = sync.detach().unwrap();
+        sync.set_workers(Some(2)).unwrap();
+        drop(detached);
+        sync.recover(None);
+        assert!(wait_until(|| sync.worker_status().is_some()));
+        assert_eq!(sync.worker_status().unwrap().threads, 2);
+        sync.shutdown();
+    }
+
+    /// #211 review: a `Locate` sent after a rebuild beats the position the rebuilt engine returns
+    /// to (also for #210's rebuild after a stream panic: both set `locate_after_rebuild`).
+    #[test]
+    fn a_newer_locate_beats_the_rebuild_position() {
+        let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
+        let doc = Document::new(demo_project());
+        sync.sync(&doc);
+        sync.send(Command::Play);
+        assert!(wait_until(|| {
+            sync.poll();
+            sync.playhead() > Tick(2_000)
+        }));
+        let detached = sync.detach().unwrap();
+        drop(detached);
+        sync.recover(None);
+        assert!(sync.locate_after_rebuild.is_some());
+        sync.send(Command::Stop);
+        assert!(
+            sync.locate_after_rebuild.is_some(),
+            "other commands leave it"
+        );
+        sync.send(Command::Locate(Tick(100)));
+        assert_eq!(sync.locate_after_rebuild, Some(Tick(100)));
+        sync.sync(&doc);
+        assert!(wait_until(|| {
+            sync.poll();
+            // The position is rounded to a frame.
+            (Tick(95)..=Tick(100)).contains(&sync.playhead())
+        }));
+        assert_eq!(sync.locate_after_rebuild, None);
+        sync.shutdown();
+    }
+
+    /// #211 review: the worker start of a replacement engine is not reported (the crash message
+    /// outranks it); the next stream start's is again.
+    #[test]
+    fn a_replacement_engines_worker_notices_are_quiet_until_it_prepared() {
+        let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
+        let detached = sync.detach().unwrap();
+        drop(detached);
+        sync.recover(None);
+        sync.worker_notice.store(true, Ordering::Relaxed);
+        sync.workgroup_notice.store(true, Ordering::Relaxed);
+        assert!(!sync.take_worker_notice());
+        assert!(!sync.take_workgroup_notice() || sync.worker_status().is_none());
+        assert!(wait_until(|| {
+            sync.worker_status().is_some() && {
+                sync.take_worker_notice();
+                sync.take_workgroup_notice();
+                !sync.quiet_worker_notices.get()
+            }
+        }));
+        sync.worker_notice.store(true, Ordering::Relaxed);
+        assert!(sync.take_worker_notice());
         sync.shutdown();
     }
 
