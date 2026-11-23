@@ -57,8 +57,8 @@ fn source_words(root: &Path) -> BTreeSet<String> {
     rust_files(&root.join("crates"), &mut files);
     let mut words = BTreeSet::new();
     for file in files.iter().filter(|f| !f.starts_with(&own_tests)) {
-        let text = std::fs::read_to_string(file)
-            .unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+        let text =
+            std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
         for line in text.lines().filter(|l| !l.trim_start().starts_with("//")) {
             words.extend(
                 line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
