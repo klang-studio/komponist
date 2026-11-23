@@ -974,9 +974,15 @@ struct Edges {
 }
 
 impl Edges {
+    /// Line `delay.line`, for as long as `self` (the jobs' view of the segment) is borrowed.
+    ///
     /// # Safety
     /// No other reference to line `delay.line` exists while the result is used.
-    unsafe fn get<'e>(self, delay: Delay) -> &'e mut EdgeState {
+    #[expect(
+        clippy::mut_from_ref,
+        reason = "the lines are shared by the jobs, each line used by one job (the caller's contract)"
+    )]
+    unsafe fn get(&self, delay: Delay) -> &mut EdgeState {
         let index = usize::from(delay.line.0);
         assert!(index < self.len);
         // SAFETY: in bounds; exclusive per the caller.
@@ -1115,6 +1121,8 @@ impl TrackJobs<'_> {
             // Source clips start at graph time zero. Align them before adding a live input,
             // whose bus tap already carries its source latency.
             if let Some(delay) = route.head {
+                // SAFETY: the head delay's line belongs to this job's track, and every job runs
+                // once per segment, so no other reference to it exists.
                 let edge = unsafe { self.edges.get(delay) };
                 let [l, r] = &mut bufs.a;
                 edge.line.process(&mut l[..n], &mut r[..n], delay.frames);
@@ -1335,6 +1343,8 @@ impl TrackJobs<'_> {
         };
         // Keep input delay state moving even with monitoring off, so enabling it has no stale tail.
         if let Some(input_route) = route.audio_input {
+            // SAFETY: the bus input's delay line belongs to this audio track (the compiler gives
+            // it its own line), whose job runs once per segment: no other reference exists.
             let edge = unsafe { self.edges.get(input_route.delay) };
             edge.line
                 .process(&mut l[..n], &mut r[..n], input_route.delay.frames);
