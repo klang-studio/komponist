@@ -141,8 +141,56 @@ pub(crate) fn write_atomic(path: &Path, text: &str, create_dir: bool) -> std::io
         .write(true)
         .open(&staged_file)?;
     file.write_all(text.as_bytes())?;
+    // The data must be on disk before the rename publishes it: on XFS and btrfs a power loss
+    // after a rename without this can leave a zero-length file in place of the good one.
+    file.sync_all()?;
     drop(file);
-    std::fs::rename(staged_file, path)
+    durable_rename(&staged_file, path, parent)
+}
+
+/// Renames `from` over `to` (both in `parent`) and makes the rename itself durable.
+#[cfg(unix)]
+fn durable_rename(from: &Path, to: &Path, parent: &Path) -> std::io::Result<()> {
+    std::fs::rename(from, to)?;
+    match std::fs::File::open(parent).and_then(|dir| dir.sync_all()) {
+        Ok(()) => Ok(()),
+        // Some filesystems reject fsync on a directory; there is nothing more to do there.
+        Err(error) if directory_sync_unsupported(&error) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(unix)]
+fn directory_sync_unsupported(error: &std::io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(code) if code == libc::EINVAL || code == libc::ENOTSUP || code == libc::EOPNOTSUPP
+    )
+}
+
+/// Renames `from` over `to` and returns only once the move is flushed to disk
+/// (`MOVEFILE_WRITE_THROUGH`); `std::fs::rename` replaces the target but does not wait.
+#[cfg(windows)]
+fn durable_rename(from: &Path, to: &Path, _parent: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    let wide = |path: &Path| -> Vec<u16> { path.as_os_str().encode_wide().chain([0]).collect() };
+    let (from, to) = (wide(from), wide(to));
+    // SAFETY: both buffers are NUL-terminated and outlive the call.
+    let moved = unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// `path` with the `.komponist` extension (added if it has another one or none).
@@ -1396,6 +1444,51 @@ mod tests {
             recent_path(Path::new("/c/komponist/settings.json")),
             Path::new("/c/komponist/recent.json")
         );
+    }
+
+    #[test]
+    fn write_atomic_replaces_the_target_and_leaves_no_staging_files() {
+        let dir = scratch("atomic");
+        let path = dir.join("nested/settings.json");
+        // Creates the folder on request, replaces on the second write.
+        write_atomic(&path, "one", true).unwrap();
+        write_atomic(&path, "two", true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two");
+        assert_eq!(std::fs::read_dir(dir.join("nested")).unwrap().count(), 1);
+        // A target that cannot be replaced (a folder) is an error: it stays and staging is gone.
+        let blocked = dir.join("nested/blocked");
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::write(blocked.join("keep"), "x").unwrap();
+        assert!(write_atomic(&blocked, "three", true).is_err());
+        assert!(blocked.join("keep").exists());
+        let names: Vec<_> = std::fs::read_dir(dir.join("nested"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+    }
+
+    #[test]
+    fn a_broken_recent_list_survives_remember() {
+        let dir = scratch("recent-broken");
+        std::fs::create_dir_all(&dir).unwrap();
+        let settings = dir.join("settings.json");
+        let recent = recent_path(&settings);
+        std::fs::write(&recent, "{ kaputt").unwrap();
+        let mut app = App::new(
+            Document::new(Project::new("Recent")),
+            crate::engine_sync::EngineSync::null_with_midi(
+                Box::new(crate::device_host::BuiltinHost::new()),
+                komponist_audio::MidiReceiver::disconnected(),
+            ),
+            crate::settings::Settings::default(),
+            Some(settings),
+        );
+        assert!(app.recent().is_empty());
+        app.remember(PathBuf::from("/p/a.komponist"));
+        // The session keeps working with an in-memory list; the file is untouched.
+        assert_eq!(app.recent(), [PathBuf::from("/p/a.komponist")]);
+        assert_eq!(std::fs::read_to_string(&recent).unwrap(), "{ kaputt");
     }
 
     #[test]
