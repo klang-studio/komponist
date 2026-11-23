@@ -182,11 +182,22 @@ fn create_dirs_durably(dir: &Path) -> std::io::Result<()> {
     // Outermost first; each new folder's entry lives in its parent.
     created.reverse();
     for new in created {
-        if let Some(parent) = new.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        if let Some(parent) = containing_dir(new) {
             sync_directory(parent)?;
         }
     }
     Ok(())
+}
+
+/// The folder whose entry list holds `path`: its parent, or `.` for a single relative component.
+fn containing_dir(path: &Path) -> Option<&Path> {
+    path.parent().map(|parent| {
+        if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        }
+    })
 }
 
 /// Flushes the entries of folder `dir`. Filesystems that reject fsync on a folder are fine.
@@ -265,10 +276,20 @@ fn windows_wide(path: &Path) -> std::io::Result<Vec<u16>> {
     const MAX_PATH: usize = 260;
     let units = |path: &Path| path.as_os_str().encode_wide().collect::<Vec<u16>>();
     let slash = u16::from(b'\\');
+    if units(path).contains(&0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path contains a NUL",
+        ));
+    }
     let mut wide = units(path);
-    if wide.len() >= MAX_PATH && !wide.starts_with(&[slash, slash, u16::from(b'?'), slash]) {
+    if !wide.starts_with(&[slash, slash, u16::from(b'?'), slash]) {
+        // The limit applies to the resolved path: a short relative path from a long working
+        // directory needs the prefix too.
         let absolute = units(&std::path::absolute(path)?);
-        let verbatim: Vec<u16> = if absolute.starts_with(&[slash, slash]) {
+        wide = if absolute.len() < MAX_PATH {
+            absolute
+        } else if absolute.starts_with(&[slash, slash]) {
             r"\\?\UNC\"
                 .encode_utf16()
                 .chain(absolute[2..].iter().copied())
@@ -276,13 +297,6 @@ fn windows_wide(path: &Path) -> std::io::Result<Vec<u16>> {
         } else {
             r"\\?\".encode_utf16().chain(absolute).collect()
         };
-        wide = verbatim;
-    }
-    if wide.contains(&0) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "path contains a NUL",
-        ));
     }
     wide.push(0);
     Ok(wide)
@@ -1692,5 +1706,42 @@ mod tests {
             Err(ProjectIoError::Recent(..))
         ));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A new folder's entry lives in its parent; a single relative component lives in `.`.
+    #[test]
+    fn a_new_folder_is_flushed_in_its_containing_folder() {
+        assert_eq!(
+            super::containing_dir(Path::new("nested")),
+            Some(Path::new("."))
+        );
+        assert_eq!(
+            super::containing_dir(Path::new("a/b")),
+            Some(Path::new("a"))
+        );
+        assert_eq!(super::containing_dir(Path::new("/x")), Some(Path::new("/")));
+        assert_eq!(super::containing_dir(Path::new("/")), None);
+    }
+
+    /// `MoveFileExW` gets NUL-free, absolute paths; resolved paths of `MAX_PATH` or more get the
+    /// verbatim prefix, also when the input was a short relative path.
+    #[cfg(windows)]
+    #[test]
+    fn windows_paths_are_resolved_before_the_length_check() {
+        let text = |wide: Vec<u16>| String::from_utf16(&wide[..wide.len() - 1]).unwrap();
+        assert_eq!(
+            super::windows_wide(Path::new("a\u{0}b"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        let short = text(super::windows_wide(Path::new("short.komponist")).unwrap());
+        assert!(Path::new(&short).is_absolute() && !short.starts_with(r"\\?\"));
+        let long = format!(r"C:\{}\x.komponist", "d".repeat(300));
+        assert!(text(super::windows_wide(Path::new(&long)).unwrap()).starts_with(r"\\?\C:\"));
+        let unc = format!(r"\\server\share\{}\x.komponist", "d".repeat(300));
+        assert!(
+            text(super::windows_wide(Path::new(&unc)).unwrap()).starts_with(r"\\?\UNC\server\")
+        );
     }
 }
