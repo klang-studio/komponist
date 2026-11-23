@@ -45,6 +45,8 @@ pub mod warp;
 
 #[cfg(test)]
 mod proptests;
+#[cfg(test)]
+mod validate_tests;
 
 pub use audio::{
     AudioClip, AudioFile, AudioInput, AudioIo, AudioTake, CLIP_GAIN_DB_MAX, CLIP_GAIN_DB_MIN,

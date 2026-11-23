@@ -1030,3 +1030,191 @@ proptest! {
         prop_assert!(!doc.undo());
     }
 }
+
+// ------------------------------------------------------------------------------------------------
+// Loading damaged files (#209)
+// ------------------------------------------------------------------------------------------------
+
+/// A saved project of the fixtures: the demo (steps, MIDI, devices), the automation project (lanes,
+/// envelopes, a bus, macros) or an audio project, as the JSON value of its file.
+fn saved_project(which: u8) -> serde_json::Value {
+    use crate::audio::AudioFile;
+    use crate::edits::{NewAudioTrack, add_audio_track};
+    let project = match which % 3 {
+        0 => demo_project(),
+        1 => crate::fixtures::automation_project(),
+        _ => {
+            let (p, track) =
+                add_audio_track(&Project::new("Audio"), NewAudioTrack::default()).unwrap();
+            let file = AudioFile {
+                abs: "/t/take.wav".into(),
+                rel: "take.wav".into(),
+                frames: 480_000,
+                sample_rate: 48_000,
+                channels: 2,
+            };
+            edits::add_clip(
+                &p,
+                track,
+                NewClip {
+                    name: "take".into(),
+                    start: Tick(3840),
+                    length: Tick(7680),
+                    content: NewClipContent::Audio { file, offset: 1000 },
+                },
+            )
+            .unwrap()
+            .0
+        }
+    };
+    serde_json::from_str(&to_json(&project).unwrap()).unwrap()
+}
+
+/// Every JSON pointer below the root of `value`, containers and leaves.
+fn pointers(value: &serde_json::Value, at: &mut String, out: &mut Vec<String>) {
+    use serde_json::Value;
+    let keep = at.len();
+    match value {
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                at.push_str(&format!("/{i}"));
+                out.push(at.clone());
+                pointers(item, at, out);
+                at.truncate(keep);
+            }
+        }
+        Value::Object(map) => {
+            for (key, item) in map {
+                at.push_str(&format!("/{key}"));
+                out.push(at.clone());
+                pointers(item, at, out);
+                at.truncate(keep);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// One random damage to a file: the value at some place becomes an extreme or a wrong type, goes
+/// away, is repeated (ids too) or replaced by another value of the file.
+#[derive(Debug, Clone)]
+struct Damage {
+    at: u32,
+    kind: u8,
+    pick: u8,
+    from: u32,
+}
+
+fn damage() -> impl Strategy<Value = Damage> {
+    (any::<u32>(), 0u8..12, any::<u8>(), any::<u32>()).prop_map(|(at, kind, pick, from)| Damage {
+        at,
+        kind,
+        pick,
+        from,
+    })
+}
+
+const BAD_INTS: [i64; 16] = [
+    0,
+    1,
+    -1,
+    127,
+    128,
+    200,
+    255,
+    256,
+    65_535,
+    1 << 26,
+    (1 << 26) + 1,
+    1_000_000_000_000_000,
+    9_000_000_000_000_000_000,
+    i64::MAX,
+    i64::MIN,
+    -9_000_000_000_000_000_000,
+];
+const BAD_FLOATS: [f64; 8] = [0.0, -0.0, 0.5, -0.5, 1.5, 1e30, -1e30, 1e-30];
+
+fn apply_damage(root: &mut serde_json::Value, pointers: &[String], d: &Damage) {
+    use serde_json::Value;
+    let Some(at) = pointers.get(d.at as usize % pointers.len().max(1)) else {
+        return;
+    };
+    let (parent, key) = at.rsplit_once('/').expect("a pointer below the root");
+    let source = pointers
+        .get(d.from as usize % pointers.len())
+        .and_then(|p| root.pointer(p))
+        .cloned();
+    let Some(target) = root.pointer_mut(at) else {
+        return;
+    };
+    match d.kind {
+        // A number becomes an extreme of its own kind, other leaves flip or change type.
+        0..=7 => {
+            let new = match &*target {
+                Value::Number(n) if n.is_f64() => {
+                    serde_json::Number::from_f64(BAD_FLOATS[usize::from(d.pick) % 8])
+                        .map_or(Value::Null, Value::Number)
+                }
+                Value::Number(_) => BAD_INTS[usize::from(d.pick) % 16].into(),
+                Value::Bool(b) => Value::Bool(!*b),
+                Value::String(_) => {
+                    Value::String(["", "x", "master"][usize::from(d.pick) % 3].into())
+                }
+                other => other.clone(),
+            };
+            *target = new;
+        }
+        8 => *target = Value::Null,
+        9 | 10 => {
+            let copy = target.clone();
+            let Some(parent) = root.pointer_mut(parent) else {
+                return;
+            };
+            match parent {
+                Value::Array(items) => {
+                    let index: usize = key.parse().unwrap_or(0);
+                    if d.kind == 9 {
+                        items.remove(index);
+                    } else {
+                        items.insert(index, copy);
+                    }
+                }
+                Value::Object(map) if d.kind == 9 => {
+                    map.remove(key);
+                }
+                _ => {}
+            }
+        }
+        _ => {
+            if let Some(source) = source {
+                *target = source;
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    /// Random damage to a saved project never makes `from_json` panic (or run out of memory), and
+    /// every project it accepts passes `validate`, saves, and loads again unchanged and unrepaired.
+    #[test]
+    fn damaged_files_never_panic_and_load_valid(
+        which in any::<u8>(),
+        damages in prop::collection::vec(damage(), 1..6),
+    ) {
+        let mut value = saved_project(which);
+        let mut places = Vec::new();
+        pointers(&value["project"], &mut String::new(), &mut places);
+        let places: Vec<String> = places.into_iter().map(|p| format!("/project{p}")).collect();
+        for d in &damages {
+            apply_damage(&mut value, &places, d);
+        }
+        if let Ok(loaded) = crate::persist::load(&value.to_string()) {
+            prop_assert!(loaded.project.validate().is_ok(), "{:?}", loaded.project.validate());
+            let again = crate::persist::load(&to_json(&loaded.project).unwrap()).unwrap();
+            prop_assert_eq!(&again.project, &loaded.project);
+            prop_assert!(again.repairs.is_empty(), "{}", again.repairs);
+        }
+    }
+}
