@@ -1162,16 +1162,17 @@ impl App {
     /// layout is written again when it changes, or with `retry` (shutdown).
     fn persist_panel_layout(&mut self, retry: bool) {
         let panels = PanelSettings::from_layout(&self.ui.layout);
-        if self.shell.saved_panels == Some(panels)
-            || (!retry && self.shell.unsaved_panels == Some(panels))
-        {
+        if self.shell.saved_panels == Some(panels) {
+            // On disk already; a failed write of another layout may have left that one here.
+            self.settings.panels = panels;
+            self.shell.unsaved_panels = None;
+            return;
+        }
+        if !retry && self.shell.unsaved_panels == Some(panels) {
             return;
         }
         self.settings.panels = panels;
-        if self.save_settings() {
-            self.shell.saved_panels = Some(panels);
-            self.shell.unsaved_panels = None;
-        } else {
+        if !self.save_settings() {
             self.shell.unsaved_panels = Some(panels);
         }
     }
@@ -1186,6 +1187,9 @@ impl App {
             self.set_status(e.to_string(), StatusKind::Error);
             return false;
         }
+        // Any write saves the panel sizes in `settings` too.
+        self.shell.saved_panels = Some(self.settings.panels);
+        self.shell.unsaved_panels = None;
         true
     }
 
@@ -3234,6 +3238,50 @@ mod tests {
         app.shutdown();
         let saved = Settings::load(&path).unwrap();
         assert_eq!(saved.panels.browser_width, 300.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed panel write followed by another settings write (which saves the failed layout
+    /// too) and a return to the earlier layout: the file ends up with the layout on screen.
+    #[test]
+    fn returning_to_the_saved_layout_after_a_failed_write_is_saved() {
+        let dir =
+            std::env::temp_dir().join(format!("komponist-panels-back-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let engine = EngineSync::null(Box::new(crate::device_host::BuiltinHost::new()));
+        let mut app = App::new(
+            Document::new(empty_project()),
+            engine,
+            Settings::default(),
+            Some(path.clone()),
+        );
+        let width = |path: &std::path::Path| Settings::load(path).unwrap().panels.browser_width;
+        let blocker = dir.join("blocked");
+        std::fs::write(&blocker, b"").unwrap();
+        let set_width = |app: &mut App, width: f32, writable: bool| {
+            app.settings_path = Some(if writable {
+                path.clone()
+            } else {
+                blocker.join("settings.json")
+            });
+            app.ui.layout.browser_width = width;
+            app.persist_panels();
+        };
+        // A (300) is saved, B (320) fails, the layout goes back to A, another setting is saved.
+        set_width(&mut app, 300.0, true);
+        set_width(&mut app, 320.0, false);
+        set_width(&mut app, 300.0, true);
+        assert!(app.save_settings());
+        assert_eq!(width(&path), 300.0);
+        // B fails, another setting saves B with it, the layout goes back to A.
+        set_width(&mut app, 320.0, false);
+        app.settings_path = Some(path.clone());
+        assert!(app.save_settings());
+        assert_eq!(width(&path), 320.0);
+        set_width(&mut app, 300.0, true);
+        assert_eq!(width(&path), 300.0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

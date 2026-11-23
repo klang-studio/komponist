@@ -155,10 +155,12 @@ type StageResult = std::io::Result<StagedCopies>;
 
 /// Tests: holds the next staging worker after its private copies are made until `go` gets a
 /// message (or hangs up), and reports on `finished` when it is done, its clean-up included.
+/// `ready` hears when it waits there.
 #[cfg(test)]
 struct StageGate {
     go: mpsc::Receiver<()>,
     finished: mpsc::Sender<()>,
+    ready: Option<mpsc::Sender<()>>,
 }
 
 /// Runs [`files::stage`] on a worker; returns the receivers of its result and of its end. If
@@ -179,6 +181,9 @@ fn stage_in_background(
                 .map(|(private, copies)| StagedCopies { private, copies });
             #[cfg(test)]
             if let Some(gate) = &gate {
+                if let Some(ready) = &gate.ready {
+                    let _ = ready.send(());
+                }
                 let _ = gate.go.recv();
             }
             // A failed send drops the copies here, before `alive` reports the end.
@@ -2115,7 +2120,11 @@ mod tests {
         app.project_path = Some(project_file.clone());
         let (release, go) = mpsc::channel();
         let (finished, _) = mpsc::channel();
-        app.audio_recording.stage_gate = Some(StageGate { go, finished });
+        app.audio_recording.stage_gate = Some(StageGate {
+            go,
+            finished,
+            ready: None,
+        });
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
         wait(&mut app, |app| {
@@ -2205,7 +2214,11 @@ mod tests {
         app.project_path = Some(root.join("Song.komponist"));
         let (release, go) = mpsc::channel::<()>();
         let (finished, done) = mpsc::channel();
-        app.audio_recording.stage_gate = Some(StageGate { go, finished });
+        app.audio_recording.stage_gate = Some(StageGate {
+            go,
+            finished,
+            ready: None,
+        });
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
         wait(&mut app, |app| {
@@ -2224,12 +2237,18 @@ mod tests {
     }
 
     /// Holds the next staging worker: stops the take begun on `track` in a saved project and
-    /// steps until its copy waits for `release`. `finished` reports the worker's end.
+    /// steps until the worker has made its private copy and waits for `release`. `finished`
+    /// reports the worker's end.
     fn staging_held(app: &mut App, root: &Path) -> (mpsc::Sender<()>, mpsc::Receiver<()>) {
         app.project_path = Some(root.join("Song.komponist"));
         let (release, go) = mpsc::channel::<()>();
         let (finished, done) = mpsc::channel();
-        app.audio_recording.stage_gate = Some(StageGate { go, finished });
+        let (ready, waiting) = mpsc::channel();
+        app.audio_recording.stage_gate = Some(StageGate {
+            go,
+            finished,
+            ready: Some(ready),
+        });
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
         wait(app, |app| {
@@ -2238,6 +2257,7 @@ mod tests {
                 .as_ref()
                 .is_some_and(|capture| capture.staging.is_some())
         });
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
         (release, done)
     }
 
@@ -2450,7 +2470,11 @@ mod tests {
         app.project_path = Some(root.join("Song.komponist"));
         let (release, go) = mpsc::channel::<()>();
         let (finished, _done) = mpsc::channel();
-        app.audio_recording.stage_gate = Some(StageGate { go, finished });
+        app.audio_recording.stage_gate = Some(StageGate {
+            go,
+            finished,
+            ready: None,
+        });
         // Four laps without a frame, then stop: the middle laps are never shown.
         assert!(app.engine_mut().run_held(4 * (end - lead), &[], 0));
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));

@@ -140,9 +140,10 @@ pub(super) fn stage_private(
     }
 }
 
-/// Moves privately staged copies into `target` under final names (`source → final path`), never
-/// replacing a file there. On an error, the files published so far are removed again and the
-/// remaining private copies stay where they are.
+/// Gives privately staged copies final names in `target` (`source → final path`), never
+/// replacing a file there: a hard link, or an exclusively created copy where links are not
+/// supported. The private names stay for the private folder's owner to delete. On an error, the
+/// files published so far are removed again.
 pub(super) fn publish(
     copies: &BTreeMap<PathBuf, PathBuf>,
     target: &Path,
@@ -165,15 +166,17 @@ pub(super) fn publish(
                     format!("{stem}{suffix}.{extension}")
                 };
                 let destination = target.join(name);
-                // A hard link fails instead of replacing an existing file. Filesystems without
-                // links get a rename after a check.
-                match fs::hard_link(copy, &destination) {
-                    Ok(()) => {
-                        fs::remove_file(copy)?;
+                // Both fail instead of replacing an existing file: try the next name then.
+                let linked = match fs::hard_link(copy, &destination) {
+                    Err(error) if error.kind() != io::ErrorKind::AlreadyExists => {
+                        copy_exclusive(copy, &destination)
                     }
+                    linked => linked,
+                };
+                match linked {
+                    Ok(()) => {}
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                    Err(_) if destination.exists() => continue,
-                    Err(_) => fs::rename(copy, &destination)?,
+                    Err(error) => return Err(error),
                 }
                 placed = Some(destination);
                 break;
@@ -195,6 +198,18 @@ pub(super) fn publish(
         return Err(error);
     }
     Ok(published)
+}
+
+/// Copies `from` to a new file `to`, which must not exist yet; a partial copy is removed.
+fn copy_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    let mut output = OpenOptions::new().create_new(true).write(true).open(to)?;
+    let copied = fs::File::open(from)
+        .and_then(|mut input| io::copy(&mut input, &mut output))
+        .and_then(|_| output.sync_all());
+    if copied.is_err() {
+        let _ = fs::remove_file(to);
+    }
+    copied
 }
 
 /// Deletes private staging folders that a staging worker left in `target` (`Takes`) when the
@@ -366,6 +381,8 @@ mod tests {
         assert!(!target.join("Take-1.wav").exists(), "no final name yet");
         let published = publish(&copies, &target).unwrap();
         assert_eq!(published[&source], target.join("Take-1.wav"));
+        // The private name stays for the folder's owner.
+        assert!(copies[&source].is_file());
         assert_eq!(fs::read(target.join("Take-1.wav")).unwrap(), b"recording");
         assert_eq!(
             fs::read(target.join("Take.wav")).unwrap(),
@@ -376,6 +393,25 @@ mod tests {
         reclaim_abandoned(&target);
         assert!(!private.exists());
         assert!(target.join("Take-1.wav").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+    /// The fallback for filesystems without hard links never replaces a file.
+    #[test]
+    fn an_exclusive_copy_never_replaces_a_file() {
+        let root = scratch();
+        let (from, to) = (root.join("copy.wav"), root.join("Take.wav"));
+        fs::write(&from, b"recording").unwrap();
+        fs::write(&to, b"previous recording").unwrap();
+        let error = copy_exclusive(&from, &to).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&to).unwrap(), b"previous recording");
+        copy_exclusive(&from, &root.join("Take-1.wav")).unwrap();
+        assert_eq!(fs::read(root.join("Take-1.wav")).unwrap(), b"recording");
+        assert!(copy_exclusive(&root.join("missing.wav"), &root.join("Take-2.wav")).is_err());
+        assert!(
+            !root.join("Take-2.wav").exists(),
+            "a failed copy leaves nothing"
+        );
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
