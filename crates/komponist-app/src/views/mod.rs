@@ -16,8 +16,7 @@
 //! | [`Views::browser`] | left panel | WP-44 (`views/browser/`) |
 //! | [`Views::devices`] | dock, "Geräte" tab | WP-44 (`views/devices/`) |
 //!
-//! Until a WP lands, its slot holds a [`Placeholder`] that shows the view's name. A WP replaces
-//! the placeholder in [`Views::new`] with its own type implementing [`View`].
+//! Each slot holds its view's own type implementing [`View`], created in [`Views::new`].
 
 pub mod arrangement;
 pub mod audio_editor;
@@ -166,32 +165,8 @@ pub trait View {
     fn show(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>);
 }
 
-/// A view that is not implemented yet: its name, centred, in `text.3`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Placeholder {
-    name: &'static str,
-}
-
-impl Placeholder {
-    /// A placeholder showing `name`.
-    pub const fn new(name: &'static str) -> Placeholder {
-        Placeholder { name }
-    }
-
-    /// The name it shows.
-    pub fn name(&self) -> &'static str {
-        self.name
-    }
-}
-
-impl View for Placeholder {
-    fn show(&mut self, ui: &mut Ui, _ctx: &mut ViewCtx<'_>) {
-        centered_text(ui, ui.max_rect(), self.name, None);
-    }
-}
-
 /// Paints `title` (and `detail` below it) centred in `rect`: `title` in `type.ui` medium
-/// `text.2`, `detail` in `type.ui` `text.3`, 6 px apart (the dock's empty state, placeholders).
+/// `text.2`, `detail` in `type.ui` `text.3`, 6 px apart (the dock's empty state).
 /// AccessKit reads them as labels.
 pub fn centered_text(ui: &mut Ui, rect: Rect, title: &str, detail: Option<&str>) {
     let ppp = ui.pixels_per_point();
