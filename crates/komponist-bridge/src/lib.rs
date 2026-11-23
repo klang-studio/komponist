@@ -35,10 +35,16 @@
 //! bridge aborts it, so a failing bridge always looks like a crash to the app and never leaves a
 //! half-torn-down plugin running. Both modes end with `_exit` after the plugin is torn down
 //! ([`exit_now`]).
+//!
+//! Both modes also end with the app, even while the main thread is stuck in a plugin call (#218):
+//! on Linux and Windows the app sees to that when it spawns the bridge
+//! (`komponist_ipc::process::spawn_tied`); on macOS the bridge watches the app (`app_watch`).
 
 // Missing SAFETY comments: 2 (macOS build; Linux and Windows code not counted). Remove this allow when the crate is clean (#241 follow-up).
 #![allow(clippy::undocumented_unsafe_blocks)]
 
+#[cfg(target_os = "macos")]
+mod app_watch;
 #[cfg(target_os = "macos")]
 mod cf_loop;
 #[cfg(target_os = "linux")]
@@ -188,10 +194,17 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     match parse_args(args) {
         Ok(Mode::Instance(options)) => {
             #[cfg(target_os = "macos")]
-            macos_app::setup();
+            {
+                app_watch::start();
+                macos_app::setup();
+            }
             exit_now(instance::run(options))
         }
-        Ok(Mode::Scan(bundle)) => exit_now(scan::run(&bundle)),
+        Ok(Mode::Scan(bundle)) => {
+            #[cfg(target_os = "macos")]
+            app_watch::start();
+            exit_now(scan::run(&bundle))
+        }
         Ok(Mode::Help) => {
             println!("{USAGE}");
             ExitCode::SUCCESS
