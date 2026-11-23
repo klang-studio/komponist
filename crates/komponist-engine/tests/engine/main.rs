@@ -15,6 +15,7 @@ mod chase;
 mod common;
 mod export;
 mod export_demo;
+mod finite;
 mod live;
 mod midi_fx;
 mod mixing;

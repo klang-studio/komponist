@@ -7,6 +7,10 @@ use komponist_engine::{Command, Program};
 use komponist_model::{AudioTake, ClipId, DeviceId, Tempo, Tick, TickRange, edits};
 use std::sync::atomic::AtomicBool;
 
+/// A finite sample the stretcher refuses (above `MAX_SAMPLE_MAGNITUDE`). Files cannot carry NaN
+/// or Inf into the engine any more: decoding maps them to 0 (#217).
+const BAD_SAMPLE: f32 = 2048.0;
+
 struct Env(u32);
 impl CompileEnv for Env {
     fn midi_port(&self, _: &str) -> Option<komponist_engine::program::MidiPort> {
@@ -278,7 +282,7 @@ fn export_uses_identical_chunks_and_failure_never_commits_a_silent_file() {
     );
     let mut s = Studio::new("warp-export-bad");
     let t = s.track();
-    let file = s.wav("bad.wav", 48000, 2, 96000, |_, _| f32::NAN);
+    let file = s.wav("bad.wav", 48000, 2, 96000, |_, _| BAD_SAMPLE);
     let c = s.clip(t, &file, 0, 960, 0);
     s.project = edits::set_audio_clip_warp(&s.project, c, true).unwrap();
     let p = s.program();
@@ -305,7 +309,7 @@ fn export_uses_identical_chunks_and_failure_never_commits_a_silent_file() {
 fn export_never_reuses_a_failed_live_ring() {
     let mut s = Studio::new("warp-export-failed-live-ring");
     let track = s.track();
-    let file = s.wav("bad.wav", 48000, 2, 48000, |_, _| f32::NAN);
+    let file = s.wav("bad.wav", 48000, 2, 48000, |_, _| BAD_SAMPLE);
     let clip = s.clip(track, &file, 0, 960, 0);
     s.project = edits::set_audio_clip_warp(&s.project, clip, true).unwrap();
     let program = s.program();
@@ -347,7 +351,7 @@ fn export_of_a_clean_later_range_ignores_invalid_input_near_the_clip_start() {
     let mut s = Studio::new("warp-export-clean-subrange");
     let track = s.track();
     let file = s.wav("partial.wav", 48000, 2, 192000, |i, _| {
-        if i < 18000 { f32::NAN } else { 0.25 }
+        if i < 18000 { BAD_SAMPLE } else { 0.25 }
     });
     let clip = s.clip(track, &file, 0, 3840, 0);
     s.project = edits::set_audio_clip_warp(&s.project, clip, true).unwrap();
@@ -408,7 +412,7 @@ fn warp_export_only_decodes_the_input_needed_at_the_exact_range_end() {
     assert!(reference.iter().any(|v| v.abs() > 0.0005));
     for (bad_at, succeeds) in [(prime + 100, true), (prime + 27, true), (prime + 26, false)] {
         s.wav("source.wav", 48000, 2, 96000, |i, _| {
-            if i == bad_at { f32::NAN } else { 0.25 }
+            if i == bad_at { BAD_SAMPLE } else { 0.25 }
         });
         let result = export::export(
             &mut r.engine,
@@ -787,7 +791,7 @@ fn zero_frame_export_skips_warp_validation_and_preroll() {
 
     let mut s = Studio::new("warp-export-empty");
     let track = s.track();
-    let file = s.wav("source.wav", 48000, 2, 96000, |_, _| f32::NAN);
+    let file = s.wav("source.wav", 48000, 2, 96000, |_, _| BAD_SAMPLE);
     let clip = s.clip(track, &file, 0, 960, 0);
     s.project = edits::set_audio_clip_warp(&s.project, clip, true).unwrap();
     let program = s.program();
@@ -940,7 +944,7 @@ fn a_failed_warp_is_counted_without_blocking_other_tracks_or_later_clips() {
     let mut s = Studio::new("warp-failure-mix");
     let t = s.track();
     let other = s.track();
-    let bad = s.wav("bad.wav", 48000, 2, 48000, |_, _| f32::NAN);
+    let bad = s.wav("bad.wav", 48000, 2, 48000, |_, _| BAD_SAMPLE);
     let good = s.wav("good.wav", 48000, 2, 96000, |_, _| 0.25);
     let bed = s.wav("bed.wav", 48000, 2, 96000, |_, _| 0.125);
     let c = s.clip(t, &bad, 0, 960, 0);
@@ -989,7 +993,7 @@ fn a_failed_warp_prime_reports_pending_and_recovers_within_the_same_clip() {
     let mut s = Studio::new("warp-retry-nearby-clean-input");
     let t = s.track();
     let file = s.wav("fault.wav", 48000, 2, 96000, |i, _| {
-        if i == 0 { f32::NAN } else { 0.25 }
+        if i == 0 { BAD_SAMPLE } else { 0.25 }
     });
     let c = s.clip(t, &file, 0, 3840, 0);
     s.project = edits::set_audio_clip_warp(&s.project, c, true).unwrap();
@@ -1013,7 +1017,7 @@ fn successfully_rendered_chunks_survive_a_later_read_in_the_same_worker_request(
     let mut s = Studio::new("warp-retry-valid-prefix");
     let t = s.track();
     let file = s.wav("fault.wav", 48000, 2, 96000, |i, _| {
-        if i == 7424 { f32::NAN } else { 0.25 }
+        if i == 7424 { BAD_SAMPLE } else { 0.25 }
     });
     let c = s.clip(t, &file, 0, 3840, 0);
     s.project = edits::set_audio_clip_warp(&s.project, c, true).unwrap();
