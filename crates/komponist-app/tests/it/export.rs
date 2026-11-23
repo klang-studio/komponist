@@ -24,10 +24,12 @@ use komponist_app::settings::{self, Settings};
 use komponist_app::ui_state::{Dialog, FocusArea, StatusKind};
 use komponist_app::{Action, App, ProjectAction, TransportAction, UiAction};
 use komponist_engine::export::{ExportJob, NORMALIZE_TARGET_DB};
+use komponist_engine::testing::TestPanic;
 use komponist_engine::{
     Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo, TransportState,
 };
 use komponist_i18n::{Lang, de};
+use komponist_ipc::RenderMode;
 use komponist_model::edits::{self, NewDevice};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{
@@ -877,9 +879,58 @@ fn missing_devices_are_listed_and_the_export_goes_on_without_them_or_not_at_all(
 /// fails as soon as it renders offline (a bridge that dies during the export).
 struct FailingHost {
     builtin: BuiltinHost,
+    /// The latest global render mode (for the panic test).
+    mode: Arc<Mutex<Option<RenderMode>>>,
 }
 
 const KAPUTT: &str = "kaputt";
+/// Plugin ids of the devices that panic: in `activate` at the export's sample rate (the worker
+/// outside the engine's render), or in the one-frame render that ends the export (inside it).
+const PANIK_ACTIVATE: &str = "panik-activate";
+const PANIK_RENDER: &str = "panik-render";
+
+/// The export rate at which [`PANIK_ACTIVATE`] panics (the null backend runs at 48 kHz).
+const PANIC_RATE: f32 = 44_100.0;
+
+/// Passes audio through and panics where the plugin id says. The export's blocks are far longer
+/// than one frame, and they run inside `assert_no_alloc`, whose allocator aborts on the
+/// allocation of a panic (and on the frees while unwinding): a panic there cannot be tested in a
+/// debug build, so the render panic is in the one-frame render the worker does outside of it.
+struct Panicky {
+    in_render: bool,
+    panic: TestPanic,
+}
+
+impl Processor for Panicky {
+    fn activate(&mut self, sample_rate: f32, max_block: usize) -> Result<(), ProcessorError> {
+        assert!(
+            self.in_render || sample_rate != PANIC_RATE,
+            "Panicky::activate at {sample_rate}"
+        );
+        self.panic.activate(sample_rate, max_block)
+    }
+
+    fn process(
+        &mut self,
+        ctx: &ProcessContext,
+        events: &[Event],
+        io: &mut StereoIo<'_>,
+    ) -> ProcessStatus {
+        if self.in_render && ctx.offline && ctx.frames == 1 {
+            return self.panic.process(ctx, events, io);
+        }
+        let [left, right] = &mut io.output;
+        left.copy_from_slice(io.input[0]);
+        right.copy_from_slice(io.input[1]);
+        ProcessStatus::Continue
+    }
+
+    fn latency(&self) -> u32 {
+        0
+    }
+
+    fn reset(&mut self) {}
+}
 
 struct Failing;
 
@@ -920,6 +971,12 @@ impl DeviceHost for FailingHost {
         if device.plugin.id == KAPUTT {
             return Some(Box::new(Failing));
         }
+        if device.plugin.id == PANIK_ACTIVATE || device.plugin.id == PANIK_RENDER {
+            return Some(Box::new(Panicky {
+                in_render: device.plugin.id == PANIK_RENDER,
+                panic: TestPanic,
+            }));
+        }
         self.builtin.create_processor(device, setup)
     }
 
@@ -946,6 +1003,11 @@ impl DeviceHost for FailingHost {
     fn catalog(&self) -> &Catalog {
         self.builtin.catalog()
     }
+
+    fn set_render_mode(&mut self, mode: RenderMode) {
+        *self.mode.lock().unwrap() = Some(mode);
+        self.builtin.set_render_mode(mode);
+    }
 }
 
 #[test]
@@ -964,6 +1026,7 @@ fn a_device_that_drops_out_of_the_render_is_named() {
     let (project, _) = with_effect(project, kaputt);
     let host = FailingHost {
         builtin: BuiltinHost::new(),
+        mode: Arc::default(),
     };
     let (mut app, _) = app_with(&dir, project, Box::new(host));
     app.step();
@@ -981,6 +1044,84 @@ fn a_device_that_drops_out_of_the_render_is_named() {
             StatusKind::Error
         )
     );
+}
+
+/// #211: a panic on the export worker (a device while the export re-activates it, or inside the
+/// engine's render, which poisons the engine) is not left to silence the session: the engine is
+/// rebuilt and attached, the bridges render in realtime again, nothing piles up in the command
+/// queue, and the status says what happened.
+#[test]
+fn a_panic_on_the_export_worker_leaves_a_playing_session() {
+    for (lang, plugin) in [
+        (Lang::De, PANIK_ACTIVATE),
+        (Lang::En, PANIK_ACTIVATE),
+        (Lang::De, PANIK_RENDER),
+        (Lang::En, PANIK_RENDER),
+    ] {
+        let dir = scratch(&format!("panic-{lang:?}-{plugin}"));
+        let mut project = one_bar_song();
+        project.loop_range = TickRange::new(Tick::ZERO, Tick(BAR / 2));
+        let panik = PluginRef {
+            format: PluginFormat::Clap,
+            id: plugin.into(),
+            name: "Panik-Hall".into(),
+            vendor: "Test".into(),
+            version: "1.0".into(),
+            module: Box::default(),
+        };
+        let (project, _) = with_effect(project, panik);
+        let mode = Arc::new(Mutex::new(None));
+        let host = FailingHost {
+            builtin: BuiltinHost::new(),
+            mode: Arc::clone(&mode),
+        };
+        let (app, _) = app_with(&dir, project, Box::new(host));
+        let mut app = app.with_lang(lang);
+        // Single-threaded, so the render panics on the export worker itself.
+        app.engine_mut().set_workers(Some(0)).unwrap();
+        app.step();
+        let settings = ExportSettings {
+            tail_seconds: 0.0,
+            sample_rate: if plugin == PANIK_ACTIVATE {
+                PANIC_RATE as u32
+            } else {
+                48_000
+            },
+            ..export_settings(&dir, ExportRange::Loop)
+        };
+        export(&mut app, settings);
+
+        let crashed = lang.export_failed(lang.export_worker_crashed());
+        assert_eq!(
+            status(&app),
+            (crashed.clone(), StatusKind::Error),
+            "{plugin}"
+        );
+        assert!(app.ui().dialog.is_none());
+        assert!(app.exported().is_empty());
+        // The render panic comes after the export wrote its file (the closing one-frame render).
+        assert_eq!(
+            dir.join("out/Night Drive.wav").exists(),
+            plugin == PANIK_RENDER
+        );
+        assert_eq!(*mode.lock().unwrap(), Some(RenderMode::Realtime));
+        assert!(!app.engine().is_detached());
+        assert_eq!(app.engine().pending_commands(), 0);
+
+        // The status stays (the rebuild notice was taken with it) and the session plays audio.
+        app.step();
+        assert_eq!(status(&app).0, crashed);
+        app.engine_mut().hold_engine().unwrap();
+        app.dispatch(Action::Transport(TransportAction::TogglePlay));
+        app.step();
+        let (left, right) = app.engine_mut().run_held_capture(24_000, &[], 0).unwrap();
+        assert!(
+            left.iter().chain(&right).any(|s| s.abs() > 1e-4),
+            "playback is silent after {plugin}"
+        );
+        assert_eq!(app.engine().pending_commands(), 0);
+        app.engine_mut().release_engine();
+    }
 }
 
 // ------------------------------------------------------------------------------------------------

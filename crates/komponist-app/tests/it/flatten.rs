@@ -13,6 +13,7 @@ use komponist_app::project_io::{load_project, save_project};
 use komponist_app::ui_state::{FocusArea, StatusKind};
 use komponist_app::{Action, App, EditAction, ProjectAction};
 use komponist_builtin::Internal;
+use komponist_engine::testing::TestPanic;
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
@@ -147,6 +148,9 @@ enum TestProcessor {
         delay: usize,
     },
     Broken,
+    /// Panics in the one-frame render that ends a flatten (outside the render's
+    /// `assert_no_alloc`, whose allocator aborts on a panic's allocation).
+    Panic(TestPanic),
 }
 
 impl Processor for TestProcessor {
@@ -165,7 +169,7 @@ impl Processor for TestProcessor {
                 *value = 0.0;
                 *remaining = 0;
             }
-            Self::Broken => {}
+            Self::Broken | Self::Panic(_) => {}
         }
     }
 
@@ -195,6 +199,13 @@ impl Processor for TestProcessor {
                 ProcessStatus::Continue
             }
             Self::Tail { .. } => {
+                for channel in &mut io.output {
+                    channel.fill(0.0);
+                }
+                ProcessStatus::Continue
+            }
+            Self::Panic(panic) if ctx.offline && ctx.frames == 1 => panic.process(ctx, events, io),
+            Self::Panic(_) => {
                 for channel in &mut io.output {
                     channel.fill(0.0);
                 }
@@ -247,6 +258,7 @@ impl Processor for TestProcessor {
 enum Fixture {
     Ready,
     Broken,
+    Panic,
     Loading,
     WasNotSnapshotted,
     DelayedEcho,
@@ -268,6 +280,9 @@ impl DeviceHost for Host {
         match device.plugin.id.as_str() {
             "instrument" => Some(Box::new(TestProcessor::Instrument(0.0))),
             "tail" if self.fixture == Fixture::Broken => Some(Box::new(TestProcessor::Broken)),
+            "tail" if self.fixture == Fixture::Panic => {
+                Some(Box::new(TestProcessor::Panic(TestPanic)))
+            }
             "tail" => Some(Box::new(TestProcessor::Tail {
                 value: 0.0,
                 remaining: 0,
@@ -448,6 +463,40 @@ fn a_failed_render_leaves_the_original_project_history_and_no_wav() {
     assert!(dir.path().read_dir().unwrap().next().is_none());
     assert_eq!(app.ui().status.as_ref().unwrap().kind, StatusKind::Error);
     assert!(!app.engine().is_detached());
+}
+
+/// #211: a panic on the render worker leaves the original project, a rebuilt engine in the
+/// session and the localized status.
+#[test]
+fn a_panic_in_the_flatten_render_rebuilds_the_engine() {
+    for lang in [Lang::De, Lang::En] {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, track, effect) = fixture();
+        let mut app = app(project.clone(), dir.path(), effect, Fixture::Panic).with_lang(lang);
+        // Single-threaded, so the render panics on the flatten worker itself.
+        app.engine_mut().set_workers(Some(0)).unwrap();
+        flatten(&mut app, track);
+        assert_eq!(app.project().as_ref(), &project);
+        assert!(app.doc().undo_label().is_none());
+        assert!(dir.path().read_dir().unwrap().next().is_none());
+        assert_eq!(
+            app.ui().status.as_ref().map(|s| (s.text.clone(), s.kind)),
+            Some((
+                lang.flatten_failed(lang.export_worker_crashed()),
+                StatusKind::Error
+            ))
+        );
+        assert!(!app.engine().is_detached());
+        assert_eq!(app.engine().pending_commands(), 0);
+        // The engine plays again (the transport starts).
+        app.engine_mut().hold_engine().unwrap();
+        app.dispatch(Action::Transport(
+            komponist_app::TransportAction::TogglePlay,
+        ));
+        app.step();
+        assert!(app.engine_mut().run_held(4_800, &[], 0));
+        assert!(app.engine().playhead() > Tick::ZERO);
+    }
 }
 
 #[test]
