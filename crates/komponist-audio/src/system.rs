@@ -1498,8 +1498,11 @@ impl<P: AudioProcess> AudioSystem<P> {
         // Every backend drops its callback (and with it the slot) before this returns. A handle
         // that has not closed yet is not waited for here: `poll` collects it (#221).
         drop(backend);
+        // A slot hands the engine back before it marks itself closed: read `closed` first, so
+        // a slot that closes in between is retired and its engine collected by `poll`.
+        let closed = handle.is_closed();
         self.reclaim(&mut handle);
-        if !handle.is_closed() {
+        if !closed {
             self.retired.push(handle);
         }
     }
@@ -1517,8 +1520,10 @@ impl<P: AudioProcess> AudioSystem<P> {
     fn collect_retired(&mut self) {
         let mut retired = std::mem::take(&mut self.retired);
         retired.retain_mut(|handle| {
+            // `closed` before reclaiming, as in `teardown`.
+            let closed = handle.is_closed();
             self.reclaim(handle);
-            !handle.is_closed()
+            !closed
         });
         self.retired.append(&mut retired);
     }
