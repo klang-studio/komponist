@@ -315,7 +315,10 @@ small job sets and unavailable workers use the serial path.
 
 The dispatcher claims unstarted jobs itself and waits only for work another thread already owns.
 A late owned job cannot be abandoned or processed twice; deadline overruns are counted, and the
-dispatcher continues waiting for completion. `worker_threads` supports automatic sizing or an
+dispatcher continues waiting for completion. A job that panics never ends a batch early: on a
+worker it is re-raised on the dispatcher afterwards, and a panic on the dispatcher waits for the
+rest of the batch before it unwinds, because worker jobs read the segment's context on the
+dispatcher's stack. `worker_threads` supports automatic sizing or an
 explicit count, including zero. Automatic sizing accounts for available CPU topology and the
 macOS audio workgroup's parallelism limit.
 
@@ -579,6 +582,10 @@ the pass and restores the playback curve or base value.
 `AudioSystem` enumerates hosts, devices, rates, buffers and inputs. `EngineSlot<P>` owns the
 callback processor and returns it on stream teardown; buffer/device changes rebuild the stream
 while preserving the engine. A lost output device enters `NoDevice` and disables playback/recording.
+An engine whose callback unwound in a panic is poisoned: it outputs silence, is never handed to
+another stream, and the app replaces it with a new engine compiled from the document (#210). The
+new engine stays stopped at the old playhead; a running take ends there like an interruption and
+keeps what was recorded.
 
 Input capture starts only when configured. Separate-device callbacks exchange timestamped frames
 through a bounded bridge; rate conversion and a bounded clock follower align input to output.
@@ -654,7 +661,11 @@ instrument bridges start early while other tracks run. Offline requests use a lo
 
 Bridge RT scheduling uses SCHED_FIFO, macOS time constraints with an audio work interval, or
 Windows MMCSS. Failure is reported as a realtime warning. The main loop answers heartbeats;
-crashed or stalled instances can be reloaded from their last state. Snapshots are collected on
+crashed or stalled instances can be reloaded from their last state. The app never waits for a
+control message that has not arrived: each channel keeps the partial frame and the fragments of
+a large message between reads, and a message that has begun to arrive is read on for at most a
+short budget per poll, so a bridge frozen mid-message cannot hold up the UI thread or the
+watchdog. Snapshots are collected on
 save, GUI close and debounced dirty notifications. Bridge exit suppresses plugin teardown code
 that could run after unloading. Scan stdout is isolated from plugin output to preserve JSON.
 

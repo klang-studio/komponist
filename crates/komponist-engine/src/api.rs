@@ -431,6 +431,9 @@ pub struct Telemetry {
     /// Audio tracks whose read-ahead has not caught up with the playhead yet (a locate or a
     /// program change just asked for it), as of the last block.
     pub(crate) audio_pending: AtomicU32,
+    /// Samples of the master output that were NaN or infinite and were replaced by silence
+    /// (a processor misbehaved; #217).
+    pub(crate) non_finite_samples: AtomicU32,
     macro_tracks: Box<[MacroTelemetry]>,
     pub(crate) macro_edit: AtomicU64,
 }
@@ -455,6 +458,7 @@ impl Telemetry {
             held_input: [AtomicU64::new(0), AtomicU64::new(0)],
             audio_underruns: AtomicU32::new(0),
             audio_pending: AtomicU32::new(0),
+            non_finite_samples: AtomicU32::new(0),
             macro_edit: AtomicU64::new(0),
             macro_tracks: (0..crate::MAX_TRACKS)
                 .map(|_| MacroTelemetry::default())
@@ -523,6 +527,13 @@ impl Telemetry {
     /// where a clip should have sounded because the streaming was late (never a block).
     pub fn audio_underruns(&self) -> u32 {
         self.audio_underruns.load(Ordering::Relaxed)
+    }
+
+    /// Total number of master output samples since the engine started that were NaN or infinite
+    /// and were replaced by 0 before the meter and the device. Nonzero means a processor emitted
+    /// non-finite audio.
+    pub fn non_finite_samples(&self) -> u32 {
+        self.non_finite_samples.load(Ordering::Relaxed)
     }
 
     /// How many audio tracks are not ready at the playhead yet: their read-ahead is filling after

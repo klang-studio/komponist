@@ -353,7 +353,13 @@ fn failed_source_tempo_can_be_retried_for_the_same_open_file() {
             }
             wav.finalize().unwrap();
         };
-        write(f32::NAN);
+        // A header that promises twice the data the file holds: it opens, reading it fails. (A
+        // NaN sample no longer fails: decoding maps non-finite samples to 0, #217.)
+        write(0.0_f32);
+        let mut bytes = std::fs::read(&path).unwrap();
+        let at = bytes.windows(4).position(|w| w == b"data").unwrap() + 4;
+        bytes[at..at + 4].copy_from_slice(&(2 * 4 * 48000_u32).to_le_bytes());
+        std::fs::write(&path, bytes).unwrap();
         let file = FilePool::global().open(&path).unwrap();
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         let (p, c) = project(&path, 48000, 1, false);

@@ -270,8 +270,9 @@ impl Dsp for Limiter {
             let done = CONTROL - self.countdown;
             self.countdown -= 1;
             let g_in = self.gain.at(done);
-            let xl = finite(il[n]) * g_in;
-            let xr = finite(ir[n]) * g_in;
+            // The gain can overflow a huge finite input to Inf (and Inf * 0 is NaN): filter again.
+            let xl = finite(finite(il[n]) * g_in);
+            let xr = finite(finite(ir[n]) * g_in);
             let peak = xl.abs().max(xr.abs());
             let required = if peak > ceiling { ceiling / peak } else { 1.0 };
             // Attack: sliding minimum, then the moving average of the minimum.
@@ -381,6 +382,40 @@ mod tests {
                     l.over < 1e-5,
                     "lookahead {lookahead}, release {release_ms}: {} over before the clamp",
                     l.over
+                );
+            }
+        }
+    }
+
+    /// A huge finite input times the maximum input gain overflows to Inf; the output stays finite
+    /// and under the ceiling (#217).
+    #[test]
+    fn a_huge_input_at_maximum_gain_stays_finite() {
+        for lookahead in [1.0, 0.0] {
+            let mut l = dsp();
+            l.activate(48_000.0);
+            l.set_param(GAIN, 24.0);
+            l.set_param(CEILING, -1.0);
+            l.set_param(LOOKAHEAD, lookahead);
+            let mut x = noise(4096, 7, 1.0);
+            for (i, s) in x[0].iter_mut().enumerate() {
+                match i % 5 {
+                    0 => *s = f32::MAX,
+                    1 => *s = -f32::MAX,
+                    2 => *s = f32::NAN,
+                    3 => *s = f32::INFINITY,
+                    _ => {}
+                }
+            }
+            x[1] = x[0].clone();
+            let mut out = [vec![0.0; 4096], vec![0.0; 4096]];
+            let [ol, or] = &mut out;
+            l.process([&x[0], &x[1]], [ol, or]);
+            let ceiling = db_to_gain(-1.0) * 1.000_001;
+            for v in out.iter().flatten() {
+                assert!(
+                    v.is_finite() && v.abs() <= ceiling,
+                    "lookahead {lookahead}: {v}"
                 );
             }
         }

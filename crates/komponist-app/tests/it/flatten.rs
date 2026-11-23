@@ -542,7 +542,7 @@ fn a_warp_failure_names_the_sidechain_clip_in_both_languages() {
     )
     .unwrap();
     for _ in 0..48_000 {
-        writer.write_sample(f32::NAN).unwrap();
+        writer.write_sample(2048.0_f32).unwrap();
     }
     writer.finalize().unwrap();
     let (project, track, effect) = fixture();

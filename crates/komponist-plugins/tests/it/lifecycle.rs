@@ -971,6 +971,393 @@ fn watchdog_kills_a_hanging_bridge() {
     rig.wait_status(10, DeviceStatus::Ok);
 }
 
+/// The test name the plugin manager runs as the fake bridge of [`fake_bridge_manager`].
+#[cfg(unix)]
+const FAKE_BRIDGE: &str = "lifecycle::fake_bridge_entry";
+
+/// What the fake bridge does at the third `Ping` (#216).
+#[cfg(unix)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FakeBridge {
+    /// Writes the header and one payload byte of a `Pong`, then stops itself (`SIGSTOP`).
+    StallsMidFrame,
+    /// Sends a [`SLOW_LOG_LEN`]-byte `Log` message over about [`SLOW_SEND`], then the `Pong`.
+    SendsSlowly,
+}
+
+#[cfg(unix)]
+impl FakeBridge {
+    fn arg(self) -> &'static str {
+        match self {
+            FakeBridge::StallsMidFrame => "stalls-mid-frame",
+            FakeBridge::SendsSlowly => "sends-slowly",
+        }
+    }
+}
+
+/// Length of the slow `Log` message of [`FakeBridge::SendsSlowly`]: many frames.
+#[cfg(unix)]
+const SLOW_LOG_LEN: usize = 1024 * 1024;
+
+/// How long [`FakeBridge::SendsSlowly`] takes for its message: several `pong_timeout`s of
+/// [`fake_bridge_manager`].
+#[cfg(unix)]
+const SLOW_SEND: Duration = Duration::from_millis(2000);
+
+/// A fake bridge (#216): this test binary, started by the plugin manager as `<test>
+/// lifecycle::fake_bridge_entry --exact … -- <marker> <mode> --instance --control-fd N` (libtest
+/// takes everything after `--` as name filters, so only this test runs). It plays the start-up
+/// protocol and answers two `Ping`s; at the third it does what [`FakeBridge`] `<mode>` says and
+/// creates the file `<marker>` once that is done (the parent's proof). In an ordinary test run
+/// it does nothing.
+#[cfg(unix)]
+#[test]
+fn fake_bridge_entry() {
+    use komponist_ipc::{BridgeChannel, BridgeMsg, ControlMsg, LoadedInfo, PluginDescriptor};
+    use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+
+    let args: Vec<String> = std::env::args().collect();
+    let Some(at) = args.iter().position(|arg| arg == "--control-fd") else {
+        return;
+    };
+    let fd: i32 = args[at + 1].parse().expect("fd number");
+    let marker = std::path::PathBuf::from(&args[at - 3]);
+    let mode = [FakeBridge::StallsMidFrame, FakeBridge::SendsSlowly]
+        .into_iter()
+        .find(|mode| mode.arg() == args[at - 2])
+        .expect("fake bridge mode");
+    // SAFETY: the plugin manager made this inherited fd ours, and nothing else owns it.
+    let channel = BridgeChannel::from_fd(unsafe { OwnedFd::from_raw_fd(fd) });
+    let send = |msg: BridgeMsg| {
+        if channel.send(&msg).is_err() {
+            std::process::exit(0);
+        }
+    };
+    let write_all = |mut bytes: &[u8]| {
+        while !bytes.is_empty() {
+            match rustix::io::write(channel.as_fd(), bytes) {
+                Ok(n) => bytes = &bytes[n..],
+                Err(rustix::io::Errno::INTR) => {}
+                Err(_) => std::process::exit(0),
+            }
+        }
+    };
+    send(BridgeMsg::Hello {
+        protocol: komponist_ipc::control::PROTOCOL_VERSION,
+        pid: std::process::id(),
+    });
+    let Ok(_region) = channel.recv_fd() else {
+        std::process::exit(0);
+    };
+    let mut pings = 0;
+    loop {
+        match channel.recv() {
+            Ok(ControlMsg::Load { bundle, .. }) => send(BridgeMsg::Loaded(Box::new(LoadedInfo {
+                descriptor: PluginDescriptor {
+                    format: komponist_ipc::PluginFormat::Clap,
+                    id: SYNTH.into(),
+                    name: "kp-test-synth".into(),
+                    vendor: "klang-studio".into(),
+                    version: "0.1.0".into(),
+                    kind: komponist_ipc::PluginKind::Instrument,
+                    features: Vec::new(),
+                    bundle,
+                    sidechain: false,
+                },
+                params: Vec::new(),
+                values: Vec::new(),
+                latency: 0,
+                note_names: Vec::new(),
+                has_gui: false,
+                native_layout: None,
+            }))),
+            Ok(ControlMsg::Activate { .. }) => send(BridgeMsg::Activated { latency: 0 }),
+            Ok(ControlMsg::Ping { seq }) => {
+                pings += 1;
+                if pings == 3 && mode == FakeBridge::StallsMidFrame {
+                    // A frame header announcing a 5-byte message (tag `TAG_LAST`, u24 length,
+                    // u32 total), and one byte of it.
+                    write_all(&[0, 5, 0, 0, 5, 0, 0, 0, 0]);
+                    std::fs::write(&marker, b"partial frame written").expect("marker file");
+                    rustix::process::kill_process(
+                        rustix::process::getpid(),
+                        rustix::process::Signal::STOP,
+                    )
+                    .expect("SIGSTOP");
+                    // Only a kill ends a stopped process; should it ever go on, it stays silent.
+                    loop {
+                        std::thread::park();
+                    }
+                }
+                if pings == 3 && mode == FakeBridge::SendsSlowly {
+                    // The frames `send` writes, captured, then written in slices with pauses:
+                    // the `Pong` queues behind a message that takes several pong timeouts.
+                    let wire = wire_of(&BridgeMsg::Log {
+                        level: LogLevel::Info,
+                        message: "x".repeat(SLOW_LOG_LEN),
+                    });
+                    let slices = 100;
+                    for slice in wire.chunks(wire.len().div_ceil(slices)) {
+                        write_all(slice);
+                        std::thread::sleep(SLOW_SEND / slices as u32);
+                    }
+                    send(BridgeMsg::Pong { seq });
+                    std::fs::write(&marker, b"slow message sent").expect("marker file");
+                    continue;
+                }
+                send(BridgeMsg::Pong { seq });
+            }
+            Ok(_) => {}
+            Err(_) => std::process::exit(0),
+        }
+    }
+}
+
+/// The bytes `Channel::send` writes for `msg`, captured through a socket pair of its own (so the
+/// fake bridge can write them at its own pace).
+#[cfg(unix)]
+fn wire_of(msg: &komponist_ipc::BridgeMsg) -> Vec<u8> {
+    use std::os::fd::AsFd;
+    let (reader, writer) = komponist_ipc::control::socket_pair().expect("socket pair");
+    let writer = komponist_ipc::BridgeChannel::from_fd(writer);
+    std::thread::scope(|scope| {
+        scope.spawn(move || writer.send(msg).expect("capture send"));
+        let mut wire = Vec::new();
+        let mut buf = vec![0; 64 * 1024];
+        loop {
+            match rustix::io::read(reader.as_fd(), &mut buf) {
+                Ok(0) => return wire,
+                Ok(n) => wire.extend_from_slice(&buf[..n]),
+                Err(rustix::io::Errno::INTR) => {}
+                Err(e) => panic!("capture read: {e}"),
+            }
+        }
+    })
+}
+
+/// A manager whose catalog holds the scanned fixtures and whose bridges are the fake bridge in
+/// `mode`, with a short watchdog; and the fake bridge's marker file.
+#[cfg(unix)]
+fn fake_bridge_manager(
+    dir: &std::path::Path,
+    mode: FakeBridge,
+) -> Option<(PluginManager, std::path::PathBuf)> {
+    // The real bridge scans the fixtures into the cache file; the manager under test reads the
+    // catalog from it and starts the fake bridge.
+    drop(scanned_manager(dir)?);
+    let marker = dir.join("fake-bridge-marker");
+    let mut config = config(dir);
+    config.bridge_exe = std::env::current_exe().unwrap();
+    config.bridge_args = [
+        FAKE_BRIDGE,
+        "--exact",
+        "--nocapture",
+        "--test-threads=1",
+        "--",
+    ]
+    .map(Into::into)
+    .to_vec();
+    config.bridge_args.push(marker.clone().into());
+    config.bridge_args.push(mode.arg().into());
+    let mut manager = PluginManager::new(config);
+    manager.set_watchdog_timing(Duration::from_millis(50), Duration::from_millis(500));
+    manager.set_warm_up(Duration::ZERO);
+    Some((manager, marker))
+}
+
+/// The state [`PollWatch`]'s watcher and its users share under one lock: the timeout decision
+/// and the disarming cannot interleave.
+#[cfg(unix)]
+#[derive(Default)]
+struct WatchState {
+    /// When the `poll` in progress started.
+    since: Option<Instant>,
+    /// The watch is dropped: the watcher ends.
+    done: bool,
+}
+
+/// Times every `PluginManager::poll` of a test on a watcher thread. A poll that blocks never
+/// returns, so the test could not fail by itself: once one call has run for [`PATIENCE`], the
+/// watcher ends the process with a message. It is armed only during a call (also a call that
+/// panics disarms it), and dropping the watch (also while a failed assertion unwinds) stops the
+/// watcher; both take the lock under which the watcher decides, so it never exits after that.
+#[cfg(unix)]
+struct PollWatch {
+    state: Arc<std::sync::Mutex<WatchState>>,
+}
+
+#[cfg(unix)]
+impl PollWatch {
+    fn new(test: &'static str) -> PollWatch {
+        let state = Arc::<std::sync::Mutex<WatchState>>::default();
+        let watched = state.clone();
+        std::thread::spawn(move || {
+            loop {
+                {
+                    let state = lock(&watched);
+                    if state.done {
+                        return;
+                    }
+                    if state.since.is_some_and(|since| since.elapsed() > PATIENCE) {
+                        eprintln!("{test}: a plugin manager poll blocked for {PATIENCE:?}");
+                        // Under the lock: nobody disarms the watch in between.
+                        std::process::exit(101);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        PollWatch { state }
+    }
+
+    /// `manager.poll()`, watched.
+    fn poll(&self, manager: &mut PluginManager) -> Vec<PluginManagerEvent> {
+        /// Disarms the watch when the poll returns or unwinds.
+        struct Armed<'a>(&'a std::sync::Mutex<WatchState>);
+        impl Drop for Armed<'_> {
+            fn drop(&mut self) {
+                lock(self.0).since = None;
+            }
+        }
+        lock(&self.state).since = Some(Instant::now());
+        let _armed = Armed(&self.state);
+        manager.poll()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for PollWatch {
+    fn drop(&mut self) {
+        lock(&self.state).done = true;
+    }
+}
+
+/// The watch state, also after a panic elsewhere poisoned it.
+#[cfg(unix)]
+fn lock(state: &std::sync::Mutex<WatchState>) -> std::sync::MutexGuard<'_, WatchState> {
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// #216: a bridge frozen in the middle of a frame holds up no `poll` of the plugin manager (the UI
+/// thread), and the watchdog still finds it unresponsive and kills it.
+#[cfg(unix)]
+#[test]
+fn a_bridge_stalled_mid_frame_blocks_no_poll_and_is_killed() {
+    let dir = scratch("stalled-mid-frame");
+    let Some((mut manager, marker)) = fake_bridge_manager(&dir, FakeBridge::StallsMidFrame) else {
+        return;
+    };
+    let watch = PollWatch::new("a_bridge_stalled_mid_frame_blocks_no_poll_and_is_killed");
+
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let _processor = manager
+        .create_processor(&synth, SETUP)
+        .expect("start the fake bridge");
+    let pid = manager.bridge_pid(DeviceId(10)).unwrap();
+    let deadline = Instant::now() + PATIENCE;
+    let mut longest = Duration::ZERO;
+    let mut events = Vec::new();
+    let mut detected = None;
+    let mut ok_at = None;
+    while detected.is_none() {
+        assert!(Instant::now() < deadline, "not killed; events {events:?}");
+        let t0 = Instant::now();
+        events.extend(watch.poll(&mut manager));
+        longest = longest.max(t0.elapsed());
+        match manager.status(DeviceId(10)) {
+            DeviceStatus::Ok if ok_at.is_none() => ok_at = Some(Instant::now()),
+            // Whether the partial frame was out when the watchdog struck: else the test would
+            // pass on a bridge that was merely not scheduled.
+            DeviceStatus::Crashed(reason) => detected = Some((reason, marker.exists())),
+            _ => {}
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (reason, partial_written) = detected.unwrap();
+    let ok_at = ok_at.unwrap_or_else(|| panic!("the fake bridge never ran; events {events:?}"));
+    assert!(
+        partial_written,
+        "the watchdog struck before the fake bridge wrote its partial frame"
+    );
+    assert_eq!(reason, FailReason::Unresponsive);
+    eprintln!(
+        "stalled mid-frame: detected after {:.1?}, longest poll {longest:.1?}",
+        ok_at.elapsed()
+    );
+    assert!(
+        longest < Duration::from_millis(250),
+        "a poll took {longest:?}"
+    );
+    let t0 = Instant::now();
+    while alive(pid) {
+        assert!(t0.elapsed() < PATIENCE, "the stopped bridge was not killed");
+        watch.poll(&mut manager);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// #216 review: a bridge whose `Pong` queues behind a large message that arrives over many polls,
+/// for several pong timeouts, is alive while the message keeps coming; it is not killed, and the
+/// message and the `Pong` arrive.
+#[cfg(unix)]
+#[test]
+fn a_bridge_sending_a_large_message_slowly_is_not_killed() {
+    let dir = scratch("sends-slowly");
+    let Some((mut manager, marker)) = fake_bridge_manager(&dir, FakeBridge::SendsSlowly) else {
+        return;
+    };
+    let watch = PollWatch::new("a_bridge_sending_a_large_message_slowly_is_not_killed");
+
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let _processor = manager
+        .create_processor(&synth, SETUP)
+        .expect("start the fake bridge");
+    let deadline = Instant::now() + PATIENCE;
+    let mut events = Vec::new();
+    let mut ok = false;
+    let mut longest = Duration::ZERO;
+    let started = Instant::now();
+    // Until the fake bridge has sent the message and the `Pong`, and a little longer.
+    let mut sent_at = None;
+    while sent_at.is_none_or(|at: Instant| at.elapsed() < Duration::from_millis(300)) {
+        assert!(
+            Instant::now() < deadline,
+            "the slow message never finished; events {events:?}"
+        );
+        let t0 = Instant::now();
+        events.extend(watch.poll(&mut manager));
+        longest = longest.max(t0.elapsed());
+        match manager.status(DeviceId(10)) {
+            DeviceStatus::Ok => ok = true,
+            DeviceStatus::Crashed(reason) => panic!(
+                "a bridge still sending was killed ({reason:?}) after {:.1?}",
+                started.elapsed()
+            ),
+            _ => {}
+        }
+        if sent_at.is_none() && marker.exists() {
+            sent_at = Some(Instant::now());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(ok, "the fake bridge never ran; events {events:?}");
+    let slow = events.iter().any(|event| {
+        matches!(event, PluginManagerEvent::Log { message, .. } if message.len() == SLOW_LOG_LEN)
+    });
+    assert!(slow, "the slow message did not arrive");
+    assert_eq!(manager.status(DeviceId(10)), DeviceStatus::Ok);
+    eprintln!(
+        "sent slowly: {:.1?} without a kill, longest poll {longest:.1?}",
+        started.elapsed()
+    );
+    assert!(
+        longest < Duration::from_millis(250),
+        "a poll took {longest:?}"
+    );
+}
+
 #[test]
 fn release_shutdown_and_drop_end_the_bridges() {
     let dir = scratch("shutdown");

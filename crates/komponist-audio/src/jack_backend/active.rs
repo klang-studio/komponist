@@ -111,6 +111,8 @@ unsafe extern "C" fn process<P: AudioProcess + 'static>(frames: u32, data: *mut 
         Ok(Control::Continue) => 0,
         Ok(Control::Quit) => -1,
         Err(error) => {
+            // The stream ends; an engine that unwound reports itself poisoned and is not handed
+            // to the next stream (`AudioSystem::take_poisoned`, #210).
             state.notifications.shutdown();
             // No potentially user-defined panic destructor on JACK's process thread.
             std::mem::forget(error);

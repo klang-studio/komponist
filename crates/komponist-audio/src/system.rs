@@ -412,6 +412,9 @@ pub struct AudioSystem<P: AudioProcess> {
     stats: Arc<StreamStats>,
     /// The engine while no stream holds it (and it is not detached).
     engine: Option<Box<P>>,
+    /// An engine that came back poisoned ([`AudioProcess::is_poisoned`]), for the owner
+    /// ([`AudioSystem::take_poisoned`]); never handed to a stream.
+    poisoned: Option<Box<P>>,
     /// The MIDI receiver while no stream holds it.
     midi: Option<MidiReceiver>,
     /// The engine is out (detach) until `attach`.
@@ -621,6 +624,7 @@ impl<P: AudioProcess> AudioSystem<P> {
             state: AudioState::Stopped,
             stats: Arc::new(StreamStats::new()),
             engine: Some(engine),
+            poisoned: None,
             midi: Some(midi),
             detached: false,
             current: None,
@@ -1274,11 +1278,24 @@ impl<P: AudioProcess> AudioSystem<P> {
     }
 
     /// Keeps `engine` in the system. The system owns one engine; a second one (an `attach` without
-    /// a `detach`) is dropped here, on the UI thread.
+    /// a `detach`) is dropped here, on the UI thread. A poisoned engine (one whose callback
+    /// unwound, #210) is not kept for the next stream: it waits for
+    /// [`AudioSystem::take_poisoned`], and the streams output silence until the owner attaches a
+    /// new one.
     fn keep_engine(&mut self, engine: Box<P>) {
-        if self.engine.is_none() {
+        if engine.is_poisoned() {
+            self.poisoned = Some(engine);
+        } else if self.engine.is_none() {
             self.engine = Some(engine);
         }
+    }
+
+    /// UI thread, after [`AudioSystem::poll`]: the engine that came back from a stream (or an
+    /// [`AudioSystem::attach`]) poisoned, i.e. whose `process` unwound in a panic
+    /// ([`AudioProcess::is_poisoned`]). The system holds no engine then; the owner drops this one
+    /// and attaches a new one, built from scratch.
+    pub fn take_poisoned(&mut self) -> Option<Box<P>> {
+        self.poisoned.take()
     }
 
     /// Starts probing for a missing output device.
@@ -1546,6 +1563,43 @@ mod tests {
         system.attach(engine);
         assert_eq!(probe.prepares.load(Ordering::SeqCst), 2);
         assert!(runs(&probe, 3));
+    }
+
+    /// An engine that comes back poisoned from a stream (its callback unwound, #210) is not
+    /// handed to the next stream or to a detach: the owner takes it and attaches a new one.
+    #[test]
+    fn a_poisoned_engine_is_not_reused() {
+        let (mut system, probe, _sender) = system(0.0);
+        system.start(&null(64)).unwrap();
+        assert!(runs(&probe, 3));
+        assert!(system.take_poisoned().is_none());
+        probe.poisoned.store(true, Ordering::SeqCst);
+        // A rebuild takes the engine out of the old stream; the new one runs without it.
+        system.start(&null(128)).unwrap();
+        let (calls, callbacks) = (probe.calls(), system.stats().callbacks());
+        assert!(wait_until(WAIT, || system.stats().callbacks() > callbacks + 3));
+        system.poll();
+        assert_eq!(probe.calls(), calls, "the poisoned engine runs no more");
+        assert_eq!(probe.prepares.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            system.detach(Duration::ZERO).unwrap_err(),
+            AudioError::Detached
+        );
+        let poisoned = system.take_poisoned().expect("kept apart for the owner");
+        assert_eq!(
+            &*poisoned as *const TestEngine as usize,
+            probe.address.load(Ordering::SeqCst)
+        );
+        assert!(system.take_poisoned().is_none(), "taken once");
+        // An attach of a poisoned engine is refused the same way.
+        system.attach(poisoned);
+        assert!(system.take_poisoned().is_some());
+        // A new engine takes over the running stream.
+        let (fresh, fresh_probe) = TestEngine::boxed(0.0);
+        system.attach(fresh);
+        assert_eq!(fresh_probe.params().max_frames, 128);
+        assert!(runs(&fresh_probe, 3));
+        assert_eq!(probe.calls(), calls);
     }
 
     #[test]

@@ -207,6 +207,23 @@ pub(crate) fn fp_state() -> u64 {
     }
 }
 
+/// RT. `state` (from [`fp_state`]) with flush-to-zero and denormals-are-zero set: MXCSR bits 15
+/// and 6 on x86_64, FPCR.FZ (bit 24, which also flushes denormal inputs) on aarch64.
+pub(crate) fn with_flush_to_zero(state: u64) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        state | (1 << 15) | (1 << 6)
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        state | (1 << 24)
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        state
+    }
+}
+
 /// RT. Loads a state read by [`fp_state`] (on the same architecture) into the calling thread.
 pub(crate) fn set_fp_state(state: u64) {
     #[cfg(target_arch = "x86_64")]

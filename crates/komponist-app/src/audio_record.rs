@@ -1727,6 +1727,70 @@ mod tests {
         );
     }
 
+    /// #210, owner 2026-11-23: the engine panics while a mixed take runs. The take ends at the
+    /// crash like an interruption and keeps what was recorded so far, the audio and the MIDI
+    /// (whose lap is marked incomplete), as one undo step; the new engine stays stopped there.
+    #[test]
+    fn a_mixed_take_is_kept_when_the_engine_panics() {
+        let (_root, mut app, audio) = rig();
+        // A hexa track, so a processor can panic; armed with the audio track.
+        app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+        let midi = app.project().tracks.last().unwrap().id;
+        app.doc
+            .apply("Arm both", |project| {
+                edits::set_track_prop(project, &[audio, midi], edits::TrackProp::Arm(true))
+            })
+            .unwrap();
+        app.step();
+        // Single-threaded, so the panic is on this thread and outside `assert_no_alloc`.
+        assert_eq!(
+            app.engine_mut()
+                .set_workers(Some(0))
+                .unwrap()
+                .unwrap()
+                .threads,
+            0
+        );
+        begin_mixed(&mut app);
+        assert!(app.recording.is_some());
+        let instrument = app.project().track(midi).unwrap().channel.devices[0].id;
+        let slot = app
+            .engine
+            .program()
+            .unwrap()
+            .slots
+            .slot(instrument)
+            .unwrap();
+        let at = app.engine.playhead();
+        app.engine.send(Command::InsertProcessor {
+            slot,
+            processor: Box::new(komponist_engine::testing::TestPanic),
+        });
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app.engine.run_held(256, &[], 0);
+        }));
+        assert!(caught.is_err(), "the processor ran");
+        app.engine.release_engine();
+        wait(&mut app, |app| !app.audio_recording.is_active());
+        assert!(app.recording.is_none());
+        let midi_clip = &app.project().track(midi).unwrap().clips[0];
+        let ClipContent::Midi(content) = &midi_clip.content else {
+            panic!("a MIDI clip")
+        };
+        assert_eq!(content.takes[0].name, app.lang.record_take_incomplete(1));
+        assert_eq!(content.takes[0].notes.len(), 1);
+        let audio_clip = &app.project().track(audio).unwrap().clips[0];
+        let ClipContent::Audio(content) = &audio_clip.content else {
+            panic!("an audio clip")
+        };
+        assert!(content.file.abs.is_file());
+        app.dispatch(Action::Edit(EditAction::Undo));
+        assert!(app.project().track(midi).unwrap().clips.is_empty());
+        assert!(app.project().track(audio).unwrap().clips.is_empty());
+        wait(&mut app, |app| app.engine.playhead() == at);
+        assert_eq!(app.transport(), komponist_engine::TransportState::Stopped);
+    }
+
     #[test]
     fn audio_failure_freezes_and_preserves_the_active_midi_overlay_once() {
         let (_root, mut app, audio) = rig();

@@ -330,7 +330,8 @@ impl Wav {
                 for c in 0..source {
                     let v = next()?;
                     if let Some(slot) = frame.get_mut(c) {
-                        *slot = v;
+                        // A float file may hold NaN or Inf: silence, not poison (#217).
+                        *slot = if v.is_finite() { v } else { 0.0 };
                     }
                 }
             }
@@ -652,7 +653,8 @@ impl Sym {
             self.pending_pos = 0;
             for i in first..frames {
                 for plane in self.planar.iter().take(self.channels) {
-                    self.pending.push(plane[i]);
+                    let v = plane[i];
+                    self.pending.push(if v.is_finite() { v } else { 0.0 });
                 }
             }
             return Ok(true);

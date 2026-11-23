@@ -29,9 +29,6 @@
 //! rtrb queues of [`api`] or atomics. With workers ([`Engine::set_workers`]), the track chains of
 //! a segment also run on the engine's worker threads (see [`workers`]).
 
-// Missing SAFETY comments: 2. Remove this allow when the crate is clean (#241 follow-up).
-#![allow(clippy::undocumented_unsafe_blocks)]
-
 pub mod api;
 pub mod audio;
 pub mod automation;
