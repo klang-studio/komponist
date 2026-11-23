@@ -5,7 +5,10 @@
 //! The app keeps one end and passes the other to the bridge as an inherited fd (`--instance
 //! --control-fd N`). Messages larger than [`MAX_FRAME`] (big plugin states) are split into frames
 //! and reassembled by [`Channel`]; callers always see whole messages. The shared-memory fd travels
-//! over the same socket as SCM_RIGHTS ancillary data (`Channel::send_fd`).
+//! over the same socket as SCM_RIGHTS ancillary data (`Channel::send_fd`). What has arrived of the
+//! next frame and message is kept in the channel, so [`Channel::try_recv`] takes whatever is
+//! queued and never waits for the rest: a peer that stops in the middle of a message (frozen, or
+//! plugin code writing to the socket) cannot hold up the app's UI thread and its watchdog (#216).
 //!
 //! Every frame header carries the frame's own payload length, and the receiver reads each frame
 //! exactly (header, then payload), never past its end. So frame boundaries hold on a byte stream,
@@ -63,9 +66,11 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsHandle, BorrowedHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
-use rustix::event::{PollFd, PollFlags, poll};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 #[cfg(unix)]
 use rustix::io::Errno;
 #[cfg(unix)]
@@ -617,6 +622,8 @@ pub struct Channel<Tx, Rx> {
     /// Windows: an overlapped end of the duplex named pipe.
     #[cfg(windows)]
     pipe: OwnedHandle,
+    /// What has arrived of the next frame and message (one receiver at a time).
+    rx: Mutex<Receiver>,
     _msgs: PhantomData<fn(Tx) -> Rx>,
 }
 
@@ -991,7 +998,7 @@ fn codec_error(message: impl Into<String>) -> ChannelError {
 
 /// The fds that arrived with the bytes of one frame.
 #[cfg(unix)]
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Incoming {
     /// The first fd (more are closed).
     fd: Option<OwnedFd>,
@@ -1001,10 +1008,10 @@ struct Incoming {
 
 /// Windows: nothing arrives besides the bytes.
 #[cfg(windows)]
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Incoming {}
 
-/// One received frame (payload in the caller's buffer after the header).
+/// One received frame (its payload is in [`Receiver::payload`] until the next read).
 struct Frame {
     tag: u8,
     /// Length of the whole message, from the header.
@@ -1016,7 +1023,71 @@ struct Frame {
     fd: Option<OwnedFd>,
 }
 
-/// Blocks until `fd` is ready for `flags` (used when someone made the socket non-blocking).
+/// The receive side of a channel end: what has arrived of the current frame and of a fragmented
+/// message, kept across calls so that [`Channel::try_recv`] can return in the middle of either
+/// and go on where it stopped (#216). Blocking receives run through the same state.
+struct Receiver {
+    /// The current frame, header then payload: `MAX_FRAME` bytes, allocated once per channel.
+    buf: Box<[u8]>,
+    /// Bytes of the current frame received so far.
+    filled: usize,
+    /// Payload bytes of a refused oversized frame still to be read past (stream sync).
+    discard: usize,
+    /// The fds that came with the current frame.
+    incoming: Incoming,
+    /// The payloads received so far of a fragmented message.
+    message: Vec<u8>,
+    /// The announced length of the fragmented message in `message`; `None` between messages.
+    total: Option<usize>,
+}
+
+impl core::fmt::Debug for Receiver {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Receiver")
+            .field("filled", &self.filled)
+            .field("discard", &self.discard)
+            .field("incoming", &self.incoming)
+            .field("message", &self.message.len())
+            .field("total", &self.total)
+            .finish()
+    }
+}
+
+impl Receiver {
+    fn new() -> Receiver {
+        Receiver {
+            buf: vec![0; MAX_FRAME].into_boxed_slice(),
+            filled: 0,
+            discard: 0,
+            incoming: Incoming::default(),
+            message: Vec::new(),
+            total: None,
+        }
+    }
+
+    /// The payload of the frame [`Channel::next_frame`] returned last.
+    fn payload(&self, frame: &Frame) -> &[u8] {
+        &self.buf[FRAME_HEADER..FRAME_HEADER + frame.len]
+    }
+
+    /// Whether part of a frame or message has arrived (or an oversized frame is being read past).
+    fn in_progress(&self) -> bool {
+        self.filled > 0 || self.discard > 0 || self.total.is_some()
+    }
+
+    /// Forgets the fragmented message (complete or abandoned); a big buffer is given back.
+    fn end_message(&mut self) {
+        self.total = None;
+        if self.message.capacity() > 16 * MAX_FRAME {
+            self.message = Vec::new();
+        } else {
+            self.message.clear();
+        }
+    }
+}
+
+/// Blocks until `fd` is ready for `flags` (used by the blocking calls when someone made the
+/// socket non-blocking; never by [`Channel::try_recv`]).
 #[cfg(unix)]
 fn wait_ready(fd: BorrowedFd<'_>, flags: PollFlags) -> Result<(), ChannelError> {
     let mut fds = [PollFd::from_borrowed_fd(fd, flags)];
@@ -1024,6 +1095,11 @@ fn wait_ready(fd: BorrowedFd<'_>, flags: PollFlags) -> Result<(), ChannelError> 
         Ok(_) | Err(Errno::INTR) => Ok(()),
         Err(e) => Err(io_error(e)),
     }
+}
+
+/// The payload length a frame header announces (u24, little-endian, after the tag).
+fn payload_len(header: &[u8]) -> usize {
+    u32::from_le_bytes([header[1], header[2], header[3], 0]) as usize
 }
 
 /// Decodes exactly one message from `bytes` (trailing bytes are an error).
@@ -1044,6 +1120,7 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
     pub fn from_fd(fd: OwnedFd) -> Channel<Tx, Rx> {
         Channel {
             fd,
+            rx: Mutex::new(Receiver::new()),
             _msgs: PhantomData,
         }
     }
@@ -1054,6 +1131,7 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
     pub fn from_handle(pipe: OwnedHandle) -> Channel<Tx, Rx> {
         Channel {
             pipe,
+            rx: Mutex::new(Receiver::new()),
             _msgs: PhantomData,
         }
     }
@@ -1092,17 +1170,76 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
 
     /// Receives one whole message, blocking.
     pub fn recv(&self) -> Result<Rx, ChannelError> {
+        let mut rx = self.receiver();
         loop {
-            if let Some(msg) = self.recv_message(false)? {
+            if let Some(msg) = self.next_message(&mut rx, true)? {
                 return Ok(msg);
             }
         }
     }
 
-    /// Receives one whole message if one is ready, without blocking (for poll loops). A partially
-    /// received fragmented message is completed blockingly.
+    /// Receives one whole message if it has arrived, never blocking (for poll loops on the UI
+    /// thread, #216). A partial frame or the first fragments of a large message are read and
+    /// kept in the channel; a later call goes on from there, so a peer that stops in the middle
+    /// of a message holds up nobody. `None` also while another thread is inside a blocking
+    /// receive on this end.
     pub fn try_recv(&self) -> Result<Option<Rx>, ChannelError> {
-        self.recv_message(true)
+        let mut rx = match self.rx.try_lock() {
+            Ok(rx) => rx,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return Ok(None),
+        };
+        self.next_message(&mut rx, false)
+    }
+
+    /// Like [`Channel::try_recv`], but a message that has begun to arrive is read on as long as
+    /// its bytes keep coming, until `deadline` at the latest. With nothing queued it returns
+    /// `None` at once, as `try_recv` does. For the app's poll loop: a bridge that streams a
+    /// large state is read at full speed (one socket buffer per poll would hold the bridge's
+    /// main thread in `send` for seconds, past its watchdog), while one that stalls in the
+    /// middle of a message costs the caller at most until `deadline`.
+    pub fn try_recv_until(&self, deadline: Instant) -> Result<Option<Rx>, ChannelError> {
+        let mut rx = match self.rx.try_lock() {
+            Ok(rx) => rx,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return Ok(None),
+        };
+        loop {
+            if let Some(msg) = self.next_message(&mut rx, false)? {
+                return Ok(Some(msg));
+            }
+            let now = Instant::now();
+            if !rx.in_progress() || now >= deadline {
+                return Ok(None);
+            }
+            self.wait_readable(deadline - now)?;
+        }
+    }
+
+    /// The receive state, for a blocking receive.
+    fn receiver(&self) -> MutexGuard<'_, Receiver> {
+        self.rx.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Waits up to `timeout` for bytes to read (or the end of the stream).
+    #[cfg(unix)]
+    fn wait_readable(&self, timeout: Duration) -> Result<(), ChannelError> {
+        let mut fds = [PollFd::new(&self.fd, PollFlags::IN)];
+        let timeout = Timespec {
+            tv_sec: timeout.as_secs() as i64,
+            tv_nsec: i64::from(timeout.subsec_nanos()),
+        };
+        match poll(&mut fds, Some(&timeout)) {
+            Ok(_) | Err(Errno::INTR) => Ok(()),
+            Err(e) => Err(io_error(e)),
+        }
+    }
+
+    /// Windows: a pipe cannot be waited on for "readable"; look again shortly.
+    #[cfg(windows)]
+    fn wait_readable(&self, timeout: Duration) -> Result<(), ChannelError> {
+        std::thread::sleep(timeout.min(Duration::from_millis(1)));
+        Ok(())
     }
 
     /// Windows: duplicates `handle` into `peer` (the bridge's process handle, e.g. its
@@ -1135,15 +1272,11 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
     /// bridge receives handles, from the app that started it.
     #[cfg(windows)]
     pub unsafe fn recv_handle(&self) -> Result<OwnedHandle, ChannelError> {
-        let mut buf = vec![0u8; MAX_FRAME];
-        let frame = loop {
-            if let Some(frame) = self.recv_frame(&mut buf, false)? {
-                break frame;
-            }
-        };
+        let mut rx = self.receiver();
+        let frame = self.next_frame_blocking(&mut rx)?;
         match (frame.tag, frame.len) {
             (TAG_FD, HANDLE_PAYLOAD) => {
-                let payload = &buf[FRAME_HEADER..FRAME_HEADER + HANDLE_PAYLOAD];
+                let payload = rx.payload(&frame);
                 let value = u64::from_le_bytes(payload.try_into().unwrap()) as usize as RawHandle;
                 if value.is_null() || value as isize == -1 {
                     return Err(codec_error("handle frame without a valid handle"));
@@ -1202,24 +1335,27 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
         sys::write_all(&self.pipe, payload)
     }
 
-    /// Windows: fills `buf` exactly from the pipe. `Ok(false)` only with `dont_wait` when not a
-    /// single byte is queued; once a byte has arrived, the rest is awaited blockingly. A pipe
-    /// whose other end is gone is `Closed` (after what it still holds was read).
+    /// Windows: reads up to `buf.len()` bytes from the pipe (never more, so no read crosses the
+    /// end of a frame). With `wait` it blocks for the first byte; without, it reads only what is
+    /// queued and returns 0 when nothing is (the caller holds the receive lock, so nobody takes
+    /// the queued bytes in between). A pipe whose other end is gone is `Closed` (after what it
+    /// still holds was read).
     #[cfg(windows)]
-    fn recv_exact(
+    fn read_some(
         &self,
         buf: &mut [u8],
-        dont_wait: bool,
+        wait: bool,
         _incoming: &mut Incoming,
-    ) -> Result<bool, ChannelError> {
-        if dont_wait && !buf.is_empty() && sys::available(&self.pipe)? == 0 {
-            return Ok(false);
+    ) -> Result<usize, ChannelError> {
+        let len = if wait {
+            buf.len()
+        } else {
+            (sys::available(&self.pipe)? as usize).min(buf.len())
+        };
+        if len == 0 {
+            return Ok(0);
         }
-        let mut got = 0;
-        while got < buf.len() {
-            got += sys::read(&self.pipe, &mut buf[got..])?;
-        }
-        Ok(true)
+        sys::read(&self.pipe, &mut buf[..len])
     }
 
     /// Sends a file descriptor (SCM_RIGHTS) as its own frame.
@@ -1233,12 +1369,7 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
     /// A message frame in its place is consumed and reported as `Codec`.
     #[cfg(unix)]
     pub fn recv_fd(&self) -> Result<OwnedFd, ChannelError> {
-        let mut buf = vec![0u8; MAX_FRAME];
-        let frame = loop {
-            if let Some(frame) = self.recv_frame(&mut buf, false)? {
-                break frame;
-            }
-        };
+        let frame = self.next_frame_blocking(&mut self.receiver())?;
         match (frame.tag, frame.fd) {
             (TAG_FD, Some(fd)) => Ok(fd),
             (TAG_FD, None) => Err(codec_error("file descriptor frame without a descriptor")),
@@ -1307,30 +1438,30 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
         Ok(())
     }
 
-    /// Fills `buf` exactly from the stream, collecting the fds that come with the bytes.
-    /// `Ok(false)` only with `dont_wait` when not a single byte is queued; once a byte has
-    /// arrived, the rest is awaited blockingly. End of stream is `Closed`.
+    /// Reads up to `buf.len()` bytes from the stream (never more, so no read crosses the end of
+    /// a frame and every fd stays with its frame), collecting the fds that come with them. With
+    /// `wait` it blocks for the first byte; without, it returns 0 when nothing is queued. End of
+    /// stream is `Closed`.
     #[cfg(unix)]
-    fn recv_exact(
+    fn read_some(
         &self,
         buf: &mut [u8],
-        mut dont_wait: bool,
+        wait: bool,
         incoming: &mut Incoming,
-    ) -> Result<bool, ChannelError> {
+    ) -> Result<usize, ChannelError> {
+        let flags = if wait {
+            sys::RECV_FLAGS
+        } else {
+            sys::RECV_FLAGS | RecvFlags::DONTWAIT
+        };
         let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
-        let mut got = 0;
-        while got < buf.len() {
-            let flags = if dont_wait {
-                sys::RECV_FLAGS | RecvFlags::DONTWAIT
-            } else {
-                sys::RECV_FLAGS
-            };
+        loop {
             let mut control = RecvAncillaryBuffer::new(&mut space);
-            let mut iov = [IoSliceMut::new(&mut buf[got..])];
+            let mut iov = [IoSliceMut::new(buf)];
             let msg = match recvmsg(&self.fd, &mut iov, &mut control, flags) {
                 Ok(msg) => msg,
                 Err(Errno::INTR) => continue,
-                Err(Errno::AGAIN) if dont_wait => return Ok(false),
+                Err(Errno::AGAIN) if !wait => return Ok(0),
                 Err(Errno::AGAIN) => {
                     wait_ready(self.fd.as_fd(), PollFlags::IN)?;
                     continue;
@@ -1356,102 +1487,137 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
             if msg.bytes == 0 {
                 return Err(ChannelError::Closed);
             }
-            got += msg.bytes;
-            dont_wait = false;
+            return Ok(msg.bytes);
         }
-        Ok(true)
     }
 
-    /// Reads one frame into `buf` (at least `MAX_FRAME` bytes; the payload lands after
-    /// `FRAME_HEADER`). `None` only with `dont_wait` when nothing is queued.
-    fn recv_frame(&self, buf: &mut [u8], dont_wait: bool) -> Result<Option<Frame>, ChannelError> {
-        let mut header = [0u8; FRAME_HEADER];
-        let mut incoming = Incoming::default();
-        if !self.recv_exact(&mut header, dont_wait, &mut incoming)? {
-            return Ok(None);
-        }
-        let len = u32::from_le_bytes([header[1], header[2], header[3], 0]) as usize;
-        let total = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
-        if len > MAX_PAYLOAD {
-            // Read past the oversized payload, so the stream stays in step, then refuse it.
-            let mut left = len;
-            while left > 0 {
-                let n = left.min(MAX_PAYLOAD);
-                self.recv_exact(
-                    &mut buf[FRAME_HEADER..FRAME_HEADER + n],
-                    false,
-                    &mut incoming,
-                )?;
-                left -= n;
+    /// Reads on with the current frame. `None` when it is not complete yet (only without `wait`;
+    /// on Windows also after an empty write of the peer): what arrived is kept in `rx`.
+    ///
+    /// An oversized frame is refused (`Codec`) once its header is in; its payload is read past
+    /// before the next frame, so the stream stays in step.
+    fn next_frame(&self, rx: &mut Receiver, wait: bool) -> Result<Option<Frame>, ChannelError> {
+        loop {
+            if rx.discard > 0 {
+                let n = rx.discard.min(MAX_FRAME);
+                let got = self.read_some(&mut rx.buf[..n], wait, &mut rx.incoming)?;
+                if got == 0 {
+                    return Ok(None);
+                }
+                rx.discard -= got;
+                if rx.discard == 0 {
+                    rx.incoming = Incoming::default();
+                }
+                continue;
             }
-            return Err(codec_error(format!("frame larger than {MAX_FRAME} bytes")));
-        }
-        self.recv_exact(
-            &mut buf[FRAME_HEADER..FRAME_HEADER + len],
-            false,
-            &mut incoming,
-        )?;
-        #[cfg(unix)]
-        if incoming.truncated {
-            return Err(codec_error("too many file descriptors in one frame"));
-        }
-        Ok(Some(Frame {
-            tag: header[0],
-            total,
-            len,
-            #[cfg(unix)]
-            fd: incoming.fd,
-        }))
-    }
-
-    /// Receives one message; the first frame without blocking if `dont_wait`.
-    fn recv_message(&self, dont_wait: bool) -> Result<Option<Rx>, ChannelError> {
-        let mut buf = vec![0u8; MAX_FRAME];
-        let Some(first) = self.recv_frame(&mut buf, dont_wait)? else {
-            return Ok(None);
-        };
-        let total = first.total;
-        match first.tag {
-            TAG_LAST if first.len == total => {
-                decode(&buf[FRAME_HEADER..FRAME_HEADER + first.len]).map(Some)
+            let end = if rx.filled < FRAME_HEADER {
+                FRAME_HEADER
+            } else {
+                FRAME_HEADER + payload_len(&rx.buf)
+            };
+            if rx.filled == end {
+                let frame = Frame {
+                    tag: rx.buf[0],
+                    total: u32::from_le_bytes(rx.buf[4..8].try_into().unwrap()) as usize,
+                    len: end - FRAME_HEADER,
+                    #[cfg(unix)]
+                    fd: rx.incoming.fd.take(),
+                };
+                rx.filled = 0;
+                #[cfg(unix)]
+                if std::mem::take(&mut rx.incoming.truncated) {
+                    return Err(codec_error("too many file descriptors in one frame"));
+                }
+                return Ok(Some(frame));
             }
-            TAG_LAST => Err(codec_error(format!(
-                "frame of {} bytes announces a message of {total}",
-                first.len
-            ))),
-            TAG_MORE if total > MAX_MESSAGE => Err(codec_error(format!(
-                "announced message of {total} bytes exceeds {MAX_MESSAGE}"
-            ))),
-            TAG_MORE if first.len >= total => {
-                Err(codec_error("fragment as long as the whole message"))
+            let got = self.read_some(&mut rx.buf[rx.filled..end], wait, &mut rx.incoming)?;
+            if got == 0 {
+                return Ok(None);
             }
-            TAG_MORE => {
-                // Grow with the data rather than trusting the announced length up front.
-                let mut message = Vec::with_capacity(total.min(16 * MAX_FRAME));
-                message.extend_from_slice(&buf[FRAME_HEADER..FRAME_HEADER + first.len]);
-                loop {
-                    let Some(frame) = self.recv_frame(&mut buf, false)? else {
-                        continue;
-                    };
-                    if frame.tag != TAG_MORE && frame.tag != TAG_LAST {
-                        return Err(codec_error("unexpected frame inside a fragmented message"));
-                    }
-                    if frame.total != total || message.len() + frame.len > total {
-                        return Err(codec_error("fragment lengths do not add up"));
-                    }
-                    message.extend_from_slice(&buf[FRAME_HEADER..FRAME_HEADER + frame.len]);
-                    if frame.tag == TAG_LAST {
-                        if message.len() != total {
-                            return Err(codec_error("fragmented message ends early"));
-                        }
-                        return decode(&message).map(Some);
-                    }
+            rx.filled += got;
+            if rx.filled == FRAME_HEADER {
+                let len = payload_len(&rx.buf);
+                if len > MAX_PAYLOAD {
+                    rx.filled = 0;
+                    rx.discard = len;
+                    rx.incoming = Incoming::default();
+                    return Err(codec_error(format!("frame larger than {MAX_FRAME} bytes")));
                 }
             }
-            TAG_FD => Err(codec_error(
-                "expected a message, got a file descriptor frame",
-            )),
-            tag => Err(codec_error(format!("unknown frame tag {tag}"))),
+        }
+    }
+
+    /// The next whole frame, blocking.
+    fn next_frame_blocking(&self, rx: &mut Receiver) -> Result<Frame, ChannelError> {
+        loop {
+            if let Some(frame) = self.next_frame(rx, true)? {
+                return Ok(frame);
+            }
+        }
+    }
+
+    /// Reads on until a whole message is in. `None` when it is not yet (only without `wait`;
+    /// on Windows also after an empty write): the fragments so far are kept in `rx`. A broken
+    /// message is abandoned with a `Codec` error; the stream stays in step.
+    fn next_message(&self, rx: &mut Receiver, wait: bool) -> Result<Option<Rx>, ChannelError> {
+        loop {
+            let Some(frame) = self.next_frame(rx, wait)? else {
+                return Ok(None);
+            };
+            let Some(total) = rx.total else {
+                // The first (or only) frame of a message.
+                let total = frame.total;
+                match frame.tag {
+                    TAG_LAST if frame.len == total => return decode(rx.payload(&frame)).map(Some),
+                    TAG_LAST => {
+                        return Err(codec_error(format!(
+                            "frame of {} bytes announces a message of {total}",
+                            frame.len
+                        )));
+                    }
+                    TAG_MORE if total > MAX_MESSAGE => {
+                        return Err(codec_error(format!(
+                            "announced message of {total} bytes exceeds {MAX_MESSAGE}"
+                        )));
+                    }
+                    TAG_MORE if frame.len >= total => {
+                        return Err(codec_error("fragment as long as the whole message"));
+                    }
+                    TAG_MORE => {
+                        // Grow with the data rather than trusting the announced length up front.
+                        rx.message.reserve(total.min(16 * MAX_FRAME));
+                        let Receiver { buf, message, .. } = &mut *rx;
+                        message.extend_from_slice(&buf[FRAME_HEADER..FRAME_HEADER + frame.len]);
+                        rx.total = Some(total);
+                        continue;
+                    }
+                    TAG_FD => {
+                        return Err(codec_error(
+                            "expected a message, got a file descriptor frame",
+                        ));
+                    }
+                    tag => return Err(codec_error(format!("unknown frame tag {tag}"))),
+                }
+            };
+            if frame.tag != TAG_MORE && frame.tag != TAG_LAST {
+                rx.end_message();
+                return Err(codec_error("unexpected frame inside a fragmented message"));
+            }
+            if frame.total != total || rx.message.len() + frame.len > total {
+                rx.end_message();
+                return Err(codec_error("fragment lengths do not add up"));
+            }
+            let Receiver { buf, message, .. } = &mut *rx;
+            message.extend_from_slice(&buf[FRAME_HEADER..FRAME_HEADER + frame.len]);
+            if frame.tag == TAG_LAST {
+                let msg = if rx.message.len() == total {
+                    decode(&rx.message)
+                } else {
+                    Err(codec_error("fragmented message ends early"))
+                };
+                rx.end_message();
+                return msg.map(Some);
+            }
         }
     }
 }
@@ -1836,7 +2002,7 @@ mod tests {
         app.send(&ControlMsg::ListParams).unwrap();
         assert_eq!(bridge.try_recv().unwrap(), Some(ControlMsg::ListParams));
         assert_eq!(bridge.try_recv().unwrap(), None);
-        // A fragmented message whose first frame is queued is completed.
+        // A fragmented message arrives once all its fragments are in.
         let big = ControlMsg::SetState {
             request: 9,
             state: vec![5; 3 * MAX_FRAME],
@@ -1898,7 +2064,8 @@ mod tests {
             let open = || ShmRegion::open(unsafe { bridge.recv_region() }.unwrap()).unwrap();
             assert_eq!(bridge.recv().unwrap(), ControlMsg::ListParams);
             assert_eq!(open().latency(), 1);
-            assert_eq!(bridge.recv().unwrap(), big);
+            // Read piecewise while the sender is still writing it (#216).
+            assert_eq!(poll_until_message(&bridge), big);
             assert_eq!(open().latency(), 2);
             assert_eq!(bridge.recv().unwrap(), ControlMsg::Deactivate);
         });
@@ -1976,7 +2143,8 @@ mod tests {
                     .latency(),
                 1
             );
-            assert_eq!(bridge.recv().unwrap(), big);
+            // Read piecewise while the sender is still writing it (#216).
+            assert_eq!(poll_until_message(&bridge), big);
             assert_eq!(
                 ShmRegion::open(bridge.recv_fd().unwrap())
                     .unwrap()
@@ -2084,26 +2252,194 @@ mod tests {
         assert_eq!(bridge.recv().unwrap(), ControlMsg::Deactivate);
     }
 
-    #[test]
-    fn a_frame_split_across_writes_is_reassembled() {
-        let (app, bridge) = pair();
-        let bytes = postcard::to_stdvec(&ControlMsg::SetParam { id: 9, value: 0.25 }).unwrap();
-        let whole = frame(TAG_LAST, bytes.len() as u32, &bytes);
-        // Cut inside the header, then inside the payload; the rest arrives a little later.
-        for cut in [3, FRAME_HEADER + 1] {
-            assert_eq!(bridge.try_recv().unwrap(), None);
-            raw_send(&app, &whole[..cut]);
-            std::thread::scope(|scope| {
-                scope.spawn(|| {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                    raw_send(&app, &whole[cut..]);
-                });
-                // A started frame is completed blockingly, also by `try_recv`.
-                assert_eq!(
-                    bridge.try_recv().unwrap(),
-                    Some(ControlMsg::SetParam { id: 9, value: 0.25 })
-                );
-            });
+    /// Calls `try_recv` until a message is in.
+    fn poll_until_message(bridge: &BridgeChannel) -> ControlMsg {
+        loop {
+            if let Some(msg) = bridge.try_recv().unwrap() {
+                return msg;
+            }
+            std::thread::yield_now();
         }
+    }
+
+    /// How long a test peer stalls in the middle of a message before it writes the rest.
+    const STALL: Duration = Duration::from_millis(500);
+
+    /// The frames `Channel::send` writes for `msg`.
+    fn frames_of(msg: &ControlMsg) -> Vec<u8> {
+        let bytes = postcard::to_stdvec(msg).unwrap();
+        let chunks: Vec<&[u8]> = bytes.chunks(MAX_PAYLOAD).collect();
+        let mut wire = Vec::new();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let tag = if i + 1 == chunks.len() {
+                TAG_LAST
+            } else {
+                TAG_MORE
+            };
+            wire.extend(frame(tag, bytes.len() as u32, chunk));
+        }
+        wire
+    }
+
+    /// The peer has written part of a message and stalls: `try_recv` returns `None` at once
+    /// (twice, the second time with the partial data already taken), and `rest` arrives only
+    /// after [`STALL`]. A `try_recv` that waited for the rest would fail the time check.
+    fn stall_then_send(app: &AppChannel, bridge: &BridgeChannel, rest: &[u8]) {
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                std::thread::sleep(STALL);
+                raw_send(app, rest);
+            });
+            let t0 = Instant::now();
+            assert_eq!(bridge.try_recv().unwrap(), None);
+            assert_eq!(bridge.try_recv().unwrap(), None);
+            let waited = t0.elapsed();
+            assert!(
+                waited < STALL / 2,
+                "try_recv waited {waited:?} for a stalled peer"
+            );
+            writer.join().unwrap();
+        });
+    }
+
+    /// #216: a peer that stops in the middle of a frame holds up no `try_recv`; the bytes so far
+    /// are kept and the message arrives once the rest is written.
+    #[test]
+    fn try_recv_never_waits_for_the_rest_of_a_frame() {
+        let (app, bridge) = pair();
+        let msg = ControlMsg::SetParam { id: 9, value: 0.25 };
+        let whole = frames_of(&msg);
+        // Cut inside the header, after it, inside the payload and before the last byte.
+        for cut in [1, 3, FRAME_HEADER, FRAME_HEADER + 1, whole.len() - 1] {
+            raw_send(&app, &whole[..cut]);
+            stall_then_send(&app, &bridge, &whole[cut..]);
+            assert_eq!(
+                bridge.try_recv().unwrap(),
+                Some(msg.clone()),
+                "cut at {cut}"
+            );
+            assert_eq!(bridge.try_recv().unwrap(), None);
+        }
+        // One byte at a time: complete only with the last one.
+        for (i, byte) in whole.iter().enumerate() {
+            raw_send(&app, &[*byte]);
+            let got = bridge.try_recv().unwrap();
+            assert_eq!(got.is_some(), i + 1 == whole.len(), "after byte {i}");
+        }
+    }
+
+    /// #216: the fragments of a large message are collected across many `try_recv` calls, also
+    /// when the peer stalls right after a whole fragment (where the old code blocked).
+    #[test]
+    fn a_fragmented_message_reassembles_across_try_recv_calls() {
+        let (app, bridge) = pair();
+        let big = ControlMsg::SetState {
+            request: 7,
+            state: (0..3 * MAX_FRAME + 123)
+                .map(|i| (i * 7 + i / 251) as u8)
+                .collect(),
+        };
+        let wire = frames_of(&big);
+        assert!(wire.len() > 3 * MAX_FRAME);
+        // The first fragment whole, then a stall; then part of the next header after a stall.
+        raw_send(&app, &wire[..MAX_FRAME]);
+        stall_then_send(&app, &bridge, &wire[MAX_FRAME..MAX_FRAME + 5]);
+        // The rest in pieces that cut headers and payloads at odd places.
+        let pieces: Vec<&[u8]> = wire[MAX_FRAME + 5..].chunks(9_999).collect();
+        for (i, piece) in pieces.iter().enumerate() {
+            raw_send(&app, piece);
+            let got = bridge.try_recv().unwrap();
+            if i + 1 == pieces.len() {
+                assert_eq!(got, Some(big.clone()));
+            } else {
+                assert_eq!(got, None, "after piece {i}");
+            }
+        }
+        assert_eq!(bridge.try_recv().unwrap(), None);
+        // The blocking receive goes on from a fragment `try_recv` left half read.
+        raw_send(&app, &wire[..MAX_FRAME + 3]);
+        assert_eq!(bridge.try_recv().unwrap(), None);
+        std::thread::scope(|scope| {
+            scope.spawn(|| raw_send(&app, &wire[MAX_FRAME + 3..]));
+            assert_eq!(bridge.recv().unwrap(), big);
+        });
+    }
+
+    /// `try_recv_until` reads a message that has begun to arrive at the pace of its sender, in
+    /// one call; with nothing queued it returns at once; a stalled peer costs it its deadline.
+    #[test]
+    fn try_recv_until_reads_on_while_bytes_keep_coming() {
+        let (app, bridge) = pair();
+        let far = || Instant::now() + Duration::from_secs(30);
+        let t0 = Instant::now();
+        assert_eq!(bridge.try_recv_until(far()).unwrap(), None);
+        assert!(t0.elapsed() < STALL / 2, "waited with nothing queued");
+        // Far beyond the socket buffer: the sender has to wait for the reader again and again.
+        let big = ControlMsg::SetState {
+            request: 3,
+            state: (0..4 * 1024 * 1024 + 5)
+                .map(|i| (i * 3 + i / 509) as u8)
+                .collect(),
+        };
+        let wire = frames_of(&big);
+        raw_send(&app, &wire[..MAX_FRAME + 1]);
+        std::thread::scope(|scope| {
+            scope.spawn(|| raw_send(&app, &wire[MAX_FRAME + 1..]));
+            assert_eq!(bridge.try_recv_until(far()).unwrap(), Some(big.clone()));
+        });
+        // A peer that stalls in the middle of a frame: `None` once the deadline has passed.
+        raw_send(&app, &wire[..FRAME_HEADER + 2]);
+        let budget = Duration::from_millis(30);
+        let t0 = Instant::now();
+        assert_eq!(bridge.try_recv_until(t0 + budget).unwrap(), None);
+        let waited = t0.elapsed();
+        assert!(waited >= budget && waited < STALL, "waited {waited:?}");
+        // It goes on from there once the rest arrives.
+        std::thread::scope(|scope| {
+            scope.spawn(|| raw_send(&app, &wire[FRAME_HEADER + 2..]));
+            assert_eq!(bridge.try_recv_until(far()).unwrap(), Some(big));
+        });
+    }
+
+    /// An oversized frame is refused as soon as its header is in, and its payload is read past
+    /// piecewise; the next message arrives intact.
+    #[test]
+    fn an_oversized_frame_is_read_past_without_blocking() {
+        let (app, bridge) = pair();
+        let lie = frame_announcing(TAG_LAST, MAX_PAYLOAD as u32 + 1, 3, &[0; MAX_PAYLOAD + 1]);
+        raw_send(&app, &lie[..FRAME_HEADER + 10]);
+        assert!(matches!(bridge.try_recv(), Err(ChannelError::Codec(_))));
+        stall_then_send(&app, &bridge, &lie[FRAME_HEADER + 10..]);
+        app.send(&ControlMsg::Deactivate).unwrap();
+        assert_eq!(bridge.try_recv().unwrap(), Some(ControlMsg::Deactivate));
+    }
+
+    /// `try_recv` does not queue behind a thread blocked in `recv` on the same end.
+    #[test]
+    fn try_recv_does_not_wait_for_a_blocked_recv() {
+        let (app, bridge) = pair();
+        std::thread::scope(|scope| {
+            let receiver = scope.spawn(|| bridge.recv().unwrap());
+            std::thread::sleep(Duration::from_millis(20));
+            assert_eq!(bridge.try_recv().unwrap(), None);
+            app.send(&ControlMsg::ListParams).unwrap();
+            assert_eq!(receiver.join().unwrap(), ControlMsg::ListParams);
+        });
+    }
+
+    /// An fd still arrives with its own frame when the message after it is read piecewise.
+    #[test]
+    #[cfg(unix)]
+    fn an_fd_arrives_with_its_frame_before_a_partial_message() {
+        let (app, bridge) = pair();
+        let region = ShmRegion::create().unwrap();
+        region.set_latency(5);
+        let whole = frames_of(&ControlMsg::ListParams);
+        app.send_fd(region.fd()).unwrap();
+        raw_send(&app, &whole[..3]);
+        let fd = bridge.recv_fd().unwrap();
+        assert_eq!(ShmRegion::open(fd).unwrap().latency(), 5);
+        stall_then_send(&app, &bridge, &whole[3..]);
+        assert_eq!(bridge.try_recv().unwrap(), Some(ControlMsg::ListParams));
     }
 }
