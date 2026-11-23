@@ -680,6 +680,56 @@ fn open_plugin_waits_for_the_document_the_prompt_opens() {
 }
 
 #[test]
+fn the_prompt_comes_back_after_the_close_prompt_is_cancelled() {
+    let dir = scratch("close-over-prompt");
+    let songs = dir.join("songs");
+    std::fs::create_dir_all(&songs).unwrap();
+    let a = songs.join("A.komponist");
+    let b = songs.join("B.komponist");
+    project_io::save_project(&a, &song("A")).unwrap();
+    project_io::save_project(&b, &song("B")).unwrap();
+    crashed_session(&dir, Some(&b));
+    let clock = FakeClock::new();
+    let mut app = session(&dir, Project::new("Unbenannt"), &clock);
+    app.show_start_screen();
+    app.offer_recovery(None);
+    let mut h = harness(app);
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    // A is open and dirty; opening B asks to save A, then for B's copy.
+    h.state_mut()
+        .dispatch(Action::Project(ProjectAction::OpenPath(a.clone())));
+    h.run_steps(2);
+    edit(&mut h, EditAction::NewMidiTrack);
+    h.state_mut()
+        .dispatch(Action::Project(ProjectAction::OpenPath(b.clone())));
+    h.run_steps(2);
+    h.get_by_label(de::NEW_PROJECT_DISCARD).click();
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::Dialog, de::RECOVERY_TITLE);
+    // Closing the window asks about A (still the document) on top of the prompt.
+    for cancel in ["button", "escape"] {
+        assert!(!h.state_mut().close_requested(), "A is unsaved");
+        h.run_steps(2);
+        h.get_by_value(de::NEW_PROJECT_UNSAVED_TITLE);
+        if cancel == "button" {
+            h.get_by_label(de::DIALOG_CANCEL).click();
+        } else {
+            h.key_press(Key::Escape);
+        }
+        h.run_steps(3);
+        assert!(h.query_by_value(de::NEW_PROJECT_UNSAVED_TITLE).is_none());
+        // The unanswered prompt is back, and opens still wait behind a prompt that is shown.
+        h.get_by_role_and_label(Role::Dialog, de::RECOVERY_TITLE);
+        assert!(h.state().recovery_prompt_open(), "after {cancel}");
+    }
+    h.get_by_role_and_label(Role::Button, de::RECOVERY_LATER)
+        .click();
+    h.run_steps(2);
+    assert_eq!(h.state().project().name, "B");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_take_a_copy_refers_to_survives_saves() {
     let dir = scratch("takes");
     // A take in a provisional recordings folder of a crashed session.

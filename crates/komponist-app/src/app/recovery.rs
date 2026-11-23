@@ -89,6 +89,12 @@ impl App {
 
     /// One frame of the copy (module docs).
     pub(crate) fn update_recovery(&mut self, ctx: &egui::Context) {
+        // An unanswered prompt is always on screen: another overlay on top of it (the close
+        // prompt) gives it back when it closes, so opens never wait behind a prompt nobody sees.
+        if self.recovery_ui.prompt.is_some() && self.dialogs.overlay.is_none() {
+            self.open_overlay(Overlay::Recovery);
+            ctx.request_repaint();
+        }
         if !self.recovery.enabled() {
             return;
         }
