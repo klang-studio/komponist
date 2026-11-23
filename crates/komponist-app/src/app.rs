@@ -201,11 +201,14 @@ impl App {
         settings.panels.apply_to(&mut ui.layout);
         ui.browser.favorites = settings.favorites.clone();
         let saved_panels = Some(settings.panels);
-        let recent_path = settings_path.as_deref().map(project_io::recent_path);
+        let mut recent_path = settings_path.as_deref().map(project_io::recent_path);
+        // An unreadable list is reported and left alone, like the settings file: this session
+        // keeps an in-memory list and never overwrites the file.
         let recent = match recent_path.as_deref().map(RecentList::load) {
             Some(Ok(list)) => list,
             Some(Err(e)) => {
-                eprintln!("komponist: recent projects not loaded: {e}");
+                eprintln!("komponist: recent projects not loaded, keeping the file: {e}");
+                recent_path = None;
                 RecentList::default()
             }
             None => RecentList::default(),
