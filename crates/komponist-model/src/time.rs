@@ -26,6 +26,15 @@ pub const PPQ: i64 = 960;
 /// Ticks per beat in the display format `Takt.Schlag.Tick` (`10.2.120`): 0 ..= 239.
 pub const DISPLAY_TICKS_PER_BEAT: i64 = 240;
 
+/// Largest tick any stored document position or length may have (#209): every start, length, loop
+/// length, note position, loop range end and automation tick lies in `0 ..= MAX_DOC_TICK`
+/// (automation points: `-MAX_DOC_TICK ..= MAX_DOC_TICK`). 2^26 ticks are 17 476 bars of 4/4, or 29
+/// hours at 40 bpm: far beyond any song, yet small enough that sums and differences of document
+/// ticks never overflow `i64`, and that expanding a step or looped clip over its length
+/// (`StepClip::hits`, the engine compiler) stays in the low millions of notes. Loading repairs
+/// larger values ([`crate::persist`]); the edits clamp to it.
+pub const MAX_DOC_TICK: Tick = Tick(1 << 26);
+
 /// Ticks per 1/16 step, the position unit of the prototype and of the step sequencer at 1/16.
 pub const TICKS_PER_STEP: i64 = PPQ / 4;
 

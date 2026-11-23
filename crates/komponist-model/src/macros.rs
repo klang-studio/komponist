@@ -4,8 +4,8 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-use crate::TrackId;
 use crate::automation::{AutomationTarget, bend};
+use crate::validate::{RepairKind, Repairs};
 
 /// Number of fixed macro slots on each track.
 pub const MACRO_COUNT: usize = 8;
@@ -38,19 +38,15 @@ impl TrackMacros {
     }
 
     /// Repair malformed ranges and resolve conflicting mappings in file order.
-    pub(crate) fn repair(&mut self, track: TrackId) {
+    pub(crate) fn repair(&mut self, repairs: &mut Repairs) {
         let mut seen = HashSet::new();
-        for (index, slot) in self.0.iter_mut().enumerate() {
+        for slot in self.0.iter_mut() {
             slot.value = slot.value.clamp(0.0, 1.0);
             slot.mappings.retain_mut(|mapping| {
                 if matches!(mapping.target, AutomationTarget::Macro { .. })
                     || !seen.insert(mapping.target.clone())
                 {
-                    eprintln!(
-                        "Ignored invalid or duplicate mapping on track {}, macro {}",
-                        track.0,
-                        index + 1
-                    );
+                    repairs.add(RepairKind::MacroMappings, 1);
                     return false;
                 }
                 mapping.min = mapping.min.clamp(0.0, 1.0);
@@ -58,21 +54,12 @@ impl TrackMacros {
                 mapping.bend = mapping.bend.clamp(-1.0, 1.0);
                 if mapping.min > mapping.max {
                     std::mem::swap(&mut mapping.min, &mut mapping.max);
-                    eprintln!(
-                        "Reordered mapping range on track {}, macro {}",
-                        track.0,
-                        index + 1
-                    );
+                    repairs.add(RepairKind::MacroMappings, 1);
                 }
                 true
             });
-            if slot.mappings.len() > MAX_MAPPINGS {
-                eprintln!(
-                    "Kept excess mappings on track {}, macro {}",
-                    track.0,
-                    index + 1
-                );
-            }
+            // Excess mappings are kept for editing (`driver` and the engine ignore them), so
+            // they are no repair.
         }
     }
 }

@@ -258,7 +258,7 @@ fn flattening_refuses_to_expand_an_enormous_disabled_modulating_loop() {
 
     let (p, id) = midi_track(&Project::new("Flatten"));
     let (p, clip) = ok_with(add_clip(&p, id, midi(240, 1200)));
-    let p = ok(set_clip_loop(&p, clip, Some(Tick(2)), Tick(1_000_000_000)));
+    let p = ok(set_clip_loop(&p, clip, Some(Tick(2)), Tick(60_000_000)));
     let target = AutomationTarget::Pan;
     let p = ok(add_clip_automation(&p, clip, target.clone(), String::new()));
     let lane = p.track(id).unwrap().automation.lane(&target).unwrap().id;
@@ -287,7 +287,7 @@ fn flattening_refuses_to_expand_an_enormous_disabled_modulating_loop() {
         ]),
     ));
     assert_eq!(
-        split_clips(&p, &[clip], Tick(500_000_240)),
+        split_clips(&p, &[clip], Tick(30_000_240)),
         Err(EditError::AutomationExpansionTooLarge),
     );
     let mut doc = Document::new(p);

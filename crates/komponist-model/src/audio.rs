@@ -477,13 +477,15 @@ impl AudioClip {
         Tick((secs / self.source_secs_per_tick(project) + 1e-6).floor() as i64)
     }
 
-    /// The longest clip length in ticks that stays inside the file: what is left behind
-    /// [`AudioTake::offset`], floored. 0 when the window is empty.
+    /// The longest clip length in ticks that stays inside the file (what is left behind
+    /// [`AudioTake::offset`], floored) and inside the document ([`crate::time::MAX_DOC_TICK`]). 0 when
+    /// the window is empty.
     pub fn max_length(&self, project: Tempo) -> Tick {
         if self.offset >= self.file.frames {
             return Tick::ZERO;
         }
         self.frames_to_ticks(self.file.frames.saturating_sub(self.offset), project)
+            .min(crate::time::MAX_DOC_TICK)
     }
 
     /// Clamps gain and fades into range for a clip of `length` ticks: gain into
