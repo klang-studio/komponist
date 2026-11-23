@@ -1696,6 +1696,7 @@ fn s09_model() -> start::Model {
         date: date.to_owned(),
         hues: hues.to_vec(),
         missing: false,
+        recovery: None,
     };
     start::Model {
         version: start::version_line(Lang::De),

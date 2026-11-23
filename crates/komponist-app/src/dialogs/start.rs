@@ -46,6 +46,9 @@ pub struct RecentRow {
     pub hues: Vec<u16>,
     /// The file cannot be read.
     pub missing: bool,
+    /// A recovery copy of this project waits (#227): the row shows the chip „Sicherungskopie“.
+    /// A row of a copy alone (an untitled project) has an empty `path`.
+    pub recovery: Option<crate::recovery::Id>,
 }
 
 /// The colour of a system row's dot.
@@ -102,6 +105,8 @@ pub enum Output {
     OpenRecent(PathBuf),
     /// Entf: remove the entry from the list.
     RemoveRecent(PathBuf),
+    /// Open the row of a recovery copy without a file (asks for the copy).
+    Recovery(crate::recovery::Id),
     /// A system row: the settings at its section.
     Settings(SettingsSection),
 }
@@ -162,6 +167,7 @@ pub fn recent_row(
                 missing: false,
                 path,
                 path_label,
+                recovery: None,
             }
         }
         None => RecentRow {
@@ -172,6 +178,7 @@ pub fn recent_row(
             missing: true,
             path,
             path_label,
+            recovery: None,
         },
     }
 }
@@ -481,11 +488,13 @@ fn right_column(
         // A disappearing row may change the fallback selection. Do not act on that replacement
         // before it has been shown to the user.
         if !selection_disappeared && let Some(&i) = shown.get(view.selected) {
+            let row = &model.recent[i];
             if enter {
-                out.push(Output::OpenRecent(model.recent[i].path.clone()));
+                out.push(open(row));
             }
-            if delete {
-                out.push(Output::RemoveRecent(model.recent[i].path.clone()));
+            // A copy's own row has no list entry to remove.
+            if delete && !row.path.as_os_str().is_empty() {
+                out.push(Output::RemoveRecent(row.path.clone()));
             }
         }
     }
@@ -547,7 +556,7 @@ fn right_column(
             let r = recent_row_ui(ui, width, row, k == view.selected);
             if r.clicked() {
                 view.selected = k;
-                out.push(Output::OpenRecent(row.path.clone()));
+                out.push(open(row));
             }
         }
     });
@@ -576,12 +585,26 @@ fn right_column(
     }
 }
 
+/// What opening `row` means: its file (which asks for a waiting copy first), or the copy of a row
+/// without a file.
+fn open(row: &RecentRow) -> Output {
+    match &row.recovery {
+        Some(id) if row.path.as_os_str().is_empty() => Output::Recovery(id.clone()),
+        _ => Output::OpenRecent(row.path.clone()),
+    }
+}
+
 /// One recent project (`recent` `s`): colour bars, name and path, meta, date; the selected row on
-/// `surface.3` with a 1 px accent outline 1 px outside.
+/// `surface.3` with a 1 px accent outline 1 px outside. A row with a recovery copy shows the chip
+/// „Sicherungskopie“ at the right end of the name column (#227).
 fn recent_row_ui(ui: &mut Ui, width: f32, row: &RecentRow, selected: bool) -> egui::Response {
+    let t = komponist_ui::lang(ui.ctx());
     let ppp = ui.pixels_per_point();
     let (rect, response) = ui.allocate_exact_size(vec2(width, m::ROW_HEIGHT), Sense::click());
-    let name = format!("{}, {}", row.name, row.meta);
+    let mut name = format!("{}, {}", row.name, row.meta);
+    if row.recovery.is_some() {
+        name = t.start_recovery_row(name);
+    }
     response.widget_info(|| egui::WidgetInfo::selected(Role::ListItem, true, selected, &name));
     let st = state::State::of(ui, &response);
     let painter = ui.painter();
@@ -617,7 +640,10 @@ fn recent_row_ui(ui: &mut Ui, width: f32, row: &RecentRow, selected: bool) -> eg
     let text_x = inner.left() + m::BARS_COLUMN + m::ROW_GAP;
     let date_x = inner.right() - m::DATE_COLUMN;
     let meta_x = date_x - m::ROW_GAP - m::META_COLUMN;
-    let text_right = meta_x - m::ROW_GAP;
+    let mut text_right = meta_x - m::ROW_GAP;
+    if row.recovery.is_some() {
+        text_right = recovery_chip(ui, t, inner, text_right) - m::ROW_GAP;
+    }
     // Name and path.
     let name_color = if row.missing {
         color::TEXT_2
@@ -667,6 +693,37 @@ fn recent_row_ui(ui: &mut Ui, width: f32, row: &RecentRow, selected: bool) -> eg
     response
 }
 
+/// The chip „Sicherungskopie“ (`accent.surface`, text `accent`), its right edge at `right`,
+/// centred in `row`; returns its left edge.
+fn recovery_chip(ui: &Ui, t: Lang, row: Rect, right: f32) -> f32 {
+    let ppp = ui.pixels_per_point();
+    let g = styled(
+        ui,
+        t.start_recovery_chip(),
+        &typography::UI,
+        color32(color::ACCENT),
+        None,
+    );
+    let [pad_x, pad_y] = m::CHIP_PADDING;
+    let size = vec2(g.size().x.ceil() + 2.0 * pad_x, g.size().y + 2.0 * pad_y);
+    let chip = px::snap_rect(
+        Rect::from_min_size(pos2(right - size.x, row.center().y - size.y / 2.0), size),
+        ppp,
+    );
+    px::fill(
+        ui.painter(),
+        chip,
+        radius::S,
+        color32(color::ACCENT_SURFACE),
+    );
+    ui.painter().galley(
+        w::text_pos(chip, &g, chip.left() + pad_x, ppp),
+        g,
+        Color32::PLACEHOLDER,
+    );
+    chip.left()
+}
+
 impl crate::App {
     /// Builds the start screen model from summaries available on this frame.
     pub(crate) fn start_model(&mut self, ctx: &egui::Context) -> Model {
@@ -687,7 +744,9 @@ impl crate::App {
             .refresh(ctx, &self.recent.projects, |path| {
                 ProjectSummary::read(path).ok()
             });
-        let recent = self.dialogs.start.rows(t, SystemTime::now());
+        let now = SystemTime::now();
+        let mut recent = self.dialogs.start.rows(t, now);
+        self.recovery_rows(&mut recent, now);
 
         let audio = match self.engine.audio_state() {
             AudioState::NoDevice { .. } => (Health::Error, t.start_audio_none().to_owned()),
@@ -798,6 +857,7 @@ impl crate::App {
                         .push(Action::Project(ProjectAction::OpenPath(path)));
                 }
                 Output::RemoveRecent(path) => self.forget(&path),
+                Output::Recovery(id) => self.ask_recovery_of(id),
                 Output::Settings(section) => {
                     self.queue.push(Action::Ui(UiAction::OpenSettings(section)));
                 }
@@ -819,6 +879,7 @@ mod tests {
             date: String::new(),
             hues: Vec::new(),
             missing: false,
+            recovery: None,
         }
     }
 

@@ -185,3 +185,17 @@ status-macros-mapping = Zuordnen: Parameter bewegen ordnet sie { $source } zu ·
 status-macros-locked = { $param } wird von { $source } gesteuert
 status-macros-moved = { $param }: jetzt { $source }
 status-macros-full = Höchstens 16 Zuordnungen pro Spur-Makro
+
+## Crash recovery (#227, crash-recovery proposal (internal notes)).
+
+# A recovered copy opened; `$time` is "heute 14:32", `$shortcut` the save shortcut ("Strg S"), `$file` the file name.
+status-recovered = Änderungen von { $time } wiederhergestellt · { $shortcut } speichert sie in „{ $file }“
+
+# Same for a project that was never saved.
+status-recovered-untitled = Änderungen von { $time } wiederhergestellt · { $shortcut } speichert sie als neues Projekt
+
+# Same for a project whose file is gone: saving asks for a location.
+status-recovered-elsewhere = Änderungen von { $time } wiederhergestellt · { $shortcut } fragt nach einem Ort zum Speichern
+
+# The recovery copy could not be written (once per session); `$reason` is one of the `project-reason-*` texts.
+status-recovery-write-failed = Sicherungskopie lässt sich nicht schreiben: { $reason }

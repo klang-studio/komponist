@@ -225,6 +225,7 @@ fn the_recent_list_shows_english_dates_and_a_missing_file() {
                 ),
                 hues: vec![45, 250],
                 missing: false,
+                recovery: None,
             },
         ],
         system: Vec::new(),

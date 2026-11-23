@@ -27,6 +27,7 @@ pub mod metrics;
 pub mod missing_plugins;
 pub mod new_project;
 pub mod new_track;
+pub mod recovery;
 pub mod settings;
 pub mod start;
 
@@ -96,6 +97,9 @@ pub(crate) enum Overlay {
     Unsaved,
     /// "Neue Spur": the dialog behind the box below the tracks.
     NewTrack(new_track::State),
+    /// „Ungespeicherte Änderungen wiederherstellen?“: a recovery copy at start (#227); its state
+    /// is `App::recovery_ui`.
+    Recovery,
 }
 
 /// A step that waits for the unsaved-changes prompt (or for the save it started).
@@ -154,6 +158,12 @@ pub(crate) fn fit(ctx: &Context, size: egui::Vec2) -> egui::Vec2 {
 /// The header bar of S07 and S08: 44 high, `surface.3`, the title in `type.title`, the close
 /// button at the right. Returns whether the close button was clicked.
 pub(crate) fn header(ui: &mut Ui, width: f32, title: &str) -> bool {
+    header_with(ui, width, title, None)
+}
+
+/// [`header`] with a `counter` ("1 von 2", `type.ui` / `text.3`) right-aligned before the close
+/// button (the recovery prompt with several copies).
+pub(crate) fn header_with(ui: &mut Ui, width: f32, title: &str, counter: Option<&str>) -> bool {
     let (rect, _) = ui.allocate_exact_size(vec2(width, m::HEADER_HEIGHT), Sense::hover());
     let r = radius::L as u8;
     ui.painter().rect_filled(
@@ -183,6 +193,14 @@ pub(crate) fn header(ui: &mut Ui, width: f32, title: &str) -> bool {
         ),
         vec2(m::CLOSE, m::CLOSE),
     );
+    if let Some(counter) = counter {
+        let g = styled(ui, counter, &typography::UI, color32(color::TEXT_3), None);
+        let x = close.left() - m::HEADER_COUNTER_GAP - g.size().x;
+        let pos = w::text_pos(rect, &g, x, ui.pixels_per_point());
+        let counter_rect = Rect::from_min_size(pos, g.size());
+        ui.painter().galley(pos, g, Color32::PLACEHOLDER);
+        label_node(ui, counter_rect, counter, Role::Label);
+    }
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(close));
     // The name of the × button is `dialog-close`; the language lives in the egui context.
     let t = komponist_ui::lang(ui.ctx());
@@ -504,6 +522,13 @@ impl crate::App {
                 let name = self.project().name.clone();
                 if let Some(answer) = new_project::show_unsaved(ctx, &name) {
                     self.answer_unsaved(answer);
+                }
+            }
+            Some(Overlay::Recovery) => {
+                if let Some(model) = self.recovery_model()
+                    && let Some(answer) = recovery::show(ctx, &model)
+                {
+                    self.answer_recovery(answer);
                 }
             }
             Some(Overlay::NewTrack(state)) => {
