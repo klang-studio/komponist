@@ -1727,34 +1727,6 @@ mod tests {
         );
     }
 
-    /// An instrument whose `process` panics.
-    struct Panics;
-
-    impl komponist_engine::Processor for Panics {
-        fn activate(
-            &mut self,
-            _sample_rate: f32,
-            _max_block: usize,
-        ) -> Result<(), komponist_engine::ProcessorError> {
-            Ok(())
-        }
-
-        fn process(
-            &mut self,
-            _ctx: &komponist_engine::ProcessContext,
-            _events: &[komponist_engine::Event],
-            _io: &mut komponist_engine::StereoIo<'_>,
-        ) -> komponist_engine::ProcessStatus {
-            panic!("a processor panics");
-        }
-
-        fn latency(&self) -> u32 {
-            0
-        }
-
-        fn reset(&mut self) {}
-    }
-
     /// #210, owner 2026-11-23: the engine panics while a mixed take runs. The take ends at the
     /// crash like an interruption and keeps what was recorded so far, the audio and the MIDI
     /// (whose lap is marked incomplete), as one undo step; the new engine stays stopped there.
@@ -1792,7 +1764,7 @@ mod tests {
         let at = app.engine.playhead();
         app.engine.send(Command::InsertProcessor {
             slot,
-            processor: Box::new(Panics),
+            processor: Box::new(komponist_engine::testing::TestPanic),
         });
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             app.engine.run_held(256, &[], 0);

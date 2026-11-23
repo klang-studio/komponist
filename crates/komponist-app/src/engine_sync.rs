@@ -1158,6 +1158,15 @@ impl EngineSync {
         changed
     }
 
+    /// Tests: a MIDI change and a new compile diagnostic waiting for the app, as a scan and a
+    /// sync leave them.
+    #[cfg(test)]
+    pub(crate) fn queue_notices(&mut self, change: MidiChange, diagnostic: compile::Diagnostic) {
+        self.midi_changes.push(change);
+        self.diagnostics.push(diagnostic);
+        self.diagnostics_notice = true;
+    }
+
     /// The devices that appeared or vanished in scans since the last call (the status bar says
     /// so). The scan at start-up is not among them: it runs before the first scan.
     pub fn take_midi_changes(&mut self) -> Vec<MidiChange> {
@@ -1779,34 +1788,6 @@ mod tests {
         sync.shutdown();
     }
 
-    /// An instrument whose `process` panics.
-    struct Panics;
-
-    impl komponist_engine::Processor for Panics {
-        fn activate(
-            &mut self,
-            _sample_rate: f32,
-            _max_block: usize,
-        ) -> Result<(), komponist_engine::ProcessorError> {
-            Ok(())
-        }
-
-        fn process(
-            &mut self,
-            _ctx: &komponist_engine::ProcessContext,
-            _events: &[komponist_engine::Event],
-            _io: &mut komponist_engine::StereoIo<'_>,
-        ) -> komponist_engine::ProcessStatus {
-            panic!("a processor panics");
-        }
-
-        fn latency(&self) -> u32 {
-            0
-        }
-
-        fn reset(&mut self) {}
-    }
-
     /// #210: an engine whose `process` unwound is not given back to the stream; a new one is
     /// built at the same rate and worker setting, the document is compiled into it from scratch,
     /// its transport stays stopped at the old playhead, the old engine's queued events still
@@ -1830,7 +1811,7 @@ mod tests {
         assert!(at > Tick::ZERO);
         sync.send(Command::InsertProcessor {
             slot,
-            processor: Box::new(Panics),
+            processor: Box::new(komponist_engine::testing::TestPanic),
         });
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             sync.run_held(256, &[], 0);

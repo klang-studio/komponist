@@ -897,30 +897,6 @@ fn workers_without_workgroup_reach_the_status_bar() {
     assert_eq!(status_text(&app), None);
 }
 
-/// An instrument whose `process` panics.
-struct Panics;
-
-impl Processor for Panics {
-    fn activate(&mut self, _sample_rate: f32, _max_block: usize) -> Result<(), ProcessorError> {
-        Ok(())
-    }
-
-    fn process(
-        &mut self,
-        _ctx: &ProcessContext,
-        _events: &[Event],
-        _io: &mut StereoIo<'_>,
-    ) -> ProcessStatus {
-        panic!("a processor panics");
-    }
-
-    fn latency(&self) -> u32 {
-        0
-    }
-
-    fn reset(&mut self) {}
-}
-
 /// #210: an engine whose `process` panicked is replaced by a new one; every device gets a fresh
 /// processor from the document (none is released), and the status bar says so as an error.
 #[test]
@@ -939,7 +915,7 @@ fn a_panicked_engine_is_rebuilt_and_reported() {
     engine.hold_engine().unwrap();
     engine.send(komponist_engine::Command::InsertProcessor {
         slot,
-        processor: Box::new(Panics),
+        processor: Box::new(komponist_engine::testing::TestPanic),
     });
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         engine.run_held(256, &[], 0);
@@ -1014,7 +990,7 @@ fn a_take_running_when_the_engine_panics_is_kept() {
     let engine = app.engine_mut();
     engine.send(komponist_engine::Command::InsertProcessor {
         slot,
-        processor: Box::new(Panics),
+        processor: Box::new(komponist_engine::testing::TestPanic),
     });
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         engine.run_held(256, &[], 0);

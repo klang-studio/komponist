@@ -422,12 +422,12 @@ impl App {
 
     /// The engine was rebuilt after a panic with the playhead at `at` (#210). A running take (MIDI
     /// or audio) ends there like an interruption and keeps what was recorded so far; a count-in
-    /// that was running never ends, so no take waits for it. The status bar says so.
-    fn engine_rebuilt_at(&mut self, at: Tick) {
+    /// that was running never ends, so no take waits for it. Returns whether a take ended (the
+    /// caller reports the rebuild).
+    fn end_take_after_rebuild(&mut self, at: Tick) -> bool {
         self.shell.take_expected = false;
         if self.recording.is_none() && !self.audio_recording.is_active() {
-            self.report_engine_rebuilt();
-            return;
+            return false;
         }
         // The crash may have lost the running lap's last events.
         let lap = self
@@ -439,7 +439,7 @@ impl App {
             first_incomplete_lap: lap,
             triggering_track: None,
         });
-        self.set_status(self.lang.status_engine_rebuilt_take(), StatusKind::Error);
+        true
     }
 
     /// Tells in the status bar what the engine leaves out of the project (#92) when the last
@@ -614,8 +614,8 @@ impl App {
         let rebuilt = self.engine.take_rebuild_notice();
         let no_realtime = self.engine.take_worker_notice();
         let no_workgroup = self.engine.take_workgroup_notice();
-        // One message per frame; a rebuilt engine is the worst news (reported after the events
-        // below), then a missing priority.
+        // One message per frame; a rebuilt engine is the worst news (reported last, below, so no
+        // other message of this drain replaces it), then a missing priority.
         let worker_notices = device_stream && rebuilt.is_none();
         if worker_notices && no_realtime {
             self.report_workers_without_realtime();
@@ -639,9 +639,7 @@ impl App {
             self.engine_event(&event);
         }
         // After the old engine's last events: the take they belong to ends at the crash.
-        if let Some(at) = rebuilt {
-            self.engine_rebuilt_at(at);
-        }
+        let kept_take = rebuilt.is_some_and(|at| self.end_take_after_rebuild(at));
         let mut recompile = false;
         for event in self.engine.poll_device_events() {
             recompile |= matches!(
@@ -662,6 +660,13 @@ impl App {
             self.engine.send_project(self.doc.project());
         }
         self.flush_deferred();
+        if rebuilt.is_some() {
+            if kept_take {
+                self.set_status(self.lang.status_engine_rebuilt_take(), StatusKind::Error);
+            } else {
+                self.report_engine_rebuilt();
+            }
+        }
     }
 
     /// The recording's part of an engine event: the count-in's end starts the take, captured
@@ -3163,6 +3168,51 @@ mod tests {
         );
         app.cancel_count_in();
         assert!(!app.shell.take_expected);
+    }
+
+    /// #210 review: a MIDI change and a compile diagnostic in the same drain as an engine rebuild
+    /// do not replace its message (the notice is taken once, so it would be lost).
+    #[test]
+    fn a_rebuild_outranks_the_other_notices_of_its_frame() {
+        use komponist_engine::compile::{Diagnostic, Reason, Subject};
+        use komponist_model::fixtures::demo_project;
+
+        let mut app = App::headless(demo_project());
+        app.step();
+        let lead = app.project().tracks[2].channel.devices[0].id;
+        // Single-threaded, so the panic is on this thread and outside `assert_no_alloc`.
+        assert_eq!(app.engine.set_workers(Some(0)).unwrap().unwrap().threads, 0);
+        let slot = app.engine.program().unwrap().slots.slot(lead).unwrap();
+        app.engine.hold_engine().unwrap();
+        app.engine.send(Command::InsertProcessor {
+            slot,
+            processor: Box::new(komponist_engine::testing::TestPanic),
+        });
+        let engine = &mut app.engine;
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            engine.run_held(256, &[], 0);
+        }));
+        assert!(caught.is_err(), "the processor ran");
+        app.engine.release_engine();
+        app.engine.queue_notices(
+            MidiChange::Appeared("P-125".into()),
+            Diagnostic {
+                subject: Subject::Track {
+                    track: app.project().tracks[0].id,
+                    index: 0,
+                },
+                reason: Reason::TrackLimit,
+            },
+        );
+        app.ui.status = None;
+        app.drain_events();
+        assert_eq!(
+            app.ui.status.as_ref().map(|s| (s.text.as_str(), s.kind)),
+            Some((app.lang.status_engine_rebuilt(), StatusKind::Error))
+        );
+        // Both notices were handled in that drain.
+        assert!(app.engine.take_midi_changes().is_empty());
+        assert!(!app.engine.take_diagnostics_notice());
     }
 
     #[test]
