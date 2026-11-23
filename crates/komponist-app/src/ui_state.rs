@@ -585,12 +585,15 @@ pub struct StartView {
     pub selected: usize,
     /// The selected project, so a late summary can change the displayed index safely.
     pub selected_path: Option<std::path::PathBuf>,
+    /// The copy of a selected row of a recovery copy alone (#227): such rows can share a path.
+    pub selected_copy: Option<crate::recovery::Id>,
 }
 
 impl StartView {
     pub(crate) fn reset_selection(&mut self) {
         self.selected = 0;
         self.selected_path = None;
+        self.selected_copy = None;
     }
 }
 

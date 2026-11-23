@@ -199,3 +199,6 @@ status-recovered-elsewhere = Änderungen von { $time } wiederhergestellt · { $s
 
 # The recovery copy could not be written (once per session); `$reason` is one of the `project-reason-*` texts.
 status-recovery-write-failed = Sicherungskopie lässt sich nicht schreiben: { $reason }
+
+# The recovery folder could not be read at start; `$reason` is one of the `project-reason-*` texts.
+status-recovery-scan-failed = Sicherungskopien lassen sich nicht lesen: { $reason }

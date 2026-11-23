@@ -1697,6 +1697,7 @@ fn s09_model() -> start::Model {
         hues: hues.to_vec(),
         missing: false,
         recovery: None,
+        copy_only: false,
     };
     start::Model {
         version: start::version_line(Lang::De),

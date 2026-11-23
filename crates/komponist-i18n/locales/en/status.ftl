@@ -199,3 +199,6 @@ status-recovered-elsewhere = Recovered changes from { $time } · { $shortcut } a
 
 # The recovery copy could not be written (once per session); `$reason` is one of the `project-reason-*` texts.
 status-recovery-write-failed = Cannot write the recovery copy: { $reason }
+
+# The recovery folder could not be read at start; `$reason` is one of the `project-reason-*` texts.
+status-recovery-scan-failed = Cannot read the recovery copies: { $reason }

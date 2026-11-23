@@ -114,6 +114,14 @@ impl App {
     pub fn offer_recovery(&mut self, after: Option<PathBuf>) {
         let after = after.map(|path| Pending::OpenPath(std::path::absolute(&path).unwrap_or(path)));
         self.recovery.scan();
+        if let Some(error) = self.recovery.take_scan_error() {
+            let reason =
+                crate::project_io::ProjectIoError::Io(PathBuf::new(), error).reason(self.lang);
+            self.set_status(
+                self.lang.status_recovery_scan_failed(reason),
+                StatusKind::Error,
+            );
+        }
         let mut ids: Vec<Id> = self
             .recovery
             .candidates
@@ -134,6 +142,11 @@ impl App {
             rest: ids,
             after,
         });
+    }
+
+    /// The copy the open prompt asks for (tests).
+    pub fn recovery_prompt_id(&self) -> Option<Id> {
+        self.recovery_ui.prompt.as_ref().map(|p| p.id.clone())
     }
 
     /// Whether the recovery prompt is open.
@@ -168,16 +181,24 @@ impl App {
         true
     }
 
-    /// Asks for the copy `id` from the start screen's own row of a copy.
+    /// Asks for the copy `id` from its row on the start screen; „Später“ and „Verwerfen“ then open
+    /// its project file, if it has one.
     pub(crate) fn ask_recovery_of(&mut self, id: Id) {
-        if self.recovery.candidate(&id).is_some() && !self.recovery_prompt_open() {
-            self.ask_recovery(Prompt {
-                id,
-                counter: (1, 1),
-                rest: Vec::new(),
-                after: None,
-            });
+        if self.recovery_prompt_open() {
+            return;
         }
+        let Some(candidate) = self.recovery.candidate(&id) else {
+            return;
+        };
+        let after = candidate
+            .project_path()
+            .map(|path| Pending::OpenPath(path.to_path_buf()));
+        self.ask_recovery(Prompt {
+            id,
+            counter: (1, 1),
+            rest: Vec::new(),
+            after,
+        });
     }
 
     fn ask_recovery(&mut self, prompt: Prompt) {
@@ -349,16 +370,18 @@ impl App {
     }
 
     /// The start screen's rows with the waiting copies (§3.5): a chip on the recent row of a
-    /// project with a copy; a copy without a recent row (an untitled project, a file that left the
-    /// list) gets its own row at the top.
+    /// project with a copy (the newest copy, the candidates come newest first); any other copy (an
+    /// untitled project, a file that left the list, an older second copy of the same project) gets
+    /// its own row at the top, newest first.
     pub(crate) fn recovery_rows(&self, rows: &mut Vec<RecentRow>, now: SystemTime) {
         let t = self.lang;
         let mut own = Vec::new();
         for candidate in &self.recovery.candidates {
             // Both paths come from this app as absolute paths; no file system access per frame.
-            let listed = candidate
-                .project_path()
-                .and_then(|path| rows.iter_mut().find(|row| row.path == path));
+            let listed = candidate.project_path().and_then(|path| {
+                rows.iter_mut()
+                    .find(|row| !row.copy_only && row.recovery.is_none() && row.path == path)
+            });
             if let Some(row) = listed {
                 row.recovery = Some(candidate.id.clone());
                 continue;
@@ -392,6 +415,7 @@ impl App {
                 hues,
                 missing,
                 recovery: Some(candidate.id.clone()),
+                copy_only: true,
             });
         }
         rows.splice(0..0, own);

@@ -46,9 +46,11 @@ pub struct RecentRow {
     pub hues: Vec<u16>,
     /// The file cannot be read.
     pub missing: bool,
-    /// A recovery copy of this project waits (#227): the row shows the chip „Sicherungskopie“.
-    /// A row of a copy alone (an untitled project) has an empty `path`.
+    /// A recovery copy of this project waits (#227): the row shows the chip „Sicherungskopie“, and
+    /// opening it asks for the copy first.
     pub recovery: Option<crate::recovery::Id>,
+    /// A row of a copy alone, not of the recent list (an untitled project has an empty `path`).
+    pub copy_only: bool,
 }
 
 /// The colour of a system row's dot.
@@ -105,7 +107,7 @@ pub enum Output {
     OpenRecent(PathBuf),
     /// Entf: remove the entry from the list.
     RemoveRecent(PathBuf),
-    /// Open the row of a recovery copy without a file (asks for the copy).
+    /// Open a row with a recovery copy: ask for the copy, then open the file (if it has one).
     Recovery(crate::recovery::Id),
     /// A system row: the settings at its section.
     Settings(SettingsSection),
@@ -168,6 +170,7 @@ pub fn recent_row(
                 path,
                 path_label,
                 recovery: None,
+                copy_only: false,
             }
         }
         None => RecentRow {
@@ -179,6 +182,7 @@ pub fn recent_row(
             path,
             path_label,
             recovery: None,
+            copy_only: false,
         },
     }
 }
@@ -458,10 +462,13 @@ fn right_column(
     let inner = rect.shrink2(vec2(pad_x, pad_y));
     let width = inner.width().min(m::RECENT_MAX_WIDTH);
     let shown = filtered(&model.recent, &view.filter);
+    // A file row is found by its path, a copy's own row by its copy (two untitled copies have the
+    // same empty path).
     let remembered_index = view.selected_path.as_ref().and_then(|path| {
-        shown
-            .iter()
-            .position(|&index| model.recent[index].path == *path)
+        shown.iter().position(|&index| {
+            let row = &model.recent[index];
+            row.path == *path && copy_key(row) == view.selected_copy.as_ref()
+        })
     });
     let selection_disappeared = view.selected_path.is_some() && remembered_index.is_none();
     view.selected =
@@ -493,7 +500,7 @@ fn right_column(
                 out.push(open(row));
             }
             // A copy's own row has no list entry to remove.
-            if delete && !row.path.as_os_str().is_empty() {
+            if delete && !row.copy_only {
                 out.push(Output::RemoveRecent(row.path.clone()));
             }
         }
@@ -560,9 +567,9 @@ fn right_column(
             }
         }
     });
-    view.selected_path = shown
-        .get(view.selected)
-        .map(|&index| model.recent[index].path.clone());
+    let selected = shown.get(view.selected).map(|&index| &model.recent[index]);
+    view.selected_path = selected.map(|row| row.path.clone());
+    view.selected_copy = selected.and_then(copy_key).cloned();
     col.add_space(m::RIGHT_GAP + m::HINT_TOP);
     let g = styled(
         &col,
@@ -585,13 +592,17 @@ fn right_column(
     }
 }
 
-/// What opening `row` means: its file (which asks for a waiting copy first), or the copy of a row
-/// without a file.
+/// What opening `row` means: its file, or, with a waiting copy, the prompt for that copy first.
 fn open(row: &RecentRow) -> Output {
     match &row.recovery {
-        Some(id) if row.path.as_os_str().is_empty() => Output::Recovery(id.clone()),
-        _ => Output::OpenRecent(row.path.clone()),
+        Some(id) => Output::Recovery(id.clone()),
+        None => Output::OpenRecent(row.path.clone()),
     }
+}
+
+/// The copy that tells a copy's own row apart (`None` for a row of the recent list).
+fn copy_key(row: &RecentRow) -> Option<&crate::recovery::Id> {
+    row.recovery.as_ref().filter(|_| row.copy_only)
 }
 
 /// One recent project (`recent` `s`): colour bars, name and path, meta, date; the selected row on
@@ -880,6 +891,7 @@ mod tests {
             hues: Vec::new(),
             missing: false,
             recovery: None,
+            copy_only: false,
         }
     }
 

@@ -339,6 +339,19 @@ fn a_copy_whose_file_is_gone_asks_where_to_save() {
     h.run_steps(2);
     assert_eq!(h.state().project().name, "Night Drive");
     assert!(h.state().doc().is_dirty());
+    // „Speichern“ before another project asks for a place too, and the new project waits for it.
+    press(&mut h, Modifiers::COMMAND, Key::N);
+    h.get_by_label(de::NEW_PROJECT_SAVE).click();
+    h.run_steps(3);
+    h.get_by_value(de::FILE_SAVE_TITLE);
+    assert!(!file.exists(), "nothing written to the old path");
+    assert_eq!(h.state().project().name, "Night Drive");
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    assert_eq!(
+        h.state().project().name,
+        "Night Drive",
+        "cancelled: still open"
+    );
     // Ctrl S asks for a place, in the old folder.
     press(&mut h, Modifiers::COMMAND, Key::S);
     h.run_steps(1);
@@ -448,6 +461,73 @@ fn the_start_screen_marks_rows_with_copies_and_opening_one_asks_first() {
     assert!(!h.state().doc().is_dirty(), "the file, not the copy");
     assert_eq!(copies(&dir).len(), 2, "both copies wait for the next start");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn two_copies_of_one_project_get_the_chip_and_a_row_of_their_own() {
+    let dir = scratch("twice");
+    let songs = dir.join("songs");
+    std::fs::create_dir_all(&songs).unwrap();
+    let night = songs.join("Night Drive.komponist");
+    project_io::save_project(&night, &song("Night Drive")).unwrap();
+    crashed_session(&dir, Some(&night));
+    std::thread::sleep(Duration::from_millis(20));
+    crashed_session(&dir, Some(&night));
+    assert_eq!(copies(&dir).len(), 2);
+
+    let clock = FakeClock::new();
+    let mut app = session(&dir, Project::new("Unbenannt"), &clock);
+    app.show_start_screen();
+    app.offer_recovery(None);
+    let newest = app.recovery().candidates[0].id.clone();
+    let older = app.recovery().candidates[1].id.clone();
+    let mut h = harness(app);
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    h.run_steps(2);
+    let rows: Vec<String> = h
+        .get_all_by_role(Role::ListItem)
+        .map(|n| n.accesskit_node().label().unwrap_or_default())
+        .collect();
+    let with_copy = rows
+        .iter()
+        .filter(|l| l.starts_with("Night Drive, ") && l.ends_with(", Sicherungskopie vorhanden"))
+        .count();
+    assert_eq!(with_copy, 2, "{rows:?}");
+    // The top row is the older copy's own; it asks for that copy, not the newest.
+    h.get_all_by_role(Role::ListItem).next().unwrap().click();
+    h.run_steps(2);
+    let asked = h.state().recovery_prompt_id().unwrap();
+    assert_eq!(asked, older);
+    assert_ne!(asked, newest);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_arrow_keys_move_through_two_untitled_copies() {
+    let t = Lang::De;
+    let mut model = start_model(t);
+    let mut second = model.recent[0].clone();
+    second.recovery = Id::parse("00000000000000c3");
+    second.name = "Skizze".into();
+    model.recent.insert(1, second);
+    let mut h = komponist_ui::snapshot::builder::<StartView>(1.0)
+        .with_size(vec2(W, H))
+        .build_ui_state(
+            move |ui, view: &mut StartView| {
+                let rect = ui.ctx().content_rect();
+                let _ = start::show(ui, rect, &model, view, true);
+            },
+            StartView::default(),
+        );
+    h.run_steps(2);
+    h.key_press(Key::ArrowDown);
+    h.run_steps(2);
+    assert_eq!(h.state().selected, 1, "the second untitled copy");
+    assert_eq!(h.state().selected_copy, Id::parse("00000000000000c3"));
+    h.key_press(Key::ArrowDown);
+    h.run_steps(2);
+    assert_eq!(h.state().selected, 2);
 }
 
 #[test]
@@ -782,6 +862,7 @@ fn start_model(t: Lang) -> start::Model {
             date: date.to_owned(),
             hues: hues.to_vec(),
             missing: false,
+            copy_only: path.is_empty(),
             recovery: copy,
         }
     };

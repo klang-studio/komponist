@@ -1141,12 +1141,13 @@ impl App {
             Answer::Save => {
                 self.stop_take();
                 match self.project_path.clone() {
-                    Some(path) => {
+                    // As Ctrl S: a recovered copy whose file is gone asks for a place first.
+                    Some(path) if !self.recovery_ui.save_asks => {
                         if self.save_to(&path) {
                             self.proceed(next);
                         }
                     }
-                    None => {
+                    _ => {
                         self.open_file_browser(Purpose::Save);
                         self.dialogs.pending = Some(next);
                     }
