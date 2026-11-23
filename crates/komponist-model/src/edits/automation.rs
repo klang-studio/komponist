@@ -538,6 +538,7 @@ pub(crate) fn repair_loaded(
                     continue;
                 }
                 let clip = Arc::make_mut(clip);
+                let before = clip.automation.len();
                 if clip.kind() == ClipKind::Audio {
                     clip.automation.clear();
                 } else {
@@ -545,8 +546,21 @@ pub(crate) fn repair_loaded(
                     clip.automation
                         .retain(|envelope| targets.insert(envelope.target.clone()));
                 }
+                repairs.add(
+                    crate::validate::RepairKind::AutomationLanes,
+                    before - clip.automation.len(),
+                );
             }
+            let lanes = project.tracks[index].automation.lanes.len();
             ensure_clip_lanes(project, index)?;
+            repairs.add(
+                crate::validate::RepairKind::AutomationLanes,
+                project.tracks[index]
+                    .automation
+                    .lanes
+                    .len()
+                    .saturating_sub(lanes),
+            );
         }
     }
     Ok(())

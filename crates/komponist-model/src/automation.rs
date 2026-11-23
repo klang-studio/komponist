@@ -258,11 +258,13 @@ impl Serialize for Points {
 
 impl<'de> Deserialize<'de> for Points {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let points = Vec::<Point>::deserialize(deserializer)?;
-        if !points.is_sorted_by_key(|point| point.tick) {
+        let raw = Vec::<Point>::deserialize(deserializer)?;
+        let points = Self::new(raw.clone());
+        // Sorting, clamped ticks, values and curves, dropped middle points of a tick.
+        if points.as_slice() != raw.as_slice() {
             crate::validate::note_deserialize_repair(crate::validate::RepairKind::AutomationPoints);
         }
-        Ok(Self::new(points))
+        Ok(points)
     }
 }
 

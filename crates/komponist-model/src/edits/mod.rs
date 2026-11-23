@@ -913,11 +913,16 @@ pub fn duplicate_clips(
             ))
         })
         .collect::<Result<Vec<_>, EditError>>()?;
+    if located.iter().any(|(_, clip)| clip.end() > MAX_DOC_TICK) {
+        return Err(EditError::Invalid(
+            "the copy would start behind the end of the document",
+        ));
+    }
     let mut p = project.clone();
     let mut copies = Vec::with_capacity(located.len());
     for (track_index, clip) in located {
         let mut copy = copy_clip(&mut p, &clip)?;
-        copy.start = clip.end().min(MAX_DOC_TICK);
+        copy.start = clip.end();
         copies.push(copy.id);
         insert_clip(track_mut(&mut p, track_index), Arc::new(copy));
     }
@@ -1907,10 +1912,7 @@ impl ClipGroup {
         let last = project.tracks.len() as i64 - 1;
         let group = ClipGroup {
             clips,
-            delta: delta.clamp(
-                -earliest.max(Tick::ZERO),
-                (MAX_DOC_TICK - latest).max(Tick::ZERO),
-            ),
+            delta: delta.clamp(-earliest.max(Tick::ZERO), room_after(latest)),
             track_delta: i64::from(track_delta).clamp(-top, (last - bottom).max(-top)),
         };
         for (t, clip) in &group.clips {
@@ -2100,6 +2102,12 @@ impl NoteSelection {
     }
 }
 
+/// How far something that starts at `start` can move later and still start inside the document;
+/// never negative, and no overflow for any `start`.
+fn room_after(start: Tick) -> Tick {
+    Tick(MAX_DOC_TICK.0.saturating_sub(start.0)).max(Tick::ZERO)
+}
+
 /// Clamps a group move so no selected note starts before 0 or after [`MAX_DOC_TICK`] or leaves
 /// `0 ..= 127`. Total: the ranges always contain 0 (no move), whatever the notes hold, so a note
 /// that is out of range itself (a file that was never repaired) cannot make the clamp panic.
@@ -2115,10 +2123,7 @@ fn clamp_note_move(
     let lowest = selected().map(|n| i64::from(n.pitch)).min().unwrap_or(0);
     let highest = selected().map(|n| i64::from(n.pitch)).max().unwrap_or(127);
     (
-        delta.clamp(
-            -earliest.max(Tick::ZERO),
-            (MAX_DOC_TICK - latest).max(Tick::ZERO),
-        ),
+        delta.clamp(-earliest.max(Tick::ZERO), room_after(latest)),
         i64::from(pitch_delta).clamp((-lowest).min(0), (127 - highest).max(0)),
     )
 }

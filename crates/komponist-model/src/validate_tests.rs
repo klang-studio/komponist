@@ -178,10 +178,12 @@ fn the_edits_keep_every_tick_inside_the_document() {
     ] {
         edit.validate().unwrap();
     }
-    // Moved to the very end, a duplicate lands there too instead of overflowing.
+    // Moved to the very end, a duplicate would start behind the document: refused, nothing cut.
     let end = edits::move_clips(&project, &[clip], Tick(max), 0).unwrap();
-    let (end, _) = edits::duplicate_clips(&end, &[clip]).unwrap();
-    end.validate().unwrap();
+    assert!(matches!(
+        edits::duplicate_clips(&end, &[clip]),
+        Err(crate::EditError::Invalid(_))
+    ));
     // Notes: moves, copies and resizes clamp.
     let notes: Vec<NoteId> = match &project.tracks[1].clips[0].content {
         ClipContent::Midi(m) => m.active().notes.iter().map(|n| n.id).collect(),
@@ -390,11 +392,11 @@ fn macro_repairs_are_reported() {
         ],
     }]);
     let loaded = loaded(value);
-    // One range swapped, one duplicate mapping dropped.
-    assert_eq!(loaded.repairs.count(RepairKind::MacroMappings), 2);
-    assert_eq!(loaded.repairs.total(), 2);
+    // The slot value clamped, one range swapped, one duplicate mapping dropped.
+    assert_eq!(loaded.repairs.count(RepairKind::MacroMappings), 3);
+    assert_eq!(loaded.repairs.total(), 3);
     let text = loaded.repairs.to_string();
-    assert!(text.contains("2 × macro mapping"), "{text}");
+    assert!(text.contains("3 × macro mapping"), "{text}");
 }
 
 #[test]
@@ -429,4 +431,135 @@ fn validate_names_what_is_broken() {
     let mut p: Project = demo_project();
     p.next_id = 1;
     assert!(p.validate().unwrap_err().to_string().contains("next_id"));
+}
+
+#[test]
+fn note_moves_are_total_even_for_the_lowest_tick() {
+    let mut project = demo_project();
+    let clip = project.tracks[1].clips[0].id;
+    let track = Arc::make_mut(&mut project.tracks[1]);
+    let ClipContent::Midi(m) = &mut Arc::make_mut(&mut track.clips[0]).content else {
+        panic!("a MIDI clip");
+    };
+    let notes = Arc::make_mut(&mut m.takes[0].notes);
+    notes[0].start = Tick(i64::MIN);
+    notes[1].start = Tick(i64::MAX);
+    let all: Vec<NoteId> = notes.iter().map(|n| n.id).collect();
+    edits::move_notes(&project, clip, &all, Tick(5), 0).unwrap();
+    edits::copy_notes(&project, clip, &all, Tick(i64::MIN), 0).unwrap();
+}
+
+#[test]
+fn a_device_id_shared_by_master_and_track_keeps_both_targets_alive() {
+    use crate::automation::AutomationTarget;
+    let mut p = automation_project();
+    // The master's first device takes the id of a track device that an envelope or lane targets.
+    let (track, device) = p
+        .tracks
+        .iter()
+        .enumerate()
+        .find_map(|(i, t)| {
+            let id = t.automation.lanes.iter().find_map(|l| match l.target {
+                AutomationTarget::Param { device, .. } => Some(device),
+                _ => None,
+            })?;
+            Some((i, id))
+        })
+        .expect("a parameter lane in the fixture");
+    let mut value = serde_json::to_value(&p).unwrap();
+    let master_lane = value["tracks"][track]["automation"]["lanes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["target"]["kind"] == "param")
+        .unwrap()
+        .clone();
+    let mut master_device = value["tracks"][track]["channel"]["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == device.0)
+        .unwrap()
+        .clone();
+    master_device["role"] = "effect".into();
+    value["master"]["devices"] = serde_json::json!([master_device]);
+    let mut lane = master_lane;
+    lane["id"] = 880_001.into();
+    value["master_automation"] = serde_json::json!({ "lanes": [lane] });
+    p = loaded(value).project;
+    let own = p.tracks[track]
+        .channel
+        .devices
+        .iter()
+        .map(|d| d.id)
+        .collect::<Vec<_>>();
+    assert!(
+        own.contains(&device),
+        "the track keeps its id (found first)"
+    );
+    let master_id = p.master.devices[0].id;
+    assert_ne!(master_id, device);
+    // Both lanes still target a device of their own owner.
+    assert!(matches!(
+        p.master_automation.lanes[0].target,
+        AutomationTarget::Param { device: d, .. } if d == master_id
+    ));
+    assert!(
+        p.tracks[track]
+            .automation
+            .lanes
+            .iter()
+            .any(|l| matches!(l.target, AutomationTarget::Param { device: d, .. } if d == device))
+    );
+}
+
+#[test]
+fn a_new_id_never_lands_on_a_dangling_route_target() {
+    let base = demo_project();
+    let next = base.next_id;
+    let mut value = serde_json::to_value(&base).unwrap();
+    // The track outputs to a bus that is not there, with the id the first replacement would take;
+    // a second track shares the first one's id.
+    value["tracks"][2]["output"] = serde_json::json!({ "bus": next });
+    let first = value["tracks"][0]["id"].clone();
+    value["tracks"][1]["id"] = first;
+    let loaded = loaded(value);
+    let p = &loaded.project;
+    assert_eq!(p.tracks[2].output, crate::TrackOutput::Master, "dropped");
+    assert_ne!(p.tracks[1].id.0, next);
+    assert!(p.track(crate::TrackId(next)).is_none());
+}
+
+#[test]
+fn only_real_changes_are_counted() {
+    // Clips out of order, a raised next_id, an input bus cleared, a lane for a missing target.
+    let p = demo_project();
+    let mut value = serde_json::to_value(&p).unwrap();
+    let clips = value["tracks"][2]["clips"].as_array_mut().unwrap();
+    clips.reverse();
+    value["next_id"] = 1.into();
+    let loaded = loaded(value);
+    assert_eq!(loaded.repairs.count(RepairKind::NextId), 1);
+    assert!(loaded.repairs.count(RepairKind::Order) >= 1 || p.tracks[2].clips.len() < 2);
+    assert_eq!(loaded.repairs.count(RepairKind::DuplicateIds), 0);
+}
+
+#[test]
+fn validate_checks_lanes_envelopes_and_macros() {
+    let mut p = automation_project();
+    p.validate().unwrap();
+    let track = p
+        .tracks
+        .iter()
+        .position(|t| !t.automation.lanes.is_empty())
+        .unwrap();
+    let t = Arc::make_mut(&mut p.tracks[track]);
+    let mut again = (*t.automation.lanes[0]).clone();
+    again.id = crate::LaneId(p.next_id);
+    p.next_id += 1;
+    t.automation.lanes.push(Arc::new(again));
+    assert!(p.validate().unwrap_err().to_string().contains("one target"));
+    let mut p = demo_project();
+    Arc::make_mut(&mut p.tracks[0]).macros.0[0].value = 2.0;
+    assert!(p.validate().unwrap_err().to_string().contains("macro"));
 }

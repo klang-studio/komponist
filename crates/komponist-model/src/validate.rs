@@ -24,6 +24,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::audio::{CLIP_GAIN_DB_MAX, CLIP_GAIN_DB_MIN};
+use crate::automation::AutomationTarget;
 use crate::automation::{LANE_HEIGHT_MAX, LANE_HEIGHT_MIN};
 use crate::edits::{MAX_COUNT_IN_BARS, valid_meter};
 use crate::project::{
@@ -67,10 +68,18 @@ pub enum RepairKind {
     DuplicateIds,
     /// A macro mapping was dropped, clamped or reordered.
     MacroMappings,
-    /// A duplicate automation lane was dropped.
+    /// A duplicate or unusable automation lane or clip envelope was dropped, or a missing lane added.
     AutomationLanes,
-    /// Unsorted automation points were put in order.
+    /// Automation points were put in order, clamped or thinned, or a clip envelope was dropped.
     AutomationPoints,
+    /// Clips or notes were put in the order the model keeps them in.
+    Order,
+    /// A routing reference (output, send, sidechain, audio input, group order) was dropped or fixed.
+    Routing,
+    /// Overlapping audio clips were cut.
+    AudioOverlaps,
+    /// `next_id` was below an id in use and was raised.
+    NextId,
 }
 
 impl RepairKind {
@@ -90,7 +99,11 @@ impl RepairKind {
             RepairKind::DuplicateIds => "duplicate object id replaced",
             RepairKind::MacroMappings => "macro mapping repaired or dropped",
             RepairKind::AutomationLanes => "duplicate automation lane dropped",
-            RepairKind::AutomationPoints => "unsorted automation points reordered",
+            RepairKind::AutomationPoints => "automation points reordered, clamped or thinned",
+            RepairKind::Order => "clips or notes put in order",
+            RepairKind::Routing => "routing reference dropped or fixed",
+            RepairKind::AudioOverlaps => "overlapping audio clips cut",
+            RepairKind::NextId => "next id raised above the ids in use",
         }
     }
 }
@@ -259,9 +272,14 @@ fn validate(p: &Project) -> Result<(), String> {
         id("device", d.id.0)?;
         ensure!(d.role == DeviceRole::Effect, "master takes effects only");
     }
+    let mut targets = HashSet::new();
     for lane in &p.master_automation.lanes {
         id("lane", lane.id.0)?;
         validate_lane(lane)?;
+        ensure!(
+            targets.insert(&lane.target),
+            "master: two lanes for one target"
+        );
     }
     for t in &p.tracks {
         id("track", t.id.0)?;
@@ -307,10 +325,17 @@ fn validate(p: &Project) -> Result<(), String> {
                 send.id.0
             );
         }
+        let mut targets = HashSet::new();
         for lane in &t.automation.lanes {
             id("lane", lane.id.0)?;
             validate_lane(lane)?;
+            ensure!(
+                targets.insert(&lane.target),
+                "track {}: two lanes for one target",
+                t.id.0
+            );
         }
+        ensure!(t.macros.is_valid(), "track {}: macro out of range", t.id.0);
         ensure!(
             t.clips.is_sorted_by_key(|c| (c.start, c.id)),
             "track {}: clips not sorted",
@@ -374,7 +399,14 @@ fn validate_clip(
     if !clip.kind().fits(t.kind) {
         return fail("kind does not fit the track");
     }
+    if matches!(clip.content, ClipContent::Audio(_)) && !clip.automation.is_empty() {
+        return fail("an audio clip has no envelopes");
+    }
+    let mut targets = HashSet::new();
     for envelope in &clip.automation {
+        if !targets.insert(&envelope.target) {
+            return fail("two envelopes for one target");
+        }
         let bound = (-MAX_DOC_TICK)..=MAX_DOC_TICK;
         if !envelope
             .points
@@ -514,13 +546,39 @@ pub(crate) fn repair_loaded(project: &mut Project) -> Result<Repairs, String> {
     }
     repair_ids(project, &mut repairs)?;
     for track in &mut project.tracks {
-        sort_track(track);
+        sort_track(track, &mut repairs);
     }
-    repair_routing(project);
-    repair_audio_inputs(project);
+    let order: Vec<TrackId> = project.tracks.iter().map(|t| t.id).collect();
+    let routed = repair_routing(project) + repair_audio_inputs(project);
+    repairs.add(
+        RepairKind::Routing,
+        routed + usize::from(order != project.tracks.iter().map(|t| t.id).collect::<Vec<_>>()),
+    );
     crate::edits::automation::repair_loaded(project, &mut repairs)
         .map_err(|error| error.to_string())?;
+    let audio_before: Vec<Vec<Arc<Clip>>> = project
+        .tracks
+        .iter()
+        .map(|t| {
+            if t.is_audio() {
+                t.clips.clone()
+            } else {
+                Vec::new()
+            }
+        })
+        .collect();
     crate::edits::normalize_audio_overlaps(project).map_err(|error| error.to_string())?;
+    let cut = project
+        .tracks
+        .iter()
+        .zip(&audio_before)
+        .filter(|(t, before)| {
+            t.is_audio()
+                && (t.clips.len() != before.len()
+                    || t.clips.iter().zip(before.iter()).any(|(a, b)| a != b))
+        })
+        .count();
+    repairs.add(RepairKind::AudioOverlaps, cut);
     routing::check(project).map_err(|issue| issue.to_string())?;
     project.validate().map_err(|error| error.to_string())?;
     Ok(repairs)
@@ -561,9 +619,11 @@ fn repair_track(track: &mut Arc<Track>, tempo: Tempo, repairs: &mut Repairs) -> 
     }
     if !t.is_audio() && !t.audio.is_default() {
         t.audio = crate::AudioIo::default();
+        repairs.add(RepairKind::MixerValues, 1);
     }
     if t.is_audio() && t.monitor {
         t.monitor = false;
+        repairs.add(RepairKind::MixerValues, 1);
     }
     if !Hue::ALL.contains(&t.hue) {
         t.hue = nearest_hue(t.hue);
@@ -677,6 +737,7 @@ fn repair_clip(clip: &mut Arc<Clip>, tempo: Tempo, repairs: &mut Repairs) -> Res
             if length != c.length || fixed != *a {
                 c.length = length;
                 c.content = ClipContent::Audio(fixed);
+                repairs.add(RepairKind::ClipValues, 1);
             }
         }
     }
@@ -729,69 +790,251 @@ fn repair_step_clip(s: &mut StepClip, repairs: &mut Repairs) {
     repairs.add(RepairKind::StepValues, fixed);
 }
 
-/// Calls `f` on the id of every object that has one: tracks first (references point to them), then
-/// the master's devices and lanes and, per track, devices, sends, lanes, clips and notes.
-fn visit_ids(project: &mut Project, f: &mut impl FnMut(&mut u64)) {
-    for track in &mut project.tracks {
-        f(&mut Arc::make_mut(track).id.0);
+/// What an id names, for [`visit_ids`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IdKind {
+    Track,
+    Device,
+    Send,
+    Other,
+}
+
+/// Who holds an object: the master or the track at an index.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Owner {
+    Master,
+    Track(usize),
+}
+
+/// A new id for an object, and whether automation of its owner that targeted the old id follows it.
+struct Replace {
+    new: u64,
+    retarget: bool,
+}
+
+/// Points the `Param` and `Send` targets of `kind` `old` to `new`.
+fn retarget(target: &mut AutomationTarget, kind: IdKind, old: u64, new: u64) {
+    match target {
+        AutomationTarget::Param { device, .. } if kind == IdKind::Device && device.0 == old => {
+            device.0 = new;
+        }
+        AutomationTarget::Send { send } if kind == IdKind::Send && send.0 == old => send.0 = new,
+        _ => {}
     }
-    for device in &mut Arc::make_mut(&mut project.master).devices {
-        f(&mut Arc::make_mut(device).id.0);
+}
+
+/// Calls `f` with the kind, the owner and the id of every object that has one: tracks first
+/// (references point to them), then per track its devices, sends, lanes, clips and notes, then the
+/// master's devices and lanes. A device or send that gets a new id takes the automation targets
+/// and macro mappings of its own owner along when `f` says so.
+fn visit_ids(project: &mut Project, f: &mut impl FnMut(IdKind, Owner, u64) -> Option<Replace>) {
+    fn apply(
+        kind: IdKind,
+        owner: Owner,
+        id: &mut u64,
+        f: &mut impl FnMut(IdKind, Owner, u64) -> Option<Replace>,
+        moved: &mut Vec<(IdKind, u64, u64)>,
+    ) {
+        if let Some(r) = f(kind, owner, *id) {
+            if r.retarget {
+                moved.push((kind, *id, r.new));
+            }
+            *id = r.new;
+        }
     }
-    for lane in &mut Arc::make_mut(&mut project.master_automation).lanes {
-        f(&mut Arc::make_mut(lane).id.0);
+    for (i, track) in project.tracks.iter_mut().enumerate() {
+        apply(
+            IdKind::Track,
+            Owner::Track(i),
+            &mut Arc::make_mut(track).id.0,
+            f,
+            &mut Vec::new(),
+        );
     }
-    for track in &mut project.tracks {
+    for (i, track) in project.tracks.iter_mut().enumerate() {
+        let owner = Owner::Track(i);
         let t = Arc::make_mut(track);
+        let mut moved = Vec::new();
         for device in &mut t.channel.devices {
-            f(&mut Arc::make_mut(device).id.0);
+            apply(
+                IdKind::Device,
+                owner,
+                &mut Arc::make_mut(device).id.0,
+                f,
+                &mut moved,
+            );
         }
         for send in &mut t.sends {
-            f(&mut send.id.0);
+            apply(IdKind::Send, owner, &mut send.id.0, f, &mut moved);
         }
         for lane in &mut t.automation.lanes {
-            f(&mut Arc::make_mut(lane).id.0);
+            apply(
+                IdKind::Other,
+                owner,
+                &mut Arc::make_mut(lane).id.0,
+                f,
+                &mut moved,
+            );
         }
         for clip in &mut t.clips {
             let c = Arc::make_mut(clip);
-            f(&mut c.id.0);
+            apply(IdKind::Other, owner, &mut c.id.0, f, &mut moved);
             if let ClipContent::Midi(m) = &mut c.content {
                 for take in &mut m.takes {
                     for note in Arc::make_mut(&mut take.notes).iter_mut() {
-                        f(&mut note.id.0);
+                        apply(IdKind::Other, owner, &mut note.id.0, f, &mut moved);
                     }
                 }
             }
         }
+        for (kind, old, new) in moved {
+            for lane in &mut t.automation.lanes {
+                retarget(&mut Arc::make_mut(lane).target, kind, old, new);
+            }
+            for clip in &mut t.clips {
+                for envelope in &mut Arc::make_mut(clip).automation {
+                    retarget(&mut envelope.target, kind, old, new);
+                }
+            }
+            for slot in &mut t.macros.0 {
+                for mapping in &mut slot.mappings {
+                    retarget(&mut mapping.target, kind, old, new);
+                }
+            }
+        }
     }
+    let mut moved = Vec::new();
+    for device in &mut Arc::make_mut(&mut project.master).devices {
+        apply(
+            IdKind::Device,
+            Owner::Master,
+            &mut Arc::make_mut(device).id.0,
+            f,
+            &mut moved,
+        );
+    }
+    for lane in &mut Arc::make_mut(&mut project.master_automation).lanes {
+        apply(
+            IdKind::Other,
+            Owner::Master,
+            &mut Arc::make_mut(lane).id.0,
+            f,
+            &mut moved,
+        );
+    }
+    for (kind, old, new) in moved {
+        for lane in &mut Arc::make_mut(&mut project.master_automation).lanes {
+            retarget(&mut Arc::make_mut(lane).target, kind, old, new);
+        }
+    }
+}
+
+/// Every id the project refers to without owning it: routing targets, sidechain sources, input
+/// buses and the devices and sends that automation and macros address. A replacement id must not
+/// be one of them, or a reference to something that is missing would find a new object.
+fn referenced_ids(project: &Project) -> HashSet<u64> {
+    let mut ids = HashSet::new();
+    let mut target = |t: &AutomationTarget| match t {
+        AutomationTarget::Param { device, .. } => {
+            ids.insert(device.0);
+        }
+        AutomationTarget::Send { send } => {
+            ids.insert(send.0);
+        }
+        _ => {}
+    };
+    for lane in &project.master_automation.lanes {
+        target(&lane.target);
+    }
+    for t in &project.tracks {
+        t.automation
+            .lanes
+            .iter()
+            .for_each(|lane| target(&lane.target));
+        t.clips
+            .iter()
+            .flat_map(|c| &c.automation)
+            .for_each(|e| target(&e.target));
+        t.macros
+            .0
+            .iter()
+            .flat_map(|slot| &slot.mappings)
+            .for_each(|m| target(&m.target));
+    }
+    for t in &project.tracks {
+        if let crate::project::TrackOutput::Bus(b) = t.output {
+            ids.insert(b.0);
+        }
+        ids.extend(t.sends.iter().map(|s| s.target.0));
+        ids.extend(
+            t.channel
+                .devices
+                .iter()
+                .filter_map(|d| d.sidechain)
+                .map(|s| s.source.0),
+        );
+        ids.extend(t.input_bus().map(|b| b.0));
+    }
+    ids.extend(
+        project
+            .master
+            .devices
+            .iter()
+            .filter_map(|d| d.sidechain)
+            .map(|s| s.source.0),
+    );
+    ids
 }
 
 /// Raises `next_id` above every id, then gives every id that is used twice a new one. The first
 /// object in [`visit_ids`] order keeps it, so references (routing, sidechains, automation targets)
 /// still name the object they named before, which is also what the routing graph and `find_*`
-/// resolve to. Rejects a project whose ids are used up.
+/// resolve to (tracks before the master). Devices and sends that lose their id keep the automation
+/// targets and macro mappings of their own track or master. Replacement ids skip the ids that
+/// [`referenced_ids`] names. Rejects a project whose ids are used up.
 fn repair_ids(project: &mut Project, repairs: &mut Repairs) -> Result<(), String> {
     const EXHAUSTED: &str = "project object identifiers exhausted";
     let mut max = 0;
-    visit_ids(project, &mut |id| max = max.max(*id));
-    let next = max.checked_add(1).ok_or(EXHAUSTED)?;
-    let mut next = project.next_id.max(next);
+    visit_ids(project, &mut |_, _, id| {
+        max = max.max(id);
+        None
+    });
+    let needed = max.checked_add(1).ok_or(EXHAUSTED)?;
+    if project.next_id < needed {
+        repairs.add(RepairKind::NextId, 1);
+    }
+    let mut next = project.next_id.max(needed);
     if next == u64::MAX {
         return Err(EXHAUSTED.to_owned());
     }
-    let mut seen = HashSet::new();
+    let reserved = referenced_ids(project);
+    let mut first: HashMap<u64, (IdKind, Owner)> = HashMap::new();
     let mut replaced = 0;
     let mut exhausted = false;
-    visit_ids(project, &mut |id| {
-        if !seen.insert(*id) {
-            *id = next;
-            seen.insert(next);
-            replaced += 1;
-            match next.checked_add(1).filter(|&n| n < u64::MAX) {
+    visit_ids(project, &mut |kind, owner, id| {
+        let Some(&(first_kind, first_owner)) = first.get(&id) else {
+            first.insert(id, (kind, owner));
+            return None;
+        };
+        while first.contains_key(&next) || reserved.contains(&next) {
+            match next.checked_add(1) {
                 Some(n) => next = n,
-                None => exhausted = true,
+                None => {
+                    exhausted = true;
+                    break;
+                }
             }
         }
+        let new = next;
+        first.insert(new, (kind, owner));
+        replaced += 1;
+        match next.checked_add(1).filter(|&n| n < u64::MAX) {
+            Some(n) => next = n,
+            None => exhausted = true,
+        }
+        // The first holder is another object than the one automation of this owner means.
+        let retarget = !(first_kind == kind && first_owner == owner);
+        Some(Replace { new, retarget })
     });
     if exhausted {
         return Err(EXHAUSTED.to_owned());
@@ -802,10 +1045,11 @@ fn repair_ids(project: &mut Project, repairs: &mut Repairs) -> Result<(), String
 }
 
 /// Puts clips and notes in the order the model keeps them in.
-fn sort_track(track: &mut Arc<Track>) {
+fn sort_track(track: &mut Arc<Track>, repairs: &mut Repairs) {
     let t = Arc::make_mut(track);
     if !t.clips.is_sorted_by_key(|c| (c.start, c.id)) {
         t.clips.sort_by_key(|c| (c.start, c.id));
+        repairs.add(RepairKind::Order, 1);
     }
     for clip in &mut t.clips {
         let ClipContent::Midi(m) = &clip.content else {
@@ -822,14 +1066,18 @@ fn sort_track(track: &mut Arc<Track>) {
             continue;
         };
         for take in &mut m.takes {
-            Arc::make_mut(&mut take.notes).sort_by_key(|n| (n.start, n.pitch, n.id));
+            if !take.notes.is_sorted_by_key(|n| (n.start, n.pitch, n.id)) {
+                Arc::make_mut(&mut take.notes).sort_by_key(|n| (n.start, n.pitch, n.id));
+                repairs.add(RepairKind::Order, 1);
+            }
         }
     }
 }
 
 /// Clears the input bus of an audio track that names a missing track, the track itself or a track
 /// that is not a bus. A cycle through an input stays for [`routing::check`] to reject.
-fn repair_audio_inputs(project: &mut Project) {
+fn repair_audio_inputs(project: &mut Project) -> usize {
+    let mut cleared = 0;
     let buses: HashSet<_> = project
         .tracks
         .iter()
@@ -839,8 +1087,10 @@ fn repair_audio_inputs(project: &mut Project) {
     for track in &mut project.tracks {
         if track.input_bus().is_some_and(|b| !buses.contains(&b)) {
             Arc::make_mut(track).audio.input = crate::AudioInput::None;
+            cleared += 1;
         }
     }
+    cleared
 }
 
 /// Drops routing references that cannot work: outputs and sends that name a missing track, the
@@ -848,8 +1098,9 @@ fn repair_audio_inputs(project: &mut Project) {
 /// same bus, sidechains from a missing track or from the device's own track, `folder` on a track
 /// that is not a bus, `folded` on one that is not a group, arm and monitoring on a bus. Then puts
 /// every group's members behind it. Leaves cycles and bus content to [`routing::check`], which
-/// rejects them.
-fn repair_routing(project: &mut Project) {
+/// rejects them. Returns how many tracks and master devices it changed.
+fn repair_routing(project: &mut Project) -> usize {
+    let mut changed = 0;
     use crate::project::TrackOutput;
 
     let kinds: HashMap<TrackId, bool> = project.tracks.iter().map(|t| (t.id, t.is_bus())).collect();
@@ -876,6 +1127,7 @@ fn repair_routing(project: &mut Project) {
         if !broken {
             continue;
         }
+        changed += 1;
         let t = Arc::make_mut(&mut project.tracks[index]);
         if matches!(t.output, TrackOutput::Bus(b) if !is_bus(own, b)) {
             t.output = TrackOutput::Master;
@@ -904,8 +1156,10 @@ fn repair_routing(project: &mut Project) {
         for d in &mut Arc::make_mut(&mut project.master).devices {
             if bad_sidechain(None, d.sidechain) {
                 Arc::make_mut(d).sidechain = None;
+                changed += 1;
             }
         }
     }
     routing::normalize_groups(project);
+    changed
 }
