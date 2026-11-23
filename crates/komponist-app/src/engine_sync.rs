@@ -1102,7 +1102,7 @@ impl EngineSync {
         let before = self.sample_rate();
         self.audio.poll();
         if let Some(poisoned) = self.audio.take_poisoned() {
-            self.rebuild_engine(*poisoned);
+            self.rebuild_engine(Some(*poisoned));
         }
         if self.sample_rate() != before {
             self.synced = None;
@@ -1487,30 +1487,47 @@ impl EngineSync {
     /// stays stopped at the old playhead (located there with the first program); commands that
     /// waited for the old engine are dropped, the events it had queued reach the next poll. The
     /// app reports it once and ends a running take there ([`EngineSync::take_rebuild_notice`]).
-    fn rebuild_engine(&mut self, poisoned: EngineProcess) {
+    ///
+    /// `None`: the engine is lost altogether (its export worker died, [`EngineSync::recover`]);
+    /// the new one runs at the stream's rate with the default worker setting.
+    fn rebuild_engine(&mut self, poisoned: Option<EngineProcess>) {
+        let sample_rate = poisoned.as_ref().map_or_else(
+            || self.rate.load(Ordering::Relaxed) as f32,
+            |p| p.engine.sample_rate(),
+        );
         let (engine, handle) = Engine::new(EngineConfig {
-            sample_rate: poisoned.engine.sample_rate(),
+            sample_rate,
             ..EngineConfig::default()
         });
-        let EngineProcess {
-            workers,
-            workers_auto,
-            rt,
-            worker_status,
-            worker_notice,
-            workgroup_notice,
-            ..
-        } = poisoned;
-        let process = EngineProcess {
-            workers,
-            workers_auto,
-            rt,
-            worker_status,
-            worker_notice,
-            workgroup_notice,
-            ..EngineProcess::new(engine, Arc::clone(&self.rate))
+        let fresh = EngineProcess::new(engine, Arc::clone(&self.rate));
+        let mut process = match poisoned {
+            Some(EngineProcess {
+                workers,
+                workers_auto,
+                rt,
+                worker_status,
+                worker_notice,
+                workgroup_notice,
+                ..
+            }) => EngineProcess {
+                workers,
+                workers_auto,
+                rt,
+                worker_status,
+                worker_notice,
+                workgroup_notice,
+                ..fresh
+            },
+            None => fresh,
         };
-        let playhead = self.telemetry.playhead();
+        // A worker setting asked for during an export applies to the new engine, as at `attach`.
+        if let Some(setting) = self.workers_after_export.take() {
+            process.apply_worker_setting(setting);
+        }
+        let playhead = self
+            .frozen
+            .take()
+            .unwrap_or_else(|| self.telemetry.playhead());
         self.worker_stats = process.engine.worker_stats();
         self.telemetry = Arc::clone(handle.telemetry());
         // The old handle goes with its queues; garbage in them is dropped here, the rest is kept.
@@ -1531,6 +1548,25 @@ impl EngineSync {
         self.locate_after_rebuild = Some(playhead);
         // `prepare` starts the workers for the running stream.
         self.audio.attach(Box::new(process));
+    }
+
+    /// An export worker panicked or died ([`EngineSync::detach`]): replaces the engine with a new
+    /// one built from the document, the rebuild of [`AudioSystem::take_poisoned`] (#210). `engine`
+    /// is what came back from the worker, if anything: its state is unknown, so it is dropped
+    /// here, on the UI thread, never reattached; its handle is drained like a poisoned engine's.
+    /// Commands that waited for it are dropped, so the queue cannot grow while nothing runs.
+    /// Reported through [`EngineSync::take_rebuild_notice`].
+    pub fn recover(&mut self, engine: Option<DetachedEngine>) {
+        self.held = None;
+        match engine {
+            Some(DetachedEngine {
+                process, handle, ..
+            }) => {
+                self.handle = Some(handle);
+                self.rebuild_engine(Some(*process));
+            }
+            None => self.rebuild_engine(None),
+        }
     }
 
     /// The playhead at which the engine was rebuilt after a panic, if it was since the last call
@@ -1850,6 +1886,36 @@ mod tests {
         sync.hold_engine().unwrap();
         assert!(!sync.held.as_ref().unwrap().engine.is_poisoned());
         sync.release_engine();
+        sync.shutdown();
+    }
+
+    /// #211: an export worker that died with the engine: a new one is built at the stream's rate,
+    /// the commands that waited are dropped (the queue cannot grow while nothing runs), the app
+    /// is told once, and the new engine plays the document.
+    #[test]
+    fn a_lost_engine_is_rebuilt_and_the_waiting_commands_dropped() {
+        let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
+        let doc = Document::new(demo_project());
+        sync.sync(&doc);
+        let rate = sync.sample_rate();
+        let detached = sync.detach().unwrap();
+        sync.send(Command::Play);
+        assert_eq!(sync.pending_commands(), 1);
+        // The worker dies: the engine goes with it.
+        drop(detached);
+        sync.recover(None);
+        assert!(!sync.is_detached());
+        assert_eq!(sync.pending_commands(), 0);
+        assert_eq!(sync.sample_rate(), rate);
+        assert!(sync.take_rebuild_notice().is_some());
+        assert_eq!(sync.take_rebuild_notice(), None, "taken once");
+        sync.sync(&doc);
+        sync.send(Command::Play);
+        let at = sync.playhead();
+        assert!(wait_until(|| {
+            sync.poll();
+            sync.playhead() > at
+        }));
         sync.shutdown();
     }
 
