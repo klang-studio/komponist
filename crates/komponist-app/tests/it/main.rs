@@ -71,3 +71,4 @@ mod surf;
 mod volt;
 
 mod audio_warp;
+mod automation_curve;
