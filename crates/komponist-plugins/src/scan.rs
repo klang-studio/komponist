@@ -457,9 +457,14 @@ pub(crate) fn scan_bundle(
     let mut watcher = match ProcessWatcher::new(child.id()) {
         Ok(watcher) => watcher,
         Err(e) => {
-            // No group kill: it needs a watcher that knows the leader is not reaped.
-            let _ = child.kill();
-            let _ = child.wait();
+            // No group kill: it needs a watcher that knows the leader is not reaped. A failed
+            // watcher may have reaped the child already (macOS reaps an exited child before it
+            // can fail), so signal the pid only while `try_wait` still sees it running: a pid we
+            // have not reaped cannot be reused.
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
             return Some(Scanned::failed(
                 format!("cannot watch the scan: {e}"),
                 false,
