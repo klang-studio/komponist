@@ -284,8 +284,10 @@ pub struct StreamStats {
     /// Callbacks whose own work took longer than their buffer period (an xrun the app caused,
     /// whatever the scheduler did), since the system was created.
     overruns: AtomicU32,
-    /// The backend refused real-time scheduling for the current stream's audio thread.
-    realtime_denied: AtomicBool,
+    /// The newest stream generation whose backend refused real-time scheduling.
+    denied: AtomicU64,
+    /// The generation of the installed stream (0: none), the one `realtime_denied` reports on.
+    installed: AtomicU64,
 }
 
 impl StreamStats {
@@ -416,24 +418,28 @@ impl StreamStats {
     }
 
     /// Whether the backend reported that real-time scheduling was refused for the audio thread of
-    /// the current stream (cpal `RealtimeDenied`): the hint in S07 and the status bar. Reset when a
-    /// stream is torn down.
+    /// the current stream (cpal `RealtimeDenied`): the hint in S07 and the status bar. Only the
+    /// installed stream's report counts: a stream being opened or torn down cannot set it for
+    /// another one (#221).
     ///
     /// `false` does not prove real-time scheduling: the null backend and server-backed ALSA devices
     /// (such as ALSA's PipeWire default) are not promoted and report nothing. PipeWire is promoted
     /// through RTKit; JACK threads are the server's. CoreAudio never reports it (its I/O thread
     /// is the system's).
     pub fn realtime_denied(&self) -> bool {
-        self.realtime_denied.load(Ordering::Relaxed)
+        let installed = self.installed.load(Ordering::Acquire);
+        installed != 0 && self.denied.load(Ordering::Acquire) == installed
     }
 
-    /// Error callback (any thread): real-time scheduling was refused.
-    pub(crate) fn record_realtime_denied(&self) {
-        self.realtime_denied.store(true, Ordering::Relaxed);
+    /// Error callback (any thread): real-time scheduling was refused for stream `generation`
+    /// ([`StreamShared::generation`]). Generations only grow, so a later stream's report is kept.
+    pub(crate) fn record_realtime_denied(&self, generation: u64) {
+        self.denied.fetch_max(generation, Ordering::AcqRel);
     }
 
-    fn reset_realtime_denied(&self) {
-        self.realtime_denied.store(false, Ordering::Relaxed);
+    /// The stream whose reports count; 0: none.
+    pub(crate) fn set_installed(&self, generation: u64) {
+        self.installed.store(generation, Ordering::Release);
     }
 }
 
@@ -464,9 +470,10 @@ pub struct AudioSystem<P: AudioProcess> {
     retired: Vec<SlotHandle<P>>,
     /// Reconnection while the configured device is missing.
     retry: Option<OutputRetry<P>>,
-    /// Reconnection workers that were superseded while they ran. Nothing waits for them, but
-    /// every later open does, so they never hold a device that another stream opens.
-    superseded: Vec<JoinHandle<Reopen<P>>>,
+    /// Reapers of reconnection workers that were superseded while they ran: each joins its
+    /// worker and drops what it opened, off this thread. Nothing waits for them, but every later
+    /// hardware open does, so they never hold a device that another stream opens.
+    superseded: Vec<JoinHandle<()>>,
     retry_interval: Duration,
     input: Option<crate::InputConfig>,
     input_error: Option<AudioError>,
@@ -578,6 +585,9 @@ struct Opened<P: AudioProcess> {
     effective: StreamConfig,
     input_channels: u16,
     input_error: Option<AudioError>,
+    /// Tests: notes the thread this stream is dropped on.
+    #[cfg(test)]
+    drop_probe: Option<tests::DropProbe>,
 }
 
 /// What opening the capture input next to an output gave.
@@ -696,9 +706,6 @@ fn reopen<P: AudioProcess>(
     if !current.load(Ordering::Acquire) {
         return Reopen::Missing;
     }
-    // The lost stream's report is stale; the new one reports for itself, also before it is
-    // installed.
-    context.stats.reset_realtime_denied();
     let opened = open_device(
         config,
         context.input.as_ref(),
@@ -776,6 +783,8 @@ fn open_device<P: AudioProcess>(
         effective: negotiated.effective,
         input_channels: opened_input.channels,
         input_error: opened_input.error,
+        #[cfg(test)]
+        drop_probe: None,
     })
 }
 
@@ -813,6 +822,8 @@ fn open_null<P: AudioProcess>(
         effective: config.clone(),
         input_channels,
         input_error: None,
+        #[cfg(test)]
+        drop_probe: None,
     })
 }
 
@@ -1142,8 +1153,11 @@ impl<P: AudioProcess> AudioSystem<P> {
         self.cancel_retry();
         self.input_error = None;
         self.teardown();
-        // Serialized with a reconnection that was opening the same device.
-        self.await_superseded();
+        // Serialized with a reconnection that was opening a device. The null backend touches no
+        // device, so it starts without waiting for a stalled one.
+        if config.host != HostKind::Null {
+            self.await_superseded();
+        }
         self.requested_jack_capture = requested_jack_capture(config);
         match start_output(self, config) {
             Ok(effective) => {
@@ -1163,12 +1177,7 @@ impl<P: AudioProcess> AudioSystem<P> {
                     config: config.clone(),
                     reason: err.to_string(),
                 };
-                if matches!(
-                    err,
-                    AudioError::NoDevice(_)
-                        | AudioError::HostUnavailable(_)
-                        | AudioError::Backend(_)
-                ) {
+                if retries(&err) {
                     self.arm_retry(config.clone());
                 }
                 Err(err)
@@ -1441,6 +1450,7 @@ impl<P: AudioProcess> AudioSystem<P> {
     }
 
     fn install(&mut self, current: Current<P>) {
+        self.stats.set_installed(current.shared.generation());
         self.current = Some(current);
         self.hand_over();
     }
@@ -1472,20 +1482,11 @@ impl<P: AudioProcess> AudioSystem<P> {
         }
     }
 
-    /// Drops the running stream and takes the engine and the MIDI receiver back. The stream's
-    /// realtime-scheduling report goes with it.
+    /// Drops the running stream and takes the engine and the MIDI receiver back. Its
+    /// realtime-scheduling report no longer counts.
     fn teardown(&mut self) {
-        let running = self.current.is_some();
-        self.teardown_keeping_stats();
-        if running {
-            self.stats.reset_realtime_denied();
-        }
-    }
-
-    /// [`AudioSystem::teardown`] that keeps the shared realtime report: installing a stream that
-    /// a worker opened (it may have reported already) replaces the null fallback.
-    fn teardown_keeping_stats(&mut self) {
         self.input_channels = 0;
+        self.stats.set_installed(0);
         let Some(current) = self.current.take() else {
             return;
         };
@@ -1553,18 +1554,28 @@ impl<P: AudioProcess> AudioSystem<P> {
         });
     }
 
-    /// Ends the reconnection without waiting for a worker still opening the device.
+    /// Ends the reconnection without waiting for a worker still opening the device. A worker
+    /// may already have returned a live stream; a reaper thread joins it and drops that stream,
+    /// since closing a stream can wait for other threads (PipeWire).
     fn cancel_retry(&mut self) {
-        if let Some(worker) = self.retry.take().and_then(OutputRetry::supersede) {
-            self.superseded.push(worker);
+        let Some(worker) = self.retry.take().and_then(OutputRetry::supersede) else {
+            return;
+        };
+        // If the reaper cannot start, the worker is detached: its result then drops on its
+        // own thread once nobody holds the handle.
+        if let Ok(reaper) = thread::Builder::new()
+            .name("komponist-audio-reap".to_owned())
+            .spawn(move || drop(worker.join()))
+        {
+            self.superseded.push(reaper);
         }
     }
 
-    /// Waits for superseded reconnection workers, which drop what they opened: called before
-    /// a stream opens, so two opens of one device never overlap.
+    /// Waits until superseded reconnection workers have dropped what they opened: called before
+    /// a hardware stream opens, so two opens of one device never overlap.
     fn await_superseded(&mut self) {
-        for worker in self.superseded.drain(..) {
-            let _ = worker.join();
+        for reaper in self.superseded.drain(..) {
+            let _ = reaper.join();
         }
     }
 
@@ -1583,8 +1594,8 @@ impl<P: AudioProcess> AudioSystem<P> {
             .into_iter()
             .partition(JoinHandle::is_finished);
         self.superseded = running;
-        for worker in done {
-            let _ = worker.join();
+        for reaper in done {
+            let _ = reaper.join();
         }
         if !self.superseded.is_empty() {
             return;
@@ -1602,14 +1613,24 @@ impl<P: AudioProcess> AudioSystem<P> {
         });
         let config = retry.probe.target.clone();
         match found {
-            None | Some(Reopen::Missing) | Some(Reopen::Opened(Err(_))) => {}
+            None | Some(Reopen::Missing) => {}
+            // The device is back but does not open: say why, as `start` would, and keep looking
+            // only after a failure that can pass (the null fallback keeps running).
+            Some(Reopen::Opened(Err(error))) => {
+                if let AudioState::NoDevice { reason, .. } = &mut self.state {
+                    *reason = error.to_string();
+                }
+                if !retries(&error) {
+                    self.retry = None;
+                }
+            }
             Some(Reopen::Present) => {
                 let _ = self.start(&config);
             }
             Some(Reopen::Opened(Ok(opened))) => {
                 self.retry = None;
                 self.input_error = None;
-                self.teardown_keeping_stats();
+                self.teardown();
                 self.requested_jack_capture = requested_jack_capture(&config);
                 let effective = self.install_opened(*opened);
                 self.state = AudioState::Running {
@@ -1628,6 +1649,13 @@ impl<P: AudioProcess> AudioSystem<P> {
     #[cfg(test)]
     pub(crate) fn is_retrying(&self) -> bool {
         self.retry.is_some()
+    }
+
+    /// Tests: the installed stream reports refused real-time scheduling.
+    #[cfg(test)]
+    fn report_realtime_denied(&self) {
+        let installed = self.stats.installed.load(Ordering::Acquire);
+        self.stats.record_realtime_denied(installed);
     }
 
     #[cfg(test)]
@@ -1658,6 +1686,15 @@ impl<P: AudioProcess> Drop for AudioSystem<P> {
             self.collect_retired();
         }
     }
+}
+
+/// Whether a failed output start is worth looking for again: the device is missing or the backend
+/// failed, not a configuration the device cannot run.
+fn retries(error: &AudioError) -> bool {
+    matches!(
+        error,
+        AudioError::NoDevice(_) | AudioError::HostUnavailable(_) | AudioError::Backend(_)
+    )
 }
 
 /// The JACK capture ports a configuration names, all missing until the stream reports them.
@@ -2219,8 +2256,18 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
             release.send(()).unwrap();
         });
+        // A hardware start (a stand-in that runs the null stream on a device host's config).
+        let hardware = StreamConfig {
+            host: HostKind::PipeWire,
+            ..null(128)
+        };
         let started = Instant::now();
-        system.start(&null(128)).unwrap();
+        system
+            .start_with(&hardware, |system, config| {
+                system.start_null(config)?;
+                Ok(config.clone())
+            })
+            .unwrap();
         assert!(
             started.elapsed() >= Duration::from_millis(40),
             "start opened while the superseded worker still held the device"
@@ -2248,17 +2295,121 @@ mod tests {
         release.send(()).unwrap();
     }
 
+    /// Notes the name of the thread it is dropped on.
+    pub(super) struct DropProbe(pub(super) Arc<std::sync::Mutex<Option<String>>>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            *self.0.lock().unwrap() = Some(thread::current().name().unwrap_or("").to_owned());
+        }
+    }
+
+    /// Switching to the null backend never waits for a stalled reconnection; a later hardware
+    /// start still would.
+    #[test]
+    fn switching_to_null_does_not_wait_for_a_stalled_reopen() {
+        let (mut system, probe, _sender) = system(0.0);
+        system.set_retry_interval(Duration::from_millis(5));
+        system.start(&null(64)).unwrap();
+        let (release, opening) = blocking_reopen(&mut system);
+        system.simulate_device_loss("device unplugged");
+        assert!(wait_until(WAIT, || {
+            system.poll();
+            opening.try_recv().is_ok()
+        }));
+        let started = Instant::now();
+        system.start(&null(128)).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(100));
+        assert_eq!(probe.params().max_frames, 128);
+        assert!(runs(&probe, 3));
+        assert_eq!(
+            system.superseded.len(),
+            1,
+            "a hardware start would wait for it"
+        );
+        release.send(()).unwrap();
+    }
+
+    /// A superseded worker that already returned a live stream: the stream is dropped by the
+    /// reaper, never on the control thread.
+    #[test]
+    fn a_superseded_stream_is_dropped_off_the_control_thread() {
+        let (mut system, _probe, _sender) = system(0.0);
+        system.set_retry_interval(Duration::from_millis(5));
+        system.start(&null(64)).unwrap();
+        let dropped = Arc::new(std::sync::Mutex::new(None));
+        let noted = Arc::clone(&dropped);
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let gate = std::sync::Mutex::new(gate);
+        let (began, opening) = std::sync::mpsc::channel();
+        system.set_fake_reopen(move |config, context| {
+            let _ = began.send(());
+            let _ = gate.lock().unwrap().recv_timeout(WAIT);
+            Reopen::Opened(open_null(config, None, &context.stats).map(|mut opened| {
+                opened.drop_probe = Some(DropProbe(Arc::clone(&noted)));
+                Box::new(opened)
+            }))
+        });
+        system.simulate_device_loss("device unplugged");
+        assert!(wait_until(WAIT, || {
+            system.poll();
+            opening.try_recv().is_ok()
+        }));
+        // The worker returns its stream, but no poll collects it before the stop.
+        release.send(()).unwrap();
+        assert!(wait_until(WAIT, || {
+            let retry = system.retry.as_ref().unwrap();
+            retry.probe.worker.as_ref().unwrap().is_finished()
+        }));
+        system.stop();
+        assert!(wait_until(WAIT, || {
+            system.poll();
+            dropped.lock().unwrap().is_some()
+        }));
+        assert_eq!(
+            dropped.lock().unwrap().as_deref(),
+            Some("komponist-audio-reap")
+        );
+    }
+
+    /// A device that is back but cannot run the configuration: the reason says so and the
+    /// search ends; a transient backend failure keeps it going.
+    #[test]
+    fn a_reopen_that_fails_reports_why_and_retries_only_transient_failures() {
+        for (error, again) in [
+            (AudioError::UnsupportedConfig("96000 Hz".into()), false),
+            (AudioError::Backend("busy".into()), true),
+        ] {
+            let (mut system, probe, _sender) = system(0.0);
+            system.set_retry_interval(Duration::from_millis(5));
+            system.start(&null(64)).unwrap();
+            let failure = error.clone();
+            system.set_fake_reopen(move |_, _| Reopen::Opened(Err(failure.clone())));
+            system.simulate_device_loss("device unplugged");
+            system.poll();
+            assert!(wait_until(WAIT, || {
+                system.poll();
+                matches!(system.state(), AudioState::NoDevice { reason, .. } if *reason == error.to_string())
+            }));
+            assert_eq!(system.is_retrying(), again, "{error:?}");
+            assert!(runs(&probe, 3), "the null fallback keeps running");
+        }
+    }
+
     /// A stream that a worker opened keeps its realtime-scheduling report through installation.
     #[test]
     fn a_reopened_stream_keeps_its_realtime_report() {
         let (mut system, probe, _sender) = system(0.0);
         system.set_retry_interval(Duration::from_millis(5));
         system.start(&null(64)).unwrap();
-        system.stats().record_realtime_denied();
+        system.report_realtime_denied();
         system.set_fake_reopen(|config, context| {
-            context.stats.reset_realtime_denied();
             let opened = open_null(config, None, &context.stats);
-            context.stats.record_realtime_denied();
+            if let Ok(opened) = &opened {
+                // Reported while the worker still holds the stream.
+                let generation = opened.current.shared.generation();
+                context.stats.record_realtime_denied(generation);
+            }
             Reopen::Opened(opened.map(Box::new))
         });
         system.simulate_device_loss("device unplugged");
@@ -2525,13 +2676,24 @@ mod tests {
         let (mut system, _probe, _sender) = system(0.0);
         system.start(&null(64)).unwrap();
         assert!(!system.stats().realtime_denied());
-        system.stats().record_realtime_denied();
+        system.report_realtime_denied();
         assert!(system.stats().realtime_denied());
+        let old = system.current.as_ref().unwrap().shared.generation();
         system.start(&null(128)).unwrap();
         assert!(
             !system.stats().realtime_denied(),
             "reset for the new stream"
         );
+        // #221: a stream that is gone, or one still being opened, cannot report for it.
+        system.stats().record_realtime_denied(old);
+        assert!(!system.stats().realtime_denied());
+        let candidate = StreamShared::default();
+        system
+            .stats()
+            .record_realtime_denied(candidate.generation());
+        assert!(!system.stats().realtime_denied());
+        system.stop();
+        assert!(!system.stats().realtime_denied());
     }
 
     #[test]
