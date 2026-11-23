@@ -242,6 +242,14 @@ struct Input {
     track: Option<Arc<TrackExport>>,
 }
 
+/// The worker's side of its conversation with the UI thread.
+struct Link<'a> {
+    to_ui: &'a Sender<Message>,
+    go: &'a Receiver<Result<(), ExportError>>,
+    /// Set when the export itself is over, before the steps a panic could still interrupt.
+    finished: &'a mut Option<ExportReport>,
+}
+
 /// The worker: export rate, wait for the UI, render, device rate. The caller sends the engine
 /// back with the outcome, also after a panic ([`run_worker`]).
 fn work(
@@ -250,10 +258,13 @@ fn work(
     job: ExportJob,
     cancel: &AtomicBool,
     progress: &SharedProgress,
-    to_ui: &Sender<Message>,
-    go: &Receiver<Result<(), ExportError>>,
-    finished: &mut Option<ExportReport>,
+    link: Link<'_>,
 ) -> (Result<ExportReport, ExportError>, Vec<SlotId>) {
+    let Link {
+        to_ui,
+        go,
+        finished,
+    } = link;
     let mut failed = Vec::new();
     let device_rate = engine.engine().sample_rate();
     let export_rate = job.sample_rate as f32;
@@ -336,9 +347,11 @@ fn run_worker(
             job,
             &cancel,
             &progress,
-            &to_ui,
-            &go,
-            &mut finished,
+            Link {
+                to_ui: &to_ui,
+                go: &go,
+                finished: &mut finished,
+            },
         )
     }));
     let message = match outcome {
