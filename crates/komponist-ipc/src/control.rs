@@ -95,7 +95,8 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 9 (#75): the shared native frame header carries the track macro mapping chip.
 /// 11 adds bounded sampler front-panel data and the slice audition command.
 /// 13 distinguishes plugin-originated parameter flushes from value telemetry.
-pub const PROTOCOL_VERSION: u32 = 13;
+/// 14 (#215): a checked snapshot carries the caller's remaining time.
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -357,6 +358,9 @@ pub enum ControlMsg {
         request: u32,
         /// Expected persistent values and whether a delivered edit may be quantized.
         expected: Vec<(u32, f64, bool)>,
+        /// Milliseconds the app can still wait for the answer (0: no deadline). It decides
+        /// whether a snapshot that keeps moving may still run alongside audio.
+        budget_ms: u32,
     },
     /// Restore a state blob (from `State` or the project file). Answer: `StateApplied`.
     SetState {
@@ -1829,6 +1833,7 @@ mod tests {
             ControlMsg::GetStateChecked {
                 request: 3,
                 expected: vec![(1, 0.4, true)],
+                budget_ms: 1500,
             },
             ControlMsg::SetState {
                 request: 9,

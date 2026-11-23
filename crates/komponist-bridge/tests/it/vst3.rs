@@ -138,6 +138,7 @@ fn vst3_param_changes_from_the_app_reach_the_plugin() {
     let checked = |request| ControlMsg::GetStateChecked {
         request,
         expected: vec![(gain, 0.5, false)],
+        budget_ms: 0,
     };
     bridge.send(checked(41));
     let deferred = bridge.expect("checked state or deferral", |msg| match msg {

@@ -422,7 +422,7 @@ fn smoke_bridge(
             check_effect_meter(&mut audio, meter)?;
         }
         let request = bridge
-            .request_state(StatePurpose::Collect)
+            .request_state(StatePurpose::Collect, None)
             .ok_or_else(|| "bridge refused the state snapshot".to_owned())?;
         let state = wait_for_bridge(&mut bridge, |_, _, states| {
             Ok(states

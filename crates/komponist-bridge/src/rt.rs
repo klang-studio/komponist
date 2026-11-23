@@ -260,6 +260,10 @@ impl ControllerValues {
     }
 }
 
+/// The current audio block did not finish within [`RESTORE_WAIT`]; nothing was paused.
+#[derive(Debug)]
+pub(crate) struct PauseTimeout;
+
 /// A running RT thread with its processor.
 #[derive(Debug)]
 pub struct RtThread {
@@ -279,15 +283,41 @@ pub struct RtThread {
 pub(crate) struct ParamDelivery {
     input: Option<(u32, f64)>,
     report: Option<(u32, f64)>,
+    /// The plugin's last reported value. Unlike `report`, an input does not clear it, so an echo
+    /// of an unchanged value after a repeated input is not counted as a change.
+    last_reported: Option<f64>,
+    /// The last input value that was counted as a change: like `last_reported`, the baseline moves
+    /// only with a counted change, so small input steps cannot creep past the tolerance.
+    last_counted_input: Option<f64>,
+    /// Values this parameter took since the table was created: each input or report that
+    /// differs from the previous one of its kind. Read under the pause, so a snapshot can tell
+    /// that a value left and came back while the plugin serialized (#215).
+    changes: u32,
 }
 
 impl ParamDelivery {
     fn record_input(&mut self, block: u32, value: f64) {
+        if self
+            .last_counted_input
+            .is_none_or(|previous| !same_param_value(value, previous))
+        {
+            self.changes = self.changes.wrapping_add(1);
+            self.last_counted_input = Some(value);
+        }
         self.input = Some((block, value));
         self.report = None;
     }
 
     fn record_report(&mut self, block: u32, value: f64) {
+        // The baseline moves only with a counted change, so small steps cannot drift past the
+        // tolerance unnoticed.
+        if self
+            .last_reported
+            .is_none_or(|previous| !same_param_value(value, previous))
+        {
+            self.changes = self.changes.wrapping_add(1);
+            self.last_reported = Some(value);
+        }
         // Some plugins repeat their last output. Keep the block that established that value.
         if self
             .report
@@ -337,6 +367,16 @@ impl DeliveredParams<'_> {
     }
 }
 
+impl DeliveredParams<'_> {
+    /// How often the value of `id` changed so far (see [`ParamDelivery`]); 0 for an unknown ID.
+    pub fn changes(&self, id: u32) -> u32 {
+        self.0.get(&id).map_or(0, |slot| {
+            // SAFETY: The view cannot outlive the exclusive activity guard.
+            unsafe { &*slot.0.get() }.changes
+        })
+    }
+}
+
 #[derive(Debug)]
 struct RtParamSync {
     activity: AtomicU8,
@@ -354,6 +394,9 @@ unsafe impl Sync for RtParamSync {}
 
 const PROCESSING: u8 = 1;
 const RESTORING: u8 = 2;
+/// A checked snapshot's short capture. Blocks are answered with the fallback meanwhile, but
+/// no state is replaced, so nothing needs a voice reset.
+const SNAPSHOT: u8 = 4;
 
 struct Activity<'a> {
     sync: &'a RtParamSync,
@@ -401,11 +444,11 @@ impl Drop for Activity<'_> {
 }
 
 impl RtParamSync {
-    /// RT never waits for a state restore. The request gets fallback audio instead.
-    fn try_process(&self) -> Option<Activity<'_>> {
+    /// RT never waits for a state restore. The request gets fallback audio instead; the error is
+    /// the activity that refused it, read in the same atomic step (a pause can end right after).
+    fn try_process(&self) -> Result<Activity<'_>, u8> {
         self.activity
             .compare_exchange(0, PROCESSING, Ordering::Acquire, Ordering::Relaxed)
-            .ok()
             .map(|_| Activity {
                 sync: self,
                 bit: PROCESSING,
@@ -415,11 +458,17 @@ impl RtParamSync {
     /// Prevent a new block from staging parameter edits while the control thread waits for
     /// the current block to finish. Never load state if a stalled processor still owns it.
     fn pause_for_restore(&self) -> Option<Activity<'_>> {
-        self.activity.fetch_or(RESTORING, Ordering::AcqRel);
-        let guard = Activity {
-            sync: self,
-            bit: RESTORING,
-        };
+        self.pause(RESTORING)
+    }
+
+    /// Like [`Self::pause_for_restore`] for a snapshot capture.
+    fn pause_for_snapshot(&self) -> Option<Activity<'_>> {
+        self.pause(SNAPSHOT)
+    }
+
+    fn pause(&self, bit: u8) -> Option<Activity<'_>> {
+        self.activity.fetch_or(bit, Ordering::AcqRel);
+        let guard = Activity { sync: self, bit };
         let deadline = Instant::now() + RESTORE_WAIT;
         while self.activity.load(Ordering::Acquire) & PROCESSING != 0 {
             if Instant::now() >= deadline {
@@ -603,15 +652,14 @@ impl RtThread {
         true
     }
 
-    /// Reads state after any in-flight block has finished applying its parameters.
+    /// Runs `capture` at a block boundary: after any in-flight block has finished applying its
+    /// parameters, with new blocks answered by the fallback until it returns. Keep it short; a
+    /// state save belongs between two captures, not inside one.
     pub fn snapshot<T>(
         &mut self,
         capture: impl FnOnce(DeliveredParams<'_>) -> T,
-    ) -> Result<T, String> {
-        let mut pause = self
-            .sync
-            .pause_for_restore()
-            .ok_or_else(|| "timed out waiting for the current audio block".to_owned())?;
+    ) -> Result<T, PauseTimeout> {
+        let mut pause = self.sync.pause_for_snapshot().ok_or(PauseTimeout)?;
         pause.install_parameter_update();
         Ok(capture(DeliveredParams(&pause.parameters().delivered)))
     }
@@ -771,25 +819,36 @@ fn serve(
     config: &RtConfig,
     sync: &RtParamSync,
 ) {
-    let Some(mut processing) = sync.try_process() else {
-        // Recovery clears voices that could otherwise miss a note-off in this discarded block.
-        scratch.reset_after_restore = true;
-        // The client may already have timed out. Retain the latest parameter values here
-        // so one-shot writes survive even if the client never consumes this reply.
-        while let Some(event) = server.pop_event() {
-            if let Some(WireEventKind::ParamValue { id, .. }) = event.decode() {
-                let event = WireEvent { offset: 0, ..event };
-                if let Some(&index) = scratch.retry_indices.get(&id) {
-                    scratch.retry_params[index] = event;
-                } else if scratch.retry_params.len() < INPUT_EVENT_CAPACITY {
-                    scratch.retry_indices.insert(id, scratch.retry_params.len());
-                    scratch.retry_params.push(event);
+    let mut processing = match sync.try_process() {
+        Ok(processing) => processing,
+        Err(activity) => {
+            // A restore replaces the plugin's state, so recovery clears its voices. A snapshot pause
+            // changes nothing: reset only if a note event is discarded with this block (a missed
+            // note-off could leave a voice hanging). Inactive blocks never reach this function.
+            let snapshot_only = activity != 0 && activity & !SNAPSHOT == 0;
+            // A reset the client asked for with this block is applied by the next processed block
+            // (the client does not repeat it after an `Inactive` reply).
+            scratch.reset_after_restore |= !snapshot_only || request.flags & BLOCK_FLAG_RESET != 0;
+            // The client may already have timed out. Retain the latest parameter values here
+            // so one-shot writes survive even if the client never consumes this reply.
+            while let Some(event) = server.pop_event() {
+                if !matches!(event.decode(), Some(WireEventKind::ParamValue { .. })) {
+                    scratch.reset_after_restore = true;
+                }
+                if let Some(WireEventKind::ParamValue { id, .. }) = event.decode() {
+                    let event = WireEvent { offset: 0, ..event };
+                    if let Some(&index) = scratch.retry_indices.get(&id) {
+                        scratch.retry_params[index] = event;
+                    } else if scratch.retry_params.len() < INPUT_EVENT_CAPACITY {
+                        scratch.retry_indices.insert(id, scratch.retry_params.len());
+                        scratch.retry_params.push(event);
+                    }
                 }
             }
+            write_fallback(server, request.frames as usize, config.fallback);
+            server.finish(result(BlockStatus::Inactive, 0));
+            return;
         }
-        write_fallback(server, request.frames as usize, config.fallback);
-        server.finish(result(BlockStatus::Inactive, 0));
-        return;
     };
     let frames = request.frames as usize;
     if request.frames == 0 || request.frames > config.max_frames {
@@ -915,6 +974,58 @@ mod tests {
         assert!(!delivery.confirms_input(0.403, 0.8));
     }
 
+    /// The host repeating an unchanged value and the plugin echoing it is no change: only values
+    /// that differ from the previous one of their kind count (#215 review).
+    #[test]
+    fn repeated_inputs_and_echoes_count_only_real_changes() {
+        let mut delivery = ParamDelivery::default();
+        delivery.record_input(1, 0.403);
+        delivery.record_report(1, 0.4);
+        let first = delivery.changes;
+        for block in 2..10 {
+            delivery.record_input(block, 0.403);
+            delivery.record_report(block, 0.4);
+        }
+        assert_eq!(delivery.changes, first, "echoes of an unchanged value");
+        delivery.record_report(10, 0.8);
+        assert_eq!(delivery.changes, first + 1, "a new reported value");
+        delivery.record_input(11, 0.9);
+        assert_eq!(delivery.changes, first + 2, "a new input");
+        assert!(!delivery.confirms_input(0.403, 0.4));
+    }
+
+    /// Steps inside the tolerance that add up to a change beyond it are counted: the baseline
+    /// moves only when a change is counted.
+    #[test]
+    fn creeping_reports_are_counted_once_they_leave_the_tolerance() {
+        let mut delivery = ParamDelivery::default();
+        delivery.record_report(1, 0.4);
+        let first = delivery.changes;
+        let mut value = 0.4;
+        for block in 2..200 {
+            value += 1e-7;
+            delivery.record_report(block, value);
+        }
+        assert!(
+            delivery.changes > first,
+            "a drift beyond the tolerance counts"
+        );
+
+        // The same for inputs a plugin accepts without reporting them.
+        let mut delivery = ParamDelivery::default();
+        delivery.record_input(1, 0.4);
+        let first = delivery.changes;
+        let mut value = 0.4;
+        for block in 2..200 {
+            value += 1e-7;
+            delivery.record_input(block, value);
+        }
+        assert!(
+            delivery.changes > first,
+            "an input drift beyond the tolerance counts"
+        );
+    }
+
     #[test]
     fn controller_updates_coalesce_without_allocating() {
         let notify = Arc::new(notify::BridgeNotify::new().unwrap());
@@ -944,6 +1055,128 @@ mod tests {
             values.drain().collect::<Vec<_>>(),
             [(1, 0.5), (2, 0.25), (3, 0.1)]
         );
+    }
+
+    /// #215: a block that meets a snapshot pause is answered with the fallback. It asks for a
+    /// voice reset only when it discards a note event (a restore keeps asking always), and the
+    /// pause sees how often a parameter changed, including a change that came back.
+    #[test]
+    fn snapshot_pauses_reset_voices_only_after_a_discarded_note_and_count_changes() {
+        use komponist_ipc::shm::{BlockSpec, BridgeState};
+        use komponist_ipc::{BridgeClient, ShmRegion, WireTransport};
+
+        struct Probe(Arc<AtomicU64>);
+
+        impl HostedProcessor for Probe {
+            fn start_processing(&mut self) -> Result<(), HostingError> {
+                Ok(())
+            }
+
+            fn stop_processing(&mut self) {}
+
+            fn reset(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+
+            fn process(&mut self, _block: &mut ProcessBlock<'_>) -> ProcessStatus {
+                ProcessStatus::Continue
+            }
+        }
+
+        let resets = Arc::new(AtomicU64::new(0));
+        let region = Arc::new(ShmRegion::create().unwrap());
+        let mut client = BridgeClient::new(region.clone());
+        let notify = Arc::new(notify::BridgeNotify::new().unwrap());
+        let controller = Arc::new(ControllerValues::new(vec![1], notify));
+        let (mut rt, _) = RtThread::start(
+            BridgeServer::new(region.clone()),
+            Box::new(Probe(resets.clone())),
+            RtConfig {
+                priority: 0,
+                period: Duration::from_millis(10),
+                max_frames: 1,
+                fallback: Fallback::Silence,
+            },
+            Some(controller),
+            vec![1],
+        )
+        .unwrap_or_else(|failure| panic!("could not start probe: {}", failure.error));
+        region.set_bridge_state(BridgeState::Active);
+        let spec = BlockSpec {
+            frames: 1,
+            flags: 0,
+            steady_time: 0,
+            deadline: None,
+            transport: WireTransport::default(),
+        };
+        let block = |client: &mut BridgeClient, events: &[WireEvent]| {
+            let seq = client
+                .begin_block(&spec, [&[0.0], &[0.0]], None, events)
+                .unwrap();
+            client
+                .wait_done(seq, Instant::now() + RESTORE_WAIT, [&mut [0.0], &mut [0.0]])
+                .unwrap()
+                .status
+        };
+        let param = |value| WireEvent::new(0, WireEventKind::ParamValue { id: 1, value });
+        let note_on = WireEvent::new(
+            0,
+            WireEventKind::NoteOn {
+                channel: 0,
+                key: 60,
+                velocity: 100,
+                note_id: u32::MAX,
+            },
+        );
+        let inactive = BlockStatus::Inactive as u32;
+        let ok = BlockStatus::Ok as u32;
+
+        // Value changes: 0.25, the same again (no change), 0.5, and back to 0.25.
+        for (value, changes) in [(0.25, 1), (0.25, 1), (0.5, 2), (0.25, 3)] {
+            assert_eq!(block(&mut client, &[param(value)]), ok);
+            assert_eq!(rt.snapshot(|p| p.changes(1)).unwrap(), changes);
+        }
+
+        // A parameter-only block that meets a snapshot pause loses nothing.
+        let status = rt.snapshot(|_| block(&mut client, &[param(0.75)])).unwrap();
+        assert_eq!(status, inactive);
+        assert_eq!(block(&mut client, &[]), ok);
+        assert_eq!(resets.load(Ordering::Relaxed), 0);
+
+        // A discarded note-on may have a note-off after it that never arrives.
+        let status = rt.snapshot(|_| block(&mut client, &[note_on])).unwrap();
+        assert_eq!(status, inactive);
+        assert_eq!(block(&mut client, &[]), ok);
+        assert_eq!(resets.load(Ordering::Relaxed), 1);
+
+        // A reset the client asked for with a block that meets the pause is applied next.
+        let reset_spec = BlockSpec {
+            flags: BLOCK_FLAG_RESET,
+            ..spec
+        };
+        let status = rt
+            .snapshot(|_| {
+                let seq = client
+                    .begin_block(&reset_spec, [&[0.0], &[0.0]], None, &[])
+                    .unwrap();
+                client
+                    .wait_done(seq, Instant::now() + RESTORE_WAIT, [&mut [0.0], &mut [0.0]])
+                    .unwrap()
+                    .status
+            })
+            .unwrap();
+        assert_eq!(status, inactive);
+        assert_eq!(block(&mut client, &[]), ok);
+        assert_eq!(resets.load(Ordering::Relaxed), 2);
+
+        // A restore always resets, as before.
+        let (status, _) = rt
+            .restore(|| (block(&mut client, &[param(0.5)]), false))
+            .unwrap();
+        assert_eq!(status, inactive);
+        assert_eq!(block(&mut client, &[]), ok);
+        assert_eq!(resets.load(Ordering::Relaxed), 3);
+        let _ = rt.stop();
     }
 
     #[test]
