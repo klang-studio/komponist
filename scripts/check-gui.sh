@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The GUI part of the gate: tests that need a real X11 display (plugin frames as real windows,
-# acceptance flow 4's GUI step). Runs them under a private Xvfb, never on the desktop, with the
+# acceptance flow 4's GUI step, the embedded-editor tests of komponist-hosting, -bridge and -plugins,
+# which are `#[ignore = "GUI: run under Xvfb with KP_GUI_TESTS=1"]`). Runs them under a private Xvfb, never on the desktop, with the
 # WP-27 test plugins (built here). HOME and the XDG folders are scratch folders under target/tmp,
 # so nothing reaches the real home or ~/.config.
 #
@@ -39,4 +40,16 @@ export KP_GUI_TESTS=1
 for test in acceptance_flow4_gui plugin_frame_gui; do
     xvfb-run -a -s "-screen 0 1920x1080x24" \
         cargo test -p komponist-app --test "$test" -- --ignored --nocapture
+done
+
+# The embedded-editor tests of the library crates: the `gui` modules only (the filter keeps the other
+# ignored tests out, e.g. the release perf suites). One X11 client at a time. The hosting library holds
+# the CLAP and VST3 editors (clap::tests::gui, vst3::tests::gui). Those modules also hold tests with
+# installed third-party plugins (Klopfer, Surge XT, Dexed …): like every test with a real plugin, they
+# return early when the plugin is not installed, so only the kp-test-* editors are guaranteed coverage.
+xvfb-run -a -s "-screen 0 1920x1080x24" \
+    cargo test -p komponist-hosting --lib -- --ignored --nocapture --test-threads=1 ::gui::
+for crate in komponist-bridge komponist-plugins; do
+    xvfb-run -a -s "-screen 0 1920x1080x24" \
+        cargo test -p "$crate" --test it -- --ignored --nocapture --test-threads=1 gui::
 done

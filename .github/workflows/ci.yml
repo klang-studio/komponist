@@ -140,7 +140,7 @@ jobs:
         env:
           TEST_WATCHDOG: "1200"
         run: |
-          cargo test --locked --workspace &
+          cargo test --locked --workspace --no-fail-fast &
           tests=$!
           (
             sleep "$TEST_WATCHDOG"
