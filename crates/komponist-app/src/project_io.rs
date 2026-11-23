@@ -184,7 +184,7 @@ pub(crate) fn write_atomic(
 
 /// `create_dir_all(dir)`, then (Unix) flushes the parent folder of every folder it had to
 /// create, up to the first existing ancestor, so the new folders themselves survive a power loss.
-fn create_dirs_durably(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn create_dirs_durably(dir: &Path) -> std::io::Result<()> {
     let mut created: Vec<&Path> = dir.ancestors().take_while(|path| !path.exists()).collect();
     std::fs::create_dir_all(dir)?;
     // Outermost first; each new folder's entry lives in its parent.

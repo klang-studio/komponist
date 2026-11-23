@@ -323,7 +323,9 @@ pub struct MetaBase {
 
 /// Creates `dir` (with its parents) and makes it private to the user.
 fn ensure_private(dir: &Path) -> io::Result<()> {
-    fs::create_dir_all(dir)?;
+    // Durably: `write_atomic` into it does not create folders, and a new store must survive a
+    // power loss on file systems that need the parent flushed.
+    crate::project_io::create_dirs_durably(dir)?;
     restrict(dir)
 }
 
@@ -354,6 +356,22 @@ fn restrict_file(path: &Path) -> io::Result<()> {
 
 #[cfg(not(unix))]
 fn restrict_file(_: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// Narrows a file an older build left readable by others to `0600` (Unix).
+#[cfg(unix)]
+fn narrow_file(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = fs::symlink_metadata(path)?;
+    if meta.is_file() && meta.permissions().mode() & 0o077 != 0 {
+        restrict_file(path)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn narrow_file(_: &Path) -> io::Result<()> {
     Ok(())
 }
 
@@ -530,6 +548,10 @@ impl Store {
                 }
             };
             let path = entry.path();
+            // Files of older builds may be readable by others.
+            if let Err(error) = narrow_file(&path) {
+                eprintln!("komponist: recovery: {}: {error}", path.display());
+            }
             let id = path
                 .extension()
                 .and_then(|e| e.to_str())
@@ -620,10 +642,17 @@ impl Store {
 
     /// Deletes the discarded copies older than [`KEEP_DISCARDED`] at `now`.
     pub fn prune_discarded(&self, now: SystemTime) {
-        let Ok(dir) = fs::read_dir(self.root.join(DISCARDED)) else {
+        let folder = self.root.join(DISCARDED);
+        let Ok(dir) = fs::read_dir(&folder) else {
             return;
         };
+        if let Err(error) = restrict(&folder) {
+            eprintln!("komponist: recovery: {}: {error}", folder.display());
+        }
         for entry in dir.filter_map(Result::ok) {
+            if let Err(error) = narrow_file(&entry.path()) {
+                eprintln!("komponist: recovery: {}: {error}", entry.path().display());
+            }
             let old = discarded_at(&entry)
                 .and_then(|at| now.duration_since(at).ok())
                 .is_some_and(|age| age > KEEP_DISCARDED);
@@ -1870,13 +1899,37 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = scratch("private");
         let root = dir.join("recovery");
-        // A store an older build left readable for others is narrowed by the next scan.
+        // A store an older build left readable for others, with its files, is narrowed by the
+        // next scan.
         fs::create_dir_all(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
         let store = Store::new(&root);
-        let _ = store.scan();
+        let old = write_copy(&store, "Alt", None);
+        let discarded = root.join(DISCARDED);
+        fs::create_dir_all(&discarded).unwrap();
+        let thrown = discarded.join(format!(
+            "{}-{}.json",
+            Id::random(),
+            unix_ms(SystemTime::now())
+        ));
+        fs::write(&thrown, "{}").unwrap();
+        fs::set_permissions(&discarded, fs::Permissions::from_mode(0o755)).unwrap();
+        let wide = fs::Permissions::from_mode(0o644);
+        for path in [&old.copy, &old.meta, &old.lock, &thrown] {
+            fs::set_permissions(path, wide.clone()).unwrap();
+        }
         let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let found = store.scan().0;
         assert_eq!(mode(&root), 0o700);
+        assert_eq!(mode(&discarded), 0o700);
+        for path in [&old.copy, &old.meta, &old.lock, &thrown] {
+            assert_eq!(mode(path), 0o600, "{}", path.display());
+        }
+        drop(found);
+        // A new store is created owner-only.
+        let fresh = dir.join("state/komponist/recovery");
+        Store::new(&fresh).create_entry().unwrap();
+        assert_eq!(mode(&fresh), 0o700);
         let (clock, now) = fake_clock();
         let mut r = Recovery::new(store, clock);
         let p = named("Privat");
