@@ -59,7 +59,7 @@ fn a_processor_emitting_nan_and_inf_leaves_the_master_output_finite() {
     rig.process(frames, BLOCK);
     assert!(rig.l.iter().chain(&rig.r).all(|x| x.is_finite()));
     // The finite quarter of the samples got through.
-    assert!(rig.l.iter().any(|&x| x == 0.25));
+    assert!(rig.l.contains(&0.25));
     let counted = rig.handle.telemetry().non_finite_samples() as usize;
     assert!(counted > 0, "occurrences are counted");
     assert_eq!(counted % 2, 0, "both channels are counted");
