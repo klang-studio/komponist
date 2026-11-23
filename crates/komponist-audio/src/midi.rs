@@ -13,15 +13,25 @@
 //! appends " (2)" to a repeated name). Tests therefore cannot create ports; they feed the input
 //! path through `MidiInputHub::inject_for_test` or [`TestMidiSource`].
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use midir::{Ignore, MidiInput, MidiInputConnection, MidiInputPort};
 
 /// Capacity of the queue between the MIDI threads and the audio callback, in messages. Messages
-/// beyond it are dropped.
+/// beyond it are dropped and counted ([`crate::StreamStats::midi_overflows`]); the receiver then
+/// releases the notes it delivered, since a dropped note-off would leave one hanging.
 pub const MIDI_QUEUE_CAPACITY: usize = 4096;
+
+/// Ports whose held notes and sustain pedals a [`MidiReceiver`] tracks at the same time for a
+/// release. A port holds an entry only while one of its notes or pedals is down.
+const HELD_PORTS: usize = 16;
+
+/// Release messages one callback delivers at most, so a release has a bounded cost; the rest
+/// follow at frame 0 of the next callbacks. 16 channels of sustain plus a ten-finger chord on
+/// each of them fit.
+const RELEASES_PER_CALLBACK: u32 = 256;
 
 /// Id of a MIDI input port, stable per device name for the lifetime of the hub (a re-plugged device
 /// gets its old id back). The app maps it 1:1 onto `komponist_engine::MidiPort`.
@@ -72,10 +82,49 @@ impl core::fmt::Display for MidiError {
 
 impl std::error::Error for MidiError {}
 
+/// The notes and sustain pedals of one port that the receiver delivered and that are still down.
+#[derive(Debug, Clone, Copy)]
+struct HeldPort {
+    port: MidiPortId,
+    /// One bit per key and channel.
+    keys: [u128; 16],
+    /// One bit per channel whose sustain pedal (CC 64) is down.
+    sustain: u16,
+}
+
+impl HeldPort {
+    const IDLE: HeldPort = HeldPort {
+        port: MidiPortId(0),
+        keys: [0; 16],
+        sustain: 0,
+    };
+
+    fn idle(&self) -> bool {
+        self.sustain == 0 && self.keys.iter().all(|&keys| keys == 0)
+    }
+}
+
 /// The audio callback's end of the MIDI queue. Moves into the stream together with the engine.
+///
+/// It keeps the notes and sustain pedals it delivered and still down. When messages were lost (a
+/// full queue) or discarded as stale (see [`crate::MidiIn`]), a lost note-off or pedal release
+/// would leave a note hanging, so the receiver then delivers a note-off for every held note and a
+/// pedal release for every held pedal, in time order with the remaining messages.
 #[derive(Debug)]
 pub struct MidiReceiver {
     consumer: rtrb::Consumer<MidiStamped>,
+    /// Messages the MIDI threads could not queue, shared with the sender.
+    overflows: Arc<AtomicU64>,
+    /// `overflows` when the receiver last looked.
+    seen_overflows: u64,
+    /// A stream has just taken the receiver over: its first callback discards stale messages.
+    attached: bool,
+    /// Allocated with the receiver; idle entries are free.
+    held: Box<[HeldPort; HELD_PORTS]>,
+    /// Release everything held, stamped with this time, once the messages before it are out.
+    release_at: Option<Instant>,
+    /// Release messages delivered in the current callback.
+    released: u32,
 }
 
 impl MidiReceiver {
@@ -87,18 +136,156 @@ impl MidiReceiver {
         receiver
     }
 
-    /// RT. Pops the oldest event if it was stamped before `now`.
+    /// RT. A stream took the receiver over: the next [`MidiReceiver::begin`] discards what queued
+    /// up while no stream drained it.
+    pub(crate) fn mark_attached(&mut self) {
+        self.attached = true;
+    }
+
+    /// RT. Starts a callback: counts messages lost to a full queue and, after an attach, discards
+    /// messages older than one period of this callback (they would all land on frame 0). Either
+    /// loss schedules a release of the held notes.
+    pub(crate) fn begin(&mut self, info: &crate::CallbackInfo, stats: &crate::StreamStats) {
+        self.released = 0;
+        let overflows = self.overflows.load(Ordering::Acquire);
+        if overflows != self.seen_overflows {
+            stats.record_midi_overflows(overflows.wrapping_sub(self.seen_overflows));
+            self.seen_overflows = overflows;
+            // After the messages that were queued before the loss: their note-ons may belong to
+            // the lost note-offs.
+            self.schedule_release(info.now.checked_sub(Duration::from_nanos(1)));
+        }
+        if std::mem::take(&mut self.attached) {
+            let period = crate::frames_to_duration(u64::from(info.frames), info.sample_rate);
+            let cutoff = info.now.checked_sub(period).unwrap_or(info.now);
+            let stale = self.discard(cutoff);
+            if stale > 0 {
+                stats.record_midi_stale(stale);
+                self.schedule_release(Some(cutoff));
+            }
+        }
+    }
+
+    /// RT. The next message for a callback that started at `now`: queued messages stamped before
+    /// `now`, oldest first, merged with a scheduled release.
     pub(crate) fn pop_before(&mut self, now: Instant) -> Option<MidiStamped> {
+        if let Some(at) = self.release_at {
+            let earlier_queued = matches!(self.consumer.peek(), Ok(event) if event.time < at);
+            if !earlier_queued {
+                if self.released >= RELEASES_PER_CALLBACK {
+                    // Later messages wait until the release is complete.
+                    return None;
+                }
+                match self.next_release(at) {
+                    Some(release) => {
+                        self.released += 1;
+                        return Some(release);
+                    }
+                    None => self.release_at = None,
+                }
+            }
+        }
         match self.consumer.peek() {
-            Ok(event) if event.time < now => self.consumer.pop().ok(),
+            Ok(event) if event.time < now => {
+                let event = self.consumer.pop().ok()?;
+                self.track(&event);
+                Some(event)
+            }
             _ => None,
         }
     }
 
-    /// RT. Drops every event stamped before `now` (used while no engine runs, so stale notes do
-    /// not reach an engine attached later).
-    pub(crate) fn discard_before(&mut self, now: Instant) {
-        while self.pop_before(now).is_some() {}
+    /// RT. Drops every message stamped before `now` while no engine runs, so they do not reach an
+    /// engine attached later. Counted as stale; the engine that comes back gets the release.
+    pub(crate) fn discard_before(&mut self, now: Instant, stats: &crate::StreamStats) {
+        let stale = self.discard(now);
+        if stale > 0 {
+            stats.record_midi_stale(stale);
+            self.schedule_release(now.checked_sub(Duration::from_nanos(1)));
+        }
+    }
+
+    /// RT. Drops queued messages stamped before `before`; returns how many.
+    fn discard(&mut self, before: Instant) -> u64 {
+        let mut count = 0;
+        while matches!(self.consumer.peek(), Ok(event) if event.time < before) {
+            let _ = self.consumer.pop();
+            count += 1;
+        }
+        count
+    }
+
+    /// Releases everything held at `at` (a later release covers an earlier one).
+    fn schedule_release(&mut self, at: Option<Instant>) {
+        let Some(at) = at else { return };
+        self.release_at = Some(self.release_at.map_or(at, |pending| pending.max(at)));
+    }
+
+    /// RT. Follows a delivered message: note-ons and pedal presses are held until their release.
+    fn track(&mut self, event: &MidiStamped) {
+        let [status, data1, data2] = event.data;
+        let channel = usize::from(status & 0x0f);
+        let key = 1u128 << (data1 & 0x7f);
+        let pedal = 1u16 << channel;
+        let press = match status & 0xf0 {
+            0x90 if data2 > 0 => true,
+            0xb0 if data1 == 64 => data2 >= 64,
+            0x80 | 0x90 => false,
+            // All sound off, all notes off.
+            0xb0 if data1 == 120 || data1 == 123 => {
+                if let Some(held) = self.held_port(event.port, false) {
+                    held.keys[channel] = 0;
+                }
+                return;
+            }
+            _ => return,
+        };
+        let Some(held) = self.held_port(event.port, press) else {
+            // Nothing held there, or every entry is busy: not tracked.
+            return;
+        };
+        match (status & 0xf0, press) {
+            (0xb0, true) => held.sustain |= pedal,
+            (0xb0, false) => held.sustain &= !pedal,
+            (_, true) => held.keys[channel] |= key,
+            (_, false) => held.keys[channel] &= !key,
+        }
+    }
+
+    /// The entry of `port` while it holds something; with `claim`, a free entry otherwise.
+    fn held_port(&mut self, port: MidiPortId, claim: bool) -> Option<&mut HeldPort> {
+        let index = self
+            .held
+            .iter()
+            .position(|held| held.port == port && !held.idle())
+            .or_else(|| claim.then(|| self.held.iter().position(HeldPort::idle))?)?;
+        let held = &mut self.held[index];
+        held.port = port;
+        Some(held)
+    }
+
+    /// RT. The next message of a release, stamped `at`, or `None` once nothing is held.
+    fn next_release(&mut self, at: Instant) -> Option<MidiStamped> {
+        let held = self.held.iter_mut().find(|held| !held.idle())?;
+        let data = if let Some((channel, keys)) = held
+            .keys
+            .iter_mut()
+            .enumerate()
+            .find(|(_, keys)| **keys != 0)
+        {
+            let key = keys.trailing_zeros() as u8;
+            *keys &= !(1u128 << key);
+            [0x80 | channel as u8, key, 0]
+        } else {
+            let channel = held.sustain.trailing_zeros() as u8;
+            held.sustain &= !(1u16 << channel);
+            [0xb0 | channel, 64, 0]
+        };
+        Some(MidiStamped {
+            time: at,
+            port: held.port,
+            data,
+        })
     }
 }
 
@@ -108,10 +295,13 @@ impl MidiReceiver {
 #[derive(Debug, Clone)]
 pub(crate) struct MidiSender {
     producer: Arc<Mutex<rtrb::Producer<MidiStamped>>>,
+    /// Messages that did not fit, for the receiver.
+    overflows: Arc<AtomicU64>,
 }
 
 impl MidiSender {
-    /// Stamps `data` with `Instant::now()` and queues it. `false` if the queue is full.
+    /// Stamps `data` with `Instant::now()` and queues it. `false` (and counted for the receiver)
+    /// if the queue is full.
     pub(crate) fn push(&self, port: MidiPortId, data: [u8; 3]) -> bool {
         let mut producer = self.producer.lock().unwrap_or_else(PoisonError::into_inner);
         let event = MidiStamped {
@@ -119,17 +309,32 @@ impl MidiSender {
             port,
             data,
         };
-        producer.push(event).is_ok()
+        let queued = producer.push(event).is_ok();
+        if !queued {
+            self.overflows.fetch_add(1, Ordering::Release);
+        }
+        queued
     }
 }
 
 /// A queue of `capacity` messages between the MIDI threads and the audio callback.
 pub(crate) fn queue(capacity: usize) -> (MidiSender, MidiReceiver) {
     let (producer, consumer) = rtrb::RingBuffer::new(capacity);
+    let overflows = Arc::new(AtomicU64::new(0));
     let sender = MidiSender {
         producer: Arc::new(Mutex::new(producer)),
+        overflows: Arc::clone(&overflows),
     };
-    (sender, MidiReceiver { consumer })
+    let receiver = MidiReceiver {
+        consumer,
+        overflows,
+        seen_overflows: 0,
+        attached: false,
+        held: Box::new([HeldPort::IDLE; HELD_PORTS]),
+        release_at: None,
+        released: 0,
+    };
+    (sender, receiver)
 }
 
 /// A MIDI source without hardware: pushes messages into the queue of a [`MidiReceiver`] exactly as
@@ -268,7 +473,8 @@ impl PortSink {
         }
         if let Some(data) = channel_message(bytes) {
             self.flags.activity.store(true, Ordering::Relaxed);
-            // A full queue means the audio callback is not draining it; drop the message.
+            // A full queue means the audio callback is not draining it: the message is dropped,
+            // counted, and the receiver releases the held notes.
             let _ = self.sender.push(self.id, data);
             if let Some(wake) = self.waker.get() {
                 wake();
@@ -583,7 +789,8 @@ fn close(entry: &mut PortEntry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use crate::{CallbackInfo, StreamStats};
+    use assert_no_alloc::assert_no_alloc;
 
     // midir has virtual ports on unix only (ALSA, CoreMIDI), not on WinMM.
     #[cfg(unix)]
@@ -720,6 +927,150 @@ mod tests {
         assert_eq!(receiver.pop_before(now).unwrap().data[1], 1);
         assert_eq!(receiver.pop_before(now).unwrap().data[1], 2);
         assert!(receiver.pop_before(now).is_none());
+    }
+
+    /// Queues a message stamped `time`, as the MIDI threads would have at that moment.
+    fn push_at(sender: &MidiSender, time: Instant, data: [u8; 3]) -> bool {
+        let mut producer = sender.producer.lock().unwrap();
+        let event = MidiStamped {
+            time,
+            port: MidiPortId(5),
+            data,
+        };
+        let queued = producer.push(event).is_ok();
+        if !queued {
+            sender.overflows.fetch_add(1, Ordering::Release);
+        }
+        queued
+    }
+
+    /// 480 frames at 48 kHz: a 10 ms period.
+    fn info(now: Instant) -> CallbackInfo {
+        CallbackInfo {
+            sample_rate: 48_000,
+            frames: 480,
+            now,
+            output_latency: Duration::ZERO,
+        }
+    }
+
+    /// One callback: what the receiver delivers, as (frame, data), RT-checked.
+    fn callback(
+        receiver: &mut MidiReceiver,
+        now: Instant,
+        stats: &StreamStats,
+    ) -> Vec<(u32, [u8; 3])> {
+        let mut out = Vec::with_capacity(512);
+        let info = info(now);
+        assert_no_alloc(|| {
+            receiver.begin(&info, stats);
+            let mut midi = crate::MidiIn::new(receiver, info);
+            while let Some(event) = midi.pop() {
+                if out.len() < out.capacity() {
+                    out.push((midi.frame_of(event.time), event.data));
+                }
+            }
+        });
+        out
+    }
+
+    #[test]
+    fn stale_messages_are_discarded_on_attach_and_release_the_held_notes() {
+        let (sender, mut receiver) = queue(16);
+        let stats = StreamStats::new();
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        push_at(&sender, t0, [0x90, 60, 100]);
+        push_at(&sender, t0 + ms(1), [0xb1, 64, 127]);
+        assert_eq!(
+            callback(&mut receiver, t0 + ms(5), &stats),
+            [(240, [0x90, 60, 100]), (288, [0xb1, 64, 127])]
+        );
+
+        // The stream changes. While no stream drains the queue the key and the pedal come up
+        // and a controller moves; one key goes down shortly before the new stream runs.
+        push_at(&sender, t0 + ms(100), [0x80, 60, 0]);
+        push_at(&sender, t0 + ms(200), [0xb1, 64, 0]);
+        push_at(&sender, t0 + ms(300), [0xb0, 1, 90]);
+        let now = t0 + ms(3000);
+        push_at(&sender, now - ms(5), [0x90, 64, 90]);
+        receiver.mark_attached();
+        // The held note and pedal are released at frame 0 instead of hanging; the fresh note
+        // keeps its place in the period. No burst of old messages at frame 0.
+        assert_eq!(
+            callback(&mut receiver, now, &stats),
+            [
+                (0, [0x80, 60, 0]),
+                (0, [0xb1, 64, 0]),
+                (240, [0x90, 64, 90])
+            ]
+        );
+        assert_eq!(stats.midi_stale(), 3);
+        assert_eq!(stats.midi_overflows(), 0);
+        // Once only.
+        assert_eq!(callback(&mut receiver, now + ms(10), &stats), []);
+    }
+
+    #[test]
+    fn a_full_queue_is_counted_and_releases_held_notes_after_the_queued_messages() {
+        let (sender, mut receiver) = queue(3);
+        let stats = StreamStats::new();
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        push_at(&sender, t0, [0x92, 48, 100]);
+        push_at(&sender, t0, [0x92, 52, 100]);
+        assert_eq!(callback(&mut receiver, t0 + ms(1), &stats).len(), 2);
+
+        // The audio side stalls: the queue fills and the note-offs are lost.
+        assert!(push_at(&sender, t0 + ms(2), [0x92, 55, 100]));
+        assert!(push_at(&sender, t0 + ms(3), [0xb2, 1, 10]));
+        assert!(push_at(&sender, t0 + ms(4), [0xb2, 1, 20]));
+        assert!(!push_at(&sender, t0 + ms(5), [0x82, 48, 0]));
+        assert!(!sender.push(MidiPortId(5), [0x82, 52, 0]));
+        let now = t0 + ms(6);
+        let delivered = callback(&mut receiver, now, &stats);
+        assert_eq!(stats.midi_overflows(), 2);
+        // The queued messages first (the third note among them), then every held note off at
+        // the end of the period.
+        assert_eq!(
+            delivered,
+            [
+                (288, [0x92, 55, 100]),
+                (336, [0xb2, 1, 10]),
+                (384, [0xb2, 1, 20]),
+                (479, [0x82, 48, 0]),
+                (479, [0x82, 52, 0]),
+                (479, [0x82, 55, 0]),
+            ]
+        );
+        assert_eq!(callback(&mut receiver, now + ms(10), &stats), []);
+        assert_eq!(stats.midi_stale(), 0);
+    }
+
+    #[test]
+    fn a_large_release_is_spread_over_callbacks_in_order() {
+        let (sender, mut receiver) = queue(512);
+        let stats = StreamStats::new();
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        for channel in 0..3u8 {
+            for key in 0..100 {
+                push_at(&sender, t0, [0x90 | channel, key, 1]);
+            }
+        }
+        assert_eq!(callback(&mut receiver, t0 + ms(1), &stats).len(), 300);
+        sender.overflows.fetch_add(1, Ordering::Release);
+        let now = t0 + ms(20);
+        // Arrives after the release began: it waits until the release is complete.
+        push_at(&sender, now + ms(5), [0x90, 1, 1]);
+        let first = callback(&mut receiver, now, &stats);
+        assert_eq!(first.len(), RELEASES_PER_CALLBACK as usize);
+        assert!(first.iter().all(|&(_, [status, ..])| status & 0xf0 == 0x80));
+        // The rest at frame 0 of the next callback, then the new note in its place.
+        let second = callback(&mut receiver, now + ms(10), &stats);
+        assert_eq!(second.len(), 300 - RELEASES_PER_CALLBACK as usize + 1);
+        assert_eq!(second[second.len() - 2], (0, [0x82, 99, 0]));
+        assert_eq!(second.last(), Some(&(240, [0x90, 1, 1])));
     }
 
     /// Waits up to 2 s for the next event in `receiver` (the virtual-port test).
