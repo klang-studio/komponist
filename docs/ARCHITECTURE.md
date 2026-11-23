@@ -252,8 +252,9 @@ changes, a writer thread keeps a copy of it in a per-user state folder
 `~/Library/Application Support/komponist/Recovery`, Windows Local AppData `komponist\Recovery`):
 2 s after the last change, at most 30 s old while changes go on, deleted when the document is clean,
 closed or the app quits. Each document has `<id>.komponist` (the project file format), `<id>.json`
-(original path, name, time, the file's fingerprint, how the session ended) and `<id>.lock`, an
-advisory lock held while the document is open. A panic hook writes the copy when the UI thread
+(original path, name, time, the file's fingerprint, how the session ended; written before the copy)
+and `<id>.lock`, an advisory lock held while the document is open. The folder is owner-only (`0700`,
+files `0600` on Unix). A panic hook writes the copy when the UI thread
 panics. At the next start the copies whose lock is free are offered before anything opens; a
 recovered copy opens dirty under its original path. The project file itself is only ever written
 by a save.
