@@ -18,6 +18,17 @@ project-opened-ready = { $name } opened · Space plays
 # A project opened with missing plugins or samples; `$problems` says which (dialog title text).
 project-opened-problems = { $name } opened · { $problems }
 
+# Part of the status text of a project that needed repairs on open: how many places of a damaged or
+# hand-edited file were corrected or dropped (a value out of range, a note without a pitch, a
+# duplicate id). `$n` counts the objects; the log lists the kinds.
+project-repaired = { $n ->
+        [one] 1 item repaired on open
+       *[other] { $n } items repaired on open
+    }
+
+# A project opened after repairs; `$name` is the project name, `$repairs` the `project-repaired` text.
+project-opened-repaired = { $name } opened · { $repairs }
+
 # The project was saved; `$path` is the shortened path.
 project-saved = Saved · { $path }
 

@@ -159,6 +159,19 @@ fn counts_use_the_english_plural() {
         Lang::En.project_opened_problems("Night", missing_plugins::title_for(Lang::En, 1, 0)),
         "Night opened · 1 Plugin Missing"
     );
+    assert_eq!(Lang::En.project_repaired(1), "1 item repaired on open");
+    assert_eq!(
+        Lang::En.project_opened_repaired("Night", Lang::En.project_repaired(3)),
+        "Night opened · 3 items repaired on open"
+    );
+    assert_eq!(
+        Lang::De.project_repaired(1),
+        "1 Stelle beim Öffnen repariert"
+    );
+    assert_eq!(
+        Lang::De.project_opened_repaired("Night", Lang::De.project_repaired(3)),
+        "Night geöffnet · 3 Stellen beim Öffnen repariert"
+    );
 }
 
 // ------------------------------------------------------------------------------------------------
