@@ -35,6 +35,11 @@ pub const MAX_MIDI_PORTS: usize = 128;
 /// each of them fit.
 const RELEASES_PER_CALLBACK: u32 = 256;
 
+/// Losses whose release a receiver keeps apart. It learns of losses once per callback, so this
+/// covers losses in as many consecutive callbacks before the first is recovered; a further one
+/// joins the latest (which it can only postpone, never an earlier one).
+const LOSS_FENCES: usize = 16;
+
 /// Id of a MIDI input port, stable per device name for the lifetime of the hub (a re-plugged device
 /// gets its old id back). The app maps it 1:1 onto `komponist_engine::MidiPort`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -133,6 +138,51 @@ struct Held {
     ports: [HeldPort; MAX_MIDI_PORTS],
     /// One bit per port with something held.
     active: u128,
+    /// Pending loss recoveries, oldest first: each is due once the receiver has taken that many
+    /// messages from the queue (every message queued before its loss).
+    fences: Fences,
+}
+
+/// A bounded FIFO of increasing message counts.
+#[derive(Debug)]
+struct Fences {
+    counts: [u64; LOSS_FENCES],
+    first: usize,
+    len: usize,
+}
+
+impl Fences {
+    const EMPTY: Fences = Fences {
+        counts: [0; LOSS_FENCES],
+        first: 0,
+        len: 0,
+    };
+
+    fn front(&self) -> Option<u64> {
+        (self.len > 0).then(|| self.counts[self.first])
+    }
+
+    /// Adds a later loss; when full, it joins the latest pending one.
+    fn push(&mut self, count: u64) {
+        let last = (self.first + self.len + LOSS_FENCES - 1) % LOSS_FENCES;
+        if self.len > 0 && self.counts[last] >= count {
+            return;
+        }
+        if self.len == LOSS_FENCES {
+            self.counts[last] = count;
+        } else {
+            self.counts[(self.first + self.len) % LOSS_FENCES] = count;
+            self.len += 1;
+        }
+    }
+
+    /// Drops the losses a release after `consumed` messages has covered.
+    fn covered(&mut self, consumed: u64) {
+        while self.front().is_some_and(|count| count <= consumed) {
+            self.first = (self.first + 1) % LOSS_FENCES;
+            self.len -= 1;
+        }
+    }
 }
 
 /// Messages the MIDI threads could not queue, shared by the sender and the receiver.
@@ -145,23 +195,15 @@ struct Losses {
     accepted_before: AtomicU64,
 }
 
-/// A pending release of everything held.
-#[derive(Debug, Clone, Copy)]
-struct Release {
-    /// Starts once the receiver has taken this many messages from the queue.
-    after: u64,
-    /// … and every queued message stamped before this time.
-    at: Option<Instant>,
-}
-
 /// The audio callback's end of the MIDI queue. Moves into the stream together with the engine.
 ///
 /// It keeps the notes and sustain pedals it delivered and still down, for every port id below
 /// [`MAX_MIDI_PORTS`]. When messages were lost (a full queue) or discarded as stale (see
 /// [`crate::MidiIn`]), a lost note-off or pedal release would leave a note hanging, so the
 /// receiver then delivers a note-off for every held note and a pedal release for every held pedal.
-/// After a loss the release follows every message queued before it; after a discard it comes
-/// first. It keeps the time order of the messages.
+/// After a discard the release comes first, stamped at the cutoff. After a loss it follows every
+/// message queued before that loss, and each loss is recovered on its own: a later loss never
+/// postpones the release for an earlier one. Releases keep the time order of the messages.
 #[derive(Debug)]
 pub struct MidiReceiver {
     consumer: rtrb::Consumer<MidiStamped>,
@@ -175,7 +217,8 @@ pub struct MidiReceiver {
     /// A stream has just taken the receiver over: its first callback discards stale messages.
     attached: bool,
     held: Box<Held>,
-    release: Option<Release>,
+    /// A release for discarded messages: due once nothing queued is stamped before it.
+    stale_release: Option<Instant>,
     /// Release messages delivered in the current callback.
     released: u32,
 }
@@ -207,7 +250,7 @@ impl MidiReceiver {
             // After every message queued before the loss, whenever it arrives: its note-on may
             // belong to a lost note-off.
             let after = self.losses.accepted_before.load(Ordering::Acquire);
-            self.schedule_release(Release { after, at: None });
+            self.held.fences.push(after);
         }
         if std::mem::take(&mut self.attached) {
             let period = crate::frames_to_duration(u64::from(info.frames), info.sample_rate);
@@ -215,10 +258,7 @@ impl MidiReceiver {
             let stale = self.discard(cutoff);
             if stale > 0 {
                 stats.record_midi_stale(stale);
-                self.schedule_release(Release {
-                    after: self.consumed,
-                    at: Some(cutoff),
-                });
+                self.schedule_stale_release(cutoff);
             }
         }
     }
@@ -226,27 +266,33 @@ impl MidiReceiver {
     /// RT. The next message for a callback that started at `now`: queued messages stamped before
     /// `now`, oldest first, merged with a scheduled release.
     pub(crate) fn pop_before(&mut self, now: Instant) -> Option<MidiStamped> {
-        if let Some(release) = self.release {
-            let earlier_queued = self.consumer.peek().is_ok_and(|event| {
-                self.consumed < release.after || release.at.is_some_and(|at| event.time < at)
-            });
-            if !earlier_queued {
-                if self.released >= RELEASES_PER_CALLBACK {
-                    // Later messages wait until the release is complete.
-                    return None;
-                }
+        let head = self.consumer.peek().ok().map(|event| event.time);
+        // Due: nothing queued before the discard's cutoff, or every message queued before the
+        // oldest pending loss taken.
+        let stale_due = self
+            .stale_release
+            .filter(|&at| head.is_none_or(|time| time >= at));
+        let loss_due = self
+            .held
+            .fences
+            .front()
+            .is_some_and(|after| self.consumed >= after || head.is_none());
+        if stale_due.is_some() || loss_due {
+            if self.held.active == 0 {
+                // Complete (or nothing was held): later messages go on in this callback.
+                self.release_done(stale_due.is_some());
+            } else if self.released >= RELEASES_PER_CALLBACK {
+                // Later messages wait until the release is complete.
+                return None;
+            } else {
                 // Never before a message already delivered.
-                let at = match (release.at, self.last_time) {
-                    (Some(at), Some(last)) => at.max(last),
-                    (at, last) => at.or(last).unwrap_or(now),
-                };
-                match self.next_release(at) {
-                    Some(message) => {
-                        self.released += 1;
-                        return Some(message);
-                    }
-                    None => self.release = None,
+                let at = stale_due.max(self.last_time).unwrap_or(now);
+                let message = self.next_release(at);
+                if self.held.active == 0 {
+                    self.release_done(stale_due.is_some());
                 }
+                self.released += 1;
+                return message;
             }
         }
         match self.consumer.peek() {
@@ -267,10 +313,7 @@ impl MidiReceiver {
         let stale = self.discard(now);
         if stale > 0 {
             stats.record_midi_stale(stale);
-            self.schedule_release(Release {
-                after: self.consumed,
-                at: Some(now),
-            });
+            self.schedule_stale_release(now);
         }
     }
 
@@ -288,16 +331,18 @@ impl MidiReceiver {
         count
     }
 
-    /// Releases everything held once both conditions hold (a later release covers an earlier
-    /// one).
-    fn schedule_release(&mut self, next: Release) {
-        self.release = Some(match self.release {
-            Some(pending) => Release {
-                after: pending.after.max(next.after),
-                at: pending.at.max(next.at),
-            },
-            None => next,
-        });
+    /// Releases everything held once nothing queued is stamped before `at`. While no engine
+    /// runs every message is discarded, so a later discard covers an earlier one.
+    fn schedule_stale_release(&mut self, at: Instant) {
+        self.stale_release = self.stale_release.max(Some(at));
+    }
+
+    /// RT. Nothing is held any more: the due releases are complete.
+    fn release_done(&mut self, stale: bool) {
+        if stale {
+            self.stale_release = None;
+        }
+        self.held.fences.covered(self.consumed);
     }
 
     /// RT. Follows a delivered message: note-ons and pedal presses are held until their release.
@@ -332,7 +377,7 @@ impl MidiReceiver {
 
     /// RT. The next message of a release, stamped `at`, or `None` once nothing is held.
     fn next_release(&mut self, at: Instant) -> Option<MidiStamped> {
-        let Held { ports, active } = &mut *self.held;
+        let Held { ports, active, .. } = &mut *self.held;
         if *active == 0 {
             return None;
         }
@@ -432,8 +477,9 @@ pub(crate) fn queue(capacity: usize) -> (MidiSender, MidiReceiver) {
         held: Box::new(Held {
             ports: [HeldPort::IDLE; MAX_MIDI_PORTS],
             active: 0,
+            fences: Fences::EMPTY,
         }),
-        release: None,
+        stale_release: None,
         released: 0,
     };
     (sender, receiver)
@@ -1192,6 +1238,105 @@ mod tests {
         assert_eq!(callback(&mut receiver, now + ms(40), &stats), []);
     }
 
+    /// Losses in consecutive callbacks: each is recovered once the messages queued before it are
+    /// taken, even while later losses keep coming (CodeRabbit on #273).
+    #[test]
+    fn a_later_loss_never_postpones_the_release_for_an_earlier_one() {
+        let (sender, mut receiver) = queue(3);
+        let stats = StreamStats::new();
+        let ms = Duration::from_millis;
+        let t0 = Instant::now();
+        assert!(push_at(&sender, t0 + ms(1), [0x90, 60, 100]));
+        assert!(push_at(&sender, t0 + ms(12), [0xb0, 1, 1]));
+        assert!(push_at(&sender, t0 + ms(12), [0xb0, 1, 2]));
+        assert!(!push_at(&sender, t0 + ms(13), [0x80, 60, 0]));
+        // The note-on is due, the messages up to the loss are not.
+        assert_eq!(
+            callback(&mut receiver, t0 + ms(2), &stats),
+            [(432, [0x90, 60, 100])]
+        );
+        // The freed slot takes another note-on; its note-off is lost too.
+        assert!(push_at(&sender, t0 + ms(14), [0x90, 62, 100]));
+        assert!(!push_at(&sender, t0 + ms(15), [0x80, 62, 0]));
+        // The first loss is recovered as soon as its messages are in, although the second one's
+        // are not due yet.
+        assert_eq!(
+            callback(&mut receiver, t0 + ms(13), &stats),
+            [
+                (432, [0xb0, 1, 1]),
+                (432, [0xb0, 1, 2]),
+                (432, [0x80, 60, 0])
+            ]
+        );
+        assert_eq!(stats.midi_overflows(), 2);
+        assert_eq!(
+            callback(&mut receiver, t0 + ms(20), &stats),
+            [(192, [0x90, 62, 100]), (192, [0x80, 62, 0])]
+        );
+        assert_eq!(callback(&mut receiver, t0 + ms(30), &stats), []);
+    }
+
+    /// A release of exactly one callback's worth completes in that callback, so a message due
+    /// after it is not held back (CodeRabbit on #273).
+    #[test]
+    fn a_release_that_fills_the_callback_cap_does_not_delay_later_messages() {
+        let (sender, mut receiver) = queue(512);
+        let stats = StreamStats::new();
+        let ms = Duration::from_millis;
+        let t0 = Instant::now();
+        let cap = RELEASES_PER_CALLBACK as usize;
+        for n in 0..cap {
+            push_at(&sender, t0, [0x90 | (n / 128) as u8, (n % 128) as u8, 1]);
+        }
+        assert_eq!(callback(&mut receiver, t0 + ms(1), &stats).len(), cap);
+        sender
+            .losses
+            .accepted_before
+            .store(cap as u64, Ordering::Release);
+        sender.losses.lost.fetch_add(1, Ordering::Release);
+        let now = t0 + ms(20);
+        push_at(&sender, now - ms(5), [0x90, 1, 1]);
+        let delivered = callback(&mut receiver, now, &stats);
+        assert_eq!(delivered.len(), cap + 1);
+        assert!(
+            delivered[..cap]
+                .iter()
+                .all(|&(_, [status, ..])| status & 0xf0 == 0x80)
+        );
+        assert_eq!(delivered[cap], (240, [0x90, 1, 1]));
+        assert_eq!(callback(&mut receiver, now + ms(10), &stats), []);
+    }
+
+    /// The first callback after an attach sees a stale discard and a loss: the stale note is
+    /// released at the cutoff, before fresh messages, and the loss after the messages queued
+    /// before it (CodeRabbit on #273).
+    #[test]
+    fn a_discard_and_a_loss_on_attach_are_released_separately() {
+        let (sender, mut receiver) = queue(3);
+        let stats = StreamStats::new();
+        let ms = Duration::from_millis;
+        let t0 = Instant::now();
+        push_at(&sender, t0, [0x90, 60, 100]);
+        assert_eq!(callback(&mut receiver, t0 + ms(5), &stats).len(), 1);
+
+        let now = t0 + ms(3000);
+        assert!(push_at(&sender, t0 + ms(100), [0x80, 60, 0]));
+        assert!(push_at(&sender, now - ms(5), [0x90, 64, 100]));
+        assert!(push_at(&sender, now + ms(5), [0xb0, 1, 1]));
+        assert!(!push_at(&sender, now + ms(6), [0x80, 64, 0]));
+        receiver.mark_attached();
+        assert_eq!(
+            callback(&mut receiver, now, &stats),
+            [(0, [0x80, 60, 0]), (240, [0x90, 64, 100])]
+        );
+        assert_eq!((stats.midi_stale(), stats.midi_overflows()), (1, 1));
+        assert_eq!(
+            callback(&mut receiver, now + ms(10), &stats),
+            [(240, [0xb0, 1, 1]), (240, [0x80, 64, 0])]
+        );
+        assert_eq!(callback(&mut receiver, now + ms(20), &stats), []);
+    }
+
     /// Every port id the sender queues has its own entry, so a release covers notes from all of
     /// them; larger ids are not queued at all.
     #[test]
@@ -1204,9 +1349,10 @@ mod tests {
             assert!(sender.push_stamped(MidiPortId(port), [0x90, 60, 100], || t0));
         }
         assert!(!sender.push_stamped(MidiPortId(MAX_MIDI_PORTS as u16), [0x90, 60, 100], || t0));
-        assert_eq!(stats.midi_overflows(), 0, "a refused port is not a loss");
         let delivered = callback(&mut receiver, t0 + ms(1), &stats);
         assert_eq!(delivered.len(), MAX_MIDI_PORTS);
+        // The receiver has looked at the sender's losses by now.
+        assert_eq!(stats.midi_overflows(), 0, "a refused port is not a loss");
         receiver.mark_attached();
         sender.push_stamped(MidiPortId(0), [0x80, 60, 0], || t0 + ms(2));
         let mut ports = Vec::with_capacity(MAX_MIDI_PORTS);
