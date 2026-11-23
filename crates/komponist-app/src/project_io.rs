@@ -1634,7 +1634,11 @@ mod tests {
                 "the take the saved project refers to must survive"
             );
             let status = app.ui.status.as_ref().unwrap();
-            assert!(status.text.contains(app.lang.project_save_not_durable().as_str()));
+            assert!(
+                status
+                    .text
+                    .contains(app.lang.project_save_not_durable().as_str())
+            );
         }
     }
 
