@@ -538,8 +538,13 @@ impl Pool {
                 let publisher = Publisher::new(&s.ready.0);
                 let run = std::panic::AssertUnwindSafe(|| job(j, 0, &publisher));
                 if let Err(payload) = std::panic::catch_unwind(run) {
-                    // The first one goes on; a later one is dropped with its payload.
-                    unwound.get_or_insert(payload);
+                    // The first one goes on. A later one is leaked, not dropped: a payload's
+                    // `Drop` may panic itself, which would leave this frame mid-batch.
+                    if unwound.is_none() {
+                        unwound = Some(payload);
+                    } else {
+                        std::mem::forget(payload);
+                    }
                 }
                 mine += 1;
             }
@@ -623,7 +628,10 @@ fn work(shared: &Shared, lane: usize, mut seen: u32) {
                 // A panic still counts the job as finished, so the dispatcher never waits for it
                 // forever (the engine's jobs publish their dependents on unwind too); it re-raises
                 // the panic.
-                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
+                if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
+                    // Leaked, not dropped: a payload's `Drop` may panic and end this worker
+                    // without counting the job.
+                    std::mem::forget(payload);
                     shared.panicked.store(true, Ordering::Release);
                 }
                 shared.stats.worker_jobs.fetch_add(1, Ordering::Relaxed);
@@ -976,6 +984,69 @@ mod tests {
         };
         pool.run(8, &job, Duration::from_secs(1));
         assert!(counts.iter().all(|c| c.load(Ordering::Relaxed) == 1));
+    }
+
+    /// Two jobs panic on the dispatching thread, the second with a payload whose `Drop` panics
+    /// (#210 review): that payload is not dropped mid-batch, so the first panic still leaves
+    /// `run_graph` only after the worker's job returned.
+    #[test]
+    fn a_second_dispatcher_panic_with_a_panicking_payload_still_waits() {
+        /// A panic payload whose `Drop` panics when armed.
+        struct Bomb {
+            armed: bool,
+        }
+        impl Drop for Bomb {
+            fn drop(&mut self) {
+                if self.armed {
+                    panic!("a panic payload's drop panics");
+                }
+            }
+        }
+
+        let (pool, _) = Pool::start(1, None, Arc::default());
+        let mut pool = pool.unwrap();
+        let mut waited = false;
+        for _ in 0..50 {
+            let worker_started = AtomicBool::new(false);
+            let worker_done = AtomicBool::new(false);
+            let panics = AtomicUsize::new(0);
+            let job = |_: usize, lane: usize| {
+                if lane != 0 {
+                    worker_started.store(true, Ordering::Release);
+                    std::thread::sleep(Duration::from_millis(20));
+                    worker_done.store(true, Ordering::Release);
+                    return;
+                }
+                let timeout = Instant::now() + Duration::from_secs(2);
+                while !worker_started.load(Ordering::Acquire) && Instant::now() < timeout {
+                    std::thread::yield_now();
+                }
+                if worker_started.load(Ordering::Acquire) {
+                    let armed = panics.fetch_add(1, Ordering::AcqRel) > 0;
+                    std::panic::panic_any(Bomb { armed });
+                }
+            };
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                pool.run(3, &job, Duration::from_secs(1));
+            }));
+            if panics.load(Ordering::Acquire) < 2 {
+                // The worker woke late, or took two jobs: again (the caught payload is harmless).
+                continue;
+            }
+            let payload = caught.expect_err("the first panic goes on");
+            assert!(
+                worker_done.load(Ordering::Acquire),
+                "a panic left `run_graph` while a worker still ran a job"
+            );
+            let bomb = payload.downcast::<Bomb>().expect("the first payload");
+            assert!(!bomb.armed, "the first panic's payload goes on");
+            waited = true;
+            break;
+        }
+        assert!(
+            waited,
+            "no batch had two dispatcher panics next to a worker job"
+        );
     }
 
     #[test]
