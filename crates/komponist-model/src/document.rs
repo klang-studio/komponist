@@ -94,7 +94,9 @@ impl Document {
     ///
     /// Outside a gesture: on success pushes the previous root as an undo step labelled `label`,
     /// clears the redo stack and returns `Ok`. During a gesture: replaces the root without pushing
-    /// (`label` is ignored). On error nothing changes.
+    /// (`label` is ignored). On error nothing changes. An edit that returns a project equal to the
+    /// current root (compared by content, [`Project::same_content`], which skips shared `Arc`s) changes nothing either: no undo
+    /// step, no redo clearing, no dirty mark, no revision bump.
     pub fn apply(
         &mut self,
         label: impl Into<String>,
@@ -110,6 +112,10 @@ impl Document {
         edit: impl FnOnce(&Project) -> Result<(Project, T), EditError>,
     ) -> Result<T, EditError> {
         let (next, value) = edit(&self.current)?;
+        if next.same_content(&self.current) {
+            // An edit that changes nothing leaves root, history, revision and dirty state alone.
+            return Ok(value);
+        }
         let previous = std::mem::replace(&mut self.current, Arc::new(next));
         if self.gesture.is_none() {
             self.push_undo(label.into(), previous);
@@ -136,14 +142,18 @@ impl Document {
         let edited = edit(&self.current)?;
         // An edit that changes nothing (a plugin state that merely echoes an undo) keeps the root
         // and the clean state.
-        let changed = edited != *self.current;
+        let changed = !edited.same_content(&self.current);
         let next = if changed {
             Arc::new(edited)
         } else {
             Arc::clone(&self.current)
         };
+        // Replace a snapshot only when the edit changes it: an equal result keeps the very same
+        // `Arc`, so the `saved` pointer stays reachable through undo and redo.
         let rebase = |snapshot: &mut Arc<Project>| {
-            if let Ok(p) = edit(snapshot) {
+            if let Ok(p) = edit(snapshot)
+                && !p.same_content(snapshot)
+            {
                 *snapshot = Arc::new(p);
             }
         };
@@ -216,7 +226,7 @@ impl Document {
         edit: impl FnOnce(&Project) -> Result<Project, EditError>,
     ) -> Result<(), EditError> {
         let edited = edit(&self.current)?;
-        if edited == *self.current {
+        if edited.same_content(&self.current) {
             return Ok(());
         }
         let next = Arc::new(edited);
@@ -263,7 +273,15 @@ impl Document {
             return self.apply_with("", edit);
         };
         let (next, value) = edit(&gesture.before)?;
-        self.current = Arc::new(next);
+        if next.same_content(&self.current) {
+            return Ok(value);
+        }
+        // Back at the start of the gesture: take its very `Arc` so the gesture ends without a step.
+        self.current = if next.same_content(&gesture.before) {
+            Arc::clone(&gesture.before)
+        } else {
+            Arc::new(next)
+        };
         self.revision += 1;
         Ok(value)
     }
@@ -273,15 +291,21 @@ impl Document {
         self.gesture.is_some()
     }
 
-    /// Ends the open gesture: pushes one undo step with the root from `begin_gesture` if any
-    /// [`Document::apply`] happened since (the root is no longer `Arc::ptr_eq` to it), and clears the
-    /// redo stack in that case. No-op without an open gesture.
+    /// Ends the open gesture: pushes one undo step with the root from `begin_gesture` if the root
+    /// differs from it (cheap `Arc::ptr_eq` first, then [`Project::same_content`]), and clears the redo
+    /// stack in that case. A gesture that ends where it started leaves no step. No-op without an
+    /// open gesture.
     pub fn end_gesture(&mut self) {
         let Some(gesture) = self.gesture.take() else {
             return;
         };
         if !Arc::ptr_eq(&gesture.before, &self.current) {
-            self.push_undo(gesture.label, gesture.before);
+            if gesture.before.same_content(&self.current) {
+                // Equal content: keep the original `Arc` (the `saved` pointer may be it).
+                self.current = gesture.before;
+            } else {
+                self.push_undo(gesture.label, gesture.before);
+            }
         }
     }
 
@@ -860,6 +884,62 @@ mod tests {
         doc.end_gesture();
         doc.undo();
         assert!(!doc.is_dirty());
+    }
+
+    #[test]
+    fn an_edit_that_changes_nothing_leaves_history_and_dirty_flag_alone() {
+        let mut doc = Document::new(Project::new("A"));
+        doc.apply("1", rename("B")).unwrap();
+        doc.undo();
+        let root = Arc::clone(doc.project());
+        let revision = doc.revision();
+        doc.apply("noop", rename("A")).unwrap();
+        assert!(Arc::ptr_eq(&root, doc.project()));
+        assert_eq!(doc.revision(), revision);
+        assert!(!doc.is_dirty());
+        assert_eq!(doc.undo_label(), None);
+        assert_eq!(doc.redo_label(), Some("1"), "redo survives a no-op");
+        let value = doc.apply_with("noop", |p| Ok((p.clone(), 7))).unwrap();
+        assert_eq!(value, 7, "the value still comes back");
+        assert_eq!(doc.undo_label(), None);
+    }
+
+    #[test]
+    fn a_gesture_that_ends_where_it_started_leaves_no_step() {
+        let mut doc = Document::new(Project::new("A"));
+        doc.begin_gesture("drag");
+        doc.apply("", rename("A")).unwrap();
+        doc.end_gesture();
+        assert_eq!(doc.undo_label(), None);
+        assert!(!doc.is_dirty());
+
+        // Moved away and back again.
+        doc.begin_gesture("drag");
+        doc.apply_in_gesture(rename("B")).unwrap();
+        assert!(doc.is_dirty());
+        doc.apply_in_gesture(rename("A")).unwrap();
+        doc.end_gesture();
+        assert_eq!(doc.undo_label(), None);
+        assert!(!doc.is_dirty());
+
+        // A non-equal gesture still pushes.
+        doc.begin_gesture("drag");
+        doc.apply_in_gesture(rename("B")).unwrap();
+        doc.end_gesture();
+        assert_eq!(doc.undo_label(), Some("drag"));
+    }
+
+    #[test]
+    fn an_untracked_edit_with_an_equal_result_keeps_the_saved_state_reachable() {
+        let mut doc = Document::new(Project::new("A"));
+        doc.mark_saved();
+        doc.apply("1", rename("B")).unwrap();
+        doc.apply_untracked(|p| Ok(p.clone())).unwrap();
+        assert!(doc.is_dirty());
+        doc.undo();
+        assert!(!doc.is_dirty(), "undo back to the saved root is clean");
+        doc.redo();
+        assert!(doc.is_dirty());
     }
 
     #[test]

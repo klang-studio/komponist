@@ -457,6 +457,31 @@ fn arrows_transpose_and_nudge_q_quantizes() {
     assert_eq!(h.state().undo_text().as_deref(), Some("Quantisieren"));
 }
 
+/// A nudge that the clip start clamps to zero changes nothing: no undo step, not dirty (#220).
+#[test]
+fn a_nudge_that_changes_nothing_leaves_no_undo_step() {
+    let (mut app, clip) = lead_a();
+    let first = *notes_of(&app, clip).iter().min_by_key(|n| n.start).unwrap();
+    assert_eq!(
+        first.start,
+        Tick(0),
+        "Lead A starts with a note at the clip start"
+    );
+    select(&mut app, vec![first.id]);
+    let mut h = harness(app);
+    assert!(!h.state().doc().is_dirty());
+    let undo_before = h.state().undo_text();
+    h.key_press(egui::Key::ArrowLeft);
+    h.run_steps(2);
+    assert_eq!(
+        notes_of(h.state(), clip).iter().map(|n| n.start).min(),
+        Some(Tick(0))
+    );
+    assert_eq!(h.state().undo_text(), undo_before);
+    assert_eq!(h.state().undo_text().as_deref(), None);
+    assert!(!h.state().doc().is_dirty());
+}
+
 /// "Strg A / Entf — Alle wählen / löschen."
 #[test]
 fn ctrl_a_selects_all_and_delete_deletes() {

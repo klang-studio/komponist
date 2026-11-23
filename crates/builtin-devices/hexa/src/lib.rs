@@ -83,7 +83,8 @@ pub static CATALOG: CatalogSpec = CatalogSpec {
     vendor: "klang-studio",
 };
 
-/// Creates a processor from the saved patch, falling back to the Init patch for invalid state.
+/// Creates a processor from the saved patch, falling back to the Init patch for invalid state
+/// (the caller reports that with [`decode_state`] and keeps the stored bytes).
 pub fn processor_from_state(state: Option<&[u8]>) -> HexaProcessor {
     HexaProcessor::from_state(state).unwrap_or_default()
 }

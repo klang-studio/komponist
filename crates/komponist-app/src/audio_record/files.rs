@@ -7,14 +7,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+/// Unsaved takes live in `<music>/komponist/Recordings` (the folder name is language-neutral; the
+/// Music folder comes from `crate::dirs::music_dir`). Documents reference takes by absolute path,
+/// so takes left in an older `komponist/Aufnahmen` folder keep working and are never moved.
 pub(super) fn provisional_root() -> Option<PathBuf> {
-    #[cfg(windows)]
-    let music = crate::dirs::start_dir();
-    #[cfg(target_os = "macos")]
-    let music = crate::dirs::home_dir().map(|home| home.join("Music"));
-    #[cfg(all(not(windows), not(target_os = "macos")))]
-    let music = crate::dirs::home_dir().map(|home| home.join("Musik"));
-    music.map(|music| music.join("komponist/Aufnahmen"))
+    crate::dirs::recordings_dir()
 }
 
 pub(super) fn directory(root: &Path, name: &str) -> io::Result<PathBuf> {
