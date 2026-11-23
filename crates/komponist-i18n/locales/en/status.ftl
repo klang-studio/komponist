@@ -184,4 +184,13 @@ status-collect-skipped = { $count } files were not collected: unsupported audio 
 status-macros-mapping = Map: move parameters to map them to { $source } · Click another macro to switch · Esc ends
 status-macros-locked = { $param } is controlled by { $source }
 status-macros-moved = { $param }: now { $source }
-status-macros-full = At most 16 mappings per track macro
+
+# #227: rejected edits and failed device starts reach the status bar.
+status-edit-routing-cycle = Not possible: this would create a routing loop
+status-edit-not-a-bus = Not possible: “{ $track }” is not a bus
+status-edit-automation-too-large = Not possible: the automation would create too many points
+status-edit-macro-full = Not possible: track macro { $n } already has 16 mappings
+# Errors only a bug can cause; the details go to the log.
+status-edit-failed = Edit not possible
+status-midi-enable-failed = Cannot open MIDI input “{ $device }”
+status-audio-input-failed = Cannot start audio input · Settings { $shortcut }

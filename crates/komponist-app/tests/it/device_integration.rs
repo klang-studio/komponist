@@ -622,11 +622,22 @@ fn copying_devices_puts_a_marker_on_the_system_clipboard_so_strg_v_arrives() {
     let head = head_point(&h, "LSP Para EQ x8");
     click(&mut h, head);
     h.event(Event::Copy);
-    assert_eq!(copied_texts(&mut h, 3), ["komponist: 1 Gerät"]);
+    assert_eq!(copied_texts(&mut h, 3), ["komponist-devices/1"]);
     // The desktop now has text on the clipboard and delivers it with Strg V: that marker.
-    h.event(Event::Paste("komponist: 1 Gerät".into()));
+    h.event(Event::Paste("komponist-devices/1".into()));
     h.run_steps(3);
     assert_eq!(chain(h.state(), track).len(), ids.len() + 1);
+    // The markers of earlier versions (German and English) still paste.
+    for text in [
+        "komponist: 1 Gerät",
+        "komponist: 2 Geräte",
+        "komponist: 1 device",
+    ] {
+        let before = chain(h.state(), track).len();
+        h.event(Event::Paste(text.into()));
+        h.run_steps(3);
+        assert_eq!(chain(h.state(), track).len(), before + 1, "{text}");
+    }
     // Nothing copied, nothing written.
     h.state_mut().ui_mut().selection.devices.clear();
     h.event(Event::Copy);

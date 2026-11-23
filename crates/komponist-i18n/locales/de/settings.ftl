@@ -155,3 +155,6 @@ settings-jack-port-missing = Nicht verbunden · { $port }
 settings-jack-scan-failed = JACK-Ports konnten nicht gelesen werden.
 settings-jack-playback-unconnected = JACK-Ausgang konnte nicht verbunden werden · { $port }
 settings-jack-inputs = JACK-Eingangsports
+
+# #227: shown in the device notice when the driver cannot list its devices.
+settings-devices-unavailable = Geräteliste nicht verfügbar: { $reason }

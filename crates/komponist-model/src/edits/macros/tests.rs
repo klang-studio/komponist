@@ -94,7 +94,7 @@ fn moving_to_a_full_slot_leaves_the_first_driver_in_place() {
     }
     assert_eq!(
         add_mapping(&p, track, 1, mapping(target.clone())),
-        Err(EditError::MacroMappingLimit)
+        Err(EditError::MacroMappingLimit { index: 1 })
     );
     assert_eq!(p.track(track).unwrap().macros.driver(&target), Some(0));
     let same = add_mapping(&p, track, 1, mapping(parameter(device, 0))).unwrap();
