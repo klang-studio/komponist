@@ -632,6 +632,9 @@ pub fn folder_formats(path: &Path) -> (bool, bool) {
     (clap, vst3)
 }
 
+/// An enumeration running on a worker thread.
+type Pending<T> = Receiver<Result<Vec<T>, AudioError>>;
+
 /// The dialog's caches between frames (app-private).
 #[derive(Debug, Default)]
 pub(crate) struct Cache {
@@ -646,11 +649,8 @@ pub(crate) struct Cache {
     /// A driver enumeration running on a worker thread.
     pending_hosts: Option<Receiver<Vec<HostKind>>>,
     /// A device enumeration running on a worker thread, and its driver.
-    pending_devices: Option<(HostKind, Receiver<Result<Vec<DeviceInfo>, AudioError>>)>,
-    pending_inputs: Option<(
-        HostKind,
-        Receiver<Result<Vec<komponist_audio::InputDeviceInfo>, AudioError>>,
-    )>,
+    pending_devices: Option<(HostKind, Pending<DeviceInfo>)>,
+    pending_inputs: Option<(HostKind, Pending<komponist_audio::InputDeviceInfo>)>,
     /// The last output device enumeration failed with this reason.
     devices_error: Option<String>,
     /// The last capture device enumeration failed with this reason.
