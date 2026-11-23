@@ -599,12 +599,20 @@ fn channel_prop(which: u8, v: i32) -> ChannelProp {
     }
 }
 
-/// Applies `op` as one undo step and checks the outcome: on success the invariants hold, on
-/// error the document is unchanged.
+/// Applies `op` as one undo step and checks the outcome: on success the invariants hold and a
+/// changed project is one step (an equal one is no step, #220; returns `false`), on error the
+/// document is unchanged.
 fn apply(doc: &mut Document, op: &Op) -> Result<bool, TestCaseError> {
     let before = Arc::clone(doc.project());
     let revision = doc.revision();
+    let label = doc.undo_label().map(str::to_owned);
     match doc.apply("Test", |p| run(p, op)) {
+        Ok(()) if **doc.project() == *before => {
+            prop_assert!(Arc::ptr_eq(doc.project(), &before));
+            prop_assert_eq!(doc.revision(), revision);
+            prop_assert_eq!(doc.undo_label().map(str::to_owned), label);
+            Ok(false)
+        }
         Ok(()) => {
             check_invariants(doc.project());
             prop_assert!(!Arc::ptr_eq(doc.project(), &before));
@@ -972,7 +980,7 @@ proptest! {
                         doc.cancel_gesture();
                         prop_assert!(Arc::ptr_eq(doc.project(), &before));
                     } else {
-                        let changed = !Arc::ptr_eq(doc.project(), &before);
+                        let changed = **doc.project() != *before;
                         doc.end_gesture();
                         if changed {
                             prop_assert_eq!(doc.undo_label(), Some("Ziehen"));
