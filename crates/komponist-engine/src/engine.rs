@@ -689,8 +689,10 @@ impl Engine {
         self.poisoned
     }
 
-    /// RT-safe, for offline use. Processes `frames` (1 ..= [`crate::MAX_BLOCK`]) frames with
-    /// `offline = true` and no live input, and returns them interleaved stereo (`[l0, r0, l1, …]`,
+    /// For offline use (export, tests); not for the audio callback. Processes `frames`
+    /// (1 ..= [`crate::MAX_BLOCK`]) frames with `offline = true`: no deadline, so audio clips are
+    /// read and stretched synchronously (allocation and file IO) and bridges wait for their
+    /// processors. No live input, and returns them interleaved stereo (`[l0, r0, l1, …]`,
     /// `2 × frames` samples) from an internal buffer valid until the next call. Panics if `frames`
     /// is 0 or larger than `MAX_BLOCK`.
     pub fn render(&mut self, frames: usize) -> &[f32] {
@@ -1321,8 +1323,9 @@ impl TrackJobs<'_> {
         state.out[1][..n].copy_from_slice(r);
     }
 
-    /// RT. A bus's input sum into `bufs.a` (zeroed): its sources' outputs and sends, in the
-    /// program's order. `bufs.b` is scratch.
+    /// RT. An audio track's input into `state.input_audio`: silence, the hardware or capture
+    /// input (with its delay correction) or the output of a source track. With monitoring on it
+    /// also adds the result to `bufs.a`; `bufs.b` is scratch.
     fn audio_source(
         &self,
         track: &TrackProgram,
