@@ -40,6 +40,9 @@
 //! - [`export`]: the flow from "Exportieren" to the status bar message (engine detached, worker
 //!   thread, devices, cancel); the S08 dialog is [`dialogs::export`].
 
+// Missing SAFETY comments: 2 (macOS build; Linux and Windows code not counted). Remove this allow when the crate is clean (#241 follow-up).
+#![allow(clippy::undocumented_unsafe_blocks)]
+
 /// The app id: desktop file and metainfo name, `StartupWMClass`, and the windows' Wayland app id /
 /// X11 `WM_CLASS`. Reverse DNS of the repository (`tests/it/packaging.rs` checks the files).
 pub const APP_ID: &str = "io.github.klang_studio.komponist";

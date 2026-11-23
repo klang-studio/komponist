@@ -63,7 +63,7 @@ jobs:
             libwayland-dev libfontconfig1-dev libgl1-mesa-dev \
             mesa-vulkan-drivers libvulkan1 xvfb xauth gdb
 
-      # rust-toolchain.toml: stable + rustfmt + clippy.
+      # rust-toolchain.toml: pinned version + rustfmt + clippy.
       - name: Install Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
@@ -170,7 +170,7 @@ jobs:
           persist-credentials: false
 
       # Xcode command line tools, bash and rustup come with the runner image; no system packages needed.
-      # rust-toolchain.toml: stable + rustfmt + clippy.
+      # rust-toolchain.toml: pinned version + rustfmt + clippy.
       - name: Install Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
@@ -244,7 +244,7 @@ jobs:
           persist-credentials: false
 
       # Visual Studio Build Tools (MSVC), Git Bash and rustup come with the runner image.
-      # rust-toolchain.toml: stable + rustfmt + clippy.
+      # rust-toolchain.toml: pinned version + rustfmt + clippy.
       - name: Install Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 

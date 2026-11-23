@@ -1,3 +1,5 @@
 [toolchain]
-channel = "stable"
+# Exact version, bumped deliberately (#241): a new stable clippy must not turn the `-D warnings`
+# gate red by itself. Keep `rust-version` in Cargo.toml and the CI toolchain steps in line.
+channel = "1.100.0"
 components = ["rustfmt", "clippy"]
