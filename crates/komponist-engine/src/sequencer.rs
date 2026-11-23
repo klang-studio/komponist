@@ -32,13 +32,17 @@ pub(crate) const MAX_ACTIVE_NOTES: usize = 256;
 ///
 /// Sorting keeps the push order within an offset, except that note-ons go after everything else
 /// at their offset (note-offs before note-ons, `Processor::process`). No allocation: both buffers
-/// are preallocated and `sort_unstable` works in place (the push index makes it stable).
+/// are preallocated and `sort_unstable` works in place (the monotonic push counter makes the keys
+/// unique, so the order is stable).
 #[derive(Debug)]
 pub(crate) struct EventList {
     keyed: Vec<(u64, Event)>,
     sorted: Vec<Event>,
     capacity: usize,
     note_off_first: bool,
+    /// Sequence number of the next push; reset by `clear`, never reused after `remove_note_on`.
+    /// A block pushes far fewer than 2^31 events, so the 31 bits of the key cannot wrap.
+    next_seq: u32,
 }
 
 impl EventList {
@@ -53,6 +57,7 @@ impl EventList {
             sorted: Vec::with_capacity(capacity),
             capacity,
             note_off_first,
+            next_seq: 0,
         }
     }
 
@@ -60,6 +65,7 @@ impl EventList {
     pub(crate) fn clear(&mut self) {
         self.keyed.clear();
         self.sorted.clear();
+        self.next_seq = 0;
     }
 
     /// Free places.
@@ -73,7 +79,9 @@ impl EventList {
             return false;
         }
         let rank = u64::from(self.note_off_first && matches!(kind, EventKind::NoteOn { .. }));
-        let key = u64::from(offset) << 32 | rank << 31 | self.keyed.len() as u64;
+        let seq = u64::from(self.next_seq & 0x7fff_ffff);
+        self.next_seq = self.next_seq.wrapping_add(1);
+        let key = u64::from(offset) << 32 | rank << 31 | seq;
         self.keyed.push((key, Event { offset, kind }));
         true
     }
@@ -906,6 +914,70 @@ mod tests {
         assert_eq!(list.room(), 2);
         assert!(list.push(1, off(1)) && list.push(1, off(1)));
         assert!(!list.push(1, off(1)));
+    }
+
+    /// After `remove_note_on` the list shrinks; a new event must still sort after everything
+    /// pushed before it (the old `keyed.len()` key reused a number and broke the send order).
+    #[test]
+    fn retriggered_note_keeps_send_order_after_remove() {
+        let mut list = EventList::new(8);
+        let on = |note_id| EventKind::NoteOn {
+            key: 60,
+            velocity: 1,
+            channel: 0,
+            note_id,
+        };
+        let cc = |v| EventKind::Midi([0xb0, 64, v]);
+        list.push(7, cc(1));
+        list.push(7, on(10)); // retriggered below
+        list.push(7, cc(2));
+        list.remove_note_on(10);
+        list.push(7, cc(3));
+        list.push(7, on(11));
+        list.push(7, cc(4));
+        let got: Vec<_> = list.finish().iter().map(|e| e.kind).collect();
+        assert_eq!(got, [cc(1), cc(2), cc(3), cc(4), on(11)]);
+    }
+
+    /// Random pushes and removals: events at equal offsets come out in send order, note-ons last.
+    #[test]
+    fn event_list_is_fifo_at_equal_offsets_under_random_use() {
+        let mut rng = Rng::new(0x226);
+        for round in 0..200 {
+            let mut list = EventList::new(64);
+            let mut model: Vec<(u32, bool, u32, EventKind)> = Vec::new(); // offset, is_on, tag, kind
+            for tag in 0..120u32 {
+                if rng.below(4) == 0 {
+                    if let Some(i) = model.iter().position(|m| m.1) {
+                        let EventKind::NoteOn { note_id, .. } = model[i].3 else {
+                            unreachable!()
+                        };
+                        list.remove_note_on(note_id);
+                        model.remove(i);
+                    }
+                    continue;
+                }
+                let offset = rng.below(3) as u32;
+                let is_on = rng.below(2) == 0;
+                let kind = if is_on {
+                    EventKind::NoteOn {
+                        key: 60,
+                        velocity: 1,
+                        channel: 0,
+                        note_id: tag,
+                    }
+                } else {
+                    EventKind::Midi([0xb0, 1, (tag % 128) as u8])
+                };
+                if list.push(offset, kind) {
+                    model.push((offset, is_on, tag, kind));
+                }
+            }
+            model.sort_by_key(|m| (m.0, m.1)); // stable: keeps send order inside a group
+            let want: Vec<_> = model.iter().map(|m| (m.0, m.3)).collect();
+            let got: Vec<_> = list.finish().iter().map(|e| (e.offset, e.kind)).collect();
+            assert_eq!(got, want, "round {round}");
+        }
     }
 
     #[test]
