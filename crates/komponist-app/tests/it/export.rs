@@ -305,7 +305,7 @@ fn a_warp_error_names_the_clip_and_localizes_the_reason() {
         )
         .unwrap();
         for _ in 0..48000 {
-            writer.write_sample(f32::NAN).unwrap();
+            writer.write_sample(2048.0_f32).unwrap();
         }
         writer.finalize().unwrap();
         let (project, track) =
