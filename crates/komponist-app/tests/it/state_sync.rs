@@ -493,3 +493,70 @@ fn an_unreadable_device_state_is_reported_and_never_overwritten() {
     host.release(DeviceId(901));
     assert_eq!(host.state_warning(DeviceId(901)), None);
 }
+
+/// A knob turn through the app on a device whose state cannot be read stores nothing: the
+/// original bytes stay and no undo step is pushed (Hexa and the internal devices have separate
+/// parameter paths).
+#[test]
+fn a_knob_turn_never_replaces_an_unreadable_state() {
+    use komponist_app::actions::DropTarget;
+    use komponist_app::{Action, App, PluginAction};
+
+    let corrupted: &[u8] = b"{\"params\": {\"gain\": ";
+    let mut app = App::headless(Project::new("Unreadable"));
+    app.dispatch(Action::Plugin(PluginAction::Add {
+        plugin: komponist_hexa::CATALOG.plugin_ref(),
+        target: DropTarget::NewTrack { index: None },
+    }));
+    let track = app.project().tracks[0].id;
+    app.dispatch(Action::Plugin(PluginAction::Add {
+        plugin: Internal::Limiter.plugin_ref(),
+        target: DropTarget::Track(track),
+    }));
+    let devices: Vec<DeviceId> = app.project().tracks[0]
+        .channel
+        .devices
+        .iter()
+        .map(|d| d.id)
+        .collect();
+    assert_eq!(devices.len(), 2);
+    let hexa_volume = komponist_hexa::device::Field::Volume.wire();
+    let limiter_gain = Internal::Limiter
+        .wire(&komponist_model::params::ParamId::new("gain"))
+        .unwrap();
+    let knobs = [(devices[0], hexa_volume), (devices[1], limiter_gain)];
+    let state = |app: &App, device: DeviceId| {
+        let (_, _, d) = app.project().find_device(device).unwrap();
+        d.state.as_deref().map(<[u8]>::to_vec)
+    };
+    // The same turn on a readable state is stored, so the refusal below is not vacuous.
+    for (device, id) in knobs {
+        let before = state(&app, device);
+        app.dispatch(Action::Plugin(PluginAction::SetParam {
+            device,
+            id,
+            value: 0.5,
+        }));
+        assert_ne!(state(&app, device), before, "{device:?}");
+    }
+    let mut project = Arc::clone(app.project());
+    for &device in &devices {
+        project = Arc::new(
+            edits::set_device_state(&project, device, Some(corrupted.to_vec().into())).unwrap(),
+        );
+    }
+    let mut app = App::headless(Arc::unwrap_or_clone(project));
+    for (device, id) in knobs {
+        app.dispatch(Action::Plugin(PluginAction::SetParam {
+            device,
+            id,
+            value: 0.5,
+        }));
+        assert_eq!(
+            state(&app, device).as_deref(),
+            Some(corrupted),
+            "{device:?}"
+        );
+        assert_eq!(app.doc().undo_label(), None, "{device:?}");
+    }
+}
