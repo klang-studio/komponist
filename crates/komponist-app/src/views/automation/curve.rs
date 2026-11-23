@@ -128,6 +128,9 @@ impl LaneFrame<'_> {
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
     selected: HashMap<Source, BTreeSet<usize>>,
+    /// The points each selection's indices refer to. A selection is dropped as soon as its lane
+    /// holds other points than these (undo, redo, automation write, macro learn, another editor).
+    basis: HashMap<Source, Points>,
     active: Option<Source>,
     focus_request: Option<Source>,
     drag: Option<Drag>,
@@ -135,6 +138,7 @@ pub(crate) struct Editor {
     entry: Option<ValueEntry>,
     dense_curves: HashMap<Source, DenseCurve>,
     paint_frame: u64,
+    pruned_frame: Option<u64>,
 }
 
 /// A dense trace's triangles are reused until its points, zoom, viewport or colours change.
@@ -224,6 +228,24 @@ impl Editor {
         self.focus_request = Some(source);
     }
 
+    /// Drops every selection whose lane no longer holds the `Points` it was made on: its indices
+    /// would name other points after an undo, a redo or any edit from outside this editor. Edits
+    /// of this editor keep their selection because `send_points` records the points it sends.
+    /// Runs once per frame, before the first lane is shown: edits sent earlier in the same frame
+    /// reach the project only after it, so a later lane would see them as foreign.
+    fn prune_stale(&mut self, project: &Project) {
+        if self.pruned_frame.replace(self.paint_frame) == Some(self.paint_frame) {
+            return;
+        }
+        let basis = &self.basis;
+        self.selected.retain(|source, _| {
+            source_points(project, source)
+                .zip(basis.get(source))
+                .is_some_and(|(now, then)| std::ptr::eq(now.as_slice(), then.as_slice()))
+        });
+        self.basis.retain(|source, _| self.selected.contains_key(source));
+    }
+
     pub fn selected(&self, source: &Source) -> bool {
         self.active.as_ref() == Some(source)
     }
@@ -253,6 +275,7 @@ impl Editor {
         lane: &LaneFrame<'_>,
         paint: &Paint<'_>,
     ) {
+        self.prune_stale(ctx.project);
         let visible = lane.rect.intersect(ui.clip_rect());
         if !visible.is_positive() {
             return;
@@ -349,7 +372,7 @@ impl Editor {
                         contour,
                         bounds,
                         record,
-                        Some(record.gamma_multiply(0.22)),
+                        Some(record.gamma_multiply(m::RECORD_FILL_ALPHA)),
                         false,
                     );
                 }
@@ -469,8 +492,8 @@ impl Editor {
         }
         if let Some((point, steps)) = point_action {
             let mut points = lane.points().to_vec();
-            points[point].value = (points[point].value + steps as f32 * 0.01).clamp(0.0, 1.0);
-            send_points(ctx, lane, points, "undo-automation-value");
+            points[point].value = (points[point].value + steps as f32 * m::VALUE_STEP).clamp(0.0, 1.0);
+            send_points(&mut self.basis, ctx, lane, points, "undo-automation-value");
         }
 
         if response.hovered() {
@@ -501,6 +524,7 @@ impl Editor {
             self.selected.clear();
         }
         self.active = Some(lane.source.clone());
+        self.basis.insert(lane.source.clone(), lane.points.clone());
         let points = self.selected.entry(lane.source.clone()).or_default();
         if let Some(i) = index
             && (!append || !points.remove(&i))
@@ -570,11 +594,11 @@ impl Editor {
             let mut points = lane.points().to_vec();
             if let Some(i) = nearest_point(lane, p) {
                 points.remove(i);
-                send_points(ctx, lane, points, "undo-automation-delete-points");
+                send_points(&mut self.basis, ctx, lane, points, "undo-automation-delete-points");
             } else if lane.end.is_none_or(|end| p.x <= lane.axis.x(end)) {
                 let point = Point::linear(lane.tick(p.x, mods.shift, meter), lane.value(p.y));
                 points.push(point);
-                send_points(ctx, lane, points, "undo-automation-add-point");
+                send_points(&mut self.basis, ctx, lane, points, "undo-automation-add-point");
             }
             self.select(lane, None, false);
             response.request_focus();
@@ -586,7 +610,7 @@ impl Editor {
             {
                 let mut points = lane.points().to_vec();
                 points[index].shape = Shape::Linear;
-                send_points(ctx, lane, points, "undo-automation-shape");
+                send_points(&mut self.basis, ctx, lane, points, "undo-automation-shape");
             } else {
                 self.select(lane, nearest_point(lane, p), mods.shift);
             }
@@ -677,7 +701,7 @@ impl Editor {
                         let raw_tick = lane.axis.x(points[*index].tick) + pointer.x - origin.x;
                         let dx = lane.tick(raw_tick, mods.shift, meter) - points[*index].tick;
                         let dy = (origin.y - pointer.y) / lane.value_rect().height().max(1.0)
-                            * if mods.shift { 0.1 } else { 1.0 };
+                            * if mods.shift { m::FINE_DRAG_FACTOR } else { 1.0 };
                         let rank = indices.iter().position(|i| i == index);
                         let original = points[*index];
                         let (points, selected) =
@@ -692,7 +716,7 @@ impl Editor {
                             "undo-automation-move-points"
                         };
                         self.selected.insert(lane.source.clone(), selected);
-                        send_points(ctx, lane, points, label);
+                        send_points(&mut self.basis, ctx, lane, points, label);
                     }
                     Drag::Bend {
                         index,
@@ -709,7 +733,7 @@ impl Editor {
                         } else {
                             Shape::Curve { tension }
                         };
-                        send_points(ctx, lane, points, "undo-automation-bend");
+                        send_points(&mut self.basis, ctx, lane, points, "undo-automation-bend");
                     }
                     Drag::Draw { raw, .. } => {
                         let tick = lane.tick(pointer.x, true, meter);
@@ -738,7 +762,8 @@ impl Editor {
             {
                 points.retain(|p| p.tick < first.tick || p.tick > last.tick);
                 points.extend_from_slice(thinned.as_slice());
-                send_points(ctx, lane, points, "undo-automation-draw");
+                send_points(&mut self.basis, ctx, lane, points, "undo-automation-draw");
+                self.selected.remove(&lane.source);
             }
         }
     }
@@ -788,7 +813,7 @@ impl Editor {
                         .is_none_or(|end| tick <= end)
                         .then_some(Point { tick, ..*p })
                 }));
-                if send_points(ctx, lane, points, "undo-automation-paste") {
+                if send_points(&mut self.basis, ctx, lane, points, "undo-automation-paste") {
                     self.selected.clear();
                 }
             }
@@ -808,19 +833,19 @@ impl Editor {
                 Tick::ZERO
             };
             let dy = if consume(Modifiers::SHIFT, Key::ArrowUp) {
-                0.001
+                m::VALUE_STEP_FINE
             } else if consume(Modifiers::SHIFT, Key::ArrowDown) {
-                -0.001
+                -m::VALUE_STEP_FINE
             } else if consume(Modifiers::NONE, Key::ArrowUp) {
-                0.01
+                m::VALUE_STEP
             } else if consume(Modifiers::NONE, Key::ArrowDown) {
-                -0.01
+                -m::VALUE_STEP
             } else {
                 0.0
             };
             if dx != Tick::ZERO || dy != 0.0 {
                 let (points, _) = move_points(lane.points(), &indices, dx, dy, lane.end, false);
-                send_points(ctx, lane, points, "undo-automation-move-points");
+                send_points(&mut self.basis, ctx, lane, points, "undo-automation-move-points");
             }
         }
     }
@@ -881,7 +906,7 @@ impl Editor {
             Some(PointCommand::Shape(shape)) => {
                 let mut points = lane.points().to_vec();
                 points[index].shape = shape;
-                send_points(ctx, lane, points, "undo-automation-shape");
+                send_points(&mut self.basis, ctx, lane, points, "undo-automation-shape");
             }
             Some(PointCommand::Value) => self.open_entry(ctx, lane, index, response.id),
             Some(PointCommand::Delete) => self.delete_points(ctx, lane),
@@ -998,7 +1023,7 @@ impl Editor {
         if !outside && let Some(value) = value {
             let mut points = lane.points().to_vec();
             points[entry.index].value = value;
-            send_points(ctx, lane, points, "undo-automation-value");
+            send_points(&mut self.basis, ctx, lane, points, "undo-automation-value");
         }
         if value.is_some() || cancel || outside {
             ui.memory_mut(|mem| {
@@ -1043,6 +1068,7 @@ impl Editor {
                     self.selected.clone_from(base);
                     *frame = Some(current);
                 }
+                self.basis.insert(lane.source.clone(), lane.points.clone());
                 self.selected
                     .entry(lane.source.clone())
                     .or_default()
@@ -1052,7 +1078,7 @@ impl Editor {
                         painter,
                         paint,
                         0.0,
-                        color32(color::ACCENT).gamma_multiply(0.15),
+                        color32(color::ACCENT).gamma_multiply(m::MARQUEE_FILL_ALPHA),
                     );
                     px::inner_border(painter, paint, color32(color::ACCENT));
                 }
@@ -1101,7 +1127,10 @@ fn source_points<'a>(project: &'a Project, source: &Source) -> Option<&'a Points
     }
 }
 
+/// Sends the new points of a lane and remembers them as the ones the selection refers to,
+/// so the edit itself does not invalidate the selection (see [`Editor::prune_stale`]).
 fn send_points(
+    basis: &mut HashMap<Source, Points>,
     ctx: &mut ViewCtx<'_>,
     lane: &LaneFrame<'_>,
     points: Vec<Point>,
@@ -1111,6 +1140,7 @@ fn send_points(
     if points.as_slice() == lane.points() {
         return false;
     }
+    basis.insert(lane.source.clone(), points.clone());
     ctx.send(Action::Automation(Automation::Points(
         lane.source.clone(),
         points,
@@ -1781,6 +1811,74 @@ mod tests {
         h.key_press(Key::Delete);
         h.run_steps(2);
         assert_eq!(h.state().points(0).len(), 3);
+    }
+
+    #[test]
+    fn undo_drops_the_selection_instead_of_retargeting_its_indices() {
+        let original = vec![
+            Point::linear(Tick(20), 0.2),
+            Point::linear(Tick(60), 0.4),
+            Point::linear(Tick(100), 0.6),
+            Point::linear(Tick(140), 0.8),
+        ];
+        let mut h = harness(&[original.clone()]);
+        let mut added = original.clone();
+        added.insert(0, Point::linear(Tick(5), 0.9));
+        let source = h.state().sources[0].clone();
+        h.state_mut()
+            .app
+            .dispatch(Action::Automation(Automation::Points(
+                source,
+                Points::new(added),
+                "undo-automation-add-point",
+            )));
+        h.run_steps(2);
+        // Index 3 of 5 is the old point 2 (tick 100).
+        h.get_all_by_role(Role::Slider)
+            .nth(3)
+            .unwrap()
+            .click_accesskit();
+        h.run_steps(2);
+        assert_eq!(h.state().editor.selected.values().next().unwrap().len(), 1);
+
+        h.state_mut().app.dispatch(Action::Edit(EditAction::Undo));
+        h.run_steps(2);
+        assert_eq!(h.state().points(0), original);
+        assert!(h.state().editor.selected.is_empty());
+        h.key_press(Key::Delete);
+        h.run_steps(2);
+        assert_eq!(h.state().points(0), original);
+        // Redo is an outside edit as well.
+        h.get_all_by_role(Role::Slider)
+            .nth(1)
+            .unwrap()
+            .click_accesskit();
+        h.run_steps(2);
+        h.state_mut().app.dispatch(Action::Edit(EditAction::Redo));
+        h.run_steps(2);
+        h.key_press(Key::ArrowUp);
+        h.run_steps(2);
+        assert_eq!(h.state().points(0).len(), 5);
+        assert!(h.state().points(0).iter().all(|p| p.value != 0.41));
+    }
+
+    #[test]
+    fn own_edits_keep_the_selection() {
+        let mut h = harness(&[vec![
+            Point::linear(Tick(25), 0.25),
+            Point::linear(Tick(80), 0.5),
+        ]]);
+        h.get_all_by_role(Role::Slider)
+            .last()
+            .unwrap()
+            .click_accesskit();
+        h.run_steps(2);
+        for _ in 0..3 {
+            h.key_press(Key::ArrowUp);
+            h.run_steps(2);
+        }
+        assert_eq!(h.state().points(0)[1].value, 0.53);
+        assert_eq!(h.state().points(0)[0].value, 0.25);
     }
 
     #[test]
