@@ -187,8 +187,7 @@ fn in_app(steps: &[Step]) -> Vec<String> {
             output: [&mut left, &mut right],
         },
     );
-    let calls = log.lock().unwrap().clone();
-    calls
+    log.lock().unwrap().clone()
 }
 
 fn adapter_instrument(steps: &[Step]) -> Vec<String> {
@@ -198,8 +197,7 @@ fn adapter_instrument(steps: &[Step]) -> Vec<String> {
     for step in steps {
         apply_note(&mut dsp, &mut held, step.clap);
     }
-    let calls = log.lock().unwrap().clone();
-    calls
+    log.lock().unwrap().clone()
 }
 
 fn sampler_clap(steps: &[Step]) -> Vec<String> {
@@ -210,8 +208,7 @@ fn sampler_clap(steps: &[Step]) -> Vec<String> {
             dispatch_note(&mut dsp, note);
         }
     }
-    let calls = log.lock().unwrap().clone();
-    calls
+    log.lock().unwrap().clone()
 }
 
 fn assert_parity(name: &str, steps: &[Step]) {
@@ -283,8 +280,7 @@ fn a_clap_note_without_an_id_arrives_as_none() {
                 channel: Some(0),
             },
         );
-        let calls = log.lock().unwrap().clone();
-        calls
+        log.lock().unwrap().clone()
     };
     let engine = Step {
         engine: EventKind::NoteOn {
