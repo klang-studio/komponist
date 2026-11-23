@@ -583,7 +583,9 @@ the pass and restores the playback curve or base value.
 callback processor and returns it on stream teardown; buffer/device changes rebuild the stream
 while preserving the engine. A lost output device enters `NoDevice` and disables playback/recording.
 An engine whose callback unwound in a panic is poisoned: it outputs silence, is never handed to
-another stream, and the app replaces it with a new engine compiled from the document (#210).
+another stream, and the app replaces it with a new engine compiled from the document (#210). The
+new engine stays stopped at the old playhead; a running take ends there like an interruption and
+keeps what was recorded.
 
 Input capture starts only when configured. Separate-device callbacks exchange timestamped frames
 through a bounded bridge; rate conversion and a bounded clock follower align input to output.

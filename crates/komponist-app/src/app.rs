@@ -420,6 +420,28 @@ impl App {
         self.set_status(self.lang.status_engine_rebuilt(), StatusKind::Error);
     }
 
+    /// The engine was rebuilt after a panic with the playhead at `at` (#210). A running take (MIDI
+    /// or audio) ends there like an interruption and keeps what was recorded so far; a count-in
+    /// that was running never ends, so no take waits for it. The status bar says so.
+    fn engine_rebuilt_at(&mut self, at: Tick) {
+        self.shell.take_expected = false;
+        if self.recording.is_none() && !self.audio_recording.is_active() {
+            self.report_engine_rebuilt();
+            return;
+        }
+        // The crash may have lost the running lap's last events.
+        let lap = self
+            .recording
+            .as_ref()
+            .map_or(0, |recording| recording.laps().saturating_sub(1) as u32);
+        self.engine_event(&EngineEvent::RecordingInterrupted {
+            at,
+            first_incomplete_lap: lap,
+            triggering_track: None,
+        });
+        self.set_status(self.lang.status_engine_rebuilt_take(), StatusKind::Error);
+    }
+
     /// Tells in the status bar what the engine leaves out of the project (#92) when the last
     /// syncs left out something new: every left-out track and device, counted per reason
     /// ([`crate::diagnostics::summary`]).
@@ -592,12 +614,12 @@ impl App {
         let rebuilt = self.engine.take_rebuild_notice();
         let no_realtime = self.engine.take_worker_notice();
         let no_workgroup = self.engine.take_workgroup_notice();
-        // One message per frame; a rebuilt engine is the worst news, then a missing priority.
-        if rebuilt {
-            self.report_engine_rebuilt();
-        } else if device_stream && no_realtime {
+        // One message per frame; a rebuilt engine is the worst news (reported after the events
+        // below), then a missing priority.
+        let worker_notices = device_stream && rebuilt.is_none();
+        if worker_notices && no_realtime {
             self.report_workers_without_realtime();
-        } else if device_stream && no_workgroup {
+        } else if worker_notices && no_workgroup {
             self.report_workers_without_workgroup();
         }
         self.report_midi_changes();
@@ -615,6 +637,10 @@ impl App {
                 self.capture_automation(&event);
             }
             self.engine_event(&event);
+        }
+        // After the old engine's last events: the take they belong to ends at the crash.
+        if let Some(at) = rebuilt {
+            self.engine_rebuilt_at(at);
         }
         let mut recompile = false;
         for event in self.engine.poll_device_events() {
