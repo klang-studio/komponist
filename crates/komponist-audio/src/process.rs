@@ -146,6 +146,14 @@ impl<'a> OutputBuffer<'a> {
 /// stamp into this callback: events received during the previous buffer period
 /// `[now − period, now)` map linearly onto frames `0 .. frames`, earlier ones to 0. This adds one
 /// buffer period of constant latency instead of jitter (about 1 ms accuracy, ARCHITECTURE §7).
+///
+/// While no stream holds the receiver (a device switch, a cpal build of up to 3 s) messages queue
+/// up. The first callback of the stream that takes it over discards those older than its period
+/// instead of firing them as a burst at frame 0; so does a stream without an engine. Discarded
+/// messages count as [`crate::StreamStats::midi_stale`], lost ones as
+/// [`crate::StreamStats::midi_overflows`]. Either way the receiver then yields a note-off for every
+/// note it delivered that is still down, and a sustain release for every held pedal (see
+/// [`MidiReceiver`]).
 #[derive(Debug)]
 pub struct MidiIn<'a> {
     /// `None` when the stream has no MIDI receiver (yet).
