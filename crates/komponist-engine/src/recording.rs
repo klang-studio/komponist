@@ -423,16 +423,42 @@ impl RecordingSession {
     }
     /// Receives only a completely drained/finalized result. Never blocks awaiting capture.
     pub fn poll(&mut self) -> Option<Result<RecordingResult, RecordingError>> {
-        let result = match self.rx.try_recv() {
-            Ok(result) => result,
+        let received = match self.rx.try_recv() {
+            Ok(result) => Ok(result),
             Err(mpsc::TryRecvError::Empty) => return None,
-            Err(mpsc::TryRecvError::Disconnected) if self.finished => return None,
-            Err(mpsc::TryRecvError::Disconnected) => Err(RecordingError::Io(
+            Err(mpsc::TryRecvError::Disconnected) => Err(()),
+        };
+        self.received(received)
+    }
+    /// Non-RT. [`RecordingSession::poll`] that waits up to `timeout` for the writer to finish,
+    /// on its completion signal instead of polling (#221).
+    pub fn poll_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Option<Result<RecordingResult, RecordingError>> {
+        let received = match self.rx.recv_timeout(timeout) {
+            Ok(result) => Ok(result),
+            Err(mpsc::RecvTimeoutError::Timeout) => return None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(()),
+        };
+        self.received(received)
+    }
+    /// `Err(())`: the writer hung up without a result.
+    fn received(
+        &mut self,
+        received: Result<Result<RecordingResult, RecordingError>, ()>,
+    ) -> Option<Result<RecordingResult, RecordingError>> {
+        let result = match received {
+            Ok(result) => result,
+            Err(()) if self.finished => return None,
+            Err(()) => Err(RecordingError::Io(
                 "recording writer terminated unexpectedly".into(),
             )),
         };
         self.finished = true;
-        if let Some(worker) = self.worker.take() {
+        // The writer sent its result as its last act; reap it only if it has already exited, so
+        // a caller with a deadline never waits for a thread's exit (#221).
+        if let Some(worker) = self.worker.take_if(|worker| worker.is_finished()) {
             let _ = worker.join();
         }
         Some(result)
@@ -453,11 +479,15 @@ impl RecordingSession {
     }
 }
 impl Drop for RecordingSession {
+    /// A cancelled writer is joined: it deletes its files before the session is gone. A writer
+    /// that has delivered its result is left to exit on its own (dropping its handle detaches it).
     fn drop(&mut self) {
         if !self.finished {
             self.cancel();
         }
-        if let Some(worker) = self.worker.take() {
+        if let Some(worker) = self.worker.take()
+            && !self.finished
+        {
             let _ = worker.join();
         }
     }
@@ -1785,6 +1815,31 @@ mod tests {
         assert_eq!(result.takes[0].start, loop_range.start);
         assert_eq!(result.takes[0].window_end, Some(loop_range.end));
         assert_pcm24(&result.takes[0].path, 1, 94_427, PERIOD as u64);
+    }
+
+    /// #221: a save waits for the writer on its completion signal, bounded by a timeout.
+    #[test]
+    fn poll_timeout_waits_for_the_result_and_gives_up_at_the_timeout() {
+        let (_directory, recorder, mut session) = stalled_writer_fixture(1);
+        let started = std::time::Instant::now();
+        assert!(session.poll_timeout(Duration::from_millis(30)).is_none());
+        assert!(started.elapsed() >= Duration::from_millis(30));
+        let finisher = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            recorder.finish();
+            recorder
+        });
+        let result = session.poll_timeout(Duration::from_secs(5));
+        assert!(
+            matches!(result, Some(Ok(_))),
+            "{:?}",
+            result.map(|r| r.err())
+        );
+        assert!(
+            session.poll_timeout(Duration::ZERO).is_none(),
+            "received once"
+        );
+        drop(finisher.join().unwrap());
     }
 
     #[test]

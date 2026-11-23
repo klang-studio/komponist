@@ -6,7 +6,8 @@ mod files;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
 
 use komponist_engine::Command;
 use komponist_engine::recording::{
@@ -24,6 +25,9 @@ use crate::app::App;
 use crate::record;
 use crate::settings::CaptureFormat;
 use crate::ui_state::StatusKind;
+
+/// How long Save (and opening the export) waits for a stopped take to drain and be copied.
+pub(crate) const TAKE_FINISH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The live view of an audio session, read by the arrangement, dock and inspector.
 #[derive(Default)]
@@ -100,6 +104,109 @@ struct Capture {
     rate: u32,
     owned: BTreeSet<PathBuf>,
     material: bool,
+    /// The writer has finished; its takes are being copied into the project's Takes folder.
+    staging: Option<Staging>,
+}
+
+/// Copies of finished takes, made on a worker so that a long copy and its `fsync` never hold up a
+/// frame (#221). The take goes into the document once the copies are done; until then the
+/// capture stays active, so no new take starts and Save waits for it.
+struct Staging {
+    result: recording::RecordingResult,
+    /// The project folder the copies go to (its `Takes`).
+    directory: PathBuf,
+    done: mpsc::Receiver<StageResult>,
+    /// Hangs up once the worker has ended, its clean-up included.
+    alive: mpsc::Receiver<()>,
+}
+
+/// Copies a staging worker made. Until the take that uses them is committed, this value is
+/// their only owner: dropping it (a discarded take, a result nobody received) deletes them.
+/// They live in a private folder in `Takes` under no final name, so nothing (an audio import, a
+/// file browser) can link them before the take does.
+struct StagedCopies {
+    private: PathBuf,
+    copies: BTreeMap<PathBuf, PathBuf>,
+}
+
+impl StagedCopies {
+    /// Gives the copies their final names in `target`; the caller owns them then (the take's
+    /// document links refer to them). Returns `source → final path`. The new entries are flushed
+    /// before this returns, since the caller deletes the originals later: a power loss must not
+    /// keep the deletion and lose the copy. If the flush fails, the published files go again.
+    fn publish(self, target: &Path) -> std::io::Result<BTreeMap<PathBuf, PathBuf>> {
+        let published = files::publish(&self.copies, target)?;
+        if let Err(error) = crate::project_io::sync_directory(target) {
+            for path in published.values() {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error);
+        }
+        Ok(published)
+    }
+}
+
+impl Drop for StagedCopies {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.private);
+    }
+}
+
+/// A background copy into `target` that failed: the same Save does not copy these sources again
+/// on the UI thread, a later one does (#221).
+struct FailedStage {
+    target: PathBuf,
+    sources: BTreeSet<PathBuf>,
+    notice: String,
+}
+
+type StageResult = std::io::Result<StagedCopies>;
+
+/// Tests: holds the next staging worker after its private copies are made until `go` gets a
+/// message (or hangs up), and reports on `finished` when it is done, its clean-up included.
+/// `ready` hears when it waits there.
+#[cfg(test)]
+struct StageGate {
+    go: mpsc::Receiver<()>,
+    finished: mpsc::Sender<()>,
+    ready: Option<mpsc::Sender<()>>,
+}
+
+/// Runs [`files::stage`] on a worker; returns the receivers of its result and of its end. If
+/// nobody takes the result (the take was discarded, the app closes), the [`StagedCopies`] in it
+/// delete themselves; the sources stay as they are.
+fn stage_in_background(
+    paths: Vec<PathBuf>,
+    target: PathBuf,
+    #[cfg(test)] gate: Option<StageGate>,
+) -> (mpsc::Receiver<StageResult>, mpsc::Receiver<()>) {
+    let (sender, done) = mpsc::sync_channel(1);
+    let (alive, ended) = mpsc::channel::<()>();
+    let worker = sender.clone();
+    let spawned = std::thread::Builder::new()
+        .name("komponist-take-staging".into())
+        .spawn(move || {
+            let staged = files::stage_private(&paths, &target)
+                .map(|(private, copies)| StagedCopies { private, copies });
+            #[cfg(test)]
+            if let Some(gate) = &gate {
+                if let Some(ready) = &gate.ready {
+                    let _ = ready.send(());
+                }
+                let _ = gate.go.recv();
+            }
+            // A failed send drops the copies here, before `alive` reports the end.
+            let _ = worker.send(staged);
+            drop(alive);
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                let _ = gate.finished.send(());
+            }
+        });
+    if let Err(error) = spawned {
+        let _ = sender.send(Err(error));
+    }
+    (done, ended)
 }
 
 impl Capture {
@@ -162,6 +269,12 @@ pub(crate) struct State {
     pending_midi: Option<record::Commit>,
     pending_automation: Option<crate::automation_capture::AutomationCapture>,
     pending_removals: BTreeSet<PathBuf>,
+    /// The ends of staging workers whose take was dropped; shutdown waits for their clean-up.
+    cleanup: Vec<mpsc::Receiver<()>>,
+    /// The last background copy that failed, until the next Save.
+    failed_stage: Option<FailedStage>,
+    #[cfg(test)]
+    stage_gate: Option<StageGate>,
 }
 
 impl State {
@@ -172,10 +285,9 @@ impl State {
         self.capture.is_some()
     }
     pub(crate) fn has_material(&self) -> bool {
-        self.capture
-            .as_ref()
-            .is_some_and(|capture| capture.material || capture.stopping)
-            || self.pending_midi.is_some()
+        self.capture.as_ref().is_some_and(|capture| {
+            capture.material || capture.stopping || capture.staging.is_some()
+        }) || self.pending_midi.is_some()
             || self.pending_automation.is_some()
     }
     pub(crate) fn defer_midi(&mut self, commit: Option<record::Commit>) {
@@ -230,8 +342,16 @@ impl State {
         self.provisional.clear();
         self.pending_removals.clear();
     }
+    /// Drops the running take. A take whose copies are still being made is dropped as well, like
+    /// one still draining its tail: its copies are deleted (by the worker, or here if they are
+    /// already made), the finished WAVs stay.
     pub(crate) fn cancel(&mut self) {
-        if let Some(capture) = self.capture.take() {
+        if let Some(mut capture) = self.capture.take() {
+            if let Some(staging) = capture.staging.take() {
+                self.cleanup
+                    .retain(|ended| ended.try_recv() == Err(mpsc::TryRecvError::Empty));
+                self.cleanup.push(staging.alive);
+            }
             capture.session.cancel();
             for path in &capture.owned {
                 self.provisional.remove(path);
@@ -240,6 +360,24 @@ impl State {
         self.pending_midi = None;
         self.pending_automation = None;
     }
+}
+
+impl State {
+    /// Quitting: drops the running take and waits, at most `timeout`, until the staging workers
+    /// of dropped takes have deleted their copies, so none stay behind in the project folder.
+    pub(crate) fn shutdown(&mut self, timeout: Duration) {
+        self.cancel();
+        let deadline = Instant::now() + timeout;
+        for ended in self.cleanup.drain(..) {
+            let _ = ended.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        }
+    }
+}
+
+/// Opening a project: deletes private copies that a staging worker left in its `Takes` when the
+/// app ended before the worker could clean up.
+pub(crate) fn reclaim_abandoned_takes(project_dir: &Path) {
+    files::reclaim_abandoned(&project_dir.join("Takes"));
 }
 
 impl App {
@@ -364,6 +502,7 @@ impl App {
                     rate,
                     owned: BTreeSet::new(),
                     material: false,
+                    staging: None,
                 });
                 self.engine.send(Command::SetRecorder(recorder));
                 true
@@ -376,6 +515,43 @@ impl App {
     }
 
     pub(crate) fn update_audio_take(&mut self) {
+        self.advance_audio_take(None);
+    }
+
+    /// One step of the take's lifecycle: refreshes the live view and commits a finished take.
+    /// With a `deadline`, it blocks until then at most on the completion signal of the writer or
+    /// of the staging worker (no busy-wait, #221) and leaves the live view as it is, since that
+    /// may wait for the writer's progress lock; without, it never blocks.
+    fn advance_audio_take(&mut self, deadline: Option<Instant>) {
+        if self
+            .audio_recording
+            .capture
+            .as_ref()
+            .is_some_and(|capture| capture.staging.is_some())
+        {
+            self.poll_take_staging(deadline);
+            return;
+        }
+        if deadline.is_none() {
+            self.refresh_take_view();
+        }
+        let Some(capture) = &mut self.audio_recording.capture else {
+            return;
+        };
+        let polled = match deadline {
+            Some(deadline) => capture
+                .session
+                .poll_timeout(deadline.saturating_duration_since(Instant::now())),
+            None => capture.session.poll(),
+        };
+        let Some(result) = polled else {
+            return;
+        };
+        self.take_finished(result);
+    }
+
+    /// The live view of the running take: its growing clips and finished laps.
+    fn refresh_take_view(&mut self) {
         let project = self.project().clone();
         let head = self.engine.playhead();
         let Some(capture) = &mut self.audio_recording.capture else {
@@ -423,16 +599,25 @@ impl App {
             }
             capture.view.progress.push(progress);
         }
-        let Some(result) = capture.session.poll() else {
-            return;
-        };
-        let capture = self
+    }
+
+    /// The writer's end: commits the take, or hands its copies to a staging worker first.
+    fn take_finished(
+        &mut self,
+        result: Result<recording::RecordingResult, recording::RecordingError>,
+    ) {
+        let mut capture = self
             .audio_recording
             .capture
             .take()
             .expect("polled capture exists");
         match result {
-            Ok(mut result) => {
+            Ok(result) => {
+                // A lap that ended between two frames was never in the live view: Esc while its
+                // copy is made must still treat it as this take's file.
+                capture
+                    .owned
+                    .extend(result.takes.iter().map(|take| take.path.clone()));
                 if capture.provisional {
                     self.audio_recording
                         .provisional
@@ -446,94 +631,25 @@ impl App {
                         .filter(|take| self.audio_recording.provisional.contains(&take.path))
                         .map(|take| take.path.clone())
                         .collect();
-                    match files::stage(&paths, &directory.join("Takes")) {
-                        Ok(mapping) => {
-                            for take in &mut result.takes {
-                                if let Some(path) = mapping.get(&take.path) {
-                                    self.audio_recording.provisional.remove(&take.path);
-                                    self.audio_recording.provisional.insert(path.clone());
-                                    take.path = path.clone();
-                                }
-                            }
-                            // Keep source files until the result is in the document; old project
-                            // checkpoints and undo states may still link to those files.
-                            self.audio_recording
-                                .pending_removals
-                                .extend(mapping.keys().cloned());
-                            if !mapping.is_empty() {
-                                let canonical = files::canonical_copies(&mapping);
-                                self.doc.rewrite_untracked(|project| {
-                                    crate::samples::rebase_project_links(
-                                        project,
-                                        Some(&directory),
-                                        &directory,
-                                        |source| {
-                                            mapping
-                                                .get(&source)
-                                                .or_else(|| {
-                                                    canonical
-                                                        .get(&std::fs::canonicalize(&source).ok()?)
-                                                })
-                                                .cloned()
-                                                .unwrap_or(source)
-                                        },
-                                    )
-                                });
-                            }
-                        }
-                        Err(error) => self.set_status(
-                            self.lang.audio_record_move_failed(error),
-                            StatusKind::Error,
-                        ),
-                    }
-                }
-                let midi = self.audio_recording.pending_midi.take();
-                let automation = self.audio_recording.pending_automation.take();
-                let label = midi
-                    .as_ref()
-                    .map(|commit| commit.label().to_owned())
-                    .unwrap_or_else(|| {
-                        self.lang
-                            .record_take(edits::next_take_number(self.project()))
-                    });
-                let lang = self.lang;
-                let directory = self.project_dir();
-                self.doc.end_gesture();
-                let applied = self.apply_with(&label, |project| {
-                    let automated;
-                    let project = if let Some(pass) = &automation {
-                        automated = pass.apply(project)?;
-                        &automated
-                    } else {
-                        project
-                    };
-                    let (project, mut clips) = match &midi {
-                        Some(commit) => commit.apply(project)?,
-                        None => (project.clone(), Vec::new()),
-                    };
-                    let (project, mut audio) =
-                        apply_takes(&project, &result.takes, lang, directory.as_deref())?;
-                    clips.append(&mut audio.clips);
-                    audio.clips = clips;
-                    Ok((project, audio))
-                });
-                if let Some(applied) = applied {
-                    if let Some(first) = applied.clips.first() {
-                        self.dispatch(Action::Ui(UiAction::OpenClip(*first)));
-                    }
-                    if let Some(notice) = applied.unlinked_notice(self.lang) {
-                        self.set_status(notice, StatusKind::Info);
-                    } else if midi.as_ref().is_some_and(record::Commit::incomplete) {
-                        self.set_status(self.lang.record_notes_lost(), StatusKind::Error);
-                    } else if applied.linked > 0 {
-                        self.set_status(
-                            self.lang.audio_record_complete(applied.linked),
-                            StatusKind::Success,
+                    if !paths.is_empty() {
+                        // Copying can take seconds: the take is committed once the worker is done.
+                        let (done, alive) = stage_in_background(
+                            paths,
+                            directory.join("Takes"),
+                            #[cfg(test)]
+                            self.audio_recording.stage_gate.take(),
                         );
+                        capture.staging = Some(Staging {
+                            result,
+                            directory,
+                            done,
+                            alive,
+                        });
+                        self.audio_recording.capture = Some(capture);
+                        return;
                     }
-                } else {
-                    self.set_status(self.lang.audio_record_apply_failed(), StatusKind::Error);
                 }
+                self.commit_audio_take(capture, result, None);
             }
             Err(recording::RecordingError::Cancelled) => {
                 self.audio_recording.pending_midi = None;
@@ -541,8 +657,18 @@ impl App {
                     self.engine.send_project(self.doc.project());
                 }
                 self.audio_recording.pending_automation = None;
+                drop(capture); // joins/IO only on this non-RT thread
             }
             Err(error) => {
+                // The writer may have finished a lap no frame saw (the blocking path draws no
+                // live view): keep every file it published, without drawing waveforms.
+                let provisional = &mut self.audio_recording.provisional;
+                for snapshot in capture.session.visible_progress() {
+                    for progress in snapshot.completed.iter().flatten() {
+                        capture.remember_progress(progress, provisional);
+                    }
+                    capture.remember_progress(&snapshot.current, provisional);
+                }
                 // Freeze an in-progress MIDI overlay too: writer failure can happen before
                 // Stop has created pending_midi. Both paths preserve captured notes once.
                 if capture.provisional {
@@ -581,28 +707,179 @@ impl App {
                 }
                 self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
                 self.engine.send(Command::StopRecording);
+                drop(capture); // joins/IO only on this non-RT thread
             }
+        }
+    }
+
+    /// Commits the staged take once the worker's copies are done (`deadline`: as in
+    /// [`App::advance_audio_take`]).
+    fn poll_take_staging(&mut self, deadline: Option<Instant>) {
+        let Some(staging) = self
+            .audio_recording
+            .capture
+            .as_ref()
+            .and_then(|capture| capture.staging.as_ref())
+        else {
+            return;
+        };
+        // `Err(true)`: the worker hung up without a result.
+        let received = match deadline {
+            Some(deadline) => staging
+                .done
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .map_err(|error| error == mpsc::RecvTimeoutError::Disconnected),
+            None => staging
+                .done
+                .try_recv()
+                .map_err(|error| error == mpsc::TryRecvError::Disconnected),
+        };
+        let staged = match received {
+            Ok(staged) => staged,
+            Err(false) => return,
+            Err(true) => Err(std::io::Error::other("recording copy worker stopped")),
+        };
+        let mut capture = self
+            .audio_recording
+            .capture
+            .take()
+            .expect("staging capture exists");
+        let staging = capture.staging.take().expect("staging exists");
+        self.commit_audio_take(capture, staging.result, Some((staging.directory, staged)));
+    }
+
+    /// Puts a finished take into the document as one undo step, with the copies `staged` into
+    /// the project folder (if any) in place of the provisional recordings.
+    fn commit_audio_take(
+        &mut self,
+        capture: Capture,
+        mut result: recording::RecordingResult,
+        staged: Option<(PathBuf, StageResult)>,
+    ) {
+        let mut move_failed = None;
+        if let Some((directory, staged)) = staged {
+            let takes = directory.join("Takes");
+            match staged.and_then(|copies| copies.publish(&takes)) {
+                Ok(mapping) => {
+                    for take in &mut result.takes {
+                        if let Some(path) = mapping.get(&take.path) {
+                            self.audio_recording.provisional.remove(&take.path);
+                            self.audio_recording.provisional.insert(path.clone());
+                            take.path = path.clone();
+                        }
+                    }
+                    // Keep source files until the result is in the document; old project
+                    // checkpoints and undo states may still link to those files.
+                    self.audio_recording
+                        .pending_removals
+                        .extend(mapping.keys().cloned());
+                    if !mapping.is_empty() {
+                        let canonical = files::canonical_copies(&mapping);
+                        self.doc.rewrite_untracked(|project| {
+                            crate::samples::rebase_project_links(
+                                project,
+                                Some(&directory),
+                                &directory,
+                                |source| {
+                                    mapping
+                                        .get(&source)
+                                        .or_else(|| {
+                                            canonical.get(&std::fs::canonicalize(&source).ok()?)
+                                        })
+                                        .cloned()
+                                        .unwrap_or(source)
+                                },
+                            )
+                        });
+                    }
+                }
+                // The take links its original WAVs; the error stays the last word below.
+                Err(error) => {
+                    let notice = self.lang.audio_record_move_failed(error);
+                    let sources = result
+                        .takes
+                        .iter()
+                        .map(|take| take.path.clone())
+                        .filter(|path| self.audio_recording.provisional.contains(path))
+                        .collect();
+                    self.audio_recording.failed_stage = Some(FailedStage {
+                        target: takes,
+                        sources,
+                        notice: notice.clone(),
+                    });
+                    move_failed = Some(notice);
+                }
+            }
+        }
+        let midi = self.audio_recording.pending_midi.take();
+        let automation = self.audio_recording.pending_automation.take();
+        let label = midi
+            .as_ref()
+            .map(|commit| commit.label().to_owned())
+            .unwrap_or_else(|| {
+                self.lang
+                    .record_take(edits::next_take_number(self.project()))
+            });
+        let lang = self.lang;
+        let directory = self.project_dir();
+        self.doc.end_gesture();
+        let applied = self.apply_with(&label, |project| {
+            let automated;
+            let project = if let Some(pass) = &automation {
+                automated = pass.apply(project)?;
+                &automated
+            } else {
+                project
+            };
+            let (project, mut clips) = match &midi {
+                Some(commit) => commit.apply(project)?,
+                None => (project.clone(), Vec::new()),
+            };
+            let (project, mut audio) =
+                apply_takes(&project, &result.takes, lang, directory.as_deref())?;
+            clips.append(&mut audio.clips);
+            audio.clips = clips;
+            Ok((project, audio))
+        });
+        if let Some(applied) = applied {
+            if let Some(first) = applied.clips.first() {
+                self.dispatch(Action::Ui(UiAction::OpenClip(*first)));
+            }
+            if let Some(notice) = applied.unlinked_notice(self.lang) {
+                self.set_status(notice, StatusKind::Info);
+            } else if midi.as_ref().is_some_and(record::Commit::incomplete) {
+                self.set_status(self.lang.record_notes_lost(), StatusKind::Error);
+            } else if applied.linked > 0 {
+                self.set_status(
+                    self.lang.audio_record_complete(applied.linked),
+                    StatusKind::Success,
+                );
+            }
+        } else {
+            self.set_status(self.lang.audio_record_apply_failed(), StatusKind::Error);
+        }
+        if let Some(move_failed) = move_failed {
+            self.set_status(move_failed, StatusKind::Error);
         }
         drop(capture); // joins/IO only on this non-RT thread
     }
 
     /// A stopped capture drains its latency tail before a Save-and-leave action can leave the
     /// project. The audio thread keeps running; a timeout leaves the project and files open.
+    /// It waits on the writer's and then the staging worker's completion signal, at most
+    /// [`TAKE_FINISH_TIMEOUT`] in all.
     pub(crate) fn await_audio_take(&mut self) -> bool {
         if !self
             .audio_recording
             .capture
             .as_ref()
-            .is_some_and(|capture| capture.stopping)
+            .is_some_and(|capture| capture.stopping || capture.staging.is_some())
         {
             return true;
         }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while self.audio_recording.capture.is_some() && std::time::Instant::now() < deadline {
-            self.update_audio_take();
-            if self.audio_recording.capture.is_some() {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+        let deadline = Instant::now() + TAKE_FINISH_TIMEOUT;
+        while self.audio_recording.capture.is_some() && Instant::now() < deadline {
+            self.advance_audio_take(Some(deadline));
         }
         if self.audio_recording.capture.is_some() {
             self.set_status(self.lang.audio_record_finalizing(), StatusKind::Info);
@@ -619,6 +896,15 @@ impl App {
         project_dir: &Path,
     ) -> Result<StagedRecordings, ()> {
         let target = project_dir.join("Takes");
+        // Private copies of an app that ended during a background copy.
+        files::reclaim_abandoned(&target);
+        // Sources whose background copy into this folder just failed keep their original links in
+        // this Save; the next Save tries again.
+        let failed = self
+            .audio_recording
+            .failed_stage
+            .take()
+            .filter(|failed| failed.target == target);
         let mut staged = StagedRecordings {
             target,
             mapping: BTreeMap::new(),
@@ -652,8 +938,12 @@ impl App {
             .provisional
             .iter()
             .filter(|path| !staged.live.contains(*path))
+            .filter(|path| !failed.as_ref().is_some_and(|f| f.sources.contains(*path)))
             .cloned()
             .collect();
+        if let Some(failed) = failed {
+            staged.notice = Some((failed.notice, StatusKind::Error));
+        }
         if !paths.is_empty() {
             match files::stage(&paths, &staged.target) {
                 Ok(mapping) => {
@@ -1827,6 +2117,429 @@ mod tests {
         assert!(app.project().track(audio).unwrap().clips.is_empty());
         drop(app);
     }
+
+    /// #221: a finished take is copied into the project's Takes folder on a worker. Frames go on
+    /// meanwhile; Save waits for the copy on its completion signal, not in a sleep loop.
+    #[test]
+    fn a_finished_take_is_copied_into_the_project_on_a_worker() {
+        let (root, mut app, track) = rig();
+        begin(&mut app, track);
+        // The project got its folder while the take was running in the provisional folder.
+        let project_file = root.join("Song.komponist");
+        app.project_path = Some(project_file.clone());
+        let (release, go) = mpsc::channel();
+        let (finished, _) = mpsc::channel();
+        app.audio_recording.stage_gate = Some(StageGate {
+            go,
+            finished,
+            ready: None,
+        });
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(&mut app, |app| {
+            app.audio_recording
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.staging.is_some())
+        });
+        let source = app
+            .audio_recording
+            .provisional
+            .iter()
+            .next()
+            .unwrap()
+            .clone();
+        // The worker is held with its copy made: the frames still run, the take is not in yet,
+        // and the copy has no final name in Takes that anything could link.
+        for _ in 0..5 {
+            app.step();
+        }
+        assert!(app.audio_recording.is_active());
+        assert!(app.audio_recording.has_material());
+        assert!(app.project().track(track).unwrap().clips.is_empty());
+        assert!(visible(&root.join("Takes")).is_empty());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while hidden(&root.join("Takes"))
+            .first()
+            .is_none_or(|private| visible(&root.join("Takes").join(private)).is_empty())
+        {
+            assert!(Instant::now() < deadline, "the worker made no private copy");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(visible(&root.join("Takes")).is_empty());
+
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            release.send(()).unwrap();
+        });
+        assert!(app.save_to(&project_file));
+        releaser.join().unwrap();
+        assert!(!app.audio_recording.is_active());
+        let clip = &app.project().track(track).unwrap().clips[0];
+        let ClipContent::Audio(audio) = &clip.content else {
+            panic!("audio clip");
+        };
+        assert!(audio.file.abs.starts_with(root.join("Takes")));
+        assert!(audio.file.abs.is_file());
+        assert!(!source.exists(), "the saved project took over the copy");
+        assert!(app.provisional_recordings_folder().is_none());
+        assert!(
+            hidden(&root.join("Takes")).is_empty(),
+            "the private folder is gone"
+        );
+    }
+
+    /// Names in `folder`, without the hidden ones.
+    fn visible(folder: &Path) -> Vec<String> {
+        entries(folder)
+            .into_iter()
+            .filter(|name| !name.starts_with('.'))
+            .collect()
+    }
+
+    /// The hidden names in `folder`.
+    fn hidden(folder: &Path) -> Vec<String> {
+        entries(folder)
+            .into_iter()
+            .filter(|name| name.starts_with('.'))
+            .collect()
+    }
+
+    fn entries(folder: &Path) -> Vec<String> {
+        std::fs::read_dir(folder)
+            .map(|entries| {
+                entries
+                    .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A take discarded while its copies are made leaves no copies behind.
+    #[test]
+    fn a_take_discarded_during_its_copy_leaves_no_copies() {
+        let (root, mut app, track) = rig();
+        begin(&mut app, track);
+        app.project_path = Some(root.join("Song.komponist"));
+        let (release, go) = mpsc::channel::<()>();
+        let (finished, done) = mpsc::channel();
+        app.audio_recording.stage_gate = Some(StageGate {
+            go,
+            finished,
+            ready: None,
+        });
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(&mut app, |app| {
+            app.audio_recording
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.staging.is_some())
+        });
+        app.dispatch(Action::Transport(TransportAction::DiscardTake));
+        assert!(!app.audio_recording.is_active());
+        // Let the worker copy into a result nobody takes.
+        drop(release);
+        done.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(std::fs::read_dir(root.join("Takes")).unwrap().count(), 0);
+        assert!(app.project().track(track).unwrap().clips.is_empty());
+    }
+
+    /// Holds the next staging worker: stops the take begun on `track` in a saved project and
+    /// steps until the worker has made its private copy and waits for `release`. `finished`
+    /// reports the worker's end.
+    fn staging_held(app: &mut App, root: &Path) -> (mpsc::Sender<()>, mpsc::Receiver<()>) {
+        app.project_path = Some(root.join("Song.komponist"));
+        let (release, go) = mpsc::channel::<()>();
+        let (finished, done) = mpsc::channel();
+        let (ready, waiting) = mpsc::channel();
+        app.audio_recording.stage_gate = Some(StageGate {
+            go,
+            finished,
+            ready: Some(ready),
+        });
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(app, |app| {
+            app.audio_recording
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.staging.is_some())
+        });
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        (release, done)
+    }
+
+    /// Copies already made but not yet received when the take is discarded are deleted too.
+    #[test]
+    fn copies_made_before_a_discard_are_deleted() {
+        let (root, mut app, track) = rig();
+        begin(&mut app, track);
+        let (release, done) = staging_held(&mut app, &root);
+        release.send(()).unwrap();
+        done.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The worker has ended; its private copy waits in the channel for the next frame.
+        assert_eq!(hidden(&root.join("Takes")).len(), 1);
+        app.dispatch(Action::Transport(TransportAction::DiscardTake));
+        assert!(!app.audio_recording.is_active());
+        assert_eq!(std::fs::read_dir(root.join("Takes")).unwrap().count(), 0);
+    }
+
+    /// Quitting waits (bounded) for the worker of a dropped take to delete its copies.
+    #[test]
+    fn shutdown_waits_until_a_dropped_take_has_no_copies() {
+        let (root, mut app, track) = rig();
+        begin(&mut app, track);
+        let (release, _done) = staging_held(&mut app, &root);
+        app.dispatch(Action::Transport(TransportAction::DiscardTake));
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            release.send(()).unwrap();
+        });
+        app.audio_recording.shutdown(Duration::from_secs(5));
+        releaser.join().unwrap();
+        assert_eq!(std::fs::read_dir(root.join("Takes")).unwrap().count(), 0);
+    }
+
+    /// #221: published take names are flushed in Takes before any original can go. If that
+    /// flush fails, the take keeps its originals and the status says the move failed.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_flush_of_the_published_takes_keeps_the_originals() {
+        use crate::project_io::tests::FAIL_DIRECTORY_SYNC;
+        let (root, mut app, track) = rig();
+        begin(&mut app, track);
+        let (release, done) = staging_held(&mut app, &root);
+        release.send(()).unwrap();
+        done.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The commit (and its flush) runs on this thread in the next frame.
+        FAIL_DIRECTORY_SYNC.with(|flag| flag.set(true));
+        app.step();
+        FAIL_DIRECTORY_SYNC.with(|flag| flag.set(false));
+        assert!(!app.audio_recording.is_active());
+        let ClipContent::Audio(audio) = &app.project().track(track).unwrap().clips[0].content
+        else {
+            panic!("audio clip");
+        };
+        assert!(audio.file.abs.starts_with(root.join("Provisional")));
+        assert!(audio.file.abs.is_file());
+        assert!(app.audio_recording.provisional.contains(&audio.file.abs));
+        assert!(app.audio_recording.pending_removals.is_empty());
+        assert!(
+            visible(&root.join("Takes")).is_empty(),
+            "no unflushed copy stays"
+        );
+        let status = app.ui.status.as_ref().unwrap();
+        assert_eq!(status.kind, StatusKind::Error, "{}", status.text);
+    }
+
+    /// A take whose copy fails links its original WAV, and the status keeps the reason.
+    #[test]
+    fn a_failed_copy_links_the_original_and_keeps_the_error_visible() {
+        let (root, mut app, track) = rig();
+        begin(&mut app, track);
+        std::fs::write(root.join("Takes"), b"not a folder").unwrap();
+        app.project_path = Some(root.join("Song.komponist"));
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(&mut app, |app| !app.audio_recording.is_active());
+        let ClipContent::Audio(audio) = &app.project().track(track).unwrap().clips[0].content
+        else {
+            panic!("audio clip");
+        };
+        assert!(audio.file.abs.starts_with(root.join("Provisional")));
+        assert!(audio.file.abs.is_file());
+        assert!(app.audio_recording.provisional.contains(&audio.file.abs));
+        let status = app.ui.status.as_ref().unwrap();
+        assert_eq!(status.kind, StatusKind::Error, "{}", status.text);
+        assert_ne!(status.text, app.lang.audio_record_complete(1));
+    }
+
+    /// #221: a staging worker held past the shutdown deadline leaves its private copies when the
+    /// app ends; the next Save to that folder, or opening the project, deletes them.
+    #[test]
+    fn copies_left_by_a_worker_past_the_deadline_are_reclaimed() {
+        let (root, mut app, track) = rig();
+        begin(&mut app, track);
+        let (release, _done) = staging_held(&mut app, &root);
+        let takes = root.join("Takes");
+        app.dispatch(Action::Transport(TransportAction::DiscardTake));
+        let started = Instant::now();
+        app.audio_recording.shutdown(Duration::from_millis(20));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        // The app "ended" here: the worker still holds its private copy.
+        assert_eq!(hidden(&takes).len(), 1);
+        assert!(app.save_to(&root.join("Song.komponist")));
+        assert!(
+            hidden(&takes).is_empty(),
+            "Save reclaims the abandoned copy"
+        );
+        drop(release);
+
+        // The same after a crash, found when the project opens.
+        let abandoned = takes.join(".komponist-staging-crashed");
+        std::fs::create_dir_all(&abandoned).unwrap();
+        std::fs::write(abandoned.join("Take.wav"), b"RIFF").unwrap();
+        app.open_path(root.join("Song.komponist"));
+        assert!(!abandoned.exists());
+    }
+
+    /// #221: when the background copy into a folder failed, the Save that follows keeps the
+    /// original links without copying again on the UI thread; a later Save copies.
+    #[test]
+    fn a_save_after_a_failed_copy_keeps_the_originals_and_the_next_one_copies() {
+        let (root, mut app, track) = rig();
+        begin(&mut app, track);
+        let takes = root.join("Takes");
+        std::fs::write(&takes, b"not a folder").unwrap();
+        app.project_path = Some(root.join("Song.komponist"));
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(&mut app, |app| !app.audio_recording.is_active());
+        std::fs::remove_file(&takes).unwrap();
+        let link = |app: &App| {
+            let saved = crate::project_io::load_project(&root.join("Song.komponist")).unwrap();
+            let ClipContent::Audio(audio) = &saved.track(track).unwrap().clips[0].content else {
+                panic!("audio clip");
+            };
+            let _ = app;
+            audio.file.abs.clone()
+        };
+        assert!(app.save_to(&root.join("Song.komponist")));
+        assert!(link(&app).starts_with(root.join("Provisional")));
+        assert!(visible(&takes).is_empty(), "no copy in this Save");
+        assert_eq!(app.ui.status.as_ref().unwrap().kind, StatusKind::Error);
+        assert!(app.save_to(&root.join("Song.komponist")));
+        assert!(link(&app).starts_with(&takes), "the next Save copies");
+    }
+
+    /// #221: a writer that fails after finishing a lap no frame saw, collected on the blocking
+    /// path: that lap's WAV stays tracked for recovery.
+    #[test]
+    fn a_writer_failure_on_the_blocking_path_keeps_the_last_finished_lap() {
+        let (_root, mut app, track) = rig();
+        let (lo, hi) = (Tick(32), Tick(64));
+        app.doc
+            .apply("Set loop", |project| {
+                let project = edits::set_project_prop(
+                    project,
+                    edits::ProjectProp::LoopRange(komponist_model::TickRange::new(lo, hi)),
+                )?;
+                edits::set_project_prop(&project, edits::ProjectProp::LoopOn(true))
+            })
+            .unwrap();
+        app.step();
+        let map = app.project().tempo_map();
+        let rate = f64::from(app.engine_mut().sample_rate());
+        let lead = map.tick_to_sample(lo, rate) as usize;
+        let end = map.tick_to_sample(hi, rate) as usize;
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(lead + 64, &[], 0));
+        wait(&mut app, |app| {
+            app.audio_recording()
+                .and_then(|view| view.progress(track))
+                .is_some_and(|progress| progress.frames > 0)
+        });
+        assert!(app.engine_mut().run_held(3 * (end - lead), &[], 0));
+        // The writer publishes the laps on its own thread; no frame runs meanwhile. Wait until it
+        // has drained what the engine queued.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let position = |app: &App| {
+            let progress = app.audio_recording.capture.as_ref().unwrap();
+            let current = progress.session.visible_progress().remove(0).current;
+            (current.lap, current.frames)
+        };
+        let mut last = position(&app);
+        let mut stable = 0;
+        while stable < 5 || last.0 < 3 {
+            assert!(Instant::now() < deadline, "the writer did not catch up");
+            std::thread::sleep(Duration::from_millis(5));
+            let now = position(&app);
+            stable = if now == last { stable + 1 } else { 0 };
+            last = now;
+        }
+        app.engine_mut().send(Command::AbortAudioRecording);
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        let finished: Vec<PathBuf> = {
+            let capture = app.audio_recording.capture.as_ref().unwrap();
+            capture
+                .session
+                .visible_progress()
+                .into_iter()
+                .flat_map(|snapshot| snapshot.completed.into_iter().flatten())
+                .filter(|progress| progress.frames > 0)
+                .map(|progress| progress.path.clone())
+                .filter(|path| !capture.owned.contains(path))
+                .collect()
+        };
+        assert!(!finished.is_empty(), "a lap no frame saw");
+        app.advance_audio_take(Some(Instant::now() + Duration::from_secs(5)));
+        assert!(!app.audio_recording.is_active());
+        for path in &finished {
+            assert!(path.is_file());
+            assert!(app.audio_recording.provisional.contains(path), "{path:?}");
+        }
+    }
+
+    /// Laps that finished between two frames never reach the live view; a take discarded while
+    /// its copy is made still gives them up.
+    #[test]
+    fn laps_no_frame_saw_are_given_up_with_a_take_discarded_during_its_copy() {
+        let (root, mut app, track) = rig();
+        let (lo, hi) = (Tick(32), Tick(64));
+        app.doc
+            .apply("Set loop", |project| {
+                let project = edits::set_project_prop(
+                    project,
+                    edits::ProjectProp::LoopRange(komponist_model::TickRange::new(lo, hi)),
+                )?;
+                edits::set_project_prop(&project, edits::ProjectProp::LoopOn(true))
+            })
+            .unwrap();
+        app.step();
+        let map = app.project().tempo_map();
+        let rate = f64::from(app.engine_mut().sample_rate());
+        let lead = map.tick_to_sample(lo, rate) as usize;
+        let end = map.tick_to_sample(hi, rate) as usize;
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(lead + 64, &[], 0));
+        wait(&mut app, |app| {
+            app.audio_recording()
+                .and_then(|view| view.progress(track))
+                .is_some_and(|progress| progress.frames > 0)
+        });
+        app.project_path = Some(root.join("Song.komponist"));
+        let (release, go) = mpsc::channel::<()>();
+        let (finished, _done) = mpsc::channel();
+        app.audio_recording.stage_gate = Some(StageGate {
+            go,
+            finished,
+            ready: None,
+        });
+        // Four laps without a frame, then stop: the middle laps are never shown.
+        assert!(app.engine_mut().run_held(4 * (end - lead), &[], 0));
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        app.advance_audio_take(Some(Instant::now() + Duration::from_secs(5)));
+        let paths: Vec<PathBuf> = app
+            .audio_recording
+            .capture
+            .as_ref()
+            .and_then(|capture| capture.staging.as_ref())
+            .expect("the copy waits")
+            .result
+            .takes
+            .iter()
+            .map(|take| take.path.clone())
+            .collect();
+        assert!(paths.len() >= 4, "{paths:?}");
+        app.dispatch(Action::Transport(TransportAction::DiscardTake));
+        for path in &paths {
+            assert!(!app.audio_recording.provisional.contains(path), "{path:?}");
+        }
+        drop(release);
+    }
+
     #[test]
     fn save_during_count_in_does_not_leave_a_stale_provisional_path() {
         let (root, mut app, audio) = rig();

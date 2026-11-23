@@ -377,6 +377,47 @@ fn panel_sizes_are_saved_in_the_settings() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #221: a splitter drag writes the settings once, when it is released, not on every frame.
+#[test]
+fn a_splitter_drag_saves_the_settings_once_at_its_end() {
+    let dir = std::env::temp_dir().join(format!("komponist-shell-drag-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("settings.json");
+    let engine = komponist_app::engine_sync::EngineSync::null(Box::new(
+        komponist_app::device_host::BuiltinHost::new(),
+    ));
+    let app = App::new(
+        komponist_model::Document::new(demo_project()),
+        engine,
+        komponist_app::settings::Settings::default(),
+        Some(path.clone()),
+    );
+    let mut h = harness(app);
+    assert!(!path.exists(), "nothing changed yet");
+    // The browser's right edge, dragged in steps.
+    let (from, to) = (pos2(260.5, 500.0), pos2(320.0, 500.0));
+    h.hover_at(from);
+    h.step();
+    h.drag_at(from);
+    h.step();
+    for i in 1..=6 {
+        h.hover_at(from + (to - from) * (i as f32 / 6.0));
+        h.step();
+        assert!(
+            !path.exists(),
+            "frame {i} of the drag wrote the settings (width {})",
+            h.state().ui().layout.browser_width
+        );
+    }
+    assert_eq!(h.state().ui().layout.browser_width, 320.0);
+    h.drop_at(to);
+    h.run_steps(2);
+    let saved = komponist_app::settings::Settings::load(&path).unwrap();
+    assert_eq!(saved.panels.browser_width, 320.0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The S01 state: Lead A open in the piano roll (focused), playhead at 10.2.120, stopped.
 fn s01() -> App {
     let mut app = demo();

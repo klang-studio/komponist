@@ -595,6 +595,8 @@ the pass and restores the playback curve or base value.
 `AudioSystem` enumerates hosts, devices, rates, buffers and inputs. `EngineSlot<P>` owns the
 callback processor and returns it on stream teardown; buffer/device changes rebuild the stream
 while preserving the engine. A lost output device enters `NoDevice` and disables playback/recording.
+A worker probes for it and opens its stream once it is back; the UI thread only installs the
+finished stream (ASIO, the native JACK client and the null backend open on the UI thread).
 An engine whose callback unwound in a panic is poisoned: it outputs silence, is never handed to
 another stream, and the app replaces it with a new engine compiled from the document (#210). The
 new engine stays stopped at the old playhead; a running take ends there like an interruption and

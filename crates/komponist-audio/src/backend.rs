@@ -80,8 +80,11 @@ pub(crate) fn validate(config: &StreamConfig) -> Result<(), AudioError> {
 }
 
 /// What a stream shares with the UI thread.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct StreamShared {
+    /// This stream's number, unique in the process: reports in the shared [`StreamStats`] that
+    /// belong to one stream carry it (#221).
+    generation: u64,
     /// The backend reported the device gone or the stream invalid.
     lost: AtomicBool,
     /// The backend's message for `lost`.
@@ -90,7 +93,24 @@ pub(crate) struct StreamShared {
     latency_nanos: AtomicU64,
 }
 
+impl Default for StreamShared {
+    fn default() -> StreamShared {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        StreamShared {
+            generation: NEXT.fetch_add(1, Ordering::Relaxed),
+            lost: AtomicBool::new(false),
+            reason: Mutex::new(None),
+            latency_nanos: AtomicU64::new(0),
+        }
+    }
+}
+
 impl StreamShared {
+    /// This stream's number (never 0).
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Error callback: the stream is unusable.
     fn mark_lost(&self, reason: String) {
         // Never block in the error callback (it may run on the audio thread).
@@ -732,7 +752,7 @@ pub(crate) fn on_stream_error(stats: &StreamStats, shared: &StreamShared, err: c
     use cpal::ErrorKind as K;
     match err.kind() {
         K::Xrun => stats.record_xrun(),
-        K::RealtimeDenied => stats.record_realtime_denied(),
+        K::RealtimeDenied => stats.record_realtime_denied(shared.generation()),
         K::DeviceNotAvailable | K::StreamInvalidated | K::HostUnavailable => {
             shared.mark_lost(err.to_string());
         }
@@ -1119,6 +1139,7 @@ mod lookup_tests {
     fn stream_errors_update_stats_and_loss() {
         let stats = StreamStats::new();
         let shared = StreamShared::default();
+        stats.set_installed(shared.generation());
         on_stream_error(
             &stats,
             &shared,
