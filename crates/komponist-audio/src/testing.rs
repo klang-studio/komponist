@@ -1,7 +1,7 @@
 //! Test engine shared by the unit tests.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::process::{AudioProcess, CallbackInfo, MidiIn, OutputBuffer, StreamParams};
@@ -26,6 +26,9 @@ pub(crate) struct Probe {
     pub(crate) last_event_frame: AtomicU32,
     /// Status and data bytes of the last MIDI event, packed big-endian into the low 24 bits.
     pub(crate) last_event_data: AtomicU32,
+    /// What [`AudioProcess::is_poisoned`] reports: set by a test that stands for a callback that
+    /// unwound (a real panic would abort inside `assert_no_alloc` in debug builds).
+    pub(crate) poisoned: AtomicBool,
 }
 
 impl Probe {
@@ -81,6 +84,10 @@ impl AudioProcess for TestEngine {
             *latency = input.latency();
         }
         self.process(out, info, midi);
+    }
+
+    fn is_poisoned(&self) -> bool {
+        self.probe.poisoned.load(Ordering::SeqCst)
     }
 
     fn prepare(&mut self, params: &StreamParams) {

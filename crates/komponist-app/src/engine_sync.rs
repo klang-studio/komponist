@@ -246,6 +246,10 @@ impl AudioProcess for EngineProcess {
         );
         out.write_stereo(left, right);
     }
+
+    fn is_poisoned(&self) -> bool {
+        self.engine.is_poisoned()
+    }
 }
 
 /// How the MIDI inputs are opened.
@@ -438,6 +442,14 @@ pub struct EngineSync {
     frozen: Option<Tick>,
     /// Worker threads asked for while an export had the engine (applied at [`EngineSync::attach`]).
     workers_after_export: Option<Option<u32>>,
+    /// The engine came back poisoned and a new one replaced it; the app takes it once
+    /// ([`EngineSync::take_rebuild_notice`]): the playhead when it happened.
+    rebuild_notice: Option<Tick>,
+    /// Where a rebuilt engine's transport goes once the program is in it (#210).
+    locate_after_rebuild: Option<Tick>,
+    /// Events the poisoned engine had queued before it was replaced, for the next
+    /// [`EngineSync::poll`] (recorded notes up to the crash).
+    stranded: Vec<EngineEvent>,
     /// Outcome of the engine's last worker start ([`EngineProcess`] writes it in `prepare`).
     worker_status: Arc<Mutex<Option<WorkerStatus>>>,
     /// See [`EngineProcess`]'s `worker_notice`.
@@ -523,6 +535,9 @@ impl EngineSync {
             held: None,
             frozen: None,
             workers_after_export: None,
+            rebuild_notice: None,
+            locate_after_rebuild: None,
+            stranded: Vec::new(),
             worker_status,
             worker_notice,
             workgroup_notice,
@@ -657,6 +672,11 @@ impl EngineSync {
         self.host
             .set_automated_params(&Self::automated_parameters(&next, project));
         self.send(Command::SetProgram(Box::new(next.clone())));
+        // A rebuilt engine stays stopped where the old one was; ticks map to frames only with
+        // the program's tempo map, so after it.
+        if let Some(at) = self.locate_after_rebuild.take() {
+            self.send(Command::Locate(at));
+        }
         self.programs_sent += 1;
         self.previous = Some(next);
         self.diagnostics_notice |= diagnostics.iter().any(|d| !self.diagnostics.contains(d));
@@ -1081,6 +1101,9 @@ impl EngineSync {
     pub(crate) fn poll_engine_events(&mut self) -> Vec<EngineEvent> {
         let before = self.sample_rate();
         self.audio.poll();
+        if let Some(poisoned) = self.audio.take_poisoned() {
+            self.rebuild_engine(*poisoned);
+        }
         if self.sample_rate() != before {
             self.synced = None;
             self.fast = None;
@@ -1093,7 +1116,7 @@ impl EngineSync {
         self.pending_macro_edits
             .retain(|_, (edit, _)| *edit > applied_edit);
         self.sync_macro_params();
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut self.stranded);
         while let Some(event) = self.handle.as_mut().and_then(EngineHandle::poll) {
             if !matches!(event, EngineEvent::Retired(_)) {
                 out.push(event);
@@ -1133,6 +1156,15 @@ impl EngineSync {
             self.fast = None;
         }
         changed
+    }
+
+    /// Tests: a MIDI change and a new compile diagnostic waiting for the app, as a scan and a
+    /// sync leave them.
+    #[cfg(test)]
+    pub(crate) fn queue_notices(&mut self, change: MidiChange, diagnostic: compile::Diagnostic) {
+        self.midi_changes.push(change);
+        self.diagnostics.push(diagnostic);
+        self.diagnostics_notice = true;
     }
 
     /// The devices that appeared or vanished in scans since the last call (the status bar says
@@ -1429,6 +1461,9 @@ impl EngineSync {
         }
         self.synced = None;
         self.fast = None;
+        // A rebuilt engine's old position and events belong to the old project.
+        self.locate_after_rebuild = None;
+        self.stranded.clear();
         // The next project's diagnostics are all new, even those equal to the old project's.
         self.diagnostics.clear();
         self.diagnostics_notice = false;
@@ -1441,6 +1476,67 @@ impl EngineSync {
                 PluginManagerEvent::ScanFinished(_) | PluginManagerEvent::Log { device: None, .. }
             )
         }));
+    }
+
+    /// Replaces an engine that came back poisoned from the stream (a panic unwound its
+    /// `process`, #210; [`AudioSystem::take_poisoned`]): its state is half-updated, so it is
+    /// dropped here, on the UI thread, with its processors, and a new engine at the same rate and
+    /// with the same worker setting takes its place in the stream. The program is forgotten, so
+    /// the next [`EngineSync::sync`] compiles the document from scratch and every device gets a
+    /// fresh processor (a bridged plugin a fresh bridge with its last known state). The transport
+    /// stays stopped at the old playhead (located there with the first program); commands that
+    /// waited for the old engine are dropped, the events it had queued reach the next poll. The
+    /// app reports it once and ends a running take there ([`EngineSync::take_rebuild_notice`]).
+    fn rebuild_engine(&mut self, poisoned: EngineProcess) {
+        let (engine, handle) = Engine::new(EngineConfig {
+            sample_rate: poisoned.engine.sample_rate(),
+            ..EngineConfig::default()
+        });
+        let EngineProcess {
+            workers,
+            workers_auto,
+            rt,
+            worker_status,
+            worker_notice,
+            workgroup_notice,
+            ..
+        } = poisoned;
+        let process = EngineProcess {
+            workers,
+            workers_auto,
+            rt,
+            worker_status,
+            worker_notice,
+            workgroup_notice,
+            ..EngineProcess::new(engine, Arc::clone(&self.rate))
+        };
+        let playhead = self.telemetry.playhead();
+        self.worker_stats = process.engine.worker_stats();
+        self.telemetry = Arc::clone(handle.telemetry());
+        // The old handle goes with its queues; garbage in them is dropped here, the rest is kept.
+        if let Some(mut old) = self.handle.replace(handle) {
+            while let Some(event) = old.poll() {
+                if !matches!(event, EngineEvent::Retired(_)) {
+                    self.stranded.push(event);
+                }
+            }
+        }
+        self.pending.clear();
+        self.previous = None;
+        self.synced = None;
+        self.fast = None;
+        self.macro_params.clear();
+        self.pending_macro_edits.clear();
+        self.rebuild_notice = Some(playhead);
+        self.locate_after_rebuild = Some(playhead);
+        // `prepare` starts the workers for the running stream.
+        self.audio.attach(Box::new(process));
+    }
+
+    /// The playhead at which the engine was rebuilt after a panic, if it was since the last call
+    /// (status bar notice; a running take ends there).
+    pub fn take_rebuild_notice(&mut self) -> Option<Tick> {
+        self.rebuild_notice.take()
     }
 
     /// Commands waiting for room in the engine's queue (diagnostics, tests).
@@ -1689,6 +1785,71 @@ mod tests {
             sync.poll();
             sync.telemetry().transport() == TransportState::Stopped
         }));
+        sync.shutdown();
+    }
+
+    /// #210: an engine whose `process` unwound is not given back to the stream; a new one is
+    /// built at the same rate and worker setting, the document is compiled into it from scratch,
+    /// its transport stays stopped at the old playhead, the old engine's queued events still
+    /// arrive, and the app is told once (with that playhead).
+    #[test]
+    fn a_poisoned_engine_is_rebuilt_from_the_document() {
+        let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
+        // Single-threaded: the panic must happen on this thread (a worker runs its jobs inside
+        // `assert_no_alloc`, where the panic's allocation aborts in debug builds).
+        assert_eq!(sync.set_workers(Some(0)).unwrap().unwrap().threads, 0);
+        let doc = Document::new(demo_project());
+        sync.sync(&doc);
+        let lead = doc.project().tracks[2].channel.devices[0].id;
+        let slot = sync.program().unwrap().slots.slot(lead).unwrap();
+        let sent = sync.programs_sent();
+        sync.hold_engine().unwrap();
+        // Play a while, so the crash happens away from 0.
+        sync.send(Command::Play);
+        assert!(sync.run_held(48_000, &[], 0));
+        let at = sync.playhead();
+        assert!(at > Tick::ZERO);
+        sync.send(Command::InsertProcessor {
+            slot,
+            processor: Box::new(komponist_engine::testing::TestPanic),
+        });
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sync.run_held(256, &[], 0);
+        }));
+        assert!(caught.is_err(), "the processor ran");
+        assert!(sync.held.as_ref().unwrap().engine.is_poisoned());
+        // Back to the stream: refused, rebuilt at the next poll.
+        sync.release_engine();
+        assert_eq!(sync.take_rebuild_notice(), None);
+        let events = sync.poll_engine_events();
+        assert_eq!(sync.take_rebuild_notice(), Some(at));
+        assert_eq!(sync.take_rebuild_notice(), None, "taken once");
+        // The old engine's queued garbage stays behind; nothing else was queued here.
+        assert!(events.iter().all(|e| !matches!(e, EngineEvent::Retired(_))));
+        assert!(sync.program().is_none(), "the old program is forgotten");
+        assert_eq!(
+            sync.worker_status().unwrap().threads,
+            0,
+            "the setting stays"
+        );
+        sync.sync(&doc);
+        assert_eq!(sync.programs_sent(), sent + 1);
+        assert!(sync.program().unwrap().slots.slot(lead).is_some());
+        // Stopped where the old engine was.
+        assert!(wait_until(|| {
+            sync.poll();
+            sync.playhead() == at
+        }));
+        assert_eq!(sync.transport(), TransportState::Stopped);
+        // The new engine runs in the stream and plays the document from there.
+        sync.send(Command::Play);
+        assert!(wait_until(|| {
+            sync.poll();
+            sync.playhead() > at
+        }));
+        sync.hold_engine().unwrap();
+        assert!(!sync.held.as_ref().unwrap().engine.is_poisoned());
+        sync.release_engine();
         sync.shutdown();
     }
 

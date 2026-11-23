@@ -338,6 +338,9 @@ pub struct Engine {
     render_l: Box<[f32]>,
     render_r: Box<[f32]>,
     render_out: Box<[f32]>,
+    /// Set while a `process` or `render` call runs; still set afterwards when the call unwound
+    /// (a panic, #210). See [`Engine::is_poisoned`].
+    poisoned: bool,
 }
 
 impl Engine {
@@ -417,6 +420,7 @@ impl Engine {
             render_l: vec![0.0; MAX_BLOCK].into_boxed_slice(),
             render_r: vec![0.0; MAX_BLOCK].into_boxed_slice(),
             render_out: vec![0.0; 2 * MAX_BLOCK].into_boxed_slice(),
+            poisoned: false,
         });
         let handle = EngineHandle {
             commands: command_tx,
@@ -665,7 +669,24 @@ impl Engine {
         audio: &AudioInputBuffer<'_>,
         macros: &[MacroInput],
     ) {
-        self.core.run(out_l, out_r, input, audio, macros, false);
+        run_unless_poisoned(
+            &mut self.core,
+            &mut self.poisoned,
+            [out_l, out_r],
+            input,
+            audio,
+            macros,
+            false,
+        );
+    }
+
+    /// Whether a [`Engine::process`] or [`Engine::render`] call unwound in the middle (a panic in
+    /// a processor or the engine, #210). Its state is half-updated then (track states, delay
+    /// lines, the transport, queued events), so the engine only outputs silence from then on and
+    /// must not be reused: the app drops it and builds a new one from the document. The worker
+    /// pool is sound (a panicking batch finishes before it unwinds), so dropping it is safe.
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
     }
 
     /// RT-safe, for offline use. Processes `frames` (1 ..= [`crate::MAX_BLOCK`]) frames with
@@ -686,8 +707,16 @@ impl Engine {
         // export sounds like playback (#217). Workers copy this state; the caller's is restored.
         let saved = sys::fp_state();
         sys::set_fp_state(sys::with_flush_to_zero(saved));
-        self.core
-            .run(l, r, &input, &AudioInputBuffer::empty(), &[], true);
+        let empty = AudioInputBuffer::empty();
+        run_unless_poisoned(
+            &mut self.core,
+            &mut self.poisoned,
+            [&mut *l, &mut *r],
+            &input,
+            &empty,
+            &[],
+            true,
+        );
         sys::set_fp_state(saved);
         let out = &mut self.render_out[..2 * frames];
         let (frames_out, _) = out.as_chunks_mut::<2>();
@@ -697,6 +726,27 @@ impl Engine {
         }
         out
     }
+}
+
+/// RT. One call of [`Core::run`], or silence once the engine is poisoned ([`Engine::is_poisoned`]).
+fn run_unless_poisoned(
+    core: &mut Core,
+    poisoned: &mut bool,
+    [out_l, out_r]: [&mut [f32]; 2],
+    input: &LiveInput<'_>,
+    audio: &AudioInputBuffer<'_>,
+    macros: &[MacroInput],
+    offline: bool,
+) {
+    if *poisoned {
+        out_l.fill(0.0);
+        out_r.fill(0.0);
+        return;
+    }
+    // Stays set if `Core::run` unwinds.
+    *poisoned = true;
+    core.run(out_l, out_r, input, audio, macros, offline);
+    *poisoned = false;
 }
 
 impl Drop for Engine {
@@ -992,9 +1042,15 @@ struct Edges {
 }
 
 impl Edges {
+    /// Line `delay.line`, for as long as `self` (the jobs' view of the segment) is borrowed.
+    ///
     /// # Safety
     /// No other reference to line `delay.line` exists while the result is used.
-    unsafe fn get<'e>(self, delay: Delay) -> &'e mut EdgeState {
+    #[expect(
+        clippy::mut_from_ref,
+        reason = "the lines are shared by the jobs, each line used by one job (the caller's contract)"
+    )]
+    unsafe fn get(&self, delay: Delay) -> &mut EdgeState {
         let index = usize::from(delay.line.0);
         assert!(index < self.len);
         // SAFETY: in bounds; exclusive per the caller.
@@ -1133,6 +1189,8 @@ impl TrackJobs<'_> {
             // Source clips start at graph time zero. Align them before adding a live input,
             // whose bus tap already carries its source latency.
             if let Some(delay) = route.head {
+                // SAFETY: the head delay's line belongs to this job's track, and every job runs
+                // once per segment, so no other reference to it exists.
                 let edge = unsafe { self.edges.get(delay) };
                 let [l, r] = &mut bufs.a;
                 edge.line.process(&mut l[..n], &mut r[..n], delay.frames);
@@ -1353,6 +1411,8 @@ impl TrackJobs<'_> {
         };
         // Keep input delay state moving even with monitoring off, so enabling it has no stale tail.
         if let Some(input_route) = route.audio_input {
+            // SAFETY: the bus input's delay line belongs to this audio track (the compiler gives
+            // it its own line), whose job runs once per segment: no other reference exists.
             let edge = unsafe { self.edges.get(input_route.delay) };
             edge.line
                 .process(&mut l[..n], &mut r[..n], input_route.delay.frames);

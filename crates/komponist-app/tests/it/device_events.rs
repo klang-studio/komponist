@@ -897,6 +897,142 @@ fn workers_without_workgroup_reach_the_status_bar() {
     assert_eq!(status_text(&app), None);
 }
 
+/// #210: an engine whose `process` panicked is replaced by a new one; every device gets a fresh
+/// processor from the document (none is released), and the status bar says so as an error.
+#[test]
+fn a_panicked_engine_is_rebuilt_and_reported() {
+    let (mut app, script) = app();
+    app.ui_mut().status = None;
+    let lead = app.project().tracks[2].channel.devices[0].id;
+    let (created, released) = {
+        let script = script.borrow();
+        (script.created.len(), script.released.len())
+    };
+    let engine = app.engine_mut();
+    // Single-threaded, so the panic is on this thread and outside `assert_no_alloc`.
+    assert_eq!(engine.set_workers(Some(0)).unwrap().unwrap().threads, 0);
+    let slot = engine.program().unwrap().slots.slot(lead).unwrap();
+    engine.hold_engine().unwrap();
+    engine.send(komponist_engine::Command::InsertProcessor {
+        slot,
+        processor: Box::new(komponist_engine::testing::TestPanic),
+    });
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        engine.run_held(256, &[], 0);
+    }));
+    assert!(caught.is_err(), "the processor ran");
+    engine.release_engine();
+    app.step();
+    assert_eq!(
+        status_text(&app),
+        Some((
+            "Audio-Engine abgestürzt · aus dem Projekt neu aufgebaut, die Wiedergabe ist gestoppt"
+                .to_owned(),
+            StatusKind::Error
+        ))
+    );
+    let script = script.borrow();
+    assert_eq!(script.created.len(), 2 * created, "every device again");
+    assert_eq!(script.released.len(), released);
+    assert!(app.engine().program().unwrap().slots.slot(lead).is_some());
+}
+
+/// #210, owner 2026-11-23: a MIDI take running when the engine panics ends at the crash like an
+/// interruption and keeps what was recorded so far, also the notes still queued in the old
+/// engine; the new engine stays stopped at the old playhead.
+#[test]
+fn a_take_running_when_the_engine_panics_is_kept() {
+    use komponist_app::{EditAction, TransportAction};
+    use komponist_engine::{MidiInEvent, MidiPort, TransportState};
+    use komponist_i18n::Lang;
+    use komponist_model::ClipContent;
+
+    // 120 bpm at 48 kHz: 25 frames per tick.
+    let frame = |tick: u32| tick * 25;
+    let mut app = App::headless(komponist_model::fixtures::empty_project());
+    app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+    app.dispatch(Action::Transport(TransportAction::ToggleCountIn));
+    let track = app.project().tracks[0].id;
+    let instrument = app.project().tracks[0].channel.devices[0].id;
+    // Single-threaded, so the panic is on this thread and outside `assert_no_alloc`.
+    assert_eq!(
+        app.engine_mut()
+            .set_workers(Some(0))
+            .unwrap()
+            .unwrap()
+            .threads,
+        0
+    );
+    app.engine_mut().hold_engine().unwrap();
+    app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+    assert!(app.engine_mut().run_held(frame(40) as usize, &[], 0));
+    app.step();
+    assert!(app.recording().is_some());
+    let note = |tick, data| MidiInEvent {
+        frame: frame(tick),
+        port: MidiPort(1),
+        data,
+    };
+    let c4 = [note(60, [0x90, 60, 100]), note(540, [0x80, 60, 0])];
+    assert!(app.engine_mut().run_held(frame(1000) as usize, &c4, 0));
+    app.step();
+    // E4 starts and is still held; the app has not seen it yet when the engine panics.
+    let e4 = [note(10, [0x90, 64, 80])];
+    assert!(app.engine_mut().run_held(frame(100) as usize, &e4, 0));
+    let at = app.engine().playhead();
+    let slot = app
+        .engine()
+        .program()
+        .unwrap()
+        .slots
+        .slot(instrument)
+        .unwrap();
+    let engine = app.engine_mut();
+    engine.send(komponist_engine::Command::InsertProcessor {
+        slot,
+        processor: Box::new(komponist_engine::testing::TestPanic),
+    });
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        engine.run_held(256, &[], 0);
+    }));
+    assert!(caught.is_err(), "the processor ran");
+    engine.release_engine();
+    app.step();
+
+    assert!(app.recording().is_none(), "the take ended");
+    let clips = &app.project().track(track).unwrap().clips;
+    assert_eq!(clips.len(), 1);
+    assert_eq!(clips[0].name, Lang::De.record_take_incomplete(1));
+    let ClipContent::Midi(midi) = &clips[0].content else {
+        panic!("a MIDI clip")
+    };
+    let notes: Vec<_> = midi.takes[0]
+        .notes
+        .iter()
+        .map(|n| (n.start.0, n.pitch))
+        .collect();
+    assert_eq!(notes, [(100, 60), (1050, 64)]);
+    // E4 was held: it ends at the crash.
+    let e4 = &midi.takes[0].notes[1];
+    assert_eq!(clips[0].start + e4.start + e4.length, at);
+    assert_eq!(
+        status_text(&app),
+        Some((
+            Lang::De.status_engine_rebuilt_take().to_owned(),
+            StatusKind::Error
+        ))
+    );
+    // The new engine: stopped where the old one was.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while app.engine().playhead() != at {
+        assert!(std::time::Instant::now() < deadline, "not located");
+        std::thread::sleep(Duration::from_millis(5));
+        app.step();
+    }
+    assert_eq!(app.transport(), TransportState::Stopped);
+    assert!(app.recording().is_none());
+}
+
 fn plugin_gui_automation(
     mode: komponist_model::automation::AutomationMode,
 ) -> (

@@ -11,8 +11,10 @@
 //! - [`TestSidechain`]: an effect that reads its sidechain input (WP-102): it outputs the
 //!   sidechain, or the main input on the left and the sidechain on the right, so tests see what
 //!   arrived and when. Counts the calls that carried a sidechain.
+//! - [`TestPanic`]: an instrument whose `process` panics (#210: a poisoned engine). Run it outside
+//!   `assert_no_alloc` and on the calling thread (no workers): the panic allocates.
 //!
-//! All are RT-safe: `process` and `reset` never allocate (the log is a preallocated rtrb queue).
+//! All but [`TestPanic`] are RT-safe: `process` and `reset` never allocate (the log is a preallocated rtrb queue).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -685,6 +687,31 @@ impl Processor for TestSidechain {
 
     fn latency(&self) -> u32 {
         self.latency
+    }
+
+    fn reset(&mut self) {}
+}
+
+/// An instrument whose [`Processor::process`] panics (see the module docs).
+#[derive(Debug, Default)]
+pub struct TestPanic;
+
+impl Processor for TestPanic {
+    fn activate(&mut self, _sample_rate: f32, _max_block: usize) -> Result<(), ProcessorError> {
+        Ok(())
+    }
+
+    fn process(
+        &mut self,
+        _ctx: &ProcessContext,
+        _events: &[Event],
+        _io: &mut StereoIo<'_>,
+    ) -> ProcessStatus {
+        panic!("TestPanic::process");
+    }
+
+    fn latency(&self) -> u32 {
+        0
     }
 
     fn reset(&mut self) {}
