@@ -13,10 +13,12 @@ use komponist_model::params::{ParamInfo, ValueTexts};
 pub mod dsp;
 pub mod layout;
 pub mod midi;
+pub mod note;
 pub mod pinned_clap_state;
 mod processor;
 mod spec;
 
+pub use note::{DeviceNote, dispatch_note, pitch_bend_bytes};
 pub use processor::{Dsp, INITIAL_RATE, InternalProcessor, SAMPLE_RATES};
 pub use spec::{CatalogSpec, Preset, Spec, SpecCache, StateError, StateParams, no_presets};
 

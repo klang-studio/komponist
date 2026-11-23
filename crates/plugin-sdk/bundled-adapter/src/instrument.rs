@@ -4,7 +4,7 @@ use std::ffi::{CStr, c_void};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use komponist_device_core::{Dsp, SAMPLE_RATES};
+use komponist_device_core::{DeviceNote, Dsp, SAMPLE_RATES, dispatch_note, pitch_bend_bytes};
 use komponist_native_clap_sdk::{NativeClapLayout, Panel};
 use nice_plug::midi::{Channel, Key, VoiceID};
 use nice_plug::prelude::*;
@@ -129,7 +129,7 @@ impl<T: AudioDefinition> Plugin for Instrument<T> {
     }
 }
 
-fn apply_note(
+pub(crate) fn apply_note(
     dsp: &mut dyn Dsp,
     notes: &mut [Option<(Channel, VoiceID)>; 128],
     event: NoteEvent<()>,
@@ -139,18 +139,13 @@ fn apply_note(
             channel,
             key,
             voice_id,
-            velocity,
             ..
         } => {
             if let Some(key) = key.number().filter(|key| *key < 128) {
                 notes[usize::from(key)] = Some((channel, voice_id));
-                let velocity = (velocity.clamp(0.0, 1.0) * 127.0).round().max(1.0) as u8;
-                dsp.note_on_with_id(
-                    key,
-                    velocity,
-                    voice_id.id().map(|id| id as u32),
-                    channel.number(),
-                );
+                if let Some(note) = to_device_note(event) {
+                    dispatch_note(dsp, note);
+                }
             }
         }
         NoteEvent::Choke {
@@ -160,7 +155,7 @@ fn apply_note(
             ..
         } => {
             notes.fill(None);
-            dsp.all_notes_off();
+            dispatch_note(dsp, DeviceNote::AllNotesOff);
         }
         NoteEvent::NoteOff {
             channel,
@@ -180,19 +175,26 @@ fn apply_note(
                     (channel.is_wildcard() || channel == note_ch)
                         && (voice_id.is_wildcard() || voice_id == note_id)
                 }) {
+                    let note_id = voice_id.id().map(|id| id as u32);
                     if choke {
-                        dsp.choke_note(
-                            Some(key),
-                            voice_id.id().map(|id| id as u32),
-                            channel.number(),
+                        dispatch_note(
+                            dsp,
+                            DeviceNote::Choke {
+                                key: Some(key),
+                                note_id,
+                                channel: channel.number(),
+                            },
                         );
                         *address = None;
                     } else {
                         // Keep the address during release so a subsequent choke can still target it.
-                        dsp.note_off_with_id(
-                            key,
-                            voice_id.id().map(|id| id as u32),
-                            channel.number(),
+                        dispatch_note(
+                            dsp,
+                            DeviceNote::Off {
+                                key,
+                                note_id,
+                                channel: channel.number(),
+                            },
                         );
                     }
                 }
@@ -207,27 +209,81 @@ fn apply_note(
                 }
             }
         }
-        NoteEvent::MidiCC { cc: 1, value, .. } => dsp.mod_wheel(value),
-        NoteEvent::MidiCC {
-            channel,
-            cc: 120 | 123,
-            ..
-        } => {
-            for (key, address) in notes.iter_mut().enumerate() {
-                if address.is_some_and(|(note_channel, _)| note_channel == Channel::Number(channel))
-                {
-                    dsp.choke_note(Some(key as u8), None, Some(channel));
-                    *address = None;
-                }
+        NoteEvent::MidiCC { cc: 120 | 123, .. } => {
+            // The key table follows the device: all notes end, whatever the channel.
+            notes.fill(None);
+            if let Some(note) = to_device_note(event) {
+                dispatch_note(dsp, note);
             }
         }
-        NoteEvent::MidiChannelPressure { pressure, .. } => dsp.pressure(pressure),
-        NoteEvent::MidiPitchBend { value, .. } => {
-            let bend = (value * 16383.0).round();
-            dsp.pitch_bend((bend - 8192.0) / 8192.0);
+        _ => {
+            if let Some(note) = to_device_note(event) {
+                dispatch_note(dsp, note);
+            }
         }
-        _ => {}
     }
+}
+
+/// Translates a CLAP note or MIDI event to the host-independent [`DeviceNote`]; `None` for events
+/// a device ignores. Wildcards stay wildcards: one definition for every bundled CLAP (#223).
+pub fn to_device_note(event: NoteEvent<()>) -> Option<DeviceNote> {
+    let midi_value = |value: f32| (value.clamp(0.0, 1.0) * 127.0).round() as u8;
+    Some(match event {
+        NoteEvent::NoteOn {
+            channel,
+            key,
+            voice_id,
+            velocity,
+            ..
+        } => DeviceNote::On {
+            key: key.number().filter(|key| *key < 128)?,
+            velocity: (velocity.clamp(0.0, 1.0) * 127.0).round().max(1.0) as u8,
+            note_id: voice_id.id().map(|id| id as u32),
+            channel: channel.number(),
+        },
+        NoteEvent::NoteOff {
+            channel,
+            key,
+            voice_id,
+            ..
+        } => DeviceNote::ReleaseGates {
+            key: key.number(),
+            note_id: voice_id.id().map(|id| id as u32),
+            channel: channel.number(),
+        },
+        NoteEvent::MidiNoteOff { key, channel, .. } => DeviceNote::Off {
+            key,
+            note_id: None,
+            channel: Some(channel),
+        },
+        NoteEvent::Choke {
+            channel: Channel::Wildcard,
+            key: Key::Wildcard,
+            voice_id: VoiceID::Wildcard,
+            ..
+        } => DeviceNote::AllNotesOff,
+        NoteEvent::Choke {
+            channel,
+            key,
+            voice_id,
+            ..
+        } => DeviceNote::Choke {
+            key: key.number(),
+            note_id: voice_id.id().map(|id| id as u32),
+            channel: channel.number(),
+        },
+        NoteEvent::MidiPitchBend { channel, value, .. } => DeviceNote::Midi(pitch_bend_bytes(
+            channel,
+            (value.clamp(0.0, 1.0) * 16383.0).round() as u16,
+        )),
+        NoteEvent::MidiCC {
+            channel, cc, value, ..
+        } => DeviceNote::Midi([0xB0 | (channel & 0x0F), cc & 0x7F, midi_value(value)]),
+        NoteEvent::MidiChannelPressure {
+            channel, pressure, ..
+        } => DeviceNote::Midi([0xD0 | (channel & 0x0F), midi_value(pressure), 0]),
+        _ => return None,
+    })
 }
 
 impl<T: AudioDefinition> ClapPlugin for Instrument<T> {
@@ -267,12 +323,13 @@ mod tests {
             self.0.push((key.unwrap(), true));
         }
         fn all_notes_off(&mut self) {
-            panic!("unexpected global release");
+            // 255 stands for the global release.
+            self.0.push((255, false));
         }
     }
 
     #[test]
-    fn midi_channel_mode_only_chokes_keys_on_that_channel() {
+    fn channel_mode_messages_end_all_notes_and_forget_the_keys() {
         for cc in [120, 123] {
             let mut dsp = NoteProbe::default();
             let mut held = [None; 128];
@@ -299,9 +356,8 @@ mod tests {
                     value: 0.0,
                 },
             );
-            assert_eq!(dsp.0, [(60, true)]);
-            assert_eq!(held[60], None);
-            assert_eq!(held[67], Some((Channel::Number(3), VoiceID::ID(67))));
+            assert_eq!(dsp.0, [(255, false)]);
+            assert!(held.iter().all(Option::is_none));
         }
     }
 

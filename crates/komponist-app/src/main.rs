@@ -243,8 +243,10 @@ fn run_app() -> eframe::Result {
     if let Some(handle) = app.recovery_panic_handle() {
         komponist_app::recovery::install_panic_hook(handle);
     }
-    if let Some(input) = app.settings().audio_input.clone() {
-        let _ = app.engine_mut().set_audio_input(Some(input));
+    if let Some(input) = app.settings().audio_input.clone()
+        && let Err(error) = app.engine_mut().set_audio_input(Some(input))
+    {
+        app.report_audio_input_failed(&error);
     }
     for name in app.settings().midi_disabled.clone() {
         if let Some(hub) = app.engine_mut().midi_mut() {

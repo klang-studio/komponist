@@ -8,6 +8,7 @@ use komponist_engine::{
 };
 use komponist_model::params::ParamInfo;
 
+use crate::note::{DeviceNote, dispatch_note};
 use crate::{Spec, midi};
 
 /// Sample rates accepted by the built-in audio processors (Hz).
@@ -138,25 +139,6 @@ pub trait Dsp: Send {
     /// RT, instruments only. Channel pressure (aftertouch): 0 … 1 (WP-95).
     fn pressure(&mut self, value: f32) {
         let _ = value;
-    }
-}
-
-/// Hands a channel message to an instrument: pitch bend (14 bit, −1 … +1), the mod wheel (CC 1),
-/// channel pressure and "all sound/notes off" (CC 120, 123). Other controllers and polyphonic
-/// aftertouch are ignored; the channel does not matter (WP-95).
-fn midi_to_dsp(dsp: &mut dyn Dsp, [status, d1, d2]: [u8; 3]) {
-    match status & 0xF0 {
-        0xE0 => {
-            let value = (i32::from(d2 & 0x7F) << 7 | i32::from(d1 & 0x7F)) - 8192;
-            dsp.pitch_bend((value as f32 / 8192.0).clamp(-1.0, 1.0));
-        }
-        0xB0 => match d1 {
-            1 => dsp.mod_wheel(f32::from(d2 & 0x7F) / 127.0),
-            120 | 123 => dsp.all_notes_off(),
-            _ => {}
-        },
-        0xD0 => dsp.pressure(f32::from(d1 & 0x7F) / 127.0),
-        _ => {}
     }
 }
 
@@ -326,23 +308,33 @@ impl InternalProcessor {
                     velocity,
                     note_id,
                     channel,
-                } => self.dsp.note_on_with_id(
-                    key,
-                    velocity,
-                    (note_id != NOTE_ID_NONE).then_some(note_id),
-                    Some(channel),
+                } => dispatch_note(
+                    self.dsp.as_mut(),
+                    DeviceNote::On {
+                        key,
+                        velocity,
+                        note_id: (note_id != NOTE_ID_NONE).then_some(note_id),
+                        channel: Some(channel),
+                    },
                 ),
                 EventKind::NoteOff {
                     key,
                     note_id,
                     channel,
-                } => self.dsp.note_off_with_id(
-                    key,
-                    (note_id != NOTE_ID_NONE).then_some(note_id),
-                    Some(channel),
+                } => dispatch_note(
+                    self.dsp.as_mut(),
+                    DeviceNote::Off {
+                        key,
+                        note_id: (note_id != NOTE_ID_NONE).then_some(note_id),
+                        channel: Some(channel),
+                    },
                 ),
-                EventKind::AllNotesOff => self.dsp.all_notes_off(),
-                EventKind::Midi(bytes) => midi_to_dsp(self.dsp.as_mut(), bytes),
+                EventKind::AllNotesOff => {
+                    dispatch_note(self.dsp.as_mut(), DeviceNote::AllNotesOff);
+                }
+                EventKind::Midi(bytes) => {
+                    dispatch_note(self.dsp.as_mut(), DeviceNote::Midi(bytes));
+                }
             }
         }
         if done < frames {

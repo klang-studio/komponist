@@ -123,9 +123,21 @@ pub trait AudioDevices: Send + Sync {
     fn hosts(&self) -> Vec<HostKind>;
     /// Output devices of `host`; empty if it cannot be enumerated.
     fn devices(&self, host: HostKind) -> Vec<DeviceInfo>;
+    /// [`AudioDevices::devices`], telling why a list is empty when the driver failed. The dialog
+    /// shows the reason; providers that cannot fail keep the default.
+    fn try_devices(&self, host: HostKind) -> Result<Vec<DeviceInfo>, AudioError> {
+        Ok(self.devices(host))
+    }
     /// Capture devices; providers used by headless tests expose none unless explicitly set.
     fn input_devices(&self, _host: HostKind) -> Vec<komponist_audio::InputDeviceInfo> {
         Vec::new()
+    }
+    /// [`AudioDevices::input_devices`] with the driver's error.
+    fn try_input_devices(
+        &self,
+        host: HostKind,
+    ) -> Result<Vec<komponist_audio::InputDeviceInfo>, AudioError> {
+        Ok(self.input_devices(host))
     }
     /// JACK graph metadata; the fixed/headless provider never contacts a real JACK server.
     fn jack_ports(&self) -> Result<Vec<JackPort>, AudioError> {
@@ -149,11 +161,22 @@ impl AudioDevices for SystemDevices {
     }
 
     fn devices(&self, host: HostKind) -> Vec<DeviceInfo> {
-        AudioSystem::<EngineProcess>::devices(host).unwrap_or_default()
+        self.try_devices(host).unwrap_or_default()
+    }
+
+    fn try_devices(&self, host: HostKind) -> Result<Vec<DeviceInfo>, AudioError> {
+        AudioSystem::<EngineProcess>::devices(host)
     }
 
     fn input_devices(&self, host: HostKind) -> Vec<komponist_audio::InputDeviceInfo> {
-        AudioSystem::<EngineProcess>::input_devices(host).unwrap_or_default()
+        self.try_input_devices(host).unwrap_or_default()
+    }
+
+    fn try_input_devices(
+        &self,
+        host: HostKind,
+    ) -> Result<Vec<komponist_audio::InputDeviceInfo>, AudioError> {
+        AudioSystem::<EngineProcess>::input_devices(host)
     }
 
     fn jack_ports(&self) -> Result<Vec<JackPort>, AudioError> {
@@ -493,6 +516,8 @@ pub struct Model {
     pub jack_ports: Option<Vec<JackPort>>,
     /// The most recent JACK enumeration failed.
     pub jack_scan_failed: bool,
+    /// Why the driver's device list is unavailable (the output or capture enumeration failed).
+    pub devices_error: Option<String>,
     /// Current connection state for the two JACK master outputs, when the native stream is running.
     pub jack_playback_connections: Option<[bool; 2]>,
     /// WAV encoding for future recordings.
@@ -607,6 +632,9 @@ pub fn folder_formats(path: &Path) -> (bool, bool) {
     (clap, vst3)
 }
 
+/// An enumeration running on a worker thread.
+type Pending<T> = Receiver<Result<Vec<T>, AudioError>>;
+
 /// The dialog's caches between frames (app-private).
 #[derive(Debug, Default)]
 pub(crate) struct Cache {
@@ -621,8 +649,12 @@ pub(crate) struct Cache {
     /// A driver enumeration running on a worker thread.
     pending_hosts: Option<Receiver<Vec<HostKind>>>,
     /// A device enumeration running on a worker thread, and its driver.
-    pending_devices: Option<(HostKind, Receiver<Vec<DeviceInfo>>)>,
-    pending_inputs: Option<(HostKind, Receiver<Vec<komponist_audio::InputDeviceInfo>>)>,
+    pending_devices: Option<(HostKind, Pending<DeviceInfo>)>,
+    pending_inputs: Option<(HostKind, Pending<komponist_audio::InputDeviceInfo>)>,
+    /// The last output device enumeration failed with this reason.
+    devices_error: Option<String>,
+    /// The last capture device enumeration failed with this reason.
+    inputs_error: Option<String>,
     input_host: Option<HostKind>,
     inputs: Vec<komponist_audio::InputDeviceInfo>,
     jack_ports: Option<Vec<JackPort>>,
@@ -638,6 +670,12 @@ pub(crate) struct Cache {
 }
 
 impl Cache {
+    /// Lists the output and capture devices again at the next frame ("Erneut suchen").
+    pub(crate) fn refresh_devices(&mut self) {
+        self.devices_host = None;
+        self.input_host = None;
+    }
+
     pub(crate) fn invalidate_jack_ports(&mut self) {
         self.next_jack_refresh = None;
     }
@@ -669,7 +707,8 @@ impl Cache {
         if let Some((host, rx)) = &self.pending_inputs {
             match rx.try_recv() {
                 Ok(inputs) => {
-                    self.inputs = inputs;
+                    self.inputs_error = inputs.as_ref().err().map(ToString::to_string);
+                    self.inputs = inputs.unwrap_or_default();
                     self.input_host = Some(*host);
                     self.pending_inputs = None;
                 }
@@ -690,7 +729,8 @@ impl Cache {
         if let Some((host, rx)) = &self.pending_devices {
             match rx.try_recv() {
                 Ok(devices) => {
-                    self.devices = devices;
+                    self.devices_error = devices.as_ref().err().map(ToString::to_string);
+                    self.devices = devices.unwrap_or_default();
                     self.devices_host = Some(*host);
                     self.pending_devices = None;
                 }
@@ -740,7 +780,7 @@ impl crate::App {
         let requested = cache.pending_devices.as_ref().map(|(host, _)| *host);
         if cache.devices_host != Some(config.host) && requested != Some(config.host) {
             let host = config.host;
-            let rx = enumerate(&self.audio_devices, move |d| d.devices(host));
+            let rx = enumerate(&self.audio_devices, move |d| d.try_devices(host));
             cache.pending_devices = Some((host, rx));
         }
         if cache.input_host != Some(config.host)
@@ -750,7 +790,7 @@ impl crate::App {
             cache.pending_inputs = Some((
                 host,
                 enumerate(&self.audio_devices, move |provider| {
-                    provider.input_devices(host)
+                    provider.try_input_devices(host)
                 }),
             ));
         }
@@ -831,6 +871,10 @@ impl crate::App {
             input_device,
             jack_ports: cache.jack_ports.clone(),
             jack_scan_failed: cache.jack_scan_failed,
+            devices_error: cache
+                .devices_error
+                .clone()
+                .or_else(|| cache.inputs_error.clone()),
             jack_playback_connections: self.engine.jack_playback_connections(),
             capture_format: self.settings.capture_format,
             section,
@@ -1170,8 +1214,8 @@ fn audio(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>)
     } else {
         output_device(ui, t, model, field_width, out);
     }
-    if model.no_device.is_some() {
-        grid_row(ui, "", |ui| notice(ui, t, field_width, out));
+    if model.no_device.is_some() || model.devices_error.is_some() {
+        grid_row(ui, "", |ui| notice(ui, t, model, field_width, out));
     }
     if config.host != HostKind::Jack || config.jack_routes.capture.is_none() {
         capture_device(ui, t, model, field_width, out);
@@ -1521,7 +1565,11 @@ fn set_audio(config: StreamConfig) -> Output {
 }
 
 /// "Gerät nicht verbunden …" with "Erneut suchen" (`#2c1c1e` box, red dot).
-fn notice(ui: &mut Ui, t: Lang, width: f32, out: &mut Vec<Output>) {
+fn notice(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>) {
+    let message = match &model.devices_error {
+        Some(reason) => t.settings_devices_unavailable(reason),
+        None => t.settings_no_device_notice().to_owned(),
+    };
     let [pad_x, pad_y] = m::NOTICE_PADDING;
     let button = ActionButton {
         height: Height::Control,
@@ -1540,7 +1588,7 @@ fn notice(ui: &mut Ui, t: Lang, width: f32, out: &mut Vec<Output>) {
     let text_width = width - 2.0 * pad_x - m::DOT - 2.0 * m::NOTICE_GAP - button_width;
     let text = galley(
         ui,
-        t.settings_no_device_notice(),
+        &message,
         komponist_ui::fonts::font_id(&typography::UI),
         m::NOTICE_LINE_HEIGHT,
         color32(color::TEXT_1),
@@ -1565,7 +1613,7 @@ fn notice(ui: &mut Ui, t: Lang, width: f32, out: &mut Vec<Output>) {
         text,
         Color32::PLACEHOLDER,
     );
-    label_node(ui, text_rect, t.settings_no_device_notice(), Role::Label);
+    label_node(ui, text_rect, &message, Role::Label);
     let b = Rect::from_min_size(
         pos2(
             rect.right() - pad_x - button_width,

@@ -4,6 +4,8 @@ mod instrument;
 mod meter;
 mod midi_effect;
 mod parameter;
+#[cfg(test)]
+mod parity_tests;
 
 use std::ffi::{CStr, c_void};
 use std::sync::Arc;
@@ -14,7 +16,7 @@ use komponist_model::params::ParamInfo;
 use komponist_native_clap_sdk::{DeviceLayout, NativeClapLayout, PageLabels, Panel};
 use nice_plug::prelude::*;
 
-pub use instrument::Instrument;
+pub use instrument::{Instrument, to_device_note};
 pub use midi_effect::MidiEffect;
 pub use parameter::{Binding, Choice, Parameters, assert_choice_bindings};
 
