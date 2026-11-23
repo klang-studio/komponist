@@ -413,7 +413,10 @@ mod tests {
             l.process([&x[0], &x[1]], [ol, or]);
             let ceiling = db_to_gain(-1.0) * 1.000_001;
             for v in out.iter().flatten() {
-                assert!(v.is_finite() && v.abs() <= ceiling, "lookahead {lookahead}: {v}");
+                assert!(
+                    v.is_finite() && v.abs() <= ceiling,
+                    "lookahead {lookahead}: {v}"
+                );
             }
         }
     }
