@@ -308,7 +308,9 @@ mod tests {
     fn user_dirs_values_are_parsed_strictly() {
         let home = Path::new(HOME);
         let abs = std::env::temp_dir().join("Tunes");
-        let line = format!("XDG_MUSIC_DIR=\"{}\"", abs.display());
+        // The file escapes backslashes (a Windows temp path has them).
+        let quoted = abs.display().to_string().replace('\\', "\\\\");
+        let line = format!("XDG_MUSIC_DIR=\"{quoted}\"");
         assert_eq!(parse_user_dirs_music(&line, home), Some(abs));
         assert_eq!(
             parse_user_dirs_music("XDG_MUSIC_DIR=\"relative\"", home),
