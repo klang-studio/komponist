@@ -589,8 +589,8 @@ keeps what was recorded.
 
 Input capture starts only when configured. Separate-device callbacks exchange timestamped frames
 through a bounded bridge; rate conversion and a bounded clock follower align input to output.
-Latency includes capture/queue delay. Gaps and device loss mark discontinuity for recording,
-while output can continue. Reconnect follows exact saved source IDs where available. ASIO opens
+Latency includes capture/queue delay. Gaps, device overruns (counted as input xruns) and device
+loss mark discontinuity for recording, while output can continue. Reconnect follows exact saved source IDs where available. ASIO opens
 input/output on the selected driver together.
 
 With capture or explicit routes, Linux uses a native JACK client for same-period capture/playback.
@@ -607,6 +607,9 @@ ASIO operation is not covered by the automated fixture tests.
 MIDI inputs are individually selectable and carry timestamps, activity and held-key state.
 WinMM inputs can be busy in another program; that state remains visible. Callback timing maps
 input to frame offsets; display latency combines the effective period and reported stream latency.
+A stream that takes the MIDI queue over discards messages older than one period instead of
+playing them as a burst. Discarded and overflowed messages are counted, and the receiver then
+releases the notes and sustain pedals it delivered, so a lost note-off never leaves a note hanging.
 
 ## 8. Plugins
 
