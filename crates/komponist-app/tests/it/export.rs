@@ -888,6 +888,9 @@ const KAPUTT: &str = "kaputt";
 /// outside the engine's render), or in the one-frame render that ends the export (inside it).
 const PANIK_ACTIVATE: &str = "panik-activate";
 const PANIK_RENDER: &str = "panik-render";
+/// Panics in `activate` when the devices go back to the device rate after an export at
+/// [`PANIC_RATE`] (the file is written then).
+const PANIK_RESTORE: &str = "panik-restore";
 
 /// The export rate at which [`PANIK_ACTIVATE`] panics (the null backend runs at 48 kHz).
 const PANIC_RATE: f32 = 44_100.0;
@@ -898,15 +901,23 @@ const PANIC_RATE: f32 = 44_100.0;
 /// debug build, so the render panic is in the one-frame render the worker does outside of it.
 struct Panicky {
     in_render: bool,
+    /// Panic in `activate` once the device rate comes back after [`PANIC_RATE`].
+    on_restore: bool,
+    exported: bool,
     panic: TestPanic,
 }
 
 impl Processor for Panicky {
     fn activate(&mut self, sample_rate: f32, max_block: usize) -> Result<(), ProcessorError> {
-        assert!(
-            self.in_render || sample_rate != PANIC_RATE,
-            "Panicky::activate at {sample_rate}"
-        );
+        if self.on_restore {
+            assert!(!self.exported, "Panicky::activate back at {sample_rate}");
+            self.exported |= sample_rate == PANIC_RATE;
+        } else {
+            assert!(
+                self.in_render || sample_rate != PANIC_RATE,
+                "Panicky::activate at {sample_rate}"
+            );
+        }
         self.panic.activate(sample_rate, max_block)
     }
 
@@ -971,9 +982,11 @@ impl DeviceHost for FailingHost {
         if device.plugin.id == KAPUTT {
             return Some(Box::new(Failing));
         }
-        if device.plugin.id == PANIK_ACTIVATE || device.plugin.id == PANIK_RENDER {
+        if [PANIK_ACTIVATE, PANIK_RENDER, PANIK_RESTORE].contains(&device.plugin.id.as_str()) {
             return Some(Box::new(Panicky {
                 in_render: device.plugin.id == PANIK_RENDER,
+                on_restore: device.plugin.id == PANIK_RESTORE,
+                exported: false,
                 panic: TestPanic,
             }));
         }
@@ -1057,6 +1070,8 @@ fn a_panic_on_the_export_worker_leaves_a_playing_session() {
         (Lang::En, PANIK_ACTIVATE),
         (Lang::De, PANIK_RENDER),
         (Lang::En, PANIK_RENDER),
+        (Lang::De, PANIK_RESTORE),
+        (Lang::En, PANIK_RESTORE),
     ] {
         let dir = scratch(&format!("panic-{lang:?}-{plugin}"));
         let mut project = one_bar_song();
@@ -1082,7 +1097,7 @@ fn a_panic_on_the_export_worker_leaves_a_playing_session() {
         app.step();
         let settings = ExportSettings {
             tail_seconds: 0.0,
-            sample_rate: if plugin == PANIK_ACTIVATE {
+            sample_rate: if plugin == PANIK_ACTIVATE || plugin == PANIK_RESTORE {
                 PANIC_RATE as u32
             } else {
                 48_000
@@ -1091,7 +1106,10 @@ fn a_panic_on_the_export_worker_leaves_a_playing_session() {
         };
         export(&mut app, settings);
 
-        let crashed = if plugin == PANIK_RENDER {
+        // A panic after the file was written (going back to the device rate, or in the closing
+        // render) keeps the export.
+        let written = plugin != PANIK_ACTIVATE;
+        let crashed = if written {
             lang.export_finished_worker_crashed("Night Drive.wav")
         } else {
             lang.export_failed(lang.export_worker_crashed())
@@ -1105,12 +1123,13 @@ fn a_panic_on_the_export_worker_leaves_a_playing_session() {
         // The render panic comes after the export wrote its file (the closing one-frame render).
         assert_eq!(
             dir.join("out/Night Drive.wav").exists(),
-            plugin == PANIK_RENDER
+            written,
+            "{plugin}"
         );
         // A file that was written stays in Projekt › Exporte.
         assert_eq!(
             app.exported(),
-            if plugin == PANIK_RENDER {
+            if written {
                 vec![dir.join("out/Night Drive.wav")]
             } else {
                 Vec::new()

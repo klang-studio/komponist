@@ -306,6 +306,9 @@ fn work(
             export(e, h, &export_program, &job, cancel, |p| progress.store(p))
         }
     });
+    // The export itself is over: a panic below, while the devices go back to the device rate or
+    // in the closing render, keeps its outcome ([`run_worker`]).
+    *finished = result.as_ref().ok().copied();
     if changed && let Err(errors) = engine.engine().set_sample_rate(device_rate) {
         failed.extend(errors.into_iter().map(|(slot, _)| slot));
     }
@@ -316,8 +319,6 @@ fn work(
             .1
             .send(Command::SetProgram(Box::new(program)));
     }
-    // The export itself is over; a panic below keeps its outcome ([`run_worker`]).
-    *finished = result.as_ref().ok().copied();
     // `export` queued Stop, the program and the old playhead; one frame lets them take
     // effect here, so the transport and the playhead the UI reads are right as soon as the
     // engine is back (else a Play right after the export could see the export's "playing" and
