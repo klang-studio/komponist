@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [lib]
-name = "komponist_sampler"
+name = "komponist_sampler_clap"
 crate-type = ["cdylib"]
 
 [dependencies]

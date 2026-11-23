@@ -26,9 +26,6 @@ export CARGO_TARGET_DIR="$plugins/target/$os"
 (cd "$plugins" && cargo xtask bundle --release)
 
 bundled="$CARGO_TARGET_DIR/bundled"
-# `complete` is written only after every bundle is copied: check.sh rebuilds when it is missing. It goes
-# first, so an interrupted delete or copy never leaves it next to missing bundles.
-rm -f "$out/complete"
 rm -rf "$out/clap" "$out/vst3"
 mkdir -p "$out/clap" "$out/vst3"
 for name in kp-test-synth kp-test-fx kp-test-crash kp-test-slow kp-test-sc; do
@@ -37,4 +34,3 @@ for name in kp-test-synth kp-test-fx kp-test-crash kp-test-slow kp-test-sc; do
     echo "$out/clap/$name.clap"
     echo "$out/vst3/$name.vst3"
 done
-touch "$out/complete"

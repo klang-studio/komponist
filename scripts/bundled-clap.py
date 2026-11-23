@@ -32,6 +32,13 @@ class Device(NamedTuple):
     package: str
     library: str
     plugin_id: str
+    # Cargo's cdylib name when it differs from `library` (the CLAP bundle and macOS executable name).
+    # Device crates that reuse their device crate's lib name carry a `_clap` suffix there (#234).
+    cdylib: str = ""
+
+    @property
+    def artifact(self):
+        return self.cdylib or self.library
 
 
 # The fixture can exercise the package workflow before the first device port.
@@ -54,16 +61,26 @@ INVENTORIES = {
 }
 
 INVENTORIES["effects"] = INVENTORIES["hall"] + tuple(
-    Device(f"komponist-bundled-{name}", f"komponist_{name}", f"org.klang-studio.komponist.{name}")
+    Device(
+        f"komponist-bundled-{name}",
+        f"komponist_{name}",
+        f"org.klang-studio.komponist.{name}",
+        f"komponist_{name}_clap",
+    )
     for name in ("delay", "eq", "presse", "limiter")
 )
 
 INVENTORIES["all"] = INVENTORIES["effects"] + (
     Device("komponist-bundled-hexa", "komponist_hexa_clap", "org.klang-studio.komponist.hexa"),
-    Device("komponist-bundled-volt", "komponist_volt", "org.klang-studio.komponist.volt"),
+    Device("komponist-bundled-volt", "komponist_volt", "org.klang-studio.komponist.volt", "komponist_volt_clap"),
     Device("komponist-bundled-surf", "komponist_surf_clap", "org.klang-studio.komponist.surf"),
-    Device("komponist-bundled-sampler", "komponist_sampler", "org.klang-studio.komponist.sampler"),
-    Device("komponist-bundled-general-sampler", "komponist_general_sampler", "org.klang-studio.komponist.general-sampler"),
+    Device("komponist-bundled-sampler", "komponist_sampler", "org.klang-studio.komponist.sampler", "komponist_sampler_clap"),
+    Device(
+        "komponist-bundled-general-sampler",
+        "komponist_general_sampler",
+        "org.klang-studio.komponist.general-sampler",
+        "komponist_general_sampler_clap",
+    ),
     Device("komponist-bundled-arpeggiator", "komponist_arpeggiator_clap", "org.klang-studio.komponist.arpeggiator"),
     Device("komponist-bundled-scale", "komponist_scale_clap", "org.klang-studio.komponist.scale"),
 )
@@ -99,7 +116,7 @@ def build(target, devices):
         command += ["--package", device.package]
 
     suffix = TARGET_LIB_SUFFIX[target]
-    names = {device.library for device in devices}
+    names = {device.artifact for device in devices}
     artifacts = {}
     with subprocess.Popen(command, cwd=workspace, stdout=subprocess.PIPE, text=True, encoding="utf-8") as child:
         for line in child.stdout:
@@ -126,7 +143,7 @@ def build(target, devices):
             raise ValueError("bundled CLAP build failed")
 
     for device in devices:
-        if device.library not in artifacts:
+        if device.artifact not in artifacts:
             raise ValueError(f"Cargo did not report a unique dynamic library for {device.package}")
 
     if target != "aarch64-apple-darwin":
@@ -154,7 +171,7 @@ def stage(target, root, devices):
 
     for device in devices:
         bundle = root / bundle_name(device)
-        artifact = artifacts[device.library]
+        artifact = artifacts[device.artifact]
         if target == "aarch64-apple-darwin":
             contents = bundle / "Contents"
             executable = contents / "MacOS" / device.library

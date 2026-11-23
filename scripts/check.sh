@@ -4,7 +4,7 @@
 # wait for another worktree's gate: start it in the background or with a long timeout. Compiling
 # runs at low priority; the tests run at normal priority so timing-sensitive tests don't flake.
 #
-# Like the CI jobs (Linux, macOS), it builds the test plugins when this OS's bundles are missing and runs the
+# Like the CI jobs (Linux, macOS), it builds the test plugins (incrementally, on every run) and runs the
 # test-plugins workspace tests and the Warp compatibility check (needs the full Git history). Differences from
 # CI: no `--locked`, no kittest tolerance file, no hang watchdog; the GUI tests are scripts/check-gui.sh.
 set -euo pipefail
@@ -21,21 +21,21 @@ case "$(uname -s)" in
 MINGW* | MSYS* | CYGWIN*) export WGPU_BACKEND="${WGPU_BACKEND:-vulkan}" ;;
 esac
 
-# Bundles of this OS (what std::env::consts::OS says); without them the plugin tests fail under REQUIRE_FIXTURES.
-# build-test-plugins.sh writes `complete` after the last copy, so an interrupted or failed copy is rebuilt.
-case "$(uname -s)" in
-Darwin) plugin_os=macos ;;
-MINGW* | MSYS* | CYGWIN*) plugin_os=windows ;;
-*) plugin_os=linux ;;
-esac
-if [ ! -f "target/test-plugins/$plugin_os/complete" ]; then
-    lowprio scripts/build-test-plugins.sh
-fi
+# The test plugins' bundles for this OS; without them the plugin tests fail under REQUIRE_FIXTURES. Built on
+# every run, so the tests always load bundles of the current test-plugins/ sources (cargo builds only what
+# changed; a fresh worktree pays the full release build once).
+lowprio scripts/build-test-plugins.sh >/dev/null
 
 lowprio cargo fmt --all --check
 lowprio cargo clippy --workspace --all-targets -- -D warnings
 lowprio cargo test --workspace --no-run
 cargo test --workspace
+
+# The plugin SDK is a workspace of its own (excluded from the root workspace), but its adapter and author
+# crates ship in every komponist-bundled-* crate (#234).
+sdk=crates/plugin-sdk/Cargo.toml
+lowprio cargo clippy --manifest-path "$sdk" --workspace --all-targets -- -D warnings
+cargo test --manifest-path "$sdk" --workspace
 
 # The test plugins are their own workspace; CI runs its tests too.
 (cd test-plugins && cargo test --workspace --no-fail-fast)

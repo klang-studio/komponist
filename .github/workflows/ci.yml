@@ -83,6 +83,15 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The SDK is a workspace of its own (excluded from the root), but its adapter and author crates ship in
+      # every komponist-bundled-* crate.
+      - name: Clippy (plugin SDK)
+        run: cargo clippy --manifest-path crates/plugin-sdk/Cargo.toml --workspace --all-targets -- -D warnings
+
+      # The SDK workflow (native-clap-sdk.yml) runs these on all three OSes; here they gate the main workflow too.
+      - name: Test (plugin SDK)
+        run: cargo test --manifest-path crates/plugin-sdk/Cargo.toml --workspace
+
       # Without the bundles the plugin tests skip silently.
       - name: Build test plugins
         run: scripts/build-test-plugins.sh
@@ -185,6 +194,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The SDK is a workspace of its own (excluded from the root), but its adapter and author crates ship in
+      # every komponist-bundled-* crate.
+      - name: Clippy (plugin SDK)
+        run: cargo clippy --manifest-path crates/plugin-sdk/Cargo.toml --workspace --all-targets -- -D warnings
+
       # Without the bundles the plugin tests skip silently.
       - name: Build test plugins
         run: scripts/build-test-plugins.sh
@@ -258,6 +272,11 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # The SDK is a workspace of its own (excluded from the root), but its adapter and author crates ship in
+      # every komponist-bundled-* crate.
+      - name: Clippy (plugin SDK)
+        run: cargo clippy --manifest-path crates/plugin-sdk/Cargo.toml --workspace --all-targets -- -D warnings
 
       # Without the bundles the plugin tests skip silently.
       - name: Build test plugins
