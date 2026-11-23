@@ -166,6 +166,9 @@ pub(crate) struct ShellState {
     pub(crate) audio_import_target: Option<(Option<komponist_model::TrackId>, Tick)>,
     /// The panel settings last written to the settings file.
     saved_panels: Option<PanelSettings>,
+    /// Panel settings whose write failed: not tried again every frame, only once they change or
+    /// at shutdown.
+    unsaved_panels: Option<PanelSettings>,
     /// A splitter is being dragged this frame: the panel sizes are written once it is released,
     /// not on every frame of the drag (#221).
     pub(crate) panel_drag: bool,
@@ -1151,35 +1154,46 @@ impl App {
     /// released, not on every frame (#221).
     fn persist_panels(&mut self) {
         if !self.shell.panel_drag {
-            self.persist_panel_layout();
+            self.persist_panel_layout(false);
         }
     }
 
-    fn persist_panel_layout(&mut self) {
+    /// Writes changed panel sizes. They count as saved only once the write worked; a failed
+    /// layout is written again when it changes, or with `retry` (shutdown).
+    fn persist_panel_layout(&mut self, retry: bool) {
         let panels = PanelSettings::from_layout(&self.ui.layout);
-        if self.shell.saved_panels == Some(panels) {
+        if self.shell.saved_panels == Some(panels)
+            || (!retry && self.shell.unsaved_panels == Some(panels))
+        {
             return;
         }
         self.settings.panels = panels;
-        self.shell.saved_panels = Some(panels);
-        self.save_settings();
+        if self.save_settings() {
+            self.shell.saved_panels = Some(panels);
+            self.shell.unsaved_panels = None;
+        } else {
+            self.shell.unsaved_panels = Some(panels);
+        }
     }
 
-    /// Writes the settings file (if the app has one); failures go to the status bar.
-    pub fn save_settings(&mut self) {
+    /// Writes the settings file (if the app has one); failures go to the status bar. `false`
+    /// if the write failed.
+    pub fn save_settings(&mut self) -> bool {
         let Some(path) = self.settings_path.clone() else {
-            return;
+            return true;
         };
         if let Err(e) = self.settings.save(&path) {
             self.set_status(e.to_string(), StatusKind::Error);
+            return false;
         }
+        true
     }
 
     /// Stops the engine, shuts the plugin bridges down and saves the settings (window closed). A
     /// running export is cancelled first, so the engine is back.
     pub fn shutdown(&mut self) {
         self.shutdown_export();
-        self.persist_panel_layout();
+        self.persist_panel_layout(true);
         self.shutdown_plugin_frames();
         self.audio_recording
             .shutdown(crate::audio_record::TAKE_FINISH_TIMEOUT);
@@ -3190,6 +3204,38 @@ fn worker_notice(
 mod tests {
     use super::*;
     use komponist_model::fixtures::empty_project;
+
+    /// #221: panel sizes count as saved only after a write that worked. A failed one is not
+    /// retried every frame, but shutdown writes it again.
+    #[test]
+    fn a_failed_panel_save_is_written_again_at_shutdown() {
+        let dir =
+            std::env::temp_dir().join(format!("komponist-panels-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A file where the settings folder should be: the write fails.
+        let blocker = dir.join("config");
+        std::fs::write(&blocker, b"").unwrap();
+        let path = blocker.join("settings.json");
+        let engine = EngineSync::null(Box::new(crate::device_host::BuiltinHost::new()));
+        let mut app = App::new(
+            Document::new(empty_project()),
+            engine,
+            Settings::default(),
+            Some(path.clone()),
+        );
+        app.ui.layout.browser_width = 300.0;
+        app.persist_panels();
+        assert!(!path.exists());
+        assert_ne!(app.shell.saved_panels.unwrap().browser_width, 300.0);
+        std::fs::remove_file(&blocker).unwrap();
+        app.persist_panels();
+        assert!(!path.exists(), "not retried every frame");
+        app.shutdown();
+        let saved = Settings::load(&path).unwrap();
+        assert_eq!(saved.panels.browser_width, 300.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn worker_notices_show_without_an_error_and_never_replace_one() {
