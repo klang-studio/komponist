@@ -95,7 +95,7 @@ impl Document {
     /// Outside a gesture: on success pushes the previous root as an undo step labelled `label`,
     /// clears the redo stack and returns `Ok`. During a gesture: replaces the root without pushing
     /// (`label` is ignored). On error nothing changes. An edit that returns a project equal to the
-    /// current root (compared structurally, `Project: PartialEq`) changes nothing either: no undo
+    /// current root (compared by content, [`Project::same_content`], which skips shared `Arc`s) changes nothing either: no undo
     /// step, no redo clearing, no dirty mark, no revision bump.
     pub fn apply(
         &mut self,
@@ -112,7 +112,7 @@ impl Document {
         edit: impl FnOnce(&Project) -> Result<(Project, T), EditError>,
     ) -> Result<T, EditError> {
         let (next, value) = edit(&self.current)?;
-        if next == *self.current {
+        if next.same_content(&self.current) {
             // An edit that changes nothing leaves root, history, revision and dirty state alone.
             return Ok(value);
         }
@@ -142,7 +142,7 @@ impl Document {
         let edited = edit(&self.current)?;
         // An edit that changes nothing (a plugin state that merely echoes an undo) keeps the root
         // and the clean state.
-        let changed = edited != *self.current;
+        let changed = !edited.same_content(&self.current);
         let next = if changed {
             Arc::new(edited)
         } else {
@@ -152,7 +152,7 @@ impl Document {
         // `Arc`, so the `saved` pointer stays reachable through undo and redo.
         let rebase = |snapshot: &mut Arc<Project>| {
             if let Ok(p) = edit(snapshot)
-                && p != **snapshot
+                && !p.same_content(snapshot)
             {
                 *snapshot = Arc::new(p);
             }
@@ -226,7 +226,7 @@ impl Document {
         edit: impl FnOnce(&Project) -> Result<Project, EditError>,
     ) -> Result<(), EditError> {
         let edited = edit(&self.current)?;
-        if edited == *self.current {
+        if edited.same_content(&self.current) {
             return Ok(());
         }
         let next = Arc::new(edited);
@@ -273,11 +273,11 @@ impl Document {
             return self.apply_with("", edit);
         };
         let (next, value) = edit(&gesture.before)?;
-        if next == *self.current {
+        if next.same_content(&self.current) {
             return Ok(value);
         }
         // Back at the start of the gesture: take its very `Arc` so the gesture ends without a step.
-        self.current = if next == *gesture.before {
+        self.current = if next.same_content(&gesture.before) {
             Arc::clone(&gesture.before)
         } else {
             Arc::new(next)
@@ -292,7 +292,7 @@ impl Document {
     }
 
     /// Ends the open gesture: pushes one undo step with the root from `begin_gesture` if the root
-    /// differs from it (cheap `Arc::ptr_eq` first, then structural equality), and clears the redo
+    /// differs from it (cheap `Arc::ptr_eq` first, then [`Project::same_content`]), and clears the redo
     /// stack in that case. A gesture that ends where it started leaves no step. No-op without an
     /// open gesture.
     pub fn end_gesture(&mut self) {
@@ -300,7 +300,7 @@ impl Document {
             return;
         };
         if !Arc::ptr_eq(&gesture.before, &self.current) {
-            if *gesture.before == *self.current {
+            if gesture.before.same_content(&self.current) {
                 // Equal content: keep the original `Arc` (the `saved` pointer may be it).
                 self.current = gesture.before;
             } else {
