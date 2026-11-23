@@ -1018,49 +1018,64 @@ impl Bridge {
             .as_ref()
             .and_then(|active| active.rt.controller());
         let mut updates = Vec::new();
-        let mut snapshot = |delivered: Option<DeliveredParams<'_>>| {
-            // Processing may have produced controller values after the first check.
-            if let Some(controller) = &controller {
-                updates.extend(controller.drain());
-                for &(id, value) in &updates {
-                    plugin.sync_controller_param(id, value);
-                }
-            }
-            // The VST3 editor can expose a new controller value before the component has
-            // processed it. Check the hosting queue while the audio pause is held.
-            if plugin.has_unapplied_edits() {
-                return Ok(None);
-            }
-            let mut verified = Vec::with_capacity(expected.len());
-            for &(id, value, allow_quantized) in expected {
-                let Some(actual) = plugin.param_value(id).filter(|actual| actual.is_finite())
-                else {
-                    return Ok(None);
-                };
-                let processed = allow_quantized
-                    && delivered
-                        .as_ref()
-                        .is_some_and(|delivery| delivery.confirms_input(id, value, actual));
-                if !same_param_value(actual, value) && !processed {
-                    return Ok(None);
-                }
-                verified.push((id, actual));
-            }
-            let state = plugin.save_state().map_err(|error| error.to_string())?;
-            let stable = verified.iter().all(|&(id, value)| {
-                plugin
-                    .param_value(id)
-                    .is_some_and(|actual| same_param_value(actual, value))
-            });
-            Ok((stable && !plugin.has_unapplied_edits()).then_some((state, verified)))
-        };
+        // Audio keeps running while the plugin serializes (CLAP allows `state.save` on the
+        // main thread during processing), so the shared bridge state stays `Active`. Only the
+        // two captures at the block boundaries below pause audio, and only for the in-flight
+        // block plus the capture: they read evidence that the RT loop writes without atomics.
+        // Everything in between compares plugin values, so a change made during the save
+        // (macro or automation output, an editor edit) makes the second capture reject it.
         let result = if let Some(active) = self.active.as_mut() {
-            self.region.set_bridge_state(BridgeState::Loaded);
-            let result = active.rt.snapshot(|delivered| snapshot(Some(delivered)));
-            self.region.set_bridge_state(BridgeState::Active);
-            result.and_then(|state| state)
+            let before = active.rt.snapshot(|delivered| {
+                capture_verified(
+                    plugin.as_mut(),
+                    expected,
+                    controller.as_deref(),
+                    &mut updates,
+                    Some(delivered),
+                )
+            });
+            match before {
+                Ok(Some(verified)) => plugin
+                    .save_state()
+                    .map_err(|error| error.to_string())
+                    .and_then(|state| {
+                        let stable = active.rt.snapshot(|_| {
+                            is_stable(
+                                plugin.as_mut(),
+                                &verified,
+                                controller.as_deref(),
+                                &mut updates,
+                            )
+                        })?;
+                        Ok(stable.then_some((state, verified)))
+                    }),
+                Ok(None) => Ok(None),
+                Err(error) => Err(error),
+            }
         } else {
-            snapshot(None)
+            match capture_verified(
+                plugin.as_mut(),
+                expected,
+                controller.as_deref(),
+                &mut updates,
+                None,
+            ) {
+                Some(verified) => {
+                    plugin
+                        .save_state()
+                        .map_err(|error| error.to_string())
+                        .map(|state| {
+                            is_stable(
+                                plugin.as_mut(),
+                                &verified,
+                                controller.as_deref(),
+                                &mut updates,
+                            )
+                            .then_some((state, verified))
+                        })
+                }
+                None => Ok(None),
+            }
         };
         for (id, value) in updates {
             self.queue_value(id, value);
@@ -1352,4 +1367,65 @@ impl Drop for Bridge {
         // `close` normally ran already; this covers early returns.
         self.close();
     }
+}
+
+/// Moves controller values produced by processing into the plugin's editor controller.
+fn sync_controller(
+    plugin: &mut dyn HostedPlugin,
+    controller: Option<&ControllerValues>,
+    updates: &mut Vec<(u32, f64)>,
+) {
+    if let Some(controller) = controller {
+        let first = updates.len();
+        updates.extend(controller.drain());
+        for &(id, value) in &updates[first..] {
+            plugin.sync_controller_param(id, value);
+        }
+    }
+}
+
+/// First half of a checked snapshot, run at a block boundary: the values that the app expects,
+/// as the plugin holds them now, or `None` when they differ or an edit is still on its way.
+fn capture_verified(
+    plugin: &mut dyn HostedPlugin,
+    expected: &[(u32, f64, bool)],
+    controller: Option<&ControllerValues>,
+    updates: &mut Vec<(u32, f64)>,
+    delivered: Option<DeliveredParams<'_>>,
+) -> Option<Vec<(u32, f64)>> {
+    // Processing may have produced controller values after the caller's first check.
+    sync_controller(plugin, controller, updates);
+    // The VST3 editor can expose a new controller value before the component has processed it.
+    if plugin.has_unapplied_edits() {
+        return None;
+    }
+    let mut verified = Vec::with_capacity(expected.len());
+    for &(id, value, allow_quantized) in expected {
+        let actual = plugin.param_value(id).filter(|actual| actual.is_finite())?;
+        let processed = allow_quantized
+            && delivered
+                .as_ref()
+                .is_some_and(|delivery| delivery.confirms_input(id, value, actual));
+        if !same_param_value(actual, value) && !processed {
+            return None;
+        }
+        verified.push((id, actual));
+    }
+    Some(verified)
+}
+
+/// Second half, run at a block boundary after `save_state`: nothing the saved bytes depend on
+/// moved while the plugin serialized them.
+fn is_stable(
+    plugin: &mut dyn HostedPlugin,
+    verified: &[(u32, f64)],
+    controller: Option<&ControllerValues>,
+    updates: &mut Vec<(u32, f64)>,
+) -> bool {
+    sync_controller(plugin, controller, updates);
+    verified.iter().all(|&(id, value)| {
+        plugin
+            .param_value(id)
+            .is_some_and(|actual| same_param_value(actual, value))
+    }) && !plugin.has_unapplied_edits()
 }

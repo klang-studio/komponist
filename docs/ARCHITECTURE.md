@@ -631,6 +631,12 @@ until the in-flight block finishes. If a request races with the pause and falls 
 replays its latest parameter values on the next block and resets voices to clear notes whose
 note-offs may have been missed.
 
+A checked snapshot (`GetStateChecked`) keeps audio running while the plugin serializes its state
+and leaves the shared bridge state `Active`. The bridge captures the expected parameter values at
+a block boundary (a short pause that waits for the in-flight block), saves, and captures again at
+the next boundary. A parameter value or editor edit that moved during the save makes the bridge
+answer `StateDeferred` instead of a verified state.
+
 The engine-owned external processor is the single consumer of the output event ring. The engine
 locates plugin values and gestures on the song timeline and sends them to both automation capture
 and the plugin manager. Temporary automation gestures update the plugin manager's live values

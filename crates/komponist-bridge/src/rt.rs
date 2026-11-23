@@ -603,7 +603,9 @@ impl RtThread {
         true
     }
 
-    /// Reads state after any in-flight block has finished applying its parameters.
+    /// Runs `capture` at a block boundary: after any in-flight block has finished applying its
+    /// parameters, with new blocks answered by the fallback until it returns. Keep it short; a
+    /// state save belongs between two captures, not inside one.
     pub fn snapshot<T>(
         &mut self,
         capture: impl FnOnce(DeliveredParams<'_>) -> T,
