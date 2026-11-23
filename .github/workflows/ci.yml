@@ -10,13 +10,26 @@
 # committed kittest.toml ([mac], [windows]) renders every snapshot without comparing it (other pixels).
 name: CI
 
-# Documentation and README media changes need no build.
+# Documentation and README media changes need no build, except the two docs files that code and tests read:
+# `docs/clap-device-layout/example.json` (`include_bytes!` in komponist-ipc) and `docs/INSTALL.md` (the packaging
+# test). `paths-ignore` cannot re-include a file (no `!`), so this is a `paths` list: everything, minus docs and
+# Markdown, plus those two files (a later positive pattern re-includes what a `!` pattern removed).
 on:
   push:
     branches: [main]
-    paths-ignore: ["docs/**", "**.md"]
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**.md"
+      - "docs/clap-device-layout/example.json"
+      - "docs/INSTALL.md"
   pull_request:
-    paths-ignore: ["docs/**", "**.md"]
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**.md"
+      - "docs/clap-device-layout/example.json"
+      - "docs/INSTALL.md"
 
 permissions:
   contents: read
