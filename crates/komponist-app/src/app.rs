@@ -414,6 +414,12 @@ impl App {
         self.set_status(self.lang.status_workers_no_workgroup(), StatusKind::Info);
     }
 
+    /// Tells in the status bar that the audio engine panicked and a new one was built from the
+    /// document (#210, `EngineSync::take_rebuild_notice`).
+    pub fn report_engine_rebuilt(&mut self) {
+        self.set_status(self.lang.status_engine_rebuilt(), StatusKind::Error);
+    }
+
     /// Tells in the status bar what the engine leaves out of the project (#92) when the last
     /// syncs left out something new: every left-out track and device, counted per reason
     /// ([`crate::diagnostics::summary`]).
@@ -583,10 +589,13 @@ impl App {
             self.engine.audio_state(),
             AudioState::Running { config, .. } if config.host != komponist_audio::HostKind::Null
         );
+        let rebuilt = self.engine.take_rebuild_notice();
         let no_realtime = self.engine.take_worker_notice();
         let no_workgroup = self.engine.take_workgroup_notice();
-        // One message per frame; a missing priority is the worse one and wins.
-        if device_stream && no_realtime {
+        // One message per frame; a rebuilt engine is the worst news, then a missing priority.
+        if rebuilt {
+            self.report_engine_rebuilt();
+        } else if device_stream && no_realtime {
             self.report_workers_without_realtime();
         } else if device_stream && no_workgroup {
             self.report_workers_without_workgroup();

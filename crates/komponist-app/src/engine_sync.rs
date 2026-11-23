@@ -246,6 +246,10 @@ impl AudioProcess for EngineProcess {
         );
         out.write_stereo(left, right);
     }
+
+    fn is_poisoned(&self) -> bool {
+        self.engine.is_poisoned()
+    }
 }
 
 /// How the MIDI inputs are opened.
@@ -438,6 +442,9 @@ pub struct EngineSync {
     frozen: Option<Tick>,
     /// Worker threads asked for while an export had the engine (applied at [`EngineSync::attach`]).
     workers_after_export: Option<Option<u32>>,
+    /// The engine came back poisoned and a new one replaced it; the app takes it once
+    /// ([`EngineSync::take_rebuild_notice`]).
+    rebuild_notice: bool,
     /// Outcome of the engine's last worker start ([`EngineProcess`] writes it in `prepare`).
     worker_status: Arc<Mutex<Option<WorkerStatus>>>,
     /// See [`EngineProcess`]'s `worker_notice`.
@@ -523,6 +530,7 @@ impl EngineSync {
             held: None,
             frozen: None,
             workers_after_export: None,
+            rebuild_notice: false,
             worker_status,
             worker_notice,
             workgroup_notice,
@@ -1081,6 +1089,9 @@ impl EngineSync {
     pub(crate) fn poll_engine_events(&mut self) -> Vec<EngineEvent> {
         let before = self.sample_rate();
         self.audio.poll();
+        if let Some(poisoned) = self.audio.take_poisoned() {
+            self.rebuild_engine(*poisoned);
+        }
         if self.sample_rate() != before {
             self.synced = None;
             self.fast = None;
@@ -1443,6 +1454,57 @@ impl EngineSync {
         }));
     }
 
+    /// Replaces an engine that came back poisoned from the stream (a panic unwound its
+    /// `process`, #210; [`AudioSystem::take_poisoned`]): its state is half-updated, so it is
+    /// dropped here, on the UI thread, with its processors, and a new engine at the same rate and
+    /// with the same worker setting takes its place in the stream. The program is forgotten, so
+    /// the next [`EngineSync::sync`] compiles the document from scratch and every device gets a
+    /// fresh processor (a bridged plugin a fresh bridge with its last known state). The transport
+    /// starts stopped at 0; commands that waited for the old engine are dropped. The app reports
+    /// it once ([`EngineSync::take_rebuild_notice`]).
+    fn rebuild_engine(&mut self, poisoned: EngineProcess) {
+        let (engine, handle) = Engine::new(EngineConfig {
+            sample_rate: poisoned.engine.sample_rate(),
+            ..EngineConfig::default()
+        });
+        let EngineProcess {
+            workers,
+            workers_auto,
+            rt,
+            worker_status,
+            worker_notice,
+            workgroup_notice,
+            ..
+        } = poisoned;
+        let process = EngineProcess {
+            workers,
+            workers_auto,
+            rt,
+            worker_status,
+            worker_notice,
+            workgroup_notice,
+            ..EngineProcess::new(engine, Arc::clone(&self.rate))
+        };
+        self.worker_stats = process.engine.worker_stats();
+        self.telemetry = Arc::clone(handle.telemetry());
+        // The old handle goes with its queues (garbage in them is dropped here).
+        self.handle = Some(handle);
+        self.pending.clear();
+        self.previous = None;
+        self.synced = None;
+        self.fast = None;
+        self.macro_params.clear();
+        self.pending_macro_edits.clear();
+        self.rebuild_notice = true;
+        // `prepare` starts the workers for the running stream.
+        self.audio.attach(Box::new(process));
+    }
+
+    /// Whether the engine was rebuilt after a panic since the last call (status bar notice).
+    pub fn take_rebuild_notice(&mut self) -> bool {
+        std::mem::take(&mut self.rebuild_notice)
+    }
+
     /// Commands waiting for room in the engine's queue (diagnostics, tests).
     pub fn pending_commands(&self) -> usize {
         self.pending.len()
@@ -1689,6 +1751,85 @@ mod tests {
             sync.poll();
             sync.telemetry().transport() == TransportState::Stopped
         }));
+        sync.shutdown();
+    }
+
+    /// An instrument whose `process` panics.
+    struct Panics;
+
+    impl komponist_engine::Processor for Panics {
+        fn activate(
+            &mut self,
+            _sample_rate: f32,
+            _max_block: usize,
+        ) -> Result<(), komponist_engine::ProcessorError> {
+            Ok(())
+        }
+
+        fn process(
+            &mut self,
+            _ctx: &komponist_engine::ProcessContext,
+            _events: &[komponist_engine::Event],
+            _io: &mut komponist_engine::StereoIo<'_>,
+        ) -> komponist_engine::ProcessStatus {
+            panic!("a processor panics");
+        }
+
+        fn latency(&self) -> u32 {
+            0
+        }
+
+        fn reset(&mut self) {}
+    }
+
+    /// #210: an engine whose `process` unwound is not given back to the stream; a new one is
+    /// built at the same rate and worker setting, the document is compiled into it from scratch,
+    /// and the app is told once.
+    #[test]
+    fn a_poisoned_engine_is_rebuilt_from_the_document() {
+        let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
+        // Single-threaded: the panic must happen on this thread (a worker runs its jobs inside
+        // `assert_no_alloc`, where the panic's allocation aborts in debug builds).
+        assert_eq!(sync.set_workers(Some(0)).unwrap().unwrap().threads, 0);
+        let doc = Document::new(demo_project());
+        sync.sync(&doc);
+        let lead = doc.project().tracks[2].channel.devices[0].id;
+        let slot = sync.program().unwrap().slots.slot(lead).unwrap();
+        let sent = sync.programs_sent();
+        sync.hold_engine().unwrap();
+        sync.send(Command::InsertProcessor {
+            slot,
+            processor: Box::new(Panics),
+        });
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sync.run_held(256, &[], 0);
+        }));
+        assert!(caught.is_err(), "the processor ran");
+        assert!(sync.held.as_ref().unwrap().engine.is_poisoned());
+        // Back to the stream: refused, rebuilt at the next poll.
+        sync.release_engine();
+        assert!(!sync.take_rebuild_notice());
+        sync.poll();
+        assert!(sync.take_rebuild_notice());
+        assert!(!sync.take_rebuild_notice(), "taken once");
+        assert!(sync.program().is_none(), "the old program is forgotten");
+        assert_eq!(
+            sync.worker_status().unwrap().threads,
+            0,
+            "the setting stays"
+        );
+        sync.sync(&doc);
+        assert_eq!(sync.programs_sent(), sent + 1);
+        assert!(sync.program().unwrap().slots.slot(lead).is_some());
+        // The new engine runs in the stream and plays the document.
+        sync.send(Command::Play);
+        assert!(wait_until(|| {
+            sync.poll();
+            sync.playhead() > Tick::ZERO
+        }));
+        sync.hold_engine().unwrap();
+        assert!(!sync.held.as_ref().unwrap().engine.is_poisoned());
+        sync.release_engine();
         sync.shutdown();
     }
 

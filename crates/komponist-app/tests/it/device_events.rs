@@ -897,6 +897,70 @@ fn workers_without_workgroup_reach_the_status_bar() {
     assert_eq!(status_text(&app), None);
 }
 
+/// An instrument whose `process` panics.
+struct Panics;
+
+impl Processor for Panics {
+    fn activate(&mut self, _sample_rate: f32, _max_block: usize) -> Result<(), ProcessorError> {
+        Ok(())
+    }
+
+    fn process(
+        &mut self,
+        _ctx: &ProcessContext,
+        _events: &[Event],
+        _io: &mut StereoIo<'_>,
+    ) -> ProcessStatus {
+        panic!("a processor panics");
+    }
+
+    fn latency(&self) -> u32 {
+        0
+    }
+
+    fn reset(&mut self) {}
+}
+
+/// #210: an engine whose `process` panicked is replaced by a new one; every device gets a fresh
+/// processor from the document (none is released), and the status bar says so as an error.
+#[test]
+fn a_panicked_engine_is_rebuilt_and_reported() {
+    let (mut app, script) = app();
+    app.ui_mut().status = None;
+    let lead = app.project().tracks[2].channel.devices[0].id;
+    let (created, released) = {
+        let script = script.borrow();
+        (script.created.len(), script.released.len())
+    };
+    let engine = app.engine_mut();
+    // Single-threaded, so the panic is on this thread and outside `assert_no_alloc`.
+    assert_eq!(engine.set_workers(Some(0)).unwrap().unwrap().threads, 0);
+    let slot = engine.program().unwrap().slots.slot(lead).unwrap();
+    engine.hold_engine().unwrap();
+    engine.send(komponist_engine::Command::InsertProcessor {
+        slot,
+        processor: Box::new(Panics),
+    });
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        engine.run_held(256, &[], 0);
+    }));
+    assert!(caught.is_err(), "the processor ran");
+    engine.release_engine();
+    app.step();
+    assert_eq!(
+        status_text(&app),
+        Some((
+            "Audio-Engine abgestürzt · aus dem Projekt neu aufgebaut, die Wiedergabe ist gestoppt"
+                .to_owned(),
+            StatusKind::Error
+        ))
+    );
+    let script = script.borrow();
+    assert_eq!(script.created.len(), 2 * created, "every device again");
+    assert_eq!(script.released.len(), released);
+    assert!(app.engine().program().unwrap().slots.slot(lead).is_some());
+}
+
 fn plugin_gui_automation(
     mode: komponist_model::automation::AutomationMode,
 ) -> (
