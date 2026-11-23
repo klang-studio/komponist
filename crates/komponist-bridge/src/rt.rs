@@ -305,13 +305,15 @@ impl ParamDelivery {
     }
 
     fn record_report(&mut self, block: u32, value: f64) {
+        // The baseline moves only with a counted change, so small steps cannot drift past the
+        // tolerance unnoticed.
         if self
             .last_reported
             .is_none_or(|previous| !same_param_value(value, previous))
         {
             self.changes = self.changes.wrapping_add(1);
+            self.last_reported = Some(value);
         }
-        self.last_reported = Some(value);
         // Some plugins repeat their last output. Keep the block that established that value.
         if self
             .report
@@ -819,7 +821,9 @@ fn serve(
         // note-off could leave a voice hanging). Inactive blocks never reach this function.
         let activity = sync.activity.load(Ordering::Acquire);
         let snapshot_only = activity != 0 && activity & !SNAPSHOT == 0;
-        scratch.reset_after_restore |= !snapshot_only;
+        // A reset the client asked for with this block is applied by the next processed block
+        // (the client does not repeat it after an `Inactive` reply).
+        scratch.reset_after_restore |= !snapshot_only || request.flags & BLOCK_FLAG_RESET != 0;
         // The client may already have timed out. Retain the latest parameter values here
         // so one-shot writes survive even if the client never consumes this reply.
         while let Some(event) = server.pop_event() {
@@ -984,6 +988,24 @@ mod tests {
         assert!(!delivery.confirms_input(0.403, 0.4));
     }
 
+    /// Steps inside the tolerance that add up to a change beyond it are counted: the baseline
+    /// moves only when a change is counted.
+    #[test]
+    fn creeping_reports_are_counted_once_they_leave_the_tolerance() {
+        let mut delivery = ParamDelivery::default();
+        delivery.record_report(1, 0.4);
+        let first = delivery.changes;
+        let mut value = 0.4;
+        for block in 2..200 {
+            value += 1e-7;
+            delivery.record_report(block, value);
+        }
+        assert!(
+            delivery.changes > first,
+            "a drift beyond the tolerance counts"
+        );
+    }
+
     #[test]
     fn controller_updates_coalesce_without_allocating() {
         let notify = Arc::new(notify::BridgeNotify::new().unwrap());
@@ -1107,13 +1129,33 @@ mod tests {
         assert_eq!(block(&mut client, &[]), ok);
         assert_eq!(resets.load(Ordering::Relaxed), 1);
 
+        // A reset the client asked for with a block that meets the pause is applied next.
+        let reset_spec = BlockSpec {
+            flags: BLOCK_FLAG_RESET,
+            ..spec
+        };
+        let status = rt
+            .snapshot(|_| {
+                let seq = client
+                    .begin_block(&reset_spec, [&[0.0], &[0.0]], None, &[])
+                    .unwrap();
+                client
+                    .wait_done(seq, Instant::now() + RESTORE_WAIT, [&mut [0.0], &mut [0.0]])
+                    .unwrap()
+                    .status
+            })
+            .unwrap();
+        assert_eq!(status, inactive);
+        assert_eq!(block(&mut client, &[]), ok);
+        assert_eq!(resets.load(Ordering::Relaxed), 2);
+
         // A restore always resets, as before.
         let (status, _) = rt
             .restore(|| (block(&mut client, &[param(0.5)]), false))
             .unwrap();
         assert_eq!(status, inactive);
         assert_eq!(block(&mut client, &[]), ok);
-        assert_eq!(resets.load(Ordering::Relaxed), 2);
+        assert_eq!(resets.load(Ordering::Relaxed), 3);
         let _ = rt.stop();
     }
 
