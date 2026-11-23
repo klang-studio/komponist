@@ -313,6 +313,20 @@ jobs:
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
         run: cargo test --workspace --no-fail-fast
 
+      # TEMPORARY (#251 trial, removed before merge): two more parallel runs of the app and UI suites, so one CI
+      # run shows whether DX12/WARP still terminates concurrent renderings.
+      - name: Repeat the app and UI suites (trial)
+        timeout-minutes: 30
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
+        run: |
+          status=0
+          for run in 2 3; do
+            echo "::group::Run $run"
+            cargo test -p komponist-app -p komponist-ui --no-fail-fast || status=$?
+            echo "::endgroup::"
+          done
+          exit "$status"
+
       # ASIO (W8, cargo feature `asio`): off in the steps above, so the plain build needs no LLVM. These two build
       # komponist-audio with it. bindgen needs libclang: the windows-2025 image has LLVM 20 (per the runner-images
       # readme; C:\Program Files\LLVM is its default path, assumed here). Steinberg's ASIO SDK (host subset, GPLv3 option) is
