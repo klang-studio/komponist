@@ -1728,6 +1728,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_paths_are_resolved_before_the_length_check() {
+        use std::os::windows::ffi::OsStrExt;
         let text = |wide: Vec<u16>| String::from_utf16(&wide[..wide.len() - 1]).unwrap();
         assert_eq!(
             super::windows_wide(Path::new("a\u{0}b"))
@@ -1735,8 +1736,13 @@ mod tests {
                 .kind(),
             std::io::ErrorKind::InvalidInput
         );
+        // A short relative name resolves against the working directory; it gets the prefix only
+        // when the resolved path reaches the limit (a deeply nested checkout).
         let short = text(super::windows_wide(Path::new("short.komponist")).unwrap());
-        assert!(Path::new(&short).is_absolute() && !short.starts_with(r"\\?\"));
+        let resolved = std::path::absolute("short.komponist").unwrap();
+        let resolved_len = resolved.as_os_str().encode_wide().count();
+        assert_eq!(short.starts_with(r"\\?\"), resolved_len >= 260, "{short}");
+        assert!(short.ends_with(r"short.komponist"));
         let long = format!(r"C:\{}\x.komponist", "d".repeat(300));
         assert!(text(super::windows_wide(Path::new(&long)).unwrap()).starts_with(r"\\?\C:\"));
         let unc = format!(r"\\server\share\{}\x.komponist", "d".repeat(300));
