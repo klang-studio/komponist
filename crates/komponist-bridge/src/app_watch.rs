@@ -9,8 +9,11 @@
 //! `EVFILT_PROC` / `NOTE_EXIT` filter for it, then ends the process with `_exit` (no plugin code
 //! runs after that; the app is gone, nothing is left to save).
 //!
-//! Started without that variable (a tool or a test running `komponist-bridge` directly), the
-//! bridge watches nothing and ends on socket EOF only, as before.
+//! With the variable set, a bridge that cannot watch the app (a bad value, no kqueue, no thread)
+//! ends before any plugin code runs, and so does one whose watch fails later: the app then sees a
+//! bridge that failed to start, or crashed, rather than one it might leave behind. Started
+//! without the variable (a tool or a test running `komponist-bridge` directly), the bridge
+//! watches nothing and ends on socket EOF only, as before.
 
 use std::os::fd::OwnedFd;
 use std::time::Duration;
@@ -22,29 +25,30 @@ use rustix::process::Pid;
 
 use crate::exit;
 
-/// Starts watching the app named in the environment; ends the process at once if it is gone.
+/// Starts watching the app named in the environment; ends the process at once if it is gone or
+/// cannot be watched (module docs).
 pub(crate) fn start() {
-    let Some(app) = std::env::var(komponist_ipc::process::PARENT_PID_ENV)
-        .ok()
+    let Some(value) = std::env::var_os(komponist_ipc::process::PARENT_PID_ENV) else {
+        return;
+    };
+    let Some(app) = value
+        .to_str()
         .and_then(|v| v.parse::<i32>().ok())
         .and_then(Pid::from_raw)
     else {
-        return;
+        fail(&format!("not a pid: {}", value.to_string_lossy()));
     };
     let kq = match watch(app) {
         Ok(kq) => kq,
         // The app died before the bridge got here.
         Err(Errno::SRCH) => gone(),
-        Err(e) => {
-            eprintln!("komponist-bridge: cannot watch the app (pid {app:?}): {e}");
-            return;
-        }
+        Err(e) => fail(&format!("pid {}: {e}", app.as_raw_pid())),
     };
     let spawned = std::thread::Builder::new()
         .name("kp-app-watch".into())
         .spawn(move || wait(&kq));
     if let Err(e) = spawned {
-        eprintln!("komponist-bridge: cannot watch the app: {e}");
+        fail(&format!("no thread: {e}"));
     }
 }
 
@@ -76,15 +80,18 @@ fn wait(kq: &OwnedFd) -> ! {
             Ok(n) if n > 0 => gone(),
             // EINTR, or a spurious wake-up.
             Ok(_) | Err(Errno::INTR) => {}
-            Err(e) => {
-                eprintln!("komponist-bridge: watching the app failed: {e}");
-                // Park for good: without the watch the bridge still ends on socket EOF.
-                loop {
-                    std::thread::park();
-                }
-            }
+            // Without the watch the bridge could outlive the app: end it now.
+            Err(e) => fail(&format!("the watch failed: {e}")),
         }
     }
+}
+
+/// The app cannot be watched: end now, before (or whatever) plugin code runs. The message goes to
+/// stderr, which the app logs.
+fn fail(why: &str) -> ! {
+    eprintln!("komponist-bridge: cannot watch the app: {why}");
+    // SAFETY: as in `gone`.
+    unsafe { libc::_exit(i32::from(exit::FAILURE)) }
 }
 
 /// The app is gone: end now, whatever the main thread is doing.
