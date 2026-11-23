@@ -71,7 +71,8 @@ use crate::cf_loop::{CfEventLoop as EventLoop, Owner};
 use crate::event_loop::EventLoop;
 use crate::notify::{BridgeNotify, CONTROLLER_VALUES_PENDING, LOG_PENDING};
 use crate::rt::{
-    ControllerValues, DeliveredParams, Fallback, RtConfig, RtThread, StartReport, same_param_value,
+    ControllerValues, DeliveredParams, Fallback, PauseTimeout, RtConfig, RtThread, StartReport,
+    same_param_value,
 };
 #[cfg(windows)]
 use crate::win_loop::{ControlReader, WinEventLoop as EventLoop};
@@ -217,6 +218,8 @@ struct Bridge {
     /// Checked snapshots in a row that a value moved under while audio ran (see
     /// `PAUSED_SNAPSHOT_AFTER`).
     unstable_snapshots: u8,
+    /// How long the last checked snapshot's `save_state` took.
+    last_save: Duration,
     controller_due: Option<Instant>,
     controller_sent: Option<Instant>,
     shutdown: bool,
@@ -253,6 +256,7 @@ impl Bridge {
             values_sent: None,
             params_due: None,
             unstable_snapshots: 0,
+            last_save: Duration::ZERO,
             controller_due: None,
             controller_sent: None,
             shutdown: false,
@@ -808,8 +812,12 @@ impl Bridge {
                     Err(e) => self.error(ErrorContext::State, e.to_string()),
                 }
             }
-            ControlMsg::GetStateChecked { request, expected } => {
-                self.get_state_checked(request, &expected);
+            ControlMsg::GetStateChecked {
+                request,
+                expected,
+                budget_ms,
+            } => {
+                self.get_state_checked(request, &expected, budget_ms);
             }
             ControlMsg::SetState { request, state } => self.set_state(request, &state),
             ControlMsg::ListParams => {
@@ -997,7 +1005,7 @@ impl Bridge {
         true
     }
 
-    fn get_state_checked(&mut self, request: u32, expected: &[(u32, f64, bool)]) {
+    fn get_state_checked(&mut self, request: u32, expected: &[(u32, f64, bool)], budget_ms: u32) {
         self.sync_controller();
         let Some(plugin) = self.plugin.as_mut() else {
             return self.error(ErrorContext::State, "no plugin loaded");
@@ -1026,41 +1034,54 @@ impl Bridge {
         // main thread during processing), so the shared bridge state stays `Active`. Only the
         // two captures at the block boundaries below pause audio, and only for the in-flight
         // block plus the capture: they read evidence that the RT loop writes without atomics.
-        // Everything in between compares plugin values, so a change made during the save
-        // (macro or automation output, an editor edit) makes the second capture reject it.
-        let paused = self.unstable_snapshots >= PAUSED_SNAPSHOT_AFTER;
+        // That evidence counts every change of a verified value, so the second capture rejects
+        // a value that moved during the save even when it came back (macro or automation
+        // output, an editor edit). The exception is the paused fallback below.
+        let budget = Duration::from_millis(u64::from(budget_ms));
+        // After an unstable attempt, a caller whose remaining time cannot fit another running
+        // attempt plus a paused one goes straight to the paused one.
+        let tight = self.unstable_snapshots >= 1 && budget_ms != 0 && budget < 2 * self.last_save;
+        let paused = self.unstable_snapshots >= PAUSED_SNAPSHOT_AFTER || tight;
         let mut unstable = false;
+        let mut save_took = None;
+        let mut timed_save = |plugin: &mut dyn HostedPlugin| {
+            let started = Instant::now();
+            let state = plugin.save_state();
+            save_took = Some(started.elapsed());
+            state.map_err(|error| SnapshotError::Failed(error.to_string()))
+        };
         let result = if let Some(active) = self.active.as_mut()
             && paused
         {
             // A value that the app or the plugin moves every block would defer forever. Hold
             // audio for this one snapshot: nothing can move, so it completes (the old behavior).
+            // The fallback is used up when it starts, whatever its outcome.
+            self.unstable_snapshots = 0;
             self.region.set_bridge_state(BridgeState::Loaded);
             let result = active.rt.snapshot(|delivered| {
-                let verified = capture_verified(
+                let Some((verified, changes)) = capture_verified(
                     plugin.as_mut(),
                     expected,
                     controller.as_deref(),
                     &mut updates,
-                    Some(delivered),
-                )?;
-                Some(plugin.save_state().map(|state| {
-                    let stable = is_stable(
-                        plugin.as_mut(),
-                        &verified,
-                        controller.as_deref(),
-                        &mut updates,
-                    );
-                    unstable = !stable;
-                    stable.then_some((state, verified))
-                }))
+                    Some(&delivered),
+                ) else {
+                    return Ok(None);
+                };
+                let state = timed_save(plugin.as_mut())?;
+                let stable = is_stable(
+                    plugin.as_mut(),
+                    &verified,
+                    &changes,
+                    controller.as_deref(),
+                    &mut updates,
+                    Some(&delivered),
+                );
+                unstable = !stable;
+                Ok(stable.then_some((state, verified)))
             });
             self.region.set_bridge_state(BridgeState::Active);
-            match result {
-                Ok(Some(saved)) => saved.map_err(|error| error.to_string()),
-                Ok(None) => Ok(None),
-                Err(error) => Err(error),
-            }
+            result.unwrap_or_else(|timeout| Err(timeout.into()))
         } else if let Some(active) = self.active.as_mut() {
             let before = active.rt.snapshot(|delivered| {
                 capture_verified(
@@ -1068,27 +1089,26 @@ impl Bridge {
                     expected,
                     controller.as_deref(),
                     &mut updates,
-                    Some(delivered),
+                    Some(&delivered),
                 )
             });
             match before {
-                Ok(Some(verified)) => plugin
-                    .save_state()
-                    .map_err(|error| error.to_string())
-                    .and_then(|state| {
-                        let stable = active.rt.snapshot(|_| {
-                            is_stable(
-                                plugin.as_mut(),
-                                &verified,
-                                controller.as_deref(),
-                                &mut updates,
-                            )
-                        })?;
-                        unstable = !stable;
-                        Ok(stable.then_some((state, verified)))
-                    }),
+                Ok(Some((verified, changes))) => timed_save(plugin.as_mut()).and_then(|state| {
+                    let stable = active.rt.snapshot(|delivered| {
+                        is_stable(
+                            plugin.as_mut(),
+                            &verified,
+                            &changes,
+                            controller.as_deref(),
+                            &mut updates,
+                            Some(&delivered),
+                        )
+                    })?;
+                    unstable = !stable;
+                    Ok(stable.then_some((state, verified)))
+                }),
                 Ok(None) => Ok(None),
-                Err(error) => Err(error),
+                Err(timeout) => Err(timeout.into()),
             }
         } else {
             match capture_verified(
@@ -1098,23 +1118,23 @@ impl Bridge {
                 &mut updates,
                 None,
             ) {
-                Some(verified) => {
-                    plugin
-                        .save_state()
-                        .map_err(|error| error.to_string())
-                        .map(|state| {
-                            is_stable(
-                                plugin.as_mut(),
-                                &verified,
-                                controller.as_deref(),
-                                &mut updates,
-                            )
-                            .then_some((state, verified))
-                        })
-                }
+                Some((verified, changes)) => timed_save(plugin.as_mut()).map(|state| {
+                    is_stable(
+                        plugin.as_mut(),
+                        &verified,
+                        &changes,
+                        controller.as_deref(),
+                        &mut updates,
+                        None,
+                    )
+                    .then_some((state, verified))
+                }),
                 None => Ok(None),
             }
         };
+        if let Some(took) = save_took {
+            self.last_save = took;
+        }
         if matches!(result, Ok(Some(_))) {
             self.unstable_snapshots = 0;
         } else if unstable {
@@ -1129,8 +1149,11 @@ impl Bridge {
                 state,
                 verified,
             }),
-            Ok(None) => self.send(BridgeMsg::StateDeferred { request }),
-            Err(error) => self.error(ErrorContext::State, error),
+            // A capture that timed out waiting for the current block is a retry, not a failure.
+            Ok(None) | Err(SnapshotError::Timeout) => {
+                self.send(BridgeMsg::StateDeferred { request });
+            }
+            Err(SnapshotError::Failed(error)) => self.error(ErrorContext::State, error),
         }
     }
 
@@ -1433,15 +1456,30 @@ fn sync_controller(
     }
 }
 
+/// Why a checked snapshot has no state.
+enum SnapshotError {
+    /// A capture could not pause the current audio block in time: retry.
+    Timeout,
+    /// The plugin failed to serialize its state.
+    Failed(String),
+}
+
+impl From<PauseTimeout> for SnapshotError {
+    fn from(_: PauseTimeout) -> Self {
+        Self::Timeout
+    }
+}
+
 /// First half of a checked snapshot, run at a block boundary: the values that the app expects,
-/// as the plugin holds them now, or `None` when they differ or an edit is still on its way.
+/// as the plugin holds them now, with the change count of each (0 without audio), or `None` when
+/// they differ or an edit is still on its way.
 fn capture_verified(
     plugin: &mut dyn HostedPlugin,
     expected: &[(u32, f64, bool)],
     controller: Option<&ControllerValues>,
     updates: &mut Vec<(u32, f64)>,
-    delivered: Option<DeliveredParams<'_>>,
-) -> Option<Vec<(u32, f64)>> {
+    delivered: Option<&DeliveredParams<'_>>,
+) -> Option<(Vec<(u32, f64)>, Vec<u32>)> {
     // Processing may have produced controller values after the caller's first check.
     sync_controller(plugin, controller, updates);
     // The VST3 editor can expose a new controller value before the component has processed it.
@@ -1449,32 +1487,35 @@ fn capture_verified(
         return None;
     }
     let mut verified = Vec::with_capacity(expected.len());
+    let mut changes = Vec::with_capacity(expected.len());
     for &(id, value, allow_quantized) in expected {
         let actual = plugin.param_value(id).filter(|actual| actual.is_finite())?;
         let processed = allow_quantized
-            && delivered
-                .as_ref()
-                .is_some_and(|delivery| delivery.confirms_input(id, value, actual));
+            && delivered.is_some_and(|delivery| delivery.confirms_input(id, value, actual));
         if !same_param_value(actual, value) && !processed {
             return None;
         }
         verified.push((id, actual));
+        changes.push(delivered.map_or(0, |delivery| delivery.changes(id)));
     }
-    Some(verified)
+    Some((verified, changes))
 }
 
 /// Second half, run at a block boundary after `save_state`: nothing the saved bytes depend on
-/// moved while the plugin serialized them.
+/// moved while the plugin serialized them. A value that left and came back counts as moved.
 fn is_stable(
     plugin: &mut dyn HostedPlugin,
     verified: &[(u32, f64)],
+    changes: &[u32],
     controller: Option<&ControllerValues>,
     updates: &mut Vec<(u32, f64)>,
+    delivered: Option<&DeliveredParams<'_>>,
 ) -> bool {
     sync_controller(plugin, controller, updates);
-    verified.iter().all(|&(id, value)| {
-        plugin
-            .param_value(id)
-            .is_some_and(|actual| same_param_value(actual, value))
+    verified.iter().zip(changes).all(|(&(id, value), &before)| {
+        delivered.is_none_or(|delivery| delivery.changes(id) == before)
+            && plugin
+                .param_value(id)
+                .is_some_and(|actual| same_param_value(actual, value))
     }) && !plugin.has_unapplied_edits()
 }

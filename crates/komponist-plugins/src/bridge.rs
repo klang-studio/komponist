@@ -509,7 +509,11 @@ impl Bridge {
     }
 
     /// Sends `GetState`; the answer is matched to `purpose`. Returns the request number.
-    pub(crate) fn request_state(&mut self, purpose: StatePurpose) -> Option<u32> {
+    pub(crate) fn request_state(
+        &mut self,
+        purpose: StatePurpose,
+        deadline: Option<Instant>,
+    ) -> Option<u32> {
         if self.phase != Phase::Running || self.keep_stored_state {
             return None;
         }
@@ -517,7 +521,15 @@ impl Bridge {
         let request = self.seq();
         let message = if checked {
             let expected = self.snapshot_expected()?;
-            ControlMsg::GetStateChecked { request, expected }
+            ControlMsg::GetStateChecked {
+                request,
+                expected,
+                budget_ms: deadline.map_or(0, |deadline| {
+                    // At least 1: 0 means no deadline.
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    u32::try_from(left.as_millis()).unwrap_or(u32::MAX).max(1)
+                }),
+            }
         } else {
             ControlMsg::GetState { request }
         };
@@ -967,7 +979,7 @@ impl Bridge {
             && now >= due
         {
             self.snapshot_due = None;
-            self.request_state(StatePurpose::Event);
+            self.request_state(StatePurpose::Event, None);
         }
         self.watchdog(now, events);
     }
@@ -1201,7 +1213,7 @@ impl Bridge {
                 self.gui_closing = false;
                 events.push(PluginManagerEvent::GuiClosed { device, rect });
                 if snapshot {
-                    self.request_state(StatePurpose::Event);
+                    self.request_state(StatePurpose::Event, None);
                 }
             }
             BridgeMsg::HeaderAction(event) => {

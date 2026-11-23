@@ -1142,7 +1142,7 @@ impl PluginManager {
             return;
         }
         if let Some(bridge) = self.bridges.get_mut(&device) {
-            bridge.request_state(StatePurpose::Event);
+            bridge.request_state(StatePurpose::Event, None);
         }
     }
 
@@ -1253,7 +1253,7 @@ impl PluginManager {
             .bridges
             .iter_mut()
             .filter(|&(&device, _)| include(device))
-            .filter_map(|(&device, b)| Some((device, b.request_state(StatePurpose::Collect)?)))
+            .filter_map(|(&device, b)| Some((device, b.request_state(StatePurpose::Collect, Some(deadline))?)))
             .collect();
         let mut direct_waiting: BTreeSet<_> = self
             .direct
