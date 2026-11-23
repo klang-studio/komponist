@@ -400,7 +400,7 @@ pub fn dsp_with_managed_loader() -> (Box<dyn Dsp>, SamplerHandle, ManagedLoader)
 }
 
 /// Creates a processor and its UI handle from a project state, falling back to parameter defaults
-/// if the state cannot be decoded. The handle also receives the saved slicing settings.
+/// if the state cannot be decoded (the host reports that, see `Spec::state_error`). The handle also receives the saved slicing settings.
 pub fn processor_from_state(state: Option<&[u8]>) -> (InternalProcessor, SamplerHandle) {
     let values = SPEC.decode_state(state).unwrap_or_else(|_| SPEC.defaults());
     let (dsp, handle) = dsp_with_handle();

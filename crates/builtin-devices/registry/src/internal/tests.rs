@@ -222,9 +222,17 @@ fn state_round_trips_and_tolerates_missing_unknown_and_wild_values() {
     let values = eq.decode_state(Some(&state)).unwrap();
     assert_eq!((values[freq], values[on]), (500.0, 0.0));
     assert_eq!(eq.with_value(None, 999, 1.0), None);
-    // A broken state is replaced by the defaults plus the change.
-    let state = eq.with_value(Some(b"junk"), freq as u32, 700.0).unwrap();
+    // A state without `params` (sample links only) counts as the defaults plus the change ...
+    let state = eq
+        .with_value(Some(br#"{"samples":{}}"#), freq as u32, 700.0)
+        .unwrap();
     assert_eq!(eq.decode_state(Some(&state)).unwrap()[freq], 700.0);
+    // ... but an unreadable one is refused, so the stored bytes are not overwritten with defaults.
+    for bad in [&b"junk"[..], b"[1]", br#"{"params": 3, "future": true}"#] {
+        assert!(eq.state_error(Some(bad)).is_some());
+        assert_eq!(eq.with_value(Some(bad), freq as u32, 700.0), None);
+    }
+    assert!(eq.state_error(None).is_none() && eq.state_error(Some(b"{}")).is_none());
 }
 
 #[test]

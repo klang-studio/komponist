@@ -625,8 +625,8 @@ impl App {
 pub(crate) fn device_param_state(device: &Device, wire: u32, value: f64) -> Option<Arc<[u8]>> {
     if is_hexa(device) {
         let field = komponist_hexa::device::Field::from_wire(wire)?;
-        let mut patch = komponist_hexa::decode_state(device.state.as_deref())
-            .unwrap_or_else(|_| komponist_hexa::default_patch());
+        // An unreadable state stays as it is (the device card warns); see `Spec::with_value`.
+        let mut patch = komponist_hexa::decode_state(device.state.as_deref()).ok()?;
         field.set(&mut patch, value);
         return Some(komponist_hexa::encode_state(&patch).into());
     }

@@ -45,8 +45,11 @@ use std::time::Duration;
 use komponist_builtin::{BuiltinKind, BuiltinProcessor, Internal};
 use komponist_engine::{DeviceMeter, Processor};
 use komponist_ipc::frame::HeaderModel;
-use komponist_ipc::{GuiSize, GuiTarget, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode};
+use komponist_ipc::{
+    GuiSize, GuiTarget, LogLevel, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode,
+};
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project};
+use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{
     Catalog, DeviceSnapshots, DeviceStatus, FailReason, MissingPlugin, PluginDirs, PluginError,
     PluginManager, PluginManagerConfig, PluginManagerEvent, ProcessorSetup, SaveSnapshots,
@@ -464,6 +467,9 @@ pub struct BuiltinHost {
     /// Samplers still loading the samples their state links: `Loading` until the loader is idle,
     /// so an export waits for the first hits' samples.
     warming: HashSet<DeviceId>,
+    /// Why a device's stored state could not be read (it plays the defaults; the document keeps the
+    /// bytes).
+    state_warnings: HashMap<DeviceId, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -483,6 +489,7 @@ impl Default for BuiltinHost {
             samplers: HashMap::new(),
             pad_names: HashMap::new(),
             warming: HashSet::new(),
+            state_warnings: HashMap::new(),
         }
     }
 }
@@ -520,6 +527,18 @@ impl DeviceHost for BuiltinHost {
             meter,
             sampler,
         } = kind.processor_from_state(device.state.as_deref());
+        // The processor plays the defaults for a state it cannot read. Say so, and leave the
+        // document's bytes alone (nothing here writes state; edits refuse an unreadable one).
+        if let Some(reason) = kind.state_error(device.state.as_deref()) {
+            self.events.push(PluginManagerEvent::Log {
+                device: Some(device.id),
+                level: LogLevel::Warning,
+                message: format!("{STATE_LOG_PREFIX} {reason}"),
+            });
+            self.state_warnings.insert(device.id, reason);
+        } else {
+            self.state_warnings.remove(&device.id);
+        }
         if let Some(meter) = meter {
             self.meters.insert(device.id, meter);
         }
@@ -573,6 +592,11 @@ impl DeviceHost for BuiltinHost {
         self.samplers.remove(&device);
         self.pad_names.remove(&device);
         self.warming.remove(&device);
+        self.state_warnings.remove(&device);
+    }
+
+    fn state_warning(&self, device: DeviceId) -> Option<&str> {
+        self.state_warnings.get(&device).map(String::as_str)
     }
 
     fn set_project_dir(&mut self, dir: Option<PathBuf>) {
@@ -896,12 +920,16 @@ impl DeviceHost for PluginHost {
         self.is_external(device) && self.manager.set_state(device, state)
     }
 
-    fn state_warning(&self, device: DeviceId) -> Option<&str> {
-        self.manager.state_warning(device)
-    }
-
     fn late_blocks(&self, device: DeviceId) -> u64 {
         self.manager.late_blocks(device)
+    }
+
+    fn state_warning(&self, device: DeviceId) -> Option<&str> {
+        if self.is_external(device) {
+            self.manager.state_warning(device)
+        } else {
+            self.reference.as_ref()?.state_warning(device)
+        }
     }
 
     fn note_names(&self, device: DeviceId) -> &[NoteName] {

@@ -422,3 +422,74 @@ fn undo_and_redo_of_a_bridged_plugins_state_reach_the_plugin() {
     redo(&mut sync, &mut doc);
     assert_eq!(current(&mut sync), quiet, "redo: the new state");
 }
+
+/// A corrupted state, or one a newer build wrote, plays as the defaults, but the host reports it
+/// (device warning plus a state log event, which the app turns into a status message), the document
+/// keeps the bytes and no knob turn saves defaults over them (#224).
+#[test]
+fn an_unreadable_device_state_is_reported_and_never_overwritten() {
+    use komponist_builtin::BuiltinKind;
+    use komponist_model::PluginRef;
+    use komponist_plugins::manager::STATE_LOG_PREFIX;
+
+    let corrupted: &[u8] = b"{\"params\": {\"gain\": ";
+    let newer: &[u8] = br#"{"version":9,"params":"packed-v9"}"#;
+    let base = demo_project()
+        .tracks
+        .iter()
+        .flat_map(|track| &track.channel.devices)
+        .find(|device| is_hexa(device))
+        .cloned()
+        .expect("the demo has a Hexa");
+    let device_for = |plugin: PluginRef, state: &[u8], id: u64| komponist_model::Device {
+        id: DeviceId(id),
+        plugin,
+        state: Some(state.to_vec().into()),
+        ..(*base).clone()
+    };
+    let setup = komponist_plugins::ProcessorSetup {
+        sample_rate: 48_000.0,
+        max_block: 512,
+    };
+    let mut host = BuiltinHost::new();
+    let mut id = 900u64;
+    for state in [corrupted, newer] {
+        for plugin in [
+            Internal::Limiter.plugin_ref(),
+            komponist_hexa::CATALOG.plugin_ref(),
+        ] {
+            id += 1;
+            let device = device_for(plugin, state, id);
+            assert!(host.create_processor(&device, setup).is_some());
+            assert!(host.state_warning(device.id).is_some(), "{state:?}");
+            let logged = host.poll().into_iter().any(|e| {
+                matches!(&e, PluginManagerEvent::Log { device: Some(d), message, .. }
+                    if *d == device.id && message.starts_with(STATE_LOG_PREFIX))
+            });
+            assert!(logged, "state log event for {state:?}");
+            // The stored bytes are untouched and no knob turn replaces them.
+            assert_eq!(device.state.as_deref(), Some(state));
+            let kind = BuiltinKind::from_plugin(&device.plugin).unwrap();
+            assert!(kind.state_error(device.state.as_deref()).is_some());
+        }
+    }
+    let limiter_gain = Internal::Limiter
+        .wire(&komponist_model::params::ParamId::new("gain"))
+        .unwrap();
+    for state in [corrupted, newer] {
+        assert_eq!(
+            Internal::Limiter.with_value(Some(state), limiter_gain, 6.0),
+            None
+        );
+    }
+
+    // A readable state, and a device without one, carry no warning; releasing clears it.
+    let fine = Internal::Limiter
+        .with_value(None, limiter_gain, 6.0)
+        .unwrap();
+    let device = device_for(Internal::Limiter.plugin_ref(), &fine, 950);
+    host.create_processor(&device, setup).unwrap();
+    assert_eq!(host.state_warning(device.id), None);
+    host.release(DeviceId(901));
+    assert_eq!(host.state_warning(DeviceId(901)), None);
+}
