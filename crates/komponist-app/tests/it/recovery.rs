@@ -352,6 +352,13 @@ fn a_copy_whose_file_is_gone_asks_where_to_save() {
         "Night Drive",
         "cancelled: still open"
     );
+    // „Sammeln und speichern“ has no file next to which to collect either: it asks too.
+    h.state_mut()
+        .dispatch(Action::Project(ProjectAction::CollectAndSave));
+    h.run_steps(3);
+    h.get_by_value(de::FILE_SAVE_TITLE);
+    assert!(!file.exists(), "nothing written to the old path");
+    press(&mut h, Modifiers::NONE, Key::Escape);
     // Ctrl S asks for a place, in the old folder.
     press(&mut h, Modifiers::COMMAND, Key::S);
     h.run_steps(1);
@@ -528,6 +535,148 @@ fn the_arrow_keys_move_through_two_untitled_copies() {
     h.key_press(Key::ArrowDown);
     h.run_steps(2);
     assert_eq!(h.state().selected, 2);
+}
+
+#[test]
+fn an_unreadable_recovery_folder_is_reported_after_the_project_argument_opens() {
+    let dir = scratch("scan-error");
+    // A file where the recovery folder should be: the scan cannot read it.
+    std::fs::write(dir.join("recovery"), "x").unwrap();
+    let song_file = dir.join("Lied.komponist");
+    project_io::save_project(&song_file, &song("Lied")).unwrap();
+    let clock = FakeClock::new();
+    let mut app = session(&dir, Project::new("Unbenannt"), &clock);
+    app.show_start_screen();
+    app.offer_recovery(Some(song_file.clone()));
+    assert_eq!(app.project().name, "Lied", "the argument opened");
+    let status = app.ui().status.clone().unwrap();
+    assert!(
+        status
+            .text
+            .starts_with("Sicherungskopien lassen sich nicht lesen: "),
+        "{}",
+        status.text
+    );
+    // An argument that cannot be opened keeps its own error, followed by the scan's.
+    let mut app = session(&dir, Project::new("Unbenannt"), &clock);
+    app.show_start_screen();
+    app.offer_recovery(Some(dir.join("Fehlt.komponist")));
+    let text = app.ui().status.clone().unwrap().text;
+    assert!(
+        text.contains("Fehlt.komponist")
+            && text.contains("Sicherungskopien lassen sich nicht lesen"),
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn opens_that_arrive_behind_the_prompt_wait_and_the_first_one_stays() {
+    let dir = scratch("behind");
+    let songs = dir.join("songs");
+    std::fs::create_dir_all(&songs).unwrap();
+    let a = songs.join("A.komponist");
+    let b = songs.join("B.komponist");
+    let c = songs.join("C.komponist");
+    for (file, name) in [(&a, "A"), (&b, "B"), (&c, "C")] {
+        project_io::save_project(file, &song(name)).unwrap();
+    }
+    crashed_session(&dir, Some(&b));
+
+    // A is open; opening B asks for its copy first.
+    let clock = FakeClock::new();
+    let mut app = session(&dir, Project::new("Unbenannt"), &clock);
+    app.show_start_screen();
+    app.offer_recovery(None);
+    let mut h = harness(app);
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    h.state_mut()
+        .dispatch(Action::Project(ProjectAction::OpenPath(a.clone())));
+    h.run_steps(2);
+    assert_eq!(h.state().project().name, "A");
+    h.state_mut()
+        .dispatch(Action::Project(ProjectAction::OpenPath(b.clone())));
+    h.run_steps(2);
+    assert!(h.state().recovery_prompt_open());
+    // The Dock asks for A, which is open: nothing changes. A dropped C does not replace B either.
+    h.state_mut().open_files(std::slice::from_ref(&a));
+    h.state_mut()
+        .dispatch(Action::Project(ProjectAction::OpenPath(c.clone())));
+    h.run_steps(2);
+    assert!(h.state().recovery_prompt_open());
+    assert_eq!(h.state().project().name, "A");
+    // „Später“: B opens, from its file.
+    h.get_by_role_and_label(Role::Button, de::RECOVERY_LATER)
+        .click();
+    h.run_steps(2);
+    assert_eq!(h.state().project().name, "B");
+    assert!(!h.state().doc().is_dirty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_file_dropped_on_the_start_screen_waits_behind_the_prompt() {
+    let dir = scratch("drop");
+    let c = dir.join("C.komponist");
+    project_io::save_project(&c, &song("C")).unwrap();
+    crashed_session(&dir, None);
+    let clock = FakeClock::new();
+    let mut app = session(&dir, Project::new("Unbenannt"), &clock);
+    app.show_start_screen();
+    app.offer_recovery(None);
+    let mut h = harness(app);
+    assert!(h.state().recovery_prompt_open());
+    // What the start screen does with a dropped project file.
+    h.state_mut()
+        .dispatch(Action::Project(ProjectAction::OpenPath(c.clone())));
+    h.run_steps(2);
+    assert!(h.state().recovery_prompt_open(), "the prompt first");
+    assert_eq!(h.state().ui().screen, Screen::Start);
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    assert_eq!(h.state().project().name, "C", "then the dropped file");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn open_plugin_waits_for_the_document_the_prompt_opens() {
+    let dir = scratch("open-plugin");
+    let file = dir.join("Beat.komponist");
+    let project =
+        komponist_app::dialogs::new_project::template(Lang::De, komponist_app::app::hexa_ref());
+    let sampler = komponist_builtin::Internal::Sampler.plugin_ref().name;
+    let device = project
+        .tracks
+        .iter()
+        .flat_map(|t| t.channel.devices.iter())
+        .find(|d| d.plugin.name == sampler)
+        .map(|d| d.id)
+        .expect("the template plays the Sampler");
+    project_io::save_project(&file, &project).unwrap();
+    let opened = |app: &App| {
+        app.dispatched().any(|a| {
+            matches!(a, Action::Plugin(komponist_app::actions::PluginAction::OpenWindow(d)) if *d == device)
+        })
+    };
+    // Without a copy waiting: at once, in the project argument.
+    let clock = FakeClock::new();
+    let mut app = session(&dir, Project::new("Unbenannt"), &clock);
+    app.show_start_screen();
+    app.offer_recovery(Some(file.clone()));
+    app.open_plugin_at_start(sampler.clone());
+    assert!(opened(&app));
+    // With a copy waiting: after „Später“, in the project argument that then opens.
+    crashed_session(&dir, None);
+    let mut app = session(&dir, Project::new("Unbenannt"), &clock);
+    app.show_start_screen();
+    app.offer_recovery(Some(file.clone()));
+    app.open_plugin_at_start(sampler.clone());
+    assert!(app.recovery_prompt_open());
+    assert!(!opened(&app), "not in the empty start document");
+    let mut h = harness(app);
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    assert_eq!(h.state().project().name, project.name);
+    assert!(opened(h.state()));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

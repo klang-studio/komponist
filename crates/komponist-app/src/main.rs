@@ -266,10 +266,9 @@ fn run_app() -> eframe::Result {
     // Recovery copies of other sessions are asked for first; the project argument waits behind
     // them (with `--demo` the prompt shows over the demo, which a recovered copy replaces).
     app.offer_recovery(args.project.filter(|_| !args.demo));
-    if let Some(name) = &args.open_plugin
-        && !app.open_plugin_named(name)
-    {
-        eprintln!("komponist: --open-plugin: no device with plugin \"{name}\"");
+    // `--open-plugin` looks in the document that opens: now, or after the recovery prompt.
+    if let Some(name) = args.open_plugin.clone() {
+        app.open_plugin_at_start(name);
     }
     // The Dock menu (#95) and documents from Finder (#96): methods on winit's application
     // delegate, added when the app launches.

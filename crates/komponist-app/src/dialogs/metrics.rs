@@ -264,6 +264,9 @@ pub mod start {
     /// The chip „Sicherungskopie“ of a row with a recovery copy (#227, crash-recovery mockup 03):
     /// `padding:2px 8px`.
     pub const CHIP_PADDING: [f32; 2] = [space::SPACE_2, space::SPACE_0_5];
+    /// The room the name and path keep before the chip gives way (komponist's own value: about
+    /// twelve characters of a project name; the mockup's list is never this narrow).
+    pub const CHIP_MIN_NAME_WIDTH: f32 = 120.0;
 }
 
 /// The recovery prompt (#227; crash-recovery proposal, internal notes, mockups 01 and 02).

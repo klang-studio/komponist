@@ -652,8 +652,15 @@ fn recent_row_ui(ui: &mut Ui, width: f32, row: &RecentRow, selected: bool) -> eg
     let date_x = inner.right() - m::DATE_COLUMN;
     let meta_x = date_x - m::ROW_GAP - m::META_COLUMN;
     let mut text_right = meta_x - m::ROW_GAP;
+    // The chip only where the name keeps its room; in a narrow window the row's accessible name
+    // still says that a copy waits.
     if row.recovery.is_some() {
-        text_right = recovery_chip(ui, t, inner, text_right) - m::ROW_GAP;
+        let chip = recovery_chip_galley(ui, t);
+        let left = text_right - chip_size(&chip).x;
+        if left - m::ROW_GAP - text_x >= m::CHIP_MIN_NAME_WIDTH {
+            paint_recovery_chip(ui, chip, inner, text_right);
+            text_right = left - m::ROW_GAP;
+        }
     }
     // Name and path.
     let name_color = if row.missing {
@@ -704,19 +711,28 @@ fn recent_row_ui(ui: &mut Ui, width: f32, row: &RecentRow, selected: bool) -> eg
     response
 }
 
-/// The chip „Sicherungskopie“ (`accent.surface`, text `accent`), its right edge at `right`,
-/// centred in `row`; returns its left edge.
-fn recovery_chip(ui: &Ui, t: Lang, row: Rect, right: f32) -> f32 {
-    let ppp = ui.pixels_per_point();
-    let g = styled(
+/// The text of the chip „Sicherungskopie“ (`type.ui`, `accent`).
+fn recovery_chip_galley(ui: &Ui, t: Lang) -> std::sync::Arc<egui::Galley> {
+    styled(
         ui,
         t.start_recovery_chip(),
         &typography::UI,
         color32(color::ACCENT),
         None,
-    );
+    )
+}
+
+/// The chip's size around its text.
+fn chip_size(g: &egui::Galley) -> egui::Vec2 {
     let [pad_x, pad_y] = m::CHIP_PADDING;
-    let size = vec2(g.size().x.ceil() + 2.0 * pad_x, g.size().y + 2.0 * pad_y);
+    vec2(g.size().x.ceil() + 2.0 * pad_x, g.size().y + 2.0 * pad_y)
+}
+
+/// Paints the chip (`accent.surface`) with its right edge at `right`, centred in `row`.
+fn paint_recovery_chip(ui: &Ui, g: std::sync::Arc<egui::Galley>, row: Rect, right: f32) {
+    let ppp = ui.pixels_per_point();
+    let [pad_x, _] = m::CHIP_PADDING;
+    let size = chip_size(&g);
     let chip = px::snap_rect(
         Rect::from_min_size(pos2(right - size.x, row.center().y - size.y / 2.0), size),
         ppp,
@@ -732,7 +748,6 @@ fn recovery_chip(ui: &Ui, t: Lang, row: Rect, right: f32) -> f32 {
         g,
         Color32::PLACEHOLDER,
     );
-    chip.left()
 }
 
 impl crate::App {

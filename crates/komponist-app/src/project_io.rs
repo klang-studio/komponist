@@ -539,10 +539,6 @@ impl App {
             );
         }
         let path = std::path::absolute(first).unwrap_or_else(|_| first.clone());
-        // At launch the recovery prompt comes first; the file waits behind it.
-        if self.defer_behind_recovery(&path) {
-            return;
-        }
         let same = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
             (Ok(a), Ok(b)) => a == b,
             _ => a == b,
@@ -553,6 +549,10 @@ impl App {
                 .as_deref()
                 .is_some_and(|open| same(open, &path))
         {
+            return;
+        }
+        // At launch the recovery prompt comes first; the file waits behind it.
+        if self.defer_behind_recovery(&path) {
             return;
         }
         self.dispatch(Action::Project(ProjectAction::OpenPath(path)));
@@ -667,6 +667,11 @@ impl App {
     /// Opens the project file at `path`: asks first if a recovery copy of it waits (#227), then
     /// [`App::open_path_now`].
     pub(crate) fn open_path(&mut self, path: PathBuf) {
+        // An open that arrives while the recovery prompt is up (a file dropped on the start
+        // screen) waits behind it.
+        if self.defer_behind_recovery(&path) {
+            return;
+        }
         if !self.ask_before_opening(&path) {
             self.open_path_now(path);
         }

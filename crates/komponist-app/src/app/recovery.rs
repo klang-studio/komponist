@@ -51,6 +51,11 @@ pub(crate) struct RecoveryUi {
     /// The open document came from a copy whose project file is gone (variant d): Save asks
     /// for a place first.
     pub(crate) save_asks: bool,
+    /// The start's scan could not read the folder: said after the round and what waited behind
+    /// it, so an open does not replace it before anyone saw it.
+    pub(crate) scan_error: Option<String>,
+    /// `--open-plugin` waits for the document the start's round opens.
+    pub(crate) open_plugin: Option<String>,
 }
 
 impl App {
@@ -87,6 +92,11 @@ impl App {
         if !self.recovery.enabled() {
             return;
         }
+        if !self.recovery.has_waker() {
+            // A write that failed is retried after a backoff: the writer wakes an idle app.
+            let ctx = ctx.clone();
+            self.recovery.set_waker(move || ctx.request_repaint());
+        }
         let dirty = self.ui.screen == Screen::Project
             && (self.doc.is_dirty() || !self.deferred_plugin_states().is_empty());
         let deferred = self.deferred_plugin_states().to_vec();
@@ -117,10 +127,7 @@ impl App {
         if let Some(error) = self.recovery.take_scan_error() {
             let reason =
                 crate::project_io::ProjectIoError::Io(PathBuf::new(), error).reason(self.lang);
-            self.set_status(
-                self.lang.status_recovery_scan_failed(reason),
-                StatusKind::Error,
-            );
+            self.recovery_ui.scan_error = Some(self.lang.status_recovery_scan_failed(reason));
         }
         let mut ids: Vec<Id> = self
             .recovery
@@ -132,6 +139,7 @@ impl App {
             if let Some(next) = after {
                 self.continue_after_recovery(next);
             }
+            self.finish_round();
             return;
         }
         let total = ids.len();
@@ -155,12 +163,15 @@ impl App {
     }
 
     /// While the prompt is open, a file to open waits behind it (a document from the Dock at
-    /// launch, #96): `true` if `path` was put there.
+    /// launch, #96, a file dropped on the start screen): `true` while the prompt is open. The first
+    /// open that waits stays; a later one does not replace it.
     pub(crate) fn defer_behind_recovery(&mut self, path: &Path) -> bool {
         let Some(prompt) = &mut self.recovery_ui.prompt else {
             return false;
         };
-        prompt.after = Some(Pending::OpenPath(path.to_path_buf()));
+        prompt
+            .after
+            .get_or_insert_with(|| Pending::OpenPath(path.to_path_buf()));
         true
     }
 
@@ -256,6 +267,7 @@ impl App {
         match answer {
             Answer::Recover => {
                 self.recover(&prompt.id);
+                self.finish_round();
                 return;
             }
             Answer::Discard => {
@@ -272,6 +284,7 @@ impl App {
             if let Some(next) = prompt.after {
                 self.continue_after_recovery(next);
             }
+            self.finish_round();
             return;
         }
         let next = rest.remove(0);
@@ -281,6 +294,41 @@ impl App {
             rest,
             after: prompt.after,
         });
+    }
+
+    /// `--open-plugin NAME` at start: the plugin window of the first device whose plugin is
+    /// `NAME`, in the document that opens. While the recovery prompt delays the start, it waits
+    /// for the document the round opens (a recovered copy or the project argument).
+    pub fn open_plugin_at_start(&mut self, name: String) {
+        if self.recovery_prompt_open() {
+            self.recovery_ui.open_plugin = Some(name);
+        } else if !self.open_plugin_named(&name) {
+            eprintln!("komponist: --open-plugin: no device with plugin \"{name}\"");
+        }
+    }
+
+    /// The end of a round of prompts: what waited for the document that opened.
+    fn finish_round(&mut self) {
+        if let Some(name) = self.recovery_ui.open_plugin.take()
+            && !self.open_plugin_named(&name)
+        {
+            eprintln!("komponist: --open-plugin: no device with plugin \"{name}\"");
+        }
+        self.report_scan_error();
+    }
+
+    /// The scan's failure, once the round and what waited behind it are done: an error of the open
+    /// stays and the scan's follows it.
+    fn report_scan_error(&mut self) {
+        let Some(text) = self.recovery_ui.scan_error.take() else {
+            return;
+        };
+        match self.ui.status.as_mut() {
+            Some(status) if status.kind == StatusKind::Error => {
+                status.text = format!("{} · {text}", status.text);
+            }
+            _ => self.set_status(text, StatusKind::Error),
+        }
     }
 
     /// What waited behind the prompt; an open request goes straight to the file (its copy was

@@ -577,7 +577,12 @@ impl App {
 
     /// "Sammeln und speichern": collects into the samples folder of the project file, then saves.
     pub(crate) fn collect_and_save(&mut self) {
-        let Some(file) = self.project_path.clone() else {
+        // A recovered copy whose file is gone has no file to collect next to (as Ctrl S).
+        let file = self
+            .project_path
+            .clone()
+            .filter(|_| !self.recovery_ui.save_asks);
+        let Some(file) = file else {
             // The folder of the samples depends on the file: ask for it, then collect.
             self.dialogs.samples.collect_after_save = true;
             self.open_file_browser(Purpose::Save);
