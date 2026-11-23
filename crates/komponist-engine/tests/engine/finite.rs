@@ -137,3 +137,22 @@ fn render_runs_with_flush_to_zero_and_restores_the_callers_state() {
         "the caller's floating-point state is restored"
     );
 }
+
+/// A processor panic during `render` leaves the caller's floating-point state as it was: the guard
+/// restores it while unwinding (the panic is caught on this thread, which goes on running).
+#[test]
+fn a_panic_during_render_restores_the_callers_fp_state() {
+    assert!(!flushes_denormals(), "the test thread starts without FTZ");
+    let mut rig = Rig::new(RATE, BLOCK);
+    rig.insert(0, komponist_engine::testing::TestPanic);
+    rig.set_program(&program(120.0, vec![track(1, 0, vec![note(0, BAR, 60)])]));
+    rig.send(Command::Play);
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rig.engine.render(BLOCK);
+    }));
+    assert!(caught.is_err(), "the processor panicked inside render");
+    assert!(
+        !flushes_denormals(),
+        "the caller's floating-point state is restored after the unwind"
+    );
+}

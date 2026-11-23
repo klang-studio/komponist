@@ -704,9 +704,9 @@ impl Engine {
             output_latency: 0,
         };
         // Like the audio callback: FTZ/DAZ on, so tails do not hit denormal slowdowns and an
-        // export sounds like playback (#217). Workers copy this state; the caller's is restored.
-        let saved = sys::fp_state();
-        sys::set_fp_state(sys::with_flush_to_zero(saved));
+        // export sounds like playback (#217). Workers copy this state; the guard restores the
+        // caller's, also when a processor panic unwinds through here.
+        let fp = FlushToZero::enable();
         let empty = AudioInputBuffer::empty();
         run_unless_poisoned(
             &mut self.core,
@@ -717,7 +717,7 @@ impl Engine {
             &[],
             true,
         );
-        sys::set_fp_state(saved);
+        drop(fp);
         let out = &mut self.render_out[..2 * frames];
         let (frames_out, _) = out.as_chunks_mut::<2>();
         for (frame, (l, r)) in frames_out.iter_mut().zip(l.iter().zip(r.iter())) {
@@ -725,6 +725,24 @@ impl Engine {
             frame[1] = *r;
         }
         out
+    }
+}
+
+/// RT. FTZ/DAZ on the calling thread for its lifetime; `Drop` restores the previous FP state, on
+/// return and while unwinding (#217).
+struct FlushToZero(u64);
+
+impl FlushToZero {
+    fn enable() -> Self {
+        let saved = sys::fp_state();
+        sys::set_fp_state(sys::with_flush_to_zero(saved));
+        Self(saved)
+    }
+}
+
+impl Drop for FlushToZero {
+    fn drop(&mut self) {
+        sys::set_fp_state(self.0);
     }
 }
 
