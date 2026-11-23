@@ -4,7 +4,8 @@
 //!
 //! Unix: the home folder is `$HOME`; there is no Music default (the export starts in the home
 //! folder, as before). Windows: the folders come from the shell's known folders
-//! (`SHGetKnownFolderPath`: `FOLDERID_Profile`, `FOLDERID_Music`, `FOLDERID_RoamingAppData`), which
+//! (`SHGetKnownFolderPath`: `FOLDERID_Profile`, `FOLDERID_Music`, `FOLDERID_RoamingAppData`,
+//! `FOLDERID_LocalAppData`), which
 //! also finds folders the user moved (a redirected Music or AppData). Only when the shell does not
 //! answer, the environment variables `USERPROFILE` and `APPDATA` stand in. The known folder wins
 //! over the variable on purpose: a variable can be stale or set by a launcher, the shell's answer is
@@ -42,6 +43,13 @@ pub fn start_dir() -> Option<PathBuf> {
 #[cfg(windows)]
 pub fn roaming_app_data() -> Option<PathBuf> {
     win::roaming_app_data().or_else(|| from_env("APPDATA"))
+}
+
+/// The local application data folder (`C:\Users\<name>\AppData\Local`), Windows only: where the
+/// recovery copies live (`crate::recovery`).
+#[cfg(windows)]
+pub fn local_app_data() -> Option<PathBuf> {
+    win::local_app_data().or_else(|| from_env("LOCALAPPDATA"))
 }
 
 /// The roots a file browser can start from above a folder: the drives (`C:\`, `D:\` …) on Windows,
@@ -98,7 +106,8 @@ mod win {
     use windows_sys::Win32::Storage::FileSystem::GetLogicalDrives;
     use windows_sys::Win32::System::Com::CoTaskMemFree;
     use windows_sys::Win32::UI::Shell::{
-        FOLDERID_Music, FOLDERID_Profile, FOLDERID_RoamingAppData, SHGetKnownFolderPath,
+        FOLDERID_LocalAppData, FOLDERID_Music, FOLDERID_Profile, FOLDERID_RoamingAppData,
+        SHGetKnownFolderPath,
     };
     use windows_sys::core::GUID;
 
@@ -112,6 +121,10 @@ mod win {
 
     pub fn roaming_app_data() -> Option<PathBuf> {
         known_folder(&FOLDERID_RoamingAppData)
+    }
+
+    pub fn local_app_data() -> Option<PathBuf> {
+        known_folder(&FOLDERID_LocalAppData)
     }
 
     pub fn drives() -> Vec<PathBuf> {

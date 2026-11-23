@@ -75,6 +75,7 @@ pub mod param_undo;
 pub mod platform;
 pub mod project_io;
 pub mod record;
+pub mod recovery;
 pub mod samples;
 pub mod settings;
 mod shell;
