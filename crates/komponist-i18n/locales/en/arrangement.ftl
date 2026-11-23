@@ -6,9 +6,6 @@ arrangement-new-track = New Track
 # Accessible name of the box that opens the dialog for new tracks.
 arrangement-new-track-button = New Track…
 
-# Its hint, before the shortcut of a new MIDI track (`$shortcut` is empty when none is bound).
-arrangement-new-track-hint = Drag an instrument here or { $shortcut }
-
 # S10: title of the empty-project hint.
 arrangement-empty-title = Empty Project
 

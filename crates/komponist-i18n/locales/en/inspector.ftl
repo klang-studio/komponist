@@ -144,9 +144,6 @@ inspector-device-active = Active
 # Tooltip detail of the power square of a bypassed device.
 inspector-device-bypass = Bypass
 
-# Status of a loading device (`ks-view.js` `fmt:'lädt'`).
-inspector-device-loading = loading
-
 # Status of a crashed device (S05 `D('Airwindows Cons.','abgestürzt',{err:1})`).
 inspector-device-crashed = crashed
 
