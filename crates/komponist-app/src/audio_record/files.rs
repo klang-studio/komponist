@@ -116,6 +116,104 @@ pub(super) fn stage(paths: &[PathBuf], target: &Path) -> io::Result<BTreeMap<Pat
     Ok(copies)
 }
 
+/// Hidden folders in `Takes` that hold copies a staging worker made but nobody accepted yet.
+const STAGING_PREFIX: &str = ".komponist-staging-";
+
+/// Copies of finished takes in a private folder inside `target` (`Takes`), so nothing sees them
+/// under a final name before the app accepts them (#221): `(private folder, source → copy)`.
+/// [`publish`] gives them their final names. On an error the private folder is gone.
+pub(super) fn stage_private(
+    paths: &[PathBuf],
+    target: &Path,
+) -> io::Result<(PathBuf, BTreeMap<PathBuf, PathBuf>)> {
+    ensure_takes_folder(target)?;
+    let private = tempfile::Builder::new()
+        .prefix(STAGING_PREFIX)
+        .tempdir_in(target)?
+        .keep();
+    match stage(paths, &private) {
+        Ok(copies) => Ok((private, copies)),
+        Err(error) => {
+            let _ = fs::remove_dir_all(&private);
+            Err(error)
+        }
+    }
+}
+
+/// Moves privately staged copies into `target` under final names (`source → final path`), never
+/// replacing a file there. On an error, the files published so far are removed again and the
+/// remaining private copies stay where they are.
+pub(super) fn publish(
+    copies: &BTreeMap<PathBuf, PathBuf>,
+    target: &Path,
+) -> io::Result<BTreeMap<PathBuf, PathBuf>> {
+    let mut published = BTreeMap::new();
+    let result = (|| {
+        for (source, copy) in copies {
+            let stem = source.file_stem().unwrap_or_default().to_string_lossy();
+            let extension = source.extension().unwrap_or_default().to_string_lossy();
+            let mut placed = None;
+            for index in 0..10_000 {
+                let suffix = if index == 0 {
+                    String::new()
+                } else {
+                    format!("-{index}")
+                };
+                let name = if extension.is_empty() {
+                    format!("{stem}{suffix}")
+                } else {
+                    format!("{stem}{suffix}.{extension}")
+                };
+                let destination = target.join(name);
+                // A hard link fails instead of replacing an existing file. Filesystems without
+                // links get a rename after a check.
+                match fs::hard_link(copy, &destination) {
+                    Ok(()) => {
+                        fs::remove_file(copy)?;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(_) if destination.exists() => continue,
+                    Err(_) => fs::rename(copy, &destination)?,
+                }
+                placed = Some(destination);
+                break;
+            }
+            let destination = placed.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "recording file names exhausted",
+                )
+            })?;
+            published.insert(source.clone(), destination);
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        for path in published.values() {
+            let _ = fs::remove_file(path);
+        }
+        return Err(error);
+    }
+    Ok(published)
+}
+
+/// Deletes private staging folders that a staging worker left in `target` (`Takes`) when the
+/// app ended before it could clean up (#221).
+pub(crate) fn reclaim_abandoned(target: &Path) {
+    let Ok(entries) = fs::read_dir(target) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let abandoned = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(STAGING_PREFIX));
+        if abandoned && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// A link may reach an owned source via a symlink rather than the writer's original spelling.
 pub(super) fn canonical_copies(copies: &BTreeMap<PathBuf, PathBuf>) -> BTreeMap<PathBuf, PathBuf> {
     copies
@@ -253,6 +351,31 @@ mod tests {
         assert!(stage(&[source.clone(), root.join("missing.wav")], &target).is_err());
         assert!(source.is_file());
         assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn private_copies_get_final_names_only_when_published() {
+        let root = scratch();
+        let source = root.join("Take.wav");
+        let target = root.join("Takes");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(&source, b"recording").unwrap();
+        fs::write(target.join("Take.wav"), b"previous recording").unwrap();
+        let (private, copies) = stage_private(std::slice::from_ref(&source), &target).unwrap();
+        assert!(private.starts_with(&target));
+        assert!(!target.join("Take-1.wav").exists(), "no final name yet");
+        let published = publish(&copies, &target).unwrap();
+        assert_eq!(published[&source], target.join("Take-1.wav"));
+        assert_eq!(fs::read(target.join("Take-1.wav")).unwrap(), b"recording");
+        assert_eq!(
+            fs::read(target.join("Take.wav")).unwrap(),
+            b"previous recording"
+        );
+        // Left behind by an app that ended: reclaimed, published files stay.
+        fs::write(private.join("Take.wav"), b"abandoned").unwrap();
+        reclaim_abandoned(&target);
+        assert!(!private.exists());
+        assert!(target.join("Take-1.wav").is_file());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

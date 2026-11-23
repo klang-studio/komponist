@@ -718,6 +718,7 @@ impl App {
                         );
                     }
                 }
+                crate::audio_record::reclaim_abandoned_takes(&project_dir);
                 self.open_document(doc, Some(path.clone()));
                 if !repairs.is_empty() {
                     eprintln!("komponist: {}: repaired on open: {repairs}", path.display());
