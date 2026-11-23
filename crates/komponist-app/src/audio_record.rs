@@ -131,9 +131,18 @@ struct StagedCopies {
 
 impl StagedCopies {
     /// Gives the copies their final names in `target`; the caller owns them then (the take's
-    /// document links refer to them). Returns `source → final path`.
+    /// document links refer to them). Returns `source → final path`. The new entries are flushed
+    /// before this returns, since the caller deletes the originals later: a power loss must not
+    /// keep the deletion and lose the copy. If the flush fails, the published files go again.
     fn publish(self, target: &Path) -> std::io::Result<BTreeMap<PathBuf, PathBuf>> {
-        files::publish(&self.copies, target)
+        let published = files::publish(&self.copies, target)?;
+        if let Err(error) = crate::project_io::sync_directory(target) {
+            for path in published.values() {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error);
+        }
+        Ok(published)
     }
 }
 
@@ -2290,6 +2299,38 @@ mod tests {
         app.audio_recording.shutdown(Duration::from_secs(5));
         releaser.join().unwrap();
         assert_eq!(std::fs::read_dir(root.join("Takes")).unwrap().count(), 0);
+    }
+
+    /// #221: published take names are flushed in Takes before any original can go. If that
+    /// flush fails, the take keeps its originals and the status says the move failed.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_flush_of_the_published_takes_keeps_the_originals() {
+        use crate::project_io::tests::FAIL_DIRECTORY_SYNC;
+        let (root, mut app, track) = rig();
+        begin(&mut app, track);
+        let (release, done) = staging_held(&mut app, &root);
+        release.send(()).unwrap();
+        done.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The commit (and its flush) runs on this thread in the next frame.
+        FAIL_DIRECTORY_SYNC.with(|flag| flag.set(true));
+        app.step();
+        FAIL_DIRECTORY_SYNC.with(|flag| flag.set(false));
+        assert!(!app.audio_recording.is_active());
+        let ClipContent::Audio(audio) = &app.project().track(track).unwrap().clips[0].content
+        else {
+            panic!("audio clip");
+        };
+        assert!(audio.file.abs.starts_with(root.join("Provisional")));
+        assert!(audio.file.abs.is_file());
+        assert!(app.audio_recording.provisional.contains(&audio.file.abs));
+        assert!(app.audio_recording.pending_removals.is_empty());
+        assert!(
+            visible(&root.join("Takes")).is_empty(),
+            "no unflushed copy stays"
+        );
+        let status = app.ui.status.as_ref().unwrap();
+        assert_eq!(status.kind, StatusKind::Error, "{}", status.text);
     }
 
     /// A take whose copy fails links its original WAV, and the status keeps the reason.

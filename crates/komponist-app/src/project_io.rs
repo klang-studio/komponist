@@ -238,7 +238,7 @@ fn containing_dir(path: &Path) -> Option<&Path> {
 }
 
 /// Flushes the entries of folder `dir`. Filesystems that reject fsync on a folder are fine.
-fn sync_directory(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn sync_directory(dir: &Path) -> std::io::Result<()> {
     #[cfg(test)]
     if tests::FAIL_DIRECTORY_SYNC.with(std::cell::Cell::get) {
         return Err(std::io::Error::other("injected directory sync failure"));
@@ -1272,13 +1272,13 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use komponist_model::fixtures::demo_project;
 
     thread_local! {
         /// Makes [`sync_directory`] fail on this thread, as a filesystem with a broken fsync would.
-        pub(super) static FAIL_DIRECTORY_SYNC: std::cell::Cell<bool> =
+        pub(crate) static FAIL_DIRECTORY_SYNC: std::cell::Cell<bool> =
             const { std::cell::Cell::new(false) };
         /// The folders [`sync_directory`] flushed on this thread.
         pub(super) static SYNCED: std::cell::RefCell<Vec<PathBuf>> =
