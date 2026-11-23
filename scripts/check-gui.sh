@@ -43,8 +43,10 @@ for test in acceptance_flow4_gui plugin_frame_gui; do
 done
 
 # The embedded-editor tests of the library crates: the `gui` modules only (the filter keeps the other
-# ignored tests out: installed third-party plugins, the release perf suites). One X11 client at a time.
-# The hosting library holds the CLAP and VST3 editors (clap::tests::gui, vst3::tests::gui).
+# ignored tests out, e.g. the release perf suites). One X11 client at a time. The hosting library holds
+# the CLAP and VST3 editors (clap::tests::gui, vst3::tests::gui). Those modules also hold tests with
+# installed third-party plugins (Klopfer, Surge XT, Dexed …): like every test with a real plugin, they
+# return early when the plugin is not installed, so only the kp-test-* editors are guaranteed coverage.
 xvfb-run -a -s "-screen 0 1920x1080x24" \
     cargo test -p komponist-hosting --lib -- --ignored --nocapture --test-threads=1 ::gui::
 for crate in komponist-bridge komponist-plugins; do

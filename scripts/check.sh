@@ -22,12 +22,13 @@ MINGW* | MSYS* | CYGWIN*) export WGPU_BACKEND="${WGPU_BACKEND:-vulkan}" ;;
 esac
 
 # Bundles of this OS (what std::env::consts::OS says); without them the plugin tests fail under REQUIRE_FIXTURES.
+# build-test-plugins.sh writes `complete` after the last copy, so an interrupted or failed copy is rebuilt.
 case "$(uname -s)" in
 Darwin) plugin_os=macos ;;
 MINGW* | MSYS* | CYGWIN*) plugin_os=windows ;;
 *) plugin_os=linux ;;
 esac
-if [ ! -d "target/test-plugins/$plugin_os/clap" ] || [ ! -d "target/test-plugins/$plugin_os/vst3" ]; then
+if [ ! -f "target/test-plugins/$plugin_os/complete" ]; then
     lowprio scripts/build-test-plugins.sh
 fi
 
