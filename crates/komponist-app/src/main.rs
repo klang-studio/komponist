@@ -128,7 +128,10 @@ fn main() -> ExitCode {
             eprintln!("usage: komponist --verify-bundled-clap [--bridge]");
             return ExitCode::from(2);
         }
-        return match komponist_plugins::verify_bundled_clap(force_bridge) {
+        return match komponist_plugins::verify_bundled_clap(
+            &settings::cache_dir_or_temp(),
+            force_bridge,
+        ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("bundled CLAP verification: {error}");
@@ -183,7 +186,7 @@ fn run_app() -> eframe::Result {
         (settings.audio.clone(), MidiSetup::System)
     };
     // The plugin bridge is this executable with `--bridge` (see `main`).
-    let mut host = PluginHost::new(PluginManagerConfig::defaults());
+    let mut host = PluginHost::new(PluginManagerConfig::defaults(&settings::cache_dir_or_temp()));
     let demo = if args.demo {
         let kit_dir = std::env::temp_dir().join("komponist-demo-kit");
         let project = komponist_app::showcase::bundled_demo(&host, &kit_dir)

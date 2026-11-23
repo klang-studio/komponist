@@ -5,6 +5,8 @@
 //! `no_std`, no allocation (but [`Synth::boxed`] with the `alloc` feature),
 //! fixed-size buffers. Must not depend on any HAL,
 //! Circle or OS facility so it can run both on the desktop and bare metal.
+// Missing SAFETY comments: 24 (`simd.rs`). Remove this allow when the crate is clean (#241 follow-up).
+#![allow(clippy::undocumented_unsafe_blocks)]
 #![cfg_attr(not(test), no_std)]
 
 #[cfg(any(test, feature = "alloc"))]

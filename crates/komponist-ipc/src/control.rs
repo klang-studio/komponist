@@ -1522,10 +1522,8 @@ mod tests {
         use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
         let mut flags = 0;
         // SAFETY: a valid handle and an out pointer.
-        assert_ne!(
-            unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) },
-            0
-        );
+        let ok = unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) };
+        assert_ne!(ok, 0);
         flags & HANDLE_FLAG_INHERIT != 0
     }
 
@@ -1896,7 +1894,7 @@ mod tests {
                 app.send_region(&b, this_process()).unwrap();
                 app.send(&ControlMsg::Deactivate).unwrap();
             });
-            // SAFETY (both): the peer is `app` above.
+            // SAFETY: the peer is `app` above, which sends both regions.
             let open = || ShmRegion::open(unsafe { bridge.recv_region() }.unwrap()).unwrap();
             assert_eq!(bridge.recv().unwrap(), ControlMsg::ListParams);
             assert_eq!(open().latency(), 1);
@@ -2021,12 +2019,12 @@ mod tests {
         drop(app);
         #[cfg(unix)]
         assert_eq!(bridge.recv_fd().unwrap_err(), ChannelError::Closed);
-        // SAFETY: nothing arrives (the peer is gone).
         #[cfg(windows)]
-        assert_eq!(
-            unsafe { bridge.recv_handle() }.unwrap_err(),
-            ChannelError::Closed
-        );
+        {
+            // SAFETY: nothing arrives (the peer is gone).
+            let received = unsafe { bridge.recv_handle() };
+            assert_eq!(received.unwrap_err(), ChannelError::Closed);
+        }
     }
 
     #[test]

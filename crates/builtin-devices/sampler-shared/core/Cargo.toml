@@ -2,9 +2,13 @@
 name = "sampler-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 description = "Realtime sampler engine of komponist: voices, pads, envelopes, interpolation, slicing"
+
+[lints]
+workspace = true
 
 [lib]
 name = "sampler_core"

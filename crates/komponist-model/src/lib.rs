@@ -23,6 +23,8 @@
 //! Threads: everything here is plain data and pure functions, used on the UI thread and on workers.
 //! Nothing in this crate runs on the audio thread.
 
+#![forbid(unsafe_code)]
+
 pub mod audio;
 pub mod automation;
 pub mod document;

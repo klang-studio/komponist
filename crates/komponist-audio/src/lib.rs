@@ -22,6 +22,9 @@
 //! Threads: `AudioSystem` and `MidiInputHub` live on the UI thread; `EngineSlot::process` and
 //! `AudioProcess::process` run on the audio thread; midir callbacks on MIDI threads.
 
+// Missing SAFETY comments: about 10 (hand count: the Linux-only JACK backend, not compiled on macOS). Remove this allow when the crate is clean (#241 follow-up).
+#![allow(clippy::undocumented_unsafe_blocks)]
+
 #[cfg(windows)]
 mod asio_registry;
 mod backend;

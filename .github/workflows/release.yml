@@ -61,7 +61,7 @@ jobs:
           echo "KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256=$digest" >> "$GITHUB_ENV"
 
       - name: Build
-        run: cargo build --release -p komponist-app --bin komponist
+        run: cargo build --locked --release -p komponist-app --bin komponist
 
       - name: Package
         run: |

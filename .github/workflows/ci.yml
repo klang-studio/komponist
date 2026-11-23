@@ -10,13 +10,26 @@
 # committed kittest.toml ([mac], [windows]) renders every snapshot without comparing it (other pixels).
 name: CI
 
-# Documentation and README media changes need no build.
+# Documentation and README media changes need no build, except the two docs files that code and tests read:
+# `docs/clap-device-layout/example.json` (`include_bytes!` in komponist-ipc) and `docs/INSTALL.md` (the packaging
+# test). `paths-ignore` cannot re-include a file (no `!`), so this is a `paths` list: everything, minus docs and
+# Markdown, plus those two files (a later positive pattern re-includes what a `!` pattern removed).
 on:
   push:
     branches: [main]
-    paths-ignore: ["docs/**", "**.md"]
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**.md"
+      - "docs/clap-device-layout/example.json"
+      - "docs/INSTALL.md"
   pull_request:
-    paths-ignore: ["docs/**", "**.md"]
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**.md"
+      - "docs/clap-device-layout/example.json"
+      - "docs/INSTALL.md"
 
 permissions:
   contents: read
@@ -63,7 +76,7 @@ jobs:
             libwayland-dev libfontconfig1-dev libgl1-mesa-dev \
             mesa-vulkan-drivers libvulkan1 xvfb xauth gdb
 
-      # rust-toolchain.toml: stable + rustfmt + clippy.
+      # rust-toolchain.toml: pinned version + rustfmt + clippy.
       - name: Install Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
@@ -83,7 +96,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       # The SDK is a workspace of its own (excluded from the root), but its adapter and author crates ship in
       # every komponist-bundled-* crate.
@@ -129,7 +142,7 @@ jobs:
         env:
           TEST_WATCHDOG: "1200"
         run: |
-          cargo test --workspace &
+          cargo test --locked --workspace &
           tests=$!
           (
             sleep "$TEST_WATCHDOG"
@@ -181,7 +194,7 @@ jobs:
           persist-credentials: false
 
       # Xcode command line tools, bash and rustup come with the runner image; no system packages needed.
-      # rust-toolchain.toml: stable + rustfmt + clippy.
+      # rust-toolchain.toml: pinned version + rustfmt + clippy.
       - name: Install Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
@@ -196,7 +209,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       # The SDK is a workspace of its own (excluded from the root), but its adapter and author crates ship in
       # every komponist-bundled-* crate.
@@ -223,7 +236,7 @@ jobs:
           # or deadlocked audio thread; the timing checks are the release soak and the perf suites
           # (docs/PERFORMANCE.md).
           KOMPONIST_SOAK_MIN_CALLBACKS: "50"
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --locked --workspace --no-fail-fast
 
       # The timer leeway of os_sync waits differs between macOS versions and with how idle the
       # machine is (#101); only this runner shows macOS 15. Print what the leeway checks measured
@@ -232,7 +245,7 @@ jobs:
         if: always()
         timeout-minutes: 5
         run: >-
-          cargo test -p komponist-rt -p komponist-ipc --lib a_timed_out_wait_ends_close_to_its_deadline
+          cargo test --locked -p komponist-rt -p komponist-ipc --lib a_timed_out_wait_ends_close_to_its_deadline
           -- --nocapture
 
   # Windows x86_64 (port in progress, branch `windows`). Formatting is checked once, on Linux. No GUI tests
@@ -271,7 +284,7 @@ jobs:
           workspace-copy: true
 
       # Visual Studio Build Tools (MSVC), Git Bash and rustup come with the runner image.
-      # rust-toolchain.toml: stable + rustfmt + clippy.
+      # rust-toolchain.toml: pinned version + rustfmt + clippy.
       - name: Install Rust toolchain
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
         run: rustup show active-toolchain || rustup toolchain install
@@ -288,7 +301,7 @@ jobs:
 
       - name: Clippy
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       # The SDK is a workspace of its own (excluded from the root), but its adapter and author crates ship in
       # every komponist-bundled-* crate.
@@ -311,7 +324,7 @@ jobs:
       - name: Test
         timeout-minutes: 45
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --locked --workspace --no-fail-fast
 
       # TEMPORARY (#251 trial, removed before merge): two more parallel runs of the app and UI suites, so one CI
       # run shows whether DX12/WARP still terminates concurrent renderings.
@@ -322,7 +335,7 @@ jobs:
           status=0
           for run in 2 3; do
             echo "::group::Run $run"
-            cargo test -p komponist-app -p komponist-ui --no-fail-fast || status=$?
+            cargo test --locked -p komponist-app -p komponist-ui --no-fail-fast || status=$?
             echo "::endgroup::"
           done
           exit "$status"
@@ -336,8 +349,8 @@ jobs:
         env:
           LIBCLANG_PATH: C:\Program Files\LLVM\bin
         run: |
-          cargo clippy -p komponist-audio --all-targets --features asio -- -D warnings
-          cargo test -p komponist-audio --features asio
+          cargo clippy --locked -p komponist-audio --all-targets --features asio -- -D warnings
+          cargo test --locked -p komponist-audio --features asio
 
       # The test scratch folders in target/tmp hold a file with a non-ASCII name (a plugins scan test), which
       # Git for Windows' tar cannot read when rust-cache packs target/: "File removed before we read it", and the
