@@ -5,8 +5,6 @@
 //! `no_std` with `alloc`: the master effects' delay lines are allocated at
 //! construction, sized from the sample rate; rendering allocates nothing.
 //! Must not depend on any HAL or OS facility.
-// Missing SAFETY comments: 24 (`simd.rs`). Remove this allow when the crate is clean (#241 follow-up).
-#![allow(clippy::undocumented_unsafe_blocks)]
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;

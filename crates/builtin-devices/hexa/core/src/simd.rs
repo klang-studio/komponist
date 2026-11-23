@@ -7,6 +7,17 @@
 //! arithmetic on `f32` / `u32`, on both backends.
 //!
 //! Masks are [`U32x4`] lanes of all ones (true) or zero (false).
+//!
+//! # Safety
+//!
+//! The only `unsafe` code is in the NEON backend, and it is of two kinds.
+//! The intrinsics are `unsafe` to call only because they need the NEON target
+//! feature, which that module's `cfg` guarantees at compile time; almost all
+//! of them take and return values in vector registers and access no memory.
+//! The exceptions are the loads and stores (`from_array`, `to_array`), which
+//! read or write exactly four lanes through a pointer to an owned `[T; 4]`,
+//! and one `transmute` between `[f32; 4]` and `float32x4_t`, which have the
+//! same size and every bit pattern valid. The portable backend is safe code.
 
 pub(crate) const LANES: usize = 4;
 
@@ -60,29 +71,34 @@ mod neon {
 
         #[inline(always)]
         pub(crate) fn splat(x: f32) -> Self {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             Self(unsafe { vdupq_n_f32(x) })
         }
 
         #[inline(always)]
         pub(crate) fn from_array(a: [f32; 4]) -> Self {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); `a` is four lanes, exactly what the load reads.
             Self(unsafe { vld1q_f32(a.as_ptr()) })
         }
 
         #[inline(always)]
         pub(crate) fn to_array(self) -> [f32; 4] {
             let mut a = [0.0; 4];
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); `a` is four lanes, exactly what the store writes.
             unsafe { vst1q_f32(a.as_mut_ptr(), self.0) };
             a
         }
 
         #[inline(always)]
         pub(crate) fn abs(self) -> Self {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             Self(unsafe { vabsq_f32(self.0) })
         }
 
         /// The magnitude of `self` with the sign of `sign`.
         #[inline(always)]
         pub(crate) fn copysign(self, sign: Self) -> Self {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsics work on values in registers, no memory is accessed.
             unsafe {
                 let sign_bit = vdupq_n_u32(0x8000_0000);
                 Self(vbslq_f32(sign_bit, sign.0, self.0))
@@ -91,23 +107,27 @@ mod neon {
 
         #[inline(always)]
         pub(crate) fn lt(self, other: Self) -> U32x4 {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             U32x4(unsafe { vcltq_f32(self.0, other.0) })
         }
 
         #[inline(always)]
         pub(crate) fn gt(self, other: Self) -> U32x4 {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             U32x4(unsafe { vcgtq_f32(self.0, other.0) })
         }
 
         /// `(x as i32) as f32`.
         #[inline(always)]
         pub(crate) fn to_i32_f32(self) -> Self {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             Self(unsafe { vcvtq_f32_s32(vcvtq_s32_f32(self.0)) })
         }
 
         /// `x as u32`.
         #[inline(always)]
         pub(crate) fn to_u32(self) -> U32x4 {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             U32x4(unsafe { vcvtq_u32_f32(self.0) })
         }
 
@@ -115,6 +135,7 @@ mod neon {
         /// for phase offsets of many periods. Exact through `f64`.
         #[inline(always)]
         pub(crate) fn to_u32_wrapping(self) -> U32x4 {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             unsafe {
                 let low = vcvtq_s64_f64(vcvt_f64_f32(vget_low_f32(self.0)));
                 let high = vcvtq_s64_f64(vcvt_high_f64_f32(self.0));
@@ -126,75 +147,88 @@ mod neon {
     impl U32x4 {
         #[inline(always)]
         pub(crate) fn from_array(a: [u32; 4]) -> Self {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); `a` is four lanes, exactly what the load reads.
             Self(unsafe { vld1q_u32(a.as_ptr()) })
         }
 
         #[inline(always)]
         pub(crate) fn to_array(self) -> [u32; 4] {
             let mut a = [0; 4];
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); `a` is four lanes, exactly what the store writes.
             unsafe { vst1q_u32(a.as_mut_ptr(), self.0) };
             a
         }
 
         #[inline(always)]
         pub(crate) fn wrapping_add(self, other: Self) -> Self {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             Self(unsafe { vaddq_u32(self.0, other.0) })
         }
 
         #[inline(always)]
         pub(crate) fn shl<const N: i32>(self) -> Self {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             Self(unsafe { vshlq_n_u32::<N>(self.0) })
         }
 
         #[inline(always)]
         pub(crate) fn shr<const N: i32>(self) -> Self {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             Self(unsafe { vshrq_n_u32::<N>(self.0) })
         }
 
         /// `a < b`, unsigned.
         #[inline(always)]
         pub(crate) fn lt(self, other: Self) -> Self {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             Self(unsafe { vcltq_u32(self.0, other.0) })
         }
 
         #[inline(always)]
         pub(crate) fn eq(self, other: Self) -> Self {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             Self(unsafe { vceqq_u32(self.0, other.0) })
         }
 
         /// `x as i32 > 0`.
         #[inline(always)]
         pub(crate) fn positive_i32(self) -> Self {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             Self(unsafe { vcgtzq_s32(vreinterpretq_s32_u32(self.0)) })
         }
 
         /// `x as f32`.
         #[inline(always)]
         pub(crate) fn to_f32(self) -> F32x4 {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             F32x4(unsafe { vcvtq_f32_u32(self.0) })
         }
 
         /// `(x as i32) as f32`.
         #[inline(always)]
         pub(crate) fn to_i32_f32(self) -> F32x4 {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             F32x4(unsafe { vcvtq_f32_s32(vreinterpretq_s32_u32(self.0)) })
         }
 
         /// Whether any lane of this mask is set.
         #[inline(always)]
         pub(crate) fn any(self) -> bool {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             unsafe { vmaxvq_u32(self.0) != 0 }
         }
 
         /// Per lane of this mask: `a` where set, else `b`.
         #[inline(always)]
         pub(crate) fn select(self, a: F32x4, b: F32x4) -> F32x4 {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             F32x4(unsafe { vbslq_f32(self.0, a.0, b.0) })
         }
 
         /// Like [`Self::select`], for `u32` lanes.
         #[inline(always)]
         pub(crate) fn select_u32(self, a: U32x4, b: U32x4) -> U32x4 {
+            // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsic works on values in registers, no memory is accessed.
             U32x4(unsafe { vbslq_u32(self.0, a.0, b.0) })
         }
     }
@@ -205,6 +239,7 @@ mod neon {
                 type Output = Self;
                 #[inline(always)]
                 fn $method(self, other: Self) -> Self {
+                    // SAFETY: NEON is enabled at compile time (see the module's `cfg`); the intrinsics work on values in registers, no memory is accessed.
                     Self(unsafe { $intrinsic(self.0, other.0) })
                 }
             }
