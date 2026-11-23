@@ -6,7 +6,8 @@ komponist is an audio and MIDI DAW for Linux, macOS and Windows. This document d
 current implementation and the decisions embodied in it. Dependency versions are defined in
 `../Cargo.toml` and resolved in `../Cargo.lock`. Installation and packaging instructions are in
 [INSTALL.md](INSTALL.md), language and catalog rules in [I18N.md](I18N.md), and measurements in
-[PERFORMANCE.md](PERFORMANCE.md).
+[PERFORMANCE.md](PERFORMANCE.md). New to the project, or to audio and realtime programming? Start
+with the guided tour in [ARCHITECTURE-GUIDE.md](ARCHITECTURE-GUIDE.md).
 
 ## 1. Architectural boundaries
 
