@@ -27,7 +27,7 @@ use crate::settings::CaptureFormat;
 use crate::ui_state::StatusKind;
 
 /// How long Save (and opening the export) waits for a stopped take to drain and be copied.
-const TAKE_FINISH_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const TAKE_FINISH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The live view of an audio session, read by the arrangement, dock and inspector.
 #[derive(Default)]
@@ -115,10 +115,31 @@ struct Staging {
     result: recording::RecordingResult,
     /// The project folder the copies go to (its `Takes`).
     directory: PathBuf,
-    done: mpsc::Receiver<std::io::Result<BTreeMap<PathBuf, PathBuf>>>,
+    done: mpsc::Receiver<StageResult>,
+    /// Hangs up once the worker has ended, its clean-up included.
+    alive: mpsc::Receiver<()>,
 }
 
-type StageResult = std::io::Result<BTreeMap<PathBuf, PathBuf>>;
+/// Copies a staging worker made. Until the take that uses them is committed, this value is
+/// their only owner: dropping it (a discarded take, a result nobody received) deletes them.
+struct StagedCopies(BTreeMap<PathBuf, PathBuf>);
+
+impl StagedCopies {
+    /// The copies, which the caller now owns (the take's document links refer to them).
+    fn adopt(mut self) -> BTreeMap<PathBuf, PathBuf> {
+        std::mem::take(&mut self.0)
+    }
+}
+
+impl Drop for StagedCopies {
+    fn drop(&mut self) {
+        for copy in self.0.values() {
+            let _ = std::fs::remove_file(copy);
+        }
+    }
+}
+
+type StageResult = std::io::Result<StagedCopies>;
 
 /// Tests: holds the next staging worker until `go` gets a message (or hangs up) and reports on
 /// `finished` when it is done, its clean-up included.
@@ -128,14 +149,16 @@ struct StageGate {
     finished: mpsc::Sender<()>,
 }
 
-/// Runs [`files::stage`] on a worker. If nobody takes the result any more (the take was discarded,
-/// the app closed), the worker deletes its own copies; the sources stay as they are.
+/// Runs [`files::stage`] on a worker; returns the receivers of its result and of its end. If
+/// nobody takes the result (the take was discarded, the app closes), the [`StagedCopies`] in it
+/// delete themselves; the sources stay as they are.
 fn stage_in_background(
     paths: Vec<PathBuf>,
     target: PathBuf,
     #[cfg(test)] gate: Option<StageGate>,
-) -> mpsc::Receiver<StageResult> {
+) -> (mpsc::Receiver<StageResult>, mpsc::Receiver<()>) {
     let (sender, done) = mpsc::sync_channel(1);
+    let (alive, ended) = mpsc::channel::<()>();
     let worker = sender.clone();
     let spawned = std::thread::Builder::new()
         .name("komponist-take-staging".into())
@@ -144,12 +167,9 @@ fn stage_in_background(
             if let Some(gate) = &gate {
                 let _ = gate.go.recv();
             }
-            let staged = files::stage(&paths, &target);
-            if let Err(mpsc::SendError(Ok(copies))) = worker.send(staged) {
-                for copy in copies.values() {
-                    let _ = std::fs::remove_file(copy);
-                }
-            }
+            // A failed send drops the copies here, before `alive` reports the end.
+            let _ = worker.send(files::stage(&paths, &target).map(StagedCopies));
+            drop(alive);
             #[cfg(test)]
             if let Some(gate) = gate {
                 let _ = gate.finished.send(());
@@ -158,7 +178,7 @@ fn stage_in_background(
     if let Err(error) = spawned {
         let _ = sender.send(Err(error));
     }
-    done
+    (done, ended)
 }
 
 impl Capture {
@@ -221,6 +241,8 @@ pub(crate) struct State {
     pending_midi: Option<record::Commit>,
     pending_automation: Option<crate::automation_capture::AutomationCapture>,
     pending_removals: BTreeSet<PathBuf>,
+    /// The ends of staging workers whose take was dropped; shutdown waits for their clean-up.
+    cleanup: Vec<mpsc::Receiver<()>>,
     #[cfg(test)]
     stage_gate: Option<StageGate>,
 }
@@ -291,9 +313,15 @@ impl State {
         self.pending_removals.clear();
     }
     /// Drops the running take. A take whose copies are still being made is dropped as well, like
-    /// one still draining its tail: the worker deletes its copies, the finished WAVs stay.
+    /// one still draining its tail: its copies are deleted (by the worker, or here if they are
+    /// already made), the finished WAVs stay.
     pub(crate) fn cancel(&mut self) {
-        if let Some(capture) = self.capture.take() {
+        if let Some(mut capture) = self.capture.take() {
+            if let Some(staging) = capture.staging.take() {
+                self.cleanup
+                    .retain(|ended| ended.try_recv() == Err(mpsc::TryRecvError::Empty));
+                self.cleanup.push(staging.alive);
+            }
             capture.session.cancel();
             for path in &capture.owned {
                 self.provisional.remove(path);
@@ -301,6 +329,18 @@ impl State {
         }
         self.pending_midi = None;
         self.pending_automation = None;
+    }
+}
+
+impl State {
+    /// Quitting: drops the running take and waits, at most `timeout`, until the staging workers
+    /// of dropped takes have deleted their copies, so none stay behind in the project folder.
+    pub(crate) fn shutdown(&mut self, timeout: Duration) {
+        self.cancel();
+        let deadline = Instant::now() + timeout;
+        for ended in self.cleanup.drain(..) {
+            let _ = ended.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        }
     }
 }
 
@@ -443,18 +483,39 @@ impl App {
     }
 
     /// One step of the take's lifecycle: refreshes the live view and commits a finished take.
-    /// With `wait`, it blocks up to that long on the completion signal of the writer or of the
-    /// staging worker (no busy-wait, #221); without, it never blocks.
-    fn advance_audio_take(&mut self, wait: Option<Duration>) {
+    /// With a `deadline`, it blocks until then at most on the completion signal of the writer or
+    /// of the staging worker (no busy-wait, #221) and leaves the live view as it is, since that
+    /// may wait for the writer's progress lock; without, it never blocks.
+    fn advance_audio_take(&mut self, deadline: Option<Instant>) {
         if self
             .audio_recording
             .capture
             .as_ref()
             .is_some_and(|capture| capture.staging.is_some())
         {
-            self.poll_take_staging(wait);
+            self.poll_take_staging(deadline);
             return;
         }
+        if deadline.is_none() {
+            self.refresh_take_view();
+        }
+        let Some(capture) = &mut self.audio_recording.capture else {
+            return;
+        };
+        let polled = match deadline {
+            Some(deadline) => capture
+                .session
+                .poll_timeout(deadline.saturating_duration_since(Instant::now())),
+            None => capture.session.poll(),
+        };
+        let Some(result) = polled else {
+            return;
+        };
+        self.take_finished(result);
+    }
+
+    /// The live view of the running take: its growing clips and finished laps.
+    fn refresh_take_view(&mut self) {
         let project = self.project().clone();
         let head = self.engine.playhead();
         let Some(capture) = &mut self.audio_recording.capture else {
@@ -502,13 +563,13 @@ impl App {
             }
             capture.view.progress.push(progress);
         }
-        let polled = match wait {
-            Some(timeout) => capture.session.poll_timeout(timeout),
-            None => capture.session.poll(),
-        };
-        let Some(result) = polled else {
-            return;
-        };
+    }
+
+    /// The writer's end: commits the take, or hands its copies to a staging worker first.
+    fn take_finished(
+        &mut self,
+        result: Result<recording::RecordingResult, recording::RecordingError>,
+    ) {
         let mut capture = self
             .audio_recording
             .capture
@@ -516,6 +577,11 @@ impl App {
             .expect("polled capture exists");
         match result {
             Ok(result) => {
+                // A lap that ended between two frames was never in the live view: Esc while its
+                // copy is made must still treat it as this take's file.
+                capture
+                    .owned
+                    .extend(result.takes.iter().map(|take| take.path.clone()));
                 if capture.provisional {
                     self.audio_recording
                         .provisional
@@ -531,7 +597,7 @@ impl App {
                         .collect();
                     if !paths.is_empty() {
                         // Copying can take seconds: the take is committed once the worker is done.
-                        let done = stage_in_background(
+                        let (done, alive) = stage_in_background(
                             paths,
                             directory.join("Takes"),
                             #[cfg(test)]
@@ -541,6 +607,7 @@ impl App {
                             result,
                             directory,
                             done,
+                            alive,
                         });
                         self.audio_recording.capture = Some(capture);
                         return;
@@ -600,9 +667,9 @@ impl App {
         }
     }
 
-    /// Commits the staged take once the worker's copies are done (`wait`: as in
+    /// Commits the staged take once the worker's copies are done (`deadline`: as in
     /// [`App::advance_audio_take`]).
-    fn poll_take_staging(&mut self, wait: Option<Duration>) {
+    fn poll_take_staging(&mut self, deadline: Option<Instant>) {
         let Some(staging) = self
             .audio_recording
             .capture
@@ -612,10 +679,10 @@ impl App {
             return;
         };
         // `Err(true)`: the worker hung up without a result.
-        let received = match wait {
-            Some(timeout) => staging
+        let received = match deadline {
+            Some(deadline) => staging
                 .done
-                .recv_timeout(timeout)
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .map_err(|error| error == mpsc::RecvTimeoutError::Disconnected),
             None => staging
                 .done
@@ -644,9 +711,11 @@ impl App {
         mut result: recording::RecordingResult,
         staged: Option<(PathBuf, StageResult)>,
     ) {
+        let mut move_failed = None;
         if let Some((directory, staged)) = staged {
             match staged {
-                Ok(mapping) => {
+                Ok(copies) => {
+                    let mapping = copies.adopt();
                     for take in &mut result.takes {
                         if let Some(path) = mapping.get(&take.path) {
                             self.audio_recording.provisional.remove(&take.path);
@@ -679,9 +748,8 @@ impl App {
                         });
                     }
                 }
-                Err(error) => {
-                    self.set_status(self.lang.audio_record_move_failed(error), StatusKind::Error)
-                }
+                // The take links its original WAVs; the error stays the last word below.
+                Err(error) => move_failed = Some(self.lang.audio_record_move_failed(error)),
             }
         }
         let midi = self.audio_recording.pending_midi.take();
@@ -731,6 +799,9 @@ impl App {
         } else {
             self.set_status(self.lang.audio_record_apply_failed(), StatusKind::Error);
         }
+        if let Some(move_failed) = move_failed {
+            self.set_status(move_failed, StatusKind::Error);
+        }
         drop(capture); // joins/IO only on this non-RT thread
     }
 
@@ -748,12 +819,8 @@ impl App {
             return true;
         }
         let deadline = Instant::now() + TAKE_FINISH_TIMEOUT;
-        while self.audio_recording.capture.is_some() {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                break;
-            }
-            self.advance_audio_take(Some(left));
+        while self.audio_recording.capture.is_some() && Instant::now() < deadline {
+            self.advance_audio_take(Some(deadline));
         }
         if self.audio_recording.capture.is_some() {
             self.set_status(self.lang.audio_record_finalizing(), StatusKind::Info);
@@ -2056,6 +2123,132 @@ mod tests {
         done.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(std::fs::read_dir(root.join("Takes")).unwrap().count(), 0);
         assert!(app.project().track(track).unwrap().clips.is_empty());
+    }
+
+    /// Holds the next staging worker: stops the take begun on `track` in a saved project and
+    /// steps until its copy waits for `release`. `finished` reports the worker's end.
+    fn staging_held(app: &mut App, root: &Path) -> (mpsc::Sender<()>, mpsc::Receiver<()>) {
+        app.project_path = Some(root.join("Song.komponist"));
+        let (release, go) = mpsc::channel::<()>();
+        let (finished, done) = mpsc::channel();
+        app.audio_recording.stage_gate = Some(StageGate { go, finished });
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(app, |app| {
+            app.audio_recording
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.staging.is_some())
+        });
+        (release, done)
+    }
+
+    /// Copies already made but not yet received when the take is discarded are deleted too.
+    #[test]
+    fn copies_made_before_a_discard_are_deleted() {
+        let (root, mut app, track) = rig();
+        begin(&mut app, track);
+        let (release, done) = staging_held(&mut app, &root);
+        release.send(()).unwrap();
+        done.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The worker has ended; its copy waits in the channel for the next frame.
+        assert_eq!(std::fs::read_dir(root.join("Takes")).unwrap().count(), 1);
+        app.dispatch(Action::Transport(TransportAction::DiscardTake));
+        assert!(!app.audio_recording.is_active());
+        assert_eq!(std::fs::read_dir(root.join("Takes")).unwrap().count(), 0);
+    }
+
+    /// Quitting waits (bounded) for the worker of a dropped take to delete its copies.
+    #[test]
+    fn shutdown_waits_until_a_dropped_take_has_no_copies() {
+        let (root, mut app, track) = rig();
+        begin(&mut app, track);
+        let (release, _done) = staging_held(&mut app, &root);
+        app.dispatch(Action::Transport(TransportAction::DiscardTake));
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            release.send(()).unwrap();
+        });
+        app.audio_recording.shutdown(Duration::from_secs(5));
+        releaser.join().unwrap();
+        assert_eq!(std::fs::read_dir(root.join("Takes")).unwrap().count(), 0);
+    }
+
+    /// A take whose copy fails links its original WAV, and the status keeps the reason.
+    #[test]
+    fn a_failed_copy_links_the_original_and_keeps_the_error_visible() {
+        let (root, mut app, track) = rig();
+        begin(&mut app, track);
+        std::fs::write(root.join("Takes"), b"not a folder").unwrap();
+        app.project_path = Some(root.join("Song.komponist"));
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(&mut app, |app| !app.audio_recording.is_active());
+        let ClipContent::Audio(audio) = &app.project().track(track).unwrap().clips[0].content
+        else {
+            panic!("audio clip");
+        };
+        assert!(audio.file.abs.starts_with(root.join("Provisional")));
+        assert!(audio.file.abs.is_file());
+        assert!(app.audio_recording.provisional.contains(&audio.file.abs));
+        let status = app.ui.status.as_ref().unwrap();
+        assert_eq!(status.kind, StatusKind::Error, "{}", status.text);
+        assert_ne!(status.text, app.lang.audio_record_complete(1));
+    }
+
+    /// Laps that finished between two frames never reach the live view; a take discarded while
+    /// its copy is made still gives them up.
+    #[test]
+    fn laps_no_frame_saw_are_given_up_with_a_take_discarded_during_its_copy() {
+        let (root, mut app, track) = rig();
+        let (lo, hi) = (Tick(32), Tick(64));
+        app.doc
+            .apply("Set loop", |project| {
+                let project = edits::set_project_prop(
+                    project,
+                    edits::ProjectProp::LoopRange(komponist_model::TickRange::new(lo, hi)),
+                )?;
+                edits::set_project_prop(&project, edits::ProjectProp::LoopOn(true))
+            })
+            .unwrap();
+        app.step();
+        let map = app.project().tempo_map();
+        let rate = f64::from(app.engine_mut().sample_rate());
+        let lead = map.tick_to_sample(lo, rate) as usize;
+        let end = map.tick_to_sample(hi, rate) as usize;
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(lead + 64, &[], 0));
+        wait(&mut app, |app| {
+            app.audio_recording()
+                .and_then(|view| view.progress(track))
+                .is_some_and(|progress| progress.frames > 0)
+        });
+        app.project_path = Some(root.join("Song.komponist"));
+        let (release, go) = mpsc::channel::<()>();
+        let (finished, _done) = mpsc::channel();
+        app.audio_recording.stage_gate = Some(StageGate { go, finished });
+        // Four laps without a frame, then stop: the middle laps are never shown.
+        assert!(app.engine_mut().run_held(4 * (end - lead), &[], 0));
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        app.advance_audio_take(Some(Instant::now() + Duration::from_secs(5)));
+        let paths: Vec<PathBuf> = app
+            .audio_recording
+            .capture
+            .as_ref()
+            .and_then(|capture| capture.staging.as_ref())
+            .expect("the copy waits")
+            .result
+            .takes
+            .iter()
+            .map(|take| take.path.clone())
+            .collect();
+        assert!(paths.len() >= 4, "{paths:?}");
+        app.dispatch(Action::Transport(TransportAction::DiscardTake));
+        for path in &paths {
+            assert!(!app.audio_recording.provisional.contains(path), "{path:?}");
+        }
+        drop(release);
     }
 
     #[test]

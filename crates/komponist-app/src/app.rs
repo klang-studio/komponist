@@ -1181,6 +1181,8 @@ impl App {
         self.shutdown_export();
         self.persist_panel_layout();
         self.shutdown_plugin_frames();
+        self.audio_recording
+            .shutdown(crate::audio_record::TAKE_FINISH_TIMEOUT);
         self.engine.shutdown();
         self.engine.host_mut().shutdown();
     }
