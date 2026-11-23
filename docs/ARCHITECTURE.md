@@ -246,6 +246,19 @@ Settings and recent lists are separate `settings.json` and `recent.json`; the sc
 `plugins.json`. Windows resolves known folders through the shell, with environment fallbacks.
 Waveform and tempo caches are user cache data rather than project assets.
 
+**Recovery copies** (#227, `komponist-app::recovery`): while the open document has unsaved
+changes, a writer thread keeps a copy of it in a per-user state folder
+(`$XDG_STATE_HOME/komponist/recovery` or `~/.local/state/komponist/recovery`, macOS
+`~/Library/Application Support/komponist/Recovery`, Windows Local AppData `komponist\Recovery`):
+2 s after the last change, at most 30 s old while changes go on, deleted when the document is clean,
+closed or the app quits. Each document has `<id>.komponist` (the project file format), `<id>.json`
+(original path, name, time, the file's fingerprint, how the session ended; written before the copy)
+and `<id>.lock`, an advisory lock held while the document is open. The folder is owner-only (`0700`,
+files `0600` on Unix). A panic hook writes the copy when the UI thread
+panics. At the next start the copies whose lock is free are offered before anything opens; a
+recovered copy opens dirty under its original path. The project file itself is only ever written
+by a save.
+
 ## 6. Engine (`komponist-engine`)
 
 ### 6.1 Realtime rules

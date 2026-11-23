@@ -194,3 +194,20 @@ status-edit-macro-full = Not possible: track macro { $n } already has 16 mapping
 status-edit-failed = Edit not possible
 status-midi-enable-failed = Cannot open MIDI input “{ $device }”
 status-audio-input-failed = Cannot start audio input · Settings { $shortcut }
+
+## Crash recovery (#227, crash-recovery proposal (internal notes)).
+
+# A recovered copy opened; `$time` is "today 14:32", `$shortcut` the save shortcut ("Ctrl+S"), `$file` the file name.
+status-recovered = Recovered changes from { $time } · { $shortcut } saves them to “{ $file }”
+
+# Same for a project that was never saved.
+status-recovered-untitled = Recovered changes from { $time } · { $shortcut } saves them as a new project
+
+# Same for a project whose file is gone: saving asks for a location.
+status-recovered-elsewhere = Recovered changes from { $time } · { $shortcut } asks where to save them
+
+# The recovery copy could not be written (once per session); `$reason` is one of the `project-reason-*` texts.
+status-recovery-write-failed = Cannot write the recovery copy: { $reason }
+
+# The recovery folder could not be read at start; `$reason` is one of the `project-reason-*` texts.
+status-recovery-scan-failed = Cannot read the recovery copies: { $reason }
