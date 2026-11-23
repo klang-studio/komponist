@@ -609,7 +609,9 @@ WinMM inputs can be busy in another program; that state remains visible. Callbac
 input to frame offsets; display latency combines the effective period and reported stream latency.
 A stream that takes the MIDI queue over discards messages older than one period instead of
 playing them as a burst. Discarded and overflowed messages are counted, and the receiver then
-releases the notes and sustain pedals it delivered, so a lost note-off never leaves a note hanging.
+releases the notes and sustain pedals it delivered, after every message queued before a loss, so a
+lost note-off never leaves a note hanging. It tracks every port id; the hub therefore gives ids to at
+most 128 inputs per session and reports further ones as refused.
 
 ## 8. Plugins
 

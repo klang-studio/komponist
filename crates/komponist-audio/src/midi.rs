@@ -15,7 +15,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use midir::{Ignore, MidiInput, MidiInputConnection, MidiInputPort};
 
@@ -24,9 +24,11 @@ use midir::{Ignore, MidiInput, MidiInputConnection, MidiInputPort};
 /// releases the notes it delivered, since a dropped note-off would leave one hanging.
 pub const MIDI_QUEUE_CAPACITY: usize = 4096;
 
-/// Ports whose held notes and sustain pedals a [`MidiReceiver`] tracks at the same time for a
-/// release. A port holds an entry only while one of its notes or pedals is down.
-const HELD_PORTS: usize = 16;
+/// Ports a hub opens at most, over its lifetime: port ids are `0 .. MAX_MIDI_PORTS`. Every
+/// [`MidiReceiver`] tracks the held notes of each of them, so a release covers every port that
+/// can deliver. The hub refuses further ports ([`MidiInputHub::refused_ports`]); a message from a
+/// larger id is not queued.
+pub const MAX_MIDI_PORTS: usize = 128;
 
 /// Release messages one callback delivers at most, so a release has a bounded cost; the rest
 /// follow at frame 0 of the next callbacks. 16 channels of sustain plus a ten-finger chord on
@@ -85,44 +87,95 @@ impl std::error::Error for MidiError {}
 /// The notes and sustain pedals of one port that the receiver delivered and that are still down.
 #[derive(Debug, Clone, Copy)]
 struct HeldPort {
-    port: MidiPortId,
     /// One bit per key and channel.
     keys: [u128; 16],
+    /// One bit per channel with a key in `keys`.
+    channels: u16,
     /// One bit per channel whose sustain pedal (CC 64) is down.
     sustain: u16,
 }
 
 impl HeldPort {
     const IDLE: HeldPort = HeldPort {
-        port: MidiPortId(0),
         keys: [0; 16],
+        channels: 0,
         sustain: 0,
     };
 
     fn idle(&self) -> bool {
-        self.sustain == 0 && self.keys.iter().all(|&keys| keys == 0)
+        self.channels == 0 && self.sustain == 0
     }
+
+    fn set_key(&mut self, channel: usize, key: u8, down: bool) {
+        let keys = &mut self.keys[channel];
+        if down {
+            *keys |= 1u128 << key;
+        } else {
+            *keys &= !(1u128 << key);
+        }
+        self.set_channel(channel);
+    }
+
+    fn set_channel(&mut self, channel: usize) {
+        let bit = 1u16 << channel;
+        if self.keys[channel] == 0 {
+            self.channels &= !bit;
+        } else {
+            self.channels |= bit;
+        }
+    }
+}
+
+/// What every port holds; allocated with the receiver.
+#[derive(Debug)]
+struct Held {
+    /// Indexed by port id.
+    ports: [HeldPort; MAX_MIDI_PORTS],
+    /// One bit per port with something held.
+    active: u128,
+}
+
+/// Messages the MIDI threads could not queue, shared by the sender and the receiver.
+#[derive(Debug, Default)]
+struct Losses {
+    /// Lost messages so far.
+    lost: AtomicU64,
+    /// The highest count of messages queued before a loss. A release waits until the receiver
+    /// has taken that many: a lost note-off can belong to any note-on queued before it.
+    accepted_before: AtomicU64,
+}
+
+/// A pending release of everything held.
+#[derive(Debug, Clone, Copy)]
+struct Release {
+    /// Starts once the receiver has taken this many messages from the queue.
+    after: u64,
+    /// … and every queued message stamped before this time.
+    at: Option<Instant>,
 }
 
 /// The audio callback's end of the MIDI queue. Moves into the stream together with the engine.
 ///
-/// It keeps the notes and sustain pedals it delivered and still down. When messages were lost (a
-/// full queue) or discarded as stale (see [`crate::MidiIn`]), a lost note-off or pedal release
-/// would leave a note hanging, so the receiver then delivers a note-off for every held note and a
-/// pedal release for every held pedal, in time order with the remaining messages.
+/// It keeps the notes and sustain pedals it delivered and still down, for every port id below
+/// [`MAX_MIDI_PORTS`]. When messages were lost (a full queue) or discarded as stale (see
+/// [`crate::MidiIn`]), a lost note-off or pedal release would leave a note hanging, so the
+/// receiver then delivers a note-off for every held note and a pedal release for every held pedal.
+/// After a loss the release follows every message queued before it; after a discard it comes
+/// first. It keeps the time order of the messages.
 #[derive(Debug)]
 pub struct MidiReceiver {
     consumer: rtrb::Consumer<MidiStamped>,
-    /// Messages the MIDI threads could not queue, shared with the sender.
-    overflows: Arc<AtomicU64>,
-    /// `overflows` when the receiver last looked.
-    seen_overflows: u64,
+    losses: Arc<Losses>,
+    /// `losses.lost` when the receiver last looked.
+    seen_lost: u64,
+    /// Messages taken from the queue (delivered or discarded).
+    consumed: u64,
+    /// Stamp of the last message taken from the queue.
+    last_time: Option<Instant>,
     /// A stream has just taken the receiver over: its first callback discards stale messages.
     attached: bool,
-    /// Allocated with the receiver; idle entries are free.
-    held: Box<[HeldPort; HELD_PORTS]>,
-    /// Release everything held, stamped with this time, once the messages before it are out.
-    release_at: Option<Instant>,
+    held: Box<Held>,
+    release: Option<Release>,
     /// Release messages delivered in the current callback.
     released: u32,
 }
@@ -147,13 +200,14 @@ impl MidiReceiver {
     /// loss schedules a release of the held notes.
     pub(crate) fn begin(&mut self, info: &crate::CallbackInfo, stats: &crate::StreamStats) {
         self.released = 0;
-        let overflows = self.overflows.load(Ordering::Acquire);
-        if overflows != self.seen_overflows {
-            stats.record_midi_overflows(overflows.wrapping_sub(self.seen_overflows));
-            self.seen_overflows = overflows;
-            // After the messages that were queued before the loss: their note-ons may belong to
-            // the lost note-offs.
-            self.schedule_release(info.now.checked_sub(Duration::from_nanos(1)));
+        let lost = self.losses.lost.load(Ordering::Acquire);
+        if lost != self.seen_lost {
+            stats.record_midi_overflows(lost.wrapping_sub(self.seen_lost));
+            self.seen_lost = lost;
+            // After every message queued before the loss, whenever it arrives: its note-on may
+            // belong to a lost note-off.
+            let after = self.losses.accepted_before.load(Ordering::Acquire);
+            self.schedule_release(Release { after, at: None });
         }
         if std::mem::take(&mut self.attached) {
             let period = crate::frames_to_duration(u64::from(info.frames), info.sample_rate);
@@ -161,7 +215,10 @@ impl MidiReceiver {
             let stale = self.discard(cutoff);
             if stale > 0 {
                 stats.record_midi_stale(stale);
-                self.schedule_release(Some(cutoff));
+                self.schedule_release(Release {
+                    after: self.consumed,
+                    at: Some(cutoff),
+                });
             }
         }
     }
@@ -169,25 +226,34 @@ impl MidiReceiver {
     /// RT. The next message for a callback that started at `now`: queued messages stamped before
     /// `now`, oldest first, merged with a scheduled release.
     pub(crate) fn pop_before(&mut self, now: Instant) -> Option<MidiStamped> {
-        if let Some(at) = self.release_at {
-            let earlier_queued = matches!(self.consumer.peek(), Ok(event) if event.time < at);
+        if let Some(release) = self.release {
+            let earlier_queued = self.consumer.peek().is_ok_and(|event| {
+                self.consumed < release.after || release.at.is_some_and(|at| event.time < at)
+            });
             if !earlier_queued {
                 if self.released >= RELEASES_PER_CALLBACK {
                     // Later messages wait until the release is complete.
                     return None;
                 }
+                // Never before a message already delivered.
+                let at = match (release.at, self.last_time) {
+                    (Some(at), Some(last)) => at.max(last),
+                    (at, last) => at.or(last).unwrap_or(now),
+                };
                 match self.next_release(at) {
-                    Some(release) => {
+                    Some(message) => {
                         self.released += 1;
-                        return Some(release);
+                        return Some(message);
                     }
-                    None => self.release_at = None,
+                    None => self.release = None,
                 }
             }
         }
         match self.consumer.peek() {
             Ok(event) if event.time < now => {
                 let event = self.consumer.pop().ok()?;
+                self.consumed += 1;
+                self.last_time = Some(event.time);
                 self.track(&event);
                 Some(event)
             }
@@ -201,92 +267,104 @@ impl MidiReceiver {
         let stale = self.discard(now);
         if stale > 0 {
             stats.record_midi_stale(stale);
-            self.schedule_release(now.checked_sub(Duration::from_nanos(1)));
+            self.schedule_release(Release {
+                after: self.consumed,
+                at: Some(now),
+            });
         }
     }
 
     /// RT. Drops queued messages stamped before `before`; returns how many.
     fn discard(&mut self, before: Instant) -> u64 {
         let mut count = 0;
-        while matches!(self.consumer.peek(), Ok(event) if event.time < before) {
+        while let Ok(event) = self.consumer.peek()
+            && event.time < before
+        {
+            self.last_time = Some(event.time);
             let _ = self.consumer.pop();
+            self.consumed += 1;
             count += 1;
         }
         count
     }
 
-    /// Releases everything held at `at` (a later release covers an earlier one).
-    fn schedule_release(&mut self, at: Option<Instant>) {
-        let Some(at) = at else { return };
-        self.release_at = Some(self.release_at.map_or(at, |pending| pending.max(at)));
+    /// Releases everything held once both conditions hold (a later release covers an earlier
+    /// one).
+    fn schedule_release(&mut self, next: Release) {
+        self.release = Some(match self.release {
+            Some(pending) => Release {
+                after: pending.after.max(next.after),
+                at: pending.at.max(next.at),
+            },
+            None => next,
+        });
     }
 
     /// RT. Follows a delivered message: note-ons and pedal presses are held until their release.
     fn track(&mut self, event: &MidiStamped) {
-        let [status, data1, data2] = event.data;
-        let channel = usize::from(status & 0x0f);
-        let key = 1u128 << (data1 & 0x7f);
-        let pedal = 1u16 << channel;
-        let press = match status & 0xf0 {
-            0x90 if data2 > 0 => true,
-            0xb0 if data1 == 64 => data2 >= 64,
-            0x80 | 0x90 => false,
-            // All sound off, all notes off.
-            0xb0 if data1 == 120 || data1 == 123 => {
-                if let Some(held) = self.held_port(event.port, false) {
-                    held.keys[channel] = 0;
-                }
-                return;
-            }
-            _ => return,
-        };
-        let Some(held) = self.held_port(event.port, press) else {
-            // Nothing held there, or every entry is busy: not tracked.
+        let index = usize::from(event.port.0);
+        // The sender queues no message from a larger id.
+        let Some(held) = self.held.ports.get_mut(index) else {
             return;
         };
-        match (status & 0xf0, press) {
-            (0xb0, true) => held.sustain |= pedal,
-            (0xb0, false) => held.sustain &= !pedal,
-            (_, true) => held.keys[channel] |= key,
-            (_, false) => held.keys[channel] &= !key,
+        let [status, data1, data2] = event.data;
+        let channel = usize::from(status & 0x0f);
+        let key = data1 & 0x7f;
+        match status & 0xf0 {
+            0x90 if data2 > 0 => held.set_key(channel, key, true),
+            0x80 | 0x90 => held.set_key(channel, key, false),
+            0xb0 if data1 == 64 && data2 >= 64 => held.sustain |= 1 << channel,
+            0xb0 if data1 == 64 => held.sustain &= !(1 << channel),
+            // All sound off, all notes off.
+            0xb0 if data1 == 120 || data1 == 123 => {
+                held.keys[channel] = 0;
+                held.set_channel(channel);
+            }
+            _ => return,
         }
-    }
-
-    /// The entry of `port` while it holds something; with `claim`, a free entry otherwise.
-    fn held_port(&mut self, port: MidiPortId, claim: bool) -> Option<&mut HeldPort> {
-        let index = self
-            .held
-            .iter()
-            .position(|held| held.port == port && !held.idle())
-            .or_else(|| claim.then(|| self.held.iter().position(HeldPort::idle))?)?;
-        let held = &mut self.held[index];
-        held.port = port;
-        Some(held)
+        let bit = 1u128 << index;
+        if held.idle() {
+            self.held.active &= !bit;
+        } else {
+            self.held.active |= bit;
+        }
     }
 
     /// RT. The next message of a release, stamped `at`, or `None` once nothing is held.
     fn next_release(&mut self, at: Instant) -> Option<MidiStamped> {
-        let held = self.held.iter_mut().find(|held| !held.idle())?;
-        let data = if let Some((channel, keys)) = held
-            .keys
-            .iter_mut()
-            .enumerate()
-            .find(|(_, keys)| **keys != 0)
-        {
-            let key = keys.trailing_zeros() as u8;
-            *keys &= !(1u128 << key);
+        let Held { ports, active } = &mut *self.held;
+        if *active == 0 {
+            return None;
+        }
+        let index = active.trailing_zeros() as usize;
+        let held = &mut ports[index];
+        let data = if held.channels != 0 {
+            let channel = held.channels.trailing_zeros() as usize;
+            let key = held.keys[channel].trailing_zeros() as u8;
+            held.set_key(channel, key, false);
             [0x80 | channel as u8, key, 0]
         } else {
             let channel = held.sustain.trailing_zeros() as u8;
             held.sustain &= !(1u16 << channel);
             [0xb0 | channel, 64, 0]
         };
+        if held.idle() {
+            *active &= !(1u128 << index);
+        }
         Some(MidiStamped {
             time: at,
-            port: held.port,
+            port: MidiPortId(index as u16),
             data,
         })
     }
+}
+
+/// What the MIDI threads share under the sender's lock.
+#[derive(Debug)]
+struct SenderQueue {
+    producer: rtrb::Producer<MidiStamped>,
+    /// Messages queued so far.
+    accepted: u64,
 }
 
 /// The MIDI threads' end of the queue. The midir callbacks of all ports share one producer, so
@@ -294,44 +372,68 @@ impl MidiReceiver {
 /// taken under the lock, so the queue stays ordered by time.
 #[derive(Debug, Clone)]
 pub(crate) struct MidiSender {
-    producer: Arc<Mutex<rtrb::Producer<MidiStamped>>>,
-    /// Messages that did not fit, for the receiver.
-    overflows: Arc<AtomicU64>,
+    queue: Arc<Mutex<SenderQueue>>,
+    losses: Arc<Losses>,
 }
 
 impl MidiSender {
-    /// Stamps `data` with `Instant::now()` and queues it. `false` (and counted for the receiver)
-    /// if the queue is full.
+    /// Stamps `data` with `Instant::now()` and queues it. `false` if the queue is full (counted
+    /// for the receiver) or `port` is not below [`MAX_MIDI_PORTS`].
     pub(crate) fn push(&self, port: MidiPortId, data: [u8; 3]) -> bool {
-        let mut producer = self.producer.lock().unwrap_or_else(PoisonError::into_inner);
+        self.push_stamped(port, data, Instant::now)
+    }
+
+    fn push_stamped(
+        &self,
+        port: MidiPortId,
+        data: [u8; 3],
+        stamp: impl FnOnce() -> Instant,
+    ) -> bool {
+        if usize::from(port.0) >= MAX_MIDI_PORTS {
+            return false;
+        }
+        let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
         let event = MidiStamped {
-            time: Instant::now(),
+            time: stamp(),
             port,
             data,
         };
-        let queued = producer.push(event).is_ok();
-        if !queued {
-            self.overflows.fetch_add(1, Ordering::Release);
+        if queue.producer.push(event).is_ok() {
+            queue.accepted += 1;
+            return true;
         }
-        queued
+        // Published before the count, which the receiver reads first.
+        self.losses
+            .accepted_before
+            .fetch_max(queue.accepted, Ordering::Release);
+        self.losses.lost.fetch_add(1, Ordering::Release);
+        false
     }
 }
 
 /// A queue of `capacity` messages between the MIDI threads and the audio callback.
 pub(crate) fn queue(capacity: usize) -> (MidiSender, MidiReceiver) {
     let (producer, consumer) = rtrb::RingBuffer::new(capacity);
-    let overflows = Arc::new(AtomicU64::new(0));
+    let losses = Arc::new(Losses::default());
     let sender = MidiSender {
-        producer: Arc::new(Mutex::new(producer)),
-        overflows: Arc::clone(&overflows),
+        queue: Arc::new(Mutex::new(SenderQueue {
+            producer,
+            accepted: 0,
+        })),
+        losses: Arc::clone(&losses),
     };
     let receiver = MidiReceiver {
         consumer,
-        overflows,
-        seen_overflows: 0,
+        losses,
+        seen_lost: 0,
+        consumed: 0,
+        last_time: None,
         attached: false,
-        held: Box::new([HeldPort::IDLE; HELD_PORTS]),
-        release_at: None,
+        held: Box::new(Held {
+            ports: [HeldPort::IDLE; MAX_MIDI_PORTS],
+            active: 0,
+        }),
+        release: None,
         released: 0,
     };
     (sender, receiver)
@@ -353,7 +455,7 @@ impl TestMidiSource {
     }
 
     /// Queues the channel message `data` (status, data1, data2) from `port`. `false` if the queue
-    /// is full.
+    /// is full or `port` is not below [`MAX_MIDI_PORTS`] (like a hub, a source has no more ports).
     pub fn send(&self, port: MidiPortId, data: [u8; 3]) -> bool {
         self.sender.push(port, data)
     }
@@ -515,6 +617,8 @@ pub struct MidiInputHub {
     /// Names the user enabled (settings) although they start disabled by default (see
     /// [`starts_disabled`]): the stored choice wins when such a port first appears.
     remembered_enabled: Vec<String>,
+    /// Ports seen after [`MAX_MIDI_PORTS`] others: they get no id and are never opened.
+    refused: Vec<String>,
 }
 
 impl core::fmt::Debug for MidiInputHub {
@@ -539,6 +643,7 @@ impl MidiInputHub {
             only: None,
             remembered_disabled: Vec::new(),
             remembered_enabled: Vec::new(),
+            refused: Vec::new(),
         };
         Ok((hub, receiver))
     }
@@ -604,28 +709,22 @@ impl MidiInputHub {
                 close(entry);
             }
         }
+        let mut first_error = None;
         for (name, port) in present {
             let index = match self.ports.iter().position(|e| e.info.name == name) {
                 Some(index) => index,
                 None => {
-                    let id = MidiPortId(self.ports.len() as u16);
                     let enabled = (self.remembered_enabled.contains(&name)
                         || !starts_disabled(&name, cfg!(target_os = "macos")))
                         && !self.remembered_disabled.contains(&name)
                         && self.only.as_deref().is_none_or(|p| name.starts_with(p));
-                    self.ports.push(PortEntry {
-                        info: MidiPortInfo {
-                            id,
-                            name,
-                            enabled,
-                            connected: false,
-                        },
-                        port: None,
-                        connection: None,
-                        busy: false,
-                        flags: Arc::new(PortFlags::default()),
-                    });
-                    self.ports.len() - 1
+                    match self.register(name, enabled) {
+                        Ok(index) => index,
+                        Err(error) => {
+                            first_error.get_or_insert(error);
+                            continue;
+                        }
+                    }
                 }
             };
             let entry = &mut self.ports[index];
@@ -637,13 +736,46 @@ impl MidiInputHub {
             }
         }
 
-        let mut first_error = None;
         for index in 0..self.ports.len() {
             if let Err(e) = self.connect(index) {
                 first_error.get_or_insert(e);
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    /// Gives a newly seen port the next id, or refuses it once [`MAX_MIDI_PORTS`] ports have one:
+    /// the receiver could not release its held notes (#219).
+    fn register(&mut self, name: String, enabled: bool) -> Result<usize, MidiError> {
+        if self.ports.len() >= MAX_MIDI_PORTS {
+            let error = MidiError::Backend(format!(
+                "more than {MAX_MIDI_PORTS} MIDI inputs: {name} is not opened"
+            ));
+            if !self.refused.contains(&name) {
+                self.refused.push(name);
+            }
+            return Err(error);
+        }
+        self.ports.push(PortEntry {
+            info: MidiPortInfo {
+                id: MidiPortId(self.ports.len() as u16),
+                name,
+                enabled,
+                connected: false,
+            },
+            port: None,
+            connection: None,
+            busy: false,
+            // Forwarding starts when the connection opens.
+            flags: Arc::new(PortFlags::default()),
+        });
+        Ok(self.ports.len() - 1)
+    }
+
+    /// Ports refused because [`MAX_MIDI_PORTS`] others were seen before them, in the order they
+    /// first appeared. [`MidiInputHub::refresh`] also reports them as an error.
+    pub fn refused_ports(&self) -> &[String] {
+        &self.refused
     }
 
     /// All ports seen since the hub was created, in enumeration order.
@@ -698,23 +830,12 @@ impl MidiInputHub {
     /// Tests: lists a port named `name` as present and enabled without a backend port behind it
     /// (WinMM has no virtual ports to create) and returns its id.
     #[cfg(test)]
-    fn add_port_for_test(&mut self, name: &str) -> MidiPortId {
-        let id = MidiPortId(self.ports.len() as u16);
-        let flags = Arc::new(PortFlags::default());
-        flags.enabled.store(true, Ordering::Relaxed);
-        self.ports.push(PortEntry {
-            info: MidiPortInfo {
-                id,
-                name: name.to_owned(),
-                enabled: true,
-                connected: true,
-            },
-            port: None,
-            connection: None,
-            busy: false,
-            flags,
-        });
-        id
+    fn add_port_for_test(&mut self, name: &str) -> Result<MidiPortId, MidiError> {
+        let index = self.register(name.to_owned(), true)?;
+        let entry = &mut self.ports[index];
+        entry.info.connected = true;
+        entry.flags.enabled.store(true, Ordering::Relaxed);
+        Ok(entry.info.id)
     }
 
     /// Tests: what the midir callback of port `id` does with `bytes`: the input path without a
@@ -791,6 +912,7 @@ mod tests {
     use super::*;
     use crate::{CallbackInfo, StreamStats};
     use assert_no_alloc::assert_no_alloc;
+    use std::time::Duration;
 
     // midir has virtual ports on unix only (ALSA, CoreMIDI), not on WinMM.
     #[cfg(unix)]
@@ -885,7 +1007,7 @@ mod tests {
             return;
         };
         // No `refresh`: the machine's real ports are neither listed nor opened.
-        let id = hub.add_port_for_test("Test Keyboard");
+        let id = hub.add_port_for_test("Test Keyboard").unwrap();
         let woken = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&woken);
         hub.set_waker(move || flag.store(true, Ordering::SeqCst));
@@ -931,17 +1053,7 @@ mod tests {
 
     /// Queues a message stamped `time`, as the MIDI threads would have at that moment.
     fn push_at(sender: &MidiSender, time: Instant, data: [u8; 3]) -> bool {
-        let mut producer = sender.producer.lock().unwrap();
-        let event = MidiStamped {
-            time,
-            port: MidiPortId(5),
-            data,
-        };
-        let queued = producer.push(event).is_ok();
-        if !queued {
-            sender.overflows.fetch_add(1, Ordering::Release);
-        }
-        queued
+        sender.push_stamped(MidiPortId(5), data, || time)
     }
 
     /// 480 frames at 48 kHz: a 10 ms period.
@@ -1030,21 +1142,106 @@ mod tests {
         let now = t0 + ms(6);
         let delivered = callback(&mut receiver, now, &stats);
         assert_eq!(stats.midi_overflows(), 2);
-        // The queued messages first (the third note among them), then every held note off at
-        // the end of the period.
+        // The queued messages first (the third note among them), then every held note off
+        // right after the last message queued before the loss.
         assert_eq!(
             delivered,
             [
                 (288, [0x92, 55, 100]),
                 (336, [0xb2, 1, 10]),
                 (384, [0xb2, 1, 20]),
-                (479, [0x82, 48, 0]),
-                (479, [0x82, 52, 0]),
-                (479, [0x82, 55, 0]),
+                (384, [0x82, 48, 0]),
+                (384, [0x82, 52, 0]),
+                (384, [0x82, 55, 0]),
             ]
         );
         assert_eq!(callback(&mut receiver, now + ms(10), &stats), []);
         assert_eq!(stats.midi_stale(), 0);
+    }
+
+    /// The loss is seen in a callback that started before the note-on was queued: the note-on
+    /// cannot be delivered yet, and nothing is held. The release must wait for it, or its lost
+    /// note-off leaves it hanging (CodeRabbit on #273).
+    #[test]
+    fn a_release_waits_for_messages_queued_before_the_loss() {
+        let (sender, mut receiver) = queue(2);
+        let stats = StreamStats::new();
+        let ms = Duration::from_millis;
+        let now = Instant::now();
+        assert!(push_at(&sender, now + ms(1), [0x90, 60, 100]));
+        assert!(push_at(&sender, now + ms(1), [0xb0, 1, 1]));
+        assert!(!push_at(&sender, now + ms(2), [0x80, 60, 0]));
+        assert_eq!(callback(&mut receiver, now, &stats), []);
+        assert_eq!(stats.midi_overflows(), 1);
+        // Next callback: the note-on, then its release; nothing in the callback after.
+        assert_eq!(
+            callback(&mut receiver, now + ms(10), &stats),
+            [
+                (48, [0x90, 60, 100]),
+                (48, [0xb0, 1, 1]),
+                (48, [0x80, 60, 0])
+            ]
+        );
+        assert_eq!(callback(&mut receiver, now + ms(20), &stats), []);
+        // Without a loss nothing is released.
+        assert!(push_at(&sender, now + ms(21), [0x90, 62, 100]));
+        assert_eq!(
+            callback(&mut receiver, now + ms(30), &stats),
+            [(48, [0x90, 62, 100])]
+        );
+        assert_eq!(callback(&mut receiver, now + ms(40), &stats), []);
+    }
+
+    /// Every port id the sender queues has its own entry, so a release covers notes from all of
+    /// them; larger ids are not queued at all.
+    #[test]
+    fn every_queued_port_is_tracked_for_a_release() {
+        let (sender, mut receiver) = queue(MAX_MIDI_PORTS + 1);
+        let stats = StreamStats::new();
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        for port in 0..MAX_MIDI_PORTS as u16 {
+            assert!(sender.push_stamped(MidiPortId(port), [0x90, 60, 100], || t0));
+        }
+        assert!(!sender.push_stamped(MidiPortId(MAX_MIDI_PORTS as u16), [0x90, 60, 100], || t0));
+        assert_eq!(stats.midi_overflows(), 0, "a refused port is not a loss");
+        let delivered = callback(&mut receiver, t0 + ms(1), &stats);
+        assert_eq!(delivered.len(), MAX_MIDI_PORTS);
+        receiver.mark_attached();
+        sender.push_stamped(MidiPortId(0), [0x80, 60, 0], || t0 + ms(2));
+        let mut ports = Vec::with_capacity(MAX_MIDI_PORTS);
+        let info = info(t0 + ms(100));
+        assert_no_alloc(|| {
+            receiver.begin(&info, &stats);
+            while let Some(event) = receiver.pop_before(info.now) {
+                assert_eq!(event.data, [0x80, 60, 0]);
+                if ports.len() < ports.capacity() {
+                    ports.push(event.port.0);
+                }
+            }
+        });
+        assert_eq!(ports, (0..MAX_MIDI_PORTS as u16).collect::<Vec<_>>());
+        assert_eq!(stats.midi_stale(), 1);
+    }
+
+    #[test]
+    fn the_hub_refuses_ports_it_could_not_track() {
+        let Ok((mut hub, _receiver)) = MidiInputHub::new() else {
+            eprintln!("MIDI backend unavailable: skipped");
+            return;
+        };
+        for n in 0..MAX_MIDI_PORTS {
+            let id = hub.add_port_for_test(&format!("Port {n}")).unwrap();
+            assert_eq!(usize::from(id.0), n);
+        }
+        assert!(matches!(
+            hub.add_port_for_test("One too many"),
+            Err(MidiError::Backend(_))
+        ));
+        assert!(hub.add_port_for_test("One too many").is_err());
+        assert_eq!(hub.refused_ports(), ["One too many"]);
+        assert_eq!(hub.port_id("One too many"), None);
+        assert_eq!(hub.ports().len(), MAX_MIDI_PORTS);
     }
 
     #[test]
@@ -1059,7 +1256,8 @@ mod tests {
             }
         }
         assert_eq!(callback(&mut receiver, t0 + ms(1), &stats).len(), 300);
-        sender.overflows.fetch_add(1, Ordering::Release);
+        sender.losses.accepted_before.store(300, Ordering::Release);
+        sender.losses.lost.fetch_add(1, Ordering::Release);
         let now = t0 + ms(20);
         // Arrives after the release began: it waits until the release is complete.
         push_at(&sender, now + ms(5), [0x90, 1, 1]);
