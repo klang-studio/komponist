@@ -81,7 +81,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       # Without the bundles the plugin tests skip silently.
       - name: Build test plugins
@@ -118,7 +118,7 @@ jobs:
         env:
           TEST_WATCHDOG: "1200"
         run: |
-          cargo test --workspace &
+          cargo test --locked --workspace &
           tests=$!
           (
             sleep "$TEST_WATCHDOG"
@@ -183,7 +183,7 @@ jobs:
           cache-on-failure: true
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       # Without the bundles the plugin tests skip silently.
       - name: Build test plugins
@@ -205,7 +205,7 @@ jobs:
           # or deadlocked audio thread; the timing checks are the release soak and the perf suites
           # (docs/PERFORMANCE.md).
           KOMPONIST_SOAK_MIN_CALLBACKS: "50"
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --locked --workspace --no-fail-fast
 
       # The timer leeway of os_sync waits differs between macOS versions and with how idle the
       # machine is (#101); only this runner shows macOS 15. Print what the leeway checks measured
@@ -214,7 +214,7 @@ jobs:
         if: always()
         timeout-minutes: 5
         run: >-
-          cargo test -p komponist-rt -p komponist-ipc --lib a_timed_out_wait_ends_close_to_its_deadline
+          cargo test --locked -p komponist-rt -p komponist-ipc --lib a_timed_out_wait_ends_close_to_its_deadline
           -- --nocapture
 
   # Windows x86_64 (port in progress, branch `windows`). Formatting is checked once, on Linux. No GUI tests
@@ -257,7 +257,7 @@ jobs:
           cache-on-failure: true
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       # Without the bundles the plugin tests skip silently.
       - name: Build test plugins
@@ -273,9 +273,9 @@ jobs:
         timeout-minutes: 45
         run: |
           test_status=0
-          cargo test --workspace --exclude komponist-app --exclude komponist-ui --no-fail-fast || test_status=$?
-          cargo test -p komponist-app --no-fail-fast -- --test-threads=1 --nocapture || test_status=$?
-          cargo test -p komponist-ui --no-fail-fast -- --test-threads=1 --nocapture || test_status=$?
+          cargo test --locked --workspace --exclude komponist-app --exclude komponist-ui --no-fail-fast || test_status=$?
+          cargo test --locked -p komponist-app --no-fail-fast -- --test-threads=1 --nocapture || test_status=$?
+          cargo test --locked -p komponist-ui --no-fail-fast -- --test-threads=1 --nocapture || test_status=$?
           exit "$test_status"
 
       # ASIO (W8, cargo feature `asio`): off in the steps above, so the plain build needs no LLVM. These two build
@@ -286,8 +286,8 @@ jobs:
         env:
           LIBCLANG_PATH: C:\Program Files\LLVM\bin
         run: |
-          cargo clippy -p komponist-audio --all-targets --features asio -- -D warnings
-          cargo test -p komponist-audio --features asio
+          cargo clippy --locked -p komponist-audio --all-targets --features asio -- -D warnings
+          cargo test --locked -p komponist-audio --features asio
 
       # The test scratch folders in target/tmp hold a file with a non-ASCII name (a plugins scan test), which
       # Git for Windows' tar cannot read when rust-cache packs target/: "File removed before we read it", and the
