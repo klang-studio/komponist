@@ -318,14 +318,17 @@ jobs:
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}/test-plugins
         run: cargo test --workspace --locked --no-fail-fast
 
-      # All suites in parallel, as on Linux and macOS. The app and UI suites ran one test at a time because
-      # DX12/WARP once terminated concurrent kittest renderings (exit 2173, no Rust panic); that cost 17 of the
-      # job's 33 minutes. Three parallel runs in one job passed on 2026-11-23 (#251): app suite 1028 s → 489 s,
-      # UI suite 148 s → 61 s. RUST_BACKTRACE above shows where if it happens again.
+      # DX12/WARP can terminate concurrent kittest renderings (exit 2173, no Rust panic). The app suite runs
+      # in parallel since #251 (1028 s → 489 s; three trial runs passed); the UI suite crashed that way again
+      # on 2026-11-23, so it runs one test at a time (#260, about 90 s more). Every suite runs either way.
       - name: Test
         timeout-minutes: 45
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
-        run: cargo test --locked --workspace --no-fail-fast
+        run: |
+          test_status=0
+          cargo test --locked --workspace --exclude komponist-ui --no-fail-fast || test_status=$?
+          cargo test --locked -p komponist-ui --no-fail-fast -- --test-threads=1 || test_status=$?
+          exit "$test_status"
 
       # ASIO (W8, cargo feature `asio`): off in the steps above, so the plain build needs no LLVM. These two build
       # komponist-audio with it. bindgen needs libclang: the windows-2025 image has LLVM 20 (per the runner-images
