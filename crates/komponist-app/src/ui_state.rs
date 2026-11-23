@@ -474,6 +474,12 @@ pub struct DevicesView {
     pub automation_recent: Vec<ParamTouch>,
 }
 
+/// The text Copy puts on the system clipboard so the desktop delivers Strg V (egui-winit sends
+/// `Event::Paste` only while the clipboard holds text). A format marker, not UI text: it does not
+/// depend on the UI language. Paste does not read the text: any text that arrives pastes the copied devices
+/// (so the German and English markers of earlier versions still work).
+pub const DEVICES_CLIPBOARD_MARKER: &str = "komponist-devices/1";
+
 /// A device and the lane contents captured by Copy.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CopiedDevice {

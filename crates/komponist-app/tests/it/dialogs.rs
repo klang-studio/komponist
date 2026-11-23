@@ -1318,6 +1318,7 @@ fn s07_model_in(lang: Lang) -> settings::Model {
         input_device: 0,
         jack_ports: None,
         jack_scan_failed: false,
+        devices_error: None,
         jack_playback_connections: None,
         capture_format: komponist_app::settings::CaptureFormat::Pcm24,
         section: SettingsSection::Audio,
