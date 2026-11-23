@@ -1456,6 +1456,9 @@ fn sync_controller(
     }
 }
 
+/// The verified `(id, value)` pairs of a first capture and the change count of each.
+type Captured = (Vec<(u32, f64)>, Vec<u32>);
+
 /// Why a checked snapshot has no state.
 enum SnapshotError {
     /// A capture could not pause the current audio block in time: retry.
@@ -1479,7 +1482,7 @@ fn capture_verified(
     controller: Option<&ControllerValues>,
     updates: &mut Vec<(u32, f64)>,
     delivered: Option<&DeliveredParams<'_>>,
-) -> Option<(Vec<(u32, f64)>, Vec<u32>)> {
+) -> Option<Captured> {
     // Processing may have produced controller values after the caller's first check.
     sync_controller(plugin, controller, updates);
     // The VST3 editor can expose a new controller value before the component has processed it.
