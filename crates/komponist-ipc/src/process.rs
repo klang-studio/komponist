@@ -46,7 +46,11 @@
 //! - Windows: the child goes into a job object of the app with `KILL_ON_JOB_CLOSE`; the job's
 //!   handle is never closed, so the system closes it, and ends the child, when the app ends,
 //!   whichever way. The job allows silent breakaway: processes the child starts are not tied,
-//!   as on Linux and macOS.
+//!   as on Linux and macOS. The child is created suspended, joins the job and only then runs, so
+//!   it cannot run (or start anything) outside it. Stable Rust's `Command` cannot pass a job list
+//!   to `CreateProcess` (`PROC_THREAD_ATTRIBUTE_JOB_LIST`), which would close the last gap: an app
+//!   that dies between creating the child and putting it into the job leaves the child suspended,
+//!   never running a line of its own or plugin code, until someone ends it.
 //!
 //! [`ProcessGroup::spawn`] does the same and puts the child into a group of its own with
 //! everything it starts (Unix: a process group, Windows: a job object of its own, nested in the
@@ -275,13 +279,9 @@ pub fn spawn_tied(command: &mut Command) -> io::Result<Child> {
     }
     #[cfg(windows)]
     {
-        let child = command.spawn()?;
-        // The job could not be made or joined (a job of the app's own that forbids nesting):
-        // the child runs untied, as before #218.
-        if let Some(job) = job::app() {
-            let _ = job::assign(job, &child);
-        }
-        Ok(child)
+        // No app job (it could not be made): the child runs untied, as before #218.
+        let app = job::app();
+        job::spawn_in(command, app.as_slice())
     }
 }
 
@@ -312,12 +312,12 @@ impl ProcessGroup {
         #[cfg(windows)]
         {
             // No limits: no breakaway (everything the child starts stays in the group), and
-            // closing the handle kills nothing.
+            // closing the handle kills nothing. The child joins the app's job first, then this
+            // one, which so nests in it; both before it runs (see `spawn_tied`).
             let group = job::create(0)?;
-            let child = spawn_tied(command)?;
-            // Could not nest (a job of the app's own that does not allow it): the group stays
-            // empty, and killing it ends nothing; the caller kills the child itself anyway.
-            let _ = job::assign(group.as_handle(), &child);
+            let mut jobs = job::app().into_iter().collect::<Vec<_>>();
+            jobs.push(group.as_handle());
+            let child = job::spawn_in(command, &jobs)?;
             Ok((child, ProcessGroup { job: group }))
         }
     }
@@ -401,6 +401,13 @@ mod job {
     use std::process::Child;
     use std::sync::OnceLock;
 
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
@@ -408,7 +415,81 @@ mod job {
         SetInformationJobObject, TerminateJobObject,
     };
 
+    use windows_sys::Win32::System::Threading::{
+        CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+    };
+
     use super::sys::KILL_EXIT_CODE;
+
+    /// Spawns `command` suspended, puts it into `jobs` in order (a later one nests in the earlier
+    /// ones) and only then lets it run, so it cannot run or start anything outside them (module
+    /// docs). A job it cannot join leaves it outside that one, running all the same. Overrides
+    /// the command's creation flags (nobody sets any).
+    pub(super) fn spawn_in(
+        command: &mut Command,
+        jobs: &[BorrowedHandle<'_>],
+    ) -> io::Result<Child> {
+        command.creation_flags(CREATE_SUSPENDED);
+        let mut child = command.spawn()?;
+        for job in jobs {
+            let _ = assign(*job, &child);
+        }
+        if let Err(e) = resume(child.id()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+        Ok(child)
+    }
+
+    /// Resumes the threads of process `pid`: a process created suspended has its main thread
+    /// only (std keeps no handle to it, so it is found by a thread snapshot). The caller holds a
+    /// handle to the process, so `pid` cannot have been reused. Resuming a running thread does
+    /// nothing.
+    fn resume(pid: u32) -> io::Result<()> {
+        // SAFETY: plain FFI call; the snapshot is closed below.
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a plain-old-data struct; `dwSize` is set as the API requires.
+        let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut resumed = false;
+        let mut error = None;
+        // SAFETY: a valid snapshot handle and an entry with `dwSize` set, alive across the calls.
+        let mut more = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+        while more {
+            if entry.th32OwnerProcessID == pid {
+                // SAFETY: plain FFI calls; the thread handle is checked and closed.
+                unsafe {
+                    let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                    if thread.is_null() {
+                        error = Some(io::Error::last_os_error());
+                    } else {
+                        if ResumeThread(thread) == u32::MAX {
+                            error = Some(io::Error::last_os_error());
+                        } else {
+                            resumed = true;
+                        }
+                        CloseHandle(thread);
+                    }
+                }
+            }
+            // SAFETY: as for `Thread32First`.
+            more = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+        }
+        // SAFETY: the snapshot handle from above, closed once.
+        unsafe { CloseHandle(snapshot) };
+        match (resumed, error) {
+            (true, _) => Ok(()),
+            (false, Some(e)) => Err(e),
+            (false, None) => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "no thread of the new process to resume",
+            )),
+        }
+    }
 
     /// A new unnamed job object with `limits`.
     pub(super) fn create(limits: JOB_OBJECT_LIMIT) -> io::Result<OwnedHandle> {
