@@ -464,6 +464,9 @@ pub struct AudioSystem<P: AudioProcess> {
     retired: Vec<SlotHandle<P>>,
     /// Reconnection while the configured device is missing.
     retry: Option<OutputRetry<P>>,
+    /// Reconnection workers that were superseded while they ran. Nothing waits for them, but
+    /// every later open does, so they never hold a device that another stream opens.
+    superseded: Vec<JoinHandle<Reopen<P>>>,
     retry_interval: Duration,
     input: Option<crate::InputConfig>,
     input_error: Option<AudioError>,
@@ -632,19 +635,18 @@ struct ReopenContext {
 
 /// Looks for a missing output device and, once it is back, opens its stream on the worker, as
 /// capture reconnection does, so the control thread never waits for a device (#221). Dropping it
-/// supersedes a running worker: that worker opens nothing more and drops what it opened.
+/// supersedes a running worker: that worker opens nothing more and drops what it opened; the
+/// system keeps its handle so later opens wait for it ([`AudioSystem::await_superseded`]).
 struct OutputRetry<P: AudioProcess> {
     probe: Retry<StreamConfig, Reopen<P>>,
     current: Arc<AtomicBool>,
 }
 
 impl<P: AudioProcess> OutputRetry<P> {
-    /// Supersedes the worker and waits for it, so it holds no device when another stream opens.
-    fn cancel(mut self) {
+    /// Supersedes the worker without waiting for it; returns its handle if it is running.
+    fn supersede(mut self) -> Option<JoinHandle<Reopen<P>>> {
         self.current.store(false, Ordering::Release);
-        if let Some(worker) = self.probe.worker.take() {
-            let _ = worker.join();
-        }
+        self.probe.worker.take()
     }
 }
 
@@ -694,6 +696,9 @@ fn reopen<P: AudioProcess>(
     if !current.load(Ordering::Acquire) {
         return Reopen::Missing;
     }
+    // The lost stream's report is stale; the new one reports for itself, also before it is
+    // installed.
+    context.stats.reset_realtime_denied();
     let opened = open_device(
         config,
         context.input.as_ref(),
@@ -927,6 +932,7 @@ impl<P: AudioProcess> AudioSystem<P> {
             current: None,
             retired: Vec::new(),
             retry: None,
+            superseded: Vec::new(),
             retry_interval: RETRY_INTERVAL,
             input: None,
             input_error: None,
@@ -1136,6 +1142,8 @@ impl<P: AudioProcess> AudioSystem<P> {
         self.cancel_retry();
         self.input_error = None;
         self.teardown();
+        // Serialized with a reconnection that was opening the same device.
+        self.await_superseded();
         self.requested_jack_capture = requested_jack_capture(config);
         match start_output(self, config) {
             Ok(effective) => {
@@ -1464,8 +1472,19 @@ impl<P: AudioProcess> AudioSystem<P> {
         }
     }
 
-    /// Drops the running stream and takes the engine and the MIDI receiver back.
+    /// Drops the running stream and takes the engine and the MIDI receiver back. The stream's
+    /// realtime-scheduling report goes with it.
     fn teardown(&mut self) {
+        let running = self.current.is_some();
+        self.teardown_keeping_stats();
+        if running {
+            self.stats.reset_realtime_denied();
+        }
+    }
+
+    /// [`AudioSystem::teardown`] that keeps the shared realtime report: installing a stream that
+    /// a worker opened (it may have reported already) replaces the null fallback.
+    fn teardown_keeping_stats(&mut self) {
         self.input_channels = 0;
         let Some(current) = self.current.take() else {
             return;
@@ -1478,7 +1497,6 @@ impl<P: AudioProcess> AudioSystem<P> {
         // Every backend drops its callback (and with it the slot) before this returns. A handle
         // that has not closed yet is not waited for here: `poll` collects it (#221).
         drop(backend);
-        self.stats.reset_realtime_denied();
         self.reclaim(&mut handle);
         if !handle.is_closed() {
             self.retired.push(handle);
@@ -1535,10 +1553,18 @@ impl<P: AudioProcess> AudioSystem<P> {
         });
     }
 
-    /// Ends the reconnection, waiting for a worker still opening the device.
+    /// Ends the reconnection without waiting for a worker still opening the device.
     fn cancel_retry(&mut self) {
-        if let Some(retry) = self.retry.take() {
-            retry.cancel();
+        if let Some(worker) = self.retry.take().and_then(OutputRetry::supersede) {
+            self.superseded.push(worker);
+        }
+    }
+
+    /// Waits for superseded reconnection workers, which drop what they opened: called before
+    /// a stream opens, so two opens of one device never overlap.
+    fn await_superseded(&mut self) {
+        for worker in self.superseded.drain(..) {
+            let _ = worker.join();
         }
     }
 
@@ -1552,6 +1578,17 @@ impl<P: AudioProcess> AudioSystem<P> {
         };
         #[cfg(test)]
         let fake = self.fake_reopen.clone();
+        // A new worker starts only once superseded ones have released the device.
+        let (done, running): (Vec<_>, Vec<_>) = std::mem::take(&mut self.superseded)
+            .into_iter()
+            .partition(JoinHandle::is_finished);
+        self.superseded = running;
+        for worker in done {
+            let _ = worker.join();
+        }
+        if !self.superseded.is_empty() {
+            return;
+        }
         let Some(retry) = self.retry.as_mut() else {
             return;
         };
@@ -1572,7 +1609,7 @@ impl<P: AudioProcess> AudioSystem<P> {
             Some(Reopen::Opened(Ok(opened))) => {
                 self.retry = None;
                 self.input_error = None;
-                self.teardown();
+                self.teardown_keeping_stats();
                 self.requested_jack_capture = requested_jack_capture(&config);
                 let effective = self.install_opened(*opened);
                 self.state = AudioState::Running {
@@ -1610,7 +1647,8 @@ impl<P: AudioProcess> AudioSystem<P> {
 }
 
 impl<P: AudioProcess> Drop for AudioSystem<P> {
-    /// Stops the stream first, so the engine comes back and drops here, on the UI thread.
+    /// Stops the stream first, so the engine comes back and drops here, on the UI thread. A
+    /// reconnection worker still opening a device is not waited for: it drops what it opened.
     fn drop(&mut self) {
         self.cancel_retry();
         self.teardown();
@@ -2155,6 +2193,86 @@ mod tests {
         );
         assert!(runs(&probe, 3));
         assert_eq!(probe.params().max_frames, 128);
+    }
+
+    /// `stop` and dropping the system never wait for a reconnection worker that is opening the
+    /// device, but the next `start` waits until that worker has released it.
+    #[test]
+    fn stop_and_drop_do_not_wait_for_a_reopen_but_the_next_start_does() {
+        let (mut system, probe, _sender) = system(0.0);
+        system.set_retry_interval(Duration::from_millis(5));
+        system.start(&null(64)).unwrap();
+        let (release, opening) = blocking_reopen(&mut system);
+        system.simulate_device_loss("device unplugged");
+        assert!(wait_until(WAIT, || {
+            system.poll();
+            opening.try_recv().is_ok()
+        }));
+        let started = Instant::now();
+        system.stop();
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "stop waited for the reopen"
+        );
+        assert_eq!(system.state(), &AudioState::Stopped);
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            release.send(()).unwrap();
+        });
+        let started = Instant::now();
+        system.start(&null(128)).unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(40),
+            "start opened while the superseded worker still held the device"
+        );
+        releaser.join().unwrap();
+        for _ in 0..5 {
+            system.poll();
+        }
+        assert_eq!(probe.params().max_frames, 128);
+        assert!(runs(&probe, 3));
+
+        // Dropping the system does not wait either.
+        let (mut system, _probe, _sender) = self::system(0.0);
+        system.set_retry_interval(Duration::from_millis(5));
+        system.start(&null(64)).unwrap();
+        let (release, opening) = blocking_reopen(&mut system);
+        system.simulate_device_loss("device unplugged");
+        assert!(wait_until(WAIT, || {
+            system.poll();
+            opening.try_recv().is_ok()
+        }));
+        let started = Instant::now();
+        drop(system);
+        assert!(started.elapsed() < Duration::from_millis(100));
+        release.send(()).unwrap();
+    }
+
+    /// A stream that a worker opened keeps its realtime-scheduling report through installation.
+    #[test]
+    fn a_reopened_stream_keeps_its_realtime_report() {
+        let (mut system, probe, _sender) = system(0.0);
+        system.set_retry_interval(Duration::from_millis(5));
+        system.start(&null(64)).unwrap();
+        system.stats().record_realtime_denied();
+        system.set_fake_reopen(|config, context| {
+            context.stats.reset_realtime_denied();
+            let opened = open_null(config, None, &context.stats);
+            context.stats.record_realtime_denied();
+            Reopen::Opened(opened.map(Box::new))
+        });
+        system.simulate_device_loss("device unplugged");
+        system.poll();
+        assert!(
+            !system.stats().realtime_denied(),
+            "the lost stream's report goes"
+        );
+        assert!(wait_until(WAIT, || {
+            system.poll();
+            matches!(system.state(), AudioState::Running { .. })
+        }));
+        assert!(system.stats().realtime_denied());
+        assert!(runs(&probe, 3));
     }
 
     #[test]
