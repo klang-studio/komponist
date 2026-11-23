@@ -36,6 +36,9 @@
 //! half-torn-down plugin running. Both modes end with `_exit` after the plugin is torn down
 //! ([`exit_now`]).
 
+// Missing SAFETY comments: 2 (macOS build; Linux and Windows code not counted). Remove this allow when the crate is clean (#241 follow-up).
+#![allow(clippy::undocumented_unsafe_blocks)]
+
 #[cfg(target_os = "macos")]
 mod cf_loop;
 #[cfg(target_os = "linux")]

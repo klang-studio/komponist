@@ -15,6 +15,8 @@
 //! The crate does not depend on egui. The `egui` feature adds [`egui_support`] with `Color32`
 //! conversions.
 
+#![forbid(unsafe_code)]
+
 pub mod icon;
 mod oklch;
 pub mod track;

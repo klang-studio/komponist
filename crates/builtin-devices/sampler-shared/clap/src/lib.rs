@@ -1,5 +1,8 @@
 //! Sample-based instruments with the device loader retained across restore and playback.
 
+// Missing SAFETY comments: 1. Remove this allow when the crate is clean (#241 follow-up).
+#![allow(clippy::undocumented_unsafe_blocks)]
+
 use std::collections::BTreeMap;
 use std::ffi::{CStr, c_void};
 use std::sync::{Arc, Mutex};

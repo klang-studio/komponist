@@ -29,6 +29,9 @@
 //! Shared vocabulary comes from `komponist-ipc` and is re-exported here: [`PluginDescriptor`],
 //! [`ParamInfo`], [`NoteName`], [`RenderMode`], [`GuiSize`].
 
+// Missing SAFETY comments: 81 (macOS build; the VST3 and CLAP host code is the bulk). Remove this allow when the crate is clean (#241 follow-up).
+#![allow(clippy::undocumented_unsafe_blocks)]
+
 use std::path::Path;
 
 /// Unit tests check RT paths with `assert_no_alloc`, which needs its allocator.

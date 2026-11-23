@@ -61,7 +61,6 @@ status-audio-imported =
         [one] 1 audio file linked
        *[other] { $count } audio files linked
     }
-audio-file-empty = The audio file is empty.
 missing-audio-files = Files Missing
 missing-plugins-and-files = Plugins and Files Missing
 missing-audio-text = Linked audio files are missing from “{ $project }”. Open a clip and choose “Replace File…” to locate its source. The clips are kept.
@@ -130,7 +129,6 @@ audio-live-input = Input { $input }
 audio-live-peak = Peak { $db } dBFS
 audio-live-duration = Duration { $time }
 # Audio recording lifecycle and file failures.
-audio-record-input-unavailable = No audio input available for “{ $track }” · choose an input
 audio-record-finalizing = Finalizing recording…
 audio-record-folder-unavailable = No recording folder available
 audio-record-failed = Recording failed: { $reason }
@@ -152,7 +150,6 @@ audio-clip-duration-value = Duration { $ratio }×
 audio-clip-duration-help = Output duration / source duration: { $ratio }× · original tempo / project tempo
 audio-clip-preserve-pitch = Preserve pitch
 audio-clip-original-speed = Original speed
-audio-source-ruler = Source time
 audio-source-time = Source { $source } ↔ Song { $song }
 audio-warp-error = Warp error observed: { $reason }
 audio-source-ruler-short = Source

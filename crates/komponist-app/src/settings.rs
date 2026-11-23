@@ -409,6 +409,12 @@ pub fn cache_dir() -> Option<PathBuf> {
     }
 }
 
+/// [`cache_dir`], else `<temp folder>/komponist`: where the plugin manager keeps its scan cache and the bundled
+/// CLAP snapshots (it needs a folder even without a usable home).
+pub fn cache_dir_or_temp() -> PathBuf {
+    cache_dir().unwrap_or_else(|| std::env::temp_dir().join("komponist"))
+}
+
 #[cfg(not(windows))]
 fn cache_dir_from(macos: bool, xdg: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
     let home = home.filter(|p| p.is_absolute());
@@ -520,6 +526,17 @@ mod tests {
             cache_dir_from(false, None, Some(Path::new("relative"))),
             None
         );
+    }
+
+    #[test]
+    fn the_plugin_cache_folder_is_the_app_cache_or_a_temp_folder() {
+        let dir = cache_dir_or_temp();
+        assert!(dir.is_absolute());
+        assert!(dir.ends_with("komponist"));
+        match cache_dir() {
+            Some(cache) => assert_eq!(dir, cache),
+            None => assert_eq!(dir, std::env::temp_dir().join("komponist")),
+        }
     }
 
     #[test]

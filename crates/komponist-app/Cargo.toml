@@ -2,17 +2,16 @@
 name = "komponist-app"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[lints]
+workspace = true
 
 [[bin]]
 name = "komponist"
 path = "src/main.rs"
-
-# Headless demo player (WP-28, gate G3): plays a project through the engine and hexa.
-[[bin]]
-name = "komponist-play"
-path = "src/bin/komponist-play.rs"
 
 [dependencies]
 komponist-model.workspace = true
@@ -49,11 +48,11 @@ serde_json.workspace = true
 realfft.workspace = true
 # Local time of recent projects and plugin scans (`dialogs::format`).
 libc.workspace = true
-# komponist-play: WAV export.
+# WAV files of the showcase project and the tests.
 hound.workspace = true
 tempfile.workspace = true
-# komponist-play: debug builds abort on any allocation inside the audio callback and the offline
-# render (ARCHITECTURE §6.1).
+# Debug builds abort on any allocation inside the audio callback and the offline render
+# (ARCHITECTURE §6.1).
 assert_no_alloc.workspace = true
 
 [features]

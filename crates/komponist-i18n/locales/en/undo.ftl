@@ -177,9 +177,6 @@ undo-remove-send = Remove Send
 # Undo step: drag the send level.
 undo-send-level = Send Level
 
-# Undo step: fold or unfold a group.
-undo-fold-group = Collapse or Expand Group
-
 ## Labels with a name in them (the name is plugin-provided text).
 
 # A card parameter changed; `$name` is the parameter's name ("Cutoff").
@@ -194,7 +191,6 @@ undo-plugin-state = { $plugin }: Change State
 # Audio clip envelope gestures.
 undo-clip-gain = Change Clip Gain
 undo-clip-fade = Change Fade
-undo-clip-repitch = Change Re-Pitch
 undo-clip-original-tempo = Change Original Tempo
 undo-clip-source-start = Change Source Start
 undo-clip-replace-file = Replace File

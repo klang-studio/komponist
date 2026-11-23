@@ -2,9 +2,13 @@
 name = "komponist-stretch"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 description = "Worker-only pitch-preserving audio stretch chunks using vendored Signalsmith Default"
+
+[lints]
+workspace = true
 
 [build-dependencies]
 cc.workspace = true

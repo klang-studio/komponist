@@ -16,6 +16,8 @@
 //! - [`FilePool`] and [`PoolFile`]: one entry per file on disk, shared by path and identity,
 //!   with the decoded audio, derived data and peaks behind it.
 
+#![forbid(unsafe_code)]
+
 mod decode;
 mod error;
 pub mod peaks;
