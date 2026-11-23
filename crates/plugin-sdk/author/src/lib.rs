@@ -296,15 +296,22 @@ unsafe fn inventory(plugin: *const clap_plugin) -> Result<Vec<ParamInfo>, Layout
     let get_extension = plugin_ref
         .get_extension
         .ok_or_else(|| error("missing CLAP extension callback"))?;
+    // SAFETY: `plugin` is the live instance whose own `get_extension` this is, and the id is a
+    // NUL-terminated static string. The returned pointer is null or an extension table of the plugin.
     let table = unsafe { get_extension(plugin, CLAP_EXT_PARAMS.as_ptr()) };
+    // SAFETY: For `CLAP_EXT_PARAMS` the table is a `clap_plugin_params` that stays valid as long as the
+    // instance; `as_ref` turns a null pointer into `None`, which is rejected here.
     let table = unsafe { table.cast::<clap_plugin_params>().as_ref() }
         .ok_or_else(|| error("missing CLAP parameter extension"))?;
     let (Some(count), Some(get_info)) = (table.count, table.get_info) else {
         return Err(error("incomplete CLAP parameter extension"));
     };
     let mut result = Vec::new();
+    // SAFETY: `count` comes from the plugin's own parameter table and takes the instance it belongs to.
     for index in 0..unsafe { count(plugin) } {
         let mut info = MaybeUninit::uninit();
+        // SAFETY: `index` is below the count just reported, and `info.as_mut_ptr()` points to writable
+        // storage for one `clap_param_info`; the plugin only writes it and returns false on failure.
         if !unsafe { get_info(plugin, index, info.as_mut_ptr()) } {
             return Err(error("CLAP parameter info unavailable"));
         }
@@ -374,6 +381,8 @@ unsafe extern "C" fn get_layout<P: NativeClapLayout>(
     if len > MAX_BYTES {
         return ERROR;
     }
+    // SAFETY: `required_or_written` was checked non-null above and is the caller's writable length
+    // pointer (already written once with 0 under the same contract).
     unsafe { required_or_written.write(len) };
     if len > capacity {
         return BUFFER_TOO_SMALL;
