@@ -704,8 +704,12 @@ mod sys {
     const BUFFER: usize = 4 * MAX_FRAME;
 
     pub(super) fn stream_pair() -> Result<(OwnedFd, OwnedFd), Errno> {
-        // No SOCK_CLOEXEC on macOS. The window until `fcntl` is short; bridges are spawned from
-        // the thread that creates their socket pair.
+        // No SOCK_CLOEXEC on macOS: until `fcntl`, a child spawned by another thread (a scan
+        // worker) would inherit both ends and keep the bridge's socket open. Children are spawned
+        // under the read side of the spawn lock (`process::spawn_tied`), this takes the write side.
+        let _creating = crate::process::SPAWN_LOCK
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (a, b) = socketpair(
             AddressFamily::UNIX,
             SocketType::STREAM,

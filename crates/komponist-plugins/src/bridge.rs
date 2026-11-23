@@ -1,7 +1,8 @@
 //! One bridge process as the plugin manager sees it (ARCHITECTURE §8.1).
 //!
 //! [`Bridge::spawn`] starts `komponist-bridge --instance --control-fd N` with the bridge end of a
-//! fresh control socket, watches it through a pidfd, sends the memfd (Windows: `--instance` with the
+//! fresh control socket, tied to the app so that it ends with it (`komponist_ipc::spawn_tied`,
+//! #218), watches it through a pidfd, sends the memfd (Windows: `--instance` with the
 //! control pipe as the child's stdin, a process handle, the section and its events duplicated into
 //! the bridge) and queues the start-up
 //! messages: `Load`, `SetState` (if there is a state), `Activate`. The state goes in before the
@@ -163,8 +164,8 @@ fn spawn_process(
             .stdin(Stdio::from(bridge_end));
         (channel, command)
     };
-    let mut child = command
-        .spawn()
+    // Tied to the app: the bridge ends with it even while stuck in a plugin call (#218).
+    let mut child = komponist_ipc::spawn_tied(&mut command)
         .map_err(|e| PluginError::Spawn(format!("{}: {e}", exe.display())))?;
     let watcher = match ProcessWatcher::new(child.id()) {
         Ok(watcher) => watcher,
@@ -1478,14 +1479,34 @@ impl Bridge {
 }
 
 impl Drop for Bridge {
-    /// Never leaves a bridge behind (no `PR_SET_PDEATHSIG`): SIGKILL and a short wait to reap it.
+    /// Never leaves a bridge behind, and never waits for it (#218): SIGKILL; the watcher reaps the
+    /// process when it is dropped, or hands it to komponist-ipc's reaper if it has not exited yet.
+    /// [`kill_and_reap`] waits a moment for several bridges at once first.
     fn drop(&mut self) {
         self.shared.run.store(RUN_DEAD, Ordering::Release);
         self.writer = None;
         if !self.exited {
             let _ = self.watcher.kill();
-            let _ = self.watcher.wait_exit(Some(Duration::from_millis(500)));
         }
+    }
+}
+
+/// How long [`kill_and_reap`] waits for killed bridges to exit, all together.
+pub(crate) const REAP_WAIT: Duration = Duration::from_millis(500);
+
+/// Kills `bridges` and waits up to [`REAP_WAIT`] in total, not per bridge, for them to exit
+/// (#218): closing a project or the app with many bridges costs one wait, not one each. A bridge
+/// that has not exited by then (a process in uninterruptible sleep) is reaped later, by
+/// komponist-ipc's reaper once the bridge is dropped.
+pub(crate) fn kill_and_reap<'a>(bridges: impl IntoIterator<Item = &'a mut Bridge>) {
+    let mut bridges: Vec<&mut Bridge> = bridges.into_iter().collect();
+    for bridge in &mut bridges {
+        bridge.kill();
+    }
+    let deadline = Instant::now() + REAP_WAIT;
+    for bridge in bridges {
+        let left = deadline.saturating_duration_since(Instant::now());
+        bridge.wait_exit(left);
     }
 }
 

@@ -661,7 +661,19 @@ instrument bridges start early while other tracks run. Offline requests use a lo
 
 Bridge RT scheduling uses SCHED_FIFO, macOS time constraints with an audio work interval, or
 Windows MMCSS. Failure is reported as a realtime warning. The main loop answers heartbeats;
-crashed or stalled instances can be reloaded from their last state. The app never waits for a
+crashed or stalled instances can be reloaded from their last state.
+
+Bridges and scan processes never outlive the app, even when the app dies while a bridge is
+stuck in a plugin call and does not see its socket close. On Linux they get
+`PR_SET_PDEATHSIG(SIGKILL)` between fork and exec, followed by a parent check. On macOS the bridge
+watches the app's pid, which the app passes in the environment, with a kqueue exit filter and then
+calls `_exit` (a bridge that cannot watch the app ends before any plugin code runs). On Windows
+they are created suspended and join a kill-on-close job object of the app before they run. A scan runs in a process
+group of its own (Windows: a nested job), so a timeout or cancel also kills the helper processes
+its plugin started. Killed bridges are reaped together with one short wait; a bridge not reaped by
+then is handed to a reaper thread instead of being left as a zombie. On macOS, control socket pairs
+are created under a lock that every spawn also takes, since they cannot be made close-on-exec
+atomically there. The app never waits for a
 control message that has not arrived: each channel keeps the partial frame and the fragments of
 a large message between reads, and a message that has begun to arrive is read on for at most a
 short budget per poll, so a bridge frozen mid-message cannot hold up the UI thread or the
@@ -695,7 +707,7 @@ threads and callbacks. GUI embedding uses X11, NSView or HWND according to platf
 ### 8.3 Scanning
 
 Background scans walk configured/platform plugin folders and run separate scan processes with
-a 10-second timeout. Versioned caches use canonical bundle identity and modification times.
+a 10-second timeout; a timed-out scan is killed with its process group (§8.1). Versioned caches use canonical bundle identity and modification times.
 Descriptors include format/ID, vendor/name/version, kind, features/categories and sidechain
 capability. Scanning initializes instances to inspect ports without activating audio.
 Crashes/load failures are cached until the bundle changes; timeouts can be retried. Browser

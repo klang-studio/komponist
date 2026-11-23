@@ -5,7 +5,8 @@
 //! directories with `Contents/MacOS/<name>` and `Contents/Info.plist`), canonicalizes their paths (the cache key), takes unchanged
 //! bundles from the [`ScanCache`] and scans the rest with `<launcher> --scan <bundle>` (`komponist --bridge`),
 //! [`PluginManagerConfig::parallel_scans`](crate::PluginManagerConfig) processes at a time, each
-//! killed after [`SCAN_TIMEOUT`](crate::catalog::SCAN_TIMEOUT). The finished job writes the new cache file and hands a
+//! killed after [`SCAN_TIMEOUT`](crate::catalog::SCAN_TIMEOUT) together with the processes its
+//! plugin started (a process group, Windows: a job object; #218). Scan processes end with the app. The finished job writes the new cache file and hands a
 //! [`ScanOutcome`] to the plugin manager, which polls for it.
 //!
 //! What gets cached: successful scans, bundles without plugins, crashes and load errors (a bundle
@@ -25,7 +26,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind, ProcessExit, ProcessWatcher};
+use komponist_ipc::{
+    PluginDescriptor, PluginFormat, PluginKind, ProcessExit, ProcessGroup, ProcessWatcher,
+};
 #[cfg(unix)]
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
@@ -432,16 +435,18 @@ pub(crate) fn scan_bundle(
     timeout: Duration,
     cancel: &AtomicBool,
 ) -> Option<Scanned> {
-    let mut child = match Command::new(bridge_exe)
+    let mut command = Command::new(bridge_exe);
+    command
         .args(bridge_args)
         .arg("--scan")
         .arg(bundle)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
+        .stderr(Stdio::piped());
+    // A group of its own, tied to the app (#218): a timeout or a cancel kills the helper processes
+    // its plugin started along with it.
+    let (mut child, group) = match ProcessGroup::spawn(&mut command) {
+        Ok(spawned) => spawned,
         Err(e) => {
             return Some(Scanned::failed(
                 format!("cannot start {}: {e}", bridge_exe.display()),
@@ -452,8 +457,14 @@ pub(crate) fn scan_bundle(
     let mut watcher = match ProcessWatcher::new(child.id()) {
         Ok(watcher) => watcher,
         Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            // No group kill: it needs a watcher that knows the leader is not reaped. A failed
+            // watcher may have reaped the child already (macOS reaps an exited child before it
+            // can fail), so signal the pid only while `try_wait` still sees it running: a pid we
+            // have not reaped cannot be reused.
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
             return Some(Scanned::failed(
                 format!("cannot watch the scan: {e}"),
                 false,
@@ -471,13 +482,16 @@ pub(crate) fn scan_bundle(
 
     let deadline = Instant::now() + timeout;
     let exit = loop {
+        // The group goes first, while its leader is not reaped (`ProcessGroup::kill` checks).
         if cancel.load(Ordering::Acquire) {
+            let _ = group.kill(&watcher);
             let _ = watcher.kill();
             let _ = watcher.wait_exit(Some(Duration::from_secs(1)));
             return None;
         }
         let now = Instant::now();
         if now >= deadline {
+            let _ = group.kill(&watcher);
             let _ = watcher.kill();
             let _ = watcher.wait_exit(Some(Duration::from_secs(1)));
             return Some(Scanned::failed(
@@ -919,5 +933,64 @@ mod tests {
         set(&file, 4_200_000_000);
         assert_eq!(bundle_mtime(&file), 4_200_000_000);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Whether `pid` still runs: not a zombie (a reparented one may wait for an init that does
+    /// not reap, a container's).
+    #[cfg(unix)]
+    fn running(pid: u32) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                return false;
+            };
+            // "pid (comm) state …"
+            let state = stat
+                .rfind(')')
+                .and_then(|i| stat[i + 1..].trim_start().chars().next());
+            state.is_some_and(|s| s != 'Z' && s != 'X')
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let out = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .expect("run ps");
+            let stat = String::from_utf8_lossy(&out.stdout);
+            let stat = stat.trim();
+            !stat.is_empty() && !stat.starts_with('Z')
+        }
+    }
+
+    /// #218: a scan that times out is killed with the processes it started (its process group),
+    /// not only the scan process itself.
+    #[test]
+    #[cfg(unix)]
+    fn a_timed_out_scan_is_killed_with_the_processes_it_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("helper.pid");
+        // The "scan process" starts a helper, names it and hangs, as a plugin might.
+        let script = format!("sleep 30 & echo $! > '{}'; wait", marker.display());
+        let args: Vec<OsString> = vec!["-c".into(), script.into(), "sh".into()];
+        let cancel = AtomicBool::new(false);
+        let timeout = Duration::from_millis(500);
+        let scanned = scan_bundle(Path::new("sh"), &args, Path::new(BUNDLE), timeout, &cancel)
+            .expect("not cancelled");
+        let error = scanned.error.unwrap_or_default();
+        assert!(error.starts_with("timed out"), "{error}");
+        assert!(!scanned.cacheable);
+        let helper: u32 = std::fs::read_to_string(&marker)
+            .expect("the scan process named its helper")
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while running(helper) {
+            assert!(
+                Instant::now() < deadline,
+                "helper {helper} outlived its scan"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }

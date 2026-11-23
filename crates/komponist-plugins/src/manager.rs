@@ -41,7 +41,7 @@ use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project, TrackId}
 #[cfg(unix)]
 use rustix::event::{PollFd, PollFlags, Timespec};
 
-use crate::bridge::{Bridge, Collected, SpawnSetup, StatePurpose, Timing};
+use crate::bridge::{Bridge, Collected, SpawnSetup, StatePurpose, Timing, kill_and_reap};
 use crate::bundled_clap::{BundleVerificationError, BundledClap, VerifiedClap};
 use crate::catalog::{
     Catalog, PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT, ScanCache, ScanReport,
@@ -324,8 +324,9 @@ pub struct ProcessorSetup {
 
 /// Owner of all bridges and the catalog. UI thread.
 ///
-/// Dropping the manager kills every bridge (SIGKILL; there is no `PR_SET_PDEATHSIG`) and cancels
-/// a running scan; [`PluginManager::shutdown`] is the graceful way.
+/// Dropping the manager kills every bridge (SIGKILL, then one short wait for all of them) and
+/// cancels a running scan; [`PluginManager::shutdown`] is the graceful way. Bridges also end with
+/// the app process when it dies without either (#218, `komponist_ipc::spawn_tied`).
 #[derive(Debug)]
 pub struct PluginManager {
     config: PluginManagerConfig,
@@ -351,6 +352,13 @@ pub struct PluginManager {
     pending: Vec<PluginManagerEvent>,
     render_mode: RenderMode,
     timing: Timing,
+}
+
+impl Drop for PluginManager {
+    /// Kills every bridge with one short wait for all of them (#218: never one wait per bridge).
+    fn drop(&mut self) {
+        kill_and_reap(self.bridges.values_mut().chain(&mut self.retiring));
+    }
 }
 
 impl PluginManager {
@@ -1468,13 +1476,15 @@ impl PluginManager {
             bridge.stop(SHUTDOWN_GRACE);
         }
         let deadline = Instant::now() + SHUTDOWN_GRACE;
+        let mut running = Vec::new();
         for bridge in &mut all {
             let left = deadline.saturating_duration_since(Instant::now());
             if !bridge.wait_exit(left) {
-                bridge.kill();
+                running.push(bridge);
             }
         }
-        // Dropping reaps the killed ones.
+        // Killed together, with one short wait for all of them.
+        kill_and_reap(running);
         drop(all);
         self.statuses.clear();
     }

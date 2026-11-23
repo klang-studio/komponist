@@ -14,4 +14,8 @@ crosses the threshold from below. State loaded before activation establishes the
 threshold check. Bridge tests use the fixture to verify that the DAW can survive and reload a
 failed instance.
 
+With `KP_TEST_CRASH_HANG` set to a file path, `activate` writes the process id to that file and then
+sleeps 30 s: a bridge stuck in a plugin call, for the test that a bridge ends with a killed app
+(komponist #218). Scans do not activate plugins, so they are unaffected.
+
 See the [test workspace README](../README.md) for fixture setup.

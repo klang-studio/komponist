@@ -28,15 +28,52 @@
 //! (SIGKILL). Every other exit code is `code`. (A program that exits with such a code on purpose,
 //! `std::process::exit(-1)` for one, reads as a crash too.)
 //!
+//! Dropping a watcher never blocks and never leaves a zombie (#218): a child that has not been
+//! reaped yet goes to a reaper thread, which reaps it once it has exited.
+//!
+//! **Children that die with the app** (#218): [`spawn_tied`] starts a child that does not outlive
+//! this process, even when the app crashes or is killed while the child is stuck in a plugin call
+//! (and so never reads the end of its control socket). Per OS:
+//!
+//! - Linux: `PR_SET_PDEATHSIG(SIGKILL)` between fork and exec, then a `getppid` check against this
+//!   process (the app may have died before the `prctl`). The kernel sends the signal when the
+//!   *thread* that spawned the child ends: spawn from a thread that lives as long as the child
+//!   should (the plugin manager's UI thread; a scan worker waits for its helper).
+//! - macOS: there is no such kernel feature. The child learns this process's pid from
+//!   [`PARENT_PID_ENV`] and watches it itself (`komponist-bridge`: kqueue `EVFILT_PROC` /
+//!   `NOTE_EXIT`, then `_exit`). Spawns also hold the spawn lock that socket pairs are created
+//!   under (`control`), since macOS has no atomic close-on-exec for them.
+//! - Windows: the child goes into a job object of the app with `KILL_ON_JOB_CLOSE`; the job's
+//!   handle is never closed, so the system closes it, and ends the child, when the app ends,
+//!   whichever way. The job allows silent breakaway: processes the child starts are not tied,
+//!   as on Linux and macOS. The child is created suspended, joins the job and only then runs, so
+//!   it cannot run (or start anything) outside it. Stable Rust's `Command` cannot pass a job list
+//!   to `CreateProcess` (`PROC_THREAD_ATTRIBUTE_JOB_LIST`), which would close the last gap: an app
+//!   that dies between creating the child and putting it into the job leaves the child suspended,
+//!   never running a line of its own or plugin code, until someone ends it.
+//!
+//! [`ProcessGroup::spawn`] does the same and puts the child into a group of its own with
+//! everything it starts (Unix: a process group, Windows: a job object of its own, nested in the
+//! app's job), so a scan helper that times out is killed with the helper processes its plugin
+//! started. The group is killed only on request: what a finished child leaves running (a
+//! background service a plugin started) lives on. One difference on Windows: the nested job
+//! allows no breakaway (or the group could not be killed whole), so such leftovers stay in the
+//! app's job too and end with the app; on Unix they outlive it.
+//!
 //! Non-RT: the engine never touches processes; a dead bridge just makes its blocks late.
 
 use std::io;
 #[cfg(unix)]
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 #[cfg(windows)]
 use std::os::windows::io::{AsHandle, BorrowedHandle, OwnedHandle};
+use std::process::{Child, Command};
 #[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "macos")]
+use std::sync::{PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
@@ -185,6 +222,343 @@ impl ProcessWatcher {
             }
             Ok(())
         }
+    }
+}
+
+impl Drop for ProcessWatcher {
+    /// Hands a child that has not been reaped yet to the reaper thread (module docs). Windows has
+    /// nothing to reap: closing the handle is all.
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if matches!(self.try_exit(), Ok(None)) {
+            reaper::adopt(self.pid);
+        }
+    }
+}
+
+/// The environment variable that tells a child started by [`spawn_tied`] the pid of the process
+/// it must not outlive (macOS, module docs).
+pub const PARENT_PID_ENV: &str = "KOMPONIST_PARENT_PID";
+
+/// macOS: socket pairs are created (and marked close-on-exec) under the write side, children are
+/// spawned under the read side, so no child inherits a socket of another bridge (module docs).
+#[cfg(target_os = "macos")]
+pub(crate) static SPAWN_LOCK: RwLock<()> = RwLock::new(());
+
+/// Starts `command` as a child that does not outlive this process (module docs). Watch it with a
+/// [`ProcessWatcher`] and drop the `Child` without waiting, as for any other child.
+///
+/// Call it from a thread that lives as long as the child should: on Linux the child is killed
+/// when the spawning *thread* ends (`PR_SET_PDEATHSIG`). Today that is the UI thread, which owns
+/// the plugin manager, and a scan worker, which outlives its helper.
+pub fn spawn_tied(command: &mut Command) -> io::Result<Child> {
+    #[cfg(target_os = "linux")]
+    {
+        let app = rustix::process::getpid();
+        // SAFETY: runs between fork and exec: two async-signal-safe syscalls and no allocation
+        // (an `io::Error` made from an errno holds the number only).
+        unsafe {
+            command.pre_exec(move || {
+                rustix::process::set_parent_process_death_signal(Some(
+                    rustix::process::Signal::KILL,
+                ))?;
+                // The app died before the `prctl`: the signal will never come.
+                if rustix::process::getppid() != Some(app) {
+                    return Err(rustix::io::Errno::SRCH.into());
+                }
+                Ok(())
+            });
+        }
+        command.spawn()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        command.env(PARENT_PID_ENV, std::process::id().to_string());
+        let _spawning = SPAWN_LOCK.read().unwrap_or_else(PoisonError::into_inner);
+        command.spawn()
+    }
+    #[cfg(windows)]
+    {
+        // No app job (it could not be made): the child runs untied, as before #218. A job that
+        // exists but cannot take the child fails the spawn (`spawn_in`).
+        let app = job::app();
+        job::spawn_in(command, app.as_slice())
+    }
+}
+
+/// A child and everything it starts, killed together (module docs).
+#[derive(Debug)]
+pub struct ProcessGroup {
+    /// Unix: the group leader, whose pid is the group id.
+    #[cfg(unix)]
+    leader: Pid,
+    /// Windows: the group's job object, nested in the app's job.
+    #[cfg(windows)]
+    job: OwnedHandle,
+}
+
+impl ProcessGroup {
+    /// Starts `command` as [`spawn_tied`] does, as the first member of a new group: on Unix the
+    /// leader of a process group of its own, on Windows the first process of a job object of its
+    /// own, which nests in the app's job (the child is in that one already; module docs).
+    pub fn spawn(command: &mut Command) -> io::Result<(Child, ProcessGroup)> {
+        #[cfg(unix)]
+        {
+            command.process_group(0);
+            let child = spawn_tied(command)?;
+            let raw = i32::try_from(child.id()).map_err(|_| io::ErrorKind::InvalidInput)?;
+            let leader = Pid::from_raw(raw).ok_or(io::ErrorKind::InvalidInput)?;
+            Ok((child, ProcessGroup { leader }))
+        }
+        #[cfg(windows)]
+        {
+            // No limits: no breakaway (everything the child starts stays in the group), and
+            // closing the handle kills nothing. The child joins the app's job first, then this
+            // one, which so nests in it; both before it runs (see `spawn_tied`).
+            let group = job::create(0)?;
+            let mut jobs = job::app().into_iter().collect::<Vec<_>>();
+            jobs.push(group.as_handle());
+            let child = job::spawn_in(command, &jobs)?;
+            Ok((child, ProcessGroup { job: group }))
+        }
+    }
+
+    /// SIGKILL to every process in the group (Windows: `TerminateJobObject`); `leader` watches the
+    /// group's first process. `Ok` if the group is already gone.
+    ///
+    /// Unix: the group id is the leader's pid, which may be reused once the leader is reaped. So
+    /// once `leader` has reaped it (its exit is known), this does nothing: the rest of the group
+    /// is out of reach then. Kill the group before the watcher can see the exit.
+    pub fn kill(&self, leader: &ProcessWatcher) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            debug_assert_eq!(leader.pid, self.leader, "not this group's leader");
+            if leader.exit.is_some() {
+                return Ok(());
+            }
+            match rustix::process::kill_process_group(self.leader, rustix::process::Signal::KILL) {
+                Ok(()) | Err(Errno::SRCH) => Ok(()),
+                Err(e) => Err(e.into()),
+            }
+        }
+        #[cfg(windows)]
+        {
+            // A job has no id to reuse: it can be terminated whatever the leader did.
+            let _ = leader;
+            job::terminate(self.job.as_handle())
+        }
+    }
+}
+
+/// Reaps the children of dropped watchers (module docs): one thread for the process, started
+/// with the first such child; it looks at its children every [`reaper::POLL`] and sleeps while it
+/// has none.
+#[cfg(unix)]
+mod reaper {
+    use std::sync::OnceLock;
+    use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+    use std::time::Duration;
+
+    use rustix::io::Errno;
+    use rustix::process::{Pid, WaitOptions, waitpid};
+
+    /// How often the reaper looks at its children.
+    pub(super) const POLL: Duration = Duration::from_millis(50);
+
+    /// Hands `pid`, an unreaped child of this process that nobody else waits for, to the reaper.
+    pub(super) fn adopt(pid: Pid) {
+        static REAPER: OnceLock<Option<Sender<Pid>>> = OnceLock::new();
+        let reaper = REAPER.get_or_init(|| {
+            let (tx, rx) = mpsc::channel();
+            std::thread::Builder::new()
+                .name("kp-reaper".into())
+                .spawn(move || run(&rx))
+                .ok()
+                .map(|_| tx)
+        });
+        // Without a reaper thread the child stays a zombie until the app ends.
+        if let Some(reaper) = reaper {
+            let _ = reaper.send(pid);
+        }
+    }
+
+    fn run(rx: &Receiver<Pid>) {
+        let mut children: Vec<Pid> = Vec::new();
+        loop {
+            let next = if children.is_empty() {
+                rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            } else {
+                rx.recv_timeout(POLL)
+            };
+            match next {
+                Ok(pid) => children.push(pid),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+            children.extend(rx.try_iter());
+            // Keep the ones still running; an error means the child is not ours (any more).
+            children.retain(|&pid| {
+                matches!(
+                    waitpid(Some(pid), WaitOptions::NOHANG),
+                    Ok(None) | Err(Errno::INTR)
+                )
+            });
+        }
+    }
+}
+
+/// Windows: job objects for [`spawn_tied`] and [`ProcessGroup`].
+#[cfg(windows)]
+mod job {
+    use std::io;
+    use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
+    use std::process::Child;
+    use std::sync::OnceLock;
+
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject,
+    };
+
+    use windows_sys::Win32::System::Threading::{
+        CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+    };
+
+    use super::sys::KILL_EXIT_CODE;
+
+    /// Spawns `command` suspended, puts it into `jobs` in order (a later one nests in the earlier
+    /// ones) and only then lets it run, so it cannot run or start anything outside them (module
+    /// docs). A job it cannot join fails the spawn: the suspended child is killed and reaped
+    /// before it ran, so no child ever runs untied. Overrides the command's creation flags
+    /// (nobody sets any).
+    pub(super) fn spawn_in(
+        command: &mut Command,
+        jobs: &[BorrowedHandle<'_>],
+    ) -> io::Result<Child> {
+        command.creation_flags(CREATE_SUSPENDED);
+        let mut child = command.spawn()?;
+        let joined = jobs.iter().try_for_each(|job| assign(*job, &child));
+        if let Err(e) = joined.and_then(|()| resume(child.id())) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+        Ok(child)
+    }
+
+    /// Resumes the threads of process `pid`: a process created suspended has its main thread
+    /// only (std keeps no handle to it, so it is found by a thread snapshot). The caller holds a
+    /// handle to the process, so `pid` cannot have been reused. Resuming a running thread does
+    /// nothing.
+    fn resume(pid: u32) -> io::Result<()> {
+        // SAFETY: plain FFI call; the snapshot is closed below.
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a plain-old-data struct; `dwSize` is set as the API requires.
+        let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut resumed = false;
+        let mut error = None;
+        // SAFETY: a valid snapshot handle and an entry with `dwSize` set, alive across the calls.
+        let mut more = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+        while more {
+            if entry.th32OwnerProcessID == pid {
+                // SAFETY: plain FFI calls; the thread handle is checked and closed.
+                unsafe {
+                    let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                    if thread.is_null() {
+                        error = Some(io::Error::last_os_error());
+                    } else {
+                        if ResumeThread(thread) == u32::MAX {
+                            error = Some(io::Error::last_os_error());
+                        } else {
+                            resumed = true;
+                        }
+                        CloseHandle(thread);
+                    }
+                }
+            }
+            // SAFETY: as for `Thread32First`.
+            more = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+        }
+        // SAFETY: the snapshot handle from above, closed once.
+        unsafe { CloseHandle(snapshot) };
+        match (resumed, error) {
+            (true, _) => Ok(()),
+            (false, Some(e)) => Err(e),
+            (false, None) => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "no thread of the new process to resume",
+            )),
+        }
+    }
+
+    /// A new unnamed job object with `limits`.
+    pub(super) fn create(limits: JOB_OBJECT_LIMIT) -> io::Result<OwnedHandle> {
+        // SAFETY: plain FFI call; default security, no name, the handle is not inheritable.
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a fresh handle that nothing else owns.
+        let job = unsafe { OwnedHandle::from_raw_handle(job) };
+        // SAFETY: a plain-old-data struct, all zero is "no limits".
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        info.BasicLimitInformation.LimitFlags = limits;
+        // SAFETY: a valid job handle and a struct of the size given, matching the class.
+        let set = unsafe {
+            SetInformationJobObject(
+                job.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&info).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if set == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(job)
+    }
+
+    /// Puts `child` into `job`.
+    pub(super) fn assign(job: BorrowedHandle<'_>, child: &Child) -> io::Result<()> {
+        // SAFETY: a valid job handle and the child's process handle (std opens it with all
+        // access, which includes PROCESS_SET_QUOTA and PROCESS_TERMINATE).
+        if unsafe { AssignProcessToJobObject(job.as_raw_handle(), child.as_raw_handle()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Ends every process in `job` with the exit code of [`super::ProcessWatcher::kill`].
+    pub(super) fn terminate(job: BorrowedHandle<'_>) -> io::Result<()> {
+        // SAFETY: a valid job handle (created with all access).
+        if unsafe { TerminateJobObject(job.as_raw_handle(), KILL_EXIT_CODE) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// The app's job (module docs), made on first use; `None` if it could not be made. Never
+    /// closed: the system closes it when the process ends.
+    pub(super) fn app() -> Option<BorrowedHandle<'static>> {
+        static APP: OnceLock<Option<OwnedHandle>> = OnceLock::new();
+        APP.get_or_init(|| {
+            create(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK).ok()
+        })
+        .as_ref()
+        .map(OwnedHandle::as_handle)
     }
 }
 
@@ -465,6 +839,8 @@ compile_error!("komponist-ipc: no process-watcher backend (process.rs) for this 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use rustix::process::Signal;
     use std::process::{Child, Command};
 
     /// A child to watch.
@@ -650,6 +1026,164 @@ mod tests {
         }
         assert!(ProcessWatcher::new(0).is_err());
         assert!(ProcessWatcher::new(u32::MAX).is_err());
+    }
+
+    /// Whether `pid` still runs (Unix): not a zombie, which `kill(pid, 0)` would count. A
+    /// reparented zombie may wait for an init that does not reap (a container's).
+    #[cfg(unix)]
+    fn running(pid: u32) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                return false;
+            };
+            // "pid (comm) state …"
+            let state = stat
+                .rfind(')')
+                .and_then(|i| stat[i + 1..].trim_start().chars().next());
+            state.is_some_and(|s| s != 'Z' && s != 'X')
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let out = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .expect("run ps");
+            let stat = String::from_utf8_lossy(&out.stdout);
+            let stat = stat.trim();
+            !stat.is_empty() && !stat.starts_with('Z')
+        }
+    }
+
+    /// Whether `pid` exists at all (Unix; a zombie counts, it is not reaped yet).
+    #[cfg(unix)]
+    fn exists(pid: u32) -> bool {
+        let pid = Pid::from_raw(pid as i32).unwrap();
+        rustix::process::test_kill_process(pid).is_ok()
+    }
+
+    /// Waits up to 10 s for `done`.
+    #[cfg(unix)]
+    fn eventually(what: &str, done: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// #218: dropping a watcher does not wait, and its child is reaped later all the same, killed
+    /// just before or still running.
+    #[test]
+    #[cfg(unix)]
+    fn a_dropped_watcher_leaves_no_zombie() {
+        let child = spawn(Kid::Sleep);
+        let pid = child.id();
+        let watcher = ProcessWatcher::new(pid).unwrap();
+        drop(child);
+        watcher.kill().unwrap();
+        let t0 = Instant::now();
+        drop(watcher);
+        assert!(
+            t0.elapsed() < Duration::from_millis(100),
+            "{:?}",
+            t0.elapsed()
+        );
+        eventually("the killed child is reaped", || !exists(pid));
+
+        // Still running when the watcher goes: reaped once it ends.
+        let child = spawn(Kid::Sleep);
+        let pid = child.id();
+        drop(ProcessWatcher::new(pid).unwrap());
+        drop(child);
+        assert!(running(pid));
+        // Ours and not reaped, so the pid cannot have been reused.
+        rustix::process::kill_process(Pid::from_raw(pid as i32).unwrap(), Signal::KILL).unwrap();
+        eventually("the running child is reaped", || !exists(pid));
+    }
+
+    /// #218, Linux: a tied child gets SIGKILL when the thread that spawned it ends (the kernel's
+    /// "parent" is that thread), as it does when the app dies.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_tied_child_is_killed_when_its_spawner_ends() {
+        let mut watcher = std::thread::spawn(|| {
+            let child = spawn_tied(Command::new("sleep").arg("30")).unwrap();
+            let watcher = ProcessWatcher::new(child.id()).unwrap();
+            drop(child);
+            watcher
+        })
+        .join()
+        .unwrap();
+        let exit = watcher.wait_exit(Some(Duration::from_secs(10))).unwrap();
+        assert_eq!(exit.and_then(|e| e.signal), Some(9), "{exit:?}");
+    }
+
+    /// #218, macOS: a tied child is told whom to watch.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_tied_child_learns_the_app_pid() {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", &format!("echo ${PARENT_PID_ENV}")])
+            .stdout(std::process::Stdio::piped());
+        let out = spawn_tied(&mut command)
+            .unwrap()
+            .wait_with_output()
+            .unwrap();
+        let pid = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(pid.trim(), std::process::id().to_string());
+    }
+
+    /// #218, Windows: a tied child is in the app's job.
+    #[test]
+    #[cfg(windows)]
+    fn a_tied_child_is_in_the_app_job() {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["process::tests::child_entry", "--exact", "--test-threads=1"])
+            .env(KID_ENV, "sleep")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let mut child = spawn_tied(&mut command).unwrap();
+        let mut member = 0;
+        // SAFETY: valid process and job handles and an out pointer.
+        let ok = unsafe {
+            IsProcessInJob(
+                child.as_raw_handle(),
+                job::app().unwrap().as_raw_handle(),
+                &mut member,
+            )
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(ok != 0 && member != 0);
+    }
+
+    /// #218: killing a group ends the processes its leader started too.
+    #[test]
+    #[cfg(unix)]
+    fn a_group_is_killed_with_what_its_leader_started() {
+        use std::io::BufRead;
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "sleep 30 & echo $!; wait"])
+            .stdout(std::process::Stdio::piped());
+        let (mut child, group) = ProcessGroup::spawn(&mut command).unwrap();
+        let mut watcher = ProcessWatcher::new(child.id()).unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        drop(child);
+        let helper: u32 = line.trim().parse().unwrap();
+        assert!(running(helper));
+        group.kill(&watcher).unwrap();
+        let exit = watcher.wait_exit(Some(Duration::from_secs(10))).unwrap();
+        assert_eq!(exit.and_then(|e| e.signal), Some(9), "{exit:?}");
+        eventually("the helper is killed with its group", || !running(helper));
     }
 
     /// Windows: an unhandled access violation and a fast fail (`abort`) count as crashes, with

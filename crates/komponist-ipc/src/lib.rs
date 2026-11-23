@@ -14,7 +14,8 @@
 //!   plugin vocabulary ([`PluginDescriptor`], [`ParamInfo`], [`NoteName`], …).
 //! - [`frame`]: the plugin frame window's vocabulary (header model and events, frame rect, keys
 //!   and the key policy), shared by the app and the bridge that owns the frame on macOS (#52).
-//! - [`process`]: [`ProcessWatcher`], crash detection of a bridge process.
+//! - [`process`]: [`ProcessWatcher`], crash detection of a bridge process, and children that die
+//!   with the app ([`spawn_tied`], [`ProcessGroup`]).
 //!
 //! Platform layer (#44): the public API is the same on Linux and macOS; `shm`, `signal`,
 //! `process` and the socket set-up in `control` each have a private `sys` module per OS (Linux:
@@ -55,7 +56,7 @@ pub use control::{
     GuiTarget, LoadedInfo, LogLevel, NoteName, ParamInfo, ParamValue, PluginDescriptor,
     PluginFormat, PluginKind, RenderMode,
 };
-pub use process::{ProcessExit, ProcessWatcher};
+pub use process::{ProcessExit, ProcessGroup, ProcessWatcher, spawn_tied};
 pub use ring::ShmRing;
 #[cfg(windows)]
 pub use shm::ShmHandles;
