@@ -2,8 +2,12 @@
 name = "komponist-bundled-hexa"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[lints]
+workspace = true
 
 [lib]
 name = "komponist_hexa_clap"
@@ -17,8 +21,8 @@ komponist-i18n.workspace = true
 komponist-model.workspace = true
 komponist-native-clap-sdk.workspace = true
 nice-plug.workspace = true
-crossbeam-queue = "=0.3.14"
-serde = { version = "=1.0.229", features = ["derive"] }
+crossbeam-queue.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

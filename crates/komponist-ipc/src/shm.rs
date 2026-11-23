@@ -1727,10 +1727,8 @@ mod tests {
             use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
             let mut flags = 0;
             // SAFETY: a valid handle and an out pointer.
-            assert_ne!(
-                unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) },
-                0
-            );
+            let ok = unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) };
+            assert_ne!(ok, 0);
             assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
         }
     }

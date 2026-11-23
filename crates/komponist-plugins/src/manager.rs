@@ -44,8 +44,8 @@ use rustix::event::{PollFd, PollFlags, Timespec};
 use crate::bridge::{Bridge, Collected, SpawnSetup, StatePurpose, Timing};
 use crate::bundled_clap::{BundleVerificationError, BundledClap, VerifiedClap};
 use crate::catalog::{
-    Catalog, Platform, PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT, ScanCache,
-    ScanReport, env_path, requires_bundled,
+    Catalog, PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT, ScanCache, ScanReport,
+    requires_bundled,
 };
 use crate::direct_device::DirectDevice;
 use crate::scan::{ScanJob, ScanSetup};
@@ -297,15 +297,12 @@ pub struct PluginManagerConfig {
 
 impl PluginManagerConfig {
     /// The default setup of the app: the bridge is the running executable itself with `--bridge`
-    /// (WP-94: nothing next to it can be missing or stale), the cache in
-    /// `$XDG_CACHE_HOME/komponist/` (else `~/.cache/komponist/`; on macOS
-    /// `~/Library/Caches/komponist/`, where the XDG variable is not honoured; on Windows
-    /// `%LOCALAPPDATA%\komponist\`), and half the CPU cores (1 ..= 8) for scans. When the running executable cannot be determined, `bridge_exe` is empty and
-    /// every start of a bridge fails with a clear [`PluginError::Spawn`].
-    pub fn defaults() -> PluginManagerConfig {
+    /// (WP-94: nothing next to it can be missing or stale), the scan cache in `cache_dir` (the
+    /// app's cache folder, which it resolves per OS), and half the CPU cores (1 ..= 8) for scans.
+    /// When the running executable cannot be determined, `bridge_exe` is empty and every start of
+    /// a bridge fails with a clear [`PluginError::Spawn`].
+    pub fn defaults(cache_dir: &Path) -> PluginManagerConfig {
         let exe = std::env::current_exe().unwrap_or_default();
-        let cache_dir = cache_dir_from(Platform::CURRENT, &|name: &str| env_path(name))
-            .unwrap_or_else(|| std::env::temp_dir().join("komponist"));
         let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
         PluginManagerConfig {
             bridge_exe: exe,
@@ -314,20 +311,6 @@ impl PluginManagerConfig {
             parallel_scans: (cores / 2).clamp(1, 8),
         }
     }
-}
-
-/// The cache folder for a platform's convention and the environment `var` (a variable by name).
-/// `None` without a usable home folder (Linux: without `$XDG_CACHE_HOME` too; Windows: without
-/// an absolute `%LOCALAPPDATA%`).
-fn cache_dir_from(platform: Platform, var: &dyn Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
-    let base = match platform {
-        Platform::Macos => var("HOME")?.join("Library/Caches"),
-        Platform::Linux => var("XDG_CACHE_HOME")
-            .filter(|d| d.is_absolute())
-            .or_else(|| var("HOME").map(|h| h.join(".cache")))?,
-        Platform::Windows => var("LOCALAPPDATA").filter(|d| d.is_absolute())?,
-    };
-    Some(base.join("komponist"))
 }
 
 /// How a processor is prepared.
@@ -1551,14 +1534,13 @@ fn is_sampler_kind(kind: Option<BuiltinKind>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
     fn release_discards_only_the_retired_devices_queued_snapshots() {
         let temp = tempfile::tempdir().unwrap();
         let config = PluginManagerConfig {
             cache_file: temp.path().join("plugins.json"),
-            ..PluginManagerConfig::defaults()
+            ..PluginManagerConfig::defaults(temp.path())
         };
         let mut manager = PluginManager::new_with_bundled_clap(config, false, false);
         let removed = DeviceId(1);
@@ -1583,7 +1565,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let config = PluginManagerConfig {
             cache_file: temp.path().join("plugins.json"),
-            ..PluginManagerConfig::defaults()
+            ..PluginManagerConfig::defaults(temp.path())
         };
         let mut manager = PluginManager::new_with_bundled_clap(config, false, false);
         let device = Device {
@@ -1638,56 +1620,12 @@ mod tests {
     }
 
     #[test]
-    fn cache_dir_follows_the_platform() {
-        let env = |vars: &'static [(&'static str, &'static str)]| {
-            move |name: &str| {
-                vars.iter()
-                    .find(|(n, _)| *n == name)
-                    .map(|(_, v)| PathBuf::from(v))
-            }
-        };
-        let home = Path::new("/Users/u");
-        // An absolute path on the OS that runs the test (`is_absolute` follows the host).
-        const XDG: &str = if cfg!(windows) {
-            "C:/x/cache"
-        } else {
-            "/x/cache"
-        };
-        let all = env(&[("HOME", "/Users/u"), ("XDG_CACHE_HOME", XDG)]);
-        assert_eq!(
-            cache_dir_from(Platform::Macos, &all),
-            Some(home.join("Library/Caches").join("komponist"))
-        );
-        assert_eq!(cache_dir_from(Platform::Macos, &env(&[])), None);
-        assert_eq!(
-            cache_dir_from(Platform::Linux, &all),
-            Some(Path::new(XDG).join("komponist"))
-        );
-        let relative = env(&[("HOME", "/Users/u"), ("XDG_CACHE_HOME", "rel")]);
-        assert_eq!(
-            cache_dir_from(Platform::Linux, &relative),
-            Some(home.join(".cache").join("komponist"))
-        );
-        assert_eq!(cache_dir_from(Platform::Linux, &env(&[])), None);
-        // Windows: %LOCALAPPDATA%, never $HOME (an absolute path only where Windows paths are).
-        assert_eq!(cache_dir_from(Platform::Windows, &all), None);
-        #[cfg(windows)]
-        assert_eq!(
-            cache_dir_from(
-                Platform::Windows,
-                &env(&[("LOCALAPPDATA", r"C:\Users\u\AppData\Local")])
-            ),
-            Some(r"C:\Users\u\AppData\Local\komponist".into())
-        );
-    }
-
-    #[test]
     fn default_config_runs_the_executable_itself_as_the_bridge() {
-        let config = PluginManagerConfig::defaults();
+        let dir = std::env::temp_dir().join("komponist");
+        let config = PluginManagerConfig::defaults(&dir);
         assert_eq!(config.bridge_exe, std::env::current_exe().unwrap());
         assert_eq!(config.bridge_args, [OsString::from("--bridge")]);
-        assert!(config.cache_file.ends_with("komponist/plugins.json"));
-        assert!(config.cache_file.is_absolute());
+        assert_eq!(config.cache_file, dir.join("plugins.json"));
         assert!((1..=8).contains(&config.parallel_scans));
     }
 

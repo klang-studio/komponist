@@ -2,9 +2,13 @@
 name = "hexa-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 description = "hexa, the 6-operator FM synth engine of komponist (no_std-friendly DSP core)"
+
+[lints]
+workspace = true
 
 [lib]
 name = "hexa_core"

@@ -2,9 +2,13 @@
 name = "komponist-audiofile"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 description = "Audio files for komponist: seekable chunked decoding, sample-rate conversion, waveform peak cache, shared file pool"
+
+[lints]
+workspace = true
 
 [dependencies]
 hound.workspace = true

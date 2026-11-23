@@ -35,12 +35,10 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Verify every artifact named by the app-bound manifest. Both routes use private snapshots of
 /// the unpacked artifacts so the scan and instance open the same authenticated bytes.
-pub fn verify_bundled_clap(force_bridge: bool) -> Result<(), String> {
-    let mut config = PluginManagerConfig::defaults();
-    let cache_dir = config
-        .cache_file
-        .parent()
-        .ok_or_else(|| "no plugin cache directory".to_owned())?;
+///
+/// `cache_dir` is the app's cache folder (the scan cache and the private snapshots live below it).
+pub fn verify_bundled_clap(cache_dir: &Path, force_bridge: bool) -> Result<(), String> {
+    let mut config = PluginManagerConfig::defaults(cache_dir);
     let cache_root = snapshot_cache(cache_dir).map_err(|error| error.to_string())?;
     let scratch = tempfile::Builder::new()
         .prefix("bundled-clap-smoke-")
