@@ -254,7 +254,7 @@ fn very_long_clip_automation_repeats_without_expanding_the_project() {
         },
     )
     .unwrap();
-    let project = edits::set_clip_loop(&project, clip, Some(Tick(2)), Tick(1_000_000_000)).unwrap();
+    let project = edits::set_clip_loop(&project, clip, Some(Tick(2)), Tick(60_000_000)).unwrap();
     let target = parameter(device, 0);
     let project = add_clip_automation(&project, clip, target.clone(), "Repeat".into()).unwrap();
     let project = set_clip_points(
@@ -268,7 +268,7 @@ fn very_long_clip_automation_repeats_without_expanding_the_project() {
     )
     .unwrap();
     let (mut rig, _, mut log) = rig(&project);
-    rig.send(Command::Locate(Tick(900_000_001)));
+    rig.send(Command::Locate(Tick(54_000_001)));
     rig.process(1, 1);
     assert_eq!(log.pop().unwrap(), (0, 0, 0.5));
     rig.send(Command::Play);

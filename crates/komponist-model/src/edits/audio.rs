@@ -29,7 +29,7 @@ use crate::project::{
     Channel, Clip, ClipContent, ClipKind, Hue, MidiChannelSel, MidiInputSel, Project,
     TRACK_HEIGHT_DEFAULT, Track, TrackKind, TrackOutput,
 };
-use crate::time::{Tempo, Tick};
+use crate::time::{MAX_DOC_TICK, Tempo, Tick};
 
 /// What a new audio track gets.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -253,7 +253,8 @@ pub fn trim_audio_clip_start(project: &Project, clip: ClipId, start: Tick) -> Ed
         let start = start
             .max(Tick::ZERO)
             .max(old_start - back)
-            .min(end - MIN_LENGTH);
+            .min(end - MIN_LENGTH)
+            .min(MAX_DOC_TICK);
         let delta = start - old_start;
         a.shift_sources(delta, tempo)?;
         let length = (old_length - delta).min(a.max_length(tempo).max(MIN_LENGTH));
@@ -518,7 +519,7 @@ pub fn flatten_midi_track(
 /// Clamps the length of an audio clip's window in `c` to the file ([`AudioClip::max_length`]) and
 /// its fades to the length; other clips get `length` as it is.
 pub(super) fn fit_length(c: &mut Clip, length: Tick, tempo: Tempo) -> Result<(), EditError> {
-    let length = length.max(MIN_LENGTH);
+    let length = length.clamp(MIN_LENGTH, MAX_DOC_TICK);
     if let ClipContent::Audio(a) = &mut c.content {
         let max = a.max_length(tempo);
         if max < MIN_LENGTH {
@@ -544,6 +545,10 @@ fn piece(c: &Clip, a: Tick, b: Tick, tempo: Tempo) -> Result<Option<Clip>, EditE
     let ClipContent::Audio(_) = &c.content else {
         return Ok(None);
     };
+    // A fragment that would start behind the document is dropped (the cut that makes it ends there).
+    if a > MAX_DOC_TICK {
+        return Ok(None);
+    }
     let mut out = c.clone();
     let ClipContent::Audio(na) = &mut out.content else {
         unreachable!("a copy of an audio clip");

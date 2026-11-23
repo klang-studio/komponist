@@ -10,115 +10,12 @@ use crate::project::StepClip;
 // Fixture and helpers
 // ------------------------------------------------------------------------------------------------
 
-/// Asserts the invariants documented in [`crate::project`] that every edit must keep.
+/// Asserts the invariants documented in [`crate::project`] that every edit must keep
+/// ([`Project::validate`]).
+#[track_caller]
 pub(crate) fn check_invariants(p: &Project) {
-    let mut ids = HashSet::new();
-    let mut id = |raw: u64| {
-        assert!(raw < p.next_id, "id {raw} not below next_id {}", p.next_id);
-        assert!(ids.insert(raw), "id {raw} used twice");
-    };
-    assert!(valid_meter(p.meter));
-    if let Err(issue) = crate::routing::check(p) {
-        panic!("routing: {issue}");
-    }
-    assert!(!p.loop_range.is_empty() && p.loop_range.start >= Tick::ZERO);
-    for d in &p.master.devices {
-        id(d.id.0);
-        assert_eq!(d.role, DeviceRole::Effect, "master takes effects only");
-    }
-    for t in &p.tracks {
-        id(t.id.0);
-        assert!(Hue::ALL.contains(&t.hue));
-        assert!((TRACK_HEIGHT_MIN..=TRACK_HEIGHT_MAX).contains(&t.height));
-        let c = &t.channel;
-        assert!((VOLUME_DB_MIN..=VOLUME_DB_MAX).contains(&c.volume_db));
-        assert!((-1.0..=1.0).contains(&c.pan));
-        for d in &c.devices {
-            id(d.id.0);
-        }
-        assert!(
-            !t.is_bus() || t.sends.is_empty(),
-            "edits give buses no sends"
-        );
-        for send in &t.sends {
-            id(send.id.0);
-            assert!((VOLUME_DB_MIN..=VOLUME_DB_MAX).contains(&send.level_db));
-        }
-        // `[MIDI effects…] → instrument → [effects…]`.
-        let rank = |r: DeviceRole| match r {
-            DeviceRole::MidiEffect => 0,
-            DeviceRole::Instrument => 1,
-            DeviceRole::Effect => 2,
-        };
-        assert!(
-            c.devices.is_sorted_by_key(|d| rank(d.role)),
-            "chain order: MIDI effects, instrument, effects"
-        );
-        assert!(
-            c.devices
-                .iter()
-                .filter(|d| d.role == DeviceRole::Instrument)
-                .count()
-                <= 1,
-            "one instrument"
-        );
-        assert!(
-            t.clips.is_sorted_by_key(|c| (c.start, c.id)),
-            "clips sorted"
-        );
-        if t.is_audio() {
-            assert!(
-                t.clips.windows(2).all(|w| w[0].end() <= w[1].start),
-                "audio clips never overlap"
-            );
-        }
-        for clip in &t.clips {
-            id(clip.id.0);
-            assert!(clip.start >= Tick::ZERO && clip.length >= MIN_LENGTH);
-            assert!((-48..=48).contains(&clip.transpose));
-            assert!((-100..=100).contains(&clip.velocity_pct));
-            match &clip.content {
-                ClipContent::Midi(m) => {
-                    assert!(!m.takes.is_empty() && m.active_take < m.takes.len());
-                    if let Some(l) = clip.loop_length {
-                        assert!(l >= MIN_LENGTH);
-                    }
-                    for take in &m.takes {
-                        assert!(
-                            take.notes.is_sorted_by_key(|n| (n.start, n.pitch, n.id)),
-                            "notes sorted"
-                        );
-                        for n in take.notes.iter() {
-                            id(n.id.0);
-                            assert!(n.start >= Tick::ZERO && n.length >= MIN_LENGTH);
-                            assert!(n.pitch <= 127 && (1..=127).contains(&n.velocity));
-                        }
-                    }
-                }
-                ClipContent::Step(s) => {
-                    assert_eq!(clip.loop_length, None, "step clips never loop");
-                    assert!((1..=MAX_STEPS as u8).contains(&s.length_steps));
-                    assert!((0.0..=MAX_SWING).contains(&s.swing));
-                    for row in &s.rows {
-                        assert!(row.note <= 127);
-                        for step in &row.steps {
-                            assert!((1..=127).contains(&step.velocity));
-                            assert!(step.probability <= 100);
-                            assert!((1..=4).contains(&step.ratchet));
-                        }
-                    }
-                }
-                ClipContent::Audio(a) => {
-                    assert_eq!(clip.loop_length, None, "audio clips never loop");
-                    assert!(a.offset < a.file.frames);
-                    assert!(clip.length <= a.max_length(p.tempo).max(MIN_LENGTH));
-                    a.validate_warp(clip.length).expect("valid warp span");
-                    assert!(a.fade_in >= Tick::ZERO && a.fade_out >= Tick::ZERO);
-                    assert!(a.fade_in + a.fade_out <= clip.length);
-                }
-            }
-            assert!(clip.kind().fits(t.kind), "clip kind fits the track kind");
-        }
+    if let Err(error) = p.validate() {
+        panic!("invalid project: {error}");
     }
 }
 

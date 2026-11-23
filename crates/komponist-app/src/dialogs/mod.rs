@@ -67,6 +67,9 @@ pub(crate) struct DialogState {
     pub(crate) queued: Option<crate::ui_state::Dialog>,
     /// The S06 check waits for the running plugin scan.
     pub(crate) missing_check: bool,
+    /// How many places loading repaired in the open project (#209); the status bar says so with
+    /// the S06 result. 0 for a project that was created or loaded without repairs.
+    pub(crate) repaired: usize,
     /// Closing the window was confirmed (saved or discarded): the next close request passes.
     pub(crate) quit_confirmed: bool,
     /// Close the window in the next frame.

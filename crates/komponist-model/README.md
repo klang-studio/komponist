@@ -14,10 +14,12 @@ undo, parameter descriptions and project serialization independently of the UI a
 - [src/routing.rs](src/routing.rs) — Validates routing and computes dependencies and mute/solo
   gates.
 - [src/persist.rs](src/persist.rs) — Reads, migrates and writes versioned project files.
+- [src/validate.rs](src/validate.rs) — Checks every project invariant and repairs files on load.
 
 ## How it works
 
 An edit builds a new project by cloning only the changed paths of an `Arc` -backed project tree.
 The document stores old roots for undo and groups continuous changes into one gesture. Edits and
-loading enforce track content and routing constraints. Saved projects link to audio sources and
+loading enforce track content and routing constraints; `Project::validate` checks them all, and
+loading repairs or rejects a file until it passes. Saved projects link to audio sources and
 store plugin identity and state.

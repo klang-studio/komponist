@@ -2675,6 +2675,7 @@ impl App {
         self.engine.send(Command::Locate(Tick::ZERO));
         self.engine.reset();
         self.doc = doc;
+        self.dialogs.repaired = 0;
         self.param_undo.forget();
         self.dialogs.samples.forget_device_state();
         self.project_path = path;

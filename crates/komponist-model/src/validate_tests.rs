@@ -1,0 +1,789 @@
+//! Tests of [`Project::validate`] and the repair pass of loading (#209).
+
+use std::sync::Arc;
+
+use serde_json::{Value, json};
+
+use crate::edits::{self, ProjectProp};
+use crate::fixtures::{automation_project, demo_project, demo_song, empty_project};
+use crate::persist::{self, Loaded, PersistError, load, to_json};
+use crate::project::{ClipContent, Project};
+use crate::time::MAX_DOC_TICK;
+use crate::validate::RepairKind;
+use crate::{Hue, NoteId, Tick, TickRange};
+
+fn demo_value() -> Value {
+    serde_json::to_value(demo_project()).unwrap()
+}
+
+fn file(project: Value) -> String {
+    json!({ "format": "komponist", "version": persist::FORMAT_VERSION, "project": project })
+        .to_string()
+}
+
+fn load_value(project: Value) -> Result<Loaded, PersistError> {
+    load(&file(project))
+}
+
+#[track_caller]
+fn loaded(project: Value) -> Loaded {
+    let loaded = load_value(project).expect("the file loads");
+    loaded
+        .project
+        .validate()
+        .expect("a loaded project is valid");
+    loaded
+}
+
+/// Notes of the first MIDI clip of the demo (track 1).
+const NOTES: &str = "/tracks/1/clips/0/content/takes/0/notes";
+
+#[test]
+fn fixtures_are_valid_and_load_unchanged() {
+    for project in [
+        demo_project(),
+        demo_song(),
+        empty_project(),
+        automation_project(),
+    ] {
+        project.validate().unwrap();
+        let loaded = load(&to_json(&project).unwrap()).unwrap();
+        assert_eq!(loaded.project, project);
+        assert!(loaded.repairs.is_empty(), "{}", loaded.repairs);
+    }
+}
+
+#[test]
+fn a_valid_file_reports_no_repairs() {
+    let loaded = loaded(demo_value());
+    assert!(loaded.repairs.is_empty());
+    assert_eq!(loaded.repairs.total(), 0);
+    assert_eq!(loaded.repairs.to_string(), "");
+}
+
+#[test]
+fn notes_out_of_range_are_repaired_and_a_move_does_not_panic() {
+    let mut value = demo_value();
+    let notes = value.pointer_mut(NOTES).unwrap().as_array_mut().unwrap();
+    let mut extra = |id: u64, field: &str, to: Value| {
+        let mut note = notes[0].clone();
+        note["id"] = id.into();
+        note[field] = to;
+        notes.push(note);
+    };
+    extra(9001, "pitch", 10.into());
+    extra(9002, "pitch", 200.into());
+    extra(9003, "velocity", 0.into());
+    extra(9004, "start", (-5).into());
+    extra(9005, "length", 0.into());
+    extra(9006, "length", 1_000_000_000_000_000_i64.into());
+    extra(9007, "start", 9_000_000_000_000_000_000_i64.into());
+    let loaded = loaded(value);
+    assert_eq!(loaded.repairs.count(RepairKind::DroppedNotes), 1);
+    assert_eq!(loaded.repairs.count(RepairKind::NoteValues), 5);
+    let clip = &loaded.project.tracks[1].clips[0];
+    let ClipContent::Midi(m) = &clip.content else {
+        panic!("a MIDI clip");
+    };
+    let all: Vec<NoteId> = m.active().notes.iter().map(|n| n.id).collect();
+    assert!(!all.contains(&NoteId(9002)));
+    let up = edits::move_notes(&loaded.project, clip.id, &all, Tick(10), 1).unwrap();
+    up.validate().unwrap();
+}
+
+#[test]
+fn edits_survive_notes_a_file_could_never_have_loaded_with() {
+    // `clamp_note_move` clamped with min 10 > max -73 for pitches 10 and 200: a panic. It is total
+    // now, whatever the document holds (also for projects built in memory).
+    let mut project = demo_project();
+    let clip = project.tracks[1].clips[0].id;
+    let track = Arc::make_mut(&mut project.tracks[1]);
+    let ClipContent::Midi(m) = &mut Arc::make_mut(&mut track.clips[0]).content else {
+        panic!("a MIDI clip");
+    };
+    let notes = Arc::make_mut(&mut m.takes[0].notes);
+    notes[0].pitch = 10;
+    notes[1].pitch = 200;
+    notes[2].start = Tick(-100);
+    let all: Vec<NoteId> = notes.iter().map(|n| n.id).collect();
+    for pitch_delta in [-100, -1, 0, 1, 100, i32::MIN, i32::MAX] {
+        edits::move_notes(&project, clip, &all, Tick(i64::MIN / 4), pitch_delta).unwrap();
+        edits::move_notes(&project, clip, &all, Tick(i64::MAX / 4), pitch_delta).unwrap();
+        edits::copy_notes(&project, clip, &all, Tick(7), pitch_delta).unwrap();
+    }
+}
+
+#[test]
+fn ticks_beyond_the_document_are_clamped() {
+    let mut value = demo_value();
+    // A step clip a quadrillion ticks long (an out-of-memory in `StepClip::hits`) and one that
+    // starts so late that `start + length` overflowed.
+    value["tracks"][0]["clips"][0]["length"] = 1_000_000_000_000_000_i64.into();
+    value["tracks"][1]["clips"][0]["start"] = 9_000_000_000_000_000_000_i64.into();
+    value["tracks"][1]["clips"][0]["loop_length"] = 9_000_000_000_000_000_000_i64.into();
+    let loaded = loaded(value);
+    let project = &loaded.project;
+    let step = project.tracks[0].clips[0].clone();
+    assert_eq!(step.length, MAX_DOC_TICK);
+    let late = project.tracks[1]
+        .clips
+        .iter()
+        .find(|c| c.start == MAX_DOC_TICK)
+        .expect("the late clip");
+    assert_eq!(late.loop_length, Some(MAX_DOC_TICK));
+    assert_eq!(late.end(), MAX_DOC_TICK + late.length, "no overflow");
+    assert!(loaded.repairs.count(RepairKind::ClipValues) >= 3);
+    assert!(project.song_end() <= MAX_DOC_TICK + MAX_DOC_TICK);
+}
+
+#[test]
+fn the_edits_keep_every_tick_inside_the_document() {
+    let project = demo_project();
+    let clip = project.tracks[1].clips[0].id;
+    let other = project.tracks[2].clips[0].id;
+    let max = i64::MAX;
+    for edit in [
+        edits::set_clip_length(&project, clip, Tick(max)).unwrap(),
+        edits::set_clip_loop(&project, clip, Some(Tick(max)), Tick(max)).unwrap(),
+        edits::move_clips(&project, &[clip, other], Tick(max), 0).unwrap(),
+        edits::copy_clips(&project, &[clip], Tick(max), 0)
+            .unwrap()
+            .0,
+        edits::set_clip_prop(&project, clip, edits::ClipProp::Start(Tick(max))).unwrap(),
+        edits::add_clip(
+            &project,
+            project.tracks[1].id,
+            edits::NewClip {
+                name: "late".into(),
+                start: Tick(max),
+                length: Tick(max),
+                content: edits::NewClipContent::Midi {
+                    notes: vec![edits::NewNote {
+                        start: Tick(max),
+                        length: Tick(max),
+                        pitch: 60,
+                        velocity: 100,
+                    }],
+                    take_name: String::new(),
+                },
+            },
+        )
+        .unwrap()
+        .0,
+        edits::set_project_prop(
+            &project,
+            ProjectProp::LoopRange(TickRange::new(Tick(-5), Tick(max))),
+        )
+        .unwrap(),
+    ] {
+        edit.validate().unwrap();
+    }
+    // Moved to the very end, a duplicate would start behind the document: refused, nothing cut.
+    let end = edits::move_clips(&project, &[clip], Tick(max), 0).unwrap();
+    assert!(matches!(
+        edits::duplicate_clips(&end, &[clip]),
+        Err(crate::EditError::Invalid(_))
+    ));
+    // Notes: moves, copies and resizes clamp.
+    let notes: Vec<NoteId> = match &project.tracks[1].clips[0].content {
+        ClipContent::Midi(m) => m.active().notes.iter().map(|n| n.id).collect(),
+        _ => unreachable!("a MIDI clip"),
+    };
+    edits::move_notes(&project, clip, &notes, Tick(max), 0)
+        .unwrap()
+        .validate()
+        .unwrap();
+    edits::copy_notes(&project, clip, &notes, Tick(max), 0)
+        .unwrap()
+        .0
+        .validate()
+        .unwrap();
+    edits::resize_notes(&project, clip, &notes, Tick(max))
+        .unwrap()
+        .validate()
+        .unwrap();
+    edits::resize_notes(&project, clip, &notes, Tick(i64::MIN))
+        .unwrap()
+        .validate()
+        .unwrap();
+    // A split behind the document is no split.
+    let (same, rights) = edits::split_clips(&project, &[clip], Tick(max)).unwrap();
+    assert!(rights.is_empty());
+    same.validate().unwrap();
+}
+
+#[test]
+fn duplicate_ids_get_new_ones_and_the_first_holder_keeps_its_id() {
+    let mut value = demo_value();
+    let first = value["tracks"][0]["id"].clone();
+    value["tracks"][1]["id"] = first.clone();
+    // A clip, a note and a device that share an id with the first track's.
+    value["tracks"][2]["clips"][0]["id"] = first.clone();
+    value["tracks"][2]["channel"]["devices"][0]["id"] = first.clone();
+    value["tracks"][3]["sends"] = json!([]);
+    let note_id = value.pointer(NOTES).unwrap()[0]["id"].clone();
+    value.pointer_mut(NOTES).unwrap()[1]["id"] = note_id;
+    let before = loaded(demo_value()).project;
+    let loaded = loaded(value);
+    let p = &loaded.project;
+    assert_eq!(loaded.repairs.count(RepairKind::DuplicateIds), 4);
+    assert_eq!(p.tracks[0].id.0, first.as_u64().unwrap(), "first holder");
+    assert_ne!(p.tracks[1].id, p.tracks[0].id);
+    assert!(p.tracks[1].id.0 >= before.next_id, "a fresh id");
+    assert!(p.next_id > p.tracks[1].id.0);
+    // Edits address each track by its own id.
+    let renamed = edits::set_track_prop(
+        p,
+        &[p.tracks[1].id],
+        edits::TrackProp::Name("Zwei".to_owned()),
+    )
+    .unwrap();
+    assert_eq!(renamed.tracks[1].name, "Zwei");
+    assert_ne!(renamed.tracks[0].name, "Zwei");
+}
+
+#[test]
+fn references_follow_the_first_holder_of_a_duplicate_track_id() {
+    // A bus and a MIDI track with the same id: the outputs that name it keep naming the bus (the
+    // first), the MIDI track gets a new id.
+    let mut p = demo_project();
+    let t: Vec<_> = p.tracks.iter().map(|t| t.id).collect();
+    p = edits::add_bus(&p, edits::NewBus::effect(vec![t[3]]))
+        .unwrap()
+        .0;
+    let bus = p.tracks.last().unwrap().id;
+    let mut value = serde_json::to_value(&p).unwrap();
+    // Move the bus in front of the track that will share its id.
+    let tracks = value["tracks"].as_array_mut().unwrap();
+    let bus_value = tracks.pop().unwrap();
+    tracks.insert(0, bus_value);
+    value["tracks"][1]["id"] = bus.0.into();
+    let loaded = loaded(value);
+    let p = &loaded.project;
+    assert_eq!(p.tracks[0].id, bus);
+    assert!(p.tracks[0].is_bus());
+    assert_ne!(p.tracks[1].id, bus);
+    assert!(p.tracks.iter().skip(1).all(|t| t.id != bus));
+}
+
+#[test]
+fn chains_are_ordered_and_hold_one_instrument() {
+    let mut value = demo_value();
+    // Track 1: instrument, effect. Reverse it, and add a second instrument.
+    let devices = value["tracks"][1]["channel"]["devices"]
+        .as_array_mut()
+        .unwrap();
+    let mut second = devices[0].clone();
+    second["id"] = 9100.into();
+    devices.reverse();
+    devices.push(second);
+    // The master gets an instrument.
+    let mut instrument = value["tracks"][0]["channel"]["devices"][0].clone();
+    instrument["id"] = 9101.into();
+    value["master"]["devices"] = json!([instrument]);
+    let loaded = loaded(value);
+    let chain = &loaded.project.tracks[1].channel.devices;
+    assert_eq!(chain[0].role, crate::DeviceRole::Instrument);
+    assert!(
+        chain[1..]
+            .iter()
+            .all(|d| d.role == crate::DeviceRole::Effect)
+    );
+    assert_eq!(loaded.repairs.count(RepairKind::ChainOrder), 1);
+    assert_eq!(loaded.repairs.count(RepairKind::DroppedDevices), 2);
+    assert!(loaded.project.master.devices.is_empty());
+}
+
+#[test]
+fn mixer_values_loop_range_and_count_in_are_clamped() {
+    let mut value = demo_value();
+    value["tracks"][0]["channel"]["volume_db"] = 99.0.into();
+    value["tracks"][0]["channel"]["pan"] = (-5.0).into();
+    value["tracks"][1]["height"] = 0.into();
+    value["tracks"][2]["hue"] = 33.into();
+    value["master"]["volume_db"] = (-1000.0).into();
+    value["count_in_bars"] = 200.into();
+    value["loop_range"] = json!({ "start": -5, "end": 1_000_000_000_000_000_i64 });
+    let loaded = loaded(value);
+    let p = &loaded.project;
+    assert_eq!(p.tracks[0].channel.volume_db, crate::project::VOLUME_DB_MAX);
+    assert_eq!(p.tracks[0].channel.pan, -1.0);
+    assert_eq!(p.tracks[1].height, crate::project::TRACK_HEIGHT_MIN);
+    assert_eq!(p.tracks[2].hue, Hue::RED, "the nearest token hue");
+    assert_eq!(p.master.volume_db, crate::project::VOLUME_DB_MIN);
+    assert_eq!(p.count_in_bars, edits::MAX_COUNT_IN_BARS);
+    assert_eq!(p.loop_range, TickRange::new(Tick::ZERO, MAX_DOC_TICK));
+    assert_eq!(loaded.repairs.count(RepairKind::LoopRange), 1);
+    assert_eq!(loaded.repairs.count(RepairKind::CountIn), 1);
+    assert_eq!(loaded.repairs.count(RepairKind::MixerValues), 4);
+    // An empty loop range starts over with the default.
+    let mut value = demo_value();
+    value["loop_range"] = json!({ "start": 10, "end": 10 });
+    assert_eq!(
+        loaded_range(value),
+        TickRange::new(Tick::ZERO, Tick::from_steps(64))
+    );
+}
+
+fn loaded_range(value: Value) -> TickRange {
+    loaded(value).project.loop_range
+}
+
+#[test]
+fn step_values_are_clamped() {
+    let mut value = demo_value();
+    let s = &mut value["tracks"][0]["clips"][0]["content"];
+    s["swing"] = 7.0.into();
+    s["rows"][0]["note"] = 200.into();
+    s["rows"][0]["steps"][0]["velocity"] = 0.into();
+    s["rows"][0]["steps"][1]["probability"] = 250.into();
+    s["rows"][0]["steps"][2]["ratchet"] = 9.into();
+    let loaded = loaded(value);
+    assert_eq!(loaded.repairs.count(RepairKind::StepValues), 5);
+}
+
+#[test]
+fn a_clip_that_cannot_loop_loses_its_loop_length() {
+    let mut value = demo_value();
+    value["tracks"][0]["clips"][0]["loop_length"] = 480.into();
+    let loaded = loaded(value);
+    assert_eq!(loaded.project.tracks[0].clips[0].loop_length, None);
+    assert_eq!(loaded.repairs.count(RepairKind::ClipLoops), 1);
+}
+
+#[test]
+fn automation_repairs_are_reported_not_printed() {
+    let p = automation_project();
+    let mut value = serde_json::to_value(&p).unwrap();
+    let lanes = value["tracks"][2]["automation"]["lanes"]
+        .as_array_mut()
+        .unwrap();
+    lanes[0]["points"] = json!([[50, 0.2], [10, 0.1]]);
+    let mut duplicate = lanes[0].clone();
+    duplicate["id"] = 777_777.into();
+    lanes.push(duplicate);
+    lanes[0]["height"] = 999.into();
+    let loaded = loaded(value);
+    assert_eq!(loaded.repairs.count(RepairKind::AutomationPoints), 2);
+    assert_eq!(loaded.repairs.count(RepairKind::AutomationLanes), 1);
+    assert_eq!(loaded.repairs.count(RepairKind::MixerValues), 1);
+    // Points keep inside the document.
+    let mut value = serde_json::to_value(&p).unwrap();
+    value["tracks"][2]["automation"]["lanes"][0]["points"] = json!([
+        [-9_000_000_000_000_000_000_i64, 0.2],
+        [9_000_000_000_000_000_000_i64, 0.1]
+    ]);
+    let loaded = self::loaded(value);
+    let points = loaded.project.tracks[2].automation.lanes[0]
+        .points
+        .as_slice();
+    assert_eq!(points[0].tick, -MAX_DOC_TICK);
+    assert_eq!(points[1].tick, MAX_DOC_TICK);
+}
+
+#[test]
+fn macro_repairs_are_reported() {
+    let mut value = demo_value();
+    value["tracks"][0]["macros"] = json!([{
+        "value": 3.0,
+        "mappings": [
+            { "target": { "kind": "pan" }, "label": "Pan", "min": 0.9, "max": 0.1 },
+            { "target": { "kind": "pan" }, "label": "Pan again", "min": 0.0, "max": 1.0 },
+        ],
+    }]);
+    let loaded = loaded(value);
+    // One range swapped, one duplicate mapping dropped; the slot value is its own kind.
+    assert_eq!(loaded.repairs.count(RepairKind::MacroMappings), 2);
+    assert_eq!(loaded.repairs.count(RepairKind::MacroValues), 1);
+    assert_eq!(loaded.repairs.total(), 3);
+    let text = loaded.repairs.to_string();
+    assert!(text.contains("2 × macro mapping"), "{text}");
+    assert!(text.contains("1 × macro slot value"), "{text}");
+}
+
+#[test]
+fn a_macro_slot_value_alone_is_reported_as_a_value() {
+    let mut value = demo_value();
+    value["tracks"][0]["macros"] = json!([{ "value": 3.0 }, { "value": -1.0 }]);
+    let loaded = loaded(value);
+    assert_eq!(loaded.repairs.count(RepairKind::MacroValues), 2);
+    assert_eq!(loaded.repairs.count(RepairKind::MacroMappings), 0);
+    assert_eq!(loaded.project.tracks[0].macros.0[0].value, 1.0);
+    assert_eq!(loaded.project.tracks[0].macros.0[1].value, 0.0);
+    let mut value = demo_value();
+    value["tracks"][0]["macros"] = json!([{ "value": 0.5 }]);
+    assert!(self::loaded(value).repairs.is_empty());
+}
+
+#[test]
+fn what_cannot_be_repaired_is_still_rejected() {
+    for (pointer, value) in [
+        ("/tempo/bpm", json!(0.5)),
+        ("/meter/num", json!(0)),
+        ("/tracks/1/clips/0/content/takes", json!([])),
+        ("/tracks/1/clips/0/content/active_take", json!(5)),
+        ("/tracks/0/clips/0/content/length_steps", json!(0)),
+    ] {
+        let mut v = demo_value();
+        *v.pointer_mut(pointer).unwrap() = value;
+        assert!(
+            matches!(load_value(v), Err(PersistError::Malformed(_))),
+            "{pointer}"
+        );
+    }
+}
+
+#[test]
+fn validate_names_what_is_broken() {
+    let mut p = demo_project();
+    assert!(p.validate().is_ok());
+    p.loop_range = TickRange::new(Tick(5), Tick(5));
+    let error = p.validate().unwrap_err();
+    assert_eq!(error.to_string(), "loop range out of bounds");
+    let mut p = demo_project();
+    let id = p.tracks[0].id;
+    Arc::make_mut(&mut p.tracks[1]).id = id;
+    assert!(p.validate().unwrap_err().to_string().contains("used twice"));
+    let mut p: Project = demo_project();
+    p.next_id = 1;
+    assert!(p.validate().unwrap_err().to_string().contains("next_id"));
+}
+
+#[test]
+fn note_moves_are_total_even_for_the_lowest_tick() {
+    let mut project = demo_project();
+    let clip = project.tracks[1].clips[0].id;
+    let track = Arc::make_mut(&mut project.tracks[1]);
+    let ClipContent::Midi(m) = &mut Arc::make_mut(&mut track.clips[0]).content else {
+        panic!("a MIDI clip");
+    };
+    let notes = Arc::make_mut(&mut m.takes[0].notes);
+    notes[0].start = Tick(i64::MIN);
+    notes[1].start = Tick(i64::MAX);
+    let all: Vec<NoteId> = notes.iter().map(|n| n.id).collect();
+    edits::move_notes(&project, clip, &all, Tick(5), 0).unwrap();
+    edits::copy_notes(&project, clip, &all, Tick(i64::MIN), 0).unwrap();
+}
+
+#[test]
+fn a_device_id_shared_by_master_and_track_keeps_both_targets_alive() {
+    use crate::automation::AutomationTarget;
+    let mut p = automation_project();
+    // The master's first device takes the id of a track device that an envelope or lane targets.
+    let (track, device) = p
+        .tracks
+        .iter()
+        .enumerate()
+        .find_map(|(i, t)| {
+            let id = t.automation.lanes.iter().find_map(|l| match l.target {
+                AutomationTarget::Param { device, .. } => Some(device),
+                _ => None,
+            })?;
+            Some((i, id))
+        })
+        .expect("a parameter lane in the fixture");
+    let mut value = serde_json::to_value(&p).unwrap();
+    let master_lane = value["tracks"][track]["automation"]["lanes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["target"]["kind"] == "param")
+        .unwrap()
+        .clone();
+    let mut master_device = value["tracks"][track]["channel"]["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == device.0)
+        .unwrap()
+        .clone();
+    master_device["role"] = "effect".into();
+    value["master"]["devices"] = serde_json::json!([master_device]);
+    let mut lane = master_lane;
+    lane["id"] = 880_001.into();
+    value["master_automation"] = serde_json::json!({ "lanes": [lane] });
+    p = loaded(value).project;
+    let own = p.tracks[track]
+        .channel
+        .devices
+        .iter()
+        .map(|d| d.id)
+        .collect::<Vec<_>>();
+    assert!(
+        own.contains(&device),
+        "the track keeps its id (found first)"
+    );
+    let master_id = p.master.devices[0].id;
+    assert_ne!(master_id, device);
+    // Both lanes still target a device of their own owner.
+    assert!(matches!(
+        p.master_automation.lanes[0].target,
+        AutomationTarget::Param { device: d, .. } if d == master_id
+    ));
+    assert!(
+        p.tracks[track]
+            .automation
+            .lanes
+            .iter()
+            .any(|l| matches!(l.target, AutomationTarget::Param { device: d, .. } if d == device))
+    );
+}
+
+#[test]
+fn a_new_id_never_lands_on_a_dangling_route_target() {
+    let base = demo_project();
+    let next = base.next_id;
+    let mut value = serde_json::to_value(&base).unwrap();
+    // The track outputs to a bus that is not there, with the id the first replacement would take;
+    // a second track shares the first one's id.
+    value["tracks"][2]["output"] = serde_json::json!({ "bus": next });
+    let first = value["tracks"][0]["id"].clone();
+    value["tracks"][1]["id"] = first;
+    let loaded = loaded(value);
+    let p = &loaded.project;
+    assert_eq!(p.tracks[2].output, crate::TrackOutput::Master, "dropped");
+    assert_ne!(p.tracks[1].id.0, next);
+    assert!(p.track(crate::TrackId(next)).is_none());
+}
+
+#[test]
+fn only_real_changes_are_counted() {
+    // Clips out of order, a raised next_id, an input bus cleared, a lane for a missing target.
+    let p = demo_project();
+    let mut value = serde_json::to_value(&p).unwrap();
+    let clips = value["tracks"][2]["clips"].as_array_mut().unwrap();
+    clips.reverse();
+    value["next_id"] = 1.into();
+    let loaded = loaded(value);
+    assert_eq!(loaded.repairs.count(RepairKind::NextId), 1);
+    assert!(loaded.repairs.count(RepairKind::Order) >= 1 || p.tracks[2].clips.len() < 2);
+    assert_eq!(loaded.repairs.count(RepairKind::DuplicateIds), 0);
+}
+
+#[test]
+fn validate_checks_lanes_envelopes_and_macros() {
+    let mut p = automation_project();
+    p.validate().unwrap();
+    let track = p
+        .tracks
+        .iter()
+        .position(|t| !t.automation.lanes.is_empty())
+        .unwrap();
+    let t = Arc::make_mut(&mut p.tracks[track]);
+    let mut again = (*t.automation.lanes[0]).clone();
+    again.id = crate::LaneId(p.next_id);
+    p.next_id += 1;
+    t.automation.lanes.push(Arc::new(again));
+    assert!(p.validate().unwrap_err().to_string().contains("one target"));
+    let mut p = demo_project();
+    Arc::make_mut(&mut p.tracks[0]).macros.0[0].value = 2.0;
+    assert!(p.validate().unwrap_err().to_string().contains("macro"));
+}
+
+#[test]
+fn an_audio_cut_behind_the_document_end_drops_the_fragment_and_loads() {
+    use crate::audio::AudioFile;
+    use crate::edits::{NewAudioTrack, NewClip, NewClipContent, add_audio_track};
+    let (p, track) = add_audio_track(&Project::new("Audio"), NewAudioTrack::default()).unwrap();
+    let file = AudioFile {
+        abs: "/t/long.wav".into(),
+        rel: "long.wav".into(),
+        frames: 3_000_000_000,
+        sample_rate: 48_000,
+        channels: 2,
+    };
+    let (p, _) = edits::add_clip(
+        &p,
+        track,
+        NewClip {
+            name: "long".into(),
+            start: Tick(1000),
+            length: Tick(7680),
+            content: NewClipContent::Audio { file, offset: 0 },
+        },
+    )
+    .unwrap();
+    let mut value = serde_json::to_value(&p).unwrap();
+    // A: from 1000 to past the document end. B: ends past it too, above A's middle: the cut
+    // leaves a right fragment of A that would start behind the document.
+    let mut a = value["tracks"][0]["clips"][0].clone();
+    a["length"] = MAX_DOC_TICK.0.into();
+    let mut b = a.clone();
+    b["id"] = 990_001.into();
+    b["start"] = (MAX_DOC_TICK.0 - 100).into();
+    b["length"] = 1000.into();
+    value["tracks"][0]["clips"] = json!([a, b]);
+    value["next_id"] = 990_002.into();
+    let loaded = loaded(value);
+    assert!(loaded.repairs.count(RepairKind::AudioOverlaps) >= 1);
+    for clip in &loaded.project.tracks[0].clips {
+        assert!(clip.start <= MAX_DOC_TICK);
+    }
+}
+
+#[test]
+fn copy_clips_never_swallows_its_source_and_validate_does_not_overflow() {
+    use crate::audio::AudioFile;
+    use crate::edits::{NewAudioTrack, NewClip, NewClipContent, add_audio_track};
+    let (p, track) = add_audio_track(&Project::new("Audio"), NewAudioTrack::default()).unwrap();
+    let file = AudioFile {
+        abs: "/t/a.wav".into(),
+        rel: "a.wav".into(),
+        frames: 480_000,
+        sample_rate: 48_000,
+        channels: 2,
+    };
+    let (p, clip) = edits::add_clip(
+        &p,
+        track,
+        NewClip {
+            name: "end".into(),
+            start: MAX_DOC_TICK,
+            length: Tick(10),
+            content: NewClipContent::Audio { file, offset: 0 },
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        edits::copy_clips(&p, &[clip], Tick(10), 0),
+        Err(crate::EditError::Invalid(_))
+    ));
+    assert!(
+        p.find_clip(clip).is_some(),
+        "the input project is untouched"
+    );
+    // A clip far beyond the bound is reported, not an overflow in the overlap check.
+    let mut value = serde_json::to_value(&p).unwrap();
+    value["tracks"][0]["clips"][0]["start"] = i64::MAX.into();
+    let mut q: Project = serde_json::from_value(value).unwrap();
+    assert!(q.validate().is_err());
+    q.tracks.clear();
+}
+
+#[test]
+fn clip_envelopes_must_belong_to_their_track() {
+    let p = automation_project();
+    let mut value = serde_json::to_value(&p).unwrap();
+    // Find a clip with an envelope and point it at macro 9 (there are 8).
+    let (t, c) = p
+        .tracks
+        .iter()
+        .enumerate()
+        .find_map(|(t, tr)| {
+            tr.clips
+                .iter()
+                .position(|c| !c.automation.is_empty())
+                .map(|c| (t, c))
+        })
+        .expect("a clip with an envelope");
+    value["tracks"][t]["clips"][c]["automation"][0]["target"] =
+        json!({ "kind": "macro", "index": 9 });
+    let loaded = loaded(value);
+    assert!(loaded.repairs.count(RepairKind::AutomationLanes) >= 1);
+    assert!(
+        loaded.project.tracks[t].clips[c]
+            .automation
+            .iter()
+            .all(|e| !matches!(
+                e.target,
+                crate::automation::AutomationTarget::Macro { index: 9 }
+            ))
+    );
+}
+
+#[test]
+fn the_first_device_in_file_order_keeps_a_shared_id_whatever_its_role() {
+    use crate::automation::AutomationTarget;
+    let p = automation_project();
+    let (t, device) = p
+        .tracks
+        .iter()
+        .enumerate()
+        .find_map(|(i, t)| {
+            t.automation.lanes.iter().find_map(|l| match l.target {
+                AutomationTarget::Param { device, .. } => Some((i, device)),
+                _ => None,
+            })
+        })
+        .expect("a parameter lane");
+    let mut value = serde_json::to_value(&p).unwrap();
+    let devices = value["tracks"][t]["channel"]["devices"]
+        .as_array_mut()
+        .unwrap();
+    let mut effect = devices
+        .iter()
+        .find(|d| d["id"] == device.0)
+        .unwrap()
+        .clone();
+    effect["role"] = "effect".into();
+    let mut instrument = effect.clone();
+    instrument["role"] = "instrument".into();
+    // The effect comes first in the file and keeps its id 7; the instrument sorts in front of it.
+    *devices = vec![effect, instrument];
+    let loaded = loaded(value);
+    let chain = &loaded.project.tracks[t].channel.devices;
+    assert_eq!(chain[0].role, crate::DeviceRole::Instrument);
+    assert_ne!(chain[0].id, device, "the instrument got a new id");
+    assert_eq!(chain[1].role, crate::DeviceRole::Effect);
+    assert_eq!(chain[1].id, device, "the effect keeps the id");
+    assert!(
+        loaded.project.tracks[t]
+            .automation
+            .lanes
+            .iter()
+            .any(|l| matches!(l.target, AutomationTarget::Param { device: d, .. } if d == device))
+    );
+}
+
+#[test]
+fn validate_rejects_huge_fades_and_audio_files_without_rate_or_channels() {
+    use crate::audio::AudioFile;
+    use crate::edits::{NewAudioTrack, NewClip, NewClipContent, add_audio_track};
+    let (p, track) = add_audio_track(&Project::new("Audio"), NewAudioTrack::default()).unwrap();
+    let file = AudioFile {
+        abs: "/t/a.wav".into(),
+        rel: "a.wav".into(),
+        frames: 480_000,
+        sample_rate: 48_000,
+        channels: 2,
+    };
+    let (p, clip) = edits::add_clip(
+        &p,
+        track,
+        NewClip {
+            name: "a".into(),
+            start: Tick(0),
+            length: Tick(1000),
+            content: NewClipContent::Audio { file, offset: 0 },
+        },
+    )
+    .unwrap();
+    p.validate().unwrap();
+    let change = |f: &dyn Fn(&mut crate::AudioClip)| {
+        let mut q = p.clone();
+        let c = Arc::make_mut(&mut Arc::make_mut(&mut q.tracks[0]).clips[0]);
+        let ClipContent::Audio(a) = &mut c.content else {
+            unreachable!("an audio clip");
+        };
+        f(a);
+        q.validate()
+    };
+    assert!(
+        change(&|a| {
+            a.fade_in = Tick(i64::MAX);
+            a.fade_out = Tick(i64::MAX);
+        })
+        .is_err()
+    );
+    assert!(change(&|a| a.fade_in = Tick(1000)).is_ok());
+    assert!(
+        change(&|a| {
+            a.fade_in = Tick(600);
+            a.fade_out = Tick(401);
+        })
+        .is_err()
+    );
+    assert!(change(&|a| a.takes[0].file.sample_rate = 0).is_err());
+    assert!(change(&|a| a.takes[0].file.channels = 0).is_err());
+    let _ = clip;
+}

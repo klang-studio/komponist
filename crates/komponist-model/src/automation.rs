@@ -13,7 +13,7 @@ pub use repeating::{RepeatingPoints, effective_repeating_points};
 pub use crate::ids::LaneId;
 use crate::params::ParamId;
 use crate::project::{ChannelRef, Clip, ClipContent, Track};
-use crate::time::{PPQ, Tick};
+use crate::time::{MAX_DOC_TICK, PPQ, Tick};
 use crate::{DeviceId, SendId, TrackId};
 
 pub const LANE_HEIGHT_MIN: u16 = 24;
@@ -198,8 +198,12 @@ impl<'de> Deserialize<'de> for Point {
 pub struct Points(Arc<Vec<Point>>);
 
 impl Points {
-    /// Clamps values and bend, then keeps the first and last point of each tick.
+    /// Clamps ticks into `±MAX_DOC_TICK`, values and bend, then keeps the first and last point of each
+    /// tick.
     pub fn new(mut points: Vec<Point>) -> Self {
+        for point in &mut points {
+            point.tick = point.tick.clamp(-MAX_DOC_TICK, MAX_DOC_TICK);
+        }
         points.sort_by_key(|point| point.tick);
         for point in &mut points {
             point.value = normalized(point.value);
@@ -254,11 +258,13 @@ impl Serialize for Points {
 
 impl<'de> Deserialize<'de> for Points {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let points = Vec::<Point>::deserialize(deserializer)?;
-        if !points.is_sorted_by_key(|point| point.tick) {
-            eprintln!("Reordered unsorted automation points");
+        let raw = Vec::<Point>::deserialize(deserializer)?;
+        let points = Self::new(raw.clone());
+        // Sorting, clamped ticks, values and curves, dropped middle points of a tick.
+        if points.as_slice() != raw.as_slice() {
+            crate::validate::note_deserialize_repair(crate::validate::RepairKind::AutomationPoints);
         }
-        Ok(Self::new(points))
+        Ok(points)
     }
 }
 

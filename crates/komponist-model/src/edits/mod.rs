@@ -32,7 +32,7 @@ use crate::project::{
     TRACK_HEIGHT_DEFAULT, TRACK_HEIGHT_MAX, TRACK_HEIGHT_MIN, Take, Track, TrackKind, TrackOutput,
     VOLUME_DB_MAX, VOLUME_DB_MIN,
 };
-use crate::time::{Meter, StepResolution, Tempo, Tick, TickRange};
+use crate::time::{MAX_DOC_TICK, Meter, StepResolution, Tempo, Tick, TickRange};
 
 mod audio;
 pub mod automation;
@@ -168,7 +168,8 @@ pub enum ProjectProp {
     Tempo(Tempo),
     /// Meter; `num` 1 ..= 32 and `den` in {1, 2, 4, 8, 16}, else `Invalid`.
     Meter(Meter),
-    /// Loop range; an empty range is `Invalid`, a start before 0 is clamped to 0. Apply with
+    /// Loop range; an empty range is `Invalid`, a start before 0 is clamped to 0, an end after
+    /// [`MAX_DOC_TICK`] to it. Apply with
     /// [`crate::Document::apply_untracked`] when set from the ruler.
     LoopRange(TickRange),
     /// Loop on/off. Apply with [`crate::Document::apply_untracked`].
@@ -475,7 +476,10 @@ pub fn set_project_prop(project: &Project, prop: ProjectProp) -> EditResult {
             p.meter = meter;
         }
         ProjectProp::LoopRange(range) => {
-            let range = TickRange::new(range.start.max(Tick::ZERO), range.end);
+            let range = TickRange::new(
+                range.start.clamp(Tick::ZERO, MAX_DOC_TICK),
+                range.end.min(MAX_DOC_TICK),
+            );
             if range.is_empty() {
                 return Err(EditError::Invalid("empty loop range"));
             }
@@ -726,7 +730,7 @@ pub fn add_clip(
     }
     let mut p = project.clone();
     let id = ClipId(p.alloc_id()?);
-    let mut length = spec.length.max(MIN_LENGTH);
+    let mut length = spec.length.clamp(MIN_LENGTH, MAX_DOC_TICK);
     let content = match spec.content {
         NewClipContent::Midi { notes, take_name } => {
             let mut notes: Vec<Note> = notes
@@ -752,7 +756,7 @@ pub fn add_clip(
     let clip = Clip {
         id,
         name: spec.name,
-        start: spec.start.max(Tick::ZERO),
+        start: spec.start.clamp(Tick::ZERO, MAX_DOC_TICK),
         length,
         loop_length: None,
         mute: false,
@@ -874,6 +878,12 @@ pub fn copy_clips(
         );
     }
     audio::cut_below(&mut p, &copies)?;
+    // A copy placed exactly on its source (the offset was clamped to nothing) must not swallow it.
+    if group.clips.iter().any(|(_, c)| p.find_clip(c.id).is_none()) {
+        return Err(EditError::Invalid(
+            "the copy cannot be placed at the requested offset",
+        ));
+    }
     if group.track_delta != 0
         && group
             .clips
@@ -909,6 +919,11 @@ pub fn duplicate_clips(
             ))
         })
         .collect::<Result<Vec<_>, EditError>>()?;
+    if located.iter().any(|(_, clip)| clip.end() > MAX_DOC_TICK) {
+        return Err(EditError::Invalid(
+            "the copy would start behind the end of the document",
+        ));
+    }
     let mut p = project.clone();
     let mut copies = Vec::with_capacity(located.len());
     for (track_index, clip) in located {
@@ -950,7 +965,7 @@ pub fn set_clip_loop(
                 expected: ClipKind::Midi,
             });
         }
-        c.loop_length = loop_length.map(|l| l.max(MIN_LENGTH));
+        c.loop_length = loop_length.map(|l| l.clamp(MIN_LENGTH, MAX_DOC_TICK));
         audio::fit_length(c, length, tempo)
     })?;
     audio::cut_below(&mut p, &[clip])?;
@@ -977,7 +992,7 @@ pub fn split_clips(
         // Look up again: right parts inserted before may have shifted the clip's index.
         let (track_index, clip_index) = locate_clip(&p, id)?;
         let clip = Arc::clone(&p.tracks[track_index].clips[clip_index]);
-        if !(clip.start < at && at < clip.end()) {
+        if !(clip.start < at && at < clip.end() && at <= MAX_DOC_TICK) {
             continue;
         }
         let (left, right) = split_clip(&mut p, &clip, at - clip.start)?;
@@ -1017,7 +1032,7 @@ pub fn set_clip_prop(project: &Project, clip: ClipId, prop: ClipProp) -> EditRes
         match prop {
             ClipProp::Name(name) => c.name = name,
             ClipProp::Start(start) => {
-                let start = start.max(Tick::ZERO);
+                let start = start.clamp(Tick::ZERO, MAX_DOC_TICK);
                 if start != c.start {
                     c.start = start;
                     for envelope in &mut c.automation {
@@ -1136,14 +1151,16 @@ pub fn copy_notes(
     Ok((p, ids))
 }
 
-/// Edge drag: changes the length of all listed notes by `delta` ticks, each clamped to ≥ 1 tick.
+/// Edge drag: changes the length of all listed notes by `delta` ticks, each clamped to
+/// `1 ..= MAX_DOC_TICK` ticks.
 pub fn resize_notes(project: &Project, clip: ClipId, notes: &[NoteId], delta: Tick) -> EditResult {
+    let delta = delta.clamp(-MAX_DOC_TICK, MAX_DOC_TICK);
     let selection = NoteSelection::new(notes);
     let mut p = project.clone();
     with_notes(&mut p, clip, |list| {
         selection.check(list)?;
         for n in list.iter_mut().filter(|n| selection.contains(n.id)) {
-            n.length = (n.length + delta).max(MIN_LENGTH);
+            n.length = (n.length + delta).clamp(MIN_LENGTH, MAX_DOC_TICK);
         }
         Ok(())
     })?;
@@ -1192,8 +1209,8 @@ pub fn quantize_notes(
         }
         let selected = |n: &Note| selection.as_ref().is_none_or(|s| s.contains(n.id));
         for n in list.iter_mut().filter(|n| selected(n)) {
-            n.start = round_to(n.start, grid);
-            n.length = round_to(n.length, grid).max(grid);
+            n.start = round_to(n.start, grid).clamp(Tick::ZERO, MAX_DOC_TICK);
+            n.length = round_to(n.length, grid).max(grid).min(MAX_DOC_TICK);
         }
         Ok(())
     })?;
@@ -1802,8 +1819,8 @@ fn sort_notes(notes: &mut [Note]) {
 fn new_note(id: NoteId, spec: &NewNote) -> Note {
     Note {
         id,
-        start: spec.start.max(Tick::ZERO),
-        length: spec.length.max(MIN_LENGTH),
+        start: spec.start.clamp(Tick::ZERO, MAX_DOC_TICK),
+        length: spec.length.clamp(MIN_LENGTH, MAX_DOC_TICK),
         pitch: spec.pitch.min(127),
         velocity: spec.velocity.clamp(1, 127),
     }
@@ -1866,7 +1883,7 @@ fn copy_clip(project: &mut Project, clip: &Clip) -> Result<Clip, EditError> {
 struct ClipGroup {
     /// Track index and clip, in the order of the request without repetitions.
     clips: Vec<(usize, Arc<Clip>)>,
-    /// Time delta, clamped so no clip starts before tick 0.
+    /// Time delta, clamped so no clip starts before tick 0 or after [`MAX_DOC_TICK`].
     delta: Tick,
     /// Track delta, clamped so every clip stays on a track.
     track_delta: i64,
@@ -1891,12 +1908,17 @@ impl ClipGroup {
             .map(|(_, c)| c.start)
             .min()
             .unwrap_or(Tick::ZERO);
+        let latest = clips
+            .iter()
+            .map(|(_, c)| c.start)
+            .max()
+            .unwrap_or(Tick::ZERO);
         let top = clips.iter().map(|&(t, _)| t).min().unwrap_or(0) as i64;
         let bottom = clips.iter().map(|&(t, _)| t).max().unwrap_or(0) as i64;
         let last = project.tracks.len() as i64 - 1;
         let group = ClipGroup {
             clips,
-            delta: delta.max(-earliest),
+            delta: delta.clamp(-earliest.max(Tick::ZERO), room_after(latest)),
             track_delta: i64::from(track_delta).clamp(-top, (last - bottom).max(-top)),
         };
         for (t, clip) in &group.clips {
@@ -2086,7 +2108,15 @@ impl NoteSelection {
     }
 }
 
-/// Clamps a group move so no selected note starts before 0 or leaves `0 ..= 127`.
+/// How far something that starts at `start` can move later and still start inside the document;
+/// never negative, and no overflow for any `start`.
+fn room_after(start: Tick) -> Tick {
+    Tick(MAX_DOC_TICK.0.saturating_sub(start.0)).max(Tick::ZERO)
+}
+
+/// Clamps a group move so no selected note starts before 0 or after [`MAX_DOC_TICK`] or leaves
+/// `0 ..= 127`. Total: the ranges always contain 0 (no move), whatever the notes hold, so a note
+/// that is out of range itself (a file that was never repaired) cannot make the clamp panic.
 fn clamp_note_move(
     notes: &[Note],
     selection: &NoteSelection,
@@ -2095,11 +2125,12 @@ fn clamp_note_move(
 ) -> (Tick, i64) {
     let selected = || notes.iter().filter(|n| selection.contains(n.id));
     let earliest = selected().map(|n| n.start).min().unwrap_or(Tick::ZERO);
+    let latest = selected().map(|n| n.start).max().unwrap_or(Tick::ZERO);
     let lowest = selected().map(|n| i64::from(n.pitch)).min().unwrap_or(0);
     let highest = selected().map(|n| i64::from(n.pitch)).max().unwrap_or(127);
     (
-        delta.max(-earliest),
-        i64::from(pitch_delta).clamp(-lowest, 127 - highest),
+        delta.clamp(-earliest.max(Tick::ZERO), room_after(latest)),
+        i64::from(pitch_delta).clamp((-lowest).min(0), (127 - highest).max(0)),
     )
 }
 

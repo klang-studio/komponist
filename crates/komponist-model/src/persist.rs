@@ -15,21 +15,26 @@
 //!   optional data, so `migrate_v2_to_v3` changes nothing; the bump keeps builds from before audio
 //!   from opening a project that may hold audio clips as if it were complete.
 //! - 4 (#65): optional track and master automation and MIDI/step clip envelopes.
+//! - 5 (macros): optional `macros` on tracks, a fixed array of eight slots with names, values and
+//!   mappings to automation targets. Tracks without it get the default slots, so
+//!   `migrate_v4_to_v5` changes nothing.
+//!
+//! Loading never trusts the file: after parsing, [`crate::validate`] repairs what has an obvious
+//! safe value, drops what is unusable and rejects the rest, so [`Project::validate`] holds for
+//! every project that loads. The repairs come back with the project ([`load`]).
 //!
 //! Thread: any non-RT thread (loading and saving run on workers).
 
 use std::fmt;
-use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::project::{
-    BUILTIN_HEXA, BUILTIN_SAMPLER, BUILTIN_VOLT, ClipContent, DRUM_SAMPLER_NAME, HEXA_NAME,
-    PRESSE_NAME, Project, VOLT_NAME,
+    BUILTIN_HEXA, BUILTIN_SAMPLER, BUILTIN_VOLT, DRUM_SAMPLER_NAME, HEXA_NAME, PRESSE_NAME,
+    Project, VOLT_NAME,
 };
-use crate::routing;
-use crate::time::Tick;
+use crate::validate::{Repairs, collect_deserialize_repairs, repair_loaded};
 
 /// Value of the `format` field.
 pub const FORMAT_TAG: &str = "komponist";
@@ -91,8 +96,25 @@ pub fn to_json(project: &Project) -> Result<String, PersistError> {
     .map_err(|e| PersistError::Malformed(e.to_string()))
 }
 
-/// Parses a project file of any supported version, migrating it to the current schema.
+/// A loaded project and what loading repaired in it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Loaded {
+    /// The project; [`Project::validate`] holds.
+    pub project: Project,
+    /// What differed from the file (empty for a valid file).
+    pub repairs: Repairs,
+}
+
+/// Parses a project file of any supported version, migrating it to the current schema, repairing
+/// it ([`crate::validate`]) and dropping the repair notes. Use [`load`] to show them.
 pub fn from_json(text: &str) -> Result<Project, PersistError> {
+    load(text).map(|loaded| loaded.project)
+}
+
+/// Parses a project file of any supported version, migrating it to the current schema and
+/// repairing it ([`crate::validate`]). The result passes [`Project::validate`]; what was repaired
+/// is in [`Loaded::repairs`]. A file that cannot be repaired is an error.
+pub fn load(text: &str) -> Result<Loaded, PersistError> {
     let malformed = |e: serde_json::Error| PersistError::Malformed(e.to_string());
     let file: Value = serde_json::from_str(text).map_err(malformed)?;
     let Value::Object(mut file) = file else {
@@ -115,9 +137,14 @@ pub fn from_json(text: &str) -> Result<Project, PersistError> {
         .ok_or_else(|| PersistError::Malformed("missing project".to_owned()))?;
     let mut project = migrate(project, version)?;
     rename_builtins(&mut project);
-    let mut project: Project = serde_json::from_value(project).map_err(malformed)?;
-    check_and_repair(&mut project).map_err(PersistError::Malformed)?;
-    Ok(project)
+    let (project, mut repairs) =
+        collect_deserialize_repairs(|| serde_json::from_value::<Project>(project));
+    let mut project = project.map_err(malformed)?;
+    let repaired = repair_loaded(&mut project).map_err(PersistError::Malformed)?;
+    for (kind, count) in repaired.iter() {
+        repairs.add(kind, count);
+    }
+    Ok(Loaded { project, repairs })
 }
 
 /// Upgrades the `project` JSON value of a file with version `from` to [`FORMAT_VERSION`] by
@@ -226,217 +253,6 @@ fn migrate_v4_to_v5(project: Value) -> Result<Value, String> {
     Ok(project)
 }
 
-/// After loading: rejects what the program cannot work with (meter, tempo, takes, pattern
-/// lengths, a routing cycle, a bus with clips or an instrument) and repairs what is cheap to
-/// repair (`next_id` below an existing id, unsorted clips and notes, routing references to
-/// missing tracks or to tracks that are not buses, group order). Hand-edited files then cannot
-/// crash the app.
-fn check_and_repair(project: &mut Project) -> Result<(), String> {
-    let meter = project.meter;
-    if !crate::edits::valid_meter(meter) {
-        return Err(format!("meter {}/{} not supported", meter.num, meter.den));
-    }
-    let bpm = project.tempo.bpm;
-    if !(crate::Tempo::MIN_BPM..=crate::Tempo::MAX_BPM).contains(&bpm) {
-        return Err(format!("tempo {bpm} out of range"));
-    }
-    let tempo = project.tempo;
-    let mut max_id = project
-        .master
-        .devices
-        .iter()
-        .map(|d| d.id.0)
-        .chain(project.master_automation.lanes.iter().map(|lane| lane.id.0))
-        .max()
-        .unwrap_or(0);
-    for track in &mut project.tracks {
-        if !track.macros.is_default() {
-            let id = track.id;
-            Arc::make_mut(track).macros.repair(id);
-        }
-        if !track.is_audio() && (!track.audio.is_default()) {
-            Arc::make_mut(track).audio = crate::AudioIo::default();
-        }
-        if track.is_audio() && track.monitor {
-            Arc::make_mut(track).monitor = false;
-        }
-        let mut ids = vec![track.id.0];
-        ids.extend(track.channel.devices.iter().map(|d| d.id.0));
-        ids.extend(track.sends.iter().map(|s| s.id.0));
-        ids.extend(track.automation.lanes.iter().map(|lane| lane.id.0));
-        if !track.clips.is_sorted_by_key(|c| (c.start, c.id)) {
-            Arc::make_mut(track).clips.sort_by_key(|c| (c.start, c.id));
-        }
-        for index in 0..track.clips.len() {
-            let clip = &track.clips[index];
-            ids.push(clip.id.0);
-            match &clip.content {
-                ClipContent::Midi(m) => {
-                    if m.takes.is_empty() || m.active_take >= m.takes.len() {
-                        return Err(format!("clip {}: no active take", clip.id.0));
-                    }
-                    let unsorted: Vec<usize> = (0..m.takes.len())
-                        .filter(|&t| {
-                            !m.takes[t]
-                                .notes
-                                .is_sorted_by_key(|n| (n.start, n.pitch, n.id))
-                        })
-                        .collect();
-                    ids.extend(m.takes.iter().flat_map(|t| t.notes.iter().map(|n| n.id.0)));
-                    if !unsorted.is_empty() {
-                        let clip = Arc::make_mut(&mut Arc::make_mut(track).clips[index]);
-                        let ClipContent::Midi(m) = &mut clip.content else {
-                            unreachable!("checked above");
-                        };
-                        for t in unsorted {
-                            Arc::make_mut(&mut m.takes[t].notes)
-                                .sort_by_key(|n| (n.start, n.pitch, n.id));
-                        }
-                    }
-                }
-                ClipContent::Step(s) => {
-                    if !(1..=crate::project::MAX_STEPS).contains(&usize::from(s.length_steps)) {
-                        return Err(format!("clip {}: pattern length out of range", clip.id.0));
-                    }
-                }
-                ClipContent::Audio(a) => {
-                    // Validate structure before dereferencing the active take; malformed files
-                    // must return an error, never panic through field compatibility access.
-                    if a.takes.is_empty() || a.active_take >= a.takes.len() {
-                        return Err(format!("clip {}: invalid audio take index", clip.id.0));
-                    }
-                    for take in &a.takes {
-                        let file = &take.file;
-                        if file.frames == 0 || file.sample_rate == 0 || file.channels == 0 {
-                            return Err(format!("clip {}: audio file without frames", clip.id.0));
-                        }
-                    }
-                    if a.offset >= a.file.frames {
-                        return Err(format!("clip {}: offset behind the file's end", clip.id.0));
-                    }
-                    let bpm = a.original_tempo.bpm;
-                    if !(crate::Tempo::MIN_BPM..=crate::Tempo::MAX_BPM).contains(&bpm) {
-                        return Err(format!("clip {}: original tempo out of range", clip.id.0));
-                    }
-                    if a.warp_enabled() && clip.length <= Tick::ZERO {
-                        return Err(format!("clip {}: empty audio warp span", clip.id.0));
-                    }
-                    a.validate_warp(clip.length)
-                        .map_err(|e| format!("clip {}: {e}", clip.id.0))?;
-                    // Repair what a hand edit can break: a window longer than the file, fades
-                    // longer than the clip, a gain out of range.
-                    let length = clip.length.min(a.max_length(tempo).max(Tick(1)));
-                    let mut fixed = a.clone();
-                    fixed.clamp(length);
-                    if length != clip.length || fixed != *a {
-                        let clip = Arc::make_mut(&mut Arc::make_mut(track).clips[index]);
-                        clip.length = length;
-                        clip.content = ClipContent::Audio(fixed);
-                    }
-                }
-            }
-        }
-        max_id = ids.into_iter().fold(max_id, u64::max);
-    }
-    let next = max_id
-        .checked_add(1)
-        .ok_or("project object identifiers exhausted")?;
-    project.next_id = project.next_id.max(next);
-    if project.next_id == u64::MAX {
-        return Err("project object identifiers exhausted".to_owned());
-    }
-    repair_routing(project);
-    repair_audio_inputs(project);
-    crate::edits::automation::repair_loaded(project).map_err(|error| error.to_string())?;
-    crate::edits::normalize_audio_overlaps(project).map_err(|error| error.to_string())?;
-    routing::check(project).map_err(|issue| issue.to_string())
-}
-
-/// Clears the input bus of an audio track that names a missing track, the track itself or a track
-/// that is not a bus. A cycle through an input stays for [`routing::check`] to reject.
-fn repair_audio_inputs(project: &mut Project) {
-    let buses: std::collections::HashSet<_> = project
-        .tracks
-        .iter()
-        .filter(|t| t.is_bus())
-        .map(|t| t.id)
-        .collect();
-    for track in &mut project.tracks {
-        if track.input_bus().is_some_and(|b| !buses.contains(&b)) {
-            Arc::make_mut(track).audio.input = crate::AudioInput::None;
-        }
-    }
-}
-
-/// Drops routing references that cannot work: outputs and sends that name a missing track, the
-/// track itself or a track that is not a bus (outputs then go to the master), second sends to the
-/// same bus, sidechains from a missing track or from the device's own track, `folder` on a track
-/// that is not a bus, `folded` on one that is not a group, arm and monitoring on a bus. Then puts
-/// every group's members behind it. Leaves cycles and bus content to [`routing::check`], which
-/// rejects them.
-fn repair_routing(project: &mut Project) {
-    use std::collections::{HashMap, HashSet};
-
-    use crate::project::TrackOutput;
-
-    let kinds: HashMap<_, bool> = project.tracks.iter().map(|t| (t.id, t.is_bus())).collect();
-    let is_bus = |own, id| id != own && kinds.get(&id) == Some(&true);
-    let bad_sidechain = |own: Option<_>, sc: Option<crate::Sidechain>| {
-        sc.is_some_and(|sc| Some(sc.source) == own || !kinds.contains_key(&sc.source))
-    };
-    for index in 0..project.tracks.len() {
-        let t = &project.tracks[index];
-        let own = t.id;
-        let mut targets = HashSet::new();
-        let broken = matches!(t.output, TrackOutput::Bus(b) if !is_bus(own, b))
-            || !t
-                .sends
-                .iter()
-                .all(|s| is_bus(own, s.target) && targets.insert(s.target))
-            || (t.folder && !t.is_bus())
-            || (t.folded && !t.is_group())
-            || (t.is_bus() && (t.arm || t.monitor))
-            || t.channel
-                .devices
-                .iter()
-                .any(|d| bad_sidechain(Some(own), d.sidechain));
-        if !broken {
-            continue;
-        }
-        let t = Arc::make_mut(&mut project.tracks[index]);
-        if matches!(t.output, TrackOutput::Bus(b) if !is_bus(own, b)) {
-            t.output = TrackOutput::Master;
-        }
-        let mut targets = HashSet::new();
-        t.sends
-            .retain(|s| is_bus(own, s.target) && targets.insert(s.target));
-        t.folder &= t.is_bus();
-        t.folded &= t.folder;
-        if t.is_bus() {
-            t.arm = false;
-            t.monitor = false;
-        }
-        for d in &mut t.channel.devices {
-            if bad_sidechain(Some(own), d.sidechain) {
-                Arc::make_mut(d).sidechain = None;
-            }
-        }
-    }
-    if project
-        .master
-        .devices
-        .iter()
-        .any(|d| bad_sidechain(None, d.sidechain))
-    {
-        for d in &mut Arc::make_mut(&mut project.master).devices {
-            if bad_sidechain(None, d.sidechain) {
-                Arc::make_mut(d).sidechain = None;
-            }
-        }
-    }
-    routing::normalize_groups(project);
-}
-
 /// serde helper for [`crate::Device::state`]: `Option<Arc<[u8]>>` as an optional standard base64
 /// string (with padding). `None` is written as `null`; a missing field reads as `None`.
 pub mod base64_state {
@@ -475,9 +291,12 @@ pub mod base64_state {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::edits::{self, NewClip, NewClipContent, NewNote};
     use crate::fixtures::{demo_project, empty_project};
+    use crate::project::ClipContent;
     use crate::{DeviceId, Tick};
 
     fn file(project: Value) -> String {

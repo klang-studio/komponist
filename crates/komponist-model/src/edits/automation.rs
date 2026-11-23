@@ -502,26 +502,29 @@ pub(super) fn remap_duplicate_targets(
     Ok(())
 }
 
-pub(crate) fn repair_loaded(project: &mut Project) -> Result<(), EditError> {
-    fn repair_lanes(automation: &mut TrackAutomation) {
+pub(crate) fn repair_loaded(
+    project: &mut Project,
+    repairs: &mut crate::validate::Repairs,
+) -> Result<(), EditError> {
+    fn repair_lanes(automation: &mut TrackAutomation, repairs: &mut crate::validate::Repairs) {
         let mut targets = HashSet::new();
         automation.lanes.retain(|lane| {
-            if targets.insert(lane.target.clone()) {
-                true
-            } else {
-                eprintln!("Ignored duplicate automation lane {}", lane.id.0);
-                false
+            let keep = targets.insert(lane.target.clone());
+            if !keep {
+                repairs.add(crate::validate::RepairKind::AutomationLanes, 1);
             }
+            keep
         });
         for lane in &mut automation.lanes {
             let height = lane.height.clamp(LANE_HEIGHT_MIN, LANE_HEIGHT_MAX);
             if height != lane.height {
                 Arc::make_mut(lane).height = height;
+                repairs.add(crate::validate::RepairKind::MixerValues, 1);
             }
         }
     }
     if !project.master_automation.lanes.is_empty() {
-        repair_lanes(Arc::make_mut(&mut project.master_automation));
+        repair_lanes(Arc::make_mut(&mut project.master_automation), repairs);
     }
     for index in 0..project.tracks.len() {
         let track = &project.tracks[index];
@@ -529,21 +532,41 @@ pub(crate) fn repair_loaded(project: &mut Project) -> Result<(), EditError> {
             || track.clips.iter().any(|clip| !clip.automation.is_empty())
         {
             let track = track_mut(project, index);
-            repair_lanes(&mut track.automation);
+            repair_lanes(&mut track.automation, repairs);
             for clip in &mut track.clips {
                 if clip.automation.is_empty() {
                     continue;
                 }
                 let clip = Arc::make_mut(clip);
+                let before = clip.automation.len();
                 if clip.kind() == ClipKind::Audio {
                     clip.automation.clear();
                 } else {
+                    // An envelope for a device or send that is gone stays (the plugin may come
+                    // back, and edits keep it); one for a macro that does not exist never can
+                    // resolve.
                     let mut targets = HashSet::new();
-                    clip.automation
-                        .retain(|envelope| targets.insert(envelope.target.clone()));
+                    clip.automation.retain(|envelope| {
+                        !matches!(envelope.target, AutomationTarget::Macro { index }
+                            if usize::from(index) >= crate::macros::MACRO_COUNT)
+                            && targets.insert(envelope.target.clone())
+                    });
                 }
+                repairs.add(
+                    crate::validate::RepairKind::AutomationLanes,
+                    before - clip.automation.len(),
+                );
             }
+            let lanes = project.tracks[index].automation.lanes.len();
             ensure_clip_lanes(project, index)?;
+            repairs.add(
+                crate::validate::RepairKind::AutomationLanes,
+                project.tracks[index]
+                    .automation
+                    .lanes
+                    .len()
+                    .saturating_sub(lanes),
+            );
         }
     }
     Ok(())

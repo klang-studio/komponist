@@ -4,8 +4,8 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-use crate::TrackId;
 use crate::automation::{AutomationTarget, bend};
+use crate::validate::{RepairKind, Repairs};
 
 /// Number of fixed macro slots on each track.
 pub const MACRO_COUNT: usize = 8;
@@ -37,42 +37,55 @@ impl TrackMacros {
             .map(|index| index as u8)
     }
 
-    /// Repair malformed ranges and resolve conflicting mappings in file order.
-    pub(crate) fn repair(&mut self, track: TrackId) {
+    /// Whether a slot's value and every mapping's range and bend are in range, no mapping drives a
+    /// macro, and no target is driven twice on the track ([`TrackMacros::repair`] makes it so).
+    pub(crate) fn is_valid(&self) -> bool {
         let mut seen = HashSet::new();
-        for (index, slot) in self.0.iter_mut().enumerate() {
-            slot.value = slot.value.clamp(0.0, 1.0);
+        self.0.iter().all(|slot| {
+            (0.0..=1.0).contains(&slot.value)
+                && slot.mappings.iter().all(|m| {
+                    !matches!(m.target, AutomationTarget::Macro { .. })
+                        && seen.insert(m.target.clone())
+                        && (0.0..=1.0).contains(&m.min)
+                        && (0.0..=1.0).contains(&m.max)
+                        && m.min <= m.max
+                        && (-1.0..=1.0).contains(&m.bend)
+                })
+        })
+    }
+
+    /// Repair malformed ranges and resolve conflicting mappings in file order. Counts every slot
+    /// and mapping it changes.
+    pub(crate) fn repair(&mut self, repairs: &mut Repairs) {
+        let unit = |v: f32, lo: f32, hi: f32| if v.is_nan() { 0.0 } else { v.clamp(lo, hi) };
+        let mut seen = HashSet::new();
+        for slot in self.0.iter_mut() {
+            let value = unit(slot.value, 0.0, 1.0);
+            if value != slot.value {
+                slot.value = value;
+                repairs.add(RepairKind::MacroValues, 1);
+            }
             slot.mappings.retain_mut(|mapping| {
                 if matches!(mapping.target, AutomationTarget::Macro { .. })
                     || !seen.insert(mapping.target.clone())
                 {
-                    eprintln!(
-                        "Ignored invalid or duplicate mapping on track {}, macro {}",
-                        track.0,
-                        index + 1
-                    );
+                    repairs.add(RepairKind::MacroMappings, 1);
                     return false;
                 }
-                mapping.min = mapping.min.clamp(0.0, 1.0);
-                mapping.max = mapping.max.clamp(0.0, 1.0);
-                mapping.bend = mapping.bend.clamp(-1.0, 1.0);
+                let before = (mapping.min, mapping.max, mapping.bend);
+                mapping.min = unit(mapping.min, 0.0, 1.0);
+                mapping.max = unit(mapping.max, 0.0, 1.0);
+                mapping.bend = unit(mapping.bend, -1.0, 1.0);
                 if mapping.min > mapping.max {
                     std::mem::swap(&mut mapping.min, &mut mapping.max);
-                    eprintln!(
-                        "Reordered mapping range on track {}, macro {}",
-                        track.0,
-                        index + 1
-                    );
+                }
+                if before != (mapping.min, mapping.max, mapping.bend) {
+                    repairs.add(RepairKind::MacroMappings, 1);
                 }
                 true
             });
-            if slot.mappings.len() > MAX_MAPPINGS {
-                eprintln!(
-                    "Kept excess mappings on track {}, macro {}",
-                    track.0,
-                    index + 1
-                );
-            }
+            // Excess mappings are kept for editing (`driver` and the engine ignore them), so
+            // they are no repair.
         }
     }
 }

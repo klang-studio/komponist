@@ -16,6 +16,7 @@
 //! - [`format`](mod@format): display strings (`10.2.120`, `−3.2`, `L 12`, `C4`).
 //! - [`params`]: the parameter model (`ParamInfo`, scales, units, context placeholders).
 //! - [`persist`]: the `*.komponist` JSON file.
+//! - [`validate`]: [`Project::validate`] (every invariant) and the repair pass of loading.
 //! - [`routing`]: the routing graph (outputs, sends, sidechains, groups): checks, valid targets,
 //!   topological order, solo and mute gates (ARCHITECTURE §6.8).
 //! - [`fixtures`]: the demo project "Night Drive" and the empty project.
@@ -39,10 +40,13 @@ pub mod persist;
 pub mod project;
 pub mod routing;
 pub mod time;
+pub mod validate;
 pub mod warp;
 
 #[cfg(test)]
 mod proptests;
+#[cfg(test)]
+mod validate_tests;
 
 pub use audio::{
     AudioClip, AudioFile, AudioInput, AudioIo, AudioTake, CLIP_GAIN_DB_MAX, CLIP_GAIN_DB_MIN,
@@ -57,7 +61,8 @@ pub use project::{
     StepHit, StepRow, Take, Tap, Track, TrackKind, TrackOutput, TrackSend,
 };
 pub use time::{
-    Bbt, DISPLAY_TICKS_PER_BEAT, Grid, Meter, PPQ, StepResolution, TICKS_PER_STEP, Tempo, TempoMap,
-    Tick, TickRange,
+    Bbt, DISPLAY_TICKS_PER_BEAT, Grid, MAX_DOC_TICK, Meter, PPQ, StepResolution, TICKS_PER_STEP,
+    Tempo, TempoMap, Tick, TickRange,
 };
+pub use validate::{RepairKind, Repairs, ValidationError};
 pub use warp::{AudioWarp, MAX_WARP_TICK, WarpError, WarpMap};

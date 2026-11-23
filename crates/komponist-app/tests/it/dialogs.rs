@@ -850,6 +850,39 @@ impl DeviceHost for Scanning {
     }
 }
 
+/// A file the loader had to repair opens and says how many places it changed (#209).
+#[test]
+fn a_repaired_project_says_so_in_the_status_bar() {
+    let dir = scratch("repaired");
+    let file = dir.join("Repariert.komponist");
+    let mut value: serde_json::Value = serde_json::from_str(
+        &komponist_model::persist::to_json(&Project::new("Repariert")).unwrap(),
+    )
+    .unwrap();
+    value["project"]["count_in_bars"] = 200.into();
+    value["project"]["loop_range"] =
+        serde_json::json!({ "start": -5, "end": 1_000_000_000_000_000_i64 });
+    std::fs::write(&file, value.to_string()).unwrap();
+    let mut app = app_in(&dir, demo_project());
+    app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
+    assert_eq!(app.project().count_in_bars, 4);
+    assert!(app.project().validate().is_ok());
+    let status = app.ui().status.as_ref().unwrap();
+    assert_eq!(
+        status.text,
+        "Repariert geöffnet · 2 Stellen beim Öffnen repariert"
+    );
+    // A project that opens without repairs keeps the usual text, also after one that needed them.
+    let clean = dir.join("Sauber.komponist");
+    save_and_open(&clean, &Project::new("Sauber"));
+    app.dispatch(Action::Project(ProjectAction::OpenPath(clean)));
+    assert_eq!(
+        app.ui().status.as_ref().unwrap().text,
+        "Sauber geöffnet · Leertaste spielt"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn s06_waits_for_the_running_scan() {
     let dir = scratch("scan");

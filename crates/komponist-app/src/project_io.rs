@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use komponist_i18n::Lang;
 use komponist_model::edits::ProjectProp;
 use komponist_model::persist::{self, FILE_EXTENSION, PersistError};
-use komponist_model::{Document, Project};
+use komponist_model::{Document, Project, Repairs};
 
 use crate::actions::{Action, ProjectAction, SettingsAction, UiAction};
 use crate::app::App;
@@ -104,8 +104,16 @@ impl ProjectIoError {
 
 /// Reads a project file.
 pub fn load_project(path: &Path) -> Result<Project, ProjectIoError> {
+    load_project_repaired(path).map(|(project, _)| project)
+}
+
+/// Reads a project file and what loading had to repair in it (#209), see
+/// [`komponist_model::validate`].
+pub fn load_project_repaired(path: &Path) -> Result<(Project, Repairs), ProjectIoError> {
     let text = std::fs::read_to_string(path).map_err(|e| ProjectIoError::Io(path.to_owned(), e))?;
-    persist::from_json(&text).map_err(|e| ProjectIoError::Format(path.to_owned(), e))
+    persist::load(&text)
+        .map(|loaded| (loaded.project, loaded.repairs))
+        .map_err(|e| ProjectIoError::Format(path.to_owned(), e))
 }
 
 /// Writes `project` to `path` through a temporary file next to it and a rename. The folder must
@@ -656,9 +664,9 @@ impl App {
     /// why.
     pub(crate) fn open_path(&mut self, path: PathBuf) {
         let loaded = resolve_project_parent(path.clone())
-            .and_then(|resolved| load_project(&resolved).map(|project| (resolved, project)));
+            .and_then(|resolved| load_project_repaired(&resolved).map(|loaded| (resolved, loaded)));
         match loaded {
-            Ok((path, project)) => {
+            Ok((path, (project, repairs))) => {
                 let project_dir =
                     komponist_model::paths::absolute(path.parent().unwrap_or(Path::new("")));
                 let host = self.engine.host();
@@ -680,6 +688,10 @@ impl App {
                     }
                 }
                 self.open_document(doc, Some(path.clone()));
+                if !repairs.is_empty() {
+                    eprintln!("komponist: {}: repaired on open: {repairs}", path.display());
+                }
+                self.dialogs.repaired = repairs.total();
                 self.remember(path);
                 self.check_missing_plugins();
             }
@@ -698,9 +710,15 @@ impl App {
     /// the check waits for its end (`App::handle_device_event`).
     pub(crate) fn check_missing_plugins(&mut self) {
         let name = self.project().name.clone();
+        let repaired =
+            (self.dialogs.repaired > 0).then(|| self.lang.project_repaired(self.dialogs.repaired));
         if self.engine.host().is_scanning() {
             self.dialogs.missing_check = true;
-            self.set_status(self.lang.project_opened(&name), StatusKind::Info);
+            let text = match &repaired {
+                Some(repaired) => self.lang.project_opened_repaired(&name, repaired),
+                None => self.lang.project_opened(&name),
+            };
+            self.set_status(text, StatusKind::Info);
             return;
         }
         self.dialogs.missing_check = false;
@@ -715,7 +733,11 @@ impl App {
             self.project_dir().as_deref(),
         );
         if missing.is_empty() && samples == 0 && audio.is_empty() {
-            self.set_status(self.lang.project_opened_ready(&name), StatusKind::Info);
+            let text = match &repaired {
+                Some(repaired) => self.lang.project_opened_repaired(&name, repaired),
+                None => self.lang.project_opened_ready(&name),
+            };
+            self.set_status(text, StatusKind::Info);
             return;
         }
         let n = if audio.is_empty() {
@@ -724,6 +746,10 @@ impl App {
             self.lang.missing_audio_files().to_owned()
         } else {
             self.lang.missing_plugins_and_files().to_owned()
+        };
+        let n = match &repaired {
+            Some(repaired) => format!("{n} · {repaired}"),
+            None => n,
         };
         self.set_status(
             self.lang.project_opened_problems(&name, n),
