@@ -249,8 +249,26 @@ impl Spec {
             .expect("a parameter map encodes as JSON")
     }
 
-    /// `state` with parameter `wire` set to `value` (a broken or missing state counts as the
-    /// defaults). `None` for an unknown wire id.
+    /// Why `state` is unreadable: not JSON, not an object, or a `params` entry that is not a map
+    /// (a corrupted state, or one written by a newer build). `None` for a readable state, one
+    /// without `params` included (the sampler's sample links alone mean default values) and for no
+    /// state at all.
+    pub fn state_error(&'static self, state: Option<&[u8]>) -> Option<StateError> {
+        match self.decode_state(state) {
+            Ok(_) => None,
+            Err(StateError::NoParams) => {
+                let value: serde_json::Value = serde_json::from_slice(state?).ok()?;
+                (!value.as_object().is_some_and(|o| !o.contains_key("params")))
+                    .then_some(StateError::NoParams)
+            }
+            Err(e) => Some(e),
+        }
+    }
+
+    /// `state` with parameter `wire` set to `value` (a state without `params` counts as the
+    /// defaults). `None` for an unknown wire id and for an unreadable state
+    /// ([`Self::state_error`]): the stored bytes stay as they are until the user replaces them on
+    /// purpose, e.g. by loading a preset.
     pub fn with_value(
         &'static self,
         state: Option<&[u8]>,
@@ -258,6 +276,9 @@ impl Spec {
         value: f64,
     ) -> Option<Vec<u8>> {
         let info = self.params().get(wire as usize)?;
+        if self.state_error(state).is_some() {
+            return None;
+        }
         let mut values = self.decode_state(state).unwrap_or_else(|_| self.defaults());
         values[wire as usize] = info.snap(value);
         Some(self.keep_extras(state, self.encode_state(&values)))

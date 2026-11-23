@@ -205,8 +205,13 @@ impl Internal {
         self.spec().encode_state(values)
     }
 
-    /// `state` with parameter `wire` set to `value` (a broken or missing state counts as the
-    /// defaults). `None` for an unknown wire id.
+    /// Why `state` cannot be read (see [`Spec::state_error`]); the processor plays the defaults then.
+    pub fn state_error(self, state: Option<&[u8]>) -> Option<StateError> {
+        self.spec().state_error(state)
+    }
+
+    /// `state` with parameter `wire` set to `value` (a state without `params` counts as the
+    /// defaults). `None` for an unknown wire id or an unreadable state.
     pub fn with_value(self, state: Option<&[u8]>, wire: u32, value: f64) -> Option<Vec<u8>> {
         self.spec().with_value(state, wire, value)
     }

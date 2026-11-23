@@ -265,6 +265,14 @@ pub struct StreamStats {
     cpu_load: AtomicU32,
     /// Underruns reported by the backend or detected (callback late), since the system was created.
     xruns: AtomicU32,
+    /// Overruns the capture device reported (frames lost before they reached komponist), since
+    /// the system was created. Each one marks a discontinuity for recording.
+    input_xruns: AtomicU32,
+    /// Live MIDI messages lost because the queue from the MIDI threads was full.
+    midi_overflows: AtomicU64,
+    /// Live MIDI messages discarded as stale: queued while no engine ran, or older than one
+    /// period when a stream took the MIDI receiver over.
+    midi_stale: AtomicU64,
     /// Callbacks run, since the system was created.
     callbacks: AtomicU64,
     /// Highest load of a single callback since the last [`StreamStats::take_peak_load`], as `f32`
@@ -293,6 +301,22 @@ impl StreamStats {
     /// Xruns so far.
     pub fn xruns(&self) -> u32 {
         self.xruns.load(Ordering::Relaxed)
+    }
+
+    /// Capture-device overruns so far (the output's are [`StreamStats::xruns`]).
+    pub fn input_xruns(&self) -> u32 {
+        self.input_xruns.load(Ordering::Relaxed)
+    }
+
+    /// Live MIDI messages lost so far because their queue was full. Each loss releases the held
+    /// notes, so a lost note-off cannot leave a note hanging.
+    pub fn midi_overflows(&self) -> u64 {
+        self.midi_overflows.load(Ordering::Relaxed)
+    }
+
+    /// Live MIDI messages discarded so far as stale (see [`crate::MidiIn`]).
+    pub fn midi_stale(&self) -> u64 {
+        self.midi_stale.load(Ordering::Relaxed)
     }
 
     /// Callbacks so far.
@@ -373,6 +397,21 @@ impl StreamStats {
     /// RT. Counts one xrun.
     pub fn record_xrun(&self) {
         self.xruns.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// RT (capture error callback). Counts one capture-device overrun.
+    pub(crate) fn record_input_xrun(&self) {
+        self.input_xruns.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// RT. Counts live MIDI messages lost to a full queue.
+    pub(crate) fn record_midi_overflows(&self, messages: u64) {
+        self.midi_overflows.fetch_add(messages, Ordering::Relaxed);
+    }
+
+    /// RT. Counts live MIDI messages discarded as stale.
+    pub(crate) fn record_midi_stale(&self, messages: u64) {
+        self.midi_stale.fetch_add(messages, Ordering::Relaxed);
     }
 
     /// Whether the backend reported that real-time scheduling was refused for the audio thread of
@@ -578,6 +617,7 @@ impl DeviceStreams {
         host: HostKind,
         params: &StreamParams,
         interval: Duration,
+        stats: &Arc<StreamStats>,
     ) -> Option<Result<u16, AudioError>> {
         let transfer_ready = self.capture_transfer.ready();
         if let Some(lost) = self.capture.take_if(|capture| capture.lost()) {
@@ -591,10 +631,17 @@ impl DeviceStreams {
 
         let rate = params.sample_rate;
         let frames = params.max_frames;
+        let stats = Arc::clone(stats);
         let result = retry.poll(move |target, current| {
             check_current_capture(current)?;
-            let (capture, reader) =
-                CaptureStream::prepare(host, &target.selection(), rate, frames, None)?;
+            let (capture, reader) = CaptureStream::prepare(
+                host,
+                &target.selection(),
+                rate,
+                frames,
+                None,
+                Arc::clone(&stats),
+            )?;
             check_current_capture(current)?;
             capture.play()?;
             check_current_capture(current)?;
@@ -947,6 +994,7 @@ impl<P: AudioProcess> AudioSystem<P> {
                             current.requested.host,
                             &current.params,
                             self.retry_interval,
+                            &self.stats,
                         )
                     {
                         match capture {
@@ -1064,6 +1112,7 @@ impl<P: AudioProcess> AudioSystem<P> {
             workgroup: None,
             ..params.clone()
         };
+        let stats = Arc::clone(&self.stats);
         let (capture, reader) = self.open_capture(|input| {
             CaptureStream::start(
                 config.host,
@@ -1071,6 +1120,7 @@ impl<P: AudioProcess> AudioSystem<P> {
                 negotiated.effective.sample_rate,
                 negotiated.effective.buffer_frames,
                 Some(&device),
+                stats,
             )
         });
         let target = self

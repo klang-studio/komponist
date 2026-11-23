@@ -504,9 +504,12 @@ impl App {
             _ => undo_label::plugin_state(&self.device_name(device)),
         };
         let tail = self.param_undo.tails.remove(&device);
+        // An edit that changes nothing pushes no step (#220): the top step is then an earlier,
+        // unrelated one, which the next snapshot must not amend.
+        let top = self.doc.top_step();
         if self.doc.apply(label, set).is_ok()
             && !in_gesture
-            && let Some(step) = self.doc.top_step()
+            && let Some(step) = self.doc.top_step().filter(|step| Some(*step) != top)
         {
             let at = tail.map_or(now, |tail| tail.max(now));
             self.param_undo.steps.insert(device, (step, at));
@@ -625,8 +628,8 @@ impl App {
 pub(crate) fn device_param_state(device: &Device, wire: u32, value: f64) -> Option<Arc<[u8]>> {
     if is_hexa(device) {
         let field = komponist_hexa::device::Field::from_wire(wire)?;
-        let mut patch = komponist_hexa::decode_state(device.state.as_deref())
-            .unwrap_or_else(|_| komponist_hexa::default_patch());
+        // An unreadable state stays as it is (the device card warns); see `Spec::with_value`.
+        let mut patch = komponist_hexa::decode_state(device.state.as_deref()).ok()?;
         field.set(&mut patch, value);
         return Some(komponist_hexa::encode_state(&patch).into());
     }
