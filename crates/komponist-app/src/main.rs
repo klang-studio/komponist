@@ -232,10 +232,10 @@ fn run_app() -> eframe::Result {
     options.app_id = APP_ID.to_owned();
     options.pixels_per_point = args.scale.or(settings.ui_scale);
     let mut app = App::new(Document::new(first), engine, settings, settings_path).with_lang(lang);
-    if let Some(input) = app.settings().audio_input.clone() {
-        if let Err(error) = app.engine_mut().set_audio_input(Some(input)) {
-            app.report_audio_input_failed(&error);
-        }
+    if let Some(input) = app.settings().audio_input.clone()
+        && let Err(error) = app.engine_mut().set_audio_input(Some(input))
+    {
+        app.report_audio_input_failed(&error);
     }
     for name in app.settings().midi_disabled.clone() {
         if let Some(hub) = app.engine_mut().midi_mut() {
