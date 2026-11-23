@@ -27,6 +27,9 @@ project-save-plugin-pending = Zustand von { $device } ist noch nicht verfügbar.
 project-save-plugin-cached = Vorheriger Plug-in-Zustand gespeichert: { $devices }
 project-save-plugin-missing-state = Kein Plug-in-Zustand verfügbar: { $devices }
 
+# The project file is saved, but the system did not confirm that it reached the disk (shown after the save status).
+project-save-not-durable = Noch nicht auf dem Datenträger gesichert
+
 ## Reasons (lower case, they follow a colon). The system's own text goes to the log only.
 
 # The file does not exist.

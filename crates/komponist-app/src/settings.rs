@@ -451,7 +451,16 @@ impl Settings {
         let io = |e| SettingsError::Io(path.to_owned(), e);
         let text = serde_json::to_string_pretty(self)
             .map_err(|e| SettingsError::Parse(path.to_owned(), e))?;
-        crate::project_io::write_atomic(path, &text, true).map_err(io)
+        crate::project_io::write_atomic(path, &text, true)
+            .map(|not_durable| {
+                if let Some(error) = not_durable {
+                    eprintln!(
+                        "komponist: {}: not flushed to disk: {error}",
+                        path.display()
+                    );
+                }
+            })
+            .map_err(io)
     }
 
     /// The folders a plugin scan covers: the default folders (ARCHITECTURE §8.3, `$CLAP_PATH`
