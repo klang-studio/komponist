@@ -35,6 +35,14 @@ pub trait AudioProcess: Send + 'static {
     ) {
         self.process(out, info, midi);
     }
+
+    /// Non-RT. Whether a [`AudioProcess::process`] call unwound in the middle (a panic) and left
+    /// the state half-updated (#210). [`crate::AudioSystem`] never hands such a process to a
+    /// stream again: it keeps it apart for its owner ([`crate::AudioSystem::take_poisoned`]),
+    /// who builds a new one. The default never poisons.
+    fn is_poisoned(&self) -> bool {
+        false
+    }
 }
 
 /// Parameters of the stream an [`AudioProcess`] is prepared for.
