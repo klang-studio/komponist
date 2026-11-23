@@ -237,3 +237,19 @@ fn esc_cancels_a_move_and_a_bend_without_an_undo_step() {
     assert_eq!(points(&h, track), original);
     assert_eq!(undo_label(&h), None);
 }
+
+#[test]
+fn esc_with_a_modifier_cancels_a_move_and_closes_its_gesture() {
+    let (mut h, track) = harness();
+    let original = points(&h, track);
+    let b = point_positions(&h)[1];
+    drag_start(&mut h, b, b + vec2(72.0, 10.0), Modifiers::NONE);
+    assert_ne!(points(&h, track), original);
+    // The keymap has no binding for ⌘/Ctrl+Esc: the editor itself must cancel the gesture.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Escape);
+    h.run_steps(2);
+    release(&mut h, b + vec2(72.0, 10.0), Modifiers::NONE);
+    assert_eq!(points(&h, track), original);
+    assert!(!h.state().doc().in_gesture());
+    assert_eq!(undo_label(&h), None);
+}

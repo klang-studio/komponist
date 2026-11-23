@@ -245,6 +245,11 @@ impl Editor {
         });
         self.basis
             .retain(|source, _| self.selected.contains_key(source));
+        // A Shift-marquee restores its base selection every frame: a lane dropped here must leave
+        // that base too, or the marquee would bring back its stale indices on the new points.
+        if let Some(Drag::Box { base, .. }) = self.drag.as_mut() {
+            base.retain(|source, _| self.selected.contains_key(source));
+        }
     }
 
     pub fn selected(&self, source: &Source) -> bool {
@@ -694,9 +699,25 @@ impl Editor {
             }
         }
         if let Some(drag) = self.drag.as_mut().filter(|d| d.source() == &lane.source) {
-            // The app's keymap consumes Esc first and cancels the gesture itself; this editor
-            // then only has to stop the drag, or it would keep sending points after the cancel.
-            let consumed = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+            // The app's keymap consumes a plain Esc first and cancels the gesture itself; this
+            // editor then only has to stop the drag, or it would keep sending points after the
+            // cancel. An Esc the keymap left (with modifiers, or one it skipped) is taken here,
+            // whatever its modifiers, and cancels the gesture, so a stopped drag never leaves
+            // its gesture open.
+            let consumed = ui.input_mut(|i| {
+                let before = i.events.len();
+                i.events.retain(|e| {
+                    !matches!(
+                        e,
+                        egui::Event::Key {
+                            key: Key::Escape,
+                            pressed: true,
+                            ..
+                        }
+                    )
+                });
+                i.events.len() != before
+            });
             if consumed || crate::views::arrangement::escape_pressed(ui) {
                 if consumed && matches!(drag, Drag::Move { .. } | Drag::Bend { .. }) {
                     ctx.send(Action::Edit(EditAction::CancelGesture));
@@ -1902,6 +1923,61 @@ mod tests {
         }
         assert_eq!(h.state().points(0)[1].value, 0.53);
         assert_eq!(h.state().points(0)[0].value, 0.25);
+    }
+
+    #[test]
+    fn shift_marquee_does_not_restore_a_selection_an_outside_edit_made_stale() {
+        let original = vec![
+            Point::linear(Tick(20), 0.2),
+            Point::linear(Tick(60), 0.4),
+            Point::linear(Tick(100), 0.6),
+        ];
+        let mut h = harness(std::slice::from_ref(&original));
+        h.get_all_by_role(Role::Slider)
+            .nth(1)
+            .unwrap()
+            .click_accesskit();
+        h.run_steps(2);
+        // A Shift-marquee over empty space, right of the last point, keeps the button down.
+        let (from, to) = (pos2(180.0, 15.0), pos2(200.0, 25.0));
+        h.event(Event::ModifiersChanged(Modifiers::SHIFT));
+        h.event(Event::PointerMoved(from));
+        h.step();
+        h.event(Event::PointerButton {
+            pos: from,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::SHIFT,
+        });
+        h.step();
+        h.event(Event::PointerMoved(to));
+        h.step();
+        assert!(matches!(h.state().editor.drag, Some(Drag::Box { .. })));
+        // An outside edit inserts a point before the selected one while the marquee is open.
+        let mut added = original.clone();
+        added.insert(0, Point::linear(Tick(5), 0.9));
+        let source = h.state().sources[0].clone();
+        h.state_mut()
+            .app
+            .dispatch(Action::Automation(Automation::Points(
+                source,
+                Points::new(added.clone()),
+                "undo-automation-add-point",
+            )));
+        h.run_steps(2);
+        h.event(Event::PointerButton {
+            pos: to,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::SHIFT,
+        });
+        h.event(Event::ModifiersChanged(Modifiers::NONE));
+        h.run_steps(2);
+        // Index 1 now names tick 20; the old selection must not come back and delete it.
+        assert!(h.state().editor.selected.values().all(BTreeSet::is_empty));
+        h.key_press(Key::Delete);
+        h.run_steps(2);
+        assert_eq!(h.state().points(0), added);
     }
 
     #[test]
