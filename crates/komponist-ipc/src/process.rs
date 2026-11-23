@@ -279,7 +279,8 @@ pub fn spawn_tied(command: &mut Command) -> io::Result<Child> {
     }
     #[cfg(windows)]
     {
-        // No app job (it could not be made): the child runs untied, as before #218.
+        // No app job (it could not be made): the child runs untied, as before #218. A job that
+        // exists but cannot take the child fails the spawn (`spawn_in`).
         let app = job::app();
         job::spawn_in(command, app.as_slice())
     }
@@ -436,18 +437,17 @@ mod job {
 
     /// Spawns `command` suspended, puts it into `jobs` in order (a later one nests in the earlier
     /// ones) and only then lets it run, so it cannot run or start anything outside them (module
-    /// docs). A job it cannot join leaves it outside that one, running all the same. Overrides
-    /// the command's creation flags (nobody sets any).
+    /// docs). A job it cannot join fails the spawn: the suspended child is killed and reaped
+    /// before it ran, so no child ever runs untied. Overrides the command's creation flags
+    /// (nobody sets any).
     pub(super) fn spawn_in(
         command: &mut Command,
         jobs: &[BorrowedHandle<'_>],
     ) -> io::Result<Child> {
         command.creation_flags(CREATE_SUSPENDED);
         let mut child = command.spawn()?;
-        for job in jobs {
-            let _ = assign(*job, &child);
-        }
-        if let Err(e) = resume(child.id()) {
+        let joined = jobs.iter().try_for_each(|job| assign(*job, &child));
+        if let Err(e) = joined.and_then(|()| resume(child.id())) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(e);
