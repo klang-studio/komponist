@@ -1172,7 +1172,7 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
     pub fn recv(&self) -> Result<Rx, ChannelError> {
         let mut rx = self.receiver();
         loop {
-            if let Some(msg) = self.next_message(&mut rx, true)? {
+            if let Some(msg) = self.next_message(&mut rx, true, None)? {
                 return Ok(msg);
             }
         }
@@ -1189,12 +1189,14 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(TryLockError::WouldBlock) => return Ok(None),
         };
-        self.next_message(&mut rx, false)
+        self.next_message(&mut rx, false, None)
     }
 
     /// Like [`Channel::try_recv`], but a message that has begun to arrive is read on as long as
-    /// its bytes keep coming, until `deadline` at the latest. With nothing queued it returns
-    /// `None` at once, as `try_recv` does. For the app's poll loop: a bridge that streams a
+    /// its bytes keep coming, until `deadline` at the latest: no read starts after it, also while
+    /// the peer keeps the socket readable (what has arrived stays in the channel for the next
+    /// call; decoding a message that is complete is not bounded by it). With nothing queued it
+    /// returns `None` at once, as `try_recv` does. For the app's poll loop: a bridge that streams a
     /// large state is read at full speed (one socket buffer per poll would hold the bridge's
     /// main thread in `send` for seconds, past its watchdog), while one that stalls in the
     /// middle of a message costs the caller at most until `deadline`.
@@ -1205,7 +1207,7 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
             Err(TryLockError::WouldBlock) => return Ok(None),
         };
         loop {
-            if let Some(msg) = self.next_message(&mut rx, false)? {
+            if let Some(msg) = self.next_message(&mut rx, false, Some(deadline))? {
                 return Ok(Some(msg));
             }
             let now = Instant::now();
@@ -1495,10 +1497,20 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
     /// on Windows also after an empty write of the peer): what arrived is kept in `rx`.
     ///
     /// An oversized frame is refused (`Codec`) once its header is in; its payload is read past
-    /// before the next frame, so the stream stays in step.
-    fn next_frame(&self, rx: &mut Receiver, wait: bool) -> Result<Option<Frame>, ChannelError> {
+    /// before the next frame, so the stream stays in step. No read starts after `deadline`
+    /// (`None` then, too).
+    fn next_frame(
+        &self,
+        rx: &mut Receiver,
+        wait: bool,
+        deadline: Option<Instant>,
+    ) -> Result<Option<Frame>, ChannelError> {
+        let expired = || deadline.is_some_and(|deadline| Instant::now() >= deadline);
         loop {
             if rx.discard > 0 {
+                if expired() {
+                    return Ok(None);
+                }
                 let n = rx.discard.min(MAX_FRAME);
                 let got = self.read_some(&mut rx.buf[..n], wait, &mut rx.incoming)?;
                 if got == 0 {
@@ -1530,6 +1542,9 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
                 }
                 return Ok(Some(frame));
             }
+            if expired() {
+                return Ok(None);
+            }
             let got = self.read_some(&mut rx.buf[rx.filled..end], wait, &mut rx.incoming)?;
             if got == 0 {
                 return Ok(None);
@@ -1550,19 +1565,35 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
     /// The next whole frame, blocking.
     fn next_frame_blocking(&self, rx: &mut Receiver) -> Result<Frame, ChannelError> {
         loop {
-            if let Some(frame) = self.next_frame(rx, true)? {
+            if let Some(frame) = self.next_frame(rx, true, None)? {
                 return Ok(frame);
             }
         }
     }
 
-    /// Reads on until a whole message is in. `None` when it is not yet (only without `wait`;
-    /// on Windows also after an empty write): the fragments so far are kept in `rx`. A broken
-    /// message is abandoned with a `Codec` error; the stream stays in step.
-    fn next_message(&self, rx: &mut Receiver, wait: bool) -> Result<Option<Rx>, ChannelError> {
+    /// Reads on until a whole message is in. `None` when it is not yet (only without `wait`, or
+    /// once `deadline` has passed; on Windows also after an empty write): the fragments so far
+    /// are kept in `rx`. A broken message, also one cut by a refused frame, is abandoned with a
+    /// `Codec` error; the stream stays in step.
+    fn next_message(
+        &self,
+        rx: &mut Receiver,
+        wait: bool,
+        deadline: Option<Instant>,
+    ) -> Result<Option<Rx>, ChannelError> {
         loop {
-            let Some(frame) = self.next_frame(rx, wait)? else {
-                return Ok(None);
+            let frame = match self.next_frame(rx, wait, deadline) {
+                Ok(Some(frame)) => frame,
+                Ok(None) => return Ok(None),
+                Err(e) => {
+                    // A refused frame (oversized, too many fds) ends the message it was part of:
+                    // the next one must not be measured against it. `discard` stays, so the
+                    // refused payload is still read past.
+                    if matches!(e, ChannelError::Codec(_)) {
+                        rx.end_message();
+                    }
+                    return Err(e);
+                }
             };
             let Some(total) = rx.total else {
                 // The first (or only) frame of a message.
@@ -2302,6 +2333,22 @@ mod tests {
         });
     }
 
+    /// Runs `write` on a second thread while `receive` reads on this one, and hands `bridge`
+    /// back. `bridge` is moved in, so a failing assertion in `receive` drops it while unwinding,
+    /// before the scope joins the writer: a writer blocked on the full socket then fails instead
+    /// of waiting for ever, and the test fails instead of hanging.
+    fn receive_while<'a>(
+        bridge: BridgeChannel,
+        write: impl FnOnce() + Send + 'a,
+        receive: impl FnOnce(&BridgeChannel),
+    ) -> BridgeChannel {
+        std::thread::scope(move |scope| {
+            scope.spawn(write);
+            receive(&bridge);
+            bridge
+        })
+    }
+
     /// #216: a peer that stops in the middle of a frame holds up no `try_recv`; the bytes so far
     /// are kept and the message arrives once the rest is written.
     #[test]
@@ -2359,10 +2406,11 @@ mod tests {
         // The blocking receive goes on from a fragment `try_recv` left half read.
         raw_send(&app, &wire[..MAX_FRAME + 3]);
         assert_eq!(bridge.try_recv().unwrap(), None);
-        std::thread::scope(|scope| {
-            scope.spawn(|| raw_send(&app, &wire[MAX_FRAME + 3..]));
-            assert_eq!(bridge.recv().unwrap(), big);
-        });
+        receive_while(
+            bridge,
+            || raw_send(&app, &wire[MAX_FRAME + 3..]),
+            |bridge| assert_eq!(bridge.recv().unwrap(), big),
+        );
     }
 
     /// `try_recv_until` reads a message that has begun to arrive at the pace of its sender, in
@@ -2383,10 +2431,11 @@ mod tests {
         };
         let wire = frames_of(&big);
         raw_send(&app, &wire[..MAX_FRAME + 1]);
-        std::thread::scope(|scope| {
-            scope.spawn(|| raw_send(&app, &wire[MAX_FRAME + 1..]));
-            assert_eq!(bridge.try_recv_until(far()).unwrap(), Some(big.clone()));
-        });
+        let bridge = receive_while(
+            bridge,
+            || raw_send(&app, &wire[MAX_FRAME + 1..]),
+            |bridge| assert_eq!(bridge.try_recv_until(far()).unwrap(), Some(big.clone())),
+        );
         // A peer that stalls in the middle of a frame: `None` once the deadline has passed.
         raw_send(&app, &wire[..FRAME_HEADER + 2]);
         let budget = Duration::from_millis(30);
@@ -2395,10 +2444,81 @@ mod tests {
         let waited = t0.elapsed();
         assert!(waited >= budget && waited < STALL, "waited {waited:?}");
         // It goes on from there once the rest arrives.
-        std::thread::scope(|scope| {
-            scope.spawn(|| raw_send(&app, &wire[FRAME_HEADER + 2..]));
-            assert_eq!(bridge.try_recv_until(far()).unwrap(), Some(big));
-        });
+        receive_while(
+            bridge,
+            || raw_send(&app, &wire[FRAME_HEADER + 2..]),
+            |bridge| assert_eq!(bridge.try_recv_until(far()).unwrap(), Some(big)),
+        );
+    }
+
+    /// `try_recv_until` starts no read after its deadline, also while more is queued and the
+    /// peer keeps writing: what arrived stays in the channel, and later calls finish the message.
+    #[test]
+    fn try_recv_until_keeps_its_deadline_while_bytes_keep_coming() {
+        let (app, bridge) = pair();
+        let big = ControlMsg::SetState {
+            request: 5,
+            state: (0..8 * 1024 * 1024)
+                .map(|i| (i * 5 + i / 307) as u8)
+                .collect(),
+        };
+        let wire = frames_of(&big);
+        // Begun: the first fragment is in.
+        raw_send(&app, &wire[..MAX_FRAME]);
+        assert_eq!(bridge.try_recv().unwrap(), None);
+        let taken = || bridge.rx.lock().unwrap().message.len();
+        assert_eq!(taken(), MAX_PAYLOAD);
+        // The deadline has passed: the queued next fragment stays unread.
+        raw_send(&app, &wire[MAX_FRAME..2 * MAX_FRAME]);
+        assert_eq!(bridge.try_recv_until(Instant::now()).unwrap(), None);
+        assert_eq!(taken(), MAX_PAYLOAD);
+        // A sender that writes the rest as fast as it can: no call outlasts its budget by more
+        // than one read (plus scheduling slack); together they complete the message.
+        let budget = Duration::from_millis(5);
+        receive_while(
+            bridge,
+            || raw_send(&app, &wire[2 * MAX_FRAME..]),
+            |bridge| {
+                let mut longest = Duration::ZERO;
+                let msg = loop {
+                    let t0 = Instant::now();
+                    let got = bridge.try_recv_until(t0 + budget).unwrap();
+                    if let Some(msg) = got {
+                        // Decoding the whole message is not bounded by the deadline.
+                        break msg;
+                    }
+                    longest = longest.max(t0.elapsed());
+                };
+                assert!(msg == big, "the message differs");
+                assert!(
+                    longest < budget + Duration::from_millis(100),
+                    "a call took {longest:?} with a budget of {budget:?}"
+                );
+            },
+        );
+    }
+
+    /// A frame refused in the middle of a fragmented message ends that message, so the next
+    /// message is not measured against it and arrives intact.
+    #[test]
+    fn a_refused_frame_ends_the_fragmented_message_it_cut() {
+        let (app, bridge) = pair();
+        raw_send(&app, &frame(TAG_MORE, 10, &[0; 4]));
+        assert_eq!(bridge.try_recv().unwrap(), None);
+        let lie = frame_announcing(TAG_LAST, MAX_PAYLOAD as u32 + 1, 3, &[0; MAX_PAYLOAD + 1]);
+        raw_send(&app, &lie);
+        assert!(matches!(bridge.try_recv(), Err(ChannelError::Codec(_))));
+        app.send(&ControlMsg::Ping { seq: 4 }).unwrap();
+        assert_eq!(
+            bridge.try_recv().unwrap(),
+            Some(ControlMsg::Ping { seq: 4 })
+        );
+        // The same with a blocking receive.
+        raw_send(&app, &frame(TAG_MORE, 10, &[0; 4]));
+        raw_send(&app, &lie);
+        assert!(matches!(bridge.recv(), Err(ChannelError::Codec(_))));
+        app.send(&ControlMsg::Ping { seq: 5 }).unwrap();
+        assert_eq!(bridge.recv().unwrap(), ControlMsg::Ping { seq: 5 });
     }
 
     /// An oversized frame is refused as soon as its header is in, and its payload is read past
