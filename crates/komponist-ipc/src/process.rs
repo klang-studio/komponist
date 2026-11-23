@@ -322,17 +322,30 @@ impl ProcessGroup {
         }
     }
 
-    /// SIGKILL to every process in the group (Windows: `TerminateJobObject`). Unix: call it while
-    /// the leader is not reaped yet (before its watcher reported the exit), so the group id cannot
-    /// have been reused. `Ok` if the group is already gone.
-    pub fn kill(&self) -> io::Result<()> {
+    /// SIGKILL to every process in the group (Windows: `TerminateJobObject`); `leader` watches the
+    /// group's first process. `Ok` if the group is already gone.
+    ///
+    /// Unix: the group id is the leader's pid, which may be reused once the leader is reaped. So
+    /// once `leader` has reaped it (its exit is known), this does nothing: the rest of the group
+    /// is out of reach then. Kill the group before the watcher can see the exit.
+    pub fn kill(&self, leader: &ProcessWatcher) -> io::Result<()> {
         #[cfg(unix)]
-        match rustix::process::kill_process_group(self.leader, rustix::process::Signal::KILL) {
-            Ok(()) | Err(Errno::SRCH) => Ok(()),
-            Err(e) => Err(e.into()),
+        {
+            debug_assert_eq!(leader.pid, self.leader, "not this group's leader");
+            if leader.exit.is_some() {
+                return Ok(());
+            }
+            match rustix::process::kill_process_group(self.leader, rustix::process::Signal::KILL) {
+                Ok(()) | Err(Errno::SRCH) => Ok(()),
+                Err(e) => Err(e.into()),
+            }
         }
         #[cfg(windows)]
-        job::terminate(self.job.as_handle())
+        {
+            // A job has no id to reuse: it can be terminated whatever the leader did.
+            let _ = leader;
+            job::terminate(self.job.as_handle())
+        }
     }
 }
 
@@ -1167,7 +1180,7 @@ mod tests {
         drop(child);
         let helper: u32 = line.trim().parse().unwrap();
         assert!(running(helper));
-        group.kill().unwrap();
+        group.kill(&watcher).unwrap();
         let exit = watcher.wait_exit(Some(Duration::from_secs(10))).unwrap();
         assert_eq!(exit.and_then(|e| e.signal), Some(9), "{exit:?}");
         eventually("the helper is killed with its group", || !running(helper));

@@ -457,7 +457,7 @@ pub(crate) fn scan_bundle(
     let mut watcher = match ProcessWatcher::new(child.id()) {
         Ok(watcher) => watcher,
         Err(e) => {
-            let _ = group.kill();
+            // No group kill: it needs a watcher that knows the leader is not reaped.
             let _ = child.kill();
             let _ = child.wait();
             return Some(Scanned::failed(
@@ -477,16 +477,16 @@ pub(crate) fn scan_bundle(
 
     let deadline = Instant::now() + timeout;
     let exit = loop {
-        // The group goes first, while its leader is not reaped (`ProcessGroup::kill`).
+        // The group goes first, while its leader is not reaped (`ProcessGroup::kill` checks).
         if cancel.load(Ordering::Acquire) {
-            let _ = group.kill();
+            let _ = group.kill(&watcher);
             let _ = watcher.kill();
             let _ = watcher.wait_exit(Some(Duration::from_secs(1)));
             return None;
         }
         let now = Instant::now();
         if now >= deadline {
-            let _ = group.kill();
+            let _ = group.kill(&watcher);
             let _ = watcher.kill();
             let _ = watcher.wait_exit(Some(Duration::from_secs(1)));
             return Some(Scanned::failed(
