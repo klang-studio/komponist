@@ -243,7 +243,8 @@ impl Editor {
                 .zip(basis.get(source))
                 .is_some_and(|(now, then)| std::ptr::eq(now.as_slice(), then.as_slice()))
         });
-        self.basis.retain(|source, _| self.selected.contains_key(source));
+        self.basis
+            .retain(|source, _| self.selected.contains_key(source));
     }
 
     pub fn selected(&self, source: &Source) -> bool {
@@ -492,7 +493,8 @@ impl Editor {
         }
         if let Some((point, steps)) = point_action {
             let mut points = lane.points().to_vec();
-            points[point].value = (points[point].value + steps as f32 * m::VALUE_STEP).clamp(0.0, 1.0);
+            points[point].value =
+                (points[point].value + steps as f32 * m::VALUE_STEP).clamp(0.0, 1.0);
             send_points(&mut self.basis, ctx, lane, points, "undo-automation-value");
         }
 
@@ -594,11 +596,23 @@ impl Editor {
             let mut points = lane.points().to_vec();
             if let Some(i) = nearest_point(lane, p) {
                 points.remove(i);
-                send_points(&mut self.basis, ctx, lane, points, "undo-automation-delete-points");
+                send_points(
+                    &mut self.basis,
+                    ctx,
+                    lane,
+                    points,
+                    "undo-automation-delete-points",
+                );
             } else if lane.end.is_none_or(|end| p.x <= lane.axis.x(end)) {
                 let point = Point::linear(lane.tick(p.x, mods.shift, meter), lane.value(p.y));
                 points.push(point);
-                send_points(&mut self.basis, ctx, lane, points, "undo-automation-add-point");
+                send_points(
+                    &mut self.basis,
+                    ctx,
+                    lane,
+                    points,
+                    "undo-automation-add-point",
+                );
             }
             self.select(lane, None, false);
             response.request_focus();
@@ -680,8 +694,11 @@ impl Editor {
             }
         }
         if let Some(drag) = self.drag.as_mut().filter(|d| d.source() == &lane.source) {
-            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-                if matches!(drag, Drag::Move { .. } | Drag::Bend { .. }) {
+            // The app's keymap consumes Esc first and cancels the gesture itself; this editor
+            // then only has to stop the drag, or it would keep sending points after the cancel.
+            let consumed = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+            if consumed || crate::views::arrangement::escape_pressed(ui) {
+                if consumed && matches!(drag, Drag::Move { .. } | Drag::Bend { .. }) {
                     ctx.send(Action::Edit(EditAction::CancelGesture));
                 }
                 self.drag = None;
@@ -845,7 +862,13 @@ impl Editor {
             };
             if dx != Tick::ZERO || dy != 0.0 {
                 let (points, _) = move_points(lane.points(), &indices, dx, dy, lane.end, false);
-                send_points(&mut self.basis, ctx, lane, points, "undo-automation-move-points");
+                send_points(
+                    &mut self.basis,
+                    ctx,
+                    lane,
+                    points,
+                    "undo-automation-move-points",
+                );
             }
         }
     }
