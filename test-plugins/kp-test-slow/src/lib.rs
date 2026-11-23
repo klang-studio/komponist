@@ -20,7 +20,8 @@ pub const SLOW_STATE_KEY: u8 = 125;
 /// A note-on of this key makes the next state snapshot change `gain` while it serializes.
 pub const MUTATE_STATE_KEY: u8 = 124;
 /// A note-on of this key makes `gain` move every block while a state snapshot is being saved
-/// (and return to 0.5 afterwards), like automation would. It stays on.
+/// (and keep its last value until the next note 125, which resets it to 0.5), like automation
+/// would. It stays on.
 pub const DRIFT_KEY: u8 = 123;
 /// Delay for the state snapshot, long enough to exercise the project's shared timeout budget.
 pub const STATE_STALL: Duration = Duration::from_millis(600);
@@ -112,22 +113,24 @@ impl Plugin for KpTestSlow {
                 match key {
                     // Breaks the realtime rules on purpose.
                     SLOW_KEY => std::thread::sleep(STALL),
-                    SLOW_STATE_KEY => self.params.delay_state.store(true, Ordering::Relaxed),
+                    SLOW_STATE_KEY => {
+                        self.params.delay_state.store(true, Ordering::Relaxed);
+                        if self.params.drift.load(Ordering::Relaxed) {
+                            // The new attempt starts from rest.
+                            // SAFETY: the pointer is valid; the value is atomic.
+                            unsafe { self.params.gain.as_ptr()._internal_set_normalized_value(0.5) };
+                        }
+                    }
                     DRIFT_KEY => self.params.drift.store(true, Ordering::Relaxed),
                     MUTATE_STATE_KEY => self.params.mutate_state.store(true, Ordering::Relaxed),
                     _ => {}
                 }
             }
         }
-        if self.params.drift.load(Ordering::Relaxed) {
+        if self.params.drift.load(Ordering::Relaxed) && self.params.saving.load(Ordering::Relaxed)
+        {
             self.blocks = self.blocks.wrapping_add(1);
-            let value = if !self.params.saving.load(Ordering::Relaxed) {
-                0.5
-            } else if self.blocks % 2 == 0 {
-                0.2
-            } else {
-                0.8
-            };
+            let value = if self.blocks % 2 == 0 { 0.2 } else { 0.8 };
             // SAFETY: the pointer is valid; the value is atomic.
             unsafe { self.params.gain.as_ptr()._internal_set_normalized_value(value) };
         }

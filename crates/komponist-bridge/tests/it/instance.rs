@@ -652,13 +652,20 @@ fn slow_plugin_is_late_without_blocking() {
 
 /// Arms the slow `save_state` of kp-test-slow (and `extra` notes) and requests a checked snapshot
 /// that expects `gain` to be `expected`. Returns the request number.
-fn request_slow_checked_state(bridge: &mut Bridge, gain: u32, expected: f64, extra: &[u8]) -> u32 {
+fn request_slow_checked_state(
+    bridge: &mut Bridge,
+    gain: u32,
+    expected: f64,
+    extra: &[u8],
+    budget_ms: u32,
+) -> u32 {
     let mut notes = vec![note_on(0, 125)];
     notes.extend(extra.iter().map(|&key| note_on(0, key)));
     assert_eq!(bridge.block(&notes).status, BlockStatus::Ok as u32);
     bridge.send(ControlMsg::GetStateChecked {
         request: 70,
         expected: vec![(gain, expected, false)],
+        budget_ms,
     });
     70
 }
@@ -685,11 +692,12 @@ fn blocks_until_state_with(
     let mut inactive = 0;
     loop {
         assert!(Instant::now() < deadline, "no answer to request {request}");
-        if allow_pause && bridge.region().bridge_state() != BridgeState::Active {
+        let state = bridge.region().bridge_state();
+        if allow_pause && state != BridgeState::Active {
             std::thread::sleep(Duration::from_millis(2));
         } else {
             assert_eq!(
-                bridge.region().bridge_state(),
+                state,
                 BridgeState::Active,
                 "a snapshot must not change the shared bridge state"
             );
@@ -697,10 +705,10 @@ fn blocks_until_state_with(
                 Err(BlockError::NotActive) if allow_pause => continue,
                 other => other.unwrap_or_else(|e| panic!("block: {e:?}")),
             };
-            blocks += 1;
             // A block that arrives while one of the two short captures holds the audio gets the
             // fallback (`Inactive`); for this passthrough effect the output is the same. Only
-            // a few such blocks are allowed, never a stretch of them.
+            // a few such blocks are allowed, never a stretch of them, and they do not count as
+            // processed.
             if result.status == BlockStatus::Inactive as u32 {
                 inactive += 1;
                 assert!(
@@ -709,6 +717,7 @@ fn blocks_until_state_with(
                 );
             } else {
                 assert_eq!(result.status, BlockStatus::Ok as u32, "block {blocks}");
+                blocks += 1;
             }
             assert_eq!(
                 bridge.output[0][..BLOCK],
@@ -740,7 +749,7 @@ fn checked_snapshot_keeps_the_plugin_processing() {
     let info = bridge.load(&bundle, SLOW);
     let gain = Bridge::param_id(&info, "Gain");
     bridge.activate();
-    let request = request_slow_checked_state(&mut bridge, gain, 0.5, &[]);
+    let request = request_slow_checked_state(&mut bridge, gain, 0.5, &[], 0);
     let started = Instant::now();
     let (answer, blocks) = blocks_until_state(&mut bridge, request);
     let took = started.elapsed();
@@ -771,7 +780,7 @@ fn parameter_change_during_a_snapshot_is_not_verified() {
     let info = bridge.load(&bundle, SLOW);
     let gain = Bridge::param_id(&info, "Gain");
     bridge.activate();
-    let request = request_slow_checked_state(&mut bridge, gain, 0.5, &[124]);
+    let request = request_slow_checked_state(&mut bridge, gain, 0.5, &[124], 0);
     let (answer, blocks) = blocks_until_state(&mut bridge, request);
     assert!(blocks >= 50, "only {blocks} blocks ran during the save");
     assert!(
@@ -783,6 +792,7 @@ fn parameter_change_during_a_snapshot_is_not_verified() {
     bridge.send(ControlMsg::GetStateChecked {
         request: 71,
         expected: vec![(gain, 0.75, false)],
+        budget_ms: 0,
     });
     let (answer, _) = blocks_until_state(&mut bridge, 71);
     match answer {
@@ -791,6 +801,39 @@ fn parameter_change_during_a_snapshot_is_not_verified() {
         }
         other => panic!("the snapshot did not verify: {other:?}"),
     }
+    assert_eq!(bridge.shutdown(), EXIT_OK);
+}
+
+/// #215: a verified parameter that leaves its value while the plugin saves and returns to it
+/// before the save ends is not verified either: the saved bytes may hold the transient value.
+#[test]
+fn parameter_change_and_return_during_a_snapshot_is_not_verified() {
+    let Some(bundle) = fixture("kp-test-slow") else {
+        return;
+    };
+    let mut bridge = Bridge::spawn();
+    let info = bridge.load(&bundle, SLOW);
+    let gain = Bridge::param_id(&info, "Gain");
+    bridge.activate();
+    let request = request_slow_checked_state(&mut bridge, gain, 0.5, &[], 0);
+    // The save runs 600 ms; move `gain` away and back some 150 ms into it.
+    let until = Instant::now() + Duration::from_millis(150);
+    while Instant::now() < until {
+        bridge.block(&[]);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    bridge.block(&[param(0, gain, 0.8)]);
+    bridge.block(&[param(0, gain, 0.5)]);
+    let (answer, _) = blocks_until_state(&mut bridge, request);
+    assert!(
+        matches!(answer, BridgeMsg::StateDeferred { .. }),
+        "a transient value went into a verified state: {answer:?}"
+    );
+
+    // Without the excursion the same snapshot verifies.
+    let request = request_slow_checked_state(&mut bridge, gain, 0.5, &[], 0);
+    let (answer, _) = blocks_until_state(&mut bridge, request);
+    assert!(matches!(answer, BridgeMsg::State { .. }), "{answer:?}");
     assert_eq!(bridge.shutdown(), EXIT_OK);
 }
 
@@ -812,9 +855,9 @@ fn checked_snapshot_completes_under_continuous_automation() {
     );
     let mut deferred = 0;
     let verified = loop {
-        // Back at rest (0.5) after the previous save; one block arms the slow save.
+        // One block arms the slow save (and puts `gain` back to 0.5).
         assert_eq!(bridge.block(&[]).status, BlockStatus::Ok as u32);
-        let request = request_slow_checked_state(&mut bridge, gain, 0.5, &[]);
+        let request = request_slow_checked_state(&mut bridge, gain, 0.5, &[], 0);
         let (answer, _) = blocks_until_state_with(&mut bridge, request, true);
         match answer {
             BridgeMsg::State { verified, .. } => break verified,
@@ -828,6 +871,34 @@ fn checked_snapshot_completes_under_continuous_automation() {
     assert!((verified[0].1 - 0.5).abs() < 1e-6, "{verified:?}");
     wait_state(&bridge, BridgeState::Active);
     assert_eq!(bridge.block(&[]).status, BlockStatus::Ok as u32);
+    assert_eq!(bridge.shutdown(), EXIT_OK);
+}
+
+/// #215: after one unstable snapshot, a caller whose remaining time is under twice the last
+/// save (here 1 s against a 600 ms save) gets the paused snapshot at once instead of a second
+/// running attempt that could leave no time for the paused one.
+#[test]
+fn a_tight_budget_goes_straight_to_the_paused_snapshot() {
+    let Some(bundle) = fixture("kp-test-slow") else {
+        return;
+    };
+    let mut bridge = Bridge::spawn();
+    let info = bridge.load(&bundle, SLOW);
+    let gain = Bridge::param_id(&info, "Gain");
+    bridge.activate();
+    assert_eq!(
+        bridge.block(&[note_on(0, 123)]).status,
+        BlockStatus::Ok as u32
+    );
+    let request = request_slow_checked_state(&mut bridge, gain, 0.5, &[], 0);
+    let (answer, _) = blocks_until_state_with(&mut bridge, request, true);
+    assert!(
+        matches!(answer, BridgeMsg::StateDeferred { .. }),
+        "{answer:?}"
+    );
+    let request = request_slow_checked_state(&mut bridge, gain, 0.5, &[], 1000);
+    let (answer, _) = blocks_until_state_with(&mut bridge, request, true);
+    assert!(matches!(answer, BridgeMsg::State { .. }), "{answer:?}");
     assert_eq!(bridge.shutdown(), EXIT_OK);
 }
 

@@ -620,7 +620,7 @@ own process and RT thread; the plugin manager controls its lifecycle and saved s
 Shared memory (layout version 3) contains request/completion sequence words, transport/status,
 latency, bounded event rings, stereo input/output and stereo sidechain input. Each request marks
 whether sidechain audio is present; absent sidechains receive silence. The postcard control
-protocol (version 8) uses length-prefixed frames for load/activation/state/parameters, GUI and
+protocol (version 14) uses length-prefixed frames for load/activation/state/parameters, GUI and
 header actions, render mode, heartbeat and shutdown.
 
 The plugin manager loads an instance, restores saved state if present, then activates it.
@@ -631,11 +631,18 @@ until the in-flight block finishes. If a request races with the pause and falls 
 replays its latest parameter values on the next block and resets voices to clear notes whose
 note-offs may have been missed.
 
-A checked snapshot (`GetStateChecked`) keeps audio running while the plugin serializes its state
-and leaves the shared bridge state `Active`. The bridge captures the expected parameter values at
-a block boundary (a short pause that waits for the in-flight block), saves, and captures again at
-the next boundary. A parameter value or editor edit that moved during the save makes the bridge
-answer `StateDeferred` instead of a verified state.
+A checked snapshot (`GetStateChecked`) normally keeps audio running while the plugin serializes
+its state and leaves the shared bridge state `Active`. The bridge captures the expected parameter
+values at a block boundary (a short pause that waits for the in-flight block; a block that meets
+it gets the fallback and resets voices only if it discards a note event), saves, and captures
+again at the next boundary. A verified parameter that changed during the save, even if it came
+back, or an editor edit that is still unapplied makes the bridge answer `StateDeferred` instead of
+a verified state; so does a capture that cannot pause the current block in time. A value that
+keeps moving would defer forever, so the exception is a paused fallback: after two such attempts
+in a row, or after one when the caller's remaining time (`budget_ms`, the save's shared deadline)
+is under twice the last save's duration, the next snapshot holds audio (bridge state `Loaded`)
+for its whole save. That fallback is used once; it ends the starvation at the cost of one audible
+gap.
 
 The engine-owned external processor is the single consumer of the output event ring. The engine
 locates plugin values and gestures on the song timeline and sends them to both automation capture
