@@ -1049,7 +1049,8 @@ mod tests {
     fn same_content_agrees_with_eq_and_sees_a_change_anywhere() {
         let p = big_project();
         assert!(p.same_content(&p.clone()));
-        let changes: Vec<(&str, Box<dyn Fn(&mut Project)>)> = vec![
+        type Change = Box<dyn Fn(&mut Project)>;
+        let changes: Vec<(&str, Change)> = vec![
             ("name", Box::new(|p| p.name.push('x'))),
             ("loop_on", Box::new(|p| p.loop_on = !p.loop_on)),
             ("metronome", Box::new(|p| p.metronome = !p.metronome)),
