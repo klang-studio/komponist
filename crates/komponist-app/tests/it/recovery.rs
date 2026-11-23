@@ -300,7 +300,11 @@ fn recover_opens_the_copy_dirty_under_its_file_and_ctrl_s_writes_that_file() {
     h.get_by_label(&Lang::De.transport_project_unsaved("Night Drive"));
     // The copy stays until the first save.
     wait(&mut h, &clock, recovery::QUIET);
-    assert_eq!(copies(&dir), [copy.clone()], "the same entry, kept");
+    assert_eq!(
+        copies(&dir),
+        std::slice::from_ref(&copy),
+        "the same entry, kept"
+    );
     // Ctrl S writes the original file (no file browser) and removes the copy.
     press(&mut h, Modifiers::COMMAND, Key::S);
     assert!(h.query_by_value(de::FILE_SAVE_TITLE).is_none());
@@ -836,9 +840,11 @@ fn snapshots_of_the_start_screen_with_recovery_copies() {
         (Lang::En, "recovery-start-en-1x"),
     ] {
         let model = start_model(lang);
-        let mut view = StartView::default();
         // The second row (Night Drive) selected, as in mockup 03.
-        view.selected = 1;
+        let view = StartView {
+            selected: 1,
+            ..StartView::default()
+        };
         let mut h = komponist_ui::snapshot::builder::<(StartView, Vec<start::Output>)>(1.0)
             .with_size(vec2(W, H))
             .with_options(SnapshotOptions::new().output_path(snapshot_dir()))
