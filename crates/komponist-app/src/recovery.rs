@@ -1926,10 +1926,12 @@ mod tests {
         let root = dir.join("recovery");
         // A store an older build left readable for others, with its files, is narrowed by the
         // next scan.
-        fs::create_dir_all(&root).unwrap();
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
         let store = Store::new(&root);
         let old = write_copy(&store, "Alt", None);
+        // Widened after the store made it private, so only the scan can narrow it again.
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&root), 0o755);
         let discarded = root.join(DISCARDED);
         fs::create_dir_all(&discarded).unwrap();
         let thrown = discarded.join(format!(
@@ -1943,7 +1945,6 @@ mod tests {
         for path in [&old.copy, &old.meta, &old.lock, &thrown] {
             fs::set_permissions(path, wide.clone()).unwrap();
         }
-        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
         let found = store.scan().0;
         assert_eq!(mode(&root), 0o700);
         assert_eq!(mode(&discarded), 0o700);
