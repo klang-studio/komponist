@@ -1,25 +1,37 @@
-//! Fixed-size delay lines with a shared write position, for the chorus and
-//! the delay. Nothing is allocated.
+//! Delay lines with a shared write position, for the chorus and the delay.
+//! The samples are one heap allocation made when the effect is built (at
+//! activation); nothing is allocated afterwards.
 
-/// `K` lines of `LEN` samples, written together.
-pub(crate) struct DelayLines<const LEN: usize, const K: usize> {
-    lines: [[f32; LEN]; K],
+use alloc::boxed::Box;
+use alloc::vec;
+
+/// `K` lines of the same length, written together.
+pub(crate) struct DelayLines<const K: usize> {
+    /// Line `k` is `samples[k * len..(k + 1) * len]`.
+    samples: Box<[f32]>,
+    len: usize,
     /// Where the next samples go.
     pos: usize,
-    /// Samples written since the last clear (up to `LEN`); older ones read
+    /// Samples written since the last clear (up to `len`); older ones read
     /// as silence, so clearing costs nothing.
     written: usize,
 }
 
-impl<const LEN: usize, const K: usize> DelayLines<LEN, K> {
-    /// Writes silent lines to `this` without building them on the stack.
-    ///
-    /// # Safety
-    /// `this` must be valid for writes and suitably aligned.
-    pub(crate) unsafe fn write_new(this: *mut Self) {
-        // SAFETY: guaranteed by the caller; all-zero bytes are silent lines
-        // at position 0.
-        unsafe { this.write_bytes(0, 1) };
+impl<const K: usize> DelayLines<K> {
+    /// Silent lines of `len` samples (at least 4) each.
+    pub(crate) fn new(len: usize) -> Self {
+        let len = len.max(4);
+        Self {
+            samples: vec![0.0; K * len].into_boxed_slice(),
+            len,
+            pos: 0,
+            written: 0,
+        }
+    }
+
+    /// Samples per line.
+    pub(crate) fn len(&self) -> usize {
+        self.len
     }
 
     /// Silences the lines.
@@ -30,15 +42,19 @@ impl<const LEN: usize, const K: usize> DelayLines<LEN, K> {
     /// Appends one sample per line.
     #[inline]
     pub(crate) fn push(&mut self, samples: [f32; K]) {
-        for (line, x) in self.lines.iter_mut().zip(samples) {
-            line[self.pos] = x;
+        for (k, x) in samples.into_iter().enumerate() {
+            self.samples[k * self.len + self.pos] = x;
         }
-        self.pos = if self.pos + 1 == LEN { 0 } else { self.pos + 1 };
-        self.written = (self.written + 1).min(LEN);
+        self.pos = if self.pos + 1 == self.len {
+            0
+        } else {
+            self.pos + 1
+        };
+        self.written = (self.written + 1).min(self.len);
     }
 
     /// Line `k` `back` samples before the newest one (`back` = 0, at most
-    /// `LEN - 2`), linearly interpolated.
+    /// `len - 2`), linearly interpolated.
     #[inline]
     pub(crate) fn read(&self, k: usize, back: f32) -> f32 {
         let whole = back as usize;
@@ -57,9 +73,9 @@ impl<const LEN: usize, const K: usize> DelayLines<LEN, K> {
         let i = if self.pos >= d {
             self.pos - d
         } else {
-            self.pos + LEN - d
+            self.pos + self.len - d
         };
-        self.lines[k][i]
+        self.samples[k * self.len + i]
     }
 }
 
@@ -67,18 +83,13 @@ impl<const LEN: usize, const K: usize> DelayLines<LEN, K> {
 mod tests {
     use super::*;
 
-    fn lines<const LEN: usize>() -> Box<DelayLines<LEN, 2>> {
-        let mut lines = Box::<DelayLines<LEN, 2>>::new_uninit();
-        // SAFETY: a valid place, fully initialized by `write_new`.
-        unsafe {
-            DelayLines::write_new(lines.as_mut_ptr());
-            lines.assume_init()
-        }
+    fn lines(len: usize) -> DelayLines<2> {
+        DelayLines::new(len)
     }
 
     #[test]
     fn reads_back_interpolates_and_wraps() {
-        let mut d = lines::<8>();
+        let mut d = lines(8);
         for i in 0..20 {
             d.push([i as f32, -(i as f32)]);
         }
@@ -90,7 +101,7 @@ mod tests {
 
     #[test]
     fn clearing_silences_the_old_samples() {
-        let mut d = lines::<8>();
+        let mut d = lines(8);
         for _ in 0..8 {
             d.push([1.0, 1.0]);
         }

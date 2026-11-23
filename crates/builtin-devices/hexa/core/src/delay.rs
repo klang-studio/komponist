@@ -8,13 +8,13 @@
 //!
 //! Changing the time glides the read position (smoothed), which bends the
 //! pitch of the echoes briefly instead of clicking. The lines are sized for
-//! [`MAX_TIME`] at [`MAX_SAMPLE_RATE`] (above it the longest times get
-//! shorter); nothing is allocated.
+//! [`MAX_TIME`] at the sample rate the delay is built for; nothing is
+//! allocated while it runs.
 
 use klang_dsp::one_pole::time_coeff;
 
 use crate::delay_line::DelayLines;
-use crate::effects::{DryWet, Effect, MAX_SAMPLE_RATE, one_pole, sweep};
+use crate::effects::{DryWet, Effect, one_pole, sweep};
 use crate::smooth::chase;
 
 /// Ranges of [`DelayParams`].
@@ -22,9 +22,11 @@ pub const MIN_TIME: f32 = 0.01;
 pub const MAX_TIME: f32 = 2.0;
 pub const MAX_FEEDBACK: f32 = 0.95;
 
-/// Samples per line, enough for [`MAX_TIME`] at [`MAX_SAMPLE_RATE`] plus the
+/// Samples per line at `rate`: enough for [`MAX_TIME`] plus the
 /// interpolation.
-const LINE: usize = (MAX_TIME * MAX_SAMPLE_RATE) as usize + 4;
+fn line_len(rate: f32) -> usize {
+    (MAX_TIME * rate) as usize + 4
+}
 
 /// Damping 0..1 moves the feedback low-pass cutoff from this ...
 const DAMPING_MAX_HZ: f32 = 20_000.0;
@@ -83,7 +85,7 @@ impl Default for DelayParams {
 
 /// State of the delay.
 pub(crate) struct Delay {
-    lines: DelayLines<LINE, 2>,
+    lines: DelayLines<2>,
     /// Current delay in samples (gliding towards the set time).
     delay: f32,
     /// Smoothed feedback, chasing the patch value once per block.
@@ -95,7 +97,7 @@ pub(crate) struct Delay {
 
 impl Delay {
     /// Writes a silent delay for `sample_rate` to `this` without building it
-    /// on the stack (it is about 1.5 MB).
+    /// on the stack. Allocates the lines (about 1.5 MB at 96 kHz).
     ///
     /// # Safety
     /// `this` must be valid for writes and suitably aligned.
@@ -104,7 +106,7 @@ impl Delay {
         let d = DelayParams::DEFAULT;
         // SAFETY: guaranteed by the caller.
         unsafe {
-            DelayLines::write_new(core::ptr::addr_of_mut!((*this).lines));
+            core::ptr::addr_of_mut!((*this).lines).write(DelayLines::new(line_len(rate)));
             core::ptr::addr_of_mut!((*this).delay).write(d.time * rate);
             core::ptr::addr_of_mut!((*this).feedback).write(d.feedback);
             core::ptr::addr_of_mut!((*this).damp_state).write([0.0; 2]);
@@ -114,7 +116,7 @@ impl Delay {
 
     /// The delay of `params` in samples, within the line.
     fn target(&self, params: &DelayParams) -> f32 {
-        (params.time * self.rate).clamp(1.0, (LINE - 3) as f32)
+        (params.time * self.rate).clamp(1.0, (self.lines.len() - 3) as f32)
     }
 }
 

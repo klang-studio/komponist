@@ -60,7 +60,7 @@ komponist-plugins = { path = "crates/komponist-plugins" }
 komponist-bridge = { path = "crates/komponist-bridge" }
 komponist-ui = { path = "crates/komponist-ui" }
 komponist-i18n = { path = "crates/komponist-i18n" }
-hexa-core = { path = "crates/builtin-devices/hexa/core", features = ["alloc", "serde"] }
+hexa-core = { path = "crates/builtin-devices/hexa/core", features = ["serde"] }
 # The Sampler's RT engine, vendored from klopfer's `dsp` crate (WP-87).
 sampler-core = { path = "crates/builtin-devices/sampler-shared/core" }
 

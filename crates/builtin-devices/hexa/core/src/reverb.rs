@@ -8,15 +8,18 @@
 //! comes from the tank itself. The delay lengths are Dattorro's (given at
 //! 29761 Hz) scaled to the sample rate.
 //!
-//! All delay lines share one fixed buffer sized for [`MAX_SAMPLE_RATE`]
-//! (above it the reverb gets shorter and smaller);
-//! nothing is allocated. Parameters change per block, see [`Effects`].
+//! All delay lines share one buffer, sized for the sample rate the reverb is
+//! built for; nothing is allocated while it runs. Parameters change per
+//! block, see [`Effects`].
 //!
 //! [`Effects`]: crate::effects::Effects
 
 use core::f32::consts::TAU;
 
-use crate::effects::{DryWet, Effect, MAX_SAMPLE_RATE, one_pole, sweep};
+use alloc::boxed::Box;
+use alloc::vec;
+
+use crate::effects::{DryWet, Effect, one_pole, sweep};
 use crate::smooth::chase;
 
 /// Ranges of [`ReverbParams`].
@@ -74,35 +77,6 @@ const DAMPING_MAX_HZ: f32 = 20_000.0;
 const DAMPING_MIN_HZ: f32 = 600.0;
 /// Keeps the tank above the denormal range when the input is silent.
 const ANTI_DENORMAL: f32 = 1e-20;
-
-/// Length of a Dattorro delay of `n` samples at [`MAX_SAMPLE_RATE`], plus room
-/// for the modulation and rounding.
-const fn max_len(n: usize) -> usize {
-    (n as f32 * (MAX_SAMPLE_RATE / DATTORRO_RATE)) as usize + 2
-}
-
-const fn memory_size() -> usize {
-    let mut total = max_len((MAX_PRE_DELAY * DATTORRO_RATE) as usize) + 1;
-    let mut i = 0;
-    while i < INPUT_DIFFUSERS.len() {
-        total += max_len(INPUT_DIFFUSERS[i].0);
-        i += 1;
-    }
-    let mut half = 0;
-    while half < 2 {
-        let mut j = 0;
-        while j < 4 {
-            total += max_len(TANK[half][j]);
-            j += 1;
-        }
-        total += max_len(EXCURSION as usize) + 2;
-        half += 1;
-    }
-    total
-}
-
-/// Samples of all delay lines together.
-const MEMORY: usize = memory_size();
 
 /// Patch parameters of the reverb.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -229,7 +203,8 @@ pub(crate) struct ReverbCoefs {
 
 /// State of the reverb: delay lines, filters and modulation.
 pub(crate) struct Reverb {
-    memory: [f32; MEMORY],
+    /// All delay lines, one after the other.
+    memory: Box<[f32]>,
     pre_delay: Line,
     diffusers: [Line; 4],
     /// Per half: modulated allpass, delay, allpass, delay.
@@ -255,12 +230,12 @@ pub(crate) struct Reverb {
 
 impl Reverb {
     /// Writes a silent reverb for `sample_rate` to `this` without building it
-    /// on the stack (it is several hundred KB).
+    /// on the stack (about 0.4 MB at 96 kHz).
     ///
     /// # Safety
     /// `this` must be valid for writes and suitably aligned.
     pub(crate) unsafe fn write_new(this: *mut Self, sample_rate: f32) {
-        let rate = sample_rate.clamp(1.0, MAX_SAMPLE_RATE);
+        let rate = sample_rate.max(1.0);
         let scale = rate / DATTORRO_RATE;
         let scaled = |n: usize| ((n as f32 * scale) as usize).max(1);
         let mut next = 0;
@@ -285,13 +260,12 @@ impl Reverb {
             lines[0].len += excursion as usize + 2;
             lines.map(|l| line(l.len))
         });
-        debug_assert!(next <= MEMORY);
         let taps = TAPS.map(|side| side.map(|(_, _, n, _)| scaled(n)));
         let step = TAU * MOD_HZ / rate;
         let mod_centre = TANK.map(|half| scaled(half[0]) as f32);
         // SAFETY: guaranteed by the caller; the memory is written in place.
         unsafe {
-            core::ptr::addr_of_mut!((*this).memory).write_bytes(0, 1);
+            core::ptr::addr_of_mut!((*this).memory).write(vec![0.0; next].into_boxed_slice());
             core::ptr::addr_of_mut!((*this).pre_delay).write(pre_delay);
             core::ptr::addr_of_mut!((*this).diffusers).write(diffusers);
             core::ptr::addr_of_mut!((*this).tank).write(tank);

@@ -2257,9 +2257,9 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 name = "hexa-core"
 version = "0.2.0"
 dependencies = [
+ "assert_no_alloc",
  "klang-dsp",
  "libm",
- "postcard",
  "serde",
 ]
 
