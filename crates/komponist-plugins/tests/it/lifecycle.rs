@@ -971,6 +971,179 @@ fn watchdog_kills_a_hanging_bridge() {
     rig.wait_status(10, DeviceStatus::Ok);
 }
 
+/// The test name the plugin manager runs as its bridge in
+/// [`a_bridge_stalled_mid_frame_blocks_no_poll_and_is_killed`].
+#[cfg(unix)]
+const STALLING_BRIDGE: &str = "lifecycle::stalling_bridge_entry";
+
+/// A fake bridge that stops in the middle of a frame (#216): this test binary, started by the
+/// plugin manager as `<test> lifecycle::stalling_bridge_entry --exact … -- --instance --control-fd
+/// N` (libtest takes everything after `--` as name filters, so only this test runs). It plays the
+/// start-up protocol, answers two `Ping`s, then writes the header and one payload byte of a
+/// `Pong` and stops itself (`SIGSTOP`). In an ordinary test run it does nothing.
+#[cfg(unix)]
+#[test]
+fn stalling_bridge_entry() {
+    use komponist_ipc::{BridgeChannel, BridgeMsg, ControlMsg, LoadedInfo, PluginDescriptor};
+    use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+
+    let args: Vec<String> = std::env::args().collect();
+    let Some(at) = args.iter().position(|arg| arg == "--control-fd") else {
+        return;
+    };
+    let fd: i32 = args[at + 1].parse().expect("fd number");
+    // SAFETY: the plugin manager made this inherited fd ours, and nothing else owns it.
+    let channel = BridgeChannel::from_fd(unsafe { OwnedFd::from_raw_fd(fd) });
+    let send = |msg: BridgeMsg| {
+        if channel.send(&msg).is_err() {
+            std::process::exit(0);
+        }
+    };
+    send(BridgeMsg::Hello {
+        protocol: komponist_ipc::control::PROTOCOL_VERSION,
+        pid: std::process::id(),
+    });
+    let Ok(_region) = channel.recv_fd() else {
+        std::process::exit(0);
+    };
+    let mut pongs = 0;
+    loop {
+        match channel.recv() {
+            Ok(ControlMsg::Load { bundle, .. }) => send(BridgeMsg::Loaded(Box::new(LoadedInfo {
+                descriptor: PluginDescriptor {
+                    format: komponist_ipc::PluginFormat::Clap,
+                    id: SYNTH.into(),
+                    name: "kp-test-synth".into(),
+                    vendor: "klang-studio".into(),
+                    version: "0.1.0".into(),
+                    kind: komponist_ipc::PluginKind::Instrument,
+                    features: Vec::new(),
+                    bundle,
+                    sidechain: false,
+                },
+                params: Vec::new(),
+                values: Vec::new(),
+                latency: 0,
+                note_names: Vec::new(),
+                has_gui: false,
+                native_layout: None,
+            }))),
+            Ok(ControlMsg::Activate { .. }) => send(BridgeMsg::Activated { latency: 0 }),
+            Ok(ControlMsg::Ping { seq }) if pongs < 2 => {
+                pongs += 1;
+                send(BridgeMsg::Pong { seq });
+            }
+            Ok(ControlMsg::Ping { .. }) => {
+                // A frame header announcing a 5-byte message (tag `TAG_LAST`, u24 length, u32
+                // total), and one byte of it.
+                let partial = [0, 5, 0, 0, 5, 0, 0, 0, 0];
+                let written = rustix::io::write(channel.as_fd(), &partial).expect("write");
+                assert_eq!(written, partial.len());
+                rustix::process::kill_process(
+                    rustix::process::getpid(),
+                    rustix::process::Signal::STOP,
+                )
+                .expect("SIGSTOP");
+                // Only a kill ends a stopped process; should it ever go on, it stays silent.
+                loop {
+                    std::thread::park();
+                }
+            }
+            Ok(_) => {}
+            Err(_) => std::process::exit(0),
+        }
+    }
+}
+
+/// #216: a bridge frozen in the middle of a frame holds up no `poll` of the plugin manager (the UI
+/// thread), and the watchdog still finds it unresponsive and kills it.
+#[cfg(unix)]
+#[test]
+fn a_bridge_stalled_mid_frame_blocks_no_poll_and_is_killed() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let dir = scratch("stalled-mid-frame");
+    // The real bridge scans the fixtures into the cache file; the manager under test reads the
+    // catalog from it and starts the fake bridge.
+    let Some(scanner) = scanned_manager(&dir) else {
+        return;
+    };
+    drop(scanner);
+    let mut config = config(&dir);
+    config.bridge_exe = std::env::current_exe().unwrap();
+    config.bridge_args = [
+        STALLING_BRIDGE,
+        "--exact",
+        "--nocapture",
+        "--test-threads=1",
+        "--",
+    ]
+    .map(Into::into)
+    .to_vec();
+    let mut manager = PluginManager::new(config);
+    manager.set_watchdog_timing(Duration::from_millis(50), Duration::from_millis(500));
+    manager.set_warm_up(Duration::ZERO);
+
+    // A `poll` that blocks on the frozen bridge never returns: fail loudly instead of hanging.
+    let done = Arc::new(AtomicBool::new(false));
+    let guard = done.clone();
+    std::thread::spawn(move || {
+        let t0 = Instant::now();
+        while t0.elapsed() < 2 * PATIENCE {
+            if guard.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        eprintln!("a_bridge_stalled_mid_frame_blocks_no_poll_and_is_killed: poll blocked");
+        std::process::exit(101);
+    });
+
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let _processor = manager
+        .create_processor(&synth, SETUP)
+        .expect("start the fake bridge");
+    let pid = manager.bridge_pid(DeviceId(10)).unwrap();
+    let deadline = Instant::now() + PATIENCE;
+    let mut longest = Duration::ZERO;
+    let mut events = Vec::new();
+    let mut detected = None;
+    let mut ok_at = None;
+    while detected.is_none() {
+        assert!(Instant::now() < deadline, "not killed; events {events:?}");
+        let t0 = Instant::now();
+        events.extend(manager.poll());
+        longest = longest.max(t0.elapsed());
+        match manager.status(DeviceId(10)) {
+            DeviceStatus::Ok if ok_at.is_none() => ok_at = Some(Instant::now()),
+            DeviceStatus::Crashed(reason) => detected = Some((reason, ok_at)),
+            _ => {}
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (reason, ok_at) = detected.unwrap();
+    assert!(
+        ok_at.is_some(),
+        "the fake bridge never ran; events {events:?}"
+    );
+    assert_eq!(reason, FailReason::Unresponsive);
+    eprintln!(
+        "stalled mid-frame: detected after {:.1?}, longest poll {longest:.1?}",
+        ok_at.unwrap().elapsed()
+    );
+    assert!(
+        longest < Duration::from_millis(250),
+        "a poll took {longest:?}"
+    );
+    let t0 = Instant::now();
+    while alive(pid) {
+        assert!(t0.elapsed() < PATIENCE, "the stopped bridge was not killed");
+        manager.poll();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    done.store(true, Ordering::Relaxed);
+}
+
 #[test]
 fn release_shutdown_and_drop_end_the_bridges() {
     let dir = scratch("shutdown");

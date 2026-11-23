@@ -654,7 +654,11 @@ instrument bridges start early while other tracks run. Offline requests use a lo
 
 Bridge RT scheduling uses SCHED_FIFO, macOS time constraints with an audio work interval, or
 Windows MMCSS. Failure is reported as a realtime warning. The main loop answers heartbeats;
-crashed or stalled instances can be reloaded from their last state. Snapshots are collected on
+crashed or stalled instances can be reloaded from their last state. The app never waits for a
+control message that has not arrived: each channel keeps the partial frame and the fragments of
+a large message between reads, and a message that has begun to arrive is read on for at most a
+short budget per poll, so a bridge frozen mid-message cannot hold up the UI thread or the
+watchdog. Snapshots are collected on
 save, GUI close and debounced dirty notifications. Bridge exit suppresses plugin teardown code
 that could run after unloading. Scan stdout is isolated from plugin output to preserve JSON.
 

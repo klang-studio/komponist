@@ -199,6 +199,14 @@ impl StateRestore {
     }
 }
 
+/// How long one [`Bridge::read_messages`] may wait for the rest of a message that has begun to
+/// arrive (#216). A large state streams through a socket buffer of about 256 KiB: read only what
+/// is queued at each poll (every 100 ms when the app is idle), a state of tens of MiB would take
+/// seconds and hold the bridge's main thread in `send` past its `Pong` timeout. Within this
+/// budget it moves at socket speed; a bridge stalled mid-message costs one budget per poll until
+/// the watchdog kills it.
+const READ_BUDGET: Duration = Duration::from_millis(10);
+
 /// One bridge process and everything the manager knows about its plugin.
 #[derive(Debug)]
 pub(crate) struct Bridge {
@@ -956,14 +964,18 @@ impl Bridge {
         self.watchdog(now, events);
     }
 
-    /// Reads every queued control message (bounded per call).
+    /// Reads every queued control message (bounded per call). Never waits for a message that
+    /// has not begun to arrive; one that has is read on while its bytes keep coming, for at most
+    /// [`READ_BUDGET`] per call, so a bridge that stalls in the middle of a message cannot hold
+    /// up the UI thread or the watchdog after this (#216).
     pub(crate) fn read_messages(
         &mut self,
         events: &mut Vec<PluginManagerEvent>,
         collected: &mut Vec<Collected>,
     ) {
+        let deadline = Instant::now() + READ_BUDGET;
         for _ in 0..256 {
-            match self.channel.try_recv() {
+            match self.channel.try_recv_until(deadline) {
                 Ok(Some(msg)) => self.handle(msg, events, collected),
                 Ok(None) => return,
                 // The process is about to be reported as exited (or was killed).
