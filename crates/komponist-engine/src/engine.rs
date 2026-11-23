@@ -337,6 +337,9 @@ pub struct Engine {
     render_l: Box<[f32]>,
     render_r: Box<[f32]>,
     render_out: Box<[f32]>,
+    /// Set while a `process` or `render` call runs; still set afterwards when the call unwound
+    /// (a panic, #210). See [`Engine::is_poisoned`].
+    poisoned: bool,
 }
 
 impl Engine {
@@ -416,6 +419,7 @@ impl Engine {
             render_l: vec![0.0; MAX_BLOCK].into_boxed_slice(),
             render_r: vec![0.0; MAX_BLOCK].into_boxed_slice(),
             render_out: vec![0.0; 2 * MAX_BLOCK].into_boxed_slice(),
+            poisoned: false,
         });
         let handle = EngineHandle {
             commands: command_tx,
@@ -664,7 +668,24 @@ impl Engine {
         audio: &AudioInputBuffer<'_>,
         macros: &[MacroInput],
     ) {
-        self.core.run(out_l, out_r, input, audio, macros, false);
+        run_unless_poisoned(
+            &mut self.core,
+            &mut self.poisoned,
+            [out_l, out_r],
+            input,
+            audio,
+            macros,
+            false,
+        );
+    }
+
+    /// Whether a [`Engine::process`] or [`Engine::render`] call unwound in the middle (a panic in
+    /// a processor or the engine, #210). Its state is half-updated then (track states, delay
+    /// lines, the transport, queued events), so the engine only outputs silence from then on and
+    /// must not be reused: the app drops it and builds a new one from the document. The worker
+    /// pool is sound (a panicking batch finishes before it unwinds), so dropping it is safe.
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
     }
 
     /// RT-safe, for offline use. Processes `frames` (1 ..= [`crate::MAX_BLOCK`]) frames with
@@ -681,8 +702,16 @@ impl Engine {
             midi: &[],
             output_latency: 0,
         };
-        self.core
-            .run(l, r, &input, &AudioInputBuffer::empty(), &[], true);
+        let empty = AudioInputBuffer::empty();
+        run_unless_poisoned(
+            &mut self.core,
+            &mut self.poisoned,
+            [&mut *l, &mut *r],
+            &input,
+            &empty,
+            &[],
+            true,
+        );
         let out = &mut self.render_out[..2 * frames];
         let (frames_out, _) = out.as_chunks_mut::<2>();
         for (frame, (l, r)) in frames_out.iter_mut().zip(l.iter().zip(r.iter())) {
@@ -691,6 +720,27 @@ impl Engine {
         }
         out
     }
+}
+
+/// RT. One call of [`Core::run`], or silence once the engine is poisoned ([`Engine::is_poisoned`]).
+fn run_unless_poisoned(
+    core: &mut Core,
+    poisoned: &mut bool,
+    [out_l, out_r]: [&mut [f32]; 2],
+    input: &LiveInput<'_>,
+    audio: &AudioInputBuffer<'_>,
+    macros: &[MacroInput],
+    offline: bool,
+) {
+    if *poisoned {
+        out_l.fill(0.0);
+        out_r.fill(0.0);
+        return;
+    }
+    // Stays set if `Core::run` unwinds.
+    *poisoned = true;
+    core.run(out_l, out_r, input, audio, macros, offline);
+    *poisoned = false;
 }
 
 impl Drop for Engine {
