@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::{Deserialize, Serialize};
 
-use crate::{AudioError, DeviceId, HostKind};
+use crate::{AudioError, DeviceId, HostKind, StreamStats};
 
 /// Maximum channels accepted from a capture device (bounds callback memory and work).
 pub const MAX_INPUT_CHANNELS: usize = 64;
@@ -223,6 +223,9 @@ struct Frame {
 
 struct Shared {
     dropped: AtomicU64,
+    /// Overruns the capture device reported (cpal `Xrun`). The producer turns each new one into a
+    /// sequence break, so the reader marks a discontinuity where the lost frames were.
+    xruns: AtomicU64,
     lost: AtomicBool,
     enabled: AtomicBool,
     burst_start: AtomicU64,
@@ -233,6 +236,7 @@ impl Default for Shared {
     fn default() -> Self {
         Self {
             dropped: AtomicU64::new(0),
+            xruns: AtomicU64::new(0),
             lost: AtomicBool::new(false),
             enabled: AtomicBool::new(false),
             burst_start: AtomicU64::new(NO_BURST),
@@ -265,6 +269,8 @@ pub struct TestAudioSource {
     rate: u32,
     sequence: u64,
     queued_frames: u64,
+    /// The device xrun count already turned into a sequence break.
+    seen_xruns: u64,
     shared: Arc<Shared>,
 }
 
@@ -281,6 +287,13 @@ impl TestAudioSource {
     {
         if samples.len() < self.channels {
             return true;
+        }
+        // Frames the device lost in an overrun never reach the queue. Skip a sequence number so
+        // the reader sees the break between the last frame before it and the first one after.
+        let xruns = self.shared.xruns.load(Ordering::Acquire);
+        if xruns != self.seen_xruns {
+            self.seen_xruns = xruns;
+            self.sequence = self.sequence.wrapping_add(1);
         }
         let first_frame = self.queued_frames;
         let complete = self.enqueue(samples, at);
@@ -320,6 +333,12 @@ impl TestAudioSource {
     /// Total source frames that did not fit in the bounded queue.
     pub fn dropped(&self) -> u64 {
         self.shared.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Any thread. The device reported an overrun, as the capture stream's error callback does
+    /// for cpal `Xrun`: the next pushed frame starts after a discontinuity.
+    pub fn report_xrun(&self) {
+        self.shared.xruns.fetch_add(1, Ordering::AcqRel);
     }
 }
 
@@ -363,6 +382,7 @@ pub fn test_input(
             rate,
             sequence: 0,
             queued_frames: 0,
+            seen_xruns: 0,
             shared: shared.clone(),
         },
         InputReader {
@@ -828,8 +848,10 @@ impl CaptureStream {
         output_rate: u32,
         buffer: u32,
         duplex_device: Option<&cpal::Device>,
+        stats: Arc<StreamStats>,
     ) -> Result<(Self, InputReader), AudioError> {
-        let (capture, reader) = Self::prepare(kind, selection, output_rate, buffer, duplex_device)?;
+        let (capture, reader) =
+            Self::prepare(kind, selection, output_rate, buffer, duplex_device, stats)?;
         capture.enable();
         capture.play()?;
         Ok((capture, reader))
@@ -841,6 +863,7 @@ impl CaptureStream {
         output_rate: u32,
         buffer: u32,
         duplex_device: Option<&cpal::Device>,
+        stats: Arc<StreamStats>,
     ) -> Result<(Self, InputReader), AudioError> {
         let host = crate::backend::host(kind)?;
         let open_default = |device: cpal::Device| -> Result<_, AudioError> {
@@ -895,10 +918,12 @@ impl CaptureStream {
         let shared = reader.shared.clone();
         let format = config.sample_format();
         let stream_config = config.config();
+        let callback = CaptureCallback { source };
+        let errors = (shared.clone(), stats);
         let stream = match format {
-            cpal::SampleFormat::F32 => build::<f32>(&device, stream_config, source, shared.clone()),
-            cpal::SampleFormat::I32 => build::<i32>(&device, stream_config, source, shared.clone()),
-            cpal::SampleFormat::I16 => build::<i16>(&device, stream_config, source, shared.clone()),
+            cpal::SampleFormat::F32 => build::<f32>(&device, stream_config, callback, errors),
+            cpal::SampleFormat::I32 => build::<i32>(&device, stream_config, callback, errors),
+            cpal::SampleFormat::I16 => build::<i16>(&device, stream_config, callback, errors),
             _ => {
                 return Err(AudioError::UnsupportedConfig(format!(
                     "capture sample format {format}"
@@ -916,40 +941,68 @@ impl CaptureStream {
     }
 }
 
+/// The capture device's data callback.
+struct CaptureCallback {
+    source: TestAudioSource,
+}
+
+impl CaptureCallback {
+    /// RT. Queues one device buffer whose first frame is `age` old at callback entry. Runs inside
+    /// `assert_no_alloc`, which reports allocations in debug builds of binaries that install its
+    /// allocator.
+    fn run<T>(&mut self, data: &[T], age: Duration)
+    where
+        T: cpal::Sample + Copy,
+        f32: cpal::FromSample<T>,
+    {
+        assert_no_alloc::assert_no_alloc(|| {
+            if !self.source.shared.enabled.load(Ordering::Acquire) {
+                return;
+            }
+            let now = Instant::now();
+            let at = now.checked_sub(age).unwrap_or(now);
+            self.source.push_typed(data, at);
+        });
+    }
+}
+
+/// The capture stream's error callback. Overruns and refused real-time promotion may arrive on the
+/// audio thread: atomics only. An overrun lost frames: it is counted and becomes a discontinuity
+/// in the captured stream. Every other error ends the capture.
+fn on_capture_error(shared: &Shared, stats: &StreamStats, error: &cpal::Error) {
+    match error.kind() {
+        cpal::ErrorKind::Xrun => {
+            stats.record_input_xrun();
+            shared.xruns.fetch_add(1, Ordering::AcqRel);
+        }
+        cpal::ErrorKind::RealtimeDenied => {}
+        _ => shared.lost.store(true, Ordering::Release),
+    }
+}
+
 fn build<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
-    mut source: TestAudioSource,
-    shared: Arc<Shared>,
+    mut callback: CaptureCallback,
+    (shared, stats): (Arc<Shared>, Arc<StreamStats>),
 ) -> Result<cpal::Stream, AudioError>
 where
     T: cpal::SizedSample + Copy,
     f32: cpal::FromSample<T>,
 {
-    let active = Arc::clone(&shared);
     device
         .build_input_stream::<T, _, _>(
             config,
             move |data, info| {
-                if !active.enabled.load(Ordering::Acquire) {
-                    return;
-                }
                 let timestamp = info.timestamp();
-                let age = timestamp
-                    .callback
-                    .saturating_duration_since(timestamp.capture);
-                let now = Instant::now();
-                let at = now.checked_sub(age).unwrap_or(now);
-                source.push_typed(data, at);
+                callback.run(
+                    data,
+                    timestamp
+                        .callback
+                        .saturating_duration_since(timestamp.capture),
+                );
             },
-            move |error| {
-                if !matches!(
-                    error.kind(),
-                    cpal::ErrorKind::RealtimeDenied | cpal::ErrorKind::Xrun
-                ) {
-                    shared.lost.store(true, Ordering::Release);
-                }
-            },
+            move |error| on_capture_error(&shared, &stats, &error),
             Some(Duration::from_secs(3)),
         )
         .map_err(crate::backend::map_err)
@@ -1046,6 +1099,92 @@ mod tests {
         });
         assert_eq!(out[15], 0.0);
     }
+    /// A device overrun loses frames before they reach the queue. The take must not be
+    /// concatenated across that gap (ARCHITECTURE §7), and the overrun is counted.
+    #[test]
+    fn an_input_xrun_marks_a_discontinuity_where_frames_were_lost() {
+        let stats = StreamStats::new();
+        let (mut source, mut reader) = test_input(1, 48_000, 64).unwrap();
+        let at = Instant::now();
+        let ramp: Vec<f32> = (0..32).map(|i| i as f32).collect();
+        assert!(source.push(&ramp, at));
+        let mut out = [0.0; 8];
+        assert!(!reader.read(&mut out, 48_000, at).discontinuous());
+
+        // The device callback runs again after the overrun with the frames that followed it.
+        on_capture_error(
+            &source.shared,
+            &stats,
+            &cpal::Error::new(cpal::ErrorKind::Xrun),
+        );
+        assert_eq!(stats.input_xruns(), 1);
+        assert_eq!(stats.xruns(), 0, "the output did not run late");
+        let later: Vec<f32> = (100..116).map(|i| i as f32).collect();
+        assert!(source.push(&later, at));
+        let mut breaks = Vec::new();
+        let mut out = [0.0; 8];
+        for _ in 0..4 {
+            let input = assert_no_alloc(|| reader.read(&mut out, 48_000, at));
+            breaks.push(input.discontinuous());
+        }
+        // Frames 8 .. 24 lie well before the overrun. The read that would interpolate from
+        // frame 31 to frame 100 (the clock follower may look one frame ahead) reports the gap.
+        assert_eq!(breaks[..2], [false, false]);
+        assert!(breaks[2..].contains(&true), "{breaks:?}");
+        assert!(out[7] >= 100.0, "{out:?}");
+        assert!(!reader.lost());
+
+        // Refused real-time scheduling is neither an overrun nor a loss; other errors end capture.
+        on_capture_error(
+            &source.shared,
+            &stats,
+            &cpal::Error::new(cpal::ErrorKind::RealtimeDenied),
+        );
+        assert_eq!(stats.input_xruns(), 1);
+        assert!(!reader.lost());
+        on_capture_error(
+            &source.shared,
+            &stats,
+            &cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable),
+        );
+        assert!(reader.lost());
+    }
+
+    #[test]
+    fn a_reported_xrun_breaks_the_sequence_only_once() {
+        let (mut source, mut reader) = test_input(1, 48_000, 64).unwrap();
+        let at = Instant::now();
+        source.report_xrun();
+        source.report_xrun();
+        assert!(source.push(&[0.5; 16], at));
+        assert!(source.push(&[0.5; 16], at));
+        let mut out = [0.0; 32];
+        // Both overruns happened before the first frame: nothing earlier to break from.
+        assert!(!reader.read(&mut out, 48_000, at).discontinuous());
+        assert_eq!(out, [0.5; 32]);
+    }
+
+    /// The device callback itself runs inside `assert_no_alloc` (as the output and JACK
+    /// callbacks do), converts the device format and stays silent until enabled.
+    #[test]
+    fn the_capture_callback_is_rt_checked_and_waits_for_enable() {
+        let (source, mut reader) = test_input(2, 48_000, 64).unwrap();
+        let shared = Arc::clone(&source.shared);
+        let mut callback = CaptureCallback { source };
+        let device = [i16::MAX, i16::MIN].repeat(16);
+        callback.run(&device, Duration::from_millis(2));
+        assert_eq!(reader.rx.slots(), 0, "not enabled yet");
+        shared.enabled.store(true, Ordering::Release);
+        callback.run(&device, Duration::from_millis(2));
+        assert_eq!(reader.rx.slots(), 16);
+        let mut out = [0.0; 32];
+        let input = reader.read(&mut out, 48_000, Instant::now());
+        assert!(!input.discontinuous());
+        assert!(input.latency() >= Duration::from_millis(2));
+        assert!((input.sample(0, 0) - 1.0).abs() < 1e-3);
+        assert_eq!(input.sample(1, 0), -1.0);
+    }
+
     #[test]
     fn a_returning_input_replaces_capture_at_the_next_callback_without_rt_drops() {
         let (_, original) = test_input(1, 48_000, 16).unwrap();
