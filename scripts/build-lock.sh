@@ -13,7 +13,11 @@
 
 _kp_lock_base="${XDG_RUNTIME_DIR:-/tmp}/komponist-build"
 
-if command -v flock >/dev/null 2>&1; then
+if [ -n "${KOMPONIST_BUILD_LOCK_HELD:-}" ]; then
+    # A script that holds the lock started this one (check.sh runs check-warp-compat.sh): waiting for
+    # the lock again would deadlock.
+    :
+elif command -v flock >/dev/null 2>&1; then
     exec 9>"$_kp_lock_base.lock"
     if ! flock -n 9; then
         echo "waiting for the build lock (another worktree is building) …" >&2
@@ -51,6 +55,9 @@ else
     trap 'exit 130' INT
     trap 'exit 143' TERM
 fi
+
+# Children that source this file (check.sh -> check-warp-compat.sh) must not wait for the lock their parent holds.
+export KOMPONIST_BUILD_LOCK_HELD=1
 
 lowprio() {
     if command -v ionice >/dev/null 2>&1; then
