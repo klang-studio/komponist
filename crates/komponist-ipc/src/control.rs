@@ -66,6 +66,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsHandle, BorrowedHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -624,6 +625,10 @@ pub struct Channel<Tx, Rx> {
     pipe: OwnedHandle,
     /// What has arrived of the next frame and message (one receiver at a time).
     rx: Mutex<Receiver>,
+    /// The base of `received`.
+    epoch: Instant,
+    /// When bytes last arrived: nanoseconds since `epoch` plus one; 0 before the first.
+    received: AtomicU64,
     _msgs: PhantomData<fn(Tx) -> Rx>,
 }
 
@@ -1121,6 +1126,8 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
         Channel {
             fd,
             rx: Mutex::new(Receiver::new()),
+            epoch: Instant::now(),
+            received: AtomicU64::new(0),
             _msgs: PhantomData,
         }
     }
@@ -1132,6 +1139,8 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
         Channel {
             pipe,
             rx: Mutex::new(Receiver::new()),
+            epoch: Instant::now(),
+            received: AtomicU64::new(0),
             _msgs: PhantomData,
         }
     }
@@ -1216,6 +1225,32 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
             }
             self.wait_readable(deadline - now)?;
         }
+    }
+
+    /// When bytes last arrived on this end (by any receive call); `None` before the first. A
+    /// poll loop that reads a large message over many calls uses it as the peer's liveness:
+    /// a reply queued behind that message cannot be read before it, but its bytes keep coming.
+    pub fn last_received(&self) -> Option<Instant> {
+        match self.received.load(Ordering::Relaxed) {
+            0 => None,
+            n => Some(self.epoch + Duration::from_nanos(n - 1)),
+        }
+    }
+
+    /// Whether part of a frame or message has arrived and waits for the rest (or another thread
+    /// is inside a receive on this end).
+    pub fn is_receiving(&self) -> bool {
+        match self.rx.try_lock() {
+            Ok(rx) => rx.in_progress(),
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().in_progress(),
+            Err(TryLockError::WouldBlock) => true,
+        }
+    }
+
+    /// Records that bytes arrived now.
+    fn note_received(&self) {
+        let nanos = u64::try_from(self.epoch.elapsed().as_nanos()).unwrap_or(u64::MAX - 1);
+        self.received.store(nanos + 1, Ordering::Relaxed);
     }
 
     /// The receive state, for a blocking receive.
@@ -1516,6 +1551,7 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
                 if got == 0 {
                     return Ok(None);
                 }
+                self.note_received();
                 rx.discard -= got;
                 if rx.discard == 0 {
                     rx.incoming = Incoming::default();
@@ -1549,6 +1585,7 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
             if got == 0 {
                 return Ok(None);
             }
+            self.note_received();
             rx.filled += got;
             if rx.filled == FRAME_HEADER {
                 let len = payload_len(&rx.buf);
@@ -2496,6 +2533,33 @@ mod tests {
                 );
             },
         );
+    }
+
+    /// `last_received` moves with every read, also in the middle of a message, and
+    /// `is_receiving` says whether a message waits for the rest.
+    #[test]
+    fn progress_is_reported_in_the_middle_of_a_message() {
+        let (app, bridge) = pair();
+        assert_eq!(bridge.last_received(), None);
+        assert!(!bridge.is_receiving());
+        let wire = frames_of(&ControlMsg::SetState {
+            request: 1,
+            state: vec![3; 2 * MAX_FRAME],
+        });
+        raw_send(&app, &wire[..MAX_FRAME + 4]);
+        let t0 = Instant::now();
+        assert_eq!(bridge.try_recv().unwrap(), None);
+        let first = bridge.last_received().expect("bytes arrived");
+        assert!(first >= t0);
+        assert!(bridge.is_receiving());
+        std::thread::sleep(Duration::from_millis(5));
+        raw_send(&app, &wire[MAX_FRAME + 4..MAX_FRAME + 9]);
+        assert_eq!(bridge.try_recv().unwrap(), None);
+        assert!(bridge.last_received().unwrap() > first);
+        assert!(bridge.is_receiving());
+        raw_send(&app, &wire[MAX_FRAME + 9..]);
+        assert!(bridge.try_recv().unwrap().is_some());
+        assert!(!bridge.is_receiving());
     }
 
     /// A frame refused in the middle of a fragmented message ends that message, so the next

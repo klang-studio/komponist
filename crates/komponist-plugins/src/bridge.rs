@@ -226,6 +226,12 @@ pub(crate) struct Bridge {
     next_seq: u32,
     /// The watchdog `Ping` waiting for its `Pong`, and since when it counts.
     ping_waiting: Option<(u32, Instant)>,
+    /// The last [`Bridge::read_messages`] stopped before it had read everything the bridge sent
+    /// (a message half in, or its budget or message cap ran out): a `Pong` may be queued behind.
+    behind: bool,
+    /// When bytes last arrived while the reader was behind (or caught up with that backlog):
+    /// the bridge's liveness while a `Pong` waits behind a message spanning several polls.
+    stream_progress: Option<Instant>,
     last_ping: Instant,
     /// A `Ping` sent after a re-activation: its `Pong` means the bridge runs with the new setup.
     sync_ping: Option<u32>,
@@ -370,6 +376,8 @@ impl Bridge {
             gui_requests: 0,
             next_seq: 0,
             ping_waiting: None,
+            behind: false,
+            stream_progress: None,
             last_ping: now,
             sync_ping: None,
             ready_at: None,
@@ -967,19 +975,35 @@ impl Bridge {
     /// Reads every queued control message (bounded per call). Never waits for a message that
     /// has not begun to arrive; one that has is read on while its bytes keep coming, for at most
     /// [`READ_BUDGET`] per call, so a bridge that stalls in the middle of a message cannot hold
-    /// up the UI thread or the watchdog after this (#216).
+    /// up the UI thread or the watchdog after this (#216). While a message spans several calls,
+    /// its arriving bytes count as the bridge's liveness (see `still_sending`).
     pub(crate) fn read_messages(
         &mut self,
         events: &mut Vec<PluginManagerEvent>,
         collected: &mut Vec<Collected>,
     ) {
+        let was_behind = self.behind;
+        self.behind = self.read_for_budget(events, collected);
+        if self.behind || was_behind {
+            self.stream_progress = self.channel.last_received();
+        }
+    }
+
+    /// Reads messages for at most [`READ_BUDGET`]; whether it stopped before the stream was
+    /// drained (see `behind`).
+    fn read_for_budget(
+        &mut self,
+        events: &mut Vec<PluginManagerEvent>,
+        collected: &mut Vec<Collected>,
+    ) -> bool {
         let deadline = Instant::now() + READ_BUDGET;
         for _ in 0..256 {
             match self.channel.try_recv_until(deadline) {
                 Ok(Some(msg)) => self.handle(msg, events, collected),
-                Ok(None) => return,
+                // Without a half-read message and with budget left, the socket was empty.
+                Ok(None) => return self.channel.is_receiving() || Instant::now() >= deadline,
                 // The process is about to be reported as exited (or was killed).
-                Err(ChannelError::Closed) => return,
+                Err(ChannelError::Closed) => return false,
                 Err(e) => {
                     events.push(PluginManagerEvent::Log {
                         device: Some(self.device),
@@ -987,11 +1011,13 @@ impl Bridge {
                         message: format!("control channel: {e}"),
                     });
                     if !matches!(e, ChannelError::Codec(_)) {
-                        return;
+                        return false;
                     }
                 }
             }
         }
+        // The message cap ended the loop.
+        true
     }
 
     fn handle(
@@ -1412,6 +1438,16 @@ impl Bridge {
         );
     }
 
+    /// Whether a late `Pong` may only be stuck behind data the bridge is still sending (#216): a
+    /// message that spans several polls (each reads for [`READ_BUDGET`]) holds the `Pong` back
+    /// until it is in, so `pong_timeout` counts from its last bytes rather than from the `Ping`.
+    /// A bridge frozen in the middle of a message sends nothing more, so it is found
+    /// unresponsive one `pong_timeout` after its last byte.
+    fn still_sending(&self, now: Instant) -> bool {
+        self.stream_progress
+            .is_some_and(|at| now.saturating_duration_since(at) <= self.timing.pong_timeout)
+    }
+
     fn watchdog(&mut self, now: Instant, events: &mut Vec<PluginManagerEvent>) {
         if matches!(self.phase, Phase::Failed | Phase::Stopping) {
             return;
@@ -1423,7 +1459,10 @@ impl Bridge {
             return;
         }
         match self.ping_waiting {
-            Some((_, since)) if now.duration_since(since) > self.timing.pong_timeout => {
+            Some((_, since))
+                if now.duration_since(since) > self.timing.pong_timeout
+                    && !self.still_sending(now) =>
+            {
                 self.fail(FailReason::Unresponsive, events);
             }
             Some(_) => {}
