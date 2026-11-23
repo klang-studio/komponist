@@ -166,6 +166,9 @@ pub(crate) struct ShellState {
     pub(crate) audio_import_target: Option<(Option<komponist_model::TrackId>, Tick)>,
     /// The panel settings last written to the settings file.
     saved_panels: Option<PanelSettings>,
+    /// A splitter is being dragged this frame: the panel sizes are written once it is released,
+    /// not on every frame of the drag (#221).
+    pub(crate) panel_drag: bool,
     /// The last edit that failed (diagnostics, tests).
     last_error: Option<EditError>,
     /// The window title last sent ("komponist · Night Drive").
@@ -551,6 +554,7 @@ impl App {
         let screen = ctx.content_rect();
         let mut root = ui.new_child(egui::UiBuilder::new().max_rect(screen));
         root.set_clip_rect(screen);
+        self.shell.panel_drag = false;
         self.draw_shell(&mut root);
         self.shell.requests = Requests::default();
         self.flush_queue();
@@ -566,7 +570,9 @@ impl App {
         self.update_plugin_frames(&ctx);
         self.engine.sync(&self.doc);
         self.sync_automation_preview();
-        self.persist_panels();
+        if !self.shell.panel_drag {
+            self.persist_panels();
+        }
         self.update_title(&ctx);
         self.schedule_repaint(&ctx);
     }

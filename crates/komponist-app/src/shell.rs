@@ -443,6 +443,9 @@ impl App {
         if response.hovered() || response.dragged() {
             ui.set_cursor_icon(cursor);
         }
+        if response.dragged() {
+            self.shell.panel_drag = true;
+        }
         let current = match edge.panel {
             Panel::Browser => self.ui.layout.browser_width,
             Panel::Inspector => self.ui.layout.inspector_width,
