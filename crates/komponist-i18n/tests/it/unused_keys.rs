@@ -29,15 +29,16 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Collects the `.rs` files below `dir`; symlinks are not followed (a worktree's `target` is one).
+/// A folder or entry that cannot be read fails the test: an incomplete scan would report live keys as
+/// unused.
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
         let path = entry.path();
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
+        let kind = entry
+            .file_type()
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         let name = entry.file_name();
         if kind.is_dir() {
             if !SKIP_DIRS.iter().any(|s| name == *s) {
@@ -75,15 +76,18 @@ fn catalog_keys(root: &Path) -> Vec<(String, String)> {
     let dir = root.join("crates/komponist-i18n/locales/de");
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .flatten()
-        .map(|e| e.path())
+        .map(|e| {
+            e.unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+                .path()
+        })
         .filter(|p| p.extension().is_some_and(|e| e == "ftl"))
         .collect();
     paths.sort();
     let mut keys = Vec::new();
     for path in paths {
         let file = path.file_name().unwrap().to_string_lossy().into_owned();
-        let text = std::fs::read_to_string(&path).unwrap();
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         for line in text.lines() {
             // A message starts in column 0 with a lower-case id; terms (`-name`), comments and
             // continuation lines do not.
