@@ -8,9 +8,9 @@ use std::ffi::{CStr, c_void};
 use std::sync::{Arc, Mutex};
 
 use clap_sys::plugin::clap_plugin;
-use komponist_bundled_clap_adapter::{DeviceDefinition, Parameters, panel_for};
+use komponist_bundled_clap_adapter::{DeviceDefinition, Parameters, panel_for, to_device_note};
 use komponist_device_core::pinned_clap_state::{MAX_SAMPLE_ASSET_BYTES, SAMPLE_ASSETS_FIELD};
-use komponist_device_core::{Dsp, SAMPLE_RATES};
+use komponist_device_core::{Dsp, SAMPLE_RATES, dispatch_note};
 use komponist_ipc::sampler_ui::{self, EXTENSION_ID, Pad, Snapshot, Status, Sync as WireSync};
 use komponist_native_clap_sdk::{NativeClapLayout, Panel};
 use komponist_sampler_shared::{ManagedLoader, PadStatus, SamplerHandle, SyncStatus, links};
@@ -124,59 +124,8 @@ impl<T: SampledDefinition> Sampled<T> {
     }
 
     fn note(&mut self, event: NoteEvent<()>) {
-        match event {
-            NoteEvent::NoteOn {
-                channel,
-                key,
-                velocity,
-                voice_id,
-                ..
-            } => {
-                if let Some(key) = key.number() {
-                    self.dsp.note_on_with_id(
-                        key,
-                        (velocity.clamp(0.0, 1.0) * 127.0).round().max(1.0) as u8,
-                        voice_id.id().map(|id| id as u32),
-                        channel.number(),
-                    );
-                }
-            }
-            NoteEvent::NoteOff {
-                channel,
-                key,
-                voice_id,
-                ..
-            } => self.dsp.release_note_gates(
-                key.number(),
-                voice_id.id().map(|id| id as u32),
-                channel.number(),
-            ),
-            NoteEvent::MidiNoteOff { key, channel, .. } => {
-                self.dsp.note_off_with_id(key, None, Some(channel));
-            }
-            NoteEvent::Choke {
-                channel,
-                key,
-                voice_id,
-                ..
-            } => {
-                self.dsp.choke_note(
-                    key.number(),
-                    voice_id.id().map(|id| id as u32),
-                    channel.number(),
-                );
-            }
-            NoteEvent::MidiPitchBend { value, .. } => self.dsp.pitch_bend(value * 2.0 - 1.0),
-            NoteEvent::MidiCC { cc: 1, value, .. } => self.dsp.mod_wheel(value),
-            NoteEvent::MidiCC {
-                channel,
-                cc: 120 | 123,
-                ..
-            } => {
-                self.dsp.choke_note(None, None, Some(channel));
-            }
-            NoteEvent::MidiChannelPressure { pressure, .. } => self.dsp.pressure(pressure),
-            _ => {}
+        if let Some(note) = to_device_note(event) {
+            dispatch_note(self.dsp.as_mut(), note);
         }
     }
 
