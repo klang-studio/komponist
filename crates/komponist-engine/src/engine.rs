@@ -92,6 +92,7 @@ use crate::route::{Delay, GateTable, MAX_LINES, MAX_SENDS, NodeRoute, Routing, S
 use crate::sequencer::{Captured, EventList, LiveMsg, NoteIds, TrackSeq, Window, track_seed};
 use crate::slots::{Bufs, ChainHook, SharedSlots, Slot, chains_exclusive, run_chain};
 use crate::stage::{self, StageLists, StageSig, StageState};
+use crate::sys;
 use crate::transport::{Song, Transport};
 use crate::workers::{
     MAX_WORKERS, Pool, Publisher, WorkerRt, WorkerStats, WorkerStatus, run_serial,
@@ -681,8 +682,13 @@ impl Engine {
             midi: &[],
             output_latency: 0,
         };
+        // Like the audio callback: FTZ/DAZ on, so tails do not hit denormal slowdowns and an
+        // export sounds like playback (#217). Workers copy this state; the caller's is restored.
+        let saved = sys::fp_state();
+        sys::set_fp_state(sys::with_flush_to_zero(saved));
         self.core
             .run(l, r, &input, &AudioInputBuffer::empty(), &[], true);
+        sys::set_fp_state(saved);
         let out = &mut self.render_out[..2 * frames];
         let (frames_out, _) = out.as_chunks_mut::<2>();
         for (frame, (l, r)) in frames_out.iter_mut().zip(l.iter().zip(r.iter())) {
@@ -706,6 +712,18 @@ impl core::fmt::Debug for Engine {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Engine").finish_non_exhaustive()
     }
+}
+
+/// RT. Replaces every NaN and infinite sample of `buf` with 0 and returns how many there were.
+/// Branchless (a select per sample), so it vectorizes.
+fn flush_non_finite(buf: &mut [f32]) -> u32 {
+    let mut bad = 0u32;
+    for x in buf {
+        let finite = x.is_finite();
+        bad += u32::from(!finite);
+        *x = if finite { *x } else { 0.0 };
+    }
+    bad
 }
 
 /// Non-RT. A zeroed stereo buffer of `MAX_BLOCK` frames.
@@ -2855,6 +2873,13 @@ impl Core {
                     clock,
                 );
                 master_fader.apply_automation(l, r, (gain, pan), !master.mute, volume, balance);
+                // One plugin's NaN or Inf must not reach the meter or the device (#217).
+                let bad = flush_non_finite(l) + flush_non_finite(r);
+                if bad > 0 {
+                    telemetry
+                        .non_finite_samples
+                        .fetch_add(bad, Ordering::Relaxed);
+                }
                 telemetry.master.record(peak(l), peak(r));
                 // The transport bar's scope (#34): only while it looks, and not in an export.
                 let tap = &telemetry.master_tap;
