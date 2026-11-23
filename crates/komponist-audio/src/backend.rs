@@ -854,6 +854,9 @@ mod tests {
             };
             let mut cb = StreamCallback::new(slot, params, Arc::new(StreamShared::default()));
             let mut data = vec![0.0f32; total * 2];
+            // The first callback after an attach drops MIDI older than one period as stale
+            // (#219); a slow runner's sleep below can exceed that, so attach first.
+            cb.run(&mut data, Duration::from_millis(5));
             assert!(sender.push(crate::midi::MidiPortId(1), [0x90, 60, 100]));
             std::thread::sleep(Duration::from_millis(1));
             cb.run(&mut data, Duration::from_millis(5));

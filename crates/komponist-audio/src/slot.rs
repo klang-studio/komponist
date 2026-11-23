@@ -134,7 +134,9 @@ impl<P: AudioProcess> EngineSlot<P> {
     ) -> (EngineSlot<P>, SlotHandle<P>) {
         let (mut slot, handle) = EngineSlot::empty(stats);
         slot.engine = Some(engine);
-        slot.midi = Some(Box::new(midi));
+        let mut midi = Box::new(midi);
+        midi.mark_attached();
+        slot.midi = Some(midi);
         slot.shared.occupied.store(true, Ordering::SeqCst);
         (slot, handle)
     }
@@ -182,6 +184,9 @@ impl<P: AudioProcess> EngineSlot<P> {
     ) {
         let start = Instant::now();
         self.exchange();
+        if let Some(receiver) = self.midi.as_deref_mut() {
+            receiver.begin(info, &self.stats);
+        }
 
         if let Some(engine) = self.engine.as_deref_mut() {
             crate::enable_flush_to_zero();
@@ -193,7 +198,7 @@ impl<P: AudioProcess> EngineSlot<P> {
         } else {
             out.silence();
             if let Some(receiver) = self.midi.as_deref_mut() {
-                receiver.discard_before(info.now);
+                receiver.discard_before(info.now, &self.stats);
             }
         }
 
@@ -215,6 +220,9 @@ impl<P: AudioProcess> EngineSlot<P> {
         }
         if self.midi.is_none() {
             self.midi = shared.midi.take();
+            if let Some(midi) = self.midi.as_deref_mut() {
+                midi.mark_attached();
+            }
         }
         if !shared.detach_requested.load(Ordering::SeqCst) {
             return;
@@ -587,6 +595,39 @@ mod tests {
         // 100 µs before the end of a 64-frame (1.33 ms) period: near the last frame.
         let frame = probe.last_event_frame.load(Ordering::SeqCst);
         assert!((50..64).contains(&frame), "frame {frame}");
+    }
+
+    /// A device switch: the old stream returns the receiver, the new one takes it over up to
+    /// seconds later (a cpal build may take 3 s). What queued up meanwhile does not fire as a
+    /// burst, and the note-off lost with it does not leave the note hanging.
+    #[test]
+    fn a_new_stream_discards_stale_midi_and_releases_held_notes() {
+        let stats = Arc::new(StreamStats::new());
+        let (engine, probe) = TestEngine::boxed(0.0);
+        let (sender, receiver) = queue(8);
+        let (mut slot, mut handle) = EngineSlot::new(engine, receiver, Arc::clone(&stats));
+        assert!(sender.push(MidiPortId(2), [0x90, 60, 100]));
+        run_at(&mut slot, Instant::now() + Duration::from_micros(100));
+        assert_eq!(probe.events.load(Ordering::SeqCst), 1);
+        drop(slot);
+        let engine = handle.try_take_engine().unwrap();
+        let midi = handle.try_take_midi().unwrap();
+
+        assert!(sender.push(MidiPortId(2), [0x80, 60, 0]));
+        assert!(sender.push(MidiPortId(2), [0xb0, 1, 64]));
+        let (mut slot, mut handle) = EngineSlot::empty(Arc::clone(&stats));
+        handle.attach(engine).unwrap();
+        handle.attach_midi(midi).unwrap();
+        // One second later: both messages are stale.
+        run_at(&mut slot, Instant::now() + Duration::from_secs(1));
+        assert_eq!(stats.midi_stale(), 2);
+        assert_eq!(probe.events.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            probe.last_event_data.load(Ordering::SeqCst),
+            0x0080_3C00,
+            "the release of note 60"
+        );
+        assert_eq!(probe.last_event_frame.load(Ordering::SeqCst), 0);
     }
 
     #[test]
