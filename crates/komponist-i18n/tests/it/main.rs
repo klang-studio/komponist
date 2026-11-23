@@ -5,3 +5,4 @@ mod generator;
 
 mod catalog;
 mod golden;
+mod unused_keys;

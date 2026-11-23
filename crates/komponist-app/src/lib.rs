@@ -15,8 +15,7 @@
 //!   [`App::dispatch`], the one place that applies actions; [`App::headless`] for tests.
 //! - [`layout`]: layout 2a as pure rect math; `shell` draws it.
 //! - [`panels`]: transport bar, status bar, the dock's tab strip.
-//! - [`views`]: the [`views::View`] trait and the slots WP-40 … WP-44 fill (placeholders until
-//!   then).
+//! - [`views`]: the [`views::View`] trait and the slots WP-40 … WP-44 fill.
 //! - [`engine_sync`]: [`engine_sync::EngineSync`], document → program → engine, the audio stream.
 //! - [`device_host`]: [`device_host::DeviceHost`], where processors come from, and its
 //!   implementations: [`device_host::PluginHost`] (hexa in process, everything else in bridges

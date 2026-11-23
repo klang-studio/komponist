@@ -107,15 +107,6 @@ param-velocity = Velocity
 # Pan of a Sampler pad.
 param-pan = Pan
 
-# Mute of a Sampler pad.
-param-mute = Mute
-
-# Solo of a Sampler pad.
-param-solo = Solo
-
-# Choke group of a Sampler pad.
-param-choke = Choke
-
 # volt sub oscillator level.
 param-sub = Sub
 

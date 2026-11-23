@@ -30,7 +30,7 @@ fn main() {
 }
 
 /// Compiles `assets/windows/komponist.rc.in` (icon, version information, manifest) with the MSVC `rc.exe` and
-/// links it into the `komponist` binary only (not `komponist-play`). `embed-resource` is a build dependency of
+/// links it into the `komponist` binary. `embed-resource` is a build dependency of
 /// Windows hosts only, so this is a no-op everywhere else.
 #[cfg(windows)]
 fn windows_resources() {

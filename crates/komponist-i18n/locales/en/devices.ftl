@@ -57,9 +57,6 @@ devices-add-search = Search devices…
 # The add menu with no match.
 devices-add-no-match = No matches
 
-# Accessible name of the add menu's list.
-devices-add-list = Devices
-
 # Accessible name and tooltip of the ⋯ button (handoff `aria-label="Weitere Aktionen"`).
 devices-more = More actions
 
