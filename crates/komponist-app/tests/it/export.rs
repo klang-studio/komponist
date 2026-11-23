@@ -1091,18 +1091,30 @@ fn a_panic_on_the_export_worker_leaves_a_playing_session() {
         };
         export(&mut app, settings);
 
-        let crashed = lang.export_failed(lang.export_worker_crashed());
+        let crashed = if plugin == PANIK_RENDER {
+            lang.export_finished_worker_crashed("Night Drive.wav")
+        } else {
+            lang.export_failed(lang.export_worker_crashed())
+        };
         assert_eq!(
             status(&app),
             (crashed.clone(), StatusKind::Error),
             "{plugin}"
         );
         assert!(app.ui().dialog.is_none());
-        assert!(app.exported().is_empty());
         // The render panic comes after the export wrote its file (the closing one-frame render).
         assert_eq!(
             dir.join("out/Night Drive.wav").exists(),
             plugin == PANIK_RENDER
+        );
+        // A file that was written stays in Projekt › Exporte.
+        assert_eq!(
+            app.exported(),
+            if plugin == PANIK_RENDER {
+                vec![dir.join("out/Night Drive.wav")]
+            } else {
+                Vec::new()
+            }
         );
         assert_eq!(*mode.lock().unwrap(), Some(RenderMode::Realtime));
         assert!(!app.engine().is_detached());
