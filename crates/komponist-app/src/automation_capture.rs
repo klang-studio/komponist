@@ -790,6 +790,15 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Ends every running write at `tick` as a stop boundary does, without committing the pass
+    /// (an engine rebuilt after a panic sends no boundary for the old transport, #210).
+    pub(crate) fn end_automation_writes_at(&mut self, tick: Tick) {
+        let project = self.project().clone();
+        self.automation_capture.end_segments(&project, tick);
+        self.automation_capture.learned.clear();
+        self.automation_stop_pending = false;
+    }
+
     pub(crate) fn take_automation_capture(&mut self) -> AutomationCapture {
         let project = self.project().clone();
         self.automation_capture
@@ -1279,6 +1288,87 @@ mod tests {
         assert!(app.doc.undo());
         assert_eq!(app.project().as_ref(), &p);
         assert!(app.doc.undo_label().is_none());
+    }
+
+    /// #210 review: a latch pass running when the engine panics ends at the crash playhead and
+    /// is committed in the rebuild's drain (no take runs), as one undo step.
+    #[test]
+    fn a_write_pass_is_committed_at_the_crash_when_the_engine_is_rebuilt() {
+        use crate::actions::{Action, EditAction, TransportAction};
+        use komponist_model::edits::ChannelProp;
+
+        let p = Project::new("Capture");
+        let owner = AutomationOwner::Master;
+        let target = AutomationTarget::Volume;
+        let (p, id) = edits::add_lane(&p, owner, target.clone(), "Volume".into()).unwrap();
+        let p = edits::set_lane_mode(&p, owner, id, AutomationMode::Latch).unwrap();
+        let mut app = App::headless(p);
+        // A hexa track whose instrument can panic; disarmed, so playing records no take.
+        app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+        let track = app.project().tracks[0].id;
+        app.dispatch(Action::Edit(EditAction::SetTrackProp {
+            tracks: vec![track],
+            prop: komponist_model::edits::TrackProp::Arm(false),
+        }));
+        app.step();
+        let instrument = app.project().tracks[0].channel.devices[0].id;
+        // Single-threaded, so the panic is on this thread and outside `assert_no_alloc`.
+        assert_eq!(app.engine.set_workers(Some(0)).unwrap().unwrap().threads, 0);
+        app.engine.hold_engine().unwrap();
+        app.dispatch(Action::Transport(TransportAction::TogglePlay));
+        assert!(app.engine.run_held(1024, &[], 0));
+        app.step();
+        app.dispatch(Action::Edit(EditAction::BeginGesture {
+            label: "Volume".into(),
+        }));
+        app.dispatch(Action::Edit(EditAction::SetMasterProp(
+            ChannelProp::VolumeDb(-16.0),
+        )));
+        assert!(app.engine.run_held(1024, &[], 0));
+        app.step();
+        app.dispatch(Action::Edit(EditAction::EndGesture));
+        assert!(app.engine.run_held(1024, &[], 0));
+        app.step();
+        assert!(app.automation_capture.is_writing(owner, id));
+        assert!(app.recording.is_none() && !app.audio_recording.is_active());
+        let at = app.engine.playhead();
+        assert!(at > Tick::ZERO);
+        let slot = app
+            .engine
+            .program()
+            .unwrap()
+            .slots
+            .slot(instrument)
+            .unwrap();
+        app.engine.send(Command::InsertProcessor {
+            slot,
+            processor: Box::new(komponist_engine::testing::TestPanic),
+        });
+        let engine = &mut app.engine;
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            engine.run_held(256, &[], 0);
+        }));
+        assert!(caught.is_err(), "the processor ran");
+        app.engine.release_engine();
+        app.drain_events();
+
+        assert!(!app.automation_capture.active(), "the pass ended");
+        assert_eq!(app.doc.undo_label(), Some("undo-automation-record"));
+        let lane = app.project().master_automation.lane(&target).unwrap();
+        let written = 1.0 - komponist_model::params::db_to_p(-16.0);
+        let points = lane.points.as_slice();
+        // The written value holds up to the crash; the latch returns one tick later, as at a stop.
+        assert!(
+            points
+                .iter()
+                .any(|p| p.tick == at && (p.value - written).abs() < 1e-5),
+            "{points:?}"
+        );
+        assert_eq!(points.iter().map(|p| p.tick).max(), Some(Tick(at.0 + 1)));
+        assert_eq!(
+            app.ui.status.as_ref().map(|s| s.text.as_str()),
+            Some(app.lang.status_engine_rebuilt())
+        );
     }
 
     #[test]

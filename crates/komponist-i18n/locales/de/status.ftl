@@ -110,6 +110,12 @@ status-workers-no-realtime = Audio-Threads laufen ohne Echtzeit-Priorität
 # The engine's worker threads could not join the audio device's workgroup (macOS).
 status-workers-no-workgroup = Audio-Threads konnten der Audio-Workgroup nicht beitreten
 
+# The audio engine panicked in the audio callback; a new one was built from the open project (#210).
+status-engine-rebuilt = Audio-Engine abgestürzt · aus dem Projekt neu aufgebaut, die Wiedergabe ist gestoppt
+
+# Same while a take was running: it ended at the crash and keeps what was recorded.
+status-engine-rebuilt-take = Audio-Engine abgestürzt · die Aufnahme bis dahin bleibt erhalten, aus dem Projekt neu aufgebaut
+
 # A MIDI input appeared; `$name` as S07 shows it.
 status-midi-connected = { $name } verbunden
 
