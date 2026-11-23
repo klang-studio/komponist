@@ -646,11 +646,17 @@ impl App {
         let no_workgroup = self.engine.take_workgroup_notice();
         // One message per frame; a rebuilt engine is the worst news (reported last, below, so no
         // other message of this drain replaces it), then a missing priority.
-        let worker_notices = device_stream && rebuilt.is_none();
-        if worker_notices && no_realtime {
-            self.report_workers_without_realtime();
-        } else if worker_notices && no_workgroup {
-            self.report_workers_without_workgroup();
+        let error_shown = matches!(&self.ui.status, Some(s) if s.kind == StatusKind::Error);
+        match worker_notice(
+            device_stream,
+            rebuilt.is_some(),
+            error_shown,
+            no_realtime,
+            no_workgroup,
+        ) {
+            Some(WorkerNotice::NoRealtime) => self.report_workers_without_realtime(),
+            Some(WorkerNotice::NoWorkgroup) => self.report_workers_without_workgroup(),
+            None => {}
         }
         self.report_midi_changes();
         self.report_compile_diagnostics();
@@ -2891,8 +2897,12 @@ impl App {
                 self.save_settings();
             }
             SettingsAction::RetryAudio => {
-                let config = self.settings.audio.clone();
-                let _ = self.engine.set_audio(&config);
+                // Only a stream that is not running is restarted: reopening a running one would
+                // interrupt playback, and the retry button also shows for a failed device list.
+                if !matches!(self.engine.audio_state(), AudioState::Running { .. }) {
+                    let config = self.settings.audio.clone();
+                    let _ = self.engine.set_audio(&config);
+                }
                 // The device list may have changed too.
                 self.dialogs.settings.refresh_devices();
                 self.dialogs.settings.invalidate_jack_ports();
@@ -3133,10 +3143,87 @@ pub fn key_to_egui(key: Key) -> egui::Key {
     }
 }
 
+/// Which worker-thread hint one drain puts in the status bar.
+#[derive(Debug, PartialEq, Eq)]
+enum WorkerNotice {
+    NoRealtime,
+    NoWorkgroup,
+}
+
+/// One message per frame: a rebuilt engine is the worst news (reported by the caller, so no
+/// other message of the drain replaces it), then a missing priority. An error already in the
+/// status bar (the saved audio input that did not start, reported before the first frame) stays:
+/// a priority hint is only an info and never replaces it.
+fn worker_notice(
+    device_stream: bool,
+    rebuilt: bool,
+    error_shown: bool,
+    no_realtime: bool,
+    no_workgroup: bool,
+) -> Option<WorkerNotice> {
+    if !device_stream || rebuilt || error_shown {
+        None
+    } else if no_realtime {
+        Some(WorkerNotice::NoRealtime)
+    } else if no_workgroup {
+        Some(WorkerNotice::NoWorkgroup)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use komponist_model::fixtures::empty_project;
+
+    #[test]
+    fn worker_notices_show_without_an_error_and_never_replace_one() {
+        use WorkerNotice::{NoRealtime, NoWorkgroup};
+        assert_eq!(
+            worker_notice(true, false, false, true, true),
+            Some(NoRealtime)
+        );
+        assert_eq!(
+            worker_notice(true, false, false, false, true),
+            Some(NoWorkgroup)
+        );
+        assert_eq!(worker_notice(true, false, true, true, true), None);
+        assert_eq!(worker_notice(true, true, false, true, false), None);
+        assert_eq!(worker_notice(false, false, false, true, true), None);
+    }
+
+    #[test]
+    fn a_failed_audio_input_stays_in_the_status_bar_after_the_first_frame() {
+        let mut app = App::headless(empty_project());
+        app.report_audio_input_failed(&AudioError::NoDevice("gone".into()));
+        let shown = app.ui.status.as_ref().map(|s| s.text.clone());
+        app.step();
+        let after = app.ui.status.as_ref().expect("status kept");
+        assert_eq!(Some(&after.text), shown.as_ref());
+        assert_eq!(after.kind, StatusKind::Error);
+    }
+
+    #[test]
+    fn retry_audio_keeps_a_running_stream_untouched() {
+        let mut app = App::headless(empty_project());
+        app.step();
+        let running = app.engine.audio_state().clone();
+        assert!(matches!(running, AudioState::Running { .. }));
+        // A saved config that differs from the running stream: a restart would replace it.
+        let AudioState::Running { config, .. } = &running else {
+            unreachable!()
+        };
+        let mut other = config.clone();
+        other.buffer_frames = if config.buffer_frames == 512 {
+            256
+        } else {
+            512
+        };
+        app.settings.audio = other;
+        app.dispatch(Action::Settings(SettingsAction::RetryAudio));
+        assert_eq!(*app.engine.audio_state(), running);
+    }
 
     fn recording_app() -> App {
         let mut app = App::headless(empty_project());
