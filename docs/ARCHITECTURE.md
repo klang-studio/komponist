@@ -667,7 +667,8 @@ Bridges and scan processes never outlive the app, even when the app dies while a
 stuck in a plugin call and does not see its socket close. On Linux they get
 `PR_SET_PDEATHSIG(SIGKILL)` between fork and exec, followed by a parent check. On macOS the bridge
 watches the app's pid, which the app passes in the environment, with a kqueue exit filter and then
-calls `_exit`. On Windows they join a kill-on-close job object of the app. A scan runs in a process
+calls `_exit` (a bridge that cannot watch the app ends before any plugin code runs). On Windows
+they are created suspended and join a kill-on-close job object of the app before they run. A scan runs in a process
 group of its own (Windows: a nested job), so a timeout or cancel also kills the helper processes
 its plugin started. Killed bridges are reaped together with one short wait; a bridge not reaped by
 then is handed to a reaper thread instead of being left as a zombie. On macOS, control socket pairs
