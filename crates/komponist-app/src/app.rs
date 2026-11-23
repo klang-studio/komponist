@@ -420,13 +420,21 @@ impl App {
         self.set_status(self.lang.status_engine_rebuilt(), StatusKind::Error);
     }
 
-    /// The engine was rebuilt after a panic with the playhead at `at` (#210). A running take (MIDI
-    /// or audio) ends there like an interruption and keeps what was recorded so far; a count-in
-    /// that was running never ends, so no take waits for it. Returns whether a take ended (the
-    /// caller reports the rebuild).
+    /// The engine was rebuilt after a panic with the playhead at `at` (#210). An automation
+    /// write pass ends there as at a stop (the old engine sends no stop boundary any more). A
+    /// running take (MIDI or audio) ends there like an interruption and keeps what was recorded
+    /// so far, with the pass; without one, the pass is committed on its own. A count-in that was
+    /// running never ends, so no take waits for it. Returns whether a take ended (the caller
+    /// reports the rebuild).
     fn end_take_after_rebuild(&mut self, at: Tick) -> bool {
         self.shell.take_expected = false;
+        // The new engine's playhead is not `at` yet: end the writes here, before anything takes
+        // the pass at the playhead.
+        self.end_automation_writes_at(at);
         if self.recording.is_none() && !self.audio_recording.is_active() {
+            if self.automation_capture.active() {
+                self.commit_automation_capture();
+            }
             return false;
         }
         // The crash may have lost the running lap's last events.
