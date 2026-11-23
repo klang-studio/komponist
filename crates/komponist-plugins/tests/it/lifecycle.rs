@@ -977,10 +977,11 @@ fn watchdog_kills_a_hanging_bridge() {
 const STALLING_BRIDGE: &str = "lifecycle::stalling_bridge_entry";
 
 /// A fake bridge that stops in the middle of a frame (#216): this test binary, started by the
-/// plugin manager as `<test> lifecycle::stalling_bridge_entry --exact … -- --instance --control-fd
-/// N` (libtest takes everything after `--` as name filters, so only this test runs). It plays the
-/// start-up protocol, answers two `Ping`s, then writes the header and one payload byte of a
-/// `Pong` and stops itself (`SIGSTOP`). In an ordinary test run it does nothing.
+/// plugin manager as `<test> lifecycle::stalling_bridge_entry --exact … -- <marker> --instance
+/// --control-fd N` (libtest takes everything after `--` as name filters, so only this test runs).
+/// It plays the start-up protocol, answers two `Ping`s, then writes the header and one payload
+/// byte of a `Pong`, creates the file `<marker>` (the parent's proof that the partial frame is
+/// out) and stops itself (`SIGSTOP`). In an ordinary test run it does nothing.
 #[cfg(unix)]
 #[test]
 fn stalling_bridge_entry() {
@@ -992,6 +993,7 @@ fn stalling_bridge_entry() {
         return;
     };
     let fd: i32 = args[at + 1].parse().expect("fd number");
+    let marker = std::path::PathBuf::from(&args[at - 2]);
     // SAFETY: the plugin manager made this inherited fd ours, and nothing else owns it.
     let channel = BridgeChannel::from_fd(unsafe { OwnedFd::from_raw_fd(fd) });
     let send = |msg: BridgeMsg| {
@@ -1039,6 +1041,7 @@ fn stalling_bridge_entry() {
                 let partial = [0, 5, 0, 0, 5, 0, 0, 0, 0];
                 let written = rustix::io::write(channel.as_fd(), &partial).expect("write");
                 assert_eq!(written, partial.len());
+                std::fs::write(&marker, b"partial frame written").expect("marker file");
                 rustix::process::kill_process(
                     rustix::process::getpid(),
                     rustix::process::Signal::STOP,
@@ -1055,13 +1058,61 @@ fn stalling_bridge_entry() {
     }
 }
 
+/// Times every `PluginManager::poll` of a test on a watcher thread. A poll that blocks never
+/// returns, so the test could not fail by itself: once one call has run for [`PATIENCE`], the
+/// watcher ends the process with a message. It is armed only during a call, and dropping the
+/// watch (also while a failed assertion unwinds) stops the watcher.
+#[cfg(unix)]
+struct PollWatch {
+    since: Arc<std::sync::Mutex<Option<Instant>>>,
+    done: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(unix)]
+impl PollWatch {
+    fn new(test: &'static str) -> PollWatch {
+        let watch = PollWatch {
+            since: Arc::default(),
+            done: Arc::default(),
+        };
+        let (since, done) = (watch.since.clone(), watch.done.clone());
+        std::thread::spawn(move || {
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                let blocked = since
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_some_and(|since| since.elapsed() > PATIENCE);
+                if blocked {
+                    eprintln!("{test}: a plugin manager poll blocked for {PATIENCE:?}");
+                    std::process::exit(101);
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        watch
+    }
+
+    /// `manager.poll()`, watched.
+    fn poll(&self, manager: &mut PluginManager) -> Vec<PluginManagerEvent> {
+        *self.since.lock().unwrap() = Some(Instant::now());
+        let events = manager.poll();
+        *self.since.lock().unwrap() = None;
+        events
+    }
+}
+
+#[cfg(unix)]
+impl Drop for PollWatch {
+    fn drop(&mut self) {
+        self.done.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// #216: a bridge frozen in the middle of a frame holds up no `poll` of the plugin manager (the UI
 /// thread), and the watchdog still finds it unresponsive and kills it.
 #[cfg(unix)]
 #[test]
 fn a_bridge_stalled_mid_frame_blocks_no_poll_and_is_killed() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
     let dir = scratch("stalled-mid-frame");
     // The real bridge scans the fixtures into the cache file; the manager under test reads the
     // catalog from it and starts the fake bridge.
@@ -1069,6 +1120,8 @@ fn a_bridge_stalled_mid_frame_blocks_no_poll_and_is_killed() {
         return;
     };
     drop(scanner);
+    // The fake bridge creates it once its partial frame is written.
+    let marker = dir.join("partial-frame-written");
     let mut config = config(&dir);
     config.bridge_exe = std::env::current_exe().unwrap();
     config.bridge_args = [
@@ -1080,24 +1133,11 @@ fn a_bridge_stalled_mid_frame_blocks_no_poll_and_is_killed() {
     ]
     .map(Into::into)
     .to_vec();
+    config.bridge_args.push(marker.clone().into());
     let mut manager = PluginManager::new(config);
     manager.set_watchdog_timing(Duration::from_millis(50), Duration::from_millis(500));
     manager.set_warm_up(Duration::ZERO);
-
-    // A `poll` that blocks on the frozen bridge never returns: fail loudly instead of hanging.
-    let done = Arc::new(AtomicBool::new(false));
-    let guard = done.clone();
-    std::thread::spawn(move || {
-        let t0 = Instant::now();
-        while t0.elapsed() < 2 * PATIENCE {
-            if guard.load(Ordering::Relaxed) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        eprintln!("a_bridge_stalled_mid_frame_blocks_no_poll_and_is_killed: poll blocked");
-        std::process::exit(101);
-    });
+    let watch = PollWatch::new("a_bridge_stalled_mid_frame_blocks_no_poll_and_is_killed");
 
     let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
     let _processor = manager
@@ -1112,24 +1152,27 @@ fn a_bridge_stalled_mid_frame_blocks_no_poll_and_is_killed() {
     while detected.is_none() {
         assert!(Instant::now() < deadline, "not killed; events {events:?}");
         let t0 = Instant::now();
-        events.extend(manager.poll());
+        events.extend(watch.poll(&mut manager));
         longest = longest.max(t0.elapsed());
         match manager.status(DeviceId(10)) {
             DeviceStatus::Ok if ok_at.is_none() => ok_at = Some(Instant::now()),
-            DeviceStatus::Crashed(reason) => detected = Some((reason, ok_at)),
+            // Whether the partial frame was out when the watchdog struck: else the test would
+            // pass on a bridge that was merely not scheduled.
+            DeviceStatus::Crashed(reason) => detected = Some((reason, marker.exists())),
             _ => {}
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    let (reason, ok_at) = detected.unwrap();
+    let (reason, partial_written) = detected.unwrap();
+    let ok_at = ok_at.unwrap_or_else(|| panic!("the fake bridge never ran; events {events:?}"));
     assert!(
-        ok_at.is_some(),
-        "the fake bridge never ran; events {events:?}"
+        partial_written,
+        "the watchdog struck before the fake bridge wrote its partial frame"
     );
     assert_eq!(reason, FailReason::Unresponsive);
     eprintln!(
         "stalled mid-frame: detected after {:.1?}, longest poll {longest:.1?}",
-        ok_at.unwrap().elapsed()
+        ok_at.elapsed()
     );
     assert!(
         longest < Duration::from_millis(250),
@@ -1138,10 +1181,9 @@ fn a_bridge_stalled_mid_frame_blocks_no_poll_and_is_killed() {
     let t0 = Instant::now();
     while alive(pid) {
         assert!(t0.elapsed() < PATIENCE, "the stopped bridge was not killed");
-        manager.poll();
+        watch.poll(&mut manager);
         std::thread::sleep(Duration::from_millis(5));
     }
-    done.store(true, Ordering::Relaxed);
 }
 
 #[test]
