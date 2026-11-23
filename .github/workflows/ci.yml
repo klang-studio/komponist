@@ -76,6 +76,8 @@ jobs:
             crates/plugin-sdk -> target
           # Save the dependency builds of a red run too, so a failing test does not make the next run cold.
           cache-on-failure: true
+          # PR runs restore main's cache but do not save their own: saving took up to 2 min per run (#251).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Format
         run: cargo fmt --all --check
@@ -190,6 +192,8 @@ jobs:
             . -> target
             test-plugins -> target
           cache-on-failure: true
+          # PR runs restore main's cache but do not save their own: saving took up to 2 min per run (#251).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -257,51 +261,64 @@ jobs:
         with:
           persist-credentials: false
 
+      # A Dev Drive (ReFS on a VHDX) for the build: NTFS overhead on cargo's many small files made the Windows
+      # build the slowest (#251). The checkout is copied there, and every later step works in
+      # DEV_DRIVE_WORKSPACE. Its post step dismounts the drive after rust-cache's post step has saved.
+      - name: Set up a Dev Drive
+        uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4.1.0
+        with:
+          drive-size: 40GB
+          workspace-copy: true
+
       # Visual Studio Build Tools (MSVC), Git Bash and rustup come with the runner image.
       # rust-toolchain.toml: stable + rustfmt + clippy.
       - name: Install Rust toolchain
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
         run: rustup show active-toolchain || rustup toolchain install
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
-            . -> target
-            test-plugins -> target
+            ${{ env.DEV_DRIVE_WORKSPACE }} -> target
+            ${{ env.DEV_DRIVE_WORKSPACE }}/test-plugins -> target
           cache-on-failure: true
+          # PR runs restore main's cache but do not save their own: saving took up to 2 min per run (#251).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Clippy
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       # The SDK is a workspace of its own (excluded from the root), but its adapter and author crates ship in
       # every komponist-bundled-* crate.
       - name: Clippy (plugin SDK)
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
         run: cargo clippy --manifest-path crates/plugin-sdk/Cargo.toml --workspace --all-targets -- -D warnings
 
       # Without the bundles the plugin tests skip silently.
       - name: Build test plugins
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
         run: scripts/build-test-plugins.sh
 
       - name: Test plugin fixtures
-        working-directory: test-plugins
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}/test-plugins
         run: cargo test --workspace --locked --no-fail-fast
 
-      # DX12/WARP can terminate concurrent kittest renderings in the app and UI suites
-      # (exit 2173, no Rust panic). Keep other workspace tests parallel and run every suite.
+      # All suites in parallel, as on Linux and macOS. The app and UI suites ran one test at a time because
+      # DX12/WARP once terminated concurrent kittest renderings (exit 2173, no Rust panic); that cost 17 of the
+      # job's 33 minutes (#251). RUST_BACKTRACE above shows where if it happens again.
       - name: Test
         timeout-minutes: 45
-        run: |
-          test_status=0
-          cargo test --workspace --exclude komponist-app --exclude komponist-ui --no-fail-fast || test_status=$?
-          cargo test -p komponist-app --no-fail-fast -- --test-threads=1 --nocapture || test_status=$?
-          cargo test -p komponist-ui --no-fail-fast -- --test-threads=1 --nocapture || test_status=$?
-          exit "$test_status"
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
+        run: cargo test --workspace --no-fail-fast
 
       # ASIO (W8, cargo feature `asio`): off in the steps above, so the plain build needs no LLVM. These two build
       # komponist-audio with it. bindgen needs libclang: the windows-2025 image has LLVM 20 (per the runner-images
       # readme; C:\Program Files\LLVM is its default path, assumed here). Steinberg's ASIO SDK (host subset, GPLv3 option) is
       # vendored in vendor/asio-sdk and selected by CPAL_ASIO_DIR in .cargo/config.toml: no download. No ASIO device is opened. Untested until pushed.
       - name: Clippy and tests with ASIO
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
         env:
           LIBCLANG_PATH: C:\Program Files\LLVM\bin
         run: |
@@ -316,7 +333,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $scratch = Join-Path $env:GITHUB_WORKSPACE 'target/tmp'
+          $scratch = Join-Path $env:DEV_DRIVE_WORKSPACE 'target/tmp'
           for ($attempt = 1; $attempt -le 5; $attempt++) {
             if (-not (Test-Path -LiteralPath $scratch)) { break }
             try {
