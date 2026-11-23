@@ -212,21 +212,6 @@ impl<const N: usize> Synth<N> {
         }
     }
 
-    /// Engine `k`, for rendering it with [`Engine::render_unclamped`] on
-    /// another core. Every engine must render the same number of frames per
-    /// call; the caller sums the outputs and passes them to
-    /// [`Self::finish`].
-    ///
-    /// # Safety
-    /// `this` must point to a valid `Synth`, `k < N`, and while the result is
-    /// in use nothing else may access that engine (other engines may be
-    /// used through this function concurrently).
-    pub unsafe fn engine_ptr(this: *mut Self, k: usize) -> *mut Engine {
-        assert!(k < N);
-        // SAFETY: projects to the field without creating a reference to `*this`.
-        unsafe { addr_of_mut!((*this).engines[k]) }
-    }
-
     /// Applies the master effects to the summed engine outputs and clamps
     /// them to -1..1.
     pub fn finish(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {

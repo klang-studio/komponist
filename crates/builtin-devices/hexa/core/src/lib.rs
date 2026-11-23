@@ -14,7 +14,6 @@ extern crate alloc;
 
 mod allocator;
 pub mod bank;
-pub mod benchmark;
 pub mod chorus;
 pub mod controls;
 pub mod delay;
@@ -42,8 +41,6 @@ mod smooth;
 mod synth;
 mod voicing;
 pub mod waveform;
-#[cfg(feature = "wire")]
-pub mod wire;
 
 pub use chorus::ChorusParams;
 pub use delay::DelayParams;

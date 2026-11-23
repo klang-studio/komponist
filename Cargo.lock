@@ -2259,7 +2259,6 @@ version = "0.2.0"
 dependencies = [
  "klang-dsp",
  "libm",
- "postcard",
  "serde",
 ]
 
