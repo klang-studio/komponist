@@ -286,6 +286,9 @@ pub(crate) struct ParamDelivery {
     /// The plugin's last reported value. Unlike `report`, an input does not clear it, so an echo
     /// of an unchanged value after a repeated input is not counted as a change.
     last_reported: Option<f64>,
+    /// The last input value that was counted as a change: like `last_reported`, the baseline moves
+    /// only with a counted change, so small input steps cannot creep past the tolerance.
+    last_counted_input: Option<f64>,
     /// Values this parameter took since the table was created: each input or report that
     /// differs from the previous one of its kind. Read under the pause, so a snapshot can tell
     /// that a value left and came back while the plugin serialized (#215).
@@ -295,10 +298,11 @@ pub(crate) struct ParamDelivery {
 impl ParamDelivery {
     fn record_input(&mut self, block: u32, value: f64) {
         if self
-            .input
-            .is_none_or(|(_, previous)| !same_param_value(value, previous))
+            .last_counted_input
+            .is_none_or(|previous| !same_param_value(value, previous))
         {
             self.changes = self.changes.wrapping_add(1);
+            self.last_counted_input = Some(value);
         }
         self.input = Some((block, value));
         self.report = None;
@@ -1005,6 +1009,20 @@ mod tests {
         assert!(
             delivery.changes > first,
             "a drift beyond the tolerance counts"
+        );
+
+        // The same for inputs a plugin accepts without reporting them.
+        let mut delivery = ParamDelivery::default();
+        delivery.record_input(1, 0.4);
+        let first = delivery.changes;
+        let mut value = 0.4;
+        for block in 2..200 {
+            value += 1e-7;
+            delivery.record_input(block, value);
+        }
+        assert!(
+            delivery.changes > first,
+            "an input drift beyond the tolerance counts"
         );
     }
 
