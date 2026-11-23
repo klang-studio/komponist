@@ -516,8 +516,9 @@ mod tests {
             },
         )
         .unwrap();
+        // A finite sample the stretcher refuses (decoding maps NaN to 0, #217).
         for _ in 0..8000 {
-            writer.write_sample(f32::NAN).unwrap();
+            writer.write_sample(2048.0_f32).unwrap();
         }
         writer.finalize().unwrap();
         let file = AudioFile::new(&source.0, None, 8000, 48000, 1);
