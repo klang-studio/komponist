@@ -667,6 +667,16 @@ fn request_slow_checked_state(bridge: &mut Bridge, gain: u32, expected: f64, ext
 /// answer and the number of blocks that ran in the meantime. Every block must be processed by the
 /// plugin (a block answered with the fallback would be `Inactive`, or `NotActive` at the client).
 fn blocks_until_state(bridge: &mut Bridge, request: u32) -> (BridgeMsg, u32) {
+    blocks_until_state_with(bridge, request, false)
+}
+
+/// `blocks_until_state`; with `allow_pause` the bridge may hold audio for the snapshot (blocks
+/// the app cannot publish are skipped) instead of the blocks being required to run.
+fn blocks_until_state_with(
+    bridge: &mut Bridge,
+    request: u32,
+    allow_pause: bool,
+) -> (BridgeMsg, u32) {
     for (i, s) in bridge.input[0].iter_mut().enumerate() {
         *s = i as f32 / 1000.0;
     }
@@ -674,19 +684,26 @@ fn blocks_until_state(bridge: &mut Bridge, request: u32) -> (BridgeMsg, u32) {
     let mut blocks = 0;
     loop {
         assert!(Instant::now() < deadline, "no answer to request {request}");
-        assert_eq!(
-            bridge.region().bridge_state(),
-            BridgeState::Active,
-            "a snapshot must not change the shared bridge state"
-        );
-        let result = bridge.block(&[]);
-        assert_eq!(result.status, BlockStatus::Ok as u32, "block {blocks}");
-        assert_eq!(
-            bridge.output[0][..BLOCK],
-            bridge.input[0][..BLOCK],
-            "block {blocks} was not processed"
-        );
-        blocks += 1;
+        if allow_pause && bridge.region().bridge_state() != BridgeState::Active {
+            std::thread::sleep(Duration::from_millis(2));
+        } else {
+            assert_eq!(
+                bridge.region().bridge_state(),
+                BridgeState::Active,
+                "a snapshot must not change the shared bridge state"
+            );
+            let result = match bridge.block_with(&[], GENEROUS) {
+                Err(BlockError::NotActive) if allow_pause => continue,
+                other => other.unwrap_or_else(|e| panic!("block: {e:?}")),
+            };
+            blocks += 1;
+            assert_eq!(result.status, BlockStatus::Ok as u32, "block {blocks}");
+            assert_eq!(
+                bridge.output[0][..BLOCK],
+                bridge.input[0][..BLOCK],
+                "block {blocks} was not processed"
+            );
+        }
         while let Some(msg) = bridge.recv_timeout(Duration::from_millis(2)) {
             match msg {
                 BridgeMsg::State { request: r, .. } | BridgeMsg::StateDeferred { request: r }
@@ -762,6 +779,43 @@ fn parameter_change_during_a_snapshot_is_not_verified() {
         }
         other => panic!("the snapshot did not verify: {other:?}"),
     }
+    assert_eq!(bridge.shutdown(), EXIT_OK);
+}
+
+/// #215: a value that moves every block while the plugin saves (kp-test-slow on note 123, like
+/// automation) makes the first checked snapshots unverifiable, but a save is not starved: after
+/// `PAUSED_SNAPSHOT_AFTER` such attempts the bridge holds audio for one snapshot, which verifies.
+#[test]
+fn checked_snapshot_completes_under_continuous_automation() {
+    let Some(bundle) = fixture("kp-test-slow") else {
+        return;
+    };
+    let mut bridge = Bridge::spawn();
+    let info = bridge.load(&bundle, SLOW);
+    let gain = Bridge::param_id(&info, "Gain");
+    bridge.activate();
+    assert_eq!(
+        bridge.block(&[note_on(0, 123)]).status,
+        BlockStatus::Ok as u32
+    );
+    let mut deferred = 0;
+    let verified = loop {
+        // Back at rest (0.5) after the previous save; one block arms the slow save.
+        assert_eq!(bridge.block(&[]).status, BlockStatus::Ok as u32);
+        let request = request_slow_checked_state(&mut bridge, gain, 0.5, &[]);
+        let (answer, _) = blocks_until_state_with(&mut bridge, request, true);
+        match answer {
+            BridgeMsg::State { verified, .. } => break verified,
+            BridgeMsg::StateDeferred { .. } => deferred += 1,
+            other => panic!("unexpected answer {other:?}"),
+        }
+        assert!(deferred <= 3, "the snapshot was deferred {deferred} times");
+    };
+    assert_eq!(deferred, 2, "audio keeps running for the first attempts");
+    assert_eq!(verified.len(), 1);
+    assert!((verified[0].1 - 0.5).abs() < 1e-6, "{verified:?}");
+    wait_state(&bridge, BridgeState::Active);
+    assert_eq!(bridge.block(&[]).status, BlockStatus::Ok as u32);
     assert_eq!(bridge.shutdown(), EXIT_OK);
 }
 

@@ -214,6 +214,9 @@ struct Bridge {
     values_due: Option<Instant>,
     values_sent: Option<Instant>,
     params_due: Option<Instant>,
+    /// Checked snapshots in a row that a value moved under while audio ran (see
+    /// `PAUSED_SNAPSHOT_AFTER`).
+    unstable_snapshots: u8,
     controller_due: Option<Instant>,
     controller_sent: Option<Instant>,
     shutdown: bool,
@@ -249,6 +252,7 @@ impl Bridge {
             values_due: None,
             values_sent: None,
             params_due: None,
+            unstable_snapshots: 0,
             controller_due: None,
             controller_sent: None,
             shutdown: false,
@@ -1024,7 +1028,40 @@ impl Bridge {
         // block plus the capture: they read evidence that the RT loop writes without atomics.
         // Everything in between compares plugin values, so a change made during the save
         // (macro or automation output, an editor edit) makes the second capture reject it.
-        let result = if let Some(active) = self.active.as_mut() {
+        let paused = self.unstable_snapshots >= PAUSED_SNAPSHOT_AFTER;
+        let mut unstable = false;
+        let result = if let Some(active) = self.active.as_mut()
+            && paused
+        {
+            // A value that the app or the plugin moves every block would defer forever. Hold
+            // audio for this one snapshot: nothing can move, so it completes (the old behavior).
+            self.region.set_bridge_state(BridgeState::Loaded);
+            let result = active.rt.snapshot(|delivered| {
+                let verified = capture_verified(
+                    plugin.as_mut(),
+                    expected,
+                    controller.as_deref(),
+                    &mut updates,
+                    Some(delivered),
+                )?;
+                Some(plugin.save_state().map(|state| {
+                    let stable = is_stable(
+                        plugin.as_mut(),
+                        &verified,
+                        controller.as_deref(),
+                        &mut updates,
+                    );
+                    unstable = !stable;
+                    stable.then_some((state, verified))
+                }))
+            });
+            self.region.set_bridge_state(BridgeState::Active);
+            match result {
+                Ok(Some(saved)) => saved.map_err(|error| error.to_string()),
+                Ok(None) => Ok(None),
+                Err(error) => Err(error),
+            }
+        } else if let Some(active) = self.active.as_mut() {
             let before = active.rt.snapshot(|delivered| {
                 capture_verified(
                     plugin.as_mut(),
@@ -1047,6 +1084,7 @@ impl Bridge {
                                 &mut updates,
                             )
                         })?;
+                        unstable = !stable;
                         Ok(stable.then_some((state, verified)))
                     }),
                 Ok(None) => Ok(None),
@@ -1077,6 +1115,11 @@ impl Bridge {
                 None => Ok(None),
             }
         };
+        if matches!(result, Ok(Some(_))) {
+            self.unstable_snapshots = 0;
+        } else if unstable {
+            self.unstable_snapshots = self.unstable_snapshots.saturating_add(1);
+        }
         for (id, value) in updates {
             self.queue_value(id, value);
         }
@@ -1368,6 +1411,12 @@ impl Drop for Bridge {
         self.close();
     }
 }
+
+/// After this many checked snapshots in a row that a moving value made unverifiable, the next
+/// one pauses audio for its whole save. Such a value (an automated or macro-driven parameter,
+/// or one the plugin moves itself) would otherwise defer every attempt while playback runs and
+/// leave a save without a state. The pause is the exception: normally audio keeps running.
+const PAUSED_SNAPSHOT_AFTER: u8 = 2;
 
 /// Moves controller values produced by processing into the plugin's editor controller.
 fn sync_controller(

@@ -19,12 +19,16 @@ pub const STALL: Duration = Duration::from_millis(50);
 pub const SLOW_STATE_KEY: u8 = 125;
 /// A note-on of this key makes the next state snapshot change `gain` while it serializes.
 pub const MUTATE_STATE_KEY: u8 = 124;
+/// A note-on of this key makes `gain` move every block while a state snapshot is being saved
+/// (and return to 0.5 afterwards), like automation would. It stays on.
+pub const DRIFT_KEY: u8 = 123;
 /// Delay for the state snapshot, long enough to exercise the project's shared timeout budget.
 pub const STATE_STALL: Duration = Duration::from_millis(600);
 
 #[derive(Default)]
 pub struct KpTestSlow {
     params: Arc<SlowParams>,
+    blocks: u32,
 }
 
 /// One unused `gain` parameter. The audio thread can arm a one-shot stall for the next state
@@ -34,6 +38,8 @@ pub struct SlowParams {
     pub gain: FloatParam,
     delay_state: AtomicBool,
     mutate_state: AtomicBool,
+    saving: AtomicBool,
+    drift: AtomicBool,
 }
 
 impl Default for SlowParams {
@@ -42,6 +48,8 @@ impl Default for SlowParams {
             gain: FloatParam::new("Gain", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 }),
             delay_state: AtomicBool::new(false),
             mutate_state: AtomicBool::new(false),
+            saving: AtomicBool::new(false),
+            drift: AtomicBool::new(false),
         }
     }
 }
@@ -54,7 +62,9 @@ unsafe impl Params for SlowParams {
 
     fn serialize_fields(&self) -> BTreeMap<String, String> {
         if self.delay_state.swap(false, Ordering::Relaxed) {
+            self.saving.store(true, Ordering::Relaxed);
             std::thread::sleep(STATE_STALL);
+            self.saving.store(false, Ordering::Relaxed);
         }
         if self.mutate_state.swap(false, Ordering::Relaxed) {
             // SAFETY: the pointer is valid; the value is atomic.
@@ -103,10 +113,23 @@ impl Plugin for KpTestSlow {
                     // Breaks the realtime rules on purpose.
                     SLOW_KEY => std::thread::sleep(STALL),
                     SLOW_STATE_KEY => self.params.delay_state.store(true, Ordering::Relaxed),
+                    DRIFT_KEY => self.params.drift.store(true, Ordering::Relaxed),
                     MUTATE_STATE_KEY => self.params.mutate_state.store(true, Ordering::Relaxed),
                     _ => {}
                 }
             }
+        }
+        if self.params.drift.load(Ordering::Relaxed) {
+            self.blocks = self.blocks.wrapping_add(1);
+            let value = if !self.params.saving.load(Ordering::Relaxed) {
+                0.5
+            } else if self.blocks % 2 == 0 {
+                0.2
+            } else {
+                0.8
+            };
+            // SAFETY: the pointer is valid; the value is atomic.
+            unsafe { self.params.gain.as_ptr()._internal_set_normalized_value(value) };
         }
         // The audio passes through: the wrapper has copied the input to the output.
         ProcessStatus::Normal
