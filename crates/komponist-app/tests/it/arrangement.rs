@@ -1546,7 +1546,10 @@ fn audio_data(h: &Harness<'_, App>, clip: ClipId) -> komponist_model::AudioClip 
     };
     a.clone()
 }
-fn audio_rect(h: &Harness<'_, App>, clip: ClipId) -> Rect {
+/// The arrangement rect of audio clip `clip`. Its label ends in the missing-file suffix, which
+/// the file pool's asynchronous check decides: step (bounded) until the node is there instead of
+/// assuming it after a fixed number of frames (#267).
+fn audio_rect(h: &mut Harness<'_, App>, clip: ClipId) -> Rect {
     let (_, c) = h.state().project().find_clip(clip).unwrap();
     let palette = komponist_tokens::TrackPalette::new(150);
     let model = komponist_ui::timeline::ClipModel::new(&c.name, &palette);
@@ -1559,16 +1562,24 @@ fn audio_rect(h: &Harness<'_, App>, clip: ClipId) -> Rect {
         komponist_ui::timeline::ClipState::REST,
     )
     .name;
-    clip_rect(
-        h,
-        &format!("{name}{}", Lang::De.a11y_audio_missing_suffix()),
-    )
+    let label = format!("{name}{}", Lang::De.a11y_audio_missing_suffix());
+    for _ in 0..100 {
+        let found = h
+            .query_all_by_role_and_label(Role::GridCell, &label)
+            .map(|n| n.rect())
+            .min_by(|a, b| a.top().total_cmp(&b.top()));
+        if let Some(rect) = found {
+            return rect;
+        }
+        h.step();
+    }
+    clip_rect(h, &label)
 }
 #[test]
 fn audio_gain_fades_and_source_trim_are_single_undo_steps() {
     let (p, id) = audio_project();
     let mut h = harness(App::headless(p));
-    let r = audio_rect(&h, id);
+    let r = audio_rect(&mut h, id);
     // The grip at unity is one third below the header. Move it down by twelve dB.
     let parts = komponist_ui::timeline::audio_parts(r, 0.0, 0.0, 0.0);
     drag(
@@ -1583,7 +1594,7 @@ fn audio_gain_fades_and_source_trim_are_single_undo_steps() {
     );
     undo(&mut h);
     assert_eq!(audio_data(&h, id).gain_db, 0.0);
-    let parts = komponist_ui::timeline::audio_parts(audio_rect(&h, id), 0.0, 0.0, 0.0);
+    let parts = komponist_ui::timeline::audio_parts(audio_rect(&mut h, id), 0.0, 0.0, 0.0);
     drag(
         parts.fade_in.center(),
         parts.fade_in.center() + vec2(18.0, 0.0),
@@ -1592,7 +1603,7 @@ fn audio_gain_fades_and_source_trim_are_single_undo_steps() {
     assert!(audio_data(&h, id).fade_in > Tick::ZERO);
     undo(&mut h);
     assert_eq!(audio_data(&h, id).fade_in, Tick::ZERO);
-    let r = audio_rect(&h, id);
+    let r = audio_rect(&mut h, id);
     drag(
         pos2(r.left() + 2.0, r.bottom() - 4.0),
         pos2(r.left() + 74.0, r.bottom() - 4.0),
@@ -1637,7 +1648,7 @@ fn audio_controls_expose_localized_accesskit_values() {
 fn audio_end_trim_never_loops_or_passes_the_source_end() {
     let (p, id) = audio_project();
     let mut h = harness(App::headless(p));
-    let r = audio_rect(&h, id);
+    let r = audio_rect(&mut h, id);
     drag(
         pos2(r.right() - 2.0, r.top() + 4.0),
         pos2(r.right() + 720.0, r.top() + 4.0),
@@ -1825,7 +1836,7 @@ fn audio_mixed_selection_stays_on_grid_and_wrong_track_refuses() {
             mode: SelectMode::Replace,
         })));
     h.run_steps(2);
-    let r = audio_rect(&h, audio);
+    let r = audio_rect(&mut h, audio);
     drag(
         pos2(r.center().x, r.bottom() - 4.0),
         pos2(r.center().x + 72.0, r.bottom() + 108.0),
@@ -1849,7 +1860,7 @@ fn audio_move_and_both_trim_edges_honor_disabled_grid_snapping() {
         .grid
         .ticks(h.state().project().meter)
         .0;
-    let r = audio_rect(&h, id);
+    let r = audio_rect(&mut h, id);
     drag(
         pos2(r.center().x, r.bottom() - 4.0),
         pos2(r.center().x + 19.0, r.bottom() - 4.0),
@@ -1863,7 +1874,7 @@ fn audio_move_and_both_trim_edges_honor_disabled_grid_snapping() {
         "disabled snap must keep the free move"
     );
     undo(&mut h);
-    let r = audio_rect(&h, id);
+    let r = audio_rect(&mut h, id);
     drag(
         pos2(r.left() + 2.0, r.bottom() - 4.0),
         pos2(r.left() + 21.0, r.bottom() - 4.0),
@@ -1878,7 +1889,7 @@ fn audio_move_and_both_trim_edges_honor_disabled_grid_snapping() {
     );
     assert!(audio_data(&h, id).offset > 0);
     undo(&mut h);
-    let r = audio_rect(&h, id);
+    let r = audio_rect(&mut h, id);
     drag(
         pos2(r.right() - 2.0, r.top() + 3.0),
         pos2(r.right() - 21.0, r.top() + 3.0),
