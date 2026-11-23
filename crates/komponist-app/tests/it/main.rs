@@ -60,6 +60,7 @@ mod piano_roll;
 mod plugin_frame;
 mod plugins;
 mod record;
+mod recovery;
 mod routing;
 mod sampler;
 mod shell;

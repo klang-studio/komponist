@@ -7,7 +7,9 @@
 //!
 //! Opens `PROJECT`, or shows the start screen (S09) with the recent projects
 //! (`recent.json` next to the settings file). On macOS, projects opened from Finder or dropped on
-//! the Dock icon (also at launch) take the same way (`App::open_files`, #96). `--demo` opens the demo project "Night Drive". The
+//! the Dock icon (also at launch) take the same way (`App::open_files`, #96). Recovery copies that
+//! an abnormal end left behind are offered before any of that (`App::offer_recovery`, #227; the
+//! folder is `komponist_app::recovery::default_root`). `--demo` opens the demo project "Night Drive". The
 //! audio output comes from the settings (`~/.config/komponist/settings.json`, on macOS
 //! `~/Library/Application Support/komponist/settings.json`, on Windows `%APPDATA%\komponist\settings.json`);
 //! `--null-audio` (or `KOMPONIST_NULL_AUDIO=1`) runs the engine on the null backend without any
@@ -232,6 +234,15 @@ fn run_app() -> eframe::Result {
     options.app_id = APP_ID.to_owned();
     options.pixels_per_point = args.scale.or(settings.ui_scale);
     let mut app = App::new(Document::new(first), engine, settings, settings_path).with_lang(lang);
+    // Crash recovery (#227): copies of unsaved changes in the per-user state folder, and a panic
+    // hook that writes the last one when the UI thread panics.
+    match komponist_app::recovery::default_root() {
+        Some(root) => app = app.with_recovery(root),
+        None => eprintln!("komponist: no home folder: recovery copies are off"),
+    }
+    if let Some(handle) = app.recovery_panic_handle() {
+        komponist_app::recovery::install_panic_hook(handle);
+    }
     if let Some(input) = app.settings().audio_input.clone()
         && let Err(error) = app.engine_mut().set_audio_input(Some(input))
     {
@@ -251,14 +262,13 @@ fn run_app() -> eframe::Result {
         // The start screen; a project argument opens through it (recent list, S06 check), and
         // a file that cannot be read leaves the start screen with the reason.
         app.show_start_screen();
-        if let Some(path) = args.project {
-            app.open_files(&[path]);
-        }
     }
-    if let Some(name) = &args.open_plugin
-        && !app.open_plugin_named(name)
-    {
-        eprintln!("komponist: --open-plugin: no device with plugin \"{name}\"");
+    // Recovery copies of other sessions are asked for first; the project argument waits behind
+    // them (with `--demo` the prompt shows over the demo, which a recovered copy replaces).
+    app.offer_recovery(args.project.filter(|_| !args.demo));
+    // `--open-plugin` looks in the document that opens: now, or after the recovery prompt.
+    if let Some(name) = args.open_plugin.clone() {
+        app.open_plugin_at_start(name);
     }
     // The Dock menu (#95) and documents from Finder (#96): methods on winit's application
     // delegate, added when the app launches.

@@ -23,6 +23,9 @@ pub mod dialog {
     pub const HEADER_PADDING_RIGHT: f32 = space::SPACE_2;
     /// The × button: `width:28px; height:28px`.
     pub const CLOSE: f32 = 28.0;
+    /// Gap between a header counter („1 von 2“) and the × button (crash-recovery proposal,
+    /// mockup 02: `gap:12px`).
+    pub const HEADER_COUNTER_GAP: f32 = space::SPACE_3;
     /// Padding of a dialog body (S06 `padding:20px 20px 0`, S08 `padding:20px`).
     pub const PADDING: f32 = space::SPACE_4 + space::SPACE_1;
     /// Footer padding (S08 `padding:14px 20px`).
@@ -258,6 +261,34 @@ pub mod start {
     pub const HINT_TOP: f32 = space::SPACE_2;
     /// Offset of the selection outline: `outlineOffset:1`.
     pub const OUTLINE_OFFSET: f32 = 1.0;
+    /// The chip „Sicherungskopie“ of a row with a recovery copy (#227, crash-recovery mockup 03):
+    /// `padding:2px 8px`.
+    pub const CHIP_PADDING: [f32; 2] = [space::SPACE_2, space::SPACE_0_5];
+    /// The room the name and path keep before the chip gives way (komponist's own value: about
+    /// twelve characters of a project name; the mockup's list is never this narrow).
+    pub const CHIP_MIN_NAME_WIDTH: f32 = 120.0;
+}
+
+/// The recovery prompt (#227; crash-recovery proposal, internal notes, mockups 01 and 02).
+pub mod recovery {
+    use super::space;
+
+    /// The small dialogs' width (S06, the unsaved-changes prompt).
+    pub const WIDTH: f32 = super::dialog::WIDTH;
+    /// Gap between the text, the facts and the notice: `gap:12px`.
+    pub const TEXT_GAP: f32 = space::SPACE_3;
+    /// Gap between a fact's label column and its value: `gap:16px`.
+    pub const FACT_GAP_X: f32 = space::SPACE_4;
+    /// Gap between the fact rows: `gap:4px`.
+    pub const FACT_GAP_Y: f32 = space::SPACE_1;
+    /// The notice is the settings dialog's device notice: its padding.
+    pub const NOTICE_PADDING: [f32; 2] = super::settings::NOTICE_PADDING;
+    /// The gap between its dot and its text.
+    pub const NOTICE_GAP: f32 = super::settings::NOTICE_GAP;
+    /// Its line height.
+    pub const NOTICE_LINE_HEIGHT: f32 = super::settings::NOTICE_LINE_HEIGHT;
+    /// Its dot.
+    pub const DOT: f32 = super::settings::DOT;
 }
 
 /// The "Neue Spur" dialog (owner request 2026-11-15; no screen shows it, so these are komponist's

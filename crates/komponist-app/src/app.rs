@@ -29,6 +29,7 @@
 mod clip_edits;
 mod devices;
 mod edit_dispatch;
+pub(crate) mod recovery;
 mod track_edits;
 mod track_macro_edits;
 
@@ -143,6 +144,11 @@ pub struct App {
     /// The language of the UI (`docs/I18N.md`). [`App::new`] starts in German, the test language;
     /// `main()` sets the resolved language with [`App::with_lang`].
     pub(crate) lang: Lang,
+    /// Crash recovery (#227): the copy of the open document and the copies other sessions left.
+    /// Off in [`App::new`]; `main()` turns it on with [`App::with_recovery`].
+    pub(crate) recovery: crate::recovery::Recovery,
+    /// The recovery prompt and what a recovered document needs ([`recovery`]).
+    pub(crate) recovery_ui: recovery::RecoveryUi,
 }
 
 /// Per-session state of the shell that is not view state.
@@ -248,6 +254,8 @@ impl App {
             frames: PluginFrames::default(),
             export: Default::default(),
             lang: Lang::default(),
+            recovery: crate::recovery::Recovery::disabled(),
+            recovery_ui: Default::default(),
         }
     }
 
@@ -592,6 +600,7 @@ impl App {
         self.update_plugin_frames(&ctx);
         self.engine.sync(&self.doc);
         self.sync_automation_preview();
+        self.update_recovery(&ctx);
         self.persist_panels();
         self.update_title(&ctx);
         self.schedule_repaint(&ctx);
@@ -1196,6 +1205,8 @@ impl App {
     /// Stops the engine, shuts the plugin bridges down and saves the settings (window closed). A
     /// running export is cancelled first, so the engine is back.
     pub fn shutdown(&mut self) {
+        // Quitting normally: the recovery copy goes (§2.3 of the crash-recovery proposal).
+        self.recovery.shutdown();
         self.shutdown_export();
         self.persist_panel_layout(true);
         self.shutdown_plugin_frames();
@@ -2260,6 +2271,14 @@ impl App {
             UiAction::SetPluginView { device, view } => self.set_plugin_view(device, view),
             UiAction::SetPluginKeepOnTop { device, on } => self.set_keep_on_top(device, on),
             UiAction::CloseDialog => {
+                // Esc on the recovery prompt is „Später“: nothing is lost by closing it.
+                if matches!(
+                    self.dialogs.overlay,
+                    Some(crate::dialogs::Overlay::Recovery)
+                ) {
+                    self.answer_recovery(crate::dialogs::recovery::Answer::Later);
+                    return;
+                }
                 // The file browser or the unsaved-changes prompt closes first.
                 if self.close_overlay() {
                     return;
@@ -2772,6 +2791,9 @@ impl App {
         self.engine.send(Command::Stop);
         self.engine.send(Command::Locate(Tick::ZERO));
         self.engine.reset();
+        // The old document's recovery copy goes; a recovered copy is adopted afterwards.
+        self.recovery.document_replaced(None);
+        self.recovery_ui.save_asks = false;
         self.doc = doc;
         self.dialogs.repaired = 0;
         self.param_undo.forget();

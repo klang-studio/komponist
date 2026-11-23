@@ -46,6 +46,11 @@ pub struct RecentRow {
     pub hues: Vec<u16>,
     /// The file cannot be read.
     pub missing: bool,
+    /// A recovery copy of this project waits (#227): the row shows the chip „Sicherungskopie“, and
+    /// opening it asks for the copy first.
+    pub recovery: Option<crate::recovery::Id>,
+    /// A row of a copy alone, not of the recent list (an untitled project has an empty `path`).
+    pub copy_only: bool,
 }
 
 /// The colour of a system row's dot.
@@ -102,6 +107,8 @@ pub enum Output {
     OpenRecent(PathBuf),
     /// Entf: remove the entry from the list.
     RemoveRecent(PathBuf),
+    /// Open a row with a recovery copy: ask for the copy, then open the file (if it has one).
+    Recovery(crate::recovery::Id),
     /// A system row: the settings at its section.
     Settings(SettingsSection),
 }
@@ -162,6 +169,8 @@ pub fn recent_row(
                 missing: false,
                 path,
                 path_label,
+                recovery: None,
+                copy_only: false,
             }
         }
         None => RecentRow {
@@ -172,6 +181,8 @@ pub fn recent_row(
             missing: true,
             path,
             path_label,
+            recovery: None,
+            copy_only: false,
         },
     }
 }
@@ -451,10 +462,13 @@ fn right_column(
     let inner = rect.shrink2(vec2(pad_x, pad_y));
     let width = inner.width().min(m::RECENT_MAX_WIDTH);
     let shown = filtered(&model.recent, &view.filter);
+    // A file row is found by its path, a copy's own row by its copy (two untitled copies have the
+    // same empty path).
     let remembered_index = view.selected_path.as_ref().and_then(|path| {
-        shown
-            .iter()
-            .position(|&index| model.recent[index].path == *path)
+        shown.iter().position(|&index| {
+            let row = &model.recent[index];
+            row.path == *path && copy_key(row) == view.selected_copy.as_ref()
+        })
     });
     let selection_disappeared = view.selected_path.is_some() && remembered_index.is_none();
     view.selected =
@@ -481,11 +495,13 @@ fn right_column(
         // A disappearing row may change the fallback selection. Do not act on that replacement
         // before it has been shown to the user.
         if !selection_disappeared && let Some(&i) = shown.get(view.selected) {
+            let row = &model.recent[i];
             if enter {
-                out.push(Output::OpenRecent(model.recent[i].path.clone()));
+                out.push(open(row));
             }
-            if delete {
-                out.push(Output::RemoveRecent(model.recent[i].path.clone()));
+            // A copy's own row has no list entry to remove.
+            if delete && !row.copy_only {
+                out.push(Output::RemoveRecent(row.path.clone()));
             }
         }
     }
@@ -547,13 +563,13 @@ fn right_column(
             let r = recent_row_ui(ui, width, row, k == view.selected);
             if r.clicked() {
                 view.selected = k;
-                out.push(Output::OpenRecent(row.path.clone()));
+                out.push(open(row));
             }
         }
     });
-    view.selected_path = shown
-        .get(view.selected)
-        .map(|&index| model.recent[index].path.clone());
+    let selected = shown.get(view.selected).map(|&index| &model.recent[index]);
+    view.selected_path = selected.map(|row| row.path.clone());
+    view.selected_copy = selected.and_then(copy_key).cloned();
     col.add_space(m::RIGHT_GAP + m::HINT_TOP);
     let g = styled(
         &col,
@@ -576,12 +592,30 @@ fn right_column(
     }
 }
 
+/// What opening `row` means: its file, or, with a waiting copy, the prompt for that copy first.
+fn open(row: &RecentRow) -> Output {
+    match &row.recovery {
+        Some(id) => Output::Recovery(id.clone()),
+        None => Output::OpenRecent(row.path.clone()),
+    }
+}
+
+/// The copy that tells a copy's own row apart (`None` for a row of the recent list).
+fn copy_key(row: &RecentRow) -> Option<&crate::recovery::Id> {
+    row.recovery.as_ref().filter(|_| row.copy_only)
+}
+
 /// One recent project (`recent` `s`): colour bars, name and path, meta, date; the selected row on
-/// `surface.3` with a 1 px accent outline 1 px outside.
+/// `surface.3` with a 1 px accent outline 1 px outside. A row with a recovery copy shows the chip
+/// „Sicherungskopie“ at the right end of the name column (#227).
 fn recent_row_ui(ui: &mut Ui, width: f32, row: &RecentRow, selected: bool) -> egui::Response {
+    let t = komponist_ui::lang(ui.ctx());
     let ppp = ui.pixels_per_point();
     let (rect, response) = ui.allocate_exact_size(vec2(width, m::ROW_HEIGHT), Sense::click());
-    let name = format!("{}, {}", row.name, row.meta);
+    let mut name = format!("{}, {}", row.name, row.meta);
+    if row.recovery.is_some() {
+        name = t.start_recovery_row(name);
+    }
     response.widget_info(|| egui::WidgetInfo::selected(Role::ListItem, true, selected, &name));
     let st = state::State::of(ui, &response);
     let painter = ui.painter();
@@ -617,7 +651,17 @@ fn recent_row_ui(ui: &mut Ui, width: f32, row: &RecentRow, selected: bool) -> eg
     let text_x = inner.left() + m::BARS_COLUMN + m::ROW_GAP;
     let date_x = inner.right() - m::DATE_COLUMN;
     let meta_x = date_x - m::ROW_GAP - m::META_COLUMN;
-    let text_right = meta_x - m::ROW_GAP;
+    let mut text_right = meta_x - m::ROW_GAP;
+    // The chip only where the name keeps its room; in a narrow window the row's accessible name
+    // still says that a copy waits.
+    if row.recovery.is_some() {
+        let chip = recovery_chip_galley(ui, t);
+        let left = text_right - chip_size(&chip).x;
+        if left - m::ROW_GAP - text_x >= m::CHIP_MIN_NAME_WIDTH {
+            paint_recovery_chip(ui, chip, inner, text_right);
+            text_right = left - m::ROW_GAP;
+        }
+    }
     // Name and path.
     let name_color = if row.missing {
         color::TEXT_2
@@ -667,6 +711,45 @@ fn recent_row_ui(ui: &mut Ui, width: f32, row: &RecentRow, selected: bool) -> eg
     response
 }
 
+/// The text of the chip „Sicherungskopie“ (`type.ui`, `accent`).
+fn recovery_chip_galley(ui: &Ui, t: Lang) -> std::sync::Arc<egui::Galley> {
+    styled(
+        ui,
+        t.start_recovery_chip(),
+        &typography::UI,
+        color32(color::ACCENT),
+        None,
+    )
+}
+
+/// The chip's size around its text.
+fn chip_size(g: &egui::Galley) -> egui::Vec2 {
+    let [pad_x, pad_y] = m::CHIP_PADDING;
+    vec2(g.size().x.ceil() + 2.0 * pad_x, g.size().y + 2.0 * pad_y)
+}
+
+/// Paints the chip (`accent.surface`) with its right edge at `right`, centred in `row`.
+fn paint_recovery_chip(ui: &Ui, g: std::sync::Arc<egui::Galley>, row: Rect, right: f32) {
+    let ppp = ui.pixels_per_point();
+    let [pad_x, _] = m::CHIP_PADDING;
+    let size = chip_size(&g);
+    let chip = px::snap_rect(
+        Rect::from_min_size(pos2(right - size.x, row.center().y - size.y / 2.0), size),
+        ppp,
+    );
+    px::fill(
+        ui.painter(),
+        chip,
+        radius::S,
+        color32(color::ACCENT_SURFACE),
+    );
+    ui.painter().galley(
+        w::text_pos(chip, &g, chip.left() + pad_x, ppp),
+        g,
+        Color32::PLACEHOLDER,
+    );
+}
+
 impl crate::App {
     /// Builds the start screen model from summaries available on this frame.
     pub(crate) fn start_model(&mut self, ctx: &egui::Context) -> Model {
@@ -687,7 +770,9 @@ impl crate::App {
             .refresh(ctx, &self.recent.projects, |path| {
                 ProjectSummary::read(path).ok()
             });
-        let recent = self.dialogs.start.rows(t, SystemTime::now());
+        let now = SystemTime::now();
+        let mut recent = self.dialogs.start.rows(t, now);
+        self.recovery_rows(&mut recent, now);
 
         let audio = match self.engine.audio_state() {
             AudioState::NoDevice { .. } => (Health::Error, t.start_audio_none().to_owned()),
@@ -798,6 +883,7 @@ impl crate::App {
                         .push(Action::Project(ProjectAction::OpenPath(path)));
                 }
                 Output::RemoveRecent(path) => self.forget(&path),
+                Output::Recovery(id) => self.ask_recovery_of(id),
                 Output::Settings(section) => {
                     self.queue.push(Action::Ui(UiAction::OpenSettings(section)));
                 }
@@ -819,6 +905,8 @@ mod tests {
             date: String::new(),
             hues: Vec::new(),
             missing: false,
+            recovery: None,
+            copy_only: false,
         }
     }
 

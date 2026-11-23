@@ -191,7 +191,7 @@ static UNFLUSHED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::ne
 /// `create_dir_all(dir)`, then (Unix) flushes the parent folder of every folder it had to
 /// create, up to the first existing ancestor, so the new folders themselves survive a power loss.
 /// Flushes that failed on an earlier call for an ancestor of `dir` are retried here.
-fn create_dirs_durably(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn create_dirs_durably(dir: &Path) -> std::io::Result<()> {
     let missing: Vec<PathBuf> = dir
         .ancestors()
         .take_while(|path| !path.exists())
@@ -527,10 +527,11 @@ impl App {
             ProjectAction::Quit => self.guard(Pending::Quit),
             ProjectAction::OpenPath(path) => self.guard(Pending::OpenPath(path)),
             ProjectAction::Save => match self.project_path.clone() {
-                Some(path) => {
+                // A recovered copy whose file is gone asks for a place (crash recovery, variant d).
+                Some(path) if !self.recovery_ui.save_asks => {
                     self.save_to(&path);
                 }
-                None => self.open_file_browser(Purpose::Save),
+                _ => self.open_file_browser(Purpose::Save),
             },
             ProjectAction::SaveAs => self.open_file_browser(Purpose::Save),
             ProjectAction::ReplaceAudio(clip) => {
@@ -579,6 +580,10 @@ impl App {
                 .as_deref()
                 .is_some_and(|open| same(open, &path))
         {
+            return;
+        }
+        // At launch the recovery prompt comes first; the file waits behind it.
+        if self.defer_behind_recovery(&path) {
             return;
         }
         self.dispatch(Action::Project(ProjectAction::OpenPath(path)));
@@ -690,10 +695,23 @@ impl App {
         std::mem::take(&mut self.dialogs.close_now)
     }
 
+    /// Opens the project file at `path`: asks first if a recovery copy of it waits (#227), then
+    /// [`App::open_path_now`].
+    pub(crate) fn open_path(&mut self, path: PathBuf) {
+        // An open that arrives while the recovery prompt is up (a file dropped on the start
+        // screen) waits behind it.
+        if self.defer_behind_recovery(&path) {
+            return;
+        }
+        if !self.ask_before_opening(&path) {
+            self.open_path_now(path);
+        }
+    }
+
     /// Opens the project file at `path` (no questions): resets the engine, remembers the file,
     /// checks the plugins (S06). A file that cannot be read leaves everything as it was and says
     /// why.
-    pub(crate) fn open_path(&mut self, path: PathBuf) {
+    pub(crate) fn open_path_now(&mut self, path: PathBuf) {
         let loaded = resolve_project_parent(path.clone())
             .and_then(|resolved| load_project_repaired(&resolved).map(|loaded| (resolved, loaded)));
         match loaded {
@@ -978,6 +996,7 @@ impl App {
                     self.doc.mark_saved();
                 }
                 self.project_path = Some(path.clone());
+                self.recovery_ui.save_asks = false;
                 self.update_deferred_plugin_states(rebased_deferred);
                 let dir = self.project_dir();
                 let host = self.engine.host_mut();
@@ -1065,7 +1084,7 @@ impl App {
     }
 
     /// Puts `path` at the front of the recent list and saves the list.
-    fn remember(&mut self, path: PathBuf) {
+    pub(crate) fn remember(&mut self, path: PathBuf) {
         self.recent.add(path);
         self.dialogs.start.invalidate();
         self.save_recent();
@@ -1090,10 +1109,12 @@ impl App {
     /// Opens the file browser for `purpose` in the project's folder (else the last one, else the
     /// home folder).
     pub(crate) fn open_file_browser(&mut self, purpose: Purpose) {
+        // A recovered project whose folder is gone starts elsewhere (crash recovery, variant d).
         let dir = self
             .project_path
             .as_deref()
             .and_then(Path::parent)
+            .filter(|dir| dir.is_dir())
             .map(Path::to_path_buf)
             .or_else(|| self.dialogs.last_dir.clone())
             .or_else(crate::dirs::home_dir)
@@ -1157,12 +1178,13 @@ impl App {
             Answer::Save => {
                 self.stop_take();
                 match self.project_path.clone() {
-                    Some(path) => {
+                    // As Ctrl S: a recovered copy whose file is gone asks for a place first.
+                    Some(path) if !self.recovery_ui.save_asks => {
                         if self.save_to(&path) {
                             self.proceed(next);
                         }
                     }
-                    None => {
+                    _ => {
                         self.open_file_browser(Purpose::Save);
                         self.dialogs.pending = Some(next);
                     }

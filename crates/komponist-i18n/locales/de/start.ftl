@@ -71,3 +71,9 @@ start-plugins-scanning = Scan läuft · Einstellungen { $shortcut }
 
 # System row plugins after a scan; `$found` is the plugin count.
 start-plugins-found = { $found } gefunden · Einstellungen { $shortcut }
+
+# Chip on a recent row whose project has a recovery copy (#227, crash-recovery mockup 03).
+start-recovery-chip = Sicherungskopie
+
+# Accessible name of such a row; `$row` is the row's own name ("Night Drive, 124 BPM · 6 Spuren").
+start-recovery-row = { $row }, Sicherungskopie vorhanden
