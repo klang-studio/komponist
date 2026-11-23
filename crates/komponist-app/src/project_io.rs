@@ -109,8 +109,26 @@ pub fn load_project(path: &Path) -> Result<Project, ProjectIoError> {
 }
 
 /// Writes `project` to `path` through a temporary file next to it and a rename. The folder must
-/// exist: saving never creates folders (a mistyped name must not leave folders behind).
+/// exist: saving never creates folders (a mistyped name must not leave folders behind). A
+/// failed durability flush after a successful publication is logged, not an error; use
+/// [`save_project_reporting`] to see it.
 pub fn save_project(path: &Path, project: &Project) -> Result<(), ProjectIoError> {
+    save_project_reporting(path, project).map(|not_durable| {
+        if let Some(error) = not_durable {
+            eprintln!(
+                "komponist: {}: not flushed to disk: {error}",
+                path.display()
+            );
+        }
+    })
+}
+
+/// [`save_project`] that returns the durability failure of a file that *was* published: `Ok(Some(_))`
+/// means the new file is in place but the folder entry may not survive a power loss.
+pub fn save_project_reporting(
+    path: &Path,
+    project: &Project,
+) -> Result<Option<std::io::Error>, ProjectIoError> {
     let json = persist::to_json(project).map_err(|e| ProjectIoError::Format(path.to_owned(), e))?;
     write_atomic(path, &json, false).map_err(|error| ProjectIoError::Io(path.to_owned(), error))
 }
@@ -118,13 +136,21 @@ pub fn save_project(path: &Path, project: &Project) -> Result<(), ProjectIoError
 /// Writes and closes a file in an exclusive staging directory on the destination filesystem.
 /// Renaming publishes the whole file at once, and dropping the temporary directory cleans up
 /// staging after either a success or an error. Only config writers create a missing parent.
-pub(crate) fn write_atomic(path: &Path, text: &str, create_dir: bool) -> std::io::Result<()> {
+///
+/// `Err` means nothing was published. `Ok(Some(error))` means the file *was* published but making
+/// the rename durable (the parent folder's fsync, Unix) failed: callers keep what the file refers
+/// to and may warn.
+pub(crate) fn write_atomic(
+    path: &Path,
+    text: &str,
+    create_dir: bool,
+) -> std::io::Result<Option<std::io::Error>> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     if create_dir {
-        std::fs::create_dir_all(parent)?;
+        create_dirs_durably(parent)?;
     }
 
     let mut builder = tempfile::Builder::new();
@@ -141,8 +167,139 @@ pub(crate) fn write_atomic(path: &Path, text: &str, create_dir: bool) -> std::io
         .write(true)
         .open(&staged_file)?;
     file.write_all(text.as_bytes())?;
+    // The data must be on disk before the rename publishes it: on XFS and btrfs a power loss
+    // after a rename without this can leave a zero-length file in place of the good one.
+    file.sync_all()?;
     drop(file);
-    std::fs::rename(staged_file, path)
+    durable_rename(&staged_file, path, parent)
+}
+
+/// `create_dir_all(dir)`, then (Unix) flushes the parent folder of every folder it had to
+/// create, up to the first existing ancestor, so the new folders themselves survive a power loss.
+fn create_dirs_durably(dir: &Path) -> std::io::Result<()> {
+    let mut created: Vec<&Path> = dir.ancestors().take_while(|path| !path.exists()).collect();
+    std::fs::create_dir_all(dir)?;
+    // Outermost first; each new folder's entry lives in its parent.
+    created.reverse();
+    for new in created {
+        if let Some(parent) = containing_dir(new) {
+            sync_directory(parent)?;
+        }
+    }
+    Ok(())
+}
+
+/// The folder whose entry list holds `path`: its parent, or `.` for a single relative component.
+fn containing_dir(path: &Path) -> Option<&Path> {
+    path.parent().map(|parent| {
+        if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        }
+    })
+}
+
+/// Flushes the entries of folder `dir`. Filesystems that reject fsync on a folder are fine.
+fn sync_directory(dir: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if tests::FAIL_DIRECTORY_SYNC.with(std::cell::Cell::get) {
+        return Err(std::io::Error::other("injected directory sync failure"));
+    }
+    #[cfg(unix)]
+    {
+        match std::fs::File::open(dir).and_then(|dir| dir.sync_all()) {
+            Err(error) if !directory_sync_unsupported(&error) => Err(error),
+            _ => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        Ok(())
+    }
+}
+
+/// Renames `from` over `to` (both in `parent`) and makes the rename itself durable. The rename
+/// publishes the file; a flush failure afterwards comes back as `Ok(Some(error))`.
+#[cfg(unix)]
+fn durable_rename(
+    from: &Path,
+    to: &Path,
+    parent: &Path,
+) -> std::io::Result<Option<std::io::Error>> {
+    std::fs::rename(from, to)?;
+    Ok(sync_directory(parent).err())
+}
+
+#[cfg(unix)]
+fn directory_sync_unsupported(error: &std::io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(code) if code == libc::EINVAL || code == libc::ENOTSUP || code == libc::EOPNOTSUPP
+    )
+}
+
+/// Renames `from` over `to` and returns only once the move is flushed to disk
+/// (`MOVEFILE_WRITE_THROUGH`); `std::fs::rename` replaces the target but does not wait.
+#[cfg(windows)]
+fn durable_rename(
+    from: &Path,
+    to: &Path,
+    _parent: &Path,
+) -> std::io::Result<Option<std::io::Error>> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    let (from, to) = (windows_wide(from)?, windows_wide(to)?);
+    // SAFETY: both buffers are NUL-terminated and outlive the call.
+    let moved = unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(None)
+    }
+}
+
+/// `path` as a NUL-terminated UTF-16 string for a Win32 call. Like `std::fs`, a path that does not
+/// fit `MAX_PATH` becomes absolute and verbatim (`\\?\` or `\\?\UNC\`), which the raw API needs
+/// without the long-path opt-in.
+#[cfg(windows)]
+fn windows_wide(path: &Path) -> std::io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    const MAX_PATH: usize = 260;
+    let units = |path: &Path| path.as_os_str().encode_wide().collect::<Vec<u16>>();
+    let slash = u16::from(b'\\');
+    if units(path).contains(&0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path contains a NUL",
+        ));
+    }
+    let mut wide = units(path);
+    if !wide.starts_with(&[slash, slash, u16::from(b'?'), slash]) {
+        // The limit applies to the resolved path: a short relative path from a long working
+        // directory needs the prefix too.
+        let absolute = units(&std::path::absolute(path)?);
+        wide = if absolute.len() < MAX_PATH {
+            absolute
+        } else if absolute.starts_with(&[slash, slash]) {
+            r"\\?\UNC\"
+                .encode_utf16()
+                .chain(absolute[2..].iter().copied())
+                .collect()
+        } else {
+            r"\\?\".encode_utf16().chain(absolute).collect()
+        };
+    }
+    wide.push(0);
+    Ok(wide)
 }
 
 /// `path` with the `.komponist` extension (added if it has another one or none).
@@ -244,7 +401,16 @@ impl RecentList {
     pub fn save(&self, path: &Path) -> Result<(), ProjectIoError> {
         let text = serde_json::to_string_pretty(self)
             .map_err(|e| ProjectIoError::Recent(path.to_owned(), e))?;
-        write_atomic(path, &text, true).map_err(|error| ProjectIoError::Io(path.to_owned(), error))
+        write_atomic(path, &text, true)
+            .map(|not_durable| {
+                if let Some(error) = not_durable {
+                    eprintln!(
+                        "komponist: {}: not flushed to disk: {error}",
+                        path.display()
+                    );
+                }
+            })
+            .map_err(|error| ProjectIoError::Io(path.to_owned(), error))
     }
 
     /// Puts `path` at the front (once), keeping [`RECENT_LIMIT`] entries.
@@ -732,17 +898,17 @@ impl App {
                 if let Some(name) = rename {
                     project.name = name.clone();
                 }
-                save_project(&path, &project)
+                save_project_reporting(&path, &project)
             }
             (None, Some(name)) => {
                 let mut renamed = Project::clone(document.project());
                 renamed.name = name.clone();
-                save_project(&path, &renamed)
+                save_project_reporting(&path, &renamed)
             }
-            (None, None) => save_project(&path, document.project()),
+            (None, None) => save_project_reporting(&path, document.project()),
         };
         match written {
-            Ok(()) => {
+            Ok(not_durable) => {
                 self.doc = document;
                 if let Some(name) = rename {
                     self.untracked(ProjectProp::Name(name));
@@ -771,6 +937,9 @@ impl App {
                 self.remember(path);
                 self.recordings_saved(recordings);
                 self.report_missing_save_snapshots(&outcome.unavailable);
+                if let Some(error) = not_durable {
+                    self.report_save_not_durable(&error);
+                }
                 true
             }
             Err(error) => self.report_project_save_error(error),
@@ -813,6 +982,17 @@ impl App {
             // The status bar clips from the right; the project path can be arbitrarily long.
             warnings.push(std::mem::take(&mut status.text));
             status.text = warnings.join(" · ");
+            status.kind = StatusKind::Error;
+        }
+    }
+
+    /// The project file is published, but the folder entry was not flushed to disk: the save
+    /// counts as done (the recordings it refers to stay), and the status says so.
+    fn report_save_not_durable(&mut self, error: &std::io::Error) {
+        eprintln!("komponist: project not flushed to disk: {error}");
+        let warning = self.lang.project_save_not_durable();
+        if let Some(status) = &mut self.ui.status {
+            status.text = format!("{} · {warning}", status.text);
             status.kind = StatusKind::Error;
         }
     }
@@ -1037,6 +1217,12 @@ impl App {
 mod tests {
     use super::*;
     use komponist_model::fixtures::demo_project;
+
+    thread_local! {
+        /// Makes [`sync_directory`] fail on this thread, as a filesystem with a broken fsync would.
+        pub(super) static FAIL_DIRECTORY_SYNC: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -1399,6 +1585,113 @@ mod tests {
     }
 
     #[test]
+    fn write_atomic_replaces_the_target_and_leaves_no_staging_files() {
+        let dir = scratch("atomic");
+        let path = dir.join("nested/settings.json");
+        // Creates the folder on request, replaces on the second write.
+        write_atomic(&path, "one", true).unwrap();
+        write_atomic(&path, "two", true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two");
+        assert_eq!(std::fs::read_dir(dir.join("nested")).unwrap().count(), 1);
+        // A target that cannot be replaced (a folder) is an error: it stays and staging is gone.
+        let blocked = dir.join("nested/blocked");
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::write(blocked.join("keep"), "x").unwrap();
+        assert!(write_atomic(&blocked, "three", true).is_err());
+        assert!(blocked.join("keep").exists());
+        let names: Vec<_> = std::fs::read_dir(dir.join("nested"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+    }
+
+    /// A destination with a NUL is refused before anything is published: the file whose name is
+    /// the part before the NUL stays as it was, and no staging folder is left.
+    #[test]
+    fn a_destination_with_a_nul_changes_nothing() {
+        let dir = scratch("nul");
+        std::fs::create_dir_all(&dir).unwrap();
+        let kept = dir.join("a");
+        std::fs::write(&kept, "old").unwrap();
+        let mut name = dir.join("a").into_os_string();
+        name.push("\u{0}b");
+        assert!(write_atomic(Path::new(&name), "new", false).is_err());
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "old");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_failed_directory_sync_is_reported_after_the_file_is_published() {
+        let dir = scratch("sync-fail");
+        let path = dir.join("a/b/settings.json");
+        FAIL_DIRECTORY_SYNC.with(|flag| flag.set(true));
+        let result = write_atomic(&path, "one", true);
+        FAIL_DIRECTORY_SYNC.with(|flag| flag.set(false));
+        // Creating the folders is not published yet: that failure is an error.
+        #[cfg(unix)]
+        assert!(result.is_err());
+        #[cfg(not(unix))]
+        let _ = result;
+        write_atomic(&path, "one", true).unwrap();
+        FAIL_DIRECTORY_SYNC.with(|flag| flag.set(true));
+        let result = write_atomic(&path, "two", true);
+        FAIL_DIRECTORY_SYNC.with(|flag| flag.set(false));
+        // The file is replaced either way; Unix reports the failed flush next to it.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two");
+        assert_eq!(result.unwrap().is_some(), cfg!(unix));
+        assert_eq!(std::fs::read_dir(dir.join("a/b")).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_failed_directory_sync_keeps_the_recordings_the_project_refers_to() {
+        let dir = scratch("sync-fail-recordings");
+        std::fs::create_dir_all(dir.join("prov")).unwrap();
+        let take = dir.join("prov/Take 1.wav");
+        std::fs::write(&take, b"RIFF").unwrap();
+        let mut app = App::headless(Project::new("Durable"));
+        app.track_provisional_audio(take);
+        let path = dir.join("Durable.komponist");
+        FAIL_DIRECTORY_SYNC.with(|flag| flag.set(true));
+        let saved = app.save_to(&path);
+        FAIL_DIRECTORY_SYNC.with(|flag| flag.set(false));
+        assert!(saved, "a published project counts as saved");
+        assert!(path.exists());
+        if cfg!(unix) {
+            assert!(
+                dir.join("Takes/Take 1.wav").exists(),
+                "the take the saved project refers to must survive"
+            );
+            let status = app.ui.status.as_ref().unwrap();
+            let warning = app.lang.project_save_not_durable();
+            assert!(status.text.ends_with(warning), "{}", status.text);
+        }
+    }
+
+    #[test]
+    fn a_broken_recent_list_survives_remember() {
+        let dir = scratch("recent-broken");
+        std::fs::create_dir_all(&dir).unwrap();
+        let settings = dir.join("settings.json");
+        let recent = recent_path(&settings);
+        std::fs::write(&recent, "{ kaputt").unwrap();
+        let mut app = App::new(
+            Document::new(Project::new("Recent")),
+            crate::engine_sync::EngineSync::null_with_midi(
+                Box::new(crate::device_host::BuiltinHost::new()),
+                komponist_audio::MidiReceiver::disconnected(),
+            ),
+            crate::settings::Settings::default(),
+            Some(settings),
+        );
+        assert!(app.recent().is_empty());
+        app.remember(PathBuf::from("/p/a.komponist"));
+        // The session keeps working with an in-memory list; the file is untouched.
+        assert_eq!(app.recent(), [PathBuf::from("/p/a.komponist")]);
+        assert_eq!(std::fs::read_to_string(&recent).unwrap(), "{ kaputt");
+    }
+
+    #[test]
     fn the_recent_list_is_unique_bounded_and_persisted() {
         let mut list = RecentList::default();
         for i in 0..20 {
@@ -1428,5 +1721,48 @@ mod tests {
             Err(ProjectIoError::Recent(..))
         ));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A new folder's entry lives in its parent; a single relative component lives in `.`.
+    #[test]
+    fn a_new_folder_is_flushed_in_its_containing_folder() {
+        assert_eq!(
+            super::containing_dir(Path::new("nested")),
+            Some(Path::new("."))
+        );
+        assert_eq!(
+            super::containing_dir(Path::new("a/b")),
+            Some(Path::new("a"))
+        );
+        assert_eq!(super::containing_dir(Path::new("/x")), Some(Path::new("/")));
+        assert_eq!(super::containing_dir(Path::new("/")), None);
+    }
+
+    /// `MoveFileExW` gets NUL-free, absolute paths; resolved paths of `MAX_PATH` or more get the
+    /// verbatim prefix, also when the input was a short relative path.
+    #[cfg(windows)]
+    #[test]
+    fn windows_paths_are_resolved_before_the_length_check() {
+        use std::os::windows::ffi::OsStrExt;
+        let text = |wide: Vec<u16>| String::from_utf16(&wide[..wide.len() - 1]).unwrap();
+        assert_eq!(
+            super::windows_wide(Path::new("a\u{0}b"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        // A short relative name resolves against the working directory; it gets the prefix only
+        // when the resolved path reaches the limit (a deeply nested checkout).
+        let short = text(super::windows_wide(Path::new("short.komponist")).unwrap());
+        let resolved = std::path::absolute("short.komponist").unwrap();
+        let resolved_len = resolved.as_os_str().encode_wide().count();
+        assert_eq!(short.starts_with(r"\\?\"), resolved_len >= 260, "{short}");
+        assert!(short.ends_with(r"short.komponist"));
+        let long = format!(r"C:\{}\x.komponist", "d".repeat(300));
+        assert!(text(super::windows_wide(Path::new(&long)).unwrap()).starts_with(r"\\?\C:\"));
+        let unc = format!(r"\\server\share\{}\x.komponist", "d".repeat(300));
+        assert!(
+            text(super::windows_wide(Path::new(&unc)).unwrap()).starts_with(r"\\?\UNC\server\")
+        );
     }
 }
