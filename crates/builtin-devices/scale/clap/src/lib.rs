@@ -108,10 +108,10 @@ enum ScaleType {
     #[name = "Locrian"]
     Locrian,
     #[id = "pentatonic-major"]
-    #[name = "Major Pentatonic"]
+    #[name = "Pentatonic Major"]
     PentatonicMajor,
     #[id = "pentatonic-minor"]
-    #[name = "Minor Pentatonic"]
+    #[name = "Pentatonic Minor"]
     PentatonicMinor,
     #[id = "blues"]
     #[name = "Blues"]
@@ -175,4 +175,10 @@ mod tests {
     fn restores_the_same_parameter_id_and_value_in_another_instance() {
         midi_contract::assert_state_round_trip::<ScalePlugin>("root");
     }
+}
+
+#[cfg(test)]
+#[test]
+fn choice_bindings_match_the_model() {
+    komponist_bundled_clap_adapter::assert_choice_bindings::<Scale>();
 }

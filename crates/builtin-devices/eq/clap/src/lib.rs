@@ -13,18 +13,18 @@ struct Eq;
 #[derive(Clone, Copy, Enum, PartialEq)]
 enum Shape {
     #[id = "low-cut"]
-    #[name = "Low cut"]
+    #[name = "LC"]
     LowCut,
     #[id = "low-shelf"]
-    #[name = "Low shelf"]
+    #[name = "LS"]
     LowShelf,
     #[id = "bell"]
     Bell,
     #[id = "high-shelf"]
-    #[name = "High shelf"]
+    #[name = "HS"]
     HighShelf,
     #[id = "high-cut"]
-    #[name = "High cut"]
+    #[name = "HC"]
     HighCut,
 }
 
@@ -108,4 +108,10 @@ mod layout_contract;
 #[test]
 fn localized_fixed_layout_matches_the_exported_clap_parameters() {
     layout_contract::assert_localized_bindings::<EqPlugin>(31);
+}
+
+#[cfg(test)]
+#[test]
+fn choice_bindings_match_the_model() {
+    komponist_bundled_clap_adapter::assert_choice_bindings::<Eq>();
 }

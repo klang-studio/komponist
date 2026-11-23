@@ -111,3 +111,9 @@ mod tests {
         midi_contract::assert_state_round_trip::<ArpeggiatorPlugin>("mode");
     }
 }
+
+#[cfg(test)]
+#[test]
+fn choice_bindings_match_the_model() {
+    komponist_bundled_clap_adapter::assert_choice_bindings::<Arpeggiator>();
+}
