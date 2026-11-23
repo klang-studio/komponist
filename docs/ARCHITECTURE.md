@@ -315,7 +315,10 @@ small job sets and unavailable workers use the serial path.
 
 The dispatcher claims unstarted jobs itself and waits only for work another thread already owns.
 A late owned job cannot be abandoned or processed twice; deadline overruns are counted, and the
-dispatcher continues waiting for completion. `worker_threads` supports automatic sizing or an
+dispatcher continues waiting for completion. A job that panics never ends a batch early: on a
+worker it is re-raised on the dispatcher afterwards, and a panic on the dispatcher waits for the
+rest of the batch before it unwinds, because worker jobs read the segment's context on the
+dispatcher's stack. `worker_threads` supports automatic sizing or an
 explicit count, including zero. Automatic sizing accounts for available CPU topology and the
 macOS audio workgroup's parallelism limit.
 
@@ -579,6 +582,8 @@ the pass and restores the playback curve or base value.
 `AudioSystem` enumerates hosts, devices, rates, buffers and inputs. `EngineSlot<P>` owns the
 callback processor and returns it on stream teardown; buffer/device changes rebuild the stream
 while preserving the engine. A lost output device enters `NoDevice` and disables playback/recording.
+An engine whose callback unwound in a panic is poisoned: it outputs silence, is never handed to
+another stream, and the app replaces it with a new engine compiled from the document (#210).
 
 Input capture starts only when configured. Separate-device callbacks exchange timestamped frames
 through a bounded bridge; rate conversion and a bounded clock follower align input to output.
