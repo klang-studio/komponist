@@ -477,6 +477,12 @@ fn validate_clip(
             if a.takes.is_empty() || a.active_take >= a.takes.len() {
                 return fail("invalid audio take index");
             }
+            for take in &a.takes {
+                let f = &take.file;
+                if f.frames == 0 || f.sample_rate == 0 || f.channels == 0 {
+                    return fail("audio file without frames, sample rate or channels");
+                }
+            }
             if a.offset >= a.file.frames {
                 return fail("offset behind the end of the file");
             }
@@ -486,9 +492,11 @@ fn validate_clip(
             if let Err(error) = a.validate_warp(clip.length) {
                 return Err(format!("clip {name}: {error}"));
             }
+            // Ordered bounds, no sum: the fades may be anything.
             if a.fade_in < Tick::ZERO
                 || a.fade_out < Tick::ZERO
-                || a.fade_in + a.fade_out > clip.length
+                || a.fade_in > clip.length
+                || a.fade_out > clip.length - a.fade_in
             {
                 return fail("fades out of range");
             }
@@ -552,6 +560,7 @@ pub(crate) fn repair_loaded(project: &mut Project) -> Result<Repairs, String> {
     }
     repair_ids(project, &mut repairs)?;
     for track in &mut project.tracks {
+        repair_chain(track, &mut repairs);
         sort_track(track, &mut repairs);
     }
     let order: Vec<TrackId> = project.tracks.iter().map(|t| t.id).collect();
@@ -641,20 +650,6 @@ fn repair_track(track: &mut Arc<Track>, tempo: Tempo, repairs: &mut Repairs) -> 
         repairs.add(RepairKind::MixerValues, 1);
     }
     repair_channel(&mut t.channel, repairs);
-    if !t.channel.devices.is_sorted_by_key(|d| rank(d.role)) {
-        t.channel.devices.sort_by_key(|d| rank(d.role));
-        repairs.add(RepairKind::ChainOrder, 1);
-    }
-    if t.kind == TrackKind::Midi {
-        // One instrument plays; the chain has room for no other.
-        let mut seen = false;
-        let before = t.channel.devices.len();
-        t.channel.devices.retain(|d| {
-            let extra = d.role == DeviceRole::Instrument && std::mem::replace(&mut seen, true);
-            !extra
-        });
-        repairs.add(RepairKind::DroppedDevices, before - t.channel.devices.len());
-    }
     if t.is_bus() && !t.sends.is_empty() {
         repairs.add(RepairKind::MixerValues, t.sends.len());
         t.sends.clear();
@@ -670,6 +665,27 @@ fn repair_track(track: &mut Arc<Track>, tempo: Tempo, repairs: &mut Repairs) -> 
         repair_clip(clip, tempo, repairs)?;
     }
     Ok(())
+}
+
+/// Puts a track's device chain in the order MIDI effects, instrument, effects and drops all
+/// instruments but the first. Runs after [`repair_ids`]: the first holder of an id in file order
+/// keeps it, so sorting must not decide who that is.
+fn repair_chain(track: &mut Arc<Track>, repairs: &mut Repairs) {
+    let t = Arc::make_mut(track);
+    if !t.channel.devices.is_sorted_by_key(|d| rank(d.role)) {
+        t.channel.devices.sort_by_key(|d| rank(d.role));
+        repairs.add(RepairKind::ChainOrder, 1);
+    }
+    if t.kind == TrackKind::Midi {
+        // One instrument plays; the chain has room for no other.
+        let mut seen = false;
+        let before = t.channel.devices.len();
+        t.channel.devices.retain(|d| {
+            let extra = d.role == DeviceRole::Instrument && std::mem::replace(&mut seen, true);
+            !extra
+        });
+        repairs.add(RepairKind::DroppedDevices, before - t.channel.devices.len());
+    }
 }
 
 fn repair_clip(clip: &mut Arc<Clip>, tempo: Tempo, repairs: &mut Repairs) -> Result<(), String> {

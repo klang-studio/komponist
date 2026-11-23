@@ -690,3 +690,100 @@ fn clip_envelopes_must_belong_to_their_track() {
             ))
     );
 }
+
+#[test]
+fn the_first_device_in_file_order_keeps_a_shared_id_whatever_its_role() {
+    use crate::automation::AutomationTarget;
+    let p = automation_project();
+    let (t, device) = p
+        .tracks
+        .iter()
+        .enumerate()
+        .find_map(|(i, t)| {
+            t.automation.lanes.iter().find_map(|l| match l.target {
+                AutomationTarget::Param { device, .. } => Some((i, device)),
+                _ => None,
+            })
+        })
+        .expect("a parameter lane");
+    let mut value = serde_json::to_value(&p).unwrap();
+    let devices = value["tracks"][t]["channel"]["devices"]
+        .as_array_mut()
+        .unwrap();
+    let mut effect = devices
+        .iter()
+        .find(|d| d["id"] == device.0)
+        .unwrap()
+        .clone();
+    effect["role"] = "effect".into();
+    let mut instrument = effect.clone();
+    instrument["role"] = "instrument".into();
+    // The effect comes first in the file and keeps its id 7; the instrument sorts in front of it.
+    *devices = vec![effect, instrument];
+    let loaded = loaded(value);
+    let chain = &loaded.project.tracks[t].channel.devices;
+    assert_eq!(chain[0].role, crate::DeviceRole::Instrument);
+    assert_ne!(chain[0].id, device, "the instrument got a new id");
+    assert_eq!(chain[1].role, crate::DeviceRole::Effect);
+    assert_eq!(chain[1].id, device, "the effect keeps the id");
+    assert!(
+        loaded.project.tracks[t]
+            .automation
+            .lanes
+            .iter()
+            .any(|l| matches!(l.target, AutomationTarget::Param { device: d, .. } if d == device))
+    );
+}
+
+#[test]
+fn validate_rejects_huge_fades_and_audio_files_without_rate_or_channels() {
+    use crate::audio::AudioFile;
+    use crate::edits::{NewAudioTrack, NewClip, NewClipContent, add_audio_track};
+    let (p, track) = add_audio_track(&Project::new("Audio"), NewAudioTrack::default()).unwrap();
+    let file = AudioFile {
+        abs: "/t/a.wav".into(),
+        rel: "a.wav".into(),
+        frames: 480_000,
+        sample_rate: 48_000,
+        channels: 2,
+    };
+    let (p, clip) = edits::add_clip(
+        &p,
+        track,
+        NewClip {
+            name: "a".into(),
+            start: Tick(0),
+            length: Tick(1000),
+            content: NewClipContent::Audio { file, offset: 0 },
+        },
+    )
+    .unwrap();
+    p.validate().unwrap();
+    let change = |f: &dyn Fn(&mut crate::AudioClip)| {
+        let mut q = p.clone();
+        let c = Arc::make_mut(&mut Arc::make_mut(&mut q.tracks[0]).clips[0]);
+        let ClipContent::Audio(a) = &mut c.content else {
+            unreachable!("an audio clip");
+        };
+        f(a);
+        q.validate()
+    };
+    assert!(
+        change(&|a| {
+            a.fade_in = Tick(i64::MAX);
+            a.fade_out = Tick(i64::MAX);
+        })
+        .is_err()
+    );
+    assert!(change(&|a| a.fade_in = Tick(1000)).is_ok());
+    assert!(
+        change(&|a| {
+            a.fade_in = Tick(600);
+            a.fade_out = Tick(401);
+        })
+        .is_err()
+    );
+    assert!(change(&|a| a.takes[0].file.sample_rate = 0).is_err());
+    assert!(change(&|a| a.takes[0].file.channels = 0).is_err());
+    let _ = clip;
+}
