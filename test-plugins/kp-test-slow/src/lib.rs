@@ -17,6 +17,8 @@ pub const SLOW_KEY: u8 = 126;
 pub const STALL: Duration = Duration::from_millis(50);
 /// A note-on of this key delays the next state snapshot on the bridge control thread.
 pub const SLOW_STATE_KEY: u8 = 125;
+/// A note-on of this key makes the next state snapshot change `gain` while it serializes.
+pub const MUTATE_STATE_KEY: u8 = 124;
 /// Delay for the state snapshot, long enough to exercise the project's shared timeout budget.
 pub const STATE_STALL: Duration = Duration::from_millis(600);
 
@@ -25,21 +27,38 @@ pub struct KpTestSlow {
     params: Arc<SlowParams>,
 }
 
-/// No parameters. The audio thread can arm a one-shot stall for the next state request.
-#[derive(Default)]
+/// One unused `gain` parameter. The audio thread can arm a one-shot stall for the next state
+/// request and a one-shot change of `gain` during that request.
 pub struct SlowParams {
+    /// Does not affect the audio; tests read and change it.
+    pub gain: FloatParam,
     delay_state: AtomicBool,
+    mutate_state: AtomicBool,
 }
 
-// SAFETY: there are no parameter pointers.
+impl Default for SlowParams {
+    fn default() -> Self {
+        Self {
+            gain: FloatParam::new("Gain", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 }),
+            delay_state: AtomicBool::new(false),
+            mutate_state: AtomicBool::new(false),
+        }
+    }
+}
+
+// SAFETY: the only pointer is `gain`, which lives as long as the params.
 unsafe impl Params for SlowParams {
     fn param_map(&self) -> Vec<(String, ParamPtr, String)> {
-        Vec::new()
+        vec![("gain".to_owned(), self.gain.as_ptr(), String::new())]
     }
 
     fn serialize_fields(&self) -> BTreeMap<String, String> {
         if self.delay_state.swap(false, Ordering::Relaxed) {
             std::thread::sleep(STATE_STALL);
+        }
+        if self.mutate_state.swap(false, Ordering::Relaxed) {
+            // SAFETY: the pointer is valid; the value is atomic.
+            unsafe { self.gain.as_ptr()._internal_set_normalized_value(0.75) };
         }
         BTreeMap::new()
     }
@@ -84,6 +103,7 @@ impl Plugin for KpTestSlow {
                     // Breaks the realtime rules on purpose.
                     SLOW_KEY => std::thread::sleep(STALL),
                     SLOW_STATE_KEY => self.params.delay_state.store(true, Ordering::Relaxed),
+                    MUTATE_STATE_KEY => self.params.mutate_state.store(true, Ordering::Relaxed),
                     _ => {}
                 }
             }
