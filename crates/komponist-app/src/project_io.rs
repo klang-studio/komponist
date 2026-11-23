@@ -182,17 +182,46 @@ pub(crate) fn write_atomic(
     durable_rename(&staged_file, path, parent)
 }
 
+/// Folders whose entry lists hold a new folder but were not flushed yet: an earlier
+/// [`create_dirs_durably`] created the folder and then failed to flush its parent. A later call
+/// for a path below such a folder flushes it again, although the new folder exists by then (#221,
+/// review of #257). Only failures add entries, and a successful flush removes them.
+static UNFLUSHED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 /// `create_dir_all(dir)`, then (Unix) flushes the parent folder of every folder it had to
 /// create, up to the first existing ancestor, so the new folders themselves survive a power loss.
+/// Flushes that failed on an earlier call for an ancestor of `dir` are retried here.
 fn create_dirs_durably(dir: &Path) -> std::io::Result<()> {
-    let mut created: Vec<&Path> = dir.ancestors().take_while(|path| !path.exists()).collect();
-    std::fs::create_dir_all(dir)?;
-    // Outermost first; each new folder's entry lives in its parent.
-    created.reverse();
-    for new in created {
-        if let Some(parent) = containing_dir(new) {
-            sync_directory(parent)?;
+    let missing: Vec<PathBuf> = dir
+        .ancestors()
+        .take_while(|path| !path.exists())
+        .map(Path::to_path_buf)
+        .collect();
+    let created = std::fs::create_dir_all(dir);
+    let mut unflushed = UNFLUSHED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Also after a failed `create_dir_all`: the folders it did create stay.
+    for new in missing.iter().filter(|path| path.is_dir()) {
+        if let Some(parent) = containing_dir(new)
+            && !unflushed.iter().any(|folder| folder == parent)
+        {
+            unflushed.push(parent.to_path_buf());
         }
+    }
+    created?;
+    let mut due: Vec<PathBuf> = unflushed
+        .iter()
+        .filter(|folder| {
+            dir.starts_with(folder) || (folder.as_path() == Path::new(".") && dir.is_relative())
+        })
+        .cloned()
+        .collect();
+    // Outermost first; each new folder's entry lives in its parent.
+    due.sort_by_key(|folder| folder.components().count());
+    for folder in due {
+        sync_directory(&folder)?;
+        unflushed.retain(|pending| *pending != folder);
     }
     Ok(())
 }
@@ -214,6 +243,8 @@ fn sync_directory(dir: &Path) -> std::io::Result<()> {
     if tests::FAIL_DIRECTORY_SYNC.with(std::cell::Cell::get) {
         return Err(std::io::Error::other("injected directory sync failure"));
     }
+    #[cfg(test)]
+    tests::SYNCED.with_borrow_mut(|synced| synced.push(dir.to_path_buf()));
     #[cfg(unix)]
     {
         match std::fs::File::open(dir).and_then(|dir| dir.sync_all()) {
@@ -1248,6 +1279,9 @@ mod tests {
         /// Makes [`sync_directory`] fail on this thread, as a filesystem with a broken fsync would.
         pub(super) static FAIL_DIRECTORY_SYNC: std::cell::Cell<bool> =
             const { std::cell::Cell::new(false) };
+        /// The folders [`sync_directory`] flushed on this thread.
+        pub(super) static SYNCED: std::cell::RefCell<Vec<PathBuf>> =
+            const { std::cell::RefCell::new(Vec::new()) };
     }
 
     fn scratch(name: &str) -> PathBuf {
@@ -1746,6 +1780,43 @@ mod tests {
             RecentList::load(&path),
             Err(ProjectIoError::Recent(..))
         ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #221 (review of #257): a retry flushes the parents of folders that an earlier attempt
+    /// created but failed to flush, although those folders exist by then.
+    #[cfg(unix)]
+    #[test]
+    fn a_retry_flushes_the_parents_of_folders_a_failed_attempt_created() {
+        let dir = scratch("sync-retry");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a/b/settings.json");
+        FAIL_DIRECTORY_SYNC.with(|flag| flag.set(true));
+        assert!(write_atomic(&path, "one", true).is_err());
+        FAIL_DIRECTORY_SYNC.with(|flag| flag.set(false));
+        assert!(dir.join("a/b").is_dir(), "the folders stay");
+
+        // Other tests' pending folders (the shared temp folder) may be flushed here too.
+        let flushed = |text| {
+            SYNCED.with_borrow_mut(Vec::clear);
+            write_atomic(&path, text, true).unwrap();
+            let mut synced = SYNCED.with_borrow_mut(std::mem::take);
+            synced.retain(|folder| folder.starts_with(&dir));
+            synced
+        };
+        // The folders exist now, but their entries were never flushed: the retry does it,
+        // outermost first, before the file's own folder.
+        let retry = flushed("one");
+        let position = |folder: &Path| retry.iter().position(|synced| synced == folder);
+        let (outer, inner) = (position(&dir).unwrap(), position(&dir.join("a")).unwrap());
+        assert!(outer < inner, "{retry:?}");
+        assert_eq!(
+            retry.last().map(PathBuf::as_path),
+            Some(dir.join("a/b").as_path())
+        );
+        // Once flushed, nothing is pending: the next write flushes only the file's folder.
+        assert_eq!(flushed("two"), [dir.join("a/b")]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
