@@ -283,6 +283,9 @@ pub struct RtThread {
 pub(crate) struct ParamDelivery {
     input: Option<(u32, f64)>,
     report: Option<(u32, f64)>,
+    /// The plugin's last reported value. Unlike `report`, an input does not clear it, so an echo
+    /// of an unchanged value after a repeated input is not counted as a change.
+    last_reported: Option<f64>,
     /// Values this parameter took since the table was created: each input or report that
     /// differs from the previous one of its kind. Read under the pause, so a snapshot can tell
     /// that a value left and came back while the plugin serialized (#215).
@@ -302,12 +305,18 @@ impl ParamDelivery {
     }
 
     fn record_report(&mut self, block: u32, value: f64) {
+        if self
+            .last_reported
+            .is_none_or(|previous| !same_param_value(value, previous))
+        {
+            self.changes = self.changes.wrapping_add(1);
+        }
+        self.last_reported = Some(value);
         // Some plugins repeat their last output. Keep the block that established that value.
         if self
             .report
             .is_none_or(|(_, previous)| !same_param_value(value, previous))
         {
-            self.changes = self.changes.wrapping_add(1);
             self.report = Some((block, value));
         }
     }
@@ -953,6 +962,26 @@ mod tests {
         assert!(delivery.confirms_input(0.403, 0.4));
         delivery.record_report(3, 0.8);
         assert!(!delivery.confirms_input(0.403, 0.8));
+    }
+
+    /// The host repeating an unchanged value and the plugin echoing it is no change: only values
+    /// that differ from the previous one of their kind count (#215 review).
+    #[test]
+    fn repeated_inputs_and_echoes_count_only_real_changes() {
+        let mut delivery = ParamDelivery::default();
+        delivery.record_input(1, 0.403);
+        delivery.record_report(1, 0.4);
+        let first = delivery.changes;
+        for block in 2..10 {
+            delivery.record_input(block, 0.403);
+            delivery.record_report(block, 0.4);
+        }
+        assert_eq!(delivery.changes, first, "echoes of an unchanged value");
+        delivery.record_report(10, 0.8);
+        assert_eq!(delivery.changes, first + 1, "a new reported value");
+        delivery.record_input(11, 0.9);
+        assert_eq!(delivery.changes, first + 2, "a new input");
+        assert!(!delivery.confirms_input(0.403, 0.4));
     }
 
     #[test]
