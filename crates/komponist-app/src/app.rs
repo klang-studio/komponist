@@ -570,9 +570,7 @@ impl App {
         self.update_plugin_frames(&ctx);
         self.engine.sync(&self.doc);
         self.sync_automation_preview();
-        if !self.shell.panel_drag {
-            self.persist_panels();
-        }
+        self.persist_panels();
         self.update_title(&ctx);
         self.schedule_repaint(&ctx);
     }
@@ -1124,7 +1122,15 @@ impl App {
         }
     }
 
+    /// Saves changed panel sizes, except while a splitter is dragged: a drag is saved once it is
+    /// released, not on every frame (#221).
     fn persist_panels(&mut self) {
+        if !self.shell.panel_drag {
+            self.persist_panel_layout();
+        }
+    }
+
+    fn persist_panel_layout(&mut self) {
         let panels = PanelSettings::from_layout(&self.ui.layout);
         if self.shell.saved_panels == Some(panels) {
             return;
@@ -1148,7 +1154,7 @@ impl App {
     /// running export is cancelled first, so the engine is back.
     pub fn shutdown(&mut self) {
         self.shutdown_export();
-        self.persist_panels();
+        self.persist_panel_layout();
         self.shutdown_plugin_frames();
         self.engine.shutdown();
         self.engine.host_mut().shutdown();
