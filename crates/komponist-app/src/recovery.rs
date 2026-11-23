@@ -397,6 +397,14 @@ fn write_entry(paths: &EntryPaths, project: &Project, meta: &RecoveryMeta) -> io
     let json = persist::to_json(project).map_err(io::Error::other)?;
     let mut meta = meta.clone();
     meta.copy = Some(CopyCheck::of(json.as_bytes()));
+    // A pending meta of the copy on disk (its commit failed last time) is that copy's only meta:
+    // commit it before the new generation's meta takes its name, or write nothing.
+    if let Ok(bytes) = fs::read(&paths.copy) {
+        let check = CopyCheck::of(&bytes);
+        if RecoveryMeta::read(&paths.next_meta).is_some_and(|m| m.copy.as_ref() == Some(&check)) {
+            commit_meta(paths)?;
+        }
+    }
     meta.write(&paths.next_meta)?;
     write_published(&paths.copy, &json)?;
     commit_meta(paths)
@@ -713,25 +721,42 @@ fn discard_with(
     meta_to: &Path,
     roll_back: impl Fn(&Path, &Path) -> io::Result<()>,
 ) -> io::Result<()> {
-    // A meta of an interrupted write belongs to no copy that is kept.
-    remove_if_present(&paths.next_meta)?;
+    // Nothing changes before the copy has moved: a failed move leaves the pair as it was, also a
+    // pending meta the scan could not commit ([`pair_meta`]).
     let moved = rename_if_present(&paths.copy, copy_to)?;
-    let Err(error) = rename_if_present(&paths.meta, meta_to) else {
+    // The meta that belongs to the copy: the pending one if it was written for these bytes (its
+    // commit failed), else the committed one. The other one is stale.
+    let pending = moved
+        && fs::read(copy_to).is_ok_and(|bytes| {
+            let check = CopyCheck::of(&bytes);
+            RecoveryMeta::read(&paths.next_meta).is_some_and(|m| m.copy.as_ref() == Some(&check))
+        });
+    let (own, stale) = if pending {
+        (&paths.next_meta, &paths.meta)
+    } else {
+        (&paths.meta, &paths.next_meta)
+    };
+    let Err(error) = rename_if_present(own, meta_to) else {
+        if let Err(error) = remove_if_present(stale) {
+            eprintln!("komponist: recovery: {}: {error}", stale.display());
+        }
         return Ok(());
     };
     if !moved {
         return Err(error);
     }
     match roll_back(copy_to, &paths.copy) {
-        // Back in place: still a candidate.
+        // Back in place: still a candidate, with its meta.
         Ok(()) => Err(error),
         Err(back) => {
             eprintln!(
                 "komponist: recovery: {} not moved back ({back}); it stays discarded",
                 copy_to.display()
             );
-            if let Err(lone) = remove_if_present(&paths.meta) {
-                eprintln!("komponist: recovery: {}: {lone}", paths.meta.display());
+            for lone in [&paths.next_meta, &paths.meta] {
+                if let Err(error) = remove_if_present(lone) {
+                    eprintln!("komponist: recovery: {}: {error}", lone.display());
+                }
             }
             Ok(())
         }
@@ -2522,6 +2547,128 @@ mod tests {
         let (found, error) = store.scan();
         assert!(found.is_empty() && error.is_none());
         assert!(copy_to.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failed_discard_keeps_the_pending_meta_of_the_copy() {
+        let dir = scratch("discard-pending");
+        let store = Store::new(&dir);
+        let entry = store.create_entry().unwrap();
+        let paths = entry.paths.clone();
+        let at = |path: &str| MetaBase {
+            project_path: Some(dir.join(path)),
+            name: "Night Drive".into(),
+        };
+        write_entry(
+            &paths,
+            &Project::new("Night Drive"),
+            &RecoveryMeta::at(&at("a/Night Drive.komponist"), SystemTime::now()),
+        )
+        .unwrap();
+        drop(entry);
+        // A newer generation in folder b: the copy is published, the meta is still pending, and
+        // the scan cannot commit it (a non-empty folder where `<id>.json` goes).
+        let mut project = Project::new("Night Drive");
+        project.tempo.bpm = 99.0;
+        let json = persist::to_json(&project).unwrap();
+        let mut next = RecoveryMeta::at(&at("b/Night Drive.komponist"), SystemTime::now());
+        next.copy = Some(CopyCheck::of(json.as_bytes()));
+        next.write(&paths.next_meta).unwrap();
+        write_published(&paths.copy, &json).unwrap();
+        fs::remove_file(&paths.meta).unwrap();
+        fs::create_dir_all(paths.meta.join("inside")).unwrap();
+        let b = dir.join("b/Night Drive.komponist");
+        let found = store.scan().0;
+        assert_eq!(found[0].project_path(), Some(b.as_path()));
+        // The discard cannot move the copy (a non-empty folder in its way): nothing changes.
+        let copy_to = dir.join("blocked-copy");
+        fs::create_dir_all(copy_to.join("inside")).unwrap();
+        assert!(discard_to(&paths, &copy_to, &dir.join("meta-to")).is_err());
+        assert!(paths.next_meta.exists() && paths.copy.exists());
+        drop(found);
+        // The next scan still has the original path of that copy.
+        let found = store.scan().0;
+        assert_eq!(found[0].project_path(), Some(b.as_path()));
+        assert_eq!(found[0].project().unwrap().tempo.bpm, 99.0);
+        drop(found);
+        // A discard that works takes the pending meta along with the copy.
+        let discarded = dir.join("gone");
+        fs::create_dir_all(&discarded).unwrap();
+        let (copy_to, meta_to) = (discarded.join("c.komponist"), discarded.join("c.json"));
+        discard_to(&paths, &copy_to, &meta_to).unwrap();
+        assert_eq!(
+            RecoveryMeta::read(&meta_to).unwrap().project_path,
+            Some(b.clone())
+        );
+        assert!(!paths.copy.exists() && !paths.next_meta.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_pending_meta_is_committed_before_the_next_write_replaces_it() {
+        let dir = scratch("pending-next");
+        let store = Store::new(&dir);
+        let entry = store.create_entry().unwrap();
+        let paths = entry.paths.clone();
+        let at = |path: &str, bpm: f64| {
+            let mut project = Project::new("Night Drive");
+            project.tempo.bpm = bpm;
+            let base = MetaBase {
+                project_path: Some(dir.join(path)),
+                name: "Night Drive".into(),
+            };
+            (project, RecoveryMeta::at(&base, SystemTime::now()))
+        };
+        // Generation A, complete.
+        let (a, meta_a) = at("a/Night Drive.komponist", 100.0);
+        write_entry(&paths, &a, &meta_a).unwrap();
+        // Generation B: the copy is published, the commit fails (a folder where `<id>.json` goes).
+        let (b, mut meta_b) = at("b/Night Drive.komponist", 110.0);
+        let json_b = persist::to_json(&b).unwrap();
+        meta_b.copy = Some(CopyCheck::of(json_b.as_bytes()));
+        meta_b.write(&paths.next_meta).unwrap();
+        write_published(&paths.copy, &json_b).unwrap();
+        fs::remove_file(&paths.meta).unwrap();
+        fs::create_dir_all(paths.meta.join("inside")).unwrap();
+        // Generation C cannot take the pending name while B's meta cannot be committed.
+        let (c, meta_c) = at("c/Night Drive.komponist", 120.0);
+        assert!(write_entry(&paths, &c, &meta_c).is_err());
+        assert_eq!(
+            RecoveryMeta::read(&paths.next_meta).unwrap().project_path,
+            Some(dir.join("b/Night Drive.komponist")),
+            "B's meta is kept"
+        );
+        // Once the commit works, C commits B first; a crash before C's copy leaves B's pair.
+        fs::remove_dir_all(&paths.meta).unwrap();
+        let json_c = persist::to_json(&c).unwrap();
+        let mut pending_c = meta_c.clone();
+        pending_c.copy = Some(CopyCheck::of(json_c.as_bytes()));
+        // What `write_entry` does up to the crash: commit B, write C's meta, no copy yet.
+        let bytes = fs::read(&paths.copy).unwrap();
+        assert!(
+            RecoveryMeta::read(&paths.next_meta)
+                .is_some_and(|m| m.copy == Some(CopyCheck::of(&bytes)))
+        );
+        commit_meta(&paths).unwrap();
+        pending_c.write(&paths.next_meta).unwrap();
+        drop(entry);
+        let found = store.scan().0;
+        assert_eq!(
+            found[0].project_path(),
+            Some(dir.join("b/Night Drive.komponist").as_path())
+        );
+        assert_eq!(found[0].project().unwrap().tempo.bpm, 110.0);
+        drop(found);
+        // And a full write of C after the commit is a complete pair.
+        let entry = store.scan().0.remove(0);
+        let paths = entry.paths.clone();
+        write_entry(&paths, &c, &meta_c).unwrap();
+        assert!(!paths.next_meta.exists());
+        assert_eq!(
+            RecoveryMeta::read(&paths.meta).unwrap().project_path,
+            Some(dir.join("c/Night Drive.komponist"))
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
