@@ -21,3 +21,9 @@ lowprio cargo fmt --all --check
 lowprio cargo clippy --workspace --all-targets -- -D warnings
 lowprio cargo test --workspace --no-run
 cargo test --workspace
+
+# The plugin SDK is a workspace of its own (excluded from the root workspace), but its adapter and author
+# crates ship in every komponist-bundled-* crate (#234).
+sdk=crates/plugin-sdk/Cargo.toml
+lowprio cargo clippy --manifest-path "$sdk" --workspace --all-targets -- -D warnings
+cargo test --manifest-path "$sdk" --workspace
