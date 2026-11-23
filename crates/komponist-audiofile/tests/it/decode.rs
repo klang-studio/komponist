@@ -433,3 +433,58 @@ fn damaged_files_fail_cleanly_and_never_panic() {
         }
     }
 }
+
+#[test]
+fn wav_float_samples_that_are_not_finite_decode_to_silence() {
+    let dir = Scratch::new("wav-non-finite");
+    let path = dir.path("nan.wav");
+    let bad = vec![0.5, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.25];
+    write_wav_f32(&path, 44100, &[bad.clone(), bad]);
+    let d = decode_all(&path, None).unwrap();
+    for plane in &d.channels {
+        assert_eq!(plane, &vec![0.5, 0.0, 0.0, 0.0, -0.25]);
+    }
+    // The streaming reader (what playback uses) filters the same way.
+    let mut file = AudioFile::open(&path).unwrap();
+    let mut out = [1.0; 10];
+    assert_eq!(file.read_full(&mut out).unwrap(), 5);
+    assert!(out.iter().all(|v| v.is_finite()));
+}
+
+#[test]
+fn aiff_c_float_samples_that_are_not_finite_decode_to_silence() {
+    // The symphonia path: AIFF-C with 32-bit float samples ("fl32"), mono.
+    let dir = Scratch::new("aiff-non-finite");
+    let path = dir.path("nan.aifc");
+    let samples = [0.5_f32, f32::NAN, f32::INFINITY, -0.25];
+    let mut comm = Vec::new();
+    comm.extend_from_slice(&1_u16.to_be_bytes());
+    comm.extend_from_slice(&(samples.len() as u32).to_be_bytes());
+    comm.extend_from_slice(&32_u16.to_be_bytes());
+    comm.extend_from_slice(&[0x40, 0x0e, 0xac, 0x44, 0, 0, 0, 0, 0, 0]);
+    comm.extend_from_slice(b"fl32");
+    comm.extend_from_slice(&[12]);
+    comm.extend_from_slice(b"32-bit float");
+    comm.push(0);
+    let mut ssnd = vec![0; 8];
+    for s in samples {
+        ssnd.extend_from_slice(&s.to_be_bytes());
+    }
+    let mut form = Vec::new();
+    form.extend_from_slice(b"AIFC");
+    form.extend_from_slice(b"FVER");
+    form.extend_from_slice(&4_u32.to_be_bytes());
+    form.extend_from_slice(&0xA280_5140_u32.to_be_bytes());
+    form.extend_from_slice(b"COMM");
+    form.extend_from_slice(&(comm.len() as u32).to_be_bytes());
+    form.extend_from_slice(&comm);
+    form.extend_from_slice(b"SSND");
+    form.extend_from_slice(&(ssnd.len() as u32).to_be_bytes());
+    form.extend_from_slice(&ssnd);
+    let mut bytes = b"FORM".to_vec();
+    bytes.extend_from_slice(&(form.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(&form);
+    std::fs::write(&path, bytes).unwrap();
+    let d = decode_all(&path, None).unwrap();
+    assert_eq!(d.channels[0], vec![0.5, 0.0, 0.0, -0.25]);
+}
