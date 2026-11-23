@@ -456,7 +456,9 @@ impl RecordingSession {
             )),
         };
         self.finished = true;
-        if let Some(worker) = self.worker.take() {
+        // The writer sent its result as its last act; reap it only if it has already exited, so
+        // a caller with a deadline never waits for a thread's exit (#221).
+        if let Some(worker) = self.worker.take_if(|worker| worker.is_finished()) {
             let _ = worker.join();
         }
         Some(result)
@@ -477,11 +479,15 @@ impl RecordingSession {
     }
 }
 impl Drop for RecordingSession {
+    /// A cancelled writer is joined: it deletes its files before the session is gone. A writer
+    /// that has delivered its result is left to exit on its own (dropping its handle detaches it).
     fn drop(&mut self) {
         if !self.finished {
             self.cancel();
         }
-        if let Some(worker) = self.worker.take() {
+        if let Some(worker) = self.worker.take()
+            && !self.finished
+        {
             let _ = worker.join();
         }
     }
