@@ -106,8 +106,10 @@ pub trait Processor: Send {
     }
 
     /// RT. Silences all voices and clears internal state (tails, delay lines) without
-    /// deallocating. Called on stop, on locate while playing and when bypass turns on. Not on a loop
-    /// wrap: there only the sequenced notes end, so tails keep sounding across the loop.
+    /// deallocating. The engine calls it on the hard cut (a second Stop while stopped), when bypass
+    /// turns on, when a track with the processor leaves the program and when a track's MIDI effect
+    /// stage changes. Not on a plain stop, a locate or a loop wrap: there only the sounding notes
+    /// end (note-offs, `AllNotesOff`), so tails keep sounding.
     fn reset(&mut self);
 
     /// RT-safe, cheap (WP-88). `Some` for a MIDI effect ([`DeviceRole::MidiEffect`] in the project):
@@ -176,8 +178,9 @@ pub trait EventProcessor {
     /// sees.
     fn process_events(&mut self, ctx: &ProcessContext, input: &[Event], out: &mut EventSink<'_>);
 
-    /// Forget held notes, phases and pending note-offs without emitting anything (stop, locate,
-    /// panic, bypass on). The engine ends the sounding notes itself.
+    /// Forget held notes, phases and pending note-offs without emitting anything (same calls as the
+    /// instrument's `reset`: hard cut, bypass on, stage change). The engine ends the sounding notes
+    /// itself.
     fn reset(&mut self);
 }
 
