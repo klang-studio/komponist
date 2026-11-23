@@ -48,6 +48,18 @@ impl BuiltinKind {
         }
     }
 
+    /// Why the saved `state` cannot be read, if it cannot (corrupted, or from a newer build). The
+    /// processor then plays the default values; the host must keep the stored bytes and tell the
+    /// user instead of saving over them.
+    pub fn state_error(self, state: Option<&[u8]>) -> Option<String> {
+        match self {
+            Self::Hexa => komponist_hexa::decode_state(state)
+                .err()
+                .map(|e| e.to_string()),
+            Self::Internal(kind) => kind.state_error(state).map(|e| e.to_string()),
+        }
+    }
+
     /// Creates the device's processor from its saved state. The host activates it and loads any
     /// linked samples using the project directory.
     pub fn processor_from_state(self, state: Option<&[u8]>) -> BuiltinProcessor {
