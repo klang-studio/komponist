@@ -1606,6 +1606,21 @@ mod tests {
         assert_eq!(names.len(), 2, "{names:?}");
     }
 
+    /// A destination with a NUL is refused before anything is published: the file whose name is
+    /// the part before the NUL stays as it was, and no staging folder is left.
+    #[test]
+    fn a_destination_with_a_nul_changes_nothing() {
+        let dir = scratch("nul");
+        std::fs::create_dir_all(&dir).unwrap();
+        let kept = dir.join("a");
+        std::fs::write(&kept, "old").unwrap();
+        let mut name = dir.join("a").into_os_string();
+        name.push("\u{0}b");
+        assert!(write_atomic(Path::new(&name), "new", false).is_err());
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "old");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
     #[test]
     fn a_failed_directory_sync_is_reported_after_the_file_is_published() {
         let dir = scratch("sync-fail");
