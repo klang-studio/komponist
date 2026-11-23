@@ -8,15 +8,24 @@
 //!   previous block (or at activation) and is at or above it now. So a state with `crash` at 1.0
 //!   loaded before activation does not crash, but one loaded while active does (nice-plug applies
 //!   it like any other parameter change).
+//!
+//! It can also hang instead (komponist #218, a bridge stuck in a plugin call): with [`HANG_ENV`]
+//! set to a file path, `activate` writes the process id to that file and then sleeps [`HANG`].
 
 use nice_plug::midi::Key;
 use nice_plug::prelude::*;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// A note-on of this key crashes the plugin.
 pub const CRASH_KEY: u8 = 127;
 /// The `crash` parameter crashes the plugin when it rises to this value or above.
 pub const CRASH_THRESHOLD: f32 = 0.9;
+/// Set to a file path, `activate` writes the process id there and hangs for [`HANG`].
+pub const HANG_ENV: &str = "KP_TEST_CRASH_HANG";
+/// How long `activate` hangs with [`HANG_ENV`] set: long enough to tell an app-death exit from
+/// the socket EOF the bridge sees once the call returns.
+pub const HANG: Duration = Duration::from_secs(30);
 
 pub struct KpTestCrash {
     params: Arc<CrashParams>,
@@ -98,6 +107,15 @@ impl Plugin for KpTestCrash {
         _buffer_config: &BufferConfig,
         _context: &mut impl ActivateContext<Self>,
     ) -> bool {
+        if let Some(path) = std::env::var_os(HANG_ENV) {
+            // Written whole, then renamed: a reader never sees half a pid.
+            let path = std::path::PathBuf::from(path);
+            let partial = path.with_extension("partial");
+            if std::fs::write(&partial, std::process::id().to_string()).is_ok() {
+                let _ = std::fs::rename(&partial, &path);
+            }
+            std::thread::sleep(HANG);
+        }
         self.last_crash = self.params.crash.value();
         true
     }

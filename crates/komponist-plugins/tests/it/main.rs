@@ -14,5 +14,6 @@ mod engine;
 mod gui;
 mod installed;
 mod lifecycle;
+mod orphans;
 mod scan;
 mod sidechain;
