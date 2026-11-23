@@ -620,3 +620,73 @@ fn an_audio_cut_behind_the_document_end_drops_the_fragment_and_loads() {
         assert!(clip.start <= MAX_DOC_TICK);
     }
 }
+
+#[test]
+fn copy_clips_never_swallows_its_source_and_validate_does_not_overflow() {
+    use crate::audio::AudioFile;
+    use crate::edits::{NewAudioTrack, NewClip, NewClipContent, add_audio_track};
+    let (p, track) = add_audio_track(&Project::new("Audio"), NewAudioTrack::default()).unwrap();
+    let file = AudioFile {
+        abs: "/t/a.wav".into(),
+        rel: "a.wav".into(),
+        frames: 480_000,
+        sample_rate: 48_000,
+        channels: 2,
+    };
+    let (p, clip) = edits::add_clip(
+        &p,
+        track,
+        NewClip {
+            name: "end".into(),
+            start: MAX_DOC_TICK,
+            length: Tick(10),
+            content: NewClipContent::Audio { file, offset: 0 },
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        edits::copy_clips(&p, &[clip], Tick(10), 0),
+        Err(crate::EditError::Invalid(_))
+    ));
+    assert!(
+        p.find_clip(clip).is_some(),
+        "the input project is untouched"
+    );
+    // A clip far beyond the bound is reported, not an overflow in the overlap check.
+    let mut value = serde_json::to_value(&p).unwrap();
+    value["tracks"][0]["clips"][0]["start"] = i64::MAX.into();
+    let mut q: Project = serde_json::from_value(value).unwrap();
+    assert!(q.validate().is_err());
+    q.tracks.clear();
+}
+
+#[test]
+fn clip_envelopes_must_belong_to_their_track() {
+    let p = automation_project();
+    let mut value = serde_json::to_value(&p).unwrap();
+    // Find a clip with an envelope and point it at macro 9 (there are 8).
+    let (t, c) = p
+        .tracks
+        .iter()
+        .enumerate()
+        .find_map(|(t, tr)| {
+            tr.clips
+                .iter()
+                .position(|c| !c.automation.is_empty())
+                .map(|c| (t, c))
+        })
+        .expect("a clip with an envelope");
+    value["tracks"][t]["clips"][c]["automation"][0]["target"] =
+        json!({ "kind": "macro", "index": 9 });
+    let loaded = loaded(value);
+    assert!(loaded.repairs.count(RepairKind::AutomationLanes) >= 1);
+    assert!(
+        loaded.project.tracks[t].clips[c]
+            .automation
+            .iter()
+            .all(|e| !matches!(
+                e.target,
+                crate::automation::AutomationTarget::Macro { index: 9 }
+            ))
+    );
+}

@@ -542,9 +542,15 @@ pub(crate) fn repair_loaded(
                 if clip.kind() == ClipKind::Audio {
                     clip.automation.clear();
                 } else {
+                    // An envelope for a device or send that is gone stays (the plugin may come
+                    // back, and edits keep it); one for a macro that does not exist never can
+                    // resolve.
                     let mut targets = HashSet::new();
-                    clip.automation
-                        .retain(|envelope| targets.insert(envelope.target.clone()));
+                    clip.automation.retain(|envelope| {
+                        !matches!(envelope.target, AutomationTarget::Macro { index }
+                            if usize::from(index) >= crate::macros::MACRO_COUNT)
+                            && targets.insert(envelope.target.clone())
+                    });
                 }
                 repairs.add(
                     crate::validate::RepairKind::AutomationLanes,

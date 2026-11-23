@@ -878,6 +878,12 @@ pub fn copy_clips(
         );
     }
     audio::cut_below(&mut p, &copies)?;
+    // A copy placed exactly on its source (the offset was clamped to nothing) must not swallow it.
+    if group.clips.iter().any(|(_, c)| p.find_clip(c.id).is_none()) {
+        return Err(EditError::Invalid(
+            "the copy cannot be placed at the requested offset",
+        ));
+    }
     if group.track_delta != 0
         && group
             .clips

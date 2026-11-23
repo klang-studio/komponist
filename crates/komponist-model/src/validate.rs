@@ -101,7 +101,9 @@ impl RepairKind {
             RepairKind::DuplicateIds => "duplicate object id replaced",
             RepairKind::MacroMappings => "macro mapping repaired or dropped",
             RepairKind::MacroValues => "macro slot value out of range",
-            RepairKind::AutomationLanes => "duplicate automation lane dropped",
+            RepairKind::AutomationLanes => {
+                "automation lane or clip envelope dropped (duplicate, macro that does not exist) or lane added"
+            }
             RepairKind::AutomationPoints => "automation points reordered, clamped or thinned",
             RepairKind::Order => "clips or notes put in order",
             RepairKind::Routing => "routing reference dropped or fixed",
@@ -344,16 +346,17 @@ fn validate(p: &Project) -> Result<(), String> {
             "track {}: clips not sorted",
             t.id.0
         );
+        for clip in &t.clips {
+            id("clip", clip.id.0)?;
+            validate_clip(p, t, clip, &mut id)?;
+        }
+        // After the range checks of every clip: `end()` adds unchecked.
         if t.is_audio() {
             ensure!(
                 t.clips.windows(2).all(|w| w[0].end() <= w[1].start),
                 "track {}: audio clips overlap",
                 t.id.0
             );
-        }
-        for clip in &t.clips {
-            id("clip", clip.id.0)?;
-            validate_clip(p, t, clip, &mut id)?;
         }
     }
     Ok(())
@@ -794,7 +797,7 @@ fn repair_step_clip(s: &mut StepClip, repairs: &mut Repairs) {
 }
 
 /// What an id names, for [`visit_ids`].
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum IdKind {
     Track,
     Device,
@@ -815,13 +818,19 @@ struct Replace {
     retarget: bool,
 }
 
-/// Points the `Param` and `Send` targets of `kind` `old` to `new`.
-fn retarget(target: &mut AutomationTarget, kind: IdKind, old: u64, new: u64) {
+/// Points a `Param` or `Send` target to the new id of its device or send, if it got one.
+fn retarget(target: &mut AutomationTarget, moved: &HashMap<(IdKind, u64), u64>) {
     match target {
-        AutomationTarget::Param { device, .. } if kind == IdKind::Device && device.0 == old => {
-            device.0 = new;
+        AutomationTarget::Param { device, .. } => {
+            if let Some(&new) = moved.get(&(IdKind::Device, device.0)) {
+                device.0 = new;
+            }
         }
-        AutomationTarget::Send { send } if kind == IdKind::Send && send.0 == old => send.0 = new,
+        AutomationTarget::Send { send } => {
+            if let Some(&new) = moved.get(&(IdKind::Send, send.0)) {
+                send.0 = new;
+            }
+        }
         _ => {}
     }
 }
@@ -836,11 +845,11 @@ fn visit_ids(project: &mut Project, f: &mut impl FnMut(IdKind, Owner, u64) -> Op
         owner: Owner,
         id: &mut u64,
         f: &mut impl FnMut(IdKind, Owner, u64) -> Option<Replace>,
-        moved: &mut Vec<(IdKind, u64, u64)>,
+        moved: &mut HashMap<(IdKind, u64), u64>,
     ) {
         if let Some(r) = f(kind, owner, *id) {
             if r.retarget {
-                moved.push((kind, *id, r.new));
+                moved.entry((kind, *id)).or_insert(r.new);
             }
             *id = r.new;
         }
@@ -851,13 +860,13 @@ fn visit_ids(project: &mut Project, f: &mut impl FnMut(IdKind, Owner, u64) -> Op
             Owner::Track(i),
             &mut Arc::make_mut(track).id.0,
             f,
-            &mut Vec::new(),
+            &mut HashMap::new(),
         );
     }
     for (i, track) in project.tracks.iter_mut().enumerate() {
         let owner = Owner::Track(i);
         let t = Arc::make_mut(track);
-        let mut moved = Vec::new();
+        let mut moved = HashMap::new();
         for device in &mut t.channel.devices {
             apply(
                 IdKind::Device,
@@ -890,23 +899,23 @@ fn visit_ids(project: &mut Project, f: &mut impl FnMut(IdKind, Owner, u64) -> Op
                 }
             }
         }
-        for (kind, old, new) in moved {
+        if !moved.is_empty() {
             for lane in &mut t.automation.lanes {
-                retarget(&mut Arc::make_mut(lane).target, kind, old, new);
+                retarget(&mut Arc::make_mut(lane).target, &moved);
             }
             for clip in &mut t.clips {
                 for envelope in &mut Arc::make_mut(clip).automation {
-                    retarget(&mut envelope.target, kind, old, new);
+                    retarget(&mut envelope.target, &moved);
                 }
             }
             for slot in &mut t.macros.0 {
                 for mapping in &mut slot.mappings {
-                    retarget(&mut mapping.target, kind, old, new);
+                    retarget(&mut mapping.target, &moved);
                 }
             }
         }
     }
-    let mut moved = Vec::new();
+    let mut moved = HashMap::new();
     for device in &mut Arc::make_mut(&mut project.master).devices {
         apply(
             IdKind::Device,
@@ -925,9 +934,9 @@ fn visit_ids(project: &mut Project, f: &mut impl FnMut(IdKind, Owner, u64) -> Op
             &mut moved,
         );
     }
-    for (kind, old, new) in moved {
+    if !moved.is_empty() {
         for lane in &mut Arc::make_mut(&mut project.master_automation).lanes {
-            retarget(&mut Arc::make_mut(lane).target, kind, old, new);
+            retarget(&mut Arc::make_mut(lane).target, &moved);
         }
     }
 }
