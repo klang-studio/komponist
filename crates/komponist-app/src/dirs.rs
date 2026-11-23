@@ -83,7 +83,11 @@ fn xdg_music_dir(
     config_home: Option<&Path>,
     home: &Path,
 ) -> PathBuf {
-    if let Some(path) = env_music.map(PathBuf::from).filter(|p| p.is_absolute()) {
+    // A value equal to the home folder means "disabled" in xdg-user-dirs, for the variable too.
+    if let Some(path) = env_music
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && p != home)
+    {
         return path;
     }
     let config = config_home
@@ -96,20 +100,31 @@ fn xdg_music_dir(
         .unwrap_or_else(|| home.join("Music"))
 }
 
-/// The `XDG_MUSIC_DIR="…"` value of a `user-dirs.dirs` file, `$HOME` expanded; the last such
-/// line wins (the file is shell syntax). Relative results are rejected.
+/// The `XDG_MUSIC_DIR="…"` value of a `user-dirs.dirs` file; the last such line wins (the file is
+/// shell syntax). Parsed like xdg-user-dirs' own lookup, without running shell code: the value is
+/// double-quoted, a leading `$HOME` is expanded, and a backslash takes the next character
+/// literally (`\$`, `\"`, `\\`). Relative results are rejected.
 #[cfg(any(test, all(not(windows), not(target_os = "macos"))))]
 fn parse_user_dirs_music(text: &str, home: &Path) -> Option<PathBuf> {
-    let value = text
+    let quoted = text
         .lines()
         .filter_map(|line| line.trim().strip_prefix("XDG_MUSIC_DIR="))
         .next_back()?
         .trim()
-        .trim_matches('"');
-    let path = match value.strip_prefix("$HOME") {
-        Some(rest) => PathBuf::from(format!("{}{rest}", home.to_str()?)),
-        None => PathBuf::from(value),
+        .strip_prefix('"')?;
+    let (mut path, rest) = match quoted.strip_prefix("$HOME") {
+        Some(rest) => (home.to_str()?.to_owned(), rest),
+        None => (String::new(), quoted),
     };
+    let mut chars = rest.chars();
+    loop {
+        match chars.next()? {
+            '"' => break,
+            '\\' => path.push(chars.next()?),
+            c => path.push(c),
+        }
+    }
+    let path = PathBuf::from(path);
     path.is_absolute().then_some(path)
 }
 
@@ -304,6 +319,34 @@ mod tests {
             parse_user_dirs_music("XDG_MUSIC_DIR=\"$HOME/a\"\nXDG_MUSIC_DIR=\"$HOME/b\"", home),
             Some(home.join("b"))
         );
+    }
+
+    /// Escapes in the quoted value are decoded like xdg-user-dirs' own lookup does.
+    #[test]
+    fn user_dirs_escapes_are_decoded() {
+        let home = Path::new(HOME);
+        let line = r#"XDG_MUSIC_DIR="$HOME/Music \$Archive \"live\" \\x""#;
+        assert_eq!(
+            parse_user_dirs_music(line, home),
+            Some(home.join(r#"Music $Archive "live" \x"#))
+        );
+        // Without a closing quote the line is malformed.
+        assert_eq!(
+            parse_user_dirs_music(r#"XDG_MUSIC_DIR="$HOME/Music"#, home),
+            None
+        );
+    }
+
+    /// The variable set to the home folder means "disabled", as in `user-dirs.dirs`.
+    #[test]
+    fn a_home_valued_variable_is_disabled() {
+        let home = Path::new(HOME);
+        let config = fake_config("XDG_MUSIC_DIR=\"$HOME/Klang\"\n");
+        assert_eq!(
+            xdg_music_dir(Some(home.as_os_str()), Some(&config), home),
+            home.join("Klang")
+        );
+        std::fs::remove_dir_all(config).unwrap();
     }
 
     #[test]
