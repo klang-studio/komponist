@@ -19,6 +19,7 @@ klang-dsp.workspace = true
 serde = { version = "1.0.229", default-features = false, features = ["derive"], optional = true }
 
 [features]
-# `Synth::boxed`, a synth on the heap.
-alloc = []
 serde = ["dep:serde"]
+
+[dev-dependencies]
+assert_no_alloc.workspace = true

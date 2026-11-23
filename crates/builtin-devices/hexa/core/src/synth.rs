@@ -25,9 +25,10 @@ use crate::voicing::{Layer, Voices, Voicing};
 use crate::{BLOCK_SIZE, Engine, MAX_VOICES, Patch};
 
 /// `N` engines sharing the voices plus the master effects; see the module
-/// documentation. About 2 MB (the effects' delay lines), so it is only built
-/// in place: [`Synth::write_new`] into static memory or a heap allocation
-/// ([`Synth::boxed`] with the `alloc` feature).
+/// documentation. The engines are large, so it is only built in place:
+/// [`Synth::write_new`] into a heap allocation ([`Synth::boxed`]). The
+/// effects own heap buffers sized from the sample rate (see [`Effects`]), so
+/// a `Synth` must be dropped, or its place dropped before `write_new` reuses it.
 pub struct Synth<const N: usize> {
     engines: [Engine; N],
     /// Keys, pedal and voice allocation for all engines.
@@ -41,8 +42,11 @@ impl<const N: usize> Synth<N> {
     /// Writes a new synth with `patch` to `this` without building it on the
     /// stack (only one engine at a time is).
     ///
+    /// Allocates the effects' buffers for `sample_rate`.
+    ///
     /// # Safety
-    /// `this` must be valid for writes and suitably aligned.
+    /// `this` must be valid for writes and suitably aligned. A previous
+    /// value there is overwritten, not dropped: drop it first.
     pub unsafe fn write_new(this: *mut Self, sample_rate: f32, patch: Patch) {
         let () = Self::VALID;
         // SAFETY: guaranteed by the caller; every field is written.
@@ -78,7 +82,6 @@ impl<const N: usize> Synth<N> {
     }
 
     /// A new synth with `patch` on the heap, built in place.
-    #[cfg(any(test, feature = "alloc"))]
     pub fn boxed(sample_rate: f32, patch: Patch) -> alloc::boxed::Box<Self> {
         let mut synth = alloc::boxed::Box::<Self>::new_uninit();
         // SAFETY: a valid place, fully initialized by `write_new`.

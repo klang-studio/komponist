@@ -11,14 +11,10 @@ use komponist_engine::{
 use crate::device::Field;
 use crate::state::{self, StateError};
 
-// `activate` overwrites the synth in place without dropping it; that is only sound
-// while `Synth` owns nothing that needs dropping (it is plain `no_std` data).
-const _: () = assert!(!core::mem::needs_drop::<Synth<1>>());
-
 /// hexa as an instrument in a komponist chain (ARCHITECTURE §8.5).
 ///
-/// Wraps one `hexa_core::Synth<1>` on the heap (about 2 MB, mostly the master effects' delay
-/// lines). Create it on the UI thread with [`HexaProcessor::new`] or
+/// Wraps one `hexa_core::Synth<1>` on the heap (the master effects' delay lines, sized at
+/// activation, take 0.9 MiB at 48 kHz and 7.4 MiB at 384 kHz). Create it on the UI thread with [`HexaProcessor::new`] or
 /// [`HexaProcessor::from_state`], activate it, send it to the engine.
 ///
 /// Events (all applied at their exact frame by splitting the render at event offsets):
@@ -87,10 +83,14 @@ impl HexaProcessor {
     fn rebuild(&mut self) {
         let patch = *self.synth.patch();
         let place: *mut Synth<1> = &mut *self.synth;
-        // SAFETY: `place` comes from a live `&mut`, so it is valid for writes and aligned, and
-        // nothing else uses the synth meanwhile. The old value is overwritten without being
-        // dropped, which leaks nothing: `Synth<1>` has no drop glue (asserted above).
-        unsafe { Synth::write_new(place, self.sample_rate, patch) };
+        // SAFETY: `place` comes from a live `&mut`, so it is valid for reads, writes and
+        // aligned, and nothing else uses the synth meanwhile. The old value is dropped (freeing
+        // the old effect buffers) and at once written again, so it is never used or dropped
+        // twice; `write_new` does not unwind.
+        unsafe {
+            core::ptr::drop_in_place(place);
+            Synth::write_new(place, self.sample_rate, patch);
+        }
     }
 
     /// Replace the complete patch, retaining values outside the device card's controls.

@@ -22,9 +22,11 @@ use crate::eq::{Eq, EqParams};
 use crate::reverb::{Reverb, ReverbParams};
 use crate::smooth;
 
-/// Highest sample rate the effects' fixed buffers are sized for; above it
-/// the longest delays and the reverb get shorter.
-pub const MAX_SAMPLE_RATE: f32 = 96_000.0;
+/// Highest sample rate the effects are built for (the device core accepts
+/// 8 to 384 kHz). Their buffers are sized from the rate they are built at, so
+/// delay times and the reverb do not depend on it; a rate above this one is
+/// treated as this one, which bounds the memory.
+pub const MAX_SAMPLE_RATE: f32 = 384_000.0;
 
 /// Smoothing time constant for effect parameter changes.
 const SMOOTHING_SECONDS: f32 = 0.02;
@@ -254,8 +256,9 @@ impl<E: Effect> Slot<E> {
     }
 }
 
-/// State of the master effects. About 2 MB (the delay lines); see
-/// [`Effects::write_new`] for building it in place.
+/// State of the master effects. The delay lines and the reverb's memory are
+/// heap allocations sized from the sample rate at [`Effects::write_new`]:
+/// about 0.9 MiB at 48 kHz, 1.9 at 96 kHz, 3.7 at 192 kHz and 7.4 at 384 kHz.
 pub struct Effects {
     distortion: Slot<Distortion>,
     bitcrusher: Slot<Bitcrusher>,
@@ -274,12 +277,15 @@ pub struct Effects {
 
 impl Effects {
     /// Writes silent effects for `sample_rate` to `this` without building
-    /// them on the stack.
+    /// them on the stack. Allocates their buffers, so it belongs in the
+    /// activation, never in the audio callback.
     ///
     /// # Safety
-    /// `this` must be valid for writes and suitably aligned.
+    /// `this` must be valid for writes and suitably aligned. A previous
+    /// value there is overwritten, not dropped: drop it first.
     pub unsafe fn write_new(this: *mut Self, sample_rate: f32) {
         use core::ptr::addr_of_mut;
+        let sample_rate = crate::clamp_or(sample_rate, 1.0, MAX_SAMPLE_RATE, 48_000.0);
         // SAFETY: guaranteed by the caller; every field is written.
         unsafe {
             Slot::write_new(addr_of_mut!((*this).distortion), |e| {
@@ -434,14 +440,14 @@ mod tests {
     fn run(effects: &mut Effects, params: &EffectParams, input: &[f32]) -> (Vec<f32>, Vec<f32>) {
         let (mut l, mut r) = (input.to_vec(), input.to_vec());
         for (l, r) in l.chunks_mut(100).zip(r.chunks_mut(100)) {
-            effects.process(params, l, r);
+            assert_no_alloc::assert_no_alloc(|| effects.process(params, l, r));
         }
         (l, r)
     }
 
-    /// Energy in dB of 10 ms windows.
-    fn envelope_db(x: &[f32]) -> Vec<f32> {
-        x.chunks(480)
+    /// Energy in dB of 10 ms windows at `rate`.
+    fn envelope_db(x: &[f32], rate: f32) -> Vec<f32> {
+        x.chunks((rate * 0.01) as usize)
             .map(|w| 10.0 * (w.iter().map(|s| s * s).sum::<f32>() / w.len() as f32 + 1e-30).log10())
             .collect()
     }
@@ -455,28 +461,70 @@ mod tests {
         assert_eq!(r, input);
     }
 
+    /// RT60 in seconds of the reverb at `rate`, from the decay between -10 dB
+    /// and -40 dB below the peak of its impulse response.
+    fn measured_rt60(rate: f32, time: f32) -> f32 {
+        let mut fx = effects(rate);
+        let params = reverb(1.0, time, 0.0);
+        // Let the mix glide in on silence, then an impulse.
+        run(&mut fx, &params, &vec![0.0; (rate / 10.0) as usize]);
+        let mut input = vec![0.0; (rate * time * 1.5) as usize];
+        input[0] = 1.0;
+        let (l, r) = run(&mut fx, &params, &input);
+        let db: Vec<f32> = envelope_db(&l, rate)
+            .iter()
+            .zip(envelope_db(&r, rate))
+            .map(|(a, b)| a.max(b))
+            .collect();
+        let peak = db.iter().cloned().fold(f32::MIN, f32::max);
+        let at = |level: f32| db.iter().rposition(|&d| d > peak + level).unwrap() as f32 * 0.01;
+        (at(-40.0) - at(-10.0)) * 2.0
+    }
+
     #[test]
     fn reverb_time_matches_the_setting() {
         for time in [0.5, 2.0, 6.0] {
-            let mut fx = effects(SR);
-            let params = reverb(1.0, time, 0.0);
-            // Let the mix glide in on silence, then an impulse.
-            run(&mut fx, &params, &[0.0; 4800]);
-            let mut input = vec![0.0; (SR * time * 1.5) as usize];
-            input[0] = 1.0;
-            let (l, r) = run(&mut fx, &params, &input);
-            let db: Vec<f32> = envelope_db(&l)
-                .iter()
-                .zip(envelope_db(&r))
-                .map(|(a, b)| a.max(b))
-                .collect();
-            // Decay rate between -10 dB and -40 dB below the peak, as RT60.
-            let peak = db.iter().cloned().fold(f32::MIN, f32::max);
-            let at = |level: f32| db.iter().rposition(|&d| d > peak + level).unwrap() as f32 * 0.01;
-            let rt60 = (at(-40.0) - at(-10.0)) * 2.0;
+            let rt60 = measured_rt60(SR, time);
             assert!(
                 (rt60 / time - 1.0).abs() < 0.3,
                 "set {time} s, measured {rt60} s"
+            );
+        }
+    }
+
+    #[test]
+    fn reverb_time_does_not_depend_on_the_rate() {
+        for time in [0.5, 2.0, 6.0] {
+            let reference = measured_rt60(SR, time);
+            for rate in [96_000.0, 192_000.0] {
+                let rt60 = measured_rt60(rate, time);
+                assert!(
+                    (rt60 / reference - 1.0).abs() < 0.1,
+                    "{time} s: {reference} s at 48 kHz, {rt60} s at {rate} Hz"
+                );
+            }
+        }
+    }
+
+    /// Seconds until the reverb's output first exceeds `threshold` after an
+    /// impulse.
+    fn reverb_onset(rate: f32, pre_delay: f32) -> f32 {
+        let mut params = reverb(1.0, 2.0, 0.0);
+        params.reverb.pre_delay = pre_delay;
+        let (l, r) = impulse_response_at(rate, &params, (rate * 0.6) as usize);
+        let first = |x: &[f32]| x.iter().position(|v| v.abs() > 1e-3).unwrap();
+        first(&l).min(first(&r)) as f32 / rate
+    }
+
+    #[test]
+    fn longest_pre_delay_is_the_same_at_any_rate() {
+        let reference = reverb_onset(SR, crate::reverb::MAX_PRE_DELAY);
+        assert!(reference > 0.25, "onset at {reference} s");
+        for rate in [96_000.0, 192_000.0, 384_000.0] {
+            let onset = reverb_onset(rate, crate::reverb::MAX_PRE_DELAY);
+            assert!(
+                (onset - reference).abs() < 0.005,
+                "{reference} s at 48 kHz, {onset} s at {rate} Hz"
             );
         }
     }
@@ -563,11 +611,40 @@ mod tests {
 
     /// An impulse after the mix has glided in; returns both channels.
     fn impulse_response(params: &EffectParams, frames: usize) -> (Vec<f32>, Vec<f32>) {
-        let mut fx = effects(SR);
-        run(&mut fx, params, &[0.0; 24_000]);
+        impulse_response_at(SR, params, frames)
+    }
+
+    /// As [`impulse_response`], at `rate`.
+    fn impulse_response_at(
+        rate: f32,
+        params: &EffectParams,
+        frames: usize,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let mut fx = effects(rate);
+        run(&mut fx, params, &vec![0.0; (rate / 2.0) as usize]);
         let mut input = vec![0.0; frames];
         input[0] = 1.0;
         run(&mut fx, params, &input)
+    }
+
+    #[test]
+    fn delay_time_is_the_same_at_any_rate() {
+        // Up to the longest time, which needs the biggest lines.
+        for time in [0.375, 1.0, crate::delay::MAX_TIME] {
+            for rate in [SR, 96_000.0, 176_400.0, 192_000.0, 384_000.0] {
+                let frames = (rate * (time + 0.1)) as usize;
+                let (l, r) = impulse_response_at(rate, &delay(1.0, time, 0.5, false), frames);
+                for channel in [&l, &r] {
+                    let peaks = echoes(channel, 0.01);
+                    let seconds = peaks[0].0 as f32 / rate;
+                    assert!(
+                        (seconds - time).abs() < 0.001,
+                        "set {time} s, first echo at {seconds} s at {rate} Hz"
+                    );
+                    assert!((peaks[0].1 - 1.0).abs() < 0.02, "level {}", peaks[0].1);
+                }
+            }
+        }
     }
 
     #[test]
@@ -725,6 +802,20 @@ mod tests {
                 (peaks[0].1 - 3f32.sqrt()).abs() < 1e-3,
                 "level {}",
                 peaks[0].1
+            );
+        }
+    }
+
+    #[test]
+    fn longest_chorus_delay_is_the_same_at_any_rate() {
+        let max = crate::chorus::MAX_DELAY;
+        for rate in [SR, 96_000.0, 192_000.0, 384_000.0] {
+            let (l, _) = impulse_response_at(rate, &chorus(1.0, 0.0, max), (rate * 0.05) as usize);
+            let peaks = echoes(&l, 0.1);
+            let seconds = peaks[0].0 as f32 / rate;
+            assert!(
+                (seconds - max).abs() < 0.0005,
+                "set {max} s, heard at {seconds} s at {rate} Hz"
             );
         }
     }

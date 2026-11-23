@@ -281,3 +281,29 @@ fn activate_checks_the_rate_and_rebuilds() {
     assert_eq!(*p.patch(), default_patch());
     assert_eq!(HexaProcessor::default().patch(), &default_patch());
 }
+
+/// The echo of a note comes after the delay time at every sample rate, also when the processor
+/// is activated again at another rate (the effects' buffers are sized at activation).
+#[test]
+fn the_delay_time_does_not_depend_on_the_activation_rate() {
+    let mut patch = default_patch();
+    patch.effects.delay.mix = 1.0;
+    patch.effects.delay.time = 1.5;
+    patch.effects.delay.feedback = 0.0;
+    let mut p = HexaProcessor::new(patch);
+    for rate in [192_000.0, 48_000.0, 384_000.0, 96_000.0] {
+        p.activate(rate, MAX_BLOCK).expect("supported rate");
+        let total = (rate * 1.8) as usize;
+        let out = play(&mut p, total, 2048, &[(0, note_on(60))]);
+        // The dry note (while the mix glides in) and its release are gone after 0.5 s.
+        let from = (rate * 0.5) as usize;
+        let echo = (from..total)
+            .find(|&i| out.l[i].abs() > AUDIBLE || out.r[i].abs() > AUDIBLE)
+            .expect("the echo sounds") as f32
+            / rate;
+        assert!(
+            (echo - 1.5).abs() < 0.02,
+            "{rate} Hz: echo of a 1.5 s delay at {echo} s"
+        );
+    }
+}

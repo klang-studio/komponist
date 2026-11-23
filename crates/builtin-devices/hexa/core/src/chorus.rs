@@ -11,7 +11,7 @@
 use klang_dsp::one_pole::time_coeff;
 
 use crate::delay_line::DelayLines;
-use crate::effects::{DryWet, Effect, MAX_SAMPLE_RATE};
+use crate::effects::{DryWet, Effect};
 use crate::{phase, sine::sine};
 
 /// Ranges of [`ChorusParams`].
@@ -24,9 +24,11 @@ pub const MAX_DEPTH: f32 = 0.004;
 
 /// Delay taps per channel.
 const TAPS: usize = 3;
-/// Samples per line: the longest delay plus swing at [`MAX_SAMPLE_RATE`],
-/// plus the interpolation. Above that rate the longest delays get shorter.
-const LINE: usize = ((MAX_DELAY + MAX_DEPTH) * MAX_SAMPLE_RATE) as usize + 4;
+/// Samples per line at `rate`: the longest delay plus swing, plus the
+/// interpolation.
+fn line_len(rate: f32) -> usize {
+    ((MAX_DELAY + MAX_DEPTH) * rate) as usize + 4
+}
 /// 1/√TAPS, see the module documentation.
 const TAP_GAIN: f32 = 0.577_350_3;
 const _: () = assert!(TAPS == 3, "TAP_GAIN is 1/√3");
@@ -77,7 +79,7 @@ impl Default for ChorusParams {
 
 /// State of the chorus.
 pub(crate) struct Chorus {
-    lines: DelayLines<LINE, 2>,
+    lines: DelayLines<2>,
     /// LFO phase.
     lfo: u32,
     /// Current centre delay and swing in samples (gliding towards the set
@@ -89,7 +91,7 @@ pub(crate) struct Chorus {
 
 impl Chorus {
     /// Writes a silent chorus for `sample_rate` to `this` without building it
-    /// on the stack.
+    /// on the stack. Allocates the lines.
     ///
     /// # Safety
     /// `this` must be valid for writes and suitably aligned.
@@ -98,7 +100,7 @@ impl Chorus {
         let d = ChorusParams::DEFAULT;
         // SAFETY: guaranteed by the caller.
         unsafe {
-            DelayLines::write_new(core::ptr::addr_of_mut!((*this).lines));
+            core::ptr::addr_of_mut!((*this).lines).write(DelayLines::new(line_len(rate)));
             core::ptr::addr_of_mut!((*this).lfo).write(0);
             core::ptr::addr_of_mut!((*this).delay).write(d.delay * rate);
             core::ptr::addr_of_mut!((*this).swing).write(d.depth * MAX_DEPTH * rate);
@@ -142,7 +144,7 @@ impl Effect for Chorus {
         let target = params.delay.clamp(MIN_DELAY, MAX_DELAY) * self.rate;
         // Delay and depth glide per sample: a jump would move every tap.
         let glide = 1.0 - time_coeff(1.0, DELAY_GLIDE_SECONDS * self.rate);
-        let max_back = (LINE - 3) as f32;
+        let max_back = (self.lines.len() - 3) as f32;
         for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
             let (dry_gain, wet_gain) = mix.at(i);
             let wet_gain = wet_gain * TAP_GAIN;

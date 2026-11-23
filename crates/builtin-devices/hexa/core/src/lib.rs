@@ -2,15 +2,19 @@
 //!
 //! Copied from pisynth's `hexa-core` (commit `b621aec`, 2026-11-15) and developed independently since.
 //!
-//! `no_std`, no allocation (but [`Synth::boxed`] with the `alloc` feature),
-//! fixed-size buffers. Must not depend on any HAL,
-//! Circle or OS facility so it can run both on the desktop and bare metal.
+//! `no_std` with `alloc`: the master effects' delay lines are allocated at
+//! construction, sized from the sample rate; rendering allocates nothing.
+//! Must not depend on any HAL or OS facility.
 // Missing SAFETY comments: 24 (`simd.rs`). Remove this allow when the crate is clean (#241 follow-up).
 #![allow(clippy::undocumented_unsafe_blocks)]
 #![cfg_attr(not(test), no_std)]
 
-#[cfg(any(test, feature = "alloc"))]
 extern crate alloc;
+
+// Tests run the effects inside `assert_no_alloc`, which only reports with this allocator.
+#[cfg(test)]
+#[global_allocator]
+static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 mod allocator;
 pub mod bank;
