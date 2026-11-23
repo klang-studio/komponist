@@ -1844,7 +1844,7 @@ mod tests {
             Point::linear(Tick(100), 0.6),
             Point::linear(Tick(140), 0.8),
         ];
-        let mut h = harness(&[original.clone()]);
+        let mut h = harness(std::slice::from_ref(&original));
         let mut added = original.clone();
         added.insert(0, Point::linear(Tick(5), 0.9));
         let source = h.state().sources[0].clone();
