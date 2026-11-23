@@ -54,7 +54,7 @@ use serde::{Deserialize, Serialize};
 use komponist_model::persist;
 use komponist_model::{DeviceId, Project, Repairs};
 
-use crate::project_io::{ProjectIoError, load_project_repaired, write_atomic};
+use crate::project_io::{ProjectIoError, write_atomic};
 
 /// Version of [`RecoveryMeta`]; a meta with a higher version is treated as unreadable.
 pub const META_VERSION: u32 = 1;
@@ -74,6 +74,7 @@ pub const DISCARDED: &str = "discarded";
 const COPY_EXTENSION: &str = persist::FILE_EXTENSION;
 const META_EXTENSION: &str = "json";
 const LOCK_EXTENSION: &str = "lock";
+const NEXT_META_EXTENSION: &str = "json.next";
 
 /// How long the panic hook waits for the writer thread to finish a write in progress before it
 /// writes the newest copy over it.
@@ -158,6 +159,8 @@ pub struct EntryPaths {
     pub copy: PathBuf,
     /// `<id>.json`: the [`RecoveryMeta`].
     pub meta: PathBuf,
+    /// `<id>.json.next`: the meta of a generation being written ([`write_entry`]).
+    pub next_meta: PathBuf,
     /// `<id>.lock`: held while the document is open.
     pub lock: PathBuf,
 }
@@ -168,6 +171,7 @@ impl EntryPaths {
         EntryPaths {
             copy: file(COPY_EXTENSION),
             meta: file(META_EXTENSION),
+            next_meta: file(NEXT_META_EXTENSION),
             lock: file(LOCK_EXTENSION),
         }
     }
@@ -246,6 +250,33 @@ pub struct RecoveryMeta {
     /// How the session ended ([`EndedBy::Unknown`] until a panic hook says otherwise).
     #[serde(default)]
     pub ended_by: EndedBy,
+    /// The copy this meta belongs to: its length and checksum (one generation, [`write_entry`]).
+    #[serde(default)]
+    pub copy: Option<CopyCheck>,
+}
+
+/// Length and FNV-1a 64 checksum of a copy's bytes: which meta belongs to which copy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CopyCheck {
+    /// Length in bytes.
+    pub len: u64,
+    /// FNV-1a 64 of the bytes, as 16 hex digits (stable across builds, unlike `std`'s hasher).
+    pub fnv: String,
+}
+
+impl CopyCheck {
+    /// The check of `bytes`.
+    pub fn of(bytes: &[u8]) -> CopyCheck {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        CopyCheck {
+            len: bytes.len() as u64,
+            fnv: format!("{hash:016x}"),
+        }
+    }
 }
 
 impl RecoveryMeta {
@@ -260,6 +291,7 @@ impl RecoveryMeta {
             file: base.project_path.as_deref().and_then(Fingerprint::of),
             app_version: env!("CARGO_PKG_VERSION").to_owned(),
             ended_by: EndedBy::Unknown,
+            copy: None,
         }
     }
 
@@ -337,24 +369,33 @@ fn write_published(path: &Path, text: &str) -> io::Result<()> {
     restrict_file(path)
 }
 
-/// Writes one generation of an entry: the meta, then the project. A copy on disk therefore always
-/// has the meta of its document (the original path is the link base, the name is the prompt's):
-/// a failed meta write leaves the previous complete pair, a failed project write or a crash in
-/// between leaves the previous copy with the meta of the same document. The copy's modification
-/// time is the time the prompt shows, so it always belongs to the project it shows.
+/// Writes one generation of an entry as a committed pair: the new meta (with the copy's
+/// [`CopyCheck`]) goes to `<id>.json.next`, then the copy is published, then the meta is renamed
+/// over `<id>.json`. An interruption anywhere leaves a pair the scan can match by the check: the
+/// previous copy with `<id>.json`, or (after the copy, before the rename) the new copy with
+/// `<id>.json.next` ([`Store::scan`]). A copy is never read with the meta of another generation, so
+/// its link base (the original path) is always its own, also after Save As moved the document.
 fn write_entry(paths: &EntryPaths, project: &Project, meta: &RecoveryMeta) -> io::Result<()> {
     let json = persist::to_json(project).map_err(io::Error::other)?;
-    meta.write(&paths.meta)?;
-    write_published(&paths.copy, &json)
+    let mut meta = meta.clone();
+    meta.copy = Some(CopyCheck::of(json.as_bytes()));
+    meta.write(&paths.next_meta)?;
+    write_published(&paths.copy, &json)?;
+    commit_meta(paths)
 }
 
-/// Deletes the copy, then its meta (the reverse of [`write_entry`]).
-fn delete_entry(paths: &EntryPaths) {
-    for path in [&paths.copy, &paths.meta] {
-        if let Err(error) = remove_if_present(path) {
-            eprintln!("komponist: recovery: {}: {error}", path.display());
-        }
-    }
+/// The last step of [`write_entry`]: `<id>.json.next` becomes `<id>.json`.
+fn commit_meta(paths: &EntryPaths) -> io::Result<()> {
+    fs::rename(&paths.next_meta, &paths.meta)
+}
+
+/// Deletes the copy, then its metas (the reverse of [`write_entry`]). If the copy cannot be
+/// deleted, its meta stays too (a copy without its meta would lose its link base) and the error
+/// comes back; a file that is not there counts as deleted.
+fn delete_entry(paths: &EntryPaths) -> io::Result<()> {
+    remove_if_present(&paths.copy)?;
+    remove_if_present(&paths.next_meta)?;
+    remove_if_present(&paths.meta)
 }
 
 fn remove_if_present(path: &Path) -> io::Result<()> {
@@ -517,23 +558,38 @@ impl Store {
         let Some(lock) = take_lock(&paths.lock)? else {
             return Ok(None);
         };
-        let copy = match fs::metadata(&paths.copy) {
-            Ok(meta) => Some(meta),
+        let bytes = match fs::read(&paths.copy) {
+            Ok(bytes) => Some(Ok(bytes)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error),
+            Err(error) => Some(Err(error)),
         };
-        let Some(copy) = copy else {
-            // Nothing to recover: a session that ended clean, or one that crashed between its
-            // first meta and its first copy.
+        let Some(bytes) = bytes else {
+            // Nothing to recover: a session that ended clean, or one that crashed before its
+            // first copy.
+            remove_if_present(&paths.next_meta)?;
             remove_if_present(&paths.meta)?;
             drop(lock);
             let _ = fs::remove_file(&paths.lock);
             return Ok(None);
         };
-        let meta = RecoveryMeta::read(&paths.meta);
-        let loaded = load_project_repaired(&paths.copy).map(|(p, r)| (Arc::new(p), r));
-        let written = copy
-            .modified()
+        let meta = bytes
+            .as_ref()
+            .ok()
+            .and_then(|bytes| pair_meta(&paths, bytes));
+        let loaded = match bytes {
+            Ok(bytes) => String::from_utf8(bytes)
+                .map_err(|_| {
+                    ProjectIoError::Format(paths.copy.clone(), persist::PersistError::NotAProject)
+                })
+                .and_then(|text| {
+                    persist::load(&text)
+                        .map(|loaded| (Arc::new(loaded.project), loaded.repairs))
+                        .map_err(|e| ProjectIoError::Format(paths.copy.clone(), e))
+                }),
+            Err(error) => Err(ProjectIoError::Io(paths.copy.clone(), error)),
+        };
+        let written = fs::metadata(&paths.copy)
+            .and_then(|m| m.modified())
             .ok()
             .or_else(|| meta.as_ref().map(RecoveryMeta::written))
             .unwrap_or(UNIX_EPOCH);
@@ -590,20 +646,67 @@ impl Store {
     }
 }
 
+/// The meta of the copy `bytes`: the committed `<id>.json` or, after an interruption between the
+/// copy and the meta's rename, `<id>.json.next`, whichever was written for these bytes
+/// ([`write_entry`]). A meta of an older build without a check pairs as before. A pending meta of
+/// another generation is left over from an interrupted write and goes.
+fn pair_meta(paths: &EntryPaths, bytes: &[u8]) -> Option<RecoveryMeta> {
+    let check = CopyCheck::of(bytes);
+    let matches = |meta: &RecoveryMeta| meta.copy.as_ref().is_none_or(|c| *c == check);
+    let next = RecoveryMeta::read(&paths.next_meta);
+    if let Some(next) = next.filter(|m| m.copy.as_ref() == Some(&check)) {
+        // The copy of the interrupted write made it: finish the commit.
+        if let Err(error) = commit_meta(paths) {
+            eprintln!("komponist: recovery: {}: {error}", paths.meta.display());
+        }
+        return Some(next);
+    }
+    let _ = remove_if_present(&paths.next_meta);
+    RecoveryMeta::read(&paths.meta).filter(matches)
+}
+
 /// Moves copy and meta of `paths` to `copy_to` and `meta_to`; rolls the copy back if the meta
 /// cannot follow.
 fn discard_to(paths: &EntryPaths, copy_to: &Path, meta_to: &Path) -> io::Result<()> {
+    discard_with(paths, copy_to, meta_to, |from, to| fs::rename(from, to))
+}
+
+/// [`discard_to`] with the rename the copy is rolled back with (tests make it fail).
+///
+/// If the meta cannot follow and the copy cannot go back either, the discard has happened for the
+/// copy (it is in `discarded/`, as the user asked): the meta left behind is deleted, so no later
+/// scan pairs it with anything, and the discard counts as done. A meta that cannot be deleted
+/// either is a leftover without a copy, which the next scan removes ([`Store::scan`]); it is never
+/// offered as a copy.
+fn discard_with(
+    paths: &EntryPaths,
+    copy_to: &Path,
+    meta_to: &Path,
+    roll_back: impl Fn(&Path, &Path) -> io::Result<()>,
+) -> io::Result<()> {
+    // A meta of an interrupted write belongs to no copy that is kept.
+    remove_if_present(&paths.next_meta)?;
     let moved = rename_if_present(&paths.copy, copy_to)?;
-    if let Err(error) = rename_if_present(&paths.meta, meta_to) {
-        if moved && let Err(back) = fs::rename(copy_to, &paths.copy) {
-            eprintln!(
-                "komponist: recovery: {} not moved back: {back}",
-                copy_to.display()
-            );
-        }
+    let Err(error) = rename_if_present(&paths.meta, meta_to) else {
+        return Ok(());
+    };
+    if !moved {
         return Err(error);
     }
-    Ok(())
+    match roll_back(copy_to, &paths.copy) {
+        // Back in place: still a candidate.
+        Ok(()) => Err(error),
+        Err(back) => {
+            eprintln!(
+                "komponist: recovery: {} not moved back ({back}); it stays discarded",
+                copy_to.display()
+            );
+            if let Err(lone) = remove_if_present(&paths.meta) {
+                eprintln!("komponist: recovery: {}: {lone}", paths.meta.display());
+            }
+            Ok(())
+        }
+    }
 }
 
 /// The state of a candidate's project file, compared with the copy.
@@ -682,17 +785,25 @@ impl Candidate {
 // ------------------------------------------------------------------------------------------------
 
 /// The debounce of the writes (owner decision Q2), on a clock the caller passes in: due [`QUIET`]
-/// after the last change, or [`MAX_AGE`] after the first change the copy does not hold yet.
+/// after the last change, or [`MAX_AGE`] after the copy began to fall behind: the first change it
+/// does not hold, or, while changes go on without a quiet [`QUIET`], the last submission (so
+/// continuous edits get a copy at 30 s, 60 s, 90 s …).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Schedule {
     first: Option<Instant>,
     last: Option<Instant>,
+    submitted: Option<Instant>,
 }
 
 impl Schedule {
     /// The document changed at `now`.
     pub fn changed(&mut self, now: Instant) {
-        self.first.get_or_insert(now);
+        if self.first.is_none() {
+            let continuous = self
+                .submitted
+                .filter(|at| now.saturating_duration_since(*at) < QUIET);
+            self.first = Some(continuous.unwrap_or(now));
+        }
         self.last = Some(now);
     }
 
@@ -706,8 +817,16 @@ impl Schedule {
         self.due_at().is_some_and(|at| now >= at)
     }
 
-    /// The copy was handed to the writer: nothing pending.
-    pub fn written(&mut self) {
+    /// The copy was handed to the writer at `now`: nothing pending.
+    pub fn submitted(&mut self, now: Instant) {
+        *self = Schedule {
+            submitted: Some(now),
+            ..Schedule::default()
+        };
+    }
+
+    /// The document is clean or another one: nothing pending, nothing submitted.
+    pub fn reset(&mut self) {
         *self = Schedule::default();
     }
 }
@@ -810,6 +929,8 @@ struct Slot {
 
 struct WriterInner {
     store: Store,
+    /// Wakes the UI after an outcome, so a failed write is retried in an idle app too.
+    waker: Mutex<Option<Waker>>,
     slot: Mutex<Slot>,
     wake: Condvar,
     idle: Condvar,
@@ -820,6 +941,9 @@ struct WriterInner {
     #[cfg(test)]
     fail_writes: std::sync::atomic::AtomicUsize,
 }
+
+/// Wakes the UI thread (`egui::Context::request_repaint`).
+pub type Waker = Box<dyn Fn() + Send + Sync>;
 
 /// What a job came to, for document `generation` (the UI ignores older documents).
 #[derive(Debug)]
@@ -850,6 +974,7 @@ impl Writer {
     pub fn start(store: Store, shared: Arc<Shared>) -> io::Result<Writer> {
         let inner = Arc::new(WriterInner {
             store,
+            waker: Mutex::new(None),
             slot: Mutex::default(),
             wake: Condvar::new(),
             idle: Condvar::new(),
@@ -958,8 +1083,16 @@ impl Owned {
             return;
         };
         {
-            let _io = lock(&inner.shared.io);
-            delete_entry(&entry.paths);
+            let io = lock(&inner.shared.io);
+            // A sealed store keeps the panic hook's copy (the session is ending anyway).
+            if !io.sealed
+                && let Err(error) = delete_entry(&entry.paths)
+            {
+                eprintln!(
+                    "komponist: recovery: {}: {error}",
+                    entry.paths.copy.display()
+                );
+            }
         }
         {
             let mut state = lock(&inner.shared.state);
@@ -1003,6 +1136,7 @@ fn run(inner: &WriterInner, outcomes: &mpsc::Sender<Outcome>) {
                         inner.store.root().display()
                     );
                     let _ = outcomes.send(Outcome::Failed { generation, error });
+                    wake(inner);
                 }
             }
             Job::Adopt { entry, generation } => {
@@ -1023,12 +1157,21 @@ fn run(inner: &WriterInner, outcomes: &mpsc::Sender<Outcome>) {
                     }
                 };
                 let _ = outcomes.send(outcome);
+                wake(inner);
             }
             Job::DeleteCopy => {
                 if let Some((entry, _)) = &owned.entry {
-                    let _io = lock(&shared.io);
-                    delete_entry(&entry.paths);
-                    lock(&shared.state).written = None;
+                    let io = lock(&shared.io);
+                    // After the panic hook's copy nothing older may remove it.
+                    if !io.sealed {
+                        match delete_entry(&entry.paths) {
+                            Ok(()) => lock(&shared.state).written = None,
+                            Err(error) => eprintln!(
+                                "komponist: recovery: {}: {error}",
+                                entry.paths.copy.display()
+                            ),
+                        }
+                    }
                 }
             }
             Job::Close => owned.close(inner),
@@ -1039,8 +1182,10 @@ fn run(inner: &WriterInner, outcomes: &mpsc::Sender<Outcome>) {
                 };
                 if let (Some((entry, _)), Some(mut meta)) = (entry, meta) {
                     meta.ended_by = ended_by;
-                    let _io = lock(&shared.io);
-                    if entry.copy.exists()
+                    let io = lock(&shared.io);
+                    // The hook's copy has its own, newer meta.
+                    if !io.sealed
+                        && entry.copy.exists()
                         && let Err(error) = meta.write(&entry.meta)
                     {
                         eprintln!("komponist: recovery: {}: {error}", entry.meta.display());
@@ -1048,6 +1193,12 @@ fn run(inner: &WriterInner, outcomes: &mpsc::Sender<Outcome>) {
                 }
             }
         }
+    }
+}
+
+fn wake(inner: &WriterInner) {
+    if let Some(waker) = &*lock(&inner.waker) {
+        waker();
     }
 }
 
@@ -1192,6 +1343,23 @@ impl Recovery {
         self.store.as_ref()
     }
 
+    /// Lets the writer wake the UI thread after a write (once; later calls do nothing).
+    pub fn set_waker(&self, waker: impl Fn() + Send + Sync + 'static) {
+        if let Some(writer) = &self.writer {
+            let mut slot = lock(&writer.inner.waker);
+            if slot.is_none() {
+                *slot = Some(Box::new(waker));
+            }
+        }
+    }
+
+    /// Whether the writer can wake the UI thread.
+    pub fn has_waker(&self) -> bool {
+        self.writer
+            .as_ref()
+            .is_some_and(|w| lock(&w.inner.waker).is_some())
+    }
+
     /// The files of this document's entry, once the writer has created it.
     pub fn entry_paths(&self) -> Option<EntryPaths> {
         lock(&self.shared.state)
@@ -1273,7 +1441,7 @@ impl Recovery {
                 writer.queue(Job::DeleteCopy);
             }
             self.has_copy = false;
-            self.schedule.written();
+            self.schedule.reset();
             self.retry = None;
             self.backoff = Duration::ZERO;
             self.seen = None;
@@ -1312,7 +1480,7 @@ impl Recovery {
         if self.schedule.due(now) || retry_due {
             writer.write(published);
             self.has_copy = true;
-            self.schedule.written();
+            self.schedule.submitted(now);
             self.retry = None;
         }
         let due = match (self.schedule.due_at(), self.retry) {
@@ -1364,7 +1532,7 @@ impl Recovery {
         self.generation += 1;
         self.prepared = false;
         self.has_copy = false;
-        self.schedule.written();
+        self.schedule.reset();
         self.retry = None;
         self.backoff = Duration::ZERO;
         self.seen = None;
@@ -1497,22 +1665,28 @@ fn write_from_hook(shared: &Shared, ended_by: EndedBy) {
             meta.ended_by = ended_by;
             write_entry(&paths, &published.project(), &meta)
         }
-        // Clean when it panicked, but a copy is still on disk: mark it.
+        // Clean when it panicked, but a copy is still on disk: mark it (not sealed: the writer
+        // may still delete that copy of a saved document).
         (_, Some(mut meta)) if paths.copy.exists() => {
             meta.ended_by = ended_by;
-            meta.write(&paths.meta)
+            if let Err(error) = meta.write(&paths.meta) {
+                eprintln!("komponist: recovery: {}: {error}", paths.meta.display());
+            }
+            return;
         }
-        _ => Ok(()),
+        _ => return,
     };
-    io.sealed = true;
-    if let Err(error) = result {
-        eprintln!("komponist: recovery copy not written while panicking: {error}");
+    // Only a copy that is on disk seals the store; after a failure the writer may still write.
+    match result {
+        Ok(()) => io.sealed = true,
+        Err(error) => eprintln!("komponist: recovery copy not written while panicking: {error}"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project_io::load_project_repaired;
 
     const WAIT: Duration = Duration::from_secs(5);
 
@@ -1632,7 +1806,22 @@ mod tests {
         }
         assert_eq!(schedule.due_at(), Some(s(30.0)));
         assert!(schedule.due(s(30.0)));
-        schedule.written();
+        schedule.submitted(s(30.0));
+        assert_eq!(schedule.due_at(), None);
+        // The changes go on: the next copy 30 s after the last submission, not after the next
+        // change.
+        let mut t = 30.5;
+        while t < 59.5 {
+            schedule.changed(s(t));
+            assert!(!schedule.due(s(t + 0.5)), "at {t}");
+            t += 1.0;
+        }
+        assert_eq!(schedule.due_at(), Some(s(60.0)));
+        // After a pause of more than 2 s a new change waits its 2 quiet seconds again.
+        schedule.submitted(s(60.0));
+        schedule.changed(s(70.0));
+        assert_eq!(schedule.due_at(), Some(s(72.0)));
+        schedule.reset();
         assert_eq!(schedule.due_at(), None);
     }
 
@@ -1707,7 +1896,7 @@ mod tests {
         let dir = scratch("max-age");
         let (clock, now) = fake_clock();
         let mut r = Recovery::new(Store::new(&dir), clock);
-        let mut writes = 0;
+        let mut writes = Vec::new();
         let mut last_copy = None;
         for i in 0..62 {
             let p = named(&format!("Take {i}"));
@@ -1716,14 +1905,14 @@ mod tests {
             if let Ok(meta) = fs::read_to_string(&paths.meta)
                 && Some(&meta) != last_copy.as_ref()
             {
-                writes += 1;
+                writes.push(i);
                 last_copy = Some(meta);
             }
             advance(&now, Duration::from_secs(1));
         }
-        // A change every second from 0 to 61 s: never two quiet seconds, so the copies come at
-        // 30 s (30 s after the change at 0 s) and at 61 s (30 s after the change at 31 s).
-        assert_eq!(writes, 2);
+        // A change every second from 0 to 61 s: never two quiet seconds, so the copies come every
+        // 30 s from the last one: at 30 s and 60 s.
+        assert_eq!(writes, [30, 60]);
         r.shutdown();
         let _ = fs::remove_dir_all(dir);
     }
@@ -1776,12 +1965,19 @@ mod tests {
             .inner
             .fail_writes
             .store(2, std::sync::atomic::Ordering::Relaxed);
+        let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&woken);
+        r.set_waker(move || {
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
         let p = named("Wieder");
         frame(&mut r, doc(true, &p));
         advance(&now, QUIET);
         frame(&mut r, doc(true, &p));
         let paths = r.entry_paths().unwrap();
         assert!(!paths.copy.exists());
+        // The writer wakes the UI, so an idle app still gets the frame that schedules the retry.
+        assert!(woken.load(std::sync::atomic::Ordering::Relaxed) > 0);
         // The failure comes back in the next frame (reported once) with a retry after 2 s.
         let (failure, due) = frame(&mut r, doc(true, &p));
         assert!(failure.is_some());
@@ -1886,6 +2082,125 @@ mod tests {
         assert_eq!(loaded_name(&paths), "B");
         let meta = RecoveryMeta::read(&paths.meta).unwrap();
         assert!(matches!(meta.ended_by, EndedBy::Panic { .. }));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_sealed_store_keeps_the_panic_copy_against_a_later_delete_and_mark() {
+        let dir = scratch("sealed-delete");
+        let (clock, now) = fake_clock();
+        let mut r = Recovery::new(Store::new(&dir), clock);
+        let a = named("A");
+        frame(&mut r, doc(true, &a));
+        advance(&now, QUIET);
+        frame(&mut r, doc(true, &a));
+        let paths = r.entry_paths().unwrap();
+        // Saved, edited again, and the UI thread panics before the writer deletes the old copy.
+        let b = named("B");
+        r.update(doc(true, &b));
+        let hook = EndedBy::Panic {
+            message: "boom".into(),
+            location: "app.rs:1:1".into(),
+        };
+        write_from_hook(&r.shared, hook.clone());
+        let writer = r.writer.as_ref().unwrap();
+        writer.queue(Job::DeleteCopy);
+        writer.queue(Job::MarkPanic(EndedBy::Panic {
+            message: "later".into(),
+            location: "engine.rs:1:1".into(),
+        }));
+        assert!(r.flush(WAIT));
+        assert_eq!(loaded_name(&paths), "B", "the copy stays");
+        assert_eq!(RecoveryMeta::read(&paths.meta).unwrap().ended_by, hook);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_hook_that_writes_nothing_does_not_seal_the_store() {
+        let dir = scratch("unsealed");
+        let (clock, now) = fake_clock();
+        let mut r = Recovery::new(Store::new(&dir), clock);
+        let p = named("Später");
+        // An entry, but a clean document: the hook has nothing to write.
+        frame(&mut r, doc(true, &p));
+        frame(&mut r, doc(false, &p));
+        write_from_hook(&r.shared, EndedBy::Unknown);
+        assert!(!lock(&r.shared.io).sealed);
+        // The writer still writes the next copy.
+        frame(&mut r, doc(true, &p));
+        advance(&now, QUIET);
+        frame(&mut r, doc(true, &p));
+        assert_eq!(loaded_name(&r.entry_paths().unwrap()), "Später");
+        r.shutdown();
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_copy_that_cannot_be_deleted_keeps_its_meta() {
+        let dir = scratch("undeletable");
+        let store = Store::new(&dir);
+        let paths = write_copy(&store, "Fest", None);
+        // A non-empty folder where the copy is: `remove_file` fails.
+        fs::remove_file(&paths.copy).unwrap();
+        fs::create_dir_all(paths.copy.join("inside")).unwrap();
+        assert!(delete_entry(&paths).is_err());
+        assert!(paths.meta.exists(), "the meta stays with its copy");
+        // Nothing there counts as deleted.
+        fs::remove_dir_all(&paths.copy).unwrap();
+        assert!(delete_entry(&paths).is_ok());
+        assert!(!paths.meta.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_interrupted_write_keeps_a_matching_pair() {
+        let dir = scratch("generation");
+        let store = Store::new(&dir);
+        let entry = store.create_entry().unwrap();
+        let paths = entry.paths.clone();
+        let at = |path: &str| MetaBase {
+            project_path: Some(dir.join(path)),
+            name: "Night Drive".into(),
+        };
+        // Generation 1 in folder A, complete.
+        write_entry(
+            &paths,
+            &Project::new("Night Drive"),
+            &RecoveryMeta::at(&at("a/Night Drive.komponist"), SystemTime::now()),
+        )
+        .unwrap();
+        drop(entry);
+        // Generation 2 after Save As to folder B: the meta is written, the copy is not (a crash,
+        // a failed write). The old copy keeps the old meta.
+        let mut project = Project::new("Night Drive");
+        project.tempo.bpm = 99.0;
+        let json = persist::to_json(&project).unwrap();
+        let mut next = RecoveryMeta::at(&at("b/Night Drive.komponist"), SystemTime::now());
+        next.copy = Some(CopyCheck::of(json.as_bytes()));
+        next.write(&paths.next_meta).unwrap();
+        let found = store.scan().0;
+        assert_eq!(
+            found[0].project_path(),
+            Some(dir.join("a/Night Drive.komponist").as_path())
+        );
+        assert_eq!(found[0].project().unwrap().tempo.bpm, 120.0);
+        assert!(!paths.next_meta.exists(), "the stale meta goes");
+        drop(found);
+        // Generation 2 again: the copy is published, the meta not yet committed. The new copy
+        // pairs with the new meta, which the scan commits.
+        next.write(&paths.next_meta).unwrap();
+        write_published(&paths.copy, &json).unwrap();
+        let found = store.scan().0;
+        assert_eq!(
+            found[0].project_path(),
+            Some(dir.join("b/Night Drive.komponist").as_path())
+        );
+        assert_eq!(found[0].project().unwrap().tempo.bpm, 99.0);
+        assert!(!paths.next_meta.exists());
+        assert_eq!(
+            RecoveryMeta::read(&paths.meta).unwrap().project_path,
+            Some(dir.join("b/Night Drive.komponist"))
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -2130,6 +2445,30 @@ mod tests {
         assert!(discard_to(&paths, &copy_to, &meta_to).is_err());
         assert!(paths.copy.exists() && paths.meta.exists());
         assert!(!copy_to.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_discard_whose_rollback_fails_stays_discarded_and_is_not_offered() {
+        let dir = scratch("discard-rollback");
+        let store = Store::new(&dir);
+        let paths = write_copy(&store, "Weg", None);
+        let folder = dir.join(DISCARDED);
+        fs::create_dir_all(&folder).unwrap();
+        let copy_to = folder.join("weg.komponist");
+        // The meta cannot follow (a non-empty folder in its way), the copy cannot go back.
+        let meta_to = dir.join("blocked");
+        fs::create_dir_all(meta_to.join("inside")).unwrap();
+        let result = discard_with(&paths, &copy_to, &meta_to, |_, _| {
+            Err(io::Error::other("test: no way back"))
+        });
+        assert!(result.is_ok(), "the copy is discarded");
+        assert!(copy_to.exists(), "the copy is kept in discarded/");
+        assert!(!paths.copy.exists() && !paths.meta.exists());
+        // The next start offers nothing, not an unreadable copy.
+        let (found, error) = store.scan();
+        assert!(found.is_empty() && error.is_none());
+        assert!(copy_to.exists());
         let _ = fs::remove_dir_all(dir);
     }
 
