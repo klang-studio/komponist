@@ -190,6 +190,15 @@ struct Worker {
 enum Message {
     /// The engine runs at the export rate; the worker waits for the bridges (module docs, step 4).
     Prepared,
+    /// The worker panicked (export code, an in-process device, the engine's `render`); the engine
+    /// comes back only to be replaced ([`EngineSync::recover`]), its state is unknown.
+    ///
+    /// `finished` is the export's report if it was complete before the panic (the closing
+    /// one-frame render, the device rate): a WAV file that was written stays listed.
+    Crashed {
+        engine: DetachedEngine,
+        finished: Option<ExportReport>,
+    },
     /// The export ended; the engine comes back.
     Done {
         engine: DetachedEngine,
@@ -233,16 +242,29 @@ struct Input {
     track: Option<Arc<TrackExport>>,
 }
 
-/// The worker: export rate, wait for the UI, render, device rate, engine back.
+/// The worker's side of its conversation with the UI thread.
+struct Link<'a> {
+    to_ui: &'a Sender<Message>,
+    go: &'a Receiver<Result<(), ExportError>>,
+    /// Set when the export itself is over, before the steps a panic could still interrupt.
+    finished: &'a mut Option<ExportReport>,
+}
+
+/// The worker: export rate, wait for the UI, render, device rate. The caller sends the engine
+/// back with the outcome, also after a panic ([`run_worker`]).
 fn work(
-    mut engine: DetachedEngine,
+    engine: &mut DetachedEngine,
     input: Input,
     job: ExportJob,
-    cancel: Arc<AtomicBool>,
-    progress: Arc<SharedProgress>,
-    to_ui: Sender<Message>,
-    go: Receiver<Result<(), ExportError>>,
-) {
+    cancel: &AtomicBool,
+    progress: &SharedProgress,
+    link: Link<'_>,
+) -> (Result<ExportReport, ExportError>, Vec<SlotId>) {
+    let Link {
+        to_ui,
+        go,
+        finished,
+    } = link;
     let mut failed = Vec::new();
     let device_rate = engine.engine().sample_rate();
     let export_rate = job.sample_rate as f32;
@@ -275,15 +297,18 @@ fn work(
         // skip come from the same processors, in frames of the export rate.
         if let Some(track) = track {
             let (e, h) = engine.parts();
-            export_track(e, h, &program, (&track, &project), &job, &cancel, |p| {
+            export_track(e, h, &program, (&track, &project), &job, cancel, |p| {
                 progress.store(p)
             })
         } else {
             let export_program = recompile(engine.engine(), &project, &program);
             let (e, h) = engine.parts();
-            export(e, h, &export_program, &job, &cancel, |p| progress.store(p))
+            export(e, h, &export_program, &job, cancel, |p| progress.store(p))
         }
     });
+    // The export itself is over: a panic below, while the devices go back to the device rate or
+    // in the closing render, keeps its outcome ([`run_worker`]).
+    *finished = result.as_ref().ok().copied();
     if changed && let Err(errors) = engine.engine().set_sample_rate(device_rate) {
         failed.extend(errors.into_iter().map(|(slot, _)| slot));
     }
@@ -299,11 +324,50 @@ fn work(
     // engine is back (else a Play right after the export could see the export's "playing" and
     // stop instead).
     engine.engine().render(1);
-    let _ = to_ui.send(Message::Done {
-        engine,
-        result,
-        failed,
-    });
+    (result, failed)
+}
+
+/// The worker thread's body: [`work`] under `catch_unwind`, so the engine always goes back to
+/// the UI thread. After a panic it comes as [`Message::Crashed`]: whatever unwound (a device
+/// inside `render` poisons the engine, #210; export code leaves the rate and the program
+/// half-changed) its state cannot be trusted, and the UI thread rebuilds it.
+fn run_worker(
+    mut engine: DetachedEngine,
+    input: Input,
+    job: ExportJob,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<SharedProgress>,
+    to_ui: Sender<Message>,
+    go: Receiver<Result<(), ExportError>>,
+) {
+    let mut finished = None;
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        work(
+            &mut engine,
+            input,
+            job,
+            &cancel,
+            &progress,
+            Link {
+                to_ui: &to_ui,
+                go: &go,
+                finished: &mut finished,
+            },
+        )
+    }));
+    let message = match outcome {
+        Ok((result, failed)) => Message::Done {
+            engine,
+            result,
+            failed,
+        },
+        Err(payload) => {
+            // The payload may own device state; the UI thread must not wait for it.
+            std::mem::forget(payload);
+            Message::Crashed { engine, finished }
+        }
+    };
+    let _ = to_ui.send(message);
 }
 
 /// The engine's bit depth for the app's.
@@ -590,27 +654,18 @@ impl App {
                     self.finish_export(engine, result, failed);
                     return;
                 }
+                Ok(Message::Crashed { engine, finished }) => {
+                    self.finish_crashed(Some(engine), finished);
+                    return;
+                }
                 Err(TryRecvError::Empty) => {
                     self.release_when_ready();
                     break;
                 }
+                // The worker is gone without a word (it normally reports even a panic): the
+                // engine went with it.
                 Err(TryRecvError::Disconnected) => {
-                    let flattening = self
-                        .export
-                        .run
-                        .as_ref()
-                        .is_some_and(|run| run.flatten.is_some());
-                    self.export.run = None;
-                    self.dialogs.after_flatten = None;
-                    self.close_export_dialog();
-                    if flattening {
-                        self.flatten_failed(self.lang.flatten_worker_failed());
-                    } else {
-                        self.set_status(
-                            self.lang.export_failed("worker stopped"),
-                            StatusKind::Error,
-                        );
-                    }
+                    self.finish_crashed(None, None);
                     return;
                 }
             }
@@ -688,7 +743,7 @@ impl App {
                             program,
                             track,
                         };
-                        work(detached, input, job, cancel, progress, to_ui, from_ui);
+                        run_worker(detached, input, job, cancel, progress, to_ui, from_ui);
                     }
                 })
         };
@@ -814,6 +869,45 @@ impl App {
         let (fraction, peak_db) = worker.progress.load();
         if let Some(Dialog::Export(dialog)) = &mut self.ui.dialog {
             dialog.progress = Some(ExportProgress { fraction, peak_db });
+        }
+    }
+
+    /// The worker panicked or vanished: the engine, if it came back, is replaced by a new one
+    /// built from the document ([`EngineSync::recover`], the rebuild of #210), the bridges render
+    /// in realtime again and the status says what happened (it takes the place of the rebuild
+    /// notice, which would otherwise replace it next frame).
+    fn finish_crashed(&mut self, engine: Option<DetachedEngine>, finished: Option<ExportReport>) {
+        let Some(mut run) = self.export.run.take() else {
+            return;
+        };
+        if let Phase::Running(worker) = &mut run.phase
+            && let Some(thread) = worker.thread.take()
+        {
+            let _ = thread.join();
+        }
+        self.set_export_render_mode(&run, RenderMode::Realtime);
+        self.engine.recover(engine);
+        let _ = self.engine.take_rebuild_notice();
+        self.export.failed.clear();
+        self.dialogs.after_flatten = None;
+        self.close_export_dialog();
+        let reason = self.lang.export_worker_crashed();
+        if run.flatten.is_some() {
+            self.flatten_failed(reason);
+        } else if finished.is_some() {
+            // The file was written before the panic: it is listed, the rebuild is reported.
+            let path = run.job.path.clone();
+            let file = path
+                .file_name()
+                .map_or_else(String::new, |f| f.to_string_lossy().into_owned());
+            self.export.done.retain(|p| *p != path);
+            self.export.done.push(path);
+            self.set_status(
+                self.lang.export_finished_worker_crashed(file),
+                StatusKind::Error,
+            );
+        } else {
+            self.set_status(self.lang.export_failed(reason), StatusKind::Error);
         }
     }
 

@@ -168,6 +168,12 @@ export-dropped-many = { $names } dropped out
 export-failed = Export failed · { $why }
 export-wav-too-large = The WAV file exceeds the format’s size limit.
 
+# Status reason after `export-failed` / `flatten-failed`: the render thread panicked or died.
+export-worker-crashed = Rendering crashed · the audio engine was rebuilt from the project, playback stopped
+
+# Status: the export file was written, then the render thread panicked; `$file` is the file name.
+export-finished-worker-crashed = { $file } exported · rendering crashed afterwards, the audio engine was rebuilt from the project, playback stopped
+
 # Status: an audio clip's linked file could not be opened; `$file` is its path.
 export-missing-audio = Export failed · Audio file is missing or cannot be opened: { $file }
 
