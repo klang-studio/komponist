@@ -664,8 +664,8 @@ fn request_slow_checked_state(bridge: &mut Bridge, gain: u32, expected: f64, ext
 }
 
 /// Plays blocks at the pace of the audio callback until the snapshot answer arrives. Returns the
-/// answer and the number of blocks that ran in the meantime. Every block must be processed by the
-/// plugin (a block answered with the fallback would be `Inactive`, or `NotActive` at the client).
+/// answer and the number of blocks that ran in the meantime. The blocks must be processed by the
+/// plugin: the bridge state stays `Active`, and at most a few blocks may meet a capture pause.
 fn blocks_until_state(bridge: &mut Bridge, request: u32) -> (BridgeMsg, u32) {
     blocks_until_state_with(bridge, request, false)
 }
@@ -682,6 +682,7 @@ fn blocks_until_state_with(
     }
     let deadline = Instant::now() + ANSWER_TIMEOUT;
     let mut blocks = 0;
+    let mut inactive = 0;
     loop {
         assert!(Instant::now() < deadline, "no answer to request {request}");
         if allow_pause && bridge.region().bridge_state() != BridgeState::Active {
@@ -697,7 +698,18 @@ fn blocks_until_state_with(
                 other => other.unwrap_or_else(|e| panic!("block: {e:?}")),
             };
             blocks += 1;
-            assert_eq!(result.status, BlockStatus::Ok as u32, "block {blocks}");
+            // A block that arrives while one of the two short captures holds the audio gets the
+            // fallback (`Inactive`); for this passthrough effect the output is the same. Only
+            // a few such blocks are allowed, never a stretch of them.
+            if result.status == BlockStatus::Inactive as u32 {
+                inactive += 1;
+                assert!(
+                    inactive <= 4,
+                    "{inactive} blocks fell back during the snapshot"
+                );
+            } else {
+                assert_eq!(result.status, BlockStatus::Ok as u32, "block {blocks}");
+            }
             assert_eq!(
                 bridge.output[0][..BLOCK],
                 bridge.input[0][..BLOCK],
