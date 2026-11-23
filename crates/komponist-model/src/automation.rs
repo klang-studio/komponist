@@ -75,6 +75,17 @@ pub struct TrackAutomation {
 }
 
 impl TrackAutomation {
+    /// `==` that skips shared lanes ([`crate::Project::same_content`]).
+    pub fn same_content(&self, other: &TrackAutomation) -> bool {
+        let TrackAutomation { shown, lanes } = self;
+        *shown == other.shown
+            && lanes.len() == other.lanes.len()
+            && lanes
+                .iter()
+                .zip(&other.lanes)
+                .all(|(a, b)| Arc::ptr_eq(a, b) || **a == **b)
+    }
+
     /// Whether there is no lane or visibility state to save.
     pub fn is_empty(&self) -> bool {
         !self.shown && self.lanes.is_empty()

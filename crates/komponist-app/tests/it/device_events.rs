@@ -552,7 +552,7 @@ fn a_snapshot_during_another_gesture_waits_for_its_end() {
     app.dispatch(Action::Edit(EditAction::SetTrackProp {
         tracks: vec![track],
         prop: komponist_model::edits::TrackProp::Channel(
-            komponist_model::edits::ChannelProp::VolumeDb(-6.0),
+            komponist_model::edits::ChannelProp::VolumeDb(-7.5),
         ),
     }));
     snapshot(&script, surge, &[7]);

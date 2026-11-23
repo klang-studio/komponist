@@ -107,6 +107,120 @@ pub struct Project {
     pub next_id: u64,
 }
 
+/// `a == b` for shared values, skipping the deep compare when both are the same allocation.
+/// `Arc`'s own `PartialEq` does that only for `T: Eq`; these types hold `f32`s.
+fn arc_same<T: PartialEq>(a: &Arc<T>, b: &Arc<T>) -> bool {
+    Arc::ptr_eq(a, b) || **a == **b
+}
+
+fn arcs_same<T: PartialEq>(a: &[Arc<T>], b: &[Arc<T>]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| arc_same(x, y))
+}
+
+impl Project {
+    /// Whether `other` holds the same content, like `==`, but without a deep compare of what both
+    /// share: tracks, the master channel, automation lanes, clips and devices are compared by
+    /// `Arc::ptr_eq` first. An edit clones the project and replaces only what it changes, so this
+    /// costs O(tracks) plus the changed tracks, not the whole project (the document compares on
+    /// every edit and every drag frame, #220).
+    ///
+    /// Every struct is destructured without `..`, so a new field is a compile error here until it
+    /// is compared.
+    pub fn same_content(&self, other: &Project) -> bool {
+        let Project {
+            name,
+            tempo,
+            meter,
+            loop_range,
+            loop_on,
+            metronome,
+            count_in_bars,
+            tracks,
+            master,
+            master_automation,
+            next_id,
+        } = self;
+        *name == other.name
+            && *tempo == other.tempo
+            && *meter == other.meter
+            && *loop_range == other.loop_range
+            && *loop_on == other.loop_on
+            && *metronome == other.metronome
+            && *count_in_bars == other.count_in_bars
+            && *next_id == other.next_id
+            && tracks.len() == other.tracks.len()
+            && tracks
+                .iter()
+                .zip(&other.tracks)
+                .all(|(a, b)| Arc::ptr_eq(a, b) || a.same_content(b))
+            && (Arc::ptr_eq(master, &other.master) || master.same_content(&other.master))
+            && (Arc::ptr_eq(master_automation, &other.master_automation)
+                || master_automation.same_content(&other.master_automation))
+    }
+}
+
+impl Track {
+    /// `==` that skips shared clips, devices and automation lanes ([`Project::same_content`]).
+    pub fn same_content(&self, other: &Track) -> bool {
+        let Track {
+            id,
+            name,
+            hue,
+            kind,
+            channel,
+            arm,
+            monitor,
+            input,
+            midi_channel,
+            audio,
+            height,
+            clips,
+            output,
+            sends,
+            folder,
+            folded,
+            automation,
+            macros,
+        } = self;
+        *id == other.id
+            && *name == other.name
+            && *hue == other.hue
+            && *kind == other.kind
+            && *arm == other.arm
+            && *monitor == other.monitor
+            && *input == other.input
+            && *midi_channel == other.midi_channel
+            && *audio == other.audio
+            && *height == other.height
+            && *output == other.output
+            && *sends == other.sends
+            && *folder == other.folder
+            && *folded == other.folded
+            && *macros == other.macros
+            && channel.same_content(&other.channel)
+            && arcs_same(clips, &other.clips)
+            && automation.same_content(&other.automation)
+    }
+}
+
+impl Channel {
+    /// `==` that skips shared devices ([`Project::same_content`]).
+    pub fn same_content(&self, other: &Channel) -> bool {
+        let Channel {
+            volume_db,
+            pan,
+            mute,
+            solo,
+            devices,
+        } = self;
+        *volume_db == other.volume_db
+            && *pan == other.pan
+            && *mute == other.mute
+            && *solo == other.solo
+            && arcs_same(devices, &other.devices)
+    }
+}
+
 impl Project {
     /// An empty project named `name`: 120 bpm, 4/4, loop off over bars 1–5 (ticks 0 .. 15360,
     /// prototype `newProject`), metronome off, count-in 1 bar, no tracks, master at 0 dB, centred.
@@ -918,6 +1032,88 @@ impl Default for Step {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 200 tracks sharing the demo's clips, so unchanged tracks stay shared between clones.
+    fn big_project() -> Project {
+        let mut p = crate::fixtures::demo_project();
+        let template = Arc::clone(&p.tracks[2]);
+        for n in 0..200 {
+            let mut t = (*template).clone();
+            t.id = TrackId(10_000 + n);
+            p.tracks.push(Arc::new(t));
+        }
+        p
+    }
+
+    #[test]
+    fn same_content_agrees_with_eq_and_sees_a_change_anywhere() {
+        let p = big_project();
+        assert!(p.same_content(&p.clone()));
+        type Change = Box<dyn Fn(&mut Project)>;
+        let changes: Vec<(&str, Change)> = vec![
+            ("name", Box::new(|p| p.name.push('x'))),
+            ("loop_on", Box::new(|p| p.loop_on = !p.loop_on)),
+            ("metronome", Box::new(|p| p.metronome = !p.metronome)),
+            ("count_in", Box::new(|p| p.count_in_bars += 1)),
+            ("next_id", Box::new(|p| p.next_id += 1)),
+            (
+                "master volume",
+                Box::new(|p| Arc::make_mut(&mut p.master).volume_db -= 1.0),
+            ),
+            (
+                "master automation",
+                Box::new(|p| Arc::make_mut(&mut p.master_automation).shown ^= true),
+            ),
+            (
+                "track name",
+                Box::new(|p| Arc::make_mut(p.tracks.last_mut().unwrap()).name.push('x')),
+            ),
+            (
+                "track channel",
+                Box::new(|p| Arc::make_mut(&mut p.tracks[0]).channel.pan += 0.5),
+            ),
+            (
+                "track height",
+                Box::new(|p| Arc::make_mut(&mut p.tracks[1]).height += 1),
+            ),
+            (
+                "clip",
+                Box::new(|p| {
+                    let t = Arc::make_mut(&mut p.tracks[2]);
+                    Arc::make_mut(&mut t.clips[0]).start = Tick(1);
+                }),
+            ),
+            ("track order", Box::new(|p| p.tracks.swap(0, 1))),
+            ("track removed", Box::new(|p| drop(p.tracks.pop()))),
+        ];
+        for (what, change) in changes {
+            let mut q = p.clone();
+            change(&mut q);
+            assert_ne!(p, q, "{what}: the change must be one");
+            assert!(!p.same_content(&q), "{what} not detected");
+            assert!(!q.same_content(&p), "{what} not detected (reversed)");
+        }
+    }
+
+    /// An unchanged track is not compared deeply: a track that is unequal to itself (a NaN level,
+    /// which a deep `==` never matches) passes while it is shared, and an equal copy of another
+    /// track costs one compare of that track only.
+    #[test]
+    fn same_content_skips_shared_tracks() {
+        let mut p = big_project();
+        Arc::make_mut(&mut p.tracks[5]).channel.volume_db = f32::NAN;
+        let q = p.clone();
+        assert_ne!(p, q, "a deep compare trips over the NaN track");
+        assert!(p.same_content(&q), "shared tracks are skipped");
+        // An edit replaces one track with an equal copy of itself: only that one is compared.
+        let mut r = p.clone();
+        let copy = (*r.tracks[100]).clone();
+        r.tracks[100] = Arc::new(copy);
+        assert!(p.same_content(&r));
+        // … and one that really differs is found.
+        Arc::make_mut(&mut r.tracks[100]).name.push('x');
+        assert!(!p.same_content(&r));
+    }
 
     /// The model mirrors a few design tokens it cannot import (no studio dependencies): the hue
     /// list, the auto-assign order and the track height range.

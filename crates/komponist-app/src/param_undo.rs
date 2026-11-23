@@ -504,9 +504,12 @@ impl App {
             _ => undo_label::plugin_state(&self.device_name(device)),
         };
         let tail = self.param_undo.tails.remove(&device);
+        // An edit that changes nothing pushes no step (#220): the top step is then an earlier,
+        // unrelated one, which the next snapshot must not amend.
+        let top = self.doc.top_step();
         if self.doc.apply(label, set).is_ok()
             && !in_gesture
-            && let Some(step) = self.doc.top_step()
+            && let Some(step) = self.doc.top_step().filter(|step| Some(*step) != top)
         {
             let at = tail.map_or(now, |tail| tail.max(now));
             self.param_undo.steps.insert(device, (step, at));
