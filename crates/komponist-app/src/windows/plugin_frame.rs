@@ -5,7 +5,7 @@
 //! **frame**: an eframe deferred viewport with the 28 px [`header`] and a [`body`] below it. In
 //! the plugin view the body holds an **X11 child window** that the bridge's plugin GUI attaches
 //! to; in the parameter view it is the generic knob grid (all parameters, with WP-44's knob model;
-//! hexa's macros come from its state in the document).
+//! legacy device parameters come from their state in the document).
 //!
 //! # Life of a frame (per root pass, [`App::update_plugin_frames`])
 //!
@@ -93,8 +93,7 @@ use komponist_i18n::Lang;
 use komponist_ipc::GuiTarget;
 use komponist_ipc::clap_presets::ClapPresetSource;
 use komponist_ipc::frame::{FrameKeyEvent, FrameRect};
-use komponist_model::project::BUILTIN_HEXA;
-use komponist_model::{ChannelRef, Device, DeviceId, PluginFormat};
+use komponist_model::{ChannelRef, DeviceId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
 use komponist_tokens::color;
 
@@ -107,7 +106,7 @@ use crate::app::App;
 use crate::keymap::{self, Key, KeyChord};
 use crate::settings::FrameMemory;
 use crate::ui_state::{FocusArea, PluginView, PluginWindow, StatusKind};
-use crate::views::devices::model::{all_plugin_params, hexa_macro_params, internal_params};
+use crate::views::devices::model::{all_plugin_params, legacy_frame_params};
 
 /// How long a parked child waits for the bridge's `GuiClosed` before it is destroyed anyway.
 const PARK_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1706,23 +1705,18 @@ impl App {
         }
     }
 
-    /// The knobs of frame `i`: all visible parameters of a bridged plugin (WP-44's filter and
-    /// formatting, without the card's auto-layout limit), or hexa's macros from its state in the
-    /// document (WP-44 writes knob changes there).
+    /// The knobs of frame `i`: the hosted plugin's visible parameters or the standalone
+    /// parameters read from a legacy device's saved state.
     fn param_grid(&self, i: usize) -> ParamGrid {
         let device = self.frames.frames[i].device;
         let host = self.engine.host();
         let owner = self.project().find_device(device);
         let params = if let Some(infos) = host.params(device) {
             all_plugin_params(self.lang, infos, |id| host.param_value(device, id))
+        } else if let Some((_, _, device)) = owner {
+            legacy_frame_params(self.lang, device)
         } else {
-            match owner {
-                Some((_, _, d)) if is_hexa(d) => hexa_macro_params(self.lang, d),
-                Some((_, _, d)) => crate::device_host::internal_kind(d)
-                    .map(|kind| internal_params(self.lang, kind, d))
-                    .unwrap_or_default(),
-                None => Vec::new(),
-            }
+            Vec::new()
         };
         let mut grid = ParamGrid::new(params);
         if let Some((ChannelRef::Track(id), _, _)) = owner
@@ -1788,10 +1782,6 @@ impl App {
 // ------------------------------------------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------------------------------------------
-
-fn is_hexa(device: &Device) -> bool {
-    device.plugin.format == PluginFormat::Builtin && device.plugin.id == BUILTIN_HEXA
-}
 
 /// The outer position of `rect`, as the settings remember it.
 fn rect_pos(rect: FrameRect) -> (i32, i32) {

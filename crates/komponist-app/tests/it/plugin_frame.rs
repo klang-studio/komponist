@@ -19,7 +19,7 @@ use komponist_app::device_host::DeviceHost;
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::PluginView;
-use komponist_app::views::devices::model::hexa_macro_params;
+use komponist_app::views::devices::model::legacy_frame_params;
 use komponist_app::windows::plugin_frame::body::{self, BodyEvent, BodyModel, ParamGrid};
 use komponist_app::windows::plugin_frame::header::{self, HeaderEvent, HeaderModel, Mark};
 use komponist_app::windows::plugin_frame::metrics;
@@ -91,7 +91,7 @@ fn macro_grid() -> ParamGrid {
         .flat_map(|t| t.channel.devices.iter())
         .find(|d| d.plugin.name == "Hexa")
         .unwrap();
-    ParamGrid::new(hexa_macro_params(Lang::De, hexa))
+    ParamGrid::new(legacy_frame_params(Lang::De, hexa))
 }
 
 /// What a frame harness shows and collects.

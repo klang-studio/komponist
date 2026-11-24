@@ -2,7 +2,7 @@
 //! Values live in the devices' opaque state; `fixtures/hexa-macros.komponist` was saved before
 //! the model existed (Algorithmus 5, Ratio 2 = 3.5, Index 0.6, Sustain 0.25).
 
-use komponist_app::views::devices::model::hexa_macro_params;
+use komponist_app::views::devices::model::legacy_frame_params;
 use komponist_hexa::Macro;
 use komponist_model::persist;
 
@@ -21,7 +21,7 @@ fn an_old_file_loads_and_its_macros_read_the_saved_values() {
         .flat_map(|t| &t.channel.devices)
         .find(|d| komponist_app::device_host::is_hexa(d))
         .expect("a hexa device");
-    let params = hexa_macro_params(komponist_i18n::Lang::De, hexa);
+    let params = legacy_frame_params(komponist_i18n::Lang::De, hexa);
     let value = |m: Macro| params.iter().find(|p| p.wire == m.id()).unwrap().value;
     assert_eq!(value(Macro::Algorithm), 5.0);
     assert_eq!(value(Macro::Ratio2), 3.5);

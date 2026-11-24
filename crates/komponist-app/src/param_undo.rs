@@ -54,7 +54,7 @@ use komponist_model::project::SavedPluginState;
 use komponist_model::{Device, DeviceId, Project, TrackId};
 
 use crate::app::App;
-use crate::device_host::{LegacyParameters, internal_kind, is_hexa};
+use crate::device_host::{LegacyParameters, internal_kind};
 use crate::undo_label;
 
 /// Snapshots of a device that arrive within this time of the last one amend its undo step.
@@ -369,17 +369,8 @@ impl App {
 
     fn param_name(&self, device: DeviceId, id: u32) -> Option<String> {
         let (_, _, d) = self.project().find_device(device)?;
-        if is_hexa(d) {
-            return komponist_hexa::device::params_in(self.lang)
-                .iter()
-                .find(|p| p.wire == id)
-                .map(|p| p.info.name.clone());
-        }
-        if let Some(kind) = internal_kind(d) {
-            return kind
-                .params_in(self.lang)
-                .get(id as usize)
-                .map(|p| p.name.clone());
+        if let Some(parameters) = LegacyParameters::new(d) {
+            return parameters.card_param_name(self.lang, id).map(str::to_owned);
         }
         self.engine
             .host()
@@ -704,9 +695,10 @@ impl App {
     /// A bridged device came up (`DeviceStatus::Ok`) without a state in the document: asks the
     /// plugin what it holds, so undoing the first edit has something to hand back.
     pub(crate) fn device_up(&mut self, device: DeviceId) {
-        let bridged = self.project().find_device(device).is_some_and(|(_, _, d)| {
-            d.state.is_none() && !is_hexa(d) && internal_kind(d).is_none()
-        });
+        let bridged = self
+            .project()
+            .find_device(device)
+            .is_some_and(|(_, _, d)| d.state.is_none() && LegacyParameters::new(d).is_none());
         if bridged
             && !self.param_undo.baseline.contains_key(&device)
             && self.param_undo.awaiting.insert(device)
@@ -736,8 +728,7 @@ impl App {
                 continue;
             }
             if (old.state != device.state || old.parameter_bases != device.parameter_bases)
-                && !is_hexa(device)
-                && internal_kind(device).is_none()
+                && LegacyParameters::new(device).is_none()
             {
                 self.forget_sampler_params(device.id);
                 if komponist_plugins::packaged_kind(&device.plugin).is_some() {
