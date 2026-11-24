@@ -381,6 +381,7 @@ pub(crate) fn audio_classes(
         classes.push((
             info.cid,
             PluginDescriptor {
+                localized: None,
                 format: PluginFormat::Vst3,
                 id: cid_hex(&info.cid),
                 name,

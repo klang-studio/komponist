@@ -222,6 +222,18 @@ pub fn plugin_name(lang: Lang, plugin: &komponist_model::PluginRef) -> String {
     komponist_builtin::device_name(lang, plugin).map_or_else(|| plugin.name.clone(), str::to_owned)
 }
 
+pub(crate) fn catalog_plugin_name(
+    lang: Lang,
+    catalog: &komponist_plugins::Catalog,
+    plugin: &komponist_model::PluginRef,
+) -> String {
+    catalog
+        .resolve(plugin)
+        .and_then(|entry| entry.localized.as_ref())
+        .and_then(|metadata| metadata.name(lang.code()))
+        .map_or_else(|| plugin_name(lang, plugin), str::to_owned)
+}
+
 /// The name of track hue `index` (0 ..= 13, the order of `komponist_tokens::track::HUES`) in `lang`.
 pub fn hue_name(lang: Lang, index: usize) -> &'static str {
     [

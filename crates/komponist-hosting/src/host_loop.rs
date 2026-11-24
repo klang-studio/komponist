@@ -981,6 +981,7 @@ mod tests {
         fn new() -> FakePlugin {
             FakePlugin {
                 descriptor: PluginDescriptor {
+                    localized: None,
                     format: PluginFormat::Clap,
                     id: "fake".into(),
                     name: "fake".into(),

@@ -535,6 +535,7 @@ fn scripted_app(layout: Option<&[u8]>) -> (App, Rc<RefCell<Script>>, DeviceId) {
         .unwrap();
     let mut catalog = Catalog::builtin();
     catalog.set_scanned(&[PluginDescriptor {
+        localized: None,
         format: BundleFormat::Clap,
         id: surge.plugin.id.clone(),
         name: surge.plugin.name.clone(),

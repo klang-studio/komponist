@@ -1676,6 +1676,7 @@ mod tests {
         manager
             .catalog
             .set_scanned(&[komponist_ipc::PluginDescriptor {
+                localized: None,
                 format: komponist_ipc::PluginFormat::Clap,
                 id: "x.synth".into(),
                 name: "Synth".into(),

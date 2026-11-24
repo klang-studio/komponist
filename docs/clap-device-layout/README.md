@@ -9,6 +9,16 @@ Gain parameter at CLAP ID `42` and a stepped enum Mode parameter at CLAP ID `7` 
 Plugins can also publish an independent [sidechain fallback extension](sidechain-fallback.md)
 to define how the host supplies a disconnected auxiliary input.
 
+## Device catalog labels
+
+A layout may provide an optional top-level `metadata` object. Its `names`
+map contains a name in the default locale and may include other declared
+locales. The optional `descriptions` map follows the same label rules.
+komponist displays these labels in the browser and uses them in search.
+Missing or invalid metadata falls back to the CLAP descriptor name and
+leaves the panel available. Hosts that ignore this field can use the same
+layout.
+
 ## Discovery and lifetime
 
 After a successful `clap_plugin_t.init`, the host calls `clap_plugin_t.get_extension` on the CLAP

@@ -1054,6 +1054,7 @@ fn fake_bridge_entry() {
         match channel.recv() {
             Ok(ControlMsg::Load { bundle, .. }) => send(BridgeMsg::Loaded(Box::new(LoadedInfo {
                 descriptor: PluginDescriptor {
+                    localized: None,
                     format: komponist_ipc::PluginFormat::Clap,
                     id: SYNTH.into(),
                     name: "kp-test-synth".into(),

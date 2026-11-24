@@ -353,6 +353,7 @@ fn a_finished_scan_loads_the_devices_it_found() {
     assert_eq!(script.borrow().scans, [Settings::default().plugin_dirs()]);
     let plugin = app.project().find_device(surge).unwrap().2.plugin.clone();
     script.borrow_mut().found = Some(vec![PluginDescriptor {
+        localized: None,
         format: BundleFormat::Clap,
         id: plugin.id.clone(),
         name: plugin.name.clone(),
@@ -702,6 +703,7 @@ fn plugin_actions_reach_the_host() {
     let surge = device(&app, "Surge XT");
     let plugin = app.project().find_device(surge).unwrap().2.plugin.clone();
     script.borrow_mut().found = Some(vec![PluginDescriptor {
+        localized: None,
         format: BundleFormat::Clap,
         id: plugin.id,
         name: plugin.name,

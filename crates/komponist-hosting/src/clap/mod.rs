@@ -141,6 +141,7 @@ fn descriptor_of(d: &clack_host::plugin::PluginDescriptor, bundle: &Path) -> Plu
         format: PluginFormat::Clap,
         id: c_str(d.id()),
         name: c_str(d.name()),
+        localized: None,
         vendor: c_str(d.vendor()),
         version: c_str(d.version()),
         kind: crate::scan::kind_from_features(PluginFormat::Clap, &features),
@@ -150,8 +151,8 @@ fn descriptor_of(d: &clack_host::plugin::PluginDescriptor, bundle: &Path) -> Plu
     }
 }
 
-/// Lists the plugins of a `.clap` bundle. Each one is instantiated once (not activated) to read
-/// whether it has a sidechain input port (`crate::scan`).
+/// Lists the plugins of a `.clap` bundle. Each one is instantiated without activation to probe
+/// its sidechain input and optional localized names and descriptions.
 pub(crate) fn scan(bundle: &Path) -> Result<Vec<PluginDescriptor>, HostingError> {
     let entry = load_entry(bundle)?;
     let factory = entry
@@ -163,9 +164,12 @@ pub(crate) fn scan(bundle: &Path) -> Result<Vec<PluginDescriptor>, HostingError>
         .map(|d| descriptor_of(d, bundle))
         .collect();
     for descriptor in &mut descriptors {
-        descriptor.sidechain =
+        if let Ok(mut plugin) =
             ClapPlugin::load(bundle, &descriptor.id, crate::scan::probe_context())
-                .is_ok_and(|plugin| plugin.descriptor.sidechain);
+        {
+            descriptor.sidechain = plugin.descriptor.sidechain;
+            descriptor.localized = plugin.descriptor.localized.take();
+        }
     }
     Ok(descriptors)
 }
@@ -280,19 +284,22 @@ impl ClapPlugin {
             && ext
                 .gui
                 .is_some_and(|gui| gui.is_api_supported(&handle, EMBEDDED));
-        let descriptor = PluginDescriptor {
-            sidechain: PortLayout::query(ext.audio_ports, &handle, true)
-                .sidechain
-                .is_some(),
-            ..descriptor
-        };
-
         let native_layout = match native_layout::read(handle.as_raw()) {
             Ok(layout) => layout,
             Err(error) => {
                 context.notify.log(LogLevel::Warning, &error.to_string());
                 None
             }
+        };
+
+        let descriptor = PluginDescriptor {
+            sidechain: PortLayout::query(ext.audio_ports, &handle, true)
+                .sidechain
+                .is_some(),
+            localized: native_layout
+                .as_ref()
+                .and_then(|(_, layout)| layout.localized_plugin()),
+            ..descriptor
         };
 
         Ok(ClapPlugin {

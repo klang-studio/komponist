@@ -26,6 +26,7 @@ pub(crate) fn entries() -> Vec<CatalogEntry> {
                 .map(|feature| (*feature).into())
                 .collect();
             CatalogEntry {
+                localized: None,
                 plugin: spec.plugin_ref(),
                 kind: match spec.role {
                     DeviceRole::MidiEffect => PluginKind::MidiEffect,
