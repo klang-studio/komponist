@@ -92,7 +92,8 @@ impl Flatten {
                 let host = app.engine.host();
                 match host.status(id) {
                     DeviceStatus::Ok
-                        if host.sampler_is_loading(id)
+                        if host.asset_inventory_pending(id)
+                            || host.sampler_is_loading(id)
                             || Self::sampler_pads(app, id).is_some_and(|(_, pads)| {
                                 pads.iter().any(|pad| {
                                     pad.link.is_some()

@@ -328,6 +328,10 @@ pub trait DeviceHost {
     ) {
     }
 
+    fn asset_inventory_pending(&self, _device: DeviceId) -> bool {
+        false
+    }
+
     fn supports_offline_preparation(&self, _device: DeviceId) -> bool {
         false
     }
@@ -1038,6 +1042,10 @@ impl DeviceHost for PluginHost {
         after: &BTreeMap<u32, AssetLink>,
     ) {
         self.manager.sync_asset_links(device, before, after);
+    }
+
+    fn asset_inventory_pending(&self, device: DeviceId) -> bool {
+        self.manager.asset_inventory_pending(device)
     }
 
     fn supports_offline_preparation(&self, device: DeviceId) -> bool {

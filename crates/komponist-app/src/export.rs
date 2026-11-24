@@ -568,7 +568,10 @@ impl App {
         for (track, devices) in chains {
             for d in devices.iter().filter(|device| !device.bypass) {
                 let state = match self.engine.device_status(d.id) {
-                    DeviceStatus::Ok if self.engine.host().sampler_is_loading(d.id) => {
+                    DeviceStatus::Ok
+                        if self.engine.host().asset_inventory_pending(d.id)
+                            || self.engine.host().sampler_is_loading(d.id) =>
+                    {
                         DeviceState::Loading
                     }
                     DeviceStatus::Ok if self.engine.host().sampler_sync_unavailable(d.id) => {

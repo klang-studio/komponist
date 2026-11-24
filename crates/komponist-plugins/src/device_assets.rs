@@ -93,6 +93,10 @@ impl DeviceAssets {
         }
     }
 
+    pub(crate) fn inventory_pending(&self) -> bool {
+        !self.discovered
+    }
+
     pub(crate) fn slots_due(&mut self) -> bool {
         let now = Instant::now();
         if (!self.discovered || self.has_slots) && now >= self.slot_poll_at {

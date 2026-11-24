@@ -1059,6 +1059,13 @@ impl PluginManager {
         }
     }
 
+    /// Whether the live CLAP asset inventory and preparation capability are still unknown.
+    pub fn asset_inventory_pending(&self, device: DeviceId) -> bool {
+        self.device_assets(device)
+            .is_some_and(DeviceAssets::inventory_pending)
+    }
+
+    /// Whether the current plugin instance advertises detached render preparation.
     pub fn supports_offline_preparation(&self, device: DeviceId) -> bool {
         self.device_assets(device)
             .is_some_and(|assets| assets.supports_offline)
