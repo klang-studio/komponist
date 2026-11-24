@@ -4,6 +4,9 @@
 #![allow(clippy::undocumented_unsafe_blocks)]
 
 mod assets;
+mod display;
+mod markers;
+mod playhead;
 
 use std::collections::BTreeMap;
 use std::ffi::{CStr, c_void};
@@ -14,8 +17,10 @@ use komponist_bundled_clap_adapter::{DeviceDefinition, Parameters, panel_for, to
 use komponist_device_core::pinned_clap_state::{MAX_SAMPLE_ASSET_BYTES, SAMPLE_ASSETS_FIELD};
 use komponist_device_core::{Dsp, SAMPLE_RATES, dispatch_note};
 use komponist_ipc::sampler_ui::{self, EXTENSION_ID, Pad, Snapshot, Status, Sync as WireSync};
-use komponist_native_clap_sdk::{NativeClapLayout, Panel};
-use komponist_sampler_shared::{ManagedLoader, PadStatus, SamplerHandle, SyncStatus, links};
+use komponist_native_clap_sdk::{NativeClapLayout, Panel, PanelV2};
+use komponist_sampler_shared::{
+    ManagedLoader, PadStatus, SamplerHandle, SyncStatus, links, settings::Settings,
+};
 use nice_plug::prelude::*;
 
 const STEREO: NonZeroU32 = NonZeroU32::new(2).unwrap();
@@ -23,17 +28,39 @@ const STEREO: NonZeroU32 = NonZeroU32::new(2).unwrap();
 /// A sampler which supplies its existing DSP and optional extra controls over loaded assets.
 pub trait SampledDefinition: DeviceDefinition {
     const PADS: usize;
+    const SLICE_SETTINGS: Option<SliceSettingsCodec> = None;
+    const DISPLAY: Option<fn(&Parameters, &mut komponist_native_clap_sdk::display::Display)> = None;
+
+    fn panel_v2() -> Option<PanelV2> {
+        None
+    }
 
     fn sampler() -> (Box<dyn Dsp>, SamplerHandle, ManagedLoader);
+}
 
-    /// Restore optional device-specific assets, such as the general sampler's slice map.
-    fn restore_settings(_handle: &SamplerHandle, _assets: &[u8]) {}
+/// Reads and updates a device's existing saved slice settings inside the sample document.
+pub struct SliceSettingsCodec {
+    pub read: fn(&[u8]) -> Settings,
+    pub write: fn(&[u8], &Settings) -> Vec<u8>,
+}
+
+struct SampleAssets {
+    document: String,
+    markers: Option<markers::MarkerState>,
+}
+
+impl SampleAssets {
+    fn source_changed(&mut self) {
+        if let Some(markers) = &mut self.markers {
+            markers.invalidate();
+        }
+    }
 }
 
 struct SampleParameters<T> {
     params: Parameters,
     samples: SamplerHandle,
-    assets: Mutex<String>,
+    assets: Mutex<SampleAssets>,
     host_bindings: Mutex<BTreeMap<usize, Option<links::SampleLink>>>,
     offline: Mutex<Option<komponist_ipc::device_assets::OfflineRequest>>,
     definition: std::marker::PhantomData<fn() -> T>,
@@ -48,7 +75,7 @@ unsafe impl<T: SampledDefinition> Params for SampleParameters<T> {
     fn serialize_fields(&self) -> BTreeMap<String, String> {
         let assets = self.assets.lock().unwrap_or_else(|err| err.into_inner());
         let mut fields = self.params.serialize_fields();
-        fields.insert(SAMPLE_ASSETS_FIELD.into(), assets.clone());
+        fields.insert(SAMPLE_ASSETS_FIELD.into(), assets.document.clone());
         fields
     }
 
@@ -63,16 +90,16 @@ unsafe impl<T: SampledDefinition> Params for SampleParameters<T> {
         };
         // The JSON reader accepts numeric aliases (for example "01"). Resolve duplicates
         // before walking the pads so a second entry for one pad cannot hide later pads.
-        let old = canonical_links(&saved);
+        let old = canonical_links(&saved.document);
         let new = canonical_links(assets);
-        let old_revisions = links::revisions(&saved);
+        let old_revisions = links::revisions(&saved.document);
         let new_revisions = links::revisions(assets);
-        let bindings = self
+        let host_bindings = self
             .host_bindings
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         for pad in 0..T::PADS {
-            if bindings.contains_key(&pad) {
+            if host_bindings.contains_key(&pad) {
                 continue;
             }
             let link_at = |links: &[(usize, links::SampleLink)]| {
@@ -91,9 +118,13 @@ unsafe impl<T: SampledDefinition> Params for SampleParameters<T> {
                 self.samples.clear(pad);
             }
         }
-        T::restore_settings(&self.samples, assets.as_bytes());
-        saved.clear();
-        saved.push_str(assets);
+        if let Some((markers, codec)) = saved.markers.as_mut().zip(T::SLICE_SETTINGS) {
+            markers.settings = (codec.read)(assets.as_bytes());
+            self.samples.set_general_settings(&markers.settings);
+            markers.invalidate();
+        }
+        saved.document.clear();
+        saved.document.push_str(assets);
     }
 }
 
@@ -115,7 +146,10 @@ impl<T: SampledDefinition> Default for Sampled<T> {
             params: Arc::new(SampleParameters {
                 params,
                 samples,
-                assets: Mutex::new("{}".into()),
+                assets: Mutex::new(SampleAssets {
+                    document: "{}".into(),
+                    markers: T::SLICE_SETTINGS.map(|_| markers::MarkerState::default()),
+                }),
                 host_bindings: Mutex::new(BTreeMap::new()),
                 offline: Mutex::new(None),
                 definition: std::marker::PhantomData,
@@ -239,6 +273,34 @@ struct SamplerUi {
 }
 
 impl<T: SampledDefinition> Sampled<T> {
+    const WAVEFORM_PREVIEW: komponist_ipc::waveform_preview::Extension =
+        komponist_ipc::waveform_preview::Extension {
+            preview: Some(Self::preview_waveform),
+        };
+
+    unsafe extern "C" fn preview_waveform(plugin: *const std::ffi::c_void, slot: u32, time: f64) {
+        if plugin.is_null() || slot != 0 || !time.is_finite() || (time < 0.0 && time != -1.0) {
+            return;
+        }
+        // SAFETY: This table is registered for this live CLAP instance; the host
+        // invokes the audition callback on the main thread.
+        unsafe {
+            nice_plug::wrapper::clap::Wrapper::<Self>::with_custom_extension_data::<
+                SampleParameters<T>,
+                _,
+            >(plugin.cast::<clap_plugin>(), |params| {
+                if time == -1.0 {
+                    params.samples.release_slice_preview();
+                } else if params.params.plain_value_by_id("mode") == Some(2.0) {
+                    let view = params.samples.view(0);
+                    if view.status == PadStatus::Ready && time < view.length_s {
+                        params.samples.preview_slice(time);
+                    }
+                }
+            });
+        }
+    }
+
     const SAMPLER_UI: SamplerUi = SamplerUi {
         snapshot: Self::read_sampler_ui,
         preview: Self::preview_slice,
@@ -361,8 +423,18 @@ impl<T: SampledDefinition> ClapPlugin for Sampled<T> {
     unsafe fn clap_custom_extension(id: &CStr) -> *const c_void {
         if id == EXTENSION_ID {
             std::ptr::from_ref(&Self::SAMPLER_UI).cast()
+        } else if id == komponist_ipc::waveform_preview::EXTENSION_ID && T::SLICE_SETTINGS.is_some()
+        {
+            std::ptr::from_ref(&Self::WAVEFORM_PREVIEW).cast()
         } else if id == komponist_ipc::device_assets::EXTENSION_ID {
             komponist_native_clap_sdk::assets::extension::<Self, SampleParameters<T>>(id)
+        } else if id == komponist_native_clap_sdk::display::EXTENSION_ID && T::DISPLAY.is_some() {
+            komponist_native_clap_sdk::display::extension::<Self, SampleParameters<T>>(id)
+        } else if id == komponist_ipc::waveform_markers::EXTENSION_ID && T::SLICE_SETTINGS.is_some()
+        {
+            markers::extension::<T>()
+        } else if id == komponist_ipc::signal_taps::EXTENSION_ID {
+            playhead::extension::<T>()
         } else {
             komponist_native_clap_sdk::extension::<Self>(id)
         }
@@ -372,5 +444,9 @@ impl<T: SampledDefinition> ClapPlugin for Sampled<T> {
 impl<T: SampledDefinition> NativeClapLayout for Sampled<T> {
     fn panel() -> Panel {
         panel_for::<T>()
+    }
+
+    fn panel_v2() -> Option<PanelV2> {
+        T::panel_v2()
     }
 }

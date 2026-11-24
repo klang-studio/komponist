@@ -12,6 +12,7 @@
 use egui::{Id, Rect, Role, Sense, Ui, WidgetInfo};
 use komponist_hexa::algorithms::ALGORITHMS;
 use komponist_i18n::Lang;
+use komponist_ipc::device_assets::{AssetKind, AssetStatus};
 use komponist_model::DeviceId;
 use komponist_model::params::eq_curve::CURVE_RATE;
 use komponist_model::params::{ParamContext, ParamKind, Scale, Unit, resolve};
@@ -26,7 +27,8 @@ use komponist_ui::widgets::device::choice::{
 use komponist_ui::widgets::device::fm_algorithm::{FmAlgorithm, Topology};
 use komponist_ui::widgets::device::graph::configs::{self, band};
 use komponist_ui::widgets::device::graph::{
-    Axis, AxisKind, Graph, GraphEvent, GraphSpec, Look, SlotInfo,
+    AreaAction, Axis, AxisKind, Bind, Graph, GraphEvent, GraphSpec, Handle, HandleLook, Look,
+    MarkerHead, Pred, SlotInfo,
 };
 use komponist_ui::widgets::device::knob_cell::KnobCell;
 use komponist_ui::widgets::device::meter_gr::{self, GrHold, MeterGr};
@@ -38,18 +40,19 @@ use komponist_ui::widgets::number_field::{open_value_entry, parse_number};
 use komponist_ui::{fonts, px};
 use komponist_volt as volt;
 
+use super::asset_waveform;
 use super::layout::{
     BAND, Cell, CellParam, ENV_OP, ENV_VIEW, GraphBinding, GraphConfig, LFO_VIEW, OSC_VIEW, SEL,
     WidgetKind,
 };
 use super::metrics;
 use super::model::{self, Card, Param};
+use super::waveform_slices;
 use crate::actions::{Action, EditAction, PluginAction, UiAction};
 use crate::platform::Platform;
 use crate::views::mixer::{Touch, gesture_actions, gesture_touch};
 use crate::views::track_macros::Pick as ParamMenu;
 use komponist_model::format::note_name;
-use komponist_sampler::PadStatus;
 
 /// The memory slot of the context placeholders (`{band}`, `{env_op}`, `{sel}`) of a device.
 fn context_id(device: DeviceId) -> Id {
@@ -151,6 +154,9 @@ pub(crate) fn draw_cell(
         CellParam::Template(t) => resolve(t, &ctx).ok().and_then(|id| card.param(&id)),
         _ => None,
     };
+    if param.is_some_and(|p| waveform_slices::hides_control(card, p.wire)) {
+        return;
+    }
     let localized = param.and_then(|param| {
         let layout = card.native_layout.as_ref()?;
         let labels = card.native_cell(cell)?.labels.as_ref()?;
@@ -182,16 +188,16 @@ pub(crate) fn draw_cell(
             meter(cu, card, cell, rect);
             true
         }
-        (WidgetKind::PadGrid, _) => {
-            pads(cu, out, card, cell, palette, rect);
+        (WidgetKind::PadGrid, _) => card.pad_bank().is_some_and(|bank| {
+            native_pads(cu, out, card, cell, palette, rect, bank);
             true
-        }
+        }),
         (WidgetKind::FmAlgorithm, p) => {
             fm(cu, card, cell, p, palette, rect);
             true
         }
-        (WidgetKind::Canvas, _) => super::canvas::draw(cu, card, cell, palette, rect),
         (WidgetKind::Graph, _) => graph(cu, out, card, palette, cell, &ctx, rect),
+        (WidgetKind::Canvas, _) => super::canvas::draw(cu, card, cell, palette, rect),
         _ => false,
     };
     if !drawn {
@@ -437,6 +443,30 @@ fn number(
     p: &Param,
     rect: Rect,
 ) -> bool {
+    if let Some(scale) = asset_waveform::trim_milliseconds(card, p.wire) {
+        let display = |ms| komponist_ui::widgets::number_field::format_number(ms, 0);
+        let mut time = p.value * scale;
+        let response = cu.put(
+            rect,
+            Number::new(&mut time, p.name())
+                .range(0.0..=scale)
+                .default_value(p.info.default * scale)
+                .unit("ms")
+                .cols(cell.cols)
+                .format(display),
+        );
+        touch(
+            cu,
+            out,
+            card,
+            p,
+            &response,
+            Some(display(p.value * scale)),
+            false,
+            response.changed().then_some(time / scale),
+        );
+        return true;
+    }
     let info = &p.info;
     let (min, max) = info.range();
     let steps = info.steps();
@@ -878,104 +908,117 @@ enum PadMenu {
     Clear,
 }
 
-/// The pad grid: one pad per grid cell. The sampler's pads (WP-87) show the sample's name and the
-/// note (or "fehlt" / "Lädt …"), light up while their voice plays, and are the selection `{sel}`
-/// of the device's context (a click selects the pad and plays it, a sample file dropped on a pad
-/// loads it, the right-click menu loads, searches and removes). Any other device with a pad grid
-/// numbers its pads and keeps the selection in its context too.
-fn pads(
+fn native_pads(
     cu: &mut Ui,
     out: &mut Vec<Action>,
     card: &Card,
     cell: &Cell,
     palette: &TrackPalette,
     rect: Rect,
+    bank: &komponist_ipc::native_layout::PadBank,
 ) {
-    let t = komponist_ui::lang(cu.ctx());
-    let count = usize::from(cell.cols) * usize::from(cell.rows);
-    let ctx = context(cu.ctx(), card.device);
-    let selected = selected_entry(&ctx, SEL, count.min(255) as u8) - 1;
-    let sampler = card.sampler.as_ref();
-    let views = |i: usize| sampler.and_then(|s| s.pads.get(i));
-    let names: Vec<String> = (0..count)
-        .map(|i| match views(i).filter(|v| !v.name.trim().is_empty()) {
-            Some(v) => v.name.clone(),
-            None if sampler.is_some() => t.devices_pad(i + 1),
-            None => (i + 1).to_string(),
+    let lang = komponist_ui::lang(cu.ctx());
+    let slot = |id| {
+        card.asset_slots
+            .iter()
+            .find(|(slot, _)| slot.id == id && slot.kind == AssetKind::AudioSample)
+    };
+    let names: Vec<_> = bank
+        .pads
+        .iter()
+        .enumerate()
+        .map(|(index, pad)| {
+            card.asset_names
+                .get(&pad.asset_slot)
+                .cloned()
+                .unwrap_or_else(|| card.layout.pages[index].name.clone())
         })
         .collect();
-    let notes: Vec<String> = (0..count)
-        .map(|i| match (sampler, views(i).map(|v| &v.status)) {
-            (None, _) => String::new(),
-            (_, Some(PadStatus::Missing)) => t.devices_pad_missing().to_owned(),
-            (_, Some(PadStatus::Loading)) => t.devices_pad_loading().to_owned(),
-            (_, Some(PadStatus::Failed(_))) => t.devices_pad_failed().to_owned(),
-            _ => note_name(komponist_sampler::note_of_pad(i)),
-        })
+    let notes: Vec<_> = bank
+        .pads
+        .iter()
+        .map(
+            |pad| match slot(pad.asset_slot).map(|(asset, _)| &asset.status) {
+                Some(AssetStatus::Missing) => lang.devices_pad_missing().into(),
+                Some(AssetStatus::Loading) => lang.devices_pad_loading().into(),
+                Some(AssetStatus::Failed(_)) => lang.devices_pad_failed().into(),
+                Some(AssetStatus::Empty) | None
+                    if card.asset_names.contains_key(&pad.asset_slot) =>
+                {
+                    lang.devices_pad_loading().into()
+                }
+                _ => note_name(pad.note),
+            },
+        )
         .collect();
-    let pad_list: Vec<Pad<'_>> = names
+    let pads: Vec<_> = names
         .iter()
         .zip(&notes)
-        .map(|(n, note)| Pad::new(n, note))
+        .map(|(name, note)| Pad::new(name, note))
         .collect();
-    let playing: Vec<usize> = sampler.map_or_else(Vec::new, |s| {
-        s.playheads
-            .iter()
-            .enumerate()
-            .filter_map(|(i, h)| h.map(|_| i))
-            .collect()
-    });
-    let mut dropped: Vec<(usize, std::path::PathBuf)> = Vec::new();
+    let playing: Vec<_> = card
+        .pad_activity
+        .iter()
+        .flat_map(|activity| {
+            activity
+                .playheads
+                .iter()
+                .enumerate()
+                .filter_map(|(index, head)| head.map(|_| index))
+        })
+        .collect();
     let shown = cu
         .scope_builder(egui::UiBuilder::new().max_rect(rect), |cu| {
-            let mut grid = PadGrid::new(&pad_list, cell.cols, palette)
-                .selected(Some(selected))
-                .playing(&playing);
-            if sampler.is_some() {
-                grid = grid.on_drop(|pad, file| dropped.push((pad, file.path().to_path_buf())));
-            }
-            grid.show(cu)
+            PadGrid::new(&pads, cell.cols, palette)
+                .selected(Some(card.page))
+                .playing(&playing)
+                .show(cu)
         })
         .inner;
-    if let Some(c) = shown.clicked {
-        if set_context(cu.ctx(), card.device, SEL, c + 1) {
+    if let Some(index) = shown.clicked {
+        select_pad(cu.ctx(), card.device, index);
+        out.push(Action::Plugin(PluginAction::AuditionNote {
+            device: card.device,
+            key: bank.pads[index].note,
+        }));
+        cu.ctx().request_repaint();
+    }
+    if card.macro_mapping {
+        return;
+    }
+    for (index, response) in shown.pads.iter().enumerate() {
+        let id = bank.pads[index].asset_slot;
+        let Some((asset, linked)) = slot(id) else {
+            continue;
+        };
+        if let Some(path) = asset_waveform::dropped_file(cu, card, response.rect, id) {
+            select_pad(cu.ctx(), card.device, index);
+            out.push(Action::Plugin(PluginAction::SetPluginAsset {
+                device: card.device,
+                slot: id,
+                path: Some(path),
+            }));
             cu.ctx().request_repaint();
         }
-        if sampler.is_some() {
-            out.push(Action::Plugin(PluginAction::AuditionPad {
-                device: card.device,
-                pad: c,
-            }));
-        }
-    }
-    let Some(sampler) = sampler else { return };
-    for (pad, path) in dropped {
-        set_context(cu.ctx(), card.device, SEL, pad + 1);
-        out.push(Action::Plugin(PluginAction::LoadSample {
-            device: card.device,
-            pad,
-            path,
-        }));
-    }
-    for (i, response) in shown.pads.iter().enumerate() {
-        let status = sampler.pads.get(i).map(|v| &v.status);
-        let pick = match status {
-            Some(PadStatus::Missing) => t.devices_search(),
-            _ => t.devices_load_sample(),
+        let pick = if asset.status == AssetStatus::Missing {
+            lang.devices_search()
+        } else {
+            lang.devices_load_sample()
         };
-        let mut clear = Entry::action(t.devices_remove_sample(), PadMenu::Clear);
-        if matches!(status, None | Some(PadStatus::Empty)) {
-            clear = clear.disabled();
-        }
-        let entries = [Entry::action(pick, PadMenu::Pick), clear];
-        match ContextMenu::new(&t.devices_pad_menu(&names[i]), &entries).show_on(response) {
-            Some(PadMenu::Pick) => out.push(Action::Plugin(PluginAction::PickSample {
+        let clear = Entry::action(lang.devices_remove_sample(), PadMenu::Clear);
+        let entries = [
+            Entry::action(pick, PadMenu::Pick),
+            if *linked { clear } else { clear.disabled() },
+        ];
+        match ContextMenu::new(&lang.devices_pad_menu(&names[index]), &entries).show_on(response) {
+            Some(PadMenu::Pick) => out.push(Action::Plugin(PluginAction::PickPluginAsset {
                 device: card.device,
-                pad: i,
+                slot: id,
             })),
-            Some(PadMenu::Clear) => out.push(Action::Plugin(PluginAction::ClearSample {
+            Some(PadMenu::Clear) => out.push(Action::Plugin(PluginAction::SetPluginAsset {
                 device: card.device,
-                pad: i,
+                slot: id,
+                path: None,
             })),
             None => {}
         }
@@ -1056,11 +1099,6 @@ fn axis_of(p: &Param) -> Axis {
     Axis::new(if log { AxisKind::Log } else { AxisKind::Lin }, min, max)
 }
 
-/// The status of the pad `sample` is about.
-fn v_status(sample: Option<(&komponist_sampler::PadView, Option<f32>)>) -> Option<&PadStatus> {
-    sample.map(|(v, _)| &v.status)
-}
-
 /// The parameter of `card` behind slot `slot` of `binding` under `ctx`.
 fn slot_param<'c>(
     card: &'c Card,
@@ -1101,7 +1139,7 @@ fn spec_of<'c>(
         GraphConfig::Compressor => configs::compressor(t),
         GraphConfig::GrHistory => configs::gr_history(t),
         // Start and end are in milliseconds; the axis spans the sample's real length when the
-        // device knows it (the sampler), else the range of the end.
+        // asset provides it, else the range of the end.
         GraphConfig::Waveform => configs::waveform(
             t,
             sample_length
@@ -1168,24 +1206,18 @@ fn graph(
         }
         _ => {}
     }
-    // The sampler's waveform: the selected pad's real sample (length, peaks, playhead).
-    let pad = selected_entry(ctx, SEL, 255) - 1;
-    let sample = (binding.config == GraphConfig::Waveform)
-        .then_some(card.sampler.as_ref())
-        .flatten()
-        .and_then(|s| Some((s.pads.get(pad)?, s.playheads.get(pad).copied().flatten())));
-    if let Some((view, _)) = sample {
-        title = model::waveform_title(t, pad + 1, &view.name);
-    }
-    let length = sample
-        .map(|(v, _)| v.length_s)
-        .filter(|l| *l > 0.0 && matches!(v_status(sample), Some(PadStatus::Ready)));
+    let native_graph = card.native_cell(cell).and_then(|cell| cell.graph.as_ref());
+    let asset_slot = native_graph.and_then(|graph| graph.asset_slot);
+    let fractional_trim = native_graph.is_some_and(|graph| {
+        graph.trim_unit == Some(komponist_ipc::native_layout::TrimUnit::SourceFraction)
+    });
+    let asset = asset_slot.and_then(|id| card.asset_waveforms.get(&id));
+    let length = asset.map(|source| source.duration);
     let signals = card.graph_signals.get(&(cell.row, cell.col));
     let analysis = signals.map_or(card.analysis.as_ref(), |signals| signals.analysis.as_ref());
     let rate = analysis.map(|a| a.rate).filter(|r| *r > 0.0);
     // surf: the range on the stack follows the shown oscillator's position.
     let osc = usize::from(ctx.get(OSC_VIEW) == Some("b"));
-    let native_graph = card.native_cell(cell).and_then(|cell| cell.graph.as_ref());
     let (title, description) = card.native_layout.as_ref().zip(native_graph).map_or(
         (title.as_str(), None),
         |(layout, graph)| {
@@ -1195,6 +1227,13 @@ fn graph(
             )
         },
     );
+    let pad_title = card.pad_for_asset(asset_slot).map(|pad| {
+        let name = asset_slot
+            .and_then(|slot| card.asset_names.get(&slot))
+            .map_or_else(|| t.devices_no_sample(), String::as_str);
+        format!("{} · {name}", card.layout.pages[pad].name)
+    });
+    let title = pad_title.as_deref().unwrap_or(title);
     let Some(mut spec) = spec_of(
         komponist_ui::lang(cu.ctx()),
         binding,
@@ -1202,12 +1241,45 @@ fn graph(
         title,
         rate,
         &lookup,
-        length,
+        length.or(fractional_trim.then_some(1.0)),
     ) else {
         return false;
     };
     if native_graph.is_some_and(|graph| graph.hide_title) {
         spec.title.clear();
+    }
+    let has_waveform_toolbar = native_graph.is_some_and(|graph| graph.waveform_toolbar);
+    if has_waveform_toolbar {
+        asset_waveform::style(&mut spec);
+    }
+    let full_rect = rect;
+    let rect = native_graph.map_or(rect, |native| {
+        asset_waveform::toolbar(
+            cu,
+            out,
+            card,
+            cell,
+            rect,
+            native,
+            signals.and_then(|signals| signals.playhead),
+        )
+    });
+    let viewport =
+        asset_slot.and_then(|slot| asset_waveform::view(cu, card, cell, rect, spec.x.pad, slot));
+    let full_end = spec.x.max;
+    // The waveform draws trim in milliseconds even when the plugin stores source fractions.
+    let trim_scale = fractional_trim.then_some(full_end * 1000.0);
+    if let Some(view) = &viewport {
+        spec.x.min = view.start;
+        spec.x.max = view.end;
+        spec.on_double_click = AreaAction::ResetZoom;
+        for (slot, handle) in spec.handles.iter_mut().enumerate() {
+            let visible_ms = view.start * 1000.0..=view.end * 1000.0;
+            handle.visible = Some(Pred::new(move |values| visible_ms.contains(&values[slot])));
+        }
+    }
+    if has_waveform_toolbar {
+        asset_waveform::time_ticks(&mut spec);
     }
     let normalized = binding.config == GraphConfig::Envelope;
     let mut values = Vec::with_capacity(spec.slots.len());
@@ -1218,21 +1290,34 @@ fn graph(
                 values.push(if normalized {
                     p.info.to_normalized(p.value)
                 } else {
-                    p.value
+                    p.value * trim_scale.unwrap_or(1.0)
                 });
-                let info = SlotInfo::from_param(&p.info, normalized);
+                let info = trim_scale.map_or_else(
+                    || SlotInfo::from_param(&p.info, normalized),
+                    |scale| {
+                        SlotInfo::new(0.0, scale, p.info.default * scale).format(|ms| {
+                            komponist_ui::widgets::number_field::format_number(ms, 0) + " ms"
+                        })
+                    },
+                );
                 let driven = card
                     .macros
                     .get(&p.info.id)
                     .is_some_and(|control| control.driver.is_some());
-                infos.push(if driven || card.macro_mapping {
-                    info.locked()
-                } else {
-                    info
-                });
+                infos.push(
+                    if driven || card.macro_mapping || fractional_trim && length.is_none() {
+                        info.locked()
+                    } else {
+                        info
+                    },
+                );
             }
             None => {
-                let v = fallback(name);
+                let v = if asset_slot.is_some() && name == "end" {
+                    full_end * 1000.0
+                } else {
+                    fallback(name)
+                };
                 values.push(v);
                 infos.push(SlotInfo::new(0.0, 1.0, v).locked());
             }
@@ -1248,12 +1333,111 @@ fn graph(
             }
         }
     }
+    let graph_id = slot(cu, cell, "graph");
+    let marker_drag_id = graph_id.with("marker-drag");
+    let snapshot = signals.and_then(|signals| signals.markers.as_ref());
+    let slice_controls = native_graph.filter(|graph| graph.waveform_slice_controls.is_some());
+    if has_waveform_toolbar && let Some(status) = snapshot.and_then(|snapshot| snapshot.preparation)
+    {
+        asset_waveform::preparation(cu, card, cell, full_rect, status);
+    }
+    let markers = asset
+        .and(snapshot)
+        .filter(|snapshot| slice_controls.is_none() || snapshot.slice_options.is_some());
+    let trim_position = |name: &str, fallback| {
+        spec.slot(name)
+            .map_or(fallback, |index| values[index] / 1000.0)
+    };
+    let trim = trim_position("start", 0.0)..trim_position("end", full_end);
+    let mut slices = slice_controls.zip(snapshot).and_then(|(graph, snapshot)| {
+        let note = graph.audition_note?;
+        let root = card.params.iter().find(|param| param.wire == note)?.value;
+        waveform_slices::SliceView::new(
+            cu,
+            graph_id.with("slices"),
+            snapshot,
+            trim.clone(),
+            root as u8,
+        )
+    });
+    let editable_markers = markers.filter(|markers| markers.editable && !card.macro_mapping);
+    let first_marker_slot = spec.slots.len();
+    let first_marker_handle = spec.handles.len();
+    if let Some(markers) = markers {
+        let rate = asset
+            .and_then(|asset| asset.peaks.as_ref())
+            .map_or(48_000, |peaks| peaks.sample_rate());
+        let gap = 1.0 / f64::from(rate);
+        let preview = editable_markers.and_then(|markers| {
+            cu.data(|data| data.get_temp::<asset_waveform::MarkerDrag>(marker_drag_id))
+                .filter(|drag| drag.revision == markers.revision)
+        });
+        if editable_markers.is_some()
+            && (slices.is_some() || cu.input(|input| input.modifiers.shift))
+        {
+            spec.on_double_click = AreaAction::NewPoint;
+        }
+        spec.deletable = editable_markers.is_some();
+        for (index, &seconds) in markers.positions.iter().enumerate() {
+            let slot = values.len();
+            let visible = spec.x.min..=spec.x.max;
+            let position = preview
+                .filter(|drag| usize::from(drag.index) == index)
+                .map_or(seconds, |drag| drag.seconds);
+            let min = index
+                .checked_sub(1)
+                .map_or(gap, |i| markers.positions[i] + gap);
+            let max = markers
+                .positions
+                .get(index + 1)
+                .map_or(full_end, |time| time - gap);
+            values.push(position);
+            let info = SlotInfo::new(min.min(seconds), max.max(seconds), seconds).format(|time| {
+                komponist_ui::widgets::number_field::format_number(time * 1000.0, 0) + " ms"
+            });
+            infos.push(if editable_markers.is_some() {
+                info
+            } else {
+                info.locked()
+            });
+            spec.slots.push(format!("marker-{index}"));
+            let name = slices.as_ref().map_or_else(
+                || t.devices_sampler_slice(index + 1),
+                |view| view.marker_name(t, index),
+            );
+            spec.handles.push(
+                Handle::dot(name)
+                    .look(HandleLook::Marker(MarkerHead::Down))
+                    .x(Bind::axis(slot, t.ui_graph_position()))
+                    .visible_if(Pred::new(move |values| visible.contains(&values[slot]))),
+            );
+        }
+        if let Some(slices) = &slices {
+            slices.add_layers(&mut spec, &mut values, &mut infos, first_marker_slot);
+        }
+    }
+    if slice_controls.is_some()
+        && slices.is_none()
+        && asset.is_some()
+        && let Some(defaults) = snapshot.and_then(|snapshot| snapshot.default_options)
+    {
+        waveform_slices::playback_fades(&mut spec, &mut values, &mut infos, defaults);
+    }
     // The live spectrum; empty while hidden, bypassed or switched off.
     let spectrum: &[f32] = analysis.map_or(&[], |a| &a.spectrum);
-    // The sampler's waveform shows the sample's peaks, the EQ its live spectrum.
-    let peaks: &[f32] = sample.map_or(spectrum, |(v, _)| &v.peaks);
-    let mut playhead = sample
-        .and_then(|(_, head)| head)
+    // An asset waveform uses the linked file's peaks, independently of the device's live signal.
+    let asset_data = asset
+        .zip(viewport.as_ref())
+        .map_or_else(Vec::new, |(source, view)| {
+            source.amplitudes(view, rect.width().ceil() as usize)
+        });
+    let peaks: &[f32] = if asset_slot.is_some() {
+        &asset_data
+    } else {
+        spectrum
+    };
+    let mut playhead = signals
+        .and_then(|signals| signals.playhead)
         .zip(length)
         .map(|(h, len)| f64::from(h) * len);
     // The compressor (WP-93): its live level on the transfer curve, and the history of the input
@@ -1283,7 +1467,10 @@ fn graph(
     } else {
         Look::Normal
     };
-    let id = slot(cu, cell, "graph");
+    let id = markers.map_or(graph_id, |markers| graph_id.with(markers.revision));
+    if let Some(slices) = &slices {
+        slices.select_handle(cu, id, first_marker_handle);
+    }
     let size = rect.size();
     let shown = cu
         .scope_builder(egui::UiBuilder::new().max_rect(rect), |gu| {
@@ -1300,9 +1487,97 @@ fn graph(
                 .show(gu)
         })
         .inner;
+    if let Some(slot) = asset_slot
+        && shown.events.contains(&GraphEvent::ResetZoom)
+    {
+        asset_waveform::reset(cu, card, cell, slot);
+    }
+    let request = editable_markers.and_then(|markers| {
+        asset_waveform::marker_request(
+            cu,
+            marker_drag_id,
+            markers,
+            first_marker_slot,
+            first_marker_handle,
+            &shown,
+        )
+    });
+    if let Some(slot) = asset_slot {
+        let request = if let Some(slices) = &mut slices {
+            slices.observe(cu, &shown, first_marker_slot);
+            slices.show(
+                cu,
+                card,
+                cell,
+                full_rect,
+                slot,
+                viewport.as_ref(),
+                playhead,
+                request,
+            )
+        } else {
+            request
+        };
+        if let Some(request) = request {
+            out.push(Action::Plugin(PluginAction::EditWaveformMarkers {
+                device: card.device,
+                slot,
+                request,
+            }));
+        }
+    }
     if card.macro_mapping {
         return true;
     }
+    if let Some((slot, note)) = asset_slot.zip(native_graph.and_then(|graph| graph.audition_note))
+        && asset.is_some()
+        && !card.bypass
+        && asset_waveform::preview_enabled(cu, card, cell, slot)
+        && cu.input(|input| {
+            !input.modifiers.shift && input.pointer.button_pressed(egui::PointerButton::Primary)
+        })
+        && (shown.response.is_pointer_button_down_on()
+            || shown.response.clicked_by(egui::PointerButton::Primary))
+        && let Some(param) = card.params.iter().find(|param| param.wire == note)
+        && param.value.is_finite()
+    {
+        let preview = if native_graph.is_some_and(|graph| graph.waveform_markers) {
+            snapshot.and_then(|markers| {
+                if markers.editable || markers.slice_options.is_some() {
+                    let position = |name: &str, fallback| {
+                        spec.slots
+                            .iter()
+                            .position(|slot| slot == name)
+                            .map_or(fallback, |index| values[index] / 1000.0)
+                    };
+                    let trim = position("start", 0.0)..position("end", full_end);
+                    shown.pointer_x.filter(|time| trim.contains(time)).map(Some)
+                } else {
+                    Some(None)
+                }
+            })
+        } else {
+            Some(None)
+        };
+        if let Some(slice_time) = preview {
+            out.push(Action::Plugin(PluginAction::PreviewWaveform {
+                device: card.device,
+                slot,
+                key: param.value.round().clamp(0.0, 127.0) as u8,
+                slice_time,
+            }));
+        }
+    }
+    if let Some(slot) = asset_slot
+        && let Some(path) = asset_waveform::dropped_file(cu, card, full_rect, slot)
+    {
+        out.push(Action::Plugin(PluginAction::SetPluginAsset {
+            device: card.device,
+            slot,
+            path: Some(path),
+        }));
+    }
+    let changed_params = shown.changed.iter().any(|(i, _)| *i < first_marker_slot);
     // One undo step per drag of a handle (or burst of wheel notches); the first parameter the
     // handle edits names it.
     let first = shown.selected_slot.or(shown.changed.first().map(|c| c.0));
@@ -1310,18 +1585,19 @@ fn graph(
         .and_then(|i| spec.slots.get(i))
         .and_then(|s| lookup(s))
         .map_or(u32::MAX, |p| p.wire);
+    let parameter_touch = first_wire != u32::MAX || markers.is_none();
     let touch = Touch {
-        drag_started: shown.touch.drag_started,
-        dragged: shown.touch.dragging,
-        drag_stopped: shown.touch.drag_stopped,
-        wheel: shown.touch.wheel,
+        drag_started: parameter_touch && shown.touch.drag_started,
+        dragged: parameter_touch && shown.touch.dragging,
+        drag_stopped: parameter_touch && shown.touch.drag_stopped,
+        wheel: parameter_touch && shown.touch.wheel,
         hovered: shown.response.hovered(),
     };
     gesture_touch(
         cu.ctx(),
         shown.response.id,
         touch,
-        !shown.changed.is_empty(),
+        changed_params,
         || begin_param(card, first_wire),
         out,
         |out| {
@@ -1331,7 +1607,11 @@ fn graph(
                         out,
                         card,
                         p,
-                        if normalized { p.info.to_plain(*v) } else { *v },
+                        if normalized {
+                            p.info.to_plain(*v)
+                        } else {
+                            *v / trim_scale.unwrap_or(1.0)
+                        },
                     );
                 }
             }
@@ -1495,11 +1775,12 @@ mod tests {
             Cell::span(0, 2, 2, 1, WidgetKind::KnobLarge, CellParam::Id(id(5))),
         ];
         Card {
-            sampler: None,
-            general_sampler: None,
             native_layout: None,
             display: None,
             asset_slots: Vec::new(),
+            asset_waveforms: Default::default(),
+            asset_names: Default::default(),
+            pad_activity: None,
             bundled_editor: false,
             device: DeviceId(7),
             automation_owner: None,
@@ -1604,6 +1885,177 @@ mod tests {
             h.get_all_by_role_and_label(Role::Slider, "Level").count(),
             2
         );
+    }
+
+    #[test]
+    fn authored_graph_and_canvas_use_the_layout_locale() {
+        use komponist_ipc::device_canvas::DisplayList;
+        use komponist_ipc::native_layout::NativeLayout;
+        use std::sync::Arc;
+
+        let layout = Arc::new(
+            NativeLayout::parse(include_bytes!(
+                "../../../../../docs/clap-device-layout/example-v2.json"
+            ))
+            .unwrap(),
+        );
+        let display = Arc::new(
+            DisplayList::decode(
+                br#"{
+            "frames":[{"key":"scope","primitives":[
+                {"kind":"line","from":[0,1],"to":[1,0],"tone":"accent"}
+            ]}]
+        }"#,
+            )
+            .unwrap(),
+        );
+        for (lang, graph, canvas) in [
+            (Lang::De, "Hüllkurve", "Signalanzeige"),
+            (Lang::En, "Envelope", "Signal display"),
+        ] {
+            let mut card = card();
+            card.layout = model::native_card_layout(&layout, lang);
+            card.native_layout = Some(Arc::clone(&layout));
+            card.display = Some(Arc::clone(&display));
+            let mut h = komponist_ui::snapshot::builder(1.0)
+                .with_size(egui::vec2(760.0, 240.0))
+                .build_ui_state(
+                    move |ui, (card, out): &mut (Card, Vec<Action>)| {
+                        komponist_ui::set_lang(ui.ctx(), lang);
+                        let palette = TrackPalette::new(150);
+                        let page = card.current_page().unwrap();
+                        for cell in &page.cells {
+                            let rect = crate::views::devices::layout::cell_rect(cell)
+                                .translate(ui.min_rect().min.to_vec2());
+                            draw_cell(ui, out, card, &palette, cell, rect);
+                        }
+                    },
+                    (card, Vec::new()),
+                );
+            h.run();
+            h.get_by_role_and_label(Role::Group, graph);
+            let painted_text = |label: &str| {
+                let label = label.to_uppercase();
+                h.output().shapes.iter().any(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label)
+                })
+            };
+            assert!(painted_text("Equalizer"));
+            assert!(!painted_text(graph));
+            h.state_mut().0.page = 1;
+            h.run();
+            h.get_by_role_and_label(Role::Group, canvas);
+            assert!(set_params(&h).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_native_pad_bank_selects_and_auditions_its_authored_notes() {
+        use komponist_ipc::device_assets::Slot;
+        use komponist_ipc::native_layout::{CAP_PAD_BANK, NativeLayout};
+        use serde_json::json;
+        use std::path::{Path, PathBuf};
+        use std::sync::Arc;
+
+        #[derive(Debug)]
+        struct Dropped(PathBuf);
+
+        impl egui::DroppedFile for Dropped {
+            fn path(&self) -> &Path {
+                &self.0
+            }
+
+            fn bytes(&self) -> Result<Vec<u8>, String> {
+                panic!("dropping a pad file should pass only its path")
+            }
+        }
+
+        let page = |index: u8, names, slot| {
+            json!({"key": format!("pad-{index}"), "labels": names, "columns": 6, "cells": [
+                {"widget": "pad_grid", "col": 0, "row": 0, "cols": 2, "rows": 1},
+                {"widget": "graph", "col": 2, "row": 0, "cols": 4, "rows": 1, "graph": {
+                    "kind": "waveform", "name": names, "asset_slot": slot,
+                    "description": {"de": "Wellenform", "en": "Waveform"}
+                }}
+            ]})
+        };
+        let document = json!({
+            "schema_version": 2, "default_locale": "en", "locales": ["en", "de"],
+            "required_capabilities": [CAP_PAD_BANK],
+            "pad_bank": {"pads": [{"note": 36, "asset_slot": 7}, {"note": 43, "asset_slot": 12}]},
+            "pages": [
+                page(1, json!({"de": "Links", "en": "Left"}), 7),
+                page(2, json!({"de": "Rechts", "en": "Right"}), 12),
+            ]
+        });
+        let layout =
+            Arc::new(NativeLayout::parse(&serde_json::to_vec(&document).unwrap()).unwrap());
+        for (lang, first, second, empty) in [
+            (Lang::De, "Links", "Rechts", "kein Sample"),
+            (Lang::En, "Left", "Right", "no sample"),
+        ] {
+            let mut card = card();
+            card.layout = model::native_card_layout(&layout, lang);
+            card.native_layout = Some(Arc::clone(&layout));
+            card.asset_names.insert(7, "Kick".into());
+            card.asset_slots.push((
+                Slot {
+                    id: 12,
+                    role: "sample".into(),
+                    label: second.into(),
+                    kind: AssetKind::AudioSample,
+                    status: AssetStatus::Empty,
+                },
+                false,
+            ));
+            let device = card.device;
+            let mut h = komponist_ui::snapshot::builder(1.0)
+                .with_size(egui::vec2(440.0, 240.0))
+                .build_ui_state(
+                    move |ui, (card, out): &mut (Card, Vec<Action>)| {
+                        komponist_ui::set_lang(ui.ctx(), lang);
+                        card.page = selected_pad(ui.ctx(), card.device);
+                        let palette = TrackPalette::new(150);
+                        let origin = ui.min_rect().min;
+                        for cell in &card.current_page().unwrap().cells {
+                            let rect = crate::views::devices::layout::cell_rect(cell)
+                                .translate(origin.to_vec2());
+                            draw_cell(ui, out, card, &palette, cell, rect);
+                        }
+                    },
+                    (card, Vec::new()),
+                );
+            h.run();
+            h.get_by_role_and_label(Role::Button, "Pad Kick");
+            h.get_by_role_and_label(Role::Group, &format!("{first} · Kick"));
+            let button = format!("Pad {second}");
+            h.get_by_role_and_label(Role::Button, &button).click();
+            h.run();
+            assert_eq!(h.state().0.page, 1);
+            h.get_by_role_and_label(Role::Group, &format!("{second} · {empty}"));
+            assert!(matches!(
+                h.state().1.as_slice(),
+                [Action::Plugin(PluginAction::AuditionNote { device: id, key: 43 })] if *id == device
+            ));
+
+            let target = h
+                .get_by_role_and_label(Role::Button, &button)
+                .rect()
+                .center();
+            h.state_mut().1.clear();
+            h.hover_at(target);
+            h.step();
+            let path = PathBuf::from("Snare.wav");
+            h.input_mut()
+                .dropped_files
+                .push(Arc::new(Dropped(path.clone())));
+            h.run();
+            assert!(matches!(
+                h.state().1.as_slice(),
+                [Action::Plugin(PluginAction::SetPluginAsset { device: id, slot: 12, path: Some(file) })]
+                    if *id == device && file == &path
+            ));
+        }
     }
 
     #[test]
@@ -1739,68 +2191,6 @@ mod tests {
     }
 
     /// A card with an EQ graph of two bands (band 2 off) and an envelope graph.
-    #[test]
-    fn authored_graph_and_canvas_use_the_layout_locale() {
-        use komponist_ipc::device_canvas::DisplayList;
-        use komponist_ipc::native_layout::NativeLayout;
-        use std::sync::Arc;
-
-        let layout = Arc::new(
-            NativeLayout::parse(include_bytes!(
-                "../../../../../docs/clap-device-layout/example-v2.json"
-            ))
-            .unwrap(),
-        );
-        let display = Arc::new(
-            DisplayList::decode(
-                br#"{
-            "frames":[{"key":"scope","primitives":[
-                {"kind":"line","from":[0,1],"to":[1,0],"tone":"accent"}
-            ]}]
-        }"#,
-            )
-            .unwrap(),
-        );
-        for (lang, graph, canvas) in [
-            (Lang::De, "Hüllkurve", "Signalanzeige"),
-            (Lang::En, "Envelope", "Signal display"),
-        ] {
-            let mut card = card();
-            card.layout = model::native_card_layout(&layout, lang);
-            card.native_layout = Some(Arc::clone(&layout));
-            card.display = Some(Arc::clone(&display));
-            let mut h = komponist_ui::snapshot::builder(1.0)
-                .with_size(egui::vec2(760.0, 240.0))
-                .build_ui_state(
-                    move |ui, (card, out): &mut (Card, Vec<Action>)| {
-                        komponist_ui::set_lang(ui.ctx(), lang);
-                        let palette = TrackPalette::new(150);
-                        let page = card.current_page().unwrap();
-                        for cell in &page.cells {
-                            let rect = crate::views::devices::layout::cell_rect(cell)
-                                .translate(ui.min_rect().min.to_vec2());
-                            draw_cell(ui, out, card, &palette, cell, rect);
-                        }
-                    },
-                    (card, Vec::new()),
-                );
-            h.run();
-            h.get_by_role_and_label(Role::Group, graph);
-            let painted_text = |label: &str| {
-                let label = label.to_uppercase();
-                h.output().shapes.iter().any(|shape| {
-                    matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label)
-                })
-            };
-            assert!(painted_text("Equalizer"));
-            assert!(!painted_text(graph));
-            h.state_mut().0.page = 1;
-            h.run();
-            h.get_by_role_and_label(Role::Group, canvas);
-            assert!(set_params(&h).is_empty());
-        }
-    }
-
     fn graph_card() -> Card {
         let mut card = card();
         let mut params = Vec::new();
@@ -2190,6 +2580,482 @@ mod tests {
         h.get_by_role_and_label(Role::Slider, "XY-Feld Feedback");
         h.get_by_role_and_label(Role::Slider, "Punkt 2 Phase");
         h.get_by_role_and_label(Role::Slider, "Punkt 2 Wert");
+    }
+
+    fn authored_asset_waveform_card(fractional: bool) -> Card {
+        use komponist_ipc::device_assets::{AssetKind, AssetStatus, Slot};
+        use komponist_ipc::native_layout::{CAP_SOURCE_FRACTION_TRIM, NativeLayout};
+        use std::sync::Arc;
+
+        let mut layout: serde_json::Value = serde_json::from_slice(
+            br#"{
+            "schema_version":2,"default_locale":"de","locales":["de","en"],
+            "pages":[{"key":"sample","labels":{"de":"Sample"},"columns":4,"cells":[
+              {"widget":"graph","row":0,"col":0,"rows":2,"cols":4,"graph":{
+                "kind":"waveform","name":{"de":"Sample-Quelle","en":"Sample source"},
+                "description":{"de":"Verkn\u00fcpfte Audiodatei.","en":"Linked audio file."},
+                "asset_slot":5,"slots":{"end":42}
+              }}
+            ]}]
+        }"#,
+        )
+        .unwrap();
+        if fractional {
+            layout["pages"][0]["cells"][0]["graph"]["trim_unit"] = "source_fraction".into();
+            layout["required_capabilities"] = serde_json::json!([CAP_SOURCE_FRACTION_TRIM]);
+        }
+        let layout = Arc::new(NativeLayout::parse(&serde_json::to_vec(&layout).unwrap()).unwrap());
+        let mut card = card();
+        card.layout = model::native_card_layout(&layout, Lang::De);
+        card.native_layout = Some(layout);
+        let max = if fractional { 1.0 } else { 500.0 };
+        let mut end = param(42, "Ende", ParamKind::lin(0.0, max), max, max);
+        end.info.id = ParamId::plugin(42);
+        card.params = vec![end];
+        card.asset_slots = vec![(
+            Slot {
+                id: 5,
+                role: "sample".into(),
+                label: "Sample".into(),
+                kind: AssetKind::AudioSample,
+                status: AssetStatus::Ready,
+            },
+            true,
+        )];
+        card
+    }
+
+    #[test]
+    fn authored_slice_controls_name_the_notes_and_request_transient_detection() {
+        use komponist_ipc::native_layout::{CAP_SOURCE_FRACTION_TRIM, NativeLayout};
+        use komponist_ipc::waveform_markers::{Edit, Request, SliceOptions, Snapshot};
+        use serde_json::json;
+        use std::sync::Arc;
+
+        let native = json!({
+            "schema_version": 2, "default_locale":"de", "locales":["de"],
+            "required_capabilities": [CAP_SOURCE_FRACTION_TRIM],
+            "pages": [{"key":"sample", "labels":{"de":"Sample"}, "columns": 14, "cells": [
+                {"widget":"graph", "row":0, "col":0, "rows":2, "cols":10, "graph":{
+                    "kind":"waveform", "name":{"de":"Wellenform"}, "description":{"de":"Sample"},
+                    "asset_slot":5, "slots":{"start":41, "end":42}, "audition_note":43,
+                    "trim_unit":"source_fraction", "waveform_toolbar":true, "waveform_markers":true,
+                    "waveform_slice_controls":[44,45,46],
+                }},
+                {"widget":"number","row":2,"col":0,"rows":1,"cols":1,"half":"top","param_id":41},
+                {"widget":"number","row":2,"col":2,"rows":1,"cols":2,"half":"top","param_id":45},
+                {"widget":"number","row":2,"col":4,"rows":1,"cols":2,"half":"top","param_id":46},
+                {"widget":"toggle_button","row":0,"col":10,"rows":1,"cols":2,"half":"bottom","param_id":44},
+            ]}]
+        });
+        let layout = Arc::new(NativeLayout::parse(&serde_json::to_vec(&native).unwrap()).unwrap());
+        let mut card = authored_asset_waveform_card(true);
+        card.layout = model::native_card_layout(&layout, Lang::De);
+        card.native_layout = Some(layout);
+        for (id, name, value) in [
+            (41, "Anfang", 0.0_f64),
+            (43, "Grundton", 60.0),
+            (44, "Sampler-Richtung", 0.0),
+            (45, "Sampler-Fade 1", 0.0),
+            (46, "Sampler-Fade 2", 0.0),
+        ] {
+            let mut p = param(id, name, ParamKind::lin(0.0, value.max(1.0)), 0.0, value);
+            p.info.id = ParamId::plugin(id);
+            card.params.push(p);
+        }
+        card.asset_waveforms.insert(
+            5,
+            asset_waveform::Waveform {
+                duration: 1.0,
+                file: komponist_audiofile::FileId {
+                    path: "source.wav".into(),
+                    len: 0,
+                    mtime_ns: None,
+                },
+                peaks: None,
+            },
+        );
+        card.graph_signals.insert(
+            (0, 0),
+            model::GraphSignals {
+                markers: Some(Snapshot {
+                    revision: 7,
+                    editable: true,
+                    positions: vec![0.25, 0.5],
+                    slice_options: Some(vec![SliceOptions::default(); 3]),
+                    default_options: Some(SliceOptions {
+                        reverse: Some(false),
+                        fade_in_ms: Some(25.0),
+                        fade_out_ms: Some(125.0),
+                        ..Default::default()
+                    }),
+                    preparation: None,
+                }),
+                ..Default::default()
+            },
+        );
+
+        let mut harness = graph_harness_sized(card, egui::vec2(900.0, 240.0));
+        let lang = Lang::De;
+        let marker = format!(
+            "{} {}",
+            komponist_model::format::note_name(61),
+            lang.ui_graph_position()
+        );
+        harness.get_by_role_and_label(Role::Slider, marker.as_str());
+        harness.get_by_role_and_label(Role::Button, lang.devices_sampler_fit());
+        harness
+            .get_by_role_and_label(Role::Button, lang.devices_sampler_detect())
+            .click();
+        harness.run();
+        let requests = harness
+            .state()
+            .1
+            .iter()
+            .filter_map(|action| match action {
+                Action::Plugin(PluginAction::EditWaveformMarkers { slot, request, .. }) => {
+                    Some((*slot, *request))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            requests,
+            [(
+                5,
+                Request {
+                    revision: 7,
+                    operation: Edit::DetectSlices
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn pressing_an_authored_waveform_uses_its_midi_note_binding() {
+        let mut card = authored_asset_waveform_card(false);
+        let layout = std::sync::Arc::get_mut(card.native_layout.as_mut().unwrap()).unwrap();
+        layout.pages[0].cells[0]
+            .graph
+            .as_mut()
+            .unwrap()
+            .audition_note = Some(43);
+        card.params.push(param(
+            43,
+            "Grundton",
+            ParamKind::Int { min: 0, max: 127 },
+            60.0,
+            64.0,
+        ));
+        card.asset_waveforms.insert(
+            5,
+            asset_waveform::Waveform {
+                duration: 0.25,
+                file: komponist_audiofile::FileId {
+                    path: "source.wav".into(),
+                    len: 0,
+                    mtime_ns: None,
+                },
+                peaks: None,
+            },
+        );
+        let mut h = graph_harness(card);
+        let pos = h
+            .get_by_role_and_label(Role::Group, "Sample-Quelle")
+            .rect()
+            .center();
+        h.hover_at(pos);
+        h.step();
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        assert!(h.state().1.iter().any(|action| matches!(
+            action,
+            Action::Plugin(PluginAction::PreviewWaveform {
+                slot: 5,
+                key: 64,
+                slice_time: None,
+                ..
+            })
+        )));
+    }
+
+    #[test]
+    fn an_authored_waveform_names_only_visible_markers() {
+        let mut card = authored_asset_waveform_card(false);
+        card.asset_waveforms.insert(
+            5,
+            asset_waveform::Waveform {
+                duration: 0.25,
+                file: komponist_audiofile::FileId {
+                    path: "source.wav".into(),
+                    len: 0,
+                    mtime_ns: None,
+                },
+                peaks: None,
+            },
+        );
+        card.graph_signals.insert(
+            (0, 0),
+            model::GraphSignals {
+                markers: Some(komponist_ipc::waveform_markers::Snapshot {
+                    revision: 4,
+                    editable: true,
+                    positions: vec![0.125, 0.5],
+                    slice_options: None,
+                    default_options: None,
+                    preparation: None,
+                }),
+                ..Default::default()
+            },
+        );
+        let mut h = graph_harness(card);
+        h.get_by_role_and_label(Role::Slider, "Schnitt 1 Position")
+            .decrement_accesskit();
+        h.run();
+        assert!(
+            h.query_by_role_and_label(Role::Slider, "Schnitt 2 Position")
+                .is_none()
+        );
+        assert!(h.state().1.iter().any(|action| matches!(
+            action,
+            Action::Plugin(PluginAction::EditWaveformMarkers {
+                slot: 5,
+                request: komponist_ipc::waveform_markers::Request {
+                    revision: 4,
+                    operation: komponist_ipc::waveform_markers::Edit::Move { index: 0, seconds },
+                },
+                ..
+            }) if *seconds > 0.0 && *seconds < 0.125
+        )));
+    }
+
+    #[test]
+    fn asset_waveform_reads_its_link_and_edits_the_plugin_range() {
+        use super::super::viewport::Viewport;
+        use komponist_ipc::device_assets::AssetKind;
+        use komponist_model::plugin_assets::AssetLink;
+        use komponist_model::{Device, DeviceRole, PluginFormat, PluginRef};
+        use std::path::Path;
+        use std::time::{Duration, Instant};
+
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("source.wav");
+        let mut wav = hound::WavWriter::create(
+            &path,
+            hound::WavSpec {
+                channels: 2,
+                sample_rate: 8_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for i in 0..2_000 {
+            wav.write_sample(0_i16).unwrap();
+            wav.write_sample(if i < 1_000 { 24_000_i16 } else { 0 })
+                .unwrap();
+        }
+        wav.finalize().unwrap();
+        let mut card = authored_asset_waveform_card(false);
+        card.asset_slots[0].0.kind = AssetKind::File;
+        let mut device = Device {
+            id: card.device,
+            role: DeviceRole::Instrument,
+            plugin: PluginRef {
+                format: PluginFormat::Clap,
+                id: "example.test.waveform".into(),
+                name: "Example waveform".into(),
+                vendor: String::new(),
+                version: String::new(),
+                module: Box::default(),
+            },
+            bypass: false,
+            // Simulate a moved project with a stale absolute path.
+            asset_links: [(
+                5,
+                AssetLink {
+                    abs: folder.path().join("old").join("source.wav"),
+                    rel: Path::new("source.wav").to_owned(),
+                    display_name: None,
+                },
+            )]
+            .into(),
+            state: None,
+            sidechain: None,
+        };
+        let egui = egui::Context::default();
+        let mut cache = super::super::asset_waveform::Cache::default();
+        let dir = Some(folder.path());
+        assert!(cache.for_card(&egui, &card, &device, dir).is_empty());
+        card.asset_slots[0].0.kind = AssetKind::AudioSample;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        card.asset_waveforms = loop {
+            let sources = cache.for_card(&egui, &card, &device, dir);
+            if sources.get(&5).is_some_and(|source| source.peaks.is_some()) {
+                break sources;
+            }
+            assert!(Instant::now() < deadline, "waveform peak worker timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let source = &card.asset_waveforms[&5];
+        assert_eq!(source.duration, 0.25);
+        let amplitudes = source.amplitudes(&Viewport::fit(0.25), 100);
+        assert!(amplitudes[..40].iter().all(|&peak| peak > 0.7));
+        assert!(amplitudes[60..].iter().all(|&peak| peak == 0.0));
+        let silent = Viewport {
+            start: 0.15,
+            end: 0.25,
+        };
+        assert!(
+            source
+                .amplitudes(&silent, 100)
+                .iter()
+                .all(|&peak| peak == 0.0)
+        );
+
+        let mut h = graph_harness(card);
+        h.get_by_role_and_label(Role::Group, "Sample-Quelle");
+        h.get_by_role_and_label(Role::Slider, "Sample-Ende Position")
+            .decrement_accesskit();
+        h.run();
+        let (_, end) = set_params(&h)
+            .into_iter()
+            .find(|(id, _)| *id == 42)
+            .unwrap();
+        assert!((0.0..250.0).contains(&end), "{end}");
+
+        device.asset_links.clear();
+        assert!(cache.for_card(&egui, &h.state().0, &device, dir).is_empty());
+    }
+
+    #[test]
+    fn fractional_waveform_trim_sends_the_same_fraction_for_different_durations() {
+        for duration in [0.25, 2.5] {
+            let mut card = authored_asset_waveform_card(true);
+            card.asset_waveforms.insert(
+                5,
+                asset_waveform::Waveform {
+                    duration,
+                    file: komponist_audiofile::FileId {
+                        path: "source.wav".into(),
+                        len: 0,
+                        mtime_ns: None,
+                    },
+                    peaks: None,
+                },
+            );
+            let mut h = graph_harness(card);
+            h.get_by_role_and_label(Role::Slider, "Sample-Ende Position")
+                .decrement_accesskit();
+            h.run();
+            let (_, end) = set_params(&h)
+                .into_iter()
+                .find(|(id, _)| *id == 42)
+                .unwrap();
+            assert!((end - 0.99).abs() < 1e-6, "{duration}s: {end}");
+        }
+    }
+
+    #[test]
+    fn dropping_a_file_on_an_asset_waveform_targets_only_its_audio_slot() {
+        use std::path::{Path, PathBuf};
+        use std::sync::Arc;
+
+        #[derive(Debug)]
+        struct Dropped(PathBuf);
+        impl egui::DroppedFile for Dropped {
+            fn path(&self) -> &Path {
+                &self.0
+            }
+
+            fn bytes(&self) -> Result<Vec<u8>, String> {
+                panic!("dropping a waveform file should pass only its path")
+            }
+        }
+
+        let card = authored_asset_waveform_card(false);
+        let device = card.device;
+        let mut h = graph_harness(card);
+        let path = PathBuf::from("source.wav");
+        let target = h.get_by_role_and_label(Role::Group, "Sample-Quelle").rect();
+        h.hover_at(target.max + egui::vec2(20.0, 20.0));
+        h.step();
+        h.input_mut()
+            .dropped_files
+            .push(Arc::new(Dropped(path.clone())));
+        h.step();
+        assert!(h.state().1.is_empty());
+
+        h.hover_at(target.center());
+        h.step();
+        h.input_mut()
+            .dropped_files
+            .push(Arc::new(Dropped(path.clone())));
+        h.run();
+        assert!(matches!(
+            h.state().1.as_slice(),
+            [Action::Plugin(PluginAction::SetPluginAsset {
+                device: id, slot: 5, path: Some(file)
+            })] if *id == device && file == &path
+        ));
+    }
+
+    #[test]
+    fn asset_waveform_zoom_pan_and_fit_leave_the_parameter_alone() {
+        let mut card = authored_asset_waveform_card(false);
+        card.asset_waveforms.insert(
+            5,
+            asset_waveform::Waveform {
+                duration: 0.25,
+                file: komponist_audiofile::FileId {
+                    path: "source.wav".into(),
+                    len: 0,
+                    mtime_ns: None,
+                },
+                peaks: None,
+            },
+        );
+        let mut h = graph_harness(card);
+        let plot = h.get_by_role_and_label(Role::Group, "Sample-Quelle").rect();
+        let end_label = "Sample-Ende Position";
+        h.get_by_role_and_label(Role::Slider, end_label);
+        h.hover_at(plot.center());
+        h.event(egui::Event::Zoom(2.0));
+        h.run_steps(3);
+        assert!(h.query_by_role_and_label(Role::Slider, end_label).is_none());
+
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(-1_000.0, 0.0),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+        });
+        h.run_steps(30);
+        h.get_by_role_and_label(Role::Slider, end_label);
+        h.event(egui::Event::Zoom(2.0));
+        h.run_steps(3);
+        assert!(h.query_by_role_and_label(Role::Slider, end_label).is_none());
+
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton {
+                    pos: plot.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+                h.step();
+            }
+        }
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::Slider, end_label);
+        assert!(set_params(&h).is_empty());
     }
 
     #[test]

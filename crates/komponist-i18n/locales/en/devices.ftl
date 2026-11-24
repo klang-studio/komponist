@@ -294,3 +294,4 @@ devices-card = Device { $name }
 
 # The text of a parameter's range: "20 Hz bis 20 kHz".
 devices-range = { $min } to { $max }
+devices-marker-edit-failed = The slice marker could not be edited.

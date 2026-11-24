@@ -1,7 +1,7 @@
 # CLAP signal taps
 
 A plugin can expose mono samples for a spectrum, detector levels in dBFS,
-or gain reduction in positive dB. The host draws
+gain reduction in positive dB, an audio asset's playhead, or pad activity. The host draws
 these layers as described by [layout v2](layout-v2.md). The [C header](clap-signal-taps.h) defines
 the optional `org.klang-studio.komponist.signal-taps/1` extension.
 
@@ -29,5 +29,18 @@ A graph's optional `signal_taps` object maps layer roles to inventory keys.
 An EQ can bind `spectrum` to a spectrum source. A compressor can bind `level` to
 a level history. A gain-reduction history can bind `level` and `reduction`.
 A vertical gain-reduction meter uses `reduction_tap` to name a reduction stream.
+A waveform with an `asset_slot` can bind `playhead` to a playhead-position stream.
+Report the latest source position as a fraction from 0 to 1, or −1 when idle.
+A playhead producer can report just the latest position after each leased block.
+The host hides idle, out-of-range and stale positions.
 Missing streams leave the corresponding data layer empty. The existing
 [audio meter extension](audio-meter.md) remains available for level meters.
+
+A pad bank can bind `activity_tap` to a pad activity stream. It reports a
+complete frame of 19 finite values after each leased block. The first two are
+the low and high unsigned 16-bit halves of a hit counter as exact floats. The
+third is the zero-based index of the most recent pad hit. It can be zero until
+the first hit. Increment the counter after each hit. The remaining sixteen
+values are source fractions for the pads in bank order, with −1 for idle pads
+and for slots beyond the bank's size. The tap requires a history capacity of at
+least 38 samples. The host ignores incomplete or malformed frames.

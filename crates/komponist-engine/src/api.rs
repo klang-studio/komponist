@@ -111,6 +111,11 @@ pub enum Command {
         /// True at the beginning, false at the end.
         begin: bool,
     },
+    /// Deliver the current automation values after a device's processor state is restored.
+    AutomationReassert {
+        /// The restored slot.
+        slot: SlotId,
+    },
     /// Discard gesture state after the UI has cancelled a recording pass.
     CancelAutomationWrite,
     /// Ends automation writing on punch-out while preserving temporary Read gestures.
@@ -226,6 +231,10 @@ impl fmt::Debug for Command {
                 .field("owner", owner)
                 .field("target", target)
                 .field("begin", begin)
+                .finish(),
+            Command::AutomationReassert { slot } => f
+                .debug_struct("AutomationReassert")
+                .field("slot", slot)
                 .finish(),
             Command::CancelAutomationWrite => f.write_str("CancelAutomationWrite"),
             Command::FinishAutomationWrite => f.write_str("FinishAutomationWrite"),

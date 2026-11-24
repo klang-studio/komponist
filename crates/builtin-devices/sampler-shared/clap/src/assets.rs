@@ -70,6 +70,11 @@ impl<T: SampledDefinition> AssetProvider for SampleParameters<T> {
         {
             return false;
         }
+        // Match the state restore lock order and invalidate marker edits before changing sources.
+        let mut assets = self
+            .assets
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut current = self
             .host_bindings
             .lock()
@@ -82,6 +87,9 @@ impl<T: SampledDefinition> AssetProvider for SampleParameters<T> {
                 .map(|path| SampleLink::new(Path::new(path), None));
             if !binding.reload && current.get(&pad) == Some(&link) {
                 continue;
+            }
+            if pad == 0 {
+                assets.source_changed();
             }
             if let Some(link) = &link {
                 self.samples.load_link(pad, link.clone(), None);

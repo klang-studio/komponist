@@ -23,6 +23,10 @@ impl Viewport {
         (self.start + self.end) * 0.5
     }
 
+    pub fn contains(&self, position: f64) -> bool {
+        (self.start..=self.end).contains(&position)
+    }
+
     pub fn set(&mut self, centre: f64, width: f64, length: f64, min_width: f64) {
         self.set_anchored(centre, 0.5, width, length, min_width);
     }
@@ -65,20 +69,19 @@ impl Viewport {
 
 #[cfg(test)]
 mod tests {
+    use super::super::metrics::WAVEFORM_MIN_ZOOM;
     use super::*;
 
-    const MIN_WIDTH: f64 = 0.005;
-
     #[test]
-    fn viewport_stays_in_bounds_and_pans_to_both_ends() {
+    fn waveform_zoom_keeps_a_sample_in_view_and_pans_to_both_ends() {
         let mut view = Viewport::fit(10.0);
-        view.set(5.0, 2.0, 10.0, MIN_WIDTH);
+        view.set(5.0, 2.0, 10.0, WAVEFORM_MIN_ZOOM);
         assert_eq!((view.start, view.end), (4.0, 6.0));
-        view.set(0.0, view.width(), 10.0, MIN_WIDTH);
+        view.set(0.0, view.width(), 10.0, WAVEFORM_MIN_ZOOM);
         assert_eq!((view.start, view.end), (0.0, 2.0));
-        view.set(10.0, view.width(), 10.0, MIN_WIDTH);
+        view.set(10.0, view.width(), 10.0, WAVEFORM_MIN_ZOOM);
         assert_eq!((view.start, view.end), (8.0, 10.0));
-        view.set(10.0, 0.0, 10.0, MIN_WIDTH);
+        view.set(10.0, 0.0, 10.0, WAVEFORM_MIN_ZOOM);
         assert!(view.width() > 0.0 && view.end == 10.0);
     }
 }

@@ -591,6 +591,46 @@ fn cancel_write_restores_the_device_base_on_a_still_empty_lane() {
 }
 
 #[test]
+fn restored_slot_reasserts_the_current_touch_or_latch_value() {
+    for mode in [AutomationMode::Touch, AutomationMode::Latch] {
+        let (project, owner, device) = source();
+        let target = parameter(device, 0);
+        let (project, _) = lane(&project, owner, target.clone(), mode, Vec::new());
+        let (mut rig, program, mut log) = rig(&project);
+        let target = program.automation_target(owner, &target).unwrap();
+        let slot = program.slots.slot(device).unwrap();
+        rig.send(Command::Play);
+        rig.send(Command::Touch {
+            owner,
+            target,
+            begin: true,
+        });
+        rig.send(Command::SetParam {
+            slot,
+            id: 0,
+            value: 0.75,
+        });
+        if mode == AutomationMode::Latch {
+            rig.send(Command::Touch {
+                owner,
+                target,
+                begin: false,
+            });
+        }
+        rig.process(64, 64);
+        assert_eq!(log.pop().unwrap(), (0, 0, 0.75));
+        assert!(log.pop().is_err());
+
+        rig.send(Command::AutomationReassert { slot });
+        rig.process(64, 64);
+        assert_eq!(log.pop().unwrap(), (64, 0, 0.75));
+        rig.process(64, 64);
+        assert!(log.pop().is_err());
+        assert_eq!(rig.l[191], 0.75);
+    }
+}
+
+#[test]
 fn discarding_after_a_loop_wrap_restores_an_empty_latch_lane() {
     let (mut project, owner, device) = source();
     project.loop_on = true;

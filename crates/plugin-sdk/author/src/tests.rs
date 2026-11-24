@@ -163,7 +163,7 @@ impl NativeClapLayout for TestPlugin<ChoiceParams> {
 }
 
 #[test]
-fn version_two_compiles_an_authored_graph_binding() {
+fn source_fraction_waveforms_declare_the_required_layout_capability() {
     type P = TestPlugin<ChoiceParams>;
     let instance = Instance::new::<P>();
     let panel = PanelV2 {
@@ -177,25 +177,37 @@ fn version_two_compiles_an_authored_graph_binding() {
         graph_labels: [(
             (0, 0),
             GraphLabels {
-                name: bilingual("Waveform", "Wellenform"),
-                description: bilingual("Sample range", "Sample-Bereich"),
-                hide_title: true,
-                signal_taps: Default::default(),
+                name: bilingual("Sample", "Sample"),
+                description: bilingual("Linked waveform", "Verknüpfte Wellenform"),
+                hide_title: false,
+                asset_slot: Some(7),
+                waveform_markers: true,
+                waveform_toolbar: false,
+                waveform_slice_controls: None,
+                audition_note: None,
+                trim_unit: Some(TrimUnit::SourceFraction),
+                signal_taps: BTreeMap::new(),
             },
         )]
         .into(),
         canvases: BTreeMap::new(),
-        headings: BTreeMap::new(),
-        reduction_taps: Default::default(),
+        headings: Default::default(),
+        pad_bank: None,
+        reduction_taps: BTreeMap::new(),
     };
     // SAFETY: The instance is the initialized wrapper for P.
     let bytes = unsafe { compile_v2::<P>(instance.0, &panel) }.unwrap();
+    let document: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        document["required_capabilities"],
+        json!([CAP_SOURCE_FRACTION_TRIM])
+    );
     let layout = NativeLayout::parse(&bytes).unwrap();
     let graph = layout.pages[0].cells[0].graph.as_ref().unwrap();
-    assert_eq!(layout.schema_version, 2);
-    assert_eq!(layout.label(&graph.name, "de"), Some("Wellenform"));
-    assert_eq!(graph.slots.len(), 1);
-    assert!(graph.hide_title);
+    assert_eq!(graph.trim_unit, Some(TrimUnit::SourceFraction));
+    assert_eq!(graph.asset_slot, Some(7));
+    assert!(graph.waveform_markers);
+    assert!(!graph.hide_title);
 }
 
 #[test]

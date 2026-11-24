@@ -88,6 +88,12 @@ impl NativeClapLayout for NativeGain {
                     ),
                     hide_title: false,
                     signal_taps: Default::default(),
+                    asset_slot: None,
+                    waveform_markers: false,
+                    waveform_toolbar: false,
+                    waveform_slice_controls: None,
+                    audition_note: None,
+                    trim_unit: None,
                 },
             )]
             .into(),
@@ -106,6 +112,7 @@ impl NativeClapLayout for NativeGain {
             )]
             .into(),
             headings: Default::default(),
+            pad_bank: None,
             reduction_taps: Default::default(),
         })
     }

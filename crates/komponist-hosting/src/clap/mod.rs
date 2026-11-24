@@ -20,9 +20,9 @@ mod events;
 mod host;
 mod native_layout;
 mod processor;
-mod sampler_ui;
 mod sidechain_fallback;
 mod signal_taps;
+mod waveform_markers;
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -438,17 +438,6 @@ impl HostedPlugin for ClapPlugin {
         device_assets::prepare_offline(self.instance.borrow_mut().plugin_handle().as_raw(), request)
     }
 
-    fn sampler_ui(&self, export_tempo: Option<f64>) -> Option<komponist_ipc::sampler_ui::Snapshot> {
-        sampler_ui::snapshot(
-            self.instance.borrow_mut().plugin_handle().as_raw(),
-            export_tempo,
-        )
-    }
-
-    fn preview_sampler_slice(&self, time: Option<f64>) {
-        sampler_ui::preview(self.instance.borrow_mut().plugin_handle().as_raw(), time);
-    }
-
     fn has_gui(&self) -> bool {
         self.has_gui
     }
@@ -565,6 +554,48 @@ impl HostedPlugin for ClapPlugin {
 
     fn device_display(&self) -> Option<komponist_ipc::device_canvas::DisplayList> {
         device_canvas::draw(self.instance.borrow_mut().plugin_handle().as_raw())
+    }
+
+    fn waveform_markers(&self, slot: u32) -> Option<komponist_ipc::waveform_markers::Snapshot> {
+        waveform_markers::snapshot(self.instance.borrow_mut().plugin_handle().as_raw(), slot)
+    }
+
+    fn edit_waveform_markers(
+        &mut self,
+        slot: u32,
+        request: komponist_ipc::waveform_markers::Request,
+    ) -> Option<komponist_ipc::waveform_markers::EditStatus> {
+        waveform_markers::edit(
+            self.instance.borrow_mut().plugin_handle().as_raw(),
+            slot,
+            request,
+        )
+    }
+
+    fn preview_waveform(&self, slot: u32, time: Option<f64>) {
+        use komponist_ipc::waveform_preview::{EXTENSION_ID, Extension, encode_time};
+
+        let Some(time) = encode_time(time) else {
+            return;
+        };
+        let mut instance = self.instance.borrow_mut();
+        let handle = instance.plugin_handle();
+        let plugin = handle.as_raw();
+        // SAFETY: The live instance is borrowed on its main thread. Its extension table
+        // is immutable for the lifetime of the instance and queried by its exact ID.
+        unsafe {
+            if let Some(preview) = plugin
+                .get_extension
+                .and_then(|query| {
+                    query(plugin, EXTENSION_ID.as_ptr())
+                        .cast::<Extension>()
+                        .as_ref()
+                })
+                .and_then(|ext| ext.preview)
+            {
+                preview(std::ptr::from_ref(plugin).cast(), slot, time);
+            }
+        }
     }
 
     fn param_value(&self, id: u32) -> Option<f64> {

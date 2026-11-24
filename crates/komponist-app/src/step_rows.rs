@@ -3,8 +3,8 @@
 //! **The instrument decides the rows when a step clip is created** ([`rows_for`]), and they are
 //! stored in the model then (`NewClipContent::Step { rows }`):
 //!
-//! - an instrument that reports note names (CLAP note-name): its first [`ROWS`] named keys, in key
-//!   order, with their names;
+//! - an instrument that reports note names, or declares a pad bank with linked samples: its
+//!   first [`ROWS`] named keys, in key order, with their names;
 //! - the Sampler: its pads 1–8 = notes 36–43, each named after its sample (the device host
 //!   reports the loaded pads' names as note names, [`komponist_sampler`]); an empty pad
 //!   gets the S03 name of its row (Kick, Snare, … Perc);
@@ -17,6 +17,8 @@
 //! ("C1") elsewhere. Changing the instrument later does not remap the rows of existing clips: a
 //! pattern keeps the notes it was written for.
 
+use std::borrow::Cow;
+
 use komponist_i18n::Lang;
 use komponist_ipc::NoteName;
 use komponist_model::PluginFormat;
@@ -27,12 +29,47 @@ use komponist_model::project::DEFAULT_STEP_ROWS;
 use komponist_model::{Device, PluginRef, StepClip, Track};
 use komponist_sampler as sampler;
 
+use crate::device_host::DeviceHost;
+
 /// Rows of a new step clip (S03: 8 pads).
 pub const ROWS: usize = 8;
 
 /// The instrument of `track`: the device right behind the MIDI effects, if it is one.
 pub fn instrument(track: &Track) -> Option<&Device> {
     track.channel.instrument().map(|(_, d)| &**d)
+}
+
+/// A native pad bank derives note names from its project-linked audio samples.
+pub(crate) fn device_note_names<'a>(
+    device: Option<&Device>,
+    host: &'a dyn DeviceHost,
+) -> Cow<'a, [NoteName]> {
+    let Some(device) = device else {
+        return Cow::Borrowed(&[]);
+    };
+    let Some(bank) = host
+        .native_layout(device.id)
+        .and_then(|layout| layout.pad_bank.as_ref())
+    else {
+        return Cow::Borrowed(host.note_names(device.id));
+    };
+    Cow::Owned(
+        bank.pads
+            .iter()
+            .filter_map(|pad| {
+                let name = device
+                    .asset_links
+                    .get(&pad.asset_slot)?
+                    .name()?
+                    .into_owned();
+                Some(NoteName {
+                    key: pad.note,
+                    channel: None,
+                    name,
+                })
+            })
+            .collect(),
+    )
 }
 
 /// Whether `plugin` is the built-in sampler.

@@ -34,3 +34,25 @@ for name in kp-test-synth kp-test-fx kp-test-crash kp-test-slow kp-test-sc; do
     echo "$out/clap/$name.clap"
     echo "$out/vst3/$name.vst3"
 done
+
+# Keep real device fixtures separate so scans of the WP-27 inventory stay unchanged.
+target="$(rustc -vV | sed -n 's/^host: //p')"
+fixture_stage="$(mktemp -d "$out/.builtin-clap.XXXXXX")"
+trap 'rm -rf "$fixture_stage"' EXIT
+python=python3
+if ! command -v "$python" >/dev/null; then
+    python=python
+fi
+CARGO_TARGET_DIR="$root/target" "$python" "$root/scripts/bundled-clap.py" \
+    --target "$target" --inventory sampler-fixtures stage "$fixture_stage/payload" >/dev/null
+fixture_dir="$out/builtin-clap"
+mkdir -p "$fixture_dir"
+install_fixture() {
+    local source="$1"
+    local fixture="$fixture_dir/$2.clap"
+    rm -rf "$fixture"
+    mv "$fixture_stage/payload/$source.clap" "$fixture"
+    echo "$fixture"
+}
+install_fixture komponist_sampler klopfer
+install_fixture komponist_general_sampler general-sampler

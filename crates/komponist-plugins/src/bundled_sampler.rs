@@ -2,10 +2,8 @@
 //! uses their pinned nice-plug state encoding and remains outside the CLAP audio path.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use komponist_builtin::Internal;
-use komponist_ipc::sampler_ui::Snapshot;
 use komponist_model::PluginRef;
 use komponist_sampler::links::{self, Collector, SampleLink};
 use komponist_sampler::settings::Settings;
@@ -15,17 +13,6 @@ use komponist_device_core::pinned_clap_state::{self, MAX_SAMPLE_ASSET_BYTES, SAM
 use serde_json::{Map, Value};
 
 use crate::catalog::requires_bundled;
-
-pub(crate) const UI_REFRESH: Duration = Duration::from_millis(80);
-
-pub(crate) fn note_names(snapshot: &Snapshot) -> impl Iterator<Item = (u8, &str)> {
-    snapshot
-        .pads
-        .iter()
-        .enumerate()
-        .filter(|(_, view)| !view.name.is_empty())
-        .map(|(pad, view)| (komponist_sampler::note_of_pad(pad), view.name.as_str()))
-}
 
 fn kind_by_id(id: &str) -> Option<Internal> {
     match id {
