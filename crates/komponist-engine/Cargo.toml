@@ -32,9 +32,3 @@ rustix.workspace = true
 [target.'cfg(windows)'.dependencies]
 # WaitOnAddress / WakeByAddress* of the worker pool (W3).
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
-
-[dev-dependencies]
-komponist-builtin.workspace = true
-komponist-device-core.workspace = true
-komponist-hexa.workspace = true
-komponist-volt.workspace = true

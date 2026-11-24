@@ -280,9 +280,9 @@ processing audio. `ProcessContext` supplies frame count, sample rate, transport,
 the realtime deadline. Events have sample offsets and include notes, raw MIDI, parameter changes
 and all-notes-off.
 
-Implementations include Hexa, Volt, Surf, Klopfer, Sampler, internal audio/MIDI effects and `ExternalProcessor`.
-Test processors in `komponist_engine::testing` exercise the same contracts. The metronome belongs
-to the engine rather than a track device.
+Implementations outside the engine include instruments, effects, and `ExternalProcessor`. The
+engine tests exercise the same contracts with test processors. Integration tests that need a
+particular device run with the device or its bundle. The metronome belongs to the engine.
 
 ### 6.3 Programs, commands and telemetry
 

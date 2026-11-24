@@ -1,37 +1,43 @@
-//! The demo project "Night Drive" exported through `HexaProcessor` (every instrument is a
-//! hexa with its stored state or "Init"; effects have no processor and pass audio through).
+//! The compiled "Night Drive" project exported with test instruments and feedback delays.
 
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use komponist_engine::compile::{self, NoEnv};
 use komponist_engine::export::{BitDepth, ExportJob, NORMALIZE_TARGET_DB, export};
-use komponist_engine::{Command, MAX_BLOCK, Processor, SlotId, TransportState};
-use komponist_hexa::HexaProcessor;
+use komponist_engine::testing::TestSine;
+use komponist_engine::{Command, MAX_BLOCK, TransportState};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{DeviceRole, Tick, TickRange};
 
 use crate::common::*;
 use crate::export::{dir, files, peak_db, read};
+use crate::feedback_delay::FeedbackDelay;
 
 #[test]
-fn the_demo_project_exports_through_hexa() {
+fn the_demo_project_exports_and_can_be_played_again() {
     let project = demo_project();
-    let program = compile::build(&project, None, &NoEnv);
+    let mut program = compile::build(&project, None, &NoEnv);
     let mut rig = Rig::new(RATE, MAX_BLOCK);
-    for (device, slot) in compile::slot_changes(None, &program).added {
-        let model = project
-            .tracks
+    let mut next_slot = compile::slot_changes(None, &program)
+        .added
+        .iter()
+        .map(|(_, slot)| slot.0)
+        .max()
+        .unwrap()
+        + 1;
+    for track in &mut program.tracks {
+        if let Some(instrument) = track
+            .chain
             .iter()
-            .flat_map(|t| &t.channel.devices)
-            .find(|d| d.id == device)
-            .unwrap();
-        if model.role == DeviceRole::Instrument {
-            let mut synth = HexaProcessor::from_state(model.state.as_deref()).unwrap_or_default();
-            synth.activate(RATE, MAX_BLOCK).unwrap();
-            rig.send(Command::InsertProcessor {
-                slot: SlotId(slot.0),
-                processor: Box::new(synth),
-            });
+            .find(|slot| slot.role == DeviceRole::Instrument)
+        {
+            rig.insert(instrument.slot.0, TestSine::new());
+            rig.insert(next_slot, FeedbackDelay::new(2_048, 0.7));
+            let track = Arc::make_mut(track);
+            track.chain.push(effect(next_slot));
+            track.gain *= 0.35;
+            next_slot += 1;
         }
     }
     rig.set_program(&program);
@@ -79,11 +85,15 @@ fn the_demo_project_exports_through_hexa() {
         "peak {peak} dBFS"
     );
     assert!(report.peak_db < 0.0 && report.peak_db > -30.0, "{report:?}");
-    // Music in the bar, decaying releases in the tail.
+    // Music in the bar, decaying echoes in the tail.
     let rms = |s: &[f32]| (s.iter().map(|x| x * x).sum::<f32>() / s.len() as f32).sqrt();
-    let body = rms(&wav.samples[..2 * bar as usize]);
+    let tail_start = 2 * bar as usize;
+    let body = rms(&wav.samples[..tail_start]);
+    let early = rms(&wav.samples[tail_start..tail_start + 9_600]);
     let end = rms(&wav.samples[wav.samples.len() - 9_600..]);
     assert!(body > 0.05, "rms {body}");
+    // 24-bit dither is on the order of 1e-7 full scale.
+    assert!(early > 1e-5, "early tail rms {early}");
     assert!(end < body / 10.0, "tail rms {end} vs {body}");
 
     // Re-attached, the engine plays the demo again.

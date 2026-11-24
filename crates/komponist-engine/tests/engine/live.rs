@@ -68,7 +68,9 @@ fn midi_reaches_monitored_tracks_whose_filter_accepts_it() {
         midi(20, 2, [0x93, 62, 90]),
         midi(30, 2, [0x92, 64, 80]),
         midi(40, 2, [0x93, 62, 0]),
-        midi(50, 1, [0xb0, 7, 100]),
+        midi(50, 1, [0xb0, 1, 100]),
+        midi(55, 1, [0xe0, 0, 127]),
+        midi(60, 1, [0xd0, 127, 0]),
         // In the second processor call of the block (max block 512).
         midi(600, 1, [0x80, 60, 0]),
     ];
@@ -76,15 +78,17 @@ fn midi_reaches_monitored_tracks_whose_filter_accepts_it() {
     let got: Vec<_> = logs.iter_mut().map(|l| events(&drain(l))).collect();
     // Omni, all ports: everything, with note-ids pairing ons and offs.
     let first = &got[0];
-    assert_eq!(first.len(), 6, "{first:?}");
+    assert_eq!(first.len(), 8, "{first:?}");
     let frames: Vec<u64> = first.iter().map(|e| e.0).collect();
-    assert_eq!(frames, [10, 20, 30, 40, 50, 600]);
+    assert_eq!(frames, [10, 20, 30, 40, 50, 55, 60, 600]);
     assert!(on(60, 100, 0)(&first[0].1));
     assert!(on(62, 90, 3)(&first[1].1));
     assert!(on(64, 80, 2)(&first[2].1));
     assert!(off(62, 3)(&first[3].1));
-    assert_eq!(first[4].1, EventKind::Midi([0xb0, 7, 100]));
-    assert!(off(60, 0)(&first[5].1));
+    assert_eq!(first[4].1, EventKind::Midi([0xb0, 1, 100]));
+    assert_eq!(first[5].1, EventKind::Midi([0xe0, 0, 127]));
+    assert_eq!(first[6].1, EventKind::Midi([0xd0, 127, 0]));
+    assert!(off(60, 0)(&first[7].1));
     // Port 2, channel 4 only.
     assert_eq!(got[1].len(), 2, "{:?}", got[1]);
     assert!(on(62, 90, 3)(&got[1][0].1) && off(62, 3)(&got[1][1].1));

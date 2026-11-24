@@ -1,12 +1,12 @@
-//! volt (WP-95, `komponist_volt`) on the real engine: sequenced and live
+//! Volt (WP-95) on the real engine: sequenced and live
 //! notes, pitch bend, mod wheel and pressure from the live input reach the instrument, and the
 //! output is bit-exact with and without workers (WP-65).
 
-use komponist_builtin::Internal;
+use komponist_device_core::InternalProcessor;
 use komponist_engine::{Command, MidiInEvent, MidiPort};
 use komponist_model::params::ParamId;
 use komponist_model::{Tick, TickRange};
-use komponist_volt::presets::presets;
+use komponist_volt::{SPEC, dsp};
 
 use crate::common::*;
 
@@ -21,17 +21,17 @@ fn rig_with(workers: usize, tracks: u32, monitored: u32, tweak: &[(&str, f64)]) 
     assert_eq!(rig.engine.set_workers(workers, None).threads, workers);
     let mut list = Vec::new();
     for i in 0..tracks {
-        let mut t = track(u64::from(i) + 1, i, crate::bench::material(i));
+        let mut t = track(u64::from(i) + 1, i, crate::material::material(i));
         t.monitor = i == monitored;
         list.push(t);
-        let mut values = Internal::Volt
-            .preset_values(i as usize % presets().len())
+        let mut values = SPEC
+            .preset_values(i as usize % SPEC.presets().len())
             .unwrap();
         for (key, value) in tweak {
-            let wire = Internal::Volt.wire(&ParamId::new(*key)).unwrap();
+            let wire = SPEC.wire(&ParamId::new(*key)).unwrap();
             values[wire as usize] = *value;
         }
-        let mut p = Internal::Volt.processor(&values);
+        let mut p = InternalProcessor::from_dsp(&SPEC, &values, dsp());
         komponist_engine::Processor::activate(&mut p, RATE, 256).unwrap();
         rig.insert(i, p);
     }

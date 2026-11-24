@@ -1,5 +1,5 @@
 //! Parallel track processing (WP-65): the output with worker threads is bit-exact with the
-//! single-threaded engine (realtime and offline, test processors and hexa), chains that share
+//! single-threaded engine (realtime and offline), chains that share
 //! a slot run serially, bridge-style processors are started early (`Processor::begin`) and their
 //! tracks run last, and the pool can be changed and switched off.
 //!
@@ -9,21 +9,16 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-use komponist_builtin::Internal;
 use komponist_engine::testing::{TestGain, TestSine};
 use komponist_engine::{
-    Command, Event, MidiInEvent, MidiPort, ProcessContext, ProcessStatus, Processor,
-    ProcessorError, Program, StereoIo,
+    Command, Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
-use komponist_hexa::{HexaProcessor, preset_patch, presets};
-use komponist_model::{Tick, TickRange, TrackId};
+use komponist_model::{Tick, TickRange};
 
-use crate::bench::material;
 use crate::common::*;
+use crate::material::material;
 
-/// A program and the processors of its slots.
-type Setup = (Program, Vec<(u32, Box<dyn Processor>)>);
-
+use crate::parallel_support::{Setup, assert_bit_exact, play};
 /// Tracks of the test-processor material.
 const TRACKS: u32 = 12;
 
@@ -56,150 +51,6 @@ fn sines() -> Setup {
     (p, processors)
 }
 
-/// 8 hexa tracks with the bench's stress material (presets E-Piano, Strings, Supersaw, Init).
-fn hexas() -> Setup {
-    let names = ["E-Piano", "Strings", "Supersaw", "Init"];
-    let mut processors: Vec<(u32, Box<dyn Processor>)> = Vec::new();
-    let tracks = (0..8)
-        .map(|i| {
-            let preset = presets().find(|x| x.name == names[i as usize % 4]).unwrap();
-            let mut p = HexaProcessor::new(preset_patch(preset.index).unwrap());
-            p.activate(RATE, 256).unwrap();
-            processors.push((i, Box::new(p)));
-            track(u64::from(i) + 1, i, material(i))
-        })
-        .collect();
-    let mut p = program(120.0, tracks);
-    p.loop_range = TickRange::new(Tick::ZERO, Tick(4 * BAR));
-    p.loop_on = true;
-    (p, processors)
-}
-
-/// 8 tracks, each a `TestSine` and five internal effects in a chain (EQ with active bands,
-/// tempo-synced Delay, Hall, the compressor `presse` with lookahead, SC-HP, partial link and mix,
-/// lookahead Limiter; WP-90, WP-93), so the transport tempo, the latencies and the effects'
-/// control-rate counters all go through the worker pool.
-fn effects() -> Setup {
-    let mut tracks = Vec::new();
-    let mut processors: Vec<(u32, Box<dyn Processor>)> = Vec::new();
-    for i in 0..8u32 {
-        let mut t = track(u64::from(i) + 1, i, material(i));
-        let mut eq = Internal::Eq.defaults();
-        eq[Internal::Eq.wire(&"b1_type".into()).unwrap() as usize] = 0.0;
-        eq[Internal::Eq.wire(&"b3_gain".into()).unwrap() as usize] = 6.0 - f64::from(i);
-        let mut delay = Internal::Delay.defaults();
-        delay[Internal::Delay.wire(&"sync".into()).unwrap() as usize] = 1.0;
-        delay[Internal::Delay.wire(&"note".into()).unwrap() as usize] = f64::from(2 + i % 6);
-        delay[Internal::Delay.wire(&"mix".into()).unwrap() as usize] = 0.5;
-        let mut limiter = Internal::Limiter.defaults();
-        limiter[Internal::Limiter.wire(&"gain".into()).unwrap() as usize] = 12.0;
-        let mut presse = Internal::Presse.defaults();
-        for (key, value) in [
-            ("threshold", -30.0),
-            ("ratio", 6.0),
-            ("detector", f64::from(i % 2)),
-            ("link", 0.5),
-            ("lookahead", 1.0),
-            ("sc_hpf", 100.0),
-            ("mix", 0.8),
-        ] {
-            presse[Internal::Presse.wire(&key.into()).unwrap() as usize] = value;
-        }
-        let chain = [
-            (Internal::Eq, eq),
-            (Internal::Delay, delay),
-            (Internal::Hall, Internal::Hall.defaults()),
-            (Internal::Presse, presse),
-            (Internal::Limiter, limiter),
-        ];
-        for (k, (kind, values)) in chain.into_iter().enumerate() {
-            let slot = 100 + i * 5 + k as u32;
-            let mut p = kind.processor(&values);
-            p.activate(RATE, 256).unwrap();
-            t.chain.push(effect(slot));
-            processors.push((slot, Box::new(p)));
-        }
-        // All tracks have the same latency (the lookaheads): nothing to compensate.
-        t.pdc_delay = 0;
-        tracks.push(t);
-        processors.push((i, Box::new(TestSine::new())));
-    }
-    let mut p = program(127.0, tracks);
-    p.loop_range = TickRange::new(Tick::ZERO, Tick(2 * BAR));
-    p.loop_on = true;
-    (p, processors)
-}
-
-/// Plays `make`'s program with `workers` worker threads: `frames` frames in calls of varying
-/// length (with live MIDI, a locate and a solo change on the way) and then an offline render; returns
-/// the output.
-fn play(workers: usize, frames: usize, make: fn() -> Setup) -> (Vec<f32>, Vec<f32>) {
-    let mut rig = Rig::new(RATE, 256);
-    let status = rig.engine.set_workers(workers, None);
-    assert_eq!(status.threads, workers);
-    assert_eq!(rig.engine.workers(), workers);
-    let (program, processors) = make();
-    for (slot, processor) in processors {
-        rig.send(Command::InsertProcessor {
-            slot: komponist_engine::SlotId(slot),
-            processor,
-        });
-    }
-    rig.set_program(&program);
-    rig.send(Command::Play);
-    let blocks = [256, 256, 100, 512, 37, 2048, 3000];
-    let mut done = 0;
-    let mut call = 0;
-    while done < frames {
-        let n = blocks[call % blocks.len()].min(frames - done);
-        let midi = [MidiInEvent {
-            frame: (n / 2) as u32,
-            port: MidiPort(0),
-            data: [0x90, 60 + (call % 12) as u8, 100],
-        }];
-        rig.process_with(n, &midi, 0);
-        match call {
-            7 => rig.send(Command::Locate(Tick(BAR / 3))),
-            11 => rig.send(Command::SetTrackSolo {
-                track: TrackId(4),
-                solo: true,
-            }),
-            15 => rig.send(Command::SetTrackSolo {
-                track: TrackId(4),
-                solo: false,
-            }),
-            _ => {}
-        }
-        done += n;
-        call += 1;
-    }
-    rig.render(frames / 2, 333);
-    rig.send(Command::Stop);
-    rig.process(1024, 256);
-    // Not vacuous: the workers took part.
-    let stats = rig.engine.worker_stats();
-    assert_eq!(
-        stats.worker_jobs() > 0,
-        workers > 0,
-        "{}",
-        stats.worker_jobs()
-    );
-    (rig.l, rig.r)
-}
-
-fn assert_bit_exact(a: &(Vec<f32>, Vec<f32>), b: &(Vec<f32>, Vec<f32>), what: &str) {
-    assert_eq!(a.0.len(), b.0.len(), "{what}: length");
-    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
-    for (channel, (x, y)) in [(&a.0, &b.0), (&a.1, &b.1)].into_iter().enumerate() {
-        let (x, y) = (bits(x), bits(y));
-        if let Some(i) = x.iter().zip(&y).position(|(p, q)| p != q) {
-            panic!("{what}: channel {channel} differs first at frame {i}");
-        }
-    }
-    // Not vacuous: the material sounds.
-    assert!(a.0.iter().any(|x| x.abs() > 0.01), "{what}: silent");
-}
-
 #[test]
 fn test_processors_are_bit_exact_with_workers() {
     let frames = 3 * 48_000;
@@ -208,24 +59,6 @@ fn test_processors_are_bit_exact_with_workers() {
         let parallel = play(workers, frames, sines);
         assert_bit_exact(&single, &parallel, &format!("{workers} workers"));
     }
-}
-
-#[test]
-fn internal_effects_are_bit_exact_with_workers() {
-    let frames = 2 * 48_000;
-    let single = play(0, frames, effects);
-    for workers in [2, 4] {
-        let parallel = play(workers, frames, effects);
-        assert_bit_exact(&single, &parallel, &format!("effects, {workers} workers"));
-    }
-}
-
-#[test]
-fn hexa_is_bit_exact_with_workers() {
-    let frames = 48_000;
-    let single = play(0, frames, hexas);
-    let parallel = play(3, frames, hexas);
-    assert_bit_exact(&single, &parallel, "hexa, 3 workers");
 }
 
 /// Two tracks whose chains share an effect slot cannot run in parallel: the engine runs them
