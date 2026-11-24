@@ -77,6 +77,7 @@ impl NativeClapLayout for NativeGain {
             labels: labels("Display", "Anzeige"),
         });
         Some(PanelV2 {
+            parameter_display: Default::default(),
             panel,
             graph_labels: [(
                 (1, 0),

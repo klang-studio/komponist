@@ -218,11 +218,7 @@ pub(super) fn set(out: &mut Vec<Action>, card: &Card, p: &Param, plain: f64) {
         out.push(Action::Plugin(PluginAction::SetParam {
             device: card.device,
             id: p.wire,
-            value: if card.bundled_editor {
-                komponist_device_core::pinned_clap_state::to_clap(&p.info, plain)
-            } else {
-                plain
-            },
+            value: card.wire_value(p, plain),
         }));
     }
 }
@@ -2280,12 +2276,21 @@ mod tests {
         card: Card,
         size: egui::Vec2,
     ) -> egui_kittest::Harness<'static, (Card, Vec<Action>)> {
+        localized_graph_harness(card, size, Lang::De)
+    }
+
+    fn localized_graph_harness(
+        card: Card,
+        size: egui::Vec2,
+        lang: Lang,
+    ) -> egui_kittest::Harness<'static, (Card, Vec<Action>)> {
         let mut h = komponist_ui::snapshot::builder(1.0)
             .with_size(size)
             // Two clicks must fall within egui's double-click time.
             .with_step_dt(1.0 / 60.0)
             .build_ui_state(
-                |ui, (card, out): &mut (Card, Vec<Action>)| {
+                move |ui, (card, out): &mut (Card, Vec<Action>)| {
+                    komponist_ui::set_lang(ui.ctx(), lang);
                     let palette = TrackPalette::new(150);
                     let page = card.current_page().unwrap().clone();
                     let origin = ui.min_rect().min;
@@ -2306,6 +2311,140 @@ mod tests {
             );
         h.run();
         h
+    }
+
+    #[test]
+    fn an_authored_xy_panel_keeps_physical_axes_and_normalized_actions() {
+        use komponist_ipc::control::ParamInfo as WireInfo;
+        use komponist_ipc::native_layout::NativeLayout;
+        use komponist_model::params::ValueTexts;
+        use serde_json::json;
+        use std::sync::Arc;
+
+        let label =
+            |get: fn(Lang) -> &'static str| json!({"de": get(Lang::De), "en": get(Lang::En)});
+        let native = Arc::new(NativeLayout::parse(&serde_json::to_vec(&json!({
+            "schema_version": 2, "default_locale": "en", "locales": ["en", "de"],
+            "required_capabilities": ["parameter-display"],
+            "parameter_display": {
+                "42": {"min": 1, "max": 2000, "default": 375, "scale": "logarithmic", "unit": "milliseconds"},
+                "43": {"min": 0, "max": 0.95, "default": 0.42, "scale": "linear", "unit": "percent"}
+            },
+            "pages": [{"key": "main", "labels": {"en": "Main"}, "columns": 4, "cells": [
+                {"widget": "graph", "col": 0, "row": 0, "cols": 2, "rows": 2, "graph": {
+                    "kind": "xy", "hide_title": true, "name": label(Lang::ui_graph_xy),
+                    "description": label(Lang::param_feedback), "slots": {"x": 42, "y": 43}
+                }},
+                {"widget": "knob", "col": 2, "row": 0, "cols": 1, "rows": 1,
+                 "param_id": 42, "labels": label(Lang::param_time)},
+                {"widget": "knob", "col": 3, "row": 0, "cols": 1, "rows": 1,
+                 "param_id": 43, "labels": label(Lang::param_feedback)}
+            ]}]
+        })).unwrap()).unwrap());
+
+        for lang in Lang::ALL {
+            let mut legacy = card();
+            legacy.bundled_editor = true;
+            legacy.params = [
+                (
+                    42,
+                    lang.param_time(),
+                    ParamKind::scaled(1.0, 2000.0, Scale::Log),
+                    375.0,
+                    Unit::Ms,
+                ),
+                (
+                    43,
+                    lang.param_feedback(),
+                    ParamKind::lin(0.0, 0.95),
+                    0.42,
+                    Unit::Percent,
+                ),
+            ]
+            .into_iter()
+            .map(|(wire, name, kind, value, unit)| {
+                let mut p = param(wire, name, kind, value, value);
+                p.info = p.info.unit(unit).texts(ValueTexts {
+                    on: lang.value_on(),
+                    off: lang.value_off(),
+                    percent: lang.value_percent(),
+                });
+                p.text = p.info.format(value);
+                p
+            })
+            .collect();
+            legacy.layout = DeviceLayout::single(Page {
+                name: String::new(),
+                cols: 4,
+                cells: vec![
+                    Cell::graph(
+                        0,
+                        0,
+                        2,
+                        2,
+                        GraphBinding::new(GraphConfig::Xy)
+                            .bind("x", "p42")
+                            .bind("y", "p43"),
+                    ),
+                    Cell::knob(2, 0, ParamId::new("p42")),
+                    Cell::knob(3, 0, ParamId::new("p43")),
+                ],
+                dividers: Vec::new(),
+            });
+            let mut authored = legacy.clone();
+            authored.bundled_editor = false;
+            authored.layout = model::native_card_layout(&native, lang);
+            authored.native_layout = Some(Arc::clone(&native));
+            let wires: Vec<_> = legacy
+                .params
+                .iter()
+                .map(|p| WireInfo {
+                    id: p.wire,
+                    name: "Wire label".into(),
+                    module: String::new(),
+                    min: 0.0,
+                    max: 1.0,
+                    default: f64::from(p.info.default_normalized() as f32),
+                    step_count: 0,
+                    flags: komponist_ipc::control::param_flags::AUTOMATABLE,
+                })
+                .collect();
+            assert!(native.validate_params(&wires).is_ok());
+            authored.params = wires
+                .iter()
+                .map(|wire| model::native_param(lang, &native, wire, None))
+                .collect();
+            let time = &authored.params[0];
+            assert_eq!(time.project_id(false), ParamId::plugin(42));
+            assert!((time.value_at_normalized(false, 0.5) - 2000.0_f64.sqrt()).abs() < 1e-9);
+            assert_eq!(time.text_at(time.value), "375 ms");
+            assert_eq!(
+                authored.params[1].text,
+                format!("42{}", lang.value_percent())
+            );
+
+            let test = |card| localized_graph_harness(card, egui::vec2(310.0, 240.0), lang);
+            let mut old = test(legacy);
+            let mut new = test(authored);
+            let legacy_image = old.render().unwrap();
+            let native_image = new.render().unwrap();
+            assert!(
+                legacy_image == native_image,
+                "{} XY rendering differs",
+                lang.code()
+            );
+            let axis = format!("{} {}", lang.ui_graph_xy(), lang.param_time());
+            for harness in [&mut old, &mut new] {
+                harness.get_by_role_and_label(Role::Group, lang.ui_graph_xy());
+                let slider = harness.get_by_role_and_label(Role::Slider, &axis);
+                assert_eq!(slider.value().as_deref(), Some("375 ms"));
+                slider.increment_accesskit();
+                harness.run();
+            }
+            let legacy_actions = set_params(&old);
+            assert!(!legacy_actions.is_empty());
+            assert_eq!(legacy_actions, set_params(&new));
+        }
     }
 
     #[test]

@@ -147,6 +147,7 @@ pub(super) fn panel() -> PanelV2 {
         trim_unit: None,
     };
     PanelV2 {
+        parameter_display: Default::default(),
         panel,
         graph_labels: [((0, 0), waveform), ((1, 0), envelope)].into(),
         canvases: [(

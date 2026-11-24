@@ -82,6 +82,25 @@
         "pattern": "^[a-z][a-z0-9._-]{0,31}(?![\\s\\S])"
       }
     },
+    "parameter_display": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 256,
+      "propertyNames": {
+        "pattern": "^(0|[1-9][0-9]{0,9})(?![\\s\\S])"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["min", "max", "default", "scale", "unit"],
+        "properties": {
+          "min": { "type": "number" },
+          "max": { "type": "number" },
+          "default": { "type": "number" },
+          "scale": { "enum": ["linear", "logarithmic"] },
+          "unit": { "enum": ["none", "hertz", "milliseconds", "percent"] }
+        }
+      }
+    },
     "metadata": {
       "type": "object",
       "required": [
@@ -113,6 +132,13 @@
       },
       "else": {
         "properties": { "pages": { "maxItems": 4 } }
+      }
+    },
+    {
+      "if": { "required": ["parameter_display"] },
+      "then": {
+        "required": ["required_capabilities"],
+        "properties": { "required_capabilities": { "contains": { "const": "parameter-display" } } }
       }
     }
   ],
