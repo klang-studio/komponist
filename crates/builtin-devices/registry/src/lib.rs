@@ -11,9 +11,11 @@ use komponist_sampler::SamplerHandle;
 #[cfg(test)]
 mod i18n;
 mod internal;
+mod legacy_params;
 pub mod presets;
 
 pub use internal::Internal;
+pub use legacy_params::{LegacyParameter, LegacyParameters};
 
 /// Which built-in a catalog entry or project device refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

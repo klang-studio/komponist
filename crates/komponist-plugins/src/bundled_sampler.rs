@@ -1,10 +1,13 @@
 //! Project-relative asset handling for the two verified bundled samplers. This adapter
 //! uses their pinned nice-plug state encoding and remains outside the CLAP audio path.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use komponist_builtin::Internal;
-use komponist_model::PluginRef;
+use komponist_model::params::ParamInfo;
+use komponist_model::project::SavedPluginState;
+use komponist_model::{Device, PluginRef};
 use komponist_sampler::links::{self, Collector, SampleLink};
 use komponist_sampler::settings::Settings;
 use komponist_sampler::{PADS, PadField};
@@ -172,6 +175,74 @@ pub fn edit_link(
     })
 }
 
+fn reset_trim_parameters(
+    kind: Internal,
+    pad: usize,
+    attaching: bool,
+    relinking: bool,
+) -> impl Iterator<Item = &'static ParamInfo> {
+    let general = pad_count(kind) == 1;
+    kind.params()
+        .iter()
+        .enumerate()
+        .filter_map(move |(wire, parameter)| {
+            let trim = if general {
+                matches!(parameter.id.as_str(), "start" | "end")
+            } else {
+                [PadField::Start.wire(pad), PadField::End.wire(pad)].contains(&wire)
+            };
+            (attaching && (!general || !relinking) && trim).then_some(parameter)
+        })
+}
+
+fn remove_reset_trim_bases(
+    parameter_bases: &mut BTreeMap<u32, f64>,
+    kind: Internal,
+    pad: usize,
+    attaching: bool,
+    relinking: bool,
+    author_ids: Option<&BTreeMap<String, u32>>,
+) -> Option<()> {
+    if !parameter_bases.is_empty() {
+        for parameter in reset_trim_parameters(kind, pad, attaching, relinking) {
+            parameter_bases.remove(author_ids?.get(parameter.id.as_str())?);
+        }
+    }
+    Some(())
+}
+
+/// Edit a legacy embedded file link and discard only the bases replaced by the trim reset.
+pub fn edit_saved_link(
+    device: &Device,
+    pad: usize,
+    link: Option<&SampleLink>,
+    relinking: bool,
+    author_ids: Option<&BTreeMap<String, u32>>,
+) -> Option<SavedPluginState> {
+    let kind = kind(&device.plugin)?;
+    let bytes = edit_link(
+        kind,
+        &device.plugin.version,
+        device.state.as_deref(),
+        pad,
+        link,
+        relinking,
+    )?;
+    let mut parameter_bases = device.parameter_bases.clone();
+    remove_reset_trim_bases(
+        &mut parameter_bases,
+        kind,
+        pad,
+        link.is_some(),
+        relinking,
+        author_ids,
+    )?;
+    Some(SavedPluginState {
+        bytes: bytes.into(),
+        parameter_bases,
+    })
+}
+
 fn reset_region(
     wrapper: &mut Value,
     assets: Vec<u8>,
@@ -181,20 +252,14 @@ fn reset_region(
     relinking: bool,
 ) -> Option<Vec<u8>> {
     let general = pad_count(kind) == 1;
-    if attaching && (!general || !relinking) {
+    let mut trim = reset_trim_parameters(kind, pad, attaching, relinking).peekable();
+    if trim.peek().is_some() {
         let params = wrapper.get_mut("params")?.as_object_mut()?;
-        for (wire, parameter) in kind.params().iter().enumerate() {
-            let region = if general {
-                matches!(parameter.id.as_str(), "start" | "end")
-            } else {
-                [PadField::Start.wire(pad), PadField::End.wire(pad)].contains(&wire)
-            };
-            if region {
-                params.insert(
-                    parameter.id.as_str().into(),
-                    pinned_clap_state::parameter(parameter, parameter.default).0,
-                );
-            }
+        for parameter in trim {
+            params.insert(
+                parameter.id.as_str().into(),
+                pinned_clap_state::parameter(parameter, parameter.default).0,
+            );
         }
     }
     Some(if general && !relinking {
@@ -207,25 +272,34 @@ fn reset_region(
 /// Prepare the bundled sampler's stored trim and slice state for a user file edit.
 /// The file link itself is stored in the project and is synced independently by the host.
 pub(crate) fn edit_native_regions(
-    plugin: &PluginRef,
-    state: Option<&[u8]>,
+    device: &Device,
     changes: &[crate::AssetEdit],
-) -> Option<Vec<u8>> {
-    let kind = kind(plugin)?;
+    author_ids: Option<&BTreeMap<String, u32>>,
+) -> Option<SavedPluginState> {
+    let kind = kind(&device.plugin)?;
     let initial;
-    let state = if let Some(state) = state {
+    let state = if let Some(state) = device.state.as_deref() {
         state
     } else {
-        initial = pinned_clap_state::encode(&plugin.version, Map::new(), Map::new());
+        initial = pinned_clap_state::encode(&device.plugin.version, Map::new(), Map::new());
         &initial
     };
-    edit_state(state, |wrapper, assets| {
+    let mut parameter_bases = device.parameter_bases.clone();
+    let bytes = edit_state(state, |wrapper, assets| {
         let mut updated = assets.as_bytes().to_vec();
         for change in changes {
             let pad = change.slot as usize;
             if pad >= pad_count(kind) {
                 return None;
             }
+            remove_reset_trim_bases(
+                &mut parameter_bases,
+                kind,
+                pad,
+                change.attaching,
+                change.relinking,
+                author_ids,
+            )?;
             updated = reset_region(
                 wrapper,
                 updated,
@@ -236,6 +310,10 @@ pub(crate) fn edit_native_regions(
             )?;
         }
         String::from_utf8(updated).ok()
+    })?;
+    Some(SavedPluginState {
+        bytes: bytes.into(),
+        parameter_bases,
     })
 }
 
@@ -356,6 +434,59 @@ mod tests {
             komponist_general_sampler::read_settings(Some(data.as_bytes())),
             Settings::default()
         );
+    }
+
+    #[test]
+    fn native_sample_replacement_clears_only_the_reset_trim_bases() {
+        let device = Device {
+            id: komponist_model::DeviceId(1),
+            role: komponist_model::DeviceRole::Instrument,
+            plugin: PluginRef {
+                format: komponist_model::PluginFormat::Clap,
+                id: "org.klang-studio.komponist.general-sampler".into(),
+                name: "General Sampler".into(),
+                vendor: String::new(),
+                version: "0.1.0".into(),
+                module: crate::catalog::bundled_module("general-sampler.clap"),
+            },
+            bypass: false,
+            state: None,
+            parameter_bases: [(7, 0.25), (9, 0.75), (31, 0.4)].into(),
+            asset_links: Default::default(),
+            sidechain: None,
+        };
+        let ids = [("start".to_owned(), 7), ("end".to_owned(), 9)].into();
+        let link = SampleLink::new(std::path::Path::new("/samples/tone.wav"), None);
+        for relinking in [false, true] {
+            let native = edit_native_regions(
+                &device,
+                &[crate::AssetEdit {
+                    slot: 0,
+                    attaching: true,
+                    relinking,
+                }],
+                Some(&ids),
+            )
+            .unwrap();
+            let embedded = edit_saved_link(&device, 0, Some(&link), relinking, Some(&ids)).unwrap();
+            for after in [native, embedded] {
+                if relinking {
+                    assert_eq!(after.parameter_bases, device.parameter_bases);
+                } else {
+                    assert_eq!(after.parameter_bases, [(31, 0.4)].into());
+                    let state = decode(&after.bytes).unwrap();
+                    assert_eq!(state["params"]["start"], json!({"f32": 0.0}));
+                    assert_eq!(state["params"]["end"], json!({"f32": 1.0}));
+                }
+            }
+        }
+        let linked = edit_saved_link(&device, 0, Some(&link), true, Some(&ids)).unwrap();
+        let device = Device {
+            state: Some(linked.bytes),
+            ..device
+        };
+        let cleared = edit_saved_link(&device, 0, None, false, None).unwrap();
+        assert_eq!(cleared.parameter_bases, device.parameter_bases);
     }
 
     #[test]

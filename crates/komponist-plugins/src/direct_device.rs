@@ -8,9 +8,11 @@ use komponist_builtin::BuiltinKind;
 use komponist_hosting::host_loop::notification_bits;
 use komponist_hosting::{HostedPlugin, HostingError};
 use komponist_ipc::clap_presets::PresetLoad;
+use komponist_ipc::control::{MAX_STATE_PARAMETER_BASES, param_flags};
 use komponist_ipc::native_layout::NativeLayout;
 use komponist_ipc::waveform_markers::{EditResult, EditStatus, Request};
 use komponist_ipc::{LogLevel, NoteName, ParamInfo, ParamValue, RenderMode};
+use komponist_model::project::SavedPluginState;
 use komponist_model::{DeviceId, DeviceRole};
 
 use crate::bundled_clap::VerifiedClap;
@@ -41,7 +43,7 @@ pub(crate) struct DirectDevice {
     pub(crate) layout: Option<Arc<NativeLayout>>,
     pub(crate) values: BTreeMap<u32, ParamValue>,
     pub(crate) base: BTreeMap<u32, f64>,
-    last_state: Option<Arc<[u8]>>,
+    last_state: Option<SavedPluginState>,
     pub(crate) state_warning: Option<String>,
     pub(crate) note_names: Vec<NoteName>,
     pub(crate) sidechain: bool,
@@ -50,7 +52,7 @@ pub(crate) struct DirectDevice {
     pending_writes: BTreeMap<u32, f64>,
     /// Persistent edits that still need to reach the plugin before a snapshot can replace state.
     unconfirmed_writes: BTreeSet<u32>,
-    pending_restore: Option<Arc<[u8]>>,
+    pending_restore: Option<SavedPluginState>,
     pending_marker_edit: Option<PendingMarkerEdit>,
     pending_preset: Option<(PresetLoad, Instant)>,
     /// Edits made after the request must reach the replacement control epoch.
@@ -117,6 +119,49 @@ impl Inventory {
     }
 }
 
+fn load_saved_state(
+    plugin: &mut dyn HostedPlugin,
+    state: &SavedPluginState,
+) -> Result<(), HostingError> {
+    if state.parameter_bases.len() > MAX_STATE_PARAMETER_BASES
+        || state
+            .parameter_bases
+            .values()
+            .any(|value| !value.is_finite())
+    {
+        return Err(HostingError::State("invalid host parameter state".into()));
+    }
+    if state.parameter_bases.is_empty() {
+        return plugin.load_state(&state.bytes);
+    }
+    let excluded = param_flags::HIDDEN | param_flags::READ_ONLY | param_flags::BYPASS;
+    let corrections: Vec<_> = plugin
+        .params()
+        .iter()
+        .filter_map(|info| {
+            let value = *state.parameter_bases.get(&info.id)?;
+            (info.flags & excluded == 0
+                && info.min.is_finite()
+                && info.max.is_finite()
+                && info.min <= info.max)
+                .then(|| (info.id, value.clamp(info.min, info.max)))
+        })
+        .collect();
+    if corrections.is_empty() {
+        return plugin.load_state(&state.bytes);
+    }
+
+    // Authenticated bundles use a known state codec. Apply the bases to a copy before loading
+    // it under the control guard, so even an immediate snapshot sees the restored values.
+    let bytes = bundled_state::kind_for_id(&plugin.descriptor().id)
+        .zip(plugin.native_layout())
+        .and_then(|(kind, (_, layout))| {
+            ParameterState { kind, layout }.restore_param_bases(&state.bytes, corrections)
+        })
+        .ok_or_else(|| HostingError::State("could not apply bundled parameter bases".into()))?;
+    plugin.load_state(&bytes)
+}
+
 impl DirectDevice {
     pub(crate) fn has_clap_presets_from(&self, path: &std::path::Path) -> bool {
         self.status == DeviceStatus::Ok && self.session.is_from_bundle(path)
@@ -130,7 +175,7 @@ impl DirectDevice {
         proof: VerifiedClap,
         role: DeviceRole,
         setup: ProcessorSetup,
-        state: Option<Arc<[u8]>>,
+        state: Option<SavedPluginState>,
         debounce: Duration,
     ) -> Result<(Self, DirectEngine), HostingError> {
         let bundled_kind = bundled_state::kind_for_id(proof.plugin_id());
@@ -138,8 +183,7 @@ impl DirectDevice {
         let (warning, inventory, sidechain) = host
             .try_control(|plugin| {
                 let warning = state.as_ref().and_then(|state| {
-                    plugin
-                        .load_state(state)
+                    load_saved_state(plugin, state)
                         .err()
                         .map(|error| error.to_string())
                 });
@@ -358,7 +402,11 @@ impl DirectDevice {
             self.user_edit = false;
             self.snapshot_due = None;
         }
-        let result = WaveformMarkerEditResult::from_wire(result, &mut self.last_state);
+        let mut last_state = None;
+        let result = WaveformMarkerEditResult::from_wire(result, &mut last_state);
+        if let Some(state) = last_state {
+            self.last_state = Some(state.into());
+        }
         events.push(PluginManagerEvent::WaveformMarkersEdited {
             device,
             slot,
@@ -415,7 +463,10 @@ impl DirectDevice {
         if self.snapshot_due.is_some_and(|due| Instant::now() >= due)
             && let Some(state) = self.capture()
         {
-            events.push(PluginManagerEvent::StateSnapshot { device: id, state });
+            events.push(PluginManagerEvent::StateSnapshot {
+                device: id,
+                state: state.into(),
+            });
         }
     }
 
@@ -463,12 +514,13 @@ impl DirectDevice {
                 latency,
             });
         }
-        if let Some(state) = self.pending_restore.clone()
-            && let Some((result, inventory)) = self.session.restore(&state, Inventory::read)
+        if let Some(state) = self.pending_restore.as_ref()
+            && let Some((result, inventory)) = self
+                .session
+                .restore(|plugin| load_saved_state(plugin, state), Inventory::read)
         {
-            self.pending_restore = None;
+            self.last_state = self.pending_restore.take();
             self.assets.finish_restore();
-            self.last_state = Some(state);
             self.state_warning = result.err().map(|error| error.to_string());
             self.report_warning(id, events);
             self.accept_inventory(inventory, true);
@@ -624,7 +676,7 @@ impl DirectDevice {
         match result {
             Ok(((before, after), inventory)) => {
                 let state: Arc<[u8]> = after.into();
-                self.last_state = Some(state.clone());
+                self.last_state = Some(state.clone().into());
                 self.state_warning = None;
                 self.unconfirmed_writes.clear();
                 self.released_automation.clear();
@@ -763,7 +815,7 @@ impl DirectDevice {
             .is_some_and(|value| value.ptr_eq(&Arc::downgrade(state)))
     }
 
-    pub(crate) fn set_state(&mut self, state: Arc<[u8]>) -> Option<u32> {
+    pub(crate) fn set_state(&mut self, state: SavedPluginState) -> Option<u32> {
         let canceled = self.invalidate_waveform_markers();
         self.assets.begin_restore();
         self.pending_preset = None;
@@ -777,7 +829,7 @@ impl DirectDevice {
         canceled
     }
 
-    pub(crate) fn state_for_reload(&self) -> Option<Arc<[u8]>> {
+    pub(crate) fn state_for_reload(&self) -> Option<SavedPluginState> {
         self.pending_restore
             .clone()
             .or_else(|| self.last_state.clone())
@@ -795,7 +847,7 @@ impl DirectDevice {
             && self
                 .last_state
                 .as_ref()
-                .is_some_and(|last| Arc::ptr_eq(last, state))
+                .is_some_and(|last| Arc::ptr_eq(&last.bytes, state))
     }
 
     pub(crate) fn needs_snapshot(&self) -> bool {
@@ -875,7 +927,7 @@ impl DirectDevice {
             (!self.user_edit && !self.macro_params.is_empty()).then(|| Arc::downgrade(&captured));
         self.user_edit = false;
         self.snapshot_due = None;
-        self.last_state = Some(captured.clone());
+        self.last_state = Some(captured.clone().into());
         Some(captured)
     }
 }

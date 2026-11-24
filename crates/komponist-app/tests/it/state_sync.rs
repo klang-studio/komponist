@@ -389,7 +389,7 @@ fn undo_and_redo_of_a_bridged_plugins_state_reach_the_plugin() {
         wait(sync, "a snapshot", |_, events| {
             for e in events {
                 if let PluginManagerEvent::StateSnapshot { state: s, .. } = e {
-                    state = Some(Arc::clone(s));
+                    state = Some(Arc::clone(&s.bytes));
                 }
             }
             state.is_some()

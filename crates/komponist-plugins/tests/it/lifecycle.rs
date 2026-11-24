@@ -11,6 +11,7 @@ use common::*;
 use komponist_engine::Command;
 use komponist_ipc::GuiTarget;
 use komponist_ipc::LogLevel;
+use komponist_model::project::SavedPluginState;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, TrackId};
 use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{
@@ -40,7 +41,7 @@ fn run_until(rig: &mut Rig, what: &str, mut condition: impl FnMut(&Rig) -> bool)
 }
 
 /// The next `StateSnapshot` of `device` the rig sees.
-fn next_snapshot(rig: &mut Rig, device: u64) -> Arc<[u8]> {
+fn next_snapshot(rig: &mut Rig, device: u64) -> SavedPluginState {
     let from = rig.events.len();
     let mut found = None;
     run_until(rig, "a state snapshot", |rig| {
@@ -82,7 +83,7 @@ fn restore_updates_parameter_bases_without_overwriting_a_later_edit() {
     rig.manager.set_param(device_id, gain, 0.625);
     assert_eq!(rig.manager.param_base(device_id, gain), Some(0.625));
     assert_ne!(next_snapshot(&mut rig, 10), state);
-    assert!(rig.manager.set_state(device_id, &state));
+    assert!(rig.manager.restore_saved_state(device_id, &state));
     rig.manager.request_state(device_id);
     assert_eq!(next_snapshot(&mut rig, 10), state);
     run_until(&mut rig, "the restored gain base", |rig| {
@@ -90,7 +91,7 @@ fn restore_updates_parameter_bases_without_overwriting_a_later_edit() {
     });
 
     let from = rig.events.len();
-    assert!(rig.manager.set_state(device_id, &state));
+    assert!(rig.manager.restore_saved_state(device_id, &state));
     let invalid_state = Arc::from(&b"not a state of kp-test-synth"[..]);
     assert!(rig.manager.set_state(device_id, &invalid_state));
     // The engine cannot safely deliver this edit before both earlier control requests.
@@ -108,12 +109,85 @@ fn restore_updates_parameter_bases_without_overwriting_a_later_edit() {
     // Restore the child's newly captured state after changing the value, so the assertion
     // observes the actual child value rather than the manager's optimistic cache.
     rig.manager.set_param(device_id, gain, 0.625);
-    assert!(rig.manager.set_state(device_id, &edited_state));
+    assert!(rig.manager.restore_saved_state(device_id, &edited_state));
     run_until(
         &mut rig,
         "the later edit recovered from the child snapshot",
         |rig| rig.manager.param_base(device_id, gain) == Some(0.5),
     );
+}
+
+#[test]
+fn loading_bridge_restores_the_latest_parameter_bases() {
+    let dir = scratch("loading-state-bases");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let gain = param_id(&rig.manager, 10, "Gain");
+    let original = rig.manager.snapshot_states(PATIENCE).pop().unwrap().1;
+
+    rig.reload(10);
+    assert_eq!(rig.manager.status(device_id), DeviceStatus::Loading);
+    for value in [0.625, 0.5] {
+        let state = SavedPluginState {
+            bytes: original.bytes.clone(),
+            parameter_bases: [(gain, value)].into(),
+        };
+        assert!(rig.manager.restore_saved_state(device_id, &state));
+    }
+    rig.wait_status(10, DeviceStatus::Ok);
+    assert_eq!(rig.manager.param_base(device_id, gain), Some(0.5));
+    rig.render(2 * BLOCK);
+    let applied = rig.manager.snapshot_states(PATIENCE).pop().unwrap().1;
+    assert_ne!(applied.bytes, original.bytes);
+    assert!(applied.parameter_bases.is_empty());
+
+    rig.reload(10);
+    let bad = Arc::from(&b"invalid CLAP state"[..]);
+    assert!(rig.manager.set_state(device_id, &bad));
+    rig.wait_status(10, DeviceStatus::Ok);
+    assert!(rig.manager.state_warning(device_id).is_some());
+    assert!(rig.manager.snapshot_states(PATIENCE).is_empty());
+}
+
+#[test]
+fn snapshots_wait_for_restored_parameter_bases_to_reach_audio() {
+    let dir = scratch("snapshot-after-state-overlay");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let gain = param_id(&rig.manager, 10, "Gain");
+    let (_, original) = rig.manager.snapshot_states(PATIENCE).pop().unwrap();
+    let restored = SavedPluginState {
+        bytes: original.bytes.clone(),
+        parameter_bases: [(gain, 0.5)].into(),
+    };
+    assert!(rig.manager.restore_saved_state(device_id, &restored));
+
+    // Poll the control channel without running audio. The reply updates the host's base
+    // cache even though the processor has not received it.
+    let deadline = Instant::now() + PATIENCE;
+    let applied = PluginManagerEvent::StateApplied { device: device_id };
+    while !rig.events.contains(&applied) {
+        assert!(Instant::now() < deadline, "restore was not acknowledged");
+        rig.poll();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(rig.manager.param_base(device_id, gain), Some(0.5));
+    assert!(rig.manager.snapshot_states(PATIENCE).is_empty());
+
+    rig.render(2 * BLOCK);
+    let (_, captured) = rig.manager.snapshot_states(PATIENCE).pop().unwrap();
+    assert_ne!(captured.bytes, original.bytes);
+    assert!(captured.parameter_bases.is_empty());
 }
 
 #[test]
@@ -152,21 +226,15 @@ fn macro_snapshot_preserves_an_independent_plugin_edit() {
     rig.manager.preview_param(device_id, gain, preview);
     assert_eq!(rig.manager.param_base(device_id, gain), base);
     rig.manager.request_state(device_id);
-    let from = rig.events.len();
-    for _ in 0..5 {
-        rig.process(BLOCK);
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    assert!(
-        !rig.events[from..]
-            .iter()
-            .any(|event| matches!(event, PluginManagerEvent::StateSnapshot { .. }))
+    let state = next_snapshot(&mut rig, 10);
+    assert!(rig.manager.is_macro_snapshot(device_id, &state.bytes));
+    assert_eq!(state.parameter_bases[&gain], mapped);
+    assert_eq!(
+        rig.manager.param_value(device_id, gain).unwrap().value,
+        preview
     );
 
     output(&mut rig, mapped);
-    rig.manager.request_state(device_id);
-    let state = next_snapshot(&mut rig, 10);
-    assert!(rig.manager.is_macro_snapshot(device_id, &state));
     assert_eq!(rig.manager.param_base(device_id, gain), base);
 
     rig.manager
@@ -175,7 +243,7 @@ fn macro_snapshot_preserves_an_independent_plugin_edit() {
     rig.manager.set_param(device_id, decay, independent);
     rig.manager.request_state(device_id);
     let edited = next_snapshot(&mut rig, 10);
-    assert!(!rig.manager.is_macro_snapshot(device_id, &edited));
+    assert!(!rig.manager.is_macro_snapshot(device_id, &edited.bytes));
     assert_eq!(rig.manager.param_base(device_id, decay), Some(independent));
     assert_eq!(rig.manager.param_base(device_id, gain), base);
 
@@ -183,14 +251,14 @@ fn macro_snapshot_preserves_an_independent_plugin_edit() {
     assert_eq!(rig.manager.param_base(device_id, gain), Some(next_mapped));
     rig.manager.request_state(device_id);
     let state = next_snapshot(&mut rig, 10);
-    assert!(rig.manager.is_macro_snapshot(device_id, &state));
+    assert!(rig.manager.is_macro_snapshot(device_id, &state.bytes));
 
     // Restore the earlier mixed snapshot after changing both parameters. StateApplied reports
     // values read from the real bridge plugin, rather than the manager's optimistic cache.
     rig.manager.set_param(device_id, gain, preview);
     rig.manager.set_param(device_id, decay, 0.75);
     let from = rig.events.len();
-    assert!(rig.manager.set_state(device_id, &edited));
+    assert!(rig.manager.restore_saved_state(device_id, &edited));
     run_until(&mut rig, "the restored macro and independent edit", |rig| {
         rig.events[from..].contains(&PluginManagerEvent::StateApplied { device: device_id })
     });
@@ -401,9 +469,7 @@ fn missing_plugin_keeps_its_state_byte_identical_through_a_save() {
     assert_eq!(devices, [11, 30]);
     for (device, state) in states {
         document
-            .apply_untracked(|p| {
-                komponist_model::edits::set_device_state(p, device, Some(state.clone()))
-            })
+            .apply_untracked(|p| komponist_model::edits::set_saved_plugin_state(p, device, &state))
             .unwrap();
     }
     let saved = komponist_model::persist::to_json(document.project()).unwrap();
@@ -418,7 +484,7 @@ fn missing_plugin_keeps_its_state_byte_identical_through_a_save() {
 }
 
 #[test]
-fn temporary_parameter_edit_defers_plugin_snapshot_until_base_returns() {
+fn temporary_parameter_edit_saves_the_base_and_restores_it_on_reopen() {
     let dir = scratch("temporary-param-state");
     let Some(manager) = scanned_manager(&dir) else {
         return;
@@ -443,15 +509,45 @@ fn temporary_parameter_edit_defers_plugin_snapshot_until_base_returns() {
     rig.process(BLOCK);
     rig.manager.request_state(device_id);
     rig.manager.preview_param(device_id, id, temporary);
-    assert!(rig.manager.snapshot_states(PATIENCE).is_empty());
+    let states = rig.manager.snapshot_states(PATIENCE);
+    let [(saved_device, state)] = states.as_slice() else {
+        panic!("expected the playing plugin's snapshot");
+    };
+    assert_eq!(*saved_device, device_id);
     assert_eq!(rig.manager.param_base(device_id, id), Some(base));
+    let raw = state.bytes.as_ref();
+    assert_ne!(
+        raw,
+        safe[0].1.bytes.as_ref(),
+        "the plug-in captured the live value"
+    );
+    assert_eq!(state.parameter_bases.get(&id), Some(&base));
 
-    rig.send(komponist_engine::Command::SetParam {
-        slot,
-        id,
-        value: base,
+    assert!(rig.manager.restore_saved_state(device_id, state));
+    run_until(&mut rig, "active state restored", |rig| {
+        rig.events.iter().any(|event| {
+            matches!(event, PluginManagerEvent::StateApplied { device } if *device == device_id)
+        })
     });
     rig.process(BLOCK);
+    let active = rig.manager.snapshot_states(PATIENCE);
+    let raw = active[0].1.bytes.as_ref();
+    assert_eq!(raw, safe[0].1.bytes.as_ref());
+
+    let mut reopened = device(
+        10,
+        DeviceRole::Instrument,
+        clap_plugin(SYNTH),
+        Some(&state.bytes),
+    );
+    reopened.parameter_bases.clone_from(&state.parameter_bases);
+    rig.manager.shutdown();
+    let mut rig = Rig::new(
+        scanned_manager(&dir).unwrap(),
+        project(vec![track(1, vec![reopened])]),
+    );
+    rig.wait_status(10, DeviceStatus::Ok);
+    assert_eq!(rig.manager.param_base(device_id, id), Some(base));
     assert_eq!(rig.manager.snapshot_states(PATIENCE), safe);
     rig.manager.shutdown();
 }
@@ -478,7 +574,7 @@ fn snapshots_keep_an_edit_pending_until_the_engine_delivers_it() {
     };
     send(&mut rig, base * 0.5);
     rig.manager.preview_param(device_id, id, base * 0.5);
-    assert!(rig.manager.snapshot_states(PATIENCE).is_empty());
+    assert_eq!(rig.manager.snapshot_states(PATIENCE).len(), 1);
     send(&mut rig, base);
     // The synth rounds to its internal 0.1 dB step. The requested value is between steps.
     let value = 0.403;
@@ -582,7 +678,8 @@ fn project_save_requires_persistent_edits_even_during_a_temporary_override() {
     let slot = rig.slots[&device_id];
     let set = |rig: &mut Rig, id, value| {
         rig.send(komponist_engine::Command::SetParam { slot, id, value });
-        rig.process(BLOCK);
+        // State verification must see the edit even when the bridge misses a realtime deadline.
+        rig.render(BLOCK);
     };
     let temporary = base * 0.5;
     let decay_after = 0.5;
@@ -591,19 +688,29 @@ fn project_save_requires_persistent_edits_even_during_a_temporary_override() {
     set(&mut rig, gain, temporary);
     rig.manager.preview_param(device_id, gain, temporary);
     let timeout = Duration::from_millis(120);
-    assert_eq!(
-        rig.manager.snapshot_for_save(timeout),
-        SaveSnapshots::default()
-    );
+    let preview_only = rig.manager.snapshot_for_save(timeout);
+    assert!(preview_only.blocked.is_empty());
+    assert!(preview_only.unavailable.is_empty());
+    let [(saved_device, saved)] = preview_only.captured.as_slice() else {
+        panic!("expected a snapshot with the temporary output corrected");
+    };
+    assert_eq!(*saved_device, device_id);
+    assert_eq!(saved.parameter_bases[&gain], base);
 
+    // The host cannot save an independent edit until the active processor receives it.
     rig.manager.edited_param(device_id, decay, decay_after);
-    set(&mut rig, decay, decay_after);
     let outcome = rig.manager.snapshot_for_save(timeout);
     assert_eq!(outcome.blocked, [device_id]);
     assert!(outcome.captured.is_empty());
     assert!(outcome.unavailable.is_empty());
 
-    set(&mut rig, gain, base);
+    set(&mut rig, decay, decay_after);
+    // The bridge may still be returning a deferred snapshot at the first audio callback.
+    // Drive further callbacks until a checked capture acknowledges the delivered edit.
+    rig.manager.request_state(device_id);
+    run_until(&mut rig, "the verified edit to reach the plugin", |rig| {
+        !rig.manager.has_pending_state_edits()
+    });
     let outcome = rig.manager.snapshot_for_save(PATIENCE);
     assert!(outcome.blocked.is_empty());
     assert!(outcome.unavailable.is_empty());
@@ -612,13 +719,14 @@ fn project_save_requires_persistent_edits_even_during_a_temporary_override() {
         panic!("expected a single saved state");
     };
     assert_eq!(*saved_device, device_id);
+    assert_eq!(saved.parameter_bases[&gain], base);
 
     // Change both values again, then load the saved blob to see what really went into the file.
     rig.manager.edited_param(device_id, decay, decay_before);
     set(&mut rig, decay, decay_before);
     rig.manager.edited_param(device_id, gain, temporary);
     set(&mut rig, gain, temporary);
-    assert!(rig.manager.set_state(device_id, saved));
+    assert!(rig.manager.restore_saved_state(device_id, saved));
     run_until(&mut rig, "the saved bases", |rig| {
         rig.manager.param_base(device_id, gain) == Some(base)
             && rig
@@ -712,7 +820,7 @@ fn unmapping_a_persistent_macro_value_allows_saving_after_a_failed_restore() {
     let states = outcome.captured;
     assert_eq!(states.len(), 1);
     assert_eq!(states[0].0, device);
-    assert_ne!(&*states[0].1, blob);
+    assert_ne!(&*states[0].1.bytes, blob);
     assert_eq!(rig.manager.param_base(device, gain), Some(value));
 }
 
@@ -800,9 +908,7 @@ fn a_state_that_fails_to_load_is_kept_until_the_user_changes_something() {
     let mut document = Document::new(original);
     for (device, state) in states {
         document
-            .apply_untracked(|p| {
-                komponist_model::edits::set_device_state(p, device, Some(state.clone()))
-            })
+            .apply_untracked(|p| komponist_model::edits::set_saved_plugin_state(p, device, &state))
             .unwrap();
     }
     let saved = komponist_model::persist::to_json(document.project()).unwrap();
@@ -823,7 +929,7 @@ fn a_state_that_fails_to_load_is_kept_until_the_user_changes_something() {
     rig.manager.set_param(DeviceId(10), gain, 0.5);
     assert_eq!(rig.manager.state_warning(DeviceId(10)), None);
     let state = next_snapshot(&mut rig, 10);
-    assert_ne!(&state[..], blob);
+    assert_ne!(&state.bytes[..], blob);
     let devices: Vec<u64> = rig
         .manager
         .snapshot_states(PATIENCE)
@@ -996,7 +1102,7 @@ fn watchdog_kills_a_hanging_bridge() {
 #[cfg(unix)]
 const FAKE_BRIDGE: &str = "lifecycle::fake_bridge_entry";
 
-/// What the fake bridge does at the third `Ping` (#216).
+/// How the fake bridge responds to control traffic.
 #[cfg(unix)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FakeBridge {
@@ -1004,6 +1110,10 @@ enum FakeBridge {
     StallsMidFrame,
     /// Sends a [`SLOW_LOG_LEN`]-byte `Log` message over about [`SLOW_SEND`], then the `Pong`.
     SendsSlowly,
+    /// Defers a startup restore until the parent sends a later parameter edit.
+    FailsStartupRestore,
+    /// Removes a parameter from the inventory when the parent edits it.
+    RemovesParameter,
 }
 
 #[cfg(unix)]
@@ -1012,6 +1122,8 @@ impl FakeBridge {
         match self {
             FakeBridge::StallsMidFrame => "stalls-mid-frame",
             FakeBridge::SendsSlowly => "sends-slowly",
+            FakeBridge::FailsStartupRestore => "fails-startup-restore",
+            FakeBridge::RemovesParameter => "removes-parameter",
         }
     }
 }
@@ -1028,13 +1140,15 @@ const SLOW_SEND: Duration = Duration::from_millis(2000);
 /// A fake bridge (#216): this test binary, started by the plugin manager as `<test>
 /// lifecycle::fake_bridge_entry --exact … -- <marker> <mode> --instance --control-fd N` (libtest
 /// takes everything after `--` as name filters, so only this test runs). It plays the start-up
-/// protocol and answers two `Ping`s; at the third it does what [`FakeBridge`] `<mode>` says and
-/// creates the file `<marker>` once that is done (the parent's proof). In an ordinary test run
-/// it does nothing.
+/// protocol and then follows the selected [`FakeBridge`] mode. In an ordinary test run it does
+/// nothing.
 #[cfg(unix)]
 #[test]
 fn fake_bridge_entry() {
-    use komponist_ipc::{BridgeChannel, BridgeMsg, ControlMsg, LoadedInfo, PluginDescriptor};
+    use komponist_ipc::control::{ParamValue, StateRestoreError, param_flags};
+    use komponist_ipc::{
+        BridgeChannel, BridgeMsg, ControlMsg, LoadedInfo, ParamInfo, PluginDescriptor,
+    };
     use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 
     let args: Vec<String> = std::env::args().collect();
@@ -1043,10 +1157,15 @@ fn fake_bridge_entry() {
     };
     let fd: i32 = args[at + 1].parse().expect("fd number");
     let marker = std::path::PathBuf::from(&args[at - 3]);
-    let mode = [FakeBridge::StallsMidFrame, FakeBridge::SendsSlowly]
-        .into_iter()
-        .find(|mode| mode.arg() == args[at - 2])
-        .expect("fake bridge mode");
+    let mode = [
+        FakeBridge::StallsMidFrame,
+        FakeBridge::SendsSlowly,
+        FakeBridge::FailsStartupRestore,
+        FakeBridge::RemovesParameter,
+    ]
+    .into_iter()
+    .find(|mode| mode.arg() == args[at - 2])
+    .expect("fake bridge mode");
     // SAFETY: the plugin manager made this inherited fd ours, and nothing else owns it.
     let channel = BridgeChannel::from_fd(unsafe { OwnedFd::from_raw_fd(fd) });
     let send = |msg: BridgeMsg| {
@@ -1070,7 +1189,25 @@ fn fake_bridge_entry() {
     let Ok(_region) = channel.recv_fd() else {
         std::process::exit(0);
     };
+    let param = |id| ParamInfo {
+        id,
+        name: format!("Parameter {id}"),
+        module: String::new(),
+        min: 0.0,
+        max: 1.0,
+        default: 0.5,
+        step_count: 0,
+        flags: param_flags::AUTOMATABLE,
+    };
+    let inventory = match mode {
+        FakeBridge::FailsStartupRestore => vec![param(7)],
+        FakeBridge::RemovesParameter => vec![param(7), param(8)],
+        _ => Vec::new(),
+    };
     let mut pings = 0;
+    let mut activated = false;
+    let mut pending_restore = None;
+    let mut ready_for_edit = false;
     loop {
         match channel.recv() {
             Ok(ControlMsg::Load { bundle, .. }) => send(BridgeMsg::Loaded(Box::new(LoadedInfo {
@@ -1086,14 +1223,54 @@ fn fake_bridge_entry() {
                     bundle,
                     sidechain: false,
                 },
-                params: Vec::new(),
-                values: Vec::new(),
+                params: inventory.clone(),
+                values: inventory
+                    .iter()
+                    .map(|param| ParamValue {
+                        id: param.id,
+                        value: param.default,
+                        text: String::new(),
+                    })
+                    .collect(),
                 latency: 0,
                 note_names: Vec::new(),
                 has_gui: false,
                 native_layout: None,
             }))),
-            Ok(ControlMsg::Activate { .. }) => send(BridgeMsg::Activated { latency: 0 }),
+            Ok(ControlMsg::Activate { .. }) => {
+                send(BridgeMsg::Activated { latency: 0 });
+                activated = true;
+            }
+            Ok(ControlMsg::SetState { request, .. }) => pending_restore = Some(request),
+            Ok(ControlMsg::SetParam { id: 8, .. }) if mode == FakeBridge::RemovesParameter => {
+                send(BridgeMsg::Params {
+                    params: vec![param(7)],
+                    native_layout: None,
+                });
+            }
+            Ok(ControlMsg::SetParam { .. }) if ready_for_edit => {
+                if let Some(request) = pending_restore.take() {
+                    send(BridgeMsg::StateApplied {
+                        request,
+                        result: Err(StateRestoreError {
+                            message: "rejected the startup state".into(),
+                            changed_values: Vec::new(),
+                        }),
+                    });
+                }
+            }
+            Ok(ControlMsg::GetStateChecked {
+                request, expected, ..
+            }) if ready_for_edit || mode == FakeBridge::RemovesParameter => {
+                send(BridgeMsg::State {
+                    request,
+                    state: b"later edit".to_vec(),
+                    verified: expected
+                        .into_iter()
+                        .map(|(id, value, _)| (id, value))
+                        .collect(),
+                });
+            }
             Ok(ControlMsg::Ping { seq }) => {
                 pings += 1;
                 if pings == 3 && mode == FakeBridge::StallsMidFrame {
@@ -1132,7 +1309,90 @@ fn fake_bridge_entry() {
             Ok(_) => {}
             Err(_) => std::process::exit(0),
         }
+        if mode == FakeBridge::FailsStartupRestore
+            && activated
+            && pending_restore.is_some()
+            && !ready_for_edit
+        {
+            ready_for_edit = true;
+            send(BridgeMsg::ParamValues(vec![ParamValue {
+                id: 7,
+                value: 0.5,
+                text: "restore pending".into(),
+            }]));
+        }
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn later_edit_remains_saveable_after_failed_startup_restore() {
+    let dir = scratch("failed-startup-restore");
+    let Some((manager, _)) = fake_bridge_manager(&dir, FakeBridge::FailsStartupRestore) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(
+        10,
+        DeviceRole::Instrument,
+        clap_plugin(SYNTH),
+        Some(b"startup state"),
+    );
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    run_until(&mut rig, "activated with a restore pending", |rig| {
+        rig.manager
+            .param_value(device_id, 7)
+            .is_some_and(|param| param.text == "restore pending")
+    });
+    assert_eq!(rig.manager.status(device_id), DeviceStatus::Loading);
+    rig.manager.set_param(device_id, 7, 0.625);
+    rig.wait_status(10, DeviceStatus::Ok);
+    assert_eq!(rig.manager.state_warning(device_id), None);
+    assert_eq!(rig.manager.param_base(device_id, 7), Some(0.625));
+    let snapshot = rig.manager.snapshot_for_save(PATIENCE);
+    assert!(snapshot.blocked.is_empty());
+    assert_eq!(
+        snapshot.captured,
+        [(device_id, Arc::<[u8]>::from(&b"later edit"[..]).into())]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn removing_an_automated_parameter_preserves_snapshots_for_remaining_controls() {
+    let dir = scratch("remove-automated-parameter");
+    let Some((manager, _)) = fake_bridge_manager(&dir, FakeBridge::RemovesParameter) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+
+    let lanes = [(device_id, 7, None), (device_id, 8, None)];
+    let snapshot_bases = |rig: &mut Rig| {
+        let save = rig.manager.snapshot_for_save(PATIENCE);
+        assert!(save.blocked.is_empty());
+        let [(id, state)] = save.captured.try_into().expect("one fresh snapshot");
+        assert_eq!(id, device_id);
+        state.parameter_bases
+    };
+    rig.manager.set_automated_params(&lanes);
+    assert_eq!(snapshot_bases(&mut rig), [(7, 0.5), (8, 0.5)].into());
+
+    rig.manager.set_param(device_id, 8, 0.625);
+    run_until(&mut rig, "parameter inventory pruned", |rig| {
+        rig.manager.params(device_id).unwrap().len() == 1
+    });
+    assert_eq!(snapshot_bases(&mut rig), [(7, 0.5)].into());
+
+    // A program compiled from the old inventory must not put the removed ID back.
+    rig.manager.set_automated_params(&lanes);
+    assert_eq!(snapshot_bases(&mut rig), [(7, 0.5)].into());
+
+    // Removing the surviving lane still protects its base while the audio catches up.
+    rig.manager.set_automated_params(&[]);
+    assert_eq!(snapshot_bases(&mut rig), [(7, 0.5)].into());
 }
 
 /// The bytes `Channel::send` writes for `msg`, captured through a socket pair of its own (so the

@@ -582,6 +582,7 @@ pub fn add_track_in(
             role: DeviceRole::Instrument,
             plugin,
             bypass: false,
+            parameter_bases: Default::default(),
             asset_links: Default::default(),
             state: None,
             sidechain: None,
@@ -1424,6 +1425,7 @@ pub fn insert_device(
             role: spec.role,
             plugin: spec.plugin,
             bypass: false,
+            parameter_bases: Default::default(),
             asset_links: Default::default(),
             state: spec.state,
             sidechain: None,
@@ -1462,6 +1464,7 @@ pub fn replace_instrument(
         role: DeviceRole::Instrument,
         plugin,
         bypass: false,
+        parameter_bases: Default::default(),
         asset_links: Default::default(),
         state: None,
         sidechain: None,
@@ -1550,7 +1553,22 @@ pub fn set_device_state(
     device: DeviceId,
     state: Option<Arc<[u8]>>,
 ) -> EditResult {
-    edit_device(project, device, |d| d.state = state)
+    edit_device(project, device, |d| {
+        d.state = state;
+        d.parameter_bases.clear();
+    })
+}
+
+/// Stores a captured state and its parameter bases in one document edit.
+pub fn set_saved_plugin_state(
+    project: &Project,
+    device: DeviceId,
+    state: &crate::project::SavedPluginState,
+) -> EditResult {
+    edit_device(project, device, |d| {
+        d.state = Some(state.bytes.clone());
+        d.parameter_bases.clone_from(&state.parameter_bases);
+    })
 }
 
 /// Replaces the device's host-managed file links without modifying its opaque state.

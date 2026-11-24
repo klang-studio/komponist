@@ -261,6 +261,135 @@ fn both_samplers_play_assets_after_the_project_moves() {
     app.shutdown();
 }
 
+fn scanned_packaged_sampler_host(scratch: &Path, launcher: std::path::PathBuf) -> PluginHost {
+    let mut config = config(scratch);
+    config.bridge_exe = launcher;
+    let mut host = PluginHost::new(config);
+    host.start_scan(&PluginDirs {
+        clap: Vec::new(),
+        vst3: Vec::new(),
+    });
+    let deadline = Instant::now() + PATIENCE;
+    while !host
+        .poll()
+        .iter()
+        .any(|event| matches!(event, PluginManagerEvent::ScanFinished(_)))
+    {
+        assert!(Instant::now() < deadline, "bundled CLAP scan timed out");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    host
+}
+
+#[test]
+#[ignore = "requires verified sampler bundles; run with scripts/measure-bundled-clap.py --current-projects"]
+fn bundled_sampler_restores_saved_parameter_bases() {
+    let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").expect("packaged launcher");
+    let force_bridge =
+        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
+    let scratch = tempfile::tempdir().unwrap();
+    let host = scanned_packaged_sampler_host(scratch.path(), launcher.clone().into());
+    let instrument = host
+        .catalog()
+        .entries()
+        .iter()
+        .find(|entry| entry.plugin.id == "org.klang-studio.komponist.general-sampler")
+        .expect("verified General Sampler")
+        .plugin
+        .clone();
+    let (project, track) = edits::add_track(
+        &Project::new("Sampler parameter bases"),
+        NewTrack {
+            name: None,
+            hue: None,
+            instrument: Some(instrument),
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let device = project
+        .track(track)
+        .unwrap()
+        .channel
+        .instrument()
+        .unwrap()
+        .1
+        .id;
+    let wait_for_sampler = |app: &mut App| {
+        step_until(app, "sampler ready", |app| {
+            app.engine().host().status(device) == DeviceStatus::Ok
+        });
+        assert_eq!(
+            app.engine().host().bridge_pid(device).is_some(),
+            force_bridge
+        );
+    };
+    let snapshot = |app: &mut App| {
+        let result = app.engine_mut().host_mut().snapshot_for_save(PATIENCE);
+        assert!(result.blocked.is_empty());
+        result
+            .captured
+            .into_iter()
+            .find_map(|(id, state)| (id == device).then_some(state))
+            .expect("fresh sampler snapshot")
+    };
+    let mut app = app_with(project.clone(), host);
+    wait_for_sampler(&mut app);
+    let host = app.engine().host();
+    let gain = host.native_layout(device).unwrap().author_ids().unwrap()["gain"];
+    let default = host.param_base(device, gain).unwrap();
+    let gain_info = host
+        .params(device)
+        .unwrap()
+        .iter()
+        .find(|info| info.id == gain)
+        .unwrap();
+    let restored_gain = (gain_info.min + gain_info.max) / 2.0;
+    assert_ne!(restored_gain, default);
+    let baseline = snapshot(&mut app);
+    assert!(baseline.parameter_bases.is_empty());
+    let state = komponist_model::project::SavedPluginState {
+        bytes: baseline.bytes.clone(),
+        parameter_bases: [(gain, restored_gain)].into(),
+    };
+
+    // The direct path can apply a queued active restore as part of taking the snapshot.
+    assert!(
+        app.engine_mut()
+            .host_mut()
+            .restore_saved_state(device, &state)
+    );
+    if force_bridge {
+        // The child acknowledges the asynchronous restore before offering a new snapshot.
+        step_until(&mut app, "bridged restore applied", |app| {
+            app.engine()
+                .host()
+                .param_base(device, gain)
+                .is_some_and(|value| (value - restored_gain).abs() < 1e-6)
+        });
+        // An empty instrument needs a processing block to consume its queued bases.
+        note_peak(&mut app, track, 60);
+    }
+    let captured = snapshot(&mut app);
+    assert_ne!(captured.bytes, baseline.bytes);
+    assert!(captured.parameter_bases.is_empty());
+    assert!((app.engine().host().param_base(device, gain).unwrap() - restored_gain).abs() < 1e-6);
+    app.shutdown();
+
+    // Start a new instance from the unchanged blob plus the sidecar stored in a project.
+    let project = edits::set_saved_plugin_state(&project, device, &state).unwrap();
+    let path = scratch.path().join("parameter-bases.komponist");
+    save_project(&path, &project).unwrap();
+    let host = scanned_packaged_sampler_host(scratch.path(), launcher.into());
+    let mut app = app_with(load_project(&path).unwrap(), host);
+    wait_for_sampler(&mut app);
+    assert!((app.engine().host().param_base(device, gain).unwrap() - restored_gain).abs() < 1e-6);
+    assert_eq!(snapshot(&mut app), captured);
+    app.shutdown();
+}
+
 #[test]
 #[ignore = "requires a verified all-device package; run with scripts/measure-bundled-clap.py --current-projects"]
 fn bundled_sampler_panels_edit_and_restore_current_state() {
@@ -289,22 +418,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             0
         }
     });
-    let mut config = config(scratch.path());
-    config.bridge_exe = launcher.into();
-    let mut host = PluginHost::new(config);
-    host.start_scan(&PluginDirs {
-        clap: Vec::new(),
-        vst3: Vec::new(),
-    });
-    let deadline = Instant::now() + PATIENCE;
-    while !host
-        .poll()
-        .iter()
-        .any(|event| matches!(event, PluginManagerEvent::ScanFinished(_)))
-    {
-        assert!(Instant::now() < deadline, "bundled CLAP scan timed out");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    let host = scanned_packaged_sampler_host(scratch.path(), launcher.into());
 
     let mut project = Project::new("Packaged samplers");
     let mut tracks = Vec::new();

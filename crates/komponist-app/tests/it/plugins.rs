@@ -1167,3 +1167,180 @@ fn sdk_example_uses_native_layout_and_falls_back() {
     );
     fallback.shutdown();
 }
+
+#[test]
+fn third_party_clap_macros_and_automation_restore_their_bases() {
+    use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points, Shape};
+    use komponist_model::edits::{self, NewDevice, NewTrack};
+    use komponist_model::macros::Mapping;
+    use komponist_model::params::ParamId;
+    use komponist_model::{ChannelRef, PPQ};
+
+    let Some(dirs) = fixture_dirs() else {
+        return;
+    };
+    let dir = scratch("third-party-automation");
+    let path = dir.join("Automation.komponist");
+    let mut host = PluginHost::new(config(&dir));
+    host.start_scan(&dirs);
+    poll_until(&mut host, "ScanFinished", |event| {
+        matches!(event, PluginManagerEvent::ScanFinished(_))
+    });
+    let (project, track) = edits::add_track(
+        &Project::new("Opaque CLAP state"),
+        NewTrack {
+            name: None,
+            hue: None,
+            instrument: Some(clap_plugin(SYNTH)),
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let synth = project.track(track).unwrap().channel.devices[0].id;
+    let (project, fx) = edits::insert_device(
+        &project,
+        ChannelRef::Track(track),
+        1,
+        NewDevice {
+            role: DeviceRole::Effect,
+            plugin: clap_plugin(FX),
+            state: None,
+            sidechain: None,
+        },
+    )
+    .unwrap();
+
+    let mut app = app_with(project.clone(), host);
+    step_until(&mut app, "third-party plugins ready", all_ok);
+    let gain_id = |device| {
+        let info = app
+            .engine()
+            .host()
+            .params(device)
+            .unwrap()
+            .iter()
+            .find(|info| info.name == "Gain")
+            .unwrap();
+        assert!(komponist_plugins::params::is_automatable(info));
+        info.id
+    };
+    let synth_gain = gain_id(synth);
+    let fx_gain = gain_id(fx);
+    let synth_base = app.engine().host().param_base(synth, synth_gain).unwrap();
+    let fx_default = app.engine().host().param_base(fx, fx_gain).unwrap();
+    let note = |app: &mut App| {
+        app.engine_mut().send(Command::LiveNote {
+            track,
+            key: 60,
+            velocity: 127,
+        });
+    };
+    note(&mut app);
+    let baseline = level(&mut app, track, Duration::from_millis(160));
+    assert!(baseline > 0.01, "the base values produce a reference tone");
+
+    let target = |device, id| AutomationTarget::Param {
+        device,
+        param: ParamId::plugin(id),
+    };
+    let owner = AutomationOwner::Track(track);
+    let synth_target = target(synth, synth_gain);
+    let project = edits::macros::add_mapping(
+        &project,
+        track,
+        0,
+        Mapping {
+            target: target(fx, fx_gain),
+            label: "Effect gain".into(),
+            min: 0.0,
+            max: 1.0,
+            invert: false,
+            bend: 0.0,
+        },
+    )
+    .unwrap();
+    let project = edits::macros::set_macro_value(&project, track, 0, 0.75).unwrap();
+    let add_lane = |project: &Project, target, value| {
+        let (project, lane) =
+            edits::automation::add_lane(project, owner, target, "Gain curve".into()).unwrap();
+        edits::automation::set_lane_points(
+            &project,
+            owner,
+            lane,
+            Points::new(vec![
+                Point {
+                    tick: Tick::ZERO,
+                    value,
+                    shape: Shape::Hold,
+                },
+                Point::linear(Tick(16 * PPQ), value),
+            ]),
+        )
+        .unwrap()
+    };
+    let project = add_lane(&project, synth_target.clone(), 0.6);
+    let project = add_lane(&project, AutomationTarget::Macro { index: 0 }, 0.2);
+    std::fs::write(&path, persist::to_json(&project).unwrap()).unwrap();
+    let open = |app: &mut App| {
+        app.dispatch(Action::Project(ProjectAction::OpenPath(path.clone())));
+        step_until(app, "compiled third-party automation", |app| {
+            all_ok(app)
+                && app
+                    .engine()
+                    .program()
+                    .is_some_and(|program| program.automation_reads(owner, &synth_target))
+        });
+    };
+    open(&mut app);
+    let automated_level = |app: &mut App| {
+        app.engine_mut().send(Command::Play);
+        step_until(app, "track macro automation applied", |app| {
+            app.engine()
+                .telemetry()
+                .macro_values(track)
+                .is_some_and(|values| (values[0] - 0.2).abs() < 1e-6)
+        });
+        note(app);
+        level(app, track, Duration::from_millis(160))
+    };
+    let automated = automated_level(&mut app);
+    assert!(
+        automated > 0.0 && automated < baseline * 0.2,
+        "both lanes attenuate the reference tone: {baseline} -> {automated}"
+    );
+    app.dispatch(Action::Project(ProjectAction::Save));
+
+    let saved = persist::from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let base = |device, id| saved.find_device(device).unwrap().2.parameter_bases[&id];
+    assert_eq!(base(synth, synth_gain), synth_base);
+    let fx_base = base(fx, fx_gain);
+    assert!((fx_base - 0.75).abs() < 1e-6 && (fx_base - fx_default).abs() > 1e-6);
+    assert_eq!(
+        saved.track(track).unwrap().automation,
+        project.track(track).unwrap().automation
+    );
+    assert_eq!(
+        saved.track(track).unwrap().macros,
+        project.track(track).unwrap().macros
+    );
+
+    app.shutdown();
+    let mut app = app_with(Project::new("Empty"), PluginHost::new(config(&dir)));
+    open(&mut app);
+    assert_eq!(
+        app.engine().host().param_base(synth, synth_gain),
+        Some(synth_base)
+    );
+    let restored_fx = app.engine().host().param_base(fx, fx_gain).unwrap();
+    assert!(
+        (restored_fx - fx_base).abs() < 0.002,
+        "plugin may quantize a base"
+    );
+    let reopened = automated_level(&mut app);
+    assert!(
+        (reopened - automated).abs() < automated * 0.05,
+        "reopened automation level {reopened}, before save {automated}"
+    );
+    app.shutdown();
+}

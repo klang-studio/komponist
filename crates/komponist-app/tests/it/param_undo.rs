@@ -866,7 +866,9 @@ fn plugin_state(app: &mut App, synth: DeviceId) -> Arc<[u8]> {
         .into_iter()
         .rev()
         .find_map(|e| match e {
-            PluginManagerEvent::StateSnapshot { device, state } if device == synth => Some(state),
+            PluginManagerEvent::StateSnapshot { device, state } if device == synth => {
+                Some(state.bytes)
+            }
             _ => None,
         })
         .unwrap()

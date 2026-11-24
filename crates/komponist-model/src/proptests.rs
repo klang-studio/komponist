@@ -717,6 +717,7 @@ fn raw_project(nodes: &[RawNode], master_sidechain: Option<u8>, forward: bool) -
             role: DeviceRole::Effect,
             plugin: plugin(3),
             bypass: false,
+            parameter_bases: Default::default(),
             asset_links: Default::default(),
             state: None,
             sidechain: source.filter(|_| sources > 0).map(|s| Sidechain {

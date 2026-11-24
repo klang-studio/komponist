@@ -278,6 +278,7 @@ fn demo_track(
                 plugin: plugin.to_ref(),
                 // Prototype: `mkDev('chorus', {bypass: true})`.
                 bypass: plugin.id == TAL_CHORUS.id,
+                parameter_bases: Default::default(),
                 asset_links: Default::default(),
                 state: None,
                 sidechain: None,

@@ -10,8 +10,7 @@ use komponist_model::{DeviceId, Project, TrackId};
 
 use super::App;
 use crate::actions::SelectMode;
-use crate::device_host::{internal_kind, is_hexa};
-use crate::param_undo::device_param_state;
+use crate::device_host::LegacyParameters;
 use crate::ui_state::StatusKind;
 use crate::views::automation::{Catalog, automation_control_value};
 use crate::views::track_macros::{Action, effective_value, reference};
@@ -512,19 +511,10 @@ fn preserve_unmapped_value(
         }
         AutomationTarget::Param { device, param } => {
             let state = project.find_device(*device).and_then(|(_, _, d)| {
-                let wire = if is_hexa(d) {
-                    komponist_hexa::device::param(param)
-                        .map(|field| field.wire)
-                        .or_else(|| {
-                            komponist_hexa::Macro::ALL
-                                .into_iter()
-                                .find(|m| m.key() == param.as_str())
-                                .map(|m| m.id())
-                        })?
-                } else {
-                    internal_kind(d)?.wire(param)?
-                };
-                device_param_state(d, wire, value)
+                let parameters = LegacyParameters::new(d)?;
+                parameters
+                    .with_value(parameters.wire(param)?, value)
+                    .map(Into::into)
             });
             if let Some(state) = state {
                 edits::set_device_state(&project, *device, Some(state))

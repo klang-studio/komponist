@@ -886,7 +886,7 @@ impl App {
             snapshots
                 .iter()
                 .chain(self.deferred_plugin_states())
-                .find_map(|(id, state)| (*id == device).then_some(state.as_ref()))
+                .find_map(|(id, state)| (*id == device).then_some(state.bytes.as_ref()))
         };
         if let Some(collector) = &mut collector
             && let Err(error) = crate::samples::collect_sample_sources(
@@ -946,7 +946,7 @@ impl App {
         let rebased_deferred = self
             .deferred_plugin_states()
             .iter()
-            .filter_map(|(device, state)| Some((*device, rebase_bundled(*device, state)?)))
+            .filter_map(|(device, state)| Some((*device, rebase_bundled(*device, &state.bytes)?)))
             .collect::<Vec<_>>();
         let deferred = self
             .deferred_plugin_states()
@@ -960,16 +960,15 @@ impl App {
             };
             // The processor captured its state in the old folder, even though the
             // document and history have already been rebased for the destination.
-            let rebased = rebase_bundled(*device, state);
-            let state = if let Some(rebased) = rebased {
+            let rebased = rebase_bundled(*device, &state.bytes);
+            let mut state = state.clone();
+            if let Some(rebased) = rebased {
                 rebased_bundle_states.push((*device, rebased.clone()));
-                rebased
-            } else {
-                state.clone()
-            };
-            if model.state.as_ref() != Some(&state)
+                state.bytes = rebased;
+            }
+            if !model.has_saved_state(&state)
                 && let Ok(updated) =
-                    komponist_model::edits::set_device_state(project, *device, Some(state))
+                    komponist_model::edits::set_saved_plugin_state(project, *device, &state)
             {
                 for_file = Some(updated);
             }
@@ -1571,6 +1570,7 @@ pub(crate) mod tests {
             )]),
         ));
         app.doc.begin_gesture("Fader");
+        let state = state.into();
         app.store_snapshot(device, &state);
         assert_eq!(app.deferred_plugin_states(), &[(device, state.clone())]);
 
@@ -1591,7 +1591,7 @@ pub(crate) mod tests {
             let link = &links::read(Some(assets.as_bytes()))[0].1;
             assert_eq!(link.resolve(Some(&new)).as_deref(), Some(sample.as_path()));
         };
-        check(&app.deferred_plugin_states()[0].1);
+        check(&app.deferred_plugin_states()[0].1.bytes);
         assert!(app.doc.in_gesture());
         assert!(app.save_to(&destination));
         let saved = load_project(&destination).unwrap();

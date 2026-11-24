@@ -34,7 +34,11 @@ use komponist_builtin::Internal;
 use komponist_engine::Command;
 use komponist_general_sampler as general_sampler;
 use komponist_model::edits;
-use komponist_model::{AudioFile, ChannelRef, ClipContent, DeviceId, DeviceRole, Project, TrackId};
+use komponist_model::params::ParamInfo;
+use komponist_model::project::SavedPluginState;
+use komponist_model::{
+    AudioFile, ChannelRef, ClipContent, Device, DeviceId, DeviceRole, Project, TrackId,
+};
 use komponist_plugins::{DeviceStatus, bundled_sampler};
 use komponist_sampler as sampler;
 use komponist_sampler::{Collector, PadField, SampleLink, links};
@@ -44,6 +48,25 @@ use crate::app::App;
 use crate::dialogs::file::Purpose;
 use crate::dialogs::missing_plugins::missing_samples;
 use crate::ui_state::{StatusKind, StepCursor};
+
+fn sampler_knob_state<'a>(
+    device: &Device,
+    edits: impl Iterator<Item = (u32, &'a ParamInfo, f64)>,
+) -> Option<SavedPluginState> {
+    let mut parameter_bases = device.parameter_bases.clone();
+    let edits = edits
+        .filter(|(_, _, value)| value.is_finite())
+        .map(|(id, info, value)| {
+            parameter_bases.remove(&id);
+            (info, value)
+        });
+    let bytes =
+        bundled_sampler::edit_params(&device.plugin.version, device.state.as_deref(), edits)?;
+    Some(SavedPluginState {
+        bytes: bytes.into(),
+        parameter_bases,
+    })
+}
 
 /// The demo project with the synthesized test kit on the pads of every sampler (`--demo`): the
 /// kit's files and showcase audio clips are synthesized into `dir` (created), the pads and clips
@@ -233,12 +256,10 @@ impl App {
         let params = kind.params().iter().filter_map(|info| {
             let id = *ids.get(info.id.as_str()).filter(|id| wires.contains(id))?;
             // The host orders plugin-side and application-side edits on one parameter base.
-            Some((info, host.param_base(device, id)?))
+            Some((id, info, host.param_base(device, id)?))
         });
-        if let Some(state) =
-            bundled_sampler::edit_params(&d.plugin.version, d.state.as_deref(), params)
-        {
-            self.store_sampler_knob_state(device, &state.into());
+        if let Some(state) = sampler_knob_state(d, params) {
+            self.store_sampler_knob_state(device, &state);
             self.forget_sampler_params(device);
         }
     }
@@ -293,14 +314,12 @@ impl App {
                     .any(|(slot, _)| *slot == pad)
             });
             let link = SampleLink::new(path, dir.as_deref());
-            let edited = bundled_sampler::edit_link(
-                kind,
-                &found.plugin.version,
-                state,
-                pad,
-                Some(&link),
-                relinking,
-            );
+            let ids = self
+                .engine
+                .host()
+                .native_layout(device)
+                .and_then(|layout| layout.author_ids());
+            let edited = bundled_sampler::edit_saved_link(found, pad, Some(&link), relinking, ids);
             if self.apply_bundled_sample_edit(device, edited, "undo-sample-load") {
                 self.report_sample_loaded(kind, pad, &link);
             }
@@ -355,19 +374,18 @@ impl App {
     fn apply_bundled_sample_edit(
         &mut self,
         device: DeviceId,
-        state: Option<Vec<u8>>,
+        state: Option<SavedPluginState>,
         label: &str,
     ) -> bool {
         let Some(state) = state else {
             return false;
         };
-        let state: Arc<[u8]> = state.into();
-        if !self.engine.host_mut().set_state(device, &state) {
+        if !self.engine.host_mut().restore_saved_state(device, &state) {
             let name = self.device_name(device);
             self.set_status(self.lang.status_state_load_failed(&name), StatusKind::Error);
             return false;
         }
-        self.store_param_state(device, &state, label);
+        self.store_saved_param_state(device, &state, label);
         self.forget_sampler_params(device);
         true
     }
@@ -399,17 +417,10 @@ impl App {
             return;
         };
         if bundled_sampler::kind(&found.plugin).is_some() {
-            let Some(state) = found.state.as_deref() else {
+            if found.state.is_none() {
                 return;
-            };
-            let edited = bundled_sampler::edit_link(
-                kind,
-                &found.plugin.version,
-                Some(state),
-                pad,
-                None,
-                false,
-            );
+            }
+            let edited = bundled_sampler::edit_saved_link(found, pad, None, false, None);
             self.apply_bundled_sample_edit(device, edited, "undo-sample-clear");
             return;
         }
@@ -438,7 +449,10 @@ impl App {
         }
         let state = found.state.as_deref();
         if bundled_sampler::kind(&found.plugin).is_some() {
-            let edited = state.and_then(|state| bundled_sampler::edit_slices(state, settings));
+            let edited = found.saved_state().and_then(|mut state| {
+                state.bytes = bundled_sampler::edit_slices(&state.bytes, settings)?.into();
+                Some(state)
+            });
             self.apply_bundled_sample_edit(device, edited, "undo-sample-slices");
             return;
         }
@@ -961,4 +975,39 @@ fn rewrite_samplers(
         next = edits::set_device_state(&next, device, Some(state)).ok()?;
     }
     Some(next)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storing_sampler_knobs_keeps_only_bases_absent_from_the_edit() {
+        let mut project = komponist_model::fixtures::demo_project();
+        let (gain, other) = (7, 31);
+        let track = Arc::make_mut(&mut project.tracks[0]);
+        let device = Arc::make_mut(&mut track.channel.devices[0]);
+        device.state = None;
+        device.parameter_bases = [(gain, 0.6), (other, 0.4)].into();
+        let device_id = device.id;
+        let kind = crate::device_host::internal_kind(device).unwrap();
+        let info = &kind.params()[0];
+        let edited = sampler_knob_state(device, [(gain, info, 0.25)].into_iter()).unwrap();
+        assert_eq!(edited.parameter_bases, [(other, 0.4)].into());
+
+        for gesture in [false, true] {
+            let mut app = App::headless(project.clone());
+            if gesture {
+                app.doc.begin_gesture("Gain");
+            }
+            app.store_sampler_knob_state(device_id, &edited);
+            assert!(
+                app.project()
+                    .find_device(device_id)
+                    .unwrap()
+                    .2
+                    .has_saved_state(&edited)
+            );
+        }
+    }
 }
