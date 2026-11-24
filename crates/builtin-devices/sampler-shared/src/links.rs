@@ -295,12 +295,15 @@ pub struct Collector {
     scanned: bool,
     /// Resolved source → target, so one file is handled once.
     done: HashMap<PathBuf, PathBuf>,
+    done_assets: HashMap<PathBuf, PathBuf>,
     /// The log of this run.
     pub log: Vec<Collected>,
     /// Files that were **not** collected because they are not audio (see [`is_audio_file`]); their
     /// links stay as they were. A crafted project must not make "Sammeln und speichern" copy an
     /// arbitrary file (a key, a document) next to the project.
     pub skipped: Vec<PathBuf>,
+    /// Plugin assets outside the collection folder that were not approved for copying.
+    pub unapproved_assets: Vec<PathBuf>,
 }
 
 /// File name extensions of audio files that may be collected (lower case).
@@ -361,8 +364,10 @@ impl Collector {
             known: HashMap::new(),
             scanned: false,
             done: HashMap::new(),
+            done_assets: HashMap::new(),
             log: Vec::new(),
             skipped: Vec::new(),
+            unapproved_assets: Vec::new(),
         }
     }
 
@@ -448,6 +453,11 @@ impl Collector {
         self.done.get(&normalize(file)).cloned()
     }
 
+    /// Where a generic asset went, using its own extension-preserving placement.
+    pub fn placed_asset(&self, file: &Path) -> Option<PathBuf> {
+        self.done_assets.get(&normalize(file)).cloned()
+    }
+
     /// The folder of the project file the collector works for.
     pub fn project_dir(&self) -> &Path {
         &self.project_dir
@@ -456,9 +466,12 @@ impl Collector {
     /// The path `file` has in the samples folder after collecting (copied if needed).
     fn place(&mut self, file: &Path, generic_asset: bool) -> io::Result<PathBuf> {
         let file = normalize(file);
-        if let Some(target) = self.done.get(&file)
-            && (!generic_asset || target != &file || is_audio_file(&file))
-        {
+        let done = if generic_asset {
+            &self.done_assets
+        } else {
+            &self.done
+        };
+        if let Some(target) = done.get(&file) {
             return Ok(target.clone());
         }
         if !generic_asset && !is_audio_file(&file) {
@@ -502,7 +515,11 @@ impl Collector {
             to: target.clone(),
             copied,
         });
-        self.done.insert(file, target.clone());
+        if generic_asset {
+            self.done_assets.insert(file, target.clone());
+        } else {
+            self.done.insert(file, target.clone());
+        }
         Ok(target)
     }
 
@@ -718,6 +735,20 @@ mod tests {
         let mut again = Collector::new(&project);
         assert!(again.collect(Some(&new), None).unwrap().is_none());
         assert!(again.log.iter().all(|e| !e.copied));
+    }
+
+    #[test]
+    fn generic_collection_preserves_extensions_even_after_audio_deduplication() {
+        let dir = scratch("generic-extension");
+        let project = dir.join("Set.komponist");
+        let existing = file(&dir, "Set Samples/tone.wav", &wavb(b"same"));
+        let source = file(&dir, "outside/tone.wave", &wavb(b"same"));
+        let mut collector = Collector::new(&project);
+        assert_eq!(collector.collect_file(&source).unwrap(), existing);
+        let generic = collector.collect_asset_file(&source).unwrap();
+        assert_eq!(generic, dir.join("Set Samples/tone.wave"));
+        assert_eq!(collector.placed(&source), Some(existing));
+        assert_eq!(collector.placed_asset(&source), Some(generic));
     }
 
     #[test]

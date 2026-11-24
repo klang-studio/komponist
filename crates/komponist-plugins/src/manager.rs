@@ -1080,11 +1080,7 @@ impl PluginManager {
     }
 
     pub fn offline_preparation_status(&self, device: DeviceId) -> Option<OfflineStatus> {
-        let assets = self.device_assets(device)?;
-        assets
-            .supports_offline
-            .then_some(assets.offline_status)
-            .flatten()
+        self.device_assets(device)?.offline_status()
     }
 
     fn device_assets(&self, device: DeviceId) -> Option<&DeviceAssets> {

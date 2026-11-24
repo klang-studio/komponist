@@ -220,14 +220,16 @@ impl DirectDevice {
         if self.pending_restore.is_some() || matches!(self.status, DeviceStatus::Crashed(_)) {
             return;
         }
-        if let Some(bindings) = self.assets.take_bindings()
-            && !self.session.set_asset_bindings(&bindings)
-        {
-            events.push(crate::device_assets::binding_rejected(id));
+        if let Some(bindings) = self.assets.take_bindings() {
+            let accepted = self.session.set_asset_bindings(&bindings);
+            self.assets.report_bindings(accepted);
+            if !accepted {
+                events.push(crate::device_assets::binding_rejected(id));
+            }
         }
         if self.assets.slots_due() {
-            let (slots, offline) = self.session.asset_slots();
-            self.assets.report_slots(slots, offline);
+            let (slots, file_slots, offline) = self.session.asset_slots();
+            self.assets.report_slots(slots, file_slots, offline);
         }
         if let Some(request) = self.assets.offline_due() {
             let status = self.session.prepare_offline(request);

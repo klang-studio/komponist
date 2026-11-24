@@ -119,17 +119,10 @@ impl<T: SampledDefinition> AssetProvider for SampleParameters<T> {
         if !self.samples.is_idle() {
             return OfflineStatus::Preparing;
         }
-        let bindings = self
-            .host_bindings
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
         if self.samples.sync_status() == Some(SyncStatus::Unavailable)
-            || bindings.iter().any(|(&pad, link)| {
-                link.is_some()
-                    && matches!(
-                        self.samples.view(pad).status,
-                        PadStatus::Missing | PadStatus::Failed(_)
-                    )
+            || self.samples.views().iter().any(|pad| {
+                pad.link.is_some()
+                    && matches!(pad.status, PadStatus::Missing | PadStatus::Failed(_))
             })
         {
             OfflineStatus::Failed

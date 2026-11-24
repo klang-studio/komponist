@@ -84,9 +84,10 @@ impl DirectClap {
         self.plugin.device_display()
     }
 
-    pub(crate) fn asset_slots(&self) -> (Option<Snapshot>, bool) {
+    pub(crate) fn asset_slots(&self) -> (Option<Snapshot>, bool, bool) {
         (
             self.plugin.asset_slots(),
+            self.plugin.supports_asset_slots(),
             self.plugin.supports_offline_preparation(),
         )
     }

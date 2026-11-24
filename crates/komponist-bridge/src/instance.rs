@@ -1246,11 +1246,20 @@ impl Bridge {
             bytes.truncate(len);
             Some(bytes)
         });
+        let file_slots = self
+            .plugin
+            .as_ref()
+            .is_some_and(|plugin| plugin.supports_asset_slots());
         let offline = self
             .plugin
             .as_ref()
             .is_some_and(|plugin| plugin.supports_offline_preparation());
-        self.send(BridgeMsg::DeviceAssets(request, encoded, offline));
+        self.send(BridgeMsg::DeviceAssets {
+            request,
+            snapshot: encoded,
+            file_slots,
+            offline,
+        });
     }
 
     fn set_device_assets(&mut self, request: u32, bytes: &[u8]) {

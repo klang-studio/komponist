@@ -400,6 +400,10 @@ impl HostedPlugin for ClapPlugin {
             .map(|(bytes, layout)| (bytes.as_slice(), layout))
     }
 
+    fn supports_asset_slots(&self) -> bool {
+        device_assets::supports_slots(self.instance.borrow_mut().plugin_handle().as_raw())
+    }
+
     fn asset_slots(&self) -> Option<komponist_ipc::device_assets::Snapshot> {
         device_assets::snapshot(self.instance.borrow_mut().plugin_handle().as_raw())
     }

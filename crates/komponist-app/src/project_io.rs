@@ -893,6 +893,7 @@ impl App {
                 self.project(),
                 collector,
                 old_dir.as_deref(),
+                &self.dialogs.samples.approved_plugin_files,
                 plugin_snapshot,
             )
         {
@@ -911,9 +912,18 @@ impl App {
         };
         let mut document = self.doc.clone();
         document.rewrite_untracked(|project| {
-            crate::samples::rebase_project_links(project, old_dir.as_deref(), &new_dir, |source| {
-                collected(&source).unwrap_or_else(|| recordings.destination(source))
-            })
+            crate::samples::rebase_project_links(
+                project,
+                old_dir.as_deref(),
+                &new_dir,
+                |source| collected(&source).unwrap_or_else(|| recordings.destination(source)),
+                |source| {
+                    collector
+                        .as_ref()
+                        .and_then(|collector| collector.placed_asset(&source))
+                        .unwrap_or_else(|| recordings.destination(source))
+                },
+            )
         });
         // A running take so far, with the notes still in flight, on top of all that (#85).
         let mut for_file =
@@ -1487,10 +1497,17 @@ pub(crate) mod tests {
         assert_eq!(links[&0].resolve(Some(&new_dir)), Some(source.clone()));
 
         let mut collector = Collector::new(&destination);
-        crate::samples::collect_sample_sources(&saved, &mut collector, Some(&new_dir), |_| None)
-            .unwrap();
-        let placed = collector.placed(&source).unwrap();
-        assert_eq!(collector.placed(&same), Some(placed.clone()));
+        assert!(app.save_to_collected(&destination, &mut collector));
+        assert_eq!(collector.unapproved_assets, [source.clone(), same.clone()]);
+        assert!(!collector.samples_dir().exists());
+
+        app.set_plugin_asset(device, 0, Some(&source));
+        app.set_plugin_asset(device, 1, Some(&same));
+        let mut collector = Collector::new(&destination);
+        assert!(app.save_to_collected(&destination, &mut collector));
+        assert!(collector.unapproved_assets.is_empty());
+        let placed = collector.placed_asset(&source).unwrap();
+        assert_eq!(collector.placed_asset(&same), Some(placed.clone()));
         assert_eq!(std::fs::read(&placed).unwrap(), b"data to collect");
         assert!(source.is_file() && same.is_file());
     }

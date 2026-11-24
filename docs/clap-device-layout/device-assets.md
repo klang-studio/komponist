@@ -17,6 +17,7 @@ such as `sample` or `impulse-response`, a short display label, a file kind and c
 Use stable IDs across compatible plugin versions and sessions. Keep slot IDs, roles and kinds
 fixed for the life of an initialized instance. The host uses the ID to persist that slot's
 project link, and uses the file kind when offering a file picker or accepting a drop.
+When the file-slot callbacks are present, the host retries a temporarily unavailable snapshot.
 
 The host supplies resolved absolute UTF-8 paths in `set_bindings`. An update can set or clear
 multiple existing slots at once. Slots omitted from the update keep their bindings. Reject
@@ -29,6 +30,8 @@ The host owns the project's relocatable links, including relative path resolutio
 file reporting, rebasing and copying during project save. The plugin owns the runtime files
 and loader state. The host may reapply its bindings after restoring standard CLAP state.
 After binding a path that does not exist, report the slot as `Missing`.
+Collect and Save copies non-audio assets that the user selected for the current document session.
+A link read from the project file can still resolve and play without granting permission to copy it.
 
 The host may read snapshots and set bindings while audio processing is active. Both callbacks
 run on the main thread. Use a worker for expensive file access and decoding, and keep the

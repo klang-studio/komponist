@@ -775,20 +775,20 @@ impl App {
                         .extend(mapping.keys().cloned());
                     if !mapping.is_empty() {
                         let canonical = files::canonical_copies(&mapping);
+                        let destination = |source: PathBuf| {
+                            mapping
+                                .get(&source)
+                                .or_else(|| canonical.get(&std::fs::canonicalize(&source).ok()?))
+                                .cloned()
+                                .unwrap_or(source)
+                        };
                         self.doc.rewrite_untracked(|project| {
                             crate::samples::rebase_project_links(
                                 project,
                                 Some(&directory),
                                 &directory,
-                                |source| {
-                                    mapping
-                                        .get(&source)
-                                        .or_else(|| {
-                                            canonical.get(&std::fs::canonicalize(&source).ok()?)
-                                        })
-                                        .cloned()
-                                        .unwrap_or(source)
-                                },
+                                destination,
+                                destination,
                             )
                         });
                     }

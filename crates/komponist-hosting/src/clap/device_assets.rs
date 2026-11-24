@@ -16,6 +16,10 @@ fn extension(plugin: &clap_plugin) -> Option<&Extension> {
     }
 }
 
+pub(super) fn supports_slots(plugin: &clap_plugin) -> bool {
+    extension(plugin).is_some_and(|table| table.snapshot.is_some() && table.set_bindings.is_some())
+}
+
 pub(super) fn snapshot(plugin: &clap_plugin) -> Option<Snapshot> {
     let read = extension(plugin)?.snapshot?;
     let mut bytes = vec![0; MAX_SNAPSHOT_BYTES];

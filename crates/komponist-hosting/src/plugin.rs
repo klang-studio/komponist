@@ -159,7 +159,11 @@ pub trait HostedPlugin {
         None
     }
 
-    /// Loader and playback snapshot. A tempo requests preparation while audio is detached.
+    fn supports_asset_slots(&self) -> bool {
+        false
+    }
+
+    /// Current inventory and loading status of the plugin’s declared file slots.
     fn asset_slots(&self) -> Option<komponist_ipc::device_assets::Snapshot> {
         None
     }

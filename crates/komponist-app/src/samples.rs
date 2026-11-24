@@ -24,6 +24,7 @@
 //!
 //! Thread: UI thread.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -86,6 +87,8 @@ pub(crate) struct State {
     pub(crate) target: Option<(DeviceId, usize)>,
     /// A "Sammeln und speichern" without a project file waits for the save.
     pub(crate) collect_after_save: bool,
+    /// Canonical plugin files the user explicitly picked or dropped for this document.
+    pub(crate) approved_plugin_files: HashSet<PathBuf>,
     /// Held audition notes: when to release, track, key.
     auditions: Vec<(Instant, TrackId, u8)>,
     /// Waveform preview held by the primary pointer button.
@@ -101,6 +104,7 @@ impl State {
     pub(crate) fn forget_device_state(&mut self) {
         self.pads.clear();
         self.pending_params.clear();
+        self.approved_plugin_files.clear();
     }
 }
 
@@ -636,6 +640,21 @@ impl App {
                 StatusKind::Error,
             )
         };
+        if !collector.unapproved_assets.is_empty() {
+            let files = collector
+                .unapproved_assets
+                .iter()
+                .map(|path| {
+                    path.file_name()
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy()
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let warning = self.lang.status_collect_unapproved(files);
+            text = format!("{text} · {warning}");
+            kind = StatusKind::Error;
+        }
         if let Some(warning) = save_warning {
             text = format!("{warning} · {text}");
             kind = StatusKind::Error;
@@ -766,6 +785,7 @@ pub(crate) fn collect_sample_sources<'a>(
     project: &Project,
     collector: &mut Collector,
     project_dir: Option<&Path>,
+    approved_plugin_files: &HashSet<PathBuf>,
     plugin_snapshot: impl Fn(DeviceId) -> Option<&'a [u8]>,
 ) -> std::io::Result<()> {
     for device in project
@@ -776,7 +796,17 @@ pub(crate) fn collect_sample_sources<'a>(
     {
         for link in device.asset_links.values() {
             if let Some(found) = link.resolve(project_dir) {
-                collector.collect_asset_file(&found)?;
+                let canonical = std::fs::canonicalize(&found)?;
+                if links::is_audio_file(&found) || approved_plugin_files.contains(&canonical) {
+                    collector.collect_asset_file(&found)?;
+                } else if !(found.starts_with(collector.samples_dir())
+                    && std::fs::canonicalize(collector.samples_dir())
+                        .is_ok_and(|folder| canonical.starts_with(folder)))
+                {
+                    // Existing files in this project's collection need no copy. A stored
+                    // link alone never authorizes copying another non-audio file.
+                    collector.unapproved_assets.push(found);
+                }
             }
         }
         if bundled_sampler::kind(&device.plugin).is_some() {
@@ -801,6 +831,7 @@ pub(crate) fn rebase_project_links(
     old_dir: Option<&Path>,
     new_dir: &Path,
     destination: impl Fn(PathBuf) -> PathBuf,
+    asset_destination: impl Fn(PathBuf) -> PathBuf,
 ) -> Option<Project> {
     let after_samples = rewrite_links(
         project,
@@ -839,7 +870,7 @@ pub(crate) fn rebase_project_links(
             .map(|(&id, link)| {
                 let link = link.runtime_path(old_dir).map_or_else(
                     || link.clone(),
-                    |source| link.moved_to(&destination(source), Some(new_dir)),
+                    |source| link.moved_to(&asset_destination(source), Some(new_dir)),
                 );
                 (id, link)
             })

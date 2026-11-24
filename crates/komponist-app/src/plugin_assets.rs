@@ -73,6 +73,7 @@ impl App {
         let mut links = target.asset_links.clone();
         let mut changes = Vec::new();
         let mut reloads = Vec::new();
+        let mut approved_files = Vec::new();
         for (slot, link) in updates {
             let previous = links.get(&slot);
             if previous.is_none() && link.is_none() {
@@ -85,6 +86,7 @@ impl App {
                 relinking: previous.is_some() && resolved.is_none() && link.is_some(),
             });
             if let Some(link) = link {
+                approved_files.extend(std::fs::canonicalize(&link.abs).ok());
                 if resolved.as_ref() == Some(&link.abs)
                     && let Some(path) = link.abs.to_str()
                 {
@@ -121,10 +123,16 @@ impl App {
             }
             Ok((project, ()))
         });
-        if applied.is_some() && !reloads.is_empty() {
-            self.engine
-                .host_mut()
-                .set_asset_bindings(device, &Bindings { slots: reloads });
+        if applied.is_some() {
+            self.dialogs
+                .samples
+                .approved_plugin_files
+                .extend(approved_files);
+            if !reloads.is_empty() {
+                self.engine
+                    .host_mut()
+                    .set_asset_bindings(device, &Bindings { slots: reloads });
+            }
         }
     }
 

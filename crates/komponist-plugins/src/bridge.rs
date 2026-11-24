@@ -500,8 +500,6 @@ impl Bridge {
             self.send(ControlMsg::GetDeviceAssets(request));
         }
         if self.asset_offline_waiting.is_none()
-            && self.asset_bindings_waiting.is_none()
-            && !self.assets.bindings_pending()
             && let Some(work) = self.assets.offline_due()
         {
             let request = self.seq();
@@ -1326,16 +1324,25 @@ impl Bridge {
                 message,
                 fatal,
             } => self.handle_error(context, message, fatal, events),
-            BridgeMsg::DeviceAssets(request, bytes, offline) => {
+            BridgeMsg::DeviceAssets {
+                request,
+                snapshot,
+                file_slots,
+                offline,
+            } => {
                 if self.asset_slots_waiting == Some(request) {
                     self.asset_slots_waiting = None;
-                    self.assets
-                        .report_slots(bytes.as_deref().and_then(Snapshot::decode), offline);
+                    self.assets.report_slots(
+                        snapshot.as_deref().and_then(Snapshot::decode),
+                        file_slots,
+                        offline,
+                    );
                 }
             }
             BridgeMsg::DeviceAssetsApplied(request, accepted) => {
                 if self.asset_bindings_waiting == Some(request) {
                     self.asset_bindings_waiting = None;
+                    self.assets.report_bindings(accepted);
                     if !accepted {
                         events.push(crate::device_assets::binding_rejected(device));
                     }
