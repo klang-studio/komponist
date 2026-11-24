@@ -48,6 +48,8 @@ pub enum WidgetKind {
     FmAlgorithm,
     /// `graph` (WP-84), bound by [`CellParam::Graph`].
     Graph,
+    /// The host draws a plugin's display list here.
+    Canvas,
     /// An overlay over whole columns (WP-86: hexa's operator columns): a click on a column
     /// selects it (context placeholder of [`CellParam::Select`]) and the selected column gets an
     /// accent outline. It draws and takes clicks *below* the cells above it, so
@@ -570,7 +572,11 @@ pub fn validate(
         if page.cols == 0 {
             errors.push(LayoutError::NoColumns { page: p });
         }
-        if page.dividers.iter().any(|&d| d + 1 >= page.cols) {
+        if page
+            .dividers
+            .iter()
+            .any(|&d| u16::from(d) + 1 >= u16::from(page.cols))
+        {
             errors.push(LayoutError::BadDivider { page: p });
         }
         // Slot → the cell holding it (a Full slot blocks Top and Bottom too).
@@ -728,6 +734,20 @@ mod tests {
             ],
         );
         assert_eq!(validate(&l, &ParamContext::new(), &all), vec![]);
+    }
+
+    #[test]
+    fn dividers_must_leave_a_column_on_each_side() {
+        let mut layout = page(4, vec![]);
+        layout.pages[0].dividers = vec![0, 2];
+        assert!(validate(&layout, &ParamContext::new(), &all).is_empty());
+        for divider in [3, u8::MAX] {
+            layout.pages[0].dividers = vec![divider];
+            assert_eq!(
+                validate(&layout, &ParamContext::new(), &all),
+                vec![LayoutError::BadDivider { page: 0 }]
+            );
+        }
     }
 
     #[test]

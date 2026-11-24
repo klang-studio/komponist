@@ -983,6 +983,39 @@ fn cells_body(
             ctx.send(action);
         }
     }
+    if let Some(layout) = &card.native_layout
+        && let Some(native_page) = card.native_page()
+    {
+        let lang = komponist_ui::lang(cu.ctx()).code();
+        let row_step = device::grid::CELL[1] + device::grid::GAP;
+        for heading in &native_page.headings {
+            let Some(text) = layout.label(&heading.labels, lang) else {
+                continue;
+            };
+            let rect = Rect::from_min_size(
+                origin
+                    + vec2(
+                        pad + f32::from(heading.col) * step,
+                        pad + f32::from(heading.row) * row_step,
+                    ),
+                vec2(
+                    f32::from(heading.cols) * step - device::grid::GAP,
+                    size::CONTROL_COMPACT,
+                ),
+            );
+            if rect.bottom() <= body.bottom() {
+                let response = cu.allocate_rect(rect, Sense::hover());
+                response.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
+                cu.painter().with_clip_rect(rect).text(
+                    rect.left_center(),
+                    egui::Align2::LEFT_CENTER,
+                    text,
+                    fonts::font_id(&typography::SMALL),
+                    color32(color::TEXT_2),
+                );
+            }
+        }
+    }
     for cell in &page.cells {
         let rect = super::layout::cell_rect(cell).translate(origin.to_vec2());
         if rect.bottom() <= body.bottom() {

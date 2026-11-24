@@ -97,7 +97,7 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 13 distinguishes plugin-originated parameter flushes from value telemetry.
 /// 14 (#215): a checked snapshot carries the caller's remaining time.
 /// 15 adds optional device catalog labels to scanned and loaded descriptors.
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -419,6 +419,8 @@ pub enum ControlMsg {
         /// Echoed in the answer.
         seq: u32,
     },
+    /// Query a display list on the bridge's CLAP main thread.
+    GetDeviceDisplay(u32),
 }
 
 /// Bridge → app.
@@ -557,6 +559,8 @@ pub enum BridgeMsg {
         /// Why it was refused (the OS error); empty when granted.
         detail: String,
     },
+    /// Bounded display list encoded with the public display schema.
+    DeviceDisplay(u32, Option<Vec<u8>>),
 }
 
 /// Payload of [`BridgeMsg::Loaded`].

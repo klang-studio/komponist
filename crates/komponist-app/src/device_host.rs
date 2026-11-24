@@ -160,6 +160,14 @@ pub trait DeviceHost {
         None
     }
 
+    /// Last validated display list for an authored canvas.
+    fn device_display(
+        &self,
+        _device: DeviceId,
+    ) -> Option<&Arc<komponist_ipc::device_canvas::DisplayList>> {
+        None
+    }
+
     /// Native device presentation validated against the device's current parameter inventory.
     fn native_layout(
         &self,
@@ -867,6 +875,13 @@ impl DeviceHost for PluginHost {
 
     fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
         self.manager.params(device)
+    }
+
+    fn device_display(
+        &self,
+        device: DeviceId,
+    ) -> Option<&Arc<komponist_ipc::device_canvas::DisplayList>> {
+        self.manager.device_display(device)
     }
 
     fn native_layout(

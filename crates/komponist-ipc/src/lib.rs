@@ -35,6 +35,7 @@
 //! This crate links no plugin format and no audio backend.
 
 pub mod control;
+pub mod device_canvas;
 pub mod effect_meter;
 pub mod frame;
 pub mod native_layout;

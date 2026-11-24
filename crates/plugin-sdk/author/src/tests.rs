@@ -100,6 +100,7 @@ fn panel(cell: Cell) -> Panel {
         }],
         parameter_labels: BTreeMap::new(),
         choice_labels: BTreeMap::new(),
+        device_labels: None,
     }
 }
 
@@ -162,6 +163,40 @@ impl NativeClapLayout for TestPlugin<ChoiceParams> {
 }
 
 #[test]
+fn version_two_compiles_an_authored_graph_binding() {
+    type P = TestPlugin<ChoiceParams>;
+    let instance = Instance::new::<P>();
+    let panel = PanelV2 {
+        panel: panel(Cell::graph(
+            0,
+            0,
+            4,
+            2,
+            GraphBinding::new(GraphConfig::Waveform).bind("end", "plain"),
+        )),
+        graph_labels: [(
+            (0, 0),
+            GraphLabels {
+                name: bilingual("Waveform", "Wellenform"),
+                description: bilingual("Sample range", "Sample-Bereich"),
+                hide_title: true,
+            },
+        )]
+        .into(),
+        canvases: BTreeMap::new(),
+        headings: BTreeMap::new(),
+    };
+    // SAFETY: The instance is the initialized wrapper for P.
+    let bytes = unsafe { compile_v2::<P>(instance.0, &panel) }.unwrap();
+    let layout = NativeLayout::parse(&bytes).unwrap();
+    let graph = layout.pages[0].cells[0].graph.as_ref().unwrap();
+    assert_eq!(layout.schema_version, 2);
+    assert_eq!(layout.label(&graph.name, "de"), Some("Wellenform"));
+    assert_eq!(graph.slots.len(), 1);
+    assert!(graph.hide_title);
+}
+
+#[test]
 fn live_enum_ids_and_translations_survive_two_identical_abi_copies() {
     type P = TestPlugin<ChoiceParams>;
     let instance = Instance::new::<P>();
@@ -196,7 +231,7 @@ fn live_enum_ids_and_translations_survive_two_identical_abi_copies() {
     let parsed = NativeLayout::parse(&first).unwrap();
     parsed.validate_params(&params).unwrap();
     let cell = &parsed.pages[0].cells[0];
-    assert_eq!(cell.param_id, mode);
+    assert_eq!(cell.param_id, Some(mode));
     let choices = cell.choices.as_ref().unwrap();
     assert_eq!(choices.len(), 7);
     assert_eq!(choices[1].value, 1);

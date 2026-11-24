@@ -97,7 +97,7 @@ cargo test --locked -p komponist-app --test it sdk_example_uses_native_layout_an
 ## Add a panel to your device
 
 Use the example as a starting point. The SDK's Rust API follows the komponist device core.
-The published v1 CLAP extension is the compatibility contract for the compiled bundle.
+The published CLAP layout extensions are the compatibility contract for the compiled bundle.
 Keep the device's `Cargo.lock` and pin the komponist source revision that supplies its SDK and
 device core. For example, with a pinned checkout in a sibling directory named
 `komponist-source`, the device can use these dependencies:
@@ -139,6 +139,12 @@ compare the CLAP IDs reported by an independent host to those from your previous
 workspace's `validate` command is specific to Native Gain Example. Its scan code shows how to
 check a bundle against your own expected plugin descriptor, parameter IDs and layout. Resolve ID
 collisions before a first release and plan an explicit migration before changing an existing ID.
+
+Implement `panel_v2()` to add [graphs and canvases](../../docs/clap-device-layout/layout-v2.md).
+Supply localized names and descriptions for each graph and canvas. For a canvas,
+implement `display::DisplaySource` on the instance data and register `display::extension`.
+The example publishes both layout versions and draws the current gain response.
+Run the example's bundle scanner to verify both layouts and the display callback.
 
 ### Optional sidechain fallback
 

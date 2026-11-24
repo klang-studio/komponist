@@ -319,5 +319,6 @@ pub fn panel_from_parts(
         pages,
         parameter_labels,
         choice_labels,
+        device_labels: None,
     }
 }

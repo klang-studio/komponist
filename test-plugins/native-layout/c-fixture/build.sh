@@ -23,4 +23,4 @@ mkdir -p "$output"
 python3 "$source_dir/embed_layout.py" "$example_json" "$output/fixture-layouts.h"
 common=(-std=c11 -Wall -Wextra -Werror -pedantic -I "$clap_include" -I "$abi_include")
 "${CC:-cc}" "${common[@]}" "${shared[@]}" -I "$output" "$source_dir/plugin.c" -o "$output/layout-fixture.clap"
-"${CC:-cc}" "${common[@]}" "$source_dir/probe.c" "${probe_flags[@]}" -o "$output/$probe"
+"${CC:-cc}" "${common[@]}" "$source_dir/probe.c" ${probe_flags[@]+"${probe_flags[@]}"} -o "$output/$probe"

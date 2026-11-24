@@ -15,7 +15,10 @@ use clap_sys::host::clap_host;
 use clap_sys::plugin::clap_plugin;
 use clap_sys::version::{CLAP_VERSION, clap_version_is_compatible};
 use komponist_ipc::control::{ParamInfo, param_flags};
-use komponist_ipc::native_layout::{MAX_BYTES, NativeLayout};
+use komponist_ipc::{
+    device_canvas,
+    native_layout::{EXTENSION_V2, MAX_BYTES, NativeLayout},
+};
 use libloading::Library;
 use serde_json::{Value, json};
 
@@ -24,6 +27,11 @@ use crate::{EXTENSION_ID, PLUGIN_ID, Result, bundle};
 #[repr(C)]
 struct LayoutExtension {
     get_layout: Option<unsafe extern "C" fn(*const clap_plugin, *mut u8, u32, *mut u32) -> u32>,
+}
+
+#[repr(C)]
+struct DisplayExtension {
+    draw: Option<unsafe extern "C" fn(*const clap_plugin, *mut u8, u32) -> u32>,
 }
 
 /// Unlike the app's bridge, this host calls the exported CLAP ABI from a standalone process.
@@ -98,11 +106,15 @@ pub fn example(bundle: &Path, plain: bool) -> Result<Value> {
     }
 
     let params = inventory(plugin)?;
-    let layout = layout(plugin, &params, plain)?;
+    let layout_v1 = layout(plugin, &params, plain, EXTENSION_ID, 1)?;
+    let layout_v2 = layout(plugin, &params, plain, EXTENSION_V2, 2)?;
+    let display = display(plugin, plain)?;
     Ok(json!({
         "plugin": {"id": id, "name": name, "version": version},
         "params": params,
-        "layout": layout,
+        "layout": layout_v1,
+        "layout_v2": layout_v2,
+        "display": display,
     }))
 }
 
@@ -187,15 +199,21 @@ fn flags(clap: u32) -> u32 {
     .fold(0, |all, flag| all | flag)
 }
 
-fn layout(plugin: &clap_plugin, params: &[ParamInfo], plain: bool) -> Result<Value> {
-    let ptr = extension(plugin, EXTENSION_ID)?;
+fn layout(
+    plugin: &clap_plugin,
+    params: &[ParamInfo],
+    plain: bool,
+    id: &CStr,
+    version: u8,
+) -> Result<Value> {
+    let ptr = extension(plugin, id)?;
     if plain {
         if !ptr.is_null() {
             return Err("standard-only example advertises the native layout extension".into());
         }
         return Ok(Value::Null);
     }
-    // SAFETY: This extension ID names the v1 table, owned by the initialized plugin.
+    // SAFETY: This extension ID names a layout table owned by the initialized plugin.
     let extension = unsafe { ptr.cast::<LayoutExtension>().as_ref() }
         .ok_or("native layout extension missing from the built example")?;
     let get_layout = extension
@@ -217,32 +235,70 @@ fn layout(plugin: &clap_plugin, params: &[ParamInfo], plain: bool) -> Result<Val
     }
 
     let layout = NativeLayout::parse(&bytes).map_err(|error| error.to_string())?;
+    if layout.schema_version != version {
+        return Err("schema version does not match the layout extension ID".into());
+    }
     layout
         .validate_params(params)
         .map_err(|error| error.to_string())?;
     let bindings: BTreeSet<_> = layout
         .pages
         .iter()
-        .flat_map(|page| page.cells.iter())
-        .map(|cell| cell.param_id)
+        .flat_map(|page| page.cells.iter().flat_map(|cell| cell.parameter_ids()))
         .collect();
     if bindings != params.iter().map(|param| param.id).collect() {
         return Err("not every advertised example parameter is bound in the layout".into());
     }
+    let bilingual = |labels: &komponist_ipc::native_layout::Labels| {
+        labels.contains_key("en") && labels.contains_key("de")
+    };
     if layout.default_locale != "en"
         || layout.pages.iter().any(|page| {
-            !page.labels.contains_key("en")
-                || !page.labels.contains_key("de")
+            !bilingual(&page.labels)
                 || page.cells.iter().any(|cell| {
-                    cell.labels.as_ref().is_none_or(|labels| {
-                        !labels.contains_key("en") || !labels.contains_key("de")
-                    })
+                    if let Some(graph) = &cell.graph {
+                        !(bilingual(&graph.name) && bilingual(&graph.description))
+                    } else if let Some(canvas) = &cell.canvas {
+                        !(bilingual(&canvas.name) && bilingual(&canvas.description))
+                    } else {
+                        !cell.labels.as_ref().is_some_and(bilingual)
+                    }
                 })
         })
     {
         return Err("example layout has incomplete English/German labels".into());
     }
     Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn display(plugin: &clap_plugin, plain: bool) -> Result<Value> {
+    let pointer = extension(plugin, device_canvas::EXTENSION_ID)?;
+    if plain {
+        if !pointer.is_null() {
+            return Err("standard-only example advertises the device display extension".into());
+        }
+        return Ok(Value::Null);
+    }
+    // SAFETY: The ID designates the display vtable of the initialized plugin.
+    let table = unsafe { pointer.cast::<DisplayExtension>().as_ref() }
+        .ok_or("example display extension missing")?;
+    let draw = table.draw.ok_or("example display hook missing")?;
+    let mut bytes = vec![0; device_canvas::MAX_BYTES];
+    // SAFETY: The destination stays writable for the claimed capacity for this call.
+    let written = unsafe { draw(plugin, bytes.as_mut_ptr(), device_canvas::MAX_BYTES as u32) };
+    let bytes = bytes
+        .get(..written as usize)
+        .ok_or("oversized display list")?;
+    let display =
+        device_canvas::DisplayList::decode(bytes).ok_or("invalid example display list")?;
+    if !display
+        .frames
+        .iter()
+        .any(|frame| frame.key == "response" && !frame.primitives.is_empty())
+    {
+        return Err("the example produced no gain response canvas commands".into());
+    }
+    Ok(serde_json::to_value(display)?)
 }
 
 fn descriptor_text(text: *const c_char) -> Result<String> {

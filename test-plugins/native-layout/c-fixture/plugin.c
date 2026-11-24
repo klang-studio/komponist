@@ -1,5 +1,6 @@
 /* Standalone CLAP layout fixture using only the public C headers. */
 #include <clap-device-layout.h>
+#include <clap-device-display.h>
 #include <clap/entry.h>
 #include <clap/ext/audio-ports.h>
 #include <clap/ext/params.h>
@@ -16,7 +17,7 @@
 #include "fixture-layouts.h"
 
 #define FIXTURE_ID "org.klang-studio.komponist.layout-fixture."
-#define INCOMPATIBLE_EXTENSION "org.klang-studio.komponist.device-layout/2"
+#define INCOMPATIBLE_EXTENSION "org.klang-studio.komponist.device-layout/99"
 
 enum variant {
     VALID,
@@ -29,6 +30,8 @@ enum variant {
     UNKNOWN_PARAM,
     OPTIONAL_FIELD,
     REQUIRED_CAPABILITY,
+    VERSION_TWO,
+    INVALID_VERSION_TWO,
     VARIANT_COUNT
 };
 
@@ -56,6 +59,8 @@ static const clap_plugin_descriptor_t descriptors[VARIANT_COUNT] = {
     [UNKNOWN_PARAM] = DESCRIPTOR("unknown-param"),
     [OPTIONAL_FIELD] = DESCRIPTOR("optional-field"),
     [REQUIRED_CAPABILITY] = DESCRIPTOR("required-capability"),
+    [VERSION_TWO] = DESCRIPTOR("version-two"),
+    [INVALID_VERSION_TWO] = DESCRIPTOR("invalid-version-two"),
 };
 
 static const clap_param_info_t parameter_info[PARAM_COUNT] = {
@@ -79,6 +84,7 @@ struct instance {
     clap_plugin_t plugin;
     enum variant variant;
     _Atomic double values[PARAM_COUNT];
+    _Atomic float rendered_gain;
     bool hide_mode;
     const clap_host_t *host;
 };
@@ -247,6 +253,39 @@ static uint32_t CLAP_ABI get_layout(const clap_plugin_t *plugin, uint8_t *buffer
 
 static const komponist_clap_device_layout_t layout_extension = {.get_layout = get_layout};
 
+static uint32_t CLAP_ABI get_layout_v2(const clap_plugin_t *plugin, uint8_t *buffer,
+                                       uint32_t capacity, uint32_t *written) {
+    if (!written)
+        return KOMPONIST_CLAP_LAYOUT_ERROR;
+    *written = 0;
+    if (!buffer && capacity != 0)
+        return KOMPONIST_CLAP_LAYOUT_ERROR;
+    const bool valid = instance(plugin)->variant == VERSION_TWO;
+    const uint8_t *payload = valid ? version_two_layout : invalid_version_two_layout;
+    const uint32_t size = valid ? sizeof(version_two_layout) : sizeof(invalid_version_two_layout);
+    *written = size;
+    if (capacity < size)
+        return KOMPONIST_CLAP_LAYOUT_BUFFER_TOO_SMALL;
+    memcpy(buffer, payload, size);
+    return KOMPONIST_CLAP_LAYOUT_OK;
+}
+
+static const komponist_clap_device_layout_t layout_v2_extension = {.get_layout = get_layout_v2};
+
+static uint32_t CLAP_ABI draw(const clap_plugin_t *plugin, uint8_t *buffer,
+                             uint32_t capacity) {
+    if (!buffer || !capacity)
+        return 0;
+    const unsigned gain = (unsigned)(atomic_load(&instance(plugin)->rendered_gain) * 1000.0f);
+    const int written = snprintf((char *)buffer, capacity,
+        "{\"frames\":[{\"key\":\"scope\",\"primitives\":["
+        "{\"kind\":\"line\",\"from\":[0,0.75],\"to\":[1,%u.%03u],\"tone\":\"accent\"}]}]}",
+        gain / 1000, gain % 1000);
+    return written > 0 && (uint32_t)written < capacity ? (uint32_t)written : 0;
+}
+
+static const komponist_clap_device_display_t display_extension = {.draw = draw};
+
 static bool CLAP_ABI plugin_init(const clap_plugin_t *plugin) {
     (void)plugin;
     return true;
@@ -268,11 +307,12 @@ static void CLAP_ABI no_op(const clap_plugin_t *plugin) {
 
 static clap_process_status CLAP_ABI process(const clap_plugin_t *plugin, const clap_process_t *p) {
     flush_params(plugin, p->in_events, p->out_events);
+    const float gain = (float)instance(plugin)->values[GAIN];
+    atomic_store(&instance(plugin)->rendered_gain, gain);
     if (p->audio_inputs_count != 1 || p->audio_outputs_count != 1 ||
         p->audio_inputs[0].channel_count != 2 || p->audio_outputs[0].channel_count != 2 ||
         !p->audio_inputs[0].data32 || !p->audio_outputs[0].data32)
         return CLAP_PROCESS_ERROR;
-    const float gain = (float)instance(plugin)->values[GAIN];
     for (uint32_t channel = 0; channel < 2; ++channel) {
         const float *input = p->audio_inputs[0].data32[channel];
         float *output = p->audio_outputs[0].data32[channel];
@@ -357,6 +397,13 @@ static const void *CLAP_ABI get_extension(const clap_plugin_t *plugin, const cha
         return NULL;
     if (variant == INCOMPATIBLE)
         return strcmp(id, INCOMPATIBLE_EXTENSION) == 0 ? &layout_extension : NULL;
+    if (variant == VERSION_TWO && strcmp(id, KOMPONIST_CLAP_EXT_DEVICE_DISPLAY) == 0)
+        return &display_extension;
+    if ((variant == VERSION_TWO || variant == INVALID_VERSION_TWO) &&
+        strcmp(id, KOMPONIST_CLAP_EXT_DEVICE_LAYOUT_V2) == 0)
+        return &layout_v2_extension;
+    if (variant == VERSION_TWO)
+        return NULL;
     return strcmp(id, KOMPONIST_CLAP_EXT_DEVICE_LAYOUT) == 0 ? &layout_extension : NULL;
 }
 
@@ -386,6 +433,7 @@ static const clap_plugin_t *CLAP_ABI create_plugin(const clap_plugin_factory_t *
         state->host = host;
         for (int j = 0; j < PARAM_COUNT; ++j)
             atomic_init(&state->values[j], parameter_info[j].default_value);
+        atomic_init(&state->rendered_gain, (float)parameter_info[GAIN].default_value);
         state->plugin = (clap_plugin_t){.desc = &descriptors[i],
                                        .plugin_data = state,
                                        .init = plugin_init,

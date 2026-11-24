@@ -13,6 +13,7 @@
 //! (CLAP thread-check reports it as such), processor methods mark their thread as the audio thread
 //! while they run.
 
+mod device_canvas;
 mod effect_meter;
 mod events;
 mod host;
@@ -284,35 +285,48 @@ impl ClapPlugin {
             && ext
                 .gui
                 .is_some_and(|gui| gui.is_api_supported(&handle, EMBEDDED));
-        let native_layout = match native_layout::read(handle.as_raw()) {
-            Ok(layout) => layout,
-            Err(error) => {
-                context.notify.log(LogLevel::Warning, &error.to_string());
-                None
-            }
-        };
-
         let descriptor = PluginDescriptor {
             sidechain: PortLayout::query(ext.audio_ports, &handle, true)
                 .sidechain
                 .is_some(),
-            localized: native_layout
-                .as_ref()
-                .and_then(|(_, layout)| layout.localized_plugin()),
             ..descriptor
         };
 
-        Ok(ClapPlugin {
+        let mut plugin = ClapPlugin {
             instance: RefCell::new(instance),
             _entry: entry,
             descriptor,
             ext,
             context,
             has_gui,
-            native_layout,
+            native_layout: None,
             gui: None,
             render_mode: RenderMode::Realtime,
-        })
+        };
+        use komponist_ipc::native_layout::{EXTENSION_V1, EXTENSION_V2};
+        for (id, version) in [(EXTENSION_V2, 2), (EXTENSION_V1, 1)] {
+            let layout = {
+                let mut instance = plugin.instance.borrow_mut();
+                native_layout::read(instance.plugin_handle().as_raw(), id, version)
+            };
+            match layout.and_then(|layout| {
+                if let Some((_, descriptor)) = &layout
+                    && version == 2
+                {
+                    descriptor.validate_params(&plugin.params())?;
+                }
+                Ok(layout)
+            }) {
+                Ok(Some(layout)) => {
+                    plugin.descriptor.localized = layout.1.localized_plugin();
+                    plugin.native_layout = Some(layout);
+                    break;
+                }
+                Ok(None) => {}
+                Err(error) => plugin.log(LogLevel::Warning, &error.to_string()),
+            }
+        }
+        Ok(plugin)
     }
 
     fn log(&self, level: LogLevel, message: &str) {
@@ -506,6 +520,10 @@ impl HostedPlugin for ClapPlugin {
                     .map(|i| param_info(&i))
             })
             .collect()
+    }
+
+    fn device_display(&self) -> Option<komponist_ipc::device_canvas::DisplayList> {
+        device_canvas::draw(self.instance.borrow_mut().plugin_handle().as_raw())
     }
 
     fn param_value(&self, id: u32) -> Option<f64> {

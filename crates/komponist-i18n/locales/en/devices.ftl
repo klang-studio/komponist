@@ -254,6 +254,7 @@ devices-widget-column-select = Column Select
 
 # Placeholder: widget kind.
 devices-widget-graph = Graph
+devices-widget-canvas = Canvas
 
 # The accessible name of the preset button: "Preset: Glas-Glocke" (handoff `aria-label`).
 devices-preset-name = Preset: { $name }

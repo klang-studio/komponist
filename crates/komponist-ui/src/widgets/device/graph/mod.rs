@@ -434,6 +434,7 @@ pub struct Graph<'a> {
     playhead: Option<f64>,
     level: Option<f64>,
     note: Option<(&'a str, &'a str)>,
+    description: Option<&'a str>,
     selected: Option<Option<usize>>,
     salt: Option<Id>,
 }
@@ -458,6 +459,7 @@ impl<'a> Graph<'a> {
             playhead: None,
             level: None,
             note: None,
+            description: None,
             selected: None,
             salt: None,
         }
@@ -514,6 +516,13 @@ impl<'a> Graph<'a> {
         self
     }
 
+    /// The accessible description of an authored graph.
+    #[must_use]
+    pub fn description(mut self, description: Option<&'a str>) -> Self {
+        self.description = description;
+        self
+    }
+
     /// Shows handle `selected` as selected, whatever the user clicked (stills and tests).
     #[must_use]
     pub fn selected(mut self, selected: Option<usize>) -> Self {
@@ -548,6 +557,7 @@ impl<'a> Graph<'a> {
             playhead,
             level,
             note,
+            description,
             selected: forced_selection,
             salt,
         } = self;
@@ -559,6 +569,10 @@ impl<'a> Graph<'a> {
         let (rect, area) = ui.allocate_exact_size(size, sense_area);
         let id = salt.unwrap_or(area.id);
         area.widget_info(|| WidgetInfo::labeled(Role::Group, !disabled, &spec.name));
+        if let Some(description) = description {
+            ui.ctx()
+                .accesskit_node_builder(area.id, |node| node.set_description(description));
+        }
         let plot = Plot::new(spec, rect);
         let ctx = ui.ctx().clone();
         let mods = ui.input(|i| i.modifiers);

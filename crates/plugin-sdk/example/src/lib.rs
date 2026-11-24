@@ -84,7 +84,15 @@ impl ClapPlugin for NativeGain {
     const CLAP_FEATURES: &'static [ClapFeature] = &[ClapFeature::AudioEffect, ClapFeature::Stereo];
 
     #[cfg(feature = "native-layout")]
+    fn clap_custom_extension_data(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        Some(self.params.clone())
+    }
+
+    #[cfg(feature = "native-layout")]
     unsafe fn clap_custom_extension(id: &std::ffi::CStr) -> *const std::ffi::c_void {
+        if id == komponist_native_clap_sdk::display::EXTENSION_ID {
+            return komponist_native_clap_sdk::display::extension::<Self, GainParams>(id);
+        }
         komponist_native_clap_sdk::extension::<Self>(id)
     }
 }

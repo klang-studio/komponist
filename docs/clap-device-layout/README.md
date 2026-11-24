@@ -9,6 +9,8 @@ Gain parameter at CLAP ID `42` and a stepped enum Mode parameter at CLAP ID `7` 
 Plugins can also publish an independent [sidechain fallback extension](sidechain-fallback.md)
 to define how the host supplies a disconnected auxiliary input.
 
+For graphs and canvases, see [layout version 2](layout-v2.md).
+
 ## Device catalog labels
 
 A layout may provide an optional top-level `metadata` object. Its `names`

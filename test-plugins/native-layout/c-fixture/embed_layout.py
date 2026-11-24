@@ -36,12 +36,20 @@ def main(example_path, output_path):
     required_capability = copy.deepcopy(layout)
     required_capability["required_capabilities"] = ["future-animation"]
 
+    version_two = json.loads(
+        (Path(example_path).parent / "example-v2.json").read_bytes()
+    )
+    invalid_version_two = copy.deepcopy(version_two)
+    invalid_version_two["pages"][0]["cells"][1]["graph"]["slots"]["attack"] = 999
+
     output = [
         "/* Generated from the normative layout example during the fixture build. */\n",
         declaration("example_layout", example),
         declaration("unknown_param_layout", encode(unknown_param)),
         declaration("optional_field_layout", encode(optional_field)),
         declaration("required_capability_layout", encode(required_capability)),
+        declaration("version_two_layout", encode(version_two)),
+        declaration("invalid_version_two_layout", encode(invalid_version_two)),
     ]
     Path(output_path).write_text("\n".join(output), encoding="utf-8")
 

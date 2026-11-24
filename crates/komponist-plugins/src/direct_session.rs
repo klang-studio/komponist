@@ -251,6 +251,10 @@ impl DirectSession {
         true
     }
 
+    pub(crate) fn device_display(&self) -> Option<komponist_ipc::device_canvas::DisplayList> {
+        self.host.device_display()
+    }
+
     pub(crate) fn sampler_ui(
         &self,
         export_tempo: Option<f64>,
