@@ -19,8 +19,9 @@
 //! Everything here is plain `std`, non-realtime.
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
-use std::io;
+use std::fs::File;
+use std::hash::Hasher;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use komponist_model::paths::normalize;
@@ -294,12 +295,15 @@ pub struct Collector {
     scanned: bool,
     /// Resolved source → target, so one file is handled once.
     done: HashMap<PathBuf, PathBuf>,
+    done_assets: HashMap<PathBuf, PathBuf>,
     /// The log of this run.
     pub log: Vec<Collected>,
     /// Files that were **not** collected because they are not audio (see [`is_audio_file`]); their
     /// links stay as they were. A crafted project must not make "Sammeln und speichern" copy an
     /// arbitrary file (a key, a document) next to the project.
     pub skipped: Vec<PathBuf>,
+    /// Plugin assets outside the collection folder that were not approved for copying.
+    pub unapproved_assets: Vec<PathBuf>,
 }
 
 /// File name extensions of audio files that may be collected (lower case).
@@ -360,8 +364,10 @@ impl Collector {
             known: HashMap::new(),
             scanned: false,
             done: HashMap::new(),
+            done_assets: HashMap::new(),
             log: Vec::new(),
             skipped: Vec::new(),
+            unapproved_assets: Vec::new(),
         }
     }
 
@@ -385,7 +391,7 @@ impl Collector {
                 out.push((*pad, link.clone()));
                 continue;
             };
-            let target = self.place(&found)?;
+            let target = self.collect_file(&found)?;
             let new = SampleLink {
                 rel: relative(&target, &self.project_dir),
                 abs: target,
@@ -433,7 +439,12 @@ impl Collector {
     /// does for the links of a state: copied unless it lies in the folder or an identical copy does.
     /// Returns where it is now. Audio clips use it (#9).
     pub fn collect_file(&mut self, file: &Path) -> io::Result<PathBuf> {
-        self.place(file)
+        self.place(file, false)
+    }
+
+    /// Collects a plugin-declared file, preserving its extension for formats the plugin chooses.
+    pub fn collect_asset_file(&mut self, file: &Path) -> io::Result<PathBuf> {
+        self.place(file, true)
     }
 
     /// Where `file` went in this run ([`Collector::collect_file`], [`Collector::collect`]); `None`
@@ -442,18 +453,28 @@ impl Collector {
         self.done.get(&normalize(file)).cloned()
     }
 
+    /// Where a generic asset went, using its own extension-preserving placement.
+    pub fn placed_asset(&self, file: &Path) -> Option<PathBuf> {
+        self.done_assets.get(&normalize(file)).cloned()
+    }
+
     /// The folder of the project file the collector works for.
     pub fn project_dir(&self) -> &Path {
         &self.project_dir
     }
 
     /// The path `file` has in the samples folder after collecting (copied if needed).
-    fn place(&mut self, file: &Path) -> io::Result<PathBuf> {
+    fn place(&mut self, file: &Path, generic_asset: bool) -> io::Result<PathBuf> {
         let file = normalize(file);
-        if let Some(target) = self.done.get(&file) {
+        let done = if generic_asset {
+            &self.done_assets
+        } else {
+            &self.done
+        };
+        if let Some(target) = done.get(&file) {
             return Ok(target.clone());
         }
-        if !is_audio_file(&file) {
+        if !generic_asset && !is_audio_file(&file) {
             // Not copied, not changed: the link keeps naming the file where it is.
             self.skipped.push(file.clone());
             self.done.insert(file.clone(), file.clone());
@@ -468,7 +489,14 @@ impl Collector {
             // A file already in the folder wins over a copy elsewhere; the bytes must match.
             paths
                 .iter()
-                .find(|p| same_bytes(p, &file).unwrap_or(false))
+                .find(|p| {
+                    let supported = if generic_asset {
+                        p.extension() == file.extension()
+                    } else {
+                        is_audio_file(p)
+                    };
+                    supported && same_bytes(p, &file).unwrap_or(false)
+                })
                 .cloned()
         });
         let (target, copied) = if inside {
@@ -487,7 +515,11 @@ impl Collector {
             to: target.clone(),
             copied,
         });
-        self.done.insert(file, target.clone());
+        if generic_asset {
+            self.done_assets.insert(file, target.clone());
+        } else {
+            self.done.insert(file, target.clone());
+        }
         Ok(target)
     }
 
@@ -536,14 +568,38 @@ impl Collector {
 
 /// (size, content hash) of a file.
 fn fingerprint(path: &Path) -> io::Result<(u64, u64)> {
-    let bytes = std::fs::read(path)?;
+    let mut file = File::open(path)?;
+    let length = file.metadata()?.len();
+    let mut remaining = length;
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut h);
-    Ok((bytes.len() as u64, h.finish()))
+    let mut buffer = [0; 16 * 1024];
+    while remaining != 0 {
+        let size = remaining.min(buffer.len() as u64) as usize;
+        file.read_exact(&mut buffer[..size])?;
+        h.write(&buffer[..size]);
+        remaining -= size as u64;
+    }
+    Ok((length, h.finish()))
 }
 
 fn same_bytes(a: &Path, b: &Path) -> io::Result<bool> {
-    Ok(std::fs::read(a)? == std::fs::read(b)?)
+    let (mut first, mut second) = (File::open(a)?, File::open(b)?);
+    let mut remaining = first.metadata()?.len();
+    if remaining != second.metadata()?.len() {
+        return Ok(false);
+    }
+    let mut a = [0; 16 * 1024];
+    let mut b = [0; 16 * 1024];
+    while remaining != 0 {
+        let size = remaining.min(a.len() as u64) as usize;
+        first.read_exact(&mut a[..size])?;
+        second.read_exact(&mut b[..size])?;
+        if a[..size] != b[..size] {
+            return Ok(false);
+        }
+        remaining -= size as u64;
+    }
+    Ok(first.read(&mut a[..1])? == 0 && second.read(&mut b[..1])? == 0)
 }
 
 #[cfg(test)]
@@ -679,6 +735,20 @@ mod tests {
         let mut again = Collector::new(&project);
         assert!(again.collect(Some(&new), None).unwrap().is_none());
         assert!(again.log.iter().all(|e| !e.copied));
+    }
+
+    #[test]
+    fn generic_collection_preserves_extensions_even_after_audio_deduplication() {
+        let dir = scratch("generic-extension");
+        let project = dir.join("Set.komponist");
+        let existing = file(&dir, "Set Samples/tone.wav", &wavb(b"same"));
+        let source = file(&dir, "outside/tone.wave", &wavb(b"same"));
+        let mut collector = Collector::new(&project);
+        assert_eq!(collector.collect_file(&source).unwrap(), existing);
+        let generic = collector.collect_asset_file(&source).unwrap();
+        assert_eq!(generic, dir.join("Set Samples/tone.wave"));
+        assert_eq!(collector.placed(&source), Some(existing));
+        assert_eq!(collector.placed_asset(&source), Some(generic));
     }
 
     #[test]

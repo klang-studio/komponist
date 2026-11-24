@@ -71,6 +71,7 @@ fn install(project: &mut Project, kind: Internal) -> Arc<Device> {
         plugin: kind.plugin_ref(),
         role: kind.role(),
         bypass: false,
+        asset_links: Default::default(),
         state: None,
         sidechain: None,
     })

@@ -92,7 +92,8 @@ impl Flatten {
                 let host = app.engine.host();
                 match host.status(id) {
                     DeviceStatus::Ok
-                        if host.sampler_is_loading(id)
+                        if host.asset_inventory_pending(id)
+                            || host.sampler_is_loading(id)
                             || Self::sampler_pads(app, id).is_some_and(|(_, pads)| {
                                 pads.iter().any(|pad| {
                                     pad.link.is_some()
@@ -158,6 +159,7 @@ impl Flatten {
                     .as_deref()
                     .and_then(komponist_plugins::bundled_sampler::assets)
                     .as_deref(),
+                &device.asset_links,
                 host.sampler_ui(id),
             )
             .pads
@@ -328,6 +330,7 @@ impl App {
             job,
             phase: Phase::Devices,
             diagnostics: Vec::new(),
+            offline_devices: Vec::new(),
             flatten: Some(Flatten {
                 id,
                 name,

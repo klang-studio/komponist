@@ -466,6 +466,7 @@ fn bus_latency_is_compensated_once_and_its_delayed_tail_is_drained() {
                 module: "".into(),
             },
             bypass: false,
+            asset_links: Default::default(),
             state: None,
             sidechain: None,
         }));
@@ -536,6 +537,7 @@ fn double_stop_and_locate_preserve_hardware_and_bus_latency_tails() {
                 module: "".into(),
             },
             bypass: false,
+            asset_links: Default::default(),
             state: None,
             sidechain: None,
         }));

@@ -20,6 +20,7 @@ use crate::manager::{
 };
 
 pub(crate) struct DirectDevice {
+    pub(crate) assets: crate::device_assets::DeviceAssets,
     session: DirectSession,
     bundled_kind: Option<BuiltinKind>,
     pub(crate) params: Vec<ParamInfo>,
@@ -135,6 +136,7 @@ impl DirectDevice {
             session,
             bundled_kind,
             params: Vec::new(),
+            assets: crate::device_assets::DeviceAssets::new(),
             sampler_ui: None,
             sampler_ui_at: Instant::now(),
             sampler_export_tempo: None,
@@ -218,6 +220,27 @@ impl DirectDevice {
         }
     }
 
+    pub(crate) fn poll_assets(&mut self, id: DeviceId, events: &mut Vec<PluginManagerEvent>) {
+        if self.pending_restore.is_some() || matches!(self.status, DeviceStatus::Crashed(_)) {
+            return;
+        }
+        if let Some(bindings) = self.assets.take_bindings() {
+            let accepted = self.session.set_asset_bindings(&bindings);
+            self.assets.report_bindings(accepted);
+            if !accepted {
+                events.push(crate::device_assets::binding_rejected(id));
+            }
+        }
+        if self.assets.slots_due() {
+            let (slots, file_slots, offline) = self.session.asset_slots();
+            self.assets.report_slots(slots, file_slots, offline);
+        }
+        if let Some(request) = self.assets.offline_due() {
+            let status = self.session.prepare_offline(request);
+            self.assets.report_offline(request, status);
+        }
+    }
+
     pub(crate) fn poll_sampler_ui(&mut self) {
         let now = Instant::now();
         if self.pending_restore.is_none() && now >= self.sampler_ui_at {
@@ -278,6 +301,7 @@ impl DirectDevice {
             && let Some((result, inventory)) = self.session.restore(&state, Inventory::read)
         {
             self.pending_restore = None;
+            self.assets.finish_restore();
             self.last_state = Some(state);
             self.state_warning = result.err().map(|error| error.to_string());
             self.report_warning(id, events);
@@ -407,6 +431,7 @@ impl DirectDevice {
 
     pub(crate) fn set_state(&mut self, state: Arc<[u8]>) {
         self.sampler_ui = None;
+        self.assets.begin_restore();
         self.pending_restore = Some(state);
         self.pending_writes.clear();
         self.unconfirmed_writes.clear();

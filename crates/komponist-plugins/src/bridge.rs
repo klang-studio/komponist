@@ -44,6 +44,7 @@ use std::time::{Duration, Instant};
 
 use komponist_builtin::BuiltinKind;
 use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError, socket_pair};
+use komponist_ipc::device_assets::{MAX_BINDINGS_BYTES, OfflineRequest, Snapshot};
 use komponist_ipc::{
     AppChannel, BridgeClient, BridgeMsg, ChannelError, ControlMsg, ErrorContext, GuiTarget,
     LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessExit, ProcessWatcher,
@@ -248,6 +249,10 @@ pub(crate) struct Bridge {
     /// The latest state: the last snapshot, or the state the bridge was started with.
     pub last_state: Option<Arc<[u8]>>,
     pub params: Vec<ParamInfo>,
+    pub(crate) assets: crate::device_assets::DeviceAssets,
+    asset_slots_waiting: Option<u32>,
+    asset_bindings_waiting: Option<u32>,
+    asset_offline_waiting: Option<(u32, Option<OfflineRequest>)>,
     pub sampler_ui: Option<komponist_ipc::sampler_ui::Snapshot>,
     sampler_ui_request: Option<u32>,
     sampler_ui_at: Instant,
@@ -393,6 +398,10 @@ impl Bridge {
             snapshot_due: None,
             last_state: s.state,
             params: Vec::new(),
+            assets: crate::device_assets::DeviceAssets::new(),
+            asset_slots_waiting: None,
+            asset_bindings_waiting: None,
+            asset_offline_waiting: None,
             sampler_ui: None,
             sampler_ui_request: None,
             sampler_ui_at: Instant::now(),
@@ -467,6 +476,37 @@ impl Bridge {
             && let Some(writer) = &self.writer
         {
             let _ = writer.send(msg);
+        }
+    }
+
+    pub(crate) fn poll_assets(&mut self) {
+        if !self.running() || !self.state_restores.is_empty() {
+            return;
+        }
+        if self.asset_bindings_waiting.is_none()
+            && let Some(bindings) = self.assets.take_bindings()
+        {
+            // queue_bindings validates the entries and bounds their number before coalescing.
+            let mut bytes = vec![0; MAX_BINDINGS_BYTES];
+            let len = bindings
+                .encode(&mut bytes)
+                .expect("bounded file-slot bindings");
+            bytes.truncate(len);
+            let request = self.seq();
+            self.asset_bindings_waiting = Some(request);
+            self.send(ControlMsg::SetDeviceAssets(request, bytes));
+        }
+        if self.asset_slots_waiting.is_none() && self.assets.slots_due() {
+            let request = self.seq();
+            self.asset_slots_waiting = Some(request);
+            self.send(ControlMsg::GetDeviceAssets(request));
+        }
+        if self.asset_offline_waiting.is_none()
+            && let Some(work) = self.assets.offline_due()
+        {
+            let request = self.seq();
+            self.asset_offline_waiting = Some((request, work));
+            self.send(ControlMsg::PrepareDeviceOffline(request, work));
         }
     }
 
@@ -820,6 +860,9 @@ impl Bridge {
         self.pending_params.clear();
         self.released_macro_params.clear();
         self.invalidate_state_requests();
+        self.assets.begin_restore();
+        // A reply sent before this restore cannot describe the restored state.
+        self.asset_offline_waiting = None;
         let request = self.seq();
         self.state_restores.push_back(StateRestore::new(request));
         self.send(ControlMsg::SetState {
@@ -1294,6 +1337,38 @@ impl Bridge {
                 message,
                 fatal,
             } => self.handle_error(context, message, fatal, events),
+            BridgeMsg::DeviceAssets {
+                request,
+                snapshot,
+                file_slots,
+                offline,
+            } => {
+                if self.asset_slots_waiting == Some(request) {
+                    self.asset_slots_waiting = None;
+                    self.assets.report_slots(
+                        snapshot.as_deref().and_then(Snapshot::decode),
+                        file_slots,
+                        offline,
+                    );
+                }
+            }
+            BridgeMsg::DeviceAssetsApplied(request, accepted) => {
+                if self.asset_bindings_waiting == Some(request) {
+                    self.asset_bindings_waiting = None;
+                    self.assets.report_bindings(accepted);
+                    if !accepted {
+                        events.push(crate::device_assets::binding_rejected(device));
+                    }
+                }
+            }
+            BridgeMsg::DeviceOfflineStatus(request, status) => {
+                if let Some((expected, work)) = self.asset_offline_waiting
+                    && expected == request
+                {
+                    self.asset_offline_waiting = None;
+                    self.assets.report_offline(work, status);
+                }
+            }
             BridgeMsg::SamplerUi(request, bytes) => {
                 if self.sampler_ui_request == Some(request) {
                     self.sampler_ui_request = None;
@@ -1387,6 +1462,10 @@ impl Bridge {
             return;
         };
         let restore = self.state_restores.remove(index).expect("matched restore");
+        if self.state_restores.is_empty() {
+            // A failed CLAP state load may still have changed runtime state.
+            self.assets.finish_restore();
+        }
         let device = self.device;
         let (values, error) = match result {
             Ok(values) => (values, None),

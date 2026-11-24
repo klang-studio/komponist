@@ -2631,6 +2631,13 @@ impl App {
                 self.reset_sampler_hit(device);
                 self.engine.reload_device(self.doc.project(), device);
             }
+            PluginAction::PickPluginAsset { device, slot } => self.pick_plugin_asset(device, slot),
+            PluginAction::SetPluginAsset { device, slot, path } => {
+                self.set_plugin_asset(device, slot, path.as_deref());
+            }
+            PluginAction::DropPluginAssets { device, files } => {
+                self.drop_plugin_assets(device, &files);
+            }
             PluginAction::LoadSample { .. }
             | PluginAction::ClearSample { .. }
             | PluginAction::PickSample { .. }

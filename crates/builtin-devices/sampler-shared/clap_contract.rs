@@ -227,6 +227,38 @@ pub(crate) fn sample_asset_roundtrip<P: ClapPlugin>(key: u8, gate_param: &str) {
             assets(&missing)
         );
 
+        use komponist_native_clap_sdk::device_assets;
+        let table =
+            ((*plugin).get_extension.unwrap())(plugin, device_assets::EXTENSION_ID.as_ptr());
+        let prepare = table
+            .cast::<device_assets::Extension>()
+            .as_ref()
+            .unwrap()
+            .prepare_offline
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let status =
+                device_assets::OfflineStatus::from_raw(prepare(plugin.cast(), 1, 48_000.0, 120.0));
+            match status {
+                device_assets::OfflineStatus::Failed => break,
+                device_assets::OfflineStatus::Preparing => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "missing restored sample did not settle"
+                    );
+                    std::thread::sleep(Duration::from_millis(3));
+                }
+                device_assets::OfflineStatus::Ready => {
+                    panic!("missing restored sample cannot render")
+                }
+            }
+        }
+        assert_eq!(
+            prepare(plugin.cast(), 0, 0.0, 0.0),
+            device_assets::OfflineStatus::Ready as u32
+        );
+
         assert!(((*plugin).activate.unwrap())(
             plugin,
             48_000.0,

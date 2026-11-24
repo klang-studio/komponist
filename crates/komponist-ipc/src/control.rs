@@ -99,7 +99,9 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 15 adds optional device catalog labels to scanned and loaded descriptors.
 /// 16 adds bounded canvas display messages.
 /// 17 (#289) advertises the named signal tap inventory after plugin load.
-pub const PROTOCOL_VERSION: u32 = 17;
+/// 18 distinguishes unsupported file slots from a temporarily missing snapshot.
+/// 19 combines named signal taps and device asset preparation in the same wire contract.
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -333,6 +335,12 @@ pub enum ControlMsg {
     GetSamplerUi(u32, Option<f64>),
     /// Start a held slice audition at the source position, or release it with `None`.
     PreviewSamplerSlice(Option<f64>),
+    /// Query the live file-slot inventory and offline preparation capability.
+    GetDeviceAssets(u32),
+    /// Apply a bounded atomic file-slot update on the main thread.
+    SetDeviceAssets(u32, Vec<u8>),
+    /// Start, poll or clear a detached offline preparation request.
+    PrepareDeviceOffline(u32, Option<crate::device_assets::OfflineRequest>),
     /// Load plugin `plugin_id` from `bundle`. Answer: `Loaded` or `Error`.
     Load {
         /// Bundle format.
@@ -430,6 +438,17 @@ pub enum ControlMsg {
 pub enum BridgeMsg {
     /// Bounded sampler UI data encoded with the public extension's current schema.
     SamplerUi(u32, Option<Vec<u8>>),
+    /// File-slot inventory and capabilities. A supported inventory can be temporarily unavailable.
+    DeviceAssets {
+        request: u32,
+        snapshot: Option<Vec<u8>>,
+        file_slots: bool,
+        offline: bool,
+    },
+    /// Whether the plugin accepted the file-slot update.
+    DeviceAssetsApplied(u32, bool),
+    /// Preparation result. Absent when the extension is unavailable.
+    DeviceOfflineStatus(u32, Option<crate::device_assets::OfflineStatus>),
     /// First message after start.
     Hello {
         /// [`PROTOCOL_VERSION`] of the bridge.
@@ -1926,6 +1945,12 @@ mod tests {
             name: "Kick".into(),
         };
         let messages = vec![
+            BridgeMsg::DeviceAssets {
+                request: 9,
+                snapshot: None,
+                file_slots: true,
+                offline: false,
+            },
             BridgeMsg::Hello {
                 protocol: PROTOCOL_VERSION,
                 pid: 4242,

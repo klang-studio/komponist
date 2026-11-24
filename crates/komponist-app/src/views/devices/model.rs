@@ -211,6 +211,8 @@ pub struct Card {
     pub open: bool,
     pub(crate) native_layout: Option<std::sync::Arc<komponist_ipc::native_layout::NativeLayout>>,
     pub(super) display: Option<std::sync::Arc<komponist_ipc::device_canvas::DisplayList>>,
+    /// Live file slots and whether each has a project link.
+    pub(super) asset_slots: Vec<(komponist_ipc::device_assets::Slot, bool)>,
     /// Whether the verified bundle uses the app's full device editor with author-ID bindings.
     pub(super) bundled_editor: bool,
     /// The declarative layout of the body, with an automatic layout for generic plugins.
@@ -572,6 +574,7 @@ pub(crate) fn card(
             Some(bundled_sampler_view(
                 kind,
                 sampler_assets.as_deref(),
+                &device.asset_links,
                 sampler_snapshot,
             ))
         },
@@ -606,6 +609,13 @@ pub(crate) fn card(
         layout,
         native_layout: native_layout.filter(|native| !bundled_editor || native.schema_version >= 2),
         display: host.device_display(device.id).cloned(),
+        asset_slots: host.asset_slots(device.id).map_or_else(Vec::new, |assets| {
+            assets
+                .slots
+                .iter()
+                .map(|slot| (slot.clone(), device.asset_links.contains_key(&slot.id)))
+                .collect()
+        }),
         bundled_editor,
         page: 0,
         collapsed: false,
@@ -703,6 +713,7 @@ pub fn sampler_view(host: &dyn DeviceHost, device: DeviceId) -> Option<SamplerVi
 pub(crate) fn bundled_sampler_view(
     kind: Internal,
     assets: Option<&str>,
+    project_links: &std::collections::BTreeMap<u32, komponist_model::plugin_assets::AssetLink>,
     snapshot: Option<&komponist_ipc::sampler_ui::Snapshot>,
 ) -> SamplerView {
     use komponist_ipc::sampler_ui::Status;
@@ -717,10 +728,21 @@ pub(crate) fn bundled_sampler_view(
     SamplerView {
         pads: (0..count)
             .map(|index| {
-                let link = links
-                    .iter()
-                    .find(|(pad, _)| *pad == index)
-                    .map(|(_, link)| link.clone());
+                let link = project_links
+                    .get(&(index as u32))
+                    .map(|link| links::SampleLink {
+                        abs: link.abs.clone(),
+                        rel: link.rel.clone(),
+                        name: link
+                            .name()
+                            .map_or_else(String::new, std::borrow::Cow::into_owned),
+                    })
+                    .or_else(|| {
+                        links
+                            .iter()
+                            .find(|(pad, _)| *pad == index)
+                            .map(|(_, link)| link.clone())
+                    });
                 let pad = pad_data(index);
                 let status = match pad.map(|pad| &pad.status) {
                     Some(Status::Ready) => PadStatus::Ready,
@@ -1502,6 +1524,7 @@ mod tests {
             role: DeviceRole::Effect,
             plugin: Internal::Eq.plugin_ref(),
             bypass,
+            asset_links: Default::default(),
             state: state.map(Into::into),
             sidechain: None,
         };

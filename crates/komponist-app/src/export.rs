@@ -54,6 +54,7 @@ use komponist_engine::export::{
 };
 use komponist_engine::{Command, Program, SlotId, TransportState};
 use komponist_ipc::RenderMode;
+use komponist_ipc::device_assets::{OfflineRequest, OfflineStatus};
 use komponist_model::format::fmt_bar_pos;
 use komponist_model::{ClipId, DeviceId, Project, Tick, TickRange};
 use komponist_plugins::{DeviceStatus, FailReason};
@@ -93,6 +94,7 @@ pub(crate) struct Exports {
     collecting: bool,
     /// Slots that failed during the export.
     failed: Vec<SlotId>,
+    next_offline_id: u32,
 }
 
 impl Default for Exports {
@@ -103,6 +105,7 @@ impl Default for Exports {
             opener: Box::new(open_folder),
             collecting: false,
             failed: Vec::new(),
+            next_offline_id: 0,
         }
     }
 }
@@ -163,6 +166,8 @@ struct Run {
     /// What the rendered program leaves out of the project (#92), taken with the program at
     /// launch: the document may change while the worker renders.
     diagnostics: Vec<komponist_engine::compile::Diagnostic>,
+    /// Devices that negotiated explicit preparation before the engine was detached.
+    offline_devices: Vec<DeviceId>,
 }
 
 enum Phase {
@@ -180,6 +185,8 @@ struct Worker {
     go: Option<Sender<Result<(), ExportError>>>,
     /// When the worker reported `Prepared` (the UI waits for re-activating devices).
     prepared: Option<Instant>,
+    offline_request: OfflineRequest,
+    offline_posted: bool,
     cancel: Arc<AtomicBool>,
     progress: Arc<SharedProgress>,
     /// When rendering started (speed, time left).
@@ -541,6 +548,7 @@ impl App {
             phase: Phase::Devices,
             flatten: None,
             diagnostics: Vec::new(),
+            offline_devices: Vec::new(),
         });
         self.poll_export();
     }
@@ -560,7 +568,10 @@ impl App {
         for (track, devices) in chains {
             for d in devices.iter().filter(|device| !device.bypass) {
                 let state = match self.engine.device_status(d.id) {
-                    DeviceStatus::Ok if self.engine.host().sampler_is_loading(d.id) => {
+                    DeviceStatus::Ok
+                        if self.engine.host().asset_inventory_pending(d.id)
+                            || self.engine.host().sampler_is_loading(d.id) =>
+                    {
                         DeviceState::Loading
                     }
                     DeviceStatus::Ok if self.engine.host().sampler_sync_unavailable(d.id) => {
@@ -721,6 +732,29 @@ impl App {
             return;
         };
         run.diagnostics = self.engine.diagnostics().to_vec();
+        run.offline_devices = self
+            .project()
+            .tracks
+            .iter()
+            .flat_map(|track| &track.channel.devices)
+            .chain(&self.project().master.devices)
+            .filter(|device| {
+                !device.bypass
+                    && run
+                        .flatten
+                        .as_ref()
+                        .is_none_or(|flatten| flatten.scope.devices().any(|id| id == device.id))
+                    && self.engine.host().status(device.id) == DeviceStatus::Ok
+                    && self.engine.host().supports_offline_preparation(device.id)
+            })
+            .map(|device| device.id)
+            .collect();
+        self.export.next_offline_id = self.export.next_offline_id.wrapping_add(1).max(1);
+        let offline_request = OfflineRequest {
+            id: self.export.next_offline_id,
+            sample_rate: f64::from(job.sample_rate),
+            tempo: self.project().tempo.bpm,
+        };
         let project = Arc::clone(self.doc.project());
         let track = run
             .flatten
@@ -776,6 +810,8 @@ impl App {
             messages,
             go: Some(go),
             prepared: None,
+            offline_request,
+            offline_posted: false,
             cancel,
             progress,
             started: Instant::now(),
@@ -788,6 +824,9 @@ impl App {
     /// `Loading` any more (re-activation at the export rate, warm-up), or after
     /// [`READY_TIMEOUT`] (such a device renders its fallback). Module docs, step 4.
     fn release_when_ready(&mut self) {
+        let Some(offline_ready) = self.prepare_export_devices() else {
+            return;
+        };
         let Some(Run {
             phase: Phase::Running(worker),
             flatten,
@@ -802,18 +841,8 @@ impl App {
         if worker.go.is_none() {
             return;
         }
-        let host = self.engine.host();
-        let unprepared_sampler = self.export_general_samplers(flatten.as_ref()).find(|&id| {
-            host.status(id) == DeviceStatus::Ok
-                && host
-                    .sampler_ui(id)
-                    .is_none_or(|view| view.sync != Some(komponist_ipc::sampler_ui::Sync::Ready))
-        });
-        let ready = if let Some(id) = unprepared_sampler {
-            if prepared.elapsed() < READY_TIMEOUT && !host.sampler_sync_unavailable(id) {
-                return;
-            }
-            Err(ExportError::DeviceFailed(id))
+        let ready = if offline_ready.is_err() {
+            offline_ready
         } else if let Some(flatten) = flatten {
             match flatten.unavailable(self) {
                 Some((_, DeviceStatus::Loading)) if prepared.elapsed() < READY_TIMEOUT => return,
@@ -832,15 +861,6 @@ impl App {
             }
             Ok(())
         };
-        // The device has prepared the ratio. Further polls during rendering only read it.
-        let samplers = self
-            .export_general_samplers(flatten.as_ref())
-            .collect::<Vec<_>>();
-        for device in samplers {
-            self.engine
-                .host_mut()
-                .set_sampler_export_tempo(device, None);
-        }
         if let Some(Run {
             phase: Phase::Running(worker),
             ..
@@ -855,6 +875,45 @@ impl App {
             let _ = go.send(go_on);
             worker.started = Instant::now();
         }
+    }
+
+    /// Starts one request per detached render and waits for each selected device to acknowledge it.
+    fn prepare_export_devices(&mut self) -> Option<Result<(), ExportError>> {
+        let Run {
+            phase: Phase::Running(worker),
+            offline_devices,
+            ..
+        } = self.export.run.as_mut()?
+        else {
+            return None;
+        };
+        let prepared = worker.prepared?;
+        if worker.go.is_none() || offline_devices.is_empty() {
+            return Some(Ok(()));
+        }
+        let host = self.engine.host_mut();
+        for &device in offline_devices.iter() {
+            match host.status(device) {
+                DeviceStatus::Ok => {}
+                DeviceStatus::Loading if prepared.elapsed() < READY_TIMEOUT => return None,
+                _ => return Some(Err(ExportError::DeviceFailed(device))),
+            }
+        }
+        if !worker.offline_posted {
+            for &device in offline_devices.iter() {
+                host.set_offline_preparation(device, Some(worker.offline_request));
+            }
+            worker.offline_posted = true;
+        }
+        for &device in offline_devices.iter() {
+            match host.offline_preparation_status(device) {
+                Some(OfflineStatus::Ready) => {}
+                Some(OfflineStatus::Failed) => return Some(Err(ExportError::DeviceFailed(device))),
+                _ if prepared.elapsed() < READY_TIMEOUT => return None,
+                _ => return Some(Err(ExportError::DeviceFailed(device))),
+            }
+        }
+        Some(Ok(()))
     }
 
     /// The dialog's progress from the worker's.
@@ -1015,13 +1074,11 @@ impl App {
     }
 
     fn set_export_render_mode(&mut self, run: &Run, mode: RenderMode) {
-        let tempo = (mode == RenderMode::Offline).then_some(self.project().tempo.bpm);
-        let samplers = self
-            .export_general_samplers(run.flatten.as_ref())
-            .collect::<Vec<_>>();
         let host = self.engine.host_mut();
-        for device in samplers {
-            host.set_sampler_export_tempo(device, tempo);
+        if mode == RenderMode::Realtime {
+            for &device in &run.offline_devices {
+                host.set_offline_preparation(device, None);
+            }
         }
         if let Some(flatten) = &run.flatten {
             let ids: Vec<_> = flatten.scope.devices().collect();
@@ -1029,27 +1086,6 @@ impl App {
         } else {
             host.set_render_mode(mode);
         }
-    }
-
-    fn export_general_samplers<'a>(
-        &'a self,
-        flatten: Option<&'a Flatten>,
-    ) -> impl Iterator<Item = DeviceId> + 'a {
-        use komponist_builtin::Internal;
-        let project = self.project();
-        project
-            .tracks
-            .iter()
-            .flat_map(|track| track.channel.devices.iter())
-            .chain(project.master.devices.iter())
-            .filter(move |device| {
-                !device.bypass
-                    && komponist_plugins::bundled_sampler::kind(&device.plugin)
-                        == Some(Internal::GeneralSampler)
-                    && flatten
-                        .is_none_or(|flatten| flatten.scope.devices().any(|id| id == device.id))
-            })
-            .map(|device| device.id)
     }
 
     /// The plugin names of the devices in `slots`, without repeats.

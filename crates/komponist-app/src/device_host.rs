@@ -37,18 +37,21 @@
 //!
 //! Thread: UI thread.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use komponist_builtin::{BuiltinKind, BuiltinProcessor, Internal};
 use komponist_engine::{DeviceMeter, Processor};
+use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot};
 use komponist_ipc::frame::HeaderModel;
 use komponist_ipc::{
     GuiSize, GuiTarget, LogLevel, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode,
 };
+use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project};
+use komponist_plugins::AssetEdit;
 use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{
     Catalog, DeviceSnapshots, DeviceStatus, FailReason, MissingPlugin, PluginDirs, PluginError,
@@ -308,6 +311,45 @@ pub trait DeviceHost {
 
     /// Start or release a slice audition in the running bundled sampler.
     fn preview_sampler_slice(&self, _device: DeviceId, _time: Option<f64>) {}
+
+    fn prepare_asset_edit(
+        &self,
+        _device: &Device,
+        _changes: &[AssetEdit],
+    ) -> Result<Option<Arc<[u8]>>, DeviceId> {
+        Ok(None)
+    }
+
+    fn asset_slots(&self, _device: DeviceId) -> Option<&Snapshot> {
+        None
+    }
+
+    /// Queue an update containing resolved runtime paths.
+    fn set_asset_bindings(&mut self, _device: DeviceId, _bindings: &Bindings) -> bool {
+        false
+    }
+
+    fn sync_asset_links(
+        &mut self,
+        _device: DeviceId,
+        _before: &BTreeMap<u32, AssetLink>,
+        _after: &BTreeMap<u32, AssetLink>,
+    ) {
+    }
+
+    fn asset_inventory_pending(&self, _device: DeviceId) -> bool {
+        false
+    }
+
+    fn supports_offline_preparation(&self, _device: DeviceId) -> bool {
+        false
+    }
+
+    fn set_offline_preparation(&mut self, _device: DeviceId, _request: Option<OfflineRequest>) {}
+
+    fn offline_preparation_status(&self, _device: DeviceId) -> Option<OfflineStatus> {
+        None
+    }
 
     /// Whether the device's plugin has its own GUI.
     fn has_gui(&self, device: DeviceId) -> bool {
@@ -994,6 +1036,47 @@ impl DeviceHost for PluginHost {
         self.manager.preview_sampler_slice(device, time);
     }
 
+    fn prepare_asset_edit(
+        &self,
+        device: &Device,
+        changes: &[AssetEdit],
+    ) -> Result<Option<Arc<[u8]>>, DeviceId> {
+        self.manager.prepare_asset_edit(device, changes)
+    }
+
+    fn asset_slots(&self, device: DeviceId) -> Option<&Snapshot> {
+        self.manager.asset_slots(device)
+    }
+
+    fn set_asset_bindings(&mut self, device: DeviceId, bindings: &Bindings) -> bool {
+        self.manager.set_asset_bindings(device, bindings)
+    }
+
+    fn sync_asset_links(
+        &mut self,
+        device: DeviceId,
+        before: &BTreeMap<u32, AssetLink>,
+        after: &BTreeMap<u32, AssetLink>,
+    ) {
+        self.manager.sync_asset_links(device, before, after);
+    }
+
+    fn asset_inventory_pending(&self, device: DeviceId) -> bool {
+        self.manager.asset_inventory_pending(device)
+    }
+
+    fn supports_offline_preparation(&self, device: DeviceId) -> bool {
+        self.manager.supports_offline_preparation(device)
+    }
+
+    fn set_offline_preparation(&mut self, device: DeviceId, request: Option<OfflineRequest>) {
+        self.manager.set_offline_preparation(device, request);
+    }
+
+    fn offline_preparation_status(&self, device: DeviceId) -> Option<OfflineStatus> {
+        self.manager.offline_preparation_status(device)
+    }
+
     fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {
         self.reference.as_ref()?.sampler(device)
     }
@@ -1199,6 +1282,7 @@ mod sampler_tests {
             role: DeviceRole::Instrument,
             plugin: Internal::Sampler.plugin_ref(),
             bypass: false,
+            asset_links: Default::default(),
             state: state.map(Arc::from),
             sidechain: None,
         }

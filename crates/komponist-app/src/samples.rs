@@ -24,6 +24,7 @@
 //!
 //! Thread: UI thread.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -86,6 +87,8 @@ pub(crate) struct State {
     pub(crate) target: Option<(DeviceId, usize)>,
     /// A "Sammeln und speichern" without a project file waits for the save.
     pub(crate) collect_after_save: bool,
+    /// Canonical plugin files the user explicitly picked or dropped for this document.
+    pub(crate) approved_plugin_files: HashSet<PathBuf>,
     /// Held audition notes: when to release, track, key.
     auditions: Vec<(Instant, TrackId, u8)>,
     /// Waveform preview held by the primary pointer button.
@@ -101,6 +104,7 @@ impl State {
     pub(crate) fn forget_device_state(&mut self) {
         self.pads.clear();
         self.pending_params.clear();
+        self.approved_plugin_files.clear();
     }
 }
 
@@ -261,6 +265,10 @@ impl App {
     }
 
     fn link_sample(&mut self, device: DeviceId, pad: usize, path: &Path) {
+        if self.engine.host().asset_slots(device).is_some() {
+            self.set_plugin_asset(device, pad as u32, Some(path));
+            return;
+        }
         let Some((_, _, found)) = self.project().find_device(device) else {
             return;
         };
@@ -367,6 +375,10 @@ impl App {
     }
 
     fn clear_sample(&mut self, device: DeviceId, pad: usize) {
+        if self.engine.host().asset_slots(device).is_some() {
+            self.set_plugin_asset(device, pad as u32, None);
+            return;
+        }
         self.flush_sampler_params(device);
         let Some((_, _, found)) = self.project().find_device(device) else {
             return;
@@ -628,6 +640,21 @@ impl App {
                 StatusKind::Error,
             )
         };
+        if !collector.unapproved_assets.is_empty() {
+            let files = collector
+                .unapproved_assets
+                .iter()
+                .map(|path| {
+                    path.file_name()
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy()
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let warning = self.lang.status_collect_unapproved(files);
+            text = format!("{text} · {warning}");
+            kind = StatusKind::Error;
+        }
         if let Some(warning) = save_warning {
             text = format!("{warning} · {text}");
             kind = StatusKind::Error;
@@ -758,6 +785,7 @@ pub(crate) fn collect_sample_sources<'a>(
     project: &Project,
     collector: &mut Collector,
     project_dir: Option<&Path>,
+    approved_plugin_files: &HashSet<PathBuf>,
     plugin_snapshot: impl Fn(DeviceId) -> Option<&'a [u8]>,
 ) -> std::io::Result<()> {
     for device in project
@@ -766,6 +794,21 @@ pub(crate) fn collect_sample_sources<'a>(
         .flat_map(|track| track.channel.devices.iter())
         .chain(project.master.devices.iter())
     {
+        for link in device.asset_links.values() {
+            if let Some(found) = link.resolve(project_dir) {
+                let canonical = std::fs::canonicalize(&found)?;
+                if links::is_audio_file(&found) || approved_plugin_files.contains(&canonical) {
+                    collector.collect_asset_file(&found)?;
+                } else if !(found.starts_with(collector.samples_dir())
+                    && std::fs::canonicalize(collector.samples_dir())
+                        .is_ok_and(|folder| canonical.starts_with(folder)))
+                {
+                    // Existing files in this project's collection need no copy. A stored
+                    // link alone never authorizes copying another non-audio file.
+                    collector.unapproved_assets.push(found);
+                }
+            }
+        }
         if bundled_sampler::kind(&device.plugin).is_some() {
             let state = plugin_snapshot(device.id).or(device.state.as_deref());
             bundled_sampler::collect_links(collector, state, project_dir)?;
@@ -788,8 +831,9 @@ pub(crate) fn rebase_project_links(
     old_dir: Option<&Path>,
     new_dir: &Path,
     destination: impl Fn(PathBuf) -> PathBuf,
+    asset_destination: impl Fn(PathBuf) -> PathBuf,
 ) -> Option<Project> {
-    rewrite_links(
+    let after_samples = rewrite_links(
         project,
         |device| {
             if bundled_sampler::kind(&device.plugin).is_some() {
@@ -808,7 +852,37 @@ pub(crate) fn rebase_project_links(
             let path = destination(file.resolve(old_dir)?);
             Some(file.moved_to(&path, new_dir))
         },
-    )
+    );
+    let base = after_samples.as_ref().unwrap_or(project);
+    let mut result = None;
+    for device in base
+        .tracks
+        .iter()
+        .flat_map(|track| &track.channel.devices)
+        .chain(&base.master.devices)
+    {
+        if device.asset_links.is_empty() {
+            continue;
+        }
+        let links = device
+            .asset_links
+            .iter()
+            .map(|(&id, link)| {
+                let link = link.runtime_path(old_dir).map_or_else(
+                    || link.clone(),
+                    |source| link.moved_to(&asset_destination(source), Some(new_dir)),
+                );
+                (id, link)
+            })
+            .collect();
+        if links != device.asset_links {
+            result = Some(
+                edits::set_device_asset_links(result.as_ref().unwrap_or(base), device.id, links)
+                    .ok()?,
+            );
+        }
+    }
+    result.or(after_samples)
 }
 
 /// `project` with the Sampler links rewritten by `samplers` and the audio clip files by `audio`

@@ -42,6 +42,8 @@ pub struct Row {
     pub search: Option<(DeviceId, usize)>,
     /// Missing audio clip to open for file recovery.
     pub audio: Option<komponist_model::ClipId>,
+    /// A host-managed file slot to relink.
+    pub asset: Option<(DeviceId, u32)>,
 }
 
 /// What the dialog shows.
@@ -55,6 +57,7 @@ pub struct Model {
     pub samples: Vec<Row>,
     /// Missing linked audio clips.
     pub audio: Vec<Row>,
+    pub assets: Vec<Row>,
 }
 
 /// What the user chose.
@@ -68,6 +71,8 @@ pub enum Output {
     Search(DeviceId, usize),
     /// Open a missing audio clip in its editor.
     OpenAudio(komponist_model::ClipId),
+    /// Replace a missing host-managed plugin link.
+    SearchAsset(DeviceId, u32),
 }
 
 /// The format chip of a plugin format ("INTERN" / "BUILT-IN" for the built-in devices).
@@ -128,6 +133,7 @@ pub fn model(t: Lang, project: &Project, missing: &[MissingPlugin]) -> Model {
                 module: module_label(&mp.plugin),
                 search: None,
                 audio: None,
+                asset: None,
             }
         })
         .collect();
@@ -136,6 +142,7 @@ pub fn model(t: Lang, project: &Project, missing: &[MissingPlugin]) -> Model {
         rows,
         samples: Vec::new(),
         audio: Vec::new(),
+        assets: Vec::new(),
     }
 }
 
@@ -223,6 +230,44 @@ pub fn missing_audio(
         .collect()
 }
 
+/// Missing host-managed plugin files, preserving the slot identity for relinking.
+pub fn missing_assets(t: Lang, project: &Project, dir: Option<&std::path::Path>) -> Vec<Row> {
+    let devices = project
+        .tracks
+        .iter()
+        .flat_map(|track| {
+            track
+                .channel
+                .devices
+                .iter()
+                .map(|device| (Some(&**track), device))
+        })
+        .chain(project.master.devices.iter().map(|device| (None, device)));
+    let mut rows = Vec::new();
+    for (track, device) in devices {
+        for (&slot, link) in &device.asset_links {
+            if link.resolve(dir).is_some() {
+                continue;
+            }
+            let name = link
+                .rel
+                .file_name()
+                .or_else(|| link.abs.file_name())
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+            rows.push(Row {
+                name,
+                format: t.plugin_file_chip(),
+                place: t.missing_place(owner_label(t, track), &device.plugin.name),
+                module: String::new(),
+                search: None,
+                audio: None,
+                asset: Some((device.id, slot)),
+            });
+        }
+    }
+    rows
+}
+
 /// Adds file-recovery rows without changing the project or dropping its missing links.
 pub fn with_audio(
     t: Lang,
@@ -250,6 +295,7 @@ pub fn with_audio(
                     .into_owned(),
                 search: None,
                 audio: Some(id),
+                asset: None,
             })
         })
         .collect();
@@ -287,6 +333,7 @@ pub fn with_samples(
                 module: s.file.clone(),
                 search: Some((s.device, s.pad)),
                 audio: None,
+                asset: None,
             }
         })
         .collect();
@@ -345,7 +392,9 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
         ui.add_space(dm::PADDING);
         let inner = width - 2.0 * dm::PADDING;
         indented(ui, dm::PADDING, |ui| {
-            let title = if model.audio.is_empty() {
+            let title = if !model.assets.is_empty() && n == 0 {
+                t.plugin_file_missing_title().to_owned()
+            } else if model.audio.is_empty() && model.assets.is_empty() {
                 title_for(t, n, samples)
             } else if n == 0 {
                 t.missing_audio_files().to_owned()
@@ -354,7 +403,9 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
             };
             title_row(ui, &title);
             ui.add_space(m::TEXT_GAP);
-            let body = if !model.audio.is_empty() {
+            let body = if !model.assets.is_empty() {
+                t.plugin_file_missing_body(&model.project)
+            } else if !model.audio.is_empty() {
                 t.missing_audio_text(&model.project)
             } else if n == 0 {
                 samples_text(t, &model.project, samples)
@@ -378,7 +429,13 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = m::LIST_GAP;
-                    for row in model.rows.iter().chain(&model.samples).chain(&model.audio) {
+                    for row in model
+                        .rows
+                        .iter()
+                        .chain(&model.samples)
+                        .chain(&model.audio)
+                        .chain(&model.assets)
+                    {
                         if let Some(search) = missing_row(ui, t, inner, row) {
                             out = Some(search);
                         }
@@ -387,7 +444,7 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
         });
         ui.add_space(m::LIST_MARGIN_Y + m::FOOTER_PADDING_TOP);
         indented(ui, dm::PADDING, |ui| {
-            let primary = if !model.audio.is_empty() {
+            let primary = if !model.audio.is_empty() || !model.assets.is_empty() {
                 t.missing_continue_files()
             } else {
                 match (n, samples) {
@@ -398,7 +455,7 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
                 }
             };
             let mut buttons = Vec::new();
-            let check = n > 0 || model.audio.is_empty();
+            let check = n > 0 || (model.audio.is_empty() && model.assets.is_empty());
             if check {
                 buttons.push(ActionButton::dialog(
                     t.missing_check_folders(),
@@ -546,6 +603,8 @@ fn missing_row(ui: &mut Ui, t: Lang, width: f32, row: &Row) -> Option<Output> {
     // "Suchen …" of a missing sample, left of the chip column, centred on the first line.
     let output = if let Some((device, pad)) = row.search {
         Output::Search(device, pad)
+    } else if let Some((device, slot)) = row.asset {
+        Output::SearchAsset(device, slot)
     } else {
         Output::OpenAudio(row.audio?)
     };

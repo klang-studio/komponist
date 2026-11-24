@@ -1,0 +1,15 @@
+plugin-file-caption = Files
+plugin-file-choose = Choose File
+plugin-file-none = No files available
+plugin-file-unavailable = This file cannot be linked to the plug-in.
+plugin-file-remove = Remove Link
+plugin-file-slot = { $slot } · { $status }
+plugin-file-empty = Empty
+plugin-file-loading = Loading
+plugin-file-ready = Ready
+plugin-file-missing = Missing
+plugin-file-failed = Failed
+plugin-file-missing-title = Linked Files Missing
+plugin-file-missing-body = Some files linked by plug-ins in “{ $project }” could not be found. You can locate the files or continue and keep the links.
+plugin-file-chip = FILE
+undo-plugin-file-link = Change Plug-in File Link

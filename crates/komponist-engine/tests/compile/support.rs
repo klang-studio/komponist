@@ -65,6 +65,7 @@ pub fn device(id: u64, role: DeviceRole, name: &str) -> Arc<Device> {
             module: Box::default(),
         },
         bypass: false,
+        asset_links: Default::default(),
         state: None,
         sidechain: None,
     })

@@ -180,6 +180,7 @@ status-drop-refused-audio = Audio-Spuren nehmen keine MIDI-Clips auf.
 
 # Linked audio import and browsing (epic #8).
 status-collect-skipped = { $count } Dateien nicht gesammelt: keine unterstützten Audio-Dateien · { $files }
+status-collect-unapproved = Plugin-Dateien wurden nicht gesammelt. Wähle sie im Gerät aus, um das Kopieren zu erlauben. { $files }
 
 status-macros-mapping = Zuordnen: Parameter bewegen ordnet sie { $source } zu · Klick auf ein anderes Makro wechselt · Esc beendet
 status-macros-locked = { $param } wird von { $source } gesteuert

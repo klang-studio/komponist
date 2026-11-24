@@ -151,7 +151,7 @@ impl AudioFile {
 
 /// serde for paths as text. A path that is not valid Unicode is written lossily (like the
 /// Sampler's links) instead of failing the save.
-mod path_text {
+pub(crate) mod path_text {
     use std::path::{Path, PathBuf};
 
     use serde::{Deserialize, Deserializer, Serializer};

@@ -467,7 +467,13 @@ impl crate::App {
                     missing_plugins::missing_samples(self.project(), self.project_dir().as_deref());
                 let audio =
                     missing_plugins::missing_audio(self.project(), self.project_dir().as_deref());
-                if missing.is_empty() && samples.is_empty() && audio.is_empty() {
+                let assets = missing_plugins::missing_assets(
+                    self.lang,
+                    self.project(),
+                    self.project_dir().as_deref(),
+                );
+                if missing.is_empty() && samples.is_empty() && audio.is_empty() && assets.is_empty()
+                {
                     self.queue.push(Action::Project(
                         crate::actions::ProjectAction::ContinueWithMissing,
                     ));
@@ -479,7 +485,9 @@ impl crate::App {
                     self.project(),
                     &samples,
                 );
-                let model = missing_plugins::with_audio(self.lang, model, self.project(), &audio);
+                let mut model =
+                    missing_plugins::with_audio(self.lang, model, self.project(), &audio);
+                model.assets = assets;
                 if let Some(output) =
                     missing_plugins::show(ctx, &model, self.dialogs.overlay.is_none())
                 {
@@ -496,6 +504,12 @@ impl crate::App {
                         }
                         missing_plugins::Output::Search(device, pad) => {
                             Action::Plugin(crate::actions::PluginAction::PickSample { device, pad })
+                        }
+                        missing_plugins::Output::SearchAsset(device, slot) => {
+                            Action::Plugin(crate::actions::PluginAction::PickPluginAsset {
+                                device,
+                                slot,
+                            })
                         }
                     };
                     self.queue.push(action);

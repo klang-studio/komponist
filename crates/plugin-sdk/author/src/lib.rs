@@ -5,6 +5,7 @@
 
 #![deny(missing_docs)]
 
+pub mod assets;
 pub mod display;
 
 #[doc(hidden)]
@@ -34,6 +35,7 @@ use nice_plug::wrapper::clap::Wrapper;
 use serde_json::{Value, json};
 
 pub use komponist_device_core::layout;
+pub use komponist_ipc::device_assets;
 pub use komponist_ipc::effect_meter;
 pub use komponist_ipc::native_layout::{Canvas, Heading, Labels};
 pub use komponist_ipc::sampler_ui;

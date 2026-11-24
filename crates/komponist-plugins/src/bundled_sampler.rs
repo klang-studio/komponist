@@ -81,6 +81,50 @@ pub fn assets(state: &[u8]) -> Option<String> {
     Some(asset_field(&decode(state)?)?.to_owned())
 }
 
+fn pad_count(kind: Internal) -> usize {
+    match kind {
+        Internal::Sampler => PADS,
+        Internal::GeneralSampler => 1,
+        _ => 0,
+    }
+}
+
+/// Extract old project file links when a bundled sampler starts using host-managed assets.
+/// Other saved fields, including slice options and trim parameters, stay in the wrapper state.
+pub(crate) fn move_embedded_links(
+    device: &komponist_model::Device,
+) -> Option<komponist_model::Device> {
+    let kind = kind(&device.plugin)?;
+    let state = device.state.as_deref()?;
+    let moved: Vec<_> = links::read(Some(assets(state)?.as_bytes()))
+        .into_iter()
+        .filter(|(pad, _)| *pad < pad_count(kind))
+        .collect();
+    if moved.is_empty() {
+        return None;
+    }
+    let state = update_assets(state, |assets| {
+        let mut updated = assets.as_bytes().to_vec();
+        for (pad, _) in &moved {
+            updated = links::write(Some(&updated), *pad, None);
+        }
+        String::from_utf8(updated).ok()
+    })?;
+    let mut result = device.clone();
+    for (pad, link) in moved {
+        result
+            .asset_links
+            .entry(pad as u32)
+            .or_insert(komponist_model::plugin_assets::AssetLink {
+                abs: link.abs,
+                rel: link.rel,
+                display_name: (!link.name.is_empty()).then_some(link.name),
+            });
+    }
+    result.state = Some(state.into());
+    Some(result)
+}
+
 /// Merge manual parameter edits into an asset-bearing state before editing its links.
 pub fn edit_params<'a>(
     version: &str,
@@ -118,10 +162,7 @@ pub fn edit_link(
     link: Option<&SampleLink>,
     relinking: bool,
 ) -> Option<Vec<u8>> {
-    let general = kind == Internal::GeneralSampler;
-    if !matches!(kind, Internal::Sampler | Internal::GeneralSampler)
-        || pad >= if general { 1 } else { PADS }
-    {
+    if pad >= pad_count(kind) {
         return None;
     }
     let initial;
@@ -132,27 +173,8 @@ pub fn edit_link(
         &initial
     };
     edit_state(state, |wrapper, assets| {
-        let mut updated = links::write(Some(assets.as_bytes()), pad, link);
-        if general && !relinking {
-            updated =
-                komponist_general_sampler::write_settings(Some(&updated), &Settings::default());
-        }
-        if link.is_some() && (!general || !relinking) {
-            let params = wrapper.get_mut("params")?.as_object_mut()?;
-            for (wire, parameter) in kind.params().iter().enumerate() {
-                let region = if general {
-                    matches!(parameter.id.as_str(), "start" | "end")
-                } else {
-                    [PadField::Start.wire(pad), PadField::End.wire(pad)].contains(&wire)
-                };
-                if region {
-                    params.insert(
-                        parameter.id.as_str().into(),
-                        pinned_clap_state::parameter(parameter, parameter.default).0,
-                    );
-                }
-            }
-        }
+        let updated = links::write(Some(assets.as_bytes()), pad, link);
+        let updated = reset_region(wrapper, updated, kind, pad, link.is_some(), relinking)?;
         if link.is_some() {
             let mut updated: Value = serde_json::from_slice(&updated).ok()?;
             links::touch(&mut updated, pad);
@@ -160,6 +182,73 @@ pub fn edit_link(
         } else {
             String::from_utf8(updated).ok()
         }
+    })
+}
+
+fn reset_region(
+    wrapper: &mut Value,
+    assets: Vec<u8>,
+    kind: Internal,
+    pad: usize,
+    attaching: bool,
+    relinking: bool,
+) -> Option<Vec<u8>> {
+    let general = pad_count(kind) == 1;
+    if attaching && (!general || !relinking) {
+        let params = wrapper.get_mut("params")?.as_object_mut()?;
+        for (wire, parameter) in kind.params().iter().enumerate() {
+            let region = if general {
+                matches!(parameter.id.as_str(), "start" | "end")
+            } else {
+                [PadField::Start.wire(pad), PadField::End.wire(pad)].contains(&wire)
+            };
+            if region {
+                params.insert(
+                    parameter.id.as_str().into(),
+                    pinned_clap_state::parameter(parameter, parameter.default).0,
+                );
+            }
+        }
+    }
+    Some(if general && !relinking {
+        komponist_general_sampler::write_settings(Some(&assets), &Settings::default())
+    } else {
+        assets
+    })
+}
+
+/// Prepare the bundled sampler's stored trim and slice state for a user file edit.
+/// The file link itself is stored in the project and is synced independently by the host.
+pub(crate) fn edit_native_regions(
+    plugin: &PluginRef,
+    state: Option<&[u8]>,
+    changes: &[crate::AssetEdit],
+) -> Option<Vec<u8>> {
+    let kind = kind(plugin)?;
+    let initial;
+    let state = if let Some(state) = state {
+        state
+    } else {
+        initial = pinned_clap_state::encode(&plugin.version, Map::new(), Map::new());
+        &initial
+    };
+    edit_state(state, |wrapper, assets| {
+        let mut updated = assets.as_bytes().to_vec();
+        for change in changes {
+            let pad = change.slot as usize;
+            if pad >= pad_count(kind) {
+                return None;
+            }
+            updated = reset_region(
+                wrapper,
+                updated,
+                kind,
+                pad,
+                change.attaching,
+                change.relinking,
+            )?;
+        }
+        String::from_utf8(updated).ok()
     })
 }
 

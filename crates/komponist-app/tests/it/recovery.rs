@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use egui::accesskit::Role;
 use egui::{Key, Modifiers, vec2};
@@ -383,9 +383,30 @@ fn later_and_discard_go_through_the_copies_and_then_open_the_project_argument() 
     let other = songs.join("Hafenlicht.komponist");
     project_io::save_project(&other, &Project::new("Hafenlicht")).unwrap();
     crashed_session(&dir, None);
-    std::thread::sleep(Duration::from_millis(5));
+    // The filesystem can assign the same modification time to consecutive writes.
+    let untitled = copies(&dir).pop().unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(untitled)
+        .unwrap()
+        .set_modified(UNIX_EPOCH)
+        .unwrap();
     crashed_session(&dir, Some(&night));
     assert_eq!(copies(&dir).len(), 2);
+    let store = recovery::Store::new(dir.join("recovery"));
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let (candidates, error) = store.scan();
+        assert!(error.is_none(), "{error:?}");
+        if candidates.len() == 2 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "both crash copies must be available"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 
     let clock = FakeClock::new();
     let mut app = session(&dir, Project::new("Unbenannt"), &clock);

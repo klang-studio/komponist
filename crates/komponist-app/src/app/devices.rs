@@ -33,6 +33,11 @@ fn insert_copy(
     copy: CopiedDevice,
 ) -> Result<(Project, DeviceId), edits::EditError> {
     let (project, id) = edits::insert_device(project, channel, index, spec(&copy.device))?;
+    let project = if copy.device.asset_links.is_empty() {
+        project
+    } else {
+        edits::set_device_asset_links(&project, id, copy.device.asset_links)?
+    };
     Ok((
         edits::automation::paste_device_lanes(&project, id, &copy.lanes)?,
         id,
@@ -141,12 +146,23 @@ impl App {
             return;
         };
         let p = self.project().clone();
+        let source_dir = self.project_dir();
         let copied: Vec<CopiedDevice> = chain
             .iter()
             .filter(|id| self.ui.selection.devices.contains(id))
             .filter_map(|id| p.find_device(*id).map(|(_, _, d)| d))
             .filter(|d| d.role != DeviceRole::Instrument)
-            .map(|d| capture(&p, d))
+            .map(|d| {
+                let mut copy = capture(&p, d);
+                for link in copy.device.asset_links.values_mut() {
+                    if let Some(source) = link.runtime_path(source_dir.as_deref()) {
+                        *link = link.moved_to(&source, None);
+                    } else {
+                        link.rel.clear();
+                    }
+                }
+                copy
+            })
             .collect();
         if !copied.is_empty() {
             // egui-winit sends `Event::Paste` for Strg V only while the system clipboard holds
@@ -161,7 +177,15 @@ impl App {
         let Some((track, chain)) = self.selected_chain() else {
             return;
         };
-        let copies = self.ui.devices.clipboard.clone();
+        let mut copies = self.ui.devices.clipboard.clone();
+        let destination = self.project_dir();
+        for copy in &mut copies {
+            for link in copy.device.asset_links.values_mut() {
+                if link.abs.is_absolute() {
+                    *link = link.moved_to(&link.abs, destination.as_deref());
+                }
+            }
+        }
         let index = chain
             .iter()
             .rposition(|id| self.ui.selection.devices.contains(id))
@@ -295,5 +319,91 @@ impl App {
         recent.insert(0, touch.clone());
         recent.truncate(crate::views::automation::RECENT_TARGETS);
         self.ui.devices.touched = Some(touch);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use komponist_model::plugin_assets::AssetLink;
+    use komponist_model::{Document, PluginFormat, PluginRef};
+
+    #[test]
+    fn pasted_asset_keeps_the_copied_file_after_save_as_and_open() {
+        let scratch = tempfile::tempdir().unwrap();
+        let source = scratch.path().join("source");
+        let destination = scratch.path().join("destination");
+        for folder in [&source, &destination] {
+            std::fs::create_dir(folder).unwrap();
+            std::fs::write(
+                folder.join("file.dat"),
+                folder.as_os_str().as_encoded_bytes(),
+            )
+            .unwrap();
+        }
+        let file = source.join("file.dat");
+        let track_spec = || edits::NewTrack {
+            name: None,
+            hue: None,
+            instrument: None,
+            index: None,
+            arm_exclusive: false,
+        };
+        let (project, track) = edits::add_track(&Project::new("Source"), track_spec()).unwrap();
+        let channel = ChannelRef::Track(track);
+        let (project, device) = edits::insert_device(
+            &project,
+            channel,
+            0,
+            NewDevice {
+                role: DeviceRole::Effect,
+                plugin: PluginRef {
+                    format: PluginFormat::Clap,
+                    id: "com.example.assets".into(),
+                    name: "Asset fixture".into(),
+                    vendor: String::new(),
+                    version: "1".into(),
+                    module: Box::default(),
+                },
+                sidechain: None,
+                state: None,
+            },
+        )
+        .unwrap();
+        let mut link = AssetLink::new(&file, Some(&source));
+        link.abs = scratch.path().join("previous/file.dat");
+        let project = edits::set_device_asset_links(&project, device, [(0, link)].into()).unwrap();
+        let mut app = App::headless(Project::new("Empty"));
+        app.open_document(
+            Document::new(project),
+            Some(source.join("source.komponist")),
+        );
+        app.ui.selection.tracks = [track].into_iter().collect();
+        app.ui.selection.devices = [device].into_iter().collect();
+        app.copy_devices();
+
+        let saved = destination.join("save-as.komponist");
+        assert!(app.save_to(&saved));
+        app.paste_devices();
+        let chain = &app.project().track(track).unwrap().channel.devices;
+        assert_eq!(chain.len(), 2);
+        assert_eq!(
+            chain[1].asset_links[&0].resolve(Some(&destination)),
+            Some(file.clone())
+        );
+
+        let (other, other_track) = edits::add_track(&Project::new("Other"), track_spec()).unwrap();
+        app.open_document(
+            Document::new(other),
+            Some(destination.join("other.komponist")),
+        );
+        app.ui.selection.tracks = [other_track].into_iter().collect();
+        app.paste_devices();
+        let chain = &app.project().track(other_track).unwrap().channel.devices;
+        assert_eq!(chain.len(), 1);
+        assert_eq!(
+            chain[0].asset_links[&0].resolve(Some(&destination)),
+            Some(file)
+        );
     }
 }

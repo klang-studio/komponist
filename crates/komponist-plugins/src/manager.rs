@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 
 use komponist_builtin::{BuiltinKind, Internal};
 use komponist_engine::Processor;
+use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot};
 use komponist_ipc::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderModel};
 use komponist_ipc::shm::MAX_BLOCK;
 use komponist_ipc::{
@@ -47,6 +48,7 @@ use crate::catalog::{
     Catalog, PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT, ScanCache, ScanReport,
     requires_bundled,
 };
+use crate::device_assets::DeviceAssets;
 use crate::direct_device::DirectDevice;
 use crate::scan::{ScanJob, ScanSetup};
 use crate::{bundled_effects, bundled_sampler};
@@ -490,7 +492,8 @@ impl PluginManager {
         project_dir: &Path,
     ) -> Result<Option<Project>, String> {
         use crate::legacy_bundled::{
-            bundled_clap_id, migrate_legacy_bundled_project, plan_legacy_bundled_device,
+            bundled_clap_id, migrate_legacy_bundled_project, migrate_packaged_sample_assets,
+            plan_legacy_bundled_device,
         };
 
         let Some(inventory) = &self.bundled_clap else {
@@ -508,10 +511,33 @@ impl PluginManager {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        if plans.is_empty() {
+        let packaged = source
+            .tracks
+            .iter()
+            .flat_map(|track| &track.channel.devices)
+            .chain(&source.master.devices)
+            .filter_map(|device| migrate_packaged_sample_assets(inventory, device))
+            .collect::<Vec<_>>();
+        if plans.is_empty() && packaged.is_empty() {
             return Ok(None);
         }
-        migrate_legacy_bundled_project(source, plans).map(|migration| Some(migration.project))
+        let mut project = if plans.is_empty() {
+            source.clone()
+        } else {
+            migrate_legacy_bundled_project(source, plans)?.project
+        };
+        for device in packaged {
+            project = komponist_model::edits::set_device_state(&project, device.id, device.state)
+                .and_then(|project| {
+                    komponist_model::edits::set_device_asset_links(
+                        &project,
+                        device.id,
+                        device.asset_links,
+                    )
+                })
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(Some(project))
     }
 
     /// The catalog.
@@ -730,6 +756,7 @@ impl PluginManager {
                         });
                         instance.set_render_mode(device.id, self.render_mode, &mut self.pending);
                         self.direct.insert(device.id, instance);
+                        self.sync_asset_links(device.id, &BTreeMap::new(), &device.asset_links);
                         if let Some(kind) = verified_kind {
                             self.verified_bundles.insert(device.id, kind);
                         }
@@ -776,6 +803,7 @@ impl PluginManager {
                 }
                 self.statuses.remove(&device.id);
                 self.bridges.insert(device.id, started.bridge);
+                self.sync_asset_links(device.id, &BTreeMap::new(), &device.asset_links);
                 if let Some(kind) = verified_kind {
                     self.verified_bundles.insert(device.id, kind);
                 }
@@ -878,6 +906,7 @@ impl PluginManager {
         let mut events = std::mem::take(&mut self.pending);
         for (&id, direct) in &mut self.direct {
             direct.poll(id, &mut events);
+            direct.poll_assets(id, &mut events);
             direct.poll_display();
             if is_sampler_kind(self.verified_bundles.get(&id).copied()) {
                 direct.poll_sampler_ui();
@@ -896,6 +925,7 @@ impl PluginManager {
         let mut collected = Vec::new();
         for (&device, bridge) in &mut self.bridges {
             bridge.poll(&mut events, &mut collected);
+            bridge.poll_assets();
             bridge.poll_display();
             if is_sampler_kind(self.verified_bundles.get(&device).copied()) {
                 bridge.poll_sampler_ui();
@@ -983,7 +1013,6 @@ impl PluginManager {
         }
     }
 
-    /// The latest editor snapshot for an authenticated bundled sampler.
     /// A named signal stream available from the running device's declared inventory.
     pub fn signal_tap(
         &self,
@@ -996,6 +1025,92 @@ impl PluginManager {
         self.bridges.get(&device)?.signal_tap(key)
     }
 
+    pub fn set_asset_bindings(&mut self, device: DeviceId, bindings: &Bindings) -> bool {
+        self.device_assets_mut(device)
+            .is_some_and(|assets| assets.queue_bindings(bindings))
+    }
+
+    pub fn prepare_asset_edit(
+        &self,
+        device: &komponist_model::Device,
+        changes: &[crate::AssetEdit],
+    ) -> Result<Option<Arc<[u8]>>, DeviceId> {
+        let id = device.id;
+        if self.verified_bundled_kind(id).is_none()
+            || crate::bundled_sampler::kind(&device.plugin).is_none()
+            || self.asset_slots(id).is_none()
+        {
+            return Ok(None);
+        }
+        let after = crate::bundled_sampler::edit_native_regions(
+            &device.plugin,
+            device.state.as_deref(),
+            changes,
+        )
+        .ok_or(id)?;
+        Ok((device.state.as_deref() != Some(after.as_slice())).then(|| after.into()))
+    }
+
+    pub fn asset_slots(&self, device: DeviceId) -> Option<&Snapshot> {
+        self.device_assets(device)?.snapshot.as_ref()
+    }
+
+    pub fn sync_asset_links(
+        &mut self,
+        device: DeviceId,
+        before: &BTreeMap<u32, komponist_model::plugin_assets::AssetLink>,
+        after: &BTreeMap<u32, komponist_model::plugin_assets::AssetLink>,
+    ) {
+        match crate::device_assets::project_bindings(before, after, self.project_dir.as_deref()) {
+            Ok(None) => {}
+            Ok(Some(bindings)) if self.set_asset_bindings(device, &bindings) => {}
+            _ => self
+                .pending
+                .push(crate::device_assets::binding_rejected(device)),
+        }
+    }
+
+    /// Whether the live CLAP asset inventory and preparation capability are still unknown.
+    pub fn asset_inventory_pending(&self, device: DeviceId) -> bool {
+        self.device_assets(device)
+            .is_some_and(DeviceAssets::inventory_pending)
+    }
+
+    /// Whether the current plugin instance advertises detached render preparation.
+    pub fn supports_offline_preparation(&self, device: DeviceId) -> bool {
+        self.device_assets(device)
+            .is_some_and(|assets| assets.supports_offline)
+    }
+
+    pub fn set_offline_preparation(&mut self, device: DeviceId, request: Option<OfflineRequest>) {
+        if request.is_none_or(OfflineRequest::valid)
+            && let Some(assets) = self.device_assets_mut(device)
+        {
+            assets.set_offline(request);
+        }
+    }
+
+    pub fn offline_preparation_status(&self, device: DeviceId) -> Option<OfflineStatus> {
+        self.device_assets(device)?.offline_status()
+    }
+
+    fn device_assets(&self, device: DeviceId) -> Option<&DeviceAssets> {
+        if let Some(direct) = self.direct.get(&device) {
+            return Some(&direct.assets);
+        }
+        self.bridges.get(&device).map(|bridge| &bridge.assets)
+    }
+
+    fn device_assets_mut(&mut self, device: DeviceId) -> Option<&mut DeviceAssets> {
+        if let Some(direct) = self.direct.get_mut(&device) {
+            return Some(&mut direct.assets);
+        }
+        self.bridges
+            .get_mut(&device)
+            .map(|bridge| &mut bridge.assets)
+    }
+
+    /// The latest editor snapshot for an authenticated bundled sampler.
     pub fn sampler_ui(&self, device: DeviceId) -> Option<&komponist_ipc::sampler_ui::Snapshot> {
         if !is_sampler_kind(self.verified_bundles.get(&device).copied()) {
             return None;
@@ -1620,6 +1735,7 @@ mod tests {
                 module: Box::default(),
             },
             bypass: false,
+            asset_links: Default::default(),
             state: Some(Arc::from([2])),
             sidechain: None,
         };
@@ -1724,6 +1840,7 @@ mod tests {
                 .plugin
                 .clone(),
             bypass: false,
+            asset_links: Default::default(),
             state: None,
             sidechain: None,
         };

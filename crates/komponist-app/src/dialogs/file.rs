@@ -41,6 +41,12 @@ pub enum Purpose {
     ExportFolder,
     /// Choose a sample (WAV) for a sampler pad: "Sample laden …", and "Suchen …" for a missing one.
     Sample,
+    /// Choose a file for a plugin's declared asset slot.
+    PluginAsset {
+        device: komponist_model::DeviceId,
+        slot: u32,
+        kind: komponist_ipc::device_assets::AssetKind,
+    },
     /// Import linked audio files, with multiple selection.
     ImportAudio,
     /// Relink one audio clip using a supported source file.
@@ -133,6 +139,7 @@ impl FileBrowser {
             Purpose::Folder => t.file_folder_title(),
             Purpose::ExportFolder => t.export_folder_title(),
             Purpose::Sample => t.file_sample_title(),
+            Purpose::PluginAsset { .. } => t.plugin_file_choose(),
             Purpose::ImportAudio => t.menu_import_audio(),
             Purpose::ReplaceAudio(_) => t.audio_file_replace(),
         }
@@ -145,7 +152,9 @@ impl FileBrowser {
             Purpose::Save if self.replace.is_some() => t.file_replace(),
             Purpose::Save => t.file_save(),
             Purpose::Folder | Purpose::ExportFolder => t.file_choose_folder(),
-            Purpose::Sample | Purpose::ReplaceAudio(_) => t.file_load(),
+            Purpose::Sample | Purpose::PluginAsset { .. } | Purpose::ReplaceAudio(_) => {
+                t.file_load()
+            }
             Purpose::ImportAudio => t.audio_import_confirm(),
         }
     }
@@ -240,9 +249,10 @@ impl FileBrowser {
             return None;
         }
         match self.purpose {
-            Purpose::Open | Purpose::Sample | Purpose::ReplaceAudio(_) => {
-                Some(Output::Chosen(entry.path))
-            }
+            Purpose::Open
+            | Purpose::Sample
+            | Purpose::PluginAsset { .. }
+            | Purpose::ReplaceAudio(_) => Some(Output::Chosen(entry.path)),
             Purpose::ImportAudio => Some(Output::ChosenMany(vec![entry.path])),
             Purpose::Save => {
                 self.name = entry.name;
@@ -269,7 +279,10 @@ impl FileBrowser {
                     Some(Output::ChosenMany(paths))
                 }
             }
-            Purpose::Open | Purpose::Sample | Purpose::ReplaceAudio(_) => {
+            Purpose::Open
+            | Purpose::Sample
+            | Purpose::PluginAsset { .. }
+            | Purpose::ReplaceAudio(_) => {
                 let i = self.selected?;
                 self.activate(i)
             }
@@ -322,7 +335,11 @@ impl FileBrowser {
             None
         } else if matches!(
             self.purpose,
-            Purpose::Open | Purpose::Sample | Purpose::ImportAudio | Purpose::ReplaceAudio(_)
+            Purpose::Open
+                | Purpose::Sample
+                | Purpose::PluginAsset { .. }
+                | Purpose::ImportAudio
+                | Purpose::ReplaceAudio(_)
         ) && path.is_file()
         {
             if self.purpose == Purpose::ImportAudio {
@@ -398,6 +415,9 @@ pub fn list(dir: &Path, purpose: Purpose) -> std::io::Result<Vec<Entry>> {
             dirs.push(Entry { name, path, is_dir });
         } else if match purpose {
             Purpose::Sample => is_sample_file(&path),
+            Purpose::PluginAsset { kind, .. } => {
+                kind == komponist_ipc::device_assets::AssetKind::File || is_audio_file(&path)
+            }
             Purpose::ImportAudio | Purpose::ReplaceAudio(_) => is_audio_file(&path),
             _ => !purpose.is_folder() && is_project_file(&path),
         } {
@@ -585,6 +605,7 @@ fn file_list(ui: &mut Ui, t: Lang, b: &mut FileBrowser, width: f32) -> Option<Ou
                         let text = match b.purpose {
                             Purpose::Folder | Purpose::ExportFolder => t.file_no_folders(),
                             Purpose::Sample | Purpose::ImportAudio => t.file_no_samples(),
+                            Purpose::PluginAsset { .. } => t.plugin_file_none(),
                             Purpose::ReplaceAudio(_) => t.audio_file_no_audio(),
                             _ => t.file_no_projects(),
                         };

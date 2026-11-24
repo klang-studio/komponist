@@ -773,6 +773,11 @@ impl Bridge {
 
     fn handle(&mut self, msg: ControlMsg) {
         match msg {
+            ControlMsg::GetDeviceAssets(request) => self.report_device_assets(request),
+            ControlMsg::SetDeviceAssets(request, bytes) => self.set_device_assets(request, &bytes),
+            ControlMsg::PrepareDeviceOffline(request, work) => {
+                self.prepare_device_offline(request, work);
+            }
             ControlMsg::Load {
                 format,
                 bundle,
@@ -1233,6 +1238,62 @@ impl Bridge {
             result
         })();
         self.send(BridgeMsg::StateApplied { request, result });
+    }
+
+    fn report_device_assets(&mut self, request: u32) {
+        use komponist_ipc::device_assets::MAX_SNAPSHOT_BYTES;
+
+        let assets = self.plugin.as_ref().and_then(|plugin| plugin.asset_slots());
+        let encoded = assets.and_then(|assets| {
+            let mut bytes = vec![0; MAX_SNAPSHOT_BYTES];
+            let len = assets.encode(&mut bytes)?;
+            bytes.truncate(len);
+            Some(bytes)
+        });
+        let file_slots = self
+            .plugin
+            .as_ref()
+            .is_some_and(|plugin| plugin.supports_asset_slots());
+        let offline = self
+            .plugin
+            .as_ref()
+            .is_some_and(|plugin| plugin.supports_offline_preparation());
+        self.send(BridgeMsg::DeviceAssets {
+            request,
+            snapshot: encoded,
+            file_slots,
+            offline,
+        });
+    }
+
+    fn set_device_assets(&mut self, request: u32, bytes: &[u8]) {
+        let bindings = komponist_ipc::device_assets::Bindings::decode(bytes);
+        let accepted = self
+            .plugin
+            .as_mut()
+            .zip(bindings)
+            .is_some_and(|(plugin, bindings)| plugin.set_asset_bindings(&bindings));
+        self.send(BridgeMsg::DeviceAssetsApplied(request, accepted));
+    }
+
+    fn prepare_device_offline(
+        &mut self,
+        request: u32,
+        work: Option<komponist_ipc::device_assets::OfflineRequest>,
+    ) {
+        use komponist_ipc::device_assets::OfflineStatus;
+
+        let status = self.plugin.as_mut().and_then(|plugin| {
+            if let Some(active) = self.active.as_mut() {
+                active
+                    .rt
+                    .snapshot(|_| plugin.prepare_offline(work))
+                    .unwrap_or(Some(OfflineStatus::Preparing))
+            } else {
+                plugin.prepare_offline(work)
+            }
+        });
+        self.send(BridgeMsg::DeviceOfflineStatus(request, status));
     }
 
     fn set_param(&mut self, id: u32, value: f64) {
