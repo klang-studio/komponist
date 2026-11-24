@@ -13,6 +13,7 @@
 //! (CLAP thread-check reports it as such), processor methods mark their thread as the audio thread
 //! while they run.
 
+mod device_assets;
 mod device_canvas;
 mod effect_meter;
 mod events;
@@ -397,6 +398,30 @@ impl HostedPlugin for ClapPlugin {
         self.native_layout
             .as_ref()
             .map(|(bytes, layout)| (bytes.as_slice(), layout))
+    }
+
+    fn asset_slots(&self) -> Option<komponist_ipc::device_assets::Snapshot> {
+        device_assets::snapshot(self.instance.borrow_mut().plugin_handle().as_raw())
+    }
+
+    fn set_asset_bindings(&mut self, bindings: &komponist_ipc::device_assets::Bindings) -> bool {
+        device_assets::set_bindings(
+            self.instance.borrow_mut().plugin_handle().as_raw(),
+            bindings,
+        )
+    }
+
+    fn supports_offline_preparation(&self) -> bool {
+        device_assets::supports_offline_preparation(
+            self.instance.borrow_mut().plugin_handle().as_raw(),
+        )
+    }
+
+    fn prepare_offline(
+        &mut self,
+        request: Option<komponist_ipc::device_assets::OfflineRequest>,
+    ) -> Option<komponist_ipc::device_assets::OfflineStatus> {
+        device_assets::prepare_offline(self.instance.borrow_mut().plugin_handle().as_raw(), request)
     }
 
     fn sampler_ui(&self, export_tempo: Option<f64>) -> Option<komponist_ipc::sampler_ui::Snapshot> {

@@ -11,6 +11,9 @@ to define how the host supplies a disconnected auxiliary input.
 
 For graphs and canvases, see [layout version 2](layout-v2.md).
 
+The independent [device assets extension](device-assets.md) exposes linked files and
+offline preparation to komponist.
+
 ## Device catalog labels
 
 A layout may provide an optional top-level `metadata` object. Its `names`

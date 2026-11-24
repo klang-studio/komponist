@@ -44,6 +44,8 @@ enum Menu {
     Collapse,
     Duplicate,
     Remove,
+    PickAsset(u32),
+    ClearAsset(u32),
 }
 
 /// What the chain needs to know about the frame it draws.
@@ -190,6 +192,7 @@ fn expanded(
     let head_response = cu.interact(head, id, Sense::click_and_drag());
     let menu_button = head_controls(cu, ctx, card, head, at);
     menu(ctx, card, &head_response, Some(menu_button), at);
+    asset_drop(cu, ctx, card, head);
 
     let body = Rect::from_min_max(pos2(rect.left(), head.bottom()), rect.max);
     match &card.state {
@@ -915,7 +918,7 @@ fn menu(
     if card.instrument {
         duplicate = duplicate.disabled();
     }
-    let entries = [
+    let mut entries = vec![
         open,
         Entry::action(t.devices_bypass(), Menu::Bypass).checked(card.bypass),
         reload,
@@ -925,6 +928,40 @@ fn menu(
         Entry::separator(),
         Entry::action(t.devices_remove(), Menu::Remove),
     ];
+    let labels: Vec<_> = card
+        .asset_slots
+        .iter()
+        .map(|(slot, _)| {
+            use komponist_ipc::device_assets::AssetStatus;
+            let status = match &slot.status {
+                AssetStatus::Empty => t.plugin_file_empty(),
+                AssetStatus::Loading => t.plugin_file_loading(),
+                AssetStatus::Ready => t.plugin_file_ready(),
+                AssetStatus::Missing => t.plugin_file_missing(),
+                AssetStatus::Failed(_) => t.plugin_file_failed(),
+            };
+            t.plugin_file_slot(&slot.label, status)
+        })
+        .collect();
+    let actions: Vec<_> = card
+        .asset_slots
+        .iter()
+        .map(|(slot, linked)| {
+            let clear = Entry::action(t.plugin_file_remove(), Menu::ClearAsset(slot.id));
+            [
+                Entry::action(t.plugin_file_choose(), Menu::PickAsset(slot.id)),
+                if *linked { clear } else { clear.disabled() },
+            ]
+        })
+        .collect();
+    let asset_entries: Vec<_> = labels
+        .iter()
+        .zip(&actions)
+        .map(|(label, actions)| Entry::submenu(label, actions))
+        .collect();
+    if !asset_entries.is_empty() {
+        entries.insert(3, Entry::submenu(t.plugin_file_caption(), &asset_entries));
+    }
     let device = card.device;
     match ContextMenu::new(t.devices_device(), &entries).show_on(head) {
         Some(Menu::Open) => ctx.send(Action::Plugin(PluginAction::OpenWindow(device))),
@@ -943,7 +980,48 @@ fn menu(
             index: at.index + 1,
         })),
         Some(Menu::Remove) => ctx.send(Action::Edit(EditAction::RemoveDevice(device))),
+        Some(Menu::PickAsset(slot)) => {
+            ctx.send(Action::Plugin(PluginAction::PickPluginAsset {
+                device,
+                slot,
+            }));
+        }
+        Some(Menu::ClearAsset(slot)) => ctx.send(Action::Plugin(PluginAction::SetPluginAsset {
+            device,
+            slot,
+            path: None,
+        })),
         None => {}
+    }
+}
+
+/// Dropping on the head selects the only slot, or assigns one file to each slot in display order.
+fn asset_drop(ui: &Ui, ctx: &mut ViewCtx<'_>, card: &Card, head: Rect) {
+    let files = ui.input_mut(|input| {
+        if card.asset_slots.is_empty()
+            || input.raw.dropped_files.len() != card.asset_slots.len()
+            || !input
+                .pointer
+                .hover_pos()
+                .is_some_and(|pos| head.contains(pos))
+            || input
+                .raw
+                .dropped_files
+                .iter()
+                .any(|file| file.path().as_os_str().is_empty())
+        {
+            return Vec::new();
+        }
+        std::mem::take(&mut input.raw.dropped_files)
+            .into_iter()
+            .map(|file| file.path().to_path_buf())
+            .collect::<Vec<_>>()
+    });
+    if !files.is_empty() {
+        ctx.send(Action::Plugin(PluginAction::DropPluginAssets {
+            device: card.device,
+            files,
+        }));
     }
 }
 

@@ -447,6 +447,19 @@ pub enum DropTarget {
 /// Plugin actions.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PluginAction {
+    /// Open the file browser for a plugin's declared asset slot.
+    PickPluginAsset { device: DeviceId, slot: u32 },
+    /// Bind a file to a declared slot, or clear that slot.
+    SetPluginAsset {
+        device: DeviceId,
+        slot: u32,
+        path: Option<PathBuf>,
+    },
+    /// Bind dropped files to all slots in the plugin's display order.
+    DropPluginAssets {
+        device: DeviceId,
+        files: Vec<PathBuf>,
+    },
     /// Browser double-click, Enter or drop: add `plugin` at `target`.
     Add {
         /// The catalog entry's reference.

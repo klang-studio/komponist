@@ -703,6 +703,7 @@ fn sdk_example_uses_native_layout_and_falls_back() {
     use komponist_app::UiAction;
     use komponist_app::views::devices::model::cards;
     use komponist_i18n::Lang;
+    use komponist_ipc::device_assets::{AssetStatus, OfflineRequest, OfflineStatus};
     use komponist_model::ChannelRef;
     use komponist_model::edits::{NewDevice, NewTrack, add_track, insert_device};
     use komponist_model::params::ParamId;
@@ -750,6 +751,20 @@ fn sdk_example_uses_native_layout_and_falls_back() {
             role: DeviceRole::Effect,
             state: None,
             sidechain: None,
+        },
+    )
+    .unwrap();
+    let (project, _) = komponist_model::edits::add_clip(
+        &project,
+        track,
+        komponist_model::edits::NewClip {
+            start: Tick::ZERO,
+            length: Tick(3840),
+            content: komponist_model::edits::NewClipContent::Midi {
+                notes: Vec::new(),
+                take_name: String::new(),
+            },
+            name: "Asset check".into(),
         },
     )
     .unwrap();
@@ -807,10 +822,55 @@ fn sdk_example_uses_native_layout_and_falls_back() {
     let english = cards(Lang::En, app.project().track(track).unwrap(), host, &[]);
     assert_eq!(german[0].layout.pages[0].name, "Hauptseite");
     assert_eq!(english[0].layout.pages[0].name, "Main");
+    assert_eq!(german[0].name, "Pegelbeispiel");
+    assert_eq!(english[0].name, "Native Gain Example");
     assert_eq!(
         german[0].param(&ParamId::plugin(gain_id)).unwrap().wire,
         gain_id
     );
+
+    let reference = dir.join("Reference.txt");
+    std::fs::write(&reference, b"fixture reference").unwrap();
+    step_until(&mut app, "SDK file slots and preparation", |app| {
+        let host = app.engine().host();
+        host.supports_offline_preparation(device)
+            && host.asset_slots(device).is_some_and(|snapshot| {
+                snapshot.slots[0].id == 42 && snapshot.slots[0].status == AssetStatus::Empty
+            })
+    });
+    app.dispatch(Action::Plugin(PluginAction::SetPluginAsset {
+        device,
+        slot: 42,
+        path: Some(reference.clone()),
+    }));
+    step_until(&mut app, "SDK file slot ready", |app| {
+        app.engine()
+            .host()
+            .asset_slots(device)
+            .is_some_and(|snapshot| snapshot.slots[0].status == AssetStatus::Ready)
+    });
+    let detached = app.engine_mut().detach().unwrap();
+    for id in 1..=2 {
+        app.engine_mut().host_mut().set_offline_preparation(
+            device,
+            Some(OfflineRequest {
+                id,
+                sample_rate: 48_000.0,
+                tempo: 120.0,
+            }),
+        );
+        assert_eq!(
+            app.engine().host().offline_preparation_status(device),
+            Some(OfflineStatus::Preparing),
+        );
+        step_until(&mut app, "SDK offline request completed", |app| {
+            app.engine().host().offline_preparation_status(device) == Some(OfflineStatus::Ready)
+        });
+        app.engine_mut()
+            .host_mut()
+            .set_offline_preparation(device, None);
+    }
+    app.engine_mut().attach(detached);
 
     app.dispatch(Action::Ui(UiAction::RevealDevice(device)));
     let mut h = komponist_ui::snapshot::builder::<App>(1.0)
@@ -828,15 +888,65 @@ fn sdk_example_uses_native_layout_and_falls_back() {
     app.dispatch(Action::Project(ProjectAction::Save));
     let saved = persist::from_json(&std::fs::read_to_string(&file).unwrap()).unwrap();
     assert!(saved.find_device(device).unwrap().2.state.is_some());
+    assert_eq!(
+        saved.find_device(device).unwrap().2.asset_links[&42].rel,
+        Path::new("Reference.txt")
+    );
     app.shutdown();
     drop(h);
 
     let mut reopened = open(&native, "reopen");
     step_until(&mut reopened, "native SDK example state restored", |app| {
         let host = app.engine().host();
-        host.native_layout(device).is_some() && host.param_base(device, gain_id) == Some(0.5)
+        host.native_layout(device).is_some()
+            && host.param_base(device, gain_id) == Some(0.5)
+            && host
+                .asset_slots(device)
+                .is_some_and(|snapshot| snapshot.slots[0].status == AssetStatus::Ready)
     });
-    reopened.shutdown();
+    let destination = dir.join("moved");
+    std::fs::create_dir(&destination).unwrap();
+    let moved = destination.join("Saved.komponist");
+    reopened.dispatch(Action::Project(ProjectAction::SaveAs));
+    let mut h = komponist_ui::snapshot::builder::<App>(1.0)
+        .with_size(egui::vec2(1920.0, 1080.0))
+        .build_ui_state(|ui, app| app.show(ui), reopened);
+    h.run_steps(3);
+    h.get_by_label("Dateiname").focus();
+    h.run_steps(1);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.get_by_label("Dateiname")
+        .type_text(moved.to_str().unwrap());
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let app = h.state_mut();
+    assert_eq!(app.project_path(), Some(moved.as_path()));
+    assert_eq!(
+        app.project().find_device(device).unwrap().2.asset_links[&42].resolve(Some(&destination)),
+        Some(reference.clone())
+    );
+
+    app.dispatch(Action::Project(ProjectAction::CollectAndSave));
+    let collected = destination.join("Saved Samples/Reference.txt");
+    assert_eq!(std::fs::read(&collected).unwrap(), b"fixture reference");
+    assert_eq!(
+        app.project().find_device(device).unwrap().2.asset_links[&42].resolve(Some(&destination)),
+        Some(collected)
+    );
+    let settings = crate::export::export_settings(&dir, komponist_app::actions::ExportRange::Song);
+    app.dispatch(Action::Project(ProjectAction::StartExport(settings)));
+    step_until(app, "SDK export requested preparation", |app| {
+        app.is_exporting()
+            && app.engine().is_detached()
+            && app.engine().host().offline_preparation_status(device)
+                == Some(OfflineStatus::Preparing)
+    });
+    step_until(app, "SDK asset offline export", |app| !app.is_exporting());
+    assert_eq!(app.exported().len(), 1);
+    assert!(app.exported()[0].is_file());
+    app.shutdown();
+    drop(h);
 
     // The same project and author IDs must remain usable in an ordinary CLAP build.
     let mut fallback = open(&plain, "standard");

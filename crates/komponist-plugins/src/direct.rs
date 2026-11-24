@@ -14,6 +14,7 @@ use komponist_hosting::host_loop::{Observed, PollLoop, notification_bits};
 use komponist_hosting::{
     ActivateConfig, EventOut, HostedPlugin, HostedProcessor, HostingError, ProcessBlock,
 };
+use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot};
 use komponist_ipc::shm::{INPUT_EVENT_CAPACITY, MAX_BLOCK, OUTPUT_EVENT_CAPACITY};
 use komponist_ipc::{PluginFormat, WireEvent, WireEventKind};
 use komponist_model::DeviceRole;
@@ -81,6 +82,25 @@ impl DirectClap {
 
     pub(crate) fn device_display(&self) -> Option<komponist_ipc::device_canvas::DisplayList> {
         self.plugin.device_display()
+    }
+
+    pub(crate) fn asset_slots(&self) -> (Option<Snapshot>, bool) {
+        (
+            self.plugin.asset_slots(),
+            self.plugin.supports_offline_preparation(),
+        )
+    }
+
+    pub(crate) fn set_asset_bindings(&mut self, bindings: &Bindings) -> bool {
+        self.plugin.set_asset_bindings(bindings)
+    }
+
+    pub(crate) fn prepare_offline(
+        &mut self,
+        request: Option<OfflineRequest>,
+    ) -> Option<OfflineStatus> {
+        self.try_control(|plugin| plugin.prepare_offline(request))
+            .unwrap_or(Some(OfflineStatus::Preparing))
     }
 
     pub(crate) fn sampler_ui(

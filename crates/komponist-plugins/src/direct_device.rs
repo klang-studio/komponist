@@ -20,6 +20,7 @@ use crate::manager::{
 };
 
 pub(crate) struct DirectDevice {
+    pub(crate) assets: crate::device_assets::DeviceAssets,
     session: DirectSession,
     bundled_kind: Option<BuiltinKind>,
     pub(crate) params: Vec<ParamInfo>,
@@ -131,6 +132,7 @@ impl DirectDevice {
             session,
             bundled_kind,
             params: Vec::new(),
+            assets: crate::device_assets::DeviceAssets::new(),
             sampler_ui: None,
             sampler_ui_at: Instant::now(),
             sampler_export_tempo: None,
@@ -211,6 +213,25 @@ impl DirectDevice {
         {
             self.display_at = now + komponist_ipc::device_canvas::REFRESH;
             self.display = self.session.device_display().map(Arc::new);
+        }
+    }
+
+    pub(crate) fn poll_assets(&mut self, id: DeviceId, events: &mut Vec<PluginManagerEvent>) {
+        if self.pending_restore.is_some() || matches!(self.status, DeviceStatus::Crashed(_)) {
+            return;
+        }
+        if let Some(bindings) = self.assets.take_bindings()
+            && !self.session.set_asset_bindings(&bindings)
+        {
+            events.push(crate::device_assets::binding_rejected(id));
+        }
+        if self.assets.slots_due() {
+            let (slots, offline) = self.session.asset_slots();
+            self.assets.report_slots(slots, offline);
+        }
+        if let Some(request) = self.assets.offline_due() {
+            let status = self.session.prepare_offline(request);
+            self.assets.report_offline(request, status);
         }
     }
 

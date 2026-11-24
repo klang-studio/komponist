@@ -23,6 +23,7 @@ mod bundled_effects;
 pub mod bundled_sampler;
 mod bundled_state;
 pub mod catalog;
+mod device_assets;
 mod direct;
 mod direct_device;
 mod direct_session;
@@ -37,6 +38,7 @@ pub use catalog::{
     BuiltinKind, Catalog, CatalogEntry, EffectCategory, PluginDirs, PluginLocation, ScanCache,
     ScanReport, packaged_kind,
 };
+pub use device_assets::AssetEdit;
 pub use external::ExternalProcessor;
 pub use manager::{
     BRIDGE_FLAG, DeviceSnapshots, DeviceStatus, FailReason, MissingPlugin, PluginError,

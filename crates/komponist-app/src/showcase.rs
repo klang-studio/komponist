@@ -156,6 +156,7 @@ impl Devices {
             role: kind.role(),
             plugin: kind.plugin_ref(),
             bypass: false,
+            asset_links: Default::default(),
             state: Some(state.into()),
             sidechain: None,
         })
@@ -168,6 +169,7 @@ impl Devices {
             role: DeviceRole::Instrument,
             plugin: Internal::Sampler.plugin_ref(),
             bypass: false,
+            asset_links: Default::default(),
             state: None,
             sidechain: None,
         })
@@ -184,6 +186,7 @@ impl Devices {
             role: DeviceRole::Instrument,
             plugin: crate::app::hexa_ref(),
             bypass: false,
+            asset_links: Default::default(),
             state: Some(encode_state(&patch).into()),
             sidechain: None,
         })

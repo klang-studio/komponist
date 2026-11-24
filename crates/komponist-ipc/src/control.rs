@@ -97,7 +97,7 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 13 distinguishes plugin-originated parameter flushes from value telemetry.
 /// 14 (#215): a checked snapshot carries the caller's remaining time.
 /// 15 adds optional device catalog labels to scanned and loaded descriptors.
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -331,6 +331,12 @@ pub enum ControlMsg {
     GetSamplerUi(u32, Option<f64>),
     /// Start a held slice audition at the source position, or release it with `None`.
     PreviewSamplerSlice(Option<f64>),
+    /// Query the live file-slot inventory and offline preparation capability.
+    GetDeviceAssets(u32),
+    /// Apply a bounded atomic file-slot update on the main thread.
+    SetDeviceAssets(u32, Vec<u8>),
+    /// Start, poll or clear a detached offline preparation request.
+    PrepareDeviceOffline(u32, Option<crate::device_assets::OfflineRequest>),
     /// Load plugin `plugin_id` from `bundle`. Answer: `Loaded` or `Error`.
     Load {
         /// Bundle format.
@@ -428,6 +434,12 @@ pub enum ControlMsg {
 pub enum BridgeMsg {
     /// Bounded sampler UI data encoded with the public extension's current schema.
     SamplerUi(u32, Option<Vec<u8>>),
+    /// File-slot inventory and whether this instance supports offline preparation.
+    DeviceAssets(u32, Option<Vec<u8>>, bool),
+    /// Whether the plugin accepted the file-slot update.
+    DeviceAssetsApplied(u32, bool),
+    /// Preparation result. Absent when the extension is unavailable.
+    DeviceOfflineStatus(u32, Option<crate::device_assets::OfflineStatus>),
     /// First message after start.
     Hello {
         /// [`PROTOCOL_VERSION`] of the bridge.

@@ -240,6 +240,7 @@ pub fn device(id: u64, role: DeviceRole, plugin: PluginRef, state: Option<&[u8]>
         role,
         plugin,
         bypass: false,
+        asset_links: Default::default(),
         state: state.map(Arc::from),
         sidechain: None,
     }

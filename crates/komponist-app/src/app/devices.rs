@@ -33,6 +33,11 @@ fn insert_copy(
     copy: CopiedDevice,
 ) -> Result<(Project, DeviceId), edits::EditError> {
     let (project, id) = edits::insert_device(project, channel, index, spec(&copy.device))?;
+    let project = if copy.device.asset_links.is_empty() {
+        project
+    } else {
+        edits::set_device_asset_links(&project, id, copy.device.asset_links)?
+    };
     Ok((
         edits::automation::paste_device_lanes(&project, id, &copy.lanes)?,
         id,

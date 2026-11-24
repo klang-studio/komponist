@@ -1492,6 +1492,7 @@ mod tests {
             general_sampler: None,
             native_layout: None,
             display: None,
+            asset_slots: Vec::new(),
             bundled_editor: false,
             device: DeviceId(7),
             automation_owner: None,

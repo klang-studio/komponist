@@ -5,6 +5,8 @@ use std::sync::Arc;
 use nice_plug::prelude::*;
 
 #[cfg(feature = "native-layout")]
+mod assets;
+#[cfg(feature = "native-layout")]
 mod native;
 
 #[derive(Params)]
@@ -13,6 +15,8 @@ struct GainParams {
     gain: FloatParam,
     #[id = "mix"]
     mix: FloatParam,
+    #[cfg(feature = "native-layout")]
+    asset_state: assets::FixtureAssets,
 }
 
 impl Default for GainParams {
@@ -28,6 +32,8 @@ impl Default for GainParams {
             )
             .with_unit(" dB"),
             mix: FloatParam::new("Mix", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 }),
+            #[cfg(feature = "native-layout")]
+            asset_state: assets::FixtureAssets::default(),
         }
     }
 }
@@ -90,6 +96,9 @@ impl ClapPlugin for NativeGain {
 
     #[cfg(feature = "native-layout")]
     unsafe fn clap_custom_extension(id: &std::ffi::CStr) -> *const std::ffi::c_void {
+        if id == komponist_native_clap_sdk::device_assets::EXTENSION_ID {
+            return komponist_native_clap_sdk::assets::extension::<Self, GainParams>(id);
+        }
         if id == komponist_native_clap_sdk::display::EXTENSION_ID {
             return komponist_native_clap_sdk::display::extension::<Self, GainParams>(id);
         }

@@ -582,6 +582,7 @@ pub fn add_track_in(
             role: DeviceRole::Instrument,
             plugin,
             bypass: false,
+            asset_links: Default::default(),
             state: None,
             sidechain: None,
         }));
@@ -1423,6 +1424,7 @@ pub fn insert_device(
             role: spec.role,
             plugin: spec.plugin,
             bypass: false,
+            asset_links: Default::default(),
             state: spec.state,
             sidechain: None,
         }),
@@ -1460,6 +1462,7 @@ pub fn replace_instrument(
         role: DeviceRole::Instrument,
         plugin,
         bypass: false,
+        asset_links: Default::default(),
         state: None,
         sidechain: None,
     });
@@ -1548,6 +1551,15 @@ pub fn set_device_state(
     state: Option<Arc<[u8]>>,
 ) -> EditResult {
     edit_device(project, device, |d| d.state = state)
+}
+
+/// Replaces the device's host-managed file links without modifying its opaque state.
+pub fn set_device_asset_links(
+    project: &Project,
+    device: DeviceId,
+    links: std::collections::BTreeMap<u32, crate::plugin_assets::AssetLink>,
+) -> EditResult {
+    edit_device(project, device, |device| device.asset_links = links)
 }
 
 // ------------------------------------------------------------------------------------------------

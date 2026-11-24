@@ -1,0 +1,15 @@
+plugin-file-caption = Dateien
+plugin-file-choose = Datei auswählen
+plugin-file-none = Keine Dateien verfügbar
+plugin-file-unavailable = Diese Datei kann nicht mit dem Plug-in verknüpft werden.
+plugin-file-remove = Verknüpfung entfernen
+plugin-file-slot = { $slot } · { $status }
+plugin-file-empty = Leer
+plugin-file-loading = Lädt
+plugin-file-ready = Bereit
+plugin-file-missing = Fehlt
+plugin-file-failed = Fehler
+plugin-file-missing-title = Verknüpfte Dateien fehlen
+plugin-file-missing-body = Einige mit Plug-ins in „{ $project }“ verknüpfte Dateien wurden nicht gefunden. Du kannst die Dateien suchen oder fortfahren und die Verknüpfungen behalten.
+plugin-file-chip = DATEI
+undo-plugin-file-link = Plug-in-Dateiverknüpfung ändern

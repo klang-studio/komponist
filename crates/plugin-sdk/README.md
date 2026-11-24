@@ -221,3 +221,11 @@ pinned key and check the downloaded archive hash before a managed install.
 its `devices/<name>/` layout, SDK/core pin, maintainers, review and required platform checks.
 Its contribution guide covers licensing, DE/EN, tests, demo presets, descriptions and screenshots. The SDK example can be
 built and installed manually with the workflow above.
+
+## Project file slots
+
+Implement `assets::AssetProvider` and publish `assets::extension` from the plugin's
+CLAP extension entry point. The provider can advertise file slots, offline preparation,
+or both. The host resolves and persists the paths, and the plugin manages the runtime
+files. The [asset contract](../../docs/clap-device-layout/device-assets.md) describes
+the request lifecycle and payload limits.

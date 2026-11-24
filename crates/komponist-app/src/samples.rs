@@ -256,6 +256,10 @@ impl App {
     /// Links `path` to the pad: the pad's start and end return to the whole sample, the link goes
     /// into the device state, the sample loads. One undo step ("Sample laden").
     fn load_sample(&mut self, device: DeviceId, pad: usize, path: &Path) {
+        if self.engine.host().asset_slots(device).is_some() {
+            self.set_plugin_asset(device, pad as u32, Some(path));
+            return;
+        }
         self.flush_sampler_params(device);
         self.in_one_step("undo-sample-load", |app| app.link_sample(device, pad, path));
     }
@@ -367,6 +371,10 @@ impl App {
     }
 
     fn clear_sample(&mut self, device: DeviceId, pad: usize) {
+        if self.engine.host().asset_slots(device).is_some() {
+            self.set_plugin_asset(device, pad as u32, None);
+            return;
+        }
         self.flush_sampler_params(device);
         let Some((_, _, found)) = self.project().find_device(device) else {
             return;
@@ -766,6 +774,11 @@ pub(crate) fn collect_sample_sources<'a>(
         .flat_map(|track| track.channel.devices.iter())
         .chain(project.master.devices.iter())
     {
+        for link in device.asset_links.values() {
+            if let Some(found) = link.resolve(project_dir) {
+                collector.collect_asset_file(&found)?;
+            }
+        }
         if bundled_sampler::kind(&device.plugin).is_some() {
             let state = plugin_snapshot(device.id).or(device.state.as_deref());
             bundled_sampler::collect_links(collector, state, project_dir)?;
@@ -789,7 +802,7 @@ pub(crate) fn rebase_project_links(
     new_dir: &Path,
     destination: impl Fn(PathBuf) -> PathBuf,
 ) -> Option<Project> {
-    rewrite_links(
+    let after_samples = rewrite_links(
         project,
         |device| {
             if bundled_sampler::kind(&device.plugin).is_some() {
@@ -808,7 +821,37 @@ pub(crate) fn rebase_project_links(
             let path = destination(file.resolve(old_dir)?);
             Some(file.moved_to(&path, new_dir))
         },
-    )
+    );
+    let base = after_samples.as_ref().unwrap_or(project);
+    let mut result = None;
+    for device in base
+        .tracks
+        .iter()
+        .flat_map(|track| &track.channel.devices)
+        .chain(&base.master.devices)
+    {
+        if device.asset_links.is_empty() {
+            continue;
+        }
+        let links = device
+            .asset_links
+            .iter()
+            .map(|(&id, link)| {
+                let link = link.runtime_path(old_dir).map_or_else(
+                    || link.clone(),
+                    |source| link.moved_to(&destination(source), Some(new_dir)),
+                );
+                (id, link)
+            })
+            .collect();
+        if links != device.asset_links {
+            result = Some(
+                edits::set_device_asset_links(result.as_ref().unwrap_or(base), device.id, links)
+                    .ok()?,
+            );
+        }
+    }
+    result.or(after_samples)
 }
 
 /// `project` with the Sampler links rewritten by `samplers` and the audio clip files by `audio`

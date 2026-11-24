@@ -37,6 +37,7 @@ pub mod macros;
 pub mod params;
 pub mod paths;
 pub mod persist;
+pub mod plugin_assets;
 pub mod project;
 pub mod routing;
 pub mod time;

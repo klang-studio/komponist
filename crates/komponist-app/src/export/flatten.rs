@@ -158,6 +158,7 @@ impl Flatten {
                     .as_deref()
                     .and_then(komponist_plugins::bundled_sampler::assets)
                     .as_deref(),
+                &device.asset_links,
                 host.sampler_ui(id),
             )
             .pads
@@ -328,6 +329,7 @@ impl App {
             job,
             phase: Phase::Devices,
             diagnostics: Vec::new(),
+            offline_devices: Vec::new(),
             flatten: Some(Flatten {
                 id,
                 name,

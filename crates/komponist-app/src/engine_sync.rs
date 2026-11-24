@@ -778,8 +778,18 @@ impl EngineSync {
                     self.send(Command::RemoveProcessor { slot });
                     self.host.release(device.id);
                     self.reload_device(after, device.id);
-                } else if old.state != device.state {
-                    self.follow_state(old, device, after, project_dir);
+                } else {
+                    let state_changed = old.state != device.state;
+                    if state_changed {
+                        self.follow_state(old, device, after, project_dir);
+                    }
+                    if state_changed || old.asset_links != device.asset_links {
+                        self.host.sync_asset_links(
+                            device.id,
+                            &old.asset_links,
+                            &device.asset_links,
+                        );
+                    }
                 }
             }
         }

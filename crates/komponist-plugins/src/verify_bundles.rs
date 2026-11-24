@@ -140,6 +140,7 @@ fn smoke_live_manager(
             role: DeviceRole::Effect,
             plugin: entry.plugin.clone(),
             bypass: false,
+            asset_links: Default::default(),
             state: None,
             sidechain: None,
         })

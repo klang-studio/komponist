@@ -11,6 +11,7 @@
 //! Units used throughout: positions and lengths in [`Tick`]s (960 PPQ); MIDI pitch and velocity
 //! `0 ..= 127`; volume in dB; pan `-1.0 ..= 1.0` (left … right).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,7 @@ use crate::audio::{AudioClip, AudioInput, AudioIo};
 use crate::automation::{ClipAutomation, TrackAutomation};
 use crate::ids::{ClipId, DeviceId, NoteId, SendId, TrackId};
 use crate::macros::TrackMacros;
+use crate::plugin_assets::AssetLink;
 use crate::time::{Meter, StepResolution, Tempo, TempoMap, Tick, TickRange};
 
 /// Name of a new, empty project (S10, prototype `newProject`).
@@ -679,6 +681,9 @@ pub struct Device {
     /// project file.
     #[serde(default, with = "crate::persist::base64_state")]
     pub state: Option<Arc<[u8]>>,
+    /// Project-owned links for CLAP file slots. Older devices and projects omit this.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub asset_links: BTreeMap<u32, AssetLink>,
     /// Where the device's sidechain input comes from (wave 9); `None` = no sidechain (silence).
     /// Not written when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

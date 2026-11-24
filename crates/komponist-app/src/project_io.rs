@@ -36,6 +36,7 @@ use komponist_i18n::Lang;
 use komponist_model::edits::ProjectProp;
 use komponist_model::persist::{self, FILE_EXTENSION, PersistError};
 use komponist_model::{Document, Project, Repairs};
+use komponist_sampler::links::Collector;
 
 use crate::actions::{Action, ProjectAction, SettingsAction, UiAction};
 use crate::app::App;
@@ -782,7 +783,12 @@ impl App {
             self.project(),
             self.project_dir().as_deref(),
         );
-        if missing.is_empty() && samples == 0 && audio.is_empty() {
+        let assets = crate::dialogs::missing_plugins::missing_assets(
+            self.lang,
+            self.project(),
+            self.project_dir().as_deref(),
+        );
+        if missing.is_empty() && samples == 0 && audio.is_empty() && assets.is_empty() {
             let text = match &repaired {
                 Some(repaired) => self.lang.project_opened_repaired(&name, repaired),
                 None => self.lang.project_opened_ready(&name),
@@ -790,7 +796,9 @@ impl App {
             self.set_status(text, StatusKind::Info);
             return;
         }
-        let n = if audio.is_empty() {
+        let n = if missing.is_empty() && !assets.is_empty() {
+            self.lang.plugin_file_missing_title().to_owned()
+        } else if audio.is_empty() && assets.is_empty() {
             crate::dialogs::missing_plugins::title_for(self.lang, missing.len(), samples)
         } else if missing.is_empty() {
             self.lang.missing_audio_files().to_owned()
@@ -823,19 +831,11 @@ impl App {
         self.save_project_to(path, None)
     }
 
-    pub(crate) fn save_to_collected(
-        &mut self,
-        path: &Path,
-        collector: &mut komponist_sampler::Collector,
-    ) -> bool {
+    pub(crate) fn save_to_collected(&mut self, path: &Path, collector: &mut Collector) -> bool {
         self.save_project_to(path, Some(collector))
     }
 
-    fn save_project_to(
-        &mut self,
-        path: &Path,
-        mut collector: Option<&mut komponist_sampler::Collector>,
-    ) -> bool {
+    fn save_project_to(&mut self, path: &Path, mut collector: Option<&mut Collector>) -> bool {
         let path = match resolve_project_parent(with_extension(path)) {
             Ok(path) => path,
             Err(error) => return self.report_project_save_error(error),
@@ -985,6 +985,7 @@ impl App {
         };
         match written {
             Ok(not_durable) => {
+                let previous = std::sync::Arc::clone(self.doc.project());
                 self.doc = document;
                 if let Some(name) = rename {
                     self.untracked(ProjectProp::Name(name));
@@ -999,12 +1000,25 @@ impl App {
                 self.recovery_ui.save_asks = false;
                 self.update_deferred_plugin_states(rebased_deferred);
                 let dir = self.project_dir();
+                let project = std::sync::Arc::clone(self.doc.project());
                 let host = self.engine.host_mut();
                 host.set_project_dir(dir);
                 // Future snapshots must use the new link coordinates too. Apply
                 // them only after the file write and directory change succeeded.
                 for (device, state) in rebased_bundle_states {
                     host.set_state(device, &state);
+                }
+                for device in project
+                    .tracks
+                    .iter()
+                    .flat_map(|track| &track.channel.devices)
+                    .chain(&project.master.devices)
+                {
+                    if let Some((_, _, old)) = previous.find_device(device.id)
+                        && old.asset_links != device.asset_links
+                    {
+                        host.sync_asset_links(device.id, &old.asset_links, &device.asset_links);
+                    }
                 }
                 self.set_status(
                     self.lang
@@ -1213,6 +1227,9 @@ impl App {
                 }
             }
             Purpose::Sample => self.sample_chosen(path),
+            Purpose::PluginAsset { device, slot, .. } => {
+                self.set_plugin_asset(device, slot, Some(&path));
+            }
             Purpose::ReplaceAudio(clip) => self.replace_audio_path(clip, path),
             Purpose::ImportAudio => self.audio_import_chosen(vec![path]),
             Purpose::ExportFolder => self.export_folder_chosen(path),
@@ -1402,6 +1419,80 @@ pub(crate) mod tests {
         );
         assert_eq!(std::fs::read_dir(chosen).unwrap().count(), 1);
         assert_eq!(std::fs::read_dir(actual).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn plugin_asset_links_rebase_after_success_and_collect_by_content() {
+        use komponist_model::edits::{self, NewTrack};
+        use komponist_model::plugin_assets::AssetLink;
+        use komponist_model::{PluginFormat, PluginRef};
+
+        let scratch = tempfile::tempdir().unwrap();
+        let old_dir = scratch.path().join("original");
+        let new_dir = scratch.path().join("moved");
+        std::fs::create_dir(&old_dir).unwrap();
+        std::fs::create_dir(&new_dir).unwrap();
+        let source = old_dir.join("configuration.txt");
+        let same = old_dir.join("same.txt");
+        std::fs::write(&source, b"data to collect").unwrap();
+        std::fs::copy(&source, &same).unwrap();
+        std::fs::write(new_dir.join("configuration.txt"), b"unrelated").unwrap();
+        let plugin = PluginRef {
+            format: PluginFormat::Clap,
+            id: "com.example.assets".into(),
+            name: "Asset fixture".into(),
+            vendor: String::new(),
+            version: "1".into(),
+            module: Box::default(),
+        };
+        let (project, track) = edits::add_track(
+            &Project::new("Original"),
+            NewTrack {
+                name: None,
+                hue: None,
+                instrument: Some(plugin),
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        let device = project
+            .track(track)
+            .unwrap()
+            .channel
+            .instrument()
+            .unwrap()
+            .1
+            .id;
+        let links = [
+            (0, AssetLink::new(&source, Some(&old_dir))),
+            (1, AssetLink::new(&same, Some(&old_dir))),
+        ]
+        .into_iter()
+        .collect();
+        let project = edits::set_device_asset_links(&project, device, links).unwrap();
+        let mut app = App::headless(project);
+        assert!(app.save_to(&old_dir.join("Original.komponist")));
+        let destination = new_dir.join("Saved.komponist");
+        std::fs::create_dir(&destination).unwrap();
+        assert!(!app.save_to(&destination));
+        assert_eq!(
+            app.project().find_device(device).unwrap().2.asset_links[&0].rel,
+            Path::new("configuration.txt")
+        );
+        std::fs::remove_dir(&destination).unwrap();
+        assert!(app.save_to(&destination));
+        let saved = load_project(&destination).unwrap();
+        let links = &saved.find_device(device).unwrap().2.asset_links;
+        assert_eq!(links[&0].resolve(Some(&new_dir)), Some(source.clone()));
+
+        let mut collector = Collector::new(&destination);
+        crate::samples::collect_sample_sources(&saved, &mut collector, Some(&new_dir), |_| None)
+            .unwrap();
+        let placed = collector.placed(&source).unwrap();
+        assert_eq!(collector.placed(&same), Some(placed.clone()));
+        assert_eq!(std::fs::read(&placed).unwrap(), b"data to collect");
+        assert!(source.is_file() && same.is_file());
     }
 
     #[test]

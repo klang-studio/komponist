@@ -6,8 +6,10 @@ use std::path::Path;
 use komponist_builtin::{BuiltinKind, Internal};
 use komponist_device_core::pinned_clap_state;
 use komponist_hexa::device::{Field, WIRE_COUNT};
+use komponist_hosting::HostedPlugin;
 use komponist_i18n::Lang;
 use komponist_ipc::control::param_flags;
+use komponist_ipc::device_assets::AssetKind;
 use komponist_ipc::native_layout::NativeLayout;
 use komponist_ipc::{
     ParamInfo as ClapParamInfo, PluginDescriptor, PluginFormat as ClapFormat, PluginKind,
@@ -124,7 +126,7 @@ pub fn plan_legacy_bundled_device(
         let (_, layout) = plugin
             .native_layout()
             .ok_or("missing native bundled layout")?;
-        prepare(
+        let mut plan = prepare(
             old,
             kind,
             plugin.descriptor(),
@@ -132,9 +134,40 @@ pub fn plan_legacy_bundled_device(
             &plugin.params(),
             module,
             project_dir,
-        )
+        )?;
+        if let Some(replacement) = crate::bundled_sampler::move_embedded_links(&plan.replacement)
+            && supports_sample_links(plugin, &replacement)
+        {
+            plan.replacement = replacement;
+        }
+        Ok(plan)
     })
     .ok_or_else(|| "bundled device inventory is busy".to_owned())?
+}
+
+/// Update packed sampler state only when its verified bundle declares the matching audio slots.
+pub(crate) fn migrate_packaged_sample_assets(
+    inventory: &BundledClap,
+    old: &Device,
+) -> Option<Device> {
+    let replacement = crate::bundled_sampler::move_embedded_links(old)?;
+    let (path, id) = inventory
+        .bundle_entries()
+        .find(|(_, id)| *id == old.plugin.id)?;
+    let proof = inventory.verify(path, id).ok()??;
+    let mut host = DirectClap::load(proof).ok()?;
+    host.try_control(|plugin| supports_sample_links(plugin, &replacement).then_some(replacement))?
+}
+
+fn supports_sample_links(plugin: &dyn HostedPlugin, replacement: &Device) -> bool {
+    plugin.asset_slots().is_some_and(|slots| {
+        replacement.asset_links.keys().all(|id| {
+            slots
+                .slots
+                .iter()
+                .any(|slot| slot.id == *id && slot.kind == AssetKind::AudioSample)
+        })
+    })
 }
 
 fn legacy_infos(kind: BuiltinKind) -> Vec<ParamInfo> {

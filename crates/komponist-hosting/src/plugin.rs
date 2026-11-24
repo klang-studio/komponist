@@ -160,6 +160,25 @@ pub trait HostedPlugin {
     }
 
     /// Loader and playback snapshot. A tempo requests preparation while audio is detached.
+    fn asset_slots(&self) -> Option<komponist_ipc::device_assets::Snapshot> {
+        None
+    }
+
+    fn set_asset_bindings(&mut self, _bindings: &komponist_ipc::device_assets::Bindings) -> bool {
+        false
+    }
+
+    fn supports_offline_preparation(&self) -> bool {
+        false
+    }
+
+    fn prepare_offline(
+        &mut self,
+        _request: Option<komponist_ipc::device_assets::OfflineRequest>,
+    ) -> Option<komponist_ipc::device_assets::OfflineStatus> {
+        None
+    }
+
     fn sampler_ui(
         &self,
         _export_tempo: Option<f64>,

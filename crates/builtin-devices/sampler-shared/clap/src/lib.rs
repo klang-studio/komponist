@@ -3,6 +3,8 @@
 // Missing SAFETY comments: 1. Remove this allow when the crate is clean (#241 follow-up).
 #![allow(clippy::undocumented_unsafe_blocks)]
 
+mod assets;
+
 use std::collections::BTreeMap;
 use std::ffi::{CStr, c_void};
 use std::sync::{Arc, Mutex};
@@ -32,6 +34,8 @@ struct SampleParameters<T> {
     params: Parameters,
     samples: SamplerHandle,
     assets: Mutex<String>,
+    host_bindings: Mutex<BTreeMap<usize, Option<links::SampleLink>>>,
+    offline: Mutex<Option<komponist_ipc::device_assets::OfflineRequest>>,
     definition: std::marker::PhantomData<fn() -> T>,
 }
 
@@ -63,7 +67,14 @@ unsafe impl<T: SampledDefinition> Params for SampleParameters<T> {
         let new = canonical_links(assets);
         let old_revisions = links::revisions(&saved);
         let new_revisions = links::revisions(assets);
+        let bindings = self
+            .host_bindings
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         for pad in 0..T::PADS {
+            if bindings.contains_key(&pad) {
+                continue;
+            }
             let link_at = |links: &[(usize, links::SampleLink)]| {
                 links.iter().position(|(index, _)| *index == pad)
             };
@@ -105,6 +116,8 @@ impl<T: SampledDefinition> Default for Sampled<T> {
                 params,
                 samples,
                 assets: Mutex::new("{}".into()),
+                host_bindings: Mutex::new(BTreeMap::new()),
+                offline: Mutex::new(None),
                 definition: std::marker::PhantomData,
             }),
             dsp,
@@ -348,6 +361,8 @@ impl<T: SampledDefinition> ClapPlugin for Sampled<T> {
     unsafe fn clap_custom_extension(id: &CStr) -> *const c_void {
         if id == EXTENSION_ID {
             std::ptr::from_ref(&Self::SAMPLER_UI).cast()
+        } else if id == komponist_ipc::device_assets::EXTENSION_ID {
+            komponist_native_clap_sdk::assets::extension::<Self, SampleParameters<T>>(id)
         } else {
             komponist_native_clap_sdk::extension::<Self>(id)
         }
