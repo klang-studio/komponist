@@ -190,6 +190,7 @@ pub(crate) fn draw_cell(
             fm(cu, card, cell, p, palette, rect);
             true
         }
+        (WidgetKind::Canvas, _) => super::canvas::draw(cu, card, cell, palette, rect),
         (WidgetKind::Graph, _) => graph(cu, out, card, palette, cell, &ctx, rect),
         _ => false,
     };
@@ -1177,17 +1178,30 @@ fn graph(
     let rate = card.analysis.as_ref().map(|a| a.rate).filter(|r| *r > 0.0);
     // surf: the range on the stack follows the shown oscillator's position.
     let osc = usize::from(ctx.get(OSC_VIEW) == Some("b"));
-    let Some(spec) = spec_of(
+    let native_graph = card.native_cell(cell).and_then(|cell| cell.graph.as_ref());
+    let (title, description) = card.native_layout.as_ref().zip(native_graph).map_or(
+        (title.as_str(), None),
+        |(layout, graph)| {
+            (
+                layout.label(&graph.name, t.code()).unwrap_or(&title),
+                layout.label(&graph.description, t.code()),
+            )
+        },
+    );
+    let Some(mut spec) = spec_of(
         komponist_ui::lang(cu.ctx()),
         binding,
         osc,
-        &title,
+        title,
         rate,
         &lookup,
         length,
     ) else {
         return false;
     };
+    if native_graph.is_some_and(|graph| graph.hide_title) {
+        spec.title.clear();
+    }
     let normalized = binding.config == GraphConfig::Envelope;
     let mut values = Vec::with_capacity(spec.slots.len());
     let mut infos = Vec::with_capacity(spec.slots.len());
@@ -1273,6 +1287,7 @@ fn graph(
                 .trace(trace)
                 .level(level)
                 .levels_note(detector_note)
+                .description(description)
                 .playhead(playhead)
                 .id(id)
                 .show(gu)
@@ -1476,6 +1491,7 @@ mod tests {
             sampler: None,
             general_sampler: None,
             native_layout: None,
+            display: None,
             bundled_editor: false,
             device: DeviceId(7),
             automation_owner: None,
@@ -1631,6 +1647,68 @@ mod tests {
     }
 
     /// A card with an EQ graph of two bands (band 2 off) and an envelope graph.
+    #[test]
+    fn authored_graph_and_canvas_use_the_layout_locale() {
+        use komponist_ipc::device_canvas::DisplayList;
+        use komponist_ipc::native_layout::NativeLayout;
+        use std::sync::Arc;
+
+        let layout = Arc::new(
+            NativeLayout::parse(include_bytes!(
+                "../../../../../docs/clap-device-layout/example-v2.json"
+            ))
+            .unwrap(),
+        );
+        let display = Arc::new(
+            DisplayList::decode(
+                br#"{
+            "frames":[{"key":"scope","primitives":[
+                {"kind":"line","from":[0,1],"to":[1,0],"tone":"accent"}
+            ]}]
+        }"#,
+            )
+            .unwrap(),
+        );
+        for (lang, graph, canvas) in [
+            (Lang::De, "Hüllkurve", "Signalanzeige"),
+            (Lang::En, "Envelope", "Signal display"),
+        ] {
+            let mut card = card();
+            card.layout = model::native_card_layout(&layout, lang);
+            card.native_layout = Some(Arc::clone(&layout));
+            card.display = Some(Arc::clone(&display));
+            let mut h = komponist_ui::snapshot::builder(1.0)
+                .with_size(egui::vec2(760.0, 240.0))
+                .build_ui_state(
+                    move |ui, (card, out): &mut (Card, Vec<Action>)| {
+                        komponist_ui::set_lang(ui.ctx(), lang);
+                        let palette = TrackPalette::new(150);
+                        let page = card.current_page().unwrap();
+                        for cell in &page.cells {
+                            let rect = crate::views::devices::layout::cell_rect(cell)
+                                .translate(ui.min_rect().min.to_vec2());
+                            draw_cell(ui, out, card, &palette, cell, rect);
+                        }
+                    },
+                    (card, Vec::new()),
+                );
+            h.run();
+            h.get_by_role_and_label(Role::Group, graph);
+            let painted_text = |label: &str| {
+                let label = label.to_uppercase();
+                h.output().shapes.iter().any(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label)
+                })
+            };
+            assert!(painted_text("Equalizer"));
+            assert!(!painted_text(graph));
+            h.state_mut().0.page = 1;
+            h.run();
+            h.get_by_role_and_label(Role::Group, canvas);
+            assert!(set_params(&h).is_empty());
+        }
+    }
+
     fn graph_card() -> Card {
         let mut card = card();
         let mut params = Vec::new();

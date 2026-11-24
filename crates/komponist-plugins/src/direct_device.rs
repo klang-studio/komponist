@@ -39,6 +39,8 @@ pub(crate) struct DirectDevice {
     /// Persistent edits that still need to reach the plugin before a snapshot can replace state.
     unconfirmed_writes: BTreeSet<u32>,
     pending_restore: Option<Arc<[u8]>>,
+    pub(crate) display: Option<Arc<komponist_ipc::device_canvas::DisplayList>>,
+    display_at: Instant,
     macro_params: BTreeMap<u32, f64>,
     /// A direct lane retains the host base. An automated macro retains its saved output.
     automated_params: BTreeMap<u32, Option<f64>>,
@@ -143,6 +145,8 @@ impl DirectDevice {
             pending_writes: BTreeMap::new(),
             unconfirmed_writes: BTreeSet::new(),
             pending_restore: None,
+            display: None,
+            display_at: Instant::now(),
             macro_params: BTreeMap::new(),
             automated_params: BTreeMap::new(),
             released_automation: BTreeSet::new(),
@@ -193,6 +197,21 @@ impl DirectDevice {
             self.sampler_ui = None;
         }
         self.sampler_ui_at = Instant::now();
+    }
+
+    pub(crate) fn poll_display(&mut self) {
+        let now = Instant::now();
+        if now >= self.display_at
+            && self.pending_restore.is_none()
+            && self.status == DeviceStatus::Ok
+            && self
+                .layout
+                .as_ref()
+                .is_some_and(|layout| layout.has_canvas())
+        {
+            self.display_at = now + komponist_ipc::device_canvas::REFRESH;
+            self.display = self.session.device_display().map(Arc::new);
+        }
     }
 
     pub(crate) fn poll_sampler_ui(&mut self) {

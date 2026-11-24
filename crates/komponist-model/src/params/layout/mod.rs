@@ -48,6 +48,8 @@ pub enum WidgetKind {
     FmAlgorithm,
     /// `graph` (WP-84), bound by [`CellParam::Graph`].
     Graph,
+    /// The host draws a plugin's display list here.
+    Canvas,
     /// An overlay over whole columns (WP-86: hexa's operator columns): a click on a column
     /// selects it (context placeholder of [`CellParam::Select`]) and the selected column gets an
     /// accent outline. It draws and takes clicks *below* the cells above it, so

@@ -34,6 +34,7 @@
 //! | Neu laden | `Reload` |
 
 pub(crate) mod add_menu;
+mod canvas;
 pub(crate) mod cells;
 pub(crate) use cells::{select_pad, selected_pad};
 pub mod frame;
@@ -43,6 +44,7 @@ pub mod metrics;
 pub mod model;
 pub(crate) use model::bundled_sampler_view;
 mod sidechain;
+mod viewport;
 
 use egui::{Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
 use komponist_model::{ChannelRef, DeviceId, PluginRef, Track, TrackId};

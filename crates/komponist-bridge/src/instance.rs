@@ -842,6 +842,14 @@ impl Bridge {
                     plugin.preview_sampler_slice(time);
                 }
             }
+            ControlMsg::GetDeviceDisplay(request) => {
+                let bytes = self
+                    .plugin
+                    .as_ref()
+                    .and_then(|plugin| plugin.device_display())
+                    .and_then(|display| display.encode());
+                self.send(BridgeMsg::DeviceDisplay(request, bytes));
+            }
             ControlMsg::SetParam { id, value } => self.set_param(id, value),
             ControlMsg::OpenGui(target) => self.open_gui(target),
             ControlMsg::SetGuiSize(size) => {

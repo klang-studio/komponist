@@ -79,6 +79,10 @@ impl DirectClap {
         self.refresh.0 &= !mask;
     }
 
+    pub(crate) fn device_display(&self) -> Option<komponist_ipc::device_canvas::DisplayList> {
+        self.plugin.device_display()
+    }
+
     pub(crate) fn sampler_ui(
         &self,
         export_tempo: Option<f64>,

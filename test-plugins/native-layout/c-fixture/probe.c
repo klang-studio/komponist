@@ -21,7 +21,7 @@ typedef void *module_handle;
 #endif
 
 #define FIXTURE_ID "org.klang-studio.komponist.layout-fixture."
-#define INCOMPATIBLE_EXTENSION "org.klang-studio.komponist.device-layout/2"
+#define INCOMPATIBLE_EXTENSION "org.klang-studio.komponist.device-layout/99"
 
 struct module {
     module_handle handle;
@@ -127,10 +127,11 @@ static const clap_plugin_t *instantiate(const struct module *module, const char 
     return plugin;
 }
 
-static struct layout_response read_layout(const clap_plugin_t *plugin) {
+static struct layout_response read_layout(const clap_plugin_t *plugin,
+                                          const char *extension_id) {
     struct layout_response result = {.status = KOMPONIST_CLAP_LAYOUT_ABSENT};
     const komponist_clap_device_layout_t *extension =
-        plugin->get_extension(plugin, KOMPONIST_CLAP_EXT_DEVICE_LAYOUT);
+        plugin->get_extension(plugin, extension_id);
     if (!extension)
         return result;
     result.status = KOMPONIST_CLAP_LAYOUT_ERROR;
@@ -194,7 +195,7 @@ static bool print_probe(const clap_plugin_t *plugin) {
         printf(",\"min\":%.17g,\"max\":%.17g,\"default\":%.17g}",
                info.min_value, info.max_value, info.default_value);
     }
-    struct layout_response layout = read_layout(plugin);
+    struct layout_response layout = read_layout(plugin, KOMPONIST_CLAP_EXT_DEVICE_LAYOUT);
     printf("],\"status\":%" PRIu32 ",\"size\":%" PRIu32 ",\"layout\":", layout.status, layout.size);
     const bool ok = layout.payload ? fwrite(layout.payload, 1, layout.size, stdout) == layout.size
                                    : fputs("null", stdout) != EOF;
@@ -229,9 +230,10 @@ static bool check_params(const clap_plugin_t *plugin) {
     return true;
 }
 
-static bool check_copy_contract(const clap_plugin_t *plugin, const struct layout_response *layout) {
+static bool check_copy_contract(const clap_plugin_t *plugin, const char *extension_id,
+                                const struct layout_response *layout) {
     const komponist_clap_device_layout_t *extension =
-        plugin->get_extension(plugin, KOMPONIST_CLAP_EXT_DEVICE_LAYOUT);
+        plugin->get_extension(plugin, extension_id);
     if (!extension)
         return false;
     uint32_t reported = 0;
@@ -273,6 +275,8 @@ static bool self_test(const struct module *module) {
         {FIXTURE_ID "unknown-param", KOMPONIST_CLAP_LAYOUT_OK},
         {FIXTURE_ID "optional-field", KOMPONIST_CLAP_LAYOUT_OK},
         {FIXTURE_ID "required-capability", KOMPONIST_CLAP_LAYOUT_OK},
+        {FIXTURE_ID "version-two", KOMPONIST_CLAP_LAYOUT_OK},
+        {FIXTURE_ID "invalid-version-two", KOMPONIST_CLAP_LAYOUT_OK},
     };
     const clap_plugin_factory_t *factory = module->factory;
     if (factory->get_plugin_count(factory) != sizeof(cases) / sizeof(*cases)) {
@@ -289,14 +293,18 @@ static bool self_test(const struct module *module) {
         if (!plugin)
             return false;
 
-        struct layout_response layout = read_layout(plugin);
+        const bool version_two = strcmp(desc->id, FIXTURE_ID "version-two") == 0 ||
+                                 strcmp(desc->id, FIXTURE_ID "invalid-version-two") == 0;
+        const char *extension_id = version_two ? KOMPONIST_CLAP_EXT_DEVICE_LAYOUT_V2
+                                               : KOMPONIST_CLAP_EXT_DEVICE_LAYOUT;
+        struct layout_response layout = read_layout(plugin, extension_id);
         bool ok = check_params(plugin) && layout.status == cases[index].status;
         if (strcmp(desc->id, FIXTURE_ID "incompatible") == 0)
             ok = ok && plugin->get_extension(plugin, INCOMPATIBLE_EXTENSION) != NULL;
         if (strcmp(desc->id, FIXTURE_ID "oversize") == 0)
             ok = ok && layout.size > KOMPONIST_CLAP_LAYOUT_MAX_BYTES;
         if (layout.status == KOMPONIST_CLAP_LAYOUT_OK)
-            ok = ok && check_copy_contract(plugin, &layout);
+            ok = ok && check_copy_contract(plugin, extension_id, &layout);
         free(layout.payload);
         plugin->destroy(plugin);
         if (!ok) {
@@ -305,7 +313,7 @@ static bool self_test(const struct module *module) {
             return false;
         }
     }
-    puts("C CLAP layout ABI passed for 10 fixture variants");
+    puts("C CLAP layout ABI passed for 12 fixture variants");
     return true;
 }
 

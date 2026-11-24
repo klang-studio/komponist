@@ -43,6 +43,7 @@ pub fn widget_name(lang: Lang, kind: super::layout::WidgetKind) -> &'static str 
         K::FmAlgorithm => lang.devices_widget_fm_algorithm(),
         K::ColumnSelect => lang.devices_widget_column_select(),
         K::Graph => lang.devices_widget_graph(),
+        K::Canvas => lang.devices_widget_canvas(),
     }
 }
 
@@ -209,6 +210,7 @@ pub struct Card {
     /// Its plugin window is open ("Geöffnet").
     pub open: bool,
     pub(crate) native_layout: Option<std::sync::Arc<komponist_ipc::native_layout::NativeLayout>>,
+    pub(super) display: Option<std::sync::Arc<komponist_ipc::device_canvas::DisplayList>>,
     /// Whether the verified bundle uses the app's full device editor with author-ID bindings.
     pub(super) bundled_editor: bool,
     /// The declarative layout of the body, with an automatic layout for generic plugins.
@@ -455,7 +457,8 @@ pub(crate) fn card(
                         let ids: std::collections::BTreeSet<_> = native
                             .pages
                             .iter()
-                            .flat_map(|page| page.cells.iter().map(|cell| cell.param_id))
+                            .flat_map(|page| &page.cells)
+                            .flat_map(komponist_ipc::native_layout::Cell::parameter_ids)
                             .collect();
                         infos
                             .iter()
@@ -587,6 +590,7 @@ pub(crate) fn card(
         open: windows.iter().any(|w| w.device == device.id),
         layout,
         native_layout: if bundled_editor { None } else { native_layout },
+        display: host.device_display(device.id).cloned(),
         bundled_editor,
         page: 0,
         collapsed: false,
@@ -795,12 +799,12 @@ pub fn hexa_macro_params(lang: Lang, device: &Device) -> Vec<Param> {
         .collect()
 }
 
-fn native_card_layout(
+pub(super) fn native_card_layout(
     native: &komponist_ipc::native_layout::NativeLayout,
     lang: Lang,
 ) -> DeviceLayout {
-    use komponist_ipc::native_layout::{Half, Widget};
-    use layout::{Cell, CellParam, Page, WidgetKind};
+    use komponist_ipc::native_layout::{GraphKind, Half, Widget};
+    use layout::{Cell, CellParam, GraphBinding, GraphConfig, Page, WidgetKind};
     DeviceLayout {
         pages: native
             .pages
@@ -815,6 +819,39 @@ fn native_card_layout(
                     .cells
                     .iter()
                     .map(|cell| {
+                        if let Some(graph) = &cell.graph {
+                            let config = match graph.kind {
+                                GraphKind::Envelope => GraphConfig::Envelope,
+                                GraphKind::Eq => GraphConfig::Eq {
+                                    bands: graph.bands.expect("validated band count"),
+                                },
+                                GraphKind::Filter => GraphConfig::Filter,
+                                GraphKind::Transfer => GraphConfig::Transfer,
+                                GraphKind::Waveform => GraphConfig::Waveform,
+                                GraphKind::Xy => GraphConfig::Xy,
+                                GraphKind::Lfo => GraphConfig::Lfo {
+                                    points: graph.points.expect("validated point count"),
+                                },
+                                GraphKind::Compressor => GraphConfig::Compressor,
+                                GraphKind::GrHistory => GraphConfig::GrHistory,
+                            };
+                            let mut binding = GraphBinding::new(config);
+                            binding.bind = graph
+                                .slots
+                                .iter()
+                                .map(|(slot, id)| {
+                                    (slot.clone(), ParamId::plugin(*id).as_str().to_owned())
+                                })
+                                .collect();
+                            return Cell::span(
+                                cell.col,
+                                cell.row,
+                                cell.cols,
+                                cell.rows,
+                                WidgetKind::Graph,
+                                CellParam::Graph(binding),
+                            );
+                        }
                         let widget = match cell.widget {
                             Widget::Knob => WidgetKind::Knob,
                             Widget::KnobLarge => WidgetKind::KnobLarge,
@@ -822,8 +859,22 @@ fn native_card_layout(
                             Widget::ToggleButton => WidgetKind::ToggleButton,
                             Widget::Segment => WidgetKind::Segment,
                             Widget::Dropdown => WidgetKind::Dropdown,
+                            Widget::MiniFader => WidgetKind::MiniFader,
+                            Widget::Graph => unreachable!("validated graph binding"),
+                            Widget::Canvas => {
+                                return Cell::span(
+                                    cell.col,
+                                    cell.row,
+                                    cell.cols,
+                                    cell.rows,
+                                    WidgetKind::Canvas,
+                                    CellParam::None,
+                                );
+                            }
                         };
-                        let param = CellParam::Id(ParamId::plugin(cell.param_id));
+                        let param = CellParam::Id(ParamId::plugin(
+                            cell.param_id.expect("validated control binding"),
+                        ));
                         match cell.half {
                             Some(half) => Cell::half(
                                 cell.col,
@@ -842,7 +893,7 @@ fn native_card_layout(
                         }
                     })
                     .collect(),
-                dividers: Vec::new(),
+                dividers: page.dividers.clone(),
             })
             .collect(),
     }

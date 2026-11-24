@@ -449,9 +449,13 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
     use komponist_app::actions::{EditAction, UiAction};
     use komponist_app::views::devices::model::cards;
     use komponist_i18n::Lang;
-    use komponist_model::ChannelRef;
-    use komponist_model::edits::{NewDevice, NewTrack, add_track, insert_device};
+    use komponist_ipc::device_canvas::Primitive;
+    use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points, Shape};
+    use komponist_model::edits::{
+        NewClip, NewClipContent, NewDevice, NewNote, NewTrack, add_clip, add_track, insert_device,
+    };
     use komponist_model::params::ParamId;
+    use komponist_model::{ChannelRef, PPQ};
     use std::path::PathBuf;
 
     let Some(bundle) = std::env::var_os("KOMPONIST_LAYOUT_FIXTURE") else {
@@ -476,10 +480,35 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
         },
     )
     .unwrap();
+    (project, _) = add_clip(
+        &project,
+        track,
+        NewClip {
+            start: Tick::ZERO,
+            length: Tick(16 * PPQ),
+            name: "Fixture notes".into(),
+            content: NewClipContent::Midi {
+                notes: vec![NewNote {
+                    start: Tick::ZERO,
+                    length: Tick(PPQ),
+                    pitch: 60,
+                    velocity: 100,
+                }],
+                take_name: String::new(),
+            },
+        },
+    )
+    .unwrap();
     let mut device_ids = Vec::new();
-    for (index, name) in ["valid", "missing", "unknown-param"]
-        .into_iter()
-        .enumerate()
+    for (index, name) in [
+        "valid",
+        "missing",
+        "unknown-param",
+        "version-two",
+        "invalid-version-two",
+    ]
+    .into_iter()
+    .enumerate()
     {
         let (modified, id) = insert_device(
             &project,
@@ -496,15 +525,16 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
         project = modified;
         device_ids.push(id);
     }
-    let [valid, missing, invalid] = device_ids.try_into().unwrap();
-    let owner = komponist_model::automation::AutomationOwner::Track(track);
+    let [valid, missing, invalid, v2, fallback] = device_ids.try_into().unwrap();
+    let owner = AutomationOwner::Track(track);
+    let target = AutomationTarget::Param {
+        device: v2,
+        param: ParamId::plugin(42),
+    };
     let (project, lane) = komponist_model::edits::automation::add_lane(
         &project,
         owner,
-        komponist_model::automation::AutomationTarget::Param {
-            device: valid,
-            param: ParamId::plugin(42),
-        },
+        target.clone(),
         "Gain".into(),
     )
     .unwrap();
@@ -512,10 +542,14 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
         &project,
         owner,
         lane,
-        komponist_model::automation::Points::new(vec![komponist_model::automation::Point::linear(
-            Tick::ZERO,
-            0.75,
-        )]),
+        Points::new(vec![
+            Point {
+                tick: Tick::ZERO,
+                value: 0.5,
+                shape: Shape::Hold,
+            },
+            Point::linear(Tick(2 * PPQ), 0.75),
+        ]),
     )
     .unwrap();
     let file = dir.join("Layout.komponist");
@@ -537,7 +571,7 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
     std::fs::copy(&bundle, installed.join(bundle.file_name().unwrap())).unwrap();
     app.engine_mut().host_mut().start_scan(&dirs);
     step_until(&mut app, "all fixture instances ready", |app| {
-        [valid, missing, invalid]
+        [valid, missing, invalid, v2, fallback]
             .into_iter()
             .all(|id| app.engine().host().status(id) == DeviceStatus::Ok)
     });
@@ -545,8 +579,11 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
     assert!(host.native_layout(valid).is_some());
     assert!(host.native_layout(missing).is_none());
     assert!(host.native_layout(invalid).is_none());
+    assert_eq!(host.native_layout(v2).unwrap().schema_version, 2);
+    assert_eq!(host.native_layout(fallback).unwrap().schema_version, 1);
     let cards = cards(Lang::De, app.project().track(track).unwrap(), host, &[]);
     assert_eq!(cards[0].layout.pages[0].name, "Übersicht");
+    let valid_card_label = Lang::De.devices_card(&cards[0].name);
     assert_eq!(cards[0].param(&ParamId::plugin(7)).unwrap().wire, 7);
     assert!(
         cards[0]
@@ -556,31 +593,38 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
             .automatable
     );
     assert_eq!(cards[1].layout.pages[0].cells.len(), 2);
+    assert_eq!(cards[3].layout.pages[0].name, "Diagramme");
+    assert_eq!(cards[3].layout.pages[1].name, "Anzeige");
+    assert_eq!(cards[3].param(&ParamId::plugin(42)).unwrap().wire, 42);
+
+    let rendered_gain = |app: &App| {
+        let display = app.engine().host().device_display(v2)?;
+        let frame = display.frames.iter().find(|frame| frame.key == "scope")?;
+        match frame.primitives.as_slice() {
+            [Primitive::Line { to, .. }] => Some(to[1]),
+            _ => None,
+        }
+    };
+    step_until(&mut app, "independent canvas display list", |app| {
+        rendered_gain(app) == Some(0.5)
+    });
 
     app.dispatch(Action::Project(ProjectAction::ContinueWithMissing));
     app.dispatch(Action::Transport(TransportAction::TogglePlay));
-    let deadline = Instant::now() + PATIENCE;
-    loop {
-        app.step();
-        // Automation is sent through the render queue. Ask the bridge for the fixture's
-        // actual value instead of relying on the timing of its initial state snapshot.
-        let state = app
-            .engine_mut()
-            .host_mut()
-            .snapshot_selected_states(&[valid], Duration::from_millis(250));
-        if state.is_ok_and(|states| {
-            states
-                .iter()
-                .any(|(id, state)| *id == valid && state.get(..8) == Some(&0.75f64.to_ne_bytes()))
-        }) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "automation did not reach CLAP ID 42"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    let program = app.engine().program().expect("fixture engine program");
+    assert!(program.slots.slot(v2).is_some());
+    assert!(
+        program.automation_reads(owner, &target),
+        "fixture gain curve is unresolved"
+    );
+    step_until(&mut app, "fixture transport plays", |app| {
+        app.engine().playhead() > Tick::ZERO
+    });
+    step_until(
+        &mut app,
+        "automation reaches CLAP ID 42 during processing",
+        |app| rendered_gain(app) == Some(0.75),
+    );
     app.dispatch(Action::Transport(TransportAction::Stop));
 
     app.dispatch(Action::Ui(UiAction::RevealDevice(valid)));
@@ -588,7 +632,9 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
         .with_size(egui::vec2(1920.0, 1080.0))
         .build_ui_state(|ui, app| app.show(ui), app);
     h.run_steps(3);
-    h.get_by_label("Modus: Warm").click_accesskit();
+    h.get_by_role_and_label(egui::accesskit::Role::Group, &valid_card_label)
+        .get_by_label("Modus: Warm")
+        .click_accesskit();
     h.run_steps(3);
     let app = h.state_mut();
     step_until(app, "choice snapshot", |app| {
@@ -606,8 +652,10 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
     app.dispatch(Action::Project(ProjectAction::Save));
     app.dispatch(Action::Project(ProjectAction::OpenPath(file)));
     step_until(app, "reopened native layout and state", |app| {
-        app.engine().host().native_layout(valid).is_some()
-            && app.engine().host().param_base(valid, 7) == Some(1.0)
+        let host = app.engine().host();
+        host.status(valid) == DeviceStatus::Ok
+            && host.native_layout(valid).is_some()
+            && host.param_base(valid, 7) == Some(1.0)
     });
 
     let state = |hidden| -> Arc<[u8]> {
@@ -739,6 +787,7 @@ fn sdk_example_uses_native_layout_and_falls_back() {
     let mut app = open(&native, "native");
     let host = app.engine().host();
     let layout = host.native_layout(device).expect("SDK native layout");
+    assert_eq!(layout.schema_version, 2);
     let params = host.params(device).unwrap();
     layout.validate_params(params).unwrap();
     let gain = params.iter().find(|p| p.name == "Gain").unwrap();
@@ -749,7 +798,7 @@ fn sdk_example_uses_native_layout_and_falls_back() {
         layout.pages[0]
             .cells
             .iter()
-            .map(|c| c.param_id)
+            .flat_map(|c| c.parameter_ids())
             .collect::<Vec<_>>(),
         [gain_id, mix_id],
     );

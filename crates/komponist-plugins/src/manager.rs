@@ -878,6 +878,7 @@ impl PluginManager {
         let mut events = std::mem::take(&mut self.pending);
         for (&id, direct) in &mut self.direct {
             direct.poll(id, &mut events);
+            direct.poll_display();
             if is_sampler_kind(self.verified_bundles.get(&id).copied()) {
                 direct.poll_sampler_ui();
                 if self.verified_bundles.get(&id) == Some(&BuiltinKind::Internal(Internal::Sampler))
@@ -895,6 +896,7 @@ impl PluginManager {
         let mut collected = Vec::new();
         for (&device, bridge) in &mut self.bridges {
             bridge.poll(&mut events, &mut collected);
+            bridge.poll_display();
             if is_sampler_kind(self.verified_bundles.get(&device).copied()) {
                 bridge.poll_sampler_ui();
                 if self.verified_bundles.get(&device)
@@ -943,6 +945,17 @@ impl PluginManager {
             .get(&device)
             .map(|direct| direct.params.as_slice())
             .or_else(|| self.bridges.get(&device).map(|b| b.params.as_slice()))
+    }
+
+    /// The last validated display list for a live device.
+    pub fn device_display(
+        &self,
+        device: DeviceId,
+    ) -> Option<&Arc<komponist_ipc::device_canvas::DisplayList>> {
+        if let Some(direct) = self.direct.get(&device) {
+            return direct.display.as_ref();
+        }
+        self.bridges.get(&device)?.display.as_ref()
     }
 
     /// The validated native layout for a running bridge.

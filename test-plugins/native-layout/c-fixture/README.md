@@ -24,7 +24,7 @@ The probe reports CLAP parameter IDs, flags, names, and ranges alongside the lay
 status as JSON. Successful transfers preserve the raw UTF-8 JSON bytes. The probe emits `null`
 for absent or inconsistent transfers. It leaves schema and parameter-link validation to the caller.
 
-The factory publishes ten variants under the prefix `org.klang-studio.komponist.layout-fixture.`.
+The factory publishes twelve variants under the prefix `org.klang-studio.komponist.layout-fixture.`.
 
 | Suffix | Response |
 | --- | --- |
@@ -38,3 +38,5 @@ The factory publishes ten variants under the prefix `org.klang-studio.komponist.
 | `unknown-param` | A cell refers to parameter ID 999 |
 | `optional-field` | Unknown optional metadata on the root and a cell |
 | `required-capability` | Unknown required capability |
+| `version-two` | Declarative graph panel and an authored canvas |
+| `invalid-version-two` | A v2 graph refers to unknown parameter ID 999. The v1 panel remains available |

@@ -252,6 +252,9 @@ pub(crate) struct Bridge {
     sampler_ui_request: Option<u32>,
     sampler_ui_at: Instant,
     sampler_export_tempo: Option<f64>,
+    pub(crate) display: Option<Arc<komponist_ipc::device_canvas::DisplayList>>,
+    display_request: Option<u32>,
+    display_at: Instant,
     pub native_layout: Option<Arc<komponist_ipc::native_layout::NativeLayout>>,
     pub values: BTreeMap<u32, ParamValue>,
     pub base_values: BTreeMap<u32, f64>,
@@ -393,6 +396,9 @@ impl Bridge {
             sampler_ui_request: None,
             sampler_ui_at: Instant::now(),
             sampler_export_tempo: None,
+            display: None,
+            display_request: None,
+            display_at: Instant::now(),
             native_layout: None,
             values: BTreeMap::new(),
             base_values: BTreeMap::new(),
@@ -482,6 +488,24 @@ impl Bridge {
             self.sampler_ui_request = Some(request);
             self.sampler_ui_at = now + crate::bundled_sampler::UI_REFRESH;
             self.send(ControlMsg::GetSamplerUi(request, self.sampler_export_tempo));
+        }
+    }
+
+    pub(crate) fn poll_display(&mut self) {
+        let now = Instant::now();
+        if now >= self.display_at
+            && self.running()
+            && self.state_restores.is_empty()
+            && self.display_request.is_none()
+            && self
+                .native_layout
+                .as_ref()
+                .is_some_and(|layout| layout.has_canvas())
+        {
+            let request = self.seq();
+            self.display_request = Some(request);
+            self.display_at = now + komponist_ipc::device_canvas::REFRESH;
+            self.send(ControlMsg::GetDeviceDisplay(request));
         }
     }
 
@@ -1266,6 +1290,15 @@ impl Bridge {
                     self.sampler_ui = bytes
                         .as_deref()
                         .and_then(komponist_ipc::sampler_ui::Snapshot::decode);
+                }
+            }
+            BridgeMsg::DeviceDisplay(request, bytes) => {
+                if self.display_request == Some(request) {
+                    self.display_request = None;
+                    self.display = bytes
+                        .as_deref()
+                        .and_then(komponist_ipc::device_canvas::DisplayList::decode)
+                        .map(Arc::new);
                 }
             }
             BridgeMsg::Pong { seq } => {

@@ -170,6 +170,11 @@ pub trait HostedPlugin {
     /// Audition or release a slice without changing the plugin's persisted state.
     fn preview_sampler_slice(&self, _time: Option<f64>) {}
 
+    /// A bounded list of primitives for an authored canvas.
+    fn device_display(&self) -> Option<komponist_ipc::device_canvas::DisplayList> {
+        None
+    }
+
     /// Current plain value of parameter `id` (main-thread view; CLAP `params.get_value`, VST3
     /// controller).
     fn param_value(&self, id: u32) -> Option<f64>;
