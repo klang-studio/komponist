@@ -513,8 +513,6 @@ fn row_ui(
     accessibility(&response, row, marked);
     if let Some(description) = &row.description {
         response.clone().on_hover_text(description);
-        ui.ctx()
-            .accesskit_node_builder(response.id, |node| node.set_description(description));
     }
 
     // The star sits on top of the row.
@@ -576,8 +574,13 @@ fn accessibility(response: &Response, row: &Row, marked: bool) {
                 if let Some(e) = expanded {
                     n.set_expanded(e);
                 }
-                if !tag.is_empty() {
-                    n.set_description(tag);
+                match (tag.is_empty(), row.description.as_deref()) {
+                    (false, Some(description)) => {
+                        n.set_description(format!("{tag}. {description}"));
+                    }
+                    (true, Some(description)) => n.set_description(description),
+                    (false, None) => n.set_description(tag),
+                    (true, None) => {}
                 }
             });
         }
@@ -760,4 +763,51 @@ fn drag_ghost(ctx: &egui::Context, catalog: &komponist_plugins::Catalog) {
                 ui.label(fonts::rich_text(&text, &tooltip::TEXT).color(color32(color::TEXT_1)));
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+
+    use super::*;
+
+    #[test]
+    fn localized_plugin_description_keeps_the_format_in_accesskit() {
+        let plugin = komponist_model::PluginRef {
+            format: komponist_model::PluginFormat::Clap,
+            id: "example.reverb".into(),
+            name: "Reverb".into(),
+            vendor: String::new(),
+            version: String::new(),
+            module: Box::default(),
+        };
+        for (description, expected) in [
+            (Some("Stereo-Reverb"), "CLAP. Stereo-Reverb"),
+            (None, "CLAP"),
+        ] {
+            let mut row = Row::new(
+                RowKind::Plugin {
+                    plugin: plugin.clone(),
+                    kind: komponist_ipc::PluginKind::Effect,
+                    favorite: false,
+                },
+                "Hall",
+                "CLAP",
+                0,
+            );
+            row.description = description.map(str::to_owned);
+            let mut h = komponist_ui::snapshot::builder(1.0).build_ui(|ui| {
+                let response = ui.allocate_response(vec2(120.0, 24.0), Sense::click());
+                accessibility(&response, &row, false);
+            });
+            h.run();
+            assert_eq!(
+                h.get_by_role_and_label(Role::ListItem, "Hall")
+                    .accesskit_node()
+                    .description()
+                    .as_deref(),
+                Some(expected)
+            );
+        }
+    }
 }
