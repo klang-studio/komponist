@@ -510,6 +510,21 @@ impl PluginManager {
         !self.retiring_direct.is_empty()
     }
 
+    /// Prepare default or factory-preset state from a verified installed CLAP without a scan.
+    pub fn prepare_bundled_device(
+        &self,
+        plugin_id: &str,
+        preset: Option<&str>,
+        edits: &[(&str, f64)],
+        targets: &[&str],
+    ) -> Result<crate::bundled_initial_state::InitialDevice, String> {
+        let inventory = self.bundled_clap.as_ref().ok_or_else(|| {
+            "the demo requires the packaged CLAP inventory; run scripts/run.sh --demo".to_owned()
+        })?;
+        crate::bundled_initial_state::prepare(inventory, plugin_id, preset, edits, targets)
+            .map_err(|error| format!("{plugin_id}: {error}"))
+    }
+
     /// Prepare a migrated copy of a loaded project when the verified bundled catalog is enabled.
     ///
     /// The source stays intact if any bundled device or parameter cannot be translated.

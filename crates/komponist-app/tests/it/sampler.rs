@@ -18,6 +18,7 @@ use komponist_app::actions::{EditAction, SelectMode, SelectionChange, TransportA
 use komponist_app::device_host::{DeviceHost as _, PluginHost};
 use komponist_app::ui_state::{DockTab, StepCursor};
 use komponist_app::{Action, App, PluginAction, ProjectAction, UiAction};
+use komponist_audiofile::fixtures as testkit;
 use komponist_audiofile::{FilePool, PeakState};
 use komponist_builtin::Internal;
 use komponist_general_sampler as general_sampler;
@@ -28,7 +29,7 @@ use komponist_model::plugin_assets::AssetLink;
 use komponist_model::project::DEFAULT_PROJECT_NAME;
 use komponist_model::{DeviceId, Project, Tick, TickRange, TrackId, persist};
 use komponist_plugins::DeviceStatus;
-use komponist_sampler::{PadStatus, SampleLink, links, note_of_pad, testkit};
+use komponist_sampler::{PadStatus, SampleLink, links, note_of_pad};
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;

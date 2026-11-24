@@ -27,8 +27,6 @@
 //! ([`load`]) and handed to the audio thread lock-free. [`dsp_with_handle`] returns the DSP
 //! and its [`SamplerHandle`] for the app.
 
-pub mod testkit;
-
 mod dsp;
 
 use komponist_device_core::{CatalogSpec, Dsp, Spec, SpecCache, no_presets};

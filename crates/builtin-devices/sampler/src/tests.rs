@@ -16,8 +16,8 @@ use komponist_model::{Meter, Tick, TickRange};
 
 use super::links::SampleLink;
 use super::load::{PadStatus, decode};
-use super::testkit;
 use super::*;
+use komponist_audiofile::fixtures as testkit;
 
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
@@ -660,16 +660,4 @@ fn a_knob_turn_keeps_the_links_in_the_state() {
     assert_eq!(links::read(Some(&turned)), vec![(0, link)]);
     let values = SPEC.decode_state(Some(&turned)).unwrap();
     assert_eq!(values[wire as usize], 3.0);
-}
-
-#[test]
-fn the_synthesized_kit_is_eight_short_audible_samples() {
-    let kit = testkit::kit();
-    assert_eq!(kit.len(), testkit::NAMES.len());
-    for (name, s) in testkit::NAMES.iter().zip(&kit) {
-        let peak = s.iter().fold(0.0f32, |m, v| m.max(v.abs()));
-        assert!((0.85..=0.91).contains(&peak), "{name}: {peak}");
-        assert!(s.len() > 2000 && s.len() < 20_000, "{name}: {}", s.len());
-    }
-    assert_eq!(kit, testkit::kit(), "deterministic");
 }

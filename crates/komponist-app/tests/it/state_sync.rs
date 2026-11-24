@@ -16,13 +16,14 @@ use std::time::{Duration, Instant};
 use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost, is_hexa};
 use komponist_app::engine_sync::{EngineSync, MidiSetup, SyncEvent};
 use komponist_audio::{HostKind, StreamConfig};
+use komponist_audiofile::fixtures as testkit;
 use komponist_builtin::Internal;
 use komponist_engine::Command;
 use komponist_model::edits::{self, NewDevice};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, Document, Project, TrackId};
 use komponist_plugins::PluginManagerEvent;
-use komponist_sampler::{SampleLink, links, testkit};
+use komponist_sampler::{SampleLink, links};
 
 fn null_sync(host: Box<dyn DeviceHost>) -> EngineSync {
     let config = StreamConfig {
