@@ -410,8 +410,9 @@ pub(super) fn head_width(ui: &Ui, card: &Card) -> f32 {
     if card.has_sidechain {
         width += gap + sidechain::chip_width(ui);
     }
-    if let Some(pages) =
-        (card.layout.pages.len() > 1).then(|| page_switch_width(ui, &card.layout.pages))
+    if let Some(pages) = card
+        .has_page_switch()
+        .then(|| page_switch_width(ui, &card.layout.pages))
     {
         width += gap + pages;
     }
@@ -535,7 +536,9 @@ fn head_controls(
         );
         x = bar.right() + metrics::HEAD_GAP;
     }
-    let pages = (card.layout.pages.len() > 1).then(|| page_switch_width(cu, &card.layout.pages));
+    let pages = card
+        .has_page_switch()
+        .then(|| page_switch_width(cu, &card.layout.pages));
     let pages_room = pages.map_or(0.0, |p| p + metrics::HEAD_GAP);
     let style = typography::UI;
     let room = (rest.right() - x - pages_room - metrics::HEAD_GAP).max(0.0);
@@ -1028,13 +1031,6 @@ fn cells_body(
     // (no clipped knobs).
     let palette = TrackPalette::new(at.track.hue.0);
     let origin = pos2(body.left(), area.top());
-    if card.general_sampler.is_some() && area.height() >= device::grid::BODY_H {
-        let mut out = Vec::new();
-        super::general_sampler::show(cu, &mut out, card, &palette, body);
-        for action in out {
-            ctx.send(action);
-        }
-    }
     if let Some(layout) = &card.native_layout
         && let Some(native_page) = card.native_page()
     {
@@ -1072,11 +1068,7 @@ fn cells_body(
         let rect = super::layout::cell_rect(cell).translate(origin.to_vec2());
         if rect.bottom() <= body.bottom() {
             let mut out = Vec::new();
-            if card.general_sampler.is_none()
-                || !super::general_sampler::sample_cell(cu, &mut out, card, cell, rect)
-            {
-                super::cells::draw_cell(cu, &mut out, card, &palette, cell, rect);
-            }
+            super::cells::draw_cell(cu, &mut out, card, &palette, cell, rect);
             for action in out {
                 ctx.send(action);
             }

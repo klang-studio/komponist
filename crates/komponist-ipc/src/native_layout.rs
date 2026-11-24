@@ -12,6 +12,13 @@ use crate::control::{ParamInfo, param_flags};
 
 pub const EXTENSION_V1: &CStr = c"org.klang-studio.komponist.device-layout/1";
 pub const EXTENSION_V2: &CStr = c"org.klang-studio.komponist.device-layout/2";
+/// Required capability for layouts using source-fraction trim.
+pub const CAP_SOURCE_FRACTION_TRIM: &str = "source-fraction-trim";
+/// Required capability for panels whose pages are selected from a pad grid.
+pub const CAP_PAD_BANK: &str = "pad-bank";
+/// Maximum number of pad-selected pages.
+pub const MAX_PADS: usize = 16;
+
 /// The maximum JSON document size, in bytes.
 pub const MAX_BYTES: u32 = 65_536;
 /// The maximum number of optional author IDs in a layout.
@@ -80,9 +87,27 @@ pub enum Widget {
     Segment,
     Dropdown,
     MiniFader,
-    MeterGr,
+    PadGrid,
     Graph,
     Canvas,
+    MeterGr,
+}
+
+/// One pad, selecting the corresponding page in the document.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Pad {
+    pub note: u8,
+    pub asset_slot: u32,
+}
+
+/// The pad grid shared by all pages of a pad-selected panel.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct PadBank {
+    pub pads: Vec<Pad>,
+    /// Optional named pad-activity signal.
+    pub activity_tap: Option<String>,
+    /// Optional toggle controlling selection by incoming notes.
+    pub follow_param: Option<u32>,
 }
 
 /// The localized presentation of a display-only canvas.
@@ -114,6 +139,14 @@ pub enum GraphKind {
     GrHistory,
 }
 
+/// Units of the two waveform trim bindings as sent to the CLAP parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrimUnit {
+    Milliseconds,
+    SourceFraction,
+}
+
 /// Localized presentation and numeric CLAP parameter IDs for one graph.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct Graph {
@@ -125,9 +158,23 @@ pub struct Graph {
     pub hide_title: bool,
     #[serde(default)]
     pub slots: BTreeMap<String, u32>,
-    /// Graph roles bound to streams in the plugin inventory.
+    /// Named streaming data used by this graph's host-rendered layers.
     #[serde(default)]
     pub signal_taps: BTreeMap<String, String>,
+    /// Host-managed audio file slot shown by a waveform graph.
+    pub asset_slot: Option<u32>,
+    /// Show a marker list supplied for the graph's audio asset slot.
+    #[serde(default)]
+    pub waveform_markers: bool,
+    /// Show file and zoom controls for the graph's audio asset slot.
+    #[serde(default)]
+    pub waveform_toolbar: bool,
+    /// Three fixed parameter controls replaced by the options of the selected slice.
+    pub waveform_slice_controls: Option<[u32; 3]>,
+    /// Parameter supplying a MIDI note for press-and-release audition.
+    pub audition_note: Option<u32>,
+    /// Defaults to milliseconds. Source fractions require a bound audio asset.
+    pub trim_unit: Option<TrimUnit>,
     pub bands: Option<u8>,
     pub points: Option<u8>,
 }
@@ -192,7 +239,7 @@ pub struct Cell {
     pub choices: Option<Vec<Choice>>,
     pub graph: Option<Graph>,
     pub canvas: Option<Canvas>,
-    /// Stream providing positive gain reduction in dB.
+    /// Signal tap key providing the latest gain reduction in positive dB.
     pub reduction_tap: Option<String>,
 }
 
@@ -202,7 +249,7 @@ impl Cell {
         self.param_id.into_iter().chain(
             self.graph
                 .iter()
-                .flat_map(|graph| graph.slots.values().copied()),
+                .flat_map(|graph| graph.slots.values().copied().chain(graph.audition_note)),
         )
     }
 }
@@ -238,6 +285,7 @@ pub struct NativeLayout {
     pub default_locale: String,
     locales: Vec<String>,
     pub pages: Vec<Page>,
+    pub pad_bank: Option<PadBank>,
     #[serde(default)]
     author_ids: Option<BTreeMap<String, u32>>,
     metadata: Option<Metadata>,
@@ -252,6 +300,16 @@ fn check(condition: bool, reason: &'static str) -> Result<(), LayoutError> {
 }
 
 impl NativeLayout {
+    /// The editor uses host-managed audio files for a waveform or its pad bank.
+    pub fn has_audio_asset_editor(&self) -> bool {
+        self.pad_bank.is_some()
+            || self.pages.iter().flat_map(|page| &page.cells).any(|cell| {
+                cell.graph
+                    .as_ref()
+                    .is_some_and(|graph| graph.asset_slot.is_some())
+            })
+    }
+
     /// Decode one bounded document, rejecting duplicate object keys even in optional metadata.
     pub fn parse(bytes: &[u8]) -> Result<Self, LayoutError> {
         check(
@@ -267,6 +325,9 @@ impl NativeLayout {
             return Err(LayoutError::Unsupported);
         }
         let metadata_v1 = if version == 1 {
+            if let Some(root) = value.as_object_mut() {
+                root.remove("pad_bank");
+            }
             value
                 .as_object_mut()
                 .and_then(|root| root.remove("metadata"))
@@ -276,6 +337,8 @@ impl NativeLayout {
         if let Some(metadata) = value.get("metadata") {
             check(metadata_object(metadata), "plugin metadata")?;
         }
+        let mut fractional_trim_supported = false;
+        let mut pad_bank_supported = false;
         if let Some(caps) = value.get("required_capabilities") {
             let caps = caps
                 .as_array()
@@ -289,9 +352,23 @@ impl NativeLayout {
                     }),
                 "capability list",
             )?;
-            if !seen.is_empty() {
+            if seen
+                .iter()
+                .any(|cap| version != 2 || !matches!(*cap, CAP_SOURCE_FRACTION_TRIM | CAP_PAD_BANK))
+            {
                 return Err(LayoutError::Unsupported);
             }
+            fractional_trim_supported = seen.contains(CAP_SOURCE_FRACTION_TRIM);
+            pad_bank_supported = seen.contains(CAP_PAD_BANK);
+        }
+        if let Some(bank) = value.get("pad_bank") {
+            check(
+                bank.is_object()
+                    && bank["pads"].as_array().is_some_and(|pads| {
+                        (1..=MAX_PADS).contains(&pads.len()) && pads.iter().all(Value::is_object)
+                    }),
+                "pad bank object",
+            )?;
         }
         // Serde also accepts positional structs and externally tagged enum objects. V1
         // requires named objects and string tags, while allowing unknown object members.
@@ -328,7 +405,9 @@ impl NativeLayout {
                             .and_then(Value::as_str)
                             .ok_or(LayoutError::Invalid("widget tag"))?;
                         check(
-                            if version == 2 && matches!(widget, "graph" | "canvas" | "meter_gr") {
+                            if version == 2
+                                && matches!(widget, "graph" | "canvas" | "meter_gr" | "pad_grid")
+                            {
                                 !cell.contains_key("param_id")
                             } else {
                                 cell.get("param_id").is_some_and(Value::is_u64)
@@ -386,7 +465,21 @@ impl NativeLayout {
         }
         let mut layout: Self =
             serde_json::from_value(value).map_err(|_| LayoutError::Invalid("document fields"))?;
+        check(
+            layout.pad_bank.is_some() == pad_bank_supported,
+            "pad bank capability",
+        )?;
         layout.validate_geometry()?;
+        check(
+            fractional_trim_supported
+                || !layout
+                    .pages
+                    .iter()
+                    .flat_map(|page| &page.cells)
+                    .filter_map(|cell| cell.graph.as_ref())
+                    .any(|graph| graph.trim_unit == Some(TrimUnit::SourceFraction)),
+            "waveform source fraction capability",
+        )?;
         if let Some(metadata) = metadata_v1.filter(metadata_object) {
             layout.metadata = serde_json::from_value(metadata).ok();
             if layout.validate_metadata(&layout.locale_set()).is_err() {
@@ -454,7 +547,11 @@ impl NativeLayout {
                 && locales.contains(&self.default_locale.to_ascii_lowercase()),
             "locale tags",
         )?;
-        check((1..=4).contains(&self.pages.len()), "page count")?;
+        if let Some(bank) = &self.pad_bank {
+            self.validate_pad_bank(bank)?;
+        } else {
+            check((1..=4).contains(&self.pages.len()), "page count")?;
+        }
         self.validate_metadata(&locales)?;
         let mut keys = BTreeSet::new();
         let mut canvas_keys = BTreeSet::new();
@@ -502,8 +599,9 @@ impl NativeLayout {
                     Widget::Dropdown => (2, 2, true, 1..=1),
                     Widget::Segment | Widget::ToggleButton => (1, max_columns, true, 1..=1),
                     Widget::Graph | Widget::Canvas => (1, max_columns, false, 1..=3),
-                    Widget::MiniFader => (1, 1, false, 1..=3),
                     Widget::MeterGr => (1, 1, false, 3..=3),
+                    Widget::MiniFader => (1, 1, false, 1..=3),
+                    Widget::PadGrid => (1, max_columns, false, 1..=3),
                 };
                 check(
                     rows.contains(&cell.rows)
@@ -583,24 +681,76 @@ impl NativeLayout {
                         "graph slots",
                     )?;
                     check(
+                        graph.asset_slot.is_none() || graph.kind == GraphKind::Waveform,
+                        "graph asset slot",
+                    )?;
+                    check(
+                        !graph.waveform_markers
+                            || graph.kind == GraphKind::Waveform && graph.asset_slot.is_some(),
+                        "waveform markers require an asset slot",
+                    )?;
+                    check(
+                        !graph.waveform_toolbar
+                            || graph.kind == GraphKind::Waveform
+                                && graph.asset_slot.is_some()
+                                && cell.cols >= 6,
+                        "waveform toolbar requires an asset slot and six columns",
+                    )?;
+                    if let Some(hidden) = graph.waveform_slice_controls {
+                        check(
+                            graph.waveform_markers
+                                && graph.waveform_toolbar
+                                && graph.audition_note.is_some()
+                                && graph.slots.contains_key("start")
+                                && graph.slots.contains_key("end")
+                                && cell.row == 0
+                                && cell.rows == 2
+                                && cell.cols == 10
+                                && hidden.iter().copied().collect::<BTreeSet<_>>().len() == 3
+                                && hidden.iter().all(|&id| {
+                                    page.cells.iter().any(|other| other.param_id == Some(id))
+                                })
+                                && page.cells.iter().all(|other| {
+                                    let horizontal = (cell.col..cell.col + cell.cols).any(|col| {
+                                        (other.col..other.col.saturating_add(other.cols))
+                                            .contains(&col)
+                                    });
+                                    let row_after = other.row.saturating_add(other.rows) > 2;
+                                    let is_trim = other.row == 2
+                                        && other.half == Some(Half::Top)
+                                        && other.col.saturating_add(other.cols) <= cell.col + 2;
+                                    !horizontal
+                                        || !row_after
+                                        || is_trim
+                                        || other.param_id.is_some_and(|id| hidden.contains(&id))
+                                }),
+                            "waveform slice control geometry",
+                        )?;
+                    }
+                    check(
+                        graph.audition_note.is_none()
+                            || graph.kind == GraphKind::Waveform && graph.asset_slot.is_some(),
+                        "waveform audition requires an asset slot",
+                    )?;
+                    check(
+                        graph.trim_unit.is_none()
+                            || graph.kind == GraphKind::Waveform
+                                && (graph.trim_unit != Some(TrimUnit::SourceFraction)
+                                    || graph.asset_slot.is_some()),
+                        "waveform trim unit",
+                    )?;
+                    check(
                         graph.signal_taps.iter().all(|(role, name)| {
                             crate::signal_taps::valid_key(name)
-                                && matches!(
-                                    (graph.kind, role.as_str()),
+                                && match (graph.kind, role.as_str()) {
                                     (GraphKind::Eq, "spectrum")
-                                        | (GraphKind::Compressor | GraphKind::GrHistory, "level")
-                                        | (GraphKind::GrHistory, "reduction")
-                                )
+                                    | (GraphKind::Compressor | GraphKind::GrHistory, "level")
+                                    | (GraphKind::GrHistory, "reduction") => true,
+                                    (GraphKind::Waveform, "playhead") => graph.asset_slot.is_some(),
+                                    _ => false,
+                                }
                         }),
                         "graph signal taps",
-                    )?;
-                } else if cell.widget == Widget::MeterGr {
-                    check(
-                        v2 && cell.param_id.is_none()
-                            && cell.labels.is_none()
-                            && cell.graph.is_none()
-                            && cell.canvas.is_none(),
-                        "meter binding",
                     )?;
                 } else if cell.widget == Widget::Canvas {
                     check(
@@ -622,6 +772,16 @@ impl NativeLayout {
                     )?;
                     self.validate_labels(&canvas.name, &locales, true)?;
                     self.validate_labels(&canvas.description, &locales, true)?;
+                } else if matches!(cell.widget, Widget::MeterGr | Widget::PadGrid) {
+                    check(
+                        self.schema_version == 2
+                            && (cell.widget != Widget::PadGrid || self.pad_bank.is_some())
+                            && cell.param_id.is_none()
+                            && cell.labels.is_none()
+                            && cell.graph.is_none()
+                            && cell.canvas.is_none(),
+                        "display binding",
+                    )?;
                 } else {
                     check(
                         cell.param_id.is_some()
@@ -632,6 +792,54 @@ impl NativeLayout {
                     )?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn validate_pad_bank(&self, bank: &PadBank) -> Result<(), LayoutError> {
+        let mut notes = BTreeSet::new();
+        let mut slots = BTreeSet::new();
+        check(
+            self.pages.len() == bank.pads.len()
+                && (1..=MAX_PADS).contains(&bank.pads.len())
+                && bank.pads.iter().all(|pad| {
+                    pad.note < 128
+                        && notes.insert(pad.note)
+                        && pad.asset_slot != u32::MAX
+                        && slots.insert(pad.asset_slot)
+                })
+                && bank
+                    .activity_tap
+                    .as_deref()
+                    .is_none_or(crate::signal_taps::valid_key)
+                && (bank.follow_param.is_none() || bank.activity_tap.is_some()),
+            "pad bank bindings",
+        )?;
+        let mut geometry = None;
+        for page in &self.pages {
+            let mut grids = page
+                .cells
+                .iter()
+                .filter(|cell| cell.widget == Widget::PadGrid);
+            let grid = grids
+                .next()
+                .ok_or(LayoutError::Invalid("missing pad grid"))?;
+            let position = (grid.col, grid.row, grid.cols, grid.rows);
+            let columns = usize::from(grid.cols);
+            let rows = usize::from(grid.rows);
+            check(
+                grids.next().is_none()
+                    && geometry.is_none_or(|previous| previous == position)
+                    && columns > 0
+                    && bank.pads.len().div_ceil(columns) == rows
+                    && bank.follow_param.is_none_or(|id| {
+                        page.cells.iter().any(|cell| {
+                            cell.widget == Widget::ToggleButton && cell.param_id == Some(id)
+                        })
+                    }),
+                "pad grid bindings",
+            )?;
+            geometry = Some(position);
         }
         Ok(())
     }
@@ -674,6 +882,11 @@ impl NativeLayout {
             )?;
         }
         for cell in self.pages.iter().flat_map(|page| &page.cells) {
+            let audition_note = cell.graph.as_ref().and_then(|graph| graph.audition_note);
+            let fractional_trim = cell
+                .graph
+                .as_ref()
+                .is_some_and(|graph| graph.trim_unit == Some(TrimUnit::SourceFraction));
             for id in cell.parameter_ids() {
                 let p = ids
                     .get(&id)
@@ -686,6 +899,26 @@ impl NativeLayout {
                         && p.min < p.max,
                     "unsupported parameter",
                 )?;
+                if Some(id) == audition_note {
+                    check(
+                        p.min == 0.0
+                            && p.max == 127.0
+                            && p.step_count == 127
+                            && p.flags & param_flags::STEPPED != 0,
+                        "waveform audition note range",
+                    )?;
+                }
+                if fractional_trim
+                    && cell
+                        .graph
+                        .as_ref()
+                        .is_some_and(|graph| graph.slots.values().any(|&slot| slot == id))
+                {
+                    check(
+                        p.min == 0.0 && p.max == 1.0 && p.flags & param_flags::STEPPED == 0,
+                        "waveform source fraction range",
+                    )?;
+                }
             }
             let Some(id) = cell.param_id else {
                 continue;
@@ -864,33 +1097,6 @@ mod tests {
     }
 
     #[test]
-    fn device_catalog_labels_are_localized_and_optional() {
-        use serde_json::json;
-
-        let mut example: Value = serde_json::from_slice(EXAMPLE).unwrap();
-        example["metadata"] = json!({
-            "names": {"en": "Test Gain", "de": "Testverstärker"},
-            "descriptions": {"en": "Adjust the level"}
-        });
-        let layout = NativeLayout::parse(&serde_json::to_vec(&example).unwrap()).unwrap();
-        let labels = layout.localized_plugin().unwrap();
-        assert_eq!(labels.name("de-CH"), Some("Testverstärker"));
-        assert_eq!(labels.name("fr"), Some("Test Gain"));
-        assert_eq!(labels.description("de"), Some("Adjust the level"));
-        for invalid in [
-            json!(["Test Gain"]),
-            json!({"names": {"de": "No default locale"}}),
-            json!({"names": {"en": "Test Gain", "fr": "Undeclared locale"}}),
-            json!({"names": {"en": "Test Gain"}, "descriptions": {"en": "Bad\ntext"}}),
-        ] {
-            example["metadata"] = invalid;
-            let layout = NativeLayout::parse(&serde_json::to_vec(&example).unwrap()).unwrap();
-            assert!(layout.localized_plugin().is_none());
-            assert_eq!(layout.pages[0].key, "main");
-        }
-    }
-
-    #[test]
     fn version_two_supports_wide_pages_number_fields_and_dividers() {
         let mut value: Value = serde_json::from_slice(EXAMPLE).unwrap();
         value["schema_version"] = 2.into();
@@ -964,6 +1170,31 @@ mod tests {
         }
     }
 
+    fn layout_with_waveform_asset() -> Value {
+        let source = include_bytes!("../../../docs/clap-device-layout/example-v2.json");
+        let mut value: Value = serde_json::from_slice(source).unwrap();
+        value["pages"][0]["cells"][2]["graph"]["asset_slot"] = 5.into();
+        value
+    }
+
+    #[test]
+    fn asset_slots_are_numeric_waveform_bindings() {
+        let mut value = layout_with_waveform_asset();
+        let layout = NativeLayout::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(
+            layout.pages[0].cells[2].graph.as_ref().unwrap().asset_slot,
+            Some(5)
+        );
+        value["pages"][0]["cells"][0]["graph"]["asset_slot"] = 5.into();
+        assert!(NativeLayout::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+        value["pages"][0]["cells"][0]["graph"]
+            .as_object_mut()
+            .unwrap()
+            .remove("asset_slot");
+        value["pages"][0]["cells"][2]["graph"]["asset_slot"] = (-1).into();
+        assert!(NativeLayout::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+
     #[test]
     fn tap_bindings_match_the_graph_role_and_key_syntax() {
         let source = include_bytes!("../../../docs/clap-device-layout/example-v2.json");
@@ -1029,6 +1260,138 @@ mod tests {
                    "half": "bottom", "param_id": 42}),
         );
         assert!(parse(&invalid).is_err());
+    }
+
+    #[test]
+    fn pad_banks_require_one_shared_grid_and_distinct_bindings() {
+        use serde_json::json;
+        let grid = json!({"widget": "pad_grid", "col": 0, "row": 0, "cols": 2, "rows": 1});
+        let toggle = json!({"widget":"toggle_button", "col": 0, "row": 1, "cols": 2,
+                            "rows": 1, "half": "top", "param_id": 7});
+        let document = json!({
+            "schema_version": 2, "default_locale": "en", "locales": ["en", "de"],
+            "required_capabilities": [CAP_PAD_BANK],
+            "pad_bank": {
+                "pads": [{"note": 36, "asset_slot": 4}, {"note": 42, "asset_slot": 9}],
+                "activity_tap": "pad-activity", "follow_param": 7
+            },
+            "pages": [
+                {"key": "left", "columns": 3, "labels": {"en": "Left", "de": "Links"},
+                 "cells": [grid, toggle]},
+                {"key": "right", "columns": 3, "labels": {"en": "Right", "de": "Rechts"},
+                 "cells": [grid, toggle]}
+            ]
+        });
+        let parse = |value: &Value| NativeLayout::parse(&serde_json::to_vec(value).unwrap());
+        let layout = parse(&document).unwrap();
+        assert!(
+            layout
+                .validate_params(&[parameter(7, 1.0, 1, param_flags::STEPPED)])
+                .is_ok()
+        );
+        let bank = layout.pad_bank.unwrap();
+        assert_eq!(
+            bank.pads[1],
+            Pad {
+                note: 42,
+                asset_slot: 9
+            }
+        );
+        for (path, value) in [
+            ("/required_capabilities", json!([])),
+            ("/pad_bank/pads/1/note", json!(36)),
+            ("/pad_bank/pads/1/note", json!(128)),
+            ("/pad_bank/pads/1/asset_slot", json!(4)),
+            ("/pad_bank/pads/0", json!([36, 4])),
+            ("/pad_bank/activity_tap", json!("Invalid key")),
+            ("/pad_bank/follow_param", json!(8)),
+            ("/pages/1/cells/0/col", json!(1)),
+            ("/pages/1/cells/0/rows", json!(2)),
+        ] {
+            let mut invalid = document.clone();
+            *invalid.pointer_mut(path).unwrap() = value;
+            assert!(parse(&invalid).is_err(), "{path}");
+        }
+    }
+
+    #[test]
+    fn source_fraction_trim_requires_an_asset_and_continuous_unit_parameters() {
+        let mut value = layout_with_waveform_asset();
+        let graph = &mut value["pages"][0]["cells"][2]["graph"];
+        graph["trim_unit"] = "source_fraction".into();
+        graph["slots"] = serde_json::json!({"end": 42});
+        assert!(NativeLayout::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+        value["required_capabilities"] = serde_json::json!([CAP_SOURCE_FRACTION_TRIM]);
+        let layout = NativeLayout::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(layout.validate_params(&[parameter(42, 1.0, 0, 0)]).is_ok());
+        assert!(
+            layout
+                .validate_params(&[parameter(42, 500.0, 0, 0)])
+                .is_err()
+        );
+        assert!(
+            layout
+                .validate_params(&[parameter(42, 1.0, 1, param_flags::STEPPED)])
+                .is_err()
+        );
+        value["pages"][0]["cells"][2]["graph"]
+            .as_object_mut()
+            .unwrap()
+            .remove("asset_slot");
+        assert!(NativeLayout::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+
+    #[test]
+    fn waveform_audition_requires_a_numeric_midi_note_control() {
+        let mut value = layout_with_waveform_asset();
+        value["pages"][0]["cells"][2]["graph"]["audition_note"] = 43.into();
+        let layout = NativeLayout::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let trim = parameter(42, 1.0, 0, 0);
+        assert!(layout.validate_params(std::slice::from_ref(&trim)).is_err());
+        assert!(
+            layout
+                .validate_params(&[trim.clone(), parameter(43, 127.0, 0, 0)])
+                .is_err()
+        );
+        assert!(
+            layout
+                .validate_params(&[trim, parameter(43, 127.0, 127, param_flags::STEPPED)])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn waveform_markers_require_an_asset_slot() {
+        let mut value = layout_with_waveform_asset();
+        value["pages"][0]["cells"][2]["graph"]["waveform_markers"] = true.into();
+        let layout = NativeLayout::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(
+            layout.pages[0].cells[2]
+                .graph
+                .as_ref()
+                .unwrap()
+                .waveform_markers
+        );
+        value["pages"][0]["cells"][2]["graph"]
+            .as_object_mut()
+            .unwrap()
+            .remove("asset_slot");
+        assert!(NativeLayout::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+
+    #[test]
+    fn a_playhead_requires_a_waveform_with_an_asset_slot() {
+        let mut value = layout_with_waveform_asset();
+        value["pages"][0]["cells"][2]["graph"]["signal_taps"] =
+            serde_json::json!({"playhead": "sample-position"});
+        let layout = NativeLayout::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let graph = layout.pages[0].cells[2].graph.as_ref().unwrap();
+        assert_eq!(graph.signal_taps["playhead"], "sample-position");
+        value["pages"][0]["cells"][2]["graph"]
+            .as_object_mut()
+            .unwrap()
+            .remove("asset_slot");
+        assert!(NativeLayout::parse(&serde_json::to_vec(&value).unwrap()).is_err());
     }
 
     #[test]

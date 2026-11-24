@@ -79,20 +79,41 @@ fn restore_updates_parameter_bases_without_overwriting_a_later_edit() {
     rig.manager.request_state(device_id);
     let state = next_snapshot(&mut rig, 10);
 
-    rig.manager.set_param(device_id, gain, -24.0);
-    assert_eq!(rig.manager.param_base(device_id, gain), Some(-24.0));
+    rig.manager.set_param(device_id, gain, 0.625);
+    assert_eq!(rig.manager.param_base(device_id, gain), Some(0.625));
+    assert_ne!(next_snapshot(&mut rig, 10), state);
     assert!(rig.manager.set_state(device_id, &state));
+    rig.manager.request_state(device_id);
+    assert_eq!(next_snapshot(&mut rig, 10), state);
     run_until(&mut rig, "the restored gain base", |rig| {
         rig.manager.param_base(device_id, gain) == Some(initial)
     });
 
     let from = rig.events.len();
     assert!(rig.manager.set_state(device_id, &state));
-    rig.manager.set_param(device_id, gain, -30.0);
-    run_until(&mut rig, "the second restore acknowledgement", |rig| {
+    let invalid_state = Arc::from(&b"not a state of kp-test-synth"[..]);
+    assert!(rig.manager.set_state(device_id, &invalid_state));
+    // The engine cannot safely deliver this edit before both earlier control requests.
+    assert!(!rig.manager.edit_param_through_render(device_id, gain, 0.5));
+    rig.manager.set_param(device_id, gain, 0.5);
+    run_until(&mut rig, "the later edit safely captured", |rig| {
         rig.events[from..].contains(&PluginManagerEvent::StateApplied { device: device_id })
+            && !rig.manager.has_pending_state_edits()
     });
-    assert_eq!(rig.manager.param_base(device_id, gain), Some(-30.0));
+    assert_eq!(rig.manager.param_base(device_id, gain), Some(0.5));
+    rig.manager.request_state(device_id);
+    let edited_state = next_snapshot(&mut rig, 10);
+    assert_ne!(edited_state, state);
+
+    // Restore the child's newly captured state after changing the value, so the assertion
+    // observes the actual child value rather than the manager's optimistic cache.
+    rig.manager.set_param(device_id, gain, 0.625);
+    assert!(rig.manager.set_state(device_id, &edited_state));
+    run_until(
+        &mut rig,
+        "the later edit recovered from the child snapshot",
+        |rig| rig.manager.param_base(device_id, gain) == Some(0.5),
+    );
 }
 
 #[test]

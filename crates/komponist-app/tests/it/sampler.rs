@@ -7,9 +7,9 @@ use crate::common;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use common::{app_with, config, scratch, step_until};
+use common::{PATIENCE, app_with, config, native_fixture, scratch, step_until};
 use egui::accesskit::Role;
 use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -18,12 +18,17 @@ use komponist_app::actions::{EditAction, SelectMode, SelectionChange, TransportA
 use komponist_app::device_host::{DeviceHost as _, PluginHost};
 use komponist_app::ui_state::{DockTab, StepCursor};
 use komponist_app::{Action, App, PluginAction, ProjectAction, UiAction};
+use komponist_audiofile::{FilePool, PeakState};
 use komponist_builtin::Internal;
 use komponist_general_sampler as general_sampler;
-use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack};
+use komponist_i18n::Lang;
+use komponist_ipc::device_assets::AssetStatus;
+use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack, StepRowSpec};
+use komponist_model::plugin_assets::AssetLink;
 use komponist_model::project::DEFAULT_PROJECT_NAME;
 use komponist_model::{DeviceId, Project, Tick, TickRange, TrackId, persist};
-use komponist_sampler::{PadStatus, SampleLink, links, testkit};
+use komponist_plugins::DeviceStatus;
+use komponist_sampler::{PadStatus, SampleLink, links, note_of_pad, testkit};
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
@@ -45,9 +50,17 @@ fn harness(app: App) -> Harness<'static, App> {
 /// The CPU read-out changes from run to run.
 fn mask_cpu(h: &mut Harness<'_, App>) {
     let cpu = h
-        .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
+        .get_by_role_and_label(Role::Status, h.state().lang().transport_cpu())
         .rect();
     h.mask(cpu.expand(2.0));
+}
+
+fn snapshot_authored_pad(h: &mut Harness<'_, App>, name: &str) {
+    // Bridge scheduling warnings depend on the test machine's realtime permissions.
+    h.state_mut().ui_mut().status = None;
+    h.step();
+    mask_cpu(h);
+    h.snapshot(name);
 }
 
 fn press(h: &mut Harness<'_, App>, pos: Pos2, button: PointerButton, pressed: bool) {
@@ -93,6 +106,82 @@ fn project(dir: &Path, kit: bool) -> Project {
     p
 }
 
+fn authored_project(dir: &Path, kit: bool) -> Option<(Project, PluginHost)> {
+    let (host, plugin) = native_fixture(dir, "klopfer.clap", "org.klang-studio.komponist.sampler")?;
+    let (mut project, _) = edits::add_track(
+        &Project::new(DEFAULT_PROJECT_NAME),
+        NewTrack {
+            name: Some("Drums".into()),
+            hue: None,
+            instrument: Some(plugin),
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    if kit {
+        let device = project.tracks[0].channel.devices[0].id;
+        let links = testkit::write_kit(dir)
+            .unwrap()
+            .into_iter()
+            .enumerate()
+            .map(|(pad, file)| (pad as u32, AssetLink::new(&file, None)))
+            .collect();
+        project = edits::set_device_asset_links(&project, device, links).unwrap();
+    }
+    Some((project, host))
+}
+
+fn authored_app(dir: &Path, kit: bool) -> Option<App> {
+    let (project, host) = authored_project(dir, kit)?;
+    let mut app = app_with(project, host);
+    show_authored_pads(&mut app, kit);
+    Some(app)
+}
+
+fn show_authored_pads(app: &mut App, kit: bool) {
+    show_devices(app);
+    let (_, device) = drums(app);
+    let status = if kit {
+        AssetStatus::Ready
+    } else {
+        AssetStatus::Empty
+    };
+    step_until(app, "native pad bank and samples", |app| {
+        let host = app.engine().host();
+        host.status(device) == DeviceStatus::Ok
+            && host.native_layout(device).is_some_and(|layout| {
+                layout.schema_version == 2
+                    && layout
+                        .pad_bank
+                        .as_ref()
+                        .is_some_and(|bank| bank.pads.len() == testkit::NAMES.len())
+            })
+            && host.asset_slots(device).is_some_and(|assets| {
+                assets.slots.len() == testkit::NAMES.len()
+                    && assets.slots.iter().all(|slot| slot.status == status)
+            })
+    });
+    let host = app.engine().host();
+    assert!(host.verified_bundled_kind(device).is_none());
+    assert!(host.bridge_pid(device).is_some());
+}
+
+fn wait_for_pad_sample(app: &mut App, slot: u32) {
+    let (_, device) = drums(app);
+    step_until(app, "the pad sample loaded", |app| {
+        app.engine()
+            .host()
+            .asset_slots(device)
+            .is_some_and(|assets| {
+                assets
+                    .slots
+                    .iter()
+                    .any(|asset| asset.id == slot && asset.status == AssetStatus::Ready)
+            })
+    });
+}
+
 fn drums(app: &App) -> (TrackId, DeviceId) {
     let t = &app.project().tracks[0];
     (t.id, t.channel.devices[0].id)
@@ -116,13 +205,6 @@ fn settled(app: &mut App) {
             .sampler(device)
             .is_some_and(|h| h.views().iter().all(|v| v.status != PadStatus::Loading))
     });
-}
-
-fn headless_with_kit(dir: &Path) -> App {
-    let mut app = App::headless(project(dir, true));
-    show_devices(&mut app);
-    settled(&mut app);
-    app
 }
 
 fn pad_states(app: &App) -> Vec<PadStatus> {
@@ -335,71 +417,107 @@ fn the_general_sampler_exports_a_tempo_synced_note_from_the_first_beat() {
 
 #[test]
 fn the_card_shows_the_pads_the_waveform_and_the_knobs_of_the_selected_pad() {
-    let dir = scratch("sampler-card");
-    let app = headless_with_kit(&dir);
-    let mut h = harness(app);
-    h.run_steps(4);
-    // The pads carry the kit's names and notes.
-    for name in testkit::NAMES {
-        h.get_by_role_and_label(Role::Button, &format!("Pad {name}"));
-    }
-    // Pad 1 is selected: its waveform with the real sample, its knobs.
-    h.get_by_role_and_label(Role::Group, "Pad 1 · Kick");
-    h.get_by_role_and_label(Role::Slider, "Tune 1");
-    h.get_by_role_and_label(Role::Slider, "Sample-Start Position");
-    // The snapshot is taken before any click: a click sounds the pad, and its glow and playhead
-    // depend on timing.
-    mask_cpu(&mut h);
     let mut results = SnapshotResults::new();
-    h.snapshot("sampler-card-1x");
-    results.extend_harness(&mut h);
+    for (lang, snapshot) in [
+        (Lang::De, "sampler-card-1x"),
+        (Lang::En, "sampler-card-1x-en"),
+    ] {
+        let dir = scratch(snapshot);
+        let Some(app) = authored_app(&dir, true) else {
+            return;
+        };
+        let (_, device) = drums(&app);
+        let mut h = harness(app.with_lang(lang));
+        assert_kit_pad_controls(&h);
+        let source = FilePool::global().open(&dir.join("Kick.wav")).unwrap();
+        let deadline = Instant::now() + PATIENCE;
+        while !matches!(source.peaks_state(), PeakState::Ready(_)) {
+            h.step();
+            assert!(Instant::now() < deadline, "Klopfer waveform did not load");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        h.run_steps(3);
+        // A pad's glow and playhead are timing-dependent, so capture before auditioning it.
+        snapshot_authored_pad(&mut h, snapshot);
+        results.extend_harness(&mut h);
+
+        select_snare(&mut h);
+        assert!(h.state().dispatched().any(|action| matches!(
+            action, Action::Plugin(PluginAction::AuditionNote { device: id, key })
+                if *id == device && *key == note_of_pad(1)
+        )));
+    }
     results.unwrap();
-    // A click selects pad 2 (and sounds it).
+}
+
+fn assert_kit_pad_controls(h: &Harness<'_, App>) {
+    let lang = h.state().lang();
+    for name in testkit::NAMES {
+        h.get_by_role_and_label(Role::Button, &lang.ui_pad_name(name));
+    }
+    h.get_by_role_and_label(Role::Group, &lang.devices_waveform_title(1, "Kick"));
+    h.get_by_role_and_label(Role::Slider, &lang.param_sampler_tune(1));
+    let start = format!(
+        "{} {}",
+        lang.ui_graph_sample_start(),
+        lang.ui_graph_position()
+    );
+    h.get_by_role_and_label(Role::Slider, &start);
+}
+
+fn select_snare(h: &mut Harness<'_, App>) {
+    let lang = h.state().lang();
     let snare = h
-        .get_by_role_and_label(Role::Button, "Pad Snare")
+        .get_by_role_and_label(Role::Button, &lang.ui_pad_name("Snare"))
         .rect()
         .center();
     h.state_mut().clear_dispatched();
-    click(&mut h, snare);
-    h.get_by_role_and_label(Role::Group, "Pad 2 · Snare");
-    h.get_by_role_and_label(Role::Slider, "Tune 2");
-    assert!(
-        h.state()
-            .dispatched()
-            .any(|a| matches!(a, Action::Plugin(PluginAction::AuditionPad { pad: 1, .. })))
-    );
+    click(h, snare);
+    h.get_by_role_and_label(Role::Group, &lang.devices_waveform_title(2, "Snare"));
+    h.get_by_role_and_label(Role::Slider, &lang.param_sampler_tune(2));
 }
 
 #[test]
 fn an_empty_sampler_names_its_pads_and_offers_the_load_menu() {
-    let dir = scratch("sampler-empty");
-    let mut app = App::headless(project(&dir, false));
-    show_devices(&mut app);
-    let mut h = harness(app);
-    h.run_steps(3);
-    h.get_by_role_and_label(Role::Button, "Pad Pad 1");
-    h.get_by_role_and_label(Role::Group, "Pad 1 · kein Sample");
-    // The right-click menu: load, remove (disabled without a sample).
+    let mut results = SnapshotResults::new();
+    for (lang, snapshot) in [
+        (Lang::De, "sampler-empty-1x"),
+        (Lang::En, "sampler-empty-1x-en"),
+    ] {
+        let dir = scratch(snapshot);
+        let Some(app) = authored_app(&dir, false) else {
+            return;
+        };
+        let mut h = harness(app.with_lang(lang));
+        assert_empty_pad_menu(&mut h, 3);
+        snapshot_authored_pad(&mut h, snapshot);
+        results.extend_harness(&mut h);
+    }
+    results.unwrap();
+}
+
+fn assert_empty_pad_menu(h: &mut Harness<'_, App>, number: usize) {
+    let lang = h.state().lang();
+    h.get_by_role_and_label(Role::Button, &lang.ui_pad_name(lang.devices_pad(1)));
+    h.get_by_role_and_label(
+        Role::Group,
+        &lang.devices_waveform_title(1, lang.devices_no_sample()),
+    );
     let pad = h
-        .get_by_role_and_label(Role::Button, "Pad Pad 3")
+        .get_by_role_and_label(Role::Button, &lang.ui_pad_name(lang.devices_pad(number)))
         .rect()
         .center();
     h.hover_at(pad);
     h.step();
-    press(&mut h, pad, PointerButton::Secondary, true);
-    press(&mut h, pad, PointerButton::Secondary, false);
+    press(h, pad, PointerButton::Secondary, true);
+    press(h, pad, PointerButton::Secondary, false);
     h.run_steps(3);
-    h.get_by_role_and_label(Role::MenuItem, "Sample laden …");
+    h.get_by_role_and_label(Role::MenuItem, lang.devices_load_sample());
     assert!(
-        h.get_by_role_and_label(Role::MenuItem, "Sample entfernen")
+        h.get_by_role_and_label(Role::MenuItem, lang.devices_remove_sample())
             .accesskit_node()
             .is_disabled()
     );
-    mask_cpu(&mut h);
-    let mut results = SnapshotResults::new();
-    h.snapshot("sampler-empty-1x");
-    results.extend_harness(&mut h);
-    results.unwrap();
 }
 
 /// A file dropped on a pad, as the windowing integration reports it.
@@ -419,8 +537,18 @@ impl egui::DroppedFile for Dropped {
 #[test]
 fn a_sample_dropped_on_a_pad_is_linked_and_loaded() {
     let dir = scratch("sampler-drop");
-    let mut app = App::headless(project(&dir, false));
-    show_devices(&mut app);
+    let Some((project, host)) = authored_project(&dir, false) else {
+        return;
+    };
+    let (project, clip) = add_step_clip(
+        project,
+        vec![StepRowSpec {
+            name: "Clap".into(),
+            note: note_of_pad(2),
+        }],
+    );
+    let mut app = app_with(project, host);
+    show_authored_pads(&mut app, false);
     let mut h = harness(app);
     h.run_steps(3);
     let wav = dir.join("Donner.wav");
@@ -435,49 +563,41 @@ fn a_sample_dropped_on_a_pad_is_linked_and_loaded() {
         .dropped_files
         .push(Arc::new(Dropped(wav.clone())));
     h.run_steps(3);
-    let (_, device) = drums(h.state());
-    let state = state_of(h.state());
-    let linked = links::read(state.as_deref());
+    let linked = &h.state().project().tracks[0].channel.devices[0].asset_links;
     assert_eq!(linked.len(), 1);
-    assert_eq!(linked[0].0, 2, "pad 3");
-    assert_eq!(linked[0].1.abs, wav);
-    assert_eq!(linked[0].1.name, "Donner");
-    step_until(h.state_mut(), "the sample loaded", |a| {
-        a.engine().host().sampler(device).is_some_and(|s| {
-            s.view(2).status == PadStatus::Ready && (s.view(2).length_s - 0.1).abs() < 1e-6
-        })
-    });
+    assert_eq!(linked[&2].abs, wav);
+    assert_eq!(linked[&2].name().as_deref(), Some("Donner"));
+    wait_for_pad_sample(h.state_mut(), 2);
     h.run_steps(3);
     // The pad shows its name, the step rows follow it.
     h.get_by_role_and_label(Role::Button, "Pad Donner");
-    let names = h.state().engine().host().note_names(device).to_vec();
-    assert_eq!(
-        names
-            .iter()
-            .map(|n| (n.key, n.name.as_str()))
-            .collect::<Vec<_>>(),
-        [(38, "Donner")]
-    );
+    h.get_by_role_and_label(Role::Group, "Pad 3 · Donner");
+    h.state_mut().dispatch(Action::Ui(UiAction::OpenClip(clip)));
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Button, &h.state().lang().step_seq_row("Donner"));
 }
 
 #[test]
 fn the_file_browser_loads_a_sample_into_the_pad() {
     let dir = scratch("sampler-browser");
-    let mut app = App::headless(project(&dir, false));
-    show_devices(&mut app);
+    let Some((project, host)) = authored_project(&dir, false) else {
+        return;
+    };
     // The browser opens in the project's folder: save the project there first.
     let file = dir.join("Song.komponist");
-    std::fs::write(&file, persist::to_json(app.project()).unwrap()).unwrap();
+    std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
+    let mut app = app_with(project, host);
     app.dispatch(Action::Project(ProjectAction::OpenPath(file)));
-    show_devices(&mut app);
+    show_authored_pads(&mut app, false);
     let wav = dir.join("Klatsch.wav");
     testkit::write_wav(&wav, &vec![0.5; 2400], 48_000).unwrap();
-    let (_, device) = drums(&app);
     let mut h = harness(app);
-    h.run_steps(3);
-    h.state_mut()
-        .dispatch(Action::Plugin(PluginAction::PickSample { device, pad: 4 }));
-    h.run_steps(3);
+    assert_empty_pad_menu(&mut h, 5);
+    let load = h
+        .get_by_role_and_label(Role::MenuItem, "Sample laden …")
+        .rect()
+        .center();
+    click(&mut h, load);
     h.get_by_role_and_label(Role::List, "Dateien");
     // Only folders and WAV files are listed.
     assert!(
@@ -488,20 +608,22 @@ fn the_file_browser_loads_a_sample_into_the_pad() {
         .get_by_role_and_label(Role::ListItem, "Klatsch.wav")
         .rect()
         .center();
-    h.hover_at(row);
-    h.step();
-    for _ in 0..2 {
-        press(&mut h, row, PointerButton::Primary, true);
-        press(&mut h, row, PointerButton::Primary, false);
-        h.step();
-    }
+    click(&mut h, row);
+    assert_eq!(
+        h.get_by_role_and_label(Role::ListItem, "Klatsch.wav")
+            .accesskit_node()
+            .is_selected(),
+        Some(true)
+    );
+    h.key_press(egui::Key::Enter);
     h.run_steps(3);
-    let state = state_of(h.state());
-    let linked = links::read(state.as_deref());
+    let linked = &h.state().project().tracks[0].channel.devices[0].asset_links;
     assert_eq!(linked.len(), 1);
-    assert_eq!(linked[0].0, 4);
     // The project has a file: the link also holds the path relative to it.
-    assert_eq!(linked[0].1.rel, Path::new("Klatsch.wav"));
+    assert_eq!(linked[&4].rel, Path::new("Klatsch.wav"));
+    wait_for_pad_sample(h.state_mut(), 4);
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Button, "Pad Klatsch");
     assert!(h.query_by_role_and_label(Role::List, "Dateien").is_none());
 }
 
@@ -777,11 +899,15 @@ fn missing_samples_open_s06_with_suchen_and_a_found_one_leaves_the_list() {
 
 fn step_clip_project(dir: &Path) -> (Project, komponist_model::ClipId) {
     let p = project(dir, true);
-    let track = p.tracks[0].id;
     let rows = komponist_app::step_rows::rows_for(
         Some(&Internal::Sampler.plugin_ref()),
         &komponist_app::device_host::pad_note_names(&[]),
     );
+    add_step_clip(p, rows)
+}
+
+fn add_step_clip(p: Project, rows: Vec<StepRowSpec>) -> (Project, komponist_model::ClipId) {
+    let track = p.tracks[0].id;
     let clip = NewClip {
         start: Tick::ZERO,
         length: Tick(3840),
@@ -793,13 +919,38 @@ fn step_clip_project(dir: &Path) -> (Project, komponist_model::ClipId) {
 }
 
 #[test]
-fn the_pad_selection_and_the_step_row_selection_follow_each_other() {
-    let dir = scratch("sampler-sync");
-    let (project, clip) = step_clip_project(&dir);
-    let mut app = App::headless(project);
-    show_devices(&mut app);
-    settled(&mut app);
+fn native_pad_selection_follows_the_step_rows_by_note() {
+    let dir = scratch("native-pad-step-sync");
+    let Some((project, host)) = authored_project(&dir, true) else {
+        return;
+    };
+    let mut rows: Vec<_> = testkit::NAMES
+        .iter()
+        .enumerate()
+        .map(|(pad, &name)| StepRowSpec {
+            name: name.into(),
+            note: note_of_pad(pad),
+        })
+        .collect();
+    // Keep the same notes in a different order from the pad grid.
+    rows.swap(3, 5);
+    let (project, clip) = add_step_clip(project, rows);
+    let mut app = app_with(project, host);
+    show_authored_pads(&mut app, true);
     let (_, device) = drums(&app);
+    let h = assert_pad_step_sync(app, clip, 5, 3);
+    assert!(h.state().dispatched().any(|action| matches!(
+        action, Action::Plugin(PluginAction::AuditionNote { device: id, key })
+            if *id == device && *key == note_of_pad(5)
+    )));
+}
+
+fn assert_pad_step_sync(
+    mut app: App,
+    clip: komponist_model::ClipId,
+    hat_row: usize,
+    tom_row: usize,
+) -> Harness<'static, App> {
     // The clip stays open in the editor while the dock shows the devices.
     app.dispatch(Action::Ui(UiAction::OpenClip(clip)));
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
@@ -810,7 +961,7 @@ fn the_pad_selection_and_the_step_row_selection_follow_each_other() {
     h.state_mut()
         .dispatch(Action::Ui(UiAction::Select(SelectionChange::Step {
             clip,
-            row: 3,
+            row: hat_row,
             step: None,
         })));
     h.run_steps(4);
@@ -828,11 +979,11 @@ fn the_pad_selection_and_the_step_row_selection_follow_each_other() {
         h.state().ui().selection.step,
         Some(StepCursor {
             clip,
-            row: 5,
+            row: tom_row,
             step: None
         })
     );
-    let _ = device;
+    h
 }
 
 /// The name of the pad with the accent outline ("Pad Kick").
@@ -848,47 +999,58 @@ fn selected_pad(h: &Harness<'_, App>) -> String {
         .unwrap_or_default()
 }
 
-/// Frames in real time for `time`.
-fn run_for(h: &mut Harness<'_, App>, time: Duration) {
-    let end = std::time::Instant::now() + time;
-    while std::time::Instant::now() < end {
-        h.step();
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
 #[test]
 fn pad_folgt_eingang_selects_the_pad_a_note_hit() {
     let dir = scratch("sampler-follow");
-    let project = project(&dir, true);
-    let host = PluginHost::with_reference_devices(config(&dir));
-    let mut app = app_with(project, host);
-    show_devices(&mut app);
+    let Some(app) = authored_app(&dir, true) else {
+        return;
+    };
     let (track, device) = drums(&app);
-    step_until(&mut app, "the sampler is running", |a| {
-        a.engine().host().sampler(device).is_some()
-    });
-    settled(&mut app);
-    let id = Internal::Sampler
-        .wire(&komponist_model::params::ParamId::new("follow"))
-        .unwrap();
+    let host = app.engine().host();
+    let layout = host.native_layout(device).unwrap();
+    let bank = layout.pad_bank.as_ref().unwrap();
+    let id = bank.follow_param.unwrap();
+    let signal = bank.activity_tap.clone().unwrap();
+    let count = bank.pads.len();
     let mut h = harness(app);
+    let play = |h: &mut Harness<'_, App>, pad: usize| {
+        let key = note_of_pad(pad);
+        h.state_mut()
+            .dispatch(Action::Transport(TransportAction::LiveNote {
+                track: Some(track),
+                key,
+                velocity: 100,
+            }));
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            h.step();
+            let seen = h
+                .state()
+                .engine()
+                .host()
+                .signal_tap(device, &signal)
+                .and_then(|tap| tap.pad_activity(count))
+                .is_some_and(|(_, activity)| activity.hit != 0 && activity.last_pad == pad);
+            if seen {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Klopfer did not report the pad hit"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        h.run_steps(3);
+        h.state_mut()
+            .dispatch(Action::Transport(TransportAction::LiveNote {
+                track: Some(track),
+                key,
+                velocity: 0,
+            }));
+    };
     // Off: a hit on pad 6 leaves the selection alone.
-    h.state_mut()
-        .dispatch(Action::Plugin(PluginAction::SetParam {
-            device,
-            id,
-            value: 0.0,
-        }));
-    h.state_mut()
-        .dispatch(Action::Transport(TransportAction::LiveNote {
-            track: Some(track),
-            key: 41,
-            velocity: 100,
-        }));
-    run_for(&mut h, Duration::from_millis(500));
-    let handle = h.state().engine().host().sampler(device).unwrap().clone();
-    assert_eq!(handle.last_hit().1, 5, "the audio thread saw the hit");
+    assert_eq!(h.state().engine().host().param_base(device, id), Some(0.0));
+    play(&mut h, 5);
     assert_eq!(selected_pad(&h), "Pad Kick");
     // On: the next hit (pad 7) selects its pad.
     h.state_mut()
@@ -897,13 +1059,11 @@ fn pad_folgt_eingang_selects_the_pad_a_note_hit() {
             id,
             value: 1.0,
         }));
-    h.state_mut()
-        .dispatch(Action::Transport(TransportAction::LiveNote {
-            track: Some(track),
-            key: 42,
-            velocity: 100,
-        }));
-    run_for(&mut h, Duration::from_millis(500));
+    step_until(h.state_mut(), "pad follow enabled", |app| {
+        app.engine().host().param_base(device, id) == Some(1.0)
+    });
+    h.run_steps(3);
+    play(&mut h, 6);
     assert_eq!(selected_pad(&h), "Pad Rim");
 }
 

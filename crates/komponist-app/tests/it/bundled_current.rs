@@ -343,18 +343,17 @@ fn export_packaged(app: &mut App, settings: komponist_app::actions::ExportSettin
         app.step();
         assert!(
             Instant::now() < deadline,
-            "{file_name}: {:?}; devices (name, bypass, status, sampler idle/sync): {:?}",
+            "{file_name}: {:?}; devices (name, bypass, status, preparation): {:?}",
             app.ui().dialog,
             devices(app.project())
                 .iter()
                 .map(|(_, device)| {
                     let host = app.engine().host();
-                    let ui = host.sampler_ui(device.id);
                     (
                         &device.plugin.name,
                         device.bypass,
                         host.status(device.id),
-                        ui.map(|ui| (ui.idle, ui.sync)),
+                        host.offline_preparation_status(device.id),
                     )
                 })
                 .collect::<Vec<_>>()

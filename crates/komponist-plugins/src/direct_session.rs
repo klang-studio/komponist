@@ -290,15 +290,20 @@ impl DirectSession {
         self.host.prepare_offline(request)
     }
 
-    pub(crate) fn sampler_ui(
+    pub(crate) fn waveform_markers(
         &self,
-        export_tempo: Option<f64>,
-    ) -> Option<komponist_ipc::sampler_ui::Snapshot> {
-        self.host.sampler_ui(export_tempo)
+        slot: u32,
+    ) -> Option<komponist_ipc::waveform_markers::Snapshot> {
+        self.host.waveform_markers(slot)
     }
 
-    pub(crate) fn preview_sampler_slice(&self, time: Option<f64>) {
-        self.host.preview_sampler_slice(time);
+    pub(crate) fn preview_waveform(&self, slot: u32, time: Option<f64>) {
+        self.host.preview_waveform(slot, time);
+    }
+
+    pub(crate) fn stop_after_failed_restore(&self) {
+        // The engine retires the failed processor at the next block boundary and uses fallback.
+        self.requested.restart();
     }
 
     pub(crate) fn set_render_mode(&mut self, mode: RenderMode) {

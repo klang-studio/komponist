@@ -48,6 +48,7 @@ mod library;
 pub mod plugin;
 mod scan;
 mod vst3;
+mod waveform_markers;
 
 pub use host::{FdEvents, HostContext, HostLoop, HostNotification, HostNotify, TimerId};
 pub use komponist_ipc::{
@@ -57,6 +58,8 @@ pub use plugin::{
     ActivateConfig, EventOut, GUI_EMBEDDING, GuiInfo, GuiParent, HostedPlugin, HostedProcessor,
     HostingError, ProcessBlock, ProcessStatus,
 };
+
+pub use waveform_markers::edit_waveform_marker_state;
 
 /// Bridge main thread. Loads plugin `plugin_id` from `bundle` and initialises it (not activated).
 /// The calling thread becomes the plugin's main thread for the lifetime of the instance.

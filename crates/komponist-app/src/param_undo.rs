@@ -289,8 +289,8 @@ impl App {
 
     /// `PluginAction::SetParam` (module docs).
     pub(crate) fn set_param(&mut self, device: DeviceId, id: u32, value: f64) {
-        // Active bridges receive edits in the same block path as built-in devices. While a
-        // bridge has no running slot, keep using its control socket.
+        // Most devices take edits through the engine slot. The control socket orders bridge
+        // edits alongside editor transactions and pending state restores.
         let slot = self.engine.program().and_then(|p| p.slots.slot(device));
         if let (Some(slot), Some((owner, target))) =
             (slot, self.device_automation_target(device, id))
@@ -299,7 +299,10 @@ impl App {
             return;
         }
         let bridged = if let Some(slot) = slot
-            && self.engine.host_mut().edited_param(device, id, value)
+            && self
+                .engine
+                .host_mut()
+                .edit_param_through_render(device, id, value)
         {
             self.engine.send(Command::SetParam { slot, id, value });
             true
@@ -439,20 +442,18 @@ impl App {
         }
     }
 
-    /// Records a preset already applied to the live plugin as a distinct undo step.
-    pub(crate) fn record_clap_preset(
+    /// Records an opaque edit already applied to the live plugin as a distinct undo step.
+    fn record_live_state_edit(
         &mut self,
         device: DeviceId,
         previous_state: &Arc<[u8]>,
         state: &Arc<[u8]>,
+        label: &str,
     ) {
         let Some((_, _, target)) = self.project().find_device(device) else {
             return;
         };
         let no_document_state = target.state.is_none();
-        if self.doc.in_gesture() {
-            self.end_gesture();
-        }
         self.param_undo.awaiting.remove(&device);
         self.param_undo.echo.remove(&device);
         self.param_undo.turned.remove(&device);
@@ -467,14 +468,62 @@ impl App {
         if no_document_state && previous_state == state {
             return;
         }
-        if let Err(error) = self.doc.apply("undo-load-preset", |project| {
+        if let Err(error) = self.doc.apply(label, |project| {
             edits::set_device_state(project, device, Some(Arc::clone(state)))
         }) {
             self.record_edit_error(error);
         }
     }
 
-    /// Records a plugin's coalesced state snapshot. Equal states leave the document unchanged.
+    /// Give the marker operation its exact captured undo state. A preceding plugin-side
+    /// change may still be waiting for its snapshot when the marker edit completes.
+    pub(crate) fn record_waveform_marker_edit(
+        &mut self,
+        device: DeviceId,
+        previous_state: &Arc<[u8]>,
+        state: &Arc<[u8]>,
+    ) {
+        if previous_state == state {
+            return;
+        }
+        if self.doc.in_gesture() {
+            self.end_gesture();
+        }
+        let Some((_, _, target)) = self.project().find_device(device) else {
+            return;
+        };
+        let recorded = target
+            .state
+            .as_ref()
+            .or_else(|| self.param_undo.baseline.get(&device));
+        if recorded.is_some_and(|recorded| recorded != previous_state) {
+            let label = undo_label::plugin_state(&self.device_name(device));
+            if let Err(error) = self.doc.apply(label, |project| {
+                edits::set_device_state(project, device, Some(Arc::clone(previous_state)))
+            }) {
+                self.record_edit_error(error);
+                return;
+            }
+        }
+        self.record_live_state_edit(device, previous_state, state, "undo-sample-slices");
+    }
+
+    /// Records a preset already applied to the live plugin as a distinct undo step.
+    pub(crate) fn record_clap_preset(
+        &mut self,
+        device: DeviceId,
+        previous_state: &Arc<[u8]>,
+        state: &Arc<[u8]>,
+    ) {
+        if self.doc.in_gesture() {
+            self.end_gesture();
+        }
+        self.record_live_state_edit(device, previous_state, state, "undo-load-preset");
+    }
+
+    /// A state snapshot of a bridged plugin (its GUI, a card parameter, saving) goes into the
+    /// document as a tracked change, coalesced (module docs). A state equal to the stored one is
+    /// skipped.
     pub(crate) fn store_snapshot(&mut self, device: DeviceId, state: &Arc<[u8]>) {
         self.apply_device_snapshot(device, state);
         if self.has_state(device, state) {

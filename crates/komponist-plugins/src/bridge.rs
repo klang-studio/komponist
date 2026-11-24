@@ -46,6 +46,7 @@ use komponist_builtin::BuiltinKind;
 use komponist_ipc::clap_presets::PresetLoad;
 use komponist_ipc::control::{AppliedClapPreset, PROTOCOL_VERSION, StateRestoreError, socket_pair};
 use komponist_ipc::device_assets::{MAX_BINDINGS_BYTES, OfflineRequest, Snapshot};
+use komponist_ipc::waveform_markers::{self, EditResult, EditStatus};
 use komponist_ipc::{
     AppChannel, BridgeClient, BridgeMsg, ChannelError, ControlMsg, ErrorContext, GuiTarget,
     LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessExit, ProcessWatcher,
@@ -53,10 +54,12 @@ use komponist_ipc::{
 };
 use komponist_model::{DeviceId, DeviceRole};
 
+use crate::bundled_state::{MarkerParameters, ParameterState};
 use crate::external::{ExternalProcessor, RUN_ACTIVE, RUN_DEAD, Shared};
 use crate::manager::{
     DeviceStatus, FailReason, PluginError, PluginManagerEvent, ProcessorSetup, STATE_LOG_PREFIX,
 };
+use crate::waveform_markers::{MarkerCache, WaveformMarkerEditResult};
 
 /// Watchdog and shutdown timing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +196,26 @@ struct StateRestore {
     later_edits: BTreeSet<u32>,
 }
 
+#[derive(Debug)]
+struct MarkerEdit {
+    slot: u32,
+    view_request: waveform_markers::Request,
+    provider_request: waveform_markers::Request,
+    params: MarkerParameters,
+    deadline: Instant,
+    attempt: MarkerAttempt,
+    superseded: bool,
+}
+
+#[derive(Debug)]
+enum MarkerAttempt {
+    InFlight(u32),
+    RetryAt(Instant),
+}
+
+const MARKER_EDIT_TIMEOUT: Duration = Duration::from_secs(1);
+const MARKER_EDIT_RETRY_DELAY: Duration = Duration::from_millis(16);
+
 impl StateRestore {
     fn new(request: u32) -> Self {
         Self {
@@ -256,10 +279,9 @@ pub(crate) struct Bridge {
     asset_slots_waiting: Option<u32>,
     asset_bindings_waiting: Option<u32>,
     asset_offline_waiting: Option<(u32, Option<OfflineRequest>)>,
-    pub sampler_ui: Option<komponist_ipc::sampler_ui::Snapshot>,
-    sampler_ui_request: Option<u32>,
-    sampler_ui_at: Instant,
-    sampler_export_tempo: Option<f64>,
+    pub(crate) markers: MarkerCache,
+    marker_read: Option<(u32, u32)>,
+    marker_edit: Option<MarkerEdit>,
     pub(crate) display: Option<Arc<komponist_ipc::device_canvas::DisplayList>>,
     display_request: Option<u32>,
     display_at: Instant,
@@ -410,10 +432,9 @@ impl Bridge {
             asset_slots_waiting: None,
             asset_bindings_waiting: None,
             asset_offline_waiting: None,
-            sampler_ui: None,
-            sampler_ui_request: None,
-            sampler_ui_at: Instant::now(),
-            sampler_export_tempo: None,
+            markers: MarkerCache::default(),
+            marker_read: None,
+            marker_edit: None,
             display: None,
             display_request: None,
             display_at: Instant::now(),
@@ -520,27 +541,225 @@ impl Bridge {
         }
     }
 
-    pub(crate) fn set_sampler_export_tempo(&mut self, tempo: Option<f64>) {
-        self.sampler_export_tempo = tempo;
-        if tempo.is_some() {
-            self.sampler_ui = None;
+    pub(crate) fn invalidate_waveform_markers(&mut self) {
+        if let Some(edit) = &mut self.marker_edit {
+            edit.superseded = true;
         }
-        self.sampler_ui_request = None;
-        self.sampler_ui_at = Instant::now();
+        if let Some((_, slot)) = self.marker_read.take() {
+            self.markers.request(slot);
+        }
+        self.markers.invalidate();
     }
 
-    pub(crate) fn poll_sampler_ui(&mut self) {
-        let now = Instant::now();
-        if self.running()
+    pub(crate) fn poll_waveform_markers(&mut self) {
+        if self.status() == DeviceStatus::Ok
             && self.state_restores.is_empty()
-            && self.sampler_ui_request.is_none()
-            && now >= self.sampler_ui_at
+            && self.asset_bindings_waiting.is_none()
+            && !self.assets.bindings_pending()
+            && self.marker_edit.is_none()
+            && self.marker_read.is_none()
+            && let Some(slot) = self.markers.poll()
         {
             let request = self.seq();
-            self.sampler_ui_request = Some(request);
-            self.sampler_ui_at = now + crate::bundled_sampler::UI_REFRESH;
-            self.send(ControlMsg::GetSamplerUi(request, self.sampler_export_tempo));
+            self.marker_read = Some((request, slot));
+            self.send(ControlMsg::GetWaveformMarkers(request, slot));
         }
+    }
+
+    pub(crate) fn is_editing_waveform_markers(&self) -> bool {
+        self.marker_edit.is_some()
+    }
+
+    pub(crate) fn edit_waveform_markers(
+        &mut self,
+        slot: u32,
+        edit: waveform_markers::Request,
+    ) -> Result<(), EditStatus> {
+        if self.is_editing_waveform_markers() || !self.can_edit_waveform_markers() {
+            return Err(EditStatus::Unavailable);
+        }
+        let provider_request = self.markers.checked_edit(slot, edit)?;
+        let params = self
+            .marker_parameters(slot, &[])
+            .ok_or(EditStatus::Unavailable)?;
+        self.invalidate_state_requests();
+        let now = Instant::now();
+        self.send_marker_edit(MarkerEdit {
+            slot,
+            view_request: edit,
+            provider_request,
+            params,
+            deadline: now + MARKER_EDIT_TIMEOUT,
+            attempt: MarkerAttempt::RetryAt(now),
+            superseded: false,
+        });
+        Ok(())
+    }
+
+    fn can_edit_waveform_markers(&self) -> bool {
+        self.running()
+            && self.status() == DeviceStatus::Ok
+            && !self.keep_stored_state
+            && self.state_restores.is_empty()
+            && self.pending_preset_capture.is_none()
+            && self.asset_bindings_waiting.is_none()
+            && !self.assets.bindings_pending()
+            && self.pending_params.is_empty()
+            && self.released_macro_params.is_empty()
+            && (self.verified_bundled_kind.is_some() || self.temporary_params.is_empty())
+    }
+
+    fn marker_parameters(&self, slot: u32, prior: &[u32]) -> Option<MarkerParameters> {
+        MarkerParameters::new(
+            slot,
+            &self.base_values,
+            &self.automated_params,
+            &self.macro_params,
+            &self.params,
+            self.parameter_state(),
+            self.temporary_params.iter().chain(prior).copied(),
+        )
+    }
+
+    fn parameter_state(&self) -> Option<ParameterState<'_>> {
+        Some(ParameterState {
+            kind: self.verified_bundled_kind?,
+            layout: self.native_layout.as_deref()?,
+        })
+    }
+
+    fn send_marker_edit(&mut self, mut edit: MarkerEdit) {
+        let mut bytes = [0; waveform_markers::MAX_EDIT_BYTES];
+        let len = edit
+            .provider_request
+            .encode(&mut bytes)
+            .expect("validated waveform marker edit");
+        let request = self.seq();
+        self.long_call_since.get_or_insert_with(Instant::now);
+        self.send(ControlMsg::EditWaveformMarkers {
+            request,
+            slot: edit.slot,
+            edit: bytes[..len].to_vec(),
+            expected: edit.params.expected.clone(),
+        });
+        edit.attempt = MarkerAttempt::InFlight(request);
+        self.marker_edit = Some(edit);
+    }
+
+    fn check_marker_retry(&self, edit: &MarkerEdit, now: Instant) -> Result<(), EditStatus> {
+        if edit.superseded {
+            return Err(EditStatus::Stale);
+        }
+        if now >= edit.deadline
+            || !self.can_edit_waveform_markers()
+            || self.marker_parameters(edit.slot, &[]).as_ref() != Some(&edit.params)
+        {
+            return Err(EditStatus::Unavailable);
+        }
+        let provider_request = self.markers.checked_edit(edit.slot, edit.view_request)?;
+        if provider_request != edit.provider_request {
+            return Err(EditStatus::Stale);
+        }
+        Ok(())
+    }
+
+    fn poll_marker_retry(&mut self, now: Instant, events: &mut Vec<PluginManagerEvent>) {
+        if !self
+            .marker_edit
+            .as_ref()
+            .is_some_and(|edit| matches!(edit.attempt, MarkerAttempt::RetryAt(at) if now >= at))
+        {
+            return;
+        }
+        let edit = self
+            .marker_edit
+            .take()
+            .expect("scheduled waveform marker retry");
+        match self.check_marker_retry(&edit, now) {
+            Ok(()) => self.send_marker_edit(edit),
+            Err(status) => self.report_marker_edit(edit, EditResult::Rejected(status), events),
+        }
+    }
+
+    fn finish_waveform_marker_edit(
+        &mut self,
+        request: u32,
+        result: EditResult,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        if !self.marker_edit.as_ref().is_some_and(
+            |edit| matches!(edit.attempt, MarkerAttempt::InFlight(seq) if seq == request),
+        ) {
+            return;
+        }
+        let mut edit = self
+            .marker_edit
+            .take()
+            .expect("matched waveform marker edit");
+        let now = Instant::now();
+        if self.gui_requests > 0 {
+            self.long_call_since = Some(now);
+        } else {
+            self.long_call_since = None;
+            if let Some((_, since)) = &mut self.ping_waiting {
+                *since = now;
+            }
+        }
+        if matches!(result, EditResult::Rejected(EditStatus::Unavailable))
+            && self.check_marker_retry(&edit, now).is_ok()
+        {
+            // A rejected edit has no side effects. Let audio deliver the preceding parameter
+            // values before replaying the same request with a fresh reply sequence.
+            edit.attempt =
+                MarkerAttempt::RetryAt((now + MARKER_EDIT_RETRY_DELAY).min(edit.deadline));
+            self.marker_edit = Some(edit);
+            return;
+        }
+        self.report_marker_edit(edit, result, events);
+    }
+
+    fn report_marker_edit(
+        &mut self,
+        edit: MarkerEdit,
+        result: EditResult,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        if !matches!(
+            result,
+            EditResult::Rejected(EditStatus::Invalid | EditStatus::Unchanged)
+        ) {
+            self.markers.refresh(edit.slot);
+        }
+        let device = self.device;
+        let result = if !edit.superseded && matches!(result, EditResult::Applied { .. }) {
+            match self.marker_parameters(edit.slot, edit.params.persisted_ids()) {
+                Some(latest) => latest.normalize(result),
+                None => EditResult::Failed {
+                    message: "could not determine persistent parameter values after editing waveform markers"
+                        .into(),
+                    rollback_failed: true,
+                },
+            }
+        } else {
+            result
+        };
+        let result = if let EditResult::Failed {
+            message,
+            rollback_failed: true,
+        } = result
+        {
+            self.fail(FailReason::LoadFailed(message.clone()), events);
+            WaveformMarkerEditResult::Failed(message)
+        } else if edit.superseded {
+            WaveformMarkerEditResult::Rejected(EditStatus::Stale)
+        } else {
+            WaveformMarkerEditResult::from_wire(result, &mut self.last_state)
+        };
+        events.push(PluginManagerEvent::WaveformMarkersEdited {
+            device,
+            slot: edit.slot,
+            result,
+        });
     }
 
     pub(crate) fn poll_display(&mut self) {
@@ -596,6 +815,12 @@ impl Bridge {
         deadline: Option<Instant>,
     ) -> Option<u32> {
         if self.phase != Phase::Running || self.keep_stored_state {
+            return None;
+        }
+        if !self.state_restores.is_empty() || self.is_editing_waveform_markers() {
+            if purpose == StatePurpose::Event {
+                self.snapshot_due = Some(Instant::now());
+            }
             return None;
         }
         let checked = self.snapshot_needs_verification();
@@ -669,9 +894,9 @@ impl Bridge {
 
     /// Reinsert persistent values for controls whose live values may differ during automation.
     fn snapshot_with_param_bases(&self, state: Vec<u8>) -> Option<Vec<u8>> {
-        let Some(kind) = self.verified_bundled_kind else {
+        if self.verified_bundled_kind.is_none() {
             return Some(state);
-        };
+        }
         let mut corrections = self
             .base_values
             .iter()
@@ -689,12 +914,8 @@ impl Bridge {
         if corrections.peek().is_none() {
             return Some(state);
         }
-        crate::bundled_state::restore_param_bases(
-            kind,
-            self.native_layout.as_deref()?,
-            &state,
-            corrections,
-        )
+        self.parameter_state()?
+            .restore_param_bases(&state, corrections)
     }
 
     /// A running device normally owes a fresh snapshot. An opaque plug-in state's temporary
@@ -707,7 +928,9 @@ impl Bridge {
 
     pub(crate) fn needs_snapshot_for_save(&self) -> bool {
         self.is_running()
-            && (!self.pending_params.is_empty() || !self.released_macro_params.is_empty())
+            && (self.is_editing_waveform_markers()
+                || !self.pending_params.is_empty()
+                || !self.released_macro_params.is_empty())
     }
 
     /// Whether this request still awaits a state reply or a state error.
@@ -862,12 +1085,12 @@ impl Bridge {
     }
 
     pub(crate) fn load_clap_preset(&mut self, preset: PresetLoad) -> bool {
-        if !self.running() || !self.state_restores.is_empty() {
+        if !self.running() || !self.state_restores.is_empty() || self.is_editing_waveform_markers()
+        {
             return false;
         }
         self.invalidate_state_requests();
-        self.sampler_ui = None;
-        self.sampler_ui_request = None;
+        self.invalidate_waveform_markers();
         self.assets.begin_restore();
         self.asset_offline_waiting = None;
         let request = self.seq();
@@ -885,6 +1108,7 @@ impl Bridge {
     pub(crate) fn capture_clap_preset(&mut self) -> bool {
         if !self.supports_user_presets()
             || self.pending_preset_capture.is_some()
+            || self.is_editing_waveform_markers()
             || !self.state_restores.is_empty()
         {
             return false;
@@ -909,8 +1133,7 @@ impl Bridge {
             return None;
         }
         self.user_changed();
-        self.sampler_ui = None;
-        self.sampler_ui_request = None;
+        self.invalidate_waveform_markers();
         self.last_state = Some(Arc::clone(state));
         self.pending_params.clear();
         self.released_macro_params.clear();
@@ -925,6 +1148,23 @@ impl Bridge {
             state: state.to_vec(),
         });
         Some(request)
+    }
+
+    pub(crate) fn requires_control_param_edit(&self) -> bool {
+        !self.state_restores.is_empty()
+            || self.native_layout.as_ref().is_some_and(|layout| {
+                // Keep persistent edits in the same ordered stream as marker edits and
+                // their restores. The render transport can retry a value after a restore.
+                layout
+                    .pages
+                    .iter()
+                    .flat_map(|page| &page.cells)
+                    .any(|cell| {
+                        cell.graph
+                            .as_ref()
+                            .is_some_and(|graph| graph.waveform_markers)
+                    })
+            })
     }
 
     pub(crate) fn restore_result(&self, request: u32) -> Option<Result<(), String>> {
@@ -1007,6 +1247,16 @@ impl Bridge {
         self.gui_requests = 0;
         self.state_requests.clear();
         self.state_restores.clear();
+        self.invalidate_waveform_markers();
+        if let Some(edit) = self.marker_edit.take() {
+            events.push(PluginManagerEvent::WaveformMarkersEdited {
+                device: self.device,
+                slot: edit.slot,
+                result: WaveformMarkerEditResult::Failed(format!(
+                    "Plugin became unavailable: {reason:?}"
+                )),
+            });
+        }
         self.pending_clap_preset = None;
         self.snapshot_due = None;
         self.set_status(DeviceStatus::Crashed(reason), events);
@@ -1102,6 +1352,7 @@ impl Bridge {
         self.take_reactivation(events);
         let now = Instant::now();
         self.check_ready(now, events);
+        self.poll_marker_retry(now, events);
         if let Some(deadline) = self.stop_deadline
             && now >= deadline
         {
@@ -1109,6 +1360,8 @@ impl Bridge {
             self.stop_deadline = None;
         }
         if self.phase == Phase::Running
+            && self.state_restores.is_empty()
+            && !self.is_editing_waveform_markers()
             && let Some(due) = self.snapshot_due
             && now >= due
         {
@@ -1440,20 +1693,28 @@ impl Bridge {
                     self.assets.report_offline(work, status);
                 }
             }
-            BridgeMsg::SamplerUi(request, bytes) => {
-                if self.sampler_ui_request == Some(request) {
-                    self.sampler_ui_request = None;
-                    self.sampler_ui = bytes
-                        .as_deref()
-                        .and_then(komponist_ipc::sampler_ui::Snapshot::decode);
-                }
-            }
             BridgeMsg::SignalTaps(inventory) => {
                 if let Some(taps) =
                     crate::signal_taps::SignalTaps::new(&inventory, self.sample_rate)
                 {
                     let _ = self.shared.signal_taps.set(taps);
                 }
+            }
+            BridgeMsg::WaveformMarkers(request, bytes) => {
+                if let Some((expected, slot)) = self.marker_read
+                    && request == expected
+                {
+                    self.marker_read = None;
+                    self.markers.report(
+                        slot,
+                        bytes
+                            .as_deref()
+                            .and_then(waveform_markers::Snapshot::decode),
+                    );
+                }
+            }
+            BridgeMsg::WaveformMarkersEdited(request, result) => {
+                self.finish_waveform_marker_edit(request, result, events);
             }
             BridgeMsg::DeviceDisplay(request, bytes) => {
                 if self.display_request == Some(request) {
@@ -1629,8 +1890,14 @@ impl Bridge {
 
     fn gui_answered(&mut self) {
         self.gui_requests = self.gui_requests.saturating_sub(1);
+        let marker_in_flight = self
+            .marker_edit
+            .as_ref()
+            .is_some_and(|edit| matches!(edit.attempt, MarkerAttempt::InFlight(_)));
         if self.gui_requests == 0
+            && !marker_in_flight
             && self.pending_clap_preset.is_none()
+            && self.pending_preset_capture.is_none()
             && self.phase == Phase::Running
         {
             self.long_call_since = None;

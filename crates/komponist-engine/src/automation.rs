@@ -1056,9 +1056,9 @@ impl State {
                 continue;
             }
             let gesture = cursor.playback_gesture();
+            let held = matches!(gesture, Gesture::Held { .. } | Gesture::Latch);
             if lane.mode == AutomationMode::Off
-                || (!lane.reads() && !matches!(gesture, Gesture::Return { .. }))
-                || matches!(gesture, Gesture::Held { .. } | Gesture::Latch)
+                || (!lane.reads() && !held && !matches!(gesture, Gesture::Return { .. }))
             {
                 continue;
             }
@@ -1086,7 +1086,7 @@ impl State {
                 };
                 emit(window.start, value, true);
             }
-            if window.playing {
+            if window.playing && !held {
                 let step = ramp_step(window.rate);
                 let end = window.start + i64::from(window.frames);
                 let mut grid = window.start + (-window.start).rem_euclid(step);

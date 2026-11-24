@@ -52,12 +52,11 @@ use komponist_ipc::{
 };
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project};
-use komponist_plugins::AssetEdit;
 use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{
-    Catalog, DeviceSnapshots, DeviceStatus, FailReason, MissingPlugin, PluginDirs, PluginError,
-    PluginManager, PluginManagerConfig, PluginManagerEvent, ProcessorSetup, SaveSnapshots,
-    ScanReport,
+    AssetEdit, Catalog, DeviceSnapshots, DeviceStatus, FailReason, MissingPlugin, PluginDirs,
+    PluginError, PluginManager, PluginManagerConfig, PluginManagerEvent, ProcessorSetup,
+    SaveSnapshots, ScanReport,
 };
 use komponist_sampler as sampler;
 use komponist_sampler::SamplerHandle;
@@ -104,6 +103,28 @@ pub trait DeviceHost {
 
     /// The plugins the browser offers (built-ins first, then scanned plugins by name).
     fn catalog(&self) -> &Catalog;
+
+    /// Refresh the latest marker snapshot for this slot.
+    fn request_waveform_markers(&mut self, _device: DeviceId, _slot: u32) {}
+
+    /// Latest marker snapshot from the live device, when available.
+    fn waveform_markers(
+        &self,
+        _device: DeviceId,
+        _slot: u32,
+    ) -> Option<&komponist_ipc::waveform_markers::Snapshot> {
+        None
+    }
+
+    /// Queue an edit against a specific live marker snapshot.
+    fn edit_waveform_markers(
+        &mut self,
+        _device: DeviceId,
+        _slot: u32,
+        _request: komponist_ipc::waveform_markers::Request,
+    ) -> Result<(), komponist_ipc::waveform_markers::EditStatus> {
+        Err(komponist_ipc::waveform_markers::EditStatus::Unavailable)
+    }
 
     /// Presets discovered for a live CLAP instance.
     fn clap_presets(&self, device: &Device) -> &[ClapPreset] {
@@ -215,16 +236,14 @@ pub trait DeviceHost {
         None
     }
 
-    /// A signal stream declared by the running plugin.
-    fn signal_tap(
+    /// Native device presentation validated against the device's current parameter inventory.
+    fn native_layout(
         &self,
         _device: DeviceId,
-        _name: &str,
-    ) -> Option<&komponist_plugins::signal_taps::SignalTap> {
+    ) -> Option<&Arc<komponist_ipc::native_layout::NativeLayout>> {
         None
     }
 
-    /// Last validated display list for an authored canvas.
     fn device_display(
         &self,
         _device: DeviceId,
@@ -232,11 +251,12 @@ pub trait DeviceHost {
         None
     }
 
-    /// Native device presentation validated against the device's current parameter inventory.
-    fn native_layout(
+    /// Named telemetry published by the live plugin.
+    fn signal_tap(
         &self,
         _device: DeviceId,
-    ) -> Option<&Arc<komponist_ipc::native_layout::NativeLayout>> {
+        _key: &str,
+    ) -> Option<&komponist_plugins::signal_taps::SignalTap> {
         None
     }
 
@@ -255,6 +275,11 @@ pub trait DeviceHost {
     /// Tracks an edit that reached an active bridge through the engine slot.
     fn edited_param(&mut self, _device: DeviceId, _id: u32, _value: f64) -> bool {
         false
+    }
+
+    /// Records an app edit on the render path if the host can deliver it in order.
+    fn edit_param_through_render(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+        self.edited_param(device, id, value)
     }
 
     /// Updates the visible value of a plugin parameter during an automation override.
@@ -329,40 +354,34 @@ pub trait DeviceHost {
         None
     }
 
-    /// Bounded UI data from an authenticated bundled sampler.
-    fn sampler_ui(&self, _device: DeviceId) -> Option<&komponist_ipc::sampler_ui::Snapshot> {
-        None
-    }
-
-    /// Request a General Sampler stretch at the detached engine's offline tempo.
-    fn set_sampler_export_tempo(&mut self, _device: DeviceId, _tempo: Option<f64>) {}
-
     /// Whether a sampler still needs to hand its decoded samples or stretch to audio.
     fn sampler_is_loading(&self, device: DeviceId) -> bool {
-        use komponist_builtin::{BuiltinKind, Internal};
         if let Some(handle) = self.sampler(device) {
             return !handle.is_idle();
         }
-        matches!(
-            self.verified_bundled_kind(device),
-            Some(BuiltinKind::Internal(
-                Internal::Sampler | Internal::GeneralSampler
-            ))
-        ) && self
-            .sampler_ui(device)
-            .is_none_or(|snapshot| !snapshot.idle)
+        self.native_layout(device)
+            .is_some_and(|layout| layout.has_audio_asset_editor())
+            && self.asset_slots(device).is_none_or(|snapshot| {
+                snapshot
+                    .slots
+                    .iter()
+                    .any(|slot| slot.status == komponist_ipc::device_assets::AssetStatus::Loading)
+            })
     }
 
     fn sampler_sync_unavailable(&self, device: DeviceId) -> bool {
         self.sampler(device).is_some_and(|handle| {
             handle.sync_status() == Some(komponist_sampler::SyncStatus::Unavailable)
-        }) || self.sampler_ui(device).is_some_and(|snapshot| {
-            snapshot.sync == Some(komponist_ipc::sampler_ui::Sync::Unavailable)
         })
     }
 
-    /// Start or release a slice audition in the running bundled sampler.
-    fn preview_sampler_slice(&self, _device: DeviceId, _time: Option<f64>) {}
+    /// Audition a position on a live audio asset, or release its active preview.
+    fn preview_waveform(&self, _device: DeviceId, _slot: u32, _time: Option<f64>) {}
+
+    /// File slots offered by the active plugin instance.
+    fn asset_slots(&self, _device: DeviceId) -> Option<&Snapshot> {
+        None
+    }
 
     fn prepare_asset_edit(
         &self,
@@ -370,10 +389,6 @@ pub trait DeviceHost {
         _changes: &[AssetEdit],
     ) -> Result<Option<Arc<[u8]>>, DeviceId> {
         Ok(None)
-    }
-
-    fn asset_slots(&self, _device: DeviceId) -> Option<&Snapshot> {
-        None
     }
 
     /// Queue an update containing resolved runtime paths.
@@ -980,12 +995,11 @@ impl DeviceHost for PluginHost {
         self.manager.params(device)
     }
 
-    fn signal_tap(
+    fn native_layout(
         &self,
         device: DeviceId,
-        name: &str,
-    ) -> Option<&komponist_plugins::signal_taps::SignalTap> {
-        self.manager.signal_tap(device, name)
+    ) -> Option<&Arc<komponist_ipc::native_layout::NativeLayout>> {
+        self.manager.native_layout(device)
     }
 
     fn device_display(
@@ -995,11 +1009,12 @@ impl DeviceHost for PluginHost {
         self.manager.device_display(device)
     }
 
-    fn native_layout(
+    fn signal_tap(
         &self,
         device: DeviceId,
-    ) -> Option<&Arc<komponist_ipc::native_layout::NativeLayout>> {
-        self.manager.native_layout(device)
+        key: &str,
+    ) -> Option<&komponist_plugins::signal_taps::SignalTap> {
+        self.manager.signal_tap(device, key)
     }
 
     fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {
@@ -1012,6 +1027,10 @@ impl DeviceHost for PluginHost {
 
     fn edited_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
         self.manager.edited_param(device, id, value)
+    }
+
+    fn edit_param_through_render(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+        self.manager.edit_param_through_render(device, id, value)
     }
 
     fn preview_param(&mut self, device: DeviceId, id: u32, value: f64) {
@@ -1044,6 +1063,27 @@ impl DeviceHost for PluginHost {
 
     fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
         self.is_external(device) && self.manager.set_state(device, state)
+    }
+
+    fn request_waveform_markers(&mut self, device: DeviceId, slot: u32) {
+        self.manager.request_waveform_markers(device, slot);
+    }
+
+    fn waveform_markers(
+        &self,
+        device: DeviceId,
+        slot: u32,
+    ) -> Option<&komponist_ipc::waveform_markers::Snapshot> {
+        self.manager.waveform_markers(device, slot)
+    }
+
+    fn edit_waveform_markers(
+        &mut self,
+        device: DeviceId,
+        slot: u32,
+        request: komponist_ipc::waveform_markers::Request,
+    ) -> Result<(), komponist_ipc::waveform_markers::EditStatus> {
+        self.manager.edit_waveform_markers(device, slot, request)
     }
 
     fn supports_user_presets(&self, device: DeviceId) -> bool {
@@ -1108,12 +1148,12 @@ impl DeviceHost for PluginHost {
         self.project_dir.clone()
     }
 
-    fn sampler_ui(&self, device: DeviceId) -> Option<&komponist_ipc::sampler_ui::Snapshot> {
-        self.manager.sampler_ui(device)
+    fn preview_waveform(&self, device: DeviceId, slot: u32, time: Option<f64>) {
+        self.manager.preview_waveform(device, slot, time);
     }
 
-    fn preview_sampler_slice(&self, device: DeviceId, time: Option<f64>) {
-        self.manager.preview_sampler_slice(device, time);
+    fn asset_slots(&self, device: DeviceId) -> Option<&Snapshot> {
+        self.manager.asset_slots(device)
     }
 
     fn prepare_asset_edit(
@@ -1122,10 +1162,6 @@ impl DeviceHost for PluginHost {
         changes: &[AssetEdit],
     ) -> Result<Option<Arc<[u8]>>, DeviceId> {
         self.manager.prepare_asset_edit(device, changes)
-    }
-
-    fn asset_slots(&self, device: DeviceId) -> Option<&Snapshot> {
-        self.manager.asset_slots(device)
     }
 
     fn set_asset_bindings(&mut self, device: DeviceId, bindings: &Bindings) -> bool {
@@ -1229,10 +1265,6 @@ impl DeviceHost for PluginHost {
 
     fn set_selected_render_mode(&mut self, devices: &[DeviceId], mode: RenderMode) {
         self.manager.set_selected_render_mode(devices, mode);
-    }
-
-    fn set_sampler_export_tempo(&mut self, device: DeviceId, tempo: Option<f64>) {
-        self.manager.set_sampler_export_tempo(device, tempo);
     }
 
     fn shutdown(&mut self) {

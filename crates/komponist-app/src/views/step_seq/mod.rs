@@ -78,8 +78,8 @@ impl<'p> Open<'p> {
         };
         let host = ctx.engine.host();
         let instrument = step_rows::instrument(track);
-        let note_names = instrument.map_or(&[][..], |d| host.note_names(d.id));
-        let names = step_rows::row_names(pattern, note_names);
+        let note_names = step_rows::device_note_names(instrument, host);
+        let names = step_rows::row_names(pattern, &note_names);
         let labels = pattern
             .rows
             .iter()

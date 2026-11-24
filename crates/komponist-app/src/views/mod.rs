@@ -33,6 +33,7 @@ pub mod piano_roll;
 pub mod routing;
 pub mod step_seq;
 pub mod track_macros;
+mod waveform_lookup;
 
 use std::sync::Arc;
 

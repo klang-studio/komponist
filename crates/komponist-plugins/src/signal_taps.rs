@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use komponist_engine::SampleTap;
-use komponist_ipc::signal_taps::{BlockTaps, Descriptor, valid_inventory};
+use komponist_ipc::signal_taps::{
+    BlockTaps, Descriptor, MAX_PAD_ACTIVITY_FRAME, PAD_ACTIVITY, PadActivity, valid_inventory,
+};
 
 /// A named plugin signal displayed by a native layout.
 #[derive(Debug)]
@@ -29,6 +31,17 @@ impl SignalTap {
     pub fn want(&self) {
         self.samples
             .want_at_audio_rate(f32::from_bits(self.audio_rate.load(Ordering::Relaxed)));
+    }
+
+    /// Renew interest and read the most recent complete pad-activity frame.
+    pub fn pad_activity(&self, count: usize) -> Option<(u64, PadActivity)> {
+        if self.descriptor.kind != PAD_ACTIVITY {
+            return None;
+        }
+        self.want();
+        let mut frame = [0.0; MAX_PAD_ACTIVITY_FRAME];
+        let cursor = self.samples.read_latest(&mut frame)?;
+        Some((cursor, PadActivity::decode(&frame, count)?))
     }
 
     fn set_rate(&self, rate: f32) {
@@ -79,7 +92,9 @@ impl SignalTaps {
     pub(crate) fn record(&self, payload: &BlockTaps) {
         for (index, tap) in self.0.iter().enumerate() {
             let samples = payload.samples(index);
-            if !samples.is_empty() {
+            if !samples.is_empty()
+                && (tap.descriptor.kind != PAD_ACTIVITY || samples.len() == MAX_PAD_ACTIVITY_FRAME)
+            {
                 tap.samples.push(samples);
             }
         }

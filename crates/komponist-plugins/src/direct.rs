@@ -116,20 +116,15 @@ impl DirectClap {
             .unwrap_or(Some(OfflineStatus::Preparing))
     }
 
-    pub(crate) fn sampler_ui(
+    pub(crate) fn waveform_markers(
         &self,
-        export_tempo: Option<f64>,
-    ) -> Option<komponist_ipc::sampler_ui::Snapshot> {
-        if export_tempo.is_some() {
-            let _guard = ProcessingGuard::try_enter(&self.processing)?;
-            self.plugin.sampler_ui(export_tempo)
-        } else {
-            self.plugin.sampler_ui(None)
-        }
+        slot: u32,
+    ) -> Option<komponist_ipc::waveform_markers::Snapshot> {
+        self.plugin.waveform_markers(slot)
     }
 
-    pub(crate) fn preview_sampler_slice(&self, time: Option<f64>) {
-        self.plugin.preview_sampler_slice(time);
+    pub(crate) fn preview_waveform(&self, slot: u32, time: Option<f64>) {
+        self.plugin.preview_waveform(slot, time);
     }
 
     pub(crate) fn activate(

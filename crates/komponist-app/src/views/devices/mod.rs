@@ -34,17 +34,17 @@
 //! | Neu laden | `Reload` |
 
 pub(crate) mod add_menu;
+mod asset_waveform;
 mod canvas;
 pub(crate) mod cells;
 pub(crate) use cells::{select_pad, selected_pad};
 pub mod frame;
-mod general_sampler;
 pub mod layout;
 pub mod metrics;
 pub mod model;
-pub(crate) use model::bundled_sampler_view;
 mod sidechain;
 mod viewport;
+mod waveform_slices;
 
 use egui::{Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
 use komponist_model::{ChannelRef, DeviceId, PluginRef, Track, TrackId};
@@ -85,6 +85,7 @@ pub struct CardDrag {
 pub struct Devices {
     /// The "zu spät" state of the cards.
     late: LateTracker,
+    asset_waveforms: asset_waveform::Cache,
     /// The track and devices of the last frame: a card that appears is scrolled into view.
     seen: Option<(TrackId, Vec<DeviceId>)>,
 }
@@ -102,6 +103,7 @@ impl View for Devices {
         let Some(track) =
             selected_track(&project, &ctx.ui.selection.tracks).and_then(|t| project.track(t))
         else {
+            self.asset_waveforms.clear();
             return;
         };
         let mut cards = model::cards(ctx.lang, track, ctx.engine.host(), &ctx.ui.plugin_windows);
@@ -149,7 +151,10 @@ impl View for Devices {
                     c.macros.insert(param.info.id.clone(), control);
                 }
             }
-            c.page = ctx.ui.devices.page(c.device);
+            c.page = c.pad_bank().map_or_else(
+                || ctx.ui.devices.page(c.device),
+                |bank| selected_pad(ui.ctx(), c.device).min(bank.pads.len().saturating_sub(1)),
+            );
             c.collapsed = ctx.ui.devices.collapsed.contains(&c.device);
             let fit = frame::head_width(ui, c);
             c.width = c.frame_width(fit);
@@ -232,7 +237,7 @@ impl View for Devices {
                         body.left() + left - scroll_x,
                         body.top() + metrics::BODY_PAD + device::frame::HEAD_H - scroll_y,
                     );
-                    general_sampler::takes_wheel(ui, card, origin, body)
+                    asset_waveform::takes_wheel(ui, card, origin, body)
                 })
             {
                 let mut used = egui::Vec2::ZERO;
@@ -251,25 +256,36 @@ impl View for Devices {
         }
 
         let visible = model::visible(&spans, scroll_x, body.width());
-        for (c, on_screen) in cards.iter_mut().zip(&visible) {
-            let show = *on_screen && c.state == model::CardState::Ok && !c.collapsed && !c.bypass;
+        // The live spectrum of the visible frames (WP-92); hidden ones cost nothing.
+        for ((c, on_screen), device) in cards.iter_mut().zip(&visible).zip(&track.channel.devices) {
+            let expanded = *on_screen && c.state == model::CardState::Ok && !c.collapsed;
+            if expanded {
+                c.asset_waveforms =
+                    self.asset_waveforms
+                        .for_card(ui.ctx(), c, device, ctx.project_dir);
+            }
+            let show = expanded && !c.bypass;
             let host = ctx.engine.host();
-            // Existing rich panels bind the original conventional keys. A v2 panel
-            // can choose its own keys explicitly through its graph cells.
+            c.pad_activity = c.pad_bank().filter(|_| show).and_then(|bank| {
+                let tap = host.signal_tap(c.device, bank.activity_tap.as_deref()?)?;
+                ctx.meters
+                    .named_pad_activity(c.device, tap, bank.pads.len(), now)
+            });
+            let spectrum = model::shows_spectrum(c);
             let bundled_signal = |name| {
                 (c.bundled_editor && c.native_layout.is_none())
                     .then(|| host.signal_tap(c.device, name))
                     .flatten()
             };
-            let show_spectrum = show && model::shows_spectrum(c);
+            let (detector, reduction) = (bundled_signal("detector"), bundled_signal("reduction"));
             c.analysis = if let Some(tap) = bundled_signal("spectrum") {
-                ctx.meters.named_analysis(c.device, tap, show_spectrum, now)
+                ctx.meters
+                    .named_analysis(c.device, tap, show && spectrum, now)
             } else {
-                ctx.meters.analysis(c.device, show_spectrum, now)
+                ctx.meters.analysis(c.device, show && spectrum, now)
             };
+            // The compressor's level point and reduction history likewise.
             if model::has_dynamics_graph(c) {
-                let (detector, reduction) =
-                    (bundled_signal("detector"), bundled_signal("reduction"));
                 c.dynamics = if show && (detector.is_some() || reduction.is_some()) {
                     Some(
                         ctx.meters
@@ -278,6 +294,13 @@ impl View for Devices {
                 } else {
                     ctx.meters.dynamics(c.device, show, now)
                 };
+            }
+            if show
+                && c.native_layout.is_none()
+                && let Some(tap) = reduction
+                && let Some(levels) = ctx.meters.named_device_levels(c.device, tap, now)
+            {
+                c.levels = Some(levels);
             }
             c.native_meter_levels = c
                 .native_page()
@@ -296,10 +319,14 @@ impl View for Devices {
                 .flat_map(|page| &page.cells)
                 .filter_map(|cell| {
                     let graph = cell.graph.as_ref()?;
-                    if graph.signal_taps.is_empty() {
+                    let pad = c.pad_for_asset(graph.asset_slot);
+                    if graph.signal_taps.is_empty() && !graph.waveform_markers && pad.is_none() {
                         return None;
                     }
-                    let named = |role| host.signal_tap(c.device, graph.signal_taps.get(role)?);
+                    let named = |role| {
+                        let key = graph.signal_taps.get(role)?;
+                        host.signal_tap(c.device, key)
+                    };
                     let analysis = named("spectrum")
                         .and_then(|tap| ctx.meters.named_analysis(c.device, tap, show, now));
                     let (detector, reduction) = (named("level"), named("reduction"));
@@ -308,13 +335,51 @@ impl View for Devices {
                             ctx.meters
                                 .named_dynamics(c.device, detector, reduction, now)
                         });
+                    let playable_asset = graph.asset_slot.is_some_and(|id| {
+                        c.asset_waveforms.contains_key(&id)
+                            && c.asset_slots.iter().any(|(slot, _)| {
+                                slot.id == id
+                                    && slot.status
+                                        == komponist_ipc::device_assets::AssetStatus::Ready
+                            })
+                    });
+                    let playhead = (show && playable_asset)
+                        .then(|| {
+                            pad.and_then(|pad| c.pad_activity.as_ref()?.playheads[pad])
+                                .or_else(|| {
+                                    ctx.meters.named_playhead(c.device, named("playhead")?, now)
+                                })
+                        })
+                        .flatten();
+                    let markers = graph
+                        .asset_slot
+                        .filter(|_| {
+                            expanded
+                                && graph.waveform_markers
+                                && (playable_asset || graph.waveform_slice_controls.is_some())
+                        })
+                        .and_then(|slot| {
+                            ctx.send(Action::Plugin(PluginAction::RequestWaveformMarkers {
+                                device: c.device,
+                                slot,
+                            }));
+                            ui.ctx()
+                                .request_repaint_after(std::time::Duration::from_millis(100));
+                            host.waveform_markers(c.device, slot).cloned()
+                        });
                     Some((
                         (cell.row, cell.col),
-                        model::GraphSignals { analysis, dynamics },
+                        model::GraphSignals {
+                            analysis,
+                            dynamics,
+                            playhead,
+                            markers,
+                        },
                     ))
                 })
                 .collect();
         }
+        self.asset_waveforms.retain_visible(ui.ctx());
         header_row(ui, ctx, header, track, &cards, &visible);
         track_macros::card(ui, ctx, macro_area, track, scroll_y);
         px::vline(

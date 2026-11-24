@@ -467,6 +467,14 @@ pub enum PluginAction {
         /// Where.
         target: DropTarget,
     },
+    /// Refresh the marker snapshot for a visible audio asset graph.
+    RequestWaveformMarkers { device: DeviceId, slot: u32 },
+    /// Apply one marker operation against the snapshot displayed by a waveform.
+    EditWaveformMarkers {
+        device: DeviceId,
+        slot: u32,
+        request: komponist_ipc::waveform_markers::Request,
+    },
     /// Load a discovered preset into the live CLAP instance.
     ApplyClapPreset {
         device: DeviceId,
@@ -540,17 +548,13 @@ pub enum PluginAction {
         /// The pad, 0-based.
         pad: usize,
     },
-    /// A click on a sampler pad plays it (a short live note on the device's track).
-    AuditionPad {
-        /// The sampler device.
+    /// Play an authored MIDI note briefly on the device's track.
+    AuditionNote { device: DeviceId, key: u8 },
+    /// Start a press-and-release audition from an authored waveform.
+    PreviewWaveform {
         device: DeviceId,
-        /// The pad, 0-based.
-        pad: usize,
-    },
-    /// Preview the Sampler from a waveform press.
-    PreviewSampler {
-        device: DeviceId,
-        /// Source position in seconds when choosing a slice.
+        slot: u32,
+        key: u8,
         slice_time: Option<f64>,
     },
     /// Replace the general Sampler's slice boundaries and playback options.

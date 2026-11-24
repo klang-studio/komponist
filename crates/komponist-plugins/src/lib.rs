@@ -34,6 +34,7 @@ pub mod params;
 mod scan;
 pub mod signal_taps;
 mod verify_bundles;
+mod waveform_markers;
 
 pub use catalog::{
     BuiltinKind, Catalog, CatalogEntry, EffectCategory, PluginDirs, PluginLocation, ScanCache,
@@ -47,6 +48,7 @@ pub use manager::{
 };
 pub use scan::PresetPreparation;
 pub use verify_bundles::verify_bundled_clap;
+pub use waveform_markers::WaveformMarkerEditResult;
 
 /// How long a bridged device stays `Loading` after its bridge reported the plugin active (also
 /// after a re-activation for another rate). Audio already flows meanwhile; the time covers plugins

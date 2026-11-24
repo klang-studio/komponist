@@ -18,6 +18,7 @@ komponist-bundled-clap-adapter.workspace = true
 komponist-device-core.workspace = true
 komponist-i18n.workspace = true
 komponist-model.workspace = true
+komponist-native-clap-sdk.workspace = true
 komponist-sampler-clap.workspace = true
 komponist-sampler-shared.workspace = true
 komponist-general-sampler.workspace = true
@@ -25,7 +26,7 @@ nice-plug.workspace = true
 
 [dev-dependencies]
 clap-sys.workspace = true
-komponist-native-clap-sdk.workspace = true
+komponist-ipc.workspace = true
 serde_json.workspace = true
 hound.workspace = true
 tempfile.workspace = true

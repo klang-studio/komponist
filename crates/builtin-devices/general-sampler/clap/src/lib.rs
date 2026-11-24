@@ -1,12 +1,14 @@
 //! The chromatic sampler packaged as a native CLAP instrument.
 
+mod panel;
+
 use komponist_bundled_clap_adapter::{Binding, DeviceDefinition};
 use komponist_device_core::layout::{knob_large, param, toggle};
 use komponist_device_core::{Dsp, Spec};
 use komponist_i18n::Lang;
 use komponist_model::params::layout::{Cell, DeviceLayout, Half, Page, WidgetKind};
 use komponist_model::params::{ParamInfo, ParamKind};
-use komponist_sampler_clap::{Sampled, SampledDefinition};
+use komponist_sampler_clap::{Sampled, SampledDefinition, SliceSettingsCodec};
 use komponist_sampler_shared::{ManagedLoader, SamplerHandle};
 use nice_plug::prelude::*;
 
@@ -151,13 +153,23 @@ impl DeviceDefinition for GeneralSampler {
 
 impl SampledDefinition for GeneralSampler {
     const PADS: usize = 1;
+    const DISPLAY: Option<
+        fn(
+            &komponist_bundled_clap_adapter::Parameters,
+            &mut komponist_native_clap_sdk::display::Display,
+        ),
+    > = Some(panel::paint);
+    const SLICE_SETTINGS: Option<SliceSettingsCodec> = Some(SliceSettingsCodec {
+        read: |assets| komponist_general_sampler::read_settings(Some(assets)),
+        write: |assets, settings| komponist_general_sampler::write_settings(Some(assets), settings),
+    });
+
+    fn panel_v2() -> Option<komponist_native_clap_sdk::PanelV2> {
+        Some(panel::panel())
+    }
 
     fn sampler() -> (Box<dyn Dsp>, SamplerHandle, ManagedLoader) {
         komponist_general_sampler::dsp_with_managed_loader()
-    }
-
-    fn restore_settings(handle: &SamplerHandle, assets: &[u8]) {
-        handle.set_general_settings(&komponist_general_sampler::read_settings(Some(assets)));
     }
 }
 
@@ -174,12 +186,15 @@ mod layout_contract;
 mod sampler_contract;
 
 #[cfg(test)]
+mod marker_tests;
+
+#[cfg(test)]
 #[test]
 fn all_controls_have_stable_bilingual_bindings_and_restore_sample_assets() {
     layout_contract::assert_localized_bindings::<GeneralSamplerPlugin>(
         GeneralSampler::SPEC.params().len(),
     );
-    sampler_contract::sample_asset_roundtrip::<GeneralSamplerPlugin>(60, "mode");
+    sampler_contract::sample_asset_roundtrip::<GeneralSamplerPlugin>(60, "mode", true);
 }
 
 #[cfg(test)]

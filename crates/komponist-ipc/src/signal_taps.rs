@@ -19,6 +19,76 @@ pub const SPECTRUM_SOURCE: u32 = 1;
 pub const LEVEL_HISTORY: u32 = 2;
 /// Gain reduction over time, in positive dB.
 pub const REDUCTION: u32 = 3;
+/// Position in the bound audio asset, normalized to 0–1. A value of −1 means idle.
+pub const PLAYHEAD_POSITION: u32 = 4;
+/// One atomic activity frame for a layout's pad bank at the end of an audio block.
+pub const PAD_ACTIVITY: u32 = 5;
+/// Number of counter and pad-index samples before the playhead positions in a frame.
+pub const PAD_ACTIVITY_HEADER: usize = 3;
+/// Buffer size that can hold a pad activity frame of the maximum permitted size.
+pub const MAX_PAD_ACTIVITY_FRAME: usize = PAD_ACTIVITY_HEADER + crate::native_layout::MAX_PADS;
+
+/// A bounded activity frame for a pad-selected panel.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PadActivity {
+    pub hit: u32,
+    pub last_pad: usize,
+    pub playheads: [Option<f32>; crate::native_layout::MAX_PADS],
+}
+
+impl PadActivity {
+    /// Encode a frame as exact finite f32 samples, preserving all bits of the hit counter.
+    pub fn write(
+        out: &mut [f32],
+        hit: u32,
+        last_pad: usize,
+        positions: impl Iterator<Item = Option<f32>>,
+    ) {
+        let [lo, hi, pad, positions_out @ ..] = out else {
+            return;
+        };
+        *lo = f32::from(hit as u16);
+        *hi = f32::from((hit >> 16) as u16);
+        *pad = last_pad as f32;
+        let mut positions = positions;
+        for slot in positions_out {
+            *slot = positions.next().flatten().unwrap_or(-1.0);
+        }
+    }
+
+    /// Accept only complete frames whose counters, selection and positions are in range.
+    pub fn decode(samples: &[f32], count: usize) -> Option<Self> {
+        let [lo, hi, pad, positions @ ..] = samples else {
+            return None;
+        };
+        let integer = |value: f32, limit: u16| {
+            ((0.0..=f32::from(limit)).contains(&value) && value.fract() == 0.0)
+                .then_some(value as u16)
+        };
+        let hit = u32::from(integer(*lo, u16::MAX)?) | (u32::from(integer(*hi, u16::MAX)?) << 16);
+        if !(1..=crate::native_layout::MAX_PADS).contains(&count)
+            || samples.len() != MAX_PAD_ACTIVITY_FRAME
+            || positions[count..].iter().any(|&position| position != -1.0)
+        {
+            return None;
+        }
+        let last_pad = usize::from(integer(*pad, count as u16 - 1)?);
+        let mut playheads = [None; crate::native_layout::MAX_PADS];
+        for (entry, &position) in playheads.iter_mut().zip(positions) {
+            match position {
+                -1.0 => {}
+                value if (0.0..=1.0).contains(&value) => *entry = Some(value),
+                _ => return None,
+            }
+        }
+        Some(Self {
+            hit,
+            last_pad,
+            playheads,
+        })
+    }
+}
+
 /// One tap from the main-thread inventory. The index is stable for the instance's lifetime.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,10 +170,14 @@ impl Descriptor {
     /// Validates inventory metadata before it can affect allocation or display.
     pub fn valid(&self) -> bool {
         self.key().is_some()
-            && matches!(self.kind, SPECTRUM_SOURCE | LEVEL_HISTORY | REDUCTION)
+            && matches!(
+                self.kind,
+                SPECTRUM_SOURCE | LEVEL_HISTORY | REDUCTION | PLAYHEAD_POSITION | PAD_ACTIVITY
+            )
             && (1..=MAX_BLOCK_SAMPLES as u32).contains(&self.audio_frames_per_sample)
             && (self.reference_rate == 0 || (8_000..=384_000).contains(&self.reference_rate))
             && (2..=MAX_CAPACITY).contains(&self.capacity)
+            && (self.kind != PAD_ACTIVITY || self.capacity >= 2 * MAX_PAD_ACTIVITY_FRAME as u32)
     }
 }
 
@@ -194,6 +268,26 @@ impl BlockTaps {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pad_activity_preserves_all_hit_counter_bits_and_checks_frames() {
+        let mut frame = [0.0; MAX_PAD_ACTIVITY_FRAME];
+        PadActivity::write(&mut frame, u32::MAX, 1, [Some(0.25), None].into_iter());
+        let activity = PadActivity::decode(&frame, 2).unwrap();
+        assert_eq!(activity.hit, u32::MAX);
+        assert_eq!(activity.last_pad, 1);
+        assert_eq!(&activity.playheads[..2], &[Some(0.25), None]);
+        assert!(PadActivity::decode(&frame, 1).is_none());
+        assert!(PadActivity::decode(&frame[..frame.len() - 1], 2).is_none());
+        frame[1] = 65_536.0;
+        assert!(PadActivity::decode(&frame, 2).is_none());
+        frame[1] = 0.0;
+        frame[4] = -0.5;
+        assert!(PadActivity::decode(&frame, 2).is_none());
+        frame[4] = -1.0;
+        frame[5] = 0.5;
+        assert!(PadActivity::decode(&frame, 2).is_none());
+    }
 
     #[test]
     fn malformed_inventories_and_readings_are_ignored() {

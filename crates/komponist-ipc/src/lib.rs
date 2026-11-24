@@ -48,6 +48,8 @@ pub mod shm;
 pub mod sidechain_fallback;
 pub mod signal;
 pub mod signal_taps;
+pub mod waveform_markers;
+pub mod waveform_preview;
 
 // Unit tests run RT paths inside `assert_no_alloc`, which needs its allocator (debug builds only;
 // in release builds `assert_no_alloc` is a no-op).

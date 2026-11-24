@@ -925,6 +925,27 @@ impl App {
             PluginManagerEvent::StateSnapshot { device, state } => {
                 self.store_snapshot(*device, state);
             }
+            PluginManagerEvent::WaveformMarkersEdited { device, result, .. } => {
+                use komponist_ipc::waveform_markers::EditStatus;
+                use komponist_plugins::WaveformMarkerEditResult;
+
+                match result {
+                    WaveformMarkerEditResult::Applied {
+                        previous_state,
+                        state,
+                    } => {
+                        self.record_waveform_marker_edit(*device, previous_state, state);
+                    }
+                    WaveformMarkerEditResult::Rejected(EditStatus::Unchanged) => {}
+                    WaveformMarkerEditResult::Rejected(_) => {
+                        self.set_status(self.lang.devices_marker_edit_failed(), StatusKind::Error);
+                    }
+                    WaveformMarkerEditResult::Failed(message) => {
+                        eprintln!("komponist: marker edit for device {}: {message}", device.0);
+                        self.set_status(self.lang.devices_marker_edit_failed(), StatusKind::Error);
+                    }
+                }
+            }
             PluginManagerEvent::ClapPresetLoaded {
                 device,
                 previous_state,
@@ -2533,6 +2554,25 @@ impl App {
     pub(crate) fn plugin_action(&mut self, action: PluginAction) {
         match action {
             PluginAction::Add { plugin, target } => self.add_plugin(plugin, target),
+            PluginAction::RequestWaveformMarkers { device, slot } => {
+                self.engine
+                    .host_mut()
+                    .request_waveform_markers(device, slot);
+            }
+            PluginAction::EditWaveformMarkers {
+                device,
+                slot,
+                request,
+            } => {
+                if self
+                    .engine
+                    .host_mut()
+                    .edit_waveform_markers(device, slot, request)
+                    .is_err()
+                {
+                    self.set_status(self.lang.devices_marker_edit_failed(), StatusKind::Error);
+                }
+            }
             PluginAction::ApplyClapPreset { device, source } => {
                 if let Some((_, _, target)) = self.project().find_device(device) {
                     if let Some(state) = komponist_plugins::presets::legacy_state(
@@ -2601,8 +2641,8 @@ impl App {
             PluginAction::LoadSample { .. }
             | PluginAction::ClearSample { .. }
             | PluginAction::PickSample { .. }
-            | PluginAction::AuditionPad { .. }
-            | PluginAction::PreviewSampler { .. }
+            | PluginAction::AuditionNote { .. }
+            | PluginAction::PreviewWaveform { .. }
             | PluginAction::SetSamplerSlices { .. } => {
                 self.sampler_action(&action);
             }
