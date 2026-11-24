@@ -320,11 +320,10 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     app.dispatch(Action::Project(ProjectAction::OpenPath(project_path)));
     for (kind, track, device) in &tracks {
         let pad = usize::from(*kind == Internal::Sampler) * 2;
-        step_until(&mut app, "initial sampler UI", |app| {
-            app.engine()
-                .host()
-                .sampler_ui(*device)
-                .is_some_and(|view| view.idle)
+        step_until(&mut app, "initial sampler UI and file slots", |app| {
+            let host = app.engine().host();
+            host.sampler_ui(*device).is_some_and(|view| view.idle)
+                && host.asset_slots(*device).is_some()
         });
         assert_eq!(
             app.engine().host().bridge_pid(*device).is_some(),
@@ -579,11 +578,10 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         pinned_clap_state::decode(d.state.as_deref().unwrap()).unwrap()
     };
     let sample_name = |app: &App| {
-        let state = hosted_state(app);
-        let assets = state["fields"][pinned_clap_state::SAMPLE_ASSETS_FIELD]
-            .as_str()
-            .unwrap();
-        links::read(Some(assets.as_bytes()))[0].1.name.clone()
+        app.project().find_device(general).unwrap().2.asset_links[&0]
+            .name()
+            .unwrap()
+            .into_owned()
     };
     assert_eq!(sample_name(h.state()), "replacement");
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
