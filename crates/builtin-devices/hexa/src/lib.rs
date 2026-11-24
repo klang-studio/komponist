@@ -77,6 +77,7 @@ pub static CATALOG: CatalogSpec = CatalogSpec {
     id: BUILTIN_HEXA,
     name: HEXA_NAME,
     name_in: Lang::device_name_hexa,
+    description_in: Some(Lang::device_description_hexa),
     role: DeviceRole::Instrument,
     features: &["instrument", "synthesizer"],
     sidechain: false,

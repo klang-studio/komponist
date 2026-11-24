@@ -33,6 +33,7 @@ pub static SPEC: Spec = Spec {
         id: "arpeggiator",
         name: "Arpeggiator",
         name_in: Lang::device_name_arpeggiator,
+        description_in: Some(Lang::device_description_arpeggiator),
         role: komponist_model::DeviceRole::MidiEffect,
         features: &["note-effect", "arpeggiator"],
         vendor: "komponist",

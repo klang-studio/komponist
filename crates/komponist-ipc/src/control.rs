@@ -173,7 +173,7 @@ pub struct PluginDescriptor {
     pub id: String,
     /// Display name.
     pub name: String,
-    /// Optional labels from a validated native layout. The descriptor name remains the fallback.
+    /// Optional localized layout labels and the standard CLAP description fallback.
     #[serde(default)]
     pub localized: Option<crate::native_layout::LocalizedPlugin>,
     /// Vendor.

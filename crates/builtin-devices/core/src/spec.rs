@@ -18,6 +18,8 @@ pub struct CatalogSpec {
     pub name: &'static str,
     /// Localized catalog and card name.
     pub name_in: fn(Lang) -> &'static str,
+    /// Localized catalog description exported by the device.
+    pub description_in: Option<fn(Lang) -> &'static str>,
     /// Role in the engine's device chain.
     pub role: DeviceRole,
     /// CLAP-style features for browser categories and search.
@@ -331,6 +333,7 @@ mod tests {
         catalog: CatalogSpec {
             id: "test-device",
             name: "Testgerät",
+            description_in: None,
             name_in: |lang| match lang {
                 Lang::De => "Testgerät",
                 Lang::En => "Test device",

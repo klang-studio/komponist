@@ -324,6 +324,7 @@ fn run(setup: &ScanSetup, cancel: &AtomicBool) -> Option<ScanOutcome> {
                 path: bundle.path.clone(),
                 mtime_secs: bundle.mtime_secs,
                 descriptors: result.descriptors,
+                descriptor_revision: crate::catalog::CLAP_DESCRIPTOR_REVISION,
                 clap_presets: result.clap_presets,
                 preset_discovery_complete: result.preset_discovery_complete,
                 error: result.error,

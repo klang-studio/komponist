@@ -29,6 +29,7 @@ pub static SPEC: Spec = Spec {
         id: "delay",
         name: "Delay",
         name_in: Lang::device_name_delay,
+        description_in: Some(Lang::device_description_delay),
         role: komponist_model::DeviceRole::Effect,
         features: &["audio-effect", "delay", "echo"],
         vendor: "komponist",

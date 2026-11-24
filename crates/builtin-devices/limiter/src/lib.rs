@@ -33,6 +33,7 @@ pub static SPEC: Spec = Spec {
         id: "limiter",
         name: "Limiter",
         name_in: Lang::device_name_limiter,
+        description_in: Some(Lang::device_description_limiter),
         role: komponist_model::DeviceRole::Effect,
         features: &["audio-effect", "limiter", "dynamics"],
         vendor: "komponist",

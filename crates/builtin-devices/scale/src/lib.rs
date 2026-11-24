@@ -21,6 +21,7 @@ pub static SPEC: Spec = Spec {
         id: "tonleiter",
         name: "Tonleiter",
         name_in: Lang::device_name_tonleiter,
+        description_in: Some(Lang::device_description_tonleiter),
         role: komponist_model::DeviceRole::MidiEffect,
         features: &["note-effect", "scale"],
         vendor: "komponist",
