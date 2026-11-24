@@ -162,10 +162,7 @@ pub fn edit_link(
     link: Option<&SampleLink>,
     relinking: bool,
 ) -> Option<Vec<u8>> {
-    let general = kind == Internal::GeneralSampler;
-    if !matches!(kind, Internal::Sampler | Internal::GeneralSampler)
-        || pad >= if general { 1 } else { PADS }
-    {
+    if pad >= pad_count(kind) {
         return None;
     }
     let initial;
@@ -176,27 +173,8 @@ pub fn edit_link(
         &initial
     };
     edit_state(state, |wrapper, assets| {
-        let mut updated = links::write(Some(assets.as_bytes()), pad, link);
-        if general && !relinking {
-            updated =
-                komponist_general_sampler::write_settings(Some(&updated), &Settings::default());
-        }
-        if link.is_some() && (!general || !relinking) {
-            let params = wrapper.get_mut("params")?.as_object_mut()?;
-            for (wire, parameter) in kind.params().iter().enumerate() {
-                let region = if general {
-                    matches!(parameter.id.as_str(), "start" | "end")
-                } else {
-                    [PadField::Start.wire(pad), PadField::End.wire(pad)].contains(&wire)
-                };
-                if region {
-                    params.insert(
-                        parameter.id.as_str().into(),
-                        pinned_clap_state::parameter(parameter, parameter.default).0,
-                    );
-                }
-            }
-        }
+        let updated = links::write(Some(assets.as_bytes()), pad, link);
+        let updated = reset_region(wrapper, updated, kind, pad, link.is_some(), relinking)?;
         if link.is_some() {
             let mut updated: Value = serde_json::from_slice(&updated).ok()?;
             links::touch(&mut updated, pad);
