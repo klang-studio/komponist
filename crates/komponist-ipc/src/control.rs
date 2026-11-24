@@ -101,7 +101,11 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 17 (#289) advertises the named signal tap inventory after plugin load.
 /// 18 distinguishes unsupported file slots from a temporarily missing snapshot.
 /// 19 combines named signal taps and device asset preparation in the same wire contract.
-pub const PROTOCOL_VERSION: u32 = 19;
+/// 20 (#287) restores CLAP parameter bases separately from opaque state bytes.
+pub const PROTOCOL_VERSION: u32 = 20;
+
+/// Maximum number of parameter bases that can follow an active state restore.
+pub const MAX_STATE_PARAMETER_BASES: usize = crate::shm::INPUT_EVENT_CAPACITY;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -431,6 +435,12 @@ pub enum ControlMsg {
     },
     /// Query a display list on the bridge's CLAP main thread.
     GetDeviceDisplay(u32),
+    /// Restore the opaque CLAP state and then apply the host's saved parameter bases.
+    SetClapState {
+        request: u32,
+        state: Vec<u8>,
+        parameter_bases: std::collections::BTreeMap<u32, f64>,
+    },
 }
 
 /// Bridge → app.
@@ -1878,6 +1888,11 @@ mod tests {
             ControlMsg::SetState {
                 request: 9,
                 state: vec![1, 2, 3],
+            },
+            ControlMsg::SetClapState {
+                request: 10,
+                state: vec![0, 1, 255],
+                parameter_bases: [(4, -0.25), (42, 0.75)].into(),
             },
             ControlMsg::ListParams,
             ControlMsg::SetParam { id: 3, value: -0.5 },

@@ -54,7 +54,7 @@ const STOP_POLL: Duration = Duration::from_millis(10);
 const RESTORE_WAIT: Duration = Duration::from_secs(1);
 
 /// Parameter values queued from the main thread between two blocks.
-pub const PARAM_QUEUE_CAPACITY: usize = 512;
+pub const PARAM_QUEUE_CAPACITY: usize = komponist_ipc::control::MAX_STATE_PARAMETER_BASES;
 
 /// Stack of the RT thread: plugins may use large stack buffers in `process`, so the size of a
 /// typical main thread (8 MiB, committed lazily) rather than std's 2 MiB.

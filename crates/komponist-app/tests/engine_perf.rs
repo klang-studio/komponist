@@ -133,6 +133,7 @@ fn project(bridges: bool) -> Project {
             role: DeviceRole::Effect,
             plugin: clap_plugin(FX),
             bypass: false,
+            parameter_bases: Default::default(),
             asset_links: Default::default(),
             state: None,
             sidechain: None,

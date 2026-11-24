@@ -46,7 +46,7 @@ fn load_and_play(manager: PluginManager, plugin: komponist_model::PluginRef, key
     let states = rig.manager.snapshot_states(PATIENCE);
     eprintln!(
         "{name}: loaded in {loaded:.1?}, {params} parameters, peak {level:.3}, state {} bytes",
-        states.first().map_or(0, |(_, s)| s.len())
+        states.first().map_or(0, |(_, s)| s.bytes.len())
     );
     assert_eq!(states.len(), 1);
     rig.manager.shutdown();

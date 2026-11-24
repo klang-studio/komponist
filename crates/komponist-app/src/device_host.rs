@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use komponist_builtin::{BuiltinKind, BuiltinProcessor, Internal};
+pub(crate) use komponist_builtin::{BuiltinKind, BuiltinProcessor, Internal, LegacyParameters};
 use komponist_engine::{DeviceMeter, Processor};
 use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot};
 use komponist_ipc::frame::HeaderModel;
@@ -50,6 +50,7 @@ use komponist_ipc::{
     GuiSize, GuiTarget, LogLevel, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode,
 };
 use komponist_model::plugin_assets::AssetLink;
+use komponist_model::project::SavedPluginState;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project};
 use komponist_plugins::AssetEdit;
 use komponist_plugins::manager::STATE_LOG_PREFIX;
@@ -231,6 +232,11 @@ pub trait DeviceHost {
         false
     }
 
+    /// Restores a plugin snapshot and its host-owned parameter bases.
+    fn restore_saved_state(&mut self, device: DeviceId, state: &SavedPluginState) -> bool {
+        self.set_state(device, &state.bytes)
+    }
+
     /// Restores `state` in the running plugin of a bridged device (undo or redo changed the state
     /// in the document); `false` if this host does not handle `device` or its bridge is not
     /// running.
@@ -404,7 +410,7 @@ pub trait DeviceHost {
 
     /// Blocking, for saving: the current state of every bridged device, waiting at most
     /// `timeout` in total. Devices that do not answer in time keep their last snapshot.
-    fn snapshot_states(&mut self, timeout: Duration) -> Vec<(DeviceId, Arc<[u8]>)> {
+    fn snapshot_states(&mut self, timeout: Duration) -> DeviceSnapshots {
         let _ = timeout;
         Vec::new()
     }
@@ -990,6 +996,10 @@ impl DeviceHost for PluginHost {
         true
     }
 
+    fn restore_saved_state(&mut self, device: DeviceId, state: &SavedPluginState) -> bool {
+        self.is_external(device) && self.manager.restore_saved_state(device, state)
+    }
+
     fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
         self.is_external(device) && self.manager.set_state(device, state)
     }
@@ -1123,7 +1133,7 @@ impl DeviceHost for PluginHost {
         self.manager.request_state(device);
     }
 
-    fn snapshot_states(&mut self, timeout: Duration) -> Vec<(DeviceId, Arc<[u8]>)> {
+    fn snapshot_states(&mut self, timeout: Duration) -> DeviceSnapshots {
         self.manager.snapshot_states(timeout)
     }
 
@@ -1282,6 +1292,7 @@ mod sampler_tests {
             role: DeviceRole::Instrument,
             plugin: Internal::Sampler.plugin_ref(),
             bypass: false,
+            parameter_bases: Default::default(),
             asset_links: Default::default(),
             state: state.map(Arc::from),
             sidechain: None,

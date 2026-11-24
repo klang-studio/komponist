@@ -11,6 +11,7 @@ use common::*;
 use komponist_engine::Command;
 use komponist_ipc::GuiTarget;
 use komponist_ipc::LogLevel;
+use komponist_model::project::SavedPluginState;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, TrackId};
 use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{
@@ -40,7 +41,7 @@ fn run_until(rig: &mut Rig, what: &str, mut condition: impl FnMut(&Rig) -> bool)
 }
 
 /// The next `StateSnapshot` of `device` the rig sees.
-fn next_snapshot(rig: &mut Rig, device: u64) -> Arc<[u8]> {
+fn next_snapshot(rig: &mut Rig, device: u64) -> SavedPluginState {
     let from = rig.events.len();
     let mut found = None;
     run_until(rig, "a state snapshot", |rig| {
@@ -81,13 +82,13 @@ fn restore_updates_parameter_bases_without_overwriting_a_later_edit() {
 
     rig.manager.set_param(device_id, gain, -24.0);
     assert_eq!(rig.manager.param_base(device_id, gain), Some(-24.0));
-    assert!(rig.manager.set_state(device_id, &state));
+    assert!(rig.manager.restore_saved_state(device_id, &state));
     run_until(&mut rig, "the restored gain base", |rig| {
         rig.manager.param_base(device_id, gain) == Some(initial)
     });
 
     let from = rig.events.len();
-    assert!(rig.manager.set_state(device_id, &state));
+    assert!(rig.manager.restore_saved_state(device_id, &state));
     rig.manager.set_param(device_id, gain, -30.0);
     run_until(&mut rig, "the second restore acknowledgement", |rig| {
         rig.events[from..].contains(&PluginManagerEvent::StateApplied { device: device_id })
@@ -131,21 +132,15 @@ fn macro_snapshot_preserves_an_independent_plugin_edit() {
     rig.manager.preview_param(device_id, gain, preview);
     assert_eq!(rig.manager.param_base(device_id, gain), base);
     rig.manager.request_state(device_id);
-    let from = rig.events.len();
-    for _ in 0..5 {
-        rig.process(BLOCK);
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    assert!(
-        !rig.events[from..]
-            .iter()
-            .any(|event| matches!(event, PluginManagerEvent::StateSnapshot { .. }))
+    let state = next_snapshot(&mut rig, 10);
+    assert!(rig.manager.is_macro_snapshot(device_id, &state.bytes));
+    assert_eq!(state.parameter_bases[&gain], mapped);
+    assert_eq!(
+        rig.manager.param_value(device_id, gain).unwrap().value,
+        preview
     );
 
     output(&mut rig, mapped);
-    rig.manager.request_state(device_id);
-    let state = next_snapshot(&mut rig, 10);
-    assert!(rig.manager.is_macro_snapshot(device_id, &state));
     assert_eq!(rig.manager.param_base(device_id, gain), base);
 
     rig.manager
@@ -154,7 +149,7 @@ fn macro_snapshot_preserves_an_independent_plugin_edit() {
     rig.manager.set_param(device_id, decay, independent);
     rig.manager.request_state(device_id);
     let edited = next_snapshot(&mut rig, 10);
-    assert!(!rig.manager.is_macro_snapshot(device_id, &edited));
+    assert!(!rig.manager.is_macro_snapshot(device_id, &edited.bytes));
     assert_eq!(rig.manager.param_base(device_id, decay), Some(independent));
     assert_eq!(rig.manager.param_base(device_id, gain), base);
 
@@ -162,14 +157,14 @@ fn macro_snapshot_preserves_an_independent_plugin_edit() {
     assert_eq!(rig.manager.param_base(device_id, gain), Some(next_mapped));
     rig.manager.request_state(device_id);
     let state = next_snapshot(&mut rig, 10);
-    assert!(rig.manager.is_macro_snapshot(device_id, &state));
+    assert!(rig.manager.is_macro_snapshot(device_id, &state.bytes));
 
     // Restore the earlier mixed snapshot after changing both parameters. StateApplied reports
     // values read from the real bridge plugin, rather than the manager's optimistic cache.
     rig.manager.set_param(device_id, gain, preview);
     rig.manager.set_param(device_id, decay, 0.75);
     let from = rig.events.len();
-    assert!(rig.manager.set_state(device_id, &edited));
+    assert!(rig.manager.restore_saved_state(device_id, &edited));
     run_until(&mut rig, "the restored macro and independent edit", |rig| {
         rig.events[from..].contains(&PluginManagerEvent::StateApplied { device: device_id })
     });
@@ -380,9 +375,7 @@ fn missing_plugin_keeps_its_state_byte_identical_through_a_save() {
     assert_eq!(devices, [11, 30]);
     for (device, state) in states {
         document
-            .apply_untracked(|p| {
-                komponist_model::edits::set_device_state(p, device, Some(state.clone()))
-            })
+            .apply_untracked(|p| komponist_model::edits::set_saved_plugin_state(p, device, &state))
             .unwrap();
     }
     let saved = komponist_model::persist::to_json(document.project()).unwrap();
@@ -397,7 +390,7 @@ fn missing_plugin_keeps_its_state_byte_identical_through_a_save() {
 }
 
 #[test]
-fn temporary_parameter_edit_defers_plugin_snapshot_until_base_returns() {
+fn temporary_parameter_edit_saves_the_base_and_restores_it_on_reopen() {
     let dir = scratch("temporary-param-state");
     let Some(manager) = scanned_manager(&dir) else {
         return;
@@ -422,15 +415,45 @@ fn temporary_parameter_edit_defers_plugin_snapshot_until_base_returns() {
     rig.process(BLOCK);
     rig.manager.request_state(device_id);
     rig.manager.preview_param(device_id, id, temporary);
-    assert!(rig.manager.snapshot_states(PATIENCE).is_empty());
+    let states = rig.manager.snapshot_states(PATIENCE);
+    let [(saved_device, state)] = states.as_slice() else {
+        panic!("expected the playing plugin's snapshot");
+    };
+    assert_eq!(*saved_device, device_id);
     assert_eq!(rig.manager.param_base(device_id, id), Some(base));
+    let raw = state.bytes.as_ref();
+    assert_ne!(
+        raw,
+        safe[0].1.bytes.as_ref(),
+        "the plug-in captured the live value"
+    );
+    assert_eq!(state.parameter_bases.get(&id), Some(&base));
 
-    rig.send(komponist_engine::Command::SetParam {
-        slot,
-        id,
-        value: base,
+    assert!(rig.manager.restore_saved_state(device_id, state));
+    run_until(&mut rig, "active state restored", |rig| {
+        rig.events.iter().any(|event| {
+            matches!(event, PluginManagerEvent::StateApplied { device } if *device == device_id)
+        })
     });
     rig.process(BLOCK);
+    let active = rig.manager.snapshot_states(PATIENCE);
+    let raw = active[0].1.bytes.as_ref();
+    assert_eq!(raw, safe[0].1.bytes.as_ref());
+
+    let mut reopened = device(
+        10,
+        DeviceRole::Instrument,
+        clap_plugin(SYNTH),
+        Some(&state.bytes),
+    );
+    reopened.parameter_bases.clone_from(&state.parameter_bases);
+    rig.manager.shutdown();
+    let mut rig = Rig::new(
+        scanned_manager(&dir).unwrap(),
+        project(vec![track(1, vec![reopened])]),
+    );
+    rig.wait_status(10, DeviceStatus::Ok);
+    assert_eq!(rig.manager.param_base(device_id, id), Some(base));
     assert_eq!(rig.manager.snapshot_states(PATIENCE), safe);
     rig.manager.shutdown();
 }
@@ -457,7 +480,7 @@ fn snapshots_keep_an_edit_pending_until_the_engine_delivers_it() {
     };
     send(&mut rig, base * 0.5);
     rig.manager.preview_param(device_id, id, base * 0.5);
-    assert!(rig.manager.snapshot_states(PATIENCE).is_empty());
+    assert_eq!(rig.manager.snapshot_states(PATIENCE).len(), 1);
     send(&mut rig, base);
     // The synth rounds to its internal 0.1 dB step. The requested value is between steps.
     let value = 0.403;
@@ -561,7 +584,8 @@ fn project_save_requires_persistent_edits_even_during_a_temporary_override() {
     let slot = rig.slots[&device_id];
     let set = |rig: &mut Rig, id, value| {
         rig.send(komponist_engine::Command::SetParam { slot, id, value });
-        rig.process(BLOCK);
+        // State verification must see the edit even when the bridge misses a realtime deadline.
+        rig.render(BLOCK);
     };
     let temporary = base * 0.5;
     let decay_after = 0.5;
@@ -570,19 +594,29 @@ fn project_save_requires_persistent_edits_even_during_a_temporary_override() {
     set(&mut rig, gain, temporary);
     rig.manager.preview_param(device_id, gain, temporary);
     let timeout = Duration::from_millis(120);
-    assert_eq!(
-        rig.manager.snapshot_for_save(timeout),
-        SaveSnapshots::default()
-    );
+    let preview_only = rig.manager.snapshot_for_save(timeout);
+    assert!(preview_only.blocked.is_empty());
+    assert!(preview_only.unavailable.is_empty());
+    let [(saved_device, saved)] = preview_only.captured.as_slice() else {
+        panic!("expected a snapshot with the temporary output corrected");
+    };
+    assert_eq!(*saved_device, device_id);
+    assert_eq!(saved.parameter_bases[&gain], base);
 
+    // The host cannot save an independent edit until the active processor receives it.
     rig.manager.edited_param(device_id, decay, decay_after);
-    set(&mut rig, decay, decay_after);
     let outcome = rig.manager.snapshot_for_save(timeout);
     assert_eq!(outcome.blocked, [device_id]);
     assert!(outcome.captured.is_empty());
     assert!(outcome.unavailable.is_empty());
 
-    set(&mut rig, gain, base);
+    set(&mut rig, decay, decay_after);
+    // The bridge may still be returning a deferred snapshot at the first audio callback.
+    // Drive further callbacks until a checked capture acknowledges the delivered edit.
+    rig.manager.request_state(device_id);
+    run_until(&mut rig, "the verified edit to reach the plugin", |rig| {
+        !rig.manager.has_pending_state_edits()
+    });
     let outcome = rig.manager.snapshot_for_save(PATIENCE);
     assert!(outcome.blocked.is_empty());
     assert!(outcome.unavailable.is_empty());
@@ -591,13 +625,14 @@ fn project_save_requires_persistent_edits_even_during_a_temporary_override() {
         panic!("expected a single saved state");
     };
     assert_eq!(*saved_device, device_id);
+    assert_eq!(saved.parameter_bases[&gain], base);
 
     // Change both values again, then load the saved blob to see what really went into the file.
     rig.manager.edited_param(device_id, decay, decay_before);
     set(&mut rig, decay, decay_before);
     rig.manager.edited_param(device_id, gain, temporary);
     set(&mut rig, gain, temporary);
-    assert!(rig.manager.set_state(device_id, saved));
+    assert!(rig.manager.restore_saved_state(device_id, saved));
     run_until(&mut rig, "the saved bases", |rig| {
         rig.manager.param_base(device_id, gain) == Some(base)
             && rig
@@ -691,7 +726,7 @@ fn unmapping_a_persistent_macro_value_allows_saving_after_a_failed_restore() {
     let states = outcome.captured;
     assert_eq!(states.len(), 1);
     assert_eq!(states[0].0, device);
-    assert_ne!(&*states[0].1, blob);
+    assert_ne!(&*states[0].1.bytes, blob);
     assert_eq!(rig.manager.param_base(device, gain), Some(value));
 }
 
@@ -779,9 +814,7 @@ fn a_state_that_fails_to_load_is_kept_until_the_user_changes_something() {
     let mut document = Document::new(original);
     for (device, state) in states {
         document
-            .apply_untracked(|p| {
-                komponist_model::edits::set_device_state(p, device, Some(state.clone()))
-            })
+            .apply_untracked(|p| komponist_model::edits::set_saved_plugin_state(p, device, &state))
             .unwrap();
     }
     let saved = komponist_model::persist::to_json(document.project()).unwrap();
@@ -802,7 +835,7 @@ fn a_state_that_fails_to_load_is_kept_until_the_user_changes_something() {
     rig.manager.set_param(DeviceId(10), gain, 0.5);
     assert_eq!(rig.manager.state_warning(DeviceId(10)), None);
     let state = next_snapshot(&mut rig, 10);
-    assert_ne!(&state[..], blob);
+    assert_ne!(&state.bytes[..], blob);
     let devices: Vec<u64> = rig
         .manager
         .snapshot_states(PATIENCE)

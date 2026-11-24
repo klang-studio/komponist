@@ -33,6 +33,13 @@ fn insert_copy(
     copy: CopiedDevice,
 ) -> Result<(Project, DeviceId), edits::EditError> {
     let (project, id) = edits::insert_device(project, channel, index, spec(&copy.device))?;
+    let project = if !copy.device.parameter_bases.is_empty()
+        && let Some(state) = copy.device.saved_state()
+    {
+        edits::set_saved_plugin_state(&project, id, &state)?
+    } else {
+        project
+    };
     let project = if copy.device.asset_links.is_empty() {
         project
     } else {

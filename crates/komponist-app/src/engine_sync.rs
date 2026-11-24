@@ -52,7 +52,7 @@ use komponist_engine::{
 use komponist_model::{DeviceId, Document, Project, Tick, TrackId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent, ProcessorSetup};
 
-use crate::device_host::DeviceHost;
+use crate::device_host::{DeviceHost, LegacyParameters};
 
 /// How long [`EngineSync::shutdown`] lets the engine drain its last commands.
 const SHUTDOWN_DRAIN: Duration = Duration::from_millis(30);
@@ -293,38 +293,12 @@ impl CompileEnv for Env<'_> {
         param: &komponist_model::params::ParamId,
     ) -> Option<komponist_engine::automation::Parameter> {
         use komponist_engine::automation::{Parameter, PlainMap};
-        if crate::device_host::is_hexa(device) {
-            let patch = komponist_hexa::decode_state(device.state.as_deref())
-                .unwrap_or_else(|_| komponist_hexa::default_patch());
-            if let Some(mac) = komponist_hexa::Macro::ALL
-                .into_iter()
-                .find(|mac| mac.key() == param.as_str())
-            {
-                let info = mac.param_info();
-                return info.automatable.then(|| Parameter {
-                    wire_id: mac.id(),
-                    map: PlainMap::from_kind(&info.kind),
-                    base: mac.get(&patch),
-                });
-            }
-            let card = komponist_hexa::device::param(param)?;
-            return card.info.automatable.then(|| Parameter {
-                wire_id: card.wire,
-                map: PlainMap::from_kind(&card.info.kind),
-                base: card.field.get(&patch),
-            });
-        }
-        if let Some(kind) = crate::device_host::internal_kind(device) {
-            let wire_id = kind.wire(param)?;
-            let info = &kind.params()[wire_id as usize];
-            let base = kind
-                .decode_state(device.state.as_deref())
-                .ok()
-                .map_or(info.default, |values| values[wire_id as usize]);
-            return info.automatable.then(|| Parameter {
-                wire_id,
-                map: PlainMap::from_kind(&info.kind),
-                base,
+        if let Some(parameters) = LegacyParameters::new(device) {
+            let p = parameters.get(komponist_i18n::Lang::default(), param)?;
+            return p.info.automatable.then(|| Parameter {
+                wire_id: p.wire,
+                map: PlainMap::from_kind(&p.info.kind),
+                base: p.value,
             });
         }
         if matches!(
@@ -339,7 +313,7 @@ impl CompileEnv for Env<'_> {
             .params(device.id)?
             .iter()
             .find(|p| p.id == wire_id)?;
-        plugin_automatable(info).then(|| Parameter {
+        komponist_plugins::params::is_automatable(info).then(|| Parameter {
             wire_id,
             map: PlainMap::linear(info.min, info.max, info.step_count),
             base: self
@@ -356,12 +330,6 @@ impl CompileEnv for Env<'_> {
     fn project_dir(&self) -> Option<std::path::PathBuf> {
         self.host.project_dir()
     }
-}
-
-fn plugin_automatable(info: &komponist_ipc::ParamInfo) -> bool {
-    use komponist_ipc::control::param_flags;
-    let excluded = param_flags::HIDDEN | param_flags::READ_ONLY | param_flags::BYPASS;
-    info.flags & param_flags::AUTOMATABLE != 0 && info.flags & excluded == 0
 }
 
 /// A MIDI input device that appeared or vanished between two scans ([`midi_changes`]).
@@ -779,7 +747,8 @@ impl EngineSync {
                     self.host.release(device.id);
                     self.reload_device(after, device.id);
                 } else {
-                    let state_changed = old.state != device.state;
+                    let state_changed =
+                        old.state != device.state || old.parameter_bases != device.parameter_bases;
                     if state_changed {
                         self.follow_state(old, device, after, project_dir);
                     }
@@ -807,18 +776,8 @@ impl EngineSync {
         project: &Project,
         project_dir: Option<&std::path::Path>,
     ) {
-        use crate::device_host::{internal_kind, is_hexa};
-        if is_hexa(device) {
-            // The patch fields that differ, as the card's parameters, so a sounding note goes on
-            // (#19); a change no parameter reaches (a preset with other filters, say) needs a
-            // fresh processor.
-            let decode =
-                |d: &komponist_model::Device| komponist_hexa::decode_state(d.state.as_deref()).ok();
-            let changes = decode(old)
-                .zip(decode(device))
-                .and_then(|(was, now)| komponist_hexa::device::param_changes(&was, &now))
-                .filter(|c| c.len() <= komponist_engine::MAX_PENDING_PARAMS);
-            let Some(changes) = changes else {
+        if let Some(parameters) = LegacyParameters::new(device) {
+            let Some(changes) = parameters.changes_from(old.state.as_deref()) else {
                 self.reload_device(project, device.id);
                 return;
             };
@@ -826,29 +785,10 @@ impl EngineSync {
             for (id, value) in changes {
                 self.send(Command::SetParam { slot, id, value });
             }
-            self.reassert_device_macros(device.id);
-        } else if let Some(kind) = internal_kind(device) {
-            // A state with only sample links has no `params`: its values are the defaults (as
-            // the processor made from it has them).
-            let values = |d: &komponist_model::Device| match kind.decode_state(d.state.as_deref()) {
-                Err(komponist_device_core::StateError::NoParams) => Ok(kind.defaults()),
-                other => other,
-            };
-            let (Ok(was), Ok(now)) = (values(old), values(device)) else {
-                self.reload_device(project, device.id);
-                return;
-            };
-            let slot = self.slot_of(device.id).expect("checked by the caller");
-            for (id, (a, b)) in was.iter().zip(&now).enumerate() {
-                if a != b {
-                    self.send(Command::SetParam {
-                        slot,
-                        id: id as u32,
-                        value: *b,
-                    });
-                }
-            }
-            if let Some(handle) = self.host.sampler(device.id) {
+            if let (Some(handle), Some(kind)) = (
+                self.host.sampler(device.id),
+                crate::device_host::internal_kind(device),
+            ) {
                 use komponist_sampler::links;
                 let general = kind == komponist_builtin::Internal::GeneralSampler;
                 if general {
@@ -880,8 +820,8 @@ impl EngineSync {
                 }
             }
             self.reassert_device_macros(device.id);
-        } else if let Some(state) = &device.state {
-            if !self.host.set_state(device.id, state)
+        } else if let Some(state) = device.saved_state() {
+            if !self.host.restore_saved_state(device.id, &state)
                 && komponist_plugins::packaged_kind(&device.plugin).is_some()
                 && self.host.status(device.id) == DeviceStatus::Loading
             {
@@ -1090,7 +1030,7 @@ impl EngineSync {
         self.host.params(device).is_some_and(|params| {
             params
                 .iter()
-                .any(|info| info.id == id && plugin_automatable(info))
+                .any(|info| info.id == id && komponist_plugins::params::is_automatable(info))
         })
     }
 

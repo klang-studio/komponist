@@ -330,7 +330,7 @@ impl DeviceHost for Host {
         }
         Ok(vec![(
             self.state,
-            Arc::from(&b"latest plugin settings"[..]),
+            Arc::<[u8]>::from(&b"latest plugin settings"[..]).into(),
         )])
     }
     fn set_render_mode(&mut self, _: RenderMode) {

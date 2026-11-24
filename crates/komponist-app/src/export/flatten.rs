@@ -197,11 +197,14 @@ impl Flatten {
         for (id, state) in &self.snapshots {
             if comparable
                 .find_device(*id)
-                .is_some_and(|(_, _, d)| d.state.as_ref() == Some(state))
+                .is_some_and(|(_, _, d)| d.has_saved_state(state))
                 && let Some((_, _, original)) = original.find_device(*id)
             {
-                comparable = edits::set_device_state(&comparable, *id, original.state.clone())
-                    .unwrap_or(comparable);
+                let restored = match original.saved_state() {
+                    Some(original) => edits::set_saved_plugin_state(&comparable, *id, &original),
+                    None => edits::set_device_state(&comparable, *id, None),
+                };
+                comparable = restored.unwrap_or(comparable);
             }
         }
         let unchanged = comparable.track(self.id) == original.track(self.id)
@@ -225,7 +228,7 @@ impl Flatten {
         let before = Arc::clone(app.doc.project());
         let mut restored = Project::clone(&before);
         for (device, state) in self.snapshots {
-            match edits::set_device_state(&restored, device, Some(state)) {
+            match edits::set_saved_plugin_state(&restored, device, &state) {
                 Ok(project) => restored = project,
                 Err(error) => {
                     app.flatten_failed(error);

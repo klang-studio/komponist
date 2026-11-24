@@ -15,8 +15,14 @@ pub fn is_listed(p: &WireInfo) -> bool {
     p.flags & (param_flags::HIDDEN | param_flags::READ_ONLY | param_flags::BYPASS) == 0
 }
 
-/// The model description of a bridged parameter. Nothing is modulatable (foreign plugins are not
-/// modulated by komponist); `automatable` follows the plugin's flag.
+/// Whether an automation lane or track macro can write absolute values to this parameter.
+/// Track macros send `ParamValue`, so the CLAP per-note modulation flags are independent.
+pub fn is_automatable(p: &WireInfo) -> bool {
+    is_listed(p) && p.flags & param_flags::AUTOMATABLE != 0
+}
+
+/// A bridged parameter's stable ID, range, step size and automation capability.
+/// The plugin supplies its value text, including any units.
 pub fn param_info(p: &WireInfo) -> ParamInfo {
     let whole = |v: f64| v.fract() == 0.0 && v.abs() < f64::from(i32::MAX);
     let steps = f64::from(p.step_count);
@@ -47,7 +53,7 @@ pub fn param_info(p: &WireInfo) -> ParamInfo {
     };
     let mut info = ParamInfo::new(ParamId::plugin(p.id), p.name.clone(), kind, p.default)
         .unit(unit)
-        .flags(p.flags & param_flags::AUTOMATABLE != 0, false);
+        .flags(is_automatable(p), false);
     info.is_macro = p.flags & param_flags::MACRO != 0;
     info
 }
@@ -102,7 +108,9 @@ mod tests {
             param_flags::READ_ONLY,
             param_flags::BYPASS,
         ] {
-            assert!(!is_listed(&wire(0.0, 1.0, 0, flag)));
+            let hidden = wire(0.0, 1.0, 0, flag | param_flags::AUTOMATABLE);
+            assert!(!is_listed(&hidden));
+            assert!(!is_automatable(&hidden));
         }
     }
 }

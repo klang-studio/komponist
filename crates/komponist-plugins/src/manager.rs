@@ -38,6 +38,7 @@ use komponist_ipc::shm::MAX_BLOCK;
 use komponist_ipc::{
     ControlMsg, GuiSize, GuiTarget, LogLevel, NoteName, ParamInfo, ParamValue, RenderMode,
 };
+use komponist_model::project::SavedPluginState;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project, TrackId};
 #[cfg(unix)]
 use rustix::event::{PollFd, PollFlags, Timespec};
@@ -95,10 +96,10 @@ pub enum FailReason {
 }
 
 /// State blobs captured from running plugin bridges.
-pub type DeviceSnapshots = Vec<(DeviceId, Arc<[u8]>)>;
+pub type DeviceSnapshots = Vec<(DeviceId, SavedPluginState)>;
 
 /// The outcome of collecting current external plug-in states for a project save.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct SaveSnapshots {
     /// Fresh states that can be used even when another bridge did not answer.
     pub captured: DeviceSnapshots,
@@ -123,7 +124,7 @@ pub enum PluginManagerEvent {
         /// The device.
         device: DeviceId,
         /// The state.
-        state: Arc<[u8]>,
+        state: SavedPluginState,
     },
     /// A plugin has applied a requested state restore to its processor.
     StateApplied {
@@ -630,7 +631,7 @@ impl PluginManager {
         device: &Device,
         setup: ProcessorSetup,
     ) -> Result<Box<dyn Processor>, PluginError> {
-        self.start(device, setup, device.state.clone())
+        self.start(device, setup, device.saved_state())
     }
 
     /// "Neu laden": kills the old bridge if still alive and starts a new one with the last known
@@ -649,8 +650,9 @@ impl PluginManager {
                 self.direct
                     .get(&device.id)
                     .and_then(DirectDevice::state_for_reload)
+                    .map(Into::into)
             })
-            .or_else(|| device.state.clone());
+            .or_else(|| device.saved_state());
         if let Some(mut old) = self.bridges.remove(&device.id) {
             // A bridge reload retires the old process even if start rejects the setup.
             self.discard_queued_snapshots(device.id);
@@ -665,7 +667,7 @@ impl PluginManager {
         &mut self,
         device: &Device,
         setup: ProcessorSetup,
-        state: Option<Arc<[u8]>>,
+        state: Option<SavedPluginState>,
     ) -> Result<Box<dyn Processor>, PluginError> {
         let Some(entry) = self.catalog.resolve(&device.plugin) else {
             self.retire(device.id, false);
@@ -730,16 +732,16 @@ impl PluginManager {
             effect_meter = bundled_effects::Meter::new(&features, setup.sample_rate);
             if is_sampler_kind(verified_kind)
                 && let Some(original) = state.as_ref()
-                && let Some(runtime) = self.sampler_runtime_state(original)
+                && let Some(runtime) = self.sampler_runtime_state(&original.bytes)
             {
-                state = Some(runtime);
+                state = Some(runtime.into());
             }
             if !self.force_bundled_bridge {
                 return match DirectDevice::start(
                     proof,
                     device.role,
                     setup,
-                    state,
+                    state.map(|state| state.bytes),
                     self.timing.snapshot_debounce,
                 ) {
                     Ok((mut instance, mut processor)) => {
@@ -1209,22 +1211,18 @@ impl PluginManager {
         }
     }
 
-    /// Publish the compiled automation targets to authenticated bundled snapshot handlers.
+    /// Publish the compiled automation targets to plugin snapshot handlers.
     /// A value is present for a mapped parameter. It is the model's macro output.
     pub fn set_automated_params(&mut self, values: &[(DeviceId, u32, Option<f64>)]) {
         let mut by_device = BTreeMap::<DeviceId, BTreeMap<u32, Option<f64>>>::new();
         for &(device, id, base) in values {
-            if self.verified_bundles.contains_key(&device) {
-                by_device.entry(device).or_default().insert(id, base);
-            }
+            by_device.entry(device).or_default().insert(id, base);
         }
         for (&device, direct) in &mut self.direct {
             direct.set_automated_params(by_device.remove(&device).unwrap_or_default());
         }
         for (&device, bridge) in &mut self.bridges {
-            if self.verified_bundles.contains_key(&device) {
-                bridge.set_automated_params(by_device.remove(&device).unwrap_or_default());
-            }
+            bridge.set_automated_params(by_device.remove(&device).unwrap_or_default());
         }
     }
 
@@ -1248,7 +1246,7 @@ impl PluginManager {
             bridge
                 .last_state
                 .as_ref()
-                .is_some_and(|last| Arc::ptr_eq(last, state))
+                .is_some_and(|last| Arc::ptr_eq(&last.bytes, state))
                 && !bridge.needs_snapshot_for_save()
                 && !bridge.is_macro_snapshot(state)
         })
@@ -1266,15 +1264,21 @@ impl PluginManager {
     /// Restores `state` in the running plugin of `device` (undo or redo changed the device's
     /// state in the document); `false` if the device has no running bridge.
     pub fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        self.restore_saved_state(device, &state.clone().into())
+    }
+
+    /// Restores opaque bytes and the host-owned parameter bases as one operation.
+    pub fn restore_saved_state(&mut self, device: DeviceId, state: &SavedPluginState) -> bool {
         let runtime = is_sampler_kind(self.verified_bundles.get(&device).copied())
-            .then(|| self.sampler_runtime_state(state))
+            .then(|| self.sampler_runtime_state(&state.bytes))
             .flatten();
+        let runtime = runtime.map(SavedPluginState::from);
         let state = runtime.as_ref().unwrap_or(state);
         if let Some(direct) = self.direct.get_mut(&device) {
             if matches!(direct.status, DeviceStatus::Crashed(_)) {
                 return false;
             }
-            direct.set_state(state.clone());
+            direct.set_state(state.bytes.clone());
             return true;
         }
         self.bridges
@@ -1298,7 +1302,7 @@ impl PluginManager {
     /// total. Devices that do not answer in time are left out (their last snapshot stays in the
     /// document), and so are devices with a [`Self::state_warning`]. Sorted by device id; a late
     /// answer arrives later as a `StateSnapshot` event.
-    pub fn snapshot_states(&mut self, timeout: Duration) -> Vec<(DeviceId, Arc<[u8]>)> {
+    pub fn snapshot_states(&mut self, timeout: Duration) -> DeviceSnapshots {
         self.snapshot_states_if(timeout, |_| true)
     }
 
@@ -1395,7 +1399,7 @@ impl PluginManager {
         &mut self,
         timeout: Duration,
         include: impl Fn(DeviceId) -> bool,
-    ) -> Vec<(DeviceId, Arc<[u8]>)> {
+    ) -> DeviceSnapshots {
         let deadline = Instant::now() + timeout;
         let mut waiting: BTreeMap<DeviceId, u32> = self
             .bridges
@@ -1423,7 +1427,7 @@ impl PluginManager {
                 };
                 direct.service(*device, &mut self.pending);
                 if let Some(state) = direct.capture() {
-                    states.push((*device, state));
+                    states.push((*device, state.into()));
                     false
                 } else {
                     direct.awaits_snapshot()
@@ -1703,7 +1707,7 @@ mod tests {
         for device in [removed, other] {
             manager.pending.push(PluginManagerEvent::StateSnapshot {
                 device,
-                state: Arc::from([1]),
+                state: Arc::<[u8]>::from([1]).into(),
             });
         }
 
@@ -1735,6 +1739,7 @@ mod tests {
                 module: Box::default(),
             },
             bypass: false,
+            parameter_bases: Default::default(),
             asset_links: Default::default(),
             state: Some(Arc::from([2])),
             sidechain: None,
@@ -1742,14 +1747,14 @@ mod tests {
         let other = DeviceId(2);
         let other_snapshot = PluginManagerEvent::StateSnapshot {
             device: other,
-            state: Arc::from([3]),
+            state: Arc::<[u8]>::from([3]).into(),
         };
         let metadata = PluginManagerEvent::ParamsChanged { device: device.id };
         manager.pending.extend([
             metadata.clone(),
             PluginManagerEvent::StateSnapshot {
                 device: device.id,
-                state: Arc::from([1]),
+                state: Arc::<[u8]>::from([1]).into(),
             },
             other_snapshot.clone(),
         ]);
@@ -1840,6 +1845,7 @@ mod tests {
                 .plugin
                 .clone(),
             bypass: false,
+            parameter_bases: Default::default(),
             asset_links: Default::default(),
             state: None,
             sidechain: None,

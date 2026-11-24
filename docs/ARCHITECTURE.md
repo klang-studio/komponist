@@ -555,6 +555,18 @@ points at one tick encode a jump. Device targets pair the project's stable devic
 device's parameter ID. Tracks also expose volume, pan and send levels. The master exposes volume,
 pan and insert parameters.
 
+Track macros and lanes resolve the same plugin parameter IDs. CLAP plugins declare a stable ID,
+plain limits, default and step count through `clap.params`. Parameters marked automatable are
+available to both controls unless they are hidden, read-only or bypass controls. Named units come
+from the plugin's value text. These controls send absolute parameter values through the processor
+slot, so they require no CLAP modulation flag or custom extension. Legacy built-in parameter
+keys and ranges are resolved by the built-in registry.
+
+A third-party CLAP state snapshot keeps the plugin's opaque bytes and can also store plain values
+by ID in the optional `parameter_bases` device field. The bridge gives the plugin its bytes first,
+then restores the host-owned bases. The engine reasserts macros and automation through the same
+parameter event path. Older projects omit the field and load their state as before.
+
 An unmuted clip envelope overrides its arrangement lane while the clip plays. The later-starting
 clip wins on overlap, with the clip ID breaking ties. Splitting a clip preserves the original
 envelope's precedence across both halves. When no clip overrides the target, playback uses the

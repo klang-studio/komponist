@@ -1524,6 +1524,7 @@ mod tests {
             role: DeviceRole::Effect,
             plugin: Internal::Eq.plugin_ref(),
             bypass,
+            parameter_bases: Default::default(),
             asset_links: Default::default(),
             state: state.map(Into::into),
             sidechain: None,

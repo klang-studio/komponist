@@ -50,6 +50,7 @@ use komponist_ipc::{
     LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessExit, ProcessWatcher,
     RenderMode, ShmRegion,
 };
+use komponist_model::project::SavedPluginState;
 use komponist_model::{DeviceId, DeviceRole};
 
 use crate::external::{ExternalProcessor, RUN_ACTIVE, RUN_DEAD, Shared};
@@ -121,7 +122,7 @@ struct StateRequest {
 }
 
 /// A state blob that arrived for a `Collect` request.
-pub(crate) type Collected = (u32, Arc<[u8]>);
+pub(crate) type Collected = (u32, SavedPluginState);
 
 /// Starts `exe args… --instance` with the bridge end of a fresh control channel and watches it:
 /// on Unix the end is an inherited fd named by `--control-fd`; on Windows it is the child's stdin
@@ -213,6 +214,7 @@ const READ_BUDGET: Duration = Duration::from_millis(10);
 #[derive(Debug)]
 pub(crate) struct Bridge {
     device: DeviceId,
+    format: PluginFormat,
     channel: Arc<AppChannel>,
     writer: Option<mpsc::Sender<ControlMsg>>,
     watcher: ProcessWatcher,
@@ -247,7 +249,7 @@ pub(crate) struct Bridge {
     restore_reply: Option<(u32, Result<(), String>)>,
     snapshot_due: Option<Instant>,
     /// The latest state: the last snapshot, or the state the bridge was started with.
-    pub last_state: Option<Arc<[u8]>>,
+    pub last_state: Option<SavedPluginState>,
     pub params: Vec<ParamInfo>,
     pub(crate) assets: crate::device_assets::DeviceAssets,
     asset_slots_waiting: Option<u32>,
@@ -290,6 +292,22 @@ pub(crate) struct Bridge {
     keep_stored_state: bool,
 }
 
+fn restore_message(request: u32, state: &SavedPluginState) -> ControlMsg {
+    let bytes = state.bytes.to_vec();
+    if state.parameter_bases.is_empty() {
+        ControlMsg::SetState {
+            request,
+            state: bytes,
+        }
+    } else {
+        ControlMsg::SetClapState {
+            request,
+            state: bytes,
+            parameter_bases: state.parameter_bases.clone(),
+        }
+    }
+}
+
 /// A started bridge and the processor for the engine.
 pub(crate) struct Started {
     pub bridge: Bridge,
@@ -307,7 +325,7 @@ pub(crate) struct SpawnSetup<'a> {
     pub bundle: &'a Path,
     pub plugin_id: &'a str,
     pub verified_bundled_kind: Option<BuiltinKind>,
-    pub state: Option<Arc<[u8]>>,
+    pub state: Option<SavedPluginState>,
     pub setup: ProcessorSetup,
     pub timing: Timing,
     /// The catalog says the plugin has a sidechain input.
@@ -357,10 +375,7 @@ impl Bridge {
         if let Some(state) = &s.state {
             let request = 0;
             state_restores.push_back(StateRestore::new(request));
-            let _ = writer.send(ControlMsg::SetState {
-                request,
-                state: state.to_vec(),
-            });
+            let _ = writer.send(restore_message(request, state));
         }
         let _ = writer.send(activate(s.setup));
 
@@ -374,6 +389,7 @@ impl Bridge {
         let now = Instant::now();
         let bridge = Bridge {
             device: s.device,
+            format: s.format,
             channel,
             writer: Some(writer),
             watcher,
@@ -588,6 +604,12 @@ impl Bridge {
         if self.phase != Phase::Running || self.keep_stored_state {
             return None;
         }
+        if !self.state_restores.is_empty() {
+            if matches!(purpose, StatePurpose::Event) {
+                self.snapshot_soon();
+            }
+            return None;
+        }
         let checked = self.snapshot_needs_verification();
         let request = self.seq();
         let message = if checked {
@@ -622,8 +644,12 @@ impl Bridge {
             || !self.released_macro_params.is_empty()
     }
 
+    fn snapshots_preserve_bases(&self) -> bool {
+        self.format == PluginFormat::Clap
+    }
+
     fn snapshot_expected(&self) -> Option<Vec<(u32, f64, bool)>> {
-        if self.verified_bundled_kind.is_some() {
+        if self.snapshots_preserve_bases() {
             // Automation and macro outputs are written into the saved state from the host's
             // persistent values. Independent user edits still need delivery verification.
             return self
@@ -658,33 +684,44 @@ impl Bridge {
     }
 
     /// Reinsert persistent values for controls whose live values may differ during automation.
-    fn snapshot_with_param_bases(&self, state: Vec<u8>) -> Option<Vec<u8>> {
-        let Some(kind) = self.verified_bundled_kind else {
-            return Some(state);
-        };
-        let mut corrections = self
-            .base_values
-            .iter()
-            .filter_map(|(&id, &base)| {
-                let persistent = self
-                    .automated_params
-                    .get(&id)
-                    .map(|value| value.unwrap_or(base));
-                persistent
-                    .or_else(|| self.macro_params.get(&id).copied())
-                    .or_else(|| self.temporary_params.contains(&id).then_some(base))
-                    .map(|value| (id, value))
-            })
-            .peekable();
-        if corrections.peek().is_none() {
-            return Some(state);
+    fn snapshot_with_param_bases(&self, state: Vec<u8>) -> Option<SavedPluginState> {
+        if !self.snapshots_preserve_bases() {
+            return Some(Arc::<[u8]>::from(state).into());
         }
-        crate::bundled_state::restore_param_bases(
-            kind,
-            self.native_layout.as_deref()?,
-            &state,
-            corrections,
-        )
+        let ids = self
+            .automated_params
+            .keys()
+            .chain(self.macro_params.keys())
+            .chain(&self.temporary_params);
+        let mut corrections = BTreeMap::new();
+        for &id in ids {
+            let base = self.base_values.get(&id).copied();
+            let value = match self.automated_params.get(&id) {
+                Some(value) => value.or(base),
+                None => self.macro_params.get(&id).copied().or(base),
+            }?;
+            corrections.insert(id, value);
+        }
+        if corrections.is_empty() {
+            return Some(Arc::<[u8]>::from(state).into());
+        }
+        if let Some(kind) = self.verified_bundled_kind {
+            let bytes = crate::bundled_state::restore_param_bases(
+                kind,
+                self.native_layout.as_deref()?,
+                &state,
+                corrections,
+            )?;
+            Some(Arc::<[u8]>::from(bytes).into())
+        } else {
+            if corrections.len() > komponist_ipc::control::MAX_STATE_PARAMETER_BASES {
+                return None;
+            }
+            Some(SavedPluginState {
+                bytes: state.into(),
+                parameter_bases: corrections,
+            })
+        }
     }
 
     /// A running device normally owes a fresh snapshot. An opaque plug-in state's temporary
@@ -692,7 +729,7 @@ impl Bridge {
     pub(crate) fn expects_snapshot_for_save(&self) -> bool {
         self.is_running()
             && !self.keep_stored_state
-            && (self.verified_bundled_kind.is_some() || self.temporary_params.is_empty())
+            && (self.snapshots_preserve_bases() || self.temporary_params.is_empty())
     }
 
     pub(crate) fn needs_snapshot_for_save(&self) -> bool {
@@ -758,7 +795,7 @@ impl Bridge {
         };
         if temporary {
             self.temporary_params.insert(id);
-            if self.verified_bundled_kind.is_none() {
+            if !self.snapshots_preserve_bases() {
                 self.invalidate_state_requests();
             }
         }
@@ -766,7 +803,7 @@ impl Bridge {
     }
 
     pub(crate) fn set_automated_params(&mut self, params: BTreeMap<u32, Option<f64>>) {
-        if self.verified_bundled_kind.is_some() && self.automated_params != params {
+        if self.snapshots_preserve_bases() && self.automated_params != params {
             // A program swap can remove a lane before audio restores the control. Keep
             // correcting any captured transient value until an explicit edit replaces it.
             self.temporary_params.extend(
@@ -785,7 +822,7 @@ impl Bridge {
             return;
         }
         let previous = std::mem::replace(&mut self.macro_params, values);
-        if self.verified_bundled_kind.is_some() {
+        if self.snapshots_preserve_bases() {
             if previous.keys().eq(self.macro_params.keys())
                 && previous.iter().all(|(id, value)| {
                     self.macro_params.get(id) == Some(value)
@@ -844,19 +881,19 @@ impl Bridge {
     /// Sends `SetState` to the running plugin (an undo or redo changed the device's state); the
     /// plugin's parameter values follow with the bridge's echo. `false` while the bridge is not
     /// running (it then starts with the state it was given).
-    pub(crate) fn set_state(&mut self, state: &Arc<[u8]>) -> bool {
+    pub(crate) fn set_state(&mut self, state: &SavedPluginState) -> bool {
         self.request_restore(state).is_some()
     }
 
     /// Queue a restore and return the sequence used by the bridge's reply.
-    pub(crate) fn request_restore(&mut self, state: &Arc<[u8]>) -> Option<u32> {
+    pub(crate) fn request_restore(&mut self, state: &SavedPluginState) -> Option<u32> {
         if self.phase != Phase::Running {
             return None;
         }
         self.user_changed();
         self.sampler_ui = None;
         self.sampler_ui_request = None;
-        self.last_state = Some(Arc::clone(state));
+        self.last_state = Some(state.clone());
         self.pending_params.clear();
         self.released_macro_params.clear();
         self.invalidate_state_requests();
@@ -865,10 +902,7 @@ impl Bridge {
         self.asset_offline_waiting = None;
         let request = self.seq();
         self.state_restores.push_back(StateRestore::new(request));
-        self.send(ControlMsg::SetState {
-            request,
-            state: state.to_vec(),
-        });
+        self.send(restore_message(request, state));
         Some(request)
     }
 
@@ -1053,6 +1087,7 @@ impl Bridge {
             self.stop_deadline = None;
         }
         if self.phase == Phase::Running
+            && self.state_restores.is_empty()
             && let Some(due) = self.snapshot_due
             && now >= due
         {
@@ -1173,7 +1208,7 @@ impl Bridge {
                     self.snapshot_soon();
                     return;
                 }
-                if self.verified_bundled_kind.is_some()
+                if self.snapshots_preserve_bases()
                     && self
                         .pending_params
                         .iter()
@@ -1186,7 +1221,9 @@ impl Bridge {
                     self.snapshot_soon();
                     return;
                 };
-                let macro_snapshot = self.macro_changed
+                // A capture during automation can contain different opaque bytes even when
+                // the parameter bases and the independent plugin state have not changed.
+                let macro_snapshot = (self.macro_changed || !state.parameter_bases.is_empty())
                     && !self.plugin_state_dirty
                     && self.pending_params.is_empty();
                 if pending.as_ref().is_some_and(|pending| pending.checked) {
@@ -1207,19 +1244,18 @@ impl Bridge {
                         events.push(PluginManagerEvent::ParamsChanged { device });
                         events.push(PluginManagerEvent::ParamValuesChanged { device });
                     }
-                    if self.verified_bundled_kind.is_none() {
+                    if !self.snapshots_preserve_bases() {
                         self.temporary_params.clear();
                     }
                     self.pending_params.clear();
                     self.released_macro_params.clear();
                 }
-                let state: Arc<[u8]> = state.into();
                 self.macro_changed = false;
                 self.plugin_state_dirty = false;
                 if macro_snapshot {
                     self.macro_snapshots
                         .retain(|snapshot| snapshot.strong_count() != 0);
-                    self.macro_snapshots.push(Arc::downgrade(&state));
+                    self.macro_snapshots.push(Arc::downgrade(&state.bytes));
                 }
                 self.last_state = Some(state.clone());
                 match pending.map(|request| request.purpose) {
@@ -1262,7 +1298,7 @@ impl Bridge {
                 events.push(PluginManagerEvent::ParamValuesChanged { device });
             }
             BridgeMsg::PluginParamEdits(edits) => {
-                if self.verified_bundled_kind.is_some() && self.phase == Phase::Running {
+                if self.snapshots_preserve_bases() && self.phase == Phase::Running {
                     for (id, value) in edits {
                         if value.is_finite() && !self.automated_params.contains_key(&id) {
                             self.edited_param(id, value);

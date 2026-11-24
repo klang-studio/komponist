@@ -258,7 +258,10 @@ impl DirectDevice {
         if self.snapshot_due.is_some_and(|due| Instant::now() >= due)
             && let Some(state) = self.capture()
         {
-            events.push(PluginManagerEvent::StateSnapshot { device: id, state });
+            events.push(PluginManagerEvent::StateSnapshot {
+                device: id,
+                state: state.into(),
+            });
         }
     }
 

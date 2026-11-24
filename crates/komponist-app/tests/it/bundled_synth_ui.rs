@@ -179,7 +179,7 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
         .host_mut()
         .snapshot_selected_states(&[volt], PATIENCE)
         .expect("snapshot after immediate redo");
-    let state = pinned_clap_state::decode(&snapshots[0].1).unwrap();
+    let state = pinned_clap_state::decode(&snapshots[0].1.bytes).unwrap();
     let actual = state["params"]["cutoff"]["f32"].as_f64().unwrap();
     assert!(
         (actual - preset_cutoff).abs() < 1e-6,
@@ -221,7 +221,7 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
             if *device != volt {
                 return false;
             }
-            let Some(snapshot) = pinned_clap_state::decode(state) else {
+            let Some(snapshot) = pinned_clap_state::decode(&state.bytes) else {
                 return false;
             };
             let matches = |id: &str, expected: f64| {
