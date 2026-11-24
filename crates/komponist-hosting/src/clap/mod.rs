@@ -310,10 +310,10 @@ impl ClapPlugin {
                 native_layout::read(instance.plugin_handle().as_raw(), id, version)
             };
             match layout.and_then(|layout| {
-                if let Some((_, descriptor)) = &layout {
-                    if version == 2 {
-                        descriptor.validate_params(&plugin.params())?;
-                    }
+                if let Some((_, descriptor)) = &layout
+                    && version == 2
+                {
+                    descriptor.validate_params(&plugin.params())?;
                 }
                 Ok(layout)
             }) {
