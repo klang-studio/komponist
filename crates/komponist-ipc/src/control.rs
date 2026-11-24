@@ -97,7 +97,9 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 13 distinguishes plugin-originated parameter flushes from value telemetry.
 /// 14 (#215): a checked snapshot carries the caller's remaining time.
 /// 15 adds optional device catalog labels to scanned and loaded descriptors.
-pub const PROTOCOL_VERSION: u32 = 16;
+/// 16 adds bounded canvas display messages.
+/// 17 (#289) advertises the named signal tap inventory after plugin load.
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
