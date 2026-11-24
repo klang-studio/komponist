@@ -204,11 +204,6 @@ fn fallbacks_while_loading_late_and_busy() {
         std::thread::sleep(Duration::from_millis(5));
     }
 
-    // Running: kp-test-slow passes audio through itself.
-    let (status, _) = call(&mut *fx, &input, &mut output, &[]);
-    assert_eq!(status, ProcessStatus::Continue);
-    assert_eq!(output[0], input);
-
     // The calls below run on a realtime thread, as the device's audio thread does: a timeshare
     // thread's deadline wait gets the process's timer leeway, tens of milliseconds on a
     // QoS-clamped process such as the GitHub macOS runner (a busy call took 27 ms there, #101).
@@ -218,28 +213,50 @@ fn fallbacks_while_loading_late_and_busy() {
     ))
     .expect("time-constraint policy");
 
-    // Key 126 makes it sleep 50 ms in `process`: the call returns at its deadline (60 % of
-    // 5.3 ms) with the dry input, and the next calls find the bridge busy and pass through too.
-    let (status, took) = call(&mut *fx, &input, &mut output, &[note(0, 126, true)]);
+    // Wait for a normal block to complete before submitting the note that stalls the effect.
+    let ready_by = Instant::now() + PATIENCE;
+    let late_before = loop {
+        let late = manager.late_blocks(slow.id);
+        let (status, _) = call(&mut *fx, &input, &mut output, &[]);
+        assert_eq!(status, ProcessStatus::Continue);
+        assert_eq!(output[0], input);
+        if manager.late_blocks(slow.id) == late {
+            break late;
+        }
+        assert!(Instant::now() < ready_by, "the slow fixture did not settle");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+
+    // Each note 126 sleeps for 50 ms. Two notes leave room to probe the busy bridge after
+    // the first callback returns at its deadline, even if the runner schedules it late.
+    let stall = [note(0, 126, true), note(1, 126, true)];
+    let earliest_completion = Instant::now() + Duration::from_millis(100);
+    let (status, took) = call(&mut *fx, &input, &mut output, &stall);
     assert_eq!(status, ProcessStatus::Continue);
     assert!(took < Duration::from_millis(40), "waited {took:?}");
     assert_eq!(output[0], input);
+    assert_eq!(manager.late_blocks(slow.id), late_before + 1);
+
     let mut busy_calls = 0;
-    let t0 = Instant::now();
-    while t0.elapsed() < Duration::from_millis(30) {
+    let probe_until = Instant::now() + Duration::from_millis(30);
+    while Instant::now() < probe_until {
+        let late = manager.late_blocks(slow.id);
         let (status, took) = call(&mut *fx, &input, &mut output, &[note(0, 126, false)]);
+        if Instant::now() >= earliest_completion {
+            // A scheduler pause may have let the fixture finish before this call.
+            break;
+        }
         assert_eq!(status, ProcessStatus::Continue);
-        // Far below the plugin's 50 ms (with room for preemption on a loaded machine).
         assert!(
             took < Duration::from_millis(25),
             "a busy call waited {took:?}"
         );
         assert_eq!(output[1], input);
+        assert_eq!(manager.late_blocks(slow.id), late + 1);
         busy_calls += 1;
     }
+    assert!(busy_calls > 0, "no call observed the stalled plugin");
     eprintln!("slow plugin: late call, then {busy_calls} busy calls passed through");
-    // Every one of them counts as late.
-    assert!(manager.late_blocks(DeviceId(20)) > busy_calls);
     assert_eq!(manager.late_blocks(DeviceId(21)), 0);
 
     // The instrument plays, and a reset silences it at the next block.
