@@ -517,11 +517,12 @@ impl ScanCache {
         })
     }
 
-    /// The cached result for `path` scanned at `mtime_secs`, if any.
+    /// A reusable scan of `path` at `mtime_secs`. Failed probes are retried on each scan.
     pub(crate) fn lookup(&self, path: &Path, mtime_secs: u64) -> Option<&CachedBundle> {
         self.bundles
             .iter()
             .find(|b| b.path == path && b.mtime_secs == mtime_secs)
+            .filter(|b| b.error.is_none())
             .filter(|b| {
                 b.descriptor_revision == CLAP_DESCRIPTOR_REVISION
                     || b.descriptors.iter().all(|d| d.format != BundleFormat::Clap)
@@ -1115,6 +1116,7 @@ mod tests {
                 .is_some()
         );
         assert!(cache.lookup(Path::new("/usr/lib/clap/A.clap"), 1).is_none());
+        assert!(cache.lookup(Path::new("/usr/lib/clap/B.clap"), 3).is_none());
         let descriptors = ScanCache::load(&file).descriptors();
         assert_eq!(descriptors, [localized]);
         let mut catalog = Catalog::default();

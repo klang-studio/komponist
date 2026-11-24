@@ -54,7 +54,7 @@ use komponist_model::{
     PluginRef, Project, Tick, TickRange, TrackId,
 };
 use komponist_plugins::manager::STATE_LOG_PREFIX;
-use komponist_plugins::{DeviceStatus, FailReason, PluginManagerEvent};
+use komponist_plugins::{DeviceStatus, FailReason, PluginManagerEvent, SaveSnapshots};
 
 use crate::actions::{
     Action, DropTarget, EditAction, GridTarget, PluginAction, ProjectAction, SelectMode,
@@ -1037,26 +1037,67 @@ impl App {
 
     /// Apply changes in catalog availability without replacing the project's saved devices.
     fn sync_catalog_devices(&mut self) -> bool {
-        let project = Arc::clone(self.doc.project());
         let host = self.engine.host();
-        let changes: Vec<_> = project
+        let changes: Vec<_> = self
+            .project()
             .tracks
             .iter()
             .flat_map(|t| t.channel.devices.iter())
-            .chain(project.master.devices.iter())
+            .chain(self.project().master.devices.iter())
             .filter_map(|device| {
                 let available = host.catalog().resolve(&device.plugin).is_some();
                 let missing = host.status(device.id) == DeviceStatus::Missing;
-                (available == missing).then_some((device.id, available))
+                (available == missing && (available || !host.device_probe_failed(device.id)))
+                    .then_some((device.id, available))
             })
             .collect();
-        for &(device, _) in &changes {
+        let removed: Vec<_> = changes
+            .iter()
+            .filter_map(|&(device, available)| (!available).then_some(device))
+            .collect();
+        let SaveSnapshots {
+            captured,
+            unavailable,
+            blocked,
+        } = if removed.is_empty() {
+            SaveSnapshots::default()
+        } else {
+            self.engine
+                .host_mut()
+                .snapshot_available_states(&removed, SNAPSHOT_TIMEOUT)
+        };
+        for (device, state) in captured {
+            self.store_retiring_snapshot(device, &state);
+        }
+        let project = Arc::clone(self.project());
+        let mut newly_missing = false;
+        for (device, available) in changes {
+            if (blocked.contains(&device) || unavailable.contains(&device))
+                && matches!(
+                    self.engine.host().status(device),
+                    DeviceStatus::Ok | DeviceStatus::Loading
+                )
+            {
+                // Leave the live state intact and retry retirement on the next scan.
+                continue;
+            }
             self.engine.reload_device(&project, device);
+            newly_missing |= !available;
         }
-        if let Some(crate::ui_state::Dialog::MissingPlugins(missing)) = &mut self.ui.dialog {
-            *missing = self.engine.host().missing_plugins(&project);
+        let queued = &mut self.dialogs.queued;
+        let active = &mut self.ui.dialog;
+        if [&*active, &*queued]
+            .iter()
+            .any(|dialog| matches!(dialog, Some(Dialog::MissingPlugins(_))))
+        {
+            let missing = self.engine.host().missing_plugins(&project);
+            for dialog in [active, queued] {
+                if let Some(Dialog::MissingPlugins(plugins)) = dialog {
+                    plugins.clone_from(&missing);
+                }
+            }
         }
-        changes.iter().any(|&(_, available)| !available)
+        newly_missing
     }
 
     /// The plugin name of `device` for messages ("Surge XT"), its id if it is gone.
@@ -3263,6 +3304,26 @@ fn worker_notice(
 mod tests {
     use super::*;
     use komponist_model::fixtures::empty_project;
+
+    #[test]
+    fn catalog_restoration_refreshes_the_missing_dialog_waiting_behind_flatten() {
+        let mut app = App::headless(Project::new("Restored device"));
+        app.ui.dialog = Some(Dialog::Flatten);
+        app.dialogs.queued = Some(Dialog::MissingPlugins(vec![
+            komponist_plugins::MissingPlugin {
+                track: None,
+                device: DeviceId(1),
+                role: DeviceRole::Instrument,
+                index: 0,
+                plugin: hexa_ref(),
+            },
+        ]));
+        assert!(!app.sync_catalog_devices());
+        assert!(matches!(app.ui.dialog, Some(Dialog::Flatten)));
+        assert!(
+            matches!(app.dialogs.queued, Some(Dialog::MissingPlugins(missing)) if missing.is_empty())
+        );
+    }
 
     /// #221: panel sizes count as saved only after a write that worked. A failed one is not
     /// retried every frame, but shutdown writes it again.

@@ -163,6 +163,10 @@ fn load_saved_state(
 }
 
 impl DirectDevice {
+    pub(crate) fn is_running_from(&self, path: &std::path::Path) -> bool {
+        !matches!(self.status, DeviceStatus::Crashed(_)) && self.session.is_from_bundle(path)
+    }
+
     pub(crate) fn has_clap_presets_from(&self, path: &std::path::Path) -> bool {
         self.status == DeviceStatus::Ok && self.session.is_from_bundle(path)
     }

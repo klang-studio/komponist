@@ -655,6 +655,16 @@ impl App {
         }
     }
 
+    /// Keep the last live edit in the document before its processor is retired.
+    pub(crate) fn store_retiring_snapshot(&mut self, device: DeviceId, state: &SavedPluginState) {
+        if self.doc.in_gesture() {
+            self.end_gesture();
+        }
+        // This is the final state, even if the initial baseline request never completed.
+        self.param_undo.awaiting.remove(&device);
+        self.store_snapshot(device, state);
+    }
+
     /// A snapshot taken for the file being saved: like [`App::store_snapshot`], but a device
     /// that still holds what it came up with ([`App::device_up`]) gets that state into the
     /// document too (untracked: it is no edit), so the file has it.

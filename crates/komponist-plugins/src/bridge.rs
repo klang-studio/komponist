@@ -985,6 +985,12 @@ impl Bridge {
             .any(|pending| pending.request == request)
     }
 
+    pub(crate) fn snapshot_capture_pending(&self) -> bool {
+        self.state_requests
+            .iter()
+            .any(|pending| pending.purpose == StatePurpose::Collect && !pending.superseded)
+    }
+
     fn take_state_request(&mut self, request: u32) -> Option<StateRequest> {
         let index = self
             .state_requests
@@ -1126,6 +1132,10 @@ impl Bridge {
 
     pub(crate) fn is_loading_clap_preset(&self) -> bool {
         self.pending_clap_preset.is_some()
+    }
+
+    pub(crate) fn is_running_from(&self, bundle: &Path) -> bool {
+        self.is_running() && self.bundle == bundle
     }
 
     pub(crate) fn has_clap_presets_from(&self, bundle: &Path) -> bool {

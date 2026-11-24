@@ -646,7 +646,31 @@ fn scanned_device_metadata_and_availability_follow_the_bundle() {
         clap: vec![installed],
         vst3: Vec::new(),
     };
-    let mut host = PluginHost::new(config(&dir));
+    let config = config(&dir);
+    #[cfg(unix)]
+    let (config, probe_failure) = {
+        let mut config = config;
+        let probe_failure = dir.join("fail-probe");
+        let bridge = std::mem::replace(&mut config.bridge_exe, "/bin/sh".into());
+        config.bridge_args.splice(
+            0..0,
+            [
+                "-c".into(),
+                r#"failure="$1"; bridge="$2"; shift 2
+                if [ "$2" = "--scan" ] && [ -f "$failure" ]; then
+                    exit 1
+                fi
+                exec "$bridge" "$@"
+            "#
+                .into(),
+                "fixture-probe".into(),
+                probe_failure.as_os_str().into(),
+                bridge.into_os_string(),
+            ],
+        );
+        (config, probe_failure)
+    };
+    let mut host = PluginHost::new(config.clone());
     host.start_scan(&dirs);
     poll_until(&mut host, "fixture catalog scan", |event| {
         matches!(event, PluginManagerEvent::ScanFinished(_))
@@ -732,7 +756,47 @@ fn scanned_device_metadata_and_availability_follow_the_bundle() {
     step_until(&mut app, "installed device ready", |app| {
         app.engine().device_status(device) == DeviceStatus::Ok
     });
-    let saved = app.project().clone();
+    #[cfg(unix)]
+    {
+        let pid = app.engine().host().bridge_pid(device).unwrap();
+        std::fs::write(&probe_failure, []).unwrap();
+        // Force a descriptor refresh while leaving the bundle and its loaded instance intact.
+        std::fs::File::open(&installation)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(5)),
+            )
+            .unwrap();
+        app.engine_mut().host_mut().start_scan(&dirs);
+        step_until(&mut app, "probe failed", |app| {
+            app.device_events().iter().any(|event| {
+                matches!(
+                    event, PluginManagerEvent::ScanFinished(report) if report.skipped.len() == 1
+                )
+            })
+        });
+        let host = app.engine().host();
+        assert!(host.catalog().resolve(&plugin).is_none());
+        assert_eq!(host.status(device), DeviceStatus::Ok);
+        assert_eq!(host.bridge_pid(device), Some(pid));
+        assert!(host.missing_plugins(app.project()).is_empty());
+        assert!(app.ui().dialog.is_none());
+
+        std::fs::remove_file(probe_failure).unwrap();
+        app.engine_mut().host_mut().start_scan(&dirs);
+        step_until(&mut app, "unchanged bundle probe retried", |app| {
+            app.engine().host().catalog().resolve(&plugin).is_some()
+        });
+        assert_eq!(app.engine().host().bridge_pid(device), Some(pid));
+    }
+
+    // Send a live edit immediately before removing the bundle, without waiting for the
+    // normal debounced snapshot to put it into the project.
+    let prior = app.project().find_device(device).unwrap().2.state.clone();
+    assert!(app.engine_mut().host_mut().set_param(device, 42, 0.75));
+    assert_eq!(app.project().find_device(device).unwrap().2.state, prior);
+
     let mut removed_dirs = dirs.clone();
     if cfg!(windows) {
         // Windows may keep the loaded library open. Removing its folder from the scan
@@ -740,7 +804,7 @@ fn scanned_device_metadata_and_availability_follow_the_bundle() {
         removed_dirs.clap.clear();
     } else {
         std::fs::remove_file(&installation).unwrap();
-        let restarted = PluginHost::new(config(&dir));
+        let restarted = PluginHost::new(config);
         assert!(restarted.catalog().resolve(&plugin).is_none());
     }
     app.engine_mut().host_mut().start_scan(&removed_dirs);
@@ -753,7 +817,14 @@ fn scanned_device_metadata_and_availability_follow_the_bundle() {
         Some(Dialog::MissingPlugins(missing))
             if missing.len() == 1 && missing[0].device == device && missing[0].plugin == plugin
     ));
-    assert_eq!(app.project(), &saved);
+    let saved = app.project().clone();
+    let saved_device = saved.find_device(device).unwrap().2;
+    assert_eq!(saved_device.plugin.id, plugin.id);
+    let captured = saved_device
+        .state
+        .as_deref()
+        .expect("live state captured before retirement");
+    assert_eq!(f64::from_ne_bytes(captured[..8].try_into().unwrap()), 0.75);
 
     if !installation.exists() {
         std::fs::copy(&bundle, &installation).unwrap();
@@ -767,6 +838,7 @@ fn scanned_device_metadata_and_availability_follow_the_bundle() {
         matches!(&app.ui().dialog, Some(Dialog::MissingPlugins(missing)) if missing.is_empty())
     );
     assert_eq!(app.project(), &saved);
+    assert_eq!(app.engine().host().param_base(device, 42), Some(0.75));
     app.shutdown();
 }
 

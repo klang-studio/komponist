@@ -45,6 +45,7 @@ struct Script {
     snapshot: DeviceSnapshots,
     snapshot_unavailable: Vec<DeviceId>,
     snapshot_blocked: Vec<DeviceId>,
+    retiring_snapshots: SaveSnapshots,
     // Observed:
     created: Vec<DeviceId>,
     released: Vec<DeviceId>,
@@ -311,6 +312,14 @@ impl DeviceHost for FakeHost {
         }
     }
 
+    fn snapshot_available_states(
+        &mut self,
+        _devices: &[DeviceId],
+        _timeout: Duration,
+    ) -> SaveSnapshots {
+        std::mem::take(&mut self.script.borrow_mut().retiring_snapshots)
+    }
+
     fn shutdown(&mut self) {
         self.script.borrow_mut().shut_down = true;
     }
@@ -424,6 +433,47 @@ fn a_finished_scan_loads_the_devices_it_found() {
     assert_eq!(app.engine().device_status(vital), DeviceStatus::Missing);
     app.step();
     assert!(app.device_events().is_empty(), "events live one frame");
+}
+
+#[test]
+fn a_missing_bundle_keeps_running_until_its_state_can_be_captured() {
+    let (mut app, script) = app();
+    let surge = device(&app, "Surge XT");
+    let plugin = app.project().find_device(surge).unwrap().2.plugin.clone();
+    script.borrow_mut().found = Some(vec![super::fake_host::descriptor(
+        &plugin.id,
+        &plugin.name,
+        PluginKind::Instrument,
+        &["instrument"],
+    )]);
+    app.step();
+    assert_eq!(app.engine().device_status(surge), DeviceStatus::Ok);
+    let created = script.borrow().created.len();
+
+    for pending in [
+        SaveSnapshots {
+            unavailable: vec![surge],
+            ..Default::default()
+        },
+        SaveSnapshots {
+            blocked: vec![surge],
+            ..Default::default()
+        },
+    ] {
+        script.borrow_mut().found = Some(Vec::new());
+        script.borrow_mut().retiring_snapshots = pending;
+        app.step();
+        assert_eq!(app.engine().device_status(surge), DeviceStatus::Ok);
+        assert_eq!(script.borrow().created.len(), created);
+    }
+
+    let captured = Arc::<[u8]>::from([51]);
+    script.borrow_mut().found = Some(Vec::new());
+    script.borrow_mut().retiring_snapshots.captured = vec![(surge, Arc::clone(&captured).into())];
+    app.step();
+    assert_eq!(app.engine().device_status(surge), DeviceStatus::Missing);
+    assert_eq!(script.borrow().created.last(), Some(&surge));
+    assert_eq!(state(&app, surge), Some(captured));
 }
 
 /// Undo steps of `app` that are left, counted by undoing them all (and redoing them again).
