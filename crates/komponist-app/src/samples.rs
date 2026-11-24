@@ -314,14 +314,12 @@ impl App {
                     .any(|(slot, _)| *slot == pad)
             });
             let link = SampleLink::new(path, dir.as_deref());
-            let edited = bundled_sampler::edit_link(
-                kind,
-                &found.plugin.version,
-                state,
-                pad,
-                Some(&link),
-                relinking,
-            );
+            let ids = self
+                .engine
+                .host()
+                .native_layout(device)
+                .and_then(|layout| layout.author_ids());
+            let edited = bundled_sampler::edit_saved_link(found, pad, Some(&link), relinking, ids);
             if self.apply_bundled_sample_edit(device, edited, "undo-sample-load") {
                 self.report_sample_loaded(kind, pad, &link);
             }
@@ -376,19 +374,18 @@ impl App {
     fn apply_bundled_sample_edit(
         &mut self,
         device: DeviceId,
-        state: Option<Vec<u8>>,
+        state: Option<SavedPluginState>,
         label: &str,
     ) -> bool {
         let Some(state) = state else {
             return false;
         };
-        let state: Arc<[u8]> = state.into();
-        if !self.engine.host_mut().set_state(device, &state) {
+        if !self.engine.host_mut().restore_saved_state(device, &state) {
             let name = self.device_name(device);
             self.set_status(self.lang.status_state_load_failed(&name), StatusKind::Error);
             return false;
         }
-        self.store_param_state(device, &state, label);
+        self.store_saved_param_state(device, &state, label);
         self.forget_sampler_params(device);
         true
     }
@@ -420,17 +417,10 @@ impl App {
             return;
         };
         if bundled_sampler::kind(&found.plugin).is_some() {
-            let Some(state) = found.state.as_deref() else {
+            if found.state.is_none() {
                 return;
-            };
-            let edited = bundled_sampler::edit_link(
-                kind,
-                &found.plugin.version,
-                Some(state),
-                pad,
-                None,
-                false,
-            );
+            }
+            let edited = bundled_sampler::edit_saved_link(found, pad, None, false, None);
             self.apply_bundled_sample_edit(device, edited, "undo-sample-clear");
             return;
         }
@@ -459,7 +449,10 @@ impl App {
         }
         let state = found.state.as_deref();
         if bundled_sampler::kind(&found.plugin).is_some() {
-            let edited = state.and_then(|state| bundled_sampler::edit_slices(state, settings));
+            let edited = found.saved_state().and_then(|mut state| {
+                state.bytes = bundled_sampler::edit_slices(&state.bytes, settings)?.into();
+                Some(state)
+            });
             self.apply_bundled_sample_edit(device, edited, "undo-sample-slices");
             return;
         }

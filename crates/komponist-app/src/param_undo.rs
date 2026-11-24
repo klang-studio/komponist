@@ -447,6 +447,20 @@ impl App {
         }
     }
 
+    /// Stores an already applied edit to both the opaque state and its saved parameter bases.
+    pub(crate) fn store_saved_param_state(
+        &mut self,
+        device: DeviceId,
+        state: &SavedPluginState,
+        label: &str,
+    ) {
+        if !self.has_saved_state(device, state) {
+            let _ = self
+                .doc
+                .apply(label, |p| edits::set_saved_plugin_state(p, device, state));
+        }
+    }
+
     fn has_saved_state(&self, device: DeviceId, state: &SavedPluginState) -> bool {
         self.project()
             .find_device(device)

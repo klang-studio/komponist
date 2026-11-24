@@ -211,12 +211,12 @@ impl DirectSession {
 
     pub(crate) fn restore<T>(
         &mut self,
-        state: &[u8],
+        load: impl FnOnce(&mut dyn HostedPlugin) -> Result<(), HostingError>,
         inventory: impl FnOnce(&mut dyn HostedPlugin) -> T,
     ) -> Option<(Result<(), HostingError>, T)> {
         let requested = &self.requested;
         let restored = self.host.try_control(|plugin| {
-            let result = plugin.load_state(state);
+            let result = load(plugin);
             if result.is_ok() {
                 requested.control_epoch.fetch_add(1, Ordering::Release);
             }

@@ -658,7 +658,6 @@ impl PluginManager {
                 self.direct
                     .get(&device.id)
                     .and_then(DirectDevice::state_for_reload)
-                    .map(Into::into)
             })
             .or_else(|| device.saved_state());
         if let Some(mut old) = self.bridges.remove(&device.id) {
@@ -749,7 +748,7 @@ impl PluginManager {
                     proof,
                     device.role,
                     setup,
-                    state.map(|state| state.bytes),
+                    state,
                     self.timing.snapshot_debounce,
                 ) {
                     Ok((mut instance, mut processor)) => {
@@ -1345,7 +1344,7 @@ impl PluginManager {
             if matches!(direct.status, DeviceStatus::Crashed(_)) {
                 return false;
             }
-            if let Some(slot) = direct.set_state(state.bytes.clone()) {
+            if let Some(slot) = direct.set_state(state.clone()) {
                 self.pending
                     .push(PluginManagerEvent::WaveformMarkersEdited {
                         device,

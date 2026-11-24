@@ -1783,6 +1783,7 @@ impl Bridge {
         if let Some(message) = error {
             if self.shared.run.load(Ordering::Acquire) == RUN_LOADING
                 && self.state_restores.is_empty()
+                && restore.later_edits.is_empty()
             {
                 self.keep_stored_state = true;
                 events.push(PluginManagerEvent::Log {

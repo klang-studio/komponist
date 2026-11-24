@@ -195,6 +195,54 @@ fn reset_trim_parameters(
         })
 }
 
+fn remove_reset_trim_bases(
+    parameter_bases: &mut BTreeMap<u32, f64>,
+    kind: Internal,
+    pad: usize,
+    attaching: bool,
+    relinking: bool,
+    author_ids: Option<&BTreeMap<String, u32>>,
+) -> Option<()> {
+    if !parameter_bases.is_empty() {
+        for parameter in reset_trim_parameters(kind, pad, attaching, relinking) {
+            parameter_bases.remove(author_ids?.get(parameter.id.as_str())?);
+        }
+    }
+    Some(())
+}
+
+/// Edit a legacy embedded file link and discard only the bases replaced by the trim reset.
+pub fn edit_saved_link(
+    device: &Device,
+    pad: usize,
+    link: Option<&SampleLink>,
+    relinking: bool,
+    author_ids: Option<&BTreeMap<String, u32>>,
+) -> Option<SavedPluginState> {
+    let kind = kind(&device.plugin)?;
+    let bytes = edit_link(
+        kind,
+        &device.plugin.version,
+        device.state.as_deref(),
+        pad,
+        link,
+        relinking,
+    )?;
+    let mut parameter_bases = device.parameter_bases.clone();
+    remove_reset_trim_bases(
+        &mut parameter_bases,
+        kind,
+        pad,
+        link.is_some(),
+        relinking,
+        author_ids,
+    )?;
+    Some(SavedPluginState {
+        bytes: bytes.into(),
+        parameter_bases,
+    })
+}
+
 fn reset_region(
     wrapper: &mut Value,
     assets: Vec<u8>,
@@ -244,14 +292,14 @@ pub(crate) fn edit_native_regions(
             if pad >= pad_count(kind) {
                 return None;
             }
-            if !parameter_bases.is_empty() {
-                for parameter in
-                    reset_trim_parameters(kind, pad, change.attaching, change.relinking)
-                {
-                    let id = author_ids?.get(parameter.id.as_str())?;
-                    parameter_bases.remove(id);
-                }
-            }
+            remove_reset_trim_bases(
+                &mut parameter_bases,
+                kind,
+                pad,
+                change.attaching,
+                change.relinking,
+                author_ids,
+            )?;
             updated = reset_region(
                 wrapper,
                 updated,
@@ -408,8 +456,9 @@ mod tests {
             sidechain: None,
         };
         let ids = [("start".to_owned(), 7), ("end".to_owned(), 9)].into();
+        let link = SampleLink::new(std::path::Path::new("/samples/tone.wav"), None);
         for relinking in [false, true] {
-            let after = edit_native_regions(
+            let native = edit_native_regions(
                 &device,
                 &[crate::AssetEdit {
                     slot: 0,
@@ -419,15 +468,25 @@ mod tests {
                 Some(&ids),
             )
             .unwrap();
-            if relinking {
-                assert_eq!(after.parameter_bases, device.parameter_bases);
-            } else {
-                assert_eq!(after.parameter_bases, [(31, 0.4)].into());
-                let state = decode(&after.bytes).unwrap();
-                assert_eq!(state["params"]["start"], json!({"f32": 0.0}));
-                assert_eq!(state["params"]["end"], json!({"f32": 1.0}));
+            let embedded = edit_saved_link(&device, 0, Some(&link), relinking, Some(&ids)).unwrap();
+            for after in [native, embedded] {
+                if relinking {
+                    assert_eq!(after.parameter_bases, device.parameter_bases);
+                } else {
+                    assert_eq!(after.parameter_bases, [(31, 0.4)].into());
+                    let state = decode(&after.bytes).unwrap();
+                    assert_eq!(state["params"]["start"], json!({"f32": 0.0}));
+                    assert_eq!(state["params"]["end"], json!({"f32": 1.0}));
+                }
             }
         }
+        let linked = edit_saved_link(&device, 0, Some(&link), true, Some(&ids)).unwrap();
+        let device = Device {
+            state: Some(linked.bytes),
+            ..device
+        };
+        let cleared = edit_saved_link(&device, 0, None, false, None).unwrap();
+        assert_eq!(cleared.parameter_bases, device.parameter_bases);
     }
 
     #[test]

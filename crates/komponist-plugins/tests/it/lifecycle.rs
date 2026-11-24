@@ -1102,7 +1102,7 @@ fn watchdog_kills_a_hanging_bridge() {
 #[cfg(unix)]
 const FAKE_BRIDGE: &str = "lifecycle::fake_bridge_entry";
 
-/// What the fake bridge does at the third `Ping` (#216).
+/// How the fake bridge responds to control traffic.
 #[cfg(unix)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FakeBridge {
@@ -1110,6 +1110,8 @@ enum FakeBridge {
     StallsMidFrame,
     /// Sends a [`SLOW_LOG_LEN`]-byte `Log` message over about [`SLOW_SEND`], then the `Pong`.
     SendsSlowly,
+    /// Defers a startup restore until the parent sends a later parameter edit.
+    FailsStartupRestore,
 }
 
 #[cfg(unix)]
@@ -1118,6 +1120,7 @@ impl FakeBridge {
         match self {
             FakeBridge::StallsMidFrame => "stalls-mid-frame",
             FakeBridge::SendsSlowly => "sends-slowly",
+            FakeBridge::FailsStartupRestore => "fails-startup-restore",
         }
     }
 }
@@ -1134,13 +1137,15 @@ const SLOW_SEND: Duration = Duration::from_millis(2000);
 /// A fake bridge (#216): this test binary, started by the plugin manager as `<test>
 /// lifecycle::fake_bridge_entry --exact … -- <marker> <mode> --instance --control-fd N` (libtest
 /// takes everything after `--` as name filters, so only this test runs). It plays the start-up
-/// protocol and answers two `Ping`s; at the third it does what [`FakeBridge`] `<mode>` says and
-/// creates the file `<marker>` once that is done (the parent's proof). In an ordinary test run
-/// it does nothing.
+/// protocol and then follows the selected [`FakeBridge`] mode. In an ordinary test run it does
+/// nothing.
 #[cfg(unix)]
 #[test]
 fn fake_bridge_entry() {
-    use komponist_ipc::{BridgeChannel, BridgeMsg, ControlMsg, LoadedInfo, PluginDescriptor};
+    use komponist_ipc::control::{ParamValue, StateRestoreError, param_flags};
+    use komponist_ipc::{
+        BridgeChannel, BridgeMsg, ControlMsg, LoadedInfo, ParamInfo, PluginDescriptor,
+    };
     use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 
     let args: Vec<String> = std::env::args().collect();
@@ -1149,10 +1154,14 @@ fn fake_bridge_entry() {
     };
     let fd: i32 = args[at + 1].parse().expect("fd number");
     let marker = std::path::PathBuf::from(&args[at - 3]);
-    let mode = [FakeBridge::StallsMidFrame, FakeBridge::SendsSlowly]
-        .into_iter()
-        .find(|mode| mode.arg() == args[at - 2])
-        .expect("fake bridge mode");
+    let mode = [
+        FakeBridge::StallsMidFrame,
+        FakeBridge::SendsSlowly,
+        FakeBridge::FailsStartupRestore,
+    ]
+    .into_iter()
+    .find(|mode| mode.arg() == args[at - 2])
+    .expect("fake bridge mode");
     // SAFETY: the plugin manager made this inherited fd ours, and nothing else owns it.
     let channel = BridgeChannel::from_fd(unsafe { OwnedFd::from_raw_fd(fd) });
     let send = |msg: BridgeMsg| {
@@ -1177,6 +1186,9 @@ fn fake_bridge_entry() {
         std::process::exit(0);
     };
     let mut pings = 0;
+    let mut activated = false;
+    let mut pending_restore = None;
+    let mut ready_for_edit = false;
     loop {
         match channel.recv() {
             Ok(ControlMsg::Load { bundle, .. }) => send(BridgeMsg::Loaded(Box::new(LoadedInfo {
@@ -1192,14 +1204,54 @@ fn fake_bridge_entry() {
                     bundle,
                     sidechain: false,
                 },
-                params: Vec::new(),
+                params: if mode == FakeBridge::FailsStartupRestore {
+                    vec![ParamInfo {
+                        id: 7,
+                        name: "Gain".into(),
+                        module: String::new(),
+                        min: 0.0,
+                        max: 1.0,
+                        default: 0.5,
+                        step_count: 0,
+                        flags: param_flags::AUTOMATABLE,
+                    }]
+                } else {
+                    Vec::new()
+                },
                 values: Vec::new(),
                 latency: 0,
                 note_names: Vec::new(),
                 has_gui: false,
                 native_layout: None,
             }))),
-            Ok(ControlMsg::Activate { .. }) => send(BridgeMsg::Activated { latency: 0 }),
+            Ok(ControlMsg::Activate { .. }) => {
+                send(BridgeMsg::Activated { latency: 0 });
+                activated = true;
+            }
+            Ok(ControlMsg::SetState { request, .. }) => pending_restore = Some(request),
+            Ok(ControlMsg::SetParam { .. }) if ready_for_edit => {
+                if let Some(request) = pending_restore.take() {
+                    send(BridgeMsg::StateApplied {
+                        request,
+                        result: Err(StateRestoreError {
+                            message: "rejected the startup state".into(),
+                            changed_values: Vec::new(),
+                        }),
+                    });
+                }
+            }
+            Ok(ControlMsg::GetStateChecked {
+                request, expected, ..
+            }) if ready_for_edit => {
+                send(BridgeMsg::State {
+                    request,
+                    state: b"later edit".to_vec(),
+                    verified: expected
+                        .into_iter()
+                        .map(|(id, value, _)| (id, value))
+                        .collect(),
+                });
+            }
             Ok(ControlMsg::Ping { seq }) => {
                 pings += 1;
                 if pings == 3 && mode == FakeBridge::StallsMidFrame {
@@ -1238,7 +1290,52 @@ fn fake_bridge_entry() {
             Ok(_) => {}
             Err(_) => std::process::exit(0),
         }
+        if mode == FakeBridge::FailsStartupRestore
+            && activated
+            && pending_restore.is_some()
+            && !ready_for_edit
+        {
+            ready_for_edit = true;
+            send(BridgeMsg::ParamValues(vec![ParamValue {
+                id: 7,
+                value: 0.5,
+                text: "restore pending".into(),
+            }]));
+        }
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn later_edit_remains_saveable_after_failed_startup_restore() {
+    let dir = scratch("failed-startup-restore");
+    let Some((manager, _)) = fake_bridge_manager(&dir, FakeBridge::FailsStartupRestore) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(
+        10,
+        DeviceRole::Instrument,
+        clap_plugin(SYNTH),
+        Some(b"startup state"),
+    );
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    run_until(&mut rig, "activated with a restore pending", |rig| {
+        rig.manager
+            .param_value(device_id, 7)
+            .is_some_and(|param| param.text == "restore pending")
+    });
+    assert_eq!(rig.manager.status(device_id), DeviceStatus::Loading);
+    rig.manager.set_param(device_id, 7, 0.625);
+    rig.wait_status(10, DeviceStatus::Ok);
+    assert_eq!(rig.manager.state_warning(device_id), None);
+    assert_eq!(rig.manager.param_base(device_id, 7), Some(0.625));
+    let snapshot = rig.manager.snapshot_for_save(PATIENCE);
+    assert!(snapshot.blocked.is_empty());
+    assert_eq!(
+        snapshot.captured,
+        [(device_id, Arc::<[u8]>::from(&b"later edit"[..]).into())]
+    );
 }
 
 /// The bytes `Channel::send` writes for `msg`, captured through a socket pair of its own (so the
