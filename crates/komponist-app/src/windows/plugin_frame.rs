@@ -444,7 +444,14 @@ impl App {
             .iter()
             .flat_map(|t| t.channel.devices.iter())
             .chain(project.master.devices.iter())
-            .find(|d| d.plugin.name == name)
+            .find(|d| {
+                d.plugin.name == name
+                    || crate::views::catalog_plugin_name(
+                        self.lang,
+                        self.engine.host().catalog(),
+                        &d.plugin,
+                    ) == name
+            })
             .map(|d| d.id);
         match device {
             Some(device) => {
@@ -1640,7 +1647,11 @@ impl App {
                     ChannelRef::Master => self.lang.dialog_master(),
                 };
                 (
-                    crate::views::plugin_name(self.lang, &d.plugin),
+                    crate::views::catalog_plugin_name(
+                        self.lang,
+                        self.engine.host().catalog(),
+                        &d.plugin,
+                    ),
                     format!(
                         "{track} · {}",
                         crate::dialogs::missing_plugins::format_label(self.lang, d.plugin.format)
@@ -1742,7 +1753,11 @@ impl App {
         self.project()
             .find_device(device)
             .map_or_else(String::new, |(_, _, d)| {
-                crate::views::plugin_name(self.lang, &d.plugin)
+                crate::views::catalog_plugin_name(
+                    self.lang,
+                    self.engine.host().catalog(),
+                    &d.plugin,
+                )
             })
     }
 

@@ -585,7 +585,7 @@ impl App {
                     DeviceStatus::Crashed(FailReason::Unresponsive) => DeviceState::Unresponsive,
                 };
                 rows.push(DeviceRow {
-                    name: d.plugin.name.clone(),
+                    name: self.device_name(d.id),
                     track: track.to_owned(),
                     state,
                 });
@@ -1099,10 +1099,7 @@ impl App {
             else {
                 continue;
             };
-            let name = self.project().find_device(device).map_or_else(
-                || self.lang.status_device_unnamed(device.0),
-                |(_, _, d)| d.plugin.name.clone(),
-            );
+            let name = self.device_name(device);
             if !names.contains(&name) {
                 names.push(name);
             }

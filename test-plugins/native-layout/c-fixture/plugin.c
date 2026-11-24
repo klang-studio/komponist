@@ -48,6 +48,7 @@ static const char *const features[] = {CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
      .id = FIXTURE_ID suffix,                                                                      \
      .name = "Layout Fixture (" suffix ")",                                                        \
      .vendor = "klang-studio",                                                                     \
+     .description = "Standalone stereo CLAP fixture.",                                             \
      .version = "1.0.0",                                                                           \
      .features = features}
 

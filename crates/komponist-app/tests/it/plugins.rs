@@ -624,6 +624,153 @@ fn standalone_clap_preset_round_trips_through_catalog_browser_and_bridge() {
 }
 
 #[test]
+fn scanned_device_metadata_and_availability_follow_the_bundle() {
+    use komponist_app::settings::Favorites;
+    use komponist_app::ui_state::{BrowserSegment, Dialog};
+    use komponist_app::views::browser::model::{self, Input, RowKind};
+    use komponist_i18n::Lang;
+    use komponist_model::ChannelRef;
+    use komponist_model::edits::{NewDevice, NewTrack, add_track, insert_device};
+    use std::collections::BTreeSet;
+
+    let Some(bundle) = std::env::var_os("KOMPONIST_LAYOUT_FIXTURE") else {
+        eprintln!("set KOMPONIST_LAYOUT_FIXTURE to the standalone C CLAP fixture");
+        return;
+    };
+    let dir = scratch("catalog-device-identity");
+    let installed = dir.join("installed");
+    let installation = installed.join("layout-fixture.clap");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::copy(&bundle, &installation).unwrap();
+    let dirs = PluginDirs {
+        clap: vec![installed],
+        vst3: Vec::new(),
+    };
+    let mut host = PluginHost::new(config(&dir));
+    host.start_scan(&dirs);
+    poll_until(&mut host, "fixture catalog scan", |event| {
+        matches!(event, PluginManagerEvent::ScanFinished(_))
+    });
+
+    let catalog = host.catalog();
+    let id = "org.klang-studio.komponist.layout-fixture.version-two";
+    let entry = catalog.resolve(&clap_plugin(id)).unwrap();
+    assert_eq!(entry.plugin.vendor, "klang-studio");
+    assert!(
+        entry
+            .features
+            .iter()
+            .any(|feature| feature == "audio-effect")
+    );
+    let fallback = catalog
+        .resolve(&clap_plugin(
+            "org.klang-studio.komponist.layout-fixture.missing",
+        ))
+        .unwrap();
+    assert_eq!(fallback.display_name("de"), "Layout Fixture (missing)");
+    assert_eq!(
+        fallback.description("de"),
+        Some("Standalone stereo CLAP fixture.")
+    );
+    let mut plugin = entry.plugin.clone();
+    plugin.name = "Saved fixture name".into();
+    let (project, track) = add_track(
+        &Project::new("Catalog identity"),
+        NewTrack {
+            name: None,
+            hue: None,
+            instrument: None,
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let (project, device) = insert_device(
+        &project,
+        ChannelRef::Track(track),
+        0,
+        NewDevice {
+            plugin: plugin.clone(),
+            role: DeviceRole::Effect,
+            state: None,
+            sidechain: None,
+        },
+    )
+    .unwrap();
+
+    for (lang, name, description) in [
+        (Lang::De, "Layout-Testgerät", "Prüft die native Anzeige."),
+        (Lang::En, "Layout Fixture", "Exercises the native display."),
+    ] {
+        assert_eq!(
+            komponist_app::views::catalog_plugin_name(lang, catalog, &plugin),
+            name,
+        );
+        let input = Input {
+            catalog,
+            favorites: &Favorites::default(),
+            segment: BrowserSegment::Effects,
+            query: description,
+            collapsed: &BTreeSet::new(),
+            project: &project,
+            exports: &[],
+        };
+        for rows in [
+            model::rows(lang, &input),
+            model::picker_rows(lang, &input, false),
+        ] {
+            let row = rows
+                .iter()
+                .find(|row| matches!(&row.kind, RowKind::Plugin { plugin, .. } if plugin.id == id))
+                .unwrap();
+            assert_eq!(row.name, name);
+            assert_eq!(row.description.as_deref(), Some(description));
+        }
+    }
+
+    let mut app = app_with(project, host);
+    step_until(&mut app, "installed device ready", |app| {
+        app.engine().device_status(device) == DeviceStatus::Ok
+    });
+    let saved = app.project().clone();
+    let mut removed_dirs = dirs.clone();
+    if cfg!(windows) {
+        // Windows may keep the loaded library open. Removing its folder from the scan
+        // exercises the same catalog transition while the bridge remains live.
+        removed_dirs.clap.clear();
+    } else {
+        std::fs::remove_file(&installation).unwrap();
+        let restarted = PluginHost::new(config(&dir));
+        assert!(restarted.catalog().resolve(&plugin).is_none());
+    }
+    app.engine_mut().host_mut().start_scan(&removed_dirs);
+    step_until(&mut app, "removed device missing", |app| {
+        app.engine().device_status(device) == DeviceStatus::Missing
+    });
+    assert!(app.engine().host().catalog().resolve(&plugin).is_none());
+    assert!(matches!(
+        &app.ui().dialog,
+        Some(Dialog::MissingPlugins(missing))
+            if missing.len() == 1 && missing[0].device == device && missing[0].plugin == plugin
+    ));
+    assert_eq!(app.project(), &saved);
+
+    if !installation.exists() {
+        std::fs::copy(&bundle, &installation).unwrap();
+    }
+    app.engine_mut().host_mut().start_scan(&dirs);
+    step_until(&mut app, "reinstalled device ready", |app| {
+        app.engine().device_status(device) == DeviceStatus::Ok
+    });
+    assert!(app.engine().host().catalog().resolve(&plugin).is_some());
+    assert!(
+        matches!(&app.ui().dialog, Some(Dialog::MissingPlugins(missing)) if missing.is_empty())
+    );
+    assert_eq!(app.project(), &saved);
+    app.shutdown();
+}
+
+#[test]
 fn native_layout_is_discovered_edited_saved_and_revalidated() {
     use egui_kittest::kittest::Queryable as _;
     use komponist_app::actions::{EditAction, UiAction};

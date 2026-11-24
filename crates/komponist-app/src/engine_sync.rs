@@ -683,6 +683,8 @@ impl EngineSync {
                 self.host
                     .set_automated_params(&Self::automated_parameters(program, project));
             }
+        } else if self.host.status(device) == DeviceStatus::Missing {
+            self.send(Command::RemoveProcessor { slot });
         }
     }
 

@@ -214,7 +214,7 @@ fn inserts(lang: Lang, channel: &Channel, host: &dyn DeviceHost) -> Vec<Insert> 
         .iter()
         .map(|d: &std::sync::Arc<Device>| Insert {
             device: d.id,
-            name: crate::views::plugin_name(lang, &d.plugin),
+            name: crate::views::catalog_plugin_name(lang, host.catalog(), &d.plugin),
             instrument: d.role == DeviceRole::Instrument,
             midi: d.role == DeviceRole::MidiEffect,
             bypass: d.bypass,
@@ -254,7 +254,7 @@ pub fn strips(
             .to_owned()
         } else {
             ch.instrument()
-                .map(|(_, d)| crate::views::plugin_name(lang, &d.plugin))
+                .map(|(_, d)| crate::views::catalog_plugin_name(lang, host.catalog(), &d.plugin))
                 .unwrap_or_default()
         };
         Strip {

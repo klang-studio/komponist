@@ -24,7 +24,7 @@ use komponist_plugins::{Catalog, CatalogEntry, EffectCategory, packaged_kind};
 use crate::actions::{Action, DropTarget, EditAction, PluginAction, UiAction};
 use crate::settings::Favorites;
 use crate::ui_state::{BrowserSegment, DockTab};
-use crate::views::{catalog_plugin_tag, plugin_name};
+use crate::views::catalog_plugin_tag;
 
 /// Hint in the search field while it has text (`searchHint`): a key name.
 pub const SEARCH_CLEAR: &str = "Esc";
@@ -277,20 +277,12 @@ fn plugin_row(lang: Lang, input: &Input<'_>, entry: &CatalogEntry, level: u8) ->
         catalog_plugin_tag(lang, &entry.plugin),
         level,
     );
-    row.description = entry
-        .localized
-        .as_ref()
-        .and_then(|metadata| metadata.description(lang.code()))
-        .map(str::to_owned);
+    row.description = entry.description(lang.code()).map(str::to_owned);
     row
 }
 
 fn entry_name(lang: Lang, entry: &CatalogEntry) -> String {
-    entry
-        .localized
-        .as_ref()
-        .and_then(|metadata| metadata.name(lang.code()))
-        .map_or_else(|| plugin_name(lang, &entry.plugin), str::to_owned)
+    entry.display_name(lang.code()).to_owned()
 }
 
 fn folder(input: &Input<'_>, key: String, label: &str, count: usize, rows: &mut Vec<Row>) -> bool {
@@ -699,10 +691,9 @@ pub fn picker_rows(lang: Lang, input: &Input<'_>, effects_only: bool) -> Vec<Row
 
 /// The instruments of the catalog for the new-track dialog: the plugin rows of [`picker_rows`]
 /// that are instruments (so the search is the browser's), each plugin once, no section headers.
-pub fn instrument_rows(input: &Input<'_>) -> Vec<Row> {
+pub fn instrument_rows(lang: Lang, input: &Input<'_>) -> Vec<Row> {
     let mut seen: Vec<PluginRef> = Vec::new();
-    // Only the plugin rows are kept: no text of the result depends on the language.
-    picker_rows(Lang::default(), input, false)
+    picker_rows(lang, input, false)
         .into_iter()
         .filter(|r| {
             let RowKind::Plugin { plugin, kind, .. } = &r.kind else {

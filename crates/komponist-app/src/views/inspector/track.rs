@@ -240,13 +240,13 @@ fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
     });
     let mut labels: Vec<String> = plugins
         .iter()
-        .map(|p| crate::views::plugin_name(t, p))
+        .map(|p| crate::views::catalog_plugin_name(t, catalog, p))
         .collect();
     let mut enabled = vec![true; labels.len()];
     let mut selected = match (selected_entry, &current) {
         (Some(i), _) => i,
         (None, Some(c)) => {
-            labels.insert(0, crate::views::plugin_name(t, c));
+            labels.insert(0, crate::views::catalog_plugin_name(t, catalog, c));
             plugins.insert(0, c.clone());
             enabled.insert(0, false);
             0

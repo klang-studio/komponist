@@ -87,6 +87,55 @@ fn snapshot_next_to_s01() {
     results.unwrap();
 }
 
+#[test]
+fn scanned_device_names_in_browser_and_instrument_picker_in_both_languages() {
+    use komponist_ipc::PluginKind;
+    use komponist_ipc::native_layout::LocalizedPlugin;
+    use komponist_model::Project;
+    use komponist_plugins::Catalog;
+
+    let mut descriptor = fake_host::descriptor(
+        "org.example.synth",
+        "Catalog descriptor original",
+        PluginKind::Instrument,
+        &["instrument", "synthesizer"],
+    );
+    descriptor.localized = Some(LocalizedPlugin {
+        default_locale: "en".into(),
+        names: [
+            ("en".into(), "Catalog Synth".into()),
+            ("de".into(), "Katalog-Synthesizer".into()),
+        ]
+        .into(),
+        descriptions: Default::default(),
+    });
+    let mut catalog = Catalog::default();
+    catalog.set_scanned(&[descriptor]);
+    let mut results = SnapshotResults::new();
+    for (lang, name) in [
+        (Lang::De, "Katalog-Synthesizer"),
+        (Lang::En, "Catalog Synth"),
+    ] {
+        let app = App::headless(Project::new("Catalog"))
+            .with_lang(lang)
+            .with_device_host(Box::new(FakeHost::new().with_catalog(catalog.clone())));
+        let mut h = harness(app);
+        h.get_by_role_and_label(Role::ListItem, name);
+        let cpu = h
+            .get_by_role_and_label(Role::Status, lang.transport_cpu())
+            .rect();
+        h.state_mut()
+            .dispatch(Action::Ui(UiAction::OpenNewTrackDialog));
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::ListBoxOption, name);
+        assert!(h.query_by_label("Catalog descriptor original").is_none());
+        h.mask(cpu.expand(2.0));
+        h.snapshot(format!("scanned-device-picker-{}-1x", lang.code()));
+        results.extend_harness(&mut h);
+    }
+    results.unwrap();
+}
+
 // ------------------------------------------------------------------------------------------------
 // Pointer and key helpers
 

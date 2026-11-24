@@ -471,6 +471,7 @@ impl crate::App {
                     self.lang,
                     self.project(),
                     self.project_dir().as_deref(),
+                    self.engine.host().catalog(),
                 );
                 if missing.is_empty() && samples.is_empty() && audio.is_empty() && assets.is_empty()
                 {
@@ -547,11 +548,21 @@ impl crate::App {
             }
             Some(Overlay::NewTrack(state)) => {
                 let catalog = self.engine.host().catalog();
+                let instrument = state
+                    .instrument
+                    .as_ref()
+                    .and_then(|plugin| catalog.resolve(plugin))
+                    .filter(|entry| entry.kind == komponist_ipc::PluginKind::Instrument)
+                    .map(|entry| &entry.plugin);
+                if state.instrument.as_ref() != instrument {
+                    state.instrument = instrument.cloned();
+                }
                 let favorites = &self.ui.browser.favorites;
                 let project = self.doc.project();
                 let instruments = |query: &str| {
                     let no_exports: [String; 0] = [];
                     crate::views::browser::model::instrument_rows(
+                        self.lang,
                         &crate::views::browser::model::Input {
                             catalog,
                             favorites,

@@ -984,8 +984,8 @@ impl App {
                 self.set_status(text, StatusKind::Error);
             }
             PluginManagerEvent::ScanFinished(_) => {
-                self.load_found_devices();
-                if self.dialogs.missing_check {
+                let newly_missing = self.sync_catalog_devices();
+                if self.dialogs.missing_check || newly_missing {
                     self.check_missing_plugins();
                 }
             }
@@ -1035,31 +1035,41 @@ impl App {
         self.release_keyboard_notes_if(|id| after.track(id).is_none());
     }
 
-    /// After a scan: devices that were missing and whose plugin is now in the catalog get a
-    /// processor (into the slot they already have).
-    fn load_found_devices(&mut self) {
+    /// Apply changes in catalog availability without replacing the project's saved devices.
+    fn sync_catalog_devices(&mut self) -> bool {
         let project = Arc::clone(self.doc.project());
         let host = self.engine.host();
-        let found: Vec<DeviceId> = project
+        let changes: Vec<_> = project
             .tracks
             .iter()
             .flat_map(|t| t.channel.devices.iter())
             .chain(project.master.devices.iter())
-            .filter(|d| host.status(d.id) == DeviceStatus::Missing)
-            .filter(|d| host.catalog().resolve(&d.plugin).is_some())
-            .map(|d| d.id)
+            .filter_map(|device| {
+                let available = host.catalog().resolve(&device.plugin).is_some();
+                let missing = host.status(device.id) == DeviceStatus::Missing;
+                (available == missing).then_some((device.id, available))
+            })
             .collect();
-        for device in found {
+        for &(device, _) in &changes {
             self.engine.reload_device(&project, device);
         }
+        if let Some(crate::ui_state::Dialog::MissingPlugins(missing)) = &mut self.ui.dialog {
+            *missing = self.engine.host().missing_plugins(&project);
+        }
+        changes.iter().any(|&(_, available)| !available)
     }
 
     /// The plugin name of `device` for messages ("Surge XT"), its id if it is gone.
     pub(crate) fn device_name(&self, device: DeviceId) -> String {
         self.project().find_device(device).map_or_else(
             || self.lang.status_device_unnamed(device.0),
-            // A built-in device shows its name in the UI language ("Hall" is "Reverb").
-            |(_, _, d)| crate::views::plugin_name(self.lang, &d.plugin),
+            |(_, _, d)| {
+                crate::views::catalog_plugin_name(
+                    self.lang,
+                    self.engine.host().catalog(),
+                    &d.plugin,
+                )
+            },
         )
     }
 
@@ -1969,11 +1979,16 @@ impl App {
         if self.ui.dialog.is_some() || self.dialogs.overlay.is_some() {
             return;
         }
-        let instrument = self
-            .dialogs
-            .last_instrument
-            .clone()
-            .unwrap_or_else(|| self.default_hexa());
+        let catalog = self.engine.host().catalog();
+        let instrument = match &self.dialogs.last_instrument {
+            Some(None) => None,
+            Some(Some(last)) => catalog
+                .resolve(last)
+                .filter(|entry| entry.kind == komponist_ipc::PluginKind::Instrument)
+                .map(|entry| entry.plugin.clone())
+                .or_else(|| self.default_hexa()),
+            None => self.default_hexa(),
+        };
         let mut state = crate::dialogs::new_track::State::new(instrument);
         state.choose_default_input(self.project(), &self.engine);
         self.open_overlay(crate::dialogs::Overlay::NewTrack(state));

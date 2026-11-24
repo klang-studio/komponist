@@ -787,6 +787,7 @@ impl App {
             self.lang,
             self.project(),
             self.project_dir().as_deref(),
+            self.engine.host().catalog(),
         );
         if missing.is_empty() && samples == 0 && audio.is_empty() && assets.is_empty() {
             let text = match &repaired {

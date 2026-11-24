@@ -1390,7 +1390,7 @@ fn the_window_list_names_the_open_windows_in_project_order() {
         label: label.to_owned(),
     };
     assert_eq!(
-        window_list::entries(Lang::De, &project, &windows),
+        window_list::entries(Lang::De, &project, &windows, &Catalog::builtin()),
         vec![
             entry(hexa, "Hexa · Bass"),
             entry(eq, "LSP Para EQ x8 · Bass"),
@@ -1398,9 +1398,9 @@ fn the_window_list_names_the_open_windows_in_project_order() {
             entry(DeviceId(9_000), "Surge XT · Master"),
         ]
     );
-    let en = window_list::entries(Lang::En, &project, &windows);
+    let en = window_list::entries(Lang::En, &project, &windows, &Catalog::builtin());
     assert_eq!(en[0].label, "Hexa · Bass");
-    assert!(window_list::entries(Lang::De, &project, &[]).is_empty());
+    assert!(window_list::entries(Lang::De, &project, &[], &Catalog::builtin()).is_empty());
 }
 
 #[test]

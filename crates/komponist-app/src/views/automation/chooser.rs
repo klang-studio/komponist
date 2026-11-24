@@ -267,7 +267,11 @@ impl<'a> Catalog<'a> {
                     .iter()
                     .find(|d| d.id == *device)
                     .ok_or_else(|| Some(lang.automation_not_on_track().to_owned()))?;
-                let name = catalog_plugin_name(lang, self.engine.host().catalog(), &device.plugin);
+                let catalog = self.engine.host().catalog();
+                let name = catalog_plugin_name(lang, catalog, &device.plugin);
+                if catalog.resolve(&device.plugin).is_none() {
+                    return Err(Some(lang.arrangement_plugin_missing(&name)));
+                }
                 match self.engine.device_status(device.id) {
                     DeviceStatus::Missing | DeviceStatus::Crashed(_) => {
                         return Err(Some(lang.arrangement_plugin_missing(&name)));
@@ -351,8 +355,12 @@ impl<'a> Catalog<'a> {
                 .collect();
             sections.push((lang.macros_title().to_owned(), targets));
         }
+        let host = self.engine.host();
         for device in self.channel.devices.iter() {
-            let name = catalog_plugin_name(lang, self.engine.host().catalog(), &device.plugin);
+            let Some(entry) = host.catalog().resolve(&device.plugin) else {
+                continue;
+            };
+            let name = entry.display_name(lang.code()).to_owned();
             let mut targets = self.device_targets(device, &name);
             if let Some(infos) = self.engine.host().params(device.id) {
                 let modules: HashMap<_, _> = infos

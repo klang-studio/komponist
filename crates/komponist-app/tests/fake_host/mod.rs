@@ -161,6 +161,12 @@ impl FakeHost {
         }
     }
 
+    /// Use the given installed catalog, including its scanned presentation metadata.
+    pub fn with_catalog(mut self, catalog: Catalog) -> Self {
+        self.catalog = catalog;
+        self
+    }
+
     /// `device` reports `status`.
     pub fn status(self, device: DeviceId, status: DeviceStatus) -> FakeHost {
         self.statuses.lock().unwrap().insert(device, status);

@@ -210,6 +210,7 @@ fn both_samplers_play_assets_after_the_project_moves() {
             komponist_i18n::Lang::De,
             app.project(),
             Some(&destination),
+            app.engine().host().catalog(),
         )
     };
     let external = missing_assets(app);

@@ -480,11 +480,12 @@ impl PluginManager {
                 })
         };
         descriptors.retain(|descriptor| {
-            !self
-                .private_clap_dir
-                .as_ref()
-                .is_some_and(|path| descriptor.bundle.starts_with(path))
-                || shipped(descriptor)
+            descriptor.bundle.exists()
+                && (!self
+                    .private_clap_dir
+                    .as_ref()
+                    .is_some_and(|path| descriptor.bundle.starts_with(path))
+                    || shipped(descriptor))
         });
         for descriptor in &mut descriptors {
             if shipped(descriptor)
