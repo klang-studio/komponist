@@ -265,14 +265,16 @@ impl Card {
             .find(|p| p.info.id == *id || (self.bundled_editor && id.plugin_id() == Some(p.wire)))
     }
 
+    pub(super) fn native_page(&self) -> Option<&komponist_ipc::native_layout::Page> {
+        let pages = &self.native_layout.as_ref()?.pages;
+        pages.get(self.page).or_else(|| pages.last())
+    }
+
     pub(super) fn native_cell(
         &self,
         cell: &layout::Cell,
     ) -> Option<&komponist_ipc::native_layout::Cell> {
-        let layout = self.native_layout.as_ref()?;
-        let page = layout
-            .pages
-            .get(self.page.min(layout.pages.len().saturating_sub(1)))?;
+        let page = self.native_page()?;
         let half = cell.half.map(|half| match half {
             layout::Half::Top => komponist_ipc::native_layout::Half::Top,
             layout::Half::Bottom => komponist_ipc::native_layout::Half::Bottom,
@@ -1317,6 +1319,35 @@ mod tests {
         assert_eq!(cards[1].open_label(Lang::De), None);
         assert!(cards[2].bypass);
         assert_eq!(first_effect_slot(&cards), 1);
+    }
+
+    #[test]
+    fn native_metadata_uses_the_same_page_as_the_card_grid() {
+        let project = demo_project();
+        let host = BuiltinHost::new();
+        let mut card = cards(Lang::En, &project.tracks[2], &host, &[]).remove(0);
+        let native = komponist_ipc::native_layout::NativeLayout::parse(include_bytes!(
+            "../../../../../docs/clap-device-layout/example-v2.json"
+        ))
+        .unwrap();
+        card.layout = native_card_layout(&native, Lang::En);
+        card.native_layout = Some(std::sync::Arc::new(native));
+
+        for (index, title, key) in [
+            (0, "Graphs", "graphs"),
+            (1, "Display", "display"),
+            (2, "Display", "display"),
+        ] {
+            card.page = index;
+            let current = card.current_page().unwrap();
+            let native = card.native_page().unwrap();
+            assert_eq!(current.name, title);
+            assert_eq!(native.key, key);
+            assert!(std::ptr::eq(
+                card.native_cell(&current.cells[0]).unwrap(),
+                &native.cells[0],
+            ));
+        }
     }
 
     #[test]

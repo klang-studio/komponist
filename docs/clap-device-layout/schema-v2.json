@@ -449,8 +449,7 @@
           "minimum": 2,
           "maximum": 16
         }
-      },
-      "allOf": []
+      }
     },
     "graph_cell": {
       "type": "object",
