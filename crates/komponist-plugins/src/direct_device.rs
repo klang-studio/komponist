@@ -238,6 +238,7 @@ impl DirectDevice {
         events: &mut Vec<PluginManagerEvent>,
     ) {
         self.session.stop_after_failed_restore();
+        self.fail_preset_capture(device, message, events);
         self.status = DeviceStatus::Crashed(FailReason::LoadFailed(message.into()));
         events.push(PluginManagerEvent::StatusChanged {
             device,
@@ -433,12 +434,7 @@ impl DirectDevice {
                         message: message.clone(),
                     });
                 }
-                if std::mem::take(&mut self.capture_preset) {
-                    events.push(PluginManagerEvent::ClapPresetCaptured {
-                        device: id,
-                        result: Err(message.clone()),
-                    });
-                }
+                self.fail_preset_capture(id, &message, events);
                 self.status = DeviceStatus::Crashed(FailReason::LoadFailed(message));
                 events.push(PluginManagerEvent::StatusChanged {
                     device: id,
@@ -523,6 +519,20 @@ impl DirectDevice {
         if observed.has(notification_bits::STATE_DIRTY) {
             self.user_edit = true;
             self.snapshot_due = Some(Instant::now() + self.debounce);
+        }
+    }
+
+    fn fail_preset_capture(
+        &mut self,
+        device: DeviceId,
+        message: &str,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        if std::mem::take(&mut self.capture_preset) {
+            events.push(PluginManagerEvent::ClapPresetCaptured {
+                device,
+                result: Err(message.into()),
+            });
         }
     }
 
@@ -663,10 +673,24 @@ impl DirectDevice {
         self.session.retired()
     }
 
+    fn param_edit_value(&self, id: u32, value: f64) -> Option<f64> {
+        (value.is_finite() && self.base.contains_key(&id)).then(|| {
+            self.params
+                .iter()
+                .find(|param| param.id == id && param.step_count != 0)
+                .map_or(value, |param| crate::params::param_info(param).snap(value))
+        })
+    }
+
     pub(crate) fn edited_param(&mut self, id: u32, value: f64) -> bool {
-        if !value.is_finite() || !self.base.contains_key(&id) {
+        let Some(value) = self.param_edit_value(id, value) else {
             return false;
-        }
+        };
+        self.record_param_edit(id, value);
+        true
+    }
+
+    fn record_param_edit(&mut self, id: u32, value: f64) {
         self.preview_param(id, value);
         if !self.macro_params.contains_key(&id) {
             if self.pending_restore.is_some() {
@@ -679,7 +703,6 @@ impl DirectDevice {
             self.user_edit = true;
             self.snapshot_due = Some(Instant::now() + self.debounce);
         }
-        true
     }
 
     pub(crate) fn preview_param(&mut self, id: u32, value: f64) {
@@ -691,15 +714,15 @@ impl DirectDevice {
         }
     }
 
-    pub(crate) fn set_param(&mut self, id: u32, value: f64) {
-        if self.pending_preset.is_some() {
-            if value.is_finite() && self.base.contains_key(&id) {
-                self.preview_param(id, value);
-                self.after_preset_writes.insert(id, value);
-            }
+    pub(crate) fn set_param(&mut self, id: u32, requested: f64) {
+        let Some(value) = self.param_edit_value(id, requested) else {
             return;
-        }
-        if self.edited_param(id, value) {
+        };
+        if self.pending_preset.is_some() {
+            self.preview_param(id, value);
+            self.after_preset_writes.insert(id, requested);
+        } else {
+            self.record_param_edit(id, value);
             self.pending_writes.insert(id, value);
         }
     }

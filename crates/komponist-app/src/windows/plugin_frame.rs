@@ -91,6 +91,7 @@ use egui::{
 };
 use komponist_i18n::Lang;
 use komponist_ipc::GuiTarget;
+use komponist_ipc::clap_presets::ClapPresetSource;
 use komponist_ipc::frame::{FrameKeyEvent, FrameRect};
 use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{ChannelRef, Device, DeviceId, PluginFormat};
@@ -235,10 +236,10 @@ struct Frame {
     /// The state the preset match belongs to (`None`: not seen yet).
     state_seen: Option<Option<Arc<[u8]>>>,
     /// The preset matching the state, or the last successfully applied selection.
-    preset: Option<usize>,
+    preset: Option<ClapPresetSource>,
     preset_changed: bool,
-    requested_preset: Option<usize>,
-    queued_preset: Option<usize>,
+    requested_preset: Option<ClapPresetSource>,
+    queued_preset: Option<ClapPresetSource>,
 }
 
 /// Shared between the root pass and the frame viewport's callback.
@@ -745,20 +746,31 @@ impl App {
                     }
                 }
                 HeaderEvent::PresetPrev | HeaderEvent::PresetNext => {
-                    let n = self
-                        .project()
-                        .find_device(device)
-                        .map_or(0, |(_, _, device)| {
-                            self.engine.host().clap_presets(device).len()
-                        });
+                    let Some((_, _, target)) = self.project().find_device(device) else {
+                        return;
+                    };
+                    let entries = self.engine.host().clap_presets(target);
+                    let n = entries.len();
                     if n == 0 {
                         return;
                     }
                     let current = self
                         .frames
-                        .frame_mut(device)
-                        .and_then(|f| f.queued_preset.or(f.requested_preset).or(f.preset))
-                        .filter(|index| *index < n);
+                        .frames
+                        .iter()
+                        .find(|f| f.device == device)
+                        .and_then(|f| {
+                            [
+                                f.queued_preset.as_ref(),
+                                f.requested_preset.as_ref(),
+                                f.preset.as_ref(),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .find_map(|source| {
+                                entries.iter().position(|entry| &entry.source == source)
+                            })
+                        });
                     let next = match (e, current) {
                         (HeaderEvent::PresetNext, Some(i)) => (i + 1) % n,
                         (HeaderEvent::PresetNext, None) => 0,
@@ -819,15 +831,10 @@ impl App {
         let Some((_, _, target)) = self.project().find_device(device) else {
             return;
         };
-        if self
-            .engine
-            .host()
-            .clap_presets(target)
-            .get(preset)
-            .is_some()
+        if let Some(entry) = self.engine.host().clap_presets(target).get(preset)
             && let Some(frame) = self.frames.frame_mut(device)
         {
-            frame.queued_preset = Some(preset);
+            frame.queued_preset = Some(entry.source.clone());
         }
     }
 
@@ -837,18 +844,23 @@ impl App {
             if frame.requested_preset.is_some() {
                 continue;
             }
-            let Some(preset) = frame.queued_preset.take() else {
+            let Some(source) = frame.queued_preset.take() else {
                 continue;
             };
             let device = frame.device;
             let Some((_, _, target)) = self.project().find_device(device) else {
                 continue;
             };
-            let Some(entry) = self.engine.host().clap_presets(target).get(preset) else {
+            if !self
+                .engine
+                .host()
+                .clap_presets(target)
+                .iter()
+                .any(|entry| entry.source == source)
+            {
                 continue;
-            };
-            let source = entry.source.clone();
-            self.frames.frames[i].requested_preset = Some(preset);
+            }
+            self.frames.frames[i].requested_preset = Some(source.clone());
             self.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
                 device,
                 source,
@@ -1208,7 +1220,7 @@ impl App {
                 PluginView::Gui,
                 window.keep_on_top,
                 frame.had_gui || has_gui,
-                frame.preset,
+                frame.preset.as_ref(),
                 frame.preset_changed,
             );
             let target = GuiTarget::OwnFrame {
@@ -1493,7 +1505,7 @@ impl App {
             window.view,
             f.keep_on_top,
             f.had_gui,
-            f.preset,
+            f.preset.as_ref(),
             f.preset_changed,
         );
         let status = self.engine.host().status(device);
@@ -1591,18 +1603,19 @@ impl App {
             None => false,
         };
         let preset = selected
-            .map(|(index, _)| index)
-            .or_else(|| f.preset.filter(|index| *index < entries.len()));
+            .and_then(|(index, _)| entries.get(index))
+            .map(|entry| &entry.source)
+            .or(f.preset.as_ref());
         let changed = selected.map_or(
             preset.is_some() && (!same || f.preset_changed),
             |(_, changed)| changed,
         );
-        if same && f.preset == preset && f.preset_changed == changed {
+        if same && f.preset.as_ref() == preset && f.preset_changed == changed {
             return;
         }
         f.state_seen = Some(state);
         f.params_dirty = true;
-        f.preset = preset;
+        f.preset = preset.cloned();
         f.preset_changed = changed;
     }
 
@@ -1613,7 +1626,7 @@ impl App {
         view: PluginView,
         keep_on_top: bool,
         had_gui: bool,
-        preset: Option<usize>,
+        preset: Option<&ClapPresetSource>,
         preset_changed: bool,
     ) -> HeaderModel {
         let project = self.project();
@@ -1642,12 +1655,13 @@ impl App {
             (DeviceStatus::Ok, true) => Mark::Bypassed,
             _ => Mark::Inactive,
         };
-        let presets: Vec<String> = found
-            .map_or(&[][..], |(_, _, device)| host.clap_presets(device))
+        let entries = found.map_or(&[][..], |(_, _, device)| host.clap_presets(device));
+        let presets = entries
             .iter()
             .map(|entry| entry.display_name(self.lang.code()).to_owned())
             .collect();
-        let preset = preset.filter(|index| *index < presets.len());
+        let preset =
+            preset.and_then(|source| entries.iter().position(|entry| &entry.source == source));
         let mapping_chip = found.and_then(|(owner, _, _)| {
             let ChannelRef::Track(id) = owner else {
                 return None;

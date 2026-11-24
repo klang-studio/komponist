@@ -52,7 +52,8 @@ empty list. Unreadable paths and unsupported plug-in IDs are skipped. Discovery 
 provider that fails initialization, and discards rows from a location whose metadata receiver
 reports an error. Locations, directory traversal, and metadata have size limits. Directory
 traversal uses declared preset file extensions, follows a symlink declared as a location,
-and skips symlinks within that location. The load key in JSON is a byte array so it can round-trip without interpreting the provider's key.
+and skips symlinks within that location. The load key in JSON is a byte array so it can
+round-trip without interpreting the provider's key.
 
 The normal catalog scan caches the rows after a successful CLAP descriptor scan and associates
 them with the exact bundle path and plug-in ID. The optional preset scan runs in a separate
@@ -65,3 +66,7 @@ The hosting API reports unsupported preset loading and refused state operations 
 A failed contextual state operation is surfaced to the caller. A failure can mean the
 plug-in attempted a load without completing it, so callers should only commit the new state
 on success.
+
+Packaged builds start the bridge from the app executable. Quit the app before replacing or
+rolling back the installation. Custom launchers that use a separate bridge executable need the
+bridge from the same app version because startup checks the protocol version.

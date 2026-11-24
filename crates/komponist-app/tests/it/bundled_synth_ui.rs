@@ -169,7 +169,7 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     let preset_cutoff = pinned_clap_state::to_clap(cutoff_info, 350.0);
     let default_cutoff = pinned_clap_state::to_clap(cutoff_info, cutoff_info.default);
     assert!(newest_instrument(h.state()).state.is_none());
-    h.state_mut().dispatch(apply_volt);
+    h.state_mut().dispatch(apply_volt.clone());
     wait_for_value(
         h.state_mut(),
         volt,
@@ -261,6 +261,39 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     });
     h.run_steps(3);
     snapshot(&mut h, "volt-envelopes", lang);
+
+    if !force_bridge {
+        let app = h.state_mut();
+        let parameter = alias(app, volt, "osc_b_oct");
+        app.dispatch(Action::Plugin(PluginAction::SetParam {
+            device: volt,
+            id: parameter,
+            value: 4.6,
+        }));
+        app.dispatch(apply_volt);
+        let events = step_until(app, "preset after a stepped parameter edit", |app| {
+            app.device_events().iter().any(|event| {
+                matches!(
+                    event,
+                    PluginManagerEvent::ClapPresetLoaded { device, .. } if *device == volt
+                )
+            })
+        });
+        let previous = events
+            .iter()
+            .find_map(|event| match event {
+                PluginManagerEvent::ClapPresetLoaded {
+                    device,
+                    previous_state,
+                    ..
+                } if *device == volt => pinned_clap_state::decode(previous_state),
+                _ => None,
+            })
+            .expect("the prior plugin state contains the snapped edit");
+        // Volt's CLAP octave range is 0–6 for the stored range of -3–3.
+        assert_eq!(previous["params"]["osc_b_oct"]["i32"].as_i64(), Some(2));
+    }
+
     h.state_mut().shutdown();
 }
 
