@@ -139,6 +139,7 @@ fn smoke_live_manager(
             role: DeviceRole::Effect,
             plugin: entry.plugin.clone(),
             bypass: false,
+            parameter_bases: Default::default(),
             asset_links: Default::default(),
             state: None,
             sidechain: None,
@@ -221,10 +222,10 @@ fn smoke_live_manager(
     if snapshot(&mut manager).is_some() {
         return Err("normal Hall captured a temporary automation value".into());
     }
-    if !manager.set_state(device_id, &initial) {
+    if !manager.restore_saved_state(device_id, &initial) {
         return Err("normal Hall did not accept an undo state".into());
     }
-    if snapshot(&mut manager).as_deref() != Some(initial.as_ref()) {
+    if snapshot(&mut manager).as_ref() != Some(&initial) {
         return Err("normal Hall save did not service the pending undo".into());
     }
     if !manager.poll().iter().any(|event| {
@@ -235,7 +236,7 @@ fn smoke_live_manager(
         return Err("normal Hall undo did not restore its parameter base".into());
     }
 
-    if !manager.set_state(device_id, &edited) {
+    if !manager.restore_saved_state(device_id, &edited) {
         return Err("normal Hall did not queue a restore before reload".into());
     }
     let replacement = manager
@@ -463,7 +464,7 @@ fn smoke_bridge(
                 .find(|(seq, _)| *seq == request)
                 .map(|(_, state)| state.clone()))
         })?;
-        if state.is_empty() {
+        if state.bytes.is_empty() {
             return Err("bridge saved an empty plugin state".to_owned());
         }
         let restore = bridge

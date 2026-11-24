@@ -379,6 +379,44 @@ mod tests {
     }
 
     #[test]
+    fn parameter_bases_are_optional_and_do_not_change_plugin_state_bytes() {
+        let device = DeviceId(2);
+        let bytes: Arc<[u8]> = Arc::from([0, 201, 1, 255]);
+        let state = crate::project::SavedPluginState {
+            bytes: Arc::clone(&bytes),
+            parameter_bases: [(42, 0.8)].into(),
+        };
+        let project = edits::set_saved_plugin_state(&demo_project(), device, &state).unwrap();
+        let text = to_json(&project).unwrap();
+        let loaded = from_json(&text).unwrap();
+        assert!(
+            loaded
+                .find_device(device)
+                .unwrap()
+                .2
+                .has_saved_state(&state)
+        );
+
+        let mut legacy: Value = serde_json::from_str(&text).unwrap();
+        let device_json = legacy["project"]["tracks"][0]["channel"]["devices"][0]
+            .as_object_mut()
+            .unwrap();
+        assert_eq!(device_json["state"], "AMkB/w==");
+        assert_eq!(
+            device_json.remove("parameter_bases"),
+            Some(serde_json::json!({"42": 0.8}))
+        );
+        let legacy = from_json(&legacy.to_string()).unwrap();
+        assert!(
+            legacy
+                .find_device(device)
+                .unwrap()
+                .2
+                .has_saved_state(&bytes.into())
+        );
+    }
+
+    #[test]
     fn small_state_encoding() {
         let mut v = demo_value();
         v["tracks"][0]["channel"]["devices"][0]["state"] = "AAEC/w==".into();

@@ -19,10 +19,9 @@ use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::{focus, icons, px, widgets};
 
 use super::{lanes, metrics as m};
-use crate::device_host::{internal_kind, is_hexa};
+use crate::device_host::LegacyParameters;
 use crate::engine_sync::EngineSync;
 use crate::ui_state::ParamTouch;
-use crate::views::devices::model as devices;
 use crate::views::{ViewCtx, catalog_plugin_name, elided_galley};
 
 #[derive(Clone)]
@@ -197,44 +196,38 @@ impl<'a> Catalog<'a> {
         )
     }
 
-    fn device_params(&self, device: &Device) -> Vec<devices::Param> {
-        let lang = self.lang;
+    fn hosted_info(&self, info: &komponist_ipc::ParamInfo) -> ParamInfo {
+        komponist_plugins::params::param_info(info)
+            .texts(komponist_device_core::value_texts(self.lang))
+    }
+
+    fn device_targets(&self, device: &Device, name: &str) -> Vec<Target> {
+        if let Some(parameters) = LegacyParameters::new(device) {
+            return parameters
+                .all(self.lang)
+                .into_iter()
+                .filter(|p| p.info.automatable)
+                .map(|p| self.device_target(device, p.info, p.value, name))
+                .collect();
+        }
         let host = self.engine.host();
-        if let Some(kind) = internal_kind(device) {
-            return devices::internal_params(lang, kind, device);
-        }
-        if is_hexa(device) {
-            let mut params = devices::hexa_params(lang, device);
-            params.extend(devices::hexa_macro_params(lang, device));
-            return params;
-        }
-        host.params(device.id).map_or_else(Vec::new, |infos| {
-            devices::all_plugin_params(lang, infos, |id| host.param_value(device.id, id))
-        })
+        host.params(device.id)
+            .unwrap_or_default()
+            .iter()
+            .filter(|p| komponist_plugins::params::is_automatable(p))
+            .map(|p| {
+                let info = self.hosted_info(p);
+                let value = host.param_base(device.id, p.id).unwrap_or(p.default);
+                self.device_target(device, info, value, name)
+            })
+            .collect()
     }
 
     /// Resolve just the visible lane's parameter. The full catalog is built when the chooser opens.
     fn device_param(&self, device: &Device, id: &ParamId) -> Option<(ParamInfo, f64)> {
-        let lang = self.lang;
-        if let Some(kind) = internal_kind(device) {
-            let wire = kind.wire(id)? as usize;
-            let info = &kind.params_in(lang)[wire];
-            let value = kind
-                .decode_state(device.state.as_deref())
-                .ok()
-                .map_or(info.default, |values| values[wire]);
-            return Some((info.clone(), value));
-        }
-        if is_hexa(device) {
-            let patch = komponist_hexa::decode_state(device.state.as_deref())
-                .unwrap_or_else(|_| komponist_hexa::default_patch());
-            if let Some(param) = komponist_hexa::device::param_in(lang, id) {
-                return Some((param.info.clone(), param.field.get(&patch)));
-            }
-            let m = komponist_hexa::Macro::ALL
-                .into_iter()
-                .find(|m| m.key() == id.as_str())?;
-            return Some((m.param_info_in(lang), m.get(&patch)));
+        if let Some(parameters) = LegacyParameters::new(device) {
+            let p = parameters.get(self.lang, id)?;
+            return Some((p.info, p.value));
         }
         let wire = id.plugin_id()?;
         let host = self.engine.host();
@@ -242,8 +235,7 @@ impl<'a> Catalog<'a> {
             .params(device.id)?
             .iter()
             .find(|param| param.id == wire && komponist_plugins::params::is_listed(param))?;
-        let info = komponist_plugins::params::param_info(param)
-            .texts(komponist_device_core::value_texts(lang));
+        let info = self.hosted_info(param);
         let value = host.param_base(device.id, wire).unwrap_or(param.default);
         Some((info, value))
     }
@@ -361,12 +353,7 @@ impl<'a> Catalog<'a> {
         }
         for device in self.channel.devices.iter() {
             let name = catalog_plugin_name(lang, self.engine.host().catalog(), &device.plugin);
-            let mut targets = self
-                .device_params(device)
-                .into_iter()
-                .filter(|p| p.info.automatable)
-                .map(|param| self.device_target(device, param.info, param.value, &name))
-                .collect::<Vec<_>>();
+            let mut targets = self.device_targets(device, &name);
             if let Some(infos) = self.engine.host().params(device.id) {
                 let modules: HashMap<_, _> = infos
                     .iter()

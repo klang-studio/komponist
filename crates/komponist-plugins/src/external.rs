@@ -277,9 +277,18 @@ impl ExternalProcessor {
             RUN_ACTIVE if !self.shared.reactivating.load(Ordering::Acquire) => {}
             RUN_DEAD => return outcome(Outcome::Fallback(ProcessStatus::Failed)),
             _ => {
-                // Parameter changes queued by the MIDI stage must survive bridge activation.
                 if self.midi.is_none() {
-                    self.forget_pending();
+                    self.pending.retain(|event| {
+                        matches!(event.decode(), Some(WireEventKind::ParamValue { .. }))
+                    });
+                    self.pending_all_off = false;
+                }
+                // The engine has accepted these events for the slot. Keep the latest value
+                // per parameter so a held automation point reaches the first active block.
+                for event in events {
+                    if matches!(event.kind, EventKind::Param { .. }) {
+                        self.stash(to_wire(event));
+                    }
                 }
                 return outcome(Outcome::Fallback(ProcessStatus::Continue));
             }
@@ -446,6 +455,9 @@ impl Processor for ExternalProcessor {
             return Ok(());
         }
         self.setup = setup;
+        if let Some(taps) = self.shared.signal_taps.get() {
+            taps.set_rate(sample_rate);
+        }
         if let Some(meter) = &self.effect_meter {
             meter.set_rate(sample_rate);
         }
@@ -718,6 +730,81 @@ pub(crate) fn wire_transport(t: &TransportInfo) -> WireTransport {
 mod tests {
     use super::*;
     use komponist_model::{Meter, Tick, TickRange};
+
+    #[test]
+    fn an_audio_bridge_delivers_held_parameter_values_after_activation() {
+        use komponist_ipc::{BlockResult, BridgeServer, BridgeState, ShmRegion};
+
+        let region = Arc::new(ShmRegion::create().unwrap());
+        let shared = Arc::new(Shared::new());
+        let mut server = BridgeServer::new(region.clone());
+        let mut processor = ExternalProcessor::new(
+            BridgeClient::new(region.clone()),
+            shared.clone(),
+            DeviceRole::Instrument,
+            ProcessorSetup {
+                sample_rate: 48_000.0,
+                max_block: 32,
+            },
+        );
+        let context = ProcessContext {
+            frames: 32,
+            sample_rate: 48_000.0,
+            transport: TransportInfo {
+                playing: true,
+                recording: false,
+                looping: false,
+                tempo_bpm: 120.0,
+                meter: Meter::FOUR_FOUR,
+                position_ticks: 0.0,
+                loop_range: TickRange::new(Tick(0), Tick(3840)),
+            },
+            offline: true,
+            deadline: None,
+        };
+        let audio = [0.0; 32];
+        assert_no_alloc::assert_no_alloc(|| {
+            for value in [0.75, 0.2] {
+                let events = [
+                    Event {
+                        offset: 4,
+                        kind: EventKind::Param { id: 7, value },
+                    },
+                    Event {
+                        offset: 5,
+                        kind: EventKind::NoteOn {
+                            key: 60,
+                            velocity: 100,
+                            channel: 0,
+                            note_id: 1,
+                        },
+                    },
+                ];
+                assert!(matches!(
+                    processor
+                        .start(&context, &events, [&audio; 2], None)
+                        .outcome,
+                    Outcome::Fallback(_)
+                ));
+            }
+            region.set_bridge_state(BridgeState::Active);
+            shared.run.store(RUN_ACTIVE, Ordering::Release);
+            assert!(matches!(
+                processor.start(&context, &[], [&audio; 2], None).outcome,
+                Outcome::Sent { .. }
+            ));
+            server.wait_request(Some(Instant::now())).unwrap();
+            assert_eq!(
+                server.pop_event(),
+                Some(WireEvent::new(
+                    0,
+                    WireEventKind::ParamValue { id: 7, value: 0.2 }
+                ))
+            );
+            assert_eq!(server.pop_event(), None);
+            server.finish(BlockResult::default());
+        });
+    }
 
     #[test]
     fn midi_bridge_defers_parameters_to_keep_timed_note_releases_in_their_block() {

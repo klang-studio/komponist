@@ -215,6 +215,8 @@ struct Bridge {
     values_due: Option<Instant>,
     values_sent: Option<Instant>,
     params_due: Option<Instant>,
+    /// The next state capture must wait for the audio block that applies restored bases.
+    verify_restored_bases: bool,
     /// Checked snapshots in a row that a value moved under while audio ran (see
     /// `PAUSED_SNAPSHOT_AFTER`).
     unstable_snapshots: u8,
@@ -255,6 +257,7 @@ impl Bridge {
             values_due: None,
             values_sent: None,
             params_due: None,
+            verify_restored_bases: false,
             unstable_snapshots: 0,
             last_save: Duration::ZERO,
             controller_due: None,
@@ -804,6 +807,12 @@ impl Bridge {
             }
             ControlMsg::Deactivate => self.deactivate(),
             ControlMsg::GetState { request } => {
+                if self.verify_restored_bases {
+                    // StateApplied only acknowledges the overlay was queued. A checked capture
+                    // also waits for a block that already pulled the overlay off the queue.
+                    self.get_state_checked(request, &[], 0);
+                    return;
+                }
                 self.sync_controller();
                 let Some(plugin) = self.plugin.as_mut() else {
                     return self.error(ErrorContext::State, "no plugin loaded");
@@ -824,7 +833,16 @@ impl Bridge {
             } => {
                 self.get_state_checked(request, &expected, budget_ms);
             }
-            ControlMsg::SetState { request, state } => self.set_state(request, &state),
+            ControlMsg::SetState { request, state } => {
+                self.set_state(request, &state, BTreeMap::new())
+            }
+            ControlMsg::SetClapState {
+                request,
+                state,
+                parameter_bases,
+            } => {
+                self.set_state(request, &state, parameter_bases);
+            }
             ControlMsg::ListParams => {
                 // Answered in every state (an empty list before `Load`).
                 self.report_params();
@@ -1161,6 +1179,7 @@ impl Bridge {
             self.last_save = took;
         }
         if matches!(result, Ok(Some(_))) {
+            self.verify_restored_bases = false;
             self.unstable_snapshots = 0;
         } else if unstable {
             self.unstable_snapshots = self.unstable_snapshots.saturating_add(1);
@@ -1182,7 +1201,7 @@ impl Bridge {
         }
     }
 
-    fn set_state(&mut self, request: u32, state: &[u8]) {
+    fn set_state(&mut self, request: u32, state: &[u8], bases: BTreeMap<u32, f64>) {
         let untouched = |message| StateRestoreError {
             message,
             changed_values: Vec::new(),
@@ -1192,6 +1211,15 @@ impl Bridge {
                 .plugin
                 .as_mut()
                 .ok_or_else(|| untouched("no plugin loaded".to_owned()))?;
+            if !bases.is_empty()
+                && (plugin.descriptor().format != komponist_ipc::PluginFormat::Clap
+                    || bases.len() > komponist_ipc::control::MAX_STATE_PARAMETER_BASES
+                    || bases.values().any(|value| !value.is_finite()))
+            {
+                return Err(untouched("invalid host parameter state".to_owned()));
+            }
+            let active_restore = self.active.is_some();
+            let mut apply_on_audio = BTreeMap::new();
             let mut load = || {
                 let before: BTreeMap<_, _> = plugin
                     .params()
@@ -1199,11 +1227,37 @@ impl Bridge {
                     .filter_map(|info| Some((info.id, plugin.param_value(info.id)?)))
                     .collect();
                 let load_result = plugin.load_state(state);
-                let values = plugin
-                    .params()
+                let infos = plugin.params();
+                if load_result.is_ok() && !bases.is_empty() {
+                    let values = infos.iter().filter_map(|info| {
+                        let &value = bases.get(&info.id)?;
+                        let excluded = komponist_ipc::control::param_flags::HIDDEN
+                            | komponist_ipc::control::param_flags::READ_ONLY
+                            | komponist_ipc::control::param_flags::BYPASS;
+                        (info.flags & excluded == 0
+                            && info.min.is_finite()
+                            && info.max.is_finite()
+                            && info.min <= info.max)
+                            .then(|| (info.id, value.clamp(info.min, info.max)))
+                    });
+                    if active_restore {
+                        apply_on_audio.extend(values);
+                    } else {
+                        let input: Vec<_> = values
+                            .map(|(id, value)| {
+                                WireEvent::new(0, WireEventKind::ParamValue { id, value })
+                            })
+                            .collect();
+                        plugin.flush_params(&input, &mut Vec::new());
+                    }
+                }
+                let values = infos
                     .into_iter()
                     .filter_map(|info| {
-                        let value = plugin.param_value(info.id)?;
+                        let value = apply_on_audio
+                            .get(&info.id)
+                            .copied()
+                            .or_else(|| plugin.param_value(info.id))?;
                         if load_result.is_err() && before.get(&info.id) == Some(&value) {
                             return None;
                         }
@@ -1233,6 +1287,14 @@ impl Bridge {
                 // wait for the block already in flight.
                 self.region.set_bridge_state(BridgeState::Loaded);
                 let result = active.rt.restore(load);
+                if matches!(&result, Ok((_, true))) {
+                    self.verify_restored_bases = !apply_on_audio.is_empty();
+                }
+                for (id, value) in apply_on_audio {
+                    // A successful restore clears the old queue. The state format bounds the
+                    // overlay to the queue's capacity, before the client starts sending again.
+                    assert!(active.rt.set_param(id, value));
+                }
                 self.region.set_bridge_state(BridgeState::Active);
                 result.map_err(untouched)?
             } else {

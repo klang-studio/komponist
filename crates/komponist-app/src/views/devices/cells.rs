@@ -2886,6 +2886,7 @@ mod tests {
             )]
             .into(),
             state: None,
+            parameter_bases: Default::default(),
             sidechain: None,
         };
         let egui = egui::Context::default();

@@ -14,6 +14,7 @@ use komponist_model::params::ParamId;
 use komponist_model::{ClipId, DeviceId, Project, Tick};
 
 use crate::app::App;
+use crate::device_host::LegacyParameters;
 
 /// Prevents a single long uninterrupted gesture from retaining unbounded raw data.
 const MAX_RAW_POINTS: usize = 100_000;
@@ -764,16 +765,9 @@ impl App {
         let Some((_, _, model)) = self.project().find_device(device) else {
             return false;
         };
-        if crate::device_host::is_hexa(model) {
-            return komponist_hexa::device::params()
-                .iter()
-                .find(|p| p.wire == wire_id)
-                .is_some_and(|p| p.info.is_stepped());
-        }
-        if let Some(kind) = crate::device_host::internal_kind(model) {
-            return kind
-                .params()
-                .get(wire_id as usize)
+        if let Some(parameters) = LegacyParameters::new(model) {
+            return parameters
+                .info(self.lang, wire_id)
                 .is_some_and(|p| p.is_stepped());
         }
         self.engine
@@ -851,12 +845,9 @@ impl App {
         id: u32,
     ) -> Option<(AutomationOwner, AutomationTarget)> {
         let (owner, _, d) = self.project().find_device(device)?;
-        let param = if crate::device_host::is_hexa(d) {
-            ParamId::new(komponist_hexa::device::Field::from_wire(id)?.key())
-        } else if let Some(kind) = crate::device_host::internal_kind(d) {
-            kind.params().get(id as usize)?.id.clone()
-        } else {
-            ParamId::plugin(id)
+        let param = match LegacyParameters::new(d) {
+            Some(parameters) => parameters.id(id)?,
+            None => ParamId::plugin(id),
         };
         Some((owner.into(), AutomationTarget::Param { device, param }))
     }

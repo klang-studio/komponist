@@ -102,7 +102,11 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 18 distinguishes unsupported file slots from a temporarily missing snapshot.
 /// 19 combines named signal taps and device asset preparation in the same wire contract.
 /// 20 (#290) replaces sampler UI snapshots with asset-slot waveform commands.
-pub const PROTOCOL_VERSION: u32 = 20;
+/// 21 (#287) restores CLAP parameter bases separately from opaque state bytes.
+pub const PROTOCOL_VERSION: u32 = 21;
+
+/// Maximum number of parameter bases that can follow an active state restore.
+pub const MAX_STATE_PARAMETER_BASES: usize = crate::shm::INPUT_EVENT_CAPACITY;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -440,6 +444,12 @@ pub enum ControlMsg {
     },
     /// Begin or release an ephemeral waveform preview for an audio asset slot.
     PreviewWaveform { slot: u32, time: Option<f64> },
+    /// Restore the opaque CLAP state and then apply the host's saved parameter bases.
+    SetClapState {
+        request: u32,
+        state: Vec<u8>,
+        parameter_bases: std::collections::BTreeMap<u32, f64>,
+    },
 }
 
 /// Bridge → app.
@@ -1889,6 +1899,11 @@ mod tests {
             ControlMsg::SetState {
                 request: 9,
                 state: vec![1, 2, 3],
+            },
+            ControlMsg::SetClapState {
+                request: 10,
+                state: vec![0, 1, 255],
+                parameter_bases: [(4, -0.25), (42, 0.75)].into(),
             },
             ControlMsg::ListParams,
             ControlMsg::SetParam { id: 3, value: -0.5 },

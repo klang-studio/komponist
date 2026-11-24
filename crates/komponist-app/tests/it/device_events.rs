@@ -28,8 +28,8 @@ use komponist_model::fixtures::demo_project;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginRef, TrackId, persist};
 use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{
-    Catalog, DeviceStatus, FailReason, PluginDirs, PluginError, PluginManagerEvent, ProcessorSetup,
-    SaveSnapshots, ScanReport,
+    Catalog, DeviceSnapshots, DeviceStatus, FailReason, PluginDirs, PluginError,
+    PluginManagerEvent, ProcessorSetup, SaveSnapshots, ScanReport,
 };
 
 /// What the test scripts and observes.
@@ -41,7 +41,7 @@ struct Script {
     found: Option<Vec<PluginDescriptor>>,
     latencies: HashMap<DeviceId, u32>,
     /// Answer of `snapshot_states`.
-    snapshot: Vec<(DeviceId, Arc<[u8]>)>,
+    snapshot: DeviceSnapshots,
     snapshot_unavailable: Vec<DeviceId>,
     snapshot_blocked: Vec<DeviceId>,
     // Observed:
@@ -263,7 +263,7 @@ impl DeviceHost for FakeHost {
         self.script.borrow_mut().closed_guis.push(device);
     }
 
-    fn snapshot_states(&mut self, _timeout: Duration) -> Vec<(DeviceId, Arc<[u8]>)> {
+    fn snapshot_states(&mut self, _timeout: Duration) -> DeviceSnapshots {
         let mut script = self.script.borrow_mut();
         script.snapshot_calls += 1;
         script.snapshot.clone()
@@ -398,7 +398,7 @@ fn snapshot(script: &Rc<RefCell<Script>>, device: DeviceId, bytes: &[u8]) {
         script,
         PluginManagerEvent::StateSnapshot {
             device,
-            state: Arc::from(bytes),
+            state: Arc::<[u8]>::from(bytes).into(),
         },
     );
 }
@@ -530,7 +530,7 @@ fn saving_a_devices_baseline_changes_no_other_step() {
     assert!(state(&app, surge).is_none());
 
     // Saving takes the baseline into the document and the file, outside the history …
-    script.borrow_mut().snapshot = vec![(surge, Arc::from(baseline))];
+    script.borrow_mut().snapshot = vec![(surge, Arc::<[u8]>::from(baseline).into())];
     app.dispatch(Action::Project(ProjectAction::Save));
     assert_eq!(state(&app, surge).as_deref(), Some(baseline));
     let saved = persist::from_json(&std::fs::read_to_string(&file).unwrap()).unwrap();
@@ -769,7 +769,7 @@ fn saving_snapshots_the_states_and_exit_shuts_the_host_down() {
     app.step();
     let surge = device(&app, "Surge XT");
     let blob: Arc<[u8]> = Arc::from(&b"surge state"[..]);
-    script.borrow_mut().snapshot = vec![(surge, Arc::clone(&blob))];
+    script.borrow_mut().snapshot = vec![(surge, Arc::clone(&blob).into())];
 
     app.dispatch(Action::Project(ProjectAction::Save));
     assert_eq!(script.borrow().snapshot_calls, 1);
@@ -794,7 +794,7 @@ fn saving_reports_cached_and_missing_plugin_states_without_losing_fresh_states()
     let vital = device(&app, "Vital");
     let fresh = app.project().tracks[0].channel.devices[1].id;
     let cached = Arc::from(&b"previous surge state"[..]);
-    let captured = Arc::from(&b"fresh effect state"[..]);
+    let captured: Arc<[u8]> = Arc::from(&b"fresh effect state"[..]);
     let project =
         komponist_model::edits::set_device_state(app.project(), surge, Some(cached)).unwrap();
     std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
@@ -802,7 +802,7 @@ fn saving_reports_cached_and_missing_plugin_states_without_losing_fresh_states()
     app.step();
     {
         let mut script = script.borrow_mut();
-        script.snapshot = vec![(fresh, Arc::clone(&captured))];
+        script.snapshot = vec![(fresh, Arc::clone(&captured).into())];
         script.snapshot_unavailable = vec![surge, vital];
     }
 
@@ -840,10 +840,10 @@ fn saving_reports_cached_and_missing_plugin_states_without_losing_fresh_states()
         "{status}"
     );
 
-    let next = Arc::from(&b"new effect state"[..]);
+    let next: Arc<[u8]> = Arc::from(&b"new effect state"[..]);
     {
         let mut script = script.borrow_mut();
-        script.snapshot = vec![(fresh, Arc::clone(&next))];
+        script.snapshot = vec![(fresh, Arc::clone(&next).into())];
         script.snapshot_unavailable.clear();
         script.snapshot_blocked = vec![surge];
     }

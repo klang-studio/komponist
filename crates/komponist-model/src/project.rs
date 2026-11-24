@@ -681,6 +681,9 @@ pub struct Device {
     /// project file.
     #[serde(default, with = "crate::persist::base64_state")]
     pub state: Option<Arc<[u8]>>,
+    /// Host-owned plain values to restore after loading an opaque CLAP snapshot.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parameter_bases: BTreeMap<u32, f64>,
     /// Project-owned links for CLAP file slots. Older devices and projects omit this.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub asset_links: BTreeMap<u32, AssetLink>,
@@ -688,6 +691,40 @@ pub struct Device {
     /// Not written when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidechain: Option<Sidechain>,
+}
+
+impl Device {
+    /// Whether the raw state and its host-owned parameter values match a snapshot.
+    pub fn has_saved_state(&self, snapshot: &SavedPluginState) -> bool {
+        self.state.as_ref() == Some(&snapshot.bytes)
+            && self.parameter_bases == snapshot.parameter_bases
+    }
+
+    /// A copy of the persistent plugin state, including any host-owned values.
+    pub fn saved_state(&self) -> Option<SavedPluginState> {
+        Some(SavedPluginState {
+            bytes: self.state.clone()?,
+            parameter_bases: self.parameter_bases.clone(),
+        })
+    }
+}
+
+/// A captured plugin state and separately owned bases of transiently driven parameters.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SavedPluginState {
+    /// The exact bytes supplied by the plugin.
+    pub bytes: Arc<[u8]>,
+    /// Values to apply after restoring the bytes, addressed by plugin parameter ID.
+    pub parameter_bases: BTreeMap<u32, f64>,
+}
+
+impl From<Arc<[u8]>> for SavedPluginState {
+    fn from(bytes: Arc<[u8]>) -> Self {
+        Self {
+            bytes,
+            parameter_bases: BTreeMap::new(),
+        }
+    }
 }
 
 /// Role of a device in its chain.

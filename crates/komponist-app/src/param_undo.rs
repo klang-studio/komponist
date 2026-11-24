@@ -50,10 +50,11 @@ use komponist_engine::Command;
 use komponist_model::automation::AutomationTarget;
 use komponist_model::edits;
 use komponist_model::macros::MAX_MAPPINGS;
+use komponist_model::project::SavedPluginState;
 use komponist_model::{Device, DeviceId, Project, TrackId};
 
 use crate::app::App;
-use crate::device_host::{internal_kind, is_hexa};
+use crate::device_host::{LegacyParameters, internal_kind, is_hexa};
 use crate::undo_label;
 
 /// Snapshots of a device that arrive within this time of the last one amend its undo step.
@@ -93,13 +94,13 @@ pub(crate) struct ParamUndo {
     /// Until when snapshots of a device are the echo of a state the document handed it.
     echo: HashMap<DeviceId, Instant>,
     /// Snapshots that arrived during a gesture that is not theirs, in arrival order.
-    deferred: Vec<(DeviceId, Arc<[u8]>)>,
+    deferred: Vec<(DeviceId, SavedPluginState)>,
     /// Bridged devices whose first snapshot is asked for as a baseline (their document state is
     /// still `None`).
     awaiting: BTreeSet<DeviceId>,
     /// What a bridged device held before its state entered the document: undoing back to "no
     /// state" hands the plugin this.
-    baseline: HashMap<DeviceId, Arc<[u8]>>,
+    baseline: HashMap<DeviceId, SavedPluginState>,
 }
 
 impl Default for ParamUndo {
@@ -248,10 +249,10 @@ impl App {
             let state = self
                 .project()
                 .find_device(device)
-                .and_then(|(_, _, d)| d.state.clone())
+                .and_then(|(_, _, d)| d.saved_state())
                 .or_else(|| self.param_undo.baseline.get(&device).cloned());
             if let Some(state) = state
-                && self.engine.host_mut().set_state(device, &state)
+                && self.engine.host_mut().restore_saved_state(device, &state)
             {
                 self.param_undo.echo.insert(device, now + ECHO_QUIET);
             }
@@ -259,7 +260,7 @@ impl App {
         self.flush_deferred();
     }
 
-    pub(crate) fn deferred_plugin_states(&self) -> &[(DeviceId, Arc<[u8]>)] {
+    pub(crate) fn deferred_plugin_states(&self) -> &[(DeviceId, SavedPluginState)] {
         &self.param_undo.deferred
     }
 
@@ -272,7 +273,7 @@ impl App {
                 .iter_mut()
                 .find(|(id, _)| *id == device)
             {
-                *pending = state;
+                pending.bytes = state;
             }
         }
     }
@@ -429,17 +430,41 @@ impl App {
 
     /// An asset edit supersedes outstanding snapshots. Commit the latest manual knob changes
     /// as their own undo step before queuing the new state.
-    pub(crate) fn store_sampler_knob_state(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+    pub(crate) fn store_sampler_knob_state(&mut self, device: DeviceId, state: &SavedPluginState) {
         self.param_undo.awaiting.remove(&device);
         self.param_undo.echo.remove(&device);
         self.param_undo
             .deferred
             .retain(|(pending, _)| *pending != device);
         if self.doc.in_gesture() {
-            let _ = self.store_param_state(device, state, "");
+            if !self.has_saved_state(device, state) {
+                let _ = self
+                    .doc
+                    .apply("", |p| edits::set_saved_plugin_state(p, device, state));
+            }
         } else {
             self.store_snapshot(device, state);
         }
+    }
+
+    /// Stores an already applied edit to both the opaque state and its saved parameter bases.
+    pub(crate) fn store_saved_param_state(
+        &mut self,
+        device: DeviceId,
+        state: &SavedPluginState,
+        label: &str,
+    ) {
+        if !self.has_saved_state(device, state) {
+            let _ = self
+                .doc
+                .apply(label, |p| edits::set_saved_plugin_state(p, device, state));
+        }
+    }
+
+    fn has_saved_state(&self, device: DeviceId, state: &SavedPluginState) -> bool {
+        self.project()
+            .find_device(device)
+            .is_none_or(|(_, _, d)| d.has_saved_state(state))
     }
 
     /// Records an opaque edit already applied to the live plugin as a distinct undo step.
@@ -463,7 +488,7 @@ impl App {
             self.param_undo
                 .baseline
                 .entry(device)
-                .or_insert_with(|| Arc::clone(previous_state));
+                .or_insert_with(|| previous_state.clone().into());
         }
         if no_document_state && previous_state == state {
             return;
@@ -492,10 +517,12 @@ impl App {
         let Some((_, _, target)) = self.project().find_device(device) else {
             return;
         };
-        let recorded = target
-            .state
-            .as_ref()
-            .or_else(|| self.param_undo.baseline.get(&device));
+        let recorded = target.state.as_ref().or_else(|| {
+            self.param_undo
+                .baseline
+                .get(&device)
+                .map(|state| &state.bytes)
+        });
         if recorded.is_some_and(|recorded| recorded != previous_state) {
             let label = undo_label::plugin_state(&self.device_name(device));
             if let Err(error) = self.doc.apply(label, |project| {
@@ -511,20 +538,20 @@ impl App {
     /// A state snapshot of a bridged plugin (its GUI, a card parameter, saving) goes into the
     /// document as a tracked change, coalesced (module docs). A state equal to the stored one is
     /// skipped.
-    pub(crate) fn store_snapshot(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+    pub(crate) fn store_snapshot(&mut self, device: DeviceId, state: &SavedPluginState) {
         self.apply_device_snapshot(device, state);
-        if self.has_state(device, state) {
-            self.reconcile_sampler_params(device, state);
+        if self.has_saved_state(device, state) {
+            self.reconcile_sampler_params(device, &state.bytes);
         }
     }
 
-    fn apply_device_snapshot(&mut self, device: DeviceId, state: &Arc<[u8]>) {
-        if self.has_state(device, state) {
+    fn apply_device_snapshot(&mut self, device: DeviceId, state: &SavedPluginState) {
+        if self.has_saved_state(device, state) {
             return;
         }
         if self.param_undo.awaiting.remove(&device) {
             // The baseline asked for when the plugin came up: not an edit.
-            self.param_undo.baseline.insert(device, Arc::clone(state));
+            self.param_undo.baseline.insert(device, state.clone());
             return;
         }
         // A device without state in the document that still holds what it came up with is
@@ -533,7 +560,7 @@ impl App {
             .param_undo
             .baseline
             .get(&device)
-            .is_some_and(|b| **b == **state)
+            .is_some_and(|b| b == state)
             && self
                 .project()
                 .find_device(device)
@@ -546,7 +573,7 @@ impl App {
             self.store_root_state(device, state);
             return;
         }
-        if self.engine.host().is_macro_snapshot(device, state) {
+        if self.engine.host().is_macro_snapshot(device, &state.bytes) {
             self.store_macro_snapshot(device, state, now);
             return;
         }
@@ -554,10 +581,10 @@ impl App {
         if in_gesture && self.param_undo.gesture_device != Some(device) {
             // Not this gesture's change: after it.
             self.param_undo.deferred.retain(|(d, _)| *d != device);
-            self.param_undo.deferred.push((device, Arc::clone(state)));
+            self.param_undo.deferred.push((device, state.clone()));
             return;
         }
-        let set = |p: &Project| edits::set_device_state(p, device, Some(Arc::clone(state)));
+        let set = |p: &Project| edits::set_saved_plugin_state(p, device, state);
         if !in_gesture
             && let Some(&(step, at)) = self.param_undo.steps.get(&device)
             && now.duration_since(at) < self.param_undo.window
@@ -585,8 +612,8 @@ impl App {
         }
     }
 
-    fn store_macro_snapshot(&mut self, device: DeviceId, state: &Arc<[u8]>, now: Instant) {
-        let set = |p: &Project| edits::set_device_state(p, device, Some(Arc::clone(state)));
+    fn store_macro_snapshot(&mut self, device: DeviceId, state: &SavedPluginState, now: Instant) {
+        let set = |p: &Project| edits::set_saved_plugin_state(p, device, state);
         if self.doc.in_gesture() && self.param_undo.macro_gesture.contains(&device) {
             let _ = self.doc.apply("", set);
         } else if !self
@@ -605,7 +632,7 @@ impl App {
     /// A snapshot taken for the file being saved: like [`App::store_snapshot`], but a device
     /// that still holds what it came up with ([`App::device_up`]) gets that state into the
     /// document too (untracked: it is no edit), so the file has it.
-    pub(crate) fn store_snapshot_for_save(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+    pub(crate) fn store_snapshot_for_save(&mut self, device: DeviceId, state: &SavedPluginState) {
         self.param_undo
             .deferred
             .retain(|(pending, _)| *pending != device);
@@ -613,7 +640,7 @@ impl App {
             .param_undo
             .baseline
             .get(&device)
-            .is_some_and(|b| **b == **state)
+            .is_some_and(|b| b == state)
             && self
                 .project()
                 .find_device(device)
@@ -629,13 +656,13 @@ impl App {
     /// (`Document::apply_untracked_to_root`): for bytes that restate what the root means, not an
     /// edit (the echo of an undo, a baseline taken for the file). The undo and redo steps keep
     /// their own states (#86).
-    pub(crate) fn store_root_state(&mut self, device: DeviceId, state: &Arc<[u8]>) {
-        if self.has_state(device, state) {
+    pub(crate) fn store_root_state(&mut self, device: DeviceId, state: &SavedPluginState) {
+        if self.has_saved_state(device, state) {
             return;
         }
-        let _ = self.doc.apply_untracked_to_root(|p| {
-            edits::set_device_state(p, device, Some(Arc::clone(state)))
-        });
+        let _ = self
+            .doc
+            .apply_untracked_to_root(|p| edits::set_saved_plugin_state(p, device, state));
     }
 
     /// A bridged device came up (`DeviceStatus::Ok`) without a state in the document: asks the
@@ -672,7 +699,10 @@ impl App {
                 self.reset_sampler_hit(device.id);
                 continue;
             }
-            if old.state != device.state && !is_hexa(device) && internal_kind(device).is_none() {
+            if (old.state != device.state || old.parameter_bases != device.parameter_bases)
+                && !is_hexa(device)
+                && internal_kind(device).is_none()
+            {
                 self.forget_sampler_params(device.id);
                 if komponist_plugins::packaged_kind(&device.plugin).is_some() {
                     self.param_undo.awaiting.remove(&device.id);
@@ -684,7 +714,9 @@ impl App {
                     && komponist_plugins::packaged_kind(&device.plugin).is_none()
                     && let Some(baseline) = self.param_undo.baseline.get(&device.id).cloned()
                 {
-                    self.engine.host_mut().set_state(device.id, &baseline);
+                    self.engine
+                        .host_mut()
+                        .restore_saved_state(device.id, &baseline);
                 }
                 self.param_undo.echo.insert(device.id, until);
             }
@@ -695,14 +727,7 @@ impl App {
 /// The document state after setting a built-in parameter, including all eight Hexa device macros.
 /// Apply to the device from the latest edited root when updating several parameters together.
 pub(crate) fn device_param_state(device: &Device, wire: u32, value: f64) -> Option<Arc<[u8]>> {
-    if is_hexa(device) {
-        let field = komponist_hexa::device::Field::from_wire(wire)?;
-        // An unreadable state stays as it is (the device card warns); see `Spec::with_value`.
-        let mut patch = komponist_hexa::decode_state(device.state.as_deref()).ok()?;
-        field.set(&mut patch, value);
-        return Some(komponist_hexa::encode_state(&patch).into());
-    }
-    let kind = internal_kind(device)?;
-    kind.with_value(device.state.as_deref(), wire, value)
+    LegacyParameters::new(device)?
+        .with_value(wire, value)
         .map(Into::into)
 }
