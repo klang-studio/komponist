@@ -133,6 +133,14 @@ dependencies that are pinned by `rev`. Bump them by hand:
   are pinned by `rev` as well. Set the new hash on every line of the same repository (all `nice-plug*` entries share
   one `rev`), run `cargo update` inside `test-plugins/` and check with `scripts/build-test-plugins.sh`.
 
+## Test fixtures in a fresh worktree
+
+Run `scripts/build-test-plugins.sh` to build the CLAP and VST3 fixtures for the local platform,
+then run `scripts/check.sh`. The gate refreshes the fixtures and sets `KOMPONIST_REQUIRE_FIXTURES=1`
+so a missing bundle fails a test that needs it. These test plugins are separate from the twelve
+devices used by the installed demo. To exercise the shipped demo in its authenticated package, run
+`scripts/measure-bundled-clap.py --current-projects PATH_TO_PACKAGED_APP`.
+
 ## Executable
 
 ```bash

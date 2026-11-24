@@ -41,7 +41,7 @@ fn package_env() -> (PathBuf, PathBuf) {
     )
 }
 
-fn scan(launcher: &Path, work: &Path) -> PluginHost {
+pub(super) fn scan(launcher: &Path, work: &Path) -> PluginHost {
     let mut config = config(work);
     config.bridge_exe = launcher.to_owned();
     let mut host = PluginHost::new(config);
@@ -262,6 +262,13 @@ fn assert_ready(app: &mut App, expected: &[(TrackId, komponist_model::Device)], 
 fn demo_and_new_tracks_use_verified_clap_only() {
     let (launcher, _) = package_env();
     let work = tempfile::tempdir().unwrap();
+    let mut launch = config(work.path());
+    launch.bridge_exe = launcher.clone();
+    // The CLI constructs the project before it starts the background catalog scan.
+    let cold_host = PluginHost::new(launch);
+    assert!(cold_host.catalog().entries().is_empty());
+    let project =
+        komponist_app::showcase::bundled_demo(&cold_host, &work.path().join("kit")).unwrap();
     let host = scan(&launcher, work.path());
     assert!(
         host.catalog()
@@ -270,7 +277,6 @@ fn demo_and_new_tracks_use_verified_clap_only() {
             .all(|entry| !entry.is_builtin())
     );
     let bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some();
-    let project = komponist_app::showcase::bundled_demo(&host, &work.path().join("kit")).unwrap();
     let expected = devices(&project);
     assert!(!expected.is_empty());
     assert!(
@@ -280,6 +286,52 @@ fn demo_and_new_tracks_use_verified_clap_only() {
     );
     let mut app = app_with(project, host);
     assert_ready(&mut app, &expected, bridge);
+
+    let project = app.project();
+    let host = app.engine().host();
+    let target = |device: DeviceId, author: &str| AutomationTarget::Param {
+        device,
+        param: ParamId::plugin(host.native_layout(device).unwrap().author_ids().unwrap()[author]),
+    };
+    let track = |name: &str| {
+        project
+            .tracks
+            .iter()
+            .find(|track| track.name == name)
+            .unwrap()
+    };
+    let lead = track("Lead");
+    let delay = lead.channel.devices.last().unwrap().id;
+    assert_eq!(lead.macros.0[0].mappings[0].target, target(delay, "mix"));
+    assert!(
+        lead.automation
+            .lane(&target(lead.channel.devices[0].id, "feedback"))
+            .is_some()
+    );
+    let pad = track("Pad");
+    assert!(
+        pad.automation
+            .lane(&target(pad.channel.devices[0].id, "cutoff"))
+            .is_some()
+    );
+    let surf = track("Vowel Pad");
+    for author in ["osc_a_pos", "osc_b_pos"] {
+        assert!(
+            surf.automation
+                .lane(&target(surf.channel.devices[0].id, author))
+                .is_some()
+        );
+    }
+    for (track_name, slots) in [("Drums", 8), ("Glass Pluck", 1), ("Glass Slices", 1)] {
+        let sampler = track(track_name).channel.instrument().unwrap().1;
+        assert_eq!(sampler.asset_links.len(), slots);
+        assert!(
+            sampler
+                .asset_links
+                .values()
+                .all(|link| link.resolve(None).is_some())
+        );
+    }
 
     let count = app.project().tracks.len();
     app.dispatch(Action::Edit(EditAction::NewMidiTrack));

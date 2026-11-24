@@ -8,9 +8,11 @@ use std::sync::Arc;
 use komponist_builtin::Internal;
 use komponist_general_sampler::{Settings, write_settings};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewNote, NewTrack};
-use komponist_model::params::ParamId;
+use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{Hue, Project, Tick};
 use komponist_sampler::{SampleLink, links};
+
+use super::{DeviceSource, log_position};
 
 const SAMPLE_FILE: &str = "Glass Pluck.wav";
 const RATE: u32 = 48_000;
@@ -21,8 +23,7 @@ const MELODY_TRACK: &str = "Glass Pluck";
 const SLICE_TRACK: &str = "Glass Slices";
 const HIT_POSITIONS: [f64; 6] = [0.0, 0.75, 1.5, 2.5, 3.0, 3.5];
 
-pub(super) fn add_tracks(project: &mut Project) {
-    let kind = Internal::GeneralSampler;
+pub(super) fn add_tracks(project: &mut Project, source: DeviceSource<'_>) -> Result<(), String> {
     for (name, hue, clip_name, bar, pattern) in [
         (
             MELODY_TRACK,
@@ -49,13 +50,33 @@ pub(super) fn add_tracks(project: &mut Project) {
             ],
         ),
     ] {
+        let melody = name == MELODY_TRACK;
+        let values = sampler_values(melody);
+        let mut prepared = source.prepare("general-sampler", None, &values, &[])?;
+        if !melody {
+            let state = prepared
+                .state
+                .as_deref()
+                .ok_or("missing sampler demo state")?;
+            let times = HIT_POSITIONS[1..].iter().copied();
+            let state = match source {
+                DeviceSource::Packaged(_) => {
+                    komponist_plugins::bundled_sampler::edit_slice_markers(state, times)
+                        .ok_or("could not initialize the sampler's slice map")?
+                }
+                DeviceSource::LegacyFixture => {
+                    write_settings(Some(state), &Settings::from_markers(times))
+                }
+            };
+            prepared.state = Some(state.into());
+        }
         let clip_bars = if name == MELODY_TRACK { 2 } else { 1 };
         let (next, track) = edits::add_track(
             project,
             NewTrack {
                 name: Some(name.into()),
                 hue: Some(hue),
-                instrument: Some(kind.plugin_ref()),
+                instrument: Some(prepared.plugin.clone()),
                 index: None,
                 arm_exclusive: false,
             },
@@ -89,53 +110,49 @@ pub(super) fn add_tracks(project: &mut Project) {
         let track = Arc::make_mut(track);
         track.channel.volume_db = -24.0;
         track.channel.pan = if name == MELODY_TRACK { -0.14 } else { 0.14 };
-        Arc::make_mut(&mut track.channel.devices[0]).state = Some(state(name).into());
+        let id = track.channel.devices[0].id;
+        track.channel.devices[0] = Arc::new(prepared.into_device(id));
         *project = next;
     }
+    Ok(())
 }
 
-fn state(name: &str) -> Vec<u8> {
-    let kind = Internal::GeneralSampler;
-    let mut state = kind.encode_state(&kind.defaults());
-    let mut set = |id, value| {
-        let wire = kind
-            .wire(&ParamId::new(id))
-            .expect("showcase sampler parameter");
-        state = kind
-            .with_value(Some(&state), wire, value)
-            .expect("showcase sampler state");
-    };
-    set("root", f64::from(ROOT));
-    set("source_bpm", SOURCE_BPM);
-    set("filter", 1.0);
-    set("cutoff", 3100.0);
-    set("resonance", 0.18);
-    set("filter_env", 0.28);
-    set("filter_decay", 190.0);
-    set("lfo_rate", 0.70);
-    set("lfo_target", 2.0);
-    set("lfo_depth", 0.08);
-    set("velocity_target", 2.0);
-    set("velocity_depth", 0.12);
-    set("amp_attack", 6.0);
-    set("amp_decay", 250.0);
-    set("amp_sustain", 0.72);
-    set("amp_release", 130.0);
-    if name == MELODY_TRACK {
-        set("mode", 1.0);
-        set("sync", 1.0);
-        set("end", 0.5 / 4.0);
-        set("fade_out", 12.0);
-        return state;
-    }
-    set("mode", 2.0);
-    set("direction", 1.0);
-    set("fade_in", 8.0);
-    set("fade_out", 10.0);
-    write_settings(
-        Some(&state),
-        &Settings::from_markers(HIT_POSITIONS[1..].iter().copied()),
-    )
+/// Values in the bundle's published CLAP parameter ranges. The time knobs are normalized.
+fn sampler_values(melody: bool) -> Vec<(&'static str, f64)> {
+    let mut values = vec![
+        ("root", f64::from(ROOT)),
+        ("source_bpm", (SOURCE_BPM - 40.0) / 200.0),
+        ("filter", 1.0),
+        ("cutoff", log_position(3100.0, 20.0, 20000.0)),
+        ("resonance", 0.18),
+        ("filter_env", (0.28 + 8.0) / 16.0),
+        ("filter_decay", 190.0 / 10000.0),
+        ("lfo_rate", log_position(0.70, 0.05, 30.0)),
+        ("lfo_target", 2.0),
+        ("lfo_depth", (0.08 + 1.0) / 2.0),
+        ("velocity_target", 2.0),
+        ("velocity_depth", (0.12 + 1.0) / 2.0),
+        ("amp_attack", 6.0 / 5000.0),
+        ("amp_decay", 250.0 / 10000.0),
+        ("amp_sustain", 0.72),
+        ("amp_release", 130.0 / 10000.0),
+    ];
+    values.extend(if melody {
+        [
+            ("mode", 1.0),
+            ("sync", 1.0),
+            ("end", 0.5 / 4.0),
+            ("fade_out", 12.0 / 10000.0),
+        ]
+    } else {
+        [
+            ("mode", 2.0),
+            ("direction", 1.0),
+            ("fade_in", 8.0 / 10000.0),
+            ("fade_out", 10.0 / 10000.0),
+        ]
+    });
+    values
 }
 
 /// Writes the source of the two showcase tracks and links it without replacing their instruments.
@@ -154,6 +171,33 @@ pub(crate) fn write_sampler_file(project: &mut Project, dir: &Path) -> io::Resul
         return Ok(());
     }
 
+    let path = write_sample(dir)?;
+    let link = SampleLink::new(&path, None);
+    for track in &mut project.tracks {
+        let track = Arc::make_mut(track);
+        for device in &mut track.channel.devices {
+            if uses_sample(&track.name, device) {
+                let state = links::write(device.state.as_deref(), 0, Some(&link));
+                Arc::make_mut(device).state = Some(state.into());
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn write_packaged_sample(project: &mut Project, dir: &Path) -> io::Result<()> {
+    let path = write_sample(dir)?;
+    let link = AssetLink::new(&path, Some(dir));
+    for track in &mut project.tracks {
+        if matches!(track.name.as_str(), MELODY_TRACK | SLICE_TRACK) {
+            let device = &mut Arc::make_mut(track).channel.devices[0];
+            Arc::make_mut(device).asset_links.insert(0, link.clone());
+        }
+    }
+    Ok(())
+}
+
+fn write_sample(dir: &Path) -> io::Result<std::path::PathBuf> {
     let path = dir.join(SAMPLE_FILE);
     let mut writer = hound::WavWriter::create(
         &path,
@@ -187,15 +231,5 @@ pub(crate) fn write_sampler_file(project: &mut Project, dir: &Path) -> io::Resul
     }
     writer.finalize().map_err(io::Error::other)?;
 
-    let link = SampleLink::new(&path, None);
-    for track in &mut project.tracks {
-        let track = Arc::make_mut(track);
-        for device in &mut track.channel.devices {
-            if uses_sample(&track.name, device) {
-                let state = links::write(device.state.as_deref(), 0, Some(&link));
-                Arc::make_mut(device).state = Some(state.into());
-            }
-        }
-    }
-    Ok(())
+    Ok(path)
 }
