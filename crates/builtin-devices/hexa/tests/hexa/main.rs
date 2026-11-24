@@ -11,5 +11,16 @@ mod card;
 #[allow(dead_code)]
 mod common;
 mod engine;
+mod engine_bench;
+#[allow(dead_code)]
+#[path = "../../../../komponist-engine/tests/engine/common.rs"]
+mod engine_common;
+mod engine_parallel;
 mod events;
+#[path = "../../../../komponist-engine/tests/engine/material.rs"]
+mod material;
+#[path = "../../../../komponist-engine/tests/engine/measure.rs"]
+mod measure;
+#[path = "../../../../komponist-engine/tests/engine/parallel_support.rs"]
+mod parallel_support;
 mod state;

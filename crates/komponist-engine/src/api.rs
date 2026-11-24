@@ -63,8 +63,7 @@ pub enum Command {
         slot: SlotId,
     },
     /// Deliver `EventKind::Param { id, value }` to the processor in `slot` at offset 0 of the slot's
-    /// next processor call (hexa macros; external plugins get parameters through
-    /// `komponist-plugins`). Values wait per slot, coalesced by id, so a bypassed device keeps them.
+    /// next processor call. Values wait per slot, coalesced by id, so a bypassed device keeps them.
     SetParam {
         /// Target slot.
         slot: SlotId,

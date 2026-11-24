@@ -1,9 +1,8 @@
 //! The `Processor` trait and the per-block types it sees (ARCHITECTURE §6.2).
 //!
 //! A processor is one device in a channel chain: an instrument (makes sound from note events) or an
-//! effect (processes audio). Implementations: `HexaProcessor` (`komponist-builtin`),
-//! `ExternalProcessor` (`komponist-plugins`, talks to a bridge process), `TestSine` / `TestGain`
-//! (engine tests). The metronome is engine-internal and not a processor.
+//! effect (processes audio). The engine provides `TestSine` and `TestGain` for tests.
+//! The metronome runs inside the engine.
 //!
 //! Lifecycle: created and [`Processor::activate`]d on a non-RT thread, sent to the engine with
 //! `Command::InsertProcessor`, processed on the audio thread, sent back through the garbage queue
@@ -342,8 +341,7 @@ pub enum EventKind {
     /// Any other MIDI 1.0 channel message as 3 bytes (status, data1, data2; unused bytes 0): CC,
     /// pitch bend, aftertouch from live input. CC lanes come later.
     Midi([u8; 3]),
-    /// Sets parameter `id` to `value` in the parameter's plain range (its `min ..= max`). Used for
-    /// hexa macros now and automation later.
+    /// Sets parameter `id` to `value` in the parameter's plain range (its `min ..= max`).
     Param {
         /// Parameter id (stable per processor type).
         id: u32,

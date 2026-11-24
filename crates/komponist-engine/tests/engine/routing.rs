@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use klang_dsp::units::db_to_gain;
-use komponist_builtin::Internal;
 use komponist_engine::compile::{self, CompileEnv};
 use komponist_engine::testing::{TestGain, TestSidechain, TestSidechainMode, TestSine};
 use komponist_engine::{
@@ -20,7 +19,6 @@ use komponist_engine::{
 };
 use komponist_model::edits::{self, ChannelProp, NewBus, NewDevice, NewTrack, SendProp, TrackProp};
 use komponist_model::fixtures::demo_project;
-use komponist_model::params::ParamId;
 use komponist_model::{
     ChannelRef, DeviceId, DeviceRole, PluginFormat, PluginRef, Project, SendId, Sidechain, Tap,
     Tick, TrackId, TrackOutput,
@@ -150,11 +148,6 @@ enum Dev {
     Gain(f32, u32),
     /// Effect: reads its sidechain (`TestSidechain`).
     Side(TestSidechainMode),
-    /// Instrument: `level` for the first `on` frames of every `period` (a kick).
-    Burst(u64, u64, f32),
-    /// Effect: the compressor presse as a ducker (WP-104): peak detector, −24 dB, 6:1, 0.5 ms
-    /// attack, 20 ms release, no auto-release.
-    Presse,
 }
 
 /// The instruments of [`Dev`].
@@ -202,15 +195,7 @@ impl Processor for Source {
                     let v = (x >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
                     (v * 0.1, v * 0.1)
                 }
-                Dev::Burst(period, on, level) => {
-                    let x = if (self.frame + i as u64) % period < on {
-                        level
-                    } else {
-                        0.0
-                    };
-                    (x, x)
-                }
-                Dev::Gain(..) | Dev::Side(_) | Dev::Presse => (0.0, 0.0),
+                Dev::Gain(..) | Dev::Side(_) => (0.0, 0.0),
             };
             l[i] = a;
             r[i] = b;
@@ -230,24 +215,6 @@ fn processor(dev: Dev) -> Box<dyn Processor> {
     match dev {
         Dev::Gain(gain, latency) => Box::new(TestGain::with_latency(gain, latency)),
         Dev::Side(mode) => Box::new(TestSidechain::new(mode)),
-        Dev::Presse => {
-            let kind = Internal::Presse;
-            let mut values = kind.defaults();
-            for (key, value) in [
-                ("threshold", -24.0),
-                ("ratio", 6.0),
-                ("knee", 0.0),
-                ("attack", 0.5),
-                ("release", 20.0),
-                ("detector", 0.0),
-                ("auto_release", 0.0),
-            ] {
-                values[kind.wire(&ParamId::new(key)).unwrap() as usize] = value;
-            }
-            let mut p = kind.processor(&values);
-            p.activate(RATE, 256).unwrap();
-            Box::new(p)
-        }
         Dev::Noise(seed) | Dev::Busy(seed) => Box::new(Source {
             dev,
             frame: 0,
@@ -565,54 +532,6 @@ fn a_sidechain_gets_the_source_tap_pre_or_post() {
     // The source plays now too (0.5 × −6 dB), the holder outputs its post tap (the same).
     let post = 0.5 * db(-6.0);
     assert_close(last(&rig).0, post + post, "post follows the fader");
-}
-
-/// Kick on track A (loud for 2400 of every 12000 frames), pad on track B (−26 dB, under the
-/// threshold) with presse sidechained to A. Returns the pad's level in the middle of a kick and
-/// in the quiet part, measured on the master.
-fn ducked_pad(configure: impl FnOnce(&mut Song, TrackId, DeviceId)) -> (f32, f32) {
-    let mut s = Song::new();
-    let kick = s.track(Dev::Burst(12_000, 2_400, 0.8));
-    let pad = s.track(Dev::Dc(0.05));
-    let presse = s.fx(ChannelRef::Track(pad), Dev::Presse);
-    configure(&mut s, kick, presse);
-    // The kick is not on the master, so the master carries the pad only.
-    s.channel(kick, ChannelProp::Mute(true));
-    let mut rig = Rig::new(RATE, 256);
-    s.load(&mut rig, None);
-    rig.process(12_000, 256);
-    (rig.l[2_300], rig.l[11_900])
-}
-
-#[test]
-fn presse_ducks_a_pad_by_the_kick_on_its_sidechain() {
-    let (hit, quiet) = ducked_pad(|s, kick, presse| s.sidechain(presse, kick, Tap::Pre));
-    assert_close(quiet, 0.05, "recovered between kicks");
-    // (−2 dB − (−24 dB)) × (1/6 − 1) = −18.3 dB.
-    let ducked = 0.05 * db(-18.3);
-    assert!(
-        (hit - ducked).abs() < 0.2 * ducked,
-        "ducked on the kick: {hit} vs {ducked}"
-    );
-    // Without a source the pad is under the threshold: not touched.
-    let (hit, quiet) = ducked_pad(|_, _, _| {});
-    assert_close(hit, 0.05, "no source: no ducking");
-    assert_close(quiet, 0.05, "no source: no ducking");
-}
-
-#[test]
-fn the_pre_tap_ducks_with_the_source_fader_at_minus_infinity_and_the_post_tap_does_not() {
-    let fader_off = |s: &mut Song, kick: TrackId| s.volume(kick, f32::NEG_INFINITY);
-    let (pre, _) = ducked_pad(|s, kick, presse| {
-        fader_off(s, kick);
-        s.sidechain(presse, kick, Tap::Pre);
-    });
-    assert!(pre < 0.05 * db(-12.0), "pre tap still ducks: {pre}");
-    let (post, _) = ducked_pad(|s, kick, presse| {
-        fader_off(s, kick);
-        s.sidechain(presse, kick, Tap::Post);
-    });
-    assert_close(post, 0.05, "post tap follows the fader");
 }
 
 /// Plays `s` for 4096 frames and returns where the left and right outputs are not zero.

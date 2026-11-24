@@ -14,7 +14,7 @@
 //! 2. Renders with [`Engine::render`] (`offline = true`, no deadline) a block at a time: first
 //!    a pre-roll of less than one tick when the range start lies between two ticks
 //!    (`Locate` takes ticks), plus the project latency ([`Engine::project_latency`]: lookahead
-//!    of presse or Limiter, plugin latency, delay compensation), all of it discarded, so the sound
+//!    and other processor latency, delay compensation), all of it discarded, so the sound
 //!    of song frame `f` is file frame `f − range.start`; then range + tail. A project without
 //!    latency renders exactly as without that skip. After every render
 //!    call it reports [`Progress`]; before every call it checks the cancel flag.

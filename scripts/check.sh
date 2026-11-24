@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The gate every work package must pass before it reports: formatting, clippy without warnings,
+# The gate every work package must pass before it reports: the device boundary, formatting, clippy without warnings,
 # all tests of the workspace. Runs under the shared build lock (scripts/build-lock.sh), so it may
 # wait for another worktree's gate: start it in the background or with a long timeout. Compiling
 # runs at low priority; the tests run at normal priority so timing-sensitive tests don't flake.
@@ -10,6 +10,7 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+scripts/check-device-boundary.sh
 source scripts/build-lock.sh
 
 # A green gate must exercise the bundled plugin fixtures.

@@ -227,7 +227,8 @@ cargo bench -p komponist-ui --bench timeline
 # scripts/build-test-plugins.sh), each with 0 and 4 worker threads (WP-65; KOMPONIST_BENCH_WORKERS /
 # KOMPONIST_PERF_WORKERS take another list, KOMPONIST_PERF_SECS another length). For RT priority
 # run the test binary under chrt -f 70.
-cargo test --release -p komponist-engine --test engine bench -- --ignored --nocapture
+cargo test --release -p komponist-engine --test engine bench_engine_16_tracks -- --ignored --nocapture
+cargo test --release -p komponist-hexa --test hexa bench_engine_16_hexa_tracks -- --ignored --nocapture
 # Audio clips (#11): N streamed stereo clips, audio thread and read-ahead thread (KOMPONIST_BENCH_AUDIO_TRACKS=16,64)
 cargo test --release -p komponist-engine --test engine audio::bench -- --ignored --nocapture
 # Routing (WP-102): 16 tracks flat vs. + 4 buses, sends and a sidechain, 0 and 4 workers
@@ -269,7 +270,7 @@ ARCHITECTURE §6.4.1.
 | Run | Before (main, single-threaded) | After, 0 workers | After, 4 workers |
 |---|---|---|---|
 | Engine alone, 16 idle instruments, one thread (`bench`) | 8.4 µs (0.16 %), worst 143 µs | 8.8 µs (0.16 %), worst 142 µs | 10.8 µs (0.20 %), worst 214 µs |
-| Engine + 16 Hexa, stress material, one thread (`bench`) | 3.1 ms (58.6 %), worst 5.1 ms (96 %) | 3.1 ms (58.7 %), worst 5.2 ms (98 %) | **0.89 ms (16.7 %), worst 2.2 ms (42 %)** |
+| Engine + 16 Hexa, stress material, one thread (`engine_bench`) | 3.1 ms (58.6 %), worst 5.1 ms (96 %) | 3.1 ms (58.7 %), worst 5.2 ms (98 %) | **0.89 ms (16.7 %), worst 2.2 ms (42 %)** |
 | 16 Hexa, real callback path, 10 s (`engine_perf`) | mean 63.5 %, peak 94.6 %, 0 overruns | mean 63.4 %, peak 79.7 %, 0 overruns | **mean 17.5 %, peak 27.7 %, 0 overruns** |
 | + 8 kp-test-fx bridges (after Hexa on 8 tracks), 10 s | — | mean 65.0 %, peak 88.6 %, 0 late blocks | **mean 21.1 %, peak 27.9 %, 0 late blocks** |
 | 16 Hexa, callback path, **5 minutes** | — | — | **mean 17.7 %, peak 28.5 %, 0 overruns, 0 xruns in 56 265 callbacks**, 0 late waits |

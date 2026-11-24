@@ -95,6 +95,13 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
+      - name: Check built-in device boundary
+        env:
+          DEVICE_BOUNDARY_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python3 -B scripts/test-device-boundary.py
+          scripts/check-device-boundary.sh --against "$DEVICE_BOUNDARY_BASE"
+
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
@@ -208,6 +215,9 @@ jobs:
           # PR runs restore main's cache but do not save their own: saving took up to 2 min per run (#251).
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Check built-in device boundary
+        run: scripts/check-device-boundary.sh
+
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
@@ -298,6 +308,10 @@ jobs:
           cache-on-failure: true
           # PR runs restore main's cache but do not save their own: saving took up to 2 min per run (#251).
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Check built-in device boundary
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
+        run: scripts/check-device-boundary.sh
 
       - name: Clippy
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}

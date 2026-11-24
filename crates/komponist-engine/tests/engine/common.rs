@@ -299,3 +299,32 @@ pub fn onsets(buf: &[f32]) -> Vec<usize> {
         .filter(|&i| buf[i] != 0.0 && buf[i.saturating_sub(64)..i].iter().all(|&x| x == 0.0))
         .collect()
 }
+
+/// Slot of the instrument and of the MIDI effect.
+pub const SYNTH: u32 = 0;
+pub const FX: u32 = 1;
+
+/// A track with a MIDI effect in `FX` in front of the instrument in `SYNTH`.
+pub fn staged(id: u64, notes: Vec<SeqNote>) -> TrackProgram {
+    let mut t = track(id, SYNTH, notes);
+    t.chain = vec![midi_effect(FX), instrument(SYNTH)];
+    t
+}
+
+/// The keys the instrument still holds after `log`: note-ons without a note-off of their id.
+pub fn held(log: &[Logged]) -> Vec<u8> {
+    let mut open: Vec<(u32, u8)> = Vec::new();
+    for (_, kind, key, id) in notes(log) {
+        if kind == "on" {
+            open.push((id, key));
+        } else {
+            let at = open.iter().position(|(i, _)| *i == id);
+            assert!(
+                at.is_some(),
+                "note-off for a note that never started: {key}"
+            );
+            open.remove(at.unwrap());
+        }
+    }
+    open.into_iter().map(|(_, key)| key).collect()
+}
