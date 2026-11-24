@@ -28,37 +28,51 @@
 //! audio. Playback stops during rendering and the other tracks play their original material
 //! when playback resumes.
 //!
-//! Device states are written like the presets of the UI do: `{"params": …, "preset": "<name>"}`
-//! ([`Internal::preset_state`]); hexa's state is the factory patch.
-//! The audio links are metadata until `samples::demo_with_kit` synthesizes their WAVs at load.
+//! The packaged demo loads the devices' factory presets and snapshots their ordinary CLAP state.
+//! Its sample files are synthesized at startup and linked as project assets.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use komponist_builtin::Internal;
-use komponist_hexa::{encode_state, preset_patch, presets as hexa_presets};
 use komponist_model::edits::{self, NewBus, SendProp};
 use komponist_model::fixtures::demo_song;
+use komponist_model::params::ParamId;
+use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{
-    ClipContent, Device, DeviceId, DeviceRole, MidiClip, Note, NoteId, Project, Sidechain, Take,
-    Tap, Tick,
+    ClipContent, Device, DeviceId, MidiClip, Note, NoteId, Project, Sidechain, Take, Tap, Tick,
 };
+use komponist_plugins::bundled_initial_state::InitialDevice;
 
 pub(crate) mod audio;
 mod sampler;
 pub mod surf;
 
-/// Builds the demo with its generated samples and serializes its devices for the installed CLAPs.
+/// Builds the demo from the authenticated installed plugins and generates its audio assets.
 pub fn bundled_demo(
-    host: &dyn crate::device_host::DeviceHost,
+    host: &crate::device_host::PluginHost,
     kit_dir: &Path,
 ) -> Result<Project, String> {
-    let source = crate::samples::demo_with_kit(showcase_project(), kit_dir)
-        .map_err(|error| error.to_string())?;
-    host.migrate_project_for_open(&source, kit_dir)?
-        .ok_or_else(|| {
-            "the demo requires the packaged CLAP inventory; run scripts/run.sh --demo".to_owned()
-        })
+    let mut project = build(DeviceSource::Packaged(host))?;
+    let mut write_audio = || -> std::io::Result<()> {
+        std::fs::create_dir_all(kit_dir)?;
+        let drums = komponist_audiofile::fixtures::write_kit(kit_dir)?;
+        let drum_track = project
+            .tracks
+            .iter_mut()
+            .find(|track| track.name == "Drums")
+            .expect("Drums");
+        let drum_device = &mut Arc::make_mut(drum_track).channel.devices[0];
+        Arc::make_mut(drum_device).asset_links = drums
+            .iter()
+            .enumerate()
+            .map(|(slot, path)| (slot as u32, AssetLink::new(path, Some(kit_dir))))
+            .collect();
+        audio::write_files(&mut project, kit_dir)?;
+        sampler::write_packaged_sample(&mut project, kit_dir)
+    };
+    write_audio().map_err(|error| error.to_string())?;
+    Ok(project)
 }
 
 /// Volumes of the tracks in dB, in track order (Drums, Bass, Lead, Pad, Keys, Arp), set by
@@ -66,7 +80,17 @@ pub fn bundled_demo(
 const VOLUMES_DB: [f32; 6] = [-16.0, -6.0, 0.0, -10.0, 0.0, 0.0];
 
 /// „Ducking“, gentler: the kick moves the bass down a few dB and it comes back before the next beat.
-const BASS_DUCKING: &[(&str, f64)] = &[("ratio", 3.0), ("threshold", -20.0), ("release", 120.0)];
+fn bass_ducking() -> [(&'static str, f64); 3] {
+    [
+        ("ratio", log_position(3.0, 1.0, 20.0)),
+        ("threshold", 40.0 / 60.0),
+        ("release", log_position(120.0, 5.0, 2000.0)),
+    ]
+}
+
+fn log_position(value: f64, min: f64, max: f64) -> f64 {
+    (value / min).ln() / (max / min).ln()
+}
 
 /// Name of the group of Drums and Bass.
 pub const GROUP_NAME: &str = "Rhythm";
@@ -90,143 +114,121 @@ const CHORDS: [[u8; 3]; 8] = [
 /// Velocity of the Arp chords.
 const CHORD_VELOCITY: u8 = 84;
 
-/// Allocates ids and builds the devices.
-struct Devices {
-    next: u64,
+#[derive(Clone, Copy)]
+enum DeviceSource<'a> {
+    Packaged(&'a crate::device_host::PluginHost),
+    LegacyFixture,
 }
 
-impl Devices {
+impl DeviceSource<'_> {
+    fn prepare(
+        self,
+        suffix: &str,
+        preset: Option<&str>,
+        edits: &[(&str, f64)],
+        targets: &[&str],
+    ) -> Result<InitialDevice, String> {
+        let id = format!("org.klang-studio.komponist.{suffix}");
+        match self {
+            Self::Packaged(host) => host
+                .manager()
+                .prepare_bundled_device(&id, preset, edits, targets),
+            Self::LegacyFixture => legacy::prepare(&id, preset, edits, targets),
+        }
+    }
+}
+
+/// Allocates device IDs and retains the authored automation bindings used in the song.
+struct Devices<'a> {
+    source: DeviceSource<'a>,
+    next: u64,
+    targets: BTreeMap<(DeviceId, String), (ParamId, f32)>,
+}
+
+impl Devices<'_> {
     fn take(&mut self) -> DeviceId {
         let id = DeviceId(self.next);
         self.next += 1;
         id
     }
 
-    /// An internal device with factory preset `preset`.
-    fn internal(&mut self, kind: Internal, preset: &str) -> Arc<Device> {
-        let index = kind
-            .presets()
-            .iter()
-            .position(|p| p.name == preset)
-            .unwrap_or_else(|| panic!("{} has no preset {preset}", kind.name()));
-        let state = kind.preset_state(None, index).expect("the preset exists");
-        self.with_state(kind, state)
+    fn add(
+        &mut self,
+        id: &str,
+        preset: Option<&str>,
+        edits: &[(&str, f64)],
+        targets: &[&str],
+    ) -> Result<Arc<Device>, String> {
+        let prepared = self.source.prepare(id, preset, edits, targets)?;
+        let id = self.take();
+        self.targets.extend(
+            prepared
+                .targets
+                .iter()
+                .map(|(author, target)| ((id, author.clone()), target.clone())),
+        );
+        Ok(Arc::new(prepared.into_device(id)))
     }
 
-    /// An internal device with factory preset `preset`, then `changes` on top (the device shows
-    /// the preset name with the „ *“ mark).
-    fn tuned(&mut self, kind: Internal, preset: &str, changes: &[(&str, f64)]) -> Arc<Device> {
-        let device = self.internal(kind, preset);
-        let mut state = device
-            .state
-            .as_deref()
-            .expect("a preset has state")
-            .to_vec();
-        for (key, value) in changes {
-            let wire = kind
-                .wire(&komponist_model::params::ParamId::new(*key))
-                .unwrap_or_else(|| panic!("{} has no parameter {key}", kind.name()));
-            state = kind
-                .with_value(Some(&state), wire, *value)
-                .expect("a known wire id");
-        }
-        Arc::new(Device {
-            state: Some(state.into()),
-            ..Device::clone(&device)
-        })
+    fn preset(&mut self, id: &str, name: &str) -> Result<Arc<Device>, String> {
+        self.add(id, Some(name), &[], &[])
     }
 
-    /// An internal device with its default parameters (no preset name).
-    fn plain(&mut self, kind: Internal, changes: &[(&str, f64)]) -> Arc<Device> {
-        let mut state = kind.encode_state(&kind.defaults());
-        for (key, value) in changes {
-            let wire = kind
-                .wire(&komponist_model::params::ParamId::new(*key))
-                .unwrap_or_else(|| panic!("{} has no parameter {key}", kind.name()));
-            state = kind
-                .with_value(Some(&state), wire, *value)
-                .expect("a known wire id");
-        }
-        self.with_state(kind, state)
-    }
-
-    fn with_state(&mut self, kind: Internal, state: Vec<u8>) -> Arc<Device> {
-        Arc::new(Device {
-            id: self.take(),
-            role: kind.role(),
-            plugin: kind.plugin_ref(),
-            bypass: false,
-            parameter_bases: Default::default(),
-            asset_links: Default::default(),
-            state: Some(state.into()),
-            sidechain: None,
-        })
-    }
-
-    /// The sampler without state: `samples::demo_with_kit` puts the test kit on its pads.
-    fn sampler(&mut self) -> Arc<Device> {
-        Arc::new(Device {
-            id: self.take(),
-            role: DeviceRole::Instrument,
-            plugin: Internal::Sampler.plugin_ref(),
-            bypass: false,
-            parameter_bases: Default::default(),
-            asset_links: Default::default(),
-            state: None,
-            sidechain: None,
-        })
-    }
-
-    /// hexa with factory preset `preset`.
-    fn hexa(&mut self, preset: &str) -> Arc<Device> {
-        let info = hexa_presets()
-            .find(|p| p.name == preset)
-            .unwrap_or_else(|| panic!("hexa has no preset {preset}"));
-        let patch = preset_patch(info.index).expect("a listed preset exists");
-        Arc::new(Device {
-            id: self.take(),
-            role: DeviceRole::Instrument,
-            plugin: crate::app::hexa_ref(),
-            bypass: false,
-            parameter_bases: Default::default(),
-            asset_links: Default::default(),
-            state: Some(encode_state(&patch).into()),
-            sidechain: None,
-        })
+    fn parameter(&self, device: DeviceId, author: &str) -> (ParamId, f32) {
+        self.targets[&(device, author.into())].clone()
     }
 }
 
-/// The demo project: see the module docs.
+/// The historical in-process reference for the demo and its feature fixtures.
+#[doc(hidden)]
 pub fn showcase_project() -> Project {
+    build(DeviceSource::LegacyFixture).expect("the reference showcase is valid")
+}
+
+fn build(source: DeviceSource<'_>) -> Result<Project, String> {
     let mut project = demo_song();
     let mut d = Devices {
+        source,
         next: project.next_id,
+        targets: BTreeMap::new(),
     };
     let chains = [
-        vec![d.sampler(), d.internal(Internal::Presse, "Tight Drums")],
         vec![
-            d.internal(Internal::Volt, "Fat Saw"),
-            d.internal(Internal::Eq, "Warm Bass"),
-            d.tuned(Internal::Presse, "Ducking", BASS_DUCKING),
+            d.add("sampler", None, &[], &[])?,
+            d.preset("presse", "Tight Drums")?,
         ],
         vec![
-            d.hexa("Saw Lead"),
-            d.internal(Internal::Eq, "Low Cut 80 Hz"),
-            d.internal(Internal::Delay, "Dotted Eighths"),
+            d.preset("volt", "Fat Saw")?,
+            d.preset("eq", "Warm Bass")?,
+            d.add("presse", Some("Ducking"), &bass_ducking(), &[])?,
         ],
         vec![
-            d.internal(Internal::Volt, "Wide Pad"),
-            d.internal(Internal::Eq, "Low Cut 80 Hz"),
+            d.add("hexa", Some("Saw Lead"), &[], &["feedback"])?,
+            d.preset("eq", "Low Cut 80 Hz")?,
+            d.add("delay", Some("Dotted Eighths"), &[], &["mix"])?,
         ],
-        vec![d.hexa("E-Piano"), d.internal(Internal::Delay, "Soft Tape")],
         vec![
-            d.internal(Internal::Tonleiter, "A Minor Pentatonic"),
-            d.internal(Internal::Arpeggiator, "Sixteenths Up/Down"),
-            d.hexa("Synth Pluck"),
-            d.internal(Internal::Delay, "Eighth Ping-Pong"),
+            d.add("volt", Some("Wide Pad"), &[], &["cutoff"])?,
+            d.preset("eq", "Low Cut 80 Hz")?,
+        ],
+        vec![
+            d.preset("hexa", "E-Piano")?,
+            d.preset("delay", "Soft Tape")?,
+        ],
+        vec![
+            d.preset("scale", "A Minor Pentatonic")?,
+            d.preset("arpeggiator", "Sixteenths Up/Down")?,
+            d.preset("hexa", "Synth Pluck")?,
+            d.preset("delay", "Eighth Ping-Pong")?,
         ],
     ];
-    let master = vec![d.plain(Internal::Limiter, &[("gain", 3.0), ("ceiling", -0.3)])];
+    // The limiter adds 3 dB and stops at −0.3 dBFS.
+    let master = vec![d.add(
+        "limiter",
+        None,
+        &[("gain", 3.0 / 24.0), ("ceiling", 11.7 / 12.0)],
+        &[],
+    )?];
     for ((track, chain), volume) in project.tracks.iter_mut().zip(chains).zip(VOLUMES_DB) {
         let track = Arc::make_mut(track);
         track.channel.devices = chain;
@@ -257,17 +259,17 @@ pub fn showcase_project() -> Project {
         active_take: 0,
     });
     project.next_id = d.next;
-    add_routing(&mut project);
+    add_routing(&mut project, &mut d)?;
     audio::add_tracks(&mut project);
-    sampler::add_tracks(&mut project);
-    surf::add_track(&mut project);
-    add_automation(&mut project);
-    add_track_macros(&mut project);
-    project
+    sampler::add_tracks(&mut project, source)?;
+    surf::add_track(&mut project, source)?;
+    add_automation(&mut project, &d);
+    add_track_macros(&mut project, &d);
+    Ok(project)
 }
 
 /// Group, effect bus, sends and sidechain, through the model's routing edits.
-fn add_routing(project: &mut Project) {
+fn add_routing(project: &mut Project, d: &mut Devices<'_>) -> Result<(), String> {
     let id_of = |p: &Project, name: &str| {
         p.tracks
             .iter()
@@ -299,8 +301,8 @@ fn add_routing(project: &mut Project) {
         p = edits::set_send(&p, send, SendProp::Tap(Tap::Post))
             .expect("the demo routing is valid: tap");
     }
-    let mut d = Devices { next: p.next_id };
-    let reverb = d.internal(Internal::Hall, "Large Hall");
+    d.next = p.next_id;
+    let reverb = d.preset("hall", "Large Hall")?;
     p.next_id = d.next;
     let bus = p
         .tracks
@@ -321,14 +323,15 @@ fn add_routing(project: &mut Project) {
     };
     *project = edits::set_sidechain(&p, presse, Some(sidechain))
         .expect("the demo routing is valid: sidechain");
+    Ok(())
 }
 
 /// The Pad macro automates its Hall send. A clip envelope drives the Lead delay mix.
-fn add_track_macros(project: &mut Project) {
+fn add_track_macros(project: &mut Project, d: &Devices<'_>) {
     use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points};
     use komponist_model::edits::{automation, macros};
     use komponist_model::macros::Mapping;
-    use komponist_model::params::{ParamId, db_to_p};
+    use komponist_model::params::db_to_p;
 
     let pad = project
         .tracks
@@ -396,18 +399,8 @@ fn add_track_macros(project: &mut Project) {
         .find(|clip| clip.name == "Lead B")
         .expect("Lead B")
         .id;
-    let delay = lead
-        .channel
-        .devices
-        .iter()
-        .find(|device| Internal::from_plugin(&device.plugin) == Some(Internal::Delay))
-        .expect("Lead delay");
-    let mix = ParamId::new("mix");
-    let wire = Internal::Delay.wire(&mix).expect("Delay mix") as usize;
-    let base = Internal::Delay
-        .decode_state(delay.state.as_deref())
-        .expect("Delay state")[wire];
-    let base = Internal::Delay.params()[wire].to_normalized(base) as f32;
+    let delay = &lead.channel.devices[2];
+    let (mix, base) = d.parameter(delay.id, "mix");
     let mapping = Mapping {
         target: AutomationTarget::Param {
             device: delay.id,
@@ -443,10 +436,10 @@ fn add_track_macros(project: &mut Project) {
 }
 
 /// The song demonstrates track, clip and master curves.
-fn add_automation(project: &mut Project) {
+fn add_automation(project: &mut Project, d: &Devices<'_>) {
     use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points, Shape};
     use komponist_model::edits::automation as edits;
-    use komponist_model::params::{ParamId, db_to_p};
+    use komponist_model::params::db_to_p;
 
     let track = |project: &Project, name: &str| {
         project
@@ -466,12 +459,7 @@ fn add_automation(project: &mut Project) {
 
     let pad = track(project, "Pad");
     let pad_device = &project.track(pad).expect("Pad").channel.devices[0];
-    let cutoff = ParamId::new("cutoff");
-    let wire = Internal::Volt.wire(&cutoff).expect("Volt cutoff") as usize;
-    let base_cutoff = Internal::Volt
-        .decode_state(pad_device.state.as_deref())
-        .expect("Volt state")[wire];
-    let cutoff_value = Internal::Volt.params()[wire].to_normalized(base_cutoff) as f32;
+    let (cutoff, cutoff_value) = d.parameter(pad_device.id, "cutoff");
     let cutoff_target = AutomationTarget::Param {
         device: pad_device.id,
         param: cutoff,
@@ -507,10 +495,7 @@ fn add_automation(project: &mut Project) {
     let lead = track(project, "Lead");
     let lead_track = project.track(lead).expect("Lead");
     let hexa = &lead_track.channel.devices[0];
-    let feedback = ParamId::new("feedback");
-    let param = komponist_hexa::device::param(&feedback).expect("Hexa feedback");
-    let patch = komponist_hexa::decode_state(hexa.state.as_deref()).expect("Hexa state");
-    let base = param.info.to_normalized(param.field.get(&patch)) as f32;
+    let (feedback, base) = d.parameter(hexa.id, "feedback");
     let target = AutomationTarget::Param {
         device: hexa.id,
         param: feedback,
@@ -558,4 +543,97 @@ fn add_automation(project: &mut Project) {
             Point::linear(bars(16), 0.0),
         ],
     );
+}
+
+mod legacy {
+    //! In-process reference state for historical project and export fixtures.
+
+    use std::collections::BTreeMap;
+
+    use komponist_builtin::Internal;
+    use komponist_hexa::{device, encode_state, preset_patch, presets};
+    use komponist_model::DeviceRole;
+    use komponist_model::params::ParamId;
+    use komponist_plugins::bundled_initial_state::InitialDevice;
+    use komponist_plugins::legacy_bundled::bundled_clap_id;
+
+    pub(super) fn prepare(
+        id: &str,
+        preset: Option<&str>,
+        edits: &[(&str, f64)],
+        targets: &[&str],
+    ) -> Result<InitialDevice, String> {
+        if id == "org.klang-studio.komponist.hexa" {
+            let name = preset.ok_or("reference Hexa needs a factory patch")?;
+            let info = presets()
+                .find(|preset| preset.name == name)
+                .ok_or_else(|| format!("no Hexa preset {name}"))?;
+            let patch = preset_patch(info.index).ok_or("missing Hexa patch")?;
+            let targets = targets
+                .iter()
+                .map(|&name| {
+                    let id = ParamId::new(name);
+                    let param =
+                        device::param(&id).ok_or_else(|| format!("no Hexa parameter {name}"))?;
+                    let value = param.info.to_normalized(param.field.get(&patch)) as f32;
+                    Ok((name.to_owned(), (id, value)))
+                })
+                .collect::<Result<_, String>>()?;
+            return Ok(InitialDevice {
+                plugin: crate::app::hexa_ref(),
+                role: DeviceRole::Instrument,
+                state: Some(encode_state(&patch).into()),
+                targets,
+            });
+        }
+        let (kind, plugin) = Internal::ALL
+            .into_iter()
+            .map(|kind| (kind, kind.plugin_ref()))
+            .find(|(_, plugin)| bundled_clap_id(plugin) == Some(id))
+            .ok_or_else(|| format!("no reference device for {id}"))?;
+        let mut result = InitialDevice {
+            plugin,
+            role: kind.role(),
+            state: None,
+            targets: BTreeMap::new(),
+        };
+        if kind == Internal::Sampler && preset.is_none() && edits.is_empty() && targets.is_empty() {
+            return Ok(result);
+        }
+        let mut state = match preset {
+            Some(name) => {
+                let index = kind
+                    .presets()
+                    .iter()
+                    .position(|p| p.name == name)
+                    .ok_or_else(|| format!("{} has no preset {name}", kind.name()))?;
+                kind.preset_state(None, index)
+                    .ok_or("missing reference preset")?
+            }
+            None => kind.encode_state(&kind.defaults()),
+        };
+        for &(name, value) in edits {
+            let wire = kind
+                .wire(&ParamId::new(name))
+                .ok_or_else(|| format!("unknown control {name}"))?;
+            let param = &kind.params()[wire as usize];
+            let plain = param.to_plain(value / f64::from(param.steps().max(1)));
+            state = kind
+                .with_value(Some(&state), wire, plain)
+                .ok_or("invalid reference state")?;
+        }
+        let values = kind
+            .decode_state(Some(&state))
+            .map_err(|error| error.to_string())?;
+        for &name in targets {
+            let id = ParamId::new(name);
+            let wire = kind
+                .wire(&id)
+                .ok_or_else(|| format!("unknown control {name}"))? as usize;
+            let value = kind.params()[wire].to_normalized(values[wire]) as f32;
+            result.targets.insert(name.to_owned(), (id, value));
+        }
+        result.state = Some(state.into());
+        Ok(result)
+    }
 }

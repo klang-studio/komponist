@@ -199,6 +199,6 @@ The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is 
     system audio settings, and never write outside the worktree, scratch dirs and the NVMe build folder. **If a tool
     call is blocked, stop and report it — do not retry the same action another way** (2026-11-15).
 15. **New features go into the demo:** every user-visible feature (a device, a routing option, an editing mode …) is also
-    shown in the demo project `komponist --demo` (`komponist_app::showcase::showcase_project()`), in a musically
+    shown in the demo project `komponist --demo` (`komponist_app::showcase::bundled_demo()`), in a musically
     sensible way, in the same WP. Keep the mix balanced (`showcase::render_levels`, ignored test: master peak ≤ −0.3 dBFS,
     limiter ≤ ~2 dB, no silent track) and update the showcase tests (owner, 2026-11-15).

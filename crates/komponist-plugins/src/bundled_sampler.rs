@@ -325,6 +325,11 @@ pub fn edit_slices(state: &[u8], settings: &Settings) -> Option<Vec<u8>> {
     })
 }
 
+/// Initialize slice markers in a prepared sampler state.
+pub fn edit_slice_markers(state: &[u8], times: impl IntoIterator<Item = f64>) -> Option<Vec<u8>> {
+    edit_slices(state, &Settings::from_markers(times))
+}
+
 /// Resolve the old links before rebasing them for the destination project folder.
 pub fn rebase_links(
     state: &[u8],

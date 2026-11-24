@@ -20,6 +20,7 @@
 
 mod decode;
 mod error;
+pub mod fixtures;
 pub mod peaks;
 mod pool;
 mod resample;

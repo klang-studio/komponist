@@ -4,11 +4,11 @@
 
 use std::sync::Arc;
 
-use komponist_builtin::Internal;
 use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points, Shape};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewNote, NewTrack};
-use komponist_model::params::ParamId;
 use komponist_model::{Hue, Project, Tick};
+
+use super::DeviceSource;
 
 /// Name of the track.
 pub const TRACK: &str = "Vowel Pad";
@@ -25,14 +25,16 @@ const POSITION_B: [f32; 2] = [0.15, 0.85];
 /// the whole vowel table to „U“ at bar 13, then back towards „E“ by the end of bar 16.
 const POSITION_A: [(i64, f32); 3] = [(8, 0.0), (12, 1.0), (16, 0.3)];
 
-pub(super) fn add_track(project: &mut Project) {
-    let kind = Internal::Surf;
+pub(super) fn add_track(project: &mut Project, source: DeviceSource<'_>) -> Result<(), String> {
+    let prepared = source.prepare("surf", Some(PRESET), &[], &["osc_a_pos", "osc_b_pos"])?;
+    let position_a = prepared.targets["osc_a_pos"].0.clone();
+    let position_b = prepared.targets["osc_b_pos"].0.clone();
     let (next, track) = edits::add_track(
         project,
         NewTrack {
             name: Some(TRACK.into()),
             hue: Some(Hue::INDIGO),
-            instrument: Some(kind.plugin_ref()),
+            instrument: Some(prepared.plugin.clone()),
             index: None,
             arm_exclusive: false,
         },
@@ -64,12 +66,6 @@ pub(super) fn add_track(project: &mut Project) {
         },
     )
     .expect("showcase surf clip");
-    let preset = kind
-        .presets()
-        .iter()
-        .position(|p| p.name == PRESET)
-        .expect("surf has the Vowel Pad");
-    let state = kind.preset_state(None, preset).expect("the preset exists");
     let device = {
         let t = next
             .tracks
@@ -79,14 +75,14 @@ pub(super) fn add_track(project: &mut Project) {
         let t = Arc::make_mut(t);
         t.channel.volume_db = VOLUME_DB;
         t.channel.pan = 0.15;
-        let device = Arc::make_mut(&mut t.channel.devices[0]);
-        device.state = Some(state.into());
-        device.id
+        let id = t.channel.devices[0].id;
+        t.channel.devices[0] = Arc::new(prepared.into_device(id));
+        id
     };
     let owner = AutomationOwner::Track(track);
     let target = AutomationTarget::Param {
         device,
-        param: ParamId::new("osc_a_pos"),
+        param: position_a,
     };
     let (with_lane, lane) =
         edits::automation::add_lane(&next, owner, target, "Surf · Position A".into())
@@ -103,7 +99,7 @@ pub(super) fn add_track(project: &mut Project) {
         .expect("showcase surf curve A");
     let target = AutomationTarget::Param {
         device,
-        param: ParamId::new("osc_b_pos"),
+        param: position_b,
     };
     let (with_lane, lane) =
         edits::automation::add_lane(&next, owner, target, "Surf · Position B".into())
@@ -123,4 +119,5 @@ pub(super) fn add_track(project: &mut Project) {
     )
     .expect("showcase surf curve");
     *project = next;
+    Ok(())
 }
