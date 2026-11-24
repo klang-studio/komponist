@@ -256,15 +256,15 @@ impl App {
     /// Links `path` to the pad: the pad's start and end return to the whole sample, the link goes
     /// into the device state, the sample loads. One undo step ("Sample laden").
     fn load_sample(&mut self, device: DeviceId, pad: usize, path: &Path) {
-        if self.engine.host().asset_slots(device).is_some() {
-            self.set_plugin_asset(device, pad as u32, Some(path));
-            return;
-        }
         self.flush_sampler_params(device);
         self.in_one_step("undo-sample-load", |app| app.link_sample(device, pad, path));
     }
 
     fn link_sample(&mut self, device: DeviceId, pad: usize, path: &Path) {
+        if self.engine.host().asset_slots(device).is_some() {
+            self.set_plugin_asset(device, pad as u32, Some(path));
+            return;
+        }
         let Some((_, _, found)) = self.project().find_device(device) else {
             return;
         };
