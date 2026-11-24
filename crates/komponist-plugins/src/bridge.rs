@@ -860,6 +860,9 @@ impl Bridge {
         self.pending_params.clear();
         self.released_macro_params.clear();
         self.invalidate_state_requests();
+        self.assets.begin_restore();
+        // A reply sent before this restore cannot describe the restored state.
+        self.asset_offline_waiting = None;
         let request = self.seq();
         self.state_restores.push_back(StateRestore::new(request));
         self.send(ControlMsg::SetState {
@@ -1459,6 +1462,10 @@ impl Bridge {
             return;
         };
         let restore = self.state_restores.remove(index).expect("matched restore");
+        if self.state_restores.is_empty() {
+            // A failed CLAP state load may still have changed runtime state.
+            self.assets.finish_restore();
+        }
         let device = self.device;
         let (values, error) = match result {
             Ok(values) => (values, None),

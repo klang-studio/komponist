@@ -301,6 +301,7 @@ impl DirectDevice {
             && let Some((result, inventory)) = self.session.restore(&state, Inventory::read)
         {
             self.pending_restore = None;
+            self.assets.finish_restore();
             self.last_state = Some(state);
             self.state_warning = result.err().map(|error| error.to_string());
             self.report_warning(id, events);
@@ -430,6 +431,7 @@ impl DirectDevice {
 
     pub(crate) fn set_state(&mut self, state: Arc<[u8]>) {
         self.sampler_ui = None;
+        self.assets.begin_restore();
         self.pending_restore = Some(state);
         self.pending_writes.clear();
         self.unconfirmed_writes.clear();

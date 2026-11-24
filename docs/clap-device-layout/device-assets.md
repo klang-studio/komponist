@@ -28,7 +28,8 @@ binding and project restoration use `reload: false`.
 
 The host owns the project's relocatable links, including relative path resolution, missing
 file reporting, rebasing and copying during project save. The plugin owns the runtime files
-and loader state. The host may reapply its bindings after restoring standard CLAP state.
+and loader state. After restoring standard CLAP state, the host reapplies its current bindings
+for managed slots, including explicit clears.
 After binding a path that does not exist, report the slot as `Missing`.
 Collect and Save copies non-audio assets that the user selected for the current document session.
 A link read from the project file can still resolve and play without granting permission to copy it.
@@ -68,6 +69,8 @@ returns `Preparing` while work is pending, `Ready` when offline processing can s
 The host starts and polls with audio processing detached, after applying the file bindings
 needed for the render. Once ready, the plugin holds the prepared result for that render.
 An all-zero call retires or cancels the request and returns `Ready`. The host clears the
-request while processing is detached. A later render uses a new ID even if the sample rate
-and tempo are unchanged. The control callback should return promptly while decoding or
+request while processing is detached. A state restore invalidates the prepared result. If a
+render request is still active, the host reapplies its bindings, clears the old preparation,
+and starts preparation again for the same render under a new ID. A later render also uses a
+new ID even if the sample rate and tempo are unchanged. The control callback should return promptly while decoding or
 time-stretching proceeds on a worker.

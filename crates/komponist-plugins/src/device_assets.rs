@@ -68,12 +68,15 @@ pub(crate) struct DeviceAssets {
     pub supports_offline: bool,
     file_slots: Option<bool>,
     slot_poll_at: Instant,
+    desired_bindings: BTreeMap<u32, Binding>,
     pending_bindings: BTreeMap<u32, Binding>,
     applying_bindings: Vec<u32>,
     rejected_bindings: BTreeSet<u32>,
     offline_request: Option<OfflineRequest>,
+    offline_work_id: u32,
     offline_status: Option<OfflineStatus>,
     clear_offline: bool,
+    restoring: bool,
     offline_poll_at: Instant,
 }
 
@@ -85,12 +88,15 @@ impl DeviceAssets {
             supports_offline: false,
             file_slots: None,
             slot_poll_at: now,
+            desired_bindings: BTreeMap::new(),
             pending_bindings: BTreeMap::new(),
             applying_bindings: Vec::new(),
             rejected_bindings: BTreeSet::new(),
             offline_request: None,
+            offline_work_id: 0,
             offline_status: None,
             clear_offline: false,
+            restoring: false,
             offline_poll_at: now,
         }
     }
@@ -131,17 +137,21 @@ impl DeviceAssets {
         let new = bindings
             .slots
             .iter()
-            .filter(|binding| !self.pending_bindings.contains_key(&binding.id))
+            .filter(|binding| !self.desired_bindings.contains_key(&binding.id))
             .count();
-        if self.pending_bindings.len() + new > MAX_SLOTS {
+        if self.desired_bindings.len() + new > MAX_SLOTS {
             return false;
         }
-        self.pending_bindings.extend(
-            bindings
-                .slots
-                .iter()
-                .map(|binding| (binding.id, binding.clone())),
-        );
+        for binding in &bindings.slots {
+            self.pending_bindings.insert(binding.id, binding.clone());
+            self.desired_bindings.insert(
+                binding.id,
+                Binding {
+                    reload: false,
+                    ..binding.clone()
+                },
+            );
+        }
         self.offline_status = self.offline_request.map(|_| OfflineStatus::Preparing);
         true
     }
@@ -173,11 +183,35 @@ impl DeviceAssets {
         }
     }
 
+    pub(crate) fn begin_restore(&mut self) {
+        self.restoring = true;
+        if self.offline_request.is_some() {
+            self.advance_offline_work();
+            self.clear_offline = true;
+            self.offline_status = Some(OfflineStatus::Preparing);
+        }
+    }
+
+    pub(crate) fn finish_restore(&mut self) {
+        if !self.restoring {
+            return;
+        }
+        self.restoring = false;
+        for (&slot, binding) in &self.desired_bindings {
+            // Keep a newer pending update, including an explicit reload, when present.
+            self.pending_bindings
+                .entry(slot)
+                .or_insert_with(|| binding.clone());
+        }
+        self.slot_poll_at = Instant::now();
+        self.offline_poll_at = self.slot_poll_at;
+    }
+
     pub(crate) fn offline_status(&self) -> Option<OfflineStatus> {
         if !self.supports_offline || self.offline_request.is_none() {
             return None;
         }
-        if self.bindings_pending() {
+        if self.restoring || self.clear_offline || self.bindings_pending() {
             Some(OfflineStatus::Preparing)
         } else if !self.rejected_bindings.is_empty() {
             Some(OfflineStatus::Failed)
@@ -191,20 +225,39 @@ impl DeviceAssets {
             return;
         }
         self.offline_request = request;
+        if request.is_some() {
+            self.advance_offline_work();
+        }
         self.offline_status = request.map(|_| OfflineStatus::Preparing);
-        self.clear_offline = request.is_none();
+        self.clear_offline |= request.is_none();
         self.offline_poll_at = Instant::now();
+    }
+
+    fn advance_offline_work(&mut self) {
+        self.offline_work_id = self.offline_work_id.wrapping_add(1).max(1);
+    }
+
+    fn offline_work(&self) -> Option<OfflineRequest> {
+        self.offline_request.map(|request| OfflineRequest {
+            id: self.offline_work_id,
+            ..request
+        })
     }
 
     pub(crate) fn offline_due(&mut self) -> Option<Option<OfflineRequest>> {
         let now = Instant::now();
         if self.supports_offline
-            && (self.clear_offline || self.offline_status() == Some(OfflineStatus::Preparing))
+            && !self.restoring
             && !self.bindings_pending()
+            && (self.clear_offline || self.offline_status() == Some(OfflineStatus::Preparing))
             && now >= self.offline_poll_at
         {
             self.offline_poll_at = now + REFRESH;
-            Some(self.offline_request)
+            Some(if self.clear_offline {
+                None
+            } else {
+                self.offline_work()
+            })
         } else {
             None
         }
@@ -215,12 +268,23 @@ impl DeviceAssets {
         request: Option<OfflineRequest>,
         status: Option<OfflineStatus>,
     ) {
-        if request == self.offline_request {
-            if request.is_none() {
-                self.clear_offline = status == Some(OfflineStatus::Preparing);
-            } else if !self.bindings_pending() && self.rejected_bindings.is_empty() {
-                self.offline_status = Some(status.unwrap_or(OfflineStatus::Failed));
+        if self.restoring {
+            return;
+        }
+        if request.is_none() && self.clear_offline {
+            self.clear_offline = status == Some(OfflineStatus::Preparing);
+            if status == Some(OfflineStatus::Ready) {
+                self.offline_poll_at = Instant::now();
+            } else if !self.clear_offline {
+                self.offline_status = self.offline_request.map(|_| OfflineStatus::Failed);
             }
+        } else if request.is_some()
+            && request == self.offline_work()
+            && !self.clear_offline
+            && !self.bindings_pending()
+            && self.rejected_bindings.is_empty()
+        {
+            self.offline_status = Some(status.unwrap_or(OfflineStatus::Failed));
         }
     }
 }
@@ -269,6 +333,81 @@ mod tests {
         assert!(!unsupported.inventory_pending());
         assert!(!unsupported.slots_due());
         assert!(!unsupported.queue_bindings(&bindings(0)));
+    }
+
+    #[test]
+    fn restore_replays_latest_bindings_then_retires_and_restarts_offline_work() {
+        let mut assets = DeviceAssets::new();
+        assets.report_slots(None, true, true);
+        let load = |id, path: &str, reload| Binding {
+            id,
+            path: Some(path.into()),
+            reload,
+        };
+        let clear = Binding {
+            id: 2,
+            path: None,
+            reload: false,
+        };
+        let original = Bindings {
+            slots: vec![
+                load(0, "/old.wav", true),
+                load(1, "/kept.wav", true),
+                clear.clone(),
+            ],
+        };
+        assert!(assets.queue_bindings(&original));
+        assert_eq!(assets.take_bindings(), Some(original));
+        assets.report_bindings(true);
+
+        let request = Some(OfflineRequest {
+            id: 1,
+            sample_rate: 48_000.0,
+            tempo: 120.0,
+        });
+        assets.set_offline(request);
+        let first = assets.offline_due().unwrap();
+        assets.report_offline(first, Some(OfflineStatus::Ready));
+        assert_eq!(assets.offline_status(), Some(OfflineStatus::Ready));
+
+        assets.begin_restore();
+        assets.report_offline(first, Some(OfflineStatus::Ready));
+        assert_eq!(assets.offline_status(), Some(OfflineStatus::Preparing));
+        assert_eq!(assets.offline_due(), None);
+        let replacement = load(0, "/new.wav", true);
+        assert!(assets.queue_bindings(&Bindings {
+            slots: vec![replacement.clone()]
+        }));
+
+        assets.finish_restore();
+        assert_eq!(
+            assets.take_bindings().unwrap().slots,
+            [replacement, load(1, "/kept.wav", false), clear]
+        );
+        assert_eq!(assets.offline_due(), None);
+        assets.report_bindings(true);
+        assert_eq!(assets.offline_due(), Some(None));
+
+        assets.report_offline(first, Some(OfflineStatus::Ready));
+        assert_eq!(assets.offline_status(), Some(OfflineStatus::Preparing));
+        assets.report_offline(None, Some(OfflineStatus::Ready));
+        let restarted = assets.offline_due().unwrap().unwrap();
+        assert_ne!(Some(restarted), first);
+        assert_eq!(
+            Some(restarted),
+            request.map(|request| OfflineRequest {
+                id: restarted.id,
+                ..request
+            })
+        );
+        assets.report_offline(first, Some(OfflineStatus::Ready));
+        assert_eq!(assets.offline_status(), Some(OfflineStatus::Preparing));
+        assets.report_offline(Some(restarted), Some(OfflineStatus::Ready));
+        assert_eq!(assets.offline_status(), Some(OfflineStatus::Ready));
+
+        assets.set_offline(request.map(|request| OfflineRequest { id: 2, ..request }));
+        let next = assets.offline_due().unwrap().unwrap();
+        assert_ne!(next.id, restarted.id);
     }
 
     #[test]

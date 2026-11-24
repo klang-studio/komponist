@@ -13,6 +13,7 @@ use komponist_device_core::pinned_clap_state;
 use komponist_engine::compile::{self, NoEnv};
 use komponist_engine::testing::{Logged, TestSine};
 use komponist_engine::{Command, Engine, EngineConfig, EventKind, Processor, TransportState};
+use komponist_ipc::device_assets::{OfflineRequest, OfflineStatus};
 use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points, Shape};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewDevice, NewNote, NewTrack};
 use komponist_model::macros::Mapping;
@@ -544,6 +545,40 @@ fn current_project_round_trip_and_offline_render() {
     for (track, key) in fixture.sampler_tracks {
         assert_audible(&mut app, track, key);
     }
+
+    let sampler = app
+        .project()
+        .track(fixture.sampler_tracks[0].0)
+        .unwrap()
+        .channel
+        .instrument()
+        .unwrap()
+        .1;
+    let (device, state) = (sampler.id, sampler.state.clone().unwrap());
+    let detached = app.engine_mut().detach().unwrap();
+    let request = Some(OfflineRequest {
+        id: u32::MAX,
+        sample_rate: 48_000.0,
+        tempo: 120.0,
+    });
+    app.engine_mut()
+        .host_mut()
+        .set_offline_preparation(device, request);
+    let ready = |app: &App| {
+        app.engine().host().offline_preparation_status(device) == Some(OfflineStatus::Ready)
+    };
+    step_until(&mut app, "packaged sampler prepared", ready);
+    assert!(app.engine_mut().host_mut().set_state(device, &state));
+    assert_eq!(
+        app.engine().host().offline_preparation_status(device),
+        Some(OfflineStatus::Preparing)
+    );
+    step_until(&mut app, "packaged sampler prepared after restore", ready);
+    assert!(app.engine().host().state_warning(device).is_none());
+    app.engine_mut()
+        .host_mut()
+        .set_offline_preparation(device, None);
+    app.engine_mut().attach(detached);
 
     let output = work.join("out/bundled.wav");
     let mut settings = export_settings(&work, ExportRange::Song);
