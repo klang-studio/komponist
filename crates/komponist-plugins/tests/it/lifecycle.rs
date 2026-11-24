@@ -1112,6 +1112,8 @@ enum FakeBridge {
     SendsSlowly,
     /// Defers a startup restore until the parent sends a later parameter edit.
     FailsStartupRestore,
+    /// Removes a parameter from the inventory when the parent edits it.
+    RemovesParameter,
 }
 
 #[cfg(unix)]
@@ -1121,6 +1123,7 @@ impl FakeBridge {
             FakeBridge::StallsMidFrame => "stalls-mid-frame",
             FakeBridge::SendsSlowly => "sends-slowly",
             FakeBridge::FailsStartupRestore => "fails-startup-restore",
+            FakeBridge::RemovesParameter => "removes-parameter",
         }
     }
 }
@@ -1158,6 +1161,7 @@ fn fake_bridge_entry() {
         FakeBridge::StallsMidFrame,
         FakeBridge::SendsSlowly,
         FakeBridge::FailsStartupRestore,
+        FakeBridge::RemovesParameter,
     ]
     .into_iter()
     .find(|mode| mode.arg() == args[at - 2])
@@ -1185,6 +1189,21 @@ fn fake_bridge_entry() {
     let Ok(_region) = channel.recv_fd() else {
         std::process::exit(0);
     };
+    let param = |id| ParamInfo {
+        id,
+        name: format!("Parameter {id}"),
+        module: String::new(),
+        min: 0.0,
+        max: 1.0,
+        default: 0.5,
+        step_count: 0,
+        flags: param_flags::AUTOMATABLE,
+    };
+    let inventory = match mode {
+        FakeBridge::FailsStartupRestore => vec![param(7)],
+        FakeBridge::RemovesParameter => vec![param(7), param(8)],
+        _ => Vec::new(),
+    };
     let mut pings = 0;
     let mut activated = false;
     let mut pending_restore = None;
@@ -1204,21 +1223,15 @@ fn fake_bridge_entry() {
                     bundle,
                     sidechain: false,
                 },
-                params: if mode == FakeBridge::FailsStartupRestore {
-                    vec![ParamInfo {
-                        id: 7,
-                        name: "Gain".into(),
-                        module: String::new(),
-                        min: 0.0,
-                        max: 1.0,
-                        default: 0.5,
-                        step_count: 0,
-                        flags: param_flags::AUTOMATABLE,
-                    }]
-                } else {
-                    Vec::new()
-                },
-                values: Vec::new(),
+                params: inventory.clone(),
+                values: inventory
+                    .iter()
+                    .map(|param| ParamValue {
+                        id: param.id,
+                        value: param.default,
+                        text: String::new(),
+                    })
+                    .collect(),
                 latency: 0,
                 note_names: Vec::new(),
                 has_gui: false,
@@ -1229,6 +1242,12 @@ fn fake_bridge_entry() {
                 activated = true;
             }
             Ok(ControlMsg::SetState { request, .. }) => pending_restore = Some(request),
+            Ok(ControlMsg::SetParam { id: 8, .. }) if mode == FakeBridge::RemovesParameter => {
+                send(BridgeMsg::Params {
+                    params: vec![param(7)],
+                    native_layout: None,
+                });
+            }
             Ok(ControlMsg::SetParam { .. }) if ready_for_edit => {
                 if let Some(request) = pending_restore.take() {
                     send(BridgeMsg::StateApplied {
@@ -1242,7 +1261,7 @@ fn fake_bridge_entry() {
             }
             Ok(ControlMsg::GetStateChecked {
                 request, expected, ..
-            }) if ready_for_edit => {
+            }) if ready_for_edit || mode == FakeBridge::RemovesParameter => {
                 send(BridgeMsg::State {
                     request,
                     state: b"later edit".to_vec(),
@@ -1336,6 +1355,44 @@ fn later_edit_remains_saveable_after_failed_startup_restore() {
         snapshot.captured,
         [(device_id, Arc::<[u8]>::from(&b"later edit"[..]).into())]
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn removing_an_automated_parameter_preserves_snapshots_for_remaining_controls() {
+    let dir = scratch("remove-automated-parameter");
+    let Some((manager, _)) = fake_bridge_manager(&dir, FakeBridge::RemovesParameter) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+
+    let lanes = [(device_id, 7, None), (device_id, 8, None)];
+    let snapshot_bases = |rig: &mut Rig| {
+        let save = rig.manager.snapshot_for_save(PATIENCE);
+        assert!(save.blocked.is_empty());
+        let [(id, state)] = save.captured.try_into().expect("one fresh snapshot");
+        assert_eq!(id, device_id);
+        state.parameter_bases
+    };
+    rig.manager.set_automated_params(&lanes);
+    assert_eq!(snapshot_bases(&mut rig), [(7, 0.5), (8, 0.5)].into());
+
+    rig.manager.set_param(device_id, 8, 0.625);
+    run_until(&mut rig, "parameter inventory pruned", |rig| {
+        rig.manager.params(device_id).unwrap().len() == 1
+    });
+    assert_eq!(snapshot_bases(&mut rig), [(7, 0.5)].into());
+
+    // A program compiled from the old inventory must not put the removed ID back.
+    rig.manager.set_automated_params(&lanes);
+    assert_eq!(snapshot_bases(&mut rig), [(7, 0.5)].into());
+
+    // Removing the surviving lane still protects its base while the audio catches up.
+    rig.manager.set_automated_params(&[]);
+    assert_eq!(snapshot_bases(&mut rig), [(7, 0.5)].into());
 }
 
 /// The bytes `Channel::send` writes for `msg`, captured through a socket pair of its own (so the

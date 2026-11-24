@@ -1024,8 +1024,13 @@ impl Bridge {
         self.update_live_param(id, value);
     }
 
-    pub(crate) fn set_automated_params(&mut self, params: BTreeMap<u32, Option<f64>>) {
-        if self.snapshots_preserve_bases() && self.automated_params != params {
+    pub(crate) fn set_automated_params(&mut self, mut params: BTreeMap<u32, Option<f64>>) {
+        if !self.snapshots_preserve_bases() {
+            return;
+        }
+        // A compiled program can still refer to a parameter removed by a rescan.
+        params.retain(|id, _| self.params.iter().any(|param| param.id == *id));
+        if self.automated_params != params {
             // A program swap can remove a lane before audio restores the control. Keep
             // correcting any captured transient value until an explicit edit replaces it.
             self.temporary_params.extend(
@@ -1533,6 +1538,7 @@ impl Bridge {
                 self.pending_params.retain(|id| ids.contains(id));
                 self.macro_params.retain(|id, _| ids.contains(id));
                 self.released_macro_params.retain(|id| ids.contains(id));
+                self.automated_params.retain(|id, _| ids.contains(id));
                 self.base_values.retain(|id, _| ids.contains(id));
                 self.values.retain(|id, _| ids.contains(id));
                 self.params = params;
