@@ -79,19 +79,30 @@ fn hexa() -> PluginRef {
 /// looped clip: a four-note chord per half bar, held, plus a 1/16 line (up to ~8 voices per
 /// track, 128 in all); loop over the 4 bars. With `bridges`, the first 8 tracks get a kp-test-fx.
 fn project(bridges: bool) -> Project {
+    project_with_hexa(bridges, |name| {
+        let preset = presets().find(|preset| preset.name == name).unwrap().index;
+        (hexa(), encode_state(&preset_patch(preset).unwrap()).into())
+    })
+}
+
+const HEXA_PRESETS: [&str; 4] = ["E-Piano", "Strings", "Supersaw", "Init"];
+
+fn project_with_hexa(
+    bridges: bool,
+    instrument: impl Fn(&str) -> (PluginRef, Arc<[u8]>),
+) -> Project {
     let mut p = Project::new("Perf");
-    let names = ["E-Piano", "Strings", "Supersaw", "Init"];
     for i in 0..TRACKS {
+        let (plugin, state) = instrument(HEXA_PRESETS[i % HEXA_PRESETS.len()]);
         let spec = NewTrack {
             name: Some(format!("Spur {}", i + 1)),
             hue: None,
-            instrument: Some(hexa()),
+            instrument: Some(plugin),
             index: None,
             arm_exclusive: false,
         };
         let (next, track) = edits::add_track(&p, spec).unwrap();
         p = next;
-        let preset = presets().find(|x| x.name == names[i % 4]).unwrap().index;
         let mut notes = Vec::new();
         for half in 0..8i64 {
             let root = 48 + ((half as usize * 5 + i) % 12) as u8;
@@ -127,7 +138,6 @@ fn project(bridges: bool) -> Project {
         )
         .unwrap();
         p = next;
-        let state: Arc<[u8]> = encode_state(&preset_patch(preset).unwrap()).into();
         let fx = (bridges && i < BRIDGES).then(|| Device {
             id: DeviceId(p.alloc_id().expect("fixture identifiers")),
             role: DeviceRole::Effect,
