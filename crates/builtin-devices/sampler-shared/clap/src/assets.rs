@@ -98,6 +98,11 @@ impl<T: SampledDefinition> AssetProvider for SampleParameters<T> {
             }
             current.insert(pad, link);
         }
+        if let Some(document) =
+            crate::links::without_managed_links(&assets.document, |pad| current.contains_key(&pad))
+        {
+            assets.document = document;
+        }
         true
     }
 

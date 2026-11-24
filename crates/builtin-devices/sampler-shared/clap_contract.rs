@@ -226,6 +226,27 @@ fn check_file_slots<P: ClapPlugin>(sample: &std::path::Path) {
             }
         }
         assert_eq!(status(), AssetStatus::Ready);
+        let mut legacy = save_state(&instance);
+        legacy["fields"]["sample_assets"] = json!({
+            "samples": {"01": {
+                "abs": sample.with_extension("missing.wav"),
+                "rel": "missing.wav",
+                "name": "legacy"
+            }},
+            "sample_revisions": [17]
+        })
+        .to_string()
+        .into();
+        let assert_host_managed = || {
+            assert!(load_state(&instance, &legacy));
+            let saved = save_state(&instance);
+            let fields: serde_json::Value =
+                serde_json::from_str(saved["fields"]["sample_assets"].as_str().unwrap()).unwrap();
+            assert!(fields.get("samples").is_none());
+            assert_eq!(fields["sample_revisions"], json!([17]));
+        };
+        assert_host_managed();
+        assert_eq!(status(), AssetStatus::Ready);
         assert_eq!(
             prepare(plugin.cast(), 0, 0.0, 0.0),
             OfflineStatus::Ready as u32
@@ -256,6 +277,7 @@ fn check_file_slots<P: ClapPlugin>(sample: &std::path::Path) {
             }]),
             1
         );
+        assert_host_managed();
         assert_eq!(status(), AssetStatus::Empty);
     }
 }

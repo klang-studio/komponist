@@ -732,11 +732,8 @@ pub(super) fn view(
     padding: [f32; 2],
     slot: u32,
 ) -> Option<Viewport> {
+    let source = card.asset_waveforms.get(&slot)?;
     let memory = view_id(card, cell, slot);
-    let Some(source) = card.asset_waveforms.get(&slot) else {
-        ui.data_mut(|data| data.remove::<ViewState>(memory));
-        return None;
-    };
     let mut state = view_state(ui, memory, source);
     state.padding = padding;
     if !ui.input(|input| input.pointer.primary_down())

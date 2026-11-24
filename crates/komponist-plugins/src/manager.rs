@@ -858,7 +858,7 @@ impl PluginManager {
         self.verified_bundles.remove(&device);
         self.effect_meters.remove(&device);
         if let Some(mut direct) = self.direct.remove(&device) {
-            direct.invalidate_waveform_markers();
+            let _ = direct.invalidate_waveform_markers();
             self.retiring_direct.push(direct);
         }
         if let Some(mut bridge) = self.bridges.remove(&device) {
@@ -1013,8 +1013,13 @@ impl PluginManager {
     pub fn set_asset_bindings(&mut self, device: DeviceId, bindings: &Bindings) -> bool {
         if let Some(direct) = self.direct.get_mut(&device) {
             let accepted = direct.assets.queue_bindings(bindings);
-            if accepted {
-                direct.invalidate_waveform_markers();
+            if accepted && let Some(slot) = direct.invalidate_waveform_markers() {
+                self.pending
+                    .push(PluginManagerEvent::WaveformMarkersEdited {
+                        device,
+                        slot,
+                        result: WaveformMarkerEditResult::Rejected(EditStatus::Stale),
+                    });
             }
             return accepted;
         }
@@ -1332,12 +1337,34 @@ impl PluginManager {
             if matches!(direct.status, DeviceStatus::Crashed(_)) {
                 return false;
             }
-            direct.set_state(state.clone());
-            return true;
-        }
-        self.bridges
+            if let Some(slot) = direct.set_state(state.clone()) {
+                self.pending
+                    .push(PluginManagerEvent::WaveformMarkersEdited {
+                        device,
+                        slot,
+                        result: WaveformMarkerEditResult::Rejected(EditStatus::Stale),
+                    });
+            }
+        } else if !self
+            .bridges
             .get_mut(&device)
             .is_some_and(|bridge| bridge.set_state(state))
+        {
+            return false;
+        }
+        for event in &mut self.pending {
+            if let PluginManagerEvent::WaveformMarkersEdited {
+                device: edited,
+                result,
+                ..
+            } = event
+                && *edited == device
+                && matches!(result, WaveformMarkerEditResult::Applied { .. })
+            {
+                *result = WaveformMarkerEditResult::Rejected(EditStatus::Stale);
+            }
+        }
+        true
     }
 
     /// Asks for a state snapshot; it arrives as [`PluginManagerEvent::StateSnapshot`] (not while
@@ -1387,7 +1414,7 @@ impl PluginManager {
         let mut state_change_pending: BTreeSet<_> =
             self.pending_waveform_marker_commits().collect();
         for (&device, bridge) in &self.bridges {
-            if bridge.is_editing_waveform_markers() {
+            if bridge.is_editing_waveform_markers() || state_change_pending.contains(&device) {
                 state_change_pending.insert(device);
                 continue;
             }
@@ -1399,7 +1426,7 @@ impl PluginManager {
             }
         }
         for (&device, direct) in &self.direct {
-            if direct.is_editing_waveform_markers() {
+            if direct.is_editing_waveform_markers() || state_change_pending.contains(&device) {
                 state_change_pending.insert(device);
                 continue;
             }

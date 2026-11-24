@@ -260,9 +260,10 @@ impl DirectDevice {
         self.pending_marker_edit.is_some()
     }
 
-    pub(crate) fn invalidate_waveform_markers(&mut self) {
-        self.pending_marker_edit = None;
+    pub(crate) fn invalidate_waveform_markers(&mut self) -> Option<u32> {
+        let canceled = self.pending_marker_edit.take().map(|edit| edit.slot);
         self.markers.invalidate();
+        canceled
     }
 
     fn can_edit_waveform_markers(&self) -> bool {
@@ -566,8 +567,8 @@ impl DirectDevice {
             .is_some_and(|value| value.ptr_eq(&Arc::downgrade(state)))
     }
 
-    pub(crate) fn set_state(&mut self, state: Arc<[u8]>) {
-        self.invalidate_waveform_markers();
+    pub(crate) fn set_state(&mut self, state: Arc<[u8]>) -> Option<u32> {
+        let canceled = self.invalidate_waveform_markers();
         self.assets.begin_restore();
         self.pending_restore = Some(state);
         self.pending_writes.clear();
@@ -575,6 +576,7 @@ impl DirectDevice {
         self.released_automation.clear();
         self.snapshot_due = None;
         self.user_edit = false;
+        canceled
     }
 
     pub(crate) fn state_for_reload(&self) -> Option<Arc<[u8]>> {

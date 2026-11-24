@@ -592,16 +592,20 @@ impl Bridge {
             && !self.assets.bindings_pending()
             && self.pending_params.is_empty()
             && self.released_macro_params.is_empty()
-            && self.temporary_params.iter().all(|id| {
-                self.automated_params.contains_key(id) || self.macro_params.contains_key(id)
-            })
+            && (self.verified_bundled_kind.is_some() || self.temporary_params.is_empty())
     }
 
     fn marker_parameters(&self, slot: u32) -> Option<MarkerParameters> {
+        let mut automated = self.automated_params.clone();
+        for &id in &self.temporary_params {
+            if !self.macro_params.contains_key(&id) {
+                automated.entry(id).or_insert(None);
+            }
+        }
         MarkerParameters::new(
             slot,
             &self.base_values,
-            &self.automated_params,
+            &automated,
             &self.macro_params,
             &self.params,
             self.parameter_state(),
@@ -683,13 +687,15 @@ impl Bridge {
             .marker_edit
             .take()
             .expect("matched waveform marker edit");
-        if self.gui_requests == 0 {
+        let now = Instant::now();
+        if self.gui_requests > 0 {
+            self.long_call_since = Some(now);
+        } else {
             self.long_call_since = None;
             if let Some((_, since)) = &mut self.ping_waiting {
-                *since = Instant::now();
+                *since = now;
             }
         }
-        let now = Instant::now();
         if matches!(result, EditResult::Rejected(EditStatus::Unavailable))
             && self.check_marker_retry(&edit, now).is_ok()
         {
@@ -705,7 +711,7 @@ impl Bridge {
 
     fn report_marker_edit(
         &mut self,
-        edit: MarkerEdit,
+        mut edit: MarkerEdit,
         result: EditResult,
         events: &mut Vec<PluginManagerEvent>,
     ) {
@@ -719,6 +725,11 @@ impl Bridge {
         let result = if edit.superseded {
             result
         } else {
+            if matches!(result, EditResult::Applied { .. })
+                && let Some(latest) = self.marker_parameters(edit.slot)
+            {
+                edit.params.update_persistent(latest);
+            }
             edit.params.normalize(result)
         };
         let result = if let EditResult::Failed {
@@ -1756,7 +1767,11 @@ impl Bridge {
 
     fn gui_answered(&mut self) {
         self.gui_requests = self.gui_requests.saturating_sub(1);
-        if self.gui_requests == 0 && self.marker_edit.is_none() && self.phase == Phase::Running {
+        let marker_in_flight = self
+            .marker_edit
+            .as_ref()
+            .is_some_and(|edit| matches!(edit.attempt, MarkerAttempt::InFlight(_)));
+        if self.gui_requests == 0 && !marker_in_flight && self.phase == Phase::Running {
             self.long_call_since = None;
             // The watchdog starts over after a long call.
             if let Some((_, since)) = &mut self.ping_waiting {

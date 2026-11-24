@@ -123,8 +123,9 @@ unsafe impl<T: SampledDefinition> Params for SampleParameters<T> {
             self.samples.set_general_settings(&markers.settings);
             markers.invalidate();
         }
-        saved.document.clear();
-        saved.document.push_str(assets);
+        saved.document =
+            links::without_managed_links(assets, |pad| host_bindings.contains_key(&pad))
+                .unwrap_or_else(|| assets.to_owned());
     }
 }
 

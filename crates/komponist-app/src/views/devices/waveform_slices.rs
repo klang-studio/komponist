@@ -188,21 +188,23 @@ impl<'a> SliceView<'a> {
     }
 
     pub fn observe(&mut self, ui: &Ui, shown: &GraphOutput, first_marker: usize) {
-        if (shown.touch.clicked || shown.touch.dragging)
-            && let Some(index) = shown
-                .selected_slot
-                .and_then(|slot| slot.checked_sub(first_marker))
-            && self
-                .snapshot
+        let active_marker = |slot: usize| {
+            let index = slot.checked_sub(first_marker)?;
+            self.snapshot
                 .positions
                 .get(index)
-                .is_some_and(|&seconds| self.active(seconds))
-        {
+                .filter(|&&seconds| self.active(seconds))
+                .map(|_| index)
+        };
+        let primary = PointerButton::Primary;
+        let pressed_marker = shown.pressed_slot.and_then(active_marker);
+        let touched_marker = (shown.touch.clicked || shown.touch.dragging)
+            .then(|| shown.selected_slot.and_then(active_marker))
+            .flatten();
+        if let Some(index) = pressed_marker.or(touched_marker) {
             self.selected = Some(index);
             self.pending = None;
-        }
-        let primary = PointerButton::Primary;
-        if ui.input(|input| input.pointer.button_pressed(primary))
+        } else if ui.input(|input| input.pointer.button_pressed(primary))
             && (shown.response.is_pointer_button_down_on() || shown.response.clicked_by(primary))
             && let Some(seconds) = shown
                 .pointer_x

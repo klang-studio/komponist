@@ -194,6 +194,27 @@ fn write_all(state: Option<&[u8]>, links: &[(usize, SampleLink)]) -> Vec<u8> {
     out
 }
 
+/// Removes legacy links for pads whose bindings are managed by the host.
+pub fn without_managed_links(assets: &str, managed: impl Fn(usize) -> bool) -> Option<String> {
+    let mut value: Value = serde_json::from_str(assets).ok()?;
+    let object = value.as_object_mut()?;
+    let links = object.get_mut(KEY)?.as_object_mut()?;
+    let previous = links.len();
+    links.retain(|key, _| {
+        !key.parse::<usize>()
+            .ok()
+            .and_then(|pad| pad.checked_sub(1))
+            .is_some_and(&managed)
+    });
+    if links.len() == previous {
+        return None;
+    }
+    if links.is_empty() {
+        object.remove(KEY);
+    }
+    serde_json::to_string(&value).ok()
+}
+
 /// Refresh the absolute fallbacks in a sampler asset object for a host that can only pass
 /// absolute sample paths at runtime. Keep the relative paths, unresolved links and all other
 /// asset metadata in the state. Returns a new asset object only when a link changes.

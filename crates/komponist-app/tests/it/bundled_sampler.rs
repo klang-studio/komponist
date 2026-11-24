@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 use komponist_app::actions::PluginAction;
 use komponist_app::device_host::{DeviceHost, PluginHost};
@@ -338,14 +338,10 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     for (kind, track, device) in &tracks {
         let pad = usize::from(*kind == Internal::Sampler) * 2;
         step_until(&mut app, "initial sampler UI", |app| {
-            assert!(
-                app.engine()
-                    .host()
-                    .native_layout(*device)
-                    .is_none_or(|layout| {
-                        layout.has_audio_asset_editor() && layout.schema_version == 2
-                    })
-            );
+            let Some(layout) = app.engine().host().native_layout(*device) else {
+                return false;
+            };
+            assert!(layout.has_audio_asset_editor() && layout.schema_version == 2);
             asset_status(app, *device, pad as u32) == Some(&AssetStatus::Empty)
         });
         assert_eq!(
@@ -427,24 +423,34 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         komponist_general_sampler::read_settings(assets.as_deref().map(str::as_bytes))
     };
     let edit_marker = |app: &mut App, prior: &[f64], operation, expected| {
-        app.dispatch(Action::Plugin(PluginAction::RequestWaveformMarkers {
-            device: general,
-            slot: 0,
-        }));
-        let has_current_markers = |app: &App| {
-            app.engine()
-                .host()
-                .waveform_markers(general, 0)
-                .is_some_and(|markers| markers.editable && markers.positions == prior)
+        let deadline = Instant::now() + PATIENCE;
+        let mut request_at = Instant::now();
+        let revision = loop {
+            let now = Instant::now();
+            if now >= request_at {
+                app.dispatch(Action::Plugin(PluginAction::RequestWaveformMarkers {
+                    device: general,
+                    slot: 0,
+                }));
+                request_at = now + Duration::from_millis(100);
+            }
+            app.step();
+            let snapshot = app.engine().host().waveform_markers(general, 0);
+            if let Some(markers) =
+                snapshot.filter(|markers| markers.editable && markers.positions == prior)
+            {
+                break markers.revision;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no editable waveform for {operation:?}; expected {prior:?}, latest {snapshot:?}, asset {:?}, device {:?}",
+                asset_status(app, general, 0),
+                app.engine().device_status(general),
+            );
+            std::thread::sleep(Duration::from_millis(5));
         };
-        step_until(
-            app,
-            "the waveform marker snapshot is ready",
-            has_current_markers,
-        );
-        let snapshot = app.engine().host().waveform_markers(general, 0).unwrap();
         let request = MarkerRequest {
-            revision: snapshot.revision,
+            revision,
             operation,
         };
         app.dispatch(Action::Plugin(PluginAction::EditWaveformMarkers {
@@ -517,30 +523,28 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     };
     select(&mut app, drum_track);
     let mut h = harness(app);
-    let save_screenshot =
-        |h: &mut egui_kittest::Harness<'_, App>, device: &str, lang: &str, waveform: bool| {
-            if let Some(folder) = std::env::var_os("KOMPONIST_SAMPLER_UI_SCREENSHOTS") {
-                if waveform {
-                    let file = komponist_audiofile::FilePool::global()
-                        .open(&sample)
-                        .unwrap();
-                    let deadline = Instant::now() + PATIENCE;
-                    while !matches!(file.peaks_state(), komponist_audiofile::PeakState::Ready(_)) {
-                        h.run_steps(1);
-                        assert!(Instant::now() < deadline, "{device} waveform did not load");
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    h.run_steps(2);
+    let save_screenshot = |h: &mut egui_kittest::Harness<'_, App>,
+                           device: &str,
+                           lang: &str,
+                           waveform: Option<&str>| {
+        if let Some(folder) = std::env::var_os("KOMPONIST_SAMPLER_UI_SCREENSHOTS") {
+            if let Some(label) = waveform {
+                let deadline = Instant::now() + PATIENCE;
+                while !has_waveform_peaks(h, label) {
+                    h.run_steps(1);
+                    assert!(Instant::now() < deadline, "{device} waveform did not load");
+                    std::thread::sleep(Duration::from_millis(5));
                 }
-                let path = std::path::PathBuf::from(folder);
-                std::fs::create_dir_all(&path).unwrap();
-                let route = if force_bridge { "bridge" } else { "direct" };
-                h.render()
-                    .unwrap()
-                    .save(path.join(format!("{device}-{route}-{lang}.png")))
-                    .unwrap();
             }
-        };
+            let path = std::path::PathBuf::from(folder);
+            std::fs::create_dir_all(&path).unwrap();
+            let route = if force_bridge { "bridge" } else { "direct" };
+            h.render()
+                .unwrap()
+                .save(path.join(format!("{device}-{route}-{lang}.png")))
+                .unwrap();
+        }
+    };
     for (language, lang) in [
         (Language::De, komponist_i18n::Lang::De),
         (Language::En, komponist_i18n::Lang::En),
@@ -557,7 +561,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         crate::acceptance_support::click_at(&mut h, pad);
         h.get_by_role_and_label(Role::Group, "Pad 3 · tone");
         h.get_by_role_and_label(Role::Slider, "Tune 3");
-        save_screenshot(&mut h, "drum-sampler", code, true);
+        save_screenshot(&mut h, "drum-sampler", code, Some("Pad 3 · tone"));
         select(h.state_mut(), general_track);
         h.run_steps(3);
         h.get_by_role_and_label(Role::Button, "tone");
@@ -579,7 +583,41 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
-        save_screenshot(&mut h, "general-sampler", code, true);
+        save_screenshot(
+            &mut h,
+            "general-sampler",
+            code,
+            Some(lang.ui_graph_waveform()),
+        );
+        if lang == komponist_i18n::Lang::En {
+            let label = format!(
+                "{} {}",
+                komponist_model::format::note_name(62),
+                lang.ui_graph_position()
+            );
+            let handle = h.get_by_role_and_label(Role::Slider, &label).rect();
+            let just_left = handle.center() - egui::vec2(2.0, 0.0);
+            h.hover_at(just_left);
+            h.step();
+            crate::acceptance_support::press(&mut h, just_left, egui::PointerButton::Primary, true);
+            h.step();
+            let assignment =
+                h.get_by_role_and_label(Role::ComboBox, lang.devices_sampler_midi_assignment());
+            assert!(
+                assignment
+                    .accesskit_node()
+                    .value()
+                    .is_some_and(|value| value.contains("100")),
+                "pressing the left edge of the 100 ms marker must select that marker immediately"
+            );
+            crate::acceptance_support::press(
+                &mut h,
+                just_left,
+                egui::PointerButton::Primary,
+                false,
+            );
+            h.step();
+        }
         let modulation = h
             .get_by_role_and_label(Role::RadioButton, lang.devices_sampler_modulation())
             .rect()
@@ -609,7 +647,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
-        save_screenshot(&mut h, "general-sampler-modulation", code, false);
+        save_screenshot(&mut h, "general-sampler-modulation", code, None);
         let sample = h
             .get_by_role_and_label(Role::RadioButton, lang.devices_sampler_sample())
             .rect()
@@ -726,6 +764,15 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         .find(|p| p.id.as_str() == "gain")
         .unwrap();
     let raw = |db| pinned_clap_state::to_clap(info, db);
+    let hosted_state = |app: &App| {
+        let (_, _, d) = app.project().find_device(general).unwrap();
+        pinned_clap_state::decode(d.state.as_deref().unwrap()).unwrap()
+    };
+    let gain_saved = |app: &App, db| {
+        hosted_state(app)["params"]["gain"]["f32"]
+            .as_f64()
+            .is_some_and(|gain| (gain - raw(db)).abs() < 1e-6)
+    };
     let set_gain = |app: &mut App, db| {
         app.dispatch(Action::Plugin(PluginAction::SetParam {
             device: general,
@@ -753,6 +800,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         },
         changed_slices,
     );
+    assert!(gain_saved(h.state(), -18.0));
     step_until(
         h.state_mut(),
         "the cancelled turn stays cancelled after a slice edit",
@@ -781,10 +829,6 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     set_gain(h.state_mut(), -22.0);
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
-    let hosted_state = |app: &App| {
-        let (_, _, d) = app.project().find_device(general).unwrap();
-        pinned_clap_state::decode(d.state.as_deref().unwrap()).unwrap()
-    };
     let sample_name = |app: &App| {
         app.project().find_device(general).unwrap().2.asset_links[&0]
             .name()
@@ -802,11 +846,6 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         asset_status(app, general, 0) == Some(&AssetStatus::Ready)
     });
 
-    let gain_saved = |app: &App, db| {
-        hosted_state(app)["params"]["gain"]["f32"]
-            .as_f64()
-            .is_some_and(|gain| (gain - raw(db)).abs() < 1e-6)
-    };
     set_gain(h.state_mut(), -28.0);
     h.state_mut().engine_mut().host_mut().request_state(general);
     step_until(h.state_mut(), "the card's gain was saved", |app| {
@@ -829,6 +868,39 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     assert_eq!(sample_name(h.state()), "replacement");
     assert!(gain_saved(h.state(), -9.0));
 
+    step_until(h.state_mut(), "replacement is ready for playback", |app| {
+        asset_status(app, general, 0) == Some(&AssetStatus::Ready)
+    });
+    let sample_peak = |app: &mut App| {
+        app.engine().track_meter(general_track).unwrap().take();
+        note_peak(app, general_track, 60)
+    };
+    let deadline = Instant::now() + PATIENCE;
+    let base_peak = loop {
+        let peak = sample_peak(h.state_mut());
+        if peak > 1e-3 {
+            break peak;
+        }
+        // The previous file's first slice is silent. A Ready inventory may still describe it.
+        assert!(
+            Instant::now() < deadline,
+            "the unautomated replacement sample is silent: peak {peak}"
+        );
+    };
+    let assert_live_automation = |app: &mut App| {
+        let ready_after = app.engine().stats().callbacks() + 2;
+        step_until(
+            app,
+            "the audio callback received the restored automation",
+            |app| app.engine().stats().callbacks() >= ready_after,
+        );
+        let peak = sample_peak(app);
+        let ratio = peak / base_peak;
+        assert!(
+            (0.01..0.05).contains(&ratio),
+            "the -42 dB lane did not attenuate the -9 dB base: peak {peak}, base {base_peak}"
+        );
+    };
     let owner = AutomationOwner::Track(general_track);
     let target = AutomationTarget::Param {
         device: general,
@@ -856,17 +928,20 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             Points::new(vec![Point::linear(Tick::ZERO, raw(-42.0) as f32)]),
             "undo-automation-add-point",
         )));
+    h.state_mut().engine_mut().send(Command::Play);
     step_until(
         h.state_mut(),
         "sampler gain automation is installed",
         |app| {
             asset_status(app, general, 0) == Some(&AssetStatus::Ready)
+                && app.engine().transport() == komponist_engine::TransportState::Playing
                 && app
                     .engine()
                     .program()
                     .is_some_and(|program| program.automation_reads(owner, &target))
         },
     );
+    assert_live_automation(h.state_mut());
     let before = slice_state(h.state());
     let prior: Vec<_> = before.slices.iter().map(|slice| slice.time).collect();
     let seconds = 0.08;
@@ -881,14 +956,48 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         after.clone(),
     );
     assert!(gain_saved(h.state(), -9.0));
+    let wait_for_restore = |app: &mut App| {
+        step_until(app, "sampler marker state restored", |app| {
+            app.device_events().iter().any(|event| {
+                matches!(event, PluginManagerEvent::StateApplied { device } if *device == general)
+            })
+        });
+        step_until(app, "restored sampler asset ready", |app| {
+            asset_status(app, general, 0) == Some(&AssetStatus::Ready)
+                && app.engine().transport() == komponist_engine::TransportState::Playing
+        });
+    };
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
     assert_eq!(slice_state(h.state()), before);
     assert!(gain_saved(h.state(), -9.0));
+    wait_for_restore(h.state_mut());
+    assert_live_automation(h.state_mut());
     h.state_mut().dispatch(Action::Edit(EditAction::Redo));
     assert_eq!(slice_state(h.state()), after);
     assert!(gain_saved(h.state(), -9.0));
+    wait_for_restore(h.state_mut());
+    assert_live_automation(h.state_mut());
     assert_eq!(sample_name(h.state()), "replacement");
     h.state_mut().shutdown();
+}
+
+fn has_waveform_peaks(harness: &egui_kittest::Harness<'_, App>, label: &str) -> bool {
+    use egui::{Shape, accesskit::Role};
+
+    let Some(graph) = harness.query_by_role_and_label(Role::Group, label) else {
+        return false;
+    };
+    let rect = graph.rect();
+    // The waveform data is painted as a strip spanning the plot, with two vertices per column.
+    harness.output().shapes.iter().any(|clipped| {
+        let Shape::Mesh(mesh) = &clipped.shape else {
+            return false;
+        };
+        let bounds = mesh.calc_bounds();
+        mesh.vertices.len() == 2 * rect.width().ceil() as usize
+            && bounds.height() > 1.0
+            && rect.expand(1.0).contains_rect(bounds)
+    })
 }
 
 fn assert_sample_sources(project: &Project, project_dir: &Path, source: &Path) {

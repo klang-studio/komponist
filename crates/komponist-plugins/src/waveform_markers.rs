@@ -86,7 +86,8 @@ impl MarkerCache {
         let (&slot, entry) = self
             .slots
             .iter_mut()
-            .find(|(_, entry)| entry.requested && now >= entry.refresh_at)?;
+            .filter(|(_, entry)| entry.requested && now >= entry.refresh_at)
+            .min_by_key(|(_, entry)| entry.refresh_at)?;
         entry.requested = false;
         entry.refresh_at = now + REFRESH;
         Some(slot)
@@ -197,6 +198,18 @@ mod tests {
             default_options: None,
             preparation: None,
         }
+    }
+
+    #[test]
+    fn an_older_eligible_slot_is_serviced_before_a_repeated_request() {
+        let mut cache = MarkerCache::default();
+        cache.request(0);
+        cache.request(1);
+        let now = Instant::now();
+        cache.slots.get_mut(&0).unwrap().refresh_at = now;
+        cache.slots.get_mut(&1).unwrap().refresh_at = now - REFRESH;
+        assert_eq!(cache.poll(), Some(1));
+        assert_eq!(cache.poll(), Some(0));
     }
 
     #[test]

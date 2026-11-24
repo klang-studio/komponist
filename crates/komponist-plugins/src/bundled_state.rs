@@ -151,6 +151,10 @@ impl MarkerParameters {
         })
     }
 
+    pub(crate) fn update_persistent(&mut self, latest: Self) {
+        self.persistent.extend(latest.persistent);
+    }
+
     pub(crate) fn normalize(&self, result: EditResult) -> EditResult {
         if self.persistent.is_empty() {
             return result;

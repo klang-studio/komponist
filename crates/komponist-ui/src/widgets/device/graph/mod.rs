@@ -172,6 +172,8 @@ pub struct GraphOutput {
     /// The slot the selected handle selects as its parameter: the one of the axis moved last, else
     /// its X, Y or wheel binding.
     pub selected_slot: Option<usize>,
+    /// The primary binding of the handle hit by a primary press on this pass.
+    pub pressed_slot: Option<usize>,
     /// Requests the host acts on.
     pub events: Vec<GraphEvent>,
     /// What the user is doing with the handles: the host brackets it into one undo gesture.
@@ -593,6 +595,9 @@ impl<'a> Graph<'a> {
         let mut hits: Vec<(usize, Rect, Id)> = Vec::new();
         let mut hot: Vec<(usize, bool, bool)> = Vec::new();
         let mut touch = GraphTouch::default();
+        let primary_button = egui::PointerButton::Primary;
+        let primary_pressed = ui.input(|input| input.pointer.button_pressed(primary_button));
+        let mut pressed_slot = None;
         for (i, h) in spec.handles.iter().enumerate() {
             if !is_visible(h, values) {
                 continue;
@@ -632,6 +637,9 @@ impl<'a> Graph<'a> {
                 continue;
             }
             hot.push((i, r.hovered() || r.dragged(), r.dragged()));
+            if primary_pressed && (r.is_pointer_button_down_on() || r.clicked_by(primary_button)) {
+                pressed_slot = primary.and_then(|binding| binding.of(h)).map(|b| b.slot);
+            }
             touch.clicked |= r.clicked();
             touch.drag_started |= r.drag_started();
             touch.dragging |= r.dragged();
@@ -922,6 +930,7 @@ impl<'a> Graph<'a> {
             changed: merged,
             selected,
             selected_slot,
+            pressed_slot,
             events,
             touch,
         }

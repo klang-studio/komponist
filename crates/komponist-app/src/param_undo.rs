@@ -454,9 +454,6 @@ impl App {
             return;
         };
         let no_document_state = target.state.is_none();
-        if self.doc.in_gesture() {
-            self.end_gesture();
-        }
         self.param_undo.awaiting.remove(&device);
         self.param_undo.echo.remove(&device);
         self.param_undo.turned.remove(&device);
@@ -489,6 +486,9 @@ impl App {
         if previous_state == state {
             return;
         }
+        if self.doc.in_gesture() {
+            self.end_gesture();
+        }
         let Some((_, _, target)) = self.project().find_device(device) else {
             return;
         };
@@ -497,7 +497,6 @@ impl App {
             .as_ref()
             .or_else(|| self.param_undo.baseline.get(&device));
         if recorded.is_some_and(|recorded| recorded != previous_state) {
-            self.end_gesture();
             let label = undo_label::plugin_state(&self.device_name(device));
             if let Err(error) = self.doc.apply(label, |project| {
                 edits::set_device_state(project, device, Some(Arc::clone(previous_state)))
