@@ -23,7 +23,7 @@ pub(super) struct Meter {
     named_frames: AtomicU32,
     named_reduction: AtomicU32,
     rate_bits: AtomicU32,
-    reduction_phase: AtomicU32,
+    reduction_phases: [AtomicU32; signal_taps::MAX_TAPS],
 }
 
 impl Meter {
@@ -38,13 +38,15 @@ impl Meter {
             named_frames: AtomicU32::new(0),
             named_reduction: AtomicU32::new(0),
             rate_bits: AtomicU32::new(48_000.0_f32.to_bits()),
-            reduction_phase: AtomicU32::new(0),
+            reduction_phases: [const { AtomicU32::new(0) }; signal_taps::MAX_TAPS],
         }
     }
 
     pub(super) fn set_rate(&self, rate: f32) {
         self.rate_bits.store(rate.to_bits(), Ordering::Relaxed);
-        self.reduction_phase.store(0, Ordering::Relaxed);
+        for phase in &self.reduction_phases {
+            phase.store(0, Ordering::Relaxed);
+        }
     }
 
     fn begin_named(&self, mask: u32) {
@@ -109,10 +111,11 @@ impl Meter {
         }
         let rate = f32::from_bits(self.rate_bits.load(Ordering::Relaxed));
         let interval = descriptor.frame_interval(rate).max(1);
-        let frames = self.named_frames.load(Ordering::Relaxed)
-            + self.reduction_phase.load(Ordering::Relaxed);
-        self.reduction_phase
-            .store(frames % interval, Ordering::Relaxed);
+        let phase = &self.reduction_phases[index as usize];
+        let frames = u64::from(self.named_frames.load(Ordering::Relaxed))
+            + u64::from(phase.load(Ordering::Relaxed));
+        let interval = u64::from(interval);
+        phase.store((frames % interval) as u32, Ordering::Relaxed);
         let count = ((frames / interval) as usize).min(out.len());
         out[..count].fill(f32::from_bits(self.named_reduction.load(Ordering::Relaxed)));
         count as u32
@@ -331,6 +334,23 @@ mod tests {
         meter.record_named_reduction(48, 3.0);
         assert_eq!(meter.read_named(0, gr, &mut out), 1);
         assert_eq!(out[0], 3.0);
+    }
+
+    #[test]
+    fn reduction_streams_keep_independent_phase() {
+        let meter = Meter::new(None);
+        let first = signal_taps::Descriptor::new("first", signal_taps::REDUCTION, 32, 256);
+        let second = signal_taps::Descriptor::new("second", signal_taps::REDUCTION, 32, 256);
+        let mut out = [0.0; 2];
+        meter.begin_named(0b11);
+        meter.record_named_reduction(48, 5.0);
+        assert_eq!(meter.read_named(0, first, &mut out), 1);
+        assert_eq!(meter.read_named(1, second, &mut out), 1);
+        meter.begin_named(0b11);
+        meter.record_named_reduction(48, 6.0);
+        assert_eq!(meter.read_named(1, second, &mut out), 2);
+        assert_eq!(out, [6.0, 6.0]);
+        assert_eq!(meter.read_named(0, first, &mut out), 2);
     }
 
     #[test]

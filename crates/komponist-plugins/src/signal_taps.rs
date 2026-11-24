@@ -1,5 +1,6 @@
 //! A common display history for direct and bridged plugin signal streams.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use komponist_engine::SampleTap;
@@ -9,7 +10,7 @@ use komponist_ipc::signal_taps::{BlockTaps, Descriptor, valid_inventory};
 #[derive(Debug)]
 pub struct SignalTap {
     descriptor: Descriptor,
-    samples: SampleTap,
+    samples: Arc<SampleTap>,
     audio_rate: AtomicU32,
 }
 
@@ -20,7 +21,7 @@ impl SignalTap {
     }
 
     /// The sample rate and lock-free history readers can inspect.
-    pub fn samples(&self) -> &SampleTap {
+    pub fn samples(&self) -> &Arc<SampleTap> {
         &self.samples
     }
 
@@ -49,7 +50,7 @@ impl SignalTaps {
                 .iter()
                 .map(|&descriptor| SignalTap {
                     descriptor,
-                    samples: SampleTap::new(descriptor.capacity as usize),
+                    samples: Arc::new(SampleTap::new(descriptor.capacity as usize)),
                     audio_rate: AtomicU32::new(0),
                 })
                 .collect(),

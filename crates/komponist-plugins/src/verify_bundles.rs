@@ -315,6 +315,15 @@ fn scan(config: &PluginManagerConfig, path: &Path, id: &str) -> Result<PluginDes
     Ok(descriptor)
 }
 
+fn expected_signal_taps(plugin_id: &str) -> &'static [&'static str] {
+    match plugin_id {
+        "org.klang-studio.komponist.eq" => &["spectrum"],
+        PRESSE_ID => &["detector", "reduction"],
+        "org.klang-studio.komponist.limiter" => &["reduction"],
+        _ => &[],
+    }
+}
+
 fn smoke_direct(
     bundle: VerifiedClap,
     descriptor: &PluginDescriptor,
@@ -323,6 +332,7 @@ fn smoke_direct(
     let meter = Meter::new(&descriptor.features, SETUP.sample_rate);
     let hall = bundle.plugin_id() == HALL_ID;
     let presse = bundle.plugin_id() == PRESSE_ID;
+    let expected_taps = expected_signal_taps(bundle.plugin_id());
     let mut host = DirectClap::load(bundle).map_err(|error| error.to_string())?;
     let can_render =
         host.try_control(|plugin| plugin.native_layout().is_some() && !plugin.params().is_empty());
@@ -340,11 +350,12 @@ fn smoke_direct(
             thread::scope(|scope| scope.spawn(|| check_effect_meter(&mut audio, meter)).join())
                 .map_err(|_| "direct meter audio worker panicked".to_owned())??;
         }
-        for name in ["spectrum", "detector", "reduction"] {
-            if let Some(tap) = session.signal_tap(name) {
-                thread::scope(|scope| scope.spawn(|| check_named_tap(&mut audio, tap)).join())
-                    .map_err(|_| "direct signal tap worker panicked".to_owned())??;
-            }
+        for &name in expected_taps {
+            let tap = session
+                .signal_tap(name)
+                .ok_or_else(|| format!("direct session did not report signal tap {name}"))?;
+            thread::scope(|scope| scope.spawn(|| check_named_tap(&mut audio, tap)).join())
+                .map_err(|_| "direct signal tap worker panicked".to_owned())??;
         }
         audio
             .activate(SETUP.sample_rate, SETUP.max_block * 2)
@@ -417,6 +428,12 @@ fn smoke_bridge(
         audio.set_effect_meter(meter.clone());
     }
     let result = (|| {
+        let expected_taps = expected_signal_taps(bundle.plugin_id());
+        if !expected_taps.is_empty() {
+            // The first request precedes inventory delivery. The second updates existing taps.
+            reactivate_named_taps(&mut bridge, &mut audio, 44_100.0, expected_taps)?;
+            reactivate_named_taps(&mut bridge, &mut audio, SETUP.sample_rate, expected_taps)?;
+        }
         wait_for_bridge(&mut bridge, |bridge, _, _| {
             Ok((bridge.status() == DeviceStatus::Ok).then_some(()))
         })?;
@@ -430,10 +447,11 @@ fn smoke_bridge(
         if let Some(meter) = &meter {
             check_effect_meter(&mut audio, meter)?;
         }
-        for name in ["spectrum", "detector", "reduction"] {
-            if let Some(tap) = bridge.signal_tap(name) {
-                check_named_tap(&mut audio, tap)?;
-            }
+        for &name in expected_taps {
+            let tap = bridge
+                .signal_tap(name)
+                .ok_or_else(|| format!("bridge did not report signal tap {name}"))?;
+            check_named_tap(&mut audio, tap)?;
         }
         let request = bridge
             .request_state(StatePurpose::Collect, None)
@@ -474,6 +492,29 @@ fn smoke_bridge(
         Ok(None) => Err("bridge timed out during shutdown".to_owned()),
         Err(error) => Err(format!("could not wait for bridge shutdown: {error}")),
     }
+}
+
+fn reactivate_named_taps(
+    bridge: &mut Bridge,
+    audio: &mut dyn Processor,
+    rate: f32,
+    expected_taps: &[&str],
+) -> Result<(), String> {
+    audio
+        .activate(rate, SETUP.max_block)
+        .map_err(|error| error.to_string())?;
+    wait_for_bridge(bridge, |bridge, _, _| {
+        Ok((bridge.status() == DeviceStatus::Ok).then_some(()))
+    })?;
+    for &name in expected_taps {
+        let tap = bridge
+            .signal_tap(name)
+            .ok_or_else(|| format!("bridge did not report signal tap {name} after reactivation"))?;
+        if tap.samples().rate() != tap.descriptor().sample_rate(rate) {
+            return Err(format!("bridge signal tap {name} kept its old sample rate"));
+        }
+    }
+    Ok(())
 }
 
 fn wait_for_bridge<T>(

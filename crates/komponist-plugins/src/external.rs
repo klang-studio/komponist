@@ -446,9 +446,6 @@ impl Processor for ExternalProcessor {
             return Ok(());
         }
         self.setup = setup;
-        if let Some(taps) = self.shared.signal_taps.get() {
-            taps.set_rate(sample_rate);
-        }
         if let Some(meter) = &self.effect_meter {
             meter.set_rate(sample_rate);
         }

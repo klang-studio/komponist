@@ -964,6 +964,9 @@ impl Bridge {
         // In order after whatever is queued: the bridge ends up active with the new setup, and
         // the `Pong` after it says so.
         self.sample_rate = setup.sample_rate;
+        if let Some(taps) = self.shared.signal_taps.get() {
+            taps.set_rate(setup.sample_rate);
+        }
         self.send(ControlMsg::Deactivate);
         self.send(activate(setup));
         let seq = self.seq();

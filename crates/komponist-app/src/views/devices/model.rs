@@ -606,7 +606,7 @@ pub(crate) fn card(
         has_gui: host.has_gui(device.id),
         open: windows.iter().any(|w| w.device == device.id),
         layout,
-        native_layout: if bundled_editor { None } else { native_layout },
+        native_layout: native_layout.filter(|native| !bundled_editor || native.schema_version >= 2),
         display: host.device_display(device.id).cloned(),
         bundled_editor,
         page: 0,

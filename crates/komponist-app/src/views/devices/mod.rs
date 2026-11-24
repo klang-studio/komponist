@@ -257,7 +257,7 @@ impl View for Devices {
             // Existing rich panels bind the original conventional keys. A v2 panel
             // can choose its own keys explicitly through its graph cells.
             let bundled_signal = |name| {
-                c.bundled_editor
+                (c.bundled_editor && c.native_layout.is_none())
                     .then(|| host.signal_tap(c.device, name))
                     .flatten()
             };
@@ -271,7 +271,10 @@ impl View for Devices {
                 let (detector, reduction) =
                     (bundled_signal("detector"), bundled_signal("reduction"));
                 c.dynamics = if show && (detector.is_some() || reduction.is_some()) {
-                    Some(ctx.meters.named_dynamics(detector, reduction))
+                    Some(
+                        ctx.meters
+                            .named_dynamics(c.device, detector, reduction, now),
+                    )
                 } else {
                     ctx.meters.dynamics(c.device, show, now)
                 };
@@ -300,8 +303,11 @@ impl View for Devices {
                     let analysis = named("spectrum")
                         .and_then(|tap| ctx.meters.named_analysis(c.device, tap, show, now));
                     let (detector, reduction) = (named("level"), named("reduction"));
-                    let dynamics = (show && (detector.is_some() || reduction.is_some()))
-                        .then(|| ctx.meters.named_dynamics(detector, reduction));
+                    let dynamics =
+                        (show && (detector.is_some() || reduction.is_some())).then(|| {
+                            ctx.meters
+                                .named_dynamics(c.device, detector, reduction, now)
+                        });
                     Some((
                         (cell.row, cell.col),
                         model::GraphSignals { analysis, dynamics },

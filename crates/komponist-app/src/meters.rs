@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use komponist_engine::{DeviceMeter, SampleTap};
 use komponist_model::{DeviceId, TrackId};
@@ -16,7 +16,7 @@ use komponist_plugins::signal_taps::SignalTap;
 use komponist_ui::widgets::meter::{MeterState, fraction};
 
 use crate::engine_sync::EngineSync;
-use crate::gain_trace::{Dynamics, GainTrace};
+use crate::gain_trace::{self, Dynamics, GainTrace};
 use crate::master_scope::MasterScope;
 use crate::spectrum::{Analysis, SpectrumAnalyzer};
 
@@ -110,6 +110,94 @@ impl ReductionReading {
     }
 }
 
+#[derive(Debug, Default)]
+struct NamedSpectrum {
+    tap: Weak<SampleTap>,
+    visible_at: f64,
+    analyzer: SpectrumAnalyzer,
+}
+
+impl NamedSpectrum {
+    fn update(&mut self, tap: &Arc<SampleTap>, now: f64) {
+        if self.tap.as_ptr() != Arc::as_ptr(tap) {
+            self.tap = Arc::downgrade(tap);
+            self.analyzer.reset();
+        }
+        self.visible_at = now;
+        self.analyzer.update_samples(now, tap);
+    }
+}
+
+#[derive(Debug)]
+struct SignalHistory {
+    tap: Weak<SampleTap>,
+    visible_at: f64,
+    last_tick: f64,
+    started_at: u64,
+    cursor: u64,
+    latest: Option<f32>,
+    columns: Arc<[f32]>,
+}
+
+impl SignalHistory {
+    fn new(tap: &Arc<SampleTap>, now: f64) -> Self {
+        let cursor = tap.written();
+        Self {
+            tap: Arc::downgrade(tap),
+            visible_at: now,
+            last_tick: now,
+            started_at: cursor,
+            cursor,
+            latest: None,
+            columns: Arc::from([0.0; gain_trace::POINTS]),
+        }
+    }
+
+    fn update(
+        &mut self,
+        tap: &Arc<SampleTap>,
+        now: f64,
+        samples: &mut Vec<f32>,
+        value_at: impl Fn(f32, f32) -> f32,
+    ) {
+        use komponist_ui::widgets::device::graph::configs::GR_HISTORY_SECONDS;
+
+        if self.tap.as_ptr() != Arc::as_ptr(tap) || now - self.visible_at > gain_trace::STALE {
+            *self = Self::new(tap, now);
+            return;
+        }
+        self.visible_at = now;
+        // This also shares the same snapshot between graph cells using the same tap.
+        if now - self.last_tick < gain_trace::INTERVAL * 0.9 {
+            return;
+        }
+        self.last_tick = now;
+        self.latest = None;
+        let written = tap.written();
+        if written == self.cursor {
+            return;
+        }
+        let window = (f64::from(tap.rate()) * GR_HISTORY_SECONDS) as usize;
+        let count = (written - self.started_at).min(window.min(tap.capacity() / 2) as u64) as usize;
+        if count == 0 {
+            return;
+        }
+        samples.resize(count, 0.0);
+        let Some(cursor) = tap.read_latest(samples) else {
+            return;
+        };
+        self.cursor = cursor;
+        self.latest = samples.last().copied();
+        let columns = Arc::make_mut(&mut self.columns);
+        columns.fill(0.0);
+        for (index, &db) in samples.iter().enumerate() {
+            let age = count - 1 - index;
+            let column = gain_trace::POINTS - 1 - age * gain_trace::POINTS / window;
+            columns[column] = value_at(columns[column], db);
+        }
+    }
+}
+
 /// Ballistics of the master, the tracks of the current program and the internal devices.
 #[derive(Debug, Default)]
 pub struct Meters {
@@ -122,9 +210,10 @@ pub struct Meters {
     /// spectrum is visible right now.
     taps: HashMap<DeviceId, Arc<SampleTap>>,
     spectra: HashMap<DeviceId, SpectrumAnalyzer>,
-    named_spectra: HashMap<(DeviceId, String), (f64, SpectrumAnalyzer)>,
+    named_spectra: HashMap<(DeviceId, String), NamedSpectrum>,
     named_reductions: HashMap<(DeviceId, String), ReductionReading>,
-    signal_history: Vec<f32>,
+    named_histories: HashMap<(DeviceId, String), SignalHistory>,
+    signal_samples: Vec<f32>,
     /// The traces of the compressors whose card is visible right now (WP-93).
     traces: HashMap<DeviceId, GainTrace>,
     /// The transport bar's oscilloscope and spectrum of the master (#34).
@@ -168,7 +257,9 @@ impl Meters {
         self.taps.retain(|id, _| seen.contains(id));
         self.spectra.retain(|id, _| seen.contains(id));
         self.named_spectra
-            .retain(|_, (visible, _)| now - *visible < 0.5);
+            .retain(|_, reading| now - reading.visible_at < 0.5);
+        self.named_histories
+            .retain(|_, reading| now - reading.visible_at <= gain_trace::STALE);
         self.traces.retain(|id, _| seen.contains(id));
         let Some(program) = engine.program() else {
             self.tracks.clear();
@@ -275,12 +366,11 @@ impl Meters {
             });
         }
         source.want();
-        let (visible, analyzer) = self.named_spectra.entry(key).or_default();
-        *visible = now;
-        analyzer.update_samples(now, source.samples());
+        let reading = self.named_spectra.entry(key).or_default();
+        reading.update(source.samples(), now);
         Some(Analysis {
             rate,
-            spectrum: Arc::clone(analyzer.values()),
+            spectrum: Arc::clone(reading.analyzer.values()),
         })
     }
 
@@ -302,55 +392,57 @@ impl Meters {
 
     pub(crate) fn named_dynamics(
         &mut self,
+        device: DeviceId,
         detector: Option<&SignalTap>,
         reduction: Option<&SignalTap>,
+        now: f64,
     ) -> Dynamics {
         use crate::gain_trace::{LEVEL_FLOOR_DB, LEVEL_HEIGHT, POINTS};
         use komponist_ipc::signal_taps::{LEVEL_HISTORY, REDUCTION};
-        let mut input = [0.0_f32; POINTS];
-        let mut trace = [0.0_f32; POINTS];
-        let level_db = detector
+        let (level_db, input) = detector
             .filter(|tap| tap.descriptor().kind == LEVEL_HISTORY)
             .and_then(|tap| {
-                self.fold_signal(tap, |column, db| {
+                self.signal_history(device, tap, now, |column, db| {
                     let h = ((db - LEVEL_FLOOR_DB) / -LEVEL_FLOOR_DB).clamp(0.0, 1.0);
-                    input[column] = input[column].max(h * LEVEL_HEIGHT);
+                    column.max(h * LEVEL_HEIGHT)
                 })
-            });
-        if let Some(tap) = reduction.filter(|tap| tap.descriptor().kind == REDUCTION) {
-            self.fold_signal(tap, |column, db| {
-                trace[column] = trace[column].min(-db.max(0.0));
-            });
-        }
+            })
+            .map_or_else(
+                || (None, Arc::from([0.0; POINTS])),
+                |reading| (reading.latest, Arc::clone(&reading.columns)),
+            );
+        let reduction = reduction
+            .filter(|tap| tap.descriptor().kind == REDUCTION)
+            .and_then(|tap| {
+                self.signal_history(device, tap, now, |column, db| column.min(-db.max(0.0)))
+            })
+            .map_or_else(
+                || Arc::from([0.0; POINTS]),
+                |reading| Arc::clone(&reading.columns),
+            );
         Dynamics {
             level_db,
-            input: Arc::from(input),
-            reduction: Arc::from(trace),
+            input,
+            reduction,
         }
     }
 
-    fn fold_signal(
+    fn signal_history(
         &mut self,
+        device: DeviceId,
         source: &SignalTap,
-        mut display: impl FnMut(usize, f32),
-    ) -> Option<f32> {
-        use crate::gain_trace::POINTS;
-        use komponist_ui::widgets::device::graph::configs::GR_HISTORY_SECONDS;
+        now: f64,
+        value_at: impl Fn(f32, f32) -> f32,
+    ) -> Option<&SignalHistory> {
+        let key = (device, source.descriptor().key()?.to_owned());
         source.want();
         let tap = source.samples();
-        let window = (f64::from(tap.rate()) * GR_HISTORY_SECONDS) as usize;
-        let count = (tap.written() as usize).min(tap.capacity() / 2).min(window);
-        if count == 0 {
-            return None;
-        }
-        self.signal_history.resize(count, 0.0);
-        tap.read_latest(&mut self.signal_history)?;
-        for (index, &db) in self.signal_history.iter().enumerate() {
-            let age = count - 1 - index;
-            let column = POINTS - 1 - age * POINTS / window;
-            display(column, db);
-        }
-        self.signal_history.last().copied()
+        let reading = self
+            .named_histories
+            .entry(key)
+            .or_insert_with(|| SignalHistory::new(tap, now));
+        reading.update(tap, now, &mut self.signal_samples, value_at);
+        Some(reading)
     }
 
     /// The meter of `track`, if it is in the program.
@@ -403,7 +495,11 @@ impl Meters {
             || self
                 .named_spectra
                 .values()
-                .any(|(_, analyzer)| analyzer.is_active())
+                .any(|reading| reading.analyzer.is_active())
+            || self
+                .named_histories
+                .values()
+                .any(|reading| reading.latest.is_some())
             || self.traces.values().any(GainTrace::is_active)
             || self.master_scope.is_active()
     }
@@ -412,6 +508,51 @@ impl Meters {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_history_shares_a_frame_and_holds_its_columns_when_audio_stops() {
+        let tap = Arc::new(SampleTap::new(256));
+        tap.set_rate(32.0);
+        tap.push(&[8.0]);
+        let mut history = SignalHistory::new(&tap, 0.0);
+        let mut samples = Vec::new();
+        history.update(&tap, 0.05, &mut samples, f32::max);
+        assert_eq!(history.latest, None);
+        tap.push(&[2.0, 3.0]);
+        history.update(&tap, 0.1, &mut samples, f32::max);
+        assert_eq!(samples, [2.0, 3.0]);
+        assert_eq!(history.latest, Some(3.0));
+        let columns = Arc::clone(&history.columns);
+        history.update(&tap, 0.1, &mut samples, f32::max);
+        assert_eq!(history.latest, Some(3.0));
+        history.update(&tap, 0.15, &mut samples, f32::max);
+        assert_eq!(history.latest, None);
+        assert!(Arc::ptr_eq(&history.columns, &columns));
+        history.update(&tap, 0.6, &mut samples, f32::max);
+        assert!(history.columns.iter().all(|&db| db == 0.0));
+    }
+
+    #[test]
+    fn named_spectrum_starts_over_after_tap_replacement() {
+        let old = Arc::new(SampleTap::new(16_384));
+        let new = Arc::new(SampleTap::new(16_384));
+        old.set_rate(48_000.0);
+        new.set_rate(48_000.0);
+        let wave: Vec<_> = (0..crate::spectrum::window_len(48_000.0))
+            .map(|n| (std::f32::consts::TAU * 1000.0 * n as f32 / 48_000.0).sin())
+            .collect();
+        old.push(&wave);
+        let mut reading = NamedSpectrum::default();
+        reading.update(&old, 0.0);
+        old.push(&wave);
+        reading.update(&old, 0.05);
+        assert!(reading.analyzer.is_active());
+        reading.update(&new, 0.1);
+        assert!(!reading.analyzer.is_active());
+        new.push(&wave);
+        reading.update(&new, 0.15);
+        assert!(reading.analyzer.is_active());
+    }
 
     #[test]
     fn named_reduction_ignores_retained_data_and_decays_at_the_meter_rate() {
