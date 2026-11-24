@@ -35,6 +35,7 @@ pub(crate) struct DirectClap {
     callbacks: Rc<PollLoop>,
     processing: Arc<AtomicBool>,
     refresh: PendingRefresh,
+    signal_taps: Option<Arc<crate::signal_taps::SignalTaps>>,
     _bundle: VerifiedClap,
 }
 
@@ -47,13 +48,20 @@ impl DirectClap {
             bundle.plugin_id(),
             callbacks.context(),
         )?;
+        let signal_taps =
+            crate::signal_taps::SignalTaps::new(plugin.signal_taps(), 48_000.0).map(Arc::new);
         Ok(Self {
             plugin,
             callbacks,
             processing: Arc::new(AtomicBool::new(false)),
             refresh: PendingRefresh::default(),
+            signal_taps,
             _bundle: bundle,
         })
+    }
+
+    pub(crate) fn signal_tap(&self, key: &str) -> Option<&crate::signal_taps::SignalTap> {
+        self.signal_taps.as_deref()?.get(key)
     }
 
     /// Main-thread operations that cannot overlap processing. The owner can retry on its next
@@ -138,6 +146,13 @@ impl DirectClap {
         }
         let latency = self.plugin.latency();
         self.clear_refresh(notification_bits::LATENCY_CHANGED);
+        let signal_taps = self.signal_taps.as_ref().map(|taps| {
+            taps.set_rate(setup.sample_rate);
+            (
+                Arc::clone(taps),
+                Box::new(komponist_ipc::signal_taps::BlockTaps::EMPTY),
+            )
+        });
         Ok(DirectProcessor {
             audio,
             processing: self.processing.clone(),
@@ -156,6 +171,7 @@ impl DirectClap {
             sample_clock: 0,
             reset_pending: false,
             offline_failures: 0,
+            signal_taps,
             midi: (role == DeviceRole::MidiEffect).then(|| MidiStage::new(setup.max_block)),
         })
     }
@@ -230,6 +246,10 @@ pub(crate) struct DirectProcessor {
     sample_clock: u64,
     reset_pending: bool,
     offline_failures: u64,
+    signal_taps: Option<(
+        Arc<crate::signal_taps::SignalTaps>,
+        Box<komponist_ipc::signal_taps::BlockTaps>,
+    )>,
     midi: Option<MidiStage>,
 }
 
@@ -339,6 +359,14 @@ impl DirectProcessor {
                 false
             }
         });
+        let tap_mask = self
+            .signal_taps
+            .as_ref()
+            .filter(|_| !ctx.offline)
+            .map_or(0, |(taps, _)| taps.begin(ctx.frames as usize));
+        if tap_mask != 0 {
+            self.audio.begin_signal_taps(tap_mask);
+        }
         let result = self.audio.process(&mut block);
         let readings = meter_requested
             .then(|| self.audio.end_effect_meter())
@@ -352,6 +380,13 @@ impl DirectProcessor {
         }
         if let Some(meter) = meter {
             meter.record(io, readings);
+        }
+        if tap_mask != 0
+            && let Some((taps, payload)) = &mut self.signal_taps
+        {
+            payload.clear();
+            self.audio.read_signal_taps(tap_mask, payload);
+            taps.record(payload);
         }
         self.delivered = true;
         ProcessStatus::Continue

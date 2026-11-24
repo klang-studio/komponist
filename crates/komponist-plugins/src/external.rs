@@ -75,6 +75,7 @@ pub(crate) struct Shared {
     pub reactivate: Mutex<Option<ProcessorSetup>>,
     /// Blocks that missed their deadline or found the bridge busy.
     pub late_blocks: AtomicU64,
+    pub signal_taps: std::sync::OnceLock<crate::signal_taps::SignalTaps>,
 }
 
 impl Shared {
@@ -84,6 +85,7 @@ impl Shared {
             reactivating: AtomicBool::new(false),
             reactivate: Mutex::new(None),
             late_blocks: AtomicU64::new(0),
+            signal_taps: std::sync::OnceLock::new(),
         }
     }
 }
@@ -299,6 +301,8 @@ impl ExternalProcessor {
         }
         if ctx.offline {
             flags |= BLOCK_FLAG_OFFLINE;
+        } else if let Some(taps) = self.shared.signal_taps.get() {
+            flags |= komponist_ipc::shm::signal_tap_flags(taps.begin(frames));
         }
         if let Some(meter) = self
             .effect_meter
@@ -375,6 +379,12 @@ impl ExternalProcessor {
                             && let (Some(meter), Some(io)) = (&self.effect_meter, io.as_deref())
                         {
                             meter.record(io, self.client.effect_meter(seq));
+                        }
+                        if result.status == BlockStatus::Ok as u32
+                            && let (Some(taps), Some(payload)) =
+                                (self.shared.signal_taps.get(), self.client.signal_taps(seq))
+                        {
+                            taps.record(payload);
                         }
                         (
                             ProcessStatus::Continue,

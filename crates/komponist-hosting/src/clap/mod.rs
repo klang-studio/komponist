@@ -22,6 +22,7 @@ mod native_layout;
 mod processor;
 mod sampler_ui;
 mod sidechain_fallback;
+mod signal_taps;
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -182,6 +183,7 @@ struct Extensions {
     audio_ports: Option<PluginAudioPorts>,
     sidechain_from_main: bool,
     effect_meter: Option<effect_meter::EffectMeter>,
+    signal_taps: Option<signal_taps::SignalTaps>,
     note_ports: Option<PluginNotePorts>,
     params: Option<PluginParams>,
     state: Option<PluginState>,
@@ -200,6 +202,7 @@ impl Extensions {
             audio_ports: handle.get_extension(),
             sidechain_from_main: sidechain_fallback::configure(handle),
             effect_meter: effect_meter::EffectMeter::query(handle.as_raw()),
+            signal_taps: signal_taps::SignalTaps::query(handle.as_raw()),
             note_ports: handle.get_extension(),
             params: handle.get_extension(),
             state: handle.get_extension(),
@@ -400,6 +403,13 @@ impl HostedPlugin for ClapPlugin {
             .map(|(bytes, layout)| (bytes.as_slice(), layout))
     }
 
+    fn signal_taps(&self) -> &[komponist_ipc::signal_taps::Descriptor] {
+        self.ext
+            .signal_taps
+            .as_ref()
+            .map_or(&[], signal_taps::SignalTaps::inventory)
+    }
+
     fn supports_asset_slots(&self) -> bool {
         device_assets::supports_slots(self.instance.borrow_mut().plugin_handle().as_raw())
     }
@@ -500,7 +510,7 @@ impl HostedPlugin for ClapPlugin {
                 },
             )
             .map_err(|e| HostingError::Activate(e.to_string()))?;
-        Ok(Box::new(ClapProcessor::new(
+        let mut processor = ClapProcessor::new(
             stopped,
             &inputs,
             &outputs,
@@ -508,7 +518,9 @@ impl HostedPlugin for ClapPlugin {
             note_output,
             config.max_frames,
             ext.effect_meter,
-        )))
+        );
+        processor.set_signal_taps(ext.signal_taps);
+        Ok(Box::new(processor))
     }
 
     fn deactivate(&mut self, processor: Box<dyn HostedProcessor>) {

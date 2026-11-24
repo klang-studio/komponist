@@ -87,6 +87,7 @@ impl NativeClapLayout for NativeGain {
                         "Beide Parameter mit einem Griff bearbeiten.",
                     ),
                     hide_title: false,
+                    signal_taps: Default::default(),
                 },
             )]
             .into(),
@@ -105,6 +106,7 @@ impl NativeClapLayout for NativeGain {
             )]
             .into(),
             headings: Default::default(),
+            reduction_taps: Default::default(),
         })
     }
 }

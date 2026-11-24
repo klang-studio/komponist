@@ -102,6 +102,10 @@ impl Inventory {
 }
 
 impl DirectDevice {
+    pub(crate) fn signal_tap(&self, key: &str) -> Option<&crate::signal_taps::SignalTap> {
+        self.session.signal_tap(key)
+    }
+
     pub(crate) fn start(
         proof: VerifiedClap,
         role: DeviceRole,

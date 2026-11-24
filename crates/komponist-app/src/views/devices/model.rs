@@ -247,6 +247,7 @@ pub struct Card {
     /// The levels of the device's gain-reduction meter (set by the view from `Meters`); `None`
     /// for a device without a level feed.
     pub levels: Option<DeviceLevels>,
+    pub(super) native_meter_levels: std::collections::BTreeMap<u8, DeviceLevels>,
     /// The sampler's pads (only a running sampler has them).
     pub sampler: Option<SamplerView>,
     /// Editor data of the general-purpose Sampler.
@@ -257,6 +258,13 @@ pub struct Card {
     /// The live level and reduction history of a compressor (WP-93, set by the view from
     /// `Meters`); `None` for a device without a compressor graph.
     pub dynamics: Option<Dynamics>,
+    pub(super) graph_signals: std::collections::BTreeMap<(u8, u8), GraphSignals>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct GraphSignals {
+    pub(super) analysis: Option<Analysis>,
+    pub(super) dynamics: Option<Dynamics>,
 }
 
 impl Card {
@@ -267,14 +275,16 @@ impl Card {
             .find(|p| p.info.id == *id || (self.bundled_editor && id.plugin_id() == Some(p.wire)))
     }
 
+    pub(super) fn native_page(&self) -> Option<&komponist_ipc::native_layout::Page> {
+        let pages = &self.native_layout.as_ref()?.pages;
+        pages.get(self.page).or_else(|| pages.last())
+    }
+
     pub(super) fn native_cell(
         &self,
         cell: &layout::Cell,
     ) -> Option<&komponist_ipc::native_layout::Cell> {
-        let layout = self.native_layout.as_ref()?;
-        let page = layout
-            .pages
-            .get(self.page.min(layout.pages.len().saturating_sub(1)))?;
+        let page = self.native_page()?;
         let half = cell.half.map(|half| match half {
             layout::Half::Top => komponist_ipc::native_layout::Half::Top,
             layout::Half::Bottom => komponist_ipc::native_layout::Half::Bottom,
@@ -435,15 +445,16 @@ pub(crate) fn card(
             ) => bundled_params(device.id, host, native, kind.params_in(lang)),
             _ => None,
         }?;
-        let layout = match kind {
+        let layout = (native.schema_version < 2).then(|| match kind {
             BuiltinKind::Hexa => hexa_editor_layout(lang),
             BuiltinKind::Internal(Internal::GeneralSampler) => super::general_sampler::layout(lang),
             BuiltinKind::Internal(kind) => kind.layout_in(lang).clone(),
-        };
+        });
         Some((layout, params))
     });
     let bundled_editor = editor.is_some();
     let (editor_layout, editor_params) = editor.unzip();
+    let editor_layout = editor_layout.flatten();
     let params = if let Some(params) = editor_params {
         params
     } else if state == CardState::Ok {
@@ -499,7 +510,11 @@ pub(crate) fn card(
     };
     #[cfg(debug_assertions)]
     if state == CardState::Ok {
-        let known = |id: &ParamId| params.iter().any(|p| p.info.id == *id);
+        let known = |id: &ParamId| {
+            params
+                .iter()
+                .any(|p| p.info.id == *id || bundled_editor && id.plugin_id() == Some(p.wire))
+        };
         let errors = layout::validate(&layout, &super::cells::default_context(), &known);
         debug_assert!(
             errors.is_empty(),
@@ -592,7 +607,7 @@ pub(crate) fn card(
         has_gui: host.has_gui(device.id),
         open: windows.iter().any(|w| w.device == device.id),
         layout,
-        native_layout: if bundled_editor { None } else { native_layout },
+        native_layout: native_layout.filter(|native| !bundled_editor || native.schema_version >= 2),
         display: host.device_display(device.id).cloned(),
         asset_slots: host.asset_slots(device.id).map_or_else(Vec::new, |assets| {
             assets
@@ -614,10 +629,12 @@ pub(crate) fn card(
         width: layout::device_width(metrics::COLUMNS as u8),
         late: None,
         levels: None,
+        native_meter_levels: Default::default(),
         sampler,
         general_sampler: sampler_editor,
         analysis: None,
         dynamics: None,
+        graph_signals: Default::default(),
         routing: hexa_patch.as_ref().map(komponist_hexa::algorithms::routing),
         state,
     }
@@ -883,6 +900,16 @@ pub(super) fn native_card_layout(
                             Widget::Dropdown => WidgetKind::Dropdown,
                             Widget::MiniFader => WidgetKind::MiniFader,
                             Widget::Graph => unreachable!("validated graph binding"),
+                            Widget::MeterGr => {
+                                return Cell::span(
+                                    cell.col,
+                                    cell.row,
+                                    1,
+                                    cell.rows,
+                                    WidgetKind::MeterGr,
+                                    CellParam::None,
+                                );
+                            }
                             Widget::Canvas => {
                                 return Cell::span(
                                     cell.col,
@@ -1339,6 +1366,35 @@ mod tests {
         assert_eq!(cards[1].open_label(Lang::De), None);
         assert!(cards[2].bypass);
         assert_eq!(first_effect_slot(&cards), 1);
+    }
+
+    #[test]
+    fn native_metadata_uses_the_same_page_as_the_card_grid() {
+        let project = demo_project();
+        let host = BuiltinHost::new();
+        let mut card = cards(Lang::En, &project.tracks[2], &host, &[]).remove(0);
+        let native = komponist_ipc::native_layout::NativeLayout::parse(include_bytes!(
+            "../../../../../docs/clap-device-layout/example-v2.json"
+        ))
+        .unwrap();
+        card.layout = native_card_layout(&native, Lang::En);
+        card.native_layout = Some(std::sync::Arc::new(native));
+
+        for (index, title, key) in [
+            (0, "Graphs", "graphs"),
+            (1, "Display", "display"),
+            (2, "Display", "display"),
+        ] {
+            card.page = index;
+            let current = card.current_page().unwrap();
+            let native = card.native_page().unwrap();
+            assert_eq!(current.name, title);
+            assert_eq!(native.key, key);
+            assert!(std::ptr::eq(
+                card.native_cell(&current.cells[0]).unwrap(),
+                &native.cells[0],
+            ));
+        }
     }
 
     #[test]

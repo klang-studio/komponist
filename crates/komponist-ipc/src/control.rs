@@ -97,8 +97,11 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 13 distinguishes plugin-originated parameter flushes from value telemetry.
 /// 14 (#215): a checked snapshot carries the caller's remaining time.
 /// 15 adds optional device catalog labels to scanned and loaded descriptors.
+/// 16 adds bounded canvas display messages.
+/// 17 (#289) advertises the named signal tap inventory after plugin load.
 /// 18 distinguishes unsupported file slots from a temporarily missing snapshot.
-pub const PROTOCOL_VERSION: u32 = 18;
+/// 19 combines named signal taps and device asset preparation in the same wire contract.
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -579,6 +582,8 @@ pub enum BridgeMsg {
     },
     /// Bounded display list encoded with the public display schema.
     DeviceDisplay(u32, Option<Vec<u8>>),
+    /// Immutable named signal streams advertised by the loaded plugin.
+    SignalTaps(Vec<crate::signal_taps::Descriptor>),
 }
 
 /// Payload of [`BridgeMsg::Loaded`].

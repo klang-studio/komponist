@@ -46,6 +46,7 @@ pub mod sampler_ui;
 pub mod shm;
 pub mod sidechain_fallback;
 pub mod signal;
+pub mod signal_taps;
 
 // Unit tests run RT paths inside `assert_no_alloc`, which needs its allocator (debug builds only;
 // in release builds `assert_no_alloc` is a no-op).

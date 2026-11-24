@@ -198,6 +198,10 @@ impl DirectSession {
         self.host.try_control(f)
     }
 
+    pub(crate) fn signal_tap(&self, key: &str) -> Option<&crate::signal_taps::SignalTap> {
+        self.host.signal_tap(key)
+    }
+
     pub(crate) fn refresh_metadata<T>(
         &mut self,
         read: impl FnOnce(&mut dyn HostedPlugin, u32) -> T,

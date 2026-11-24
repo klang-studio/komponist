@@ -39,6 +39,7 @@ pub use komponist_ipc::device_assets;
 pub use komponist_ipc::effect_meter;
 pub use komponist_ipc::native_layout::{Canvas, Heading, Labels};
 pub use komponist_ipc::sampler_ui;
+pub use komponist_ipc::signal_taps;
 pub use komponist_model::params::{
     ParamId,
     layout::{Cell, CellParam, DeviceLayout, GraphBinding, GraphConfig, Half, Page, WidgetKind},
@@ -103,6 +104,8 @@ pub struct GraphLabels {
     pub description: Labels,
     /// Omit the painted title while retaining the accessible name.
     pub hide_title: bool,
+    /// Named signal streams keyed by the graph’s layer roles.
+    pub signal_taps: BTreeMap<String, String>,
 }
 
 /// A version 2 panel with display bindings keyed by zero-based page and cell indices.
@@ -115,6 +118,8 @@ pub struct PanelV2 {
     pub canvases: BTreeMap<(usize, usize), Canvas>,
     /// Section labels keyed by zero-based page index.
     pub headings: BTreeMap<usize, Vec<Heading>>,
+    /// Named reduction streams by zero-based page and cell indices.
+    pub reduction_taps: BTreeMap<(usize, usize), String>,
 }
 
 /// A nice-plug plugin supplying an immutable native layout.
@@ -260,6 +265,25 @@ unsafe fn compile_layout<P: ClapPlugin>(
                 cells.push(compile_graph(cell, binding, labels, &mut resolve_id)?);
                 continue;
             }
+            if cell.widget == WidgetKind::MeterGr {
+                let reduction_tap = v2
+                    .and_then(|panel| panel.reduction_taps.get(&index))
+                    .ok_or_else(|| error("missing v2 gain-reduction meter tap"))?;
+                if cell.half.is_some()
+                    || cell.carrier.is_some()
+                    || cell.disabled_by.is_some()
+                    || cell.param != CellParam::None
+                {
+                    return Err(error(
+                        "a gain-reduction meter needs a full cell without parameter bindings",
+                    ));
+                }
+                cells.push(json!({
+                    "widget": "meter_gr", "col": cell.col, "row": cell.row,
+                    "cols": cell.cols, "rows": cell.rows, "reduction_tap": reduction_tap,
+                }));
+                continue;
+            }
             let id = fixed_binding(cell)?;
             let widget = widget_name(cell.widget, v2.is_some())?;
             let param_id = resolve_id(id)?;
@@ -388,6 +412,9 @@ fn compile_graph(
         ));
     }
     let mut graph = json!({"name": labels.name, "description": labels.description});
+    if !labels.signal_taps.is_empty() {
+        graph["signal_taps"] = json!(labels.signal_taps);
+    }
     if labels.hide_title {
         graph["hide_title"] = json!(true);
     }

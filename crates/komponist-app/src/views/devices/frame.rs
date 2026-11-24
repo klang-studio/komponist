@@ -1062,7 +1062,7 @@ fn cells_body(
         }
     }
     if let Some(layout) = &card.native_layout
-        && let Some(native_page) = layout.pages.get(card.page)
+        && let Some(native_page) = card.native_page()
     {
         let lang = komponist_ui::lang(cu.ctx()).code();
         let row_step = device::grid::CELL[1] + device::grid::GAP;
@@ -1084,7 +1084,7 @@ fn cells_body(
             if rect.bottom() <= body.bottom() {
                 let response = cu.allocate_rect(rect, Sense::hover());
                 response.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
-                cu.painter().text(
+                cu.painter().with_clip_rect(rect).text(
                     rect.left_center(),
                     egui::Align2::LEFT_CENTER,
                     text,

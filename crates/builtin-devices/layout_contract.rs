@@ -1,6 +1,6 @@
 //! Common native-layout ABI checks for the bundled plugins.
 
-use std::ffi::{c_char, c_void};
+use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
 use std::sync::Arc;
 
@@ -51,17 +51,17 @@ impl Drop for Instance {
 }
 
 #[repr(C)]
-struct LayoutV1 {
+struct LayoutExtension {
     get_layout: unsafe extern "C" fn(*const clap_plugin, *mut u8, u32, *mut u32) -> u32,
 }
 
-fn layout_bytes(instance: &Instance) -> Vec<u8> {
+fn layout_bytes(instance: &Instance, extension_id: &CStr) -> Vec<u8> {
     let plugin = instance.0;
     // SAFETY: The plugin is initialized and this table follows the published C layout.
     unsafe {
-        let extension = ((*plugin).get_extension.unwrap())(plugin, EXTENSION_ID.as_ptr());
+        let extension = ((*plugin).get_extension.unwrap())(plugin, extension_id.as_ptr());
         assert!(!extension.is_null());
-        let layout = &*extension.cast::<LayoutV1>();
+        let layout = &*extension.cast::<LayoutExtension>();
         let mut size = 0;
         assert_eq!(
             (layout.get_layout)(plugin, ptr::null_mut(), 0, &mut size),
@@ -81,10 +81,14 @@ fn layout_bytes(instance: &Instance) -> Vec<u8> {
 
 /// Check the exported native layout on two instances.
 pub(crate) fn read_layout<P: NativeClapLayout>() -> serde_json::Value {
+    read_layout_extension::<P>(EXTENSION_ID)
+}
+
+pub(crate) fn read_layout_extension<P: NativeClapLayout>(extension_id: &CStr) -> serde_json::Value {
     let first = Instance::new::<P>();
     let second = Instance::new::<P>();
-    let bytes = layout_bytes(&first);
-    assert_eq!(bytes, layout_bytes(&second));
+    let bytes = layout_bytes(&first, extension_id);
+    assert_eq!(bytes, layout_bytes(&second, extension_id));
     serde_json::from_slice(&bytes).unwrap()
 }
 

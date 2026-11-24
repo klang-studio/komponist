@@ -31,6 +31,7 @@ use komponist_ipc::{WireEventKind, WireTransport};
 use super::effect_meter::EffectMeter;
 use super::events::{self, InEvent, InputEventList, NO_NOTE_ID, WireSink};
 use super::host::{AudioThreadScope, KpHost};
+use super::signal_taps::SignalTaps;
 use crate::plugin::{HostedProcessor, HostingError, ProcessBlock, ProcessStatus};
 
 /// Room in the event list for an all-notes-off expanded to one note-off per held note.
@@ -275,6 +276,7 @@ pub(crate) struct ClapProcessor {
     held: [u16; 128],
     max_frames: u32,
     effect_meter: Option<EffectMeter>,
+    signal_taps: Option<SignalTaps>,
 }
 
 impl ClapProcessor {
@@ -298,7 +300,12 @@ impl ClapProcessor {
             held: [0; 128],
             max_frames,
             effect_meter,
+            signal_taps: None,
         }
+    }
+
+    pub(super) fn set_signal_taps(&mut self, taps: Option<SignalTaps>) {
+        self.signal_taps = taps;
     }
 
     /// A note on (`velocity > 0`) or off. Channels ≥ 16 and keys ≥ 128 are dropped: the wire
@@ -540,6 +547,20 @@ impl HostedProcessor for ClapProcessor {
         let meter = self.effect_meter?;
         let _audio = AudioThreadScope::enter();
         meter.end(self.audio.plugin_handle().as_raw())
+    }
+
+    fn begin_signal_taps(&mut self, mask: u32) {
+        if let Some(taps) = &self.signal_taps {
+            let _audio = AudioThreadScope::enter();
+            taps.begin(self.audio.plugin_handle().as_raw(), mask);
+        }
+    }
+
+    fn read_signal_taps(&mut self, mask: u32, out: &mut komponist_ipc::signal_taps::BlockTaps) {
+        if let Some(taps) = &self.signal_taps {
+            let _audio = AudioThreadScope::enter();
+            taps.read(self.audio.plugin_handle().as_raw(), mask, out);
+        }
     }
 
     fn reset(&mut self) {

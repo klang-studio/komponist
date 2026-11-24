@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use komponist_builtin::{BuiltinKind, Internal};
 use komponist_engine::{DeviceMeter, SampleTap, StereoIo};
 use komponist_ipc::effect_meter::BlockMeter;
 
@@ -20,13 +19,15 @@ pub(crate) struct Meter {
 }
 
 impl Meter {
-    pub(crate) fn new(kind: BuiltinKind, rate: f32) -> Option<Arc<Self>> {
-        let source = match kind {
-            BuiltinKind::Internal(Internal::Eq) => Source::Spectrum,
-            BuiltinKind::Internal(Internal::Presse) => Source::Detector,
-            BuiltinKind::Internal(Internal::Limiter) => Source::Reduction,
-            _ => return None,
-        };
+    /// Compatibility meter for authenticated bundles predating the named-tap extension.
+    /// Features are the standard CLAP descriptor tags, independent of the device's identity.
+    pub(crate) fn new(features: &[String], rate: f32) -> Option<Arc<Self>> {
+        let source = features.iter().find_map(|feature| match feature.as_str() {
+            "equalizer" => Some(Source::Spectrum),
+            "compressor" => Some(Source::Detector),
+            "limiter" => Some(Source::Reduction),
+            _ => None,
+        })?;
         let view = DeviceMeter::new();
         let capacity = match source {
             Source::Spectrum => komponist_engine::tap::DEFAULT_CAPACITY,

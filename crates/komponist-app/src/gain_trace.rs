@@ -24,7 +24,7 @@ pub const POINTS: usize = 128;
 /// Seconds between two reads (about 30 per second).
 pub const INTERVAL: f64 = 1.0 / 30.0;
 /// A gap in the updates longer than this (seconds) means the card was hidden: start over.
-const STALE: f64 = 0.4;
+pub(crate) const STALE: f64 = 0.4;
 /// The dB at the bottom of the input level's bumps and the dB range they span; a full-scale input
 /// reaches [`LEVEL_HEIGHT`] of the graph's height, so the bumps stay under the reduction line.
 pub const LEVEL_FLOOR_DB: f32 = -60.0;

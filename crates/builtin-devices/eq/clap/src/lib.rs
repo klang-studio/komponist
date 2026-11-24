@@ -1,5 +1,6 @@
 //! Parametric EQ exported through the native CLAP adapter.
 
+use komponist_bundled_clap_adapter::signal_taps;
 use komponist_bundled_clap_adapter::{Binding, DeviceDefinition, Effect};
 use komponist_device_core::Spec;
 use komponist_device_core::layout::{knob, param, toggle};
@@ -93,6 +94,13 @@ impl DeviceDefinition for Eq {
 type EqPlugin = Effect<Eq>;
 
 impl komponist_bundled_clap_adapter::AudioDefinition for Eq {
+    const SIGNAL_TAPS: &'static [signal_taps::Descriptor] = &[signal_taps::Descriptor::new(
+        "spectrum",
+        signal_taps::SPECTRUM_SOURCE,
+        1,
+        16_384,
+    )];
+
     fn dsp() -> Box<dyn komponist_device_core::Dsp> {
         komponist_eq::dsp()
     }

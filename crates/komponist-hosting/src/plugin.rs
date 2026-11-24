@@ -159,6 +159,11 @@ pub trait HostedPlugin {
         None
     }
 
+    /// Immutable inventory of the plugin's named signal streams.
+    fn signal_taps(&self) -> &[komponist_ipc::signal_taps::Descriptor] {
+        &[]
+    }
+
     fn supports_asset_slots(&self) -> bool {
         false
     }
@@ -183,6 +188,7 @@ pub trait HostedPlugin {
         None
     }
 
+    /// Loader and playback snapshot. A tempo requests preparation while audio is detached.
     fn sampler_ui(
         &self,
         _export_tempo: Option<f64>,
@@ -293,6 +299,12 @@ pub trait HostedProcessor: Send {
     fn end_effect_meter(&mut self) -> Option<komponist_ipc::effect_meter::BlockMeter> {
         None
     }
+
+    /// Request the selected named streams for the next render block.
+    fn begin_signal_taps(&mut self, _mask: u32) {}
+
+    /// Read the requested streams into preallocated block storage.
+    fn read_signal_taps(&mut self, _mask: u32, _out: &mut komponist_ipc::signal_taps::BlockTaps) {}
 
     /// Routes VST3 controller updates through the host. Called before processing starts.
     fn use_host_controller_sync(&mut self) {}
