@@ -68,19 +68,42 @@ def forbidden_edges(root, nodes, devices):
     return (edge for edge in edges if edge[1] in reaches_device)
 
 
+RUST_TRIVIA = re.compile(r"\s+|//[^\n]*|/\*")
+BLOCK_COMMENT_EDGE = re.compile(r"/\*|\*/")
+
+
+def followed_by_path_separator(text, position):
+    """Check the next Rust token without hiding references inside skipped comments."""
+    while match := RUST_TRIVIA.match(text, position):
+        position = match.end()
+        if match.group() == "/*":
+            depth = 1
+            for edge in BLOCK_COMMENT_EDGE.finditer(text, position):
+                depth += 1 if edge.group() == "/*" else -1
+                if depth == 0:
+                    position = edge.end()
+                    break
+            else:
+                return False
+    return text.startswith("::", position)
+
+
 def rust_references(crate_dir, names):
     # Match whole identifiers, including crate names in comments and string paths.
     # This is a textual boundary, so it also covers tests, build scripts, and cfg-disabled source.
     names = "|".join(re.escape(name) for name in sorted(names, key=lambda name: (-len(name), name)))
     references = re.compile(
-        r"(?P<internal>\bInternal\s*::)|(?P<kind>\bBuiltinKind\b)|"
+        r"(?P<internal>\bInternal\b)|(?P<kind>\bBuiltinKind\b)|"
         r"(?P<crate>\b(?:builtin[-_]devices|komponist[-_]bundled[-_][\w-]+"
         + (f"|{names}" if names else "")
         + r")\b)"
     )
     for path in crate_dir.rglob("*.rs"):
         relative = path.relative_to(ROOT).as_posix()
-        for match in references.finditer(path.read_text(encoding="utf-8")):
+        text = path.read_text(encoding="utf-8")
+        for match in references.finditer(text):
+            if match.lastgroup == "internal" and not followed_by_path_separator(text, match.end()):
+                continue
             marker = {"internal": "Internal::", "kind": "BuiltinKind"}.get(match.lastgroup)
             yield "source", relative, marker or match.group()
 

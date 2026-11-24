@@ -77,6 +77,25 @@ class DeviceBoundaryTests(unittest.TestCase):
                     },
                 )
 
+    def test_counts_internal_paths_with_interleaved_comments(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src.rs").write_text(
+                "use Internal /* variant imports */ ::*;\n"
+                "use Internal // line comment\n ::Foo;\n"
+                "use Internal /* Internal::Foo /* nested */ BuiltinKind */ ::Bar;\n"
+                "use Internal /* no path */;\n",
+                encoding="utf-8",
+            )
+            with patch.object(check, "ROOT", root):
+                self.assertEqual(
+                    Counter(check.rust_references(root, set())),
+                    {
+                        ("source", "src.rs", "Internal::"): 4,
+                        ("source", "src.rs", "BuiltinKind"): 1,
+                    },
+                )
+
     def test_baseline_rejects_duplicate_or_nonpositive_rows(self):
         row = "1\tsource\tsrc.rs\tInternal::"
         with self.assertRaisesRegex(ValueError, "duplicate"):

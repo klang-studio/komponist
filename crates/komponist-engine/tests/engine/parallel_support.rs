@@ -66,11 +66,13 @@ pub fn play(workers: usize, frames: usize, make: fn() -> Setup) -> (Vec<f32>, Ve
 }
 
 pub fn assert_bit_exact(a: &(Vec<f32>, Vec<f32>), b: &(Vec<f32>, Vec<f32>), what: &str) {
-    assert_eq!(a.0.len(), b.0.len(), "{what}: length");
-    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
     for (channel, (x, y)) in [(&a.0, &b.0), (&a.1, &b.1)].into_iter().enumerate() {
-        let (x, y) = (bits(x), bits(y));
-        if let Some(i) = x.iter().zip(&y).position(|(p, q)| p != q) {
+        assert_eq!(x.len(), y.len(), "{what}: channel {channel} length");
+        if let Some(i) = x
+            .iter()
+            .zip(y)
+            .position(|(p, q)| p.to_bits() != q.to_bits())
+        {
             panic!("{what}: channel {channel} differs first at frame {i}");
         }
     }

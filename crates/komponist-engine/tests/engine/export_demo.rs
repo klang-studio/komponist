@@ -87,9 +87,13 @@ fn the_demo_project_exports_and_can_be_played_again() {
     assert!(report.peak_db < 0.0 && report.peak_db > -30.0, "{report:?}");
     // Music in the bar, decaying echoes in the tail.
     let rms = |s: &[f32]| (s.iter().map(|x| x * x).sum::<f32>() / s.len() as f32).sqrt();
-    let body = rms(&wav.samples[..2 * bar as usize]);
+    let tail_start = 2 * bar as usize;
+    let body = rms(&wav.samples[..tail_start]);
+    let early = rms(&wav.samples[tail_start..tail_start + 9_600]);
     let end = rms(&wav.samples[wav.samples.len() - 9_600..]);
     assert!(body > 0.05, "rms {body}");
+    // 24-bit dither is on the order of 1e-7 full scale.
+    assert!(early > 1e-5, "early tail rms {early}");
     assert!(end < body / 10.0, "tail rms {end} vs {body}");
 
     // Re-attached, the engine plays the demo again.
