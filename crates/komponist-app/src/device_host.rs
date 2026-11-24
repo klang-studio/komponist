@@ -1390,8 +1390,9 @@ mod tests {
 #[cfg(test)]
 mod sampler_tests {
     use super::*;
+    use komponist_audiofile::fixtures as testkit;
     use komponist_model::DeviceRole;
-    use komponist_sampler::{SampleLink, links, testkit};
+    use komponist_sampler::{SampleLink, links};
 
     const SETUP: ProcessorSetup = ProcessorSetup {
         sample_rate: 48_000.0,

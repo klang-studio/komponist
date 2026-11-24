@@ -77,7 +77,7 @@ pub fn demo_with_kit(
     dir: &Path,
 ) -> std::io::Result<komponist_model::Project> {
     std::fs::create_dir_all(dir)?;
-    let kit = sampler::testkit::write_kit(dir)?;
+    let kit = komponist_audiofile::fixtures::write_kit(dir)?;
     let mut state = Internal::Sampler.encode_state(&Internal::Sampler.defaults());
     for (pad, path) in kit.iter().enumerate() {
         state = links::write(Some(&state), pad, Some(&SampleLink::new(path, None)));

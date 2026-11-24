@@ -21,6 +21,7 @@ use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::device_host::PluginHost;
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, EditAction, PluginAction, ProjectAction, UiAction};
+use komponist_audiofile::fixtures as testkit;
 use komponist_builtin::Internal;
 use komponist_engine::Command;
 use komponist_hexa::Patch;
@@ -30,7 +31,7 @@ use komponist_model::params::ParamId;
 use komponist_model::{ChannelRef, DeviceId, Project, TrackId};
 use komponist_plugins::PluginManagerEvent;
 use komponist_sampler as sampler;
-use komponist_sampler::{PadField, SampleLink, links, testkit};
+use komponist_sampler::{PadField, SampleLink, links};
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
