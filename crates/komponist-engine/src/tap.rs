@@ -127,12 +127,21 @@ impl SampleTap {
     /// Call it every frame the display is visible. A tap whose rate is not set runs for 0.5 s at
     /// 48 kHz.
     pub fn want(&self) {
-        let rate = match self.rate() {
-            r if r > 0.0 => r,
+        self.want_at_audio_rate(self.rate());
+    }
+
+    /// Refreshes a lease counted in audio frames even if the supplied signal has a slower rate.
+    pub fn want_at_audio_rate(&self, audio_rate: f32) {
+        let rate = match audio_rate {
+            r if r.is_finite() && r > 0.0 => r,
             _ => 48_000.0,
         };
-        self.wanted
-            .store((rate * LEASE_SECONDS) as u32, Ordering::Relaxed);
+        self.want_frames((rate * LEASE_SECONDS) as u32);
+    }
+
+    /// Request a bounded number of audio frames, or zero to end a block-level lease.
+    pub fn want_frames(&self, frames: u32) {
+        self.wanted.store(frames, Ordering::Relaxed);
     }
 
     /// UI. Whether the producer currently has interest left (for tests and diagnostics).
@@ -202,6 +211,17 @@ mod tests {
         assert!(!tap.is_wanted());
         tap.want();
         assert!(tap.begin(10), "a refresh starts it again");
+    }
+
+    #[test]
+    fn a_decimated_stream_uses_the_audio_clock_for_visibility() {
+        let tap = SampleTap::new(256);
+        tap.set_rate(1_500.0);
+        tap.want_at_audio_rate(48_000.0);
+        assert!(tap.begin(23_999));
+        assert!(tap.begin(1));
+        assert!(!tap.begin(1));
+        assert_eq!(tap.rate(), 1_500.0);
     }
 
     #[test]

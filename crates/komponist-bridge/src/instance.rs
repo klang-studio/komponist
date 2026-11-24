@@ -960,6 +960,7 @@ impl Bridge {
             })
             .collect();
         let native_layout = self.layout_for_params(plugin.as_ref(), &params);
+        let taps = plugin.signal_taps().to_vec();
         let info = LoadedInfo {
             descriptor: plugin.descriptor().clone(),
             params,
@@ -973,6 +974,9 @@ impl Bridge {
         self.plugin = Some(plugin);
         self.region.set_bridge_state(BridgeState::Loaded);
         self.send(BridgeMsg::Loaded(Box::new(info)));
+        if !taps.is_empty() {
+            self.send(BridgeMsg::SignalTaps(taps));
+        }
     }
 
     fn layout_for_params(

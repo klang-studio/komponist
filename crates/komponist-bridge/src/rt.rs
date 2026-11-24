@@ -895,6 +895,10 @@ fn serve(
     if capture_meter {
         processor.begin_effect_meter(request.flags & BLOCK_FLAG_EFFECT_DETECTOR != 0);
     }
+    let taps = request.signal_taps();
+    if taps != 0 {
+        processor.begin_signal_taps(taps);
+    }
     let (status, produced, mut dropped) = {
         let (input, sidechain, output) = server.audio_with_sidechain(frames);
         let mut block = ProcessBlock {
@@ -955,7 +959,13 @@ fn serve(
             );
         }
     }
-    server.finish_with_meter(result(status, dropped), meter);
+    let wrote_signal_taps = taps != 0
+        && status == BlockStatus::Ok
+        && server.signal_taps_mut().is_some_and(|out| {
+            processor.read_signal_taps(taps, out);
+            true
+        });
+    server.finish_with_telemetry(result(status, dropped), meter, wrote_signal_taps);
 }
 
 #[cfg(test)]

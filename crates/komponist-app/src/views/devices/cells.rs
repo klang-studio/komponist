@@ -849,14 +849,19 @@ fn column_select(
 /// empty without one); the read-out is the largest reduction of the last 1.5 s. The click resets
 /// the held reduction.
 fn meter(cu: &mut Ui, card: &Card, cell: &Cell, rect: Rect) {
-    let id = slot(cu, cell, "gr_hold");
+    let id = slot(cu, cell, "gr_hold").with(card.page);
     let now = cu.input(|i| i.time);
     let mut hold: GrHold = cu.data(|d| d.get_temp(id)).unwrap_or_default();
-    if let Some(levels) = card.levels {
+    let levels = card
+        .native_meter_levels
+        .get(&cell.col)
+        .copied()
+        .or(card.levels);
+    if let Some(levels) = levels {
         hold.push(now, levels.reduction_db);
     }
     let text = meter_gr::readout(hold.max(now));
-    let bars = card.levels.map_or([0.0; 3], |l| l.bars);
+    let bars = levels.map_or([0.0; 3], |l| l.bars);
     let r = cu.put(rect, MeterGr::new(bars, &text).rows(cell.rows));
     if r.clicked() {
         hold.reset();
@@ -1175,7 +1180,9 @@ fn graph(
     let length = sample
         .map(|(v, _)| v.length_s)
         .filter(|l| *l > 0.0 && matches!(v_status(sample), Some(PadStatus::Ready)));
-    let rate = card.analysis.as_ref().map(|a| a.rate).filter(|r| *r > 0.0);
+    let signals = card.graph_signals.get(&(cell.row, cell.col));
+    let analysis = signals.map_or(card.analysis.as_ref(), |signals| signals.analysis.as_ref());
+    let rate = analysis.map(|a| a.rate).filter(|r| *r > 0.0);
     // surf: the range on the stack follows the shown oscillator's position.
     let osc = usize::from(ctx.get(OSC_VIEW) == Some("b"));
     let native_graph = card.native_cell(cell).and_then(|cell| cell.graph.as_ref());
@@ -1242,7 +1249,7 @@ fn graph(
         }
     }
     // The live spectrum; empty while hidden, bypassed or switched off.
-    let spectrum: &[f32] = card.analysis.as_ref().map_or(&[], |a| &a.spectrum);
+    let spectrum: &[f32] = analysis.map_or(&[], |a| &a.spectrum);
     // The sampler's waveform shows the sample's peaks, the EQ its live spectrum.
     let peaks: &[f32] = sample.map_or(spectrum, |(v, _)| &v.peaks);
     let mut playhead = sample
@@ -1251,7 +1258,7 @@ fn graph(
         .map(|(h, len)| f64::from(h) * len);
     // The compressor (WP-93): its live level on the transfer curve, and the history of the input
     // level and the reduction, with „now“ at the right edge.
-    let dynamics = card.dynamics.as_ref();
+    let dynamics = signals.map_or(card.dynamics.as_ref(), |signals| signals.dynamics.as_ref());
     let (mut peaks, mut trace, mut level): (&[f32], &[f32], Option<f64>) = (peaks, &[], None);
     match binding.config {
         GraphConfig::Compressor => {
@@ -1544,8 +1551,10 @@ mod tests {
             width: 244.0,
             late: None,
             levels: None,
+            native_meter_levels: Default::default(),
             analysis: None,
             dynamics: None,
+            graph_signals: Default::default(),
             routing: None,
         }
     }
@@ -1594,6 +1603,88 @@ mod tests {
             h.get_all_by_role_and_label(Role::Slider, "Level").count(),
             2
         );
+    }
+
+    #[test]
+    fn authored_gain_reduction_meters_use_independent_accessible_holds() {
+        use crate::meters::DeviceLevels;
+        use komponist_ipc::native_layout::NativeLayout;
+        use std::sync::Arc;
+
+        let layout = Arc::new(
+            NativeLayout::parse(
+                br#"{
+            "schema_version":2,"default_locale":"en","locales":["en"],
+            "pages":[{"key":"main","labels":{"en":"Main"},"columns":2,"cells":[
+                {"widget":"meter_gr","row":0,"col":0,"rows":3,"cols":1,"reduction_tap":"first"},
+                {"widget":"meter_gr","row":0,"col":1,"rows":3,"cols":1,"reduction_tap":"second"}
+            ]}]
+        }"#,
+            )
+            .unwrap(),
+        );
+        for lang in [Lang::De, Lang::En] {
+            let mut card = card();
+            card.layout = model::native_card_layout(&layout, lang);
+            card.native_layout = Some(Arc::clone(&layout));
+            card.native_meter_levels = [
+                (
+                    0,
+                    DeviceLevels {
+                        bars: [0.0, 0.25, 0.0],
+                        reduction_db: 6.0,
+                    },
+                ),
+                (
+                    1,
+                    DeviceLevels {
+                        bars: [0.0, 0.50, 0.0],
+                        reduction_db: 12.0,
+                    },
+                ),
+            ]
+            .into();
+            let mut h = komponist_ui::snapshot::builder(1.0)
+                .with_size(egui::vec2(260.0, 240.0))
+                .build_ui_state(
+                    move |ui, (card, out): &mut (Card, Vec<Action>)| {
+                        komponist_ui::set_lang(ui.ctx(), lang);
+                        let palette = TrackPalette::new(150);
+                        for cell in &card.current_page().unwrap().cells {
+                            let rect = crate::views::devices::layout::cell_rect(cell)
+                                .translate(ui.min_rect().min.to_vec2());
+                            draw_cell(ui, out, card, &palette, cell, rect);
+                        }
+                    },
+                    (card, Vec::new()),
+                );
+            h.run();
+            let first = lang.ui_meter_gr_value("−6.0");
+            let second = lang.ui_meter_gr_value("−12.0");
+            {
+                let mut nodes = h.get_all_by_role_and_label(Role::Meter, lang.ui_meter_gr_name());
+                let first_node = nodes.next().unwrap();
+                let second_node = nodes.next().unwrap();
+                assert!(nodes.next().is_none());
+                assert_eq!(first_node.accesskit_node().value(), Some(first));
+                assert_eq!(second_node.accesskit_node().value(), Some(second.clone()));
+                assert_eq!(
+                    first_node.accesskit_node().description().as_deref(),
+                    Some(lang.ui_meter_gr_hint())
+                );
+                first_node.click_accesskit();
+            }
+            h.state_mut().0.native_meter_levels.clear();
+            h.run();
+            h.run();
+            let mut nodes = h.get_all_by_role_and_label(Role::Meter, lang.ui_meter_gr_name());
+            assert_eq!(
+                nodes.next().unwrap().accesskit_node().value(),
+                Some(lang.ui_meter_gr_value("0.0"))
+            );
+            assert_eq!(nodes.next().unwrap().accesskit_node().value(), Some(second));
+            assert!(h.state().1.is_empty());
+        }
     }
 
     #[test]

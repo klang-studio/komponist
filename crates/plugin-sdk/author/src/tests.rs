@@ -180,11 +180,13 @@ fn version_two_compiles_an_authored_graph_binding() {
                 name: bilingual("Waveform", "Wellenform"),
                 description: bilingual("Sample range", "Sample-Bereich"),
                 hide_title: true,
+                signal_taps: Default::default(),
             },
         )]
         .into(),
         canvases: BTreeMap::new(),
         headings: BTreeMap::new(),
+        reduction_taps: Default::default(),
     };
     // SAFETY: The instance is the initialized wrapper for P.
     let bytes = unsafe { compile_v2::<P>(instance.0, &panel) }.unwrap();

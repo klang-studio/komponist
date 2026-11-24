@@ -275,6 +275,7 @@ pub(crate) struct Bridge {
     /// The plugin has a sidechain input (#6): from the catalog until `Loaded` says so itself.
     pub sidechain: bool,
     pub latency: u32,
+    sample_rate: f32,
     gui_open: bool,
     gui_closing: bool,
     /// Why the stored state could not be loaded (see the module docs).
@@ -414,6 +415,7 @@ impl Bridge {
             note_names: Vec::new(),
             has_gui: false,
             sidechain: s.sidechain,
+            sample_rate: s.setup.sample_rate,
             latency: 0,
             gui_open: false,
             gui_closing: false,
@@ -512,6 +514,10 @@ impl Bridge {
     /// Switches realtime/offline processing. The bridge deactivates and re-activates the plugin
     /// for it, so a running device is `Loading` (fallback audio) until the bridge confirms, like a
     /// re-activation for another rate.
+    pub(crate) fn signal_tap(&self, key: &str) -> Option<&crate::signal_taps::SignalTap> {
+        self.shared.signal_taps.get()?.get(key)
+    }
+
     pub(crate) fn set_render_mode(
         &mut self,
         mode: RenderMode,
@@ -957,6 +963,10 @@ impl Bridge {
         }
         // In order after whatever is queued: the bridge ends up active with the new setup, and
         // the `Pong` after it says so.
+        self.sample_rate = setup.sample_rate;
+        if let Some(taps) = self.shared.signal_taps.get() {
+            taps.set_rate(setup.sample_rate);
+        }
         self.send(ControlMsg::Deactivate);
         self.send(activate(setup));
         let seq = self.seq();
@@ -1290,6 +1300,13 @@ impl Bridge {
                     self.sampler_ui = bytes
                         .as_deref()
                         .and_then(komponist_ipc::sampler_ui::Snapshot::decode);
+                }
+            }
+            BridgeMsg::SignalTaps(inventory) => {
+                if let Some(taps) =
+                    crate::signal_taps::SignalTaps::new(&inventory, self.sample_rate)
+                {
+                    let _ = self.shared.signal_taps.set(taps);
                 }
             }
             BridgeMsg::DeviceDisplay(request, bytes) => {

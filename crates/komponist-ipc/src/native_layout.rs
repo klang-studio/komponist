@@ -80,6 +80,7 @@ pub enum Widget {
     Segment,
     Dropdown,
     MiniFader,
+    MeterGr,
     Graph,
     Canvas,
 }
@@ -124,6 +125,9 @@ pub struct Graph {
     pub hide_title: bool,
     #[serde(default)]
     pub slots: BTreeMap<String, u32>,
+    /// Graph roles bound to streams in the plugin inventory.
+    #[serde(default)]
+    pub signal_taps: BTreeMap<String, String>,
     pub bands: Option<u8>,
     pub points: Option<u8>,
 }
@@ -188,6 +192,8 @@ pub struct Cell {
     pub choices: Option<Vec<Choice>>,
     pub graph: Option<Graph>,
     pub canvas: Option<Canvas>,
+    /// Stream providing positive gain reduction in dB.
+    pub reduction_tap: Option<String>,
 }
 
 impl Cell {
@@ -315,18 +321,23 @@ impl NativeLayout {
                             // This was an unknown object member in v1.
                             cell.remove("graph");
                             cell.remove("canvas");
+                            cell.remove("reduction_tap");
                         }
                         let widget = cell
                             .get("widget")
                             .and_then(Value::as_str)
                             .ok_or(LayoutError::Invalid("widget tag"))?;
                         check(
-                            if version == 2 && matches!(widget, "graph" | "canvas") {
+                            if version == 2 && matches!(widget, "graph" | "canvas" | "meter_gr") {
                                 !cell.contains_key("param_id")
                             } else {
                                 cell.get("param_id").is_some_and(Value::is_u64)
                             },
                             "parameter ID",
+                        )?;
+                        check(
+                            cell.get("reduction_tap").is_none_or(Value::is_string),
+                            "reduction tap key",
                         )?;
                         if let Some(graph) = cell.get("graph") {
                             check(
@@ -334,7 +345,8 @@ impl NativeLayout {
                                     && graph["kind"].is_string()
                                     && graph["name"].is_object()
                                     && graph["description"].is_object()
-                                    && graph.get("slots").is_none_or(Value::is_object),
+                                    && graph.get("slots").is_none_or(Value::is_object)
+                                    && graph.get("signal_taps").is_none_or(Value::is_object),
                                 "graph object",
                             )?;
                         }
@@ -491,6 +503,7 @@ impl NativeLayout {
                     Widget::Segment | Widget::ToggleButton => (1, max_columns, true, 1..=1),
                     Widget::Graph | Widget::Canvas => (1, max_columns, false, 1..=3),
                     Widget::MiniFader => (1, 1, false, 1..=3),
+                    Widget::MeterGr => (1, 1, false, 3..=3),
                 };
                 check(
                     rows.contains(&cell.rows)
@@ -526,6 +539,16 @@ impl NativeLayout {
                 } else {
                     check(cell.choices.is_none(), "unexpected choices")?;
                 }
+                check(
+                    if cell.widget == Widget::MeterGr {
+                        cell.reduction_tap
+                            .as_deref()
+                            .is_some_and(crate::signal_taps::valid_key)
+                    } else {
+                        cell.reduction_tap.is_none()
+                    },
+                    "reduction tap binding",
+                )?;
                 if cell.widget == Widget::Graph {
                     check(
                         self.schema_version == 2
@@ -558,6 +581,26 @@ impl NativeLayout {
                         (graph.kind != GraphKind::Xy || graph.slots.len() == 2)
                             && graph.slots.keys().all(|slot| graph.has_slot(slot)),
                         "graph slots",
+                    )?;
+                    check(
+                        graph.signal_taps.iter().all(|(role, name)| {
+                            crate::signal_taps::valid_key(name)
+                                && matches!(
+                                    (graph.kind, role.as_str()),
+                                    (GraphKind::Eq, "spectrum")
+                                        | (GraphKind::Compressor | GraphKind::GrHistory, "level")
+                                        | (GraphKind::GrHistory, "reduction")
+                                )
+                        }),
+                        "graph signal taps",
+                    )?;
+                } else if cell.widget == Widget::MeterGr {
+                    check(
+                        v2 && cell.param_id.is_none()
+                            && cell.labels.is_none()
+                            && cell.graph.is_none()
+                            && cell.canvas.is_none(),
+                        "meter binding",
                     )?;
                 } else if cell.widget == Widget::Canvas {
                     check(
@@ -919,6 +962,73 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn tap_bindings_match_the_graph_role_and_key_syntax() {
+        let source = include_bytes!("../../../docs/clap-device-layout/example-v2.json");
+        let mut value: Value = serde_json::from_slice(source).unwrap();
+        let graph = value.pointer_mut("/pages/0/cells/0/graph").unwrap();
+        graph["signal_taps"] = serde_json::json!({"spectrum": "main-output"});
+        let layout = NativeLayout::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let graph = layout.pages[0].cells[0].graph.as_ref().unwrap();
+        assert_eq!(graph.signal_taps["spectrum"], "main-output");
+
+        value["pages"][0]["cells"][0]["graph"]["signal_taps"] =
+            serde_json::json!({"level": "main-output"});
+        assert!(NativeLayout::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+        value["pages"][0]["cells"][0]["graph"]["signal_taps"] =
+            serde_json::json!({"spectrum": "invalid key"});
+        assert!(NativeLayout::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+
+    #[test]
+    fn gain_reduction_meter_requires_a_full_column_and_a_named_tap() {
+        use serde_json::json;
+
+        let document = json!({
+            "schema_version": 2, "default_locale": "en", "locales": ["en"],
+            "pages": [{"key": "main", "labels": {"en": "Main"}, "columns": 4, "cells": [
+                {"widget": "meter_gr", "col": 3, "row": 0, "cols": 1, "rows": 3,
+                 "reduction_tap": "limiter-gr"}
+            ]}]
+        });
+        let parse = |value: &Value| NativeLayout::parse(&serde_json::to_vec(value).unwrap());
+        let layout = parse(&document).unwrap();
+        let meter = &layout.pages[0].cells[0];
+        assert_eq!(meter.widget, Widget::MeterGr);
+        assert_eq!(meter.reduction_tap.as_deref(), Some("limiter-gr"));
+        assert!(layout.validate_params(&[]).is_ok());
+        for (field, value) in [
+            ("col", json!(4)),
+            ("row", json!(1)),
+            ("rows", json!(2)),
+            ("cols", json!(2)),
+            ("half", json!("top")),
+            ("reduction_tap", json!("invalid key")),
+            ("reduction_tap", Value::Null),
+            ("param_id", json!(42)),
+            ("labels", json!({"en": "Level"})),
+        ] {
+            let mut invalid = document.clone();
+            invalid["pages"][0]["cells"][0][field] = value;
+            assert!(parse(&invalid).is_err(), "{field}");
+        }
+        let mut invalid = document.clone();
+        invalid["pages"][0]["cells"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("reduction_tap");
+        assert!(parse(&invalid).is_err());
+        let mut invalid = document.clone();
+        invalid["schema_version"] = 1.into();
+        assert!(parse(&invalid).is_err());
+        let mut invalid = document.clone();
+        invalid["pages"][0]["cells"].as_array_mut().unwrap().push(
+            json!({"widget": "number", "col": 3, "row": 2, "cols": 1, "rows": 1,
+                   "half": "bottom", "param_id": 42}),
+        );
+        assert!(parse(&invalid).is_err());
     }
 
     #[test]
