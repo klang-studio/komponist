@@ -196,6 +196,8 @@ static bool print_probe(const clap_plugin_t *plugin) {
                info.min_value, info.max_value, info.default_value);
     }
     struct layout_response layout = read_layout(plugin, KOMPONIST_CLAP_EXT_DEVICE_LAYOUT);
+    if (layout.status == KOMPONIST_CLAP_LAYOUT_ABSENT)
+        layout = read_layout(plugin, KOMPONIST_CLAP_EXT_DEVICE_LAYOUT_V2);
     printf("],\"status\":%" PRIu32 ",\"size\":%" PRIu32 ",\"layout\":", layout.status, layout.size);
     const bool ok = layout.payload ? fwrite(layout.payload, 1, layout.size, stdout) == layout.size
                                    : fputs("null", stdout) != EOF;

@@ -119,7 +119,7 @@ struct NamedSpectrum {
 
 impl NamedSpectrum {
     fn update(&mut self, tap: &Arc<SampleTap>, now: f64) {
-        if self.tap.as_ptr() != Arc::as_ptr(tap) {
+        if !std::ptr::eq(self.tap.as_ptr(), Arc::as_ptr(tap)) {
             self.tap = Arc::downgrade(tap);
             self.analyzer.reset();
         }
@@ -162,7 +162,9 @@ impl SignalHistory {
     ) {
         use komponist_ui::widgets::device::graph::configs::GR_HISTORY_SECONDS;
 
-        if self.tap.as_ptr() != Arc::as_ptr(tap) || now - self.visible_at > gain_trace::STALE {
+        if !std::ptr::eq(self.tap.as_ptr(), Arc::as_ptr(tap))
+            || now - self.visible_at > gain_trace::STALE
+        {
             *self = Self::new(tap, now);
             return;
         }
