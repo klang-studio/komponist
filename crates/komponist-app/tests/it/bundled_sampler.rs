@@ -67,6 +67,18 @@ fn both_samplers_play_assets_after_the_project_moves() {
     let migrated = migrate_legacy_bundled_project(&source, plans)
         .unwrap()
         .project;
+    assert!(
+        migrated.tracks.iter().all(|track| {
+            track
+                .channel
+                .instrument()
+                .unwrap()
+                .1
+                .asset_links
+                .contains_key(&0)
+        }),
+        "both verified sampler bundles moved their file into the project link inventory"
+    );
     let filename = "samples.komponist";
     save_project(&before_dir.join(filename), &migrated).unwrap();
     let moved = scratch.path().join("moved");
@@ -131,8 +143,13 @@ fn both_samplers_play_assets_after_the_project_moves() {
     };
     step_until(&mut app, "empty sampler state applied", restored);
     step_for(&mut app, Duration::from_millis(300));
-    app.engine().track_meter(track.id).unwrap().take();
-    assert_eq!(note_peak(&mut app, track.id, 60), 0.0);
+    if device.asset_links.contains_key(&0) {
+        // Parameter-state changes leave a host-managed asset in place.
+        assert_audible(&mut app, track.id, 60);
+    } else {
+        app.engine().track_meter(track.id).unwrap().take();
+        assert_eq!(note_peak(&mut app, track.id, 60), 0.0);
+    }
     assert!(app.engine_mut().host_mut().set_state(device.id, linked));
     step_until(&mut app, "original sampler state restored", restored);
     assert_audible(&mut app, track.id, 60);
@@ -174,7 +191,15 @@ fn both_samplers_play_assets_after_the_project_moves() {
     std::fs::rename(&source, &replacement).unwrap();
     let missing =
         komponist_app::dialogs::missing_plugins::missing_samples(app.project(), Some(&destination));
-    assert_eq!(missing.len(), 2);
+    let missing_assets = |app: &App| {
+        komponist_app::dialogs::missing_plugins::missing_assets(
+            komponist_i18n::Lang::De,
+            app.project(),
+            Some(&destination),
+        )
+    };
+    let external = missing_assets(app);
+    assert_eq!(missing.len() + external.len(), 2);
     for sample in missing {
         app.dispatch(Action::Plugin(PluginAction::LoadSample {
             device: sample.device,
@@ -182,10 +207,19 @@ fn both_samplers_play_assets_after_the_project_moves() {
             path: replacement.clone(),
         }));
     }
+    for row in external {
+        let (device, slot) = row.asset.unwrap();
+        app.dispatch(Action::Plugin(PluginAction::SetPluginAsset {
+            device,
+            slot,
+            path: Some(replacement.clone()),
+        }));
+    }
     assert!(komponist_app::dialogs::missing_plugins::missing_samples(
         app.project(),
         Some(&destination),
     ).is_empty());
+    assert!(missing_assets(app).is_empty());
     assert_audible(app, track.id, 60);
 
     // Both CLAP instances still have the original source in their live state when
@@ -597,6 +631,10 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
 fn assert_sample_sources(project: &Project, project_dir: &Path, source: &Path) {
     for track in &project.tracks {
         let device = track.channel.instrument().unwrap().1;
+        if let Some(link) = device.asset_links.get(&0) {
+            assert_eq!(link.resolve(Some(project_dir)).as_deref(), Some(source));
+            continue;
+        }
         let state = device.state.as_deref().unwrap();
         let wrapper: serde_json::Value = serde_json::from_slice(&state[8..]).unwrap();
         let assets = wrapper["fields"][pinned_clap_state::SAMPLE_ASSETS_FIELD]
