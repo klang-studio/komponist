@@ -17,7 +17,7 @@ use komponist_tokens::device;
 
 use super::layout::{self, DeviceLayout};
 use super::metrics;
-use crate::device_host::{DeviceHost, internal_kind, is_hexa};
+use crate::device_host::{DeviceHost, LegacyParameters, internal_kind, is_hexa};
 use crate::gain_trace::Dynamics;
 use crate::meters::DeviceLevels;
 use crate::spectrum::Analysis;
@@ -671,21 +671,17 @@ pub fn hexa_params(lang: Lang, device: &Device) -> Vec<Param> {
         .collect()
 }
 
-/// hexa's 8 macros, read from the patch in the device state (the plugin window's parameter
-/// view lists them; the card has its own parameters, [`hexa_params`]).
-pub fn hexa_macro_params(lang: Lang, device: &Device) -> Vec<Param> {
-    let patch = komponist_hexa::decode_state(device.state.as_deref())
-        .unwrap_or_else(|_| komponist_hexa::default_patch());
-    Macro::ALL
-        .iter()
-        .map(|m| {
-            let value = m.get(&patch);
-            Param {
-                wire: m.id(),
-                info: m.param_info_in(lang),
-                value,
-                text: m.text_in(lang, value),
-            }
+/// The standalone frame parameters read from a legacy device's saved state.
+pub fn legacy_frame_params(lang: Lang, device: &Device) -> Vec<Param> {
+    LegacyParameters::new(device)
+        .map(|parameters| parameters.frame_params(lang))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(param, text)| Param {
+            wire: param.wire,
+            info: param.info,
+            value: param.value,
+            text,
         })
         .collect()
 }
@@ -1141,7 +1137,7 @@ mod tests {
 
     #[test]
     fn values_are_texted_and_snapped() {
-        let algo = hexa_macro_params(
+        let algo = legacy_frame_params(
             Lang::De,
             &komponist_model::fixtures::demo_project().tracks[2]
                 .channel
@@ -1152,7 +1148,7 @@ mod tests {
         assert_eq!(algo.snap(7.4), 7.0);
         assert_eq!(algo.snap(40.0), 32.0);
         assert_eq!(algo.text_at(0.0), "Frei");
-        let ratio = hexa_macro_params(
+        let ratio = legacy_frame_params(
             Lang::De,
             &komponist_model::fixtures::demo_project().tracks[2]
                 .channel
