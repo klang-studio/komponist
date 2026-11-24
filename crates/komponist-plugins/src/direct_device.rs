@@ -52,7 +52,9 @@ pub(crate) struct DirectDevice {
     unconfirmed_writes: BTreeSet<u32>,
     pending_restore: Option<Arc<[u8]>>,
     pending_marker_edit: Option<PendingMarkerEdit>,
-    pending_preset: Option<PresetLoad>,
+    pending_preset: Option<(PresetLoad, Instant)>,
+    /// Edits made after the request must reach the replacement control epoch.
+    after_preset_writes: BTreeMap<u32, f64>,
     capture_preset: bool,
     pub(crate) display: Option<Arc<komponist_ipc::device_canvas::DisplayList>>,
     display_at: Instant,
@@ -169,6 +171,7 @@ impl DirectDevice {
             pending_restore: None,
             pending_marker_edit: None,
             pending_preset: None,
+            after_preset_writes: BTreeMap::new(),
             capture_preset: false,
             display: None,
             display_at: Instant::now(),
@@ -422,7 +425,21 @@ impl DirectDevice {
         let observed = match self.session.poll() {
             Ok(observed) => observed,
             Err(error) => {
-                self.status = DeviceStatus::Crashed(FailReason::LoadFailed(error.to_string()));
+                let message = error.to_string();
+                if self.pending_preset.take().is_some() {
+                    self.after_preset_writes.clear();
+                    events.push(PluginManagerEvent::ClapPresetFailed {
+                        device: id,
+                        message: message.clone(),
+                    });
+                }
+                if std::mem::take(&mut self.capture_preset) {
+                    events.push(PluginManagerEvent::ClapPresetCaptured {
+                        device: id,
+                        result: Err(message.clone()),
+                    });
+                }
+                self.status = DeviceStatus::Crashed(FailReason::LoadFailed(message));
                 events.push(PluginManagerEvent::StatusChanged {
                     device: id,
                     status: self.status.clone(),
@@ -509,8 +526,15 @@ impl DirectDevice {
         }
     }
 
+    pub(crate) fn is_capturing_clap_preset(&self) -> bool {
+        self.capture_preset
+    }
+
     pub(crate) fn capture_clap_preset(&mut self) -> bool {
-        if self.status != DeviceStatus::Ok || self.capture_preset || self.pending_restore.is_some()
+        if self.status != DeviceStatus::Ok
+            || self.capture_preset
+            || self.pending_preset.is_some()
+            || self.pending_restore.is_some()
         {
             return false;
         }
@@ -522,13 +546,14 @@ impl DirectDevice {
         if self.status != DeviceStatus::Ok
             || self.pending_preset.is_some()
             || self.pending_restore.is_some()
+            || self.capture_preset
             || self.is_editing_waveform_markers()
         {
             return false;
         }
         self.markers.invalidate();
         self.assets.begin_restore();
-        self.pending_preset = Some(preset);
+        self.pending_preset = Some((preset, Instant::now() + Duration::from_secs(2)));
         true
     }
 
@@ -537,24 +562,52 @@ impl DirectDevice {
     }
 
     fn service_preset(&mut self, device: DeviceId, events: &mut Vec<PluginManagerEvent>) {
-        if self.status != DeviceStatus::Ok || !self.pending_writes.is_empty() {
-            return;
-        }
-        let Some(preset) = self.pending_preset.as_ref() else {
+        let Some((preset, deadline)) = self.pending_preset.as_ref() else {
             return;
         };
-        let Some(result) = self.session.replace_state(|plugin| {
-            let result = plugin.apply_clap_preset(preset);
-            let replaced = match &result {
-                Ok(_) => true,
-                Err((_, recovered)) => !recovered,
+        let result = if Instant::now() >= *deadline {
+            Err((
+                "timed out waiting for preceding parameter edits".into(),
+                true,
+            ))
+        } else {
+            if self.status != DeviceStatus::Ok || !self.pending_writes.is_empty() {
+                return;
+            }
+            let base = &self.base;
+            let automated = &self.automated_params;
+            let macros = &self.macro_params;
+            let unconfirmed = &self.unconfirmed_writes;
+            let Some(Some(result)) = self.session.replace_state(|plugin| {
+                // Check delivery and capture under the same processing guard.
+                if unconfirmed.iter().any(|id| {
+                    let expected = automated
+                        .get(id)
+                        .copied()
+                        .flatten()
+                        .or_else(|| macros.get(id).copied())
+                        .or_else(|| base.get(id).copied());
+                    expected.is_some_and(|expected| {
+                        !plugin.param_value(*id).is_some_and(|actual| {
+                            (actual - expected).abs() <= 1e-6 * expected.abs().max(1.0)
+                        })
+                    })
+                }) {
+                    return (None, false);
+                }
+                let result = plugin.apply_clap_preset(preset);
+                let replaced = match &result {
+                    Ok(_) => true,
+                    Err((_, recovered)) => !recovered,
+                };
+                (
+                    Some(result.map(|state| (state, Inventory::read(plugin)))),
+                    replaced,
+                )
+            }) else {
+                return;
             };
-            (
-                result.map(|state| (state, Inventory::read(plugin))),
-                replaced,
-            )
-        }) else {
-            return;
+            result
         };
         self.pending_preset = None;
         self.assets.finish_restore();
@@ -577,13 +630,15 @@ impl DirectDevice {
             }
             Err((message, recovered)) => {
                 if !recovered {
-                    self.status = DeviceStatus::Crashed(FailReason::LoadFailed(message.clone()));
-                    events.push(PluginManagerEvent::StatusChanged {
-                        device,
-                        status: self.status.clone(),
-                    });
+                    self.fail_after_rollback(device, &message, events);
                 }
                 events.push(PluginManagerEvent::ClapPresetFailed { device, message });
+            }
+        }
+        let later_writes = std::mem::take(&mut self.after_preset_writes);
+        if !matches!(self.status, DeviceStatus::Crashed(_)) {
+            for (id, value) in later_writes {
+                self.set_param(id, value);
             }
         }
     }
@@ -637,6 +692,13 @@ impl DirectDevice {
     }
 
     pub(crate) fn set_param(&mut self, id: u32, value: f64) {
+        if self.pending_preset.is_some() {
+            if value.is_finite() && self.base.contains_key(&id) {
+                self.preview_param(id, value);
+                self.after_preset_writes.insert(id, value);
+            }
+            return;
+        }
         if self.edited_param(id, value) {
             self.pending_writes.insert(id, value);
         }
@@ -682,6 +744,7 @@ impl DirectDevice {
         let canceled = self.invalidate_waveform_markers();
         self.assets.begin_restore();
         self.pending_preset = None;
+        self.after_preset_writes.clear();
         self.pending_restore = Some(state);
         self.pending_writes.clear();
         self.unconfirmed_writes.clear();

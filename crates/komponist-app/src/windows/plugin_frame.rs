@@ -232,11 +232,13 @@ struct Frame {
     initial: Vec2,
     /// The parameter grid needs rebuilding.
     params_dirty: bool,
-    /// hexa: the state the preset match belongs to (`None`: not seen yet).
+    /// The state the preset match belongs to (`None`: not seen yet).
     state_seen: Option<Option<Arc<[u8]>>>,
-    /// hexa: the preset matching the state, or the last one chosen here.
+    /// The preset matching the state, or the last successfully applied selection.
     preset: Option<usize>,
     preset_changed: bool,
+    requested_preset: Option<usize>,
+    queued_preset: Option<usize>,
 }
 
 /// Shared between the root pass and the frame viewport's callback.
@@ -643,6 +645,7 @@ impl App {
         for event in &events {
             self.frame_event(event, ctx);
         }
+        self.flush_frame_presets();
         let now = Instant::now();
         // After the raise on activation, so the picked frame ends up in front.
         self.apply_focus(ctx, native, now);
@@ -723,6 +726,8 @@ impl App {
                 state_seen: None,
                 preset: None,
                 preset_changed: false,
+                requested_preset: None,
+                queued_preset: None,
             };
             self.frames.frames.push(frame);
         }
@@ -749,7 +754,11 @@ impl App {
                     if n == 0 {
                         return;
                     }
-                    let current = self.frames.frame_mut(device).and_then(|f| f.preset);
+                    let current = self
+                        .frames
+                        .frame_mut(device)
+                        .and_then(|f| f.queued_preset.or(f.requested_preset).or(f.preset))
+                        .filter(|index| *index < n);
                     let next = match (e, current) {
                         (HeaderEvent::PresetNext, Some(i)) => (i + 1) % n,
                         (HeaderEvent::PresetNext, None) => 0,
@@ -807,15 +816,67 @@ impl App {
     }
 
     fn apply_preset(&mut self, device: DeviceId, preset: usize) {
-        let Some((_, _, d)) = self.project().find_device(device) else {
+        let Some((_, _, target)) = self.project().find_device(device) else {
             return;
         };
-        if let Some(entry) = self.engine.host().clap_presets(d).get(preset) {
-            self.queue
-                .push(Action::Plugin(PluginAction::ApplyClapPreset {
-                    device,
-                    source: entry.source.clone(),
-                }));
+        if self
+            .engine
+            .host()
+            .clap_presets(target)
+            .get(preset)
+            .is_some()
+            && let Some(frame) = self.frames.frame_mut(device)
+        {
+            frame.queued_preset = Some(preset);
+        }
+    }
+
+    fn flush_frame_presets(&mut self) {
+        for i in 0..self.frames.frames.len() {
+            let frame = &mut self.frames.frames[i];
+            if frame.requested_preset.is_some() {
+                continue;
+            }
+            let Some(preset) = frame.queued_preset.take() else {
+                continue;
+            };
+            let device = frame.device;
+            let Some((_, _, target)) = self.project().find_device(device) else {
+                continue;
+            };
+            let Some(entry) = self.engine.host().clap_presets(target).get(preset) else {
+                continue;
+            };
+            let source = entry.source.clone();
+            self.frames.frames[i].requested_preset = Some(preset);
+            self.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
+                device,
+                source,
+            }));
+        }
+    }
+
+    pub(crate) fn frame_preset_finished(&mut self, device: DeviceId, applied: bool) {
+        let state = self
+            .project()
+            .find_device(device)
+            .map(|(_, _, target)| target.state.clone());
+        if let Some(frame) = self.frames.frame_mut(device)
+            && let Some(preset) = frame.requested_preset.take()
+            && applied
+        {
+            frame.preset = Some(preset);
+            frame.preset_changed = false;
+            frame.params_dirty = true;
+            frame.state_seen = state;
+        }
+    }
+
+    pub(crate) fn cancel_frame_preset_requests(&mut self, device: DeviceId) {
+        if let Some(frame) = self.frames.frame_mut(device)
+            && frame.requested_preset.take().is_some()
+        {
+            frame.queued_preset = None;
         }
     }
 
@@ -1532,7 +1593,10 @@ impl App {
         let preset = selected
             .map(|(index, _)| index)
             .or_else(|| f.preset.filter(|index| *index < entries.len()));
-        let changed = selected.map_or(preset.is_some(), |(_, changed)| changed);
+        let changed = selected.map_or(
+            preset.is_some() && (!same || f.preset_changed),
+            |(_, changed)| changed,
+        );
         if same && f.preset == preset && f.preset_changed == changed {
             return;
         }

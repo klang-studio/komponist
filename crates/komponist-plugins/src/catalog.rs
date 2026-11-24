@@ -438,6 +438,9 @@ pub struct CachedBundle {
     /// Optional standard CLAP discovery output from a separate scan process.
     #[serde(default)]
     pub clap_presets: Vec<ClapPreset>,
+    /// Whether preset discovery completed or was unnecessary for this scan.
+    #[serde(default)]
+    pub preset_discovery_complete: bool,
     /// Why the scan failed (crash, timeout, no plugins), `None` on success.
     pub error: Option<String>,
 }
@@ -1054,6 +1057,7 @@ mod tests {
                     mtime_secs: 1_700_000_000,
                     descriptors: vec![localized.clone()],
                     clap_presets: vec![clap_preset("a", "Factory")],
+                    preset_discovery_complete: true,
                     error: None,
                 },
                 CachedBundle {
@@ -1061,6 +1065,7 @@ mod tests {
                     mtime_secs: 3,
                     descriptors: Vec::new(),
                     clap_presets: Vec::new(),
+                    preset_discovery_complete: true,
                     error: Some("crashed (signal 11)".into()),
                 },
             ],

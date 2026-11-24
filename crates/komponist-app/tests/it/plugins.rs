@@ -590,6 +590,36 @@ fn standalone_clap_preset_round_trips_through_catalog_browser_and_bridge() {
         app.device_events().iter().any(|event| matches!(event, PluginManagerEvent::ClapPresetLoaded { device: id, .. } if *id == device))
     });
     assert_eq!(app.engine().host().param_base(device, 42), Some(0.75));
+    let host = app.engine_mut().host_mut();
+    assert!(host.set_param(device, 42, 0.375));
+    assert!(host.capture_clap_preset(device));
+    let mut captured = None;
+    step_until(
+        app,
+        "preset capture after the queued parameter edit",
+        |app| {
+            captured = app.device_events().iter().find_map(|event| match event {
+                PluginManagerEvent::ClapPresetCaptured { device: id, result } if *id == device => {
+                    Some(result.clone().unwrap())
+                }
+                _ => None,
+            });
+            captured.is_some()
+        },
+    );
+    let captured = captured.unwrap();
+    // The standalone fixture stores gain as the first native double.
+    assert_eq!(f64::from_ne_bytes(captured[..8].try_into().unwrap()), 0.375);
+
+    assert!(app.engine_mut().host_mut().capture_clap_preset(device));
+    app.dispatch(Action::Plugin(PluginAction::Reload(device)));
+    assert!(app.engine_mut().host_mut().poll().iter().any(|event| {
+        matches!(
+            event,
+            PluginManagerEvent::ClapPresetCaptured { device: captured, result: Err(_) }
+                if *captured == device
+        )
+    }));
     app.shutdown();
 }
 

@@ -98,9 +98,10 @@ fn preset_files(
     budget: &mut usize,
 ) -> Vec<ClapPresetLocation> {
     let mut files = Vec::new();
-    if let Ok(info) = fs::symlink_metadata(root)
-        && info.file_type().is_file()
-    {
+    let Ok(info) = fs::metadata(root) else {
+        return files;
+    };
+    if info.is_file() {
         if *budget != 0 {
             *budget -= 1;
             if let Some(path) = root.to_str() {
@@ -109,10 +110,14 @@ fn preset_files(
         }
         return files;
     }
+    if !info.is_dir() {
+        return files;
+    }
     let mut folders = vec![root.to_path_buf()];
     while *budget != 0 {
         let Some(folder) = folders.pop() else { break };
-        if !fs::symlink_metadata(&folder).is_ok_and(|info| info.file_type().is_dir()) {
+        // Only the explicitly declared root follows links. The walk never follows child links.
+        if folder != root && !fs::symlink_metadata(&folder).is_ok_and(|info| info.is_dir()) {
             continue;
         }
         let Ok(children) = fs::read_dir(folder) else {

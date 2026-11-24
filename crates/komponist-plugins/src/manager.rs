@@ -676,11 +676,9 @@ impl PluginManager {
                     .and_then(DirectDevice::state_for_reload)
             })
             .or_else(|| device.state.clone());
-        if let Some(mut old) = self.bridges.remove(&device.id) {
+        if self.bridges.contains_key(&device.id) {
             // A bridge reload retires the old process even if start rejects the setup.
-            self.discard_queued_snapshots(device.id);
-            old.kill();
-            self.retiring.push(old);
+            self.retire(device.id, false);
         }
         self.start(device, setup, state)
     }
@@ -723,24 +721,8 @@ impl PluginManager {
         let mut effect_meter = None;
         let mut verified_bundle = None;
         let mut state = state;
-        if requires_bundled(&device.plugin)
-            || self
-                .private_clap_dir
-                .as_ref()
-                .is_some_and(|root| bundle.starts_with(root))
-        {
-            let verified = self
-                .bundled_clap
-                .as_ref()
-                .ok_or_else(|| PluginError::Ipc("bundled CLAP verification is unavailable".into()))
-                .and_then(|bundled| {
-                    bundled
-                        .verify(&bundle, &plugin_id)
-                        .map_err(|error| PluginError::Ipc(error.to_string()))?
-                        .ok_or_else(|| {
-                            PluginError::Ipc("bundle is not in the app release inventory".into())
-                        })
-                });
+        if self.requires_bundle_verification(&device.plugin, &bundle) {
+            let verified = self.verify_catalog_bundle(&bundle, &plugin_id);
             let proof = match verified {
                 Ok(proof) => proof,
                 Err(error) => {
@@ -876,7 +858,27 @@ impl PluginManager {
     /// Takes the bridge of `device` out: `Shutdown` with a grace period if `graceful`, else
     /// SIGKILL. Its process is reaped by later polls.
     fn retire(&mut self, device: DeviceId, graceful: bool) {
+        let capture_interrupted = self
+            .direct
+            .get(&device)
+            .is_some_and(DirectDevice::is_capturing_clap_preset)
+            || self
+                .bridges
+                .get(&device)
+                .is_some_and(Bridge::is_capturing_clap_preset)
+            || self.pending.iter().any(|event| {
+                matches!(event,
+                PluginManagerEvent::ClapPresetCaptured { device: id, .. } if *id == device)
+            });
         self.discard_queued_snapshots(device);
+        if capture_interrupted {
+            self.pending.push(PluginManagerEvent::ClapPresetCaptured {
+                device,
+                result: Err(
+                    "the plugin instance was replaced or removed during preset capture".into(),
+                ),
+            });
+        }
         self.verified_bundles.remove(&device);
         self.effect_meters.remove(&device);
         if let Some(mut direct) = self.direct.remove(&device) {
@@ -1240,6 +1242,10 @@ impl PluginManager {
             .bridges
             .get(&device)
             .is_some_and(Bridge::requires_control_param_edit)
+            || self
+                .direct
+                .get(&device)
+                .is_some_and(DirectDevice::is_loading_clap_preset)
         {
             return false;
         }
@@ -1359,6 +1365,12 @@ impl PluginManager {
             if matches!(direct.status, DeviceStatus::Crashed(_)) {
                 return false;
             }
+            if direct.is_loading_clap_preset() {
+                self.pending.push(PluginManagerEvent::ClapPresetFailed {
+                    device,
+                    message: "a document restore superseded the CLAP preset load".into(),
+                });
+            }
             if let Some(slot) = direct.set_state(state.clone()) {
                 self.pending
                     .push(PluginManagerEvent::WaveformMarkersEdited {
@@ -1463,6 +1475,27 @@ impl PluginManager {
             .is_some_and(|bridge| bridge.load_clap_preset(preset))
     }
 
+    fn requires_bundle_verification(&self, plugin: &PluginRef, path: &Path) -> bool {
+        requires_bundled(plugin)
+            || self
+                .private_clap_dir
+                .as_ref()
+                .is_some_and(|root| path.starts_with(root))
+    }
+
+    fn verify_catalog_bundle(
+        &self,
+        path: &Path,
+        plugin_id: &str,
+    ) -> Result<VerifiedClap, PluginError> {
+        self.bundled_clap
+            .as_ref()
+            .ok_or_else(|| PluginError::Ipc("bundled CLAP verification is unavailable".into()))?
+            .verify(path, plugin_id)
+            .map_err(|error| PluginError::Ipc(error.to_string()))?
+            .ok_or_else(|| PluginError::Ipc("bundle is not in the app release inventory".into()))
+    }
+
     /// Prepares the project state for a new instance with a discovered CLAP preset.
     pub fn prepare_clap_preset(
         &self,
@@ -1482,13 +1515,8 @@ impl PluginManager {
             .clap_presets
             .iter()
             .find(|preset| &preset.source == source)?;
-        let verified = if requires_bundled(plugin) {
-            Some(
-                self.bundled_clap
-                    .as_ref()?
-                    .verify(path, &preset.plugin_id)
-                    .ok()??,
-            )
+        let verified = if self.requires_bundle_verification(plugin, path) {
+            Some(self.verify_catalog_bundle(path, &preset.plugin_id).ok()?)
         } else {
             None
         };

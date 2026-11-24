@@ -190,6 +190,13 @@ fn spawn_process(
 }
 
 #[derive(Debug)]
+struct PresetCapture {
+    request: u32,
+    deadline: Instant,
+    deferred: bool,
+}
+
+#[derive(Debug)]
 struct StateRestore {
     request: u32,
     /// Newer user edits already applied optimistically to the manager's cache.
@@ -268,7 +275,9 @@ pub(crate) struct Bridge {
     state_requests: VecDeque<StateRequest>,
     state_restores: VecDeque<StateRestore>,
     pending_clap_preset: Option<u32>,
-    pending_preset_capture: Option<u32>,
+    pending_preset_capture: Option<PresetCapture>,
+    /// A preset changed audio while a newer document restore was queued.
+    superseded_preset_applied: bool,
     // The most recent matched reply, including partial restore failures reported as UI updates.
     restore_reply: Option<(u32, Result<(), String>)>,
     snapshot_due: Option<Instant>,
@@ -424,6 +433,7 @@ impl Bridge {
             state_restores,
             pending_clap_preset: None,
             pending_preset_capture: None,
+            superseded_preset_applied: false,
             restore_reply: None,
             snapshot_due: None,
             last_state: s.state,
@@ -1085,7 +1095,10 @@ impl Bridge {
     }
 
     pub(crate) fn load_clap_preset(&mut self, preset: PresetLoad) -> bool {
-        if !self.running() || !self.state_restores.is_empty() || self.is_editing_waveform_markers()
+        if !self.running()
+            || !self.state_restores.is_empty()
+            || self.is_editing_waveform_markers()
+            || self.is_capturing_clap_preset()
         {
             return false;
         }
@@ -1105,6 +1118,10 @@ impl Bridge {
         self.running() && self.format == PluginFormat::Clap
     }
 
+    pub(crate) fn is_capturing_clap_preset(&self) -> bool {
+        self.pending_preset_capture.is_some()
+    }
+
     pub(crate) fn capture_clap_preset(&mut self) -> bool {
         if !self.supports_user_presets()
             || self.pending_preset_capture.is_some()
@@ -1114,7 +1131,11 @@ impl Bridge {
             return false;
         }
         let request = self.seq();
-        self.pending_preset_capture = Some(request);
+        self.pending_preset_capture = Some(PresetCapture {
+            request,
+            deadline: Instant::now() + self.timing.long_call_timeout,
+            deferred: false,
+        });
         self.long_call_since.get_or_insert_with(Instant::now);
         self.send(ControlMsg::CaptureClapPreset(request));
         true
@@ -1257,7 +1278,18 @@ impl Bridge {
                 )),
             });
         }
-        self.pending_clap_preset = None;
+        if self.pending_clap_preset.take().is_some() {
+            events.push(PluginManagerEvent::ClapPresetFailed {
+                device: self.device,
+                message: format!("plugin became unavailable: {reason:?}"),
+            });
+        }
+        if self.pending_preset_capture.is_some() {
+            self.finish_preset_capture(
+                Err(format!("plugin became unavailable: {reason:?}")),
+                events,
+            );
+        }
         self.snapshot_due = None;
         self.set_status(DeviceStatus::Crashed(reason), events);
     }
@@ -1353,6 +1385,7 @@ impl Bridge {
         let now = Instant::now();
         self.check_ready(now, events);
         self.poll_marker_retry(now, events);
+        self.poll_preset_capture(now, events);
         if let Some(deadline) = self.stop_deadline
             && now >= deadline
         {
@@ -1541,7 +1574,11 @@ impl Bridge {
                 }
             }
             BridgeMsg::StateDeferred { request } => {
-                if self.take_state_request(request).is_some() {
+                if let Some(capture) = &mut self.pending_preset_capture
+                    && capture.request == request
+                {
+                    capture.deferred = true;
+                } else if self.take_state_request(request).is_some() {
                     self.snapshot_soon();
                 }
             }
@@ -1580,15 +1617,12 @@ impl Bridge {
                 }
             }
             BridgeMsg::ClapPresetCaptured(request, result) => {
-                if self.pending_preset_capture == Some(request) {
-                    self.pending_preset_capture = None;
-                    if self.gui_requests == 0 && self.pending_clap_preset.is_none() {
-                        self.long_call_since = None;
-                    }
-                    events.push(PluginManagerEvent::ClapPresetCaptured {
-                        device: self.device,
-                        result,
-                    });
+                if self
+                    .pending_preset_capture
+                    .as_ref()
+                    .is_some_and(|capture| capture.request == request)
+                {
+                    self.finish_preset_capture(result, events);
                 }
             }
             BridgeMsg::ClapPresetApplied(request, result) => {
@@ -1780,6 +1814,42 @@ impl Bridge {
         });
     }
 
+    fn poll_preset_capture(&mut self, now: Instant, events: &mut Vec<PluginManagerEvent>) {
+        let Some(capture) = self
+            .pending_preset_capture
+            .as_mut()
+            .filter(|capture| capture.deferred)
+        else {
+            return;
+        };
+        if now >= capture.deadline || !self.state_restores.is_empty() {
+            self.finish_preset_capture(
+                Err(
+                    "preset capture was interrupted before parameter edits reached the plugin"
+                        .into(),
+                ),
+                events,
+            );
+            return;
+        }
+        capture.deferred = false;
+        let request = capture.request;
+        self.send(ControlMsg::CaptureClapPreset(request));
+    }
+
+    fn finish_preset_capture(
+        &mut self,
+        result: Result<Vec<u8>, String>,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        self.pending_preset_capture = None;
+        self.clear_completed_long_call();
+        events.push(PluginManagerEvent::ClapPresetCaptured {
+            device: self.device,
+            result,
+        });
+    }
+
     fn finish_clap_preset(
         &mut self,
         request: u32,
@@ -1790,9 +1860,7 @@ impl Bridge {
             return;
         }
         self.pending_clap_preset = None;
-        if self.gui_requests == 0 && self.pending_preset_capture.is_none() {
-            self.long_call_since = None;
-        }
+        self.clear_completed_long_call();
         let device = self.device;
         match result {
             Ok(applied) => {
@@ -1821,6 +1889,7 @@ impl Bridge {
                     });
                 }
                 self.finish_restore(request, Ok(applied.values), events);
+                self.superseded_preset_applied = superseded;
             }
             Err(message) => {
                 self.state_restores
@@ -1869,7 +1938,17 @@ impl Bridge {
             events.push(PluginManagerEvent::ParamValuesChanged { device });
             events.push(PluginManagerEvent::StateApplied { device });
         }
+        let mismatched_preset = std::mem::take(&mut self.superseded_preset_applied);
         if let Some(message) = error {
+            if mismatched_preset {
+                self.fail(
+                    FailReason::LoadFailed(format!(
+                        "the document restore after a preset load failed: {message}"
+                    )),
+                    events,
+                );
+                return;
+            }
             if self.phase != Phase::Running {
                 self.keep_stored_state = true;
                 events.push(PluginManagerEvent::Log {
@@ -1890,6 +1969,10 @@ impl Bridge {
 
     fn gui_answered(&mut self) {
         self.gui_requests = self.gui_requests.saturating_sub(1);
+        self.clear_completed_long_call();
+    }
+
+    fn clear_completed_long_call(&mut self) {
         let marker_in_flight = self
             .marker_edit
             .as_ref()

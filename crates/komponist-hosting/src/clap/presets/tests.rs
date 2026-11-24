@@ -334,3 +334,36 @@ fn community_clap_discovers_loads_and_round_trips_a_preset() {
     plugin.load_preset_state(&[64]).unwrap();
     assert_eq!(plugin.save_preset_state().unwrap(), [64]);
 }
+
+#[cfg(unix)]
+#[test]
+fn follows_declared_symlink_roots_but_skips_links_inside_them() {
+    use std::os::unix::fs::symlink;
+
+    let dir = std::env::temp_dir().join(format!("kp-preset-root-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let actual = dir.join("actual");
+    fs::create_dir_all(&actual).unwrap();
+    fs::write(actual.join("real.preset"), []).unwrap();
+    symlink("real.preset", actual.join("alias.preset")).unwrap();
+    symlink(".", actual.join("cycle")).unwrap();
+    let folder = dir.join("linked-folder");
+    symlink("actual", &folder).unwrap();
+    let file = dir.join("linked-file.preset");
+    symlink("actual/real.preset", &file).unwrap();
+
+    let extensions = BTreeSet::from(["preset".to_owned()]);
+    let mut budget = 5;
+    let location = |path: &Path| ClapPresetLocation::File(path.to_str().unwrap().to_owned());
+    assert_eq!(
+        preset_files(&folder, &extensions, &mut budget),
+        [location(&folder.join("real.preset"))]
+    );
+    assert_eq!(budget, 2);
+    assert_eq!(
+        preset_files(&file, &extensions, &mut budget),
+        [location(&file)]
+    );
+    assert_eq!(budget, 1);
+    fs::remove_dir_all(dir).unwrap();
+}

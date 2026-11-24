@@ -572,6 +572,33 @@ fn discovered_clap_preset_menu_loads_a_localized_preset_in_one_undo_step() {
 }
 
 #[test]
+fn preset_undo_preserves_a_preceding_live_edit_without_a_snapshot() {
+    let (mut app, script) = app();
+    let device = device(&app, "Surge XT");
+    let baseline = [11_u8];
+    snapshot(&script, device, &baseline);
+    app.step();
+    let edited: Arc<[u8]> = Arc::from([22_u8]);
+    let preset: Arc<[u8]> = Arc::from([33_u8]);
+    push(
+        &script,
+        PluginManagerEvent::ClapPresetLoaded {
+            device,
+            previous_state: Arc::clone(&edited),
+            state: Arc::clone(&preset),
+        },
+    );
+    app.step();
+    assert_eq!(state(&app, device), Some(preset));
+    assert!(script.borrow().restores.is_empty());
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(state(&app, device), Some(Arc::clone(&edited)));
+    assert_eq!(script.borrow().restores.last(), Some(&(device, edited)));
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(state(&app, device).as_deref(), Some(baseline.as_slice()));
+}
+
+#[test]
 fn state_snapshots_are_undo_steps_that_follow_each_other_into_one() {
     let (mut app, script) = app();
     let surge = device(&app, "Surge XT");

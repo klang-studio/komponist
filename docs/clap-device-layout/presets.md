@@ -51,14 +51,15 @@ as JSON from a disposable scanner process. A bundle without a discovery factory 
 empty list. Unreadable paths and unsupported plug-in IDs are skipped. Discovery skips a
 provider that fails initialization, and discards rows from a location whose metadata receiver
 reports an error. Locations, directory traversal, and metadata have size limits. Directory
-traversal uses declared preset file extensions and skips symlinks. The load key in JSON is
-a byte array so it can round-trip without interpreting the provider's key.
+traversal uses declared preset file extensions, follows a symlink declared as a location,
+and skips symlinks within that location. The load key in JSON is a byte array so it can round-trip without interpreting the provider's key.
 
 The normal catalog scan caches the rows after a successful CLAP descriptor scan and associates
 them with the exact bundle path and plug-in ID. The optional preset scan runs in a separate
 process with a three-second limit. Malformed output, a crash, or a timeout leaves the plug-in
-available in the catalog with an empty preset list. Preset directories are indexed again when
-the bundle is rescanned after a change.
+available in the catalog and keeps any previously cached preset list. The next catalog scan
+retries incomplete preset discovery even when the bundle is unchanged. A bundle change also
+refreshes its preset list.
 
 The hosting API reports unsupported preset loading and refused state operations as errors.
 A failed contextual state operation is surfaced to the caller. A failure can mean the

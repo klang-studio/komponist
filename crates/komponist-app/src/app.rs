@@ -952,11 +952,13 @@ impl App {
                 state,
             } => {
                 self.record_clap_preset(*device, previous_state, state);
+                self.frame_preset_finished(*device, true);
             }
             PluginManagerEvent::ClapPresetCaptured { device, result } => {
                 self.user_preset_captured(*device, result);
             }
             PluginManagerEvent::ClapPresetFailed { device, message } => {
+                self.frame_preset_finished(*device, false);
                 eprintln!("komponist: preset load for device {}: {message}", device.0);
                 self.set_status(self.lang.devices_preset_load_failed(), StatusKind::Error);
             }
@@ -964,10 +966,14 @@ impl App {
                 device,
                 status: DeviceStatus::Ok,
             } => self.device_up(*device),
+            PluginManagerEvent::StateApplied { device } => {
+                self.cancel_frame_preset_requests(*device)
+            }
             PluginManagerEvent::StatusChanged {
                 device,
                 status: DeviceStatus::Crashed(reason),
             } => {
+                self.cancel_frame_preset_requests(*device);
                 let name = self.device_name(*device);
                 eprintln!("komponist: device {} ({name}): {reason:?}", device.0);
                 let text = match reason {
@@ -2583,9 +2589,11 @@ impl App {
                         self.apply("undo-load-preset", |p| {
                             edits::set_device_state(p, device, Some(state.into()))
                         });
+                        self.frame_preset_finished(device, true);
                     } else {
                         let target = Arc::clone(target);
                         if !self.engine.host_mut().load_clap_preset(&target, &source) {
+                            self.frame_preset_finished(device, false);
                             self.set_status(
                                 self.lang.devices_preset_load_failed(),
                                 StatusKind::Error,
@@ -2628,6 +2636,7 @@ impl App {
             PluginAction::CloseWindow(device) => self.close_plugin_window(device),
             PluginAction::FocusWindow(device) => self.focus_plugin_window(device),
             PluginAction::Reload(device) => {
+                self.cancel_frame_preset_requests(device);
                 self.reset_sampler_hit(device);
                 self.engine.reload_device(self.doc.project(), device);
             }

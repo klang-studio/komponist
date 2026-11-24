@@ -11,8 +11,8 @@
 //!
 //! What gets cached: successful scans, bundles without plugins, crashes and load errors (a bundle
 //! that fails the same way again is not rescanned until it changes). Standard CLAP preset discovery
-//! runs in another disposable process after a successful uncached CLAP scan. A crash, timeout or
-//! malformed reply in that optional pass leaves the plug-in available in the catalog.
+//! runs in another disposable process after a successful CLAP descriptor scan. A crash, timeout or
+//! malformed reply in that optional pass leaves the plug-in available and is retried next scan.
 //! Descriptor timeouts and unsupported formats are retried on the next scan.
 
 use std::collections::{HashSet, VecDeque};
@@ -149,6 +149,7 @@ struct Found {
 pub(crate) struct Scanned {
     pub descriptors: Vec<PluginDescriptor>,
     pub clap_presets: Vec<ClapPreset>,
+    pub preset_discovery_complete: bool,
     pub error: Option<String>,
     /// Whether the result goes into the cache.
     pub cacheable: bool,
@@ -159,6 +160,7 @@ impl Scanned {
         Scanned {
             descriptors: Vec::new(),
             clap_presets: Vec::new(),
+            preset_discovery_complete: true,
             error: Some(error.into()),
             cacheable,
         }
@@ -208,19 +210,30 @@ fn run(setup: &ScanSetup, cancel: &AtomicBool) -> Option<ScanOutcome> {
                 .map(|cached| Scanned {
                     descriptors: cached.descriptors.clone(),
                     clap_presets: cached.clap_presets.clone(),
+                    preset_discovery_complete: cached.preset_discovery_complete
+                        || !cached
+                            .descriptors
+                            .iter()
+                            .any(|d| d.format == PluginFormat::Clap),
                     error: cached.error.clone(),
                     cacheable: true,
                 })
         })
         .collect();
-    let queue: VecDeque<usize> = (0..found.len()).filter(|&i| results[i].is_none()).collect();
+    let queue: VecDeque<usize> = (0..found.len())
+        .filter(|&i| {
+            results[i]
+                .as_ref()
+                .is_none_or(|result| !result.preset_discovery_complete)
+        })
+        .collect();
     let workers = setup.parallel.max(1).min(queue.len());
     let queue = Mutex::new(queue);
     let (tx, rx) = mpsc::channel();
     std::thread::scope(|scope| {
         for _ in 0..workers {
             let tx = tx.clone();
-            let (queue, found) = (&queue, &found);
+            let (queue, found, cached) = (&queue, &found, &results);
             scope.spawn(move || {
                 loop {
                     if cancel.load(Ordering::Acquire) {
@@ -231,26 +244,32 @@ fn run(setup: &ScanSetup, cancel: &AtomicBool) -> Option<ScanOutcome> {
                         return;
                     };
                     let bundle = &found[index].path;
-                    let scanned = scan_bundle(
-                        &setup.bridge_exe,
-                        &setup.bridge_args,
-                        bundle,
-                        setup.timeout,
-                        cancel,
-                    );
+                    let scanned = cached[index].clone().or_else(|| {
+                        scan_bundle(
+                            &setup.bridge_exe,
+                            &setup.bridge_args,
+                            bundle,
+                            setup.timeout,
+                            cancel,
+                        )
+                    });
                     if let Some(mut scanned) = scanned {
                         if scanned
                             .descriptors
                             .iter()
                             .any(|descriptor| descriptor.format == PluginFormat::Clap)
                         {
-                            scanned.clap_presets = scan_bundle_presets(
+                            let presets = scan_bundle_presets(
                                 &setup.bridge_exe,
                                 &setup.bridge_args,
                                 bundle,
                                 setup.timeout.min(PRESET_SCAN_TIMEOUT),
                                 cancel,
                             );
+                            scanned.preset_discovery_complete = presets.is_some();
+                            if let Some(presets) = presets {
+                                scanned.clap_presets = presets;
+                            }
                         }
                         let _ = tx.send((index, scanned));
                     }
@@ -306,6 +325,7 @@ fn run(setup: &ScanSetup, cancel: &AtomicBool) -> Option<ScanOutcome> {
                 mtime_secs: bundle.mtime_secs,
                 descriptors: result.descriptors,
                 clap_presets: result.clap_presets,
+                preset_discovery_complete: result.preset_discovery_complete,
                 error: result.error,
             });
         }
@@ -478,7 +498,7 @@ fn scan_bundle_presets(
     bundle: &Path,
     timeout: Duration,
     cancel: &AtomicBool,
-) -> Vec<ClapPreset> {
+) -> Option<Vec<ClapPreset>> {
     let Some(Ok(output)) = run_scan_command(
         bridge_exe,
         bridge_args,
@@ -488,13 +508,13 @@ fn scan_bundle_presets(
         timeout,
         cancel,
     ) else {
-        return Vec::new();
+        return None;
     };
     // A failed provider must not replace or invalidate a successful descriptor scan.
     if output.exit.code == Some(0) {
-        serde_json::from_slice(&output.stdout).unwrap_or_default()
+        serde_json::from_slice(&output.stdout).ok()
     } else {
-        Vec::new()
+        None
     }
 }
 
@@ -665,6 +685,7 @@ pub(crate) fn interpret(exit: ProcessExit, stdout: &[u8], stderr: &[u8], bundle:
             Ok(descriptors) => Scanned {
                 descriptors,
                 clap_presets: Vec::new(),
+                preset_discovery_complete: true,
                 error: None,
                 cacheable: true,
             },
@@ -924,17 +945,26 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn failed_preset_helper_does_not_discard_descriptor_scan() {
+    fn failed_preset_helper_retries_without_rescanning_descriptors() {
         let scratch = tempfile::tempdir().unwrap();
-        // The fixture helper returns a valid descriptor and fails only in preset mode.
+        // The fixture helper fails the first preset scan and reports an empty list on retry.
         macos_bundle(scratch.path(), "Y.clap");
         let script = r#"
             case "$2" in
                 --scan)
+                    printf 'descriptor\n' >> "$1"
                     printf '%s\n' '[{"format":"clap","id":"x.y","name":"Y","vendor":"X",
                         "version":"1","kind":"effect","features":[],"bundle":"/a/Y.clap"}]'
                     ;;
-                --scan-presets) : > "$1"; exit 1 ;;
+                --scan-presets)
+                    if grep -q '^preset$' "$1"; then
+                        printf 'preset\n' >> "$1"
+                        printf '[]\n'
+                    else
+                        printf 'preset\n' >> "$1"
+                        exit 1
+                    fi
+                    ;;
                 *) exit 2 ;;
             esac
         "#;
@@ -963,6 +993,22 @@ mod tests {
         assert!(outcome.report.skipped.is_empty());
         assert_eq!(outcome.cache.descriptors()[0].id, "x.y");
         assert!(outcome.cache.bundles[0].clap_presets.is_empty());
+        assert!(!outcome.cache.bundles[0].preset_discovery_complete);
+
+        let mut setup = ScanSetup {
+            cache: outcome.cache,
+            ..setup
+        };
+        let retry = run(&setup, &AtomicBool::new(false)).unwrap();
+        assert_eq!(retry.cache.descriptors()[0].id, "x.y");
+        assert!(retry.cache.bundles[0].preset_discovery_complete);
+        assert!(retry.cache.bundles[0].clap_presets.is_empty());
+        setup.cache = retry.cache;
+        run(&setup, &AtomicBool::new(false)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(attempted).unwrap(),
+            "descriptor\npreset\npreset\n"
+        );
     }
 
     #[test]

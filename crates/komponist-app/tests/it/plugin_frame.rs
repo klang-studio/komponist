@@ -834,6 +834,40 @@ fn hexa_opens_its_parameters_and_steps_through_its_presets() {
 }
 
 #[test]
+fn two_frame_preset_steps_in_one_event_batch_advance_twice() {
+    let (app, script, _) = app();
+    let mut h = harness(app);
+    let device = device_named(h.state(), "Hexa");
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::OpenWindow(device)));
+    h.run_steps(3);
+
+    push(
+        &script,
+        PluginManagerEvent::FrameHeaderAction {
+            device,
+            event: HeaderEvent::Preset(0),
+        },
+    );
+    h.run_steps(3);
+    for _ in 0..2 {
+        push(
+            &script,
+            PluginManagerEvent::FrameHeaderAction {
+                device,
+                event: HeaderEvent::PresetNext,
+            },
+        );
+    }
+    h.run_steps(3);
+    let app = h.state();
+    let target = app.project().find_device(device).unwrap().2;
+    let expected = &app.engine().host().clap_presets(target)[2].name;
+    let field = h.get_by_role_and_label(Role::ComboBox, de::PLUGIN_FRAME_PRESET);
+    assert_eq!(field.value().as_deref(), Some(expected.as_str()));
+}
+
+#[test]
 fn a_missing_plugin_says_so_and_esc_in_the_main_window_leaves_the_frame_open() {
     let (app, _script, _) = app();
     let mut h = harness(app);

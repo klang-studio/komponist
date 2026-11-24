@@ -1310,6 +1310,12 @@ impl Bridge {
     }
 
     fn capture_clap_preset(&mut self, request: u32) {
+        if let Some(active) = self.active.as_mut()
+            && (active.rt.has_queued_params() || active.rt.snapshot(|_| ()).is_err())
+        {
+            self.send(BridgeMsg::StateDeferred { request });
+            return;
+        }
         let result = if let Some(plugin) = self.plugin.as_mut() {
             plugin
                 .save_preset_state()

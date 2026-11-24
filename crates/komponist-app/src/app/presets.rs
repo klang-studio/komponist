@@ -69,10 +69,25 @@ fn read_user_preset(path: &Path) -> Result<UserPreset, String> {
 }
 
 pub(super) struct PendingPreset {
-    job: PresetPreparation,
+    preparation: Preparation,
     plugin: PluginRef,
     role: DeviceRole,
     track: Option<TrackId>,
+}
+
+enum Preparation {
+    Running(PresetPreparation),
+    Ready(Result<Vec<u8>, String>),
+}
+
+impl Preparation {
+    fn poll(&mut self) {
+        if let Self::Running(job) = self
+            && let Some(result) = job.try_finish()
+        {
+            *self = Self::Ready(result);
+        }
+    }
 }
 
 impl App {
@@ -95,35 +110,50 @@ impl App {
             );
             return;
         }
-        if let Some(state) = komponist_plugins::presets::legacy_state(&plugin, None, &source) {
-            self.insert_prepared_preset(plugin, role, track, state);
-        } else if let Some(job) = self.engine.host().prepare_clap_preset(&plugin, &source) {
-            self.preset_preparations.push(PendingPreset {
-                job,
-                plugin,
-                role,
-                track,
-            });
-        } else {
-            self.set_status(self.lang.devices_preset_load_failed(), StatusKind::Error);
-        }
+        let preparation =
+            if let Some(state) = komponist_plugins::presets::legacy_state(&plugin, None, &source) {
+                Preparation::Ready(Ok(state))
+            } else if let Some(job) = self.engine.host().prepare_clap_preset(&plugin, &source) {
+                Preparation::Running(job)
+            } else {
+                self.set_status(self.lang.devices_preset_load_failed(), StatusKind::Error);
+                return;
+            };
+        self.preset_preparations.push(PendingPreset {
+            preparation,
+            plugin,
+            role,
+            track,
+        });
+        self.poll_preset_preparations();
     }
 
     pub(super) fn poll_preset_preparations(&mut self) {
-        let mut pending = std::mem::take(&mut self.preset_preparations);
-        for request in pending.drain(..) {
-            match request.job.try_finish() {
-                None => self.preset_preparations.push(request),
-                Some(Ok(state)) => {
-                    self.insert_prepared_preset(request.plugin, request.role, request.track, state)
+        let mut blocked_tracks = std::collections::BTreeSet::new();
+        for mut request in std::mem::take(&mut self.preset_preparations) {
+            request.preparation.poll();
+            let destination = request
+                .track
+                .filter(|_| request.role != DeviceRole::Instrument);
+            if destination.is_some_and(|track| blocked_tracks.contains(&track))
+                || matches!(request.preparation, Preparation::Running(_))
+            {
+                blocked_tracks.extend(destination);
+                self.preset_preparations.push(request);
+                continue;
+            }
+            match request.preparation {
+                Preparation::Ready(Ok(state)) => {
+                    self.insert_prepared_preset(request.plugin, request.role, request.track, state);
                 }
-                Some(Err(error)) => {
+                Preparation::Ready(Err(error)) => {
                     eprintln!(
                         "komponist: preparing a preset from {}: {error}",
                         request.plugin.name
                     );
                     self.set_status(self.lang.devices_preset_load_failed(), StatusKind::Error);
                 }
+                Preparation::Running(_) => unreachable!("running preparations were retained"),
             }
         }
     }
