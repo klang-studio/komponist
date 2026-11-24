@@ -56,6 +56,13 @@ fn mask_cpu(h: &mut Harness<'_, App>) {
     h.mask(cpu.expand(2.0));
 }
 
+fn authored_snapshot_harness(mut app: App, lang: Lang) -> Harness<'static, App> {
+    // Hold audio before the first frame so the live bridge cannot add late blocks during
+    // the capture. The sampler control messages still reach the bridge.
+    app.engine_mut().hold_engine().expect("engine held");
+    harness(app.with_lang(lang))
+}
+
 fn snapshot_authored_pad(h: &mut Harness<'_, App>, name: &str) {
     // Bridge scheduling warnings depend on the test machine's realtime permissions.
     h.state_mut().ui_mut().status = None;
@@ -428,7 +435,7 @@ fn the_card_shows_the_pads_the_waveform_and_the_knobs_of_the_selected_pad() {
             return;
         };
         let (_, device) = drums(&app);
-        let mut h = harness(app.with_lang(lang));
+        let mut h = authored_snapshot_harness(app, lang);
         assert_kit_pad_controls(&h);
         let source = FilePool::global().open(&dir.join("Kick.wav")).unwrap();
         let deadline = Instant::now() + PATIENCE;
@@ -489,7 +496,7 @@ fn an_empty_sampler_names_its_pads_and_offers_the_load_menu() {
         let Some(app) = authored_app(&dir, false) else {
             return;
         };
-        let mut h = harness(app.with_lang(lang));
+        let mut h = authored_snapshot_harness(app, lang);
         assert_empty_pad_menu(&mut h, 3);
         snapshot_authored_pad(&mut h, snapshot);
         results.extend_harness(&mut h);
