@@ -927,8 +927,22 @@ fn sdk_example_uses_native_layout_and_falls_back() {
         Some(reference.clone())
     );
 
-    app.dispatch(Action::Project(ProjectAction::CollectAndSave));
     let collected = destination.join("Saved Samples/Reference.txt");
+    // Copying a restored non-audio file requires a fresh selection.
+    app.dispatch(Action::Project(ProjectAction::CollectAndSave));
+    assert!(!collected.exists());
+    let unapproved = persist::from_json(&std::fs::read_to_string(&moved).unwrap()).unwrap();
+    assert_eq!(
+        unapproved.find_device(device).unwrap().2.asset_links[&42].resolve(Some(&destination)),
+        Some(reference.clone())
+    );
+
+    app.dispatch(Action::Plugin(PluginAction::SetPluginAsset {
+        device,
+        slot: 42,
+        path: Some(reference.clone()),
+    }));
+    app.dispatch(Action::Project(ProjectAction::CollectAndSave));
     assert_eq!(std::fs::read(&collected).unwrap(), b"fixture reference");
     assert_eq!(
         app.project().find_device(device).unwrap().2.asset_links[&42].resolve(Some(&destination)),
