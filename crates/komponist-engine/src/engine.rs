@@ -1962,6 +1962,7 @@ impl Core {
                 target,
                 begin,
             } => self.automation_touch(owner, target, begin),
+            Command::AutomationReassert { slot } => self.reassert_slot_automation(slot),
             Command::CancelAutomationWrite => self.cancel_automation_write(),
             Command::FinishAutomationWrite => self.finish_automation_write(),
             Command::SetParam { slot, id, value } => {

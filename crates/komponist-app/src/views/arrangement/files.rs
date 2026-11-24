@@ -5,138 +5,14 @@ use komponist_ui::timeline::{AudioFileState, WaveMesh, WaveSpec};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex, Weak,
-        atomic::{AtomicUsize, Ordering},
-        mpsc::{self, Receiver, SyncSender, TryRecvError},
-    },
+    sync::{Arc, atomic::AtomicUsize, mpsc::TryRecvError},
     time::{Duration, Instant},
 };
 
+use super::super::waveform_lookup::{LookupWorker, PendingLookup};
+
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const LOOKUP_RETRY: Duration = Duration::from_millis(50);
-const LOOKUP_WORKERS: usize = 2;
-const MAX_LOOKUP_WORKERS: usize = 2 * LOOKUP_WORKERS;
-const LOOKUP_QUEUE: usize = 16;
-// Leave at least half the queue for files whose first metadata has yet to arrive.
-const MAX_REFRESH_REQUESTS: usize = LOOKUP_QUEUE / 2;
-
-struct LookupSlot(Arc<AtomicUsize>);
-
-impl LookupSlot {
-    fn acquire(counter: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
-        counter
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                (used < limit).then_some(used + 1)
-            })
-            .ok()?;
-        Some(Self(Arc::clone(counter)))
-    }
-}
-
-impl Drop for LookupSlot {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-#[derive(Debug)]
-struct PendingLookup {
-    result: Receiver<Option<Arc<PoolFile>>>,
-    // Dropping the entry tells a worker it can skip a queued lookup for an invisible file.
-    _interest: Arc<()>,
-}
-
-struct Lookup {
-    file: AudioFile,
-    dir: Option<PathBuf>,
-    result: SyncSender<Option<Arc<PoolFile>>>,
-    interest: Weak<()>,
-    ctx: egui::Context,
-    refresh_slot: Option<LookupSlot>,
-}
-
-#[derive(Debug)]
-struct LookupWorker {
-    queue: SyncSender<Lookup>,
-    refresh_requests: Arc<AtomicUsize>,
-}
-
-impl LookupWorker {
-    fn spawn(
-        workers: &Arc<AtomicUsize>,
-        resolve: impl Fn(&AudioFile, Option<&Path>) -> Option<Arc<PoolFile>> + Send + Sync + 'static,
-    ) -> Option<Self> {
-        let (queue, jobs) = mpsc::sync_channel::<Lookup>(LOOKUP_QUEUE);
-        let jobs = Arc::new(Mutex::new(jobs));
-        let resolve = Arc::new(resolve);
-        let mut started = false;
-        for n in 0..LOOKUP_WORKERS {
-            let Some(thread_slot) = LookupSlot::acquire(workers, MAX_LOOKUP_WORKERS) else {
-                break;
-            };
-            let jobs = Arc::clone(&jobs);
-            let resolve = Arc::clone(&resolve);
-            // A slow mount can hold one lookup without holding the queue mutex or the UI.
-            let worker = std::thread::Builder::new()
-                .name(format!("komponist-waveform-file-{n}"))
-                .spawn(move || {
-                    let _thread_slot = thread_slot;
-                    loop {
-                        let next = jobs.lock().unwrap_or_else(|err| err.into_inner()).recv();
-                        let Ok(job) = next else { break };
-                        if job.interest.strong_count() == 0 {
-                            continue;
-                        }
-                        let file = resolve(&job.file, job.dir.as_deref());
-                        drop(job.refresh_slot);
-                        if job.result.send(file).is_ok() {
-                            job.ctx.request_repaint();
-                        }
-                    }
-                });
-            started |= worker.is_ok();
-        }
-        started.then(|| Self {
-            queue,
-            refresh_requests: Arc::default(),
-        })
-    }
-
-    fn request(
-        &self,
-        file: &AudioFile,
-        dir: Option<&Path>,
-        ctx: &egui::Context,
-        first_lookup: bool,
-    ) -> Option<PendingLookup> {
-        let refresh_slot = if first_lookup {
-            None
-        } else {
-            Some(LookupSlot::acquire(
-                &self.refresh_requests,
-                MAX_REFRESH_REQUESTS,
-            )?)
-        };
-        let (send, result) = mpsc::sync_channel(1);
-        let interest = Arc::new(());
-        self.queue
-            .try_send(Lookup {
-                file: file.clone(),
-                dir: dir.map(Path::to_path_buf),
-                result: send,
-                interest: Arc::downgrade(&interest),
-                ctx: ctx.clone(),
-                refresh_slot,
-            })
-            .ok()?;
-        Some(PendingLookup {
-            result,
-            _interest: interest,
-        })
-    }
-}
-
 fn resolve(file: &AudioFile, dir: Option<&Path>) -> Option<Arc<PoolFile>> {
     file.resolve(dir)
         .and_then(|path| FilePool::global().open(&path).ok())
@@ -212,7 +88,7 @@ struct WaveEntry {
 pub struct AudioCache {
     files: HashMap<(AudioFile, Option<PathBuf>), FileEntry>,
     waves: HashMap<usize, WaveEntry>,
-    worker: Option<LookupWorker>,
+    worker: Option<LookupWorker<AudioFile>>,
     // Still-running workers from abandoned documents count against the same limit.
     workers: Arc<AtomicUsize>,
     worker_retry: Option<Instant>,
@@ -247,11 +123,10 @@ impl AudioCache {
 
     fn refresh_files(
         files: &mut HashMap<(AudioFile, Option<PathBuf>), FileEntry>,
-        worker: &LookupWorker,
+        worker: &LookupWorker<AudioFile>,
         ctx: &egui::Context,
     ) {
-        let slots =
-            MAX_REFRESH_REQUESTS.saturating_sub(worker.refresh_requests.load(Ordering::Relaxed));
+        let slots = worker.refresh_slots();
         // The frame has already queued initial lookups, including for clips drawn later.
         // Select just the oldest visible refreshes that can fit, independent of paint order.
         let mut due = Vec::with_capacity(slots);
@@ -310,7 +185,7 @@ impl AudioCache {
                     .worker_retry
                     .is_none_or(|at| at.elapsed() >= REFRESH_INTERVAL)
             {
-                self.worker = LookupWorker::spawn(&self.workers, resolve);
+                self.worker = LookupWorker::<AudioFile>::spawn(&self.workers, resolve);
                 self.worker_retry = self.worker.is_none().then(Instant::now);
             }
             if let Some(worker) = self.worker.as_ref() {
@@ -371,8 +246,16 @@ impl AudioCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::views::waveform_lookup::{
+        LOOKUP_QUEUE, LOOKUP_WORKERS, MAX_LOOKUP_WORKERS, MAX_REFRESH_REQUESTS,
+    };
     use komponist_model::edits::{self, NewAudioTrack, NewClip, NewClipContent};
     use komponist_model::{Project, Tick};
+    use std::sync::{
+        Mutex,
+        atomic::Ordering,
+        mpsc::{self, Receiver},
+    };
     fn clip(path: &Path) -> Arc<Clip> {
         let (p, t) =
             edits::add_audio_track(&Project::new("cache"), NewAudioTrack::default()).unwrap();
@@ -526,7 +409,7 @@ mod tests {
 
         let lookup_pool = pool.clone();
         let mut cache = AudioCache::default();
-        cache.worker = LookupWorker::spawn(&cache.workers, move |file, dir| {
+        cache.worker = LookupWorker::<AudioFile>::spawn(&cache.workers, move |file, dir| {
             file.resolve(dir)
                 .and_then(|path| lookup_pool.open(&path).ok())
         });
@@ -552,7 +435,7 @@ mod tests {
         let (started, calls) = mpsc::channel();
         let (resume, held) = mpsc::channel();
         let held = Mutex::new(held);
-        cache.worker = LookupWorker::spawn(&cache.workers, move |_, _| {
+        cache.worker = LookupWorker::<AudioFile>::spawn(&cache.workers, move |_, _| {
             let _ = started.send(());
             let _ = held.lock().unwrap().recv();
             None
@@ -666,7 +549,7 @@ mod tests {
         let counted = Arc::clone(&refreshes);
         let ctx = egui::Context::default();
         let mut cache = AudioCache::default();
-        cache.worker = LookupWorker::spawn(&cache.workers, move |file, _| {
+        cache.worker = LookupWorker::<AudioFile>::spawn(&cache.workers, move |file, _| {
             if file
                 .abs
                 .file_name()
@@ -812,7 +695,7 @@ mod tests {
         let blocked = Mutex::new(blocked);
         let (returned, old_lookup_done) = mpsc::channel();
         let mut cache = AudioCache::default();
-        cache.worker = LookupWorker::spawn(&cache.workers, move |_, dir| {
+        cache.worker = LookupWorker::<AudioFile>::spawn(&cache.workers, move |_, dir| {
             let dir = dir.unwrap();
             let old = dir.ends_with("old");
             if old {

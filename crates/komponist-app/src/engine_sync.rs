@@ -1096,6 +1096,9 @@ impl EngineSync {
         events.extend(self.host.poll());
         for event in &events {
             if let PluginManagerEvent::StateApplied { device } = *event {
+                if let Some(slot) = self.slot_of(device) {
+                    self.send(Command::AutomationReassert { slot });
+                }
                 self.reassert_device_macros(device);
             }
         }

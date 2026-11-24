@@ -29,7 +29,7 @@
 use std::cell::UnsafeCell;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -379,28 +379,39 @@ impl DeliveredParams<'_> {
 
 #[derive(Debug)]
 struct RtParamSync {
-    activity: AtomicU8,
+    // The low bits are the activity flags. The upper bits count successful state restores.
+    activity: AtomicU64,
     params: UnsafeCell<Consumer<(u32, f64)>>,
     parameters: UnsafeCell<Arc<ParameterTable>>,
+    restore_fence: UnsafeCell<RestoreFence>,
     parameter_updates: UnsafeCell<Consumer<Arc<ParameterTable>>>,
     retired_parameters: UnsafeCell<Producer<Arc<ParameterTable>>>,
     #[cfg(test)]
     dequeue_probe: DequeueProbe,
 }
 
-// SAFETY: The live table and the RT ends of the queues are only accessed through an
+#[derive(Debug, Default)]
+struct RestoreFence {
+    replayed_generation: u64,
+    superseded: BTreeMap<u32, u64>,
+}
+
+// SAFETY: The live table, restore fence and the RT ends of the queues are only accessed through an
 // Activity guard. Processing and a completed restore pause are mutually exclusive.
 unsafe impl Sync for RtParamSync {}
 
-const PROCESSING: u8 = 1;
-const RESTORING: u8 = 2;
+const PROCESSING: u64 = 1;
+const RESTORING: u64 = 2;
 /// A checked snapshot's short capture. Blocks are answered with the fallback meanwhile, but
 /// no state is replaced, so nothing needs a voice reset.
-const SNAPSHOT: u8 = 4;
+const SNAPSHOT: u64 = 4;
+const ACTIVITY_BITS: u64 = PROCESSING | RESTORING | SNAPSHOT;
+const RESTORE_GENERATION_STEP: u64 = ACTIVITY_BITS + 1;
 
 struct Activity<'a> {
     sync: &'a RtParamSync,
-    bit: u8,
+    bit: u64,
+    replaced_state: bool,
 }
 
 impl Activity<'_> {
@@ -413,6 +424,25 @@ impl Activity<'_> {
     fn parameters(&self) -> &ParameterTable {
         // SAFETY: This guard excludes both audio processing and restore from other threads.
         unsafe { &*self.sync.parameters.get() }
+    }
+
+    fn restore_fence(&mut self) -> &mut RestoreFence {
+        // SAFETY: This activity guard excludes audio and the control thread from each other.
+        unsafe { &mut *self.sync.restore_fence.get() }
+    }
+
+    fn mark_restored_parameters(&mut self) {
+        let generation = (self.sync.activity.load(Ordering::Relaxed) & !ACTIVITY_BITS)
+            .wrapping_add(RESTORE_GENERATION_STEP);
+        let sync = self.sync;
+        // SAFETY: This guard is exclusive. The table and fence are separate fields.
+        let fence = unsafe { &mut *sync.restore_fence.get() };
+        fence
+            .superseded
+            .retain(|_, generation| *generation > fence.replayed_generation);
+        for &id in self.parameters().delivered.keys() {
+            fence.superseded.insert(id, generation);
+        }
     }
 
     fn install_parameter_update(&mut self) {
@@ -439,19 +469,45 @@ impl Activity<'_> {
 
 impl Drop for Activity<'_> {
     fn drop(&mut self) {
-        self.sync.activity.fetch_and(!self.bit, Ordering::Release);
+        if self.replaced_state {
+            debug_assert_eq!(self.bit, RESTORING);
+            // End the pause and publish the new generation in the same atomic step.
+            self.sync
+                .activity
+                .fetch_add(RESTORE_GENERATION_STEP - RESTORING, Ordering::Release);
+        } else {
+            self.sync.activity.fetch_and(!self.bit, Ordering::Release);
+        }
     }
 }
 
 impl RtParamSync {
-    /// RT never waits for a state restore. The request gets fallback audio instead; the error is
-    /// the activity that refused it, read in the same atomic step (a pause can end right after).
-    fn try_process(&self) -> Result<Activity<'_>, u8> {
+    /// RT never waits for the control thread. A refused block carries the activity and restore
+    /// generation it encountered, so its deferred writes can be checked when audio resumes.
+    fn try_process(&self) -> Result<Activity<'_>, u64> {
+        let state = self.activity.load(Ordering::Acquire);
+        if state & ACTIVITY_BITS != 0 {
+            return Err(state);
+        }
         self.activity
-            .compare_exchange(0, PROCESSING, Ordering::Acquire, Ordering::Relaxed)
+            .compare_exchange(
+                state,
+                state | PROCESSING,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
             .map(|_| Activity {
                 sync: self,
                 bit: PROCESSING,
+                replaced_state: false,
+            })
+            .map_err(|observed| {
+                if (observed ^ state) & !ACTIVITY_BITS != 0 {
+                    // A restore completed while claiming this block. Its writes predate it.
+                    state | RESTORING
+                } else {
+                    observed
+                }
             })
     }
 
@@ -466,9 +522,13 @@ impl RtParamSync {
         self.pause(SNAPSHOT)
     }
 
-    fn pause(&self, bit: u8) -> Option<Activity<'_>> {
+    fn pause(&self, bit: u64) -> Option<Activity<'_>> {
         self.activity.fetch_or(bit, Ordering::AcqRel);
-        let guard = Activity { sync: self, bit };
+        let guard = Activity {
+            sync: self,
+            bit,
+            replaced_state: false,
+        };
         let deadline = Instant::now() + RESTORE_WAIT;
         while self.activity.load(Ordering::Acquire) & PROCESSING != 0 {
             if Instant::now() >= deadline {
@@ -506,8 +566,14 @@ struct Scratch {
     events_in: Vec<WireEvent>,
     events_out: Vec<WireEvent>,
     reset_after_restore: bool,
-    retry_params: Vec<WireEvent>,
+    retry_params: Vec<DeferredParam>,
     retry_indices: HashMap<u32, usize>,
+}
+
+struct DeferredParam {
+    id: u32,
+    generation: u64,
+    event: WireEvent,
 }
 
 impl RtThread {
@@ -537,9 +603,10 @@ impl RtThread {
             controller,
         });
         let sync = Arc::new(RtParamSync {
-            activity: AtomicU8::new(0),
+            activity: AtomicU64::new(0),
             params: UnsafeCell::new(params_rx),
             parameters: UnsafeCell::new(parameters.clone()),
+            restore_fence: UnsafeCell::new(RestoreFence::default()),
             parameter_updates: UnsafeCell::new(updates_rx),
             retired_parameters: UnsafeCell::new(retired_tx),
             #[cfg(test)]
@@ -673,6 +740,7 @@ impl RtThread {
         pause.install_parameter_update();
         let result = load();
         if result.1 {
+            pause.mark_restored_parameters();
             while pause.params().pop().is_ok() {}
             for slot in pause.parameters().delivered.values() {
                 // SAFETY: The pause excludes audio access while clearing the delivery evidence.
@@ -681,6 +749,7 @@ impl RtThread {
             if let Some(controller) = &pause.parameters().controller {
                 controller.invalidate(None);
             }
+            pause.replaced_state = true;
         }
         Ok(result)
     }
@@ -821,7 +890,9 @@ fn serve(
 ) {
     let mut processing = match sync.try_process() {
         Ok(processing) => processing,
-        Err(activity) => {
+        Err(observed) => {
+            let generation = observed & !ACTIVITY_BITS;
+            let activity = observed & ACTIVITY_BITS;
             // A restore replaces the plugin's state, so recovery clears its voices. A snapshot pause
             // changes nothing: reset only if a note event is discarded with this block (a missed
             // note-off could leave a voice hanging). Inactive blocks never reach this function.
@@ -836,12 +907,16 @@ fn serve(
                     scratch.reset_after_restore = true;
                 }
                 if let Some(WireEventKind::ParamValue { id, .. }) = event.decode() {
-                    let event = WireEvent { offset: 0, ..event };
+                    let retry = DeferredParam {
+                        id,
+                        generation,
+                        event: WireEvent { offset: 0, ..event },
+                    };
                     if let Some(&index) = scratch.retry_indices.get(&id) {
-                        scratch.retry_params[index] = event;
+                        scratch.retry_params[index] = retry;
                     } else if scratch.retry_params.len() < INPUT_EVENT_CAPACITY {
                         scratch.retry_indices.insert(id, scratch.retry_params.len());
-                        scratch.retry_params.push(event);
+                        scratch.retry_params.push(retry);
                     }
                 }
             }
@@ -873,9 +948,20 @@ fn serve(
         count += 1;
     }
     let queued = count;
-    let retry_end = count + scratch.retry_params.len();
-    scratch.events_in[count..retry_end].copy_from_slice(&scratch.retry_params);
-    count = retry_end;
+    // Check the IDs known to a successful restore, even when a rescan has installed a new table.
+    let restore_generation = sync.activity.load(Ordering::Relaxed) & !ACTIVITY_BITS;
+    let fence = processing.restore_fence();
+    for retry in &scratch.retry_params {
+        if fence
+            .superseded
+            .get(&retry.id)
+            .is_none_or(|&restored| restored <= retry.generation)
+        {
+            scratch.events_in[count] = retry.event;
+            count += 1;
+        }
+    }
+    fence.replayed_generation = restore_generation;
     scratch.retry_params.clear();
     scratch.retry_indices.clear();
     while let Some(event) = server.pop_event() {
@@ -1186,6 +1272,15 @@ mod tests {
         assert_eq!(status, inactive);
         assert_eq!(block(&mut client, &[]), ok);
         assert_eq!(resets.load(Ordering::Relaxed), 3);
+        assert_eq!(rt.snapshot(|p| p.changes(1)).unwrap(), 5);
+
+        // The new plug-in state supersedes a cancelled write that met the restore pause.
+        let (status, _) = rt
+            .restore(|| (block(&mut client, &[param(0.9)]), true))
+            .unwrap();
+        assert_eq!(status, inactive);
+        assert_eq!(block(&mut client, &[]), ok);
+        assert_eq!(rt.snapshot(|p| p.changes(1)).unwrap(), 0);
         let _ = rt.stop();
     }
 
@@ -1501,6 +1596,7 @@ mod tests {
                     [&[0.0], &[0.0]],
                     None,
                     &[
+                        WireEvent::new(0, WireEventKind::ParamValue { id: 0, value: 0.1 }),
                         WireEvent::new(0, WireEventKind::ParamValue { id: 1, value: 0.25 }),
                         WireEvent::new(
                             0,
@@ -1527,6 +1623,10 @@ mod tests {
             runner.join().unwrap()
         });
         assert_eq!(rt.params.slots(), PARAM_QUEUE_CAPACITY);
+        // A snapshot after the rescan installs the new ID before replay. The restore
+        // superseded only ID 0, so the deferred one-shot write for ID 1 must survive.
+        assert!(rt.refresh_parameter_ids(vec![0, 1]));
+        rt.snapshot(|_| {}).unwrap();
         let after_restore = client
             .begin_block(&spec, [&[0.0], &[0.0]], None, &[])
             .unwrap();
@@ -1544,7 +1644,6 @@ mod tests {
             .unwrap();
         assert_eq!(wait(&mut client, after_edit), BlockStatus::Ok as u32);
         assert_eq!(f64::from_bits(value.load(Ordering::Relaxed)), 0.875);
-        assert!(rt.refresh_parameter_ids(vec![0, 1]));
         assert!(rt.set_param(1, 0.403));
         let new_param = client
             .begin_block(&spec, [&[0.0], &[0.0]], None, &[])

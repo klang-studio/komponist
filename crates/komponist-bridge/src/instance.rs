@@ -838,24 +838,27 @@ impl Bridge {
                 // Answered in every state (an empty list before `Load`).
                 self.report_params();
             }
-            ControlMsg::GetSamplerUi(request, export_tempo) => {
+            ControlMsg::GetWaveformMarkers(request, slot) => {
+                use komponist_ipc::waveform_markers::MAX_SNAPSHOT_BYTES;
+
                 let snapshot = self
                     .plugin
                     .as_ref()
-                    .and_then(|plugin| plugin.sampler_ui(export_tempo));
-                let encoded = snapshot.and_then(|snapshot| {
-                    let mut bytes = vec![0; komponist_ipc::sampler_ui::MAX_BYTES];
+                    .and_then(|plugin| plugin.waveform_markers(slot));
+                let bytes = snapshot.and_then(|snapshot| {
+                    let mut bytes = vec![0; MAX_SNAPSHOT_BYTES];
                     let len = snapshot.encode(&mut bytes)?;
                     bytes.truncate(len);
                     Some(bytes)
                 });
-                self.send(BridgeMsg::SamplerUi(request, encoded));
+                self.send(BridgeMsg::WaveformMarkers(request, bytes));
             }
-            ControlMsg::PreviewSamplerSlice(time) => {
-                if let Some(plugin) = &self.plugin {
-                    plugin.preview_sampler_slice(time);
-                }
-            }
+            ControlMsg::EditWaveformMarkers {
+                request,
+                slot,
+                edit,
+                expected,
+            } => self.edit_waveform_markers(request, slot, &edit, &expected),
             ControlMsg::GetDeviceDisplay(request) => {
                 let bytes = self
                     .plugin
@@ -863,6 +866,11 @@ impl Bridge {
                     .and_then(|plugin| plugin.device_display())
                     .and_then(|display| display.encode());
                 self.send(BridgeMsg::DeviceDisplay(request, bytes));
+            }
+            ControlMsg::PreviewWaveform { slot, time } => {
+                if let Some(plugin) = &self.plugin {
+                    plugin.preview_waveform(slot, time);
+                }
             }
             ControlMsg::SetParam { id, value } => self.set_param(id, value),
             ControlMsg::OpenGui(target) => self.open_gui(target),
@@ -1343,6 +1351,74 @@ impl Bridge {
             }
         });
         self.send(BridgeMsg::DeviceOfflineStatus(request, status));
+    }
+
+    fn edit_waveform_markers(
+        &mut self,
+        request: u32,
+        slot: u32,
+        encoded: &[u8],
+        expected: &[(u32, f64)],
+    ) {
+        use komponist_ipc::waveform_markers::{EditResult, EditStatus, Request};
+
+        let result = 'edit: {
+            let Some(edit) = Request::decode(encoded) else {
+                break 'edit EditResult::Rejected(EditStatus::Invalid);
+            };
+            let Some(plugin) = self.plugin.as_deref_mut() else {
+                break 'edit EditResult::Rejected(EditStatus::Unavailable);
+            };
+            if let Some(active) = self.active.as_mut() {
+                if active.rt.has_queued_params() {
+                    break 'edit EditResult::Rejected(EditStatus::Unavailable);
+                }
+                self.region.set_bridge_state(BridgeState::Loaded);
+                let result = active.rt.restore(|| {
+                    let result =
+                        komponist_hosting::edit_waveform_marker_state(plugin, slot, edit, expected);
+                    let broken = matches!(
+                        result,
+                        EditResult::Failed {
+                            rollback_failed: true,
+                            ..
+                        }
+                    );
+                    (result, broken)
+                });
+                match result {
+                    Ok((result, broken)) => {
+                        if broken {
+                            self.shutdown = true;
+                        } else {
+                            self.region.set_bridge_state(BridgeState::Active);
+                        }
+                        result
+                    }
+                    Err(message) => {
+                        self.region.set_bridge_state(BridgeState::Active);
+                        EditResult::Failed {
+                            message,
+                            rollback_failed: false,
+                        }
+                    }
+                }
+            } else {
+                let result =
+                    komponist_hosting::edit_waveform_marker_state(plugin, slot, edit, expected);
+                if matches!(
+                    result,
+                    EditResult::Failed {
+                        rollback_failed: true,
+                        ..
+                    }
+                ) {
+                    self.shutdown = true;
+                }
+                result
+            }
+        };
+        self.send(BridgeMsg::WaveformMarkersEdited(request, result));
     }
 
     fn set_param(&mut self, id: u32, value: f64) {

@@ -68,6 +68,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Limiter {
             canvases: Default::default(),
             headings: Default::default(),
             reduction_taps,
+            pad_bank: None,
         })
     }
 

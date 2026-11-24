@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_app::App;
-use komponist_app::device_host::{PluginHost, is_hexa};
+use komponist_app::device_host::{DeviceHost as _, PluginHost, is_hexa};
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::settings::Settings;
 use komponist_audio::{HostKind, StreamConfig};
@@ -59,6 +59,47 @@ pub fn fixture_dirs() -> Option<PluginDirs> {
     } else {
         None
     }
+}
+
+/// Real native CLAP fixtures use a separate scan directory from the WP-27 test plugins.
+pub fn native_fixture_dirs(bundle: &str) -> Option<PluginDirs> {
+    let dir = target_dir()
+        .join("test-plugins")
+        .join(std::env::consts::OS)
+        .join("builtin-clap");
+    test_fixtures::available(&dir.join(bundle)).then(|| PluginDirs {
+        clap: vec![std::fs::canonicalize(dir).unwrap()],
+        vst3: Vec::new(),
+    })
+}
+
+/// Scan a real device fixture as an ordinary external CLAP.
+pub fn native_fixture(dir: &Path, bundle: &str, id: &str) -> Option<(PluginHost, PluginRef)> {
+    let dirs = native_fixture_dirs(bundle)?;
+    let mut host = PluginHost::new(config(dir));
+    host.start_scan(&dirs);
+    let deadline = Instant::now() + PATIENCE;
+    while !host
+        .poll()
+        .iter()
+        .any(|event| matches!(event, PluginManagerEvent::ScanFinished(_)))
+    {
+        assert!(Instant::now() < deadline, "{bundle} fixture scan timed out");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let plugin = host
+        .catalog()
+        .entries()
+        .iter()
+        .find(|entry| {
+            entry.plugin.format == PluginFormat::Clap
+                && entry.plugin.id == id
+                && entry.plugin.module.as_ref() == bundle
+        })
+        .unwrap_or_else(|| panic!("{bundle} fixture missing from the external scan"))
+        .plugin
+        .clone();
+    Some((host, plugin))
 }
 
 /// A fresh scratch folder for one test.

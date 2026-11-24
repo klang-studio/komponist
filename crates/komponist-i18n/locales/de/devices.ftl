@@ -294,3 +294,4 @@ devices-card = Gerät { $name }
 
 # The text of a parameter's range: "20 Hz bis 20 kHz".
 devices-range = { $min } bis { $max }
+devices-marker-edit-failed = Der Schnittmarker lässt sich gerade nicht ändern.

@@ -188,16 +188,22 @@ pub trait HostedPlugin {
         None
     }
 
-    /// Loader and playback snapshot. A tempo requests preparation while audio is detached.
-    fn sampler_ui(
-        &self,
-        _export_tempo: Option<f64>,
-    ) -> Option<komponist_ipc::sampler_ui::Snapshot> {
+    /// Reads the current waveform markers for an asset slot on the plugin's main thread.
+    fn waveform_markers(&self, _slot: u32) -> Option<komponist_ipc::waveform_markers::Snapshot> {
         None
     }
 
-    /// Audition or release a slice without changing the plugin's persisted state.
-    fn preview_sampler_slice(&self, _time: Option<f64>) {}
+    /// Sends a revision-checked marker edit on the plugin's main thread.
+    fn edit_waveform_markers(
+        &mut self,
+        _slot: u32,
+        _request: komponist_ipc::waveform_markers::Request,
+    ) -> Option<komponist_ipc::waveform_markers::EditStatus> {
+        None
+    }
+
+    /// Audition a source position in an audio asset slot, or release the active preview.
+    fn preview_waveform(&self, _slot: u32, _time: Option<f64>) {}
 
     /// A bounded list of primitives for an authored canvas.
     fn device_display(&self) -> Option<komponist_ipc::device_canvas::DisplayList> {

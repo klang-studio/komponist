@@ -35,6 +35,7 @@ use komponist_engine::Processor;
 use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot};
 use komponist_ipc::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderModel};
 use komponist_ipc::shm::MAX_BLOCK;
+use komponist_ipc::waveform_markers::{self, EditStatus};
 use komponist_ipc::{
     ControlMsg, GuiSize, GuiTarget, LogLevel, NoteName, ParamInfo, ParamValue, RenderMode,
 };
@@ -52,6 +53,7 @@ use crate::catalog::{
 use crate::device_assets::DeviceAssets;
 use crate::direct_device::DirectDevice;
 use crate::scan::{ScanJob, ScanSetup};
+use crate::waveform_markers::WaveformMarkerEditResult;
 use crate::{bundled_effects, bundled_sampler};
 
 /// How long a released bridge may take for `Shutdown` before it is killed.
@@ -125,6 +127,12 @@ pub enum PluginManagerEvent {
         device: DeviceId,
         /// The state.
         state: SavedPluginState,
+    },
+    /// The outcome of one accepted waveform marker edit request.
+    WaveformMarkersEdited {
+        device: DeviceId,
+        slot: u32,
+        result: WaveformMarkerEditResult,
     },
     /// A plugin has applied a requested state restore to its processor.
     StateApplied {
@@ -838,7 +846,10 @@ impl PluginManager {
         // Reload and Undo can replace the plugin while keeping its DeviceId. A blocked save
         // can leave queued state from the retiring instance under that same ID.
         self.pending.retain(|event| {
-            !matches!(event, PluginManagerEvent::StateSnapshot { device: old, .. } if *old == device)
+            !matches!(event,
+                PluginManagerEvent::StateSnapshot { device: old, .. }
+                    | PluginManagerEvent::WaveformMarkersEdited { device: old, .. } if *old == device
+            )
         });
     }
 
@@ -848,7 +859,8 @@ impl PluginManager {
         self.discard_queued_snapshots(device);
         self.verified_bundles.remove(&device);
         self.effect_meters.remove(&device);
-        if let Some(direct) = self.direct.remove(&device) {
+        if let Some(mut direct) = self.direct.remove(&device) {
+            let _ = direct.invalidate_waveform_markers();
             self.retiring_direct.push(direct);
         }
         if let Some(mut bridge) = self.bridges.remove(&device) {
@@ -910,18 +922,7 @@ impl PluginManager {
             direct.poll(id, &mut events);
             direct.poll_assets(id, &mut events);
             direct.poll_display();
-            if is_sampler_kind(self.verified_bundles.get(&id).copied()) {
-                direct.poll_sampler_ui();
-                if self.verified_bundles.get(&id) == Some(&BuiltinKind::Internal(Internal::Sampler))
-                {
-                    update_sampler_names(
-                        id,
-                        direct.sampler_ui.as_ref(),
-                        &mut direct.note_names,
-                        &mut events,
-                    );
-                }
-            }
+            direct.poll_waveform_markers();
         }
         self.retiring_direct.retain_mut(|direct| !direct.retired());
         let mut collected = Vec::new();
@@ -929,19 +930,7 @@ impl PluginManager {
             bridge.poll(&mut events, &mut collected);
             bridge.poll_assets();
             bridge.poll_display();
-            if is_sampler_kind(self.verified_bundles.get(&device).copied()) {
-                bridge.poll_sampler_ui();
-                if self.verified_bundles.get(&device)
-                    == Some(&BuiltinKind::Internal(Internal::Sampler))
-                {
-                    update_sampler_names(
-                        device,
-                        bridge.sampler_ui.as_ref(),
-                        &mut bridge.note_names,
-                        &mut events,
-                    );
-                }
-            }
+            bridge.poll_waveform_markers();
             // Answers to a `snapshot_states` that gave up waiting still belong in the document.
             for (_, state) in collected.drain(..) {
                 events.push(PluginManagerEvent::StateSnapshot { device, state });
@@ -1001,17 +990,13 @@ impl PluginManager {
         self.bridges.get(&device)?.native_layout.as_ref()
     }
 
-    /// Apply a temporary export tempo to an authenticated General Sampler.
-    pub fn set_sampler_export_tempo(&mut self, device: DeviceId, tempo: Option<f64>) {
-        if self.verified_bundles.get(&device)
-            != Some(&BuiltinKind::Internal(Internal::GeneralSampler))
-        {
-            return;
-        }
+    /// Schedule a marker snapshot for this slot. A visible view can request on every frame;
+    /// each plugin is polled at a bounded rate.
+    pub fn request_waveform_markers(&mut self, device: DeviceId, slot: u32) {
         if let Some(direct) = self.direct.get_mut(&device) {
-            direct.set_sampler_export_tempo(tempo);
+            direct.markers.request(slot);
         } else if let Some(bridge) = self.bridges.get_mut(&device) {
-            bridge.set_sampler_export_tempo(tempo);
+            bridge.markers.request(slot);
         }
     }
 
@@ -1028,8 +1013,26 @@ impl PluginManager {
     }
 
     pub fn set_asset_bindings(&mut self, device: DeviceId, bindings: &Bindings) -> bool {
-        self.device_assets_mut(device)
-            .is_some_and(|assets| assets.queue_bindings(bindings))
+        if let Some(direct) = self.direct.get_mut(&device) {
+            let accepted = direct.assets.queue_bindings(bindings);
+            if accepted && let Some(slot) = direct.invalidate_waveform_markers() {
+                self.pending
+                    .push(PluginManagerEvent::WaveformMarkersEdited {
+                        device,
+                        slot,
+                        result: WaveformMarkerEditResult::Rejected(EditStatus::Stale),
+                    });
+            }
+            return accepted;
+        }
+        let Some(bridge) = self.bridges.get_mut(&device) else {
+            return false;
+        };
+        let accepted = bridge.assets.queue_bindings(bindings);
+        if accepted {
+            bridge.invalidate_waveform_markers();
+        }
+        accepted
     }
 
     pub fn prepare_asset_edit(
@@ -1043,6 +1046,20 @@ impl PluginManager {
             || self.asset_slots(id).is_none()
         {
             return Ok(None);
+        }
+        if self
+            .pending_waveform_marker_commits()
+            .any(|pending| pending == id)
+            || self
+                .direct
+                .get(&id)
+                .is_some_and(DirectDevice::is_editing_waveform_markers)
+            || self
+                .bridges
+                .get(&id)
+                .is_some_and(Bridge::is_editing_waveform_markers)
+        {
+            return Err(id);
         }
         let after = crate::bundled_sampler::edit_native_regions(
             &device.plugin,
@@ -1112,26 +1129,59 @@ impl PluginManager {
             .map(|bridge| &mut bridge.assets)
     }
 
-    /// The latest editor snapshot for an authenticated bundled sampler.
-    pub fn sampler_ui(&self, device: DeviceId) -> Option<&komponist_ipc::sampler_ui::Snapshot> {
-        if !is_sampler_kind(self.verified_bundles.get(&device).copied()) {
+    /// The last valid marker snapshot for a running plugin and an asset slot. Its revision is a
+    /// host token bound to this slot and instance. An absent snapshot means there are no current
+    /// markers available to display.
+    pub fn waveform_markers(
+        &self,
+        device: DeviceId,
+        slot: u32,
+    ) -> Option<&waveform_markers::Snapshot> {
+        if self.status(device) != DeviceStatus::Ok {
             return None;
         }
         if let Some(direct) = self.direct.get(&device) {
-            return direct.sampler_ui.as_ref();
+            return direct.markers.snapshot(slot);
         }
-        self.bridges.get(&device)?.sampler_ui.as_ref()
+        self.bridges.get(&device)?.markers.snapshot(slot)
     }
 
-    /// Audition a slice of a verified General Sampler through the active host route.
-    pub fn preview_sampler_slice(&self, device: DeviceId, time: Option<f64>) {
-        if !is_sampler_kind(self.verified_bundles.get(&device).copied()) {
+    /// Request one edit against the revision returned by [Self::waveform_markers]. A successful
+    /// submission yields [PluginManagerEvent::WaveformMarkersEdited] on the next completed poll.
+    pub fn edit_waveform_markers(
+        &mut self,
+        device: DeviceId,
+        slot: u32,
+        request: waveform_markers::Request,
+    ) -> Result<(), EditStatus> {
+        if self.pending.iter().any(|event| {
+            matches!(event,
+            PluginManagerEvent::WaveformMarkersEdited { device: pending, .. } if *pending == device)
+        }) {
+            return Err(EditStatus::Unavailable);
+        }
+        if let Some(direct) = self.direct.get_mut(&device) {
+            return direct.edit_waveform_markers(device, slot, request, &mut self.pending);
+        }
+        self.bridges
+            .get_mut(&device)
+            .ok_or(EditStatus::Unavailable)?
+            .edit_waveform_markers(slot, request)
+    }
+
+    /// Start or release an authored waveform preview through the live host route.
+    pub fn preview_waveform(&self, device: DeviceId, slot: u32, time: Option<f64>) {
+        if komponist_ipc::waveform_preview::encode_time(time).is_none() {
             return;
         }
-        if let Some(direct) = self.direct.get(&device) {
-            direct.preview_sampler_slice(time);
+        if let Some(direct) = self
+            .direct
+            .get(&device)
+            .filter(|direct| direct.status == DeviceStatus::Ok)
+        {
+            direct.preview_waveform(slot, time);
         } else if let Some(bridge) = self.bridges.get(&device).filter(|bridge| bridge.running()) {
-            bridge.send(ControlMsg::PreviewSamplerSlice(time));
+            bridge.send(ControlMsg::PreviewWaveform { slot, time });
         }
     }
 
@@ -1161,6 +1211,19 @@ impl PluginManager {
         } else if let Some(bridge) = self.bridges.get_mut(&device) {
             bridge.set_param(id, value);
         }
+    }
+
+    /// Records a persistent app edit on the render path unless it must share the bridge's
+    /// ordered control path with marker operations or a pending state restore.
+    pub fn edit_param_through_render(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+        if self
+            .bridges
+            .get(&device)
+            .is_some_and(Bridge::requires_control_param_edit)
+        {
+            return false;
+        }
+        self.edited_param(device, id, value)
     }
 
     /// Records an edit already sent to the processor, either from the app or a plugin GUI.
@@ -1278,12 +1341,34 @@ impl PluginManager {
             if matches!(direct.status, DeviceStatus::Crashed(_)) {
                 return false;
             }
-            direct.set_state(state.bytes.clone());
-            return true;
-        }
-        self.bridges
+            if let Some(slot) = direct.set_state(state.bytes.clone()) {
+                self.pending
+                    .push(PluginManagerEvent::WaveformMarkersEdited {
+                        device,
+                        slot,
+                        result: WaveformMarkerEditResult::Rejected(EditStatus::Stale),
+                    });
+            }
+        } else if !self
+            .bridges
             .get_mut(&device)
             .is_some_and(|bridge| bridge.set_state(state))
+        {
+            return false;
+        }
+        for event in &mut self.pending {
+            if let PluginManagerEvent::WaveformMarkersEdited {
+                device: edited,
+                result,
+                ..
+            } = event
+                && *edited == device
+                && matches!(result, WaveformMarkerEditResult::Applied { .. })
+            {
+                *result = WaveformMarkerEditResult::Rejected(EditStatus::Stale);
+            }
+        }
+        true
     }
 
     /// Asks for a state snapshot; it arrives as [`PluginManagerEvent::StateSnapshot`] (not while
@@ -1310,6 +1395,18 @@ impl PluginManager {
     pub fn has_pending_state_edits(&self) -> bool {
         self.bridges.values().any(Bridge::needs_snapshot_for_save)
             || self.direct.values().any(DirectDevice::needs_snapshot)
+            || self.pending_waveform_marker_commits().next().is_some()
+    }
+
+    fn pending_waveform_marker_commits(&self) -> impl Iterator<Item = DeviceId> + '_ {
+        self.pending.iter().filter_map(|event| match event {
+            PluginManagerEvent::WaveformMarkersEdited {
+                device,
+                result: WaveformMarkerEditResult::Applied { .. },
+                ..
+            } => Some(*device),
+            _ => None,
+        })
     }
 
     /// Collects current plug-in states under one shared deadline. An unanswered request from an
@@ -1318,7 +1415,13 @@ impl PluginManager {
         let deadline = Instant::now() + timeout;
         let mut expected = BTreeSet::new();
         let mut required = BTreeSet::new();
+        let mut state_change_pending: BTreeSet<_> =
+            self.pending_waveform_marker_commits().collect();
         for (&device, bridge) in &self.bridges {
+            if bridge.is_editing_waveform_markers() || state_change_pending.contains(&device) {
+                state_change_pending.insert(device);
+                continue;
+            }
             if bridge.expects_snapshot_for_save() {
                 expected.insert(device);
             }
@@ -1327,6 +1430,10 @@ impl PluginManager {
             }
         }
         for (&device, direct) in &self.direct {
+            if direct.is_editing_waveform_markers() || state_change_pending.contains(&device) {
+                state_change_pending.insert(device);
+                continue;
+            }
             if direct.can_snapshot() {
                 expected.insert(device);
             }
@@ -1334,8 +1441,10 @@ impl PluginManager {
                 required.insert(device);
             }
         }
-        let mut captured =
-            self.snapshot_states_if(deadline.saturating_duration_since(Instant::now()), |_| true);
+        let mut captured = self.snapshot_states_if(
+            deadline.saturating_duration_since(Instant::now()),
+            |device| !state_change_pending.contains(&device),
+        );
         loop {
             for (device, _) in &captured {
                 expected.remove(device);
@@ -1360,6 +1469,7 @@ impl PluginManager {
             ));
         }
         captured.sort_by_key(|(device, _)| *device);
+        required.append(&mut state_change_pending);
         SaveSnapshots {
             captured,
             unavailable: expected.difference(&required).copied().collect(),
@@ -1658,29 +1768,6 @@ impl PluginManager {
     }
 }
 
-fn update_sampler_names(
-    device: DeviceId,
-    snapshot: Option<&komponist_ipc::sampler_ui::Snapshot>,
-    names: &mut Vec<NoteName>,
-    events: &mut Vec<PluginManagerEvent>,
-) {
-    if let Some(snapshot) = snapshot
-        && !names
-            .iter()
-            .map(|note| (note.key, note.name.as_str()))
-            .eq(bundled_sampler::note_names(snapshot))
-    {
-        *names = bundled_sampler::note_names(snapshot)
-            .map(|(key, name)| NoteName {
-                key,
-                channel: None,
-                name: name.to_owned(),
-            })
-            .collect();
-        events.push(PluginManagerEvent::NoteNamesChanged { device });
-    }
-}
-
 fn is_sampler_kind(kind: Option<BuiltinKind>) -> bool {
     matches!(
         kind,
@@ -1717,6 +1804,36 @@ mod tests {
             manager.pending.as_slice(),
             [PluginManagerEvent::StateSnapshot { device, .. }] if *device == other
         ));
+    }
+
+    #[test]
+    fn waveform_markers_commit_blocks_save_until_delivered_or_retired() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = PluginManagerConfig {
+            cache_file: temp.path().join("plugins.json"),
+            ..PluginManagerConfig::defaults(temp.path())
+        };
+        let mut manager = PluginManager::new_with_bundled_clap(config, false, false);
+        let device = DeviceId(1);
+        let event = PluginManagerEvent::WaveformMarkersEdited {
+            device,
+            slot: 0,
+            result: WaveformMarkerEditResult::Applied {
+                previous_state: Arc::from([1]),
+                state: Arc::from([2]),
+            },
+        };
+        manager.pending.push(event.clone());
+
+        assert!(manager.has_pending_state_edits());
+        assert_eq!(manager.snapshot_for_save(Duration::ZERO).blocked, [device]);
+        assert_eq!(manager.poll().as_slice(), std::slice::from_ref(&event));
+        assert!(!manager.has_pending_state_edits());
+
+        manager.pending.push(event);
+        manager.release(device);
+        assert!(manager.poll().is_empty());
+        assert!(manager.snapshot_for_save(Duration::ZERO).blocked.is_empty());
     }
 
     #[test]

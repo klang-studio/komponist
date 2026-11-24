@@ -101,8 +101,9 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 17 (#289) advertises the named signal tap inventory after plugin load.
 /// 18 distinguishes unsupported file slots from a temporarily missing snapshot.
 /// 19 combines named signal taps and device asset preparation in the same wire contract.
-/// 20 (#287) restores CLAP parameter bases separately from opaque state bytes.
-pub const PROTOCOL_VERSION: u32 = 20;
+/// 20 (#290) replaces sampler UI snapshots with asset-slot waveform commands.
+/// 21 (#287) restores CLAP parameter bases separately from opaque state bytes.
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// Maximum number of parameter bases that can follow an active state restore.
 pub const MAX_STATE_PARAMETER_BASES: usize = crate::shm::INPUT_EVENT_CAPACITY;
@@ -131,7 +132,7 @@ const TAG_FD: u8 = 2;
 const HANDLE_PAYLOAD: usize = 8;
 /// Largest encoded message either side accepts (a sanity limit against a corrupt peer; plugin
 /// states of sample-based instruments reach tens of MiB).
-const MAX_MESSAGE: usize = 1 << 30;
+pub(crate) const MAX_MESSAGE: usize = 1 << 30;
 
 // ------------------------------------------------------------------------------------------------
 // Shared plugin vocabulary
@@ -335,10 +336,6 @@ pub enum LogLevel {
 /// App → bridge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ControlMsg {
-    /// Query the current sampler UI snapshot from a running plugin.
-    GetSamplerUi(u32, Option<f64>),
-    /// Start a held slice audition at the source position, or release it with `None`.
-    PreviewSamplerSlice(Option<f64>),
     /// Query the live file-slot inventory and offline preparation capability.
     GetDeviceAssets(u32),
     /// Apply a bounded atomic file-slot update on the main thread.
@@ -435,6 +432,18 @@ pub enum ControlMsg {
     },
     /// Query a display list on the bridge's CLAP main thread.
     GetDeviceDisplay(u32),
+    /// Query a slot's marker snapshot, with a request sequence and asset slot ID.
+    GetWaveformMarkers(u32, u32),
+    /// Apply one revision-checked edit and capture opaque project state.
+    EditWaveformMarkers {
+        request: u32,
+        slot: u32,
+        edit: Vec<u8>,
+        /// Confirm the processor is using the host's persistent parameter values.
+        expected: Vec<(u32, f64)>,
+    },
+    /// Begin or release an ephemeral waveform preview for an audio asset slot.
+    PreviewWaveform { slot: u32, time: Option<f64> },
     /// Restore the opaque CLAP state and then apply the host's saved parameter bases.
     SetClapState {
         request: u32,
@@ -446,8 +455,6 @@ pub enum ControlMsg {
 /// Bridge → app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BridgeMsg {
-    /// Bounded sampler UI data encoded with the public extension's current schema.
-    SamplerUi(u32, Option<Vec<u8>>),
     /// File-slot inventory and capabilities. A supported inventory can be temporarily unavailable.
     DeviceAssets {
         request: u32,
@@ -594,6 +601,10 @@ pub enum BridgeMsg {
     DeviceDisplay(u32, Option<Vec<u8>>),
     /// Immutable named signal streams advertised by the loaded plugin.
     SignalTaps(Vec<crate::signal_taps::Descriptor>),
+    /// An absent snapshot indicates that the extension or slot was unavailable.
+    WaveformMarkers(u32, Option<Vec<u8>>),
+    /// Result of editing the requested marker list.
+    WaveformMarkersEdited(u32, crate::waveform_markers::EditResult),
 }
 
 /// Payload of [`BridgeMsg::Loaded`].
@@ -1928,6 +1939,21 @@ mod tests {
             ControlMsg::CloseGui,
             ControlMsg::SetRenderMode(RenderMode::Offline),
             ControlMsg::Shutdown,
+            ControlMsg::GetWaveformMarkers(7, 42),
+            ControlMsg::PreviewWaveform {
+                slot: 42,
+                time: Some(0.5),
+            },
+            ControlMsg::PreviewWaveform {
+                slot: 42,
+                time: None,
+            },
+            ControlMsg::EditWaveformMarkers {
+                request: 8,
+                slot: 42,
+                edit: vec![4, 2, 1],
+                expected: vec![(12, 0.5)],
+            },
             ControlMsg::Ping { seq: u32::MAX },
         ];
         for msg in &messages {
@@ -2056,6 +2082,14 @@ mod tests {
                 height: 4.0,
             }),
             BridgeMsg::CloseRequested,
+            BridgeMsg::WaveformMarkers(7, Some(vec![4, 2, 1])),
+            BridgeMsg::WaveformMarkersEdited(
+                8,
+                crate::waveform_markers::EditResult::Applied {
+                    previous_state: vec![4, 2],
+                    state: vec![4, 2, 1],
+                },
+            ),
             BridgeMsg::FrameWindow(4711),
             BridgeMsg::LatencyChanged(128),
             BridgeMsg::RestartRequested,

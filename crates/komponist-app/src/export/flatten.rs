@@ -9,6 +9,7 @@ use komponist_builtin::Internal;
 use komponist_engine::export::{
     BitDepth, ExportError, ExportJob, ExportReport, TRACK_TAIL_SECONDS, TrackExport,
 };
+use komponist_ipc::device_assets::{AssetKind, AssetStatus};
 use komponist_model::{DeviceId, Project, TrackId, TrackKind, edits};
 use komponist_plugins::{DeviceSnapshots, DeviceStatus};
 use komponist_sampler::PadStatus;
@@ -122,6 +123,38 @@ impl Flatten {
                     app.lang.flatten_sampler_sync_failed(app.device_name(id)),
                 ));
             }
+            if let Some(layout) = host
+                .native_layout(id)
+                .filter(|layout| layout.has_audio_asset_editor())
+            {
+                let Some((_, _, device)) = app.project().find_device(id) else {
+                    continue;
+                };
+                for slot in host
+                    .asset_slots(id)
+                    .into_iter()
+                    .flat_map(|assets| &assets.slots)
+                {
+                    if slot.kind == AssetKind::AudioSample
+                        && matches!(slot.status, AssetStatus::Missing | AssetStatus::Failed(_))
+                        && let Some(link) = device.asset_links.get(&slot.id)
+                    {
+                        let file = link
+                            .name()
+                            .map_or_else(|| slot.label.clone(), std::borrow::Cow::into_owned);
+                        let name = app.device_name(id);
+                        let message = if let Some(pad) = layout.pad_bank.as_ref().and_then(|bank| {
+                            bank.pads.iter().position(|pad| pad.asset_slot == slot.id)
+                        }) {
+                            app.lang.flatten_pad_failed(name, pad + 1, file)
+                        } else {
+                            app.lang.flatten_sampler_failed(name, file)
+                        };
+                        return Some((id, message));
+                    }
+                }
+                continue;
+            }
             let Some((general, views)) = Self::sampler_pads(app, id) else {
                 continue;
             };
@@ -143,30 +176,9 @@ impl Flatten {
     }
 
     fn sampler_pads(app: &App, id: DeviceId) -> Option<(bool, Vec<komponist_sampler::PadView>)> {
-        let host = app.engine.host();
-        let device = app.project().find_device(id).map(|(_, _, device)| device);
-        let builtin = device.and_then(|device| crate::device_host::internal_kind(device));
-        let bundled =
-            device.and_then(|device| komponist_plugins::bundled_sampler::kind(&device.plugin));
-        let general = builtin.or(bundled) == Some(Internal::GeneralSampler);
-        let pads = if let Some(handle) = host.sampler(id) {
-            handle.views()
-        } else if let Some((kind, device)) = bundled.zip(device) {
-            crate::views::devices::bundled_sampler_view(
-                kind,
-                device
-                    .state
-                    .as_deref()
-                    .and_then(komponist_plugins::bundled_sampler::assets)
-                    .as_deref(),
-                &device.asset_links,
-                host.sampler_ui(id),
-            )
-            .pads
-        } else {
-            return None;
-        };
-        Some((general, pads))
+        let (_, _, device) = app.project().find_device(id)?;
+        let general = crate::device_host::internal_kind(device) == Some(Internal::GeneralSampler);
+        Some((general, app.engine.host().sampler(id)?.views()))
     }
 
     pub(super) fn finish(self, app: &mut App, result: Result<ExportReport, ExportError>) {

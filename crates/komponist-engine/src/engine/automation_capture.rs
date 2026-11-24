@@ -198,6 +198,19 @@ impl Core {
         }
     }
 
+    pub(super) fn reassert_slot_automation(&mut self, slot: SlotId) {
+        if let Some((owner, _)) = self.slot_device(slot)
+            && let Some((lanes, state)) = self.locate_automation(owner)
+        {
+            for (lane, cursor) in lanes.iter().zip(state.cursors()) {
+                if matches!(lane.target, EngineTarget::Slot { slot: target, .. } if target == slot)
+                {
+                    cursor.reassert();
+                }
+            }
+        }
+    }
+
     pub(super) fn chase_automation(&mut self) {
         self.visit_automation(|_, _, state, _, _| state.chase());
     }

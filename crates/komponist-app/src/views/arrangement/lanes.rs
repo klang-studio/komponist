@@ -194,14 +194,14 @@ impl Arrangement {
                         let at = Tick(g.tick_at(pos.x).max(0.0) as i64);
                         let host = ctx.engine.host();
                         let note_names =
-                            step_rows::instrument(track).map_or(&[][..], |d| host.note_names(d.id));
+                            step_rows::device_note_names(step_rows::instrument(track), host);
                         let clip = new_clip(
                             ctx.lang,
                             project,
                             track,
                             at,
                             &ctx.ui.arrangement,
-                            note_names,
+                            &note_names,
                         );
                         ctx.send(Action::Edit(EditAction::AddClip {
                             track: track.id,

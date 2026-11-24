@@ -8,25 +8,35 @@ use komponist_builtin::BuiltinKind;
 use komponist_hosting::host_loop::notification_bits;
 use komponist_hosting::{HostedPlugin, HostingError};
 use komponist_ipc::native_layout::NativeLayout;
+use komponist_ipc::waveform_markers::{EditResult, EditStatus, Request};
 use komponist_ipc::{LogLevel, NoteName, ParamInfo, ParamValue, RenderMode};
 use komponist_model::{DeviceId, DeviceRole};
 
 use crate::bundled_clap::VerifiedClap;
-use crate::bundled_state;
+use crate::bundled_state::{self, MarkerParameters, ParameterState};
 use crate::direct::DirectClap;
 use crate::direct_session::{DirectEngine, DirectSession};
 use crate::manager::{
     DeviceStatus, FailReason, PluginManagerEvent, ProcessorSetup, STATE_LOG_PREFIX,
 };
 
+use crate::waveform_markers::{MarkerCache, WaveformMarkerEditResult};
+
+const MARKER_EDIT_TIMEOUT: Duration = Duration::from_secs(1);
+
+struct PendingMarkerEdit {
+    slot: u32,
+    request: Request,
+    params: MarkerParameters,
+    deadline: Instant,
+}
+
 pub(crate) struct DirectDevice {
     pub(crate) assets: crate::device_assets::DeviceAssets,
     session: DirectSession,
     bundled_kind: Option<BuiltinKind>,
     pub(crate) params: Vec<ParamInfo>,
-    pub(crate) sampler_ui: Option<komponist_ipc::sampler_ui::Snapshot>,
-    sampler_ui_at: Instant,
-    sampler_export_tempo: Option<f64>,
+    pub(crate) markers: MarkerCache,
     pub(crate) layout: Option<Arc<NativeLayout>>,
     pub(crate) values: BTreeMap<u32, ParamValue>,
     pub(crate) base: BTreeMap<u32, f64>,
@@ -40,6 +50,7 @@ pub(crate) struct DirectDevice {
     /// Persistent edits that still need to reach the plugin before a snapshot can replace state.
     unconfirmed_writes: BTreeSet<u32>,
     pending_restore: Option<Arc<[u8]>>,
+    pending_marker_edit: Option<PendingMarkerEdit>,
     pub(crate) display: Option<Arc<komponist_ipc::device_canvas::DisplayList>>,
     display_at: Instant,
     macro_params: BTreeMap<u32, f64>,
@@ -137,9 +148,7 @@ impl DirectDevice {
             bundled_kind,
             params: Vec::new(),
             assets: crate::device_assets::DeviceAssets::new(),
-            sampler_ui: None,
-            sampler_ui_at: Instant::now(),
-            sampler_export_tempo: None,
+            markers: MarkerCache::default(),
             layout: None,
             values: BTreeMap::new(),
             base: BTreeMap::new(),
@@ -151,6 +160,7 @@ impl DirectDevice {
             pending_writes: BTreeMap::new(),
             unconfirmed_writes: BTreeSet::new(),
             pending_restore: None,
+            pending_marker_edit: None,
             display: None,
             display_at: Instant::now(),
             macro_params: BTreeMap::new(),
@@ -197,12 +207,152 @@ impl DirectDevice {
         }
     }
 
-    pub(crate) fn set_sampler_export_tempo(&mut self, tempo: Option<f64>) {
-        self.sampler_export_tempo = tempo;
-        if tempo.is_some() {
-            self.sampler_ui = None;
+    pub(crate) fn poll_waveform_markers(&mut self) {
+        if self.status == DeviceStatus::Ok
+            && self.pending_restore.is_none()
+            && self.pending_marker_edit.is_none()
+            && let Some(slot) = self.markers.poll()
+        {
+            self.markers
+                .report(slot, self.session.waveform_markers(slot));
         }
-        self.sampler_ui_at = Instant::now();
+    }
+
+    fn fail_after_rollback(
+        &mut self,
+        device: DeviceId,
+        message: &str,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        self.session.stop_after_failed_restore();
+        self.status = DeviceStatus::Crashed(FailReason::LoadFailed(message.into()));
+        events.push(PluginManagerEvent::StatusChanged {
+            device,
+            status: self.status.clone(),
+        });
+    }
+
+    pub(crate) fn edit_waveform_markers(
+        &mut self,
+        device: DeviceId,
+        slot: u32,
+        request: Request,
+        events: &mut Vec<PluginManagerEvent>,
+    ) -> Result<(), EditStatus> {
+        if self.is_editing_waveform_markers() || !self.can_edit_waveform_markers() {
+            return Err(EditStatus::Unavailable);
+        }
+        self.markers.checked_edit(slot, request)?;
+        let params = self
+            .marker_parameters(slot)
+            .ok_or(EditStatus::Unavailable)?;
+        self.pending_marker_edit = Some(PendingMarkerEdit {
+            slot,
+            request,
+            params,
+            deadline: Instant::now() + MARKER_EDIT_TIMEOUT,
+        });
+        self.poll_marker_edit(device, events);
+        Ok(())
+    }
+
+    pub(crate) fn is_editing_waveform_markers(&self) -> bool {
+        self.pending_marker_edit.is_some()
+    }
+
+    pub(crate) fn invalidate_waveform_markers(&mut self) -> Option<u32> {
+        let canceled = self.pending_marker_edit.take().map(|edit| edit.slot);
+        self.markers.invalidate();
+        canceled
+    }
+
+    fn can_edit_waveform_markers(&self) -> bool {
+        self.can_snapshot()
+            && self.pending_restore.is_none()
+            && !self.assets.bindings_pending()
+            && self.pending_writes.is_empty()
+            && self.unconfirmed_writes.is_empty()
+    }
+
+    fn marker_parameters(&self, slot: u32) -> Option<MarkerParameters> {
+        MarkerParameters::new(
+            slot,
+            &self.base,
+            &self.automated_params,
+            &self.macro_params,
+            &self.params,
+            self.parameter_state(),
+            [],
+        )
+    }
+
+    fn parameter_state(&self) -> Option<ParameterState<'_>> {
+        Some(ParameterState {
+            kind: self.bundled_kind?,
+            layout: self.layout.as_deref()?,
+        })
+    }
+
+    fn try_marker_edit(&mut self, edit: &PendingMarkerEdit) -> Option<EditResult> {
+        if Instant::now() >= edit.deadline
+            || !self.can_edit_waveform_markers()
+            || self.marker_parameters(edit.slot).as_ref() != Some(&edit.params)
+        {
+            return Some(EditResult::Rejected(EditStatus::Unavailable));
+        }
+        let request = match self.markers.checked_edit(edit.slot, edit.request) {
+            Ok(request) => request,
+            Err(status) => return Some(EditResult::Rejected(status)),
+        };
+        self.session.try_control(|plugin| {
+            komponist_hosting::edit_waveform_marker_state(
+                plugin,
+                edit.slot,
+                request,
+                &edit.params.expected,
+            )
+        })
+    }
+
+    fn poll_marker_edit(&mut self, device: DeviceId, events: &mut Vec<PluginManagerEvent>) {
+        let Some(edit) = self.pending_marker_edit.take() else {
+            return;
+        };
+        let Some(result) = self.try_marker_edit(&edit) else {
+            // The audio processor won the control guard. Keep the original revision and
+            // expected values for one attempt on the next host poll.
+            self.pending_marker_edit = Some(edit);
+            return;
+        };
+        let slot = edit.slot;
+        let result = edit.params.normalize(result);
+        if let EditResult::Failed {
+            message,
+            rollback_failed: true,
+        } = &result
+        {
+            self.fail_after_rollback(device, message, events);
+        }
+        if !matches!(
+            result,
+            EditResult::Rejected(EditStatus::Invalid | EditStatus::Unchanged)
+        ) {
+            self.markers.refresh(slot);
+        }
+        if matches!(result, EditResult::Applied { .. }) {
+            self.user_edit = false;
+            self.snapshot_due = None;
+        }
+        let result = WaveformMarkerEditResult::from_wire(result, &mut self.last_state);
+        events.push(PluginManagerEvent::WaveformMarkersEdited {
+            device,
+            slot,
+            result,
+        });
+    }
+
+    pub(crate) fn preview_waveform(&self, slot: u32, time: Option<f64>) {
+        self.session.preview_waveform(slot, time);
     }
 
     pub(crate) fn poll_display(&mut self) {
@@ -241,20 +391,9 @@ impl DirectDevice {
         }
     }
 
-    pub(crate) fn poll_sampler_ui(&mut self) {
-        let now = Instant::now();
-        if self.pending_restore.is_none() && now >= self.sampler_ui_at {
-            self.sampler_ui_at = now + crate::bundled_sampler::UI_REFRESH;
-            self.sampler_ui = self.session.sampler_ui(self.sampler_export_tempo);
-        }
-    }
-
-    pub(crate) fn preview_sampler_slice(&self, time: Option<f64>) {
-        self.session.preview_sampler_slice(time);
-    }
-
     pub(crate) fn poll(&mut self, id: DeviceId, events: &mut Vec<PluginManagerEvent>) {
         self.service(id, events);
+        self.poll_marker_edit(id, events);
         if self.snapshot_due.is_some_and(|due| Instant::now() >= due)
             && let Some(state) = self.capture()
         {
@@ -432,8 +571,8 @@ impl DirectDevice {
             .is_some_and(|value| value.ptr_eq(&Arc::downgrade(state)))
     }
 
-    pub(crate) fn set_state(&mut self, state: Arc<[u8]>) {
-        self.sampler_ui = None;
+    pub(crate) fn set_state(&mut self, state: Arc<[u8]>) -> Option<u32> {
+        let canceled = self.invalidate_waveform_markers();
         self.assets.begin_restore();
         self.pending_restore = Some(state);
         self.pending_writes.clear();
@@ -441,6 +580,7 @@ impl DirectDevice {
         self.released_automation.clear();
         self.snapshot_due = None;
         self.user_edit = false;
+        canceled
     }
 
     pub(crate) fn state_for_reload(&self) -> Option<Arc<[u8]>> {
@@ -465,7 +605,7 @@ impl DirectDevice {
     }
 
     pub(crate) fn needs_snapshot(&self) -> bool {
-        self.user_edit || self.pending_restore.is_some()
+        self.user_edit || self.pending_restore.is_some() || self.pending_marker_edit.is_some()
     }
 
     pub(crate) fn awaits_snapshot(&self) -> bool {
@@ -478,7 +618,10 @@ impl DirectDevice {
     }
 
     pub(crate) fn capture(&mut self) -> Option<Arc<[u8]>> {
-        if !self.can_snapshot() || self.pending_restore.is_some() || !self.pending_writes.is_empty()
+        if !self.can_snapshot()
+            || self.pending_restore.is_some()
+            || self.pending_marker_edit.is_some()
+            || !self.pending_writes.is_empty()
         {
             return None;
         }
@@ -487,7 +630,7 @@ impl DirectDevice {
         let automated = &self.automated_params;
         let unconfirmed = &self.unconfirmed_writes;
         let released = &self.released_automation;
-        let bundle = self.bundled_kind.zip(self.layout.as_deref());
+        let can_restore_bases = self.parameter_state().is_some();
         let (state, corrections) = self
             .session
             .try_control(|plugin| {
@@ -510,7 +653,7 @@ impl DirectDevice {
                     // it. Differences on playback-owned parameters have an authoritative base
                     // and can be repaired on the detached copy of the known bundle's state.
                     if unconfirmed.contains(&id)
-                        || bundle.is_none()
+                        || !can_restore_bases
                         || !(automated.contains_key(&id)
                             || macros.contains_key(&id)
                             || released.contains(&id))
@@ -525,8 +668,9 @@ impl DirectDevice {
         let captured: Arc<[u8]> = if corrections.is_empty() {
             state.into()
         } else {
-            let (kind, layout) = bundle?;
-            bundled_state::restore_param_bases(kind, layout, &state, corrections)?.into()
+            self.parameter_state()?
+                .restore_param_bases(&state, corrections)?
+                .into()
         };
         self.unconfirmed_writes.clear();
         self.macro_snapshot =
