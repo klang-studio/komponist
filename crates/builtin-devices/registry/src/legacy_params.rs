@@ -62,6 +62,20 @@ impl<'a> LegacyParameters<'a> {
         }
     }
 
+    /// The parameter name used in the undo label for a legacy card edit.
+    pub fn card_param_name(&self, lang: Lang, wire: u32) -> Option<&'static str> {
+        let info = match self.kind {
+            BuiltinKind::Hexa => {
+                &hexa::device::params_in(lang)
+                    .iter()
+                    .find(|param| param.wire == wire)?
+                    .info
+            }
+            BuiltinKind::Internal(kind) => kind.params_in(lang).get(wire as usize)?,
+        };
+        Some(info.name.as_str())
+    }
+
     pub fn get(&self, lang: Lang, id: &ParamId) -> Option<LegacyParameter> {
         let wire = self.wire(id)?;
         let info = self.info(lang, wire)?;
@@ -116,6 +130,36 @@ impl<'a> LegacyParameters<'a> {
         }
     }
 
+    /// Parameters and value text as shown in a legacy device's standalone frame.
+    pub fn frame_params(&self, lang: Lang) -> Vec<(LegacyParameter, String)> {
+        match self.kind {
+            BuiltinKind::Hexa => {
+                let patch =
+                    hexa::decode_state(self.state).unwrap_or_else(|_| hexa::default_patch());
+                Macro::ALL
+                    .iter()
+                    .map(|item| {
+                        let value = item.get(&patch);
+                        let param = LegacyParameter {
+                            info: item.param_info_in(lang),
+                            wire: item.id(),
+                            value,
+                        };
+                        (param, item.text_in(lang, value))
+                    })
+                    .collect()
+            }
+            BuiltinKind::Internal(_) => self
+                .all(lang)
+                .into_iter()
+                .map(|param| {
+                    let text = param.info.format(param.value);
+                    (param, text)
+                })
+                .collect(),
+        }
+    }
+
     /// Parameter writes that update an existing processor without resetting its voices or tails.
     /// A state change outside the parameter model requires a fresh processor.
     pub fn changes_from(&self, previous: Option<&[u8]>) -> Option<Vec<(u32, f64)>> {
@@ -153,6 +197,30 @@ impl<'a> LegacyParameters<'a> {
                 Some(hexa::encode_state(&patch))
             }
             BuiltinKind::Internal(kind) => kind.with_value(self.state, wire, value),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_card_parameters_name_legacy_card_undo_steps() {
+        let project = komponist_model::fixtures::demo_project();
+        let device = &project.tracks[2].channel.devices[0];
+        let parameters = LegacyParameters::new(device).expect("legacy instrument");
+        for lang in Lang::ALL {
+            let algorithm = Macro::Algorithm;
+            assert_eq!(
+                parameters.card_param_name(lang, algorithm.id()),
+                Some(algorithm.name_in(lang))
+            );
+            let ratio = Macro::Ratio2;
+            assert_eq!(parameters.card_param_name(lang, ratio.id()), None);
+            let frame = parameters.frame_params(lang);
+            assert_eq!(frame[1].0.wire, ratio.id());
+            assert_eq!(frame[1].1, ratio.text_in(lang, frame[1].0.value));
         }
     }
 }
