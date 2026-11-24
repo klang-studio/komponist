@@ -532,6 +532,9 @@ impl Bridge {
     }
 
     pub(crate) fn invalidate_waveform_markers(&mut self) {
+        if let Some(edit) = &mut self.marker_edit {
+            edit.superseded = true;
+        }
         if let Some((_, slot)) = self.marker_read.take() {
             self.markers.request(slot);
         }
@@ -567,7 +570,7 @@ impl Bridge {
         }
         let provider_request = self.markers.checked_edit(slot, edit)?;
         let params = self
-            .marker_parameters(slot)
+            .marker_parameters(slot, &[])
             .ok_or(EditStatus::Unavailable)?;
         self.invalidate_state_requests();
         let now = Instant::now();
@@ -595,20 +598,15 @@ impl Bridge {
             && (self.verified_bundled_kind.is_some() || self.temporary_params.is_empty())
     }
 
-    fn marker_parameters(&self, slot: u32) -> Option<MarkerParameters> {
-        let mut automated = self.automated_params.clone();
-        for &id in &self.temporary_params {
-            if !self.macro_params.contains_key(&id) {
-                automated.entry(id).or_insert(None);
-            }
-        }
+    fn marker_parameters(&self, slot: u32, prior: &[u32]) -> Option<MarkerParameters> {
         MarkerParameters::new(
             slot,
             &self.base_values,
-            &automated,
+            &self.automated_params,
             &self.macro_params,
             &self.params,
             self.parameter_state(),
+            self.temporary_params.iter().chain(prior).copied(),
         )
     }
 
@@ -643,7 +641,7 @@ impl Bridge {
         }
         if now >= edit.deadline
             || !self.can_edit_waveform_markers()
-            || self.marker_parameters(edit.slot).as_ref() != Some(&edit.params)
+            || self.marker_parameters(edit.slot, &[]).as_ref() != Some(&edit.params)
         {
             return Err(EditStatus::Unavailable);
         }
@@ -711,7 +709,7 @@ impl Bridge {
 
     fn report_marker_edit(
         &mut self,
-        mut edit: MarkerEdit,
+        edit: MarkerEdit,
         result: EditResult,
         events: &mut Vec<PluginManagerEvent>,
     ) {
@@ -722,15 +720,17 @@ impl Bridge {
             self.markers.refresh(edit.slot);
         }
         let device = self.device;
-        let result = if edit.superseded {
-            result
-        } else {
-            if matches!(result, EditResult::Applied { .. })
-                && let Some(latest) = self.marker_parameters(edit.slot)
-            {
-                edit.params.update_persistent(latest);
+        let result = if !edit.superseded && matches!(result, EditResult::Applied { .. }) {
+            match self.marker_parameters(edit.slot, edit.params.persisted_ids()) {
+                Some(latest) => latest.normalize(result),
+                None => EditResult::Failed {
+                    message: "could not determine persistent parameter values after editing waveform markers"
+                        .into(),
+                    rollback_failed: true,
+                },
             }
-            edit.params.normalize(result)
+        } else {
+            result
         };
         let result = if let EditResult::Failed {
             message,
@@ -1077,9 +1077,6 @@ impl Bridge {
         }
         self.user_changed();
         self.invalidate_waveform_markers();
-        if let Some(edit) = &mut self.marker_edit {
-            edit.superseded = true;
-        }
         self.last_state = Some(Arc::clone(state));
         self.pending_params.clear();
         self.released_macro_params.clear();

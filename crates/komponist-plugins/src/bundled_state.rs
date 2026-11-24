@@ -1,6 +1,6 @@
 //! Persistent parameter values for authenticated bundles using the pinned CLAP wrapper.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use komponist_builtin::BuiltinKind;
 use komponist_device_core::pinned_clap_state;
@@ -88,6 +88,7 @@ fn apply_parameter_values(state: &[u8], corrections: &Map<String, Value>) -> Opt
 pub(crate) struct MarkerParameters {
     pub(crate) expected: Vec<(u32, f64)>,
     persistent: Map<String, Value>,
+    persisted_ids: Vec<u32>,
 }
 
 impl MarkerParameters {
@@ -98,11 +99,14 @@ impl MarkerParameters {
         macros: &BTreeMap<u32, f64>,
         inventory: &[ParamInfo],
         bundle: Option<ParameterState<'_>>,
+        retain: impl IntoIterator<Item = u32>,
     ) -> Option<Self> {
-        if automated.is_empty() && macros.is_empty() {
+        let retained: BTreeSet<_> = retain.into_iter().collect();
+        if automated.is_empty() && macros.is_empty() && retained.is_empty() {
             return Some(Self {
                 expected: base.iter().map(|(&id, &value)| (id, value)).collect(),
                 persistent: Map::new(),
+                persisted_ids: Vec::new(),
             });
         }
 
@@ -137,7 +141,8 @@ impl MarkerParameters {
             let saved = automated
                 .get(&id)
                 .map(|automated| automated.unwrap_or(value))
-                .or_else(|| macros.get(&id).copied());
+                .or_else(|| macros.get(&id).copied())
+                .or_else(|| retained.contains(&id).then_some(value));
             if let Some(saved) = saved {
                 persistent.insert(id, saved);
             }
@@ -147,12 +152,13 @@ impl MarkerParameters {
         }
         Some(Self {
             expected,
+            persisted_ids: persistent.keys().copied().collect(),
             persistent: bundle.parameter_values(persistent)?,
         })
     }
 
-    pub(crate) fn update_persistent(&mut self, latest: Self) {
-        self.persistent.extend(latest.persistent);
+    pub(crate) fn persisted_ids(&self) -> &[u32] {
+        &self.persisted_ids
     }
 
     pub(crate) fn normalize(&self, result: EditResult) -> EditResult {
@@ -261,9 +267,12 @@ mod tests {
             layout: &layout,
         };
         let plan =
-            MarkerParameters::new(0, &base, &automated, &macros, &inventory, Some(codec)).unwrap();
+            MarkerParameters::new(0, &base, &automated, &macros, &inventory, Some(codec), [])
+                .unwrap();
         assert_eq!(plan.expected, [(7, 2.0), (9, 0.5)]);
-        assert!(MarkerParameters::new(0, &base, &automated, &macros, &inventory, None).is_none());
+        assert!(
+            MarkerParameters::new(0, &base, &automated, &macros, &inventory, None, []).is_none()
+        );
 
         let document = |markers| {
             json!({
@@ -272,6 +281,21 @@ mod tests {
                 "fields":{"markers":markers}
             })
         };
+        // A driver can be removed after submission while the bridge still holds its live value.
+        let latest_base = [(42, 0.75), (7, 2.0), (9, 0.75)].into();
+        let latest = MarkerParameters::new(
+            0,
+            &latest_base,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &inventory,
+            Some(codec),
+            plan.persisted_ids().iter().copied(),
+        )
+        .unwrap();
+        assert_eq!(latest.persistent["b1_freq"], json!({"f32":0.75}));
+        assert_eq!(latest.persistent["b2_gain"], json!({"f32":0.75}));
+
         let before = document("old");
         let after = document("new");
         let result = plan.normalize(EditResult::Applied {

@@ -282,6 +282,7 @@ impl DirectDevice {
             &self.macro_params,
             &self.params,
             self.parameter_state(),
+            [],
         )
     }
 
