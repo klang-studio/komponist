@@ -34,8 +34,8 @@ use komponist_builtin::Internal;
 use komponist_engine::Command;
 use komponist_general_sampler as general_sampler;
 use komponist_model::edits;
-use komponist_model::{AudioFile, ChannelRef, ClipContent, DeviceId, Project, TrackId};
-use komponist_plugins::bundled_sampler;
+use komponist_model::{AudioFile, ChannelRef, ClipContent, DeviceId, DeviceRole, Project, TrackId};
+use komponist_plugins::{DeviceStatus, bundled_sampler};
 use komponist_sampler as sampler;
 use komponist_sampler::{Collector, PadField, SampleLink, links};
 
@@ -43,7 +43,6 @@ use crate::actions::PluginAction;
 use crate::app::App;
 use crate::dialogs::file::Purpose;
 use crate::dialogs::missing_plugins::missing_samples;
-use crate::step_rows;
 use crate::ui_state::{StatusKind, StepCursor};
 
 /// The demo project with the synthesized test kit on the pads of every sampler (`--demo`): the
@@ -110,7 +109,7 @@ impl State {
 
 enum WaveformPreview {
     Sample { track: TrackId, key: u8 },
-    Slice(DeviceId),
+    Asset { device: DeviceId, slot: u32 },
 }
 
 /// A sampler device of the project: id, track (`None`: master), state.
@@ -134,7 +133,15 @@ fn valid_slot(kind: Internal, pad: usize) -> bool {
 struct PadSync {
     cursor: Option<usize>,
     sel: usize,
-    hit: u32,
+    hit: Option<u32>,
+}
+
+struct PadInput {
+    device: DeviceId,
+    track: Option<TrackId>,
+    notes: Vec<u8>,
+    follow: bool,
+    hit: Option<(u32, usize)>,
 }
 
 impl App {
@@ -200,7 +207,7 @@ impl App {
 
     pub(crate) fn reset_sampler_hit(&mut self, device: DeviceId) {
         if let Some(sync) = self.dialogs.samples.pads.get_mut(&device) {
-            sync.hit = 0;
+            sync.hit = None;
         }
     }
 
@@ -245,9 +252,14 @@ impl App {
                 self.dialogs.samples.target = Some((*device, *pad));
                 self.open_file_browser(Purpose::Sample);
             }
-            PluginAction::AuditionPad { device, pad } => self.audition(*device, *pad),
-            PluginAction::PreviewSampler { device, slice_time } => {
-                self.preview_sampler(*device, *slice_time);
+            PluginAction::AuditionNote { device, key } => self.audition_note(*device, *key),
+            PluginAction::PreviewWaveform {
+                device,
+                slot,
+                key,
+                slice_time,
+            } => {
+                self.preview_waveform(*device, *slot, *key, *slice_time);
             }
             PluginAction::SetSamplerSlices { device, settings } => {
                 self.set_sampler_slices(*device, settings);
@@ -441,15 +453,13 @@ impl App {
         }
     }
 
-    /// A click on a pad: a live note on the device's track, released shortly after.
-    fn audition(&mut self, device: DeviceId, pad: usize) {
-        let Some((ChannelRef::Track(track), _, found)) = self.project().find_device(device) else {
+    fn audition_note(&mut self, device: DeviceId, key: u8) {
+        let Some((ChannelRef::Track(track), _, _)) = self.project().find_device(device) else {
             return;
         };
-        if sample_device_kind(found) != Some(Internal::Sampler) || pad >= sampler::PADS {
+        if key > 127 {
             return;
         }
-        let key = sampler::note_of_pad(pad);
         self.engine.send(Command::LiveNote {
             track,
             key,
@@ -461,43 +471,29 @@ impl App {
             .push((Instant::now() + AUDITION, track, key));
     }
 
-    fn preview_sampler(&mut self, device: DeviceId, slice_time: Option<f64>) {
+    fn preview_waveform(&mut self, device: DeviceId, slot: u32, key: u8, time: Option<f64>) {
         let Some((ChannelRef::Track(track), _, found)) = self.project().find_device(device) else {
             return;
         };
-        let kind = Internal::GeneralSampler;
-        if sample_device_kind(found) != Some(kind) {
+        if key > 127
+            || !found.asset_links.contains_key(&slot)
+            || self.engine.host().status(device) != DeviceStatus::Ok
+            || komponist_ipc::waveform_preview::encode_time(time).is_none()
+        {
             return;
         }
-        if let Some(time) = slice_time {
-            let bundled = bundled_sampler::kind(&found.plugin).is_some();
-            self.stop_waveform_preview();
-            if bundled && self.engine.host().sampler_ui(device).is_some() {
-                self.engine.host().preview_sampler_slice(device, Some(time));
-                self.dialogs.samples.waveform_preview = Some(WaveformPreview::Slice(device));
-            } else if let Some(handle) = self.engine.host().sampler(device) {
-                handle.preview_slice(time);
-                self.dialogs.samples.waveform_preview = Some(WaveformPreview::Slice(device));
-            }
-            return;
-        }
-        let key = if bundled_sampler::kind(&found.plugin).is_some() {
-            let host = self.engine.host();
-            host.native_layout(device)
-                .and_then(|layout| layout.author_ids()?.get("root"))
-                .and_then(|id| host.param_value(device, *id))
-                .map_or(60, |value| value.value.round().clamp(0.0, 127.0) as u8)
-        } else {
-            let values = kind
-                .decode_state(found.state.as_deref())
-                .unwrap_or_else(|_| kind.defaults());
-            kind.params()
-                .iter()
-                .zip(values)
-                .find(|(param, _)| param.id.as_str() == "root")
-                .map_or(60, |(_, value)| value.round() as u8)
-        };
         self.stop_waveform_preview();
+        if let Some(time) = time {
+            self.engine
+                .host()
+                .preview_waveform(device, slot, Some(time));
+            self.dialogs.samples.waveform_preview = Some(WaveformPreview::Asset { device, slot });
+        } else {
+            self.start_waveform_note(track, key);
+        }
+    }
+
+    fn start_waveform_note(&mut self, track: TrackId, key: u8) {
         self.dialogs.samples.waveform_preview = Some(WaveformPreview::Sample { track, key });
         self.engine.send(Command::LiveNote {
             track,
@@ -515,12 +511,8 @@ impl App {
                     velocity: 0,
                 });
             }
-            Some(WaveformPreview::Slice(device)) => {
-                if let Some(handle) = self.engine.host().sampler(device) {
-                    handle.release_slice_preview();
-                } else {
-                    self.engine.host().preview_sampler_slice(device, None);
-                }
+            Some(WaveformPreview::Asset { device, slot }) => {
+                self.engine.host().preview_waveform(device, slot, None);
             }
             None => {}
         }
@@ -674,21 +666,15 @@ impl App {
     pub(crate) fn sync_pads(&mut self, ctx: &Context) {
         let open = self.ui.editor.clip;
         let cursor = self.ui.selection.step;
-        for (device, track, kind, state) in self.samplers() {
-            if kind != Internal::Sampler {
-                continue;
-            }
-            let host = self.engine.host();
-            let hit = host.sampler(device).map_or_else(
-                || {
-                    host.sampler_ui(device)
-                        .map(|data| (data.last_hit.0, usize::from(data.last_hit.1)))
-                },
-                |handle| Some(handle.last_hit()),
-            );
-            let Some((hit_counter, hit_pad)) = hit else {
-                continue;
-            };
+        for PadInput {
+            device,
+            track,
+            notes,
+            follow,
+            hit,
+        } in self.pad_inputs()
+        {
+            let hit_counter = hit.map(|(counter, _)| counter);
             let sel = crate::views::devices::selected_pad(ctx, device);
             // The pattern of the open step clip, if it is this sampler's track's.
             let pattern = open
@@ -702,9 +688,8 @@ impl App {
                 })
                 .flatten();
             let cursor_pad = pattern.as_ref().and_then(|(clip, p)| {
-                cursor
-                    .filter(|c| c.clip == *clip)
-                    .and_then(|c| step_rows::pad_of_row(p, c.row))
+                let row = p.rows.get(cursor.filter(|c| c.clip == *clip)?.row)?;
+                notes.iter().position(|&note| note == row.note)
             });
             let last = self
                 .dialogs
@@ -717,25 +702,17 @@ impl App {
                     sel,
                     hit: hit_counter,
                 });
-            let follow = host
-                .native_layout(device)
-                .and_then(|layout| layout.author_ids()?.get("follow"))
-                .and_then(|id| host.param_value(device, *id))
-                .map(|value| value.value >= 0.5)
-                .unwrap_or_else(|| {
-                    Internal::Sampler
-                        .decode_state(state.as_deref())
-                        .ok()
-                        .and_then(|v| v.get(sampler::FOLLOW).copied())
-                        .is_some_and(|v| v >= 0.5)
-                });
             let mut now = sel;
             if cursor_pad != last.cursor
                 && let Some(pad) = cursor_pad
             {
                 now = pad;
-            } else if follow && hit_counter != 0 && hit_counter != last.hit {
-                now = hit_pad;
+            } else if follow
+                && let Some((counter, pad)) = hit
+                && counter != 0
+                && last.hit.is_some_and(|previous| previous != counter)
+            {
+                now = pad;
             }
             if now != sel {
                 crate::views::devices::select_pad(ctx, device, now);
@@ -745,7 +722,8 @@ impl App {
             if now != last.sel
                 && cursor_pad != Some(now)
                 && let Some((clip, p)) = &pattern
-                && let Some(row) = step_rows::row_of_pad(p, now)
+                && let Some(&note) = notes.get(now)
+                && let Some(row) = p.rows.iter().position(|row| row.note == note)
             {
                 self.ui.selection.step = Some(StepCursor {
                     clip: *clip,
@@ -763,6 +741,68 @@ impl App {
                 },
             );
         }
+    }
+
+    fn pad_inputs(&self) -> Vec<PadInput> {
+        let host = self.engine.host();
+        let project = self.project();
+        let instruments = project.tracks.iter().flat_map(|track| {
+            track.channel.devices.iter().filter_map(|device| {
+                (device.role == DeviceRole::Instrument).then_some((Some(track.id), device))
+            })
+        });
+        let mut inputs: Vec<_> = instruments
+            .filter_map(|(track, device)| {
+                let bank = host.native_layout(device.id)?.pad_bank.as_ref()?;
+                let follow = bank
+                    .follow_param
+                    .and_then(|id| host.param_value(device.id, id))
+                    .is_some_and(|value| value.value >= 0.5);
+                let hit = if follow {
+                    bank.activity_tap
+                        .as_deref()
+                        .and_then(|key| host.signal_tap(device.id, key))
+                        .and_then(|tap| tap.pad_activity(bank.pads.len()))
+                        .map(|(_, frame)| (frame.hit, frame.last_pad))
+                } else {
+                    None
+                };
+                Some(PadInput {
+                    device: device.id,
+                    track,
+                    follow,
+                    hit,
+                    notes: bank.pads.iter().map(|pad| pad.note).collect(),
+                })
+            })
+            .collect();
+        inputs.extend(
+            self.samplers()
+                .into_iter()
+                .filter_map(|(device, track, kind, state)| {
+                    if kind != Internal::Sampler
+                        || host
+                            .native_layout(device)
+                            .is_some_and(|layout| layout.pad_bank.is_some())
+                    {
+                        return None;
+                    }
+                    let hit = host.sampler(device)?.last_hit();
+                    let follow = kind
+                        .decode_state(state.as_deref())
+                        .ok()
+                        .and_then(|values| values.get(sampler::FOLLOW).copied())
+                        .is_some_and(|value| value >= 0.5);
+                    Some(PadInput {
+                        device,
+                        track,
+                        follow,
+                        hit: Some(hit),
+                        notes: (0..sampler::PADS).map(sampler::note_of_pad).collect(),
+                    })
+                }),
+        );
+        inputs
     }
 }
 

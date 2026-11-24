@@ -28,10 +28,32 @@
     "pages": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 4,
+      "maxItems": 16,
       "items": {
         "$ref": "#/$defs/page"
       }
+    },
+    "pad_bank": {
+      "type": "object",
+      "required": ["pads"],
+      "properties": {
+        "pads": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "required": ["note", "asset_slot"],
+            "properties": {
+              "note": { "type": "integer", "minimum": 0, "maximum": 127 },
+              "asset_slot": { "type": "integer", "minimum": 0, "maximum": 4294967294 }
+            }
+          }
+        },
+        "activity_tap": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}(?![\\s\\S])" },
+        "follow_param": { "type": "integer", "minimum": 0, "maximum": 4294967294 }
+      },
+      "dependentRequired": { "follow_param": ["activity_tap"] }
     },
     "author_ids": {
       "type": "object",
@@ -53,7 +75,7 @@
     },
     "required_capabilities": {
       "type": "array",
-      "maxItems": 0,
+      "maxItems": 8,
       "uniqueItems": true,
       "items": {
         "type": "string",
@@ -82,6 +104,18 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": { "required": ["pad_bank"] },
+      "then": {
+        "required": ["required_capabilities"],
+        "properties": { "required_capabilities": { "contains": { "const": "pad-bank" } } }
+      },
+      "else": {
+        "properties": { "pages": { "maxItems": 4 } }
+      }
+    }
+  ],
   "$defs": {
     "locale": {
       "type": "string",
@@ -136,42 +170,19 @@
           "type": "array",
           "maxItems": 13,
           "uniqueItems": true,
-          "items": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 12
-          }
+          "items": { "type": "integer", "minimum": 0, "maximum": 12 }
         },
         "headings": {
           "type": "array",
           "maxItems": 14,
           "items": {
             "type": "object",
-            "required": [
-              "col",
-              "row",
-              "cols",
-              "labels"
-            ],
+            "required": ["col", "row", "cols", "labels"],
             "properties": {
-              "col": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 13
-              },
-              "row": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 2
-              },
-              "cols": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 14
-              },
-              "labels": {
-                "$ref": "#/$defs/labels"
-              }
+              "col": { "type": "integer", "minimum": 0, "maximum": 13 },
+              "row": { "type": "integer", "minimum": 0, "maximum": 2 },
+              "cols": { "type": "integer", "minimum": 1, "maximum": 14 },
+              "labels": { "$ref": "#/$defs/labels" }
             }
           }
         }
@@ -286,27 +297,9 @@
           }
         },
         {
-          "if": {
-            "properties": {
-              "widget": {
-                "const": "mini_fader"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "cols": {
-                "const": 1
-              }
-            }
-          },
-          "else": {
-            "properties": {
-              "rows": {
-                "const": 1
-              }
-            }
-          }
+          "if": { "properties": { "widget": { "const": "mini_fader" } } },
+          "then": { "properties": { "cols": { "const": 1 } } },
+          "else": { "properties": { "rows": { "const": 1 } } }
         },
         {
           "if": {
@@ -325,20 +318,8 @@
           }
         },
         {
-          "if": {
-            "properties": {
-              "widget": {
-                "const": "number"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "cols": {
-                "maximum": 2
-              }
-            }
-          }
+          "if": { "properties": { "widget": { "const": "number" } } },
+          "then": { "properties": { "cols": { "maximum": 2 } } }
         },
         {
           "if": {
@@ -395,6 +376,9 @@
             "required": [
               "canvas"
             ]
+          },
+          {
+            "required": ["reduction_tap"]
           }
         ]
       }
@@ -439,14 +423,40 @@
             "maximum": 4294967294
           }
         },
+        "asset_slot": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "waveform_markers": {
+          "type": "boolean"
+        },
+        "audition_note": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967294
+        },
+        "waveform_toolbar": {
+          "type": "boolean"
+        },
+        "waveform_slice_controls": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 0, "maximum": 4294967294 }
+        },
+        "trim_unit": {
+          "enum": ["milliseconds", "source_fraction"]
+        },
         "signal_taps": {
           "type": "object",
           "propertyNames": {
-            "enum": ["spectrum", "level", "reduction"]
+            "enum": ["spectrum", "level", "reduction", "playhead"]
           },
           "additionalProperties": {
             "type": "string",
-            "pattern": "^[a-z][a-z0-9_-]{0,31}(?![\\s\\S])"
+            "pattern": "^[a-z][a-z0-9_-]{0,31}$"
           }
         },
         "bands": {
@@ -459,7 +469,43 @@
           "minimum": 2,
           "maximum": 16
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["audition_note"] },
+          "then": { "required": ["asset_slot"] }
+        },
+        {
+          "if": {
+            "anyOf": [
+              { "required": ["asset_slot"] },
+              { "required": ["trim_unit"] }
+            ]
+          },
+          "then": { "properties": { "kind": { "const": "waveform" } } }
+        },
+        {
+          "if": {
+            "required": ["waveform_markers"],
+            "properties": { "waveform_markers": { "const": true } }
+          },
+          "then": { "required": ["asset_slot"] }
+        },
+        {
+          "if": {
+            "required": ["waveform_toolbar"],
+            "properties": { "waveform_toolbar": { "const": true } }
+          },
+          "then": { "required": ["asset_slot"] }
+        },
+        {
+          "if": {
+            "required": ["trim_unit"],
+            "properties": { "trim_unit": { "const": "source_fraction" } }
+          },
+          "then": { "required": ["asset_slot"] }
+        }
+      ]
     },
     "graph_cell": {
       "type": "object",
@@ -497,6 +543,9 @@
             "required": [
               "canvas"
             ]
+          },
+          {
+            "required": ["reduction_tap"]
           }
         ]
       },
@@ -542,8 +591,33 @@
         },
         {
           "$ref": "#/$defs/meter_gr_cell"
+        },
+        {
+          "$ref": "#/$defs/pad_grid_cell"
         }
       ]
+    },
+    "pad_grid_cell": {
+      "type": "object",
+      "required": ["widget", "col", "row", "cols", "rows"],
+      "not": {
+        "anyOf": [
+          { "required": ["half"] },
+          { "required": ["param_id"] },
+          { "required": ["labels"] },
+          { "required": ["choices"] },
+          { "required": ["graph"] },
+          { "required": ["canvas"] },
+          { "required": ["reduction_tap"] }
+        ]
+      },
+      "properties": {
+        "widget": { "const": "pad_grid" },
+        "col": { "type": "integer", "minimum": 0, "maximum": 13 },
+        "row": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "cols": { "type": "integer", "minimum": 1, "maximum": 14 },
+        "rows": { "type": "integer", "minimum": 1, "maximum": 3 }
+      }
     },
     "canvas": {
       "type": "object",
@@ -609,6 +683,9 @@
             "required": [
               "graph"
             ]
+          },
+          {
+            "required": ["reduction_tap"]
           }
         ]
       },

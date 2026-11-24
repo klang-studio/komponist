@@ -26,7 +26,8 @@ use clap_sys::{
 };
 use komponist_ipc::control::{ParamInfo, param_flags};
 use komponist_ipc::native_layout::{
-    EXTENSION_V1, EXTENSION_V2, GraphKind, MAX_AUTHOR_IDS, MAX_BYTES, NativeLayout, valid_author_id,
+    CAP_PAD_BANK, CAP_SOURCE_FRACTION_TRIM, EXTENSION_V1, EXTENSION_V2, GraphKind, MAX_AUTHOR_IDS,
+    MAX_BYTES, NativeLayout, valid_author_id,
 };
 use komponist_model::params::ParamContext;
 use komponist_model::params::layout::validate;
@@ -37,7 +38,7 @@ use serde_json::{Value, json};
 pub use komponist_device_core::layout;
 pub use komponist_ipc::device_assets;
 pub use komponist_ipc::effect_meter;
-pub use komponist_ipc::native_layout::{Canvas, Heading, Labels};
+pub use komponist_ipc::native_layout::{Canvas, Heading, Labels, Pad, TrimUnit};
 pub use komponist_ipc::sampler_ui;
 pub use komponist_ipc::signal_taps;
 pub use komponist_model::params::{
@@ -104,8 +105,30 @@ pub struct GraphLabels {
     pub description: Labels,
     /// Omit the painted title while retaining the accessible name.
     pub hide_title: bool,
-    /// Named signal streams keyed by the graph’s layer roles.
+    /// Optional graph layer role to named signal tap.
     pub signal_taps: BTreeMap<String, String>,
+    /// Optional host-managed audio file slot for a waveform graph.
+    pub asset_slot: Option<u32>,
+    /// Show the asset slot's waveform marker list when its extension is available.
+    pub waveform_markers: bool,
+    /// Draw the host's file and viewport controls for the waveform asset slot.
+    pub waveform_toolbar: bool,
+    /// Fixed direction and fade controls replaced while the waveform edits individual slices.
+    pub waveform_slice_controls: Option<[ParamId; 3]>,
+    /// Optional parameter containing the MIDI note for waveform audition.
+    pub audition_note: Option<ParamId>,
+    /// Optional waveform trim units. The default is milliseconds.
+    pub trim_unit: Option<TrimUnit>,
+}
+
+/// A pad-selected panel. Each entry corresponds to a page in the same order.
+pub struct PadBank {
+    /// Pad note and asset bindings.
+    pub pads: Vec<Pad>,
+    /// Named pad-activity stream.
+    pub activity_tap: Option<String>,
+    /// Nice-plug author ID of the optional follow-input toggle.
+    pub follow_param: Option<ParamId>,
 }
 
 /// A version 2 panel with display bindings keyed by zero-based page and cell indices.
@@ -116,10 +139,12 @@ pub struct PanelV2 {
     pub graph_labels: BTreeMap<(usize, usize), GraphLabels>,
     /// The metadata of every canvas cell, by zero-based page and cell indices.
     pub canvases: BTreeMap<(usize, usize), Canvas>,
+    /// Signal tap keys for gain-reduction meter cells, by zero-based page and cell indices.
+    pub reduction_taps: BTreeMap<(usize, usize), String>,
+    /// Select pages from a pad grid instead of from the panel header.
+    pub pad_bank: Option<PadBank>,
     /// Section labels keyed by zero-based page index.
     pub headings: BTreeMap<usize, Vec<Heading>>,
-    /// Named reduction streams by zero-based page and cell indices.
-    pub reduction_taps: BTreeMap<(usize, usize), String>,
 }
 
 /// A nice-plug plugin supplying an immutable native layout.
@@ -240,6 +265,42 @@ unsafe fn compile_layout<P: ClapPlugin>(
         let mut cells = Vec::new();
         for (cell_index, cell) in page.cells.iter().enumerate() {
             let index = (page_index, cell_index);
+            if cell.widget == WidgetKind::PadGrid {
+                if v2.and_then(|v2| v2.pad_bank.as_ref()).is_none()
+                    || cell.half.is_some()
+                    || cell.carrier.is_some()
+                    || cell.disabled_by.is_some()
+                    || cell.param != CellParam::None
+                {
+                    return Err(error(
+                        "a v2 pad grid requires a pad bank and an unbound full cell",
+                    ));
+                }
+                cells.push(json!({
+                    "widget": "pad_grid", "col": cell.col, "row": cell.row,
+                    "cols": cell.cols, "rows": cell.rows,
+                }));
+                continue;
+            }
+            if cell.widget == WidgetKind::MeterGr {
+                let reduction_tap = v2
+                    .and_then(|panel| panel.reduction_taps.get(&index))
+                    .ok_or_else(|| error("missing v2 gain-reduction meter tap"))?;
+                if cell.half.is_some()
+                    || cell.carrier.is_some()
+                    || cell.disabled_by.is_some()
+                    || cell.param != CellParam::None
+                {
+                    return Err(error(
+                        "a gain-reduction meter needs a full cell without parameter bindings",
+                    ));
+                }
+                cells.push(json!({
+                    "widget": "meter_gr", "col": cell.col, "row": cell.row,
+                    "cols": cell.cols, "rows": cell.rows, "reduction_tap": reduction_tap,
+                }));
+                continue;
+            }
             if cell.widget == WidgetKind::Canvas {
                 let canvas = v2
                     .and_then(|panel| panel.canvases.get(&index))
@@ -263,25 +324,6 @@ unsafe fn compile_layout<P: ClapPlugin>(
                 && let Some(labels) = v2.and_then(|panel| panel.graph_labels.get(&index))
             {
                 cells.push(compile_graph(cell, binding, labels, &mut resolve_id)?);
-                continue;
-            }
-            if cell.widget == WidgetKind::MeterGr {
-                let reduction_tap = v2
-                    .and_then(|panel| panel.reduction_taps.get(&index))
-                    .ok_or_else(|| error("missing v2 gain-reduction meter tap"))?;
-                if cell.half.is_some()
-                    || cell.carrier.is_some()
-                    || cell.disabled_by.is_some()
-                    || cell.param != CellParam::None
-                {
-                    return Err(error(
-                        "a gain-reduction meter needs a full cell without parameter bindings",
-                    ));
-                }
-                cells.push(json!({
-                    "widget": "meter_gr", "col": cell.col, "row": cell.row,
-                    "cols": cell.cols, "rows": cell.rows, "reduction_tap": reduction_tap,
-                }));
                 continue;
             }
             let id = fixed_binding(cell)?;
@@ -331,12 +373,18 @@ unsafe fn compile_layout<P: ClapPlugin>(
         }
         pages.push(wire_page);
     }
+    let pad_bank = v2.and_then(|v2| v2.pad_bank.as_ref());
     if let Some(failure) = validate(&panel.grid, &ParamContext::new(), &|id| {
         resolved.contains_key(id)
     })
     .into_iter()
-    .next()
-    {
+    .find(|error| {
+        pad_bank.is_none()
+            || !matches!(
+                error,
+                komponist_model::params::layout::LayoutError::TooManyPages(_)
+            )
+    }) {
         return Err(error(failure.to_string()));
     }
     let mut document = json!({
@@ -345,6 +393,32 @@ unsafe fn compile_layout<P: ClapPlugin>(
         "locales": panel.locales,
         "pages": pages,
     });
+    let mut capabilities = Vec::new();
+    if v2.is_some_and(|v2| {
+        v2.graph_labels
+            .values()
+            .any(|labels| labels.trim_unit == Some(TrimUnit::SourceFraction))
+    }) {
+        capabilities.push(CAP_SOURCE_FRACTION_TRIM);
+    }
+    if let Some(bank) = pad_bank {
+        capabilities.push(CAP_PAD_BANK);
+        let mut value = json!({"pads": bank.pads});
+        if let Some(tap) = &bank.activity_tap {
+            value["activity_tap"] = json!(tap);
+        }
+        if let Some(param) = &bank.follow_param {
+            value["follow_param"] = json!(
+                resolved
+                    .get(param)
+                    .ok_or_else(|| error("unbound pad-follow parameter"))?
+            );
+        }
+        document["pad_bank"] = value;
+    }
+    if !capabilities.is_empty() {
+        document["required_capabilities"] = json!(capabilities);
+    }
     if let Some(labels) = &panel.device_labels {
         document["metadata"] = json!({"names": labels.names, "descriptions": labels.descriptions});
     }
@@ -412,11 +486,33 @@ fn compile_graph(
         ));
     }
     let mut graph = json!({"name": labels.name, "description": labels.description});
+    if labels.hide_title {
+        graph["hide_title"] = json!(true);
+    }
     if !labels.signal_taps.is_empty() {
         graph["signal_taps"] = json!(labels.signal_taps);
     }
-    if labels.hide_title {
-        graph["hide_title"] = json!(true);
+    if let Some(slot) = labels.asset_slot {
+        graph["asset_slot"] = json!(slot);
+    }
+    if labels.waveform_markers {
+        graph["waveform_markers"] = json!(true);
+    }
+    if labels.waveform_toolbar {
+        graph["waveform_toolbar"] = json!(true);
+    }
+    if let Some(ids) = &labels.waveform_slice_controls {
+        let ids = ids
+            .iter()
+            .map(&mut *resolve_id)
+            .collect::<Result<Vec<_>, _>>()?;
+        graph["waveform_slice_controls"] = json!(ids);
+    }
+    if let Some(note) = &labels.audition_note {
+        graph["audition_note"] = json!(resolve_id(note)?);
+    }
+    if let Some(unit) = labels.trim_unit {
+        graph["trim_unit"] = json!(unit);
     }
     let kind = match binding.config {
         GraphConfig::Envelope => GraphKind::Envelope,

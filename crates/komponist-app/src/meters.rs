@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
 use komponist_engine::{DeviceMeter, SampleTap};
+use komponist_ipc::signal_taps::PadActivity;
 use komponist_model::{DeviceId, TrackId};
 use komponist_plugins::signal_taps::SignalTap;
 use komponist_ui::widgets::meter::{MeterState, fraction};
@@ -25,6 +26,7 @@ use crate::spectrum::{Analysis, SpectrumAnalyzer};
 pub const GR_RANGE_DB: f32 = DeviceMeter::DEFAULT_GR_RANGE_DB;
 /// How fast the gain reduction bar falls back, dB per second.
 pub const GR_FALL_DB_PER_S: f32 = 40.0;
+const PLAYHEAD_FRESH_SECONDS: f64 = 0.5;
 const REDUCTION_VISIBILITY_SECONDS: f64 = 0.5;
 
 /// What a device's level meter (`meter_gr`) shows: the bars In · GR · Out as 0–1 and the
@@ -83,6 +85,13 @@ impl DeviceBallistics {
     fn is_active(&self) -> bool {
         self.io.is_active() || self.reduction_db > 0.0
     }
+}
+
+#[derive(Debug)]
+struct PlayheadReading {
+    cursor: u64,
+    received_at: Option<f64>,
+    visible_at: f64,
 }
 
 #[derive(Debug)]
@@ -200,6 +209,22 @@ impl SignalHistory {
     }
 }
 
+impl PlayheadReading {
+    fn fresh(&mut self, cursor: u64, now: f64) -> bool {
+        if cursor != self.cursor {
+            self.cursor = cursor;
+            self.received_at = Some(now);
+        }
+        self.visible_at = now;
+        self.received_at
+            .is_some_and(|received| now - received < PLAYHEAD_FRESH_SECONDS)
+    }
+
+    fn update(&mut self, cursor: u64, position: f32, now: f64) -> Option<f32> {
+        (self.fresh(cursor, now) && (0.0..=1.0).contains(&position)).then_some(position)
+    }
+}
+
 /// Ballistics of the master, the tracks of the current program and the internal devices.
 #[derive(Debug, Default)]
 pub struct Meters {
@@ -216,6 +241,7 @@ pub struct Meters {
     named_reductions: HashMap<(DeviceId, String), ReductionReading>,
     named_histories: HashMap<(DeviceId, String), SignalHistory>,
     signal_samples: Vec<f32>,
+    named_playheads: HashMap<(DeviceId, String), PlayheadReading>,
     /// The traces of the compressors whose card is visible right now (WP-93).
     traces: HashMap<DeviceId, GainTrace>,
     /// The transport bar's oscilloscope and spectrum of the master (#34).
@@ -262,6 +288,8 @@ impl Meters {
             .retain(|_, reading| now - reading.visible_at < 0.5);
         self.named_histories
             .retain(|_, reading| now - reading.visible_at <= gain_trace::STALE);
+        self.named_playheads
+            .retain(|_, reading| now - reading.visible_at < 2.0 * PLAYHEAD_FRESH_SECONDS);
         self.traces.retain(|id, _| seen.contains(id));
         let Some(program) = engine.program() else {
             self.tracks.clear();
@@ -323,6 +351,49 @@ impl Meters {
         levels.reduction_db = reduction;
         levels.bars[1] = (reduction / range).clamp(0.0, 1.0);
         Some(levels)
+    }
+
+    pub(crate) fn named_playhead(
+        &mut self,
+        device: DeviceId,
+        source: &SignalTap,
+        now: f64,
+    ) -> Option<f32> {
+        if source.descriptor().kind != komponist_ipc::signal_taps::PLAYHEAD_POSITION {
+            return None;
+        }
+        let reading = self.playhead_reading(device, source, now)?;
+        source.want();
+        let mut latest = [-1.0];
+        let end = source.samples().read_latest(&mut latest)?;
+        reading.update(end, latest[0], now)
+    }
+
+    pub(crate) fn named_pad_activity(
+        &mut self,
+        device: DeviceId,
+        source: &SignalTap,
+        count: usize,
+        now: f64,
+    ) -> Option<PadActivity> {
+        let reading = self.playhead_reading(device, source, now)?;
+        let (cursor, frame) = source.pad_activity(count)?;
+        reading.fresh(cursor, now).then_some(frame)
+    }
+
+    fn playhead_reading(
+        &mut self,
+        device: DeviceId,
+        source: &SignalTap,
+        now: f64,
+    ) -> Option<&mut PlayheadReading> {
+        let key = (device, source.descriptor().key()?.to_owned());
+        // A tap retains its last value when its visibility lease expires.
+        Some(self.named_playheads.entry(key).or_insert(PlayheadReading {
+            cursor: source.samples().written(),
+            received_at: None,
+            visible_at: now,
+        }))
     }
 
     /// What the card of `device` shows of its signal (WP-92); `None` for a device without a sample
@@ -568,6 +639,21 @@ mod tests {
         assert_eq!(reading.update(Some((9, 8.0)), 0.125), Some(8.0));
         assert_eq!(reading.update(Some((9, 8.0)), 0.25), Some(3.0));
         assert_eq!(reading.update(None, 0.375), Some(0.0));
+    }
+
+    #[test]
+    fn a_playhead_ignores_retained_and_expired_positions_and_hides_on_idle() {
+        let mut reading = PlayheadReading {
+            cursor: 12,
+            received_at: None,
+            visible_at: 0.0,
+        };
+        assert_eq!(reading.update(12, 0.1, 0.0), None);
+        assert_eq!(reading.update(13, 0.2, 0.1), Some(0.2));
+        assert_eq!(reading.update(13, 0.2, 0.3), Some(0.2));
+        assert_eq!(reading.update(13, 0.2, 0.7), None);
+        assert_eq!(reading.update(14, 0.4, 0.8), Some(0.4));
+        assert_eq!(reading.update(15, -1.0, 0.9), None);
     }
 
     #[test]

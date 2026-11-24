@@ -2840,6 +2840,7 @@ dependencies = [
  "komponist-device-core",
  "komponist-general-sampler",
  "komponist-i18n",
+ "komponist-ipc",
  "komponist-model",
  "komponist-native-clap-sdk",
  "komponist-sampler-clap",

@@ -169,7 +169,7 @@ impl DeviceAssets {
         })
     }
 
-    fn bindings_pending(&self) -> bool {
+    pub(crate) fn bindings_pending(&self) -> bool {
         !self.pending_bindings.is_empty() || !self.applying_bindings.is_empty()
     }
 

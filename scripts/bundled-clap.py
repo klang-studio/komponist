@@ -23,6 +23,7 @@ LICENSES = {
 }
 TARGET_LIB_SUFFIX = {
     "x86_64-unknown-linux-gnu": ".so",
+    "aarch64-unknown-linux-gnu": ".so",
     "aarch64-apple-darwin": ".dylib",
     "x86_64-pc-windows-msvc": ".dll",
 }
@@ -70,20 +71,29 @@ INVENTORIES["effects"] = INVENTORIES["hall"] + tuple(
     for name in ("delay", "eq", "presse", "limiter")
 )
 
+KLOPFER = Device(
+    "komponist-bundled-sampler",
+    "komponist_sampler",
+    "org.klang-studio.komponist.sampler",
+    "komponist_sampler_clap",
+)
+GENERAL_SAMPLER = Device(
+    "komponist-bundled-general-sampler",
+    "komponist_general_sampler",
+    "org.klang-studio.komponist.general-sampler",
+    "komponist_general_sampler_clap",
+)
+
 INVENTORIES["all"] = INVENTORIES["effects"] + (
     Device("komponist-bundled-hexa", "komponist_hexa_clap", "org.klang-studio.komponist.hexa"),
     Device("komponist-bundled-volt", "komponist_volt", "org.klang-studio.komponist.volt", "komponist_volt_clap"),
     Device("komponist-bundled-surf", "komponist_surf_clap", "org.klang-studio.komponist.surf"),
-    Device("komponist-bundled-sampler", "komponist_sampler", "org.klang-studio.komponist.sampler", "komponist_sampler_clap"),
-    Device(
-        "komponist-bundled-general-sampler",
-        "komponist_general_sampler",
-        "org.klang-studio.komponist.general-sampler",
-        "komponist_general_sampler_clap",
-    ),
+    KLOPFER,
+    GENERAL_SAMPLER,
     Device("komponist-bundled-arpeggiator", "komponist_arpeggiator_clap", "org.klang-studio.komponist.arpeggiator"),
     Device("komponist-bundled-scale", "komponist_scale_clap", "org.klang-studio.komponist.scale"),
 )
+INVENTORIES["sampler-fixtures"] = (KLOPFER, GENERAL_SAMPLER)
 
 
 def bundle_name(device):

@@ -1,5 +1,9 @@
 # CLAP sampler UI extension v2
 
+This endpoint is retained for older hosts. Current komponist builds use
+[layout v2](layout-v2.md), [file slots](device-assets.md), [signal taps](signal-taps.md),
+[waveform markers](waveform-markers.md), and [waveform preview](clap-waveform-preview.h).
+
 The optional plugin extension `org.klang-studio.komponist.sampler-ui/2` supplies snapshots and audition commands for a host-owned sampler front panel. The ABI is in [clap-sampler-ui.h](clap-sampler-ui.h). Plugin and host call it only on the CLAP main thread, after initialization and before destruction. The table is immutable and valid until destruction. Ordinary snapshot polling and preview callbacks may run while the audio processor is active. The plugin must keep its RT path independent of snapshot serialization and preview requests. It must neither wait for the main thread on the audio path nor retain the host's output buffer. The bundled samplers read loader metadata on the main thread and publish playhead and preview signals through atomics.
 
 Version 2 adds an export tempo argument to the snapshot callback. Query the exact versioned extension ID before using its table. The earlier `/1` callback has a different signature.
