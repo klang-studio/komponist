@@ -31,4 +31,3 @@ a level history. A gain-reduction history can bind `level` and `reduction`.
 A vertical gain-reduction meter uses `reduction_tap` to name a reduction stream.
 Missing streams leave the corresponding data layer empty. The existing
 [audio meter extension](audio-meter.md) remains available for level meters.
-
