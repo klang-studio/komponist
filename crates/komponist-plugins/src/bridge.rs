@@ -55,7 +55,7 @@ use komponist_model::project::SavedPluginState;
 use komponist_model::{DeviceId, DeviceRole};
 
 use crate::bundled_state::{MarkerParameters, ParameterState};
-use crate::external::{ExternalProcessor, RUN_ACTIVE, RUN_DEAD, Shared};
+use crate::external::{ExternalProcessor, RUN_ACTIVE, RUN_DEAD, RUN_LOADING, Shared};
 use crate::manager::{
     DeviceStatus, FailReason, PluginError, PluginManagerEvent, ProcessorSetup, STATE_LOG_PREFIX,
 };
@@ -1100,18 +1100,18 @@ impl Bridge {
         }
     }
 
-    /// Sends `SetState` to the running plugin (an undo or redo changed the device's state); the
-    /// plugin's parameter values follow with the bridge's echo. `false` while the bridge is not
-    /// running (it then starts with the state it was given).
+    /// Queues a document restore for a live or starting bridge.
+    /// The plugin's parameter values follow with the bridge's echo.
     pub(crate) fn set_state(&mut self, state: &SavedPluginState) -> bool {
         self.request_restore(state).is_some()
     }
 
     /// Queue a restore and return the sequence used by the bridge's reply.
     pub(crate) fn request_restore(&mut self, state: &SavedPluginState) -> Option<u32> {
-        if self.phase != Phase::Running {
+        if matches!(self.phase, Phase::Failed | Phase::Stopping) {
             return None;
         }
+        // Startup commands already precede this restore on the same writer.
         self.user_changed();
         self.invalidate_waveform_markers();
         self.last_state = Some(state.clone());
@@ -1304,12 +1304,15 @@ impl Bridge {
     /// Ends the warm-up: `Ok` once it passed (and no re-activation runs).
     fn check_ready(&mut self, now: Instant, events: &mut Vec<PluginManagerEvent>) {
         if let Some(at) = self.ready_at
-            && now >= at
             && self.phase == Phase::Running
+            && self.state_restores.is_empty()
             && !self.shared.reactivating.load(Ordering::Acquire)
         {
-            self.ready_at = None;
-            self.set_status(DeviceStatus::Ok, events);
+            self.shared.run.store(RUN_ACTIVE, Ordering::Release);
+            if now >= at {
+                self.ready_at = None;
+                self.set_status(DeviceStatus::Ok, events);
+            }
         }
     }
 
@@ -1439,8 +1442,7 @@ impl Bridge {
                     self.phase = Phase::Running;
                     self.long_call_since = (self.gui_requests > 0).then(Instant::now);
                     self.last_ping = Instant::now();
-                    self.shared.run.store(RUN_ACTIVE, Ordering::Release);
-                    // Audio flows from now on; the status follows after the warm-up.
+                    // Audio can run once the startup restores reply. Status follows after warm-up.
                     self.ready_at = Some(Instant::now() + self.timing.warm_up);
                     self.check_ready(Instant::now(), events);
                 }
@@ -1779,7 +1781,9 @@ impl Bridge {
             events.push(PluginManagerEvent::StateApplied { device });
         }
         if let Some(message) = error {
-            if self.phase != Phase::Running {
+            if self.shared.run.load(Ordering::Acquire) == RUN_LOADING
+                && self.state_restores.is_empty()
+            {
                 self.keep_stored_state = true;
                 events.push(PluginManagerEvent::Log {
                     device: Some(device),

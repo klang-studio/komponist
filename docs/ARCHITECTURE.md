@@ -566,6 +566,9 @@ A third-party CLAP state snapshot keeps the plugin's opaque bytes and can also s
 by ID in the optional `parameter_bases` device field. The bridge gives the plugin its bytes first,
 then restores the host-owned bases. The engine reasserts macros and automation through the same
 parameter event path. Older projects omit the field and load their state as before.
+Older builds open projects from the opaque state alone. Saving in an older build drops
+`parameter_bases`. Reopening that saved copy can restore a value captured during automation
+in place of the original base.
 
 An unmuted clip envelope overrides its arrangement lane while the clip plays. The later-starting
 clip wins on overlap, with the clip ID breaking ties. Splitting a clip preserves the original

@@ -215,6 +215,8 @@ struct Bridge {
     values_due: Option<Instant>,
     values_sent: Option<Instant>,
     params_due: Option<Instant>,
+    /// The next state capture must wait for the audio block that applies restored bases.
+    verify_restored_bases: bool,
     /// Checked snapshots in a row that a value moved under while audio ran (see
     /// `PAUSED_SNAPSHOT_AFTER`).
     unstable_snapshots: u8,
@@ -255,6 +257,7 @@ impl Bridge {
             values_due: None,
             values_sent: None,
             params_due: None,
+            verify_restored_bases: false,
             unstable_snapshots: 0,
             last_save: Duration::ZERO,
             controller_due: None,
@@ -804,6 +807,12 @@ impl Bridge {
             }
             ControlMsg::Deactivate => self.deactivate(),
             ControlMsg::GetState { request } => {
+                if self.verify_restored_bases {
+                    // StateApplied only acknowledges the overlay was queued. A checked capture
+                    // also waits for a block that already pulled the overlay off the queue.
+                    self.get_state_checked(request, &[], 0);
+                    return;
+                }
                 self.sync_controller();
                 let Some(plugin) = self.plugin.as_mut() else {
                     return self.error(ErrorContext::State, "no plugin loaded");
@@ -1170,6 +1179,7 @@ impl Bridge {
             self.last_save = took;
         }
         if matches!(result, Ok(Some(_))) {
+            self.verify_restored_bases = false;
             self.unstable_snapshots = 0;
         } else if unstable {
             self.unstable_snapshots = self.unstable_snapshots.saturating_add(1);
@@ -1277,6 +1287,9 @@ impl Bridge {
                 // wait for the block already in flight.
                 self.region.set_bridge_state(BridgeState::Loaded);
                 let result = active.rt.restore(load);
+                if matches!(&result, Ok((_, true))) {
+                    self.verify_restored_bases = !apply_on_audio.is_empty();
+                }
                 for (id, value) in apply_on_audio {
                     // A successful restore clears the old queue. The state format bounds the
                     // overlay to the queue's capacity, before the client starts sending again.

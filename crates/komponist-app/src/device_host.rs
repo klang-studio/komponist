@@ -341,7 +341,7 @@ pub trait DeviceHost {
         &self,
         _device: &Device,
         _changes: &[AssetEdit],
-    ) -> Result<Option<Arc<[u8]>>, DeviceId> {
+    ) -> Result<Option<SavedPluginState>, DeviceId> {
         Ok(None)
     }
 
@@ -1090,7 +1090,7 @@ impl DeviceHost for PluginHost {
         &self,
         device: &Device,
         changes: &[AssetEdit],
-    ) -> Result<Option<Arc<[u8]>>, DeviceId> {
+    ) -> Result<Option<SavedPluginState>, DeviceId> {
         self.manager.prepare_asset_edit(device, changes)
     }
 

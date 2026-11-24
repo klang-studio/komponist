@@ -739,10 +739,10 @@ impl PluginManager {
             verified_kind = crate::bundled_state::kind_for_id(proof.plugin_id());
             effect_meter = bundled_effects::Meter::new(&features, setup.sample_rate);
             if is_sampler_kind(verified_kind)
-                && let Some(original) = state.as_ref()
+                && let Some(original) = state.as_mut()
                 && let Some(runtime) = self.sampler_runtime_state(&original.bytes)
             {
-                state = Some(runtime.into());
+                original.bytes = runtime;
             }
             if !self.force_bundled_bridge {
                 return match DirectDevice::start(
@@ -1039,7 +1039,7 @@ impl PluginManager {
         &self,
         device: &komponist_model::Device,
         changes: &[crate::AssetEdit],
-    ) -> Result<Option<Arc<[u8]>>, DeviceId> {
+    ) -> Result<Option<SavedPluginState>, DeviceId> {
         let id = device.id;
         if self.verified_bundled_kind(id).is_none()
             || crate::bundled_sampler::kind(&device.plugin).is_none()
@@ -1062,12 +1062,13 @@ impl PluginManager {
             return Err(id);
         }
         let after = crate::bundled_sampler::edit_native_regions(
-            &device.plugin,
-            device.state.as_deref(),
+            device,
             changes,
+            self.native_layout(id)
+                .and_then(|layout| layout.author_ids()),
         )
         .ok_or(id)?;
-        Ok((device.state.as_deref() != Some(after.as_slice())).then(|| after.into()))
+        Ok((!device.has_saved_state(&after)).then_some(after))
     }
 
     pub fn asset_slots(&self, device: DeviceId) -> Option<&Snapshot> {
@@ -1335,7 +1336,10 @@ impl PluginManager {
         let runtime = is_sampler_kind(self.verified_bundles.get(&device).copied())
             .then(|| self.sampler_runtime_state(&state.bytes))
             .flatten();
-        let runtime = runtime.map(SavedPluginState::from);
+        let runtime = runtime.map(|bytes| SavedPluginState {
+            bytes,
+            parameter_bases: state.parameter_bases.clone(),
+        });
         let state = runtime.as_ref().unwrap_or(state);
         if let Some(direct) = self.direct.get_mut(&device) {
             if matches!(direct.status, DeviceStatus::Crashed(_)) {

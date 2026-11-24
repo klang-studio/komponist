@@ -119,7 +119,7 @@ impl App {
         let applied = self.apply_with("undo-plugin-file-link", |project| {
             let mut project = edits::set_device_asset_links(project, device, links)?;
             if let Some(state) = state {
-                project = edits::set_device_state(&project, device, Some(state))?;
+                project = edits::set_saved_plugin_state(&project, device, &state)?;
             }
             Ok((project, ()))
         });

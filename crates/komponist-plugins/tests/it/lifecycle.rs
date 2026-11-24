@@ -118,6 +118,79 @@ fn restore_updates_parameter_bases_without_overwriting_a_later_edit() {
 }
 
 #[test]
+fn loading_bridge_restores_the_latest_parameter_bases() {
+    let dir = scratch("loading-state-bases");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let gain = param_id(&rig.manager, 10, "Gain");
+    let original = rig.manager.snapshot_states(PATIENCE).pop().unwrap().1;
+
+    rig.reload(10);
+    assert_eq!(rig.manager.status(device_id), DeviceStatus::Loading);
+    for value in [0.625, 0.5] {
+        let state = SavedPluginState {
+            bytes: original.bytes.clone(),
+            parameter_bases: [(gain, value)].into(),
+        };
+        assert!(rig.manager.restore_saved_state(device_id, &state));
+    }
+    rig.wait_status(10, DeviceStatus::Ok);
+    assert_eq!(rig.manager.param_base(device_id, gain), Some(0.5));
+    rig.render(2 * BLOCK);
+    let applied = rig.manager.snapshot_states(PATIENCE).pop().unwrap().1;
+    assert_ne!(applied.bytes, original.bytes);
+    assert!(applied.parameter_bases.is_empty());
+
+    rig.reload(10);
+    let bad = Arc::from(&b"invalid CLAP state"[..]);
+    assert!(rig.manager.set_state(device_id, &bad));
+    rig.wait_status(10, DeviceStatus::Ok);
+    assert!(rig.manager.state_warning(device_id).is_some());
+    assert!(rig.manager.snapshot_states(PATIENCE).is_empty());
+}
+
+#[test]
+fn snapshots_wait_for_restored_parameter_bases_to_reach_audio() {
+    let dir = scratch("snapshot-after-state-overlay");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let gain = param_id(&rig.manager, 10, "Gain");
+    let (_, original) = rig.manager.snapshot_states(PATIENCE).pop().unwrap();
+    let restored = SavedPluginState {
+        bytes: original.bytes.clone(),
+        parameter_bases: [(gain, 0.5)].into(),
+    };
+    assert!(rig.manager.restore_saved_state(device_id, &restored));
+
+    // Poll the control channel without running audio. The reply updates the host's base
+    // cache even though the processor has not received it.
+    let deadline = Instant::now() + PATIENCE;
+    let applied = PluginManagerEvent::StateApplied { device: device_id };
+    while !rig.events.contains(&applied) {
+        assert!(Instant::now() < deadline, "restore was not acknowledged");
+        rig.poll();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(rig.manager.param_base(device_id, gain), Some(0.5));
+    assert!(rig.manager.snapshot_states(PATIENCE).is_empty());
+
+    rig.render(2 * BLOCK);
+    let (_, captured) = rig.manager.snapshot_states(PATIENCE).pop().unwrap();
+    assert_ne!(captured.bytes, original.bytes);
+    assert!(captured.parameter_bases.is_empty());
+}
+
+#[test]
 fn macro_snapshot_preserves_an_independent_plugin_edit() {
     let dir = scratch("macro-state-provenance");
     let Some(manager) = scanned_manager(&dir) else {

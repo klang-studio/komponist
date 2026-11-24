@@ -430,16 +430,20 @@ impl App {
 
     /// An asset edit supersedes outstanding snapshots. Commit the latest manual knob changes
     /// as their own undo step before queuing the new state.
-    pub(crate) fn store_sampler_knob_state(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+    pub(crate) fn store_sampler_knob_state(&mut self, device: DeviceId, state: &SavedPluginState) {
         self.param_undo.awaiting.remove(&device);
         self.param_undo.echo.remove(&device);
         self.param_undo
             .deferred
             .retain(|(pending, _)| *pending != device);
         if self.doc.in_gesture() {
-            let _ = self.store_param_state(device, state, "");
+            if !self.has_saved_state(device, state) {
+                let _ = self
+                    .doc
+                    .apply("", |p| edits::set_saved_plugin_state(p, device, state));
+            }
         } else {
-            self.store_snapshot(device, &state.clone().into());
+            self.store_snapshot(device, state);
         }
     }
 
