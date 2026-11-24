@@ -576,7 +576,7 @@ pub(crate) fn card(
         macros: Default::default(),
         macro_mapping: false,
         macro_mappings: 0,
-        name: crate::views::plugin_name(lang, &device.plugin),
+        name: crate::views::catalog_plugin_name(lang, host.catalog(), &device.plugin),
         tag: format_tag(lang, device.plugin.format),
         instrument,
         midi_effect,

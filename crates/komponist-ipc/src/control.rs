@@ -96,7 +96,8 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 11 adds bounded sampler front-panel data and the slice audition command.
 /// 13 distinguishes plugin-originated parameter flushes from value telemetry.
 /// 14 (#215): a checked snapshot carries the caller's remaining time.
-pub const PROTOCOL_VERSION: u32 = 14;
+/// 15 adds optional device catalog labels to scanned and loaded descriptors.
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -162,6 +163,9 @@ pub struct PluginDescriptor {
     pub id: String,
     /// Display name.
     pub name: String,
+    /// Optional labels from a validated native layout. The descriptor name remains the fallback.
+    #[serde(default)]
+    pub localized: Option<crate::native_layout::LocalizedPlugin>,
     /// Vendor.
     pub vendor: String,
     /// Version string as reported.
@@ -1806,6 +1810,15 @@ mod tests {
             format: PluginFormat::Clap,
             id: "org.example.synth".into(),
             name: "Synth".into(),
+            localized: Some(crate::native_layout::LocalizedPlugin {
+                default_locale: "en".into(),
+                names: [
+                    ("en".into(), "Synth".into()),
+                    ("de".into(), "Synthesizer".into()),
+                ]
+                .into(),
+                descriptions: [("en".into(), "A test instrument".into())].into(),
+            }),
             vendor: "Example".into(),
             version: "1.0".into(),
             kind: PluginKind::Instrument,

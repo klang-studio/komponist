@@ -115,6 +115,8 @@ pub struct Row {
     pub kind: RowKind,
     /// The text.
     pub name: String,
+    /// Device-authored description for the tooltip and accessibility tree.
+    pub description: Option<String>,
     /// The tag on the right: format ("CLAP"), count ("4"), "MIDI"; empty = none.
     pub tag: String,
     /// Folder depth (indent 12 per level).
@@ -131,6 +133,7 @@ impl Row {
         Row {
             kind,
             name: name.into(),
+            description: None,
             tag: tag.into(),
             level,
         }
@@ -258,16 +261,30 @@ pub fn rows(lang: Lang, input: &Input<'_>) -> Vec<Row> {
 }
 
 fn plugin_row(lang: Lang, input: &Input<'_>, entry: &CatalogEntry, level: u8) -> Row {
-    Row::new(
+    let mut row = Row::new(
         RowKind::Plugin {
             plugin: entry.plugin.clone(),
             kind: entry.kind,
             favorite: input.favorites.contains(&entry.plugin),
         },
-        plugin_name(lang, &entry.plugin),
+        entry_name(lang, entry),
         catalog_plugin_tag(lang, &entry.plugin),
         level,
-    )
+    );
+    row.description = entry
+        .localized
+        .as_ref()
+        .and_then(|metadata| metadata.description(lang.code()))
+        .map(str::to_owned);
+    row
+}
+
+fn entry_name(lang: Lang, entry: &CatalogEntry) -> String {
+    entry
+        .localized
+        .as_ref()
+        .and_then(|metadata| metadata.name(lang.code()))
+        .map_or_else(|| plugin_name(lang, &entry.plugin), str::to_owned)
 }
 
 fn folder(input: &Input<'_>, key: String, label: &str, count: usize, rows: &mut Vec<Row>) -> bool {
@@ -493,17 +510,13 @@ fn search(lang: Lang, input: &Input<'_>, query: &str) -> Vec<Row> {
         .iter()
         .filter(|e| {
             found.iter().any(|f| f.plugin == e.plugin)
-                || plugin_name(lang, &e.plugin).to_lowercase().contains(&shown)
+                || entry_name(lang, e).to_lowercase().contains(&shown)
         })
         .filter(|e| segment_has(e))
         .collect();
     // A typed name takes precedence over metadata after the first letter of a search.
     if shown.chars().nth(1).is_some() {
-        hits.sort_by_cached_key(|e| {
-            !plugin_name(lang, &e.plugin)
-                .to_lowercase()
-                .starts_with(&shown)
-        });
+        hits.sort_by_cached_key(|e| !entry_name(lang, e).to_lowercase().starts_with(&shown));
     }
     let mut rows = vec![Row::section(lang.browser_hits(hits.len(), query))];
     rows.extend(hits.iter().map(|e| plugin_row(lang, input, e, 0)));
@@ -710,6 +723,7 @@ mod tests {
             format: BundleFormat::Clap,
             id: id.into(),
             name: name.into(),
+            localized: None,
             vendor: "Test".into(),
             version: "1.0".into(),
             kind,
@@ -775,6 +789,41 @@ mod tests {
             collapsed,
             project,
             exports: &[],
+        }
+    }
+
+    #[test]
+    fn rows_show_device_labels_in_the_current_language() {
+        let mut entry = descriptor("gain", "Test Gain", PluginKind::Effect, &["utility"]);
+        entry.localized = Some(komponist_ipc::native_layout::LocalizedPlugin {
+            default_locale: "en".into(),
+            names: [
+                ("en".into(), "Test Gain".into()),
+                ("de".into(), "Testverstärker".into()),
+            ]
+            .into(),
+            descriptions: [("en".into(), "Adjust the level".into())].into(),
+        });
+        let mut catalog = Catalog::default();
+        catalog.set_scanned(&[entry]);
+        let (favorites, project) = (Favorites::default(), demo_project());
+        let collapsed = BTreeSet::new();
+        let input = input(
+            &catalog,
+            &favorites,
+            &collapsed,
+            &project,
+            BrowserSegment::Effects,
+            "Testverstärker",
+        );
+        for (language, expected) in [(Lang::De, "Testverstärker"), (Lang::En, "Test Gain")] {
+            let shown = rows(language, &input);
+            let row = shown
+                .iter()
+                .find(|row| matches!(row.kind, RowKind::Plugin { .. }))
+                .unwrap();
+            assert_eq!(row.name, expected);
+            assert_eq!(row.description.as_deref(), Some("Adjust the level"));
         }
     }
 

@@ -18,6 +18,7 @@ fn historical_volt() -> Device {
 fn inventory(kind: BuiltinKind) -> (PluginDescriptor, Vec<ClapParamInfo>, Value) {
     let params = legacy_infos(kind);
     let descriptor = PluginDescriptor {
+        localized: None,
         format: ClapFormat::Clap,
         id: clap_id(kind).into(),
         name: kind.catalog().name.into(),

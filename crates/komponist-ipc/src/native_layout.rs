@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use serde::Deserialize;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::control::{ParamInfo, param_flags};
@@ -40,6 +40,31 @@ impl fmt::Display for LayoutError {
 
 /// Localized labels keyed by a document locale tag.
 pub type Labels = BTreeMap<String, String>;
+
+/// Display metadata from a validated layout, carried with a scanned descriptor.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub struct LocalizedPlugin {
+    pub default_locale: String,
+    pub names: Labels,
+    pub descriptions: Labels,
+}
+
+impl LocalizedPlugin {
+    pub fn name(&self, language: &str) -> Option<&str> {
+        localized_label(&self.names, language, &self.default_locale)
+    }
+
+    pub fn description(&self, language: &str) -> Option<&str> {
+        localized_label(&self.descriptions, language, &self.default_locale)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+struct Metadata {
+    names: Labels,
+    #[serde(default)]
+    descriptions: Labels,
+}
 
 /// The supported v1 controls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -100,6 +125,8 @@ pub struct NativeLayout {
     pub pages: Vec<Page>,
     #[serde(default)]
     author_ids: Option<BTreeMap<String, u32>>,
+    #[serde(skip)]
+    metadata: Option<Metadata>,
 }
 
 fn check(condition: bool, reason: &'static str) -> Result<(), LayoutError> {
@@ -117,7 +144,7 @@ impl NativeLayout {
             !bytes.is_empty() && bytes.len() <= MAX_BYTES as usize,
             "document size",
         )?;
-        let Unique(value) = serde_json::from_slice(bytes)
+        let Unique(mut value) = serde_json::from_slice(bytes)
             .map_err(|_| LayoutError::Invalid("JSON syntax or duplicate keys"))?;
         let version = value["schema_version"]
             .as_i64()
@@ -125,6 +152,15 @@ impl NativeLayout {
         if version != 1 {
             return Err(LayoutError::Unsupported);
         }
+        let metadata = value
+            .as_object_mut()
+            .and_then(|root| root.remove("metadata"))
+            .filter(|metadata| {
+                metadata.is_object()
+                    && metadata["names"].is_object()
+                    && metadata.get("descriptions").is_none_or(Value::is_object)
+            })
+            .and_then(|metadata| serde_json::from_value::<Metadata>(metadata).ok());
         if let Some(caps) = value.get("required_capabilities") {
             let caps = caps
                 .as_array()
@@ -177,9 +213,23 @@ impl NativeLayout {
                 "author ID map",
             )?;
         }
-        let layout: Self =
+        let mut layout: Self =
             serde_json::from_value(value).map_err(|_| LayoutError::Invalid("document fields"))?;
-        layout.validate_geometry()?;
+        let locales = layout
+            .locales
+            .iter()
+            .map(|tag| tag.to_ascii_lowercase())
+            .collect();
+        layout.validate_geometry(&locales)?;
+        layout.metadata = metadata.filter(|metadata| {
+            layout
+                .validate_labels(&metadata.names, &locales, true)
+                .is_ok()
+                && (metadata.descriptions.is_empty()
+                    || layout
+                        .validate_labels(&metadata.descriptions, &locales, true)
+                        .is_ok())
+        });
         if let Some(author_ids) = &layout.author_ids {
             let mut seen = BTreeSet::new();
             check(
@@ -198,12 +248,17 @@ impl NativeLayout {
         self.author_ids.as_ref()
     }
 
-    fn validate_geometry(&self) -> Result<(), LayoutError> {
-        let locales: BTreeSet<_> = self
-            .locales
-            .iter()
-            .map(|tag| tag.to_ascii_lowercase())
-            .collect();
+    /// Device names and descriptions for the scan catalog, when the layout provides valid labels.
+    pub fn localized_plugin(&self) -> Option<LocalizedPlugin> {
+        let metadata = self.metadata.as_ref()?;
+        Some(LocalizedPlugin {
+            default_locale: self.default_locale.clone(),
+            names: metadata.names.clone(),
+            descriptions: metadata.descriptions.clone(),
+        })
+    }
+
+    fn validate_geometry(&self, locales: &BTreeSet<String>) -> Result<(), LayoutError> {
         check(
             (1..=8).contains(&self.locales.len())
                 && self.locales.iter().all(|tag| locale_tag(tag))
@@ -219,7 +274,7 @@ impl NativeLayout {
                 identifier(&page.key, false) && keys.insert(&page.key),
                 "page key",
             )?;
-            self.validate_labels(&page.labels, &locales, true)?;
+            self.validate_labels(&page.labels, locales, true)?;
             check(
                 (1..=12).contains(&page.columns) && (1..=72).contains(&page.cells.len()),
                 "page dimensions",
@@ -252,7 +307,7 @@ impl NativeLayout {
                     *slot |= mask;
                 }
                 if let Some(labels) = &cell.labels {
-                    self.validate_labels(labels, &locales, false)?;
+                    self.validate_labels(labels, locales, false)?;
                 }
                 if matches!(cell.widget, Widget::Segment | Widget::Dropdown) {
                     let choices = cell
@@ -261,7 +316,7 @@ impl NativeLayout {
                         .ok_or(LayoutError::Invalid("missing choices"))?;
                     check((2..=16).contains(&choices.len()), "choice count")?;
                     for choice in choices {
-                        self.validate_labels(&choice.labels, &locales, true)?;
+                        self.validate_labels(&choice.labels, locales, true)?;
                     }
                 } else {
                     check(cell.choices.is_none(), "unexpected choices")?;
@@ -351,20 +406,24 @@ impl NativeLayout {
 
     /// Resolve exact language, primary language and then the document default.
     pub fn label<'a>(&self, labels: &'a Labels, requested: &str) -> Option<&'a str> {
-        let find = |tag: &str| {
-            labels
-                .iter()
-                .find(|(key, _)| key.eq_ignore_ascii_case(tag))
-                .map(|(_, value)| value.as_str())
-        };
-        find(requested)
-            .or_else(|| {
-                requested
-                    .split_once('-')
-                    .and_then(|(primary, _)| find(primary))
-            })
-            .or_else(|| find(&self.default_locale))
+        localized_label(labels, requested, &self.default_locale)
     }
+}
+
+fn localized_label<'a>(labels: &'a Labels, requested: &str, default: &str) -> Option<&'a str> {
+    let find = |tag: &str| {
+        labels
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(tag))
+            .map(|(_, value)| value.as_str())
+    };
+    find(requested)
+        .or_else(|| {
+            requested
+                .split_once('-')
+                .and_then(|(primary, _)| find(primary))
+        })
+        .or_else(|| find(default))
 }
 
 fn locale_tag(tag: &str) -> bool {
@@ -479,6 +538,33 @@ mod tests {
         let labels = &layout.pages[0].labels;
         assert_eq!(layout.label(labels, "de-CH"), Some("Übersicht"));
         assert_eq!(layout.label(labels, "fr"), Some("Main"));
+    }
+
+    #[test]
+    fn device_catalog_labels_are_localized_and_optional() {
+        use serde_json::json;
+
+        let mut example: Value = serde_json::from_slice(EXAMPLE).unwrap();
+        example["metadata"] = json!({
+            "names": {"en": "Test Gain", "de": "Testverstärker"},
+            "descriptions": {"en": "Adjust the level"}
+        });
+        let layout = NativeLayout::parse(&serde_json::to_vec(&example).unwrap()).unwrap();
+        let labels = layout.localized_plugin().unwrap();
+        assert_eq!(labels.name("de-CH"), Some("Testverstärker"));
+        assert_eq!(labels.name("fr"), Some("Test Gain"));
+        assert_eq!(labels.description("de"), Some("Adjust the level"));
+        for invalid in [
+            json!(["Test Gain"]),
+            json!({"names": {"de": "No default locale"}}),
+            json!({"names": {"en": "Test Gain", "fr": "Undeclared locale"}}),
+            json!({"names": {"en": "Test Gain"}, "descriptions": {"en": "Bad\ntext"}}),
+        ] {
+            example["metadata"] = invalid;
+            let layout = NativeLayout::parse(&serde_json::to_vec(&example).unwrap()).unwrap();
+            assert!(layout.localized_plugin().is_none());
+            assert_eq!(layout.pages[0].key, "main");
+        }
     }
 
     #[test]

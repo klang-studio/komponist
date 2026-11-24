@@ -120,6 +120,8 @@ pub struct CatalogEntry {
     /// The reference a device stores when this entry is added (format `Builtin` for hexa and
     /// the internal devices, shown as "INTERN").
     pub plugin: PluginRef,
+    /// Device labels advertised by a native layout.
+    pub localized: Option<komponist_ipc::native_layout::LocalizedPlugin>,
     /// Instrument or effect.
     pub kind: PluginKind,
     /// Browser category for effects, `None` for instruments.
@@ -234,6 +236,13 @@ impl Catalog {
                 query.is_empty()
                     || hit(&e.plugin.name)
                     || hit(&e.plugin.vendor)
+                    || e.localized.as_ref().is_some_and(|metadata| {
+                        metadata
+                            .names
+                            .values()
+                            .chain(metadata.descriptions.values())
+                            .any(|label| hit(label))
+                    })
                     || e.features.iter().any(|f| hit(f))
             })
             .collect()
@@ -263,6 +272,7 @@ fn scanned_entry(d: &PluginDescriptor, bundled: bool) -> CatalogEntry {
             }),
         },
         kind: d.kind,
+        localized: d.localized.clone(),
         category: (d.kind == PluginKind::Effect)
             .then(|| EffectCategory::from_features(&d.features)),
         features: d.features.clone(),
@@ -405,9 +415,8 @@ pub struct CachedBundle {
     pub error: Option<String>,
 }
 
-/// Format version of the scan cache file. 1 (#6): descriptors say whether the plugin has a
-/// sidechain input, which a file without a version (from before #6) does not know.
-pub const SCAN_CACHE_VERSION: u32 = 1;
+/// Format version of the scan cache file. Version 2 includes native layout labels.
+pub const SCAN_CACHE_VERSION: u32 = 2;
 
 /// The scan cache file. A bundle is rescanned when its path is new or its mtime changed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -525,6 +534,7 @@ mod tests {
             format: BundleFormat::Clap,
             id: id.into(),
             name: name.into(),
+            localized: None,
             vendor: "Vendor".into(),
             version: "1.0".into(),
             kind,
@@ -966,13 +976,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let file = dir.join("nested/plugins.json");
         assert_eq!(ScanCache::load(&file), ScanCache::default());
+        let mut localized = descriptor("a", "A", PluginKind::Effect, &["eq"]);
+        localized.localized = Some(komponist_ipc::native_layout::LocalizedPlugin {
+            default_locale: "en".into(),
+            names: [
+                ("en".into(), "Test EQ".into()),
+                ("de".into(), "Testentzerrer".into()),
+            ]
+            .into(),
+            descriptions: [("en".into(), "Tone correction".into())].into(),
+        });
         let cache = ScanCache {
             version: SCAN_CACHE_VERSION,
             bundles: vec![
                 CachedBundle {
                     path: "/usr/lib/clap/A.clap".into(),
                     mtime_secs: 1_700_000_000,
-                    descriptors: vec![descriptor("a", "A", PluginKind::Effect, &["eq"])],
+                    descriptors: vec![localized.clone()],
                     error: None,
                 },
                 CachedBundle {
@@ -991,7 +1011,16 @@ mod tests {
                 .is_some()
         );
         assert!(cache.lookup(Path::new("/usr/lib/clap/A.clap"), 1).is_none());
-        assert_eq!(cache.descriptors().len(), 1);
+        let descriptors = ScanCache::load(&file).descriptors();
+        assert_eq!(descriptors, [localized]);
+        let mut catalog = Catalog::default();
+        catalog.set_scanned(&descriptors);
+        assert_eq!(catalog.search("testentzerrer").len(), 1);
+        assert_eq!(catalog.search("tone correction").len(), 1);
+        assert_eq!(
+            catalog.entries()[0].localized.as_ref().unwrap().name("de"),
+            Some("Testentzerrer")
+        );
         std::fs::write(&file, b"{ not json").unwrap();
         assert_eq!(ScanCache::load(&file), ScanCache::default());
         // A cache from before #6 (no version, descriptors without `sidechain`) is dropped, so

@@ -23,7 +23,7 @@ use crate::device_host::{internal_kind, is_hexa};
 use crate::engine_sync::EngineSync;
 use crate::ui_state::ParamTouch;
 use crate::views::devices::model as devices;
-use crate::views::{ViewCtx, elided_galley, plugin_name};
+use crate::views::{ViewCtx, catalog_plugin_name, elided_galley};
 
 #[derive(Clone)]
 pub(crate) struct Target {
@@ -275,7 +275,7 @@ impl<'a> Catalog<'a> {
                     .iter()
                     .find(|d| d.id == *device)
                     .ok_or_else(|| Some(lang.automation_not_on_track().to_owned()))?;
-                let name = plugin_name(lang, &device.plugin);
+                let name = catalog_plugin_name(lang, self.engine.host().catalog(), &device.plugin);
                 match self.engine.device_status(device.id) {
                     DeviceStatus::Missing | DeviceStatus::Crashed(_) => {
                         return Err(Some(lang.arrangement_plugin_missing(&name)));
@@ -360,7 +360,7 @@ impl<'a> Catalog<'a> {
             sections.push((lang.macros_title().to_owned(), targets));
         }
         for device in self.channel.devices.iter() {
-            let name = plugin_name(lang, &device.plugin);
+            let name = catalog_plugin_name(lang, self.engine.host().catalog(), &device.plugin);
             let mut targets = self
                 .device_params(device)
                 .into_iter()

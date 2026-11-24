@@ -42,6 +42,7 @@ pub struct FakeHost {
 /// A scanned CLAP plugin (format CLAP, id = `id`).
 pub fn descriptor(id: &str, name: &str, kind: PluginKind, features: &[&str]) -> PluginDescriptor {
     PluginDescriptor {
+        localized: None,
         format: BundleFormat::Clap,
         id: id.into(),
         name: name.into(),

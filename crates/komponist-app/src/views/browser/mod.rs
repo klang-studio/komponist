@@ -141,7 +141,7 @@ impl View for Browser {
         segments(ui, ctx, layout.segments);
         self.list(ui, ctx, layout.list, &rows);
         footer(ui, layout.foot, foot_text);
-        drag_ghost(ui.ctx());
+        drag_ghost(ui.ctx(), ctx.engine.host().catalog());
     }
 }
 
@@ -511,6 +511,11 @@ fn row_ui(
     }
     let st = state::State::of(ui, &response).with_selected(marked);
     accessibility(&response, row, marked);
+    if let Some(description) = &row.description {
+        response.clone().on_hover_text(description);
+        ui.ctx()
+            .accesskit_node_builder(response.id, |node| node.set_description(description));
+    }
 
     // The star sits on top of the row.
     let mut star_hovered = false;
@@ -734,9 +739,9 @@ fn footer(ui: &mut Ui, rect: Rect, text: &str) {
 }
 
 /// While a plugin is dragged: its name at the pointer, in a tooltip frame.
-fn drag_ghost(ctx: &egui::Context) {
+fn drag_ghost(ctx: &egui::Context, catalog: &komponist_plugins::Catalog) {
     let text = if let Some(plugin) = egui::DragAndDrop::payload::<PluginRef>(ctx) {
-        crate::views::plugin_name(komponist_ui::lang(ctx), &plugin)
+        crate::views::catalog_plugin_name(komponist_ui::lang(ctx), catalog, &plugin)
     } else if let Some(audio) = egui::DragAndDrop::payload::<crate::audio_import::AudioDrag>(ctx) {
         format!("{} · {}", audio.name, audio.meta)
     } else {
