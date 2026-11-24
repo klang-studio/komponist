@@ -7,7 +7,7 @@
 //! | Strg F (app shortcut) | the search field takes the keyboard focus |
 //! | typing | filters at once (`SetBrowserQuery`); the first hit is marked |
 //! | ↑ ↓ | marks the previous / next row (in the field, or with the browser focused) |
-//! | Enter, double-click | adds the marked plugin ([`model::activate`]): instrument → new track, effect → selected track; preset → hexa of the selected track; take → opens its clip; folder → opens / closes |
+//! | Enter, double-click | adds the marked plugin ([`model::activate`]): instrument → new track, effect → selected track; preset → matching device or a new instance; take → opens its clip; folder → opens / closes |
 //! | Esc in the field | clears the text, a second Esc leaves the field |
 //! | click | marks the row; on a folder: opens / closes it; on the star: favourite on / off |
 //! | drag a plugin | an egui drag-and-drop payload of type [`PluginRef`]; the arrangement, the mixer and the device chain take it |
@@ -54,7 +54,7 @@ pub struct Browser {
     /// The search field's text (the view state's query follows it through `SetBrowserQuery`).
     query: String,
     /// The default-closed folders went into the view state.
-    seeded: bool,
+    known_folders: std::collections::BTreeSet<String>,
     /// The segment of the last frame (a new segment drops the mark).
     last_segment: Option<BrowserSegment>,
     /// The mark moved by key: scroll it into view.
@@ -83,9 +83,10 @@ struct Layout {
 
 impl View for Browser {
     fn show(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
-        if !self.seeded {
-            ctx.ui.browser.collapsed.extend(model::default_collapsed());
-            self.seeded = true;
+        for key in model::default_collapsed(ctx.engine.host().catalog()) {
+            if self.known_folders.insert(key.clone()) {
+                ctx.ui.browser.collapsed.insert(key);
+            }
         }
         let segment = ctx.ui.browser.segment;
         if self.last_segment.is_some_and(|s| s != segment) {
@@ -502,7 +503,7 @@ fn row_ui(
                 toggle_folder(ctx, key);
             }
         }
-        RowKind::Preset(_) | RowKind::Take { .. } => {
+        RowKind::Preset { .. } | RowKind::Take { .. } => {
             if response.double_clicked() {
                 activate(ctx, row);
             }
@@ -651,7 +652,7 @@ fn paint_row(
         RowKind::AudioFile { .. } => {
             icons::paint_in(ui, icon_rect, Icon::AudioWaveform, color32(color::TEXT_3))
         }
-        RowKind::Preset(_) => {
+        RowKind::Preset { .. } => {
             let g = w::galley(
                 ui,
                 "·",
@@ -708,7 +709,7 @@ fn paint_row(
         right - name_x,
     );
     let text = match row.kind {
-        RowKind::Preset(_) | RowKind::Plain => color::TEXT_2,
+        RowKind::Preset { .. } | RowKind::Plain => color::TEXT_2,
         _ => color::TEXT_1,
     };
     painter.galley(w::text_pos(rect, &g, name_x, ppp), g, color32(text));

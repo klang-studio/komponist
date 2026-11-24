@@ -4,24 +4,24 @@
 //!
 //! | Segment | Without search (`browserAll`, `browserView`) | With search (`browserSearch`) |
 //! |---|---|---|
-//! | Alle | Favoriten · Instrumente · Effekte (category folders, then uncategorised effects) · Presets · Hexa (category folders) · Projekt (Takes, Exporte) | „n Treffer für „q““ · Presets mit „q“ · Kategorie … |
-//! | Instr. | Instrumente · Presets · Hexa | hits among the instruments · presets |
+//! | Alle | Favoriten · Instrumente · Effekte (category folders, then uncategorised effects) · Presets (category folders) · Projekt (Takes, Exporte) | „n Treffer für „q““ · Presets mit „q“ · Kategorie … |
+//! | Instr. | Instrumente · Presets | hits among the instruments · presets |
 //! | Effekte | Effekte with a sub-header per category (prototype) | hits among the effects · Kategorie … |
 //! | Dateien | Takes · Exporte | the takes and exports whose name contains the text |
 //!
 //! Folders start collapsed ([`default_collapsed`], S01 shows ▸); their keys are
-//! "section/label" ("Effekte/Dynamik"), so a hexa category cannot collide with an effect
+//! "section/label" ("Effekte/Dynamik"), so a preset category cannot collide with an effect
 //! category.
 
 use std::collections::BTreeSet;
 
 use komponist_i18n::Lang;
 use komponist_ipc::PluginKind;
-use komponist_model::{ClipContent, ClipId, DeviceRole, PluginRef, Project, TrackId};
-use komponist_plugins::{BuiltinKind, Catalog, CatalogEntry, EffectCategory, packaged_kind};
+use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource};
+use komponist_model::{ClipContent, ClipId, PluginRef, Project, TrackId};
+use komponist_plugins::{Catalog, CatalogEntry, EffectCategory, packaged_kind};
 
 use crate::actions::{Action, DropTarget, EditAction, PluginAction, UiAction};
-use crate::device_host::is_hexa;
 use crate::settings::Favorites;
 use crate::ui_state::{BrowserSegment, DockTab};
 use crate::views::{catalog_plugin_tag, plugin_name};
@@ -97,8 +97,11 @@ pub enum RowKind {
         /// Open.
         expanded: bool,
     },
-    /// A factory preset of hexa (index in `komponist_hexa::presets`).
-    Preset(usize),
+    /// An advertised preset of a catalog plugin.
+    Preset {
+        plugin: PluginRef,
+        source: ClapPresetSource,
+    },
     /// A recorded take.
     Take {
         /// The clip.
@@ -156,7 +159,10 @@ impl Row {
                 format!("plugin:{:?}:{bundled}:{}", plugin.format, plugin.id)
             }
             RowKind::Folder { key, .. } => format!("folder:{key}"),
-            RowKind::Preset(i) => format!("preset:{i}"),
+            RowKind::Preset { plugin, source } => format!(
+                "preset:{:?}:{}:{}:{source:?}",
+                plugin.format, plugin.id, plugin.module
+            ),
             RowKind::Directory(path) => format!("dir:{}", path.display()),
             RowKind::AudioFile { path, .. } => format!("audio:{}", path.display()),
             RowKind::Take { clip, take } => format!("take:{}:{take}", clip.0),
@@ -173,7 +179,7 @@ impl Row {
     pub fn activatable(&self) -> bool {
         matches!(
             self.kind,
-            RowKind::Plugin { .. } | RowKind::Preset(_) | RowKind::Take { .. }
+            RowKind::Plugin { .. } | RowKind::Preset { .. } | RowKind::Take { .. }
         )
     }
 }
@@ -226,12 +232,12 @@ mod section {
 }
 
 /// Every folder key, collapsed when the browser first shows (S01: all folders ▸).
-pub fn default_collapsed() -> Vec<String> {
+pub fn default_collapsed(catalog: &Catalog) -> Vec<String> {
     let mut keys: Vec<String> = CATEGORIES
         .iter()
         .map(|c| folder_key(section::EFFECTS, category_id(*c)))
         .collect();
-    keys.extend(komponist_hexa::categories().map(|c| folder_key(section::PRESETS, c)));
+    keys.extend(catalog.preset_entries().flat_map(preset_folder_keys));
     keys.push(folder_key(section::PROJECT, section::TAKES));
     keys.push(folder_key(section::PROJECT, section::EXPORTS));
     keys
@@ -343,9 +349,7 @@ fn browse(lang: Lang, input: &Input<'_>) -> Vec<Row> {
             rows.extend(midi.iter().map(|e| plugin_row(lang, input, e, 0)));
         }
     }
-    if all || input.segment == BrowserSegment::Instruments {
-        presets(lang, input, &mut rows);
-    }
+    presets(lang, input, &mut rows);
     if all {
         rows.push(Row::section(lang.browser_project()));
         let takes = takes(input.project, "");
@@ -401,30 +405,101 @@ fn effects(
     );
 }
 
-/// hexa's factory presets in category folders, if hexa is in the catalog.
-fn presets(lang: Lang, input: &Input<'_>, rows: &mut Vec<Row>) {
-    let has_hexa = input.catalog.packaged(BuiltinKind::Hexa).is_some()
-        || input
-            .catalog
-            .entries()
-            .iter()
-            .any(|entry| BuiltinKind::from_plugin(&entry.plugin) == Some(BuiltinKind::Hexa));
-    if !has_hexa {
-        return;
+fn preset_key(entry: &CatalogEntry, category: Option<&str>) -> String {
+    let group = category.unwrap_or(&entry.plugin.id);
+    folder_key(section::PRESETS, group)
+}
+
+fn preset_folder_keys(entry: &CatalogEntry) -> impl Iterator<Item = String> + '_ {
+    let categories = komponist_plugins::presets::categories(&entry.clap_presets);
+    let uncategorized = entry
+        .clap_presets
+        .iter()
+        .any(|preset| preset.category().is_none());
+    categories
+        .into_iter()
+        .map(|category| preset_key(entry, Some(category)))
+        .chain(uncategorized.then(|| preset_key(entry, None)))
+}
+
+fn preset_segment(segment: BrowserSegment, entry: &CatalogEntry) -> bool {
+    match segment {
+        BrowserSegment::Instruments => is_instrument(entry),
+        BrowserSegment::Effects => is_effect(entry) || is_midi_effect(entry),
+        _ => true,
     }
-    rows.push(Row::section(lang.browser_presets()));
-    let all: Vec<komponist_hexa::PresetInfo> = komponist_hexa::presets().collect();
-    for category in komponist_hexa::categories() {
-        let members: Vec<&komponist_hexa::PresetInfo> =
-            all.iter().filter(|p| p.category == category).collect();
-        let key = folder_key(section::PRESETS, category);
-        let label = komponist_device_core::category_text(lang, category);
-        if folder(input, key, label, members.len(), rows) {
-            rows.extend(
-                members
-                    .iter()
-                    .map(|p| Row::new(RowKind::Preset(p.index), p.name, "", 1)),
-            );
+}
+
+fn preset_row(
+    entry: &CatalogEntry,
+    preset: &ClapPreset,
+    name: impl Into<String>,
+    level: u8,
+) -> Row {
+    Row::new(
+        RowKind::Preset {
+            plugin: entry.plugin.clone(),
+            source: preset.source.clone(),
+        },
+        name,
+        "",
+        level,
+    )
+}
+
+/// Presets grouped by provider category. Uncategorised presets use the provider's name.
+fn presets(lang: Lang, input: &Input<'_>, rows: &mut Vec<Row>) {
+    struct PresetFolder<'a> {
+        key: String,
+        label: String,
+        members: Vec<(&'a CatalogEntry, &'a ClapPreset)>,
+    }
+    let mut folders: Vec<PresetFolder<'_>> = Vec::new();
+    for entry in input
+        .catalog
+        .preset_entries()
+        .filter(|entry| preset_segment(input.segment, entry))
+    {
+        for preset in &entry.clap_presets {
+            let category = preset.category();
+            let key = preset_key(entry, category);
+            if let Some(folder) = folders.iter_mut().find(|folder| folder.key == key) {
+                folder.members.push((entry, preset));
+            } else {
+                let label = category.map_or_else(
+                    || entry_name(lang, entry),
+                    |group| komponist_device_core::category_text(lang, group).to_owned(),
+                );
+                folders.push(PresetFolder {
+                    key,
+                    label,
+                    members: vec![(entry, preset)],
+                });
+            }
+        }
+    }
+    let mut providers = input
+        .catalog
+        .preset_entries()
+        .filter(|entry| preset_segment(input.segment, entry));
+    if let Some(first) = providers.next() {
+        let label = if providers.next().is_none() {
+            lang.browser_provider_presets(entry_name(lang, first))
+        } else {
+            lang.browser_presets().to_owned()
+        };
+        rows.push(Row::section(label));
+    }
+    for PresetFolder {
+        key,
+        label,
+        members,
+    } in folders
+    {
+        if folder(input, key, &label, members.len(), rows) {
+            rows.extend(members.into_iter().map(|(entry, preset)| {
+                preset_row(entry, preset, preset.display_name(lang.code()), 1)
+            }));
         }
     }
 }
@@ -522,22 +597,35 @@ fn search(lang: Lang, input: &Input<'_>, query: &str) -> Vec<Row> {
     rows.extend(hits.iter().map(|e| plugin_row(lang, input, e, 0)));
 
     let lower = query.to_lowercase();
-    if input.segment != BrowserSegment::Effects {
-        let presets: Vec<Row> = komponist_hexa::presets()
-            .filter(|p| p.name.to_lowercase().contains(&lower))
-            .map(|p| {
-                Row::new(
-                    RowKind::Preset(p.index),
-                    lang.browser_preset_hit(p.name),
-                    "",
-                    0,
-                )
-            })
-            .collect();
-        if !presets.is_empty() {
-            rows.push(Row::section(lang.browser_presets_with(query)));
-            rows.extend(presets);
-        }
+    let preset_matches: Vec<_> = input
+        .catalog
+        .preset_entries()
+        .filter(|entry| preset_segment(input.segment, entry))
+        .flat_map(|entry| {
+            let plugin = entry_name(lang, entry);
+            let lower = &lower;
+            entry
+                .clap_presets
+                .iter()
+                .filter(move |preset| {
+                    std::iter::once(preset.display_name(lang.code()))
+                        .chain(std::iter::once(&*preset.name))
+                        .chain(preset.aliases.iter().map(String::as_str))
+                        .any(|name| name.to_lowercase().contains(lower))
+                })
+                .map(move |preset| {
+                    preset_row(
+                        entry,
+                        preset,
+                        lang.browser_preset_hit(preset.display_name(lang.code()), &plugin),
+                        0,
+                    )
+                })
+        })
+        .collect();
+    if !preset_matches.is_empty() {
+        rows.push(Row::section(lang.browser_presets_with(query)));
+        rows.extend(preset_matches);
     }
     if input.segment != BrowserSegment::Instruments {
         for category in CATEGORIES {
@@ -651,7 +739,7 @@ pub fn selected_track(project: &Project, selected: &BTreeSet<TrackId>) -> Option
 /// What a double-click or Enter on `row` does (prototype `brActivate`): an instrument gets a new
 /// track; an effect goes onto the selected track and the dock shows its chain (prototype
 /// `addEffect`), without a selected track the dispatcher says that effects need one; a preset
-/// loads into the selected track's hexa; a take opens its clip with that take active.
+/// loads into a matching device on the selected track; a take opens its clip with that take active.
 pub fn activate(row: &Row, project: &Project, track: Option<TrackId>) -> Vec<Action> {
     match &row.kind {
         RowKind::Plugin {
@@ -675,13 +763,28 @@ pub fn activate(row: &Row, project: &Project, track: Option<TrackId>) -> Vec<Act
                 target: DropTarget::NewTrack { index: None },
             })],
         },
-        RowKind::Preset(preset) => vec![Action::Plugin(match hexa_of(project, track) {
-            Some(device) => PluginAction::ApplyHexaPreset {
-                device,
-                preset: *preset,
-            },
-            None => PluginAction::NewHexaTrack { preset: *preset },
-        })],
+        RowKind::Preset { plugin, source } => {
+            let existing = track
+                .and_then(|track| project.track(track))
+                .and_then(|track| {
+                    track.channel.devices.iter().find(|device| {
+                        device.plugin.format == plugin.format
+                            && device.plugin.id == plugin.id
+                            && packaged_kind(&device.plugin) == packaged_kind(plugin)
+                    })
+                });
+            vec![Action::Plugin(match existing {
+                Some(device) => PluginAction::ApplyClapPreset {
+                    device: device.id,
+                    source: source.clone(),
+                },
+                None => PluginAction::AddFromPreset {
+                    plugin: plugin.clone(),
+                    source: source.clone(),
+                    track,
+                },
+            })]
+        }
         RowKind::Take { clip, take } => vec![
             Action::Edit(EditAction::SelectTake {
                 clip: *clip,
@@ -695,20 +798,6 @@ pub fn activate(row: &Row, project: &Project, track: Option<TrackId>) -> Vec<Act
         | RowKind::Directory(_)
         | RowKind::AudioFile { .. } => Vec::new(),
     }
-}
-
-/// The hexa instrument of `track`, if it has one.
-pub fn hexa_of(project: &Project, track: Option<TrackId>) -> Option<komponist_model::DeviceId> {
-    let track = project.track(track?)?;
-    track
-        .channel
-        .devices
-        .iter()
-        .find(|device| {
-            device.role == DeviceRole::Instrument
-                && (is_hexa(device) || packaged_kind(&device.plugin) == Some(BuiltinKind::Hexa))
-        })
-        .map(|d| d.id)
 }
 
 #[cfg(test)]
@@ -830,7 +919,7 @@ mod tests {
     #[test]
     fn all_lists_sections_like_s01() {
         let (c, f, p) = (catalog(), Favorites::default(), demo_project());
-        let collapsed: BTreeSet<String> = default_collapsed().into_iter().collect();
+        let collapsed: BTreeSet<String> = default_collapsed(&c).into_iter().collect();
         let rows = rows(
             Lang::De,
             &input(&c, &f, &collapsed, &p, BrowserSegment::All, ""),
@@ -889,7 +978,7 @@ mod tests {
     #[test]
     fn open_folders_show_their_members_indented() {
         let (c, f, p) = (catalog(), Favorites::default(), demo_project());
-        let mut collapsed: BTreeSet<String> = default_collapsed().into_iter().collect();
+        let mut collapsed: BTreeSet<String> = default_collapsed(&c).into_iter().collect();
         collapsed.remove(&folder_key("effects", "reverb-delay"));
         collapsed.remove(&folder_key("project", "exports"));
         let rows = rows(
@@ -1164,19 +1253,35 @@ mod tests {
             })]
         );
         // Lead plays hexa; Pad plays Surge XT (no hexa there).
-        let preset = Row::new(RowKind::Preset(3), "x", "", 1);
+        let plugin = p.tracks[2].channel.devices[0].plugin.clone();
+        let source = komponist_plugins::presets::legacy_source(3);
+        let preset = Row::new(
+            RowKind::Preset {
+                plugin: plugin.clone(),
+                source: source.clone(),
+            },
+            "x",
+            "",
+            1,
+        );
         let device = p.tracks[2].channel.devices[0].id;
         assert_eq!(
             activate(&preset, &p, Some(lead)),
-            [Action::Plugin(PluginAction::ApplyHexaPreset {
+            [Action::Plugin(PluginAction::ApplyClapPreset {
                 device,
-                preset: 3
+                source: source.clone()
             })]
         );
-        // No hexa on the selected track (or no track): a new hexa track with the preset.
-        let new = [Action::Plugin(PluginAction::NewHexaTrack { preset: 3 })];
-        assert_eq!(activate(&preset, &p, Some(p.tracks[3].id)), new);
-        assert_eq!(activate(&preset, &p, None), new);
+        for track in [Some(p.tracks[3].id), None] {
+            assert_eq!(
+                activate(&preset, &p, track),
+                [Action::Plugin(PluginAction::AddFromPreset {
+                    plugin: plugin.clone(),
+                    source: source.clone(),
+                    track,
+                })]
+            );
+        }
         let mut sel = BTreeSet::new();
         sel.insert(p.tracks[4].id);
         sel.insert(p.tracks[1].id);

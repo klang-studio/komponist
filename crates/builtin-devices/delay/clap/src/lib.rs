@@ -55,6 +55,7 @@ enum SyncNote {
 }
 
 impl DeviceDefinition for Delay {
+    const PUBLISH_FACTORY_PRESETS: bool = true;
     const SPEC: &'static Spec = &komponist_delay::SPEC;
     const NAME: &'static str = "Delay";
     const ID: &'static str = "org.klang-studio.komponist.delay";
@@ -111,7 +112,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Delay {
     }
 }
 
-nice_export_clap!(DelayPlugin);
+komponist_bundled_clap_adapter::export_spec_with_presets!(Delay, DelayPlugin);
 
 #[cfg(test)]
 #[path = "../../../layout_contract.rs"]

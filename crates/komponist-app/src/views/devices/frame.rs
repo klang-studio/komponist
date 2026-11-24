@@ -44,6 +44,8 @@ enum Menu {
     Collapse,
     Duplicate,
     Remove,
+    SaveUserPreset,
+    LoadUserPreset,
     PickAsset(u32),
     ClearAsset(u32),
 }
@@ -645,22 +647,11 @@ fn format_tag(row: &mut Ui, card: &Card) {
 /// 6px`, caret `text.2`): opens a menu of the factory presets by category.
 fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
     let t = ctx.lang;
-    // The current preset's name; „ *“ behind it once a value differs (internal devices).
-    let known: Option<String> = match card.internal_presets {
-        Some(kind) => card
-            .preset
-            .and_then(|i| kind.presets().get(i))
-            .map(|p| p.name.to_owned()),
-        None => card
-            .preset
-            .and_then(|i| komponist_hexa::presets().nth(i))
-            .map(|p| p.name.to_owned()),
-    }
-    .map(|name| {
+    let known = card.preset_name.as_ref().map(|name| {
         if card.preset_changed {
             format!("{name}{}", model::CHANGED)
         } else {
-            name
+            name.clone()
         }
     });
     let current = known.as_deref().unwrap_or(t.devices_preset());
@@ -734,82 +725,49 @@ fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
         ContextMenu::<usize>::open_at(row.ctx(), r.id, rect.left_bottom() + vec2(0.0, 2.0));
     }
     if open || r.clicked() {
-        let chosen = match card.internal_presets {
-            Some(kind) => internal_preset_menu(t, &r, kind),
-            None => hexa_preset_menu(t, &r),
+        let Some((_, _, device)) = ctx.project.find_device(card.device) else {
+            return;
         };
-        if let Some(preset) = chosen {
-            let action = match card.internal_presets {
-                Some(_) => PluginAction::ApplyInternalPreset {
-                    device: card.device,
-                    index: preset,
-                },
-                None => PluginAction::ApplyHexaPreset {
-                    device: card.device,
-                    preset,
-                },
-            };
-            ctx.send(Action::Plugin(action));
+        let presets = ctx.engine.host().clap_presets(device);
+        if let Some(index) = preset_menu(t, &r, presets) {
+            ctx.send(Action::Plugin(PluginAction::ApplyClapPreset {
+                device: card.device,
+                source: presets[index].source.clone(),
+            }));
         }
     }
 }
 
-/// hexa's menu: its factory bank by category; the chosen index.
-fn hexa_preset_menu(t: Lang, r: &Response) -> Option<usize> {
-    let categories: Vec<&str> = komponist_hexa::categories().collect();
-    let presets: Vec<_> = komponist_hexa::presets().collect();
-    let groups: Vec<Vec<Entry<'_, usize>>> = categories
-        .iter()
-        .map(|c| {
-            presets
-                .iter()
-                .filter(|p| p.category == *c)
-                .map(|p| Entry::action(p.name, p.index))
-                .collect()
-        })
-        .collect();
-    let entries: Vec<Entry<'_, usize>> = categories
-        .iter()
-        .zip(&groups)
-        .map(|(c, g)| Entry::submenu(komponist_device_core::category_text(t, c), g))
-        .collect();
-    ContextMenu::new(t.devices_preset(), &entries).show_on(r)
-}
-
-/// The menu of an internal device (WP-96): its presets grouped by category if they have one, else
-/// a flat list; the chosen index in [`Internal::presets`](komponist_builtin::Internal::presets).
-fn internal_preset_menu(t: Lang, r: &Response, kind: komponist_builtin::Internal) -> Option<usize> {
-    let presets = kind.presets();
-    let mut categories: Vec<&str> = Vec::new();
-    for c in presets.iter().filter_map(|p| p.category) {
-        if !categories.contains(&c) {
-            categories.push(c);
-        }
-    }
-    let groups: Vec<Vec<Entry<'_, usize>>> = categories
-        .iter()
-        .map(|c| {
-            presets
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| p.category == Some(*c))
-                .map(|(i, p)| Entry::action(p.name, i))
-                .collect()
-        })
-        .collect();
-    let mut entries: Vec<Entry<'_, usize>> = categories
-        .iter()
-        .zip(&groups)
-        .map(|(c, g)| Entry::submenu(komponist_device_core::category_text(t, c), g))
-        .collect();
-    entries.extend(
+fn preset_menu(
+    t: Lang,
+    response: &Response,
+    presets: &[komponist_ipc::clap_presets::ClapPreset],
+) -> Option<usize> {
+    let categories = komponist_plugins::presets::categories(presets);
+    let entries_for = |category| {
         presets
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.category.is_none())
-            .map(|(i, p)| Entry::action(p.name, i)),
-    );
-    ContextMenu::new(t.devices_preset(), &entries).show_on(r)
+            .filter(move |(_, preset)| preset.category() == category)
+            .map(|(index, preset)| {
+                Entry::action(preset.display_name(t.code()), index).elide_label()
+            })
+    };
+    let groups: Vec<Vec<_>> = categories
+        .iter()
+        .map(|category| entries_for(Some(*category)).collect())
+        .collect();
+    let mut entries: Vec<_> = categories
+        .iter()
+        .zip(&groups)
+        .map(|(category, group)| {
+            Entry::scrollable_submenu(komponist_device_core::category_text(t, category), group)
+        })
+        .collect();
+    entries.extend(entries_for(None));
+    ContextMenu::new(t.devices_preset(), &entries)
+        .scrollable()
+        .show_on(response)
 }
 
 /// The caret of the preset button (`border-left/right:3px`, `border-top:4px`): 6 × 4.
@@ -965,6 +923,16 @@ fn menu(
     if !asset_entries.is_empty() {
         entries.insert(3, Entry::submenu(t.plugin_file_caption(), &asset_entries));
     }
+    if card.user_presets {
+        entries.insert(
+            1,
+            Entry::action(t.devices_preset_load_file(), Menu::LoadUserPreset),
+        );
+        entries.insert(
+            2,
+            Entry::action(t.devices_preset_save_file(), Menu::SaveUserPreset),
+        );
+    }
     let device = card.device;
     match ContextMenu::new(t.devices_device(), &entries).show_on(head) {
         Some(Menu::Open) => ctx.send(Action::Plugin(PluginAction::OpenWindow(device))),
@@ -983,6 +951,12 @@ fn menu(
             index: at.index + 1,
         })),
         Some(Menu::Remove) => ctx.send(Action::Edit(EditAction::RemoveDevice(device))),
+        Some(Menu::SaveUserPreset) => {
+            ctx.send(Action::Plugin(PluginAction::SaveUserPreset(device)))
+        }
+        Some(Menu::LoadUserPreset) => {
+            ctx.send(Action::Plugin(PluginAction::LoadUserPreset(device)))
+        }
         Some(Menu::PickAsset(slot)) => {
             ctx.send(Action::Plugin(PluginAction::PickPluginAsset {
                 device,

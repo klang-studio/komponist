@@ -21,6 +21,7 @@ enum Room {
 }
 
 impl DeviceDefinition for Hall {
+    const PUBLISH_FACTORY_PRESETS: bool = true;
     const SPEC: &'static Spec = &komponist_reverb::SPEC;
     const NAME: &'static str = "Hall";
     const ID: &'static str = "org.klang-studio.komponist.hall";
@@ -44,7 +45,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Hall {
     }
 }
 
-nice_export_clap!(HallPlugin);
+komponist_bundled_clap_adapter::export_spec_with_presets!(Hall, HallPlugin);
 
 #[cfg(test)]
 #[path = "../../../layout_contract.rs"]

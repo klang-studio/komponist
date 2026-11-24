@@ -514,8 +514,19 @@ impl App {
         if self.doc.in_gesture() {
             self.end_gesture();
         }
+        if self.reconcile_previous_live_state(device, previous_state) {
+            self.record_live_state_edit(device, previous_state, state, "undo-sample-slices");
+        }
+    }
+
+    /// Preserve an earlier plugin edit whose snapshot has yet to reach the document.
+    fn reconcile_previous_live_state(
+        &mut self,
+        device: DeviceId,
+        previous_state: &Arc<[u8]>,
+    ) -> bool {
         let Some((_, _, target)) = self.project().find_device(device) else {
-            return;
+            return false;
         };
         let recorded = target.state.as_ref().or_else(|| {
             self.param_undo
@@ -529,10 +540,25 @@ impl App {
                 edits::set_device_state(project, device, Some(Arc::clone(previous_state)))
             }) {
                 self.record_edit_error(error);
-                return;
+                return false;
             }
         }
-        self.record_live_state_edit(device, previous_state, state, "undo-sample-slices");
+        true
+    }
+
+    /// Records a preset already applied to the live plugin as a distinct undo step.
+    pub(crate) fn record_clap_preset(
+        &mut self,
+        device: DeviceId,
+        previous_state: &Arc<[u8]>,
+        state: &Arc<[u8]>,
+    ) {
+        if self.doc.in_gesture() {
+            self.end_gesture();
+        }
+        if self.reconcile_previous_live_state(device, previous_state) {
+            self.record_live_state_edit(device, previous_state, state, "undo-load-preset");
+        }
     }
 
     /// A state snapshot of a bridged plugin (its GUI, a card parameter, saving) goes into the

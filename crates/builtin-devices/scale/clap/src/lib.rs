@@ -10,6 +10,7 @@ use nice_plug::prelude::*;
 struct Scale;
 
 impl DeviceDefinition for Scale {
+    const PUBLISH_FACTORY_PRESETS: bool = true;
     const SPEC: &'static Spec = &komponist_scale::SPEC;
     const NAME: &'static str = "Scale";
     const ID: &'static str = "org.klang-studio.komponist.scale";
@@ -148,7 +149,7 @@ impl komponist_bundled_clap_adapter::MidiDefinition for Scale {
     }
 }
 
-nice_export_clap!(ScalePlugin);
+komponist_bundled_clap_adapter::export_spec_with_presets!(Scale, ScalePlugin);
 
 #[cfg(test)]
 #[path = "../../../layout_contract.rs"]

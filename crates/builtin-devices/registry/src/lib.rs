@@ -12,6 +12,7 @@ use komponist_sampler::SamplerHandle;
 mod i18n;
 mod internal;
 mod legacy_params;
+pub mod presets;
 
 pub use internal::Internal;
 pub use legacy_params::{LegacyParameter, LegacyParameters};

@@ -198,6 +198,10 @@ impl DirectSession {
         self.host.try_control(f)
     }
 
+    pub(crate) fn is_from_bundle(&self, path: &std::path::Path) -> bool {
+        self.host.is_from_bundle(path)
+    }
+
     pub(crate) fn signal_tap(&self, key: &str) -> Option<&crate::signal_taps::SignalTap> {
         self.host.signal_tap(key)
     }
@@ -214,16 +218,27 @@ impl DirectSession {
         load: impl FnOnce(&mut dyn HostedPlugin) -> Result<(), HostingError>,
         inventory: impl FnOnce(&mut dyn HostedPlugin) -> T,
     ) -> Option<(Result<(), HostingError>, T)> {
-        let requested = &self.requested;
-        let restored = self.host.try_control(|plugin| {
+        self.replace_state(|plugin| {
             let result = load(plugin);
-            if result.is_ok() {
+            let replaced = result.is_ok();
+            ((result, inventory(plugin)), replaced)
+        })
+    }
+
+    pub(crate) fn replace_state<T>(
+        &mut self,
+        apply: impl FnOnce(&mut dyn HostedPlugin) -> (T, bool),
+    ) -> Option<T> {
+        let requested = &self.requested;
+        let result = self.host.try_control(|plugin| {
+            let (result, replaced) = apply(plugin);
+            if replaced {
                 requested.control_epoch.fetch_add(1, Ordering::Release);
             }
-            (result, inventory(plugin))
+            result
         })?;
         self.host.clear_refresh(METADATA_REFRESH);
-        Some(restored)
+        Some(result)
     }
 
     pub(crate) fn set_param(&mut self, id: u32, value: f64) -> bool {

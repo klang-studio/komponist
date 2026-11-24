@@ -36,7 +36,7 @@ pub(crate) struct DirectClap {
     processing: Arc<AtomicBool>,
     refresh: PendingRefresh,
     signal_taps: Option<Arc<crate::signal_taps::SignalTaps>>,
-    _bundle: VerifiedClap,
+    bundle: VerifiedClap,
 }
 
 impl DirectClap {
@@ -56,8 +56,12 @@ impl DirectClap {
             processing: Arc::new(AtomicBool::new(false)),
             refresh: PendingRefresh::default(),
             signal_taps,
-            _bundle: bundle,
+            bundle,
         })
+    }
+
+    pub(crate) fn is_from_bundle(&self, path: &std::path::Path) -> bool {
+        self.bundle.original_path() == path
     }
 
     pub(crate) fn signal_tap(&self, key: &str) -> Option<&crate::signal_taps::SignalTap> {

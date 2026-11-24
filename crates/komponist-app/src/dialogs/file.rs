@@ -35,6 +35,8 @@ pub enum Purpose {
     Open,
     /// Save under a file name.
     Save,
+    SavePreset(komponist_model::DeviceId),
+    OpenPreset(komponist_model::DeviceId),
     /// Choose a folder (S07 "+ Ordner").
     Folder,
     /// Choose the export folder (S08 "Ändern").
@@ -54,6 +56,10 @@ pub enum Purpose {
 }
 
 impl Purpose {
+    fn is_save(self) -> bool {
+        matches!(self, Self::Save | Self::SavePreset(_))
+    }
+
     /// Whether a folder is chosen (the list shows folders only).
     pub fn is_folder(self) -> bool {
         matches!(self, Purpose::Folder | Purpose::ExportFolder)
@@ -125,7 +131,7 @@ impl FileBrowser {
             location: super::format::tilde(&dir),
             replace: None,
             message: None,
-            focus_name: purpose == Purpose::Save,
+            focus_name: purpose.is_save(),
         };
         b.go(dir);
         b
@@ -136,6 +142,8 @@ impl FileBrowser {
         match self.purpose {
             Purpose::Open => t.file_open_title(),
             Purpose::Save => t.file_save_title(),
+            Purpose::SavePreset(_) => t.devices_preset_save_file(),
+            Purpose::OpenPreset(_) => t.devices_preset_load_file(),
             Purpose::Folder => t.file_folder_title(),
             Purpose::ExportFolder => t.export_folder_title(),
             Purpose::Sample => t.file_sample_title(),
@@ -149,12 +157,13 @@ impl FileBrowser {
     pub fn primary(&self, t: Lang) -> &'static str {
         match self.purpose {
             Purpose::Open => t.file_open(),
-            Purpose::Save if self.replace.is_some() => t.file_replace(),
-            Purpose::Save => t.file_save(),
+            Purpose::Save | Purpose::SavePreset(_) if self.replace.is_some() => t.file_replace(),
+            Purpose::Save | Purpose::SavePreset(_) => t.file_save(),
             Purpose::Folder | Purpose::ExportFolder => t.file_choose_folder(),
-            Purpose::Sample | Purpose::PluginAsset { .. } | Purpose::ReplaceAudio(_) => {
-                t.file_load()
-            }
+            Purpose::Sample
+            | Purpose::PluginAsset { .. }
+            | Purpose::ReplaceAudio(_)
+            | Purpose::OpenPreset(_) => t.file_load(),
             Purpose::ImportAudio => t.audio_import_confirm(),
         }
     }
@@ -206,7 +215,7 @@ impl FileBrowser {
         let Some(entry) = self.entries.get(index) else {
             return;
         };
-        if self.purpose == Purpose::Save && !entry.is_dir {
+        if self.purpose.is_save() && !entry.is_dir {
             self.name = entry.name.clone();
             self.replace = None;
         }
@@ -250,11 +259,12 @@ impl FileBrowser {
         }
         match self.purpose {
             Purpose::Open
+            | Purpose::OpenPreset(_)
             | Purpose::Sample
             | Purpose::PluginAsset { .. }
             | Purpose::ReplaceAudio(_) => Some(Output::Chosen(entry.path)),
             Purpose::ImportAudio => Some(Output::ChosenMany(vec![entry.path])),
-            Purpose::Save => {
+            Purpose::Save | Purpose::SavePreset(_) => {
                 self.name = entry.name;
                 self.confirm()
             }
@@ -280,6 +290,7 @@ impl FileBrowser {
                 }
             }
             Purpose::Open
+            | Purpose::OpenPreset(_)
             | Purpose::Sample
             | Purpose::PluginAsset { .. }
             | Purpose::ReplaceAudio(_) => {
@@ -295,12 +306,23 @@ impl FileBrowser {
                 // The list of drives (Windows) is no folder.
                 (!chosen.as_os_str().is_empty()).then_some(Output::Chosen(chosen))
             }
-            Purpose::Save => {
+            Purpose::Save | Purpose::SavePreset(_) => {
                 let name = self.name.trim();
                 if name.is_empty() || self.dir.as_os_str().is_empty() {
                     return None;
                 }
-                let path = with_extension(&self.dir.join(name));
+                let path = self.dir.join(name);
+                let path = if matches!(self.purpose, Purpose::SavePreset(_)) {
+                    if is_user_preset_file(&path) {
+                        path
+                    } else {
+                        let mut name = path.as_os_str().to_os_string();
+                        name.push(".kppreset");
+                        PathBuf::from(name)
+                    }
+                } else {
+                    with_extension(&path)
+                };
                 if path.is_dir() {
                     self.go(path);
                     return None;
@@ -336,6 +358,7 @@ impl FileBrowser {
         } else if matches!(
             self.purpose,
             Purpose::Open
+                | Purpose::OpenPreset(_)
                 | Purpose::Sample
                 | Purpose::PluginAsset { .. }
                 | Purpose::ImportAudio
@@ -352,6 +375,11 @@ impl FileBrowser {
             None
         }
     }
+}
+
+fn is_user_preset_file(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("kppreset"))
 }
 
 /// Whether `path` is a sample the sampler can load (a WAV file, by its extension).
@@ -415,6 +443,7 @@ pub fn list(dir: &Path, purpose: Purpose) -> std::io::Result<Vec<Entry>> {
             dirs.push(Entry { name, path, is_dir });
         } else if match purpose {
             Purpose::Sample => is_sample_file(&path),
+            Purpose::OpenPreset(_) | Purpose::SavePreset(_) => is_user_preset_file(&path),
             Purpose::PluginAsset { kind, .. } => {
                 kind == komponist_ipc::device_assets::AssetKind::File || is_audio_file(&path)
             }
@@ -477,7 +506,7 @@ pub fn show(ctx: &Context, b: &mut FileBrowser) -> Option<Output> {
             if let Some(o) = file_list(ui, t, b, inner) {
                 out = Some(o);
             }
-            if b.purpose == Purpose::Save && name_row(ui, t, b) {
+            if b.purpose.is_save() && name_row(ui, t, b) {
                 out = b.confirm();
             }
             if let Some(message) = &b.message {
@@ -607,6 +636,9 @@ fn file_list(ui: &mut Ui, t: Lang, b: &mut FileBrowser, width: f32) -> Option<Ou
                             Purpose::Sample | Purpose::ImportAudio => t.file_no_samples(),
                             Purpose::PluginAsset { .. } => t.plugin_file_none(),
                             Purpose::ReplaceAudio(_) => t.audio_file_no_audio(),
+                            Purpose::OpenPreset(_) | Purpose::SavePreset(_) => {
+                                t.devices_preset_files_empty()
+                            }
                             _ => t.file_no_projects(),
                         };
                         let g = styled(ui, text, &typography::SMALL, color32(color::TEXT_3), None);

@@ -200,16 +200,12 @@ pub struct Card {
     pub page: usize,
     /// Shown as the 28 px strip (set by the view).
     pub collapsed: bool,
-    /// The device has factory presets (hexa, internal devices with a list): the head shows
-    /// the preset dropdown.
+    /// Whether to show the preset dropdown.
     pub presets: bool,
-    /// The factory preset the state is (hexa) or says it loaded (internal devices), if any.
+    pub(super) user_presets: bool,
+    /// The selected entry in the preset inventory.
     pub preset: Option<usize>,
-    /// The internal device whose [`Internal::presets`] the dropdown lists (WP-96); `None` for
-    /// hexa (its bank) and for devices without presets.
-    ///
-    /// [`Internal::presets`]: komponist_builtin::Internal::presets
-    pub internal_presets: Option<komponist_builtin::Internal>,
+    pub(super) preset_name: Option<String>,
     /// The device has a sidechain input: the head shows the "SC" chip (WP-104). Internal devices
     /// say so in their spec, plugins through [`DeviceHost::has_sidechain`].
     pub has_sidechain: bool,
@@ -539,30 +535,8 @@ pub(crate) fn card(
     };
     let hexa_patch =
         (hexa || bundled_hexa).then(|| hexa_patch.unwrap_or_else(komponist_hexa::default_patch));
-    let bundled_internal = match verified {
-        Some(BuiltinKind::Internal(kind)) => Some(kind),
-        _ => None,
-    };
-    let internal_presets = internal_kind(device)
-        .or(bundled_internal)
-        .filter(|kind| !kind.presets().is_empty());
-    let presets = hexa || bundled_hexa || internal_presets.is_some();
-    let loaded = internal_presets.and_then(|kind| {
-        if bundled_internal.is_some() {
-            bundled_preset(device, host, native_layout.as_deref()?, kind)
-        } else {
-            kind.loaded_preset(device.state.as_deref())
-        }
-    });
-    let preset_changed = loaded.is_some_and(|(_, changed)| changed);
-    let preset = hexa_patch
-        .and_then(|patch| {
-            let encoded = komponist_hexa::encode_state(&patch);
-            crate::windows::plugin_frame::factory_states()
-                .iter()
-                .position(|s| *s == encoded)
-        })
-        .or(loaded.map(|(index, _)| index));
+    let preset_entries = host.clap_presets(device);
+    let selected = host.saved_preset(device, preset_entries);
     Card {
         device: device.id,
         automation_owner: None,
@@ -599,10 +573,13 @@ pub(crate) fn card(
         bundled_editor,
         page: 0,
         collapsed: false,
-        presets,
-        preset,
-        internal_presets,
-        preset_changed,
+        presets: !preset_entries.is_empty(),
+        user_presets: host.supports_user_presets(device.id),
+        preset: selected.map(|(index, _)| index),
+        preset_name: selected
+            .and_then(|(index, _)| preset_entries.get(index))
+            .map(|preset| preset.display_name(lang.code()).to_owned()),
+        preset_changed: selected.is_some_and(|(_, changed)| changed),
         has_sidechain: internal_kind(device)
             .map_or_else(|| host.has_sidechain(device.id), |k| k.has_sidechain()),
         sidechain: device.sidechain,
@@ -650,31 +627,6 @@ fn hexa_editor_layout(lang: Lang) -> DeviceLayout {
     );
     layout.pages.retain(|page| !page.cells.is_empty());
     layout
-}
-
-fn bundled_preset(
-    device: &Device,
-    host: &dyn DeviceHost,
-    native: &komponist_ipc::native_layout::NativeLayout,
-    kind: Internal,
-) -> Option<(usize, bool)> {
-    let index = crate::bundled_presets::index(kind, device.state.as_deref()?)?;
-    let aliases = native.author_ids()?;
-    let changed = kind
-        .params()
-        .iter()
-        .zip(kind.preset_values(index)?)
-        .any(|(info, plain)| {
-            let Some(base) = aliases
-                .get(info.id.as_str())
-                .and_then(|wire| host.param_base(device.id, *wire))
-            else {
-                return false;
-            };
-            let expected = pinned_clap_state::to_clap(info, plain);
-            (base - expected).abs() > 1e-6
-        });
-    Some((index, changed))
 }
 
 /// The parameters of an internal effect with the values in its device state (the defaults for a

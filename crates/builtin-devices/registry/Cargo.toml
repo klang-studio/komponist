@@ -10,6 +10,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+komponist-ipc.workspace = true
+serde_json.workspace = true
 komponist-arpeggiator.workspace = true
 komponist-delay.workspace = true
 komponist-device-core.workspace = true

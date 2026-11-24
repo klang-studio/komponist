@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use komponist_builtin::BuiltinKind;
 use komponist_hosting::host_loop::notification_bits;
 use komponist_hosting::{HostedPlugin, HostingError};
+use komponist_ipc::clap_presets::PresetLoad;
 use komponist_ipc::control::{MAX_STATE_PARAMETER_BASES, param_flags};
 use komponist_ipc::native_layout::NativeLayout;
 use komponist_ipc::waveform_markers::{EditResult, EditStatus, Request};
@@ -53,6 +54,10 @@ pub(crate) struct DirectDevice {
     unconfirmed_writes: BTreeSet<u32>,
     pending_restore: Option<SavedPluginState>,
     pending_marker_edit: Option<PendingMarkerEdit>,
+    pending_preset: Option<(PresetLoad, Instant)>,
+    /// Edits made after the request must reach the replacement control epoch.
+    after_preset_writes: BTreeMap<u32, f64>,
+    capture_preset: bool,
     pub(crate) display: Option<Arc<komponist_ipc::device_canvas::DisplayList>>,
     display_at: Instant,
     macro_params: BTreeMap<u32, f64>,
@@ -158,6 +163,10 @@ fn load_saved_state(
 }
 
 impl DirectDevice {
+    pub(crate) fn has_clap_presets_from(&self, path: &std::path::Path) -> bool {
+        self.status == DeviceStatus::Ok && self.session.is_from_bundle(path)
+    }
+
     pub(crate) fn signal_tap(&self, key: &str) -> Option<&crate::signal_taps::SignalTap> {
         self.session.signal_tap(key)
     }
@@ -205,6 +214,9 @@ impl DirectDevice {
             unconfirmed_writes: BTreeSet::new(),
             pending_restore: None,
             pending_marker_edit: None,
+            pending_preset: None,
+            after_preset_writes: BTreeMap::new(),
+            capture_preset: false,
             display: None,
             display_at: Instant::now(),
             macro_params: BTreeMap::new(),
@@ -254,6 +266,7 @@ impl DirectDevice {
     pub(crate) fn poll_waveform_markers(&mut self) {
         if self.status == DeviceStatus::Ok
             && self.pending_restore.is_none()
+            && self.pending_preset.is_none()
             && self.pending_marker_edit.is_none()
             && let Some(slot) = self.markers.poll()
         {
@@ -269,6 +282,7 @@ impl DirectDevice {
         events: &mut Vec<PluginManagerEvent>,
     ) {
         self.session.stop_after_failed_restore();
+        self.fail_preset_capture(device, message, events);
         self.status = DeviceStatus::Crashed(FailReason::LoadFailed(message.into()));
         events.push(PluginManagerEvent::StatusChanged {
             device,
@@ -312,6 +326,7 @@ impl DirectDevice {
 
     fn can_edit_waveform_markers(&self) -> bool {
         self.can_snapshot()
+            && self.pending_preset.is_none()
             && self.pending_restore.is_none()
             && !self.assets.bindings_pending()
             && self.pending_writes.is_empty()
@@ -419,7 +434,10 @@ impl DirectDevice {
     }
 
     pub(crate) fn poll_assets(&mut self, id: DeviceId, events: &mut Vec<PluginManagerEvent>) {
-        if self.pending_restore.is_some() || matches!(self.status, DeviceStatus::Crashed(_)) {
+        if self.pending_restore.is_some()
+            || self.pending_preset.is_some()
+            || matches!(self.status, DeviceStatus::Crashed(_))
+        {
             return;
         }
         if let Some(bindings) = self.assets.take_bindings() {
@@ -459,7 +477,16 @@ impl DirectDevice {
         let observed = match self.session.poll() {
             Ok(observed) => observed,
             Err(error) => {
-                self.status = DeviceStatus::Crashed(FailReason::LoadFailed(error.to_string()));
+                let message = error.to_string();
+                if self.pending_preset.take().is_some() {
+                    self.after_preset_writes.clear();
+                    events.push(PluginManagerEvent::ClapPresetFailed {
+                        device: id,
+                        message: message.clone(),
+                    });
+                }
+                self.fail_preset_capture(id, &message, events);
+                self.status = DeviceStatus::Crashed(FailReason::LoadFailed(message));
                 events.push(PluginManagerEvent::StatusChanged {
                     device: id,
                     status: self.status.clone(),
@@ -502,6 +529,23 @@ impl DirectDevice {
                 events.push(PluginManagerEvent::StateApplied { device: id });
             }
         }
+        self.service_preset(id, events);
+        if self.capture_preset
+            && self.pending_preset.is_none()
+            && self.pending_restore.is_none()
+            && self.pending_marker_edit.is_none()
+            && self.pending_writes.is_empty()
+            && self.unconfirmed_writes.is_empty()
+            && let Some(result) = self
+                .session
+                .try_control(|plugin| plugin.save_preset_state())
+        {
+            self.capture_preset = false;
+            events.push(PluginManagerEvent::ClapPresetCaptured {
+                device: id,
+                result: result.map_err(|error| error.to_string()),
+            });
+        }
         if self.pending_restore.is_none() {
             self.pending_writes
                 .retain(|&param, value| !self.session.set_param(param, *value));
@@ -530,6 +574,137 @@ impl DirectDevice {
         }
     }
 
+    fn fail_preset_capture(
+        &mut self,
+        device: DeviceId,
+        message: &str,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        if std::mem::take(&mut self.capture_preset) {
+            events.push(PluginManagerEvent::ClapPresetCaptured {
+                device,
+                result: Err(message.into()),
+            });
+        }
+    }
+
+    pub(crate) fn is_capturing_clap_preset(&self) -> bool {
+        self.capture_preset
+    }
+
+    pub(crate) fn capture_clap_preset(&mut self) -> bool {
+        if self.status != DeviceStatus::Ok
+            || self.capture_preset
+            || self.pending_preset.is_some()
+            || self.pending_restore.is_some()
+        {
+            return false;
+        }
+        self.capture_preset = true;
+        true
+    }
+
+    pub(crate) fn load_clap_preset(&mut self, preset: PresetLoad) -> bool {
+        if self.status != DeviceStatus::Ok
+            || self.pending_preset.is_some()
+            || self.pending_restore.is_some()
+            || self.capture_preset
+            || self.is_editing_waveform_markers()
+        {
+            return false;
+        }
+        self.markers.invalidate();
+        self.assets.begin_restore();
+        self.pending_preset = Some((preset, Instant::now() + Duration::from_secs(2)));
+        true
+    }
+
+    pub(crate) fn is_loading_clap_preset(&self) -> bool {
+        self.pending_preset.is_some()
+    }
+
+    fn service_preset(&mut self, device: DeviceId, events: &mut Vec<PluginManagerEvent>) {
+        let Some((preset, deadline)) = self.pending_preset.as_ref() else {
+            return;
+        };
+        let result = if Instant::now() >= *deadline {
+            Err((
+                "timed out waiting for preceding parameter edits".into(),
+                true,
+            ))
+        } else {
+            if self.status != DeviceStatus::Ok || !self.pending_writes.is_empty() {
+                return;
+            }
+            let base = &self.base;
+            let automated = &self.automated_params;
+            let macros = &self.macro_params;
+            let unconfirmed = &self.unconfirmed_writes;
+            let Some(Some(result)) = self.session.replace_state(|plugin| {
+                // Check delivery and capture under the same processing guard.
+                if unconfirmed.iter().any(|id| {
+                    let expected = automated
+                        .get(id)
+                        .copied()
+                        .flatten()
+                        .or_else(|| macros.get(id).copied())
+                        .or_else(|| base.get(id).copied());
+                    expected.is_some_and(|expected| {
+                        !plugin.param_value(*id).is_some_and(|actual| {
+                            (actual - expected).abs() <= 1e-6 * expected.abs().max(1.0)
+                        })
+                    })
+                }) {
+                    return (None, false);
+                }
+                let result = plugin.apply_clap_preset(preset);
+                let replaced = match &result {
+                    Ok(_) => true,
+                    Err((_, recovered)) => !recovered,
+                };
+                (
+                    Some(result.map(|state| (state, Inventory::read(plugin)))),
+                    replaced,
+                )
+            }) else {
+                return;
+            };
+            result
+        };
+        self.pending_preset = None;
+        self.assets.finish_restore();
+        match result {
+            Ok(((before, after), inventory)) => {
+                let state: Arc<[u8]> = after.into();
+                self.last_state = Some(state.clone().into());
+                self.state_warning = None;
+                self.unconfirmed_writes.clear();
+                self.released_automation.clear();
+                self.snapshot_due = None;
+                self.user_edit = false;
+                self.accept_inventory(inventory, true);
+                Self::report_metadata(device, events);
+                events.push(PluginManagerEvent::ClapPresetLoaded {
+                    device,
+                    previous_state: before.into(),
+                    state,
+                });
+            }
+            Err((message, recovered)) => {
+                if !recovered {
+                    self.fail_after_rollback(device, &message, events);
+                }
+                events.push(PluginManagerEvent::ClapPresetFailed { device, message });
+            }
+        }
+        let later_writes = std::mem::take(&mut self.after_preset_writes);
+        if !matches!(self.status, DeviceStatus::Crashed(_)) {
+            for (id, value) in later_writes {
+                self.set_param(id, value);
+            }
+        }
+    }
+
     pub(crate) fn set_render_mode(
         &mut self,
         id: DeviceId,
@@ -550,10 +725,24 @@ impl DirectDevice {
         self.session.retired()
     }
 
+    fn param_edit_value(&self, id: u32, value: f64) -> Option<f64> {
+        (value.is_finite() && self.base.contains_key(&id)).then(|| {
+            self.params
+                .iter()
+                .find(|param| param.id == id && param.step_count != 0)
+                .map_or(value, |param| crate::params::param_info(param).snap(value))
+        })
+    }
+
     pub(crate) fn edited_param(&mut self, id: u32, value: f64) -> bool {
-        if !value.is_finite() || !self.base.contains_key(&id) {
+        let Some(value) = self.param_edit_value(id, value) else {
             return false;
-        }
+        };
+        self.record_param_edit(id, value);
+        true
+    }
+
+    fn record_param_edit(&mut self, id: u32, value: f64) {
         self.preview_param(id, value);
         if !self.macro_params.contains_key(&id) {
             if self.pending_restore.is_some() {
@@ -566,7 +755,6 @@ impl DirectDevice {
             self.user_edit = true;
             self.snapshot_due = Some(Instant::now() + self.debounce);
         }
-        true
     }
 
     pub(crate) fn preview_param(&mut self, id: u32, value: f64) {
@@ -578,8 +766,15 @@ impl DirectDevice {
         }
     }
 
-    pub(crate) fn set_param(&mut self, id: u32, value: f64) {
-        if self.edited_param(id, value) {
+    pub(crate) fn set_param(&mut self, id: u32, requested: f64) {
+        let Some(value) = self.param_edit_value(id, requested) else {
+            return;
+        };
+        if self.pending_preset.is_some() {
+            self.preview_param(id, value);
+            self.after_preset_writes.insert(id, requested);
+        } else {
+            self.record_param_edit(id, value);
             self.pending_writes.insert(id, value);
         }
     }
@@ -623,6 +818,8 @@ impl DirectDevice {
     pub(crate) fn set_state(&mut self, state: SavedPluginState) -> Option<u32> {
         let canceled = self.invalidate_waveform_markers();
         self.assets.begin_restore();
+        self.pending_preset = None;
+        self.after_preset_writes.clear();
         self.pending_restore = Some(state);
         self.pending_writes.clear();
         self.unconfirmed_writes.clear();
@@ -654,7 +851,10 @@ impl DirectDevice {
     }
 
     pub(crate) fn needs_snapshot(&self) -> bool {
-        self.user_edit || self.pending_restore.is_some() || self.pending_marker_edit.is_some()
+        self.user_edit
+            || self.pending_restore.is_some()
+            || self.pending_marker_edit.is_some()
+            || self.pending_preset.is_some()
     }
 
     pub(crate) fn awaits_snapshot(&self) -> bool {
@@ -670,6 +870,7 @@ impl DirectDevice {
         if !self.can_snapshot()
             || self.pending_restore.is_some()
             || self.pending_marker_edit.is_some()
+            || self.pending_preset.is_some()
             || !self.pending_writes.is_empty()
         {
             return None;

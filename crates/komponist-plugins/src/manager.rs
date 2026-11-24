@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 
 use komponist_builtin::{BuiltinKind, Internal};
 use komponist_engine::Processor;
+use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource, PresetLoad};
 use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot};
 use komponist_ipc::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderModel};
 use komponist_ipc::shm::MAX_BLOCK;
@@ -134,6 +135,19 @@ pub enum PluginManagerEvent {
         slot: u32,
         result: WaveformMarkerEditResult,
     },
+    /// A preset has been applied and captured in project state format.
+    ClapPresetLoaded {
+        device: DeviceId,
+        previous_state: Arc<[u8]>,
+        state: Arc<[u8]>,
+    },
+    /// Opaque user preset data from the active CLAP instance.
+    ClapPresetCaptured {
+        device: DeviceId,
+        result: Result<Vec<u8>, String>,
+    },
+    /// The active plugin could not apply or capture the preset.
+    ClapPresetFailed { device: DeviceId, message: String },
     /// A plugin has applied a requested state restore to its processor.
     StateApplied {
         /// The restored device.
@@ -484,7 +498,10 @@ impl PluginManager {
             }
         }
         // Verification still runs at load time; scanner metadata grants no trust.
-        self.catalog.set_scanned_with_bundled(&descriptors, shipped);
+        self.catalog
+            .set_scanned_with_bundled(&descriptors, shipped, |descriptor| {
+                self.cache.clap_presets_for(descriptor)
+            });
     }
 
     /// A processor removed from the engine must be handed back to its main-thread CLAP session.
@@ -660,11 +677,9 @@ impl PluginManager {
                     .and_then(DirectDevice::state_for_reload)
             })
             .or_else(|| device.saved_state());
-        if let Some(mut old) = self.bridges.remove(&device.id) {
+        if self.bridges.contains_key(&device.id) {
             // A bridge reload retires the old process even if start rejects the setup.
-            self.discard_queued_snapshots(device.id);
-            old.kill();
-            self.retiring.push(old);
+            self.retire(device.id, false);
         }
         self.start(device, setup, state)
     }
@@ -707,24 +722,8 @@ impl PluginManager {
         let mut effect_meter = None;
         let mut verified_bundle = None;
         let mut state = state;
-        if requires_bundled(&device.plugin)
-            || self
-                .private_clap_dir
-                .as_ref()
-                .is_some_and(|root| bundle.starts_with(root))
-        {
-            let verified = self
-                .bundled_clap
-                .as_ref()
-                .ok_or_else(|| PluginError::Ipc("bundled CLAP verification is unavailable".into()))
-                .and_then(|bundled| {
-                    bundled
-                        .verify(&bundle, &plugin_id)
-                        .map_err(|error| PluginError::Ipc(error.to_string()))?
-                        .ok_or_else(|| {
-                            PluginError::Ipc("bundle is not in the app release inventory".into())
-                        })
-                });
+        if self.requires_bundle_verification(&device.plugin, &bundle) {
+            let verified = self.verify_catalog_bundle(&bundle, &plugin_id);
             let proof = match verified {
                 Ok(proof) => proof,
                 Err(error) => {
@@ -793,6 +792,7 @@ impl PluginManager {
             bundle: verified_bundle
                 .as_ref()
                 .map_or(bundle.as_path(), VerifiedClap::bundle_path),
+            catalog_bundle: &bundle,
             plugin_id: &plugin_id,
             state,
             setup,
@@ -847,7 +847,11 @@ impl PluginManager {
         self.pending.retain(|event| {
             !matches!(event,
                 PluginManagerEvent::StateSnapshot { device: old, .. }
-                    | PluginManagerEvent::WaveformMarkersEdited { device: old, .. } if *old == device
+                    | PluginManagerEvent::WaveformMarkersEdited { device: old, .. }
+                | PluginManagerEvent::ClapPresetLoaded { device: old, .. }
+                | PluginManagerEvent::ClapPresetFailed { device: old, .. }
+                | PluginManagerEvent::ClapPresetCaptured { device: old, .. }
+                if *old == device
             )
         });
     }
@@ -855,7 +859,27 @@ impl PluginManager {
     /// Takes the bridge of `device` out: `Shutdown` with a grace period if `graceful`, else
     /// SIGKILL. Its process is reaped by later polls.
     fn retire(&mut self, device: DeviceId, graceful: bool) {
+        let capture_interrupted = self
+            .direct
+            .get(&device)
+            .is_some_and(DirectDevice::is_capturing_clap_preset)
+            || self
+                .bridges
+                .get(&device)
+                .is_some_and(Bridge::is_capturing_clap_preset)
+            || self.pending.iter().any(|event| {
+                matches!(event,
+                PluginManagerEvent::ClapPresetCaptured { device: id, .. } if *id == device)
+            });
         self.discard_queued_snapshots(device);
+        if capture_interrupted {
+            self.pending.push(PluginManagerEvent::ClapPresetCaptured {
+                device,
+                result: Err(
+                    "the plugin instance was replaced or removed during preset capture".into(),
+                ),
+            });
+        }
         self.verified_bundles.remove(&device);
         self.effect_meters.remove(&device);
         if let Some(mut direct) = self.direct.remove(&device) {
@@ -1047,7 +1071,7 @@ impl PluginManager {
             return Ok(None);
         }
         if self
-            .pending_waveform_marker_commits()
+            .pending_live_state_commits()
             .any(|pending| pending == id)
             || self
                 .direct
@@ -1220,6 +1244,10 @@ impl PluginManager {
             .bridges
             .get(&device)
             .is_some_and(Bridge::requires_control_param_edit)
+            || self
+                .direct
+                .get(&device)
+                .is_some_and(DirectDevice::is_loading_clap_preset)
         {
             return false;
         }
@@ -1344,6 +1372,12 @@ impl PluginManager {
             if matches!(direct.status, DeviceStatus::Crashed(_)) {
                 return false;
             }
+            if direct.is_loading_clap_preset() {
+                self.pending.push(PluginManagerEvent::ClapPresetFailed {
+                    device,
+                    message: "a document restore superseded the CLAP preset load".into(),
+                });
+            }
             if let Some(slot) = direct.set_state(state.clone()) {
                 self.pending
                     .push(PluginManagerEvent::WaveformMarkersEdited {
@@ -1359,6 +1393,9 @@ impl PluginManager {
         {
             return false;
         }
+        self.pending.retain(|event| {
+            !matches!(event, PluginManagerEvent::ClapPresetLoaded { device: loaded, .. } if *loaded == device)
+        });
         for event in &mut self.pending {
             if let PluginManagerEvent::WaveformMarkersEdited {
                 device: edited,
@@ -1372,6 +1409,133 @@ impl PluginManager {
             }
         }
         true
+    }
+
+    /// Presets discovered for the exact bundle of a running CLAP instance.
+    pub fn clap_presets(&self, device: &Device) -> &[ClapPreset] {
+        let Some(entry) = self.catalog.resolve(&device.plugin) else {
+            return &[];
+        };
+        match &entry.location {
+            PluginLocation::InProcess(_) => &entry.clap_presets,
+            PluginLocation::Bundle { path, .. }
+                if self
+                    .bridges
+                    .get(&device.id)
+                    .is_some_and(|bridge| bridge.has_clap_presets_from(path))
+                    || self
+                        .direct
+                        .get(&device.id)
+                        .is_some_and(|direct| direct.has_clap_presets_from(path)) =>
+            {
+                &entry.clap_presets
+            }
+            _ => &[],
+        }
+    }
+
+    /// Loads a preset still advertised for this instance. The request is asynchronous.
+    pub fn load_clap_preset(&mut self, device: &Device, source: &ClapPresetSource) -> bool {
+        let Some(preset) = self
+            .clap_presets(device)
+            .iter()
+            .find(|preset| &preset.source == source)
+            .cloned()
+        else {
+            return false;
+        };
+        self.load_preset(device.id, PresetLoad::Discovered(preset))
+    }
+
+    /// Whether the active device accepts CLAP user preset state operations.
+    pub fn supports_user_presets(&self, device: DeviceId) -> bool {
+        self.direct
+            .get(&device)
+            .is_some_and(|direct| direct.status == DeviceStatus::Ok)
+            || self
+                .bridges
+                .get(&device)
+                .is_some_and(Bridge::supports_user_presets)
+    }
+
+    /// Captures the running plugin's user preset data.
+    pub fn capture_clap_preset(&mut self, device: DeviceId) -> bool {
+        if let Some(direct) = self.direct.get_mut(&device) {
+            return direct.capture_clap_preset();
+        }
+        self.bridges
+            .get_mut(&device)
+            .is_some_and(Bridge::capture_clap_preset)
+    }
+
+    /// Applies user preset data in the CLAP preset context.
+    pub fn load_user_preset(&mut self, device: DeviceId, state: Vec<u8>) -> bool {
+        self.supports_user_presets(device) && self.load_preset(device, PresetLoad::UserState(state))
+    }
+
+    fn load_preset(&mut self, device: DeviceId, preset: PresetLoad) -> bool {
+        if let Some(direct) = self.direct.get_mut(&device) {
+            return direct.load_clap_preset(preset);
+        }
+        self.bridges
+            .get_mut(&device)
+            .is_some_and(|bridge| bridge.load_clap_preset(preset))
+    }
+
+    fn requires_bundle_verification(&self, plugin: &PluginRef, path: &Path) -> bool {
+        requires_bundled(plugin)
+            || self
+                .private_clap_dir
+                .as_ref()
+                .is_some_and(|root| path.starts_with(root))
+    }
+
+    fn verify_catalog_bundle(
+        &self,
+        path: &Path,
+        plugin_id: &str,
+    ) -> Result<VerifiedClap, PluginError> {
+        self.bundled_clap
+            .as_ref()
+            .ok_or_else(|| PluginError::Ipc("bundled CLAP verification is unavailable".into()))?
+            .verify(path, plugin_id)
+            .map_err(|error| PluginError::Ipc(error.to_string()))?
+            .ok_or_else(|| PluginError::Ipc("bundle is not in the app release inventory".into()))
+    }
+
+    /// Prepares the project state for a new instance with a discovered CLAP preset.
+    pub fn prepare_clap_preset(
+        &self,
+        plugin: &PluginRef,
+        source: &ClapPresetSource,
+    ) -> Option<crate::PresetPreparation> {
+        let entry = self.catalog.resolve(plugin)?;
+        let PluginLocation::Bundle {
+            path,
+            format: komponist_ipc::PluginFormat::Clap,
+            ..
+        } = &entry.location
+        else {
+            return None;
+        };
+        let preset = entry
+            .clap_presets
+            .iter()
+            .find(|preset| &preset.source == source)?;
+        let verified = if self.requires_bundle_verification(plugin, path) {
+            Some(self.verify_catalog_bundle(path, &preset.plugin_id).ok()?)
+        } else {
+            None
+        };
+        let path = verified
+            .as_ref()
+            .map_or(path.as_path(), VerifiedClap::bundle_path);
+        crate::PresetPreparation::start(
+            self.config.bridge_exe.clone(),
+            self.config.bridge_args.clone(),
+            path.to_path_buf(),
+            preset,
+        )
     }
 
     /// Asks for a state snapshot; it arrives as [`PluginManagerEvent::StateSnapshot`] (not while
@@ -1398,16 +1562,18 @@ impl PluginManager {
     pub fn has_pending_state_edits(&self) -> bool {
         self.bridges.values().any(Bridge::needs_snapshot_for_save)
             || self.direct.values().any(DirectDevice::needs_snapshot)
-            || self.pending_waveform_marker_commits().next().is_some()
+            || self.bridges.values().any(Bridge::is_loading_clap_preset)
+            || self.pending_live_state_commits().next().is_some()
     }
 
-    fn pending_waveform_marker_commits(&self) -> impl Iterator<Item = DeviceId> + '_ {
+    fn pending_live_state_commits(&self) -> impl Iterator<Item = DeviceId> + '_ {
         self.pending.iter().filter_map(|event| match event {
             PluginManagerEvent::WaveformMarkersEdited {
                 device,
                 result: WaveformMarkerEditResult::Applied { .. },
                 ..
-            } => Some(*device),
+            }
+            | PluginManagerEvent::ClapPresetLoaded { device, .. } => Some(*device),
             _ => None,
         })
     }
@@ -1418,10 +1584,12 @@ impl PluginManager {
         let deadline = Instant::now() + timeout;
         let mut expected = BTreeSet::new();
         let mut required = BTreeSet::new();
-        let mut state_change_pending: BTreeSet<_> =
-            self.pending_waveform_marker_commits().collect();
+        let mut state_change_pending: BTreeSet<_> = self.pending_live_state_commits().collect();
         for (&device, bridge) in &self.bridges {
-            if bridge.is_editing_waveform_markers() || state_change_pending.contains(&device) {
+            if bridge.is_editing_waveform_markers()
+                || bridge.is_loading_clap_preset()
+                || state_change_pending.contains(&device)
+            {
                 state_change_pending.insert(device);
                 continue;
             }
@@ -1433,7 +1601,10 @@ impl PluginManager {
             }
         }
         for (&device, direct) in &self.direct {
-            if direct.is_editing_waveform_markers() || state_change_pending.contains(&device) {
+            if direct.is_editing_waveform_markers()
+                || direct.is_loading_clap_preset()
+                || state_change_pending.contains(&device)
+            {
                 state_change_pending.insert(device);
                 continue;
             }
@@ -1810,7 +1981,7 @@ mod tests {
     }
 
     #[test]
-    fn waveform_markers_commit_blocks_save_until_delivered_or_retired() {
+    fn live_state_commits_block_save_until_delivered_or_retired() {
         let temp = tempfile::tempdir().unwrap();
         let config = PluginManagerConfig {
             cache_file: temp.path().join("plugins.json"),
@@ -1818,25 +1989,34 @@ mod tests {
         };
         let mut manager = PluginManager::new_with_bundled_clap(config, false, false);
         let device = DeviceId(1);
-        let event = PluginManagerEvent::WaveformMarkersEdited {
-            device,
-            slot: 0,
-            result: WaveformMarkerEditResult::Applied {
-                previous_state: Arc::from([1]),
-                state: Arc::from([2]),
+        let events = [
+            PluginManagerEvent::WaveformMarkersEdited {
+                device,
+                slot: 0,
+                result: WaveformMarkerEditResult::Applied {
+                    previous_state: Arc::from([1]),
+                    state: Arc::from([2]),
+                },
             },
-        };
-        manager.pending.push(event.clone());
+            PluginManagerEvent::ClapPresetLoaded {
+                device,
+                previous_state: Arc::from([2]),
+                state: Arc::from([3]),
+            },
+        ];
+        for event in events {
+            manager.pending.push(event.clone());
 
-        assert!(manager.has_pending_state_edits());
-        assert_eq!(manager.snapshot_for_save(Duration::ZERO).blocked, [device]);
-        assert_eq!(manager.poll().as_slice(), std::slice::from_ref(&event));
-        assert!(!manager.has_pending_state_edits());
+            assert!(manager.has_pending_state_edits());
+            assert_eq!(manager.snapshot_for_save(Duration::ZERO).blocked, [device]);
+            assert_eq!(manager.poll().as_slice(), std::slice::from_ref(&event));
+            assert!(!manager.has_pending_state_edits());
 
-        manager.pending.push(event);
-        manager.release(device);
-        assert!(manager.poll().is_empty());
-        assert!(manager.snapshot_for_save(Duration::ZERO).blocked.is_empty());
+            manager.pending.push(event);
+            manager.release(device);
+            assert!(manager.poll().is_empty());
+            assert!(manager.snapshot_for_save(Duration::ZERO).blocked.is_empty());
+        }
     }
 
     #[test]

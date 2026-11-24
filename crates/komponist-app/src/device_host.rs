@@ -44,6 +44,7 @@ use std::time::Duration;
 
 pub(crate) use komponist_builtin::{BuiltinKind, BuiltinProcessor, Internal, LegacyParameters};
 use komponist_engine::{DeviceMeter, Processor};
+use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource};
 use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot};
 use komponist_ipc::frame::HeaderModel;
 use komponist_ipc::{
@@ -104,7 +105,7 @@ pub trait DeviceHost {
     /// The plugins the browser offers (built-ins first, then scanned plugins by name).
     fn catalog(&self) -> &Catalog;
 
-    /// Presets discovered for a live CLAP instance.
+    /// Refresh the latest marker snapshot for this slot.
     fn request_waveform_markers(&mut self, _device: DeviceId, _slot: u32) {}
 
     /// Latest marker snapshot from the live device, when available.
@@ -124,6 +125,57 @@ pub trait DeviceHost {
         _request: komponist_ipc::waveform_markers::Request,
     ) -> Result<(), komponist_ipc::waveform_markers::EditStatus> {
         Err(komponist_ipc::waveform_markers::EditStatus::Unavailable)
+    }
+
+    /// Presets discovered for a live CLAP instance.
+    fn clap_presets(&self, device: &Device) -> &[ClapPreset] {
+        self.catalog()
+            .resolve(&device.plugin)
+            .filter(|entry| entry.is_builtin())
+            .map_or(&[], |entry| entry.clap_presets.as_slice())
+    }
+
+    /// Requests a discovered preset by its opaque source on the live instance.
+    fn load_clap_preset(&mut self, _device: &Device, _source: &ClapPresetSource) -> bool {
+        false
+    }
+
+    /// Whether this running device has CLAP user preset operations.
+    fn supports_user_presets(&self, _device: DeviceId) -> bool {
+        false
+    }
+
+    /// Requests the current preset state, completed by a device event.
+    fn capture_clap_preset(&mut self, _device: DeviceId) -> bool {
+        false
+    }
+
+    /// Applies the stored preset format to a running device.
+    fn load_user_preset(&mut self, _device: DeviceId, _state: Vec<u8>) -> bool {
+        false
+    }
+
+    /// Prepares the initial project state of a device to be inserted from the browser.
+    fn prepare_clap_preset(
+        &self,
+        _plugin: &PluginRef,
+        _source: &ClapPresetSource,
+    ) -> Option<komponist_plugins::PresetPreparation> {
+        None
+    }
+
+    /// The selected preset in the stored state, including older names.
+    fn saved_preset(&self, device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
+        let native = self.native_layout(device.id);
+        komponist_plugins::presets::saved_preset(
+            device,
+            self.verified_bundled_kind(device.id),
+            presets,
+            |id| {
+                let wire = native.as_ref()?.author_ids()?.get(id)?;
+                self.param_base(device.id, *wire)
+            },
+        )
     }
 
     /// Devices of `project` whose plugin is not in the catalog (S06 dialog on open).
@@ -1042,6 +1094,34 @@ impl DeviceHost for PluginHost {
         request: komponist_ipc::waveform_markers::Request,
     ) -> Result<(), komponist_ipc::waveform_markers::EditStatus> {
         self.manager.edit_waveform_markers(device, slot, request)
+    }
+
+    fn supports_user_presets(&self, device: DeviceId) -> bool {
+        self.manager.supports_user_presets(device)
+    }
+
+    fn capture_clap_preset(&mut self, device: DeviceId) -> bool {
+        self.manager.capture_clap_preset(device)
+    }
+
+    fn load_user_preset(&mut self, device: DeviceId, state: Vec<u8>) -> bool {
+        self.manager.load_user_preset(device, state)
+    }
+
+    fn prepare_clap_preset(
+        &self,
+        plugin: &PluginRef,
+        source: &ClapPresetSource,
+    ) -> Option<komponist_plugins::PresetPreparation> {
+        self.manager.prepare_clap_preset(plugin, source)
+    }
+
+    fn clap_presets(&self, device: &Device) -> &[ClapPreset] {
+        self.manager.clap_presets(device)
+    }
+
+    fn load_clap_preset(&mut self, device: &Device, source: &ClapPresetSource) -> bool {
+        self.manager.load_clap_preset(device, source)
     }
 
     fn late_blocks(&self, device: DeviceId) -> u64 {

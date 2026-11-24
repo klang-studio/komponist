@@ -707,3 +707,6 @@ unsafe extern "C" fn get_layout<P: NativeClapLayout, const V2: bool>(
 
 #[cfg(test)]
 mod tests;
+
+/// Optional CLAP preset discovery metadata for a previous factory preset name.
+pub use komponist_ipc::clap_presets::ALIAS_KEY as PRESET_ALIAS_KEY;

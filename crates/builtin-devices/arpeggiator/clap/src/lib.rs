@@ -8,6 +8,7 @@ use nice_plug::prelude::*;
 struct Arpeggiator;
 
 impl DeviceDefinition for Arpeggiator {
+    const PUBLISH_FACTORY_PRESETS: bool = true;
     const SPEC: &'static Spec = &komponist_arpeggiator::SPEC;
     const NAME: &'static str = "Arpeggiator";
     const ID: &'static str = "org.klang-studio.komponist.arpeggiator";
@@ -78,7 +79,7 @@ impl komponist_bundled_clap_adapter::MidiDefinition for Arpeggiator {
     }
 }
 
-nice_export_clap!(ArpeggiatorPlugin);
+komponist_bundled_clap_adapter::export_spec_with_presets!(Arpeggiator, ArpeggiatorPlugin);
 
 #[cfg(test)]
 #[path = "../../../layout_contract.rs"]

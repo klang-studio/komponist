@@ -147,9 +147,9 @@ fn loading_a_preset_is_one_undo_step_and_the_engine_follows_it_and_its_undo() {
         .unwrap();
 
     // "Hard Limit" switches the lookahead on: the processor got the values.
-    app.dispatch(Action::Plugin(PluginAction::ApplyInternalPreset {
+    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
         device: presse,
-        index: hard,
+        source: komponist_plugins::presets::legacy_source(hard),
     }));
     assert_eq!(loaded(&app, Internal::Presse, presse), Some((hard, false)));
     assert!(app.engine_mut().run_held(1024, &[], 0));
@@ -188,9 +188,9 @@ fn loading_a_preset_is_one_undo_step_and_the_engine_follows_it_and_its_undo() {
 #[test]
 fn loading_a_preset_stores_exactly_its_values_and_a_bad_index_changes_nothing() {
     let (mut app, _, limiter) = app_with(Internal::Limiter);
-    app.dispatch(Action::Plugin(PluginAction::ApplyInternalPreset {
+    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
         device: limiter,
-        index: 1,
+        source: komponist_plugins::presets::legacy_source(1),
     }));
     let values = Internal::Limiter
         .decode_state(state_of(&app, limiter).as_deref())
@@ -198,9 +198,9 @@ fn loading_a_preset_stores_exactly_its_values_and_a_bad_index_changes_nothing() 
     assert_eq!(Internal::Limiter.preset_values(1).unwrap(), values);
     // An index past the list changes nothing.
     let before = state_of(&app, limiter);
-    app.dispatch(Action::Plugin(PluginAction::ApplyInternalPreset {
+    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
         device: limiter,
-        index: 99,
+        source: komponist_plugins::presets::legacy_source(99),
     }));
     assert_eq!(state_of(&app, limiter), before);
 }
@@ -336,9 +336,9 @@ fn the_loaded_preset_survives_saving_and_old_projects_load_without_one() {
         target: DropTarget::Track(track),
     }));
     let device = app.project().tracks[0].channel.devices[1].id;
-    app.dispatch(Action::Plugin(PluginAction::ApplyInternalPreset {
+    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
         device,
-        index: 2,
+        source: komponist_plugins::presets::legacy_source(2),
     }));
     set_param(&mut app, device, kind, "mix", 0.9);
     app.dispatch(Action::Project(ProjectAction::Save));
@@ -378,9 +378,9 @@ fn the_loaded_preset_survives_saving_and_old_projects_load_without_one() {
 fn snapshot_of_the_eq_head_with_the_open_preset_dropdown() {
     let kind = Internal::Eq;
     let (mut app, _, device) = app_with(kind);
-    app.dispatch(Action::Plugin(PluginAction::ApplyInternalPreset {
+    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
         device,
-        index: 2,
+        source: komponist_plugins::presets::legacy_source(2),
     }));
     set_param(&mut app, device, kind, "out", 1.5);
     let mut h = harness(app);

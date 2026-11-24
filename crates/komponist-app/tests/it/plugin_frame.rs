@@ -26,6 +26,7 @@ use komponist_app::windows::plugin_frame::metrics;
 use komponist_app::{Action, App};
 use komponist_engine::Processor;
 use komponist_i18n::{Lang, de};
+use komponist_ipc::clap_presets::{ClapPreset, ClapPresetLocation, ClapPresetSource};
 use komponist_ipc::frame::{FrameChord, FrameKeyEvent, FrameRect, KeyMods};
 use komponist_ipc::{
     GuiSize, GuiTarget, ParamInfo, ParamValue, PluginDescriptor, PluginFormat as BundleFormat,
@@ -402,6 +403,8 @@ struct Script {
     /// Devices of the scripted plugin (they have a GUI and parameters).
     known: Vec<DeviceId>,
     events: Vec<PluginManagerEvent>,
+    new_presets: Option<Vec<ClapPreset>>,
+    preset_loads: Vec<ClapPresetSource>,
     set: Vec<(DeviceId, u32, f64)>,
     created: Vec<DeviceId>,
     opened: Vec<DeviceId>,
@@ -418,6 +421,7 @@ struct FakeHost {
     script: Rc<RefCell<Script>>,
     catalog: Catalog,
     native_layout: Option<std::sync::Arc<komponist_ipc::native_layout::NativeLayout>>,
+    presets: Vec<ClapPreset>,
     params: Vec<ParamInfo>,
     values: HashMap<u32, ParamValue>,
 }
@@ -462,7 +466,28 @@ impl DeviceHost for FakeHost {
         0
     }
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
-        std::mem::take(&mut self.script.borrow_mut().events)
+        let mut script = self.script.borrow_mut();
+        if let Some(presets) = script.new_presets.take() {
+            self.presets = presets;
+        }
+        std::mem::take(&mut script.events)
+    }
+    fn clap_presets(&self, device: &Device) -> &[ClapPreset] {
+        if self.known(device.id) {
+            &self.presets
+        } else {
+            self.catalog
+                .resolve(&device.plugin)
+                .filter(|entry| entry.is_builtin())
+                .map_or(&[], |entry| entry.clap_presets.as_slice())
+        }
+    }
+    fn load_clap_preset(&mut self, device: &Device, source: &ClapPresetSource) -> bool {
+        if !self.known(device.id) || !self.presets.iter().any(|entry| &entry.source == source) {
+            return false;
+        }
+        self.script.borrow_mut().preset_loads.push(source.clone());
+        true
     }
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
         self.catalog.resolve(plugin).map(|_| DeviceRole::Instrument)
@@ -583,6 +608,7 @@ fn scripted_app(layout: Option<&[u8]>) -> (App, Rc<RefCell<Script>>, DeviceId) {
         native_layout: layout.map(|bytes| {
             std::sync::Arc::new(komponist_ipc::native_layout::NativeLayout::parse(bytes).unwrap())
         }),
+        presets: Vec::new(),
         params,
         values,
     };
@@ -774,8 +800,11 @@ fn hexa_opens_its_parameters_and_steps_through_its_presets() {
     h.get_by_label(de::PLUGIN_FRAME_PRESET_NEXT).click();
     h.run_steps(3);
     let applied = h.state().dispatched().find_map(|a| match a {
-        Action::Plugin(PluginAction::ApplyHexaPreset { device, preset }) if *device == lead => {
-            Some(*preset)
+        Action::Plugin(PluginAction::ApplyClapPreset { device, source }) if *device == lead => {
+            std::str::from_utf8(source.load_key.as_deref()?)
+                .ok()?
+                .parse::<usize>()
+                .ok()
         }
         _ => None,
     });
@@ -828,6 +857,104 @@ fn hexa_opens_its_parameters_and_steps_through_its_presets() {
     assert_eq!(shown.value().as_deref(), Some(attack.text(stored).as_str()));
     let field = h.get_by_role_and_label(Role::ComboBox, de::PLUGIN_FRAME_PRESET);
     assert_eq!(field.value().as_deref(), Some(format!("{name} *").as_str()));
+}
+
+#[test]
+fn two_frame_preset_steps_in_one_event_batch_advance_twice() {
+    let (app, script, _) = app();
+    let mut h = harness(app);
+    let device = device_named(h.state(), "Hexa");
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::OpenWindow(device)));
+    h.run_steps(3);
+
+    push(
+        &script,
+        PluginManagerEvent::FrameHeaderAction {
+            device,
+            event: HeaderEvent::Preset(0),
+        },
+    );
+    h.run_steps(3);
+    for _ in 0..2 {
+        push(
+            &script,
+            PluginManagerEvent::FrameHeaderAction {
+                device,
+                event: HeaderEvent::PresetNext,
+            },
+        );
+    }
+    h.run_steps(3);
+    let app = h.state();
+    let target = app.project().find_device(device).unwrap().2;
+    let expected = &app.engine().host().clap_presets(target)[2].name;
+    let field = h.get_by_role_and_label(Role::ComboBox, de::PLUGIN_FRAME_PRESET);
+    assert_eq!(field.value().as_deref(), Some(expected.as_str()));
+}
+
+#[test]
+fn frame_keeps_queued_and_applied_preset_identity_when_discovery_reorders_entries() {
+    let (mut h, script, device) = bridge_frame_harness();
+    let plugin_id = h
+        .state()
+        .project()
+        .find_device(device)
+        .unwrap()
+        .2
+        .plugin
+        .id
+        .clone();
+    let preset = |name: &str| ClapPreset {
+        plugin_id: plugin_id.clone(),
+        source: ClapPresetSource {
+            location: ClapPresetLocation::Plugin,
+            load_key: Some(name.as_bytes().to_vec()),
+        },
+        name: name.into(),
+        localized_names: Default::default(),
+        aliases: Vec::new(),
+        features: Vec::new(),
+        factory: true,
+    };
+    let (a, b, inserted) = (preset("A"), preset("B"), preset("Inserted"));
+    script.borrow_mut().new_presets = Some(vec![a.clone(), b.clone()]);
+    h.run_steps(2);
+    push(
+        &script,
+        PluginManagerEvent::FrameHeaderAction {
+            device,
+            event: HeaderEvent::Preset(0),
+        },
+    );
+    h.run_steps(2);
+    push(
+        &script,
+        PluginManagerEvent::FrameHeaderAction {
+            device,
+            event: HeaderEvent::PresetNext,
+        },
+    );
+    h.run_steps(2);
+    assert_eq!(
+        script.borrow().preset_loads,
+        std::slice::from_ref(&a.source)
+    );
+    script.borrow_mut().new_presets = Some(vec![inserted, a.clone(), b.clone()]);
+    push(
+        &script,
+        PluginManagerEvent::ClapPresetLoaded {
+            device,
+            previous_state: std::sync::Arc::from([1_u8]),
+            state: std::sync::Arc::from([2_u8]),
+        },
+    );
+    h.run_steps(2);
+    let script = script.borrow();
+    assert_eq!(script.preset_loads, [a.source, b.source]);
+    let (_, header, _) = script.headers.last().unwrap();
+    assert_eq!(header.preset, Some(1));
+    assert_eq!(header.presets[1], "A");
 }
 
 #[test]

@@ -12,11 +12,12 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+use komponist_ipc::clap_presets::ClapPreset;
 use komponist_ipc::{PluginDescriptor, PluginFormat as BundleFormat, PluginKind};
 use komponist_model::PluginRef;
 use komponist_model::project::BUILTIN_KLOPFER;
 
-pub use komponist_builtin::BuiltinKind;
+pub use komponist_builtin::{BuiltinKind, presets};
 
 pub use crate::builtin::KLOPFER_CLAP_ID;
 
@@ -122,6 +123,8 @@ pub struct CatalogEntry {
     pub plugin: PluginRef,
     /// Device labels advertised by a native layout.
     pub localized: Option<komponist_ipc::native_layout::LocalizedPlugin>,
+    /// Presets advertised for this CLAP ID by the particular bundle that supplied the entry.
+    pub clap_presets: Vec<ClapPreset>,
     /// Instrument or effect.
     pub kind: PluginKind,
     /// Browser category for effects, `None` for instruments.
@@ -168,6 +171,21 @@ impl Catalog {
         &self.entries
     }
 
+    /// Providers with presets. Prefer a packaged device over its legacy in-process inventory.
+    pub fn preset_entries(&self) -> impl Iterator<Item = &CatalogEntry> {
+        self.entries.iter().filter(|entry| {
+            if entry.clap_presets.is_empty() {
+                return false;
+            }
+            match entry.location {
+                PluginLocation::InProcess(kind) => {
+                    kind.browsable_legacy_presets() && self.packaged(kind).is_none()
+                }
+                PluginLocation::Bundle { .. } => true,
+            }
+        })
+    }
+
     /// The entry for a device's plugin reference, if installed. Bundled and external CLAP
     /// references resolve separately even when they use the same plugin ID. A bundled reference
     /// also requires the exact packaged module.
@@ -202,13 +220,14 @@ impl Catalog {
     /// The same plugin in several bundles (one per folder) is listed once, from the first
     /// descriptor.
     pub fn set_scanned(&mut self, descriptors: &[PluginDescriptor]) {
-        self.set_scanned_with_bundled(descriptors, |_| false);
+        self.set_scanned_with_bundled(descriptors, |_| false, |_| Vec::new());
     }
 
     pub(crate) fn set_scanned_with_bundled(
         &mut self,
         descriptors: &[PluginDescriptor],
         shipped: impl Fn(&PluginDescriptor) -> bool,
+        presets_for: impl Fn(&PluginDescriptor) -> Vec<ClapPreset>,
     ) {
         self.entries.retain(CatalogEntry::is_builtin);
         let mut seen = HashSet::new();
@@ -218,7 +237,7 @@ impl Catalog {
             .filter_map(|d| {
                 let bundled = shipped(d);
                 seen.insert((d.format, d.id.clone(), bundled))
-                    .then(|| scanned_entry(d, bundled))
+                    .then(|| scanned_entry(d, bundled, presets_for(d)))
             })
             .collect();
         scanned.sort_by_cached_key(|e| e.plugin.name.to_lowercase());
@@ -250,7 +269,11 @@ impl Catalog {
 }
 
 /// The catalog entry of a scanned plugin.
-fn scanned_entry(d: &PluginDescriptor, bundled: bool) -> CatalogEntry {
+fn scanned_entry(
+    d: &PluginDescriptor,
+    bundled: bool,
+    clap_presets: Vec<ClapPreset>,
+) -> CatalogEntry {
     let format = match d.format {
         BundleFormat::Clap => komponist_model::PluginFormat::Clap,
         BundleFormat::Vst3 => komponist_model::PluginFormat::Vst3,
@@ -273,6 +296,7 @@ fn scanned_entry(d: &PluginDescriptor, bundled: bool) -> CatalogEntry {
         },
         kind: d.kind,
         localized: d.localized.clone(),
+        clap_presets,
         category: (d.kind == PluginKind::Effect)
             .then(|| EffectCategory::from_features(&d.features)),
         features: d.features.clone(),
@@ -411,12 +435,18 @@ pub struct CachedBundle {
     pub mtime_secs: u64,
     /// What the scan found (empty if it failed).
     pub descriptors: Vec<PluginDescriptor>,
+    /// Optional standard CLAP discovery output from a separate scan process.
+    #[serde(default)]
+    pub clap_presets: Vec<ClapPreset>,
+    /// Whether preset discovery completed or was unnecessary for this scan.
+    #[serde(default)]
+    pub preset_discovery_complete: bool,
     /// Why the scan failed (crash, timeout, no plugins), `None` on success.
     pub error: Option<String>,
 }
 
-/// Format version of the scan cache file. Version 2 includes native layout labels.
-pub const SCAN_CACHE_VERSION: u32 = 2;
+/// Format version of the scan cache file. Version 3 includes CLAP presets.
+pub const SCAN_CACHE_VERSION: u32 = 3;
 
 /// The scan cache file. A bundle is rescanned when its path is new or its mtime changed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -472,6 +502,21 @@ impl ScanCache {
         self.bundles
             .iter()
             .find(|b| b.path == path && b.mtime_secs == mtime_secs)
+    }
+
+    /// Presets for the selected descriptor, with bundle path as well as plug-in ID.
+    pub(crate) fn clap_presets_for(&self, descriptor: &PluginDescriptor) -> Vec<ClapPreset> {
+        if descriptor.format != BundleFormat::Clap {
+            return Vec::new();
+        }
+        self.bundles
+            .iter()
+            .find(|bundle| bundle.path == descriptor.bundle)
+            .into_iter()
+            .flat_map(|bundle| &bundle.clap_presets)
+            .filter(|preset| preset.plugin_id == descriptor.id)
+            .cloned()
+            .collect()
     }
 
     /// All descriptors in cache order.
@@ -541,6 +586,22 @@ mod tests {
             features: features.iter().map(|f| (*f).into()).collect(),
             bundle: format!("/usr/lib/clap/{name}.clap").into(),
             sidechain: false,
+        }
+    }
+
+    fn clap_preset(id: &str, name: &str) -> ClapPreset {
+        use komponist_ipc::clap_presets::{ClapPresetLocation, ClapPresetSource};
+        ClapPreset {
+            plugin_id: id.into(),
+            source: ClapPresetSource {
+                location: ClapPresetLocation::Plugin,
+                load_key: Some(name.as_bytes().to_vec()),
+            },
+            name: name.into(),
+            localized_names: Default::default(),
+            aliases: Vec::new(),
+            features: Vec::new(),
+            factory: true,
         }
     }
 
@@ -662,14 +723,16 @@ mod tests {
         bundled.bundle = "/app/bundled-clap/komponist_volt.clap".into();
         let mut catalog = Catalog::builtin();
         catalog.set_scanned(std::slice::from_ref(&external));
-        let external_ref = scanned_entry(&external, false).plugin;
-        let bundled_ref = scanned_entry(&bundled, true).plugin;
+        let external_ref = scanned_entry(&external, false, Vec::new()).plugin;
+        let bundled_ref = scanned_entry(&bundled, true, Vec::new()).plugin;
         assert!(catalog.resolve(&bundled_ref).is_none());
         assert!(catalog.resolve(&external_ref).is_some());
 
         let shipped_path = &bundled.bundle;
         let shipped = |d: &PluginDescriptor| &d.bundle == shipped_path;
-        catalog.set_scanned_with_bundled(&[external.clone(), bundled.clone()], shipped);
+        catalog.set_scanned_with_bundled(&[external.clone(), bundled.clone()], shipped, |d| {
+            vec![clap_preset(&d.id, &d.bundle.to_string_lossy())]
+        });
         let location = |plugin| &catalog.resolve(plugin).unwrap().location;
         assert!(
             matches!(location(&bundled_ref), PluginLocation::Bundle { path, .. } if path == shipped_path)
@@ -678,7 +741,7 @@ mod tests {
             matches!(location(&external_ref), PluginLocation::Bundle { path, .. } if *path == external.bundle)
         );
 
-        catalog.set_scanned_with_bundled(std::slice::from_ref(&bundled), shipped);
+        catalog.set_scanned_with_bundled(std::slice::from_ref(&bundled), shipped, |_| Vec::new());
         assert!(catalog.resolve(&external_ref).is_none());
         assert!(catalog.resolve(&bundled_ref).is_some());
     }
@@ -993,12 +1056,16 @@ mod tests {
                     path: "/usr/lib/clap/A.clap".into(),
                     mtime_secs: 1_700_000_000,
                     descriptors: vec![localized.clone()],
+                    clap_presets: vec![clap_preset("a", "Factory")],
+                    preset_discovery_complete: true,
                     error: None,
                 },
                 CachedBundle {
                     path: "/usr/lib/clap/B.clap".into(),
                     mtime_secs: 3,
                     descriptors: Vec::new(),
+                    clap_presets: Vec::new(),
+                    preset_discovery_complete: true,
                     error: Some("crashed (signal 11)".into()),
                 },
             ],

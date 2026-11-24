@@ -295,3 +295,18 @@ devices-card = Gerät { $name }
 # The text of a parameter's range: "20 Hz bis 20 kHz".
 devices-range = { $min } bis { $max }
 devices-marker-edit-failed = Der Schnittmarker lässt sich gerade nicht ändern.
+
+# Discovered CLAP presets in a device’s context menu.
+
+# Loading or capturing a discovered CLAP preset failed.
+devices-preset-load-failed = Das Preset lässt sich nicht laden.
+
+devices-preset-save-file = Preset speichern …
+
+devices-preset-load-file = Preset-Datei laden …
+
+devices-preset-files-empty = Keine Preset-Dateien
+
+devices-preset-save-failed = Das Preset lässt sich nicht speichern.
+
+devices-preset-saved = Preset gespeichert.

@@ -76,9 +76,9 @@ fn app_with_hexa(preset: usize) -> (App, DeviceId) {
     }));
     let track = app.project().tracks[0].id;
     let device = app.project().tracks[0].channel.devices[0].id;
-    app.dispatch(Action::Plugin(PluginAction::ApplyHexaPreset {
+    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
         device,
-        preset,
+        source: komponist_plugins::presets::legacy_source(preset),
     }));
     app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
         tracks: vec![track],

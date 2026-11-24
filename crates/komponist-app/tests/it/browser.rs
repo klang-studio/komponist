@@ -467,9 +467,9 @@ fn a_preset_loads_into_the_selected_tracks_hexa() {
     let preset = h.get_by_role_and_label(Role::ListItem, first.name).rect();
     double_click(&mut h, preset.center());
     assert!(h.state().dispatched().any(|a| *a
-        == Action::Plugin(PluginAction::ApplyHexaPreset {
+        == Action::Plugin(PluginAction::ApplyClapPreset {
             device,
-            preset: first.index
+            source: komponist_plugins::presets::legacy_source(first.index)
         })));
     let after = h.state().project().tracks[2].channel.devices[0]
         .state

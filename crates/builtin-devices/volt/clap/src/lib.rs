@@ -83,6 +83,7 @@ stable_choice!(VoiceMode {
 });
 
 impl DeviceDefinition for Volt {
+    const PUBLISH_FACTORY_PRESETS: bool = true;
     const SPEC: &'static Spec = &komponist_volt::SPEC;
     const NAME: &'static str = komponist_volt::NAME;
     const ID: &'static str = "org.klang-studio.komponist.volt";
@@ -160,7 +161,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Volt {
     }
 }
 
-nice_export_clap!(VoltPlugin);
+komponist_bundled_clap_adapter::export_spec_with_presets!(Volt, VoltPlugin);
 
 #[cfg(test)]
 mod tests;

@@ -843,6 +843,8 @@ impl Bridge {
             } => {
                 self.set_state(request, &state, parameter_bases);
             }
+            ControlMsg::LoadClapPreset(request, preset) => self.load_clap_preset(request, &preset),
+            ControlMsg::CaptureClapPreset(request) => self.capture_clap_preset(request),
             ControlMsg::ListParams => {
                 // Answered in every state (an empty list before `Load`).
                 self.report_params();
@@ -1308,6 +1310,82 @@ impl Bridge {
             result
         })();
         self.send(BridgeMsg::StateApplied { request, result });
+    }
+
+    fn load_clap_preset(&mut self, request: u32, preset: &komponist_ipc::clap_presets::PresetLoad) {
+        let Some(plugin) = self.plugin.as_mut() else {
+            self.send(BridgeMsg::ClapPresetApplied(
+                request,
+                Err("no plugin loaded".into()),
+            ));
+            return;
+        };
+        let mut rollback_failed = false;
+        let load = || {
+            let result = (|| {
+                let (previous_state, state) =
+                    plugin
+                        .apply_clap_preset(preset)
+                        .map_err(|(error, recovered)| {
+                            rollback_failed = !recovered;
+                            error
+                        })?;
+                let values = plugin
+                    .params()
+                    .into_iter()
+                    .filter_map(|info| {
+                        let value = plugin.param_value(info.id)?;
+                        Some(ParamValue {
+                            id: info.id,
+                            value,
+                            text: plugin.param_text(info.id, value).unwrap_or_default(),
+                        })
+                    })
+                    .collect();
+                Ok(komponist_ipc::control::AppliedClapPreset {
+                    previous_state,
+                    state,
+                    values,
+                })
+            })();
+            let superseded = result.is_ok() || rollback_failed;
+            (result, superseded)
+        };
+        let result = if let Some(active) = self.active.as_mut() {
+            self.region.set_bridge_state(BridgeState::Loaded);
+            let result = active.rt.restore(load).and_then(|(result, _)| result);
+            self.region.set_bridge_state(BridgeState::Active);
+            result
+        } else {
+            let mut load = load;
+            load().0
+        };
+        if result.is_ok() {
+            // Values coalesced before the load must not overwrite the preset's reported values.
+            self.pending_values.clear();
+            self.values_due = None;
+        }
+        self.send(BridgeMsg::ClapPresetApplied(request, result));
+        if rollback_failed {
+            self.shutdown = true;
+        }
+    }
+
+    fn capture_clap_preset(&mut self, request: u32) {
+        if let Some(active) = self.active.as_mut()
+            && (active.rt.has_queued_params() || active.rt.snapshot(|_| ()).is_err())
+        {
+            self.send(BridgeMsg::StateDeferred { request });
+            return;
+        }
+        let result = if let Some(plugin) = self.plugin.as_mut() {
+            plugin
+                .save_preset_state()
+                .map_err(|error| error.to_string())
+        } else {
+            Err("no plugin loaded".into())
+        };
+        self.send(BridgeMsg::ClapPresetCaptured(request, result));
     }
 
     fn report_device_assets(&mut self, request: u32) {

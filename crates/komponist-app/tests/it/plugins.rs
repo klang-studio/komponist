@@ -444,6 +444,186 @@ fn the_demo_plays_the_installed_plugins() {
 }
 
 #[test]
+fn standalone_clap_preset_round_trips_through_catalog_browser_and_bridge() {
+    use egui::{Key, Modifiers};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable as _;
+    use komponist_app::actions::EditAction;
+    use komponist_app::settings::Favorites;
+    use komponist_app::ui_state::BrowserSegment;
+    use komponist_app::views::browser::model::{self, Input};
+    use komponist_i18n::{Lang, de};
+    use komponist_model::edits::{NewTrack, add_track};
+    use std::collections::BTreeSet;
+
+    let Some(bundle) = std::env::var_os("KOMPONIST_LAYOUT_FIXTURE") else {
+        eprintln!("set KOMPONIST_LAYOUT_FIXTURE to the standalone C CLAP fixture");
+        return;
+    };
+    let bundle = std::path::PathBuf::from(bundle);
+    let dir = scratch("external-clap-preset");
+    let installed = dir.join("installed");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::copy(&bundle, installed.join("layout-fixture.clap")).unwrap();
+    let mut host = PluginHost::with_reference_devices(config(&dir));
+    host.start_scan(&PluginDirs {
+        clap: vec![installed],
+        vst3: Vec::new(),
+    });
+    poll_until(&mut host, "CLAP preset scan", |event| {
+        matches!(event, PluginManagerEvent::ScanFinished(_))
+    });
+
+    let plugin = clap_plugin("org.klang-studio.komponist.layout-fixture.valid");
+    let preset = &host.catalog().resolve(&plugin).unwrap().clap_presets[0];
+    assert_eq!(preset.display_name("de"), "Testanhebung");
+    assert!(preset.matches_name("Older Boost"));
+    let source = preset.source.clone();
+    let (project, track) = add_track(
+        &Project::new("CLAP presets"),
+        NewTrack {
+            name: None,
+            hue: None,
+            instrument: None,
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let rows = model::rows(
+        Lang::De,
+        &Input {
+            catalog: host.catalog(),
+            favorites: &Favorites::default(),
+            segment: BrowserSegment::Effects,
+            query: "Older Boost",
+            collapsed: &BTreeSet::new(),
+            project: &project,
+            exports: &[],
+        },
+    );
+    let row = rows
+        .iter()
+        .find(|row| row.name.contains("Testanhebung"))
+        .expect("alias finds localized preset");
+    let actions = model::activate(row, &project, Some(track));
+    let mut app = app_with(project, host);
+    for action in actions {
+        app.dispatch(action);
+    }
+    step_until(&mut app, "new preset-initialized effect", |app| {
+        app.project()
+            .track(track)
+            .is_some_and(|track| !track.channel.devices.is_empty())
+    });
+    let device = app.project().track(track).unwrap().channel.devices[0].id;
+    step_until(&mut app, "preset effect ready", |app| {
+        app.engine().host().status(device) == DeviceStatus::Ok
+            && app.engine().host().param_base(device, 42) == Some(0.75)
+    });
+    assert_eq!(app.engine().host().param_base(device, 7), Some(2.0));
+    let serialized = persist::to_json(app.project()).unwrap();
+    assert!(
+        persist::from_json(&serialized)
+            .unwrap()
+            .find_device(device)
+            .unwrap()
+            .2
+            .state
+            .is_some()
+    );
+
+    let preset_file = dir.join("Fixture Boost.kppreset");
+    app.dispatch(Action::Plugin(PluginAction::SaveUserPreset(device)));
+    let mut h = crate::acceptance_support::harness(app);
+    let enter_path = |h: &mut Harness<'_, App>, field: &str| {
+        h.get_by_label(field).focus();
+        h.run_steps(1);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.run_steps(2);
+        h.get_by_label(field)
+            .type_text(preset_file.to_str().unwrap());
+        h.run_steps(1);
+        h.key_press(Key::Enter);
+        h.run_steps(2);
+    };
+    enter_path(&mut h, de::FILE_NAME);
+    step_until(h.state_mut(), "CLAP user preset written", |_| {
+        preset_file.is_file()
+    });
+    let saved: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&preset_file).unwrap()).unwrap();
+    assert_eq!(saved["plugin_id"], plugin.id);
+    assert_eq!(saved["version"], 1);
+    assert!(!saved["state"].as_array().unwrap().is_empty());
+
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::SetParam {
+            device,
+            id: 42,
+            value: 0.25,
+        }));
+    step_until(h.state_mut(), "different plugin value persisted", |app| {
+        app.engine().host().param_base(device, 42) == Some(0.25)
+            && app.device_events().iter().any(|event| matches!(event, PluginManagerEvent::StateSnapshot { device: id, .. } if *id == device))
+    });
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::LoadUserPreset(device)));
+    h.run_steps(2);
+    h.get_by_label("Fixture Boost.kppreset").click();
+    h.run_steps(2);
+    h.get_by_label(de::FILE_LOAD).click();
+    h.run_steps(2);
+    let app = h.state_mut();
+    step_until(app, "CLAP user preset applied", |app| {
+        app.engine().host().param_base(device, 42) == Some(0.75)
+    });
+    app.dispatch(Action::Edit(EditAction::Undo));
+    step_until(app, "undo reveals prior value", |app| {
+        app.engine().host().param_base(device, 42) == Some(0.25)
+    });
+    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
+        device,
+        source,
+    }));
+    step_until(app, "discovered preset applied", |app| {
+        app.device_events().iter().any(|event| matches!(event, PluginManagerEvent::ClapPresetLoaded { device: id, .. } if *id == device))
+    });
+    assert_eq!(app.engine().host().param_base(device, 42), Some(0.75));
+    let host = app.engine_mut().host_mut();
+    assert!(host.set_param(device, 42, 0.375));
+    assert!(host.capture_clap_preset(device));
+    let mut captured = None;
+    step_until(
+        app,
+        "preset capture after the queued parameter edit",
+        |app| {
+            captured = app.device_events().iter().find_map(|event| match event {
+                PluginManagerEvent::ClapPresetCaptured { device: id, result } if *id == device => {
+                    Some(result.clone().unwrap())
+                }
+                _ => None,
+            });
+            captured.is_some()
+        },
+    );
+    let captured = captured.unwrap();
+    // The standalone fixture stores gain as the first native double.
+    assert_eq!(f64::from_ne_bytes(captured[..8].try_into().unwrap()), 0.375);
+
+    assert!(app.engine_mut().host_mut().capture_clap_preset(device));
+    app.dispatch(Action::Plugin(PluginAction::Reload(device)));
+    assert!(app.engine_mut().host_mut().poll().iter().any(|event| {
+        matches!(
+            event,
+            PluginManagerEvent::ClapPresetCaptured { device: captured, result: Err(_) }
+                if *captured == device
+        )
+    }));
+    app.shutdown();
+}
+
+#[test]
 fn native_layout_is_discovered_edited_saved_and_revalidated() {
     use egui_kittest::kittest::Queryable as _;
     use komponist_app::actions::{EditAction, UiAction};

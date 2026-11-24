@@ -182,6 +182,10 @@ impl<T: MidiDefinition> ClapPlugin for MidiEffect<T> {
     const CLAP_FEATURES: &'static [ClapFeature] = T::FEATURES;
 
     unsafe fn clap_custom_extension(id: &CStr) -> *const c_void {
+        let preset = crate::presets::load_extension::<T>(id);
+        if !preset.is_null() {
+            return preset;
+        }
         komponist_native_clap_sdk::extension::<Self>(id)
     }
 }

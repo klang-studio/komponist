@@ -82,6 +82,19 @@ pub fn scan(bundle: &Path) -> Result<Vec<PluginDescriptor>, HostingError> {
     scan::scan(bundle)
 }
 
+/// Lists presets from a CLAP bundle's discovery factory without activating a plug-in.
+/// Call from a disposable process when inspecting external plug-ins.
+pub fn discover_clap_presets(
+    bundle: &Path,
+) -> Result<Vec<komponist_ipc::clap_presets::ClapPreset>, HostingError> {
+    if bundle_format(bundle) != Some(PluginFormat::Clap) {
+        return Err(HostingError::Unsupported(
+            "preset discovery requires a CLAP bundle",
+        ));
+    }
+    clap::discover_presets(bundle)
+}
+
 /// The format of a bundle path by its extension (`.clap`, `.vst3`), case-insensitive.
 pub fn bundle_format(path: &Path) -> Option<PluginFormat> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();

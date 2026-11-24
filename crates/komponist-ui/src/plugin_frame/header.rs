@@ -138,8 +138,12 @@ fn left_items(ui: &mut Ui, t: Lang, model: &HeaderModel, events: &mut Vec<Header
             events.push(HeaderEvent::PresetNext);
         }
     });
-    // No preset API for CLAP/VST3 and no user presets for hexa yet (report).
-    ui.add_enabled(model.can_save, Button::new(t.plugin_frame_save()));
+    if ui
+        .add_enabled(model.can_save, Button::new(t.plugin_frame_save()))
+        .clicked()
+    {
+        events.push(HeaderEvent::SavePreset);
+    }
 }
 
 fn mapping_chip(ui: &mut Ui, chip: &str) {

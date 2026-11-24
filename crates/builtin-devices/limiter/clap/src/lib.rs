@@ -12,6 +12,7 @@ struct Limiter;
 const REDUCTION_TAP: &str = "reduction";
 
 impl DeviceDefinition for Limiter {
+    const PUBLISH_FACTORY_PRESETS: bool = true;
     const SPEC: &'static Spec = &komponist_limiter::SPEC;
     const NAME: &'static str = "Limiter";
     const ID: &'static str = "org.klang-studio.komponist.limiter";
@@ -77,7 +78,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Limiter {
     }
 }
 
-nice_export_clap!(LimiterPlugin);
+komponist_bundled_clap_adapter::export_spec_with_presets!(Limiter, LimiterPlugin);
 
 #[cfg(test)]
 #[path = "../../../layout_contract.rs"]

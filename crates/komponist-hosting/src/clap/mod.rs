@@ -19,6 +19,7 @@ mod effect_meter;
 mod events;
 mod host;
 mod native_layout;
+mod presets;
 mod processor;
 mod sidechain_fallback;
 mod signal_taps;
@@ -43,11 +44,14 @@ use clack_extensions::note_ports::PluginNotePorts;
 use clack_extensions::params::{ParamInfoBuffer, ParamInfoFlags, PluginParams};
 #[cfg(unix)]
 use clack_extensions::posix_fd::PluginPosixFd;
+use clack_extensions::preset_discovery::PluginPresetLoad;
 use clack_extensions::render::{PluginRender, RenderMode as ClapRenderMode};
 use clack_extensions::state::PluginState;
+use clack_extensions::state_context::{PluginStateContext, StateContextType};
 use clack_extensions::timer::{PluginTimer, TimerId as ClapTimerId};
 use clack_host::events::Match;
 use clack_host::prelude::*;
+use komponist_ipc::clap_presets::{ClapPreset, ClapPresetLocation};
 use komponist_ipc::control::param_flags;
 use komponist_ipc::shm::MAX_BLOCK;
 use komponist_ipc::{
@@ -134,6 +138,10 @@ fn c_str(s: Option<&CStr>) -> String {
         .unwrap_or_default()
 }
 
+pub(crate) fn discover_presets(bundle: &Path) -> Result<Vec<ClapPreset>, HostingError> {
+    presets::discover(bundle)
+}
+
 /// A CLAP factory descriptor as komponist's [`PluginDescriptor`].
 fn descriptor_of(d: &clack_host::plugin::PluginDescriptor, bundle: &Path) -> PluginDescriptor {
     let features: Vec<String> = d
@@ -187,6 +195,8 @@ struct Extensions {
     note_ports: Option<PluginNotePorts>,
     params: Option<PluginParams>,
     state: Option<PluginState>,
+    preset_load: Option<PluginPresetLoad>,
+    state_context: Option<PluginStateContext>,
     latency: Option<PluginLatency>,
     gui: Option<PluginGui>,
     timer: Option<PluginTimer>,
@@ -206,6 +216,8 @@ impl Extensions {
             note_ports: handle.get_extension(),
             params: handle.get_extension(),
             state: handle.get_extension(),
+            preset_load: handle.get_extension(),
+            state_context: handle.get_extension(),
             latency: handle.get_extension(),
             gui: handle.get_extension(),
             timer: handle.get_extension(),
@@ -252,7 +264,15 @@ impl ClapPlugin {
         plugin_id: &str,
         context: HostContext,
     ) -> Result<ClapPlugin, HostingError> {
-        let entry = load_entry(bundle)?;
+        Self::load_from_entry(bundle, plugin_id, context, load_entry(bundle)?)
+    }
+
+    fn load_from_entry(
+        bundle: &Path,
+        plugin_id: &str,
+        context: HostContext,
+        entry: PluginEntry,
+    ) -> Result<ClapPlugin, HostingError> {
         let factory = entry.get_plugin_factory().ok_or_else(|| {
             HostingError::Load(format!("{}: no plugin factory", bundle.display()))
         })?;
@@ -670,6 +690,77 @@ impl HostedPlugin for ClapPlugin {
         let mut reader = state;
         ext.load(&instance.plugin_handle(), &mut reader)
             .map_err(|e| HostingError::State(e.to_string()))
+    }
+
+    fn load_clap_preset(&mut self, preset: &ClapPreset) -> Result<(), HostingError> {
+        if preset.plugin_id != self.descriptor.id {
+            return Err(HostingError::State(
+                "preset belongs to a different plug-in".into(),
+            ));
+        }
+        let ext = self.ext.preset_load.ok_or(HostingError::Unsupported(
+            "the plugin has no preset-load extension",
+        ))?;
+        let path = match &preset.source.location {
+            ClapPresetLocation::Plugin => {
+                if preset.source.load_key.as_ref().is_none_or(Vec::is_empty) {
+                    return Err(HostingError::State(
+                        "the embedded preset has no load key".into(),
+                    ));
+                }
+                None
+            }
+            ClapPresetLocation::File(path) if Path::new(path).is_absolute() => {
+                Some(path.as_bytes())
+            }
+            ClapPresetLocation::File(_) => {
+                return Err(HostingError::State("the preset path is relative".into()));
+            }
+        };
+        let to_c_string = |value: Option<&[u8]>| {
+            value
+                .map(CString::new)
+                .transpose()
+                .map_err(|error| HostingError::State(error.to_string()))
+        };
+        let path = to_c_string(path)?;
+        let key = to_c_string(preset.source.load_key.as_deref())?;
+        let mut instance = self.instance.borrow_mut();
+        ext.load_from_location(
+            &instance.plugin_handle(),
+            presets::location_arg(path.as_deref()),
+            key.as_deref(),
+        )
+        .map_err(|error| HostingError::State(error.to_string()))
+    }
+
+    fn save_preset_state(&mut self) -> Result<Vec<u8>, HostingError> {
+        let Some(ext) = self.ext.state_context else {
+            return self.save_state();
+        };
+        let mut instance = self.instance.borrow_mut();
+        let mut blob = Vec::new();
+        ext.save(
+            &instance.plugin_handle(),
+            &mut blob,
+            StateContextType::ForPreset,
+        )
+        .map_err(|error| HostingError::State(error.to_string()))?;
+        Ok(blob)
+    }
+
+    fn load_preset_state(&mut self, state: &[u8]) -> Result<(), HostingError> {
+        let Some(ext) = self.ext.state_context else {
+            return self.load_state(state);
+        };
+        let mut instance = self.instance.borrow_mut();
+        let mut reader = state;
+        ext.load(
+            &instance.plugin_handle(),
+            &mut reader,
+            StateContextType::ForPreset,
+        )
+        .map_err(|error| HostingError::State(error.to_string()))
     }
 
     fn latency(&self) -> u32 {
