@@ -439,6 +439,16 @@
             "maximum": 4294967294
           }
         },
+        "signal_taps": {
+          "type": "object",
+          "propertyNames": {
+            "enum": ["spectrum", "level", "reduction"]
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,31}(?![\\s\\S])"
+          }
+        },
         "bands": {
           "type": "integer",
           "minimum": 1,
@@ -530,6 +540,9 @@
         },
         {
           "$ref": "#/$defs/canvas_cell"
+        },
+        {
+          "$ref": "#/$defs/meter_gr_cell"
         }
       ]
     },
@@ -626,6 +639,31 @@
         },
         "canvas": {
           "$ref": "#/$defs/canvas"
+        }
+      }
+    },
+    "meter_gr_cell": {
+      "type": "object",
+      "required": ["widget", "col", "row", "cols", "rows", "reduction_tap"],
+      "not": {
+        "anyOf": [
+          { "required": ["half"] },
+          { "required": ["param_id"] },
+          { "required": ["labels"] },
+          { "required": ["choices"] },
+          { "required": ["graph"] },
+          { "required": ["canvas"] }
+        ]
+      },
+      "properties": {
+        "widget": { "const": "meter_gr" },
+        "col": { "type": "integer", "minimum": 0, "maximum": 13 },
+        "row": { "const": 0 },
+        "cols": { "const": 1 },
+        "rows": { "const": 3 },
+        "reduction_tap": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,31}(?![\\s\\S])"
         }
       }
     }

@@ -31,6 +31,7 @@ pub mod legacy_bundled;
 pub mod manager;
 pub mod params;
 mod scan;
+pub mod signal_taps;
 mod verify_bundles;
 
 pub use catalog::{

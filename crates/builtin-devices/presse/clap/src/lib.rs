@@ -1,5 +1,6 @@
 //! Presse exported through the native CLAP adapter.
 
+use komponist_bundled_clap_adapter::signal_taps;
 use komponist_bundled_clap_adapter::{Binding, DeviceDefinition, Effect};
 use komponist_device_core::Spec;
 use komponist_i18n::Lang;
@@ -55,6 +56,13 @@ impl DeviceDefinition for Presse {
 type PressePlugin = Effect<Presse>;
 
 impl komponist_bundled_clap_adapter::AudioDefinition for Presse {
+    const SIGNAL_TAPS: &'static [signal_taps::Descriptor] = &[
+        signal_taps::Descriptor::new("detector", signal_taps::LEVEL_HISTORY, 32, 16_384)
+            .at_reference_rate(48_000),
+        signal_taps::Descriptor::new("reduction", signal_taps::REDUCTION, 32, 16_384)
+            .at_reference_rate(48_000),
+    ];
+
     fn dsp() -> Box<dyn komponist_device_core::Dsp> {
         komponist_presse::dsp()
     }

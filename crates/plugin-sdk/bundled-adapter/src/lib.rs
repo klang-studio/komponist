@@ -13,10 +13,11 @@ use std::sync::Arc;
 use komponist_device_core::{Dsp, SAMPLE_RATES, Spec};
 use komponist_i18n::Lang;
 use komponist_model::params::ParamInfo;
-use komponist_native_clap_sdk::{DeviceLayout, NativeClapLayout, PageLabels, Panel};
+use komponist_native_clap_sdk::{DeviceLayout, NativeClapLayout, PageLabels, Panel, PanelV2};
 use nice_plug::prelude::*;
 
 pub use instrument::{Instrument, to_device_note};
+pub use komponist_native_clap_sdk::signal_taps;
 pub use midi_effect::MidiEffect;
 pub use parameter::{Binding, Choice, Parameters, assert_choice_bindings};
 
@@ -58,6 +59,14 @@ pub trait DeviceDefinition: Send + 'static {
 
 /// Builds the DSP for an effect or instrument.
 pub trait AudioDefinition: DeviceDefinition {
+    /// Named streams backed by the DSP's audio tap or gain-reduction reporting.
+    const SIGNAL_TAPS: &'static [signal_taps::Descriptor] = &[];
+
+    /// An authored version 2 panel, when the device supplies one.
+    fn panel_v2() -> Option<PanelV2> {
+        None
+    }
+
     fn dsp() -> Box<dyn Dsp>;
 }
 
@@ -82,7 +91,8 @@ impl<T: AudioDefinition> Default for Effect<T> {
     fn default() -> Self {
         let params = parameter::Parameters::new(T::SPEC, T::choice);
         let dsp = T::dsp();
-        let meter = T::REPORTS_REDUCTION.then(|| Arc::new(meter::Meter::new(dsp.tap())));
+        let meter = (T::REPORTS_REDUCTION || !T::SIGNAL_TAPS.is_empty())
+            .then(|| Arc::new(meter::Meter::new(dsp.tap())));
         Self {
             applied: vec![None; params.len()],
             params: Arc::new(params),
@@ -170,6 +180,9 @@ impl<T: AudioDefinition> Plugin for Effect<T> {
         self.apply_params(true);
         self.restart_requested = false;
         self.dsp.activate(config.sample_rate);
+        if let Some(meter) = &self.meter {
+            meter.set_rate(config.sample_rate);
+        }
         context.set_latency_samples(self.dsp.latency());
         true
     }
@@ -216,8 +229,12 @@ impl<T: AudioDefinition> Plugin for Effect<T> {
         } else {
             self.dsp.process(input, output);
         }
-        if let Some(meter) = &self.meter {
-            meter.record(self.dsp.take_reduction_db());
+        if T::REPORTS_REDUCTION
+            && let Some(meter) = &self.meter
+        {
+            let reduction = self.dsp.take_reduction_db();
+            meter.record(reduction);
+            meter.record_named_reduction(count as u32, reduction);
         }
         // Keep delay lines and tails running when a quiet block precedes an audible one.
         ProcessStatus::KeepAlive
@@ -236,6 +253,10 @@ impl<T: AudioDefinition> ClapPlugin for Effect<T> {
     }
 
     unsafe fn clap_custom_extension(id: &CStr) -> *const c_void {
+        let named_taps = meter::signal_tap_extension::<T>(id);
+        if !named_taps.is_null() {
+            return named_taps;
+        }
         let meter = meter::extension::<T>(id);
         if !meter.is_null() {
             return meter;
@@ -253,6 +274,10 @@ impl<T: AudioDefinition> ClapPlugin for Effect<T> {
 impl<T: AudioDefinition> NativeClapLayout for Effect<T> {
     fn panel() -> Panel {
         panel_for::<T>()
+    }
+
+    fn panel_v2() -> Option<PanelV2> {
+        T::panel_v2()
     }
 }
 

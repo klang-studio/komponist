@@ -245,6 +245,7 @@ pub struct Card {
     /// The levels of the device's gain-reduction meter (set by the view from `Meters`); `None`
     /// for a device without a level feed.
     pub levels: Option<DeviceLevels>,
+    pub(super) native_meter_levels: std::collections::BTreeMap<u8, DeviceLevels>,
     /// The sampler's pads (only a running sampler has them).
     pub sampler: Option<SamplerView>,
     /// Editor data of the general-purpose Sampler.
@@ -255,9 +256,23 @@ pub struct Card {
     /// The live level and reduction history of a compressor (WP-93, set by the view from
     /// `Meters`); `None` for a device without a compressor graph.
     pub dynamics: Option<Dynamics>,
+    pub(super) graph_signals: std::collections::BTreeMap<(u8, u8), GraphSignals>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct GraphSignals {
+    pub(super) analysis: Option<Analysis>,
+    pub(super) dynamics: Option<Dynamics>,
 }
 
 impl Card {
+    pub(super) fn native_page(&self) -> Option<&komponist_ipc::native_layout::Page> {
+        let layout = self.native_layout.as_ref()?;
+        layout
+            .pages
+            .get(self.page.min(layout.pages.len().saturating_sub(1)))
+    }
+
     /// The parameter `id` of the body's cells.
     pub fn param(&self, id: &ParamId) -> Option<&Param> {
         self.params
@@ -269,10 +284,7 @@ impl Card {
         &self,
         cell: &layout::Cell,
     ) -> Option<&komponist_ipc::native_layout::Cell> {
-        let layout = self.native_layout.as_ref()?;
-        let page = layout
-            .pages
-            .get(self.page.min(layout.pages.len().saturating_sub(1)))?;
+        let page = self.native_page()?;
         let half = cell.half.map(|half| match half {
             layout::Half::Top => komponist_ipc::native_layout::Half::Top,
             layout::Half::Bottom => komponist_ipc::native_layout::Half::Bottom,
@@ -433,15 +445,16 @@ pub(crate) fn card(
             ) => bundled_params(device.id, host, native, kind.params_in(lang)),
             _ => None,
         }?;
-        let layout = match kind {
+        let layout = (native.schema_version < 2).then(|| match kind {
             BuiltinKind::Hexa => hexa_editor_layout(lang),
             BuiltinKind::Internal(Internal::GeneralSampler) => super::general_sampler::layout(lang),
             BuiltinKind::Internal(kind) => kind.layout_in(lang).clone(),
-        };
+        });
         Some((layout, params))
     });
     let bundled_editor = editor.is_some();
     let (editor_layout, editor_params) = editor.unzip();
+    let editor_layout = editor_layout.flatten();
     let params = if let Some(params) = editor_params {
         params
     } else if state == CardState::Ok {
@@ -497,7 +510,11 @@ pub(crate) fn card(
     };
     #[cfg(debug_assertions)]
     if state == CardState::Ok {
-        let known = |id: &ParamId| params.iter().any(|p| p.info.id == *id);
+        let known = |id: &ParamId| {
+            params
+                .iter()
+                .any(|p| p.info.id == *id || bundled_editor && id.plugin_id() == Some(p.wire))
+        };
         let errors = layout::validate(&layout, &super::cells::default_context(), &known);
         debug_assert!(
             errors.is_empty(),
@@ -604,10 +621,12 @@ pub(crate) fn card(
         width: layout::device_width(metrics::COLUMNS as u8),
         late: None,
         levels: None,
+        native_meter_levels: Default::default(),
         sampler,
         general_sampler: sampler_editor,
         analysis: None,
         dynamics: None,
+        graph_signals: Default::default(),
         routing: hexa_patch.as_ref().map(komponist_hexa::algorithms::routing),
         state,
     }
@@ -861,6 +880,16 @@ pub(super) fn native_card_layout(
                             Widget::Dropdown => WidgetKind::Dropdown,
                             Widget::MiniFader => WidgetKind::MiniFader,
                             Widget::Graph => unreachable!("validated graph binding"),
+                            Widget::MeterGr => {
+                                return Cell::span(
+                                    cell.col,
+                                    cell.row,
+                                    1,
+                                    cell.rows,
+                                    WidgetKind::MeterGr,
+                                    CellParam::None,
+                                );
+                            }
                             Widget::Canvas => {
                                 return Cell::span(
                                     cell.col,

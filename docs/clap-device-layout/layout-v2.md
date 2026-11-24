@@ -52,3 +52,13 @@ plugin ID, role and features still come from the descriptor.
 
 The same field is accepted as optional decoration in v1. Invalid decoration
 does not affect a v1 panel, and older v1 hosts ignore the field.
+
+### Live signals
+
+A graph may bind a named [signal tap](signal-taps.md) in its
+`signal_taps` object. An EQ accepts `spectrum`, a compressor accepts
+`level`, and a gain-reduction history accepts `level` and `reduction`.
+
+A `meter_gr` cell occupies a complete column and contains a
+`reduction_tap` key for its gain-reduction stream. Its level bars use the
+host's device level feed when available.

@@ -177,6 +177,11 @@ impl SpectrumAnalyzer {
     /// lets the picture fall.
     pub fn update(&mut self, now: f64, tap: &SampleTap) {
         tap.want();
+        self.update_samples(now, tap);
+    }
+
+    /// Reads a tap whose owner refreshed its lease already.
+    pub(crate) fn update_samples(&mut self, now: f64, tap: &SampleTap) {
         let rate = tap.rate();
         if rate <= 0.0 {
             return;

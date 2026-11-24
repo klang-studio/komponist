@@ -160,6 +160,15 @@ pub trait DeviceHost {
         None
     }
 
+    /// A signal stream declared by the running plugin.
+    fn signal_tap(
+        &self,
+        _device: DeviceId,
+        _name: &str,
+    ) -> Option<&komponist_plugins::signal_taps::SignalTap> {
+        None
+    }
+
     /// Last validated display list for an authored canvas.
     fn device_display(
         &self,
@@ -875,6 +884,14 @@ impl DeviceHost for PluginHost {
 
     fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
         self.manager.params(device)
+    }
+
+    fn signal_tap(
+        &self,
+        device: DeviceId,
+        name: &str,
+    ) -> Option<&komponist_plugins::signal_taps::SignalTap> {
+        self.manager.signal_tap(device, name)
     }
 
     fn device_display(

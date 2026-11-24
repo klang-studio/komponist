@@ -561,6 +561,8 @@ pub enum BridgeMsg {
     },
     /// Bounded display list encoded with the public display schema.
     DeviceDisplay(u32, Option<Vec<u8>>),
+    /// Immutable named signal streams advertised by the loaded plugin.
+    SignalTaps(Vec<crate::signal_taps::Descriptor>),
 }
 
 /// Payload of [`BridgeMsg::Loaded`].

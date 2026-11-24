@@ -251,15 +251,63 @@ impl View for Devices {
         }
 
         let visible = model::visible(&spans, scroll_x, body.width());
-        // The live spectrum of the visible frames (WP-92); hidden ones cost nothing.
         for (c, on_screen) in cards.iter_mut().zip(&visible) {
-            let show = *on_screen && model::shows_spectrum(c);
-            c.analysis = ctx.meters.analysis(c.device, show, now);
-            // The compressor's level point and reduction history likewise.
-            let live = *on_screen && model::shows_dynamics(c);
+            let show = *on_screen && c.state == model::CardState::Ok && !c.collapsed && !c.bypass;
+            let host = ctx.engine.host();
+            // Existing rich panels bind the original conventional keys. A v2 panel
+            // can choose its own keys explicitly through its graph cells.
+            let bundled_signal = |name| {
+                c.bundled_editor
+                    .then(|| host.signal_tap(c.device, name))
+                    .flatten()
+            };
+            let show_spectrum = show && model::shows_spectrum(c);
+            c.analysis = if let Some(tap) = bundled_signal("spectrum") {
+                ctx.meters.named_analysis(c.device, tap, show_spectrum, now)
+            } else {
+                ctx.meters.analysis(c.device, show_spectrum, now)
+            };
             if model::has_dynamics_graph(c) {
-                c.dynamics = ctx.meters.dynamics(c.device, live, now);
+                let (detector, reduction) =
+                    (bundled_signal("detector"), bundled_signal("reduction"));
+                c.dynamics = if show && (detector.is_some() || reduction.is_some()) {
+                    Some(ctx.meters.named_dynamics(detector, reduction))
+                } else {
+                    ctx.meters.dynamics(c.device, show, now)
+                };
             }
+            c.native_meter_levels = c
+                .native_page()
+                .filter(|_| show)
+                .into_iter()
+                .flat_map(|page| &page.cells)
+                .filter_map(|cell| {
+                    let tap = host.signal_tap(c.device, cell.reduction_tap.as_deref()?)?;
+                    let levels = ctx.meters.named_device_levels(c.device, tap, now)?;
+                    Some((cell.col, levels))
+                })
+                .collect();
+            c.graph_signals = c
+                .native_page()
+                .into_iter()
+                .flat_map(|page| &page.cells)
+                .filter_map(|cell| {
+                    let graph = cell.graph.as_ref()?;
+                    if graph.signal_taps.is_empty() {
+                        return None;
+                    }
+                    let named = |role| host.signal_tap(c.device, graph.signal_taps.get(role)?);
+                    let analysis = named("spectrum")
+                        .and_then(|tap| ctx.meters.named_analysis(c.device, tap, show, now));
+                    let (detector, reduction) = (named("level"), named("reduction"));
+                    let dynamics = (show && (detector.is_some() || reduction.is_some()))
+                        .then(|| ctx.meters.named_dynamics(detector, reduction));
+                    Some((
+                        (cell.row, cell.col),
+                        model::GraphSignals { analysis, dynamics },
+                    ))
+                })
+                .collect();
         }
         header_row(ui, ctx, header, track, &cards, &visible);
         track_macros::card(ui, ctx, macro_area, track, scroll_y);

@@ -657,6 +657,7 @@ impl PluginManager {
             } => (*format, path.clone(), plugin_id.clone()),
         };
         let sidechain = entry.sidechain;
+        let features = entry.features.clone();
         if !(setup.sample_rate.is_finite() && setup.sample_rate > 0.0)
             || !(1..=MAX_BLOCK).contains(&setup.max_block)
         {
@@ -700,8 +701,7 @@ impl PluginManager {
                 }
             };
             verified_kind = crate::bundled_state::kind_for_id(proof.plugin_id());
-            effect_meter =
-                verified_kind.and_then(|kind| bundled_effects::Meter::new(kind, setup.sample_rate));
+            effect_meter = bundled_effects::Meter::new(&features, setup.sample_rate);
             if is_sampler_kind(verified_kind)
                 && let Some(original) = state.as_ref()
                 && let Some(runtime) = self.sampler_runtime_state(original)
@@ -984,6 +984,18 @@ impl PluginManager {
     }
 
     /// The latest editor snapshot for an authenticated bundled sampler.
+    /// A named signal stream available from the running device's declared inventory.
+    pub fn signal_tap(
+        &self,
+        device: DeviceId,
+        key: &str,
+    ) -> Option<&crate::signal_taps::SignalTap> {
+        if let Some(direct) = self.direct.get(&device) {
+            return direct.signal_tap(key);
+        }
+        self.bridges.get(&device)?.signal_tap(key)
+    }
+
     pub fn sampler_ui(&self, device: DeviceId) -> Option<&komponist_ipc::sampler_ui::Snapshot> {
         if !is_sampler_kind(self.verified_bundles.get(&device).copied()) {
             return None;
