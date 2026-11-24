@@ -509,6 +509,14 @@ pub trait DeviceHost {
         SaveSnapshots::default()
     }
 
+    /// Ensures the deferred retirement can capture state in a later poll.
+    fn schedule_retiring_snapshot(&mut self, _device: DeviceId) {}
+
+    /// Whether the live instance still owes a capture or state commit before retirement.
+    fn retiring_snapshot_pending(&self, _device: DeviceId) -> bool {
+        false
+    }
+
     /// Snapshots bridged devices on a MIDI track before replacing its chain. Hosts with running
     /// bridges must return an error if any selected bridge lacks a usable snapshot.
     fn snapshot_selected_states(
@@ -1285,6 +1293,14 @@ impl DeviceHost for PluginHost {
         timeout: Duration,
     ) -> SaveSnapshots {
         self.manager.snapshot_available_states(devices, timeout)
+    }
+
+    fn schedule_retiring_snapshot(&mut self, device: DeviceId) {
+        self.manager.schedule_retiring_snapshot(device);
+    }
+
+    fn retiring_snapshot_pending(&self, device: DeviceId) -> bool {
+        self.manager.retiring_snapshot_pending(device)
     }
 
     fn snapshot_selected_states(

@@ -845,6 +845,10 @@ impl DirectDevice {
         }
     }
 
+    pub(crate) fn snapshot_capture_pending(&self) -> bool {
+        self.needs_snapshot() || self.state_warning.is_none() && self.snapshot_due.is_some()
+    }
+
     pub(crate) fn is_current_param_snapshot(&self, state: &Arc<[u8]>) -> bool {
         !self.needs_snapshot()
             && !self.is_macro_snapshot(state)

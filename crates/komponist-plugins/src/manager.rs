@@ -1710,8 +1710,8 @@ impl PluginManager {
         timeout: Duration,
     ) -> SaveSnapshots {
         let mut snapshots = self.snapshot_for_save_if(timeout, |device| devices.contains(&device));
-        // A failed bridge request can be definitive (e.g. a plug-in with no state extension).
-        // A request still in flight can deliver usable state after the deadline.
+        // A definitive bridge error (e.g. no state extension) only leaves the saved state.
+        // In-flight requests and deferred retries can still deliver usable state.
         snapshots.unavailable.retain(|device| {
             self.bridges
                 .get(device)
@@ -1719,6 +1719,29 @@ impl PluginManager {
                 || self.direct.contains_key(device)
         });
         snapshots
+    }
+
+    /// Ensures a deferred retirement has a nonblocking capture queued.
+    pub fn schedule_retiring_snapshot(&mut self, device: DeviceId) {
+        if let Some(bridge) = self.bridges.get_mut(&device) {
+            bridge.schedule_retiring_snapshot();
+        } else if let Some(direct) = self.direct.get_mut(&device) {
+            direct.request_state();
+        }
+    }
+
+    /// Whether the live device can still deliver a more recent capture or commit.
+    pub fn retiring_snapshot_pending(&self, device: DeviceId) -> bool {
+        self.pending_live_state_commits().any(|id| id == device)
+            || self.bridges.get(&device).is_some_and(|bridge| {
+                bridge.snapshot_capture_pending()
+                    || bridge.needs_snapshot_for_save()
+                    || bridge.is_loading_clap_preset()
+            })
+            || self
+                .direct
+                .get(&device)
+                .is_some_and(DirectDevice::snapshot_capture_pending)
     }
 
     /// Captures every running bridge on the track to be replaced. Devices without a running
@@ -1827,6 +1850,12 @@ impl PluginManager {
             // Windows: a pipe cannot be waited on for "readable"; look again shortly.
             #[cfg(windows)]
             std::thread::sleep((deadline - now).min(Duration::from_millis(1)));
+        }
+        for (device, request) in waiting {
+            if let Some(bridge) = self.bridges.get_mut(&device) {
+                // Report a late answer in wire order with any newer device state commits.
+                bridge.report_late_snapshot_as_event(request);
+            }
         }
         states.sort_by_key(|(device, _)| *device);
         states

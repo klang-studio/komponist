@@ -653,7 +653,7 @@ impl App {
         }
         // This is the final state, even if the initial baseline request never completed.
         self.param_undo.awaiting.remove(&device);
-        self.store_snapshot(device, state);
+        self.store_snapshot_for_save(device, state);
     }
 
     /// A snapshot taken for the file being saved: like [`App::store_snapshot`], but a device
