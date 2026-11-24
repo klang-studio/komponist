@@ -445,11 +445,14 @@ fn the_demo_plays_the_installed_plugins() {
 
 #[test]
 fn standalone_clap_preset_round_trips_through_catalog_browser_and_bridge() {
+    use egui::{Key, Modifiers};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable as _;
     use komponist_app::actions::EditAction;
     use komponist_app::settings::Favorites;
     use komponist_app::ui_state::BrowserSegment;
     use komponist_app::views::browser::model::{self, Input};
-    use komponist_i18n::Lang;
+    use komponist_i18n::{Lang, de};
     use komponist_model::edits::{NewTrack, add_track};
     use std::collections::BTreeSet;
 
@@ -530,43 +533,60 @@ fn standalone_clap_preset_round_trips_through_catalog_browser_and_bridge() {
             .is_some()
     );
 
-    assert!(app.engine_mut().host_mut().capture_clap_preset(device));
-    step_until(&mut app, "CLAP user preset captured", |app| {
-        app.device_events().iter().any(|event| matches!(event, PluginManagerEvent::ClapPresetCaptured { device: id, result: Ok(_) } if *id == device))
+    let preset_file = dir.join("Fixture Boost.kppreset");
+    app.dispatch(Action::Plugin(PluginAction::SaveUserPreset(device)));
+    let mut h = crate::acceptance_support::harness(app);
+    let enter_path = |h: &mut Harness<'_, App>, field: &str| {
+        h.get_by_label(field).focus();
+        h.run_steps(1);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.run_steps(2);
+        h.get_by_label(field)
+            .type_text(preset_file.to_str().unwrap());
+        h.run_steps(1);
+        h.key_press(Key::Enter);
+        h.run_steps(2);
+    };
+    enter_path(&mut h, de::FILE_NAME);
+    step_until(h.state_mut(), "CLAP user preset written", |_| {
+        preset_file.is_file()
     });
-    let user = app
-        .device_events()
-        .iter()
-        .find_map(|event| match event {
-            PluginManagerEvent::ClapPresetCaptured {
-                result: Ok(state), ..
-            } => Some(state.clone()),
-            _ => None,
-        })
-        .unwrap();
-    app.dispatch(Action::Plugin(PluginAction::SetParam {
-        device,
-        id: 42,
-        value: 0.25,
-    }));
-    step_until(&mut app, "different plugin value persisted", |app| {
+    let saved: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&preset_file).unwrap()).unwrap();
+    assert_eq!(saved["plugin_id"], plugin.id);
+    assert_eq!(saved["version"], 1);
+    assert!(!saved["state"].as_array().unwrap().is_empty());
+
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::SetParam {
+            device,
+            id: 42,
+            value: 0.25,
+        }));
+    step_until(h.state_mut(), "different plugin value persisted", |app| {
         app.engine().host().param_base(device, 42) == Some(0.25)
             && app.device_events().iter().any(|event| matches!(event, PluginManagerEvent::StateSnapshot { device: id, .. } if *id == device))
     });
-    assert!(app.engine_mut().host_mut().load_user_preset(device, user));
-    step_until(&mut app, "CLAP user preset applied", |app| {
-        app.device_events().iter().any(|event| matches!(event, PluginManagerEvent::ClapPresetLoaded { device: id, .. } if *id == device))
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::LoadUserPreset(device)));
+    h.run_steps(2);
+    h.get_by_label("Fixture Boost.kppreset").click();
+    h.run_steps(2);
+    h.get_by_label(de::FILE_LOAD).click();
+    h.run_steps(2);
+    let app = h.state_mut();
+    step_until(app, "CLAP user preset applied", |app| {
+        app.engine().host().param_base(device, 42) == Some(0.75)
     });
-    assert_eq!(app.engine().host().param_base(device, 42), Some(0.75));
     app.dispatch(Action::Edit(EditAction::Undo));
-    step_until(&mut app, "undo reveals prior value", |app| {
+    step_until(app, "undo reveals prior value", |app| {
         app.engine().host().param_base(device, 42) == Some(0.25)
     });
     app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
         device,
         source,
     }));
-    step_until(&mut app, "discovered preset applied", |app| {
+    step_until(app, "discovered preset applied", |app| {
         app.device_events().iter().any(|event| matches!(event, PluginManagerEvent::ClapPresetLoaded { device: id, .. } if *id == device))
     });
     assert_eq!(app.engine().host().param_base(device, 42), Some(0.75));

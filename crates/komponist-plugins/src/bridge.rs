@@ -866,6 +866,10 @@ impl Bridge {
             return false;
         }
         self.invalidate_state_requests();
+        self.sampler_ui = None;
+        self.sampler_ui_request = None;
+        self.assets.begin_restore();
+        self.asset_offline_waiting = None;
         let request = self.seq();
         self.pending_clap_preset = Some(request);
         self.state_restores.push_back(StateRestore::new(request));
@@ -1560,6 +1564,9 @@ impl Bridge {
             Err(message) => {
                 self.state_restores
                     .retain(|restore| restore.request != request);
+                if self.state_restores.is_empty() {
+                    self.assets.finish_restore();
+                }
                 events.push(PluginManagerEvent::ClapPresetFailed { device, message });
             }
         }

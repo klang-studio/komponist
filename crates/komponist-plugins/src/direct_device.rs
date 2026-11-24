@@ -230,7 +230,10 @@ impl DirectDevice {
     }
 
     pub(crate) fn poll_assets(&mut self, id: DeviceId, events: &mut Vec<PluginManagerEvent>) {
-        if self.pending_restore.is_some() || matches!(self.status, DeviceStatus::Crashed(_)) {
+        if self.pending_restore.is_some()
+            || self.pending_preset.is_some()
+            || matches!(self.status, DeviceStatus::Crashed(_))
+        {
             return;
         }
         if let Some(bindings) = self.assets.take_bindings() {
@@ -380,6 +383,8 @@ impl DirectDevice {
         {
             return false;
         }
+        self.sampler_ui = None;
+        self.assets.begin_restore();
         self.pending_preset = Some(preset);
         true
     }
@@ -409,6 +414,7 @@ impl DirectDevice {
             return;
         };
         self.pending_preset = None;
+        self.assets.finish_restore();
         match result {
             Ok(((before, after), inventory)) => {
                 let state: Arc<[u8]> = after.into();
@@ -418,7 +424,6 @@ impl DirectDevice {
                 self.released_automation.clear();
                 self.snapshot_due = None;
                 self.user_edit = false;
-                self.assets.finish_restore();
                 self.accept_inventory(inventory, true);
                 Self::report_metadata(device, events);
                 events.push(PluginManagerEvent::ClapPresetLoaded {
