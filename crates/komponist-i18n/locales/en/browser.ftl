@@ -37,7 +37,8 @@ browser-effects = Effects
 browser-midi-effects = MIDI Effects
 
 # Section of hexa's factory presets.
-browser-presets = Presets · Hexa
+browser-presets = Presets
+browser-provider-presets = Presets · { $plugin }
 
 # Section of the project's files (segment Alle).
 browser-project = Project
@@ -86,7 +87,7 @@ browser-presets-with = Presets matching “{ $query }”
 browser-category = Category { $label }
 
 # A preset in search results: "Glas · Hexa".
-browser-preset-hit = { $name } · Hexa
+browser-preset-hit = { $name } · { $plugin }
 
 # Accessible name of a row's star.
 browser-star = Favorite: { $name }

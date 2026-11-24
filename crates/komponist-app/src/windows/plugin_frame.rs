@@ -740,7 +740,15 @@ impl App {
                     }
                 }
                 HeaderEvent::PresetPrev | HeaderEvent::PresetNext => {
-                    let n = komponist_hexa::PRESET_COUNT;
+                    let n = self
+                        .project()
+                        .find_device(device)
+                        .map_or(0, |(_, _, device)| {
+                            self.engine.host().clap_presets(device).len()
+                        });
+                    if n == 0 {
+                        return;
+                    }
                     let current = self.frames.frame_mut(device).and_then(|f| f.preset);
                     let next = match (e, current) {
                         (HeaderEvent::PresetNext, Some(i)) => (i + 1) % n,
@@ -751,6 +759,9 @@ impl App {
                     self.apply_preset(device, next);
                 }
                 HeaderEvent::Preset(i) => self.apply_preset(device, i),
+                HeaderEvent::SavePreset => self
+                    .queue
+                    .push(Action::Plugin(PluginAction::SaveUserPreset(device))),
                 HeaderEvent::View(view) => {
                     self.queue
                         .push(Action::Ui(UiAction::SetPluginView { device, view }));
@@ -799,19 +810,13 @@ impl App {
         let Some((_, _, d)) = self.project().find_device(device) else {
             return;
         };
-        if !is_hexa(d) || preset >= komponist_hexa::PRESET_COUNT {
-            return;
+        if let Some(entry) = self.engine.host().clap_presets(d).get(preset) {
+            self.queue
+                .push(Action::Plugin(PluginAction::ApplyClapPreset {
+                    device,
+                    source: entry.source.clone(),
+                }));
         }
-        if let Some(f) = self.frames.frame_mut(device) {
-            f.preset = Some(preset);
-            f.preset_changed = false;
-            f.params_dirty = true;
-        }
-        self.queue
-            .push(Action::Plugin(PluginAction::ApplyHexaPreset {
-                device,
-                preset,
-            }));
     }
 
     /// A key the key thread took back from the plugin in frame `device` ([`keys`]).
@@ -1419,7 +1424,7 @@ impl App {
         else {
             return;
         };
-        self.update_hexa_state(i);
+        self.update_preset_state(i);
         self.frames.frames[i].keep_on_top = window.keep_on_top;
         let f = &self.frames.frames[i];
         let header = self.header_model(
@@ -1508,37 +1513,33 @@ impl App {
         }
     }
 
-    /// hexa: which factory preset its state is (" *" once a knob changed it).
-    fn update_hexa_state(&mut self, i: usize) {
+    /// Which advertised preset the device state contains.
+    fn update_preset_state(&mut self, i: usize) {
         let device = self.frames.frames[i].device;
         let Some((_, _, d)) = self.project().find_device(device) else {
             return;
         };
-        if !is_hexa(d) {
-            return;
-        }
         let state = d.state.clone();
+        let host = self.engine.host();
+        let entries = host.clap_presets(d);
+        let selected = host.saved_preset(d, entries);
         let f = &mut self.frames.frames[i];
         let same = match &f.state_seen {
-            Some(Some(seen)) => state.as_ref().is_some_and(|s| Arc::ptr_eq(seen, s)),
+            Some(Some(seen)) => state.as_ref().is_some_and(|state| Arc::ptr_eq(seen, state)),
             Some(None) => state.is_none(),
             None => false,
         };
-        if same {
+        let preset = selected
+            .map(|(index, _)| index)
+            .or_else(|| f.preset.filter(|index| *index < entries.len()));
+        let changed = selected.map_or(preset.is_some(), |(_, changed)| changed);
+        if same && f.preset == preset && f.preset_changed == changed {
             return;
         }
-        f.state_seen = Some(state.clone());
+        f.state_seen = Some(state);
         f.params_dirty = true;
-        let patch = komponist_hexa::decode_state(state.as_deref())
-            .unwrap_or_else(|_| komponist_hexa::default_patch());
-        let encoded = komponist_hexa::encode_state(&patch);
-        match factory_states().iter().position(|p| *p == encoded) {
-            Some(p) => {
-                f.preset = Some(p);
-                f.preset_changed = false;
-            }
-            None => f.preset_changed = f.preset.is_some(),
-        }
+        f.preset = preset;
+        f.preset_changed = changed;
     }
 
     /// The header of `device`'s frame.
@@ -1555,7 +1556,7 @@ impl App {
         let found = project.find_device(device);
         let host = self.engine.host();
         let status = host.status(device);
-        let (name, sub, bypassed, hexa) = match found {
+        let (name, sub, bypassed) = match found {
             Some((channel, _, d)) => {
                 let track = match channel {
                     ChannelRef::Track(t) => project.track(t).map_or("", |t| t.name.as_str()),
@@ -1568,23 +1569,21 @@ impl App {
                         crate::dialogs::missing_plugins::format_label(self.lang, d.plugin.format)
                     ),
                     d.bypass,
-                    is_hexa(d),
                 )
             }
-            None => (String::new(), String::new(), false, false),
+            None => (String::new(), String::new(), false),
         };
         let mark = match (&status, bypassed) {
             (DeviceStatus::Ok, false) => Mark::Active,
             (DeviceStatus::Ok, true) => Mark::Bypassed,
             _ => Mark::Inactive,
         };
-        let presets = if hexa {
-            komponist_hexa::presets()
-                .map(|p| p.name.to_owned())
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let presets: Vec<String> = found
+            .map_or(&[][..], |(_, _, device)| host.clap_presets(device))
+            .iter()
+            .map(|entry| entry.display_name(self.lang.code()).to_owned())
+            .collect();
+        let preset = preset.filter(|index| *index < presets.len());
         let mapping_chip = found.and_then(|(owner, _, _)| {
             let ChannelRef::Track(id) = owner else {
                 return None;
@@ -1607,9 +1606,9 @@ impl App {
             mark,
             bypassed,
             presets,
-            preset: if hexa { preset } else { None },
+            preset,
             preset_changed,
-            can_save: false,
+            can_save: host.supports_user_presets(device),
             view,
             has_gui: host.has_gui(device) || had_gui,
             keep_on_top,
@@ -1696,20 +1695,6 @@ impl App {
 // ------------------------------------------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------------------------------------------
-
-/// hexa's factory presets as device states, encoded once (preset match per state change).
-pub(crate) fn factory_states() -> &'static [Vec<u8>] {
-    static STATES: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
-    STATES.get_or_init(|| {
-        (0..komponist_hexa::PRESET_COUNT)
-            .map(|p| {
-                komponist_hexa::preset_patch(p)
-                    .map(|patch| komponist_hexa::encode_state(&patch))
-                    .unwrap_or_default()
-            })
-            .collect()
-    })
-}
 
 fn is_hexa(device: &Device) -> bool {
     device.plugin.format == PluginFormat::Builtin && device.plugin.id == BUILTIN_HEXA

@@ -34,6 +34,7 @@
 //!
 //! This crate links no plugin format and no audio backend.
 
+pub mod clap_presets;
 pub mod control;
 pub mod device_assets;
 pub mod device_canvas;

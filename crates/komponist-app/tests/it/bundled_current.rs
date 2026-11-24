@@ -1255,11 +1255,27 @@ fn packaged_effect_cards_and_presets() {
         app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
         app.dispatch(Action::Ui(UiAction::RevealDevice(device)));
         if kind == Internal::Eq {
-            app.dispatch(Action::Plugin(PluginAction::ApplyInternalPreset {
-                device,
-                index: 1,
-            }));
             let preset = kind.presets()[1].name;
+            let target = app.project().find_device(device).unwrap().2;
+            let source = app
+                .engine()
+                .host()
+                .clap_presets(target)
+                .iter()
+                .find(|entry| entry.name == preset)
+                .unwrap()
+                .source
+                .clone();
+            app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
+                device,
+                source,
+            }));
+            step_until(app, "bundled EQ preset applied", |app| {
+                app.device_events().iter().any(|event| {
+                    matches!(event,
+                    PluginManagerEvent::ClapPresetLoaded { device: id, .. } if *id == device)
+                })
+            });
             harness.run_steps(3);
             harness.get_by_role_and_label(Role::Button, &lang.devices_preset_name(preset));
             harness.get_by_role_and_label(Role::Group, lang.ui_graph_eq());

@@ -99,6 +99,7 @@ stable_choice!(VoiceMode {
 });
 
 impl DeviceDefinition for Surf {
+    const PUBLISH_FACTORY_PRESETS: bool = true;
     const SPEC: &'static Spec = &komponist_surf::SPEC;
     const NAME: &'static str = komponist_surf::NAME;
     const ID: &'static str = "org.klang-studio.komponist.surf";
@@ -191,7 +192,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Surf {
     }
 }
 
-nice_export_clap!(SurfPlugin);
+komponist_bundled_clap_adapter::export_spec_with_presets!(Surf, SurfPlugin);
 
 #[cfg(test)]
 mod tests;

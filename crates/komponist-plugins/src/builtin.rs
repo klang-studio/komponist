@@ -27,6 +27,7 @@ pub(crate) fn entries() -> Vec<CatalogEntry> {
                 .collect();
             CatalogEntry {
                 localized: None,
+                clap_presets: crate::presets::legacy_inventory(builtin),
                 plugin: spec.plugin_ref(),
                 kind: match spec.role {
                     DeviceRole::MidiEffect => PluginKind::MidiEffect,

@@ -20,6 +20,7 @@ use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
+use komponist_ipc::clap_presets::{ClapPreset, ClapPresetLocation, ClapPresetSource};
 use komponist_ipc::{
     LogLevel, ParamInfo, PluginDescriptor, PluginFormat as BundleFormat, PluginKind,
 };
@@ -53,6 +54,8 @@ struct Script {
     gui_previews: Vec<(DeviceId, u32, f64)>,
     closed_guis: Vec<DeviceId>,
     snapshot_calls: usize,
+    presets: Vec<(DeviceId, ClapPresetSource)>,
+    restores: Vec<(DeviceId, Arc<[u8]>)>,
     shut_down: bool,
 }
 
@@ -128,6 +131,7 @@ struct FakeHost {
     catalog: Catalog,
     statuses: HashMap<DeviceId, DeviceStatus>,
     gui: Option<GuiEditSource>,
+    clap_presets: Vec<ClapPreset>,
 }
 
 impl DeviceHost for FakeHost {
@@ -198,6 +202,34 @@ impl DeviceHost for FakeHost {
 
     fn catalog(&self) -> &Catalog {
         &self.catalog
+    }
+
+    fn clap_presets(&self, device: &Device) -> &[ClapPreset] {
+        if self
+            .clap_presets
+            .first()
+            .is_some_and(|preset| preset.plugin_id == device.plugin.id)
+        {
+            &self.clap_presets
+        } else {
+            &[]
+        }
+    }
+
+    fn load_clap_preset(&mut self, device: &Device, source: &ClapPresetSource) -> bool {
+        self.script
+            .borrow_mut()
+            .presets
+            .push((device.id, source.clone()));
+        true
+    }
+
+    fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        self.script
+            .borrow_mut()
+            .restores
+            .push((device, Arc::clone(state)));
+        true
     }
 
     fn start_scan(&mut self, dirs: &PluginDirs) {
@@ -297,12 +329,26 @@ impl FakeHost {
 
 /// The demo on the null backend with a [`FakeHost`] that knows only hexa.
 fn app() -> (App, Rc<RefCell<Script>>) {
+    app_with_presets(Vec::new())
+}
+
+fn app_with_presets(clap_presets: Vec<ClapPreset>) -> (App, Rc<RefCell<Script>>) {
     let script = Rc::new(RefCell::new(Script::default()));
+    let mut catalog = Catalog::builtin();
+    if let Some(preset) = clap_presets.first() {
+        catalog.set_scanned(&[super::fake_host::descriptor(
+            &preset.plugin_id,
+            "Surge XT",
+            PluginKind::Instrument,
+            &["instrument"],
+        )]);
+    }
     let host = FakeHost {
         script: Rc::clone(&script),
-        catalog: Catalog::builtin(),
+        catalog,
         statuses: HashMap::new(),
         gui: None,
+        clap_presets,
     };
     let engine = EngineSync::null(Box::new(host));
     let mut app = App::new(
@@ -401,6 +447,128 @@ fn snapshot(script: &Rc<RefCell<Script>>, device: DeviceId, bytes: &[u8]) {
             state: Arc::from(bytes),
         },
     );
+}
+
+#[test]
+fn discovered_clap_preset_menu_loads_a_localized_preset_in_one_undo_step() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+    use komponist_app::actions::{SelectMode, SelectionChange, UiAction};
+    use komponist_app::ui_state::DockTab;
+    use komponist_i18n::Lang;
+    use std::path::PathBuf;
+
+    let demo = demo_project();
+    let (track, synth) = demo
+        .tracks
+        .iter()
+        .find_map(|track| {
+            track
+                .channel
+                .devices
+                .iter()
+                .find(|d| d.plugin.name == "Surge XT")
+                .map(|d| (track.id, d))
+        })
+        .unwrap();
+    let source = ClapPresetSource {
+        location: ClapPresetLocation::Plugin,
+        load_key: Some(vec![0xc9, 1]),
+    };
+    let preset = ClapPreset {
+        plugin_id: synth.plugin.id.clone(),
+        source: source.clone(),
+        name: "Warm Amp".into(),
+        localized_names: [("de".into(), "Warmer Verstärker".into())].into(),
+        aliases: Vec::new(),
+        features: Vec::new(),
+        factory: true,
+    };
+
+    for (lang, preset_label, earlier_presets) in [
+        (Lang::De, "Warmer Verstärker", 0_u8),
+        (Lang::En, "Warm Amp", 48),
+    ] {
+        let mut presets = (0..earlier_presets)
+            .map(|index| ClapPreset {
+                name: format!("Other preset {index}"),
+                localized_names: Default::default(),
+                source: ClapPresetSource {
+                    location: ClapPresetLocation::Plugin,
+                    load_key: Some(vec![index]),
+                },
+                ..preset.clone()
+            })
+            .collect::<Vec<_>>();
+        presets.push(preset.clone());
+        let (app, script) = app_with_presets(presets);
+        let mut app = app.with_lang(lang);
+        app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+            tracks: vec![track],
+            mode: SelectMode::Replace,
+        })));
+        app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+        let original = state(&app, synth.id);
+        let mut harness = komponist_ui::snapshot::builder::<App>(1.0)
+            .with_size(egui::vec2(1920.0, 1080.0))
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        harness.run_steps(3);
+
+        let card_label = lang.devices_card("Surge XT");
+        harness
+            .get_by_role_and_label(Role::Group, card_label.as_str())
+            .get_by_role_and_label(Role::Button, lang.devices_preset())
+            .click();
+        harness.run_steps(3);
+        if earlier_presets > 0 {
+            for _ in 0..=earlier_presets {
+                harness.key_press(egui::Key::ArrowDown);
+                harness.step();
+            }
+            harness.run_steps(3);
+        }
+        if let Some(dir) = std::env::var_os("KOMPONIST_CLAP_PRESET_PNG_DIR") {
+            harness
+                .render()
+                .unwrap()
+                .save(PathBuf::from(dir).join(format!("clap-preset-menu-{}.png", lang.code())))
+                .unwrap();
+        }
+        let row = harness.get_by_role_and_label(Role::MenuItem, preset_label);
+        assert!((0.0..1080.0).contains(&row.rect().center().y));
+        row.click();
+        harness.run_steps(3);
+        assert_eq!(script.borrow().presets, vec![(synth.id, source.clone())]);
+        assert_eq!(state(harness.state(), synth.id), original);
+
+        let previous_state: Arc<[u8]> = Arc::from([12_u8]);
+        let loaded_state: Arc<[u8]> = Arc::from([34_u8]);
+        push(
+            &script,
+            PluginManagerEvent::ClapPresetLoaded {
+                device: synth.id,
+                previous_state: Arc::clone(&previous_state),
+                state: Arc::clone(&loaded_state),
+            },
+        );
+        let app = harness.state_mut();
+        app.step();
+        assert_eq!(state(app, synth.id), Some(Arc::clone(&loaded_state)));
+        assert!(
+            script.borrow().restores.is_empty(),
+            "the live instance already loaded it"
+        );
+        app.dispatch(Action::Edit(EditAction::Undo));
+        assert_eq!(state(app, synth.id), original);
+        let expected = original.unwrap_or(previous_state);
+        assert_eq!(script.borrow().restores.last(), Some(&(synth.id, expected)));
+        app.dispatch(Action::Edit(EditAction::Redo));
+        assert_eq!(state(app, synth.id), Some(Arc::clone(&loaded_state)));
+        assert_eq!(
+            script.borrow().restores.last(),
+            Some(&(synth.id, loaded_state))
+        );
+    }
 }
 
 #[test]
@@ -1100,6 +1268,7 @@ fn plugin_gui_automation(
         catalog: Catalog::builtin(),
         statuses: HashMap::new(),
         gui: Some(gui.clone()),
+        clap_presets: Vec::new(),
     };
     let mut app = App::headless(project).with_device_host(Box::new(host));
     app.engine_mut().hold_engine().unwrap();

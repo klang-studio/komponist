@@ -439,9 +439,42 @@ impl App {
         }
     }
 
-    /// A state snapshot of a bridged plugin (its GUI, a card parameter, saving) goes into the
-    /// document as a tracked change, coalesced (module docs). A state equal to the stored one is
-    /// skipped.
+    /// Records a preset already applied to the live plugin as a distinct undo step.
+    pub(crate) fn record_clap_preset(
+        &mut self,
+        device: DeviceId,
+        previous_state: &Arc<[u8]>,
+        state: &Arc<[u8]>,
+    ) {
+        let Some((_, _, target)) = self.project().find_device(device) else {
+            return;
+        };
+        let no_document_state = target.state.is_none();
+        if self.doc.in_gesture() {
+            self.end_gesture();
+        }
+        self.param_undo.awaiting.remove(&device);
+        self.param_undo.echo.remove(&device);
+        self.param_undo.turned.remove(&device);
+        self.param_undo.steps.remove(&device);
+        self.param_undo.tails.remove(&device);
+        if no_document_state {
+            self.param_undo
+                .baseline
+                .entry(device)
+                .or_insert_with(|| Arc::clone(previous_state));
+        }
+        if no_document_state && previous_state == state {
+            return;
+        }
+        if let Err(error) = self.doc.apply("undo-load-preset", |project| {
+            edits::set_device_state(project, device, Some(Arc::clone(state)))
+        }) {
+            self.record_edit_error(error);
+        }
+    }
+
+    /// Records a plugin's coalesced state snapshot. Equal states leave the document unchanged.
     pub(crate) fn store_snapshot(&mut self, device: DeviceId, state: &Arc<[u8]>) {
         self.apply_device_snapshot(device, state);
         if self.has_state(device, state) {

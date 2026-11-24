@@ -36,14 +36,15 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::process::CommandExt;
 #[cfg(windows)]
 use std::os::windows::io::AsHandle;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak, mpsc};
 use std::time::{Duration, Instant};
 
 use komponist_builtin::BuiltinKind;
-use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError, socket_pair};
+use komponist_ipc::clap_presets::PresetLoad;
+use komponist_ipc::control::{AppliedClapPreset, PROTOCOL_VERSION, StateRestoreError, socket_pair};
 use komponist_ipc::device_assets::{MAX_BINDINGS_BYTES, OfflineRequest, Snapshot};
 use komponist_ipc::{
     AppChannel, BridgeClient, BridgeMsg, ChannelError, ControlMsg, ErrorContext, GuiTarget,
@@ -243,6 +244,8 @@ pub(crate) struct Bridge {
     /// `GetState` requests without answer, in send order.
     state_requests: VecDeque<StateRequest>,
     state_restores: VecDeque<StateRestore>,
+    pending_clap_preset: Option<u32>,
+    pending_preset_capture: Option<u32>,
     // The most recent matched reply, including partial restore failures reported as UI updates.
     restore_reply: Option<(u32, Result<(), String>)>,
     snapshot_due: Option<Instant>,
@@ -264,6 +267,8 @@ pub(crate) struct Bridge {
     pub values: BTreeMap<u32, ParamValue>,
     pub base_values: BTreeMap<u32, f64>,
     verified_bundled_kind: Option<BuiltinKind>,
+    format: PluginFormat,
+    bundle: PathBuf,
     automated_params: BTreeMap<u32, Option<f64>>,
     temporary_params: BTreeSet<u32>,
     pending_params: BTreeSet<u32>,
@@ -305,6 +310,7 @@ pub(crate) struct SpawnSetup<'a> {
     pub role: DeviceRole,
     pub format: PluginFormat,
     pub bundle: &'a Path,
+    pub catalog_bundle: &'a Path,
     pub plugin_id: &'a str,
     pub verified_bundled_kind: Option<BuiltinKind>,
     pub state: Option<Arc<[u8]>>,
@@ -350,7 +356,7 @@ impl Bridge {
         let writer = start_writer(channel.clone());
         let _ = writer.send(ControlMsg::Load {
             format: s.format,
-            bundle: s.bundle.to_path_buf(),
+            bundle: s.catalog_bundle.to_path_buf(),
             plugin_id: s.plugin_id.to_owned(),
         });
         let mut state_restores = VecDeque::new();
@@ -394,6 +400,8 @@ impl Bridge {
             stop_deadline: None,
             state_requests: VecDeque::new(),
             state_restores,
+            pending_clap_preset: None,
+            pending_preset_capture: None,
             restore_reply: None,
             snapshot_due: None,
             last_state: s.state,
@@ -413,6 +421,8 @@ impl Bridge {
             values: BTreeMap::new(),
             base_values: BTreeMap::new(),
             verified_bundled_kind: s.verified_bundled_kind,
+            format: s.format,
+            bundle: s.catalog_bundle.to_path_buf(),
             automated_params: BTreeMap::new(),
             temporary_params: BTreeSet::new(),
             pending_params: BTreeSet::new(),
@@ -841,6 +851,47 @@ impl Bridge {
         }
     }
 
+    pub(crate) fn is_loading_clap_preset(&self) -> bool {
+        self.pending_clap_preset.is_some()
+    }
+
+    pub(crate) fn has_clap_presets_from(&self, bundle: &Path) -> bool {
+        self.status() == DeviceStatus::Ok
+            && self.format == PluginFormat::Clap
+            && self.bundle == bundle
+    }
+
+    pub(crate) fn load_clap_preset(&mut self, preset: PresetLoad) -> bool {
+        if !self.running() || !self.state_restores.is_empty() {
+            return false;
+        }
+        self.invalidate_state_requests();
+        let request = self.seq();
+        self.pending_clap_preset = Some(request);
+        self.state_restores.push_back(StateRestore::new(request));
+        self.long_call_since.get_or_insert_with(Instant::now);
+        self.send(ControlMsg::LoadClapPreset(request, preset));
+        true
+    }
+
+    pub(crate) fn supports_user_presets(&self) -> bool {
+        self.running() && self.format == PluginFormat::Clap
+    }
+
+    pub(crate) fn capture_clap_preset(&mut self) -> bool {
+        if !self.supports_user_presets()
+            || self.pending_preset_capture.is_some()
+            || !self.state_restores.is_empty()
+        {
+            return false;
+        }
+        let request = self.seq();
+        self.pending_preset_capture = Some(request);
+        self.long_call_since.get_or_insert_with(Instant::now);
+        self.send(ControlMsg::CaptureClapPreset(request));
+        true
+    }
+
     /// Sends `SetState` to the running plugin (an undo or redo changed the device's state); the
     /// plugin's parameter values follow with the bridge's echo. `false` while the bridge is not
     /// running (it then starts with the state it was given).
@@ -952,6 +1003,7 @@ impl Bridge {
         self.gui_requests = 0;
         self.state_requests.clear();
         self.state_restores.clear();
+        self.pending_clap_preset = None;
         self.snapshot_due = None;
         self.set_status(DeviceStatus::Crashed(reason), events);
     }
@@ -1270,6 +1322,21 @@ impl Bridge {
                     }
                 }
             }
+            BridgeMsg::ClapPresetCaptured(request, result) => {
+                if self.pending_preset_capture == Some(request) {
+                    self.pending_preset_capture = None;
+                    if self.gui_requests == 0 && self.pending_clap_preset.is_none() {
+                        self.long_call_since = None;
+                    }
+                    events.push(PluginManagerEvent::ClapPresetCaptured {
+                        device: self.device,
+                        result,
+                    });
+                }
+            }
+            BridgeMsg::ClapPresetApplied(request, result) => {
+                self.finish_clap_preset(request, result, events);
+            }
             BridgeMsg::StateApplied { request, result } => {
                 self.finish_restore(request, result, events);
             }
@@ -1448,6 +1515,56 @@ impl Bridge {
         });
     }
 
+    fn finish_clap_preset(
+        &mut self,
+        request: u32,
+        result: Result<AppliedClapPreset, String>,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        if self.pending_clap_preset != Some(request) {
+            return;
+        }
+        self.pending_clap_preset = None;
+        if self.gui_requests == 0 && self.pending_preset_capture.is_none() {
+            self.long_call_since = None;
+        }
+        let device = self.device;
+        match result {
+            Ok(applied) => {
+                // A document restore can arrive while the preset is loading. Its result will
+                // replace the live values, and the preset must never overwrite that document.
+                let superseded = self
+                    .state_restores
+                    .back()
+                    .is_some_and(|r| r.request != request);
+                if !superseded {
+                    let later_edits = &self
+                        .state_restores
+                        .front()
+                        .expect("pending preset")
+                        .later_edits;
+                    self.pending_params.retain(|id| later_edits.contains(id));
+                    self.released_macro_params
+                        .retain(|id| later_edits.contains(id));
+                    self.user_changed();
+                    let state: Arc<[u8]> = applied.state.into();
+                    self.last_state = Some(Arc::clone(&state));
+                    events.push(PluginManagerEvent::ClapPresetLoaded {
+                        device,
+                        previous_state: applied.previous_state.into(),
+                        state,
+                    });
+                }
+                self.finish_restore(request, Ok(applied.values), events);
+            }
+            Err(message) => {
+                self.state_restores
+                    .retain(|restore| restore.request != request);
+                events.push(PluginManagerEvent::ClapPresetFailed { device, message });
+            }
+        }
+    }
+
     fn finish_restore(
         &mut self,
         request: u32,
@@ -1505,7 +1622,10 @@ impl Bridge {
 
     fn gui_answered(&mut self) {
         self.gui_requests = self.gui_requests.saturating_sub(1);
-        if self.gui_requests == 0 && self.phase == Phase::Running {
+        if self.gui_requests == 0
+            && self.pending_clap_preset.is_none()
+            && self.phase == Phase::Running
+        {
             self.long_call_since = None;
             // The watchdog starts over after a long call.
             if let Some((_, since)) = &mut self.ping_waiting {

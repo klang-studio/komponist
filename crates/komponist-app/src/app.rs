@@ -29,6 +29,7 @@
 mod clip_edits;
 mod devices;
 mod edit_dispatch;
+mod presets;
 pub(crate) mod recovery;
 mod track_edits;
 mod track_macro_edits;
@@ -123,6 +124,8 @@ pub struct App {
     pub(crate) shell: ShellState,
     /// How device changes are grouped into undo steps ([`crate::param_undo`]).
     pub(crate) param_undo: crate::param_undo::ParamUndo,
+    preset_preparations: Vec<presets::PendingPreset>,
+    user_presets: presets::UserPresets,
     /// Overlays, pending steps and caches of the dialogs and the start screen (WP-52).
     pub(crate) dialogs: DialogState,
     /// Recent projects (`recent.json` next to the settings file).
@@ -242,6 +245,8 @@ impl App {
                 ..ShellState::default()
             },
             param_undo: Default::default(),
+            preset_preparations: Vec::new(),
+            user_presets: Default::default(),
             dialogs: DialogState::default(),
             recent,
             recent_path,
@@ -703,6 +708,8 @@ impl App {
             self.handle_device_event(&event);
             self.shell.device_events.push(event);
         }
+        self.poll_preset_preparations();
+        self.poll_user_presets();
         if let Some(rec) = &mut self.recording {
             rec.update(playhead);
         }
@@ -918,6 +925,20 @@ impl App {
             PluginManagerEvent::StateSnapshot { device, state } => {
                 self.store_snapshot(*device, state);
             }
+            PluginManagerEvent::ClapPresetLoaded {
+                device,
+                previous_state,
+                state,
+            } => {
+                self.record_clap_preset(*device, previous_state, state);
+            }
+            PluginManagerEvent::ClapPresetCaptured { device, result } => {
+                self.user_preset_captured(*device, result);
+            }
+            PluginManagerEvent::ClapPresetFailed { device, message } => {
+                eprintln!("komponist: preset load for device {}: {message}", device.0);
+                self.set_status(self.lang.devices_preset_load_failed(), StatusKind::Error);
+            }
             PluginManagerEvent::StatusChanged {
                 device,
                 status: DeviceStatus::Ok,
@@ -968,92 +989,6 @@ impl App {
                 }
             }
             _ => {}
-        }
-    }
-
-    /// Loads factory preset `index` into an internal device (WP-96): the preset's values and name
-    /// go into the device state as one undo step, and the running processor gets every value as
-    /// a `SetParam`, so tails and sounding notes go on.
-    fn apply_internal_preset(&mut self, device: DeviceId, index: usize) {
-        let Some((_, _, d)) = self.project().find_device(device) else {
-            return;
-        };
-        use komponist_builtin::BuiltinKind;
-        let state = match self.engine.host().verified_bundled_kind(device) {
-            Some(BuiltinKind::Internal(kind)) => crate::bundled_presets::state(kind, d, index),
-            _ => crate::device_host::internal_kind(d)
-                .and_then(|kind| kind.preset_state(d.state.as_deref(), index)),
-        };
-        let Some(state) = state else {
-            return;
-        };
-        let state: Arc<[u8]> = state.into();
-        // The changed values reach the running processor as `SetParam`s (`follow_device_states`).
-        self.apply("undo-load-preset", |p| {
-            edits::set_device_state(p, device, Some(Arc::clone(&state)))
-        });
-    }
-
-    fn apply_hexa_preset(&mut self, device: DeviceId, preset: usize) {
-        let Some(patch) = komponist_hexa::preset_patch(preset) else {
-            return;
-        };
-        let Some((_, _, target)) = self.project().find_device(device) else {
-            return;
-        };
-        let state: Arc<[u8]> = if crate::device_host::is_hexa(target) {
-            komponist_hexa::encode_state(&patch)
-        } else if self.engine.host().verified_bundled_kind(device)
-            == Some(komponist_builtin::BuiltinKind::Hexa)
-        {
-            komponist_hexa::state::encode_clap_patch(patch, &target.plugin.version)
-        } else {
-            return;
-        }
-        .into();
-        self.apply("undo-load-preset", |p| {
-            edits::set_device_state(p, device, Some(state))
-        });
-    }
-
-    /// Start the instrument with its preset in the first processor activation.
-    fn new_hexa_preset_track(&mut self, preset: usize) {
-        let Some(patch) = komponist_hexa::preset_patch(preset) else {
-            return;
-        };
-        let packaged = self
-            .engine
-            .host()
-            .catalog()
-            .packaged(komponist_builtin::BuiltinKind::Hexa);
-        let (instrument, state) = match packaged {
-            Some(entry) => (
-                entry.plugin.clone(),
-                komponist_hexa::state::encode_clap_patch(patch, &entry.plugin.version),
-            ),
-            None if self.default_hexa().is_some() => {
-                (hexa_ref(), komponist_hexa::encode_state(&patch))
-            }
-            None => return,
-        };
-        let spec = NewTrack {
-            name: None,
-            hue: None,
-            instrument: Some(instrument),
-            index: None,
-            arm_exclusive: true,
-        };
-        let names = default_names(self.lang);
-        if let Some(id) = self.apply_with("undo-load-preset", |p| {
-            let (p, track) = edits::add_track_in(p, spec, &names)?;
-            let instrument = p
-                .track(track)
-                .and_then(|track| track.channel.instrument())
-                .expect("new Hexa track has its instrument");
-            let p = edits::set_device_state(&p, instrument.1.id, Some(state.into()))?;
-            Ok((p, track))
-        }) {
-            self.select_tracks(vec![id], SelectMode::Replace);
         }
     }
 
@@ -1143,7 +1078,11 @@ impl App {
         let jack_routes = self.settings.audio.host == komponist_audio::HostKind::Jack
             && (!self.settings.audio.jack_routes.is_automatic()
                 || self.settings.audio_input.is_some());
-        if self.engine.host().needs_polling() || jack_routes {
+        if self.engine.host().needs_polling()
+            || jack_routes
+            || !self.preset_preparations.is_empty()
+            || self.user_presets.is_busy()
+        {
             ctx.request_repaint_after(DEVICE_POLL_INTERVAL);
         } else if self.engine.audio_input_config().is_some()
             && matches!(
@@ -2594,14 +2533,35 @@ impl App {
     pub(crate) fn plugin_action(&mut self, action: PluginAction) {
         match action {
             PluginAction::Add { plugin, target } => self.add_plugin(plugin, target),
-            PluginAction::ApplyHexaPreset { device, preset } => {
-                self.apply_hexa_preset(device, preset);
+            PluginAction::ApplyClapPreset { device, source } => {
+                if let Some((_, _, target)) = self.project().find_device(device) {
+                    if let Some(state) = komponist_plugins::presets::legacy_state(
+                        &target.plugin,
+                        target.state.as_deref(),
+                        &source,
+                    ) {
+                        self.apply("undo-load-preset", |p| {
+                            edits::set_device_state(p, device, Some(state.into()))
+                        });
+                    } else {
+                        let target = Arc::clone(target);
+                        if !self.engine.host_mut().load_clap_preset(&target, &source) {
+                            self.set_status(
+                                self.lang.devices_preset_load_failed(),
+                                StatusKind::Error,
+                            );
+                        }
+                    }
+                }
             }
-            PluginAction::ApplyInternalPreset { device, index } => {
-                self.apply_internal_preset(device, index);
-            }
-            PluginAction::NewHexaTrack { preset } => {
-                self.new_hexa_preset_track(preset);
+            PluginAction::SaveUserPreset(device) => self.open_user_preset_dialog(device, true),
+            PluginAction::LoadUserPreset(device) => self.open_user_preset_dialog(device, false),
+            PluginAction::AddFromPreset {
+                plugin,
+                source,
+                track,
+            } => {
+                self.add_from_preset(plugin, source, track);
             }
             PluginAction::OpenWindow(device) => {
                 if !self.ui.plugin_windows.iter().any(|w| w.device == device) {
@@ -2804,6 +2764,8 @@ impl App {
         self.doc = doc;
         self.dialogs.repaired = 0;
         self.param_undo.forget();
+        self.preset_preparations.clear();
+        self.user_presets = Default::default();
         self.dialogs.samples.forget_device_state();
         self.project_path = path;
         // Relative sample paths resolve against the project file's folder, before the devices of

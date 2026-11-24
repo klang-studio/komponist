@@ -20,6 +20,53 @@ use crate::exit;
 
 /// Runs a scan of `bundle`; the process exit code ([`crate::exit`]).
 pub fn run(bundle: &Path) -> u8 {
+    run_output(bundle, true, |out| {
+        let descriptors = komponist_hosting::scan(bundle)?;
+        serde_json::to_writer(out, &descriptors)
+            .map_err(|error| HostingError::State(error.to_string()))
+    })
+}
+
+/// Runs CLAP preset discovery in the same isolation as the plug-in descriptor scan.
+pub fn run_presets(bundle: &Path) -> u8 {
+    run_output(bundle, true, |out| {
+        let presets = komponist_hosting::discover_clap_presets(bundle)?;
+        serde_json::to_writer(out, &presets).map_err(|error| HostingError::State(error.to_string()))
+    })
+}
+
+/// Loads a catalogued preset into an inactive instance before the app creates a new device.
+pub fn run_preset_state(bundle: &Path, preset: &str) -> u8 {
+    run_output(bundle, false, |out| {
+        use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource};
+        let (plugin_id, source): (String, ClapPresetSource) =
+            serde_json::from_str(preset).map_err(|error| HostingError::State(error.to_string()))?;
+        let bridge = komponist_hosting::host_loop::PollLoop::new(false)?;
+        let mut plugin = komponist_hosting::load(
+            komponist_ipc::PluginFormat::Clap,
+            bundle,
+            &plugin_id,
+            bridge.context(),
+        )?;
+        plugin.load_clap_preset(&ClapPreset {
+            plugin_id,
+            source,
+            name: String::new(),
+            localized_names: Default::default(),
+            aliases: Vec::new(),
+            features: Vec::new(),
+            factory: false,
+        })?;
+        out.write_all(&plugin.save_state()?)
+            .map_err(|error| HostingError::State(error.to_string()))
+    })
+}
+
+fn run_output(
+    bundle: &Path,
+    newline: bool,
+    write_result: impl FnOnce(&mut File) -> Result<(), HostingError>,
+) -> u8 {
     // The JSON travels as UTF-8 and the app keys its cache by the path (WP-45 note).
     if bundle.to_str().is_none() {
         eprintln!(
@@ -35,20 +82,20 @@ pub fn run(bundle: &Path) -> u8 {
             return exit::FAILURE;
         }
     };
-    match komponist_hosting::scan(bundle) {
-        Ok(descriptors) => {
-            let written = serde_json::to_writer(&mut out, &descriptors)
-                .map_err(std::io::Error::from)
-                .and_then(|()| out.write_all(b"\n"))
-                .and_then(|()| out.flush());
-            match written {
-                Ok(()) => exit::SUCCESS,
-                Err(e) => {
-                    eprintln!("komponist-bridge: writing the scan result: {e}");
-                    exit::FAILURE
-                }
+    match write_result(&mut out) {
+        Ok(()) => match (if newline {
+            out.write_all(b"\n")
+        } else {
+            Ok(())
+        })
+        .and_then(|()| out.flush())
+        {
+            Ok(()) => exit::SUCCESS,
+            Err(e) => {
+                eprintln!("komponist-bridge: writing the scan result: {e}");
+                exit::FAILURE
             }
-        }
+        },
         Err(HostingError::Unsupported(reason)) => {
             eprintln!(
                 "komponist-bridge: {}: unsupported: {reason}",

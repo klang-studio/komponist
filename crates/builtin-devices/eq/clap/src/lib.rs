@@ -30,6 +30,7 @@ enum Shape {
 }
 
 impl DeviceDefinition for Eq {
+    const PUBLISH_FACTORY_PRESETS: bool = true;
     const SPEC: &'static Spec = &komponist_eq::SPEC;
     const NAME: &'static str = "EQ";
     const ID: &'static str = "org.klang-studio.komponist.eq";
@@ -106,7 +107,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Eq {
     }
 }
 
-nice_export_clap!(EqPlugin);
+komponist_bundled_clap_adapter::export_spec_with_presets!(Eq, EqPlugin);
 
 #[cfg(test)]
 #[path = "../../../layout_contract.rs"]

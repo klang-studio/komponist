@@ -774,8 +774,11 @@ fn hexa_opens_its_parameters_and_steps_through_its_presets() {
     h.get_by_label(de::PLUGIN_FRAME_PRESET_NEXT).click();
     h.run_steps(3);
     let applied = h.state().dispatched().find_map(|a| match a {
-        Action::Plugin(PluginAction::ApplyHexaPreset { device, preset }) if *device == lead => {
-            Some(*preset)
+        Action::Plugin(PluginAction::ApplyClapPreset { device, source }) if *device == lead => {
+            std::str::from_utf8(source.load_key.as_deref()?)
+                .ok()?
+                .parse::<usize>()
+                .ok()
         }
         _ => None,
     });

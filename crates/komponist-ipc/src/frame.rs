@@ -105,6 +105,8 @@ pub enum HeaderEvent {
     PresetNext,
     /// A preset from the field.
     Preset(usize),
+    /// Save the current CLAP state as a user preset.
+    SavePreset,
     /// The view switch.
     View(PluginView),
     /// "Oben halten" on or off.

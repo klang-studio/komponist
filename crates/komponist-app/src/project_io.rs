@@ -1237,6 +1237,8 @@ impl App {
                 }
             }
             Purpose::Sample => self.sample_chosen(path),
+            Purpose::OpenPreset(device) => self.load_user_preset_file(device, path),
+            Purpose::SavePreset(device) => self.save_user_preset_file(device, path),
             Purpose::PluginAsset { device, slot, .. } => {
                 self.set_plugin_asset(device, slot, Some(&path));
             }

@@ -239,6 +239,50 @@ pub trait HostedPlugin {
     /// Restores a blob from [`HostedPlugin::save_state`] (possibly from an earlier session).
     fn load_state(&mut self, state: &[u8]) -> Result<(), HostingError>;
 
+    /// Loads a preset through the provider's opaque CLAP preset source on the main thread.
+    fn load_clap_preset(
+        &mut self,
+        _preset: &komponist_ipc::clap_presets::ClapPreset,
+    ) -> Result<(), HostingError> {
+        Err(HostingError::Unsupported("CLAP preset loading"))
+    }
+
+    /// Loads a discovered preset and captures it in ordinary project-state format. The error
+    /// includes whether the host can keep operating the instance after a failed rollback.
+    fn apply_clap_preset(
+        &mut self,
+        preset: &komponist_ipc::clap_presets::PresetLoad,
+    ) -> Result<(Vec<u8>, Vec<u8>), (String, bool)> {
+        use komponist_ipc::clap_presets::PresetLoad;
+        let before = self
+            .save_state()
+            .map_err(|error| (error.to_string(), true))?;
+        let applied = match preset {
+            PresetLoad::Discovered(preset) => self.load_clap_preset(preset),
+            PresetLoad::UserState(state) => self.load_preset_state(state),
+        };
+        match applied.and_then(|()| self.save_state()) {
+            Ok(after) => Ok((before, after)),
+            Err(error) => match self.load_state(&before) {
+                Ok(()) => Err((error.to_string(), true)),
+                Err(rollback) => Err((
+                    format!("{error}; restoring the previous state failed: {rollback}"),
+                    false,
+                )),
+            },
+        }
+    }
+
+    /// Captures a user preset. Formats with context-specific state can override the project state.
+    fn save_preset_state(&mut self) -> Result<Vec<u8>, HostingError> {
+        self.save_state()
+    }
+
+    /// Restores a user preset from the format-specific opaque state.
+    fn load_preset_state(&mut self, state: &[u8]) -> Result<(), HostingError> {
+        self.load_state(state)
+    }
+
     /// Latency in frames at the active sample rate (0 when inactive or unknown).
     fn latency(&self) -> u32;
 

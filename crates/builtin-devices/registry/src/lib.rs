@@ -11,6 +11,7 @@ use komponist_sampler::SamplerHandle;
 #[cfg(test)]
 mod i18n;
 mod internal;
+pub mod presets;
 
 pub use internal::Internal;
 

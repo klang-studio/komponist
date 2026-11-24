@@ -114,6 +114,22 @@ jobs:
       - name: Test (plugin SDK)
         run: cargo test --manifest-path crates/plugin-sdk/Cargo.toml --workspace
 
+      - name: Check out CLAP headers for the standalone preset fixture
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: free-audio/clap
+          ref: ca1b43ee2b4f381e94e4170e622d60b92108b128
+          path: target/clap-preset-headers
+          persist-credentials: false
+
+      - name: Verify standalone CLAP preset interoperability
+        run: |
+          fixture="$RUNNER_TEMP/clap-preset-fixture"
+          test-plugins/native-layout/c-fixture/build.sh target/clap-preset-headers/include \
+            docs/clap-device-layout docs/clap-device-layout/example.json "$fixture"
+          KOMPONIST_LAYOUT_FIXTURE="$fixture/layout-fixture.clap" \
+            cargo test --locked -p komponist-app --test it standalone_clap_preset_round_trips
+
       # Without the bundles the plugin tests skip silently.
       - name: Build test plugins
         run: scripts/build-test-plugins.sh

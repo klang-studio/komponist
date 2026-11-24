@@ -163,6 +163,11 @@ impl Internal {
         self.spec().presets()
     }
 
+    /// Names of factory presets saved by older projects and their current names.
+    pub fn preset_aliases(self) -> &'static [(&'static str, &'static str)] {
+        self.spec().preset_aliases
+    }
+
     /// All plain values (by wire id) of preset `index`: the defaults with the preset's changes
     /// (snapped). `None` if there is no such preset.
     pub fn preset_values(self, index: usize) -> Option<Vec<f64>> {

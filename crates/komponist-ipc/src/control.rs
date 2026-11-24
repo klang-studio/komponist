@@ -101,7 +101,8 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 17 (#289) advertises the named signal tap inventory after plugin load.
 /// 18 distinguishes unsupported file slots from a temporarily missing snapshot.
 /// 19 combines named signal taps and device asset preparation in the same wire contract.
-pub const PROTOCOL_VERSION: u32 = 19;
+/// 20 applies discovered CLAP presets and captures project state.
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -341,6 +342,10 @@ pub enum ControlMsg {
     SetDeviceAssets(u32, Vec<u8>),
     /// Start, poll or clear a detached offline preparation request.
     PrepareDeviceOffline(u32, Option<crate::device_assets::OfflineRequest>),
+    /// Apply a discovered CLAP preset and capture the resulting project state.
+    LoadClapPreset(u32, crate::clap_presets::PresetLoad),
+    /// Capture current state in the CLAP preset context.
+    CaptureClapPreset(u32),
     /// Load plugin `plugin_id` from `bundle`. Answer: `Loaded` or `Error`.
     Load {
         /// Bundle format.
@@ -584,6 +589,21 @@ pub enum BridgeMsg {
     DeviceDisplay(u32, Option<Vec<u8>>),
     /// Immutable named signal streams advertised by the loaded plugin.
     SignalTaps(Vec<crate::signal_taps::Descriptor>),
+    /// Answer to a preset load.
+    ClapPresetApplied(u32, Result<AppliedClapPreset, String>),
+    /// Answer to user preset state capture.
+    ClapPresetCaptured(u32, Result<Vec<u8>, String>),
+}
+
+/// Project states and parameter values from one successful preset load.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppliedClapPreset {
+    /// State immediately before loading, for undo.
+    pub previous_state: Vec<u8>,
+    /// The loaded preset serialized in project state format.
+    pub state: Vec<u8>,
+    /// Newly loaded base values with display text.
+    pub values: Vec<ParamValue>,
 }
 
 /// Payload of [`BridgeMsg::Loaded`].
@@ -1914,6 +1934,21 @@ mod tests {
             ControlMsg::SetRenderMode(RenderMode::Offline),
             ControlMsg::Shutdown,
             ControlMsg::Ping { seq: u32::MAX },
+            ControlMsg::LoadClapPreset(
+                9,
+                crate::clap_presets::PresetLoad::Discovered(crate::clap_presets::ClapPreset {
+                    plugin_id: "example".into(),
+                    source: crate::clap_presets::ClapPresetSource {
+                        location: crate::clap_presets::ClapPresetLocation::Plugin,
+                        load_key: Some(vec![0xff, 42]),
+                    },
+                    name: "Warm".into(),
+                    localized_names: [("de".into(), "Wärme".into())].into(),
+                    aliases: Vec::new(),
+                    features: Vec::new(),
+                    factory: true,
+                }),
+            ),
         ];
         for msg in &messages {
             app.send(msg).unwrap();
@@ -2003,6 +2038,15 @@ mod tests {
                 },
                 resizable: false,
             },
+            BridgeMsg::ClapPresetApplied(
+                9,
+                Ok(AppliedClapPreset {
+                    previous_state: vec![7],
+                    state: vec![8],
+                    values: Vec::new(),
+                }),
+            ),
+            BridgeMsg::ClapPresetApplied(10, Err("preset refused".into())),
             BridgeMsg::GuiSizeRequest(GuiSize {
                 width: 1,
                 height: 2,

@@ -6,6 +6,8 @@ mod midi_effect;
 mod parameter;
 #[cfg(test)]
 mod parity_tests;
+#[doc(hidden)]
+pub mod presets;
 
 use std::ffi::{CStr, c_void};
 use std::sync::Arc;
@@ -35,6 +37,8 @@ pub trait DeviceDefinition: Send + 'static {
     const LATENCY_PARAMETER: Option<&'static str> = None;
     /// Publish true DSP gain reduction to hosts that request effect meters.
     const REPORTS_REDUCTION: bool = false;
+    /// Enables standard preset loading for devices that export a discovery provider.
+    const PUBLISH_FACTORY_PRESETS: bool = false;
     const VERSION: &'static str;
     const FEATURES: &'static [ClapFeature];
 
@@ -253,6 +257,10 @@ impl<T: AudioDefinition> ClapPlugin for Effect<T> {
     }
 
     unsafe fn clap_custom_extension(id: &CStr) -> *const c_void {
+        let preset = crate::presets::load_extension::<T>(id);
+        if !preset.is_null() {
+            return preset;
+        }
         let named_taps = meter::signal_tap_extension::<T>(id);
         if !named_taps.is_null() {
             return named_taps;

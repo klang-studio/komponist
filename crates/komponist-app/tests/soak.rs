@@ -311,8 +311,17 @@ fn act(
             70.0 + rng.below(110) as f64,
         )))),
         // Tracks and devices.
-        76..=77 if tracks(app).len() < MAX_TRACKS => Action::Plugin(PluginAction::NewHexaTrack {
-            preset: rng.below(8),
+        76..=77 if tracks(app).len() < MAX_TRACKS => Action::Plugin(PluginAction::AddFromPreset {
+            plugin: app
+                .engine()
+                .host()
+                .catalog()
+                .entries()
+                .first()?
+                .plugin
+                .clone(),
+            source: komponist_plugins::presets::legacy_source(rng.below(8)),
+            track: None,
         }),
         78 => match track {
             Some(track) if tracks(app).len() > 3 => {
@@ -327,9 +336,9 @@ fn act(
                 let d = t.channel.devices.first()?;
                 komponist_app::device_host::is_hexa(d).then_some(d.id)
             });
-            Action::Plugin(PluginAction::ApplyHexaPreset {
+            Action::Plugin(PluginAction::ApplyClapPreset {
                 device: device?,
-                preset: rng.below(8),
+                source: komponist_plugins::presets::legacy_source(rng.below(8)),
             })
         }
         81..=82 => {

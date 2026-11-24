@@ -103,11 +103,15 @@ const COREDUMP_ENV: &str = "KOMPONIST_BRIDGE_COREDUMP";
 #[cfg(unix)]
 const USAGE: &str = "usage: komponist-bridge --instance --control-fd <fd> [--rt-priority <1..=99>]
        komponist-bridge --scan <bundle>
+       komponist-bridge --scan-presets <clap-bundle>
+       komponist-bridge --preset-state <clap-bundle> <selection>
        komponist --bridge <the same arguments>";
 #[cfg(windows)]
 const USAGE: &str =
     "usage: komponist-bridge --instance [--rt-priority <1..=99>]  (control pipe on stdin)
        komponist-bridge --scan <bundle>
+       komponist-bridge --scan-presets <clap-bundle>
+       komponist-bridge --preset-state <clap-bundle> <selection>
        komponist --bridge <the same arguments>";
 
 /// The main thread's name in bridge mode. On Linux it is the process name (`comm`, at most 15
@@ -121,6 +125,8 @@ const PROCESS_NAME: &std::ffi::CStr = c"komponist-bridge";
 enum Mode {
     Instance(instance::Options),
     Scan(PathBuf),
+    ScanPresets(PathBuf),
+    PresetState(PathBuf, String),
     Help,
 }
 
@@ -130,7 +136,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Mode, String> 
     #[cfg(unix)]
     let mut control_fd: Option<RawFd> = None;
     let mut rt_priority = sched::DEFAULT_PRIORITY;
-    let mut scan: Option<PathBuf> = None;
+    let mut scan = None;
     while let Some(arg) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.to_str() {
@@ -155,7 +161,17 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Mode, String> 
                         format!("--rt-priority: not in 1..=99: {}", v.to_string_lossy())
                     })?;
             }
-            Some("--scan") => scan = Some(PathBuf::from(value("--scan")?)),
+            Some("--scan") => scan = Some(Mode::Scan(PathBuf::from(value("--scan")?))),
+            Some("--scan-presets") => {
+                scan = Some(Mode::ScanPresets(PathBuf::from(value("--scan-presets")?)));
+            }
+            Some("--preset-state") => {
+                let bundle = PathBuf::from(value("--preset-state")?);
+                let selection = value("--preset-state")?
+                    .into_string()
+                    .map_err(|_| "--preset-state needs a UTF-8 selection")?;
+                scan = Some(Mode::PresetState(bundle, selection));
+            }
             Some("--help" | "-h") => return Ok(Mode::Help),
             _ => return Err(format!("unknown argument {}", arg.to_string_lossy())),
         }
@@ -166,17 +182,17 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Mode, String> 
             control_fd,
             rt_priority,
         })),
-        (true, _, Some(_)) => Err("--instance and --scan exclude each other".into()),
+        (true, _, Some(_)) => Err("--instance and the scan modes exclude each other".into()),
         (true, None, None) => Err("--instance needs --control-fd".into()),
         (false, Some(_), _) => Err("--control-fd needs --instance".into()),
-        (false, None, Some(bundle)) => Ok(Mode::Scan(bundle)),
+        (false, None, Some(scan)) => Ok(scan),
         (false, None, None) => Err("nothing to do".into()),
     };
     #[cfg(windows)]
     return match (instance, scan) {
         (true, None) => Ok(Mode::Instance(instance::Options { rt_priority })),
-        (true, Some(_)) => Err("--instance and --scan exclude each other".into()),
-        (false, Some(bundle)) => Ok(Mode::Scan(bundle)),
+        (true, Some(_)) => Err("--instance and the scan modes exclude each other".into()),
+        (false, Some(scan)) => Ok(scan),
         (false, None) => Err("nothing to do".into()),
     };
 }
@@ -204,6 +220,16 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             #[cfg(target_os = "macos")]
             app_watch::start();
             exit_now(scan::run(&bundle))
+        }
+        Ok(Mode::ScanPresets(bundle)) => {
+            #[cfg(target_os = "macos")]
+            app_watch::start();
+            exit_now(scan::run_presets(&bundle))
+        }
+        Ok(Mode::PresetState(bundle, selection)) => {
+            #[cfg(target_os = "macos")]
+            app_watch::start();
+            exit_now(scan::run_preset_state(&bundle, &selection))
         }
         Ok(Mode::Help) => {
             println!("{USAGE}");
@@ -358,6 +384,16 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Mode, String> {
         parse_args(args.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn preset_scan_uses_the_disposable_scan_mode() {
+        assert_eq!(
+            parse(&["--scan-presets", "Community.clap"]),
+            Ok(Mode::ScanPresets("Community.clap".into()))
+        );
+        assert!(parse(&["--scan-presets"]).is_err());
+        assert!(parse(&["--instance", "--scan-presets", "Community.clap"]).is_err());
     }
 
     #[cfg(unix)]

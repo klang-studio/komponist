@@ -20,6 +20,7 @@ enum Detector {
 }
 
 impl DeviceDefinition for Presse {
+    const PUBLISH_FACTORY_PRESETS: bool = true;
     const SPEC: &'static Spec = &komponist_presse::SPEC;
     const NAME: &'static str = "Presse";
     const ID: &'static str = "org.klang-studio.komponist.presse";
@@ -68,7 +69,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Presse {
     }
 }
 
-nice_export_clap!(PressePlugin);
+komponist_bundled_clap_adapter::export_spec_with_presets!(Presse, PressePlugin);
 
 #[cfg(test)]
 #[path = "../../../layout_contract.rs"]

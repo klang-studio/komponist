@@ -294,3 +294,18 @@ devices-card = Device { $name }
 
 # The text of a parameter's range: "20 Hz bis 20 kHz".
 devices-range = { $min } to { $max }
+
+# Discovered CLAP presets in a device’s context menu.
+
+# Loading or capturing a discovered CLAP preset failed.
+devices-preset-load-failed = The preset could not be loaded.
+
+devices-preset-save-file = Save Preset…
+
+devices-preset-load-file = Load Preset File…
+
+devices-preset-files-empty = No preset files
+
+devices-preset-save-failed = Could not save the preset.
+
+devices-preset-saved = Preset saved.

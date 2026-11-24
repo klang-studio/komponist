@@ -2761,6 +2761,7 @@ dependencies = [
  "komponist-general-sampler",
  "komponist-hexa",
  "komponist-i18n",
+ "komponist-ipc",
  "komponist-limiter",
  "komponist-model",
  "komponist-presse",

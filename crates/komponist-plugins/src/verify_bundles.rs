@@ -415,6 +415,7 @@ fn smoke_bridge(
         format: PluginFormat::Clap,
         verified_bundled_kind: crate::bundled_state::kind_for_id(bundle.plugin_id()),
         bundle: bundle.bundle_path(),
+        catalog_bundle: bundle.original_path(),
         plugin_id: &descriptor.id,
         state: None,
         setup: SETUP,

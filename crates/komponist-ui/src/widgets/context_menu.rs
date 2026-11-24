@@ -84,6 +84,7 @@ pub struct Entry<'a, A> {
     /// What it does.
     pub kind: Kind<'a, A>,
     elide_label: bool,
+    scrollable_submenu: bool,
 }
 
 impl<'a, A> Entry<'a, A> {
@@ -95,6 +96,7 @@ impl<'a, A> Entry<'a, A> {
             checked: None,
             kind,
             elide_label: false,
+            scrollable_submenu: false,
         }
     }
 
@@ -106,6 +108,13 @@ impl<'a, A> Entry<'a, A> {
     /// An entry opening `entries`.
     pub fn submenu(label: &'a str, entries: &'a [Entry<'a, A>]) -> Self {
         Self::with(label, Kind::Submenu(entries))
+    }
+
+    /// An entry opening a submenu that scrolls when its rows exceed the viewport.
+    pub fn scrollable_submenu(label: &'a str, entries: &'a [Entry<'a, A>]) -> Self {
+        let mut entry = Self::submenu(label, entries);
+        entry.scrollable_submenu = true;
+        entry
     }
 
     /// An entry opening a colour grid.
@@ -210,6 +219,31 @@ struct PanelOut {
     hovered: Option<usize>,
     clicked: Option<usize>,
     rows: Vec<Rect>,
+}
+
+fn menu_height(ctx: &Context) -> f32 {
+    (ctx.content_rect().height() - 2.0 * (shadow::EDGE.spread + space::SPACE_2)).max(size::MENU_ROW)
+}
+
+fn scroll_rows(
+    ui: &mut Ui,
+    max_height: f32,
+    reveal: Option<usize>,
+    rows: impl FnOnce(&mut Ui) -> PanelOut,
+) -> PanelOut {
+    egui::ScrollArea::vertical()
+        .max_height(max_height)
+        .auto_shrink([true, true])
+        .show(ui, |ui| {
+            let out = rows(ui);
+            if let Some(row) = reveal.and_then(|i| out.rows.get(i))
+                && !ui.clip_rect().contains_rect(*row)
+            {
+                ui.scroll_to_rect(*row, None);
+            }
+            out
+        })
+        .inner
 }
 
 fn entry_rows<A>(
@@ -412,12 +446,23 @@ impl MenuState {
 pub struct ContextMenu<'a, A> {
     name: &'a str,
     entries: &'a [Entry<'a, A>],
+    scrollable: bool,
 }
 
 impl<'a, A: Clone> ContextMenu<'a, A> {
     /// A menu named `name` (accessible name, e.g. "Clip") over `entries`.
     pub fn new(name: &'a str, entries: &'a [Entry<'a, A>]) -> Self {
-        Self { name, entries }
+        Self {
+            name,
+            entries,
+            scrollable: false,
+        }
+    }
+
+    /// Allows the main menu to scroll when it exceeds the screen.
+    pub fn scrollable(mut self) -> Self {
+        self.scrollable = true;
+        self
     }
 
     /// The id of the context menu of the widget `target`.
@@ -456,7 +501,12 @@ impl<'a, A: Clone> ContextMenu<'a, A> {
             .data(|d| d.get_temp(id))
             .unwrap_or_else(|| MenuState::at(target.rect.center()));
         let mut chosen = None;
+        let old_sub_focus = (st.sub, st.sub_highlight, st.in_sub);
+        let old_focus = st.highlight;
         let mut close = self.keys(&ctx, &mut st, &mut chosen);
+        let reveal = (old_sub_focus != (st.sub, st.sub_highlight, st.in_sub) && st.in_sub)
+            .then_some(st.sub_highlight)
+            .flatten();
 
         // The main panel.
         let main = Area::new(id)
@@ -468,7 +518,20 @@ impl<'a, A: Clone> ContextMenu<'a, A> {
             .accessible_name(self.name)
             .show(&ctx, |ui| {
                 super::menu_frame()
-                    .show(ui, |ui| entry_rows(ui, self.entries, st.highlight, st.sub))
+                    .show(ui, |ui| {
+                        let max_height = menu_height(&ctx);
+                        if !self.scrollable
+                            || self.entries.len() as f32 * size::MENU_ROW <= max_height
+                        {
+                            return entry_rows(ui, self.entries, st.highlight, st.sub);
+                        }
+                        let reveal = (old_focus != st.highlight && !st.in_sub)
+                            .then_some(st.highlight)
+                            .flatten();
+                        scroll_rows(ui, max_height, reveal, |ui| {
+                            entry_rows(ui, self.entries, st.highlight, st.sub)
+                        })
+                    })
                     .inner
             });
         let out = main.inner;
@@ -527,7 +590,17 @@ impl<'a, A: Clone> ContextMenu<'a, A> {
                 .show(&ctx, |ui| match &entry.kind {
                     Kind::Submenu(entries) => {
                         super::menu_frame()
-                            .show(ui, |ui| entry_rows(ui, entries, st.sub_highlight, None))
+                            .show(ui, |ui| {
+                                let max_height = menu_height(&ctx);
+                                if !entry.scrollable_submenu
+                                    || entries.len() as f32 * size::MENU_ROW <= max_height
+                                {
+                                    return entry_rows(ui, entries, st.sub_highlight, None);
+                                }
+                                scroll_rows(ui, max_height, reveal, |ui| {
+                                    entry_rows(ui, entries, st.sub_highlight, None)
+                                })
+                            })
                             .inner
                     }
                     Kind::Colors(colors) => {

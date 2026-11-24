@@ -50,7 +50,24 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
         _ => Lang::De,
     };
     let mut app = app_with(Project::new("Bundled synths"), host).with_lang(lang);
-    app.dispatch(Action::Plugin(PluginAction::NewHexaTrack { preset: 1 }));
+    let hexa_kind = BuiltinKind::Hexa;
+    let hexa_entry = app.engine().host().catalog().packaged(hexa_kind).unwrap();
+    let plugin = hexa_entry.plugin.clone();
+    let source = hexa_entry
+        .clap_presets
+        .iter()
+        .find(|preset| preset.name == "E-Piano")
+        .unwrap()
+        .source
+        .clone();
+    app.dispatch(Action::Plugin(PluginAction::AddFromPreset {
+        plugin,
+        source,
+        track: None,
+    }));
+    step_until(&mut app, "track prepared from Hexa preset", |app| {
+        !app.project().tracks.is_empty()
+    });
     let hexa = newest_instrument(&app).id;
     assert_eq!(newest_instrument(&app).plugin.format, PluginFormat::Clap);
     assert_eq!(
@@ -60,7 +77,7 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
             .and_then(komponist_hexa::state::decode_clap_patch),
         komponist_hexa::preset_patch(1)
     );
-    wait_for_verified(&mut app, hexa, BuiltinKind::Hexa, force_bridge);
+    wait_for_verified(&mut app, hexa, hexa_kind, force_bridge);
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
     let mut h = harness(app);
     h.get_by_role_and_label(Role::Button, &lang.devices_preset_name("E-Piano"));
@@ -128,10 +145,20 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     let volt = newest_instrument(h.state()).id;
     wait_for_verified(h.state_mut(), volt, volt_kind, force_bridge);
 
-    const ACID_PLUCK: usize = 2;
-    let apply_volt = Action::Plugin(PluginAction::ApplyInternalPreset {
+    let target = h.state().project().find_device(volt).unwrap().2;
+    let source = h
+        .state()
+        .engine()
+        .host()
+        .clap_presets(target)
+        .iter()
+        .find(|preset| preset.name == "Acid Pluck")
+        .unwrap()
+        .source
+        .clone();
+    let apply_volt = Action::Plugin(PluginAction::ApplyClapPreset {
         device: volt,
-        index: ACID_PLUCK,
+        source,
     });
     let cutoff = alias(h.state(), volt, "cutoff");
     let cutoff_info = Internal::Volt

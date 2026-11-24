@@ -467,27 +467,20 @@ pub enum PluginAction {
         /// Where.
         target: DropTarget,
     },
-    /// Load factory preset `preset` (index in `hexa_core::presets`) into a hexa device
-    /// ("Presets · hexa" in the browser); an undoable state change.
-    ApplyHexaPreset {
-        /// The hexa device.
+    /// Load a discovered preset into the live CLAP instance.
+    ApplyClapPreset {
         device: DeviceId,
-        /// Factory preset index.
-        preset: usize,
+        source: komponist_ipc::clap_presets::ClapPresetSource,
     },
-    /// Load factory preset `index` (in `Internal::presets`) into an internal device (WP-96): all
-    /// its values at once, one undo step, and the engine gets every value.
-    ApplyInternalPreset {
-        /// The internal device.
-        device: DeviceId,
-        /// Index in the device's preset list.
-        index: usize,
-    },
-    /// A preset double-click without a hexa on the selected track: a new hexa track
-    /// with factory preset `preset` (one undo step).
-    NewHexaTrack {
-        /// Factory preset index.
-        preset: usize,
+    /// Choose a file in which to save the current CLAP preset.
+    SaveUserPreset(DeviceId),
+    /// Choose a CLAP user preset to load into this device.
+    LoadUserPreset(DeviceId),
+    /// Insert a device with a preset already loaded.
+    AddFromPreset {
+        plugin: PluginRef,
+        source: komponist_ipc::clap_presets::ClapPresetSource,
+        track: Option<TrackId>,
     },
     /// "Öffnen" on a device card or insert click: open the plugin window (own GUI, or the generic
     /// parameter view for plugins without one).

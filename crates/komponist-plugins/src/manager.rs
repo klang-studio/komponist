@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 
 use komponist_builtin::{BuiltinKind, Internal};
 use komponist_engine::Processor;
+use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource, PresetLoad};
 use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot};
 use komponist_ipc::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderModel};
 use komponist_ipc::shm::MAX_BLOCK;
@@ -125,6 +126,19 @@ pub enum PluginManagerEvent {
         /// The state.
         state: Arc<[u8]>,
     },
+    /// A preset has been applied and captured in project state format.
+    ClapPresetLoaded {
+        device: DeviceId,
+        previous_state: Arc<[u8]>,
+        state: Arc<[u8]>,
+    },
+    /// Opaque user preset data from the active CLAP instance.
+    ClapPresetCaptured {
+        device: DeviceId,
+        result: Result<Vec<u8>, String>,
+    },
+    /// The active plugin could not apply or capture the preset.
+    ClapPresetFailed { device: DeviceId, message: String },
     /// A plugin has applied a requested state restore to its processor.
     StateApplied {
         /// The restored device.
@@ -475,7 +489,10 @@ impl PluginManager {
             }
         }
         // Verification still runs at load time; scanner metadata grants no trust.
-        self.catalog.set_scanned_with_bundled(&descriptors, shipped);
+        self.catalog
+            .set_scanned_with_bundled(&descriptors, shipped, |descriptor| {
+                self.cache.clap_presets_for(descriptor)
+            });
     }
 
     /// A processor removed from the engine must be handed back to its main-thread CLAP session.
@@ -784,6 +801,7 @@ impl PluginManager {
             bundle: verified_bundle
                 .as_ref()
                 .map_or(bundle.as_path(), VerifiedClap::bundle_path),
+            catalog_bundle: &bundle,
             plugin_id: &plugin_id,
             state,
             setup,
@@ -836,7 +854,13 @@ impl PluginManager {
         // Reload and Undo can replace the plugin while keeping its DeviceId. A blocked save
         // can leave queued state from the retiring instance under that same ID.
         self.pending.retain(|event| {
-            !matches!(event, PluginManagerEvent::StateSnapshot { device: old, .. } if *old == device)
+            !matches!(event,
+                PluginManagerEvent::StateSnapshot { device: old, .. }
+                | PluginManagerEvent::ClapPresetLoaded { device: old, .. }
+                | PluginManagerEvent::ClapPresetFailed { device: old, .. }
+                | PluginManagerEvent::ClapPresetCaptured { device: old, .. }
+                if *old == device
+            )
         });
     }
 
@@ -1282,6 +1306,117 @@ impl PluginManager {
             .is_some_and(|bridge| bridge.set_state(state))
     }
 
+    /// Presets discovered for the exact bundle of a running CLAP instance.
+    pub fn clap_presets(&self, device: &Device) -> &[ClapPreset] {
+        let Some(entry) = self.catalog.resolve(&device.plugin) else {
+            return &[];
+        };
+        match &entry.location {
+            PluginLocation::InProcess(_) => &entry.clap_presets,
+            PluginLocation::Bundle { path, .. }
+                if self
+                    .bridges
+                    .get(&device.id)
+                    .is_some_and(|bridge| bridge.has_clap_presets_from(path))
+                    || self
+                        .direct
+                        .get(&device.id)
+                        .is_some_and(|direct| direct.has_clap_presets_from(path)) =>
+            {
+                &entry.clap_presets
+            }
+            _ => &[],
+        }
+    }
+
+    /// Loads a preset still advertised for this instance. The request is asynchronous.
+    pub fn load_clap_preset(&mut self, device: &Device, source: &ClapPresetSource) -> bool {
+        let Some(preset) = self
+            .clap_presets(device)
+            .iter()
+            .find(|preset| &preset.source == source)
+            .cloned()
+        else {
+            return false;
+        };
+        self.load_preset(device.id, PresetLoad::Discovered(preset))
+    }
+
+    /// Whether the active device accepts CLAP user preset state operations.
+    pub fn supports_user_presets(&self, device: DeviceId) -> bool {
+        self.direct
+            .get(&device)
+            .is_some_and(|direct| direct.status == DeviceStatus::Ok)
+            || self
+                .bridges
+                .get(&device)
+                .is_some_and(Bridge::supports_user_presets)
+    }
+
+    /// Captures the running plugin's user preset data.
+    pub fn capture_clap_preset(&mut self, device: DeviceId) -> bool {
+        if let Some(direct) = self.direct.get_mut(&device) {
+            return direct.capture_clap_preset();
+        }
+        self.bridges
+            .get_mut(&device)
+            .is_some_and(Bridge::capture_clap_preset)
+    }
+
+    /// Applies user preset data in the CLAP preset context.
+    pub fn load_user_preset(&mut self, device: DeviceId, state: Vec<u8>) -> bool {
+        self.supports_user_presets(device) && self.load_preset(device, PresetLoad::UserState(state))
+    }
+
+    fn load_preset(&mut self, device: DeviceId, preset: PresetLoad) -> bool {
+        if let Some(direct) = self.direct.get_mut(&device) {
+            return direct.load_clap_preset(preset);
+        }
+        self.bridges
+            .get_mut(&device)
+            .is_some_and(|bridge| bridge.load_clap_preset(preset))
+    }
+
+    /// Prepares the project state for a new instance with a discovered CLAP preset.
+    pub fn prepare_clap_preset(
+        &self,
+        plugin: &PluginRef,
+        source: &ClapPresetSource,
+    ) -> Option<crate::PresetPreparation> {
+        let entry = self.catalog.resolve(plugin)?;
+        let PluginLocation::Bundle {
+            path,
+            format: komponist_ipc::PluginFormat::Clap,
+            ..
+        } = &entry.location
+        else {
+            return None;
+        };
+        let preset = entry
+            .clap_presets
+            .iter()
+            .find(|preset| &preset.source == source)?;
+        let verified = if requires_bundled(plugin) {
+            Some(
+                self.bundled_clap
+                    .as_ref()?
+                    .verify(path, &preset.plugin_id)
+                    .ok()??,
+            )
+        } else {
+            None
+        };
+        let path = verified
+            .as_ref()
+            .map_or(path.as_path(), VerifiedClap::bundle_path);
+        crate::PresetPreparation::start(
+            self.config.bridge_exe.clone(),
+            self.config.bridge_args.clone(),
+            path.to_path_buf(),
+            preset,
+        )
+    }
+
     /// Asks for a state snapshot; it arrives as [`PluginManagerEvent::StateSnapshot`] (not while
     /// the device has a [`Self::state_warning`]).
     pub fn request_state(&mut self, device: DeviceId) {
@@ -1314,7 +1449,17 @@ impl PluginManager {
         let deadline = Instant::now() + timeout;
         let mut expected = BTreeSet::new();
         let mut required = BTreeSet::new();
+        let mut preset_loading: BTreeSet<_> = self
+            .direct
+            .iter()
+            .filter(|(_, direct)| direct.is_loading_clap_preset())
+            .map(|(&id, _)| id)
+            .collect();
         for (&device, bridge) in &self.bridges {
+            if bridge.is_loading_clap_preset() {
+                preset_loading.insert(device);
+                continue;
+            }
             if bridge.expects_snapshot_for_save() {
                 expected.insert(device);
             }
@@ -1330,8 +1475,10 @@ impl PluginManager {
                 required.insert(device);
             }
         }
-        let mut captured =
-            self.snapshot_states_if(deadline.saturating_duration_since(Instant::now()), |_| true);
+        let mut captured = self.snapshot_states_if(
+            deadline.saturating_duration_since(Instant::now()),
+            |device| !preset_loading.contains(&device),
+        );
         loop {
             for (device, _) in &captured {
                 expected.remove(device);
@@ -1356,6 +1503,7 @@ impl PluginManager {
             ));
         }
         captured.sort_by_key(|(device, _)| *device);
+        required.append(&mut preset_loading);
         SaveSnapshots {
             captured,
             unavailable: expected.difference(&required).copied().collect(),

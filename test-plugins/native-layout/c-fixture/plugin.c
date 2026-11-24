@@ -4,9 +4,12 @@
 #include <clap/entry.h>
 #include <clap/ext/audio-ports.h>
 #include <clap/ext/params.h>
+#include <clap/ext/preset-load.h>
 #include <clap/ext/gui.h>
 #include <clap/ext/state.h>
+#include <clap/ext/state-context.h>
 #include <clap/factory/plugin-factory.h>
+#include <clap/factory/preset-discovery.h>
 
 #include <math.h>
 #include <stdatomic.h>
@@ -366,6 +369,39 @@ static bool CLAP_ABI restore(const clap_plugin_t *plugin, const clap_istream_t *
 
 static const clap_plugin_state_t state_extension = {.save = save, .load = restore};
 
+static bool CLAP_ABI save_context(const clap_plugin_t *plugin, const clap_ostream_t *out,
+                                  uint32_t context) {
+    if (context != CLAP_STATE_CONTEXT_FOR_PRESET)
+        return false;
+    return save(plugin, out);
+}
+
+static bool CLAP_ABI load_context(const clap_plugin_t *plugin, const clap_istream_t *in,
+                                  uint32_t context) {
+    if (context != CLAP_STATE_CONTEXT_FOR_PRESET)
+        return false;
+    return restore(plugin, in);
+}
+
+static const clap_plugin_state_context_t state_context = {.save = save_context,
+                                                         .load = load_context};
+
+static bool CLAP_ABI load_factory_preset(const clap_plugin_t *plugin, uint32_t kind,
+                                       const char *location, const char *key) {
+    if (kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || location || !key ||
+        strcmp(key, "fixture-boost") != 0)
+        return false;
+    struct instance *self = instance(plugin);
+    self->values[GAIN] = 0.75;
+    self->values[MODE] = 2.0;
+    const clap_host_params_t *params = self->host->get_extension(self->host, CLAP_EXT_PARAMS);
+    if (params)
+        params->rescan(self->host, CLAP_PARAM_RESCAN_VALUES);
+    return true;
+}
+
+static const clap_plugin_preset_load_t preset_load = {.from_location = load_factory_preset};
+
 /* Simulate an advertised embedded editor that fails creation. */
 static bool CLAP_ABI gui_supported(const clap_plugin_t *plugin, const char *api, bool floating) {
     (void)plugin;
@@ -390,6 +426,11 @@ static const void *CLAP_ABI get_extension(const clap_plugin_t *plugin, const cha
         return &audio_ports;
     if (strcmp(id, CLAP_EXT_STATE) == 0)
         return &state_extension;
+    if (instance(plugin)->variant == VALID && strcmp(id, CLAP_EXT_STATE_CONTEXT) == 0)
+        return &state_context;
+    if (instance(plugin)->variant == VALID &&
+        (strcmp(id, CLAP_EXT_PRESET_LOAD) == 0 || strcmp(id, CLAP_EXT_PRESET_LOAD_COMPAT) == 0))
+        return &preset_load;
     if (instance(plugin)->variant == OPTIONAL_FIELD && strcmp(id, CLAP_EXT_GUI) == 0)
         return &failing_gui;
     const enum variant variant = instance(plugin)->variant;
@@ -455,6 +496,70 @@ static const clap_plugin_factory_t plugin_factory = {.get_plugin_count = plugin_
                                                      .get_plugin_descriptor = get_descriptor,
                                                      .create_plugin = create_plugin};
 
+static const clap_preset_discovery_provider_descriptor_t preset_descriptor = {
+    .clap_version = CLAP_VERSION_INIT, .id = FIXTURE_ID "presets",
+    .name = "Fixture presets", .vendor = "klang-studio",
+};
+
+static bool CLAP_ABI preset_provider_init(const clap_preset_discovery_provider_t *provider) {
+    const clap_preset_discovery_indexer_t *indexer = provider->provider_data;
+    const clap_preset_discovery_location_t embedded = {
+        .flags = CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT,
+        .name = "Factory", .kind = CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, .location = NULL,
+    };
+    return indexer->declare_location(indexer, &embedded);
+}
+
+static void CLAP_ABI preset_provider_destroy(const clap_preset_discovery_provider_t *provider) {
+    free((void *)provider);
+}
+
+static bool CLAP_ABI preset_provider_metadata(const clap_preset_discovery_provider_t *provider,
+                                              uint32_t kind, const char *location,
+                                              const clap_preset_discovery_metadata_receiver_t *receiver) {
+    (void)provider;
+    if (kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || location ||
+        !receiver->begin_preset(receiver, "Fixture Boost", "fixture-boost"))
+        return false;
+    const clap_universal_plugin_id_t id = {.abi = "clap", .id = FIXTURE_ID "valid"};
+    receiver->add_plugin_id(receiver, &id);
+    receiver->add_extra_info(receiver, "org.klang-studio.komponist.preset-alias", "Older Boost");
+    receiver->add_extra_info(receiver, "org.klang-studio.komponist.preset-name.de", "Testanhebung");
+    return true;
+}
+
+static uint32_t CLAP_ABI preset_count(const clap_preset_discovery_factory_t *factory) {
+    (void)factory;
+    return 1;
+}
+
+static const clap_preset_discovery_provider_descriptor_t *CLAP_ABI
+preset_provider_descriptor(const clap_preset_discovery_factory_t *factory, uint32_t index) {
+    (void)factory;
+    return index == 0 ? &preset_descriptor : NULL;
+}
+
+static const clap_preset_discovery_provider_t *CLAP_ABI
+create_preset_provider(const clap_preset_discovery_factory_t *factory,
+                       const clap_preset_discovery_indexer_t *indexer, const char *id) {
+    (void)factory;
+    if (strcmp(id, preset_descriptor.id) != 0)
+        return NULL;
+    clap_preset_discovery_provider_t *provider = malloc(sizeof(*provider));
+    if (!provider)
+        return NULL;
+    *provider = (clap_preset_discovery_provider_t){
+        .desc = &preset_descriptor, .provider_data = (void *)indexer,
+        .init = preset_provider_init, .destroy = preset_provider_destroy,
+        .get_metadata = preset_provider_metadata,
+    };
+    return provider;
+}
+
+static const clap_preset_discovery_factory_t preset_factory = {
+    .count = preset_count, .get_descriptor = preset_provider_descriptor, .create = create_preset_provider,
+};
+
 static bool CLAP_ABI entry_init(const char *path) {
     (void)path;
     return true;
@@ -463,7 +568,12 @@ static bool CLAP_ABI entry_init(const char *path) {
 static void CLAP_ABI entry_deinit(void) {}
 
 static const void *CLAP_ABI get_factory(const char *id) {
-    return strcmp(id, CLAP_PLUGIN_FACTORY_ID) == 0 ? &plugin_factory : NULL;
+    if (strcmp(id, CLAP_PLUGIN_FACTORY_ID) == 0)
+        return &plugin_factory;
+    if (strcmp(id, CLAP_PRESET_DISCOVERY_FACTORY_ID) == 0 ||
+        strcmp(id, CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT) == 0)
+        return &preset_factory;
+    return NULL;
 }
 
 CLAP_EXPORT const clap_plugin_entry_t clap_entry = {.clap_version = CLAP_VERSION_INIT,

@@ -10,12 +10,13 @@
 //! [`ScanOutcome`] to the plugin manager, which polls for it.
 //!
 //! What gets cached: successful scans, bundles without plugins, crashes and load errors (a bundle
-//! that fails the same way again is not rescanned until it changes). Not cached, so that the next
-//! scan tries again: timeouts (the machine may just have been busy) and formats the bridge cannot
-//! host yet (VST3 until WP-32).
+//! that fails the same way again is not rescanned until it changes). Standard CLAP preset discovery
+//! runs in another disposable process after a successful uncached CLAP scan. A crash, timeout or
+//! malformed reply in that optional pass leaves the plug-in available in the catalog.
+//! Descriptor timeouts and unsupported formats are retried on the next scan.
 
 use std::collections::{HashSet, VecDeque};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::Read;
 #[cfg(unix)]
 use std::os::fd::AsFd;
@@ -26,6 +27,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use komponist_ipc::clap_presets::ClapPreset;
 use komponist_ipc::{
     PluginDescriptor, PluginFormat, PluginKind, ProcessExit, ProcessGroup, ProcessWatcher,
 };
@@ -39,6 +41,9 @@ const MAX_DEPTH: usize = 8;
 
 /// How often a waiting scan looks at the cancel flag.
 const CANCEL_POLL: Duration = Duration::from_millis(50);
+
+/// An optional preset provider may not delay a worker beyond this extra window.
+const PRESET_SCAN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Windows: how often a waiting scan reads its output pipes (they cannot be waited on).
 #[cfg(windows)]
@@ -143,6 +148,7 @@ struct Found {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Scanned {
     pub descriptors: Vec<PluginDescriptor>,
+    pub clap_presets: Vec<ClapPreset>,
     pub error: Option<String>,
     /// Whether the result goes into the cache.
     pub cacheable: bool,
@@ -152,6 +158,7 @@ impl Scanned {
     fn failed(error: impl Into<String>, cacheable: bool) -> Scanned {
         Scanned {
             descriptors: Vec::new(),
+            clap_presets: Vec::new(),
             error: Some(error.into()),
             cacheable,
         }
@@ -200,6 +207,7 @@ fn run(setup: &ScanSetup, cancel: &AtomicBool) -> Option<ScanOutcome> {
                 .lookup(&f.path, f.mtime_secs)
                 .map(|cached| Scanned {
                     descriptors: cached.descriptors.clone(),
+                    clap_presets: cached.clap_presets.clone(),
                     error: cached.error.clone(),
                     cacheable: true,
                 })
@@ -230,7 +238,20 @@ fn run(setup: &ScanSetup, cancel: &AtomicBool) -> Option<ScanOutcome> {
                         setup.timeout,
                         cancel,
                     );
-                    if let Some(scanned) = scanned {
+                    if let Some(mut scanned) = scanned {
+                        if scanned
+                            .descriptors
+                            .iter()
+                            .any(|descriptor| descriptor.format == PluginFormat::Clap)
+                        {
+                            scanned.clap_presets = scan_bundle_presets(
+                                &setup.bridge_exe,
+                                &setup.bridge_args,
+                                bundle,
+                                setup.timeout.min(PRESET_SCAN_TIMEOUT),
+                                cancel,
+                            );
+                        }
                         let _ = tx.send((index, scanned));
                     }
                 }
@@ -284,6 +305,7 @@ fn run(setup: &ScanSetup, cancel: &AtomicBool) -> Option<ScanOutcome> {
                 path: bundle.path.clone(),
                 mtime_secs: bundle.mtime_secs,
                 descriptors: result.descriptors,
+                clap_presets: result.clap_presets,
                 error: result.error,
             });
         }
@@ -435,11 +457,137 @@ pub(crate) fn scan_bundle(
     timeout: Duration,
     cancel: &AtomicBool,
 ) -> Option<Scanned> {
+    run_scan_command(
+        bridge_exe,
+        bridge_args,
+        "--scan",
+        bundle,
+        None,
+        timeout,
+        cancel,
+    )
+    .map(|result| match result {
+        Ok(output) => interpret(output.exit, &output.stdout, &output.stderr, bundle),
+        Err(error) => Scanned::failed(error, false),
+    })
+}
+
+fn scan_bundle_presets(
+    bridge_exe: &Path,
+    bridge_args: &[OsString],
+    bundle: &Path,
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> Vec<ClapPreset> {
+    let Some(Ok(output)) = run_scan_command(
+        bridge_exe,
+        bridge_args,
+        "--scan-presets",
+        bundle,
+        None,
+        timeout,
+        cancel,
+    ) else {
+        return Vec::new();
+    };
+    // A failed provider must not replace or invalidate a successful descriptor scan.
+    if output.exit.code == Some(0) {
+        serde_json::from_slice(&output.stdout).unwrap_or_default()
+    } else {
+        Vec::new()
+    }
+}
+
+/// A disposable bridge preparing the initial state for a preset added from the browser.
+#[derive(Debug)]
+pub struct PresetPreparation {
+    cancel: Arc<AtomicBool>,
+    result: mpsc::Receiver<Result<Vec<u8>, String>>,
+}
+
+impl PresetPreparation {
+    pub(crate) fn start(
+        bridge_exe: PathBuf,
+        bridge_args: Vec<OsString>,
+        bundle: PathBuf,
+        preset: &ClapPreset,
+    ) -> Option<Self> {
+        let selection = serde_json::to_string(&(&preset.plugin_id, &preset.source)).ok()?;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        let (send, result) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("kp-preset-state".into())
+            .spawn(move || {
+                let result = run_scan_command(
+                    &bridge_exe,
+                    &bridge_args,
+                    "--preset-state",
+                    &bundle,
+                    Some(OsStr::new(&selection)),
+                    crate::catalog::SCAN_TIMEOUT,
+                    &flag,
+                )
+                .map(|output| {
+                    output.and_then(|output| {
+                        if output.exit.code == Some(0) && output.stdout.len() < MAX_STDOUT {
+                            Ok(output.stdout)
+                        } else {
+                            Err(format!(
+                                "preset initialization failed: {}",
+                                String::from_utf8_lossy(&output.stderr).trim()
+                            ))
+                        }
+                    })
+                });
+                if let Some(result) = result {
+                    let _ = send.send(result);
+                }
+            })
+            .ok()?;
+        Some(Self { cancel, result })
+    }
+
+    /// Returns the state once the disposable process completes.
+    pub fn try_finish(&self) -> Option<Result<Vec<u8>, String>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err("preset helper disconnected".into())),
+        }
+    }
+}
+
+impl Drop for PresetPreparation {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+    }
+}
+
+struct ScanOutput {
+    exit: ProcessExit,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+fn run_scan_command(
+    bridge_exe: &Path,
+    bridge_args: &[OsString],
+    flag: &str,
+    bundle: &Path,
+    argument: Option<&OsStr>,
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> Option<Result<ScanOutput, String>> {
+    if cancel.load(Ordering::Acquire) {
+        return None;
+    }
     let mut command = Command::new(bridge_exe);
     command
         .args(bridge_args)
-        .arg("--scan")
+        .arg(flag)
         .arg(bundle)
+        .args(argument)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -448,10 +596,7 @@ pub(crate) fn scan_bundle(
     let (mut child, group) = match ProcessGroup::spawn(&mut command) {
         Ok(spawned) => spawned,
         Err(e) => {
-            return Some(Scanned::failed(
-                format!("cannot start {}: {e}", bridge_exe.display()),
-                false,
-            ));
+            return Some(Err(format!("cannot start {}: {e}", bridge_exe.display())));
         }
     };
     let mut watcher = match ProcessWatcher::new(child.id()) {
@@ -465,10 +610,7 @@ pub(crate) fn scan_bundle(
                 let _ = child.kill();
                 let _ = child.wait();
             }
-            return Some(Scanned::failed(
-                format!("cannot watch the scan: {e}"),
-                false,
-            ));
+            return Some(Err(format!("cannot watch the scan: {e}")));
         }
     };
     let mut pipes = Pipes {
@@ -494,22 +636,23 @@ pub(crate) fn scan_bundle(
             let _ = group.kill(&watcher);
             let _ = watcher.kill();
             let _ = watcher.wait_exit(Some(Duration::from_secs(1)));
-            return Some(Scanned::failed(
-                format!("timed out after {} s", timeout.as_secs_f32()),
-                false,
-            ));
+            return Some(Err(format!("timed out after {} s", timeout.as_secs_f32())));
         }
         pipes.wait(&watcher, (deadline - now).min(CANCEL_POLL));
         pipes.read_ready();
         match watcher.try_exit() {
             Ok(Some(exit)) => break exit,
             Ok(None) => {}
-            Err(e) => return Some(Scanned::failed(format!("scan process: {e}"), false)),
+            Err(e) => return Some(Err(format!("scan process: {e}"))),
         }
     };
     // A helper process the plugin started may hold the pipes open: take what is there.
     pipes.read_ready();
-    Some(interpret(exit, &pipes.out, &pipes.err, bundle))
+    Some(Ok(ScanOutput {
+        exit,
+        stdout: pipes.out,
+        stderr: pipes.err,
+    }))
 }
 
 /// Turns the exit status and output of a scan of `bundle` into a result.
@@ -521,6 +664,7 @@ pub(crate) fn interpret(exit: ProcessExit, stdout: &[u8], stderr: &[u8], bundle:
             }
             Ok(descriptors) => Scanned {
                 descriptors,
+                clap_presets: Vec::new(),
                 error: None,
                 cacheable: true,
             },
@@ -776,6 +920,49 @@ mod tests {
         let usage = interpret(exit(Some(2), None), b"", b"", Path::new(BUNDLE));
         assert_eq!(usage.error.as_deref(), Some("scan failed (exit code 2)"));
         assert!(!usage.cacheable);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_preset_helper_does_not_discard_descriptor_scan() {
+        let scratch = tempfile::tempdir().unwrap();
+        // The fixture helper returns a valid descriptor and fails only in preset mode.
+        macos_bundle(scratch.path(), "Y.clap");
+        let script = r#"
+            case "$2" in
+                --scan)
+                    printf '%s\n' '[{"format":"clap","id":"x.y","name":"Y","vendor":"X",
+                        "version":"1","kind":"effect","features":[],"bundle":"/a/Y.clap"}]'
+                    ;;
+                --scan-presets) : > "$1"; exit 1 ;;
+                *) exit 2 ;;
+            esac
+        "#;
+        let attempted = scratch.path().join("preset-attempted");
+        let setup = ScanSetup {
+            bridge_exe: "/bin/sh".into(),
+            bridge_args: vec![
+                "-c".into(),
+                script.into(),
+                "scan-fixture".into(),
+                attempted.as_os_str().into(),
+            ],
+            dirs: PluginDirs {
+                clap: vec![scratch.path().into()],
+                vst3: Vec::new(),
+            },
+            cache: ScanCache::default(),
+            cache_file: scratch.path().join("cache.json"),
+            bundled_only: None,
+            parallel: 1,
+            timeout: crate::catalog::SCAN_TIMEOUT,
+        };
+        let outcome = run(&setup, &AtomicBool::new(false)).unwrap();
+        assert!(attempted.is_file());
+        assert_eq!(outcome.report.found, 1);
+        assert!(outcome.report.skipped.is_empty());
+        assert_eq!(outcome.cache.descriptors()[0].id, "x.y");
+        assert!(outcome.cache.bundles[0].clap_presets.is_empty());
     }
 
     #[test]

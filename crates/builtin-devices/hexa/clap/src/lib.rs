@@ -5,6 +5,9 @@ mod state;
 use std::ffi::{CStr, c_void};
 use std::sync::{Arc, OnceLock};
 
+use komponist_bundled_clap_adapter::presets::{
+    FactoryPreset, FactoryPresets, embedded_load_extension,
+};
 use komponist_bundled_clap_adapter::{Parameters, panel_from_parts};
 use komponist_engine::{Event, EventKind, NOTE_ID_NONE, Processor};
 use komponist_hexa::device::{self, Field, WIRE_COUNT};
@@ -274,7 +277,12 @@ impl ClapPlugin for HexaPlugin {
     ];
 
     unsafe fn clap_custom_extension(id: &CStr) -> *const c_void {
-        komponist_native_clap_sdk::extension::<Self>(id)
+        let preset = embedded_load_extension::<Self>(id);
+        if preset.is_null() {
+            komponist_native_clap_sdk::extension::<Self>(id)
+        } else {
+            preset
+        }
     }
 }
 
@@ -284,7 +292,26 @@ impl NativeClapLayout for HexaPlugin {
     }
 }
 
-nice_export_clap!(HexaPlugin);
+impl FactoryPresets for HexaPlugin {
+    fn metadata() -> impl Iterator<Item = FactoryPreset> {
+        komponist_hexa::presets().map(|preset| FactoryPreset {
+            name: preset.name,
+            key: preset.index.to_string().into(),
+            category: Some(preset.category),
+        })
+    }
+
+    fn state(key: &str) -> Option<Vec<u8>> {
+        let index = key.parse::<usize>().ok()?;
+        let patch = komponist_hexa::preset_patch(index)?;
+        Some(komponist_hexa::state::encode_clap_patch(
+            patch,
+            Self::VERSION,
+        ))
+    }
+}
+
+komponist_bundled_clap_adapter::export_with_presets!(HexaPlugin, HexaPlugin);
 
 #[cfg(test)]
 mod tests;
