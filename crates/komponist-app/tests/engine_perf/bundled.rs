@@ -3,23 +3,20 @@
 #[path = "bundled/memory.rs"]
 mod memory;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost};
 use komponist_audio::HostKind;
-use komponist_builtin::Internal;
-use komponist_model::{Device, DeviceId, Project};
-use komponist_plugins::bundled_clap::BundledClap;
-use komponist_plugins::legacy_bundled::{
-    migrate_legacy_bundled_project, plan_legacy_bundled_device,
-};
-use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent};
+use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project};
+use komponist_plugins::legacy_bundled::bundled_clap_id;
+use komponist_plugins::{Catalog, DeviceStatus, PluginDirs, PluginManagerEvent};
 
 use super::{
-    PATIENCE, app_at_buffer, config, measure, project, require_audio_config, step_until,
-    worker_counts,
+    HEXA_PRESETS, PATIENCE, app_at_buffer, config, measure, project, project_with_hexa,
+    require_audio_config, step_until, worker_counts,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,47 +61,87 @@ impl Workload {
     }
 }
 
-fn install(project: &mut Project, kind: Internal) -> Arc<Device> {
-    let id = DeviceId(project.alloc_id().expect("workload device ID"));
-    Arc::new(Device {
-        id,
-        plugin: kind.plugin_ref(),
-        role: kind.role(),
-        bypass: false,
-        parameter_bases: Default::default(),
-        asset_links: Default::default(),
-        state: None,
-        sidechain: None,
-    })
-}
+fn build_project(workload: Workload, package: Option<&PluginHost>) -> Project {
+    let mut workload_project = if let Some(host) = package {
+        let presets: BTreeMap<_, _> = HEXA_PRESETS
+            .into_iter()
+            .map(|name| {
+                let hexa = host
+                    .manager()
+                    .prepare_bundled_device("org.klang-studio.komponist.hexa", Some(name), &[], &[])
+                    .unwrap_or_else(|error| panic!("benchmark preset {name}: {error}"));
+                assert_eq!(hexa.role, DeviceRole::Instrument);
+                (
+                    name,
+                    (hexa.plugin, hexa.state.expect("factory preset state")),
+                )
+            })
+            .collect();
+        project_with_hexa(false, |name| presets[name].clone())
+    } else {
+        project(false)
+    };
 
-fn build_project(workload: Workload) -> Project {
-    let mut workload_project = project(false);
+    let legacy = package.is_none().then(Catalog::builtin);
+    let mut references = BTreeMap::<_, PluginRef>::new();
+    let mut install = |project: &mut Project, slug, role| {
+        let plugin = references.entry(slug).or_insert_with(|| {
+            let id = format!("org.klang-studio.komponist.{slug}");
+            if let Some(host) = package {
+                let prepared = host
+                    .manager()
+                    .prepare_bundled_device(&id, None, &[], &[])
+                    .unwrap_or_else(|error| panic!("benchmark device {id}: {error}"));
+                assert_eq!(prepared.role, role);
+                prepared.plugin
+            } else {
+                legacy
+                    .as_ref()
+                    .expect("legacy catalog")
+                    .entries()
+                    .iter()
+                    .find(|entry| bundled_clap_id(&entry.plugin) == Some(id.as_str()))
+                    .unwrap_or_else(|| panic!("legacy benchmark device {id}"))
+                    .plugin
+                    .clone()
+            }
+        });
+        Arc::new(Device {
+            id: DeviceId(project.alloc_id().expect("workload device ID")),
+            plugin: plugin.clone(),
+            role,
+            bypass: false,
+            parameter_bases: Default::default(),
+            asset_links: Default::default(),
+            state: None,
+            sidechain: None,
+        })
+    };
     match workload {
         Workload::ParallelInstruments => {}
         Workload::SerialEffects => {
             for index in 0..4 {
-                let delay = install(&mut workload_project, Internal::Delay);
-                let hall = install(&mut workload_project, Internal::Hall);
+                let effects = ["delay", "hall"]
+                    .map(|slug| install(&mut workload_project, slug, DeviceRole::Effect));
                 Arc::make_mut(&mut workload_project.tracks[index])
                     .channel
                     .devices
-                    .extend([delay, hall]);
+                    .extend(effects);
             }
-            let master = [Internal::Eq, Internal::Presse, Internal::Limiter]
-                .map(|kind| install(&mut workload_project, kind));
+            let master = ["eq", "presse", "limiter"]
+                .map(|slug| install(&mut workload_project, slug, DeviceRole::Effect));
             Arc::make_mut(&mut workload_project.master)
                 .devices
                 .extend(master);
         }
         Workload::MidiBeforeInstruments => {
             for index in 0..8 {
-                let arpeggiator = install(&mut workload_project, Internal::Arpeggiator);
-                let scale = install(&mut workload_project, Internal::Tonleiter);
+                let midi = ["arpeggiator", "scale"]
+                    .map(|slug| install(&mut workload_project, slug, DeviceRole::MidiEffect));
                 Arc::make_mut(&mut workload_project.tracks[index])
                     .channel
                     .devices
-                    .splice(..0, [arpeggiator, scale]);
+                    .splice(..0, midi);
             }
         }
     }
@@ -117,18 +154,6 @@ fn project_devices(project: &Project) -> impl Iterator<Item = &Arc<Device>> {
         .iter()
         .flat_map(|track| &track.channel.devices)
         .chain(&project.master.devices)
-}
-
-fn migrate(project: &Project, inventory: &BundledClap) -> Project {
-    let plans = project_devices(project)
-        .map(|device| {
-            plan_legacy_bundled_device(inventory, device, None)
-                .unwrap_or_else(|error| panic!("{}: {error}", device.plugin.id))
-        })
-        .collect::<Vec<_>>();
-    migrate_legacy_bundled_project(project, plans)
-        .expect("translate the complete benchmark project")
-        .project
 }
 
 fn audio_host() -> HostKind {
@@ -164,22 +189,15 @@ fn bundled_clap_workloads() {
         .map(PathBuf::from)
         .expect("packaged bridge launcher");
     let scratch = tempfile::tempdir().expect("benchmark cache directory");
-    let inventory = match mode {
-        Mode::Legacy => None,
-        _ => Some(
-            BundledClap::discover(scratch.path())
-                .expect("trusted benchmark inventory")
-                .expect("runner must contain the app's authenticated manifest hash"),
-        ),
-    };
+    let package = (mode != Mode::Legacy).then(|| {
+        let mut launch = config(scratch.path());
+        launch.bridge_exe = launcher.clone();
+        PluginHost::new(launch)
+    });
 
     let audio = audio_host();
     for workload in Workload::selected() {
-        let source = build_project(workload);
-        let source = match &inventory {
-            Some(inventory) => migrate(&source, inventory),
-            None => source,
-        };
+        let source = build_project(workload, package.as_ref());
         let ids: Vec<_> = project_devices(&source).map(|device| device.id).collect();
         for frames in buffer_sizes() {
             for workers in worker_counts() {
@@ -247,8 +265,8 @@ fn run(
         assert!(host.state_warning(id).is_none(), "state refused for {id:?}");
         if mode != Mode::Legacy {
             assert!(
-                host.native_layout(id).is_some(),
-                "missing native layout for {id:?}"
+                host.native_layout(id).is_some() && host.verified_bundled_kind(id).is_some(),
+                "missing verified native layout for {id:?}"
             );
         }
     }
