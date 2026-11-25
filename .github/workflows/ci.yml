@@ -61,6 +61,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The device boundary check compares against the base commit of this Git history.
+          fetch-depth: 0
 
       # The build list of the README (docs: libfontconfig1-dev is missing there: yeslogic-fontconfig-sys),
       # plus the runtime pieces of the tests: lavapipe, Xvfb (check-gui.sh starts it), xkbcommon-x11 for winit.
