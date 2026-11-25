@@ -269,15 +269,19 @@ impl Card {
     pub(super) fn wire_value(&self, param: &Param, plain: f64) -> f64 {
         if self.bundled_editor {
             pinned_clap_state::to_clap(&param.info, plain)
-        } else if self
-            .native_layout
-            .as_ref()
-            .is_some_and(|layout| layout.parameter_display(param.wire).is_some())
-        {
+        } else if self.has_normalized_display(param) {
             param.info.to_normalized(plain)
         } else {
             plain
         }
+    }
+
+    pub(super) fn has_normalized_display(&self, param: &Param) -> bool {
+        !self.bundled_editor
+            && self
+                .native_layout
+                .as_ref()
+                .is_some_and(|layout| layout.parameter_display(param.wire).is_some())
     }
 
     pub(super) fn native_page(&self) -> Option<&komponist_ipc::native_layout::Page> {
