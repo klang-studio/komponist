@@ -49,7 +49,7 @@ impl Target {
     pub fn parse(&self, text: &str) -> Option<f32> {
         let text = text.trim();
         let plain = match self.info.unit {
-            Unit::Db => f64::from(komponist_model::format::parse_db(text)?),
+            Unit::Db | Unit::DbWidth => f64::from(komponist_model::format::parse_db(text)?),
             Unit::Percent => widgets::number_field::parse_number(text, "%")? / 100.0,
             Unit::Hz if text.ends_with("kHz") => {
                 widgets::number_field::parse_number(text, "kHz")? * 1000.0

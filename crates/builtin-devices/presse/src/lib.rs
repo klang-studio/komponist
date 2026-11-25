@@ -145,9 +145,7 @@ fn params(t: Lang) -> Vec<ParamInfo> {
             ParamKind::lin(0.0, 24.0),
             6.0,
         )
-        .unit(Unit::Db)
-        // A width, not a gain: no sign.
-        .formatted(|v| format!("{v:.0} dB")),
+        .unit(Unit::DbWidth),
         ParamInfo::new(
             "attack",
             t.param_attack(),

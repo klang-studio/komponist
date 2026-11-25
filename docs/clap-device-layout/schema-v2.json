@@ -97,7 +97,9 @@
           "max": { "type": "number" },
           "default": { "type": "number" },
           "scale": { "enum": ["linear", "logarithmic"] },
-          "unit": { "enum": ["none", "hertz", "milliseconds", "percent"] }
+          "unit": {
+            "enum": ["none", "hertz", "milliseconds", "percent", "decibels", "decibel_width", "ratio"]
+          }
         }
       }
     },
@@ -284,6 +286,11 @@
           "minimum": 0,
           "maximum": 4294967294
         },
+        "disabled_by": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967294
+        },
         "labels": {
           "$ref": "#/$defs/labels"
         },
@@ -297,6 +304,10 @@
         }
       },
       "allOf": [
+        {
+          "if": { "required": ["disabled_by"] },
+          "then": { "properties": { "widget": { "enum": ["knob", "knob_large"] } } }
+        },
         {
           "if": {
             "properties": {

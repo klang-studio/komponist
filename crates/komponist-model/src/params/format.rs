@@ -29,6 +29,7 @@ fn float_text(info: &ParamInfo, v: f64) -> String {
         Unit::Ms => ms(v),
         Unit::S => seconds(v),
         Unit::Db => format!("{} dB", fmt_db(v as f32)),
+        Unit::DbWidth => format!("{v:.0} dB"),
         Unit::Percent => format!("{}{}", number((v * 100.0).round(), 0), info.texts.percent),
         Unit::Semitones => format!("{} st", signed_whole(v)),
         Unit::Cents => format!("{} ct", signed_whole(v)),

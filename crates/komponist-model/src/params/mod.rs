@@ -172,6 +172,8 @@ pub enum Unit {
     Ratio,
     /// Metres (`28 m`).
     Meters,
+    /// An unsigned decibel width in whole units (`6 dB`).
+    DbWidth,
 }
 
 /// A custom text for a plain value, for devices whose values need their own words ("Frei").

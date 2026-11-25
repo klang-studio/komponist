@@ -285,7 +285,16 @@ impl View for Devices {
                 ctx.meters.analysis(c.device, show && spectrum, now)
             };
             // The compressor's level point and reduction history likewise.
-            if model::has_dynamics_graph(c) {
+            let authored_dynamics = c.native_page().is_some_and(|page| {
+                use komponist_ipc::native_layout::GraphKind;
+                page.cells.iter().any(|cell| {
+                    cell.graph.as_ref().is_some_and(|graph| {
+                        matches!(graph.kind, GraphKind::Compressor | GraphKind::GrHistory)
+                            && !graph.signal_taps.is_empty()
+                    })
+                })
+            });
+            if model::has_dynamics_graph(c) && (!show || !authored_dynamics) {
                 c.dynamics = if show && (detector.is_some() || reduction.is_some()) {
                     Some(
                         ctx.meters

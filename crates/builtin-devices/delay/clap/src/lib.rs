@@ -1,16 +1,14 @@
 //! Stereo Delay exported through the native CLAP adapter.
 
 use komponist_bundled_clap_adapter::{
-    Binding, DeviceDefinition, Effect, device_labels, panel_from_parts,
+    Binding, DeviceDefinition, Effect, device_labels, panel_from_parts, parameter_display,
 };
 use komponist_device_core::Spec;
 use komponist_device_core::layout::{knob, param, single_page, toggle};
 use komponist_i18n::Lang;
+use komponist_model::params::ParamInfo;
 use komponist_model::params::layout::{Cell, DeviceLayout, Half, WidgetKind};
-use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
-use komponist_native_clap_sdk::{
-    DisplayScale, DisplayUnit, GraphLabels, PanelV2, ParameterDisplay,
-};
+use komponist_native_clap_sdk::{GraphLabels, PanelV2};
 use nice_plug::prelude::*;
 
 struct Delay;
@@ -124,34 +122,6 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Delay {
             .cells
             .iter()
             .position(|cell| cell.widget == WidgetKind::Graph)?;
-        let parameter_display = english_params
-            .iter()
-            .filter_map(|param| {
-                let ParamKind::Float {
-                    min,
-                    max,
-                    scale,
-                    steps: 0,
-                } = param.kind
-                else {
-                    return None;
-                };
-                let scale = match scale {
-                    Scale::Lin => DisplayScale::Linear,
-                    Scale::Log => DisplayScale::Logarithmic,
-                    _ => return None,
-                };
-                let unit = match param.unit {
-                    Unit::Hz => DisplayUnit::Hertz,
-                    Unit::Ms => DisplayUnit::Milliseconds,
-                    Unit::Percent => DisplayUnit::Percent,
-                    Unit::None => DisplayUnit::None,
-                    _ => return None,
-                };
-                ParameterDisplay::new(min, max, param.default, scale, unit)
-                    .map(|display| (param.id.clone(), display))
-            })
-            .collect();
         let graph_labels = GraphLabels {
             name: Lang::ALL
                 .into_iter()
@@ -182,7 +152,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Delay {
             reduction_taps: Default::default(),
             headings: Default::default(),
             pad_bank: None,
-            parameter_display,
+            parameter_display: parameter_display(english_params),
         })
     }
 

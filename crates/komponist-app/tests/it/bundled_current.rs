@@ -1318,6 +1318,110 @@ fn packaged_effect_cards_and_presets() {
             let path = PathBuf::from(dir).join(format!("{slug}-{}.png", lang.code()));
             harness.render().unwrap().save(path).unwrap();
         }
+        if slug == "presse" {
+            check_presse_panel(&mut harness, track, device, lang);
+        }
     }
     harness.state_mut().shutdown();
+}
+
+fn check_presse_panel(
+    harness: &mut egui_kittest::Harness<'_, App>,
+    track: TrackId,
+    device: DeviceId,
+    lang: komponist_i18n::Lang,
+) {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+
+    let host = harness.state().engine().host();
+    let layout = host.native_layout(device).unwrap();
+    assert_eq!(layout.schema_version, 2);
+    let threshold = layout.author_ids().unwrap()["threshold"];
+    let detector = host
+        .signal_tap(device, "detector")
+        .unwrap()
+        .samples()
+        .clone();
+    let reduction = host
+        .signal_tap(device, "reduction")
+        .unwrap()
+        .samples()
+        .clone();
+
+    harness.get_by_role_and_label(Role::Group, lang.ui_graph_transfer());
+    harness.get_by_role_and_label(Role::Group, lang.ui_graph_gr_history());
+    for (label, value) in [
+        (lang.param_presse_knee(), "6 dB"),
+        (lang.param_ratio(), "4.0:1"),
+        (lang.param_threshold(), "−18.0 dB"),
+    ] {
+        assert_eq!(
+            harness
+                .get_by_role_and_label(Role::Slider, label)
+                .value()
+                .as_deref(),
+            Some(value),
+        );
+    }
+    let makeup_disabled = |h: &egui_kittest::Harness<'_, App>| {
+        h.get_by_role_and_label(Role::Slider, lang.param_makeup())
+            .accesskit_node()
+            .is_disabled()
+    };
+    for expected in [true, false] {
+        assert_ne!(makeup_disabled(harness), expected);
+        harness
+            .get_by_role_and_label(Role::Button, lang.param_presse_auto_makeup())
+            .click();
+        harness.run_steps(3);
+        assert_eq!(makeup_disabled(harness), expected);
+    }
+    let axis = format!("{} {}", lang.ui_graph_knee(), lang.ui_graph_threshold());
+    harness
+        .get_by_role_and_label(Role::Slider, &axis)
+        .increment_accesskit();
+    harness.run_steps(3);
+    assert!(harness.state().dispatched().any(|action| matches!(
+        action,
+        Action::Plugin(PluginAction::SetParam { device: id, id: wire, value })
+            if *id == device && *wire == threshold && (0.0..=1.0).contains(value)
+    )));
+
+    let app = harness.state_mut();
+    assert!(
+        app.engine_mut()
+            .host_mut()
+            .set_param(device, threshold, 0.0)
+    );
+    app.engine_mut().send(Command::LiveNote {
+        track,
+        key: 60,
+        velocity: 120,
+    });
+    let live = |tap: &komponist_engine::SampleTap, above| {
+        let mut samples = [0.0; 32];
+        tap.read_latest(&mut samples).is_some() && samples.into_iter().any(|sample| sample > above)
+    };
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        harness.run_steps(2);
+        if live(&detector, -60.0) && live(&reduction, 0.1) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Presse's visible graphs must lease live detector and reduction taps"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if let Some(dir) = std::env::var_os("KOMPONIST_EFFECT_UI_PNG_DIR") {
+        let path = PathBuf::from(dir).join(format!("presse-live-{}.png", lang.code()));
+        harness.render().unwrap().save(path).unwrap();
+    }
+    harness.state_mut().engine_mut().send(Command::LiveNote {
+        track,
+        key: 60,
+        velocity: 0,
+    });
 }

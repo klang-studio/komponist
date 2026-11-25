@@ -1444,7 +1444,9 @@ fn graph(
         .map(|(h, len)| f64::from(h) * len);
     // The compressor (WP-93): its live level on the transfer curve, and the history of the input
     // level and the reduction, with „now“ at the right edge.
-    let dynamics = signals.map_or(card.dynamics.as_ref(), |signals| signals.dynamics.as_ref());
+    let dynamics = signals
+        .and_then(|signals| signals.dynamics.as_ref())
+        .or(card.dynamics.as_ref());
     let (mut peaks, mut trace, mut level): (&[f32], &[f32], Option<f64>) = (peaks, &[], None);
     match binding.config {
         GraphConfig::Compressor => {
