@@ -15,6 +15,7 @@ use komponist_i18n::Lang;
 use komponist_ipc::device_assets::{AssetKind, AssetStatus};
 use komponist_ipc::native_layout::{Graph, TrimUnit};
 use komponist_ipc::waveform_markers::{Edit, Preparation, Request, Snapshot};
+use komponist_model::params::ParamInfo;
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{Device, DeviceId};
 use komponist_tokens::egui_support::color32;
@@ -31,7 +32,7 @@ use super::layout::{Cell, CellParam, Half, WidgetKind, cell_rect};
 use super::metrics::{
     SAMPLER_FILE_INFO_WIDTH, SAMPLER_FILE_WIDTH, SAMPLER_TICK_COUNT, WAVEFORM_MIN_ZOOM,
 };
-use super::model::{Card, CardState};
+use super::model::{Card, CardState, Param};
 use super::viewport::Viewport;
 use crate::actions::{Action, PluginAction};
 use crate::views::waveform_lookup::{LookupWorker, PendingLookup};
@@ -283,6 +284,32 @@ fn sample_slot(card: &Card, id: u32) -> bool {
     card.asset_slots
         .iter()
         .any(|(slot, _)| slot.id == id && slot.kind == AssetKind::AudioSample)
+}
+
+/// Converts between a trim control's plain value and its position in the source.
+pub(super) struct TrimScale<'a> {
+    duration_ms: f64,
+    display: Option<&'a ParamInfo>,
+}
+
+impl<'a> TrimScale<'a> {
+    pub(super) fn new(card: &Card, param: &'a Param, duration_ms: f64) -> Self {
+        Self {
+            duration_ms,
+            display: card.has_normalized_display(param).then_some(&param.info),
+        }
+    }
+
+    pub(super) fn to_milliseconds(&self, plain: f64) -> f64 {
+        let fraction = self.display.map_or(plain, |info| info.to_normalized(plain));
+        fraction * self.duration_ms
+    }
+
+    pub(super) fn to_plain(&self, milliseconds: f64) -> f64 {
+        let fraction = milliseconds / self.duration_ms;
+        self.display
+            .map_or(fraction, |info| info.to_plain(fraction))
+    }
 }
 
 /// Source milliseconds per unit of a fractional trim parameter on the visible page.

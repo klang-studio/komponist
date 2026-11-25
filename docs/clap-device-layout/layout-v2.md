@@ -134,6 +134,36 @@ level readings where available. If the stream is absent or has a different
 kind, the host uses its existing effect readings when available and otherwise
 shows an empty meter. A meter has no parameter, label or choice bindings.
 
+## Physical parameter display
+
+A panel can present a continuous CLAP parameter with a wire range of 0–1 in
+physical units. Add `parameter-display` to `required_capabilities` and place
+the mappings in the top-level `parameter_display` object, keyed by decimal
+CLAP parameter ID. Mapped IDs must be bound by a control or a graph in the
+panel. Hosts that do not support the capability can fall back to layout v1.
+
+For example, parameter 42 can display delay time as 1–2000 ms with a
+375 ms default.
+
+```json
+"parameter_display": {
+  "42": {
+    "min": 1, "max": 2000, "default": 375,
+    "scale": "logarithmic", "unit": "milliseconds"
+  }
+}
+```
+
+The host maps normalized position `n` to `min + n × (max − min)` for
+`linear`, or `min × (max / min)^n` for `logarithmic`. The inverse maps a
+physical edit back to the existing CLAP wire value. Automation, plugin state,
+and the CLAP parameter inventory keep their existing wire values. Bounds must
+be finite, increasing, and have a finite span. A logarithmic range must start
+above zero and have a finite ratio. The physical default must lie within the
+range and map to the CLAP default, allowing for single-precision rounding.
+Units are `none`, `hertz`, `milliseconds`, and `percent`. A
+percentage uses fractional values, so 0.42 displays as 42%.
+
 ## Device catalog labels
 
 An optional root `metadata` object contains `names` and optional `descriptions`

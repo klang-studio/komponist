@@ -40,7 +40,7 @@ use komponist_ui::widgets::number_field::{open_value_entry, parse_number};
 use komponist_ui::{fonts, px};
 use komponist_volt as volt;
 
-use super::asset_waveform;
+use super::asset_waveform::{self, TrimScale};
 use super::layout::{
     BAND, Cell, CellParam, ENV_OP, ENV_VIEW, GraphBinding, GraphConfig, LFO_VIEW, OSC_VIEW, SEL,
     WidgetKind,
@@ -218,11 +218,7 @@ pub(super) fn set(out: &mut Vec<Action>, card: &Card, p: &Param, plain: f64) {
         out.push(Action::Plugin(PluginAction::SetParam {
             device: card.device,
             id: p.wire,
-            value: if card.bundled_editor {
-                komponist_device_core::pinned_clap_state::to_clap(&p.info, plain)
-            } else {
-                plain
-            },
+            value: card.wire_value(p, plain),
         }));
     }
 }
@@ -443,14 +439,16 @@ fn number(
     p: &Param,
     rect: Rect,
 ) -> bool {
-    if let Some(scale) = asset_waveform::trim_milliseconds(card, p.wire) {
+    if let Some(duration_ms) = asset_waveform::trim_milliseconds(card, p.wire) {
+        let trim = TrimScale::new(card, p, duration_ms);
         let display = |ms| komponist_ui::widgets::number_field::format_number(ms, 0);
-        let mut time = p.value * scale;
+        let current = trim.to_milliseconds(p.value);
+        let mut time = current;
         let response = cu.put(
             rect,
             Number::new(&mut time, p.name())
-                .range(0.0..=scale)
-                .default_value(p.info.default * scale)
+                .range(0.0..=duration_ms)
+                .default_value(trim.to_milliseconds(p.info.default))
                 .unit("ms")
                 .cols(cell.cols)
                 .format(display),
@@ -461,9 +459,9 @@ fn number(
             card,
             p,
             &response,
-            Some(display(p.value * scale)),
+            Some(display(current)),
             false,
-            response.changed().then_some(time / scale),
+            response.changed().then(|| trim.to_plain(time)),
         );
         return true;
     }
@@ -1268,7 +1266,7 @@ fn graph(
         asset_slot.and_then(|slot| asset_waveform::view(cu, card, cell, rect, spec.x.pad, slot));
     let full_end = spec.x.max;
     // The waveform draws trim in milliseconds even when the plugin stores source fractions.
-    let trim_scale = fractional_trim.then_some(full_end * 1000.0);
+    let trim_duration_ms = fractional_trim.then_some(full_end * 1000.0);
     if let Some(view) = &viewport {
         spec.x.min = view.start;
         spec.x.max = view.end;
@@ -1287,19 +1285,23 @@ fn graph(
     for name in &spec.slots {
         match lookup(name) {
             Some(p) => {
-                values.push(if normalized {
-                    p.info.to_normalized(p.value)
+                let (value, info) = if let Some(duration_ms) = trim_duration_ms {
+                    let trim = TrimScale::new(card, p, duration_ms);
+                    let info =
+                        SlotInfo::new(0.0, duration_ms, trim.to_milliseconds(p.info.default))
+                            .format(|ms| {
+                                komponist_ui::widgets::number_field::format_number(ms, 0) + " ms"
+                            });
+                    (trim.to_milliseconds(p.value), info)
                 } else {
-                    p.value * trim_scale.unwrap_or(1.0)
-                });
-                let info = trim_scale.map_or_else(
-                    || SlotInfo::from_param(&p.info, normalized),
-                    |scale| {
-                        SlotInfo::new(0.0, scale, p.info.default * scale).format(|ms| {
-                            komponist_ui::widgets::number_field::format_number(ms, 0) + " ms"
-                        })
-                    },
-                );
+                    let value = if normalized {
+                        p.info.to_normalized(p.value)
+                    } else {
+                        p.value
+                    };
+                    (value, SlotInfo::from_param(&p.info, normalized))
+                };
+                values.push(value);
                 let driven = card
                     .macros
                     .get(&p.info.id)
@@ -1607,10 +1609,12 @@ fn graph(
                         out,
                         card,
                         p,
-                        if normalized {
+                        if let Some(duration_ms) = trim_duration_ms {
+                            TrimScale::new(card, p, duration_ms).to_plain(*v)
+                        } else if normalized {
                             p.info.to_plain(*v)
                         } else {
-                            *v / trim_scale.unwrap_or(1.0)
+                            *v
                         },
                     );
                 }
@@ -2280,12 +2284,21 @@ mod tests {
         card: Card,
         size: egui::Vec2,
     ) -> egui_kittest::Harness<'static, (Card, Vec<Action>)> {
+        localized_graph_harness(card, size, Lang::De)
+    }
+
+    fn localized_graph_harness(
+        card: Card,
+        size: egui::Vec2,
+        lang: Lang,
+    ) -> egui_kittest::Harness<'static, (Card, Vec<Action>)> {
         let mut h = komponist_ui::snapshot::builder(1.0)
             .with_size(size)
             // Two clicks must fall within egui's double-click time.
             .with_step_dt(1.0 / 60.0)
             .build_ui_state(
-                |ui, (card, out): &mut (Card, Vec<Action>)| {
+                move |ui, (card, out): &mut (Card, Vec<Action>)| {
+                    komponist_ui::set_lang(ui.ctx(), lang);
                     let palette = TrackPalette::new(150);
                     let page = card.current_page().unwrap().clone();
                     let origin = ui.min_rect().min;
@@ -2306,6 +2319,140 @@ mod tests {
             );
         h.run();
         h
+    }
+
+    #[test]
+    fn an_authored_xy_panel_keeps_physical_axes_and_normalized_actions() {
+        use komponist_ipc::control::ParamInfo as WireInfo;
+        use komponist_ipc::native_layout::NativeLayout;
+        use komponist_model::params::ValueTexts;
+        use serde_json::json;
+        use std::sync::Arc;
+
+        let label =
+            |get: fn(Lang) -> &'static str| json!({"de": get(Lang::De), "en": get(Lang::En)});
+        let native = Arc::new(NativeLayout::parse(&serde_json::to_vec(&json!({
+            "schema_version": 2, "default_locale": "en", "locales": ["en", "de"],
+            "required_capabilities": ["parameter-display"],
+            "parameter_display": {
+                "42": {"min": 1, "max": 2000, "default": 375, "scale": "logarithmic", "unit": "milliseconds"},
+                "43": {"min": 0, "max": 0.95, "default": 0.42, "scale": "linear", "unit": "percent"}
+            },
+            "pages": [{"key": "main", "labels": {"en": "Main"}, "columns": 4, "cells": [
+                {"widget": "graph", "col": 0, "row": 0, "cols": 2, "rows": 2, "graph": {
+                    "kind": "xy", "hide_title": true, "name": label(Lang::ui_graph_xy),
+                    "description": label(Lang::param_feedback), "slots": {"x": 42, "y": 43}
+                }},
+                {"widget": "knob", "col": 2, "row": 0, "cols": 1, "rows": 1,
+                 "param_id": 42, "labels": label(Lang::param_time)},
+                {"widget": "knob", "col": 3, "row": 0, "cols": 1, "rows": 1,
+                 "param_id": 43, "labels": label(Lang::param_feedback)}
+            ]}]
+        })).unwrap()).unwrap());
+
+        for lang in Lang::ALL {
+            let mut legacy = card();
+            legacy.bundled_editor = true;
+            legacy.params = [
+                (
+                    42,
+                    lang.param_time(),
+                    ParamKind::scaled(1.0, 2000.0, Scale::Log),
+                    375.0,
+                    Unit::Ms,
+                ),
+                (
+                    43,
+                    lang.param_feedback(),
+                    ParamKind::lin(0.0, 0.95),
+                    0.42,
+                    Unit::Percent,
+                ),
+            ]
+            .into_iter()
+            .map(|(wire, name, kind, value, unit)| {
+                let mut p = param(wire, name, kind, value, value);
+                p.info = p.info.unit(unit).texts(ValueTexts {
+                    on: lang.value_on(),
+                    off: lang.value_off(),
+                    percent: lang.value_percent(),
+                });
+                p.text = p.info.format(value);
+                p
+            })
+            .collect();
+            legacy.layout = DeviceLayout::single(Page {
+                name: String::new(),
+                cols: 4,
+                cells: vec![
+                    Cell::graph(
+                        0,
+                        0,
+                        2,
+                        2,
+                        GraphBinding::new(GraphConfig::Xy)
+                            .bind("x", "p42")
+                            .bind("y", "p43"),
+                    ),
+                    Cell::knob(2, 0, ParamId::new("p42")),
+                    Cell::knob(3, 0, ParamId::new("p43")),
+                ],
+                dividers: Vec::new(),
+            });
+            let mut authored = legacy.clone();
+            authored.bundled_editor = false;
+            authored.layout = model::native_card_layout(&native, lang);
+            authored.native_layout = Some(Arc::clone(&native));
+            let wires: Vec<_> = legacy
+                .params
+                .iter()
+                .map(|p| WireInfo {
+                    id: p.wire,
+                    name: "Wire label".into(),
+                    module: String::new(),
+                    min: 0.0,
+                    max: 1.0,
+                    default: f64::from(p.info.default_normalized() as f32),
+                    step_count: 0,
+                    flags: komponist_ipc::control::param_flags::AUTOMATABLE,
+                })
+                .collect();
+            assert!(native.validate_params(&wires).is_ok());
+            authored.params = wires
+                .iter()
+                .map(|wire| model::native_param(lang, &native, wire, None))
+                .collect();
+            let time = &authored.params[0];
+            assert_eq!(time.project_id(false), ParamId::plugin(42));
+            assert!((time.value_at_normalized(false, 0.5) - 2000.0_f64.sqrt()).abs() < 1e-9);
+            assert_eq!(time.text_at(time.value), "375 ms");
+            assert_eq!(
+                authored.params[1].text,
+                format!("42{}", lang.value_percent())
+            );
+
+            let test = |card| localized_graph_harness(card, egui::vec2(310.0, 240.0), lang);
+            let mut old = test(legacy);
+            let mut new = test(authored);
+            let legacy_image = old.render().unwrap();
+            let native_image = new.render().unwrap();
+            assert!(
+                legacy_image == native_image,
+                "{} XY rendering differs",
+                lang.code()
+            );
+            let axis = format!("{} {}", lang.ui_graph_xy(), lang.param_time());
+            for harness in [&mut old, &mut new] {
+                harness.get_by_role_and_label(Role::Group, lang.ui_graph_xy());
+                let slider = harness.get_by_role_and_label(Role::Slider, &axis);
+                assert_eq!(slider.value().as_deref(), Some("375 ms"));
+                slider.increment_accesskit();
+                harness.run();
+            }
+            let legacy_actions = set_params(&old);
+            assert!(!legacy_actions.is_empty());
+            assert_eq!(legacy_actions, set_params(&new));
+        }
     }
 
     #[test]
@@ -2961,6 +3108,79 @@ mod tests {
                 .unwrap();
             assert!((end - 0.99).abs() < 1e-6, "{duration}s: {end}");
         }
+    }
+
+    #[test]
+    fn fractional_waveform_trim_uses_the_wire_fraction_with_parameter_display() {
+        use komponist_ipc::control::ParamInfo as WireInfo;
+        use komponist_ipc::native_layout::{
+            CAP_PARAMETER_DISPLAY, CAP_SOURCE_FRACTION_TRIM, NativeLayout,
+        };
+        use serde_json::json;
+        use std::sync::Arc;
+
+        let native = json!({
+            "schema_version": 2, "default_locale": "de", "locales": ["de", "en"],
+            "required_capabilities": [CAP_SOURCE_FRACTION_TRIM, CAP_PARAMETER_DISPLAY],
+            "parameter_display": {
+                "41": {"min": 0, "max": 100, "default": 25, "scale": "linear", "unit": "percent"}
+            },
+            "pages": [{"key": "sample", "labels": {"de": "Sample"}, "columns": 4, "cells": [
+                {"widget": "graph", "row": 0, "col": 0, "rows": 2, "cols": 4, "graph": {
+                    "kind": "waveform", "name": {"de": "Sample-Quelle"},
+                    "description": {"de": "Verknüpfte Audiodatei."}, "asset_slot": 5,
+                    "trim_unit": "source_fraction", "slots": {"start": 41, "end": 42}
+                }},
+                {"widget": "number", "row": 2, "col": 0, "rows": 1, "cols": 2,
+                 "half": "top", "param_id": 41}
+            ]}]
+        });
+        let layout = Arc::new(NativeLayout::parse(&serde_json::to_vec(&native).unwrap()).unwrap());
+        let mut card = authored_asset_waveform_card(true);
+        card.layout = model::native_card_layout(&layout, Lang::De);
+        card.params.push(model::native_param(
+            Lang::De,
+            &layout,
+            &WireInfo {
+                id: 41,
+                name: "Anfang".into(),
+                module: String::new(),
+                min: 0.0,
+                max: 1.0,
+                default: 0.25,
+                step_count: 0,
+                flags: 0,
+            },
+            None,
+        ));
+        card.native_layout = Some(layout);
+        card.asset_waveforms.insert(
+            5,
+            asset_waveform::Waveform {
+                duration: 10.0,
+                file: komponist_audiofile::FileId {
+                    path: "source.wav".into(),
+                    len: 0,
+                    mtime_ns: None,
+                },
+                peaks: None,
+            },
+        );
+
+        let mut h = graph_harness_sized(card, egui::vec2(330.0, 205.0));
+        for (role, name, milliseconds) in [
+            (Role::Slider, "Sample-Start Position", 4000.0),
+            (Role::SpinButton, "Anfang", 6000.0),
+        ] {
+            let control = h.get_by_role_and_label(role, name);
+            assert_eq!(control.value().as_deref(), Some("2500 ms"));
+            control.set_value_accesskit(milliseconds);
+            h.run();
+            let (id, value) = *set_params(&h).last().unwrap();
+            assert_eq!(id, 41);
+            assert!((value - milliseconds / 10_000.0).abs() < 1e-6, "{value}");
+        }
+        assert_eq!(set_params(&h).len(), 2);
     }
 
     #[test]

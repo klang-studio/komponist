@@ -732,6 +732,63 @@ mod tests {
     use komponist_model::{Meter, Tick, TickRange};
 
     #[test]
+    fn an_audio_bridge_keeps_the_callback_deadline_even_if_it_has_passed() {
+        use komponist_ipc::{BridgeState, ShmRegion};
+
+        let region = Arc::new(ShmRegion::create().unwrap());
+        region.set_bridge_state(BridgeState::Active);
+        let shared = Arc::new(Shared::new());
+        shared.run.store(RUN_ACTIVE, Ordering::Release);
+        let mut processor = ExternalProcessor::new(
+            BridgeClient::new(region),
+            shared.clone(),
+            DeviceRole::Instrument,
+            ProcessorSetup {
+                sample_rate: 48_000.0,
+                max_block: 32,
+            },
+        );
+        let deadline = Instant::now();
+        let context = ProcessContext {
+            frames: 32,
+            sample_rate: 48_000.0,
+            transport: TransportInfo {
+                playing: true,
+                recording: false,
+                looping: false,
+                tempo_bpm: 120.0,
+                meter: Meter::FOUR_FOUR,
+                position_ticks: 0.0,
+                loop_range: TickRange::new(Tick(0), Tick(3840)),
+            },
+            offline: false,
+            deadline: Some(deadline),
+        };
+        let audio = [0.0; 32];
+        assert!(assert_no_alloc::assert_no_alloc(|| processor.begin(
+            &context,
+            &[],
+            [&audio; 2]
+        )));
+        let Outcome::Sent { deadline: wait, .. } = processor.begun.as_ref().unwrap().outcome else {
+            panic!("expected the bridge request to be sent");
+        };
+        assert_eq!(wait, deadline);
+
+        let mut left = [1.0; 32];
+        let mut right = [1.0; 32];
+        let mut io = StereoIo {
+            input: [&audio; 2],
+            output: [&mut left, &mut right],
+        };
+        let status = assert_no_alloc::assert_no_alloc(|| processor.process(&context, &[], &mut io));
+        assert_eq!(status, ProcessStatus::Continue);
+        assert_eq!(left, audio);
+        assert_eq!(right, audio);
+        assert_eq!(shared.late_blocks.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
     fn an_audio_bridge_delivers_held_parameter_values_after_activation() {
         use komponist_ipc::{BlockResult, BridgeServer, BridgeState, ShmRegion};
 

@@ -8,8 +8,9 @@ use komponist_hexa::Macro;
 use komponist_i18n::Lang;
 use komponist_ipc::ParamValue;
 use komponist_ipc::control::ParamInfo as WireInfo;
+use komponist_ipc::native_layout::{DisplayScale, DisplayUnit, NativeLayout};
 use komponist_model::automation::AutomationOwner;
-use komponist_model::params::{ParamId, ParamInfo, ParamKind, auto_layout};
+use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit, auto_layout};
 use komponist_model::{Device, DeviceId, DeviceRole, Track};
 use komponist_plugins::params::{is_listed, param_info};
 use komponist_plugins::{DeviceStatus, FailReason};
@@ -265,6 +266,24 @@ impl Card {
             .find(|p| p.info.id == *id || (self.bundled_editor && id.plugin_id() == Some(p.wire)))
     }
 
+    pub(super) fn wire_value(&self, param: &Param, plain: f64) -> f64 {
+        if self.bundled_editor {
+            pinned_clap_state::to_clap(&param.info, plain)
+        } else if self.has_normalized_display(param) {
+            param.info.to_normalized(plain)
+        } else {
+            plain
+        }
+    }
+
+    pub(super) fn has_normalized_display(&self, param: &Param) -> bool {
+        !self.bundled_editor
+            && self
+                .native_layout
+                .as_ref()
+                .is_some_and(|layout| layout.parameter_display(param.wire).is_some())
+    }
+
     pub(super) fn native_page(&self) -> Option<&komponist_ipc::native_layout::Page> {
         let pages = &self.native_layout.as_ref()?.pages;
         pages.get(self.page).or_else(|| pages.last())
@@ -417,6 +436,9 @@ pub(crate) fn card(
         };
     let verified = host.verified_bundled_kind(device.id);
     let editor = native_layout.as_ref().and_then(|native| {
+        if native.has_parameter_display() {
+            return None;
+        }
         let legacy = native.schema_version < 2;
         match verified? {
             BuiltinKind::Hexa if legacy => Some((
@@ -429,7 +451,7 @@ pub(crate) fn card(
                     // supplies scales and localized value text for gestures and previews.
                     _ if native.has_audio_asset_editor() => None,
                     Internal::Hall => None,
-                    Internal::Delay | Internal::Limiter => {
+                    _ if kind.clap_v1_grid_fallback() => {
                         legacy.then(|| kind.layout_in(lang).clone())
                     }
                     Internal::Volt | Internal::Surf | Internal::Eq | Internal::Presse if legacy => {
@@ -471,7 +493,7 @@ pub(crate) fn card(
                         infos
                             .iter()
                             .filter(|info| ids.contains(&info.id))
-                            .map(|info| plugin_param(info, plugin_info(lang, info), value(info.id)))
+                            .map(|info| native_param(lang, native, info, value(info.id)))
                             .collect()
                     } else {
                         plugin_params(lang, infos, value)
@@ -863,6 +885,80 @@ pub fn all_plugin_params<'a>(
 /// A bridged plugin's parameter: its own names, our value words ("Off", "40%").
 fn plugin_info(lang: Lang, wire: &WireInfo) -> ParamInfo {
     param_info(wire).texts(komponist_device_core::value_texts(lang))
+}
+
+/// Apply the panel's display domain while retaining the live CLAP ID and flags.
+pub(super) fn native_param(
+    lang: Lang,
+    layout: &NativeLayout,
+    wire: &WireInfo,
+    known: Option<&ParamValue>,
+) -> Param {
+    let mut info = plugin_info(lang, wire);
+    if !layout.has_parameter_display() {
+        return plugin_param(wire, info, known);
+    }
+    if let Some(cell) = layout
+        .pages
+        .iter()
+        .flat_map(|page| &page.cells)
+        .find(|cell| cell.param_id == Some(wire.id))
+    {
+        if let Some(label) = cell
+            .labels
+            .as_ref()
+            .and_then(|labels| layout.label(labels, lang.code()))
+        {
+            info.name = label.to_owned();
+        }
+        if let Some(choices) = &cell.choices
+            && choices.first().is_some_and(|choice| choice.value == 0)
+        {
+            info.kind = ParamKind::Enum(
+                choices
+                    .iter()
+                    .map(|choice| {
+                        layout
+                            .label(&choice.labels, lang.code())
+                            .unwrap_or_default()
+                            .to_owned()
+                    })
+                    .collect(),
+            );
+        }
+    }
+    let raw = known.map_or(wire.default, |value| value.value);
+    let value = if let Some(display) = layout.parameter_display(wire.id) {
+        let (min, max) = display.range();
+        let scale = match display.scale {
+            DisplayScale::Linear => Scale::Lin,
+            DisplayScale::Logarithmic => Scale::Log,
+        };
+        info.kind = ParamKind::scaled(min, max, scale);
+        info.unit = match display.unit {
+            DisplayUnit::None => Unit::None,
+            DisplayUnit::Hertz => Unit::Hz,
+            DisplayUnit::Milliseconds => Unit::Ms,
+            DisplayUnit::Percent => Unit::Percent,
+        };
+        info.default = display.default_value();
+        if raw == wire.default {
+            // A normalized CLAP default can be rounded to single precision.
+            info.default
+        } else {
+            info.to_plain(raw)
+        }
+    } else if matches!(info.kind, ParamKind::Bool | ParamKind::Enum(_)) {
+        raw
+    } else {
+        return plugin_param(wire, info, known);
+    };
+    Param {
+        wire: wire.id,
+        text: info.format(value),
+        info,
+        value,
+    }
 }
 
 fn plugin_param(wire: &WireInfo, info: ParamInfo, known: Option<&ParamValue>) -> Param {

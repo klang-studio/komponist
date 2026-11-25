@@ -158,6 +158,11 @@ impl Internal {
         self.spec().layout_in(lang)
     }
 
+    /// Shipped v1 bundles whose card used the full grid from the legacy registry.
+    pub fn clap_v1_grid_fallback(self) -> bool {
+        matches!(self, Self::Delay | Self::Limiter)
+    }
+
     /// The factory presets in menu order (empty: the device has none).
     pub fn presets(self) -> &'static [Preset] {
         self.spec().presets()

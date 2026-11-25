@@ -26,8 +26,8 @@ use clap_sys::{
 };
 use komponist_ipc::control::{ParamInfo, param_flags};
 use komponist_ipc::native_layout::{
-    CAP_PAD_BANK, CAP_SOURCE_FRACTION_TRIM, EXTENSION_V1, EXTENSION_V2, GraphKind, MAX_AUTHOR_IDS,
-    MAX_BYTES, NativeLayout, valid_author_id,
+    CAP_PAD_BANK, CAP_PARAMETER_DISPLAY, CAP_SOURCE_FRACTION_TRIM, EXTENSION_V1, EXTENSION_V2,
+    GraphKind, MAX_AUTHOR_IDS, MAX_BYTES, NativeLayout, valid_author_id,
 };
 use komponist_model::params::ParamContext;
 use komponist_model::params::layout::validate;
@@ -38,7 +38,9 @@ use serde_json::{Value, json};
 pub use komponist_device_core::layout;
 pub use komponist_ipc::device_assets;
 pub use komponist_ipc::effect_meter;
-pub use komponist_ipc::native_layout::{Canvas, Heading, Labels, Pad, TrimUnit};
+pub use komponist_ipc::native_layout::{
+    Canvas, DisplayScale, DisplayUnit, Heading, Labels, Pad, ParameterDisplay, TrimUnit,
+};
 pub use komponist_ipc::sampler_ui;
 pub use komponist_ipc::signal_taps;
 pub use komponist_model::params::{
@@ -145,6 +147,8 @@ pub struct PanelV2 {
     pub pad_bank: Option<PadBank>,
     /// Section labels keyed by zero-based page index.
     pub headings: BTreeMap<usize, Vec<Heading>>,
+    /// Physical ranges and units of normalized CLAP parameters, keyed by author ID.
+    pub parameter_display: BTreeMap<ParamId, ParameterDisplay>,
 }
 
 /// A nice-plug plugin supplying an immutable native layout.
@@ -373,6 +377,11 @@ unsafe fn compile_layout<P: ClapPlugin>(
         }
         pages.push(wire_page);
     }
+    let parameter_display = v2
+        .into_iter()
+        .flat_map(|panel| &panel.parameter_display)
+        .map(|(id, display)| Ok((resolve_id(id)?, display)))
+        .collect::<Result<BTreeMap<_, _>, LayoutError>>()?;
     let pad_bank = v2.and_then(|v2| v2.pad_bank.as_ref());
     if let Some(failure) = validate(&panel.grid, &ParamContext::new(), &|id| {
         resolved.contains_key(id)
@@ -394,6 +403,10 @@ unsafe fn compile_layout<P: ClapPlugin>(
         "pages": pages,
     });
     let mut capabilities = Vec::new();
+    if !parameter_display.is_empty() {
+        capabilities.push(CAP_PARAMETER_DISPLAY);
+        document["parameter_display"] = json!(parameter_display);
+    }
     if v2.is_some_and(|v2| {
         v2.graph_labels
             .values()

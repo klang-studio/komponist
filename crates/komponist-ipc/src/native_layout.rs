@@ -6,7 +6,7 @@ use std::fmt;
 
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Number, Value};
 
 use crate::control::{ParamInfo, param_flags};
 
@@ -16,6 +16,8 @@ pub const EXTENSION_V2: &CStr = c"org.klang-studio.komponist.device-layout/2";
 pub const CAP_SOURCE_FRACTION_TRIM: &str = "source-fraction-trim";
 /// Required capability for panels whose pages are selected from a pad grid.
 pub const CAP_PAD_BANK: &str = "pad-bank";
+/// Required capability for panels that show physical values for normalized parameters.
+pub const CAP_PARAMETER_DISPLAY: &str = "parameter-display";
 /// Maximum number of pad-selected pages.
 pub const MAX_PADS: usize = 16;
 
@@ -50,6 +52,81 @@ impl fmt::Display for LayoutError {
 
 /// Localized labels keyed by a document locale tag.
 pub type Labels = BTreeMap<String, String>;
+
+/// Mapping from a continuous CLAP parameter's normalized value to its display range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayScale {
+    Linear,
+    Logarithmic,
+}
+
+/// Unit used when describing the physical display value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayUnit {
+    None,
+    Hertz,
+    Milliseconds,
+    Percent,
+}
+
+/// Presentation of a normalized CLAP parameter within a layout v2 panel.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ParameterDisplay {
+    min: Number,
+    max: Number,
+    default: Number,
+    pub scale: DisplayScale,
+    pub unit: DisplayUnit,
+}
+
+impl ParameterDisplay {
+    pub fn new(
+        min: f64,
+        max: f64,
+        default: f64,
+        scale: DisplayScale,
+        unit: DisplayUnit,
+    ) -> Option<Self> {
+        let display = Self {
+            min: Number::from_f64(min)?,
+            max: Number::from_f64(max)?,
+            default: Number::from_f64(default)?,
+            scale,
+            unit,
+        };
+        display.valid().then_some(display)
+    }
+
+    pub fn range(&self) -> (f64, f64) {
+        (
+            self.min.as_f64().expect("JSON number"),
+            self.max.as_f64().expect("JSON number"),
+        )
+    }
+
+    pub fn default_value(&self) -> f64 {
+        self.default.as_f64().expect("JSON number")
+    }
+
+    fn valid(&self) -> bool {
+        let (min, max) = self.range();
+        min < max
+            && (max - min).is_finite()
+            && (min..=max).contains(&self.default_value())
+            && (self.scale != DisplayScale::Logarithmic || min > 0.0 && (max / min).is_finite())
+    }
+
+    fn normalized_default(&self) -> f64 {
+        let (min, max) = self.range();
+        let default = self.default_value();
+        match self.scale {
+            DisplayScale::Linear => (default - min) / (max - min),
+            DisplayScale::Logarithmic => (default / min).ln() / (max / min).ln(),
+        }
+    }
+}
 
 /// Display metadata from a validated layout, carried with a scanned descriptor.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -288,6 +365,8 @@ pub struct NativeLayout {
     pub pad_bank: Option<PadBank>,
     #[serde(default)]
     author_ids: Option<BTreeMap<String, u32>>,
+    #[serde(default)]
+    parameter_display: BTreeMap<u32, ParameterDisplay>,
     metadata: Option<Metadata>,
 }
 
@@ -300,6 +379,14 @@ fn check(condition: bool, reason: &'static str) -> Result<(), LayoutError> {
 }
 
 impl NativeLayout {
+    pub fn parameter_display(&self, id: u32) -> Option<&ParameterDisplay> {
+        self.parameter_display.get(&id)
+    }
+
+    pub fn has_parameter_display(&self) -> bool {
+        !self.parameter_display.is_empty()
+    }
+
     /// The editor uses host-managed audio files for a waveform or its pad bank.
     pub fn has_audio_asset_editor(&self) -> bool {
         self.pad_bank.is_some()
@@ -327,6 +414,7 @@ impl NativeLayout {
         let metadata_v1 = if version == 1 {
             if let Some(root) = value.as_object_mut() {
                 root.remove("pad_bank");
+                root.remove("parameter_display");
             }
             value
                 .as_object_mut()
@@ -339,6 +427,7 @@ impl NativeLayout {
         }
         let mut fractional_trim_supported = false;
         let mut pad_bank_supported = false;
+        let mut parameter_display_supported = false;
         if let Some(caps) = value.get("required_capabilities") {
             let caps = caps
                 .as_array()
@@ -352,15 +441,34 @@ impl NativeLayout {
                     }),
                 "capability list",
             )?;
-            if seen
-                .iter()
-                .any(|cap| version != 2 || !matches!(*cap, CAP_SOURCE_FRACTION_TRIM | CAP_PAD_BANK))
-            {
+            if seen.iter().any(|cap| {
+                version != 2
+                    || !matches!(
+                        *cap,
+                        CAP_SOURCE_FRACTION_TRIM | CAP_PAD_BANK | CAP_PARAMETER_DISPLAY
+                    )
+            }) {
                 return Err(LayoutError::Unsupported);
             }
             fractional_trim_supported = seen.contains(CAP_SOURCE_FRACTION_TRIM);
             pad_bank_supported = seen.contains(CAP_PAD_BANK);
+            parameter_display_supported = seen.contains(CAP_PARAMETER_DISPLAY);
         }
+        let display = value.get("parameter_display");
+        check(
+            display.is_some() == parameter_display_supported
+                && display.is_none_or(|display| {
+                    display.as_object().is_some_and(|entries| {
+                        (1..=MAX_AUTHOR_IDS).contains(&entries.len())
+                            && entries.iter().all(|(key, entry)| {
+                                key.parse::<u32>()
+                                    .is_ok_and(|id| id != u32::MAX && id.to_string() == *key)
+                                    && entry.is_object()
+                            })
+                    })
+                }),
+            "parameter display map",
+        )?;
         if let Some(bank) = value.get("pad_bank") {
             check(
                 bank.is_object()
@@ -538,6 +646,10 @@ impl NativeLayout {
     }
 
     fn validate_geometry(&self) -> Result<(), LayoutError> {
+        check(
+            self.parameter_display.values().all(ParameterDisplay::valid),
+            "parameter display range",
+        )?;
         let locales = self.locale_set();
         check(
             (1..=8).contains(&self.locales.len())
@@ -881,6 +993,22 @@ impl NativeLayout {
                 "author ID map inventory mismatch",
             )?;
         }
+        for (&id, display) in &self.parameter_display {
+            let param = ids
+                .get(&id)
+                .ok_or(LayoutError::Invalid("unknown parameter display ID"))?;
+            check(
+                (param.min, param.max, param.step_count) == (0.0, 1.0, 0)
+                    && (param.default - display.normalized_default()).abs()
+                        <= f64::from(f32::EPSILON)
+                    && self
+                        .pages
+                        .iter()
+                        .flat_map(|page| &page.cells)
+                        .any(|cell| cell.parameter_ids().any(|bound| bound == id)),
+                "normalized parameter display",
+            )?;
+        }
         for cell in self.pages.iter().flat_map(|page| &page.cells) {
             let audition_note = cell.graph.as_ref().and_then(|graph| graph.audition_note);
             let fractional_trim = cell
@@ -1094,6 +1222,47 @@ mod tests {
         let labels = &layout.pages[0].labels;
         assert_eq!(layout.label(labels, "de-CH"), Some("Übersicht"));
         assert_eq!(layout.label(labels, "fr"), Some("Main"));
+    }
+
+    #[test]
+    fn physical_display_requires_a_normalized_parameter_with_the_same_default() {
+        use serde_json::json;
+
+        let mut value: Value = serde_json::from_slice(EXAMPLE).unwrap();
+        value["parameter_display"] = json!({
+            "42": {
+                "min": 1, "max": 2000, "default": 375,
+                "scale": "logarithmic", "unit": "milliseconds"
+            }
+        });
+        let parse = |value: &Value| NativeLayout::parse(&serde_json::to_vec(value).unwrap());
+        assert!(parse(&value).unwrap().parameter_display(42).is_none());
+        value["schema_version"] = json!(2);
+        assert!(parse(&value).is_err(), "older v2 hosts must fall back");
+        value["required_capabilities"] = json!(["parameter-display"]);
+        let layout = parse(&value).unwrap();
+        let mut time = parameter(42, 1.0, 0, 0);
+        time.default = 375.0_f64.ln() / 2000.0_f64.ln();
+        let mode = parameter(7, 2.0, 2, param_flags::STEPPED | param_flags::ENUM);
+        assert!(
+            layout
+                .validate_params(&[time.clone(), mode.clone()])
+                .is_ok()
+        );
+        time.default = 0.5;
+        assert!(
+            layout
+                .validate_params(&[time.clone(), mode.clone()])
+                .is_err()
+        );
+        time.default = 375.0_f64.ln() / 2000.0_f64.ln();
+        time.step_count = 1;
+        assert!(layout.validate_params(&[time, mode]).is_err());
+        value["parameter_display"]["42"]["min"] = json!(0);
+        assert!(
+            parse(&value).is_err(),
+            "logarithmic bounds must be positive"
+        );
     }
 
     #[test]

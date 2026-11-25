@@ -1224,7 +1224,7 @@ fn packaged_effect_cards_and_presets() {
     let lang = if bridge { Lang::En } else { Lang::De };
     let mut project = Project::new("Bundled CLAP effect cards");
     let mut cards = Vec::new();
-    for slug in ["eq", "presse", "limiter"] {
+    for slug in ["eq", "presse", "limiter", "delay"] {
         let (next, track) = edits::add_track(
             &project,
             NewTrack {
@@ -1288,6 +1288,28 @@ fn packaged_effect_cards_and_presets() {
             harness.run_steps(3);
             harness.get_by_role_and_label(Role::Button, &lang.devices_preset_name(preset));
             harness.get_by_role_and_label(Role::Group, lang.ui_graph_eq());
+        } else if slug == "delay" {
+            let layout = app.engine().host().native_layout(device).unwrap();
+            assert_eq!(layout.schema_version, 2);
+            let time = layout.author_ids().unwrap()["time"];
+            assert_eq!(
+                layout.parameter_display(time).unwrap().range(),
+                (1.0, 2000.0)
+            );
+            harness.run_steps(3);
+            harness.get_by_role_and_label(Role::Group, lang.ui_graph_xy());
+            harness.get_by_role_and_label(Role::Button, lang.param_delay_ping_pong());
+            harness.get_by_role_and_label(Role::ComboBox, lang.param_delay_note());
+            let axis = format!("{} {}", lang.ui_graph_xy(), lang.param_time());
+            let slider = harness.get_by_role_and_label(Role::Slider, &axis);
+            assert_eq!(slider.value().as_deref(), Some("375 ms"));
+            slider.increment_accesskit();
+            harness.run_steps(3);
+            assert!(harness.state().dispatched().any(|action| matches!(
+                action,
+                Action::Plugin(PluginAction::SetParam { device: id, id: wire, value })
+                    if *id == device && *wire == time && (0.0..=1.0).contains(value)
+            )));
         } else {
             harness.run_steps(3);
             harness.get_by_role_and_label(Role::Meter, lang.ui_meter_gr_name());
