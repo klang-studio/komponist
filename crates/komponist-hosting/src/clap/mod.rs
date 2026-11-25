@@ -471,7 +471,7 @@ impl HostedPlugin for ClapPlugin {
         &self,
         edits: &komponist_ipc::device_assets::edit_state::Edits,
         state: Option<&[u8]>,
-    ) -> komponist_ipc::device_assets::edit_state::Prepared {
+    ) -> komponist_ipc::device_assets::edit_state::PreparedChange {
         device_assets::prepare_edit_state(
             self.instance.borrow_mut().plugin_handle().as_raw(),
             edits,

@@ -193,12 +193,25 @@ fn prepare_asset_edit(
     slot: u32,
     intent: edit_state::Intent,
     source: Option<&[u8]>,
-) -> (u32, Vec<u8>) {
+) -> (u32, Vec<u8>, Vec<u32>) {
     unsafe extern "C" fn copy_state(output: *mut c_void, state: *const u8, len: u32) -> bool {
-        // SAFETY: The test supplies its output vector and the plugin borrows its state until return.
+        // SAFETY: The test supplies its output and the plugin borrows its state until return.
         unsafe {
-            let output = &mut *output.cast::<Vec<u8>>();
-            output.extend_from_slice(std::slice::from_raw_parts(state, len as usize));
+            let output = &mut *output.cast::<(Vec<u8>, Vec<u32>)>();
+            output
+                .0
+                .extend_from_slice(std::slice::from_raw_parts(state, len as usize));
+        }
+        true
+    }
+
+    unsafe extern "C" fn copy_resets(output: *mut c_void, ids: *const u32, len: u32) -> bool {
+        // SAFETY: The test supplies its output and the plugin borrows the IDs until return.
+        unsafe {
+            let output = &mut *output.cast::<(Vec<u8>, Vec<u32>)>();
+            output
+                .1
+                .extend_from_slice(std::slice::from_raw_parts(ids, len as usize));
         }
         true
     }
@@ -213,7 +226,7 @@ fn prepare_asset_edit(
     let (source, source_len) = source.map_or((ptr::null(), 0), |source| {
         (source.as_ptr(), source.len() as u32)
     });
-    let mut replacement = Vec::new();
+    let mut replacement: (Vec<u8>, Vec<u32>) = (Vec::new(), Vec::new());
     // SAFETY: The initialized plugin and all borrowed buffers remain valid for this call.
     let result = unsafe {
         let table = ((*plugin).get_extension.unwrap())(plugin, edit_state::EXTENSION_ID.as_ptr())
@@ -228,9 +241,10 @@ fn prepare_asset_edit(
             source_len,
             ptr::from_mut(&mut replacement).cast(),
             copy_state,
+            copy_resets,
         )
     };
-    (result, replacement)
+    (result, replacement.0, replacement.1)
 }
 
 fn check_asset_edit_preparation(instance: &Instance, source: &Value, assets: &Value) {
@@ -242,7 +256,7 @@ fn check_asset_edit_preparation(instance: &Instance, source: &Value, assets: &Va
     state["params"]["mode"] = json!({"string": "one-shot"});
     let input = encode_document(&state);
     for intent in [Intent::Assign, Intent::Clear] {
-        let (result, replacement) = prepare_asset_edit(instance, 0, intent, Some(&input));
+        let (result, replacement, resets) = prepare_asset_edit(instance, 0, intent, Some(&input));
         assert_eq!(result, edit_state::REPLACED);
         let mut expected = state.clone();
         let mut expected_assets = assets.clone();
@@ -251,8 +265,20 @@ fn check_asset_edit_preparation(instance: &Instance, source: &Value, assets: &Va
             .unwrap()
             .remove("sample_edit");
         expected["fields"]["sample_assets"] = expected_assets.to_string().into();
+        if intent == Intent::Assign {
+            // Assigning a file resets the trim to its defaults and reports the two parameters.
+            expected["params"]["start"] = json!({"f32": 0.0});
+            expected["params"]["end"] = json!({"f32": 1.0});
+            assert_eq!(resets.len(), 2);
+        } else {
+            assert!(resets.is_empty());
+        }
         assert_eq!(decode(&replacement), Some(expected));
     }
+    let (result, replacement, resets) = prepare_asset_edit(instance, 0, Intent::Assign, None);
+    assert_eq!(result, edit_state::REPLACED);
+    assert_eq!(resets.len(), 2);
+    assert!(decode(&replacement).is_some());
     for (slot, intent, input, result) in [
         (
             0,
@@ -260,7 +286,6 @@ fn check_asset_edit_preparation(instance: &Instance, source: &Value, assets: &Va
             Some(input.as_slice()),
             edit_state::UNCHANGED,
         ),
-        (0, Intent::Assign, None, edit_state::UNCHANGED),
         (
             1,
             Intent::Assign,
@@ -271,7 +296,7 @@ fn check_asset_edit_preparation(instance: &Instance, source: &Value, assets: &Va
     ] {
         assert_eq!(
             prepare_asset_edit(instance, slot, intent, input),
-            (result, vec![])
+            (result, vec![], vec![])
         );
     }
     assert_eq!(save_state(instance), live);

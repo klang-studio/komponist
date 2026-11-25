@@ -209,7 +209,7 @@ struct PendingAssetEdit {
     request: u64,
     deadline: Instant,
     state: crate::device_assets::AssetEditState,
-    prepared: Option<edit_state::Prepared>,
+    prepared: Option<edit_state::PreparedChange>,
     superseded: bool,
 }
 
@@ -1881,8 +1881,7 @@ impl Bridge {
                 if let Some(edit) = &mut self.pending_asset_edit
                     && edit.request == request
                 {
-                    edit.prepared =
-                        Some(result.map(|state| state.map(edit_state::State::into_bytes)));
+                    edit.prepared = Some(result);
                 }
             }
             BridgeMsg::DeviceAssetsApplied(request, accepted) => {

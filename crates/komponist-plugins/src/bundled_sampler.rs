@@ -5,9 +5,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use komponist_builtin::Internal;
-use komponist_ipc::ParamInfo as ClapParamInfo;
-use komponist_ipc::control::MAX_STATE_PARAMETER_BASES;
-use komponist_ipc::native_layout::{GraphKind, NativeLayout};
 use komponist_model::asset_collection::Collector;
 use komponist_model::params::ParamInfo;
 use komponist_model::project::SavedPluginState;
@@ -314,112 +311,6 @@ fn reset_slices(assets: Vec<u8>, kind: Internal, relinking: bool) -> Vec<u8> {
     }
 }
 
-fn waveform_trim_ids(layout: &NativeLayout, slot: u32) -> Option<[u32; 2]> {
-    let mut bindings = layout
-        .pages
-        .iter()
-        .flat_map(|page| &page.cells)
-        .filter_map(|cell| cell.graph.as_ref())
-        .filter(|graph| graph.kind == GraphKind::Waveform && graph.asset_slot == Some(slot))
-        .map(|graph| ["start", "end"].map(|name| graph.slots.get(name).copied()));
-    let [Some(start), Some(end)] = bindings.next()? else {
-        return None;
-    };
-    (start != end && bindings.all(|ids| ids == [Some(start), Some(end)])).then_some([start, end])
-}
-
-fn trim_defaults(ids: [u32; 2], params: &[ClapParamInfo]) -> Option<[(u32, f64); 2]> {
-    let [start, end] = ids.map(|id| {
-        let info = params.iter().find(|info| info.id == id)?;
-        (info.default.is_finite() && (info.min..=info.max).contains(&info.default))
-            .then_some((id, info.default))
-    });
-    Some([start?, end?])
-}
-
-/// Prepare the bundled sampler's stored trim and slice state for a user file edit.
-/// The file link itself is stored in the project and is synced independently by the host.
-pub(crate) fn edit_native_regions(
-    device: &Device,
-    changes: &[crate::AssetEdit],
-    layout: Option<&NativeLayout>,
-    params: &[ClapParamInfo],
-    include_slices: bool,
-) -> Option<SavedPluginState> {
-    let kind = kind(&device.plugin)?;
-    let current_layout = layout.filter(|layout| layout.schema_version == 2);
-    let initial;
-    let state = if let Some(state) = device.state.as_deref() {
-        state
-    } else {
-        initial = pinned_clap_state::encode(&device.plugin.version, Map::new(), Map::new());
-        &initial
-    };
-    let mut parameter_bases = device.parameter_bases.clone();
-    let bytes = edit_state(state, |wrapper, assets| {
-        let mut updated = assets.as_bytes().to_vec();
-        for change in changes {
-            let pad = change.slot as usize;
-            if pad >= pad_count(kind) {
-                return None;
-            }
-            let trim_ids = current_layout
-                .filter(|_| should_reset_trim(kind, change.attaching, change.relinking))
-                .and_then(|layout| waveform_trim_ids(layout, change.slot));
-            let defaults = trim_ids
-                .and_then(|ids| trim_defaults(ids, params))
-                .filter(|defaults| {
-                    let additional_bases = defaults
-                        .iter()
-                        .filter(|(id, _)| !parameter_bases.contains_key(id))
-                        .count();
-                    parameter_bases.len() + additional_bases <= MAX_STATE_PARAMETER_BASES
-                });
-            if let Some(defaults) = defaults {
-                // Reapply the live CLAP defaults through the saved state on both host routes.
-                parameter_bases.extend(defaults);
-                if include_slices {
-                    updated = reset_slices(updated, kind, change.relinking);
-                }
-            } else {
-                // The stored trim can take effect only after removing its competing bases.
-                if let Some(ids) = trim_ids {
-                    for id in ids {
-                        parameter_bases.remove(&id);
-                    }
-                } else {
-                    // For missing or conflicting bindings, retain the compatibility lookup.
-                    remove_reset_trim_bases(
-                        &mut parameter_bases,
-                        kind,
-                        pad,
-                        change.attaching,
-                        change.relinking,
-                        layout.and_then(NativeLayout::author_ids),
-                    )?;
-                }
-                updated = reset_region(
-                    wrapper,
-                    updated,
-                    kind,
-                    pad,
-                    change.attaching,
-                    change.relinking,
-                    include_slices,
-                )?;
-            }
-        }
-        String::from_utf8(updated).ok()
-    })?;
-    if parameter_bases.len() > MAX_STATE_PARAMETER_BASES {
-        return None;
-    }
-    Some(SavedPluginState {
-        bytes: bytes.into(),
-        parameter_bases,
-    })
-}
-
 /// Replace the General Sampler slice map without changing the source or CLAP parameters.
 pub fn edit_slices(state: &[u8], settings: &Settings) -> Option<Vec<u8>> {
     edit_state(state, |_, assets| {
@@ -496,6 +387,7 @@ fn edit_state(
 mod tests {
     use super::*;
     use komponist_device_core::pinned_clap_state;
+    use komponist_ipc::native_layout::NativeLayout;
     use serde_json::{Map, json};
 
     fn bundled_general_sampler() -> Device {
@@ -587,28 +479,14 @@ mod tests {
         let ids = layout.author_ids();
         let link = SampleLink::new(std::path::Path::new("/samples/tone.wav"), None);
         for relinking in [false, true] {
-            let native = edit_native_regions(
-                &device,
-                &[crate::AssetEdit {
-                    slot: 0,
-                    attaching: true,
-                    relinking,
-                }],
-                Some(&layout),
-                &[],
-                true,
-            )
-            .unwrap();
             let embedded = edit_saved_link(&device, 0, Some(&link), relinking, ids).unwrap();
-            for after in [native, embedded] {
-                if relinking {
-                    assert_eq!(after.parameter_bases, device.parameter_bases);
-                } else {
-                    assert_eq!(after.parameter_bases, [(31, 0.4)].into());
-                    let state = decode(&after.bytes).unwrap();
-                    assert_eq!(state["params"]["start"], json!({"f32": 0.0}));
-                    assert_eq!(state["params"]["end"], json!({"f32": 1.0}));
-                }
+            if relinking {
+                assert_eq!(embedded.parameter_bases, device.parameter_bases);
+            } else {
+                assert_eq!(embedded.parameter_bases, [(31, 0.4)].into());
+                let state = decode(&embedded.bytes).unwrap();
+                assert_eq!(state["params"]["start"], json!({"f32": 0.0}));
+                assert_eq!(state["params"]["end"], json!({"f32": 1.0}));
             }
         }
         let linked = edit_saved_link(&device, 0, Some(&link), true, ids).unwrap();
@@ -618,125 +496,6 @@ mod tests {
         };
         let cleared = edit_saved_link(&device, 0, None, false, None).unwrap();
         assert_eq!(cleared.parameter_bases, device.parameter_bases);
-    }
-
-    #[test]
-    fn native_sample_edits_use_clap_trim_defaults_for_the_asset_slot() {
-        let mut document: Value = serde_json::from_str(
-            r#"{
-                "schema_version": 2, "default_locale": "en", "locales": ["en"],
-                "pages": [{
-                    "key": "sample", "labels": {"en": "Sample"}, "columns": 6,
-                    "cells": [
-                        {
-                            "widget": "graph", "col": 0, "row": 0, "cols": 3, "rows": 3,
-                            "graph": {
-                                "kind": "waveform", "name": {"en": "Other"},
-                                "description": {"en": "Other asset"}, "asset_slot": 1,
-                                "slots": {"start": 44, "end": 51}
-                            }
-                        },
-                        {
-                            "widget": "graph", "col": 3, "row": 0, "cols": 3, "rows": 3,
-                            "graph": {
-                                "kind": "waveform", "name": {"en": "Waveform"},
-                                "description": {"en": "Sample range"}, "asset_slot": 0,
-                                "slots": {"start": 7, "end": 9}
-                            }
-                        }
-                    ]
-                }]
-            }"#,
-        )
-        .unwrap();
-        let parse =
-            |document: &Value| NativeLayout::parse(&serde_json::to_vec(document).unwrap()).unwrap();
-        let layout = parse(&document);
-        assert!(layout.author_ids().is_none());
-        let params =
-            [(7, 0.1), (9, 0.9), (44, 0.2), (51, 0.8)].map(|(id, default)| ClapParamInfo {
-                id,
-                name: id.to_string(),
-                module: String::new(),
-                min: 0.0,
-                max: 1.0,
-                default,
-                step_count: 0,
-                flags: 0,
-            });
-        layout.validate_params(&params).unwrap();
-        let opaque_trim = Map::from_iter([
-            ("start".into(), json!({"f32": 0.3})),
-            ("end".into(), json!({"f32": 0.6})),
-        ]);
-        let opaque = pinned_clap_state::encode("0.1.0", opaque_trim.clone(), Map::new());
-        let sliced = edit_slices(&opaque, &Settings::from_markers([0.25, 0.5])).unwrap();
-        let cleared = edit_slices(&sliced, &Settings::default()).unwrap();
-        let device = Device {
-            state: Some(sliced.clone().into()),
-            parameter_bases: [(7, 0.35), (31, 0.4)].into(),
-            ..bundled_general_sampler()
-        };
-        for (attaching, relinking) in [(true, false), (true, true), (false, false)] {
-            let after = edit_native_regions(
-                &device,
-                &[crate::AssetEdit {
-                    slot: 0,
-                    attaching,
-                    relinking,
-                }],
-                Some(&layout),
-                &params,
-                true,
-            )
-            .unwrap();
-            let expected_bases = if attaching && !relinking {
-                [(7, 0.1), (9, 0.9), (31, 0.4)].into()
-            } else {
-                device.parameter_bases.clone()
-            };
-            assert_eq!(after.parameter_bases, expected_bases);
-            assert_eq!(decode(&after.bytes).unwrap()["params"], json!(opaque_trim));
-            let expected = if relinking { &sliced } else { &cleared };
-            assert_eq!(assets(&after.bytes), assets(expected));
-        }
-
-        let full_bases: BTreeMap<_, _> = (1_000..)
-            .take(MAX_STATE_PARAMETER_BASES - 1)
-            .map(|id| (id, 0.4))
-            .collect();
-        let mut full_with_trim = full_bases.clone();
-        full_with_trim.insert(7, 0.35);
-        let full = Device {
-            parameter_bases: full_with_trim,
-            ..device.clone()
-        };
-        let mut invalid_defaults = params.clone();
-        invalid_defaults[0].default = f64::NAN;
-        let change = crate::AssetEdit {
-            slot: 0,
-            attaching: true,
-            relinking: false,
-        };
-        let changes = std::slice::from_ref(&change);
-        document["pages"][0]["cells"][1]["graph"]["slots"]["end"] = 7.into();
-        let ambiguous = parse(&document);
-        assert!(edit_native_regions(&device, changes, Some(&ambiguous), &params, true).is_none());
-        document["author_ids"] = json!({"start": 7, "end": 9, "other_start": 44, "other_end": 51});
-        let with_legacy_ids = parse(&document);
-        for (device, layout, params, expected_bases) in [
-            (&full, &layout, &params, full_bases),
-            (&device, &layout, &invalid_defaults, [(31, 0.4)].into()),
-            (&device, &with_legacy_ids, &params, [(31, 0.4)].into()),
-        ] {
-            let after = edit_native_regions(device, changes, Some(layout), params, true).unwrap();
-            assert_eq!(after.parameter_bases, expected_bases);
-            assert_eq!(
-                decode(&after.bytes).unwrap()["params"],
-                json!({"start": {"f32": 0.0}, "end": {"f32": 1.0}})
-            );
-            assert_eq!(assets(&after.bytes), assets(&cleared));
-        }
     }
 
     #[test]

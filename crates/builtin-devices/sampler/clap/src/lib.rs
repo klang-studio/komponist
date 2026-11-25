@@ -7,8 +7,8 @@ use komponist_i18n::Lang;
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, Page, SEL, WidgetKind};
 use komponist_model::params::{ParamContext, ParamId, ParamInfo, resolve};
 use komponist_native_clap_sdk::{GraphLabels, Pad, PadBank, PanelV2};
-use komponist_sampler::PADS;
-use komponist_sampler_clap::{Sampled, SampledDefinition};
+use komponist_sampler::{PADS, PadField};
+use komponist_sampler_clap::{AssetEditIntent, Sampled, SampledDefinition};
 use komponist_sampler_shared::{ManagedLoader, SamplerHandle};
 use nice_plug::prelude::*;
 
@@ -98,6 +98,11 @@ impl DeviceDefinition for DrumSampler {
 
 impl SampledDefinition for DrumSampler {
     const PADS: usize = PADS;
+
+    fn trim_for_asset_edit(slot: usize, intent: AssetEditIntent) -> Option<[usize; 2]> {
+        (intent != AssetEditIntent::Clear)
+            .then(|| [PadField::Start, PadField::End].map(|field| field.wire(slot)))
+    }
 
     fn panel_v2() -> Option<PanelV2> {
         let mut panel = panel_from_parts(

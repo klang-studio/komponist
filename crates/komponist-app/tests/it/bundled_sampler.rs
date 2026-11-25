@@ -1069,16 +1069,6 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             slot: 2,
             path: Some(alternate.clone()),
         }));
-    assert_eq!(
-        h.state()
-            .project()
-            .find_device(drum)
-            .unwrap()
-            .2
-            .parameter_bases
-            .get(&start),
-        Some(&default_trim)
-    );
     step_until(
         h.state_mut(),
         "replacement reset the selected pad trim",
@@ -1086,6 +1076,13 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             has_trim(app, default_trim)
                 && app.project().find_device(drum).unwrap().2.asset_links[&2].abs == alternate
         },
+    );
+    let replaced_pad = h.state().project().find_device(drum).unwrap().2;
+    assert!(!replaced_pad.parameter_bases.contains_key(&start));
+    let device_state = pinned_clap_state::decode(replaced_pad.state.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        device_state["params"][start_info.id.as_str()],
+        pinned_clap_state::parameter(start_info, start_info.default).0
     );
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
     step_until(

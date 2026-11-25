@@ -1129,20 +1129,6 @@ impl PluginManager {
         }
     }
 
-    fn bundled_sampler_for_asset_edit(&self, device: &Device) -> Option<Internal> {
-        let identity = self.verified_bundles.get(&device.id)?;
-        // Audio may still be warming up after the bridge is ready for file edits.
-        if crate::catalog::packaged_kind(&device.plugin).as_ref() != Some(identity)
-            || !matches!(
-                self.status(device.id),
-                DeviceStatus::Ok | DeviceStatus::Loading
-            )
-        {
-            return None;
-        }
-        bundled_sampler::kind(&device.plugin)
-    }
-
     pub fn prepare_asset_edit(
         &mut self,
         device: &Device,
@@ -1150,69 +1136,40 @@ impl PluginManager {
         request: u64,
     ) -> Result<AssetEditPreparation, DeviceId> {
         let id = device.id;
-        let sampler = self
-            .bundled_sampler_for_asset_edit(device)
-            .filter(|_| self.asset_slots(id).is_some());
-        let supports_state = self.supports_asset_edit_state(id);
-        let requires_current_live_state = supports_state && sampler.is_none();
-        if !supports_state && sampler.is_none() {
+        if !self.supports_asset_edit_state(id) {
             return Ok(AssetEditPreparation::Ready(None));
         }
-        if supports_state
-            && (request == 0
-                || device
-                    .state
-                    .as_deref()
-                    .is_some_and(|state| !edit_state::valid_state(state)))
+        if request == 0
+            || device
+                .state
+                .as_deref()
+                .is_some_and(|state| !edit_state::valid_state(state))
         {
             return Err(id);
         }
+        // A pending snapshot, preset or restore only delays the edit: the caller retries with the
+        // device's refreshed state.
         if self
             .pending_live_state_commits()
             .any(|pending| pending == id)
             || self.direct.get(&id).is_some_and(|direct| {
                 direct.is_editing_waveform_markers()
-                    || supports_state && direct.is_loading_clap_preset()
-                    || requires_current_live_state && direct.needs_snapshot()
+                    || direct.is_loading_clap_preset()
+                    || direct.needs_snapshot()
             })
             || self.bridges.get(&id).is_some_and(|bridge| {
                 bridge.is_editing_waveform_markers()
-                    || supports_state && !bridge.can_prepare_asset_edit()
-                    || requires_current_live_state && bridge.needs_snapshot_for_save()
+                    || !bridge.can_prepare_asset_edit()
+                    || bridge.needs_snapshot_for_save()
             })
         {
-            return Err(id);
-        }
-        let trim = sampler
-            .filter(|&kind| {
-                !supports_state
-                    || changes.iter().any(|change| {
-                        bundled_sampler::should_reset_trim(kind, change.attaching, change.relinking)
-                    })
-            })
-            .map(|_| {
-                bundled_sampler::edit_native_regions(
-                    device,
-                    changes,
-                    self.native_layout(id).map(Arc::as_ref),
-                    self.params(id).unwrap_or_default(),
-                    !supports_state,
-                )
-                .ok_or(id)
-            })
-            .transpose()?
-            .filter(|after| !device.has_saved_state(after));
-        if !supports_state {
-            return Ok(AssetEditPreparation::Ready(trim));
+            return Ok(AssetEditPreparation::Busy);
         }
         let edits = edit_state::Edits {
             slots: changes.iter().map(crate::AssetEdit::as_wire_edit).collect(),
         };
-        let trim_changed = trim.is_some();
-        let (source, parameter_bases) = match trim {
-            Some(state) => (Some(state.bytes), state.parameter_bases),
-            None => (device.state.clone(), device.parameter_bases.clone()),
-        };
+        let source = device.state.clone();
+        let parameter_bases = device.parameter_bases.clone();
         if source
             .as_deref()
             .is_some_and(|state| !edit_state::valid_state(state))
@@ -1223,7 +1180,6 @@ impl PluginManager {
         let state = AssetEditState {
             source,
             parameter_bases,
-            trim_changed,
         };
         if let Some(direct) = self.direct.get(&id) {
             let prepared = direct.prepare_asset_edit_state(&edits, state.source.as_deref());
@@ -1232,14 +1188,15 @@ impl PluginManager {
                 .map(AssetEditPreparation::Ready)
                 .map_err(|edit_state::Rejected| id);
         }
-        if self
-            .bridges
-            .get_mut(&id)
-            .is_some_and(|bridge| bridge.prepare_asset_edit(request, edits, state))
-        {
-            return Ok(AssetEditPreparation::Pending);
+        let Some(bridge) = self.bridges.get_mut(&id) else {
+            return Err(id);
+        };
+        if bridge.prepare_asset_edit(request, edits, state) {
+            Ok(AssetEditPreparation::Pending)
+        } else {
+            // Another preparation is still in flight.
+            Ok(AssetEditPreparation::Busy)
         }
-        Err(id)
     }
 
     pub fn asset_slots(&self, device: DeviceId) -> Option<&Snapshot> {
@@ -2166,47 +2123,6 @@ fn is_sampler_kind(kind: Option<BuiltinKind>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn authenticated_sampler_keeps_asset_edit_policy_during_audio_warmup() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut manager = PluginManager::new_with_bundled_clap(
-            PluginManagerConfig::defaults(dir.path()),
-            false,
-            false,
-        );
-        let device = Device {
-            id: DeviceId(1),
-            role: DeviceRole::Instrument,
-            plugin: PluginRef {
-                format: komponist_model::PluginFormat::Clap,
-                id: "org.klang-studio.komponist.general-sampler".into(),
-                name: "Sampler".into(),
-                vendor: String::new(),
-                version: "0.1.0".into(),
-                module: crate::catalog::bundled_module("sampler.clap"),
-            },
-            bypass: false,
-            parameter_bases: Default::default(),
-            asset_links: Default::default(),
-            state: None,
-            sidechain: None,
-        };
-        manager.statuses.insert(device.id, DeviceStatus::Loading);
-        assert_eq!(manager.bundled_sampler_for_asset_edit(&device), None);
-
-        let identity = crate::catalog::packaged_kind(&device.plugin).unwrap();
-        manager.verified_bundles.insert(device.id, identity);
-        assert_eq!(manager.verified_bundled_kind(device.id), None);
-        let sampler = bundled_sampler::kind(&device.plugin).unwrap();
-        assert_eq!(
-            manager.bundled_sampler_for_asset_edit(&device),
-            Some(sampler)
-        );
-
-        manager.statuses.insert(device.id, DeviceStatus::Missing);
-        assert_eq!(manager.bundled_sampler_for_asset_edit(&device), None);
-    }
 
     #[test]
     fn release_discards_only_the_retired_devices_queued_snapshots() {

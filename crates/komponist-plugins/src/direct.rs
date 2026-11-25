@@ -109,7 +109,7 @@ impl DirectClap {
         &self,
         edits: &edit_state::Edits,
         state: Option<&[u8]>,
-    ) -> edit_state::Prepared {
+    ) -> edit_state::PreparedChange {
         self.plugin.prepare_asset_edit_state(edits, state)
     }
 

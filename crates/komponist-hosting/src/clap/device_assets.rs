@@ -73,22 +73,43 @@ pub(super) fn supports_edit_state(plugin: &clap_plugin) -> bool {
 
 #[derive(Default)]
 struct StateOutput {
-    called: bool,
-    state: Option<Vec<u8>>,
+    failed: bool,
+    change: edit_state::Change,
 }
 
 unsafe extern "C" fn write_state(output: *mut c_void, bytes: *const u8, len: u32) -> bool {
     // SAFETY: The host supplies a live and unique StateOutput for the synchronous callback.
     let output = unsafe { &mut *output.cast::<StateOutput>() };
-    if std::mem::replace(&mut output.called, true)
+    if output.change.state.is_some()
         || bytes.is_null()
         || !(1..=edit_state::MAX_STATE_BYTES).contains(&(len as usize))
     {
-        output.state = None;
+        output.failed = true;
         return false;
     }
     // SAFETY: The callback's ABI requires a readable source of this length until the write returns.
-    output.state = Some(unsafe { std::slice::from_raw_parts(bytes, len as usize) }.to_vec());
+    let bytes = unsafe { std::slice::from_raw_parts(bytes, len as usize) };
+    output.change.state = edit_state::State::try_from(bytes.to_vec()).ok();
+    output.change.state.is_some()
+}
+
+unsafe extern "C" fn reset_parameter_bases(output: *mut c_void, ids: *const u32, len: u32) -> bool {
+    // SAFETY: The host supplies a live and unique StateOutput for the synchronous callback.
+    let output = unsafe { &mut *output.cast::<StateOutput>() };
+    if !output.change.reset_parameter_bases.is_empty()
+        || ids.is_null()
+        || !(1..=edit_state::MAX_PARAMETER_BASE_RESETS).contains(&(len as usize))
+    {
+        output.failed = true;
+        return false;
+    }
+    // SAFETY: The callback's ABI requires this aligned array to remain readable until return.
+    let ids = unsafe { std::slice::from_raw_parts(ids, len as usize) };
+    if !edit_state::valid_base_resets(ids) {
+        output.failed = true;
+        return false;
+    }
+    output.change.reset_parameter_bases.extend_from_slice(ids);
     true
 }
 
@@ -96,7 +117,7 @@ pub(super) fn prepare_edit_state(
     plugin: &clap_plugin,
     edits: &edit_state::Edits,
     state: Option<&[u8]>,
-) -> edit_state::Prepared {
+) -> edit_state::PreparedChange {
     let prepare = edit_state_callback(plugin)
         .and_then(|table| table.prepare)
         .ok_or(edit_state::Rejected)?;
@@ -108,23 +129,30 @@ pub(super) fn prepare_edit_state(
         None => (std::ptr::null(), 0),
     };
     let mut output = StateOutput::default();
+    let context = std::ptr::from_mut(&mut output).cast();
+    let instance = std::ptr::from_ref(plugin).cast();
     // SAFETY: All inputs and the output context remain valid until the main-thread call returns.
     // This pure operation cannot touch shared processing state.
     let status = unsafe {
         prepare(
-            std::ptr::from_ref(plugin).cast(),
+            instance,
             edit_bytes.as_ptr(),
             edit_len as u32,
             state_bytes,
             state_len,
-            std::ptr::from_mut(&mut output).cast(),
+            context,
             write_state,
+            reset_parameter_bases,
         )
     };
-    match status {
-        edit_state::UNCHANGED if !output.called => Ok(None),
-        edit_state::REPLACED => output.state.map(Some).ok_or(edit_state::Rejected),
-        _ => Err(edit_state::Rejected),
+    let changed = output.change.state.is_some() || !output.change.reset_parameter_bases.is_empty();
+    if !output.failed
+        && (status == edit_state::REPLACED && changed
+            || status == edit_state::UNCHANGED && !changed)
+    {
+        Ok(output.change)
+    } else {
+        Err(edit_state::Rejected)
     }
 }
 

@@ -40,29 +40,38 @@ impl AssetEdit {
     }
 }
 
-/// Direct and compatibility edits complete in the caller. The bridge replies on its next polls.
+/// Direct edits complete in the caller. The bridge replies on its next polls.
 pub enum AssetEditPreparation {
     Ready(Option<SavedPluginState>),
     Pending,
+    /// The device is not ready to prepare yet. Retry with its refreshed saved state.
+    Busy,
 }
 
 #[derive(Debug)]
 pub(crate) struct AssetEditState {
     pub source: Option<Arc<[u8]>>,
     pub parameter_bases: BTreeMap<u32, f64>,
-    pub trim_changed: bool,
 }
 
 impl AssetEditState {
     pub(crate) fn finish(
-        self,
-        prepared: edit_state::Prepared,
+        mut self,
+        prepared: edit_state::PreparedChange,
     ) -> Result<Option<SavedPluginState>, edit_state::Rejected> {
-        let replacement = prepared?;
-        let bytes = match replacement {
-            Some(bytes) if edit_state::valid_state(&bytes) => Arc::from(bytes),
-            Some(_) => return Err(edit_state::Rejected),
-            None if self.trim_changed => self.source.ok_or(edit_state::Rejected)?,
+        let change = prepared?;
+        if !edit_state::valid_base_resets(&change.reset_parameter_bases) {
+            return Err(edit_state::Rejected);
+        }
+        let before = self.parameter_bases.len();
+        for id in change.reset_parameter_bases {
+            self.parameter_bases.remove(&id);
+        }
+        let bytes = match change.state {
+            Some(state) => Arc::from(state.into_bytes()),
+            None if self.parameter_bases.len() != before => {
+                self.source.ok_or(edit_state::Rejected)?
+            }
             None => return Ok(None),
         };
         Ok(Some(SavedPluginState {
@@ -368,6 +377,31 @@ mod tests {
                 reload: false,
             }],
         }
+    }
+
+    #[test]
+    fn prepared_asset_edit_retires_only_device_reset_parameter_bases() {
+        let source = Arc::<[u8]>::from([1, 2]);
+        let bases = BTreeMap::from([(4, 0.3), (17, 0.8)]);
+        let input = || AssetEditState {
+            source: Some(source.clone()),
+            parameter_bases: bases.clone(),
+        };
+        let change = edit_state::Change {
+            state: Some(edit_state::State::try_from(vec![3, 4]).unwrap()),
+            reset_parameter_bases: vec![4],
+        };
+        let state = input().finish(Ok(change)).unwrap().unwrap();
+        assert_eq!(state.bytes.as_ref(), [3, 4]);
+        assert_eq!(state.parameter_bases, [(17, 0.8)].into());
+
+        let change = edit_state::Change {
+            state: None,
+            reset_parameter_bases: vec![4],
+        };
+        let state = input().finish(Ok(change)).unwrap().unwrap();
+        assert_eq!(state.bytes, source);
+        assert_eq!(state.parameter_bases, [(17, 0.8)].into());
     }
 
     #[test]

@@ -186,7 +186,7 @@ pub trait HostedPlugin {
         &self,
         _edits: &komponist_ipc::device_assets::edit_state::Edits,
         _state: Option<&[u8]>,
-    ) -> komponist_ipc::device_assets::edit_state::Prepared {
+    ) -> komponist_ipc::device_assets::edit_state::PreparedChange {
         Err(komponist_ipc::device_assets::edit_state::Rejected)
     }
 
