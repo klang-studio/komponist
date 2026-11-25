@@ -155,6 +155,7 @@ def run_staged(app, runner, digest, projects):
                 "bundled_sampler::bundled_sampler_restores_saved_parameter_bases",
                 "bundled_sampler::bundled_sampler_panels_edit_and_restore_current_state",
                 "bundled_current::packaged_effect_cards_and_presets",
+                "param_undo::packaged_limiter_drag_is_one_step_and_undo_redo_restore_the_sound",
             ),
         }[projects]
         environment = os.environ.copy()
