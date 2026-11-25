@@ -157,6 +157,11 @@ jobs:
           TOML
           cat kittest.toml
 
+      - name: Verify standalone CLAP layout v2 graph snapshots
+        env:
+          KOMPONIST_LAYOUT_FIXTURE: ${{ runner.temp }}/clap-preset-fixture/layout-fixture.clap
+        run: cargo test --locked -p komponist-app --test it standalone_clap_layout_v2_renders_three_graphs
+
       # A hanging test (2026-11-15: dispatch::dialogs_take_the_focus_and_give_it_back) would otherwise
       # hold the job for its full hour. After TEST_WATCHDOG seconds the watchdog prints the backtraces
       # of every thread of the running test binaries and fails the step.

@@ -33,9 +33,12 @@ cross-checks IDs, flags, ranges, slot occupancy, localized labels and schema fal
 ```sh
 export KOMPONIST_LAYOUT_FIXTURE="$scratch/c/layout-fixture.clap"
 cargo test -p komponist-app -p komponist-bridge --test it native_layout
+cargo test -p komponist-app --test it standalone_clap_layout_v2_renders_three_graphs
 ```
 
 The app test installs the fixture into an empty scan folder, verifies native and generic cards,
 drives automation and direct edits, then exercises undo, redo, save, reopen, parameter rescan, and
 bridge recovery. On Linux, the bridge test also verifies that a plugin editor which fails to
-open leaves the native layout available. Run these alongside the standard plugin fixture tests.
+open leaves the native layout available. The graph snapshot test renders the fixture's v2-only
+equalizer, envelope, and waveform through the bridge, checks their accessible names, and compares
+German and English snapshots on Linux. Run these alongside the standard plugin fixture tests.
