@@ -4,7 +4,6 @@
 
 use komponist_builtin::{BuiltinKind, Internal};
 use komponist_device_core::pinned_clap_state;
-use komponist_hexa::Macro;
 use komponist_i18n::Lang;
 use komponist_ipc::ParamValue;
 use komponist_ipc::control::ParamInfo as WireInfo;
@@ -458,8 +457,8 @@ pub(crate) fn card(
         }
         let legacy = native.schema_version < 2;
         match verified? {
-            BuiltinKind::Hexa if legacy => Some((
-                Some(hexa_editor_layout(lang)),
+            BuiltinKind::Hexa => Some((
+                legacy.then(|| komponist_hexa::device::clap_editor_layout(lang)),
                 bundled_params(device.id, host, native, hexa_editor_infos(lang))?,
             )),
             BuiltinKind::Internal(kind) => {
@@ -479,7 +478,6 @@ pub(crate) fn card(
                     bundled_params(device.id, host, native, kind.params_in(lang))?,
                 ))
             }
-            _ => None,
         }
     });
     let bundled_editor = editor.is_some();
@@ -559,7 +557,7 @@ pub(crate) fn card(
         );
     }
     let hexa = is_hexa(device);
-    let bundled_hexa = verified == Some(BuiltinKind::Hexa);
+    let bundled_hexa = legacy_layout && verified == Some(BuiltinKind::Hexa);
     let hexa_patch = if hexa {
         komponist_hexa::decode_state(device.state.as_deref()).ok()
     } else if bundled_hexa {
@@ -649,21 +647,6 @@ fn hexa_editor_infos(lang: Lang) -> &'static [ParamInfo] {
             })
             .collect()
     })
-}
-
-fn hexa_editor_layout(lang: Lang) -> DeviceLayout {
-    let mut layout = komponist_hexa::device::layout_in(lang);
-    // Keep all of the CLAP controls accessible alongside the full operators and envelopes.
-    let global = &mut layout.pages[3];
-    global.cells.extend(
-        Macro::ALL
-            .into_iter()
-            .filter(|item| !matches!(item, Macro::Algorithm | Macro::Feedback))
-            .enumerate()
-            .map(|(col, item)| layout::Cell::knob(col as u8, 0, ParamId::new(item.key()))),
-    );
-    layout.pages.retain(|page| !page.cells.is_empty());
-    layout
 }
 
 /// The parameters of an internal effect with the values in its device state (the defaults for a

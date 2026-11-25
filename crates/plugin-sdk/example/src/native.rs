@@ -105,6 +105,7 @@ impl NativeClapLayout for NativeGain {
                     key: "response".into(),
                     horizontal_viewport: true,
                     show_title: false,
+                    fm_topology: None,
                     name: labels("Gain response", "Pegelverlauf"),
                     description: labels(
                         "Output gain from zero to full mix.",

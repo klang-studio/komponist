@@ -774,6 +774,9 @@ fn mini_fader(
 /// Whether the mini fader of `cell` fills as a carrier (the track colour): the Bool parameter the
 /// cell names says so; without one (or while it is unknown) it does.
 fn carrier(card: &Card, cell: &Cell) -> bool {
+    if let Some(carrier) = super::canvas::fm_carrier(card, cell) {
+        return carrier;
+    }
     let Some(id) = &cell.carrier else {
         return true;
     };
@@ -835,7 +838,7 @@ fn select_segment(
 }
 
 /// A native selector stores only its index. Its localized labels remain in the layout.
-fn native_selection_id(card: &Card, key: &str) -> Id {
+pub(super) fn native_selection_id(card: &Card, key: &str) -> Id {
     let shared = card.native_page().is_some_and(|page| {
         page.cells
             .iter()
@@ -846,7 +849,7 @@ fn native_selection_id(card: &Card, key: &str) -> Id {
     Id::unique(("native-device-selection", card.device, page, key))
 }
 
-fn native_selection(ctx: &egui::Context, id: Id, count: usize) -> usize {
+pub(super) fn native_selection(ctx: &egui::Context, id: Id, count: usize) -> usize {
     ctx.data(|data| data.get_temp::<usize>(id))
         .filter(|&index| index < count)
         .unwrap_or_default()
@@ -2093,6 +2096,61 @@ mod tests {
         assert_eq!(values.len(), 1);
         assert_eq!(values[0].0, 10);
         assert!(values[0].1 > 0.5);
+    }
+
+    #[test]
+    fn an_authored_fm_diagram_selects_and_colors_using_the_same_routing() {
+        use komponist_ipc::device_canvas::DisplayList;
+        use komponist_ipc::native_layout::NativeLayout;
+
+        let layout = NativeLayout::parse(br#"{
+          "schema_version":2,"default_locale":"en","locales":["en"],
+          "required_capabilities":["cell-selections","fm-topology"],
+          "pages":[{"key":"main","labels":{"en":"Main"},"columns":4,"cells":[
+            {"widget":"selector","col":0,"row":0,"cols":2,"rows":1,"half":"top",
+             "selector":{"key":"op","labels":{"en":"Operator"},"options":[{"en":"1"},{"en":"2"}]}},
+            {"widget":"canvas","col":2,"row":0,"cols":2,"rows":2,
+             "canvas":{"key":"routing","name":{"en":"Free algorithm"},"description":{"en":"FM routing"},
+                       "fm_topology":{"selector":"op","carriers":[{"col":0,"row":1,"operator":0},
+                                                                      {"col":1,"row":1,"operator":1}]}}},
+            {"widget":"mini_fader","col":0,"row":1,"cols":1,"rows":2,"param_id":40},
+            {"widget":"mini_fader","col":1,"row":1,"cols":1,"rows":2,"param_id":41},
+            {"widget":"knob","col":2,"row":2,"cols":1,"rows":1,"follows":"op","variants":[{"param_id":42},{"param_id":43}]}
+          ]}]
+        }"#).unwrap();
+        let display = DisplayList::decode(
+            br#"{"frames":[],"fm_topologies":[
+            {"key":"routing","modulates":[2,1],"outputs":1,"feedback":1}
+        ]}"#,
+        )
+        .unwrap();
+        let mut card = card();
+        card.layout = model::native_card_layout(&layout, Lang::En);
+        card.native_layout = Some(std::sync::Arc::new(layout));
+        card.display = Some(std::sync::Arc::new(display));
+        card.params = [
+            (40, "Level 1"),
+            (41, "Level 2"),
+            (42, "Attack 1"),
+            (43, "Attack 2"),
+        ]
+        .into_iter()
+        .map(|(id, name)| param(id, name, ParamKind::lin(0.0, 1.0), 0.5, 0.5))
+        .collect();
+        let cells = &card.layout.pages[0].cells;
+        assert!(carrier(&card, &cells[2]));
+        assert!(!carrier(&card, &cells[3]));
+
+        let mut harness = localized_graph_harness(card, egui::vec2(300.0, 240.0), Lang::En);
+        harness.get_by_role_and_label(Role::Group, "Free algorithm");
+        harness.get_by_role_and_label(Role::Button, "Operator 1, carrier");
+        harness.get_by_role_and_label(Role::Slider, "Attack 1");
+        harness
+            .get_by_role_and_label(Role::Button, "Operator 2, modulator")
+            .click_accesskit();
+        harness.run_steps(3);
+        harness.get_by_role_and_label(Role::Slider, "Attack 2");
+        assert!(harness.state().1.is_empty());
     }
 
     #[test]

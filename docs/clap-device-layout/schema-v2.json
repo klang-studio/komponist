@@ -145,6 +145,23 @@
     },
     {
       "if": {
+        "not": {
+          "required": ["required_capabilities"],
+          "properties": { "required_capabilities": { "contains": { "const": "fm-topology" } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "pages": { "items": { "properties": {
+            "cells": { "items": { "properties": {
+              "canvas": { "not": { "required": ["fm_topology"] } }
+            } } }
+          } } }
+        }
+      }
+    },
+    {
+      "if": {
         "required": ["required_capabilities"],
         "properties": { "required_capabilities": { "contains": { "const": "panel-selections" } } }
       },
@@ -888,6 +905,36 @@
         "horizontal_viewport": {
           "type": "boolean",
           "default": false
+        },
+        "fm_topology": {
+          "type": "object",
+          "required": ["selector"],
+          "properties": {
+            "selector": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,31}(?![\\s\\S])"
+            },
+            "carriers": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "required": ["col", "row", "operator"],
+                "properties": {
+                  "col": { "type": "integer", "minimum": 0, "maximum": 13 },
+                  "row": { "type": "integer", "minimum": 0, "maximum": 2 },
+                  "operator": { "type": "integer", "minimum": 0, "maximum": 7 }
+                }
+              }
+            }
+          }
+        }
+      },
+      "if": { "required": ["fm_topology"] },
+      "then": {
+        "properties": {
+          "show_title": { "const": false },
+          "horizontal_viewport": { "const": false }
         }
       }
     },

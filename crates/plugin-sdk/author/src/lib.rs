@@ -26,9 +26,10 @@ use clap_sys::{
 };
 use komponist_ipc::control::{ParamInfo, param_flags};
 use komponist_ipc::native_layout::{
-    CAP_CELL_SELECTIONS, CAP_CONDITIONAL_CONTROLS, CAP_EQ_BAND_CONTROLS, CAP_PAD_BANK,
-    CAP_PANEL_SELECTIONS, CAP_PARAMETER_DISPLAY, CAP_SOURCE_FRACTION_TRIM, EXTENSION_V1,
-    EXTENSION_V2, GraphKind, MAX_AUTHOR_IDS, MAX_BYTES, NativeLayout, valid_author_id,
+    CAP_CELL_SELECTIONS, CAP_CONDITIONAL_CONTROLS, CAP_EQ_BAND_CONTROLS, CAP_FM_TOPOLOGY,
+    CAP_PAD_BANK, CAP_PANEL_SELECTIONS, CAP_PARAMETER_DISPLAY, CAP_SOURCE_FRACTION_TRIM,
+    EXTENSION_V1, EXTENSION_V2, GraphKind, MAX_AUTHOR_IDS, MAX_BYTES, NativeLayout,
+    valid_author_id,
 };
 use komponist_model::params::context::{BAND, placeholders};
 use komponist_model::params::layout::validate;
@@ -41,7 +42,8 @@ pub use komponist_device_core::layout;
 pub use komponist_ipc::device_assets;
 pub use komponist_ipc::effect_meter;
 pub use komponist_ipc::native_layout::{
-    Canvas, DisplayScale, DisplayUnit, Heading, Labels, Pad, ParameterDisplay, TrimUnit,
+    Canvas, DisplayScale, DisplayUnit, FmCarrier, FmDiagram, Heading, Labels, Pad,
+    ParameterDisplay, TrimUnit,
 };
 pub use komponist_ipc::sampler_ui;
 pub use komponist_ipc::signal_taps;
@@ -552,6 +554,13 @@ unsafe fn compile_layout<P: ClapPlugin>(
     }
     if panel_selections {
         capabilities.push(CAP_PANEL_SELECTIONS);
+    }
+    if v2.is_some_and(|v2| {
+        v2.canvases
+            .values()
+            .any(|canvas| canvas.fm_topology.is_some())
+    }) {
+        capabilities.push(CAP_FM_TOPOLOGY);
     }
     if conditional_controls {
         capabilities.push(CAP_CONDITIONAL_CONTROLS);

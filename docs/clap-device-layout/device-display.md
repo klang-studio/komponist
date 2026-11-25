@@ -21,6 +21,23 @@ points in a path. The host scales positions from normalized `[x, y]` to the
 canvas, with the origin at the top left. All coordinates and the radius are
 finite numbers in the inclusive range 0–1. Circle radii use the shorter side.
 
+The optional `fm_topologies` array carries the current routing for host-rendered
+FM diagrams. These entries share the frame limit and key namespace with
+`frames`. Each entry includes `key` and one to eight `modulates` masks, one per
+operator. Bit `n` in a mask describes an edge to operator index `n`. `outputs`
+is a mask of operators that contribute audio, including operators that also
+modulate. A self-edge uses the optional zero-based `feedback` index. `algorithm`
+is a number from 1 to 255 for a fixed algorithm and can be absent for free
+routing. The host rejects bits and indices outside the operator inventory.
+Declare `fm-topology` in the layout's `required_capabilities` and set
+`fm_topology.selector` on the corresponding canvas. The selector must be on
+the same page with one option per operator, in diagram order. A diagram node
+changes that selection. Optional `fm_topology.carriers` entries map the grid
+`col` and `row` of a mini fader to a zero-based `operator`. They derive their
+fill color from the same routing as the diagram. The canvas `name` labels free
+routing. Fixed algorithms use the host's localized algorithm number. The canvas
+`description` also describes the interactive diagram.
+
 | `kind` | Fields in addition to `tone` |
 | --- | --- |
 | `line` | `from`, `to` |
@@ -31,8 +48,8 @@ finite numbers in the inclusive range 0–1. Circle radii use the shorter side.
 | `text` | `at`, `text` (at most 128 UTF-8 bytes without control characters), `alignment` (`left`, `center`, or `right`) |
 
 `tone` is one of `text`, `muted`, `accent`, and `grid`. The host owns fonts,
-stroke widths, clipping, and accessibility. A canvas handles no input. Device
-controls use the declarative layout and keep their normal parameter gestures.
+stroke widths, clipping, and accessibility. Device controls use the declarative
+layout and keep their normal parameter gestures.
 Set `horizontal_viewport` on the layout's `canvas` object to opt in to host
 horizontal zoom and pan. Double click fits the display. These gestures change
 only the view.

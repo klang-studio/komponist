@@ -76,6 +76,12 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
         Some(&expected_piano)
     );
     wait_for_verified(&mut app, hexa, HEXA, force_bridge);
+    let hexa_layout = app.engine().host().native_layout(hexa).unwrap();
+    let native_routing = hexa_layout.schema_version == 2;
+    if native_routing {
+        assert_eq!(hexa_layout.pages.len(), 3);
+        assert!(hexa_layout.has_canvas());
+    }
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
     let mut h = harness(app);
     h.get_by_role_and_label(Role::Button, &lang.devices_preset_name(PIANO));
@@ -87,6 +93,19 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
             id: algorithm,
             value: 7.0,
         }));
+    if native_routing {
+        step_until(h.state_mut(), "Hexa reports algorithm 7 routing", |app| {
+            app.engine()
+                .host()
+                .device_display(hexa)
+                .is_some_and(|display| {
+                    display
+                        .fm_topologies
+                        .iter()
+                        .any(|frame| frame.algorithm == Some(7) && frame.outputs == 0b000101)
+                })
+        });
+    }
     h.run_steps(3);
     h.get_by_role_and_label(Role::Group, &lang.ui_fm_algorithm(7));
     snapshot(&mut h, "hexa-operators", lang);

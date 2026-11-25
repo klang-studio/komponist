@@ -111,9 +111,51 @@ pub struct Frame {
     pub primitives: Vec<Primitive>,
 }
 
+/// The widest routing the host FM diagram can represent.
+pub const MAX_FM_OPERATORS: usize = 8;
+
+/// A plugin's current FM routing for one named host-rendered diagram.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct FmFrame {
+    pub key: String,
+    /// A numbered algorithm, or `None` for free routing.
+    pub algorithm: Option<u8>,
+    /// One mask per operator. Bit `n` marks an edge to operator index `n`.
+    pub modulates: Vec<u8>,
+    /// Bit mask of the operators sent to the output, independent of modulation edges.
+    pub outputs: u8,
+    /// The operator with the feedback loop, if any, as a zero-based index.
+    pub feedback: Option<u8>,
+}
+
+impl FmFrame {
+    /// An operator contributes to the audible output.
+    pub fn is_carrier(&self, index: usize) -> bool {
+        index < self.modulates.len().min(MAX_FM_OPERATORS) && self.outputs & (1 << index) != 0
+    }
+
+    fn valid(&self) -> bool {
+        let count = self.modulates.len();
+        if !(1..=MAX_FM_OPERATORS).contains(&count) {
+            return false;
+        }
+        let outside = !(u8::MAX >> (MAX_FM_OPERATORS - count));
+        self.algorithm != Some(0)
+            && self.feedback.is_none_or(|index| usize::from(index) < count)
+            && self.outputs & outside == 0
+            && self
+                .modulates
+                .iter()
+                .enumerate()
+                .all(|(index, &mask)| mask & (outside | (1 << index)) == 0)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct DisplayList {
     pub frames: Vec<Frame>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fm_topologies: Vec<FmFrame>,
 }
 
 impl DisplayList {
@@ -137,7 +179,7 @@ impl DisplayList {
 
     fn valid(&self) -> bool {
         let mut keys = BTreeSet::new();
-        self.frames.len() <= MAX_CANVASES
+        self.frames.len().saturating_add(self.fm_topologies.len()) <= MAX_CANVASES
             && self
                 .frames
                 .iter()
@@ -149,6 +191,10 @@ impl DisplayList {
                     && keys.insert(&frame.key)
                     && frame.primitives.iter().all(Primitive::valid)
             })
+            && self
+                .fm_topologies
+                .iter()
+                .all(|frame| canvas_key(&frame.key) && keys.insert(&frame.key) && frame.valid())
     }
 }
 
@@ -168,6 +214,7 @@ mod tests {
                     filled: true,
                 }],
             }],
+            fm_topologies: vec![],
         };
         assert_eq!(
             DisplayList::decode(&list.encode().unwrap()),
@@ -183,6 +230,47 @@ mod tests {
         list.frames[0].primitives.pop();
         let duplicate = list.frames[0].clone();
         list.frames.push(duplicate);
+        assert!(list.encode().is_none());
+    }
+
+    #[test]
+    fn fm_routing_round_trips_and_rejects_malformed_operator_masks() {
+        let mut list = DisplayList::decode(br#"{"frames":[]}"#).unwrap();
+        assert!(list.fm_topologies.is_empty());
+        list.fm_topologies.push(FmFrame {
+            key: "routing".to_owned(),
+            algorithm: None,
+            modulates: vec![2, 1, 0],
+            outputs: 5,
+            feedback: Some(1),
+        });
+        assert_eq!(
+            DisplayList::decode(&list.encode().unwrap()),
+            Some(list.clone())
+        );
+        let frame = &list.fm_topologies[0];
+        assert!(frame.is_carrier(0));
+        assert!(!frame.is_carrier(1));
+        assert!(frame.is_carrier(2));
+        assert!(!frame.is_carrier(3));
+
+        for fields in [
+            r#""modulates":[],"outputs":0"#,
+            r#""modulates":[0,0,0,0,0,0,0,0,0],"outputs":0"#,
+            r#""modulates":[0,0],"outputs":4"#,
+            r#""modulates":[4,0],"outputs":2"#,
+            r#""modulates":[1,0],"outputs":2"#,
+            r#""modulates":[0,0],"outputs":2,"feedback":2"#,
+            r#""modulates":[0,0],"outputs":2,"algorithm":0"#,
+        ] {
+            let wire = format!(r#"{{"frames":[],"fm_topologies":[{{"key":"routing",{fields}}}]}}"#);
+            assert!(DisplayList::decode(wire.as_bytes()).is_none(), "{wire}");
+        }
+
+        list.frames.push(Frame {
+            key: "routing".into(),
+            primitives: vec![],
+        });
         assert!(list.encode().is_none());
     }
 }

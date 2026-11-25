@@ -14,7 +14,8 @@ use clap_sys::plugin::clap_plugin;
 use clap_sys::process::{CLAP_PROCESS_ERROR, clap_process};
 use clap_sys::stream::{clap_istream, clap_ostream};
 use clap_sys::version::CLAP_VERSION;
-use komponist_native_clap_sdk::{NativeClapLayout, compile};
+use komponist_native_clap_sdk::display::{DisplayList, EXTENSION_ID as DISPLAY_ID, FmFrame};
+use komponist_native_clap_sdk::{NativeClapLayout, compile, compile_v2};
 use nice_plug::wrapper::clap::Wrapper;
 
 use super::*;
@@ -88,6 +89,54 @@ fn layout_uses_stable_ids_and_covers_every_synth_parameter() {
         assert_eq!(expected.len(), infos(Lang::En).len());
         assert_eq!(ids, expected);
     }
+}
+
+#[test]
+fn native_editor_preserves_wire_ids_and_links_the_operator_selector() {
+    let instance = Instance::new();
+    // SAFETY: This instance and its layout queries are confined to this thread.
+    let (v1, v2) = unsafe {
+        (
+            compile::<HexaPlugin>(instance.0, &HexaPlugin::panel()).unwrap(),
+            compile_v2::<HexaPlugin>(instance.0, &HexaPlugin::panel_v2().unwrap()).unwrap(),
+        )
+    };
+    let legacy: serde_json::Value = serde_json::from_slice(&v1).unwrap();
+    let native: serde_json::Value = serde_json::from_slice(&v2).unwrap();
+    assert_eq!(native["author_ids"], legacy["author_ids"]);
+    let pages = native["pages"].as_array().unwrap();
+    assert_eq!(pages.len(), 3);
+    assert_eq!(pages[0]["labels"]["de"], "Operatoren");
+    assert_eq!(pages[1]["labels"]["en"], "Envelopes");
+    let selectors: Vec<_> = pages[..2]
+        .iter()
+        .map(|page| {
+            page["cells"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find_map(|cell| cell.get("selector"))
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(selectors[0], selectors[1]);
+    assert_eq!(selectors[0]["shared"], true);
+    let canvas = pages[0]["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|cell| cell.get("canvas"))
+        .unwrap();
+    assert_eq!(canvas["key"], fm_frame(&instance).key);
+    assert_eq!(canvas["fm_topology"]["selector"], selectors[0]["key"]);
+    assert_eq!(
+        canvas["fm_topology"]["carriers"].as_array().unwrap().len(),
+        6
+    );
+    assert_eq!(
+        pages[1]["cells"][0]["graph"]["variants"][5]["slots"]["attack"],
+        native["author_ids"]["op6_attack"]
+    );
 }
 
 unsafe extern "C" fn event_count(_: *const clap_input_events) -> u32 {
@@ -213,6 +262,62 @@ fn patch_from_saved_state(stream: &[u8]) -> komponist_hexa::Patch {
     let patch: serde_json::Value =
         serde_json::from_str(state["fields"]["hexa-patch-v1"].as_str().unwrap()).unwrap();
     serde_json::from_value(patch["patch"].clone()).unwrap()
+}
+
+fn load_patch(instance: &Instance, patch: &komponist_hexa::Patch) {
+    let input = legacy_patch_to_clap_state(&komponist_hexa::encode_state(patch)).unwrap();
+    let mut cursor = Cursor::new(input.as_slice());
+    let stream = clap_istream {
+        ctx: (&mut cursor as *mut Cursor<&[u8]>).cast(),
+        read: Some(read_state),
+    };
+    // SAFETY: The initialized plugin and stream are exclusive to this thread.
+    assert!(unsafe { (state_extension(instance).load.unwrap())(instance.0, &stream) });
+}
+
+fn fm_frame(instance: &Instance) -> FmFrame {
+    #[repr(C)]
+    struct DisplayTable {
+        draw: unsafe extern "C" fn(*const clap_plugin, *mut u8, u32) -> u32,
+    }
+    let mut buffer = [0; 1024];
+    // SAFETY: The initialized instance owns the extension and the buffer is writable.
+    let len = unsafe {
+        let table = ((*instance.0).get_extension.unwrap())(instance.0, DISPLAY_ID.as_ptr());
+        assert!(!table.is_null());
+        ((*table.cast::<DisplayTable>()).draw)(instance.0, buffer.as_mut_ptr(), buffer.len() as u32)
+    };
+    let display = DisplayList::decode(&buffer[..len as usize]).unwrap();
+    assert_eq!(display.fm_topologies.len(), 1);
+    display.fm_topologies.into_iter().next().unwrap()
+}
+
+#[test]
+fn display_reports_the_fixed_or_free_routing_of_the_loaded_patch() {
+    let instance = Instance::new();
+    let mut patch = default_patch();
+    komponist_hexa::algorithms::apply(&mut patch, 4);
+    load_patch(&instance, &patch);
+    let fixed = fm_frame(&instance);
+    assert_eq!(fixed.algorithm, Some(5));
+    assert_eq!(fixed.modulates, [0, 1, 0, 4, 0, 16]);
+    assert_eq!(fixed.outputs, 0b010101);
+    assert_eq!(fixed.feedback, Some(5));
+
+    // A free routing can contain a cycle and an audible modulator.
+    patch.operators[0].modulates[1] = true;
+    patch.operators[1].feedback = 0.3;
+    load_patch(&instance, &patch);
+    let free = fm_frame(&instance);
+    assert_eq!(free.algorithm, None);
+    assert_eq!(free.modulates, [2, 1, 0, 4, 0, 16]);
+    assert_eq!(free.outputs, 0b010101);
+    assert_eq!(free.feedback, Some(1));
+    assert!(free.is_carrier(0));
+    assert!(!free.is_carrier(1));
+
+    render_notes(instance.0);
+    assert_eq!(fm_frame(&instance), free);
 }
 
 #[test]
