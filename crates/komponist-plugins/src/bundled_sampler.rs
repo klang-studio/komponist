@@ -308,11 +308,7 @@ fn reset_slices(assets: Vec<u8>, kind: Internal, relinking: bool) -> Vec<u8> {
     }
 }
 
-fn waveform_trim_defaults(
-    layout: &NativeLayout,
-    params: &[ClapParamInfo],
-    slot: u32,
-) -> Option<[(u32, f64); 2]> {
+fn waveform_trim_ids(layout: &NativeLayout, slot: u32) -> Option<[u32; 2]> {
     let mut bindings = layout
         .pages
         .iter()
@@ -323,10 +319,11 @@ fn waveform_trim_defaults(
     let [Some(start), Some(end)] = bindings.next()? else {
         return None;
     };
-    if start == end || bindings.any(|ids| ids != [Some(start), Some(end)]) {
-        return None;
-    }
-    let [start, end] = [start, end].map(|id| {
+    (start != end && bindings.all(|ids| ids == [Some(start), Some(end)])).then_some([start, end])
+}
+
+fn trim_defaults(ids: [u32; 2], params: &[ClapParamInfo]) -> Option<[(u32, f64); 2]> {
+    let [start, end] = ids.map(|id| {
         let info = params.iter().find(|info| info.id == id)?;
         (info.default.is_finite() && (info.min..=info.max).contains(&info.default))
             .then_some((id, info.default))
@@ -359,9 +356,11 @@ pub(crate) fn edit_native_regions(
             if pad >= pad_count(kind) {
                 return None;
             }
-            let defaults = current_layout
+            let trim_ids = current_layout
                 .filter(|_| should_reset_trim(kind, change.attaching, change.relinking))
-                .and_then(|layout| waveform_trim_defaults(layout, params, change.slot))
+                .and_then(|layout| waveform_trim_ids(layout, change.slot));
+            let defaults = trim_ids
+                .and_then(|ids| trim_defaults(ids, params))
                 .filter(|defaults| {
                     let additional_bases = defaults
                         .iter()
@@ -374,15 +373,22 @@ pub(crate) fn edit_native_regions(
                 parameter_bases.extend(defaults);
                 updated = reset_slices(updated, kind, change.relinking);
             } else {
-                // Older bundles and edits without room for the overrides can use the stored trim.
-                remove_reset_trim_bases(
-                    &mut parameter_bases,
-                    kind,
-                    pad,
-                    change.attaching,
-                    change.relinking,
-                    layout.and_then(NativeLayout::author_ids),
-                )?;
+                // The stored trim can take effect only after removing its competing bases.
+                if let Some(ids) = trim_ids {
+                    for id in ids {
+                        parameter_bases.remove(&id);
+                    }
+                } else {
+                    // For missing or conflicting bindings, retain the compatibility lookup.
+                    remove_reset_trim_bases(
+                        &mut parameter_bases,
+                        kind,
+                        pad,
+                        change.attaching,
+                        change.relinking,
+                        layout.and_then(NativeLayout::author_ids),
+                    )?;
+                }
                 updated = reset_region(
                     wrapper,
                     updated,
@@ -683,30 +689,35 @@ mod tests {
             assert_eq!(assets(&after.bytes), assets(expected));
         }
 
-        document["author_ids"] = json!({"start": 7, "end": 9, "other_start": 44, "other_end": 51});
-        let with_ids = parse(&document);
         let full_bases: BTreeMap<_, _> = (1_000..)
-            .take(MAX_STATE_PARAMETER_BASES)
+            .take(MAX_STATE_PARAMETER_BASES - 1)
             .map(|id| (id, 0.4))
             .collect();
+        let mut full_with_trim = full_bases.clone();
+        full_with_trim.insert(7, 0.35);
         let full = Device {
-            parameter_bases: full_bases.clone(),
+            parameter_bases: full_with_trim,
             ..device.clone()
         };
-        document["pages"][0]["cells"][1]["graph"]["slots"]["end"] = 7.into();
-        let duplicate = parse(&document);
+        let mut invalid_defaults = params.clone();
+        invalid_defaults[0].default = f64::NAN;
         let change = crate::AssetEdit {
             slot: 0,
             attaching: true,
             relinking: false,
         };
-        for (device, layout, expected_bases) in [
-            (&full, &with_ids, full_bases),
-            (&device, &duplicate, [(31, 0.4)].into()),
+        let changes = std::slice::from_ref(&change);
+        document["pages"][0]["cells"][1]["graph"]["slots"]["end"] = 7.into();
+        let ambiguous = parse(&document);
+        assert!(edit_native_regions(&device, changes, Some(&ambiguous), &params).is_none());
+        document["author_ids"] = json!({"start": 7, "end": 9, "other_start": 44, "other_end": 51});
+        let with_legacy_ids = parse(&document);
+        for (device, layout, params, expected_bases) in [
+            (&full, &layout, &params, full_bases),
+            (&device, &layout, &invalid_defaults, [(31, 0.4)].into()),
+            (&device, &with_legacy_ids, &params, [(31, 0.4)].into()),
         ] {
-            let after =
-                edit_native_regions(device, std::slice::from_ref(&change), Some(layout), &params)
-                    .unwrap();
+            let after = edit_native_regions(device, changes, Some(layout), params).unwrap();
             assert_eq!(after.parameter_bases, expected_bases);
             assert_eq!(
                 decode(&after.bytes).unwrap()["params"],
