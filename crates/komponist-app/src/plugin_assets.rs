@@ -30,6 +30,20 @@ pub(crate) struct State {
 }
 
 impl State {
+    /// Takes every waiting edit: those past their deadline (dropped for good) and those to retry.
+    fn take_waiting_asset_edits(
+        &mut self,
+        now: Instant,
+    ) -> (Vec<DeviceId>, Vec<(DeviceId, WaitingAssetEdit)>) {
+        let (expired, retry) = std::mem::take(&mut self.waiting_asset_edits)
+            .into_iter()
+            .partition::<Vec<_>, _>(|(_, edit)| now >= edit.deadline);
+        (
+            expired.into_iter().map(|(device, _)| device).collect(),
+            retry,
+        )
+    }
+
     pub(crate) fn forget_device_state(&mut self) {
         self.approved_plugin_files.clear();
         self.pending_asset_edits.clear();
@@ -205,14 +219,15 @@ impl App {
 
     /// Retries the edits that waited for their device, and fails those past their deadline.
     pub(crate) fn retry_waiting_asset_edits(&mut self) {
-        let waiting = std::mem::take(&mut self.dialogs.plugin_assets.waiting_asset_edits);
-        let now = Instant::now();
-        for (device, edit) in waiting {
-            if now >= edit.deadline {
-                self.report_asset_edit_failed(device);
-            } else {
-                self.begin_plugin_asset_edit(device, edit.updates, Some(edit.deadline));
-            }
+        let (expired, retry) = self
+            .dialogs
+            .plugin_assets
+            .take_waiting_asset_edits(Instant::now());
+        for device in expired {
+            self.report_asset_edit_failed(device);
+        }
+        for (device, edit) in retry {
+            self.begin_plugin_asset_edit(device, edit.updates, Some(edit.deadline));
         }
     }
 
@@ -540,6 +555,39 @@ fn selectable_link(path: &Path, kind: AssetKind, dir: Option<&Path>) -> Option<A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_busy_asset_edit_fails_once_after_its_deadline_and_is_not_retried() {
+        let start = Instant::now();
+        let mut state = State::default();
+        let waiting = |deadline| WaitingAssetEdit {
+            updates: BTreeMap::new(),
+            deadline,
+        };
+        state
+            .waiting_asset_edits
+            .insert(DeviceId(1), waiting(start + ASSET_EDIT_WAIT));
+        state
+            .waiting_asset_edits
+            .insert(DeviceId(2), waiting(start + ASSET_EDIT_WAIT * 2));
+
+        let (expired, retry) = state.take_waiting_asset_edits(start + ASSET_EDIT_WAIT / 2);
+        assert!(expired.is_empty());
+        assert_eq!(retry.len(), 2);
+        // The caller parks a still busy edit again with its original deadline.
+        state.waiting_asset_edits.extend(retry);
+
+        let (expired, retry) = state.take_waiting_asset_edits(start + ASSET_EDIT_WAIT);
+        assert_eq!(expired, [DeviceId(1)]);
+        assert_eq!(retry.len(), 1);
+        state.waiting_asset_edits.extend(retry);
+
+        let (expired, retry) = state.take_waiting_asset_edits(start + ASSET_EDIT_WAIT * 3);
+        assert_eq!(expired, [DeviceId(2)]);
+        assert!(retry.is_empty());
+        let (expired, retry) = state.take_waiting_asset_edits(start + ASSET_EDIT_WAIT * 4);
+        assert!(expired.is_empty() && retry.is_empty());
+    }
     use crate::device_host::{BuiltinHost, DeviceHost};
     use crate::engine_sync::EngineSync;
     use komponist_engine::Processor;
