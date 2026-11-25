@@ -328,7 +328,21 @@ fn a_copy_whose_file_is_gone_asks_where_to_save() {
     let clock = FakeClock::new();
     let mut app = session(&dir, Project::new("Unbenannt"), &clock);
     app.show_start_screen();
-    app.offer_recovery(None);
+    // A parallel Linux test can briefly inherit a recovery lock while spawning a child.
+    // Check the fixture separately so waiting for the lock cannot hide a missing copy.
+    assert_eq!(copies(&dir).len(), 1, "the crashed session wrote its copy");
+    let deadline = Instant::now() + WAIT;
+    loop {
+        app.offer_recovery(None);
+        if app.recovery_prompt_id().is_some() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the recovery copy is still locked"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let mut h = harness(app);
     // Variant d: the file fact and the notice say so.
     let path = komponist_app::dialogs::format::tilde(&file);
