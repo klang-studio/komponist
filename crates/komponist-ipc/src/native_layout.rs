@@ -1457,6 +1457,12 @@ mod tests {
         assert!(parse(&value).is_err(), "selection requires the capability");
         value["required_capabilities"] = json!([CAP_EQ_BAND_CONTROLS]);
         let layout = parse(&value).unwrap();
+        let mut conflicting = value.clone();
+        conflicting["pages"][0]["cells"][1]["param_id"] = json!(2);
+        assert_eq!(
+            parse(&conflicting),
+            Err(LayoutError::Invalid("parameter ID"))
+        );
         let mut params: Vec<_> = (1..=11)
             .map(|id| match id {
                 1 | 6 | 11 => parameter(id, 1.0, 1, param_flags::STEPPED),

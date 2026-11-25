@@ -333,6 +333,7 @@
           "required": ["band_controls"],
           "not": {
             "anyOf": [
+              { "required": ["param_id"] },
               { "required": ["labels"] },
               { "required": ["choices"] },
               { "required": ["disabled_by"] }
