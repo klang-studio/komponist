@@ -213,6 +213,7 @@ impl App {
 
     fn edit_history(&mut self, apply: impl FnOnce(&mut Document) -> bool) {
         // Finish a gesture before stepping history, then propagate the restored device states.
+        self.cancel_plugin_asset_edits();
         self.end_gesture();
         let before = Arc::clone(self.doc.project());
         apply(&mut self.doc);

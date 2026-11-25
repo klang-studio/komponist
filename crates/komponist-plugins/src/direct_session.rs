@@ -10,7 +10,7 @@ use komponist_engine::{
 };
 use komponist_hosting::host_loop::notification_bits;
 use komponist_hosting::{HostedPlugin, HostingError};
-use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot};
+use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot, edit_state};
 use komponist_ipc::shm::{INPUT_EVENT_CAPACITY, MAX_BLOCK};
 use komponist_ipc::{RenderMode, WireEvent, WireEventKind};
 use komponist_model::DeviceRole;
@@ -275,8 +275,16 @@ impl DirectSession {
         self.host.device_display()
     }
 
-    pub(crate) fn asset_slots(&self) -> (Option<Snapshot>, bool, bool) {
+    pub(crate) fn asset_slots(&self) -> (Option<Snapshot>, bool, bool, bool) {
         self.host.asset_slots()
+    }
+
+    pub(crate) fn prepare_asset_edit_state(
+        &self,
+        edits: &edit_state::Edits,
+        state: Option<&[u8]>,
+    ) -> edit_state::Prepared {
+        self.host.prepare_asset_edit_state(edits, state)
     }
 
     pub(crate) fn set_asset_bindings(&mut self, bindings: &Bindings) -> bool {

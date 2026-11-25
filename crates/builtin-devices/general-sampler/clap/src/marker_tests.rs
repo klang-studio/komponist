@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_factory};
 use clap_sys::host::clap_host;
 use clap_sys::version::CLAP_VERSION;
+use komponist_ipc::device_assets::edit_state;
 use komponist_ipc::{device_assets, waveform_markers as wire};
 use serde_json::{Value, json};
 use wire::{Edit, EditStatus, Request, SliceOptions, Snapshot};
@@ -187,6 +188,95 @@ fn bind_file(instance: &Instance, path: &Path) {
     }
 }
 
+fn prepare_asset_edit(
+    instance: &Instance,
+    slot: u32,
+    intent: edit_state::Intent,
+    source: Option<&[u8]>,
+) -> (u32, Vec<u8>) {
+    unsafe extern "C" fn copy_state(output: *mut c_void, state: *const u8, len: u32) -> bool {
+        // SAFETY: The test supplies its output vector and the plugin borrows its state until return.
+        unsafe {
+            let output = &mut *output.cast::<Vec<u8>>();
+            output.extend_from_slice(std::slice::from_raw_parts(state, len as usize));
+        }
+        true
+    }
+
+    let plugin = instance.0;
+    let mut edits = [0; edit_state::MAX_EDITS_BYTES];
+    let size = edit_state::Edits {
+        slots: vec![edit_state::Edit { slot, intent }],
+    }
+    .encode(&mut edits)
+    .unwrap();
+    let (source, source_len) = source.map_or((ptr::null(), 0), |source| {
+        (source.as_ptr(), source.len() as u32)
+    });
+    let mut replacement = Vec::new();
+    // SAFETY: The initialized plugin and all borrowed buffers remain valid for this call.
+    let result = unsafe {
+        let table = ((*plugin).get_extension.unwrap())(plugin, edit_state::EXTENSION_ID.as_ptr())
+            .cast::<edit_state::Extension>()
+            .as_ref()
+            .expect("asset edit state extension");
+        (table.prepare.unwrap())(
+            plugin.cast(),
+            edits.as_ptr(),
+            size as u32,
+            source,
+            source_len,
+            ptr::from_mut(&mut replacement).cast(),
+            copy_state,
+        )
+    };
+    (result, replacement)
+}
+
+fn check_asset_edit_preparation(instance: &Instance, source: &Value, assets: &Value) {
+    use edit_state::Intent;
+    use komponist_device_core::pinned_clap_state::{decode, encode_document};
+
+    let live = save_state(instance);
+    let mut state = source.clone();
+    state["params"]["mode"] = json!({"string": "one-shot"});
+    let input = encode_document(&state);
+    for intent in [Intent::Assign, Intent::Clear] {
+        let (result, replacement) = prepare_asset_edit(instance, 0, intent, Some(&input));
+        assert_eq!(result, edit_state::REPLACED);
+        let mut expected = state.clone();
+        let mut expected_assets = assets.clone();
+        expected_assets
+            .as_object_mut()
+            .unwrap()
+            .remove("sample_edit");
+        expected["fields"]["sample_assets"] = expected_assets.to_string().into();
+        assert_eq!(decode(&replacement), Some(expected));
+    }
+    for (slot, intent, input, result) in [
+        (
+            0,
+            Intent::Relink,
+            Some(input.as_slice()),
+            edit_state::UNCHANGED,
+        ),
+        (0, Intent::Assign, None, edit_state::UNCHANGED),
+        (
+            1,
+            Intent::Assign,
+            Some(input.as_slice()),
+            edit_state::REJECTED,
+        ),
+        (0, Intent::Clear, Some(&[1, 2][..]), edit_state::REJECTED),
+    ] {
+        assert_eq!(
+            prepare_asset_edit(instance, slot, intent, input),
+            (result, vec![])
+        );
+    }
+    assert_eq!(save_state(instance), live);
+}
+
 #[test]
 fn waveform_markers_commit_to_legacy_clap_state() {
     let scratch = tempfile::tempdir().unwrap();
@@ -244,6 +334,7 @@ fn waveform_markers_commit_to_legacy_clap_state() {
     });
     legacy["fields"]["sample_assets"] = legacy_assets.to_string().into();
     assert!(load_state(&instance, &legacy));
+    check_asset_edit_preparation(&instance, &legacy, &legacy_assets);
     let ready = markers.wait_until_editable();
     assert_eq!(ready.positions, [0.015625, 0.0234375, 0.125]);
     let options = ready.slice_options.as_ref().unwrap();

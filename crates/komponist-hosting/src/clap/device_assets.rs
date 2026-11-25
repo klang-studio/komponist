@@ -1,6 +1,9 @@
 //! Access to the optional CLAP file slots and offline preparation.
 
+use std::ffi::c_void;
+
 use clap_sys::plugin::clap_plugin;
+use komponist_ipc::device_assets::edit_state;
 use komponist_ipc::device_assets::{
     Bindings, EXTENSION_ID, Extension, MAX_BINDINGS_BYTES, MAX_SNAPSHOT_BYTES, OfflineRequest,
     OfflineStatus, Snapshot,
@@ -51,6 +54,77 @@ pub(super) fn set_bindings(plugin: &clap_plugin, bindings: &Bindings) -> bool {
             bytes.as_ptr(),
             len as u32,
         ) == 1
+    }
+}
+
+fn edit_state_callback(plugin: &clap_plugin) -> Option<&edit_state::Extension> {
+    // SAFETY: The initialized instance is queried on the CLAP main thread. The extension
+    // table remains valid until the instance is destroyed.
+    unsafe {
+        plugin.get_extension?(plugin, edit_state::EXTENSION_ID.as_ptr())
+            .cast::<edit_state::Extension>()
+            .as_ref()
+    }
+}
+
+pub(super) fn supports_edit_state(plugin: &clap_plugin) -> bool {
+    edit_state_callback(plugin).is_some_and(|table| table.prepare.is_some())
+}
+
+#[derive(Default)]
+struct StateOutput {
+    called: bool,
+    state: Option<Vec<u8>>,
+}
+
+unsafe extern "C" fn write_state(output: *mut c_void, bytes: *const u8, len: u32) -> bool {
+    // SAFETY: The host supplies a live and unique StateOutput for the synchronous callback.
+    let output = unsafe { &mut *output.cast::<StateOutput>() };
+    if std::mem::replace(&mut output.called, true)
+        || bytes.is_null()
+        || !(1..=edit_state::MAX_STATE_BYTES).contains(&(len as usize))
+    {
+        output.state = None;
+        return false;
+    }
+    // SAFETY: The callback's ABI requires a readable source of this length until the write returns.
+    output.state = Some(unsafe { std::slice::from_raw_parts(bytes, len as usize) }.to_vec());
+    true
+}
+
+pub(super) fn prepare_edit_state(
+    plugin: &clap_plugin,
+    edits: &edit_state::Edits,
+    state: Option<&[u8]>,
+) -> edit_state::Prepared {
+    let prepare = edit_state_callback(plugin)
+        .and_then(|table| table.prepare)
+        .ok_or(edit_state::Rejected)?;
+    let mut edit_bytes = [0; edit_state::MAX_EDITS_BYTES];
+    let edit_len = edits.encode(&mut edit_bytes).ok_or(edit_state::Rejected)?;
+    let (state_bytes, state_len) = match state {
+        Some(bytes) if edit_state::valid_state(bytes) => (bytes.as_ptr(), bytes.len() as u32),
+        Some(_) => return Err(edit_state::Rejected),
+        None => (std::ptr::null(), 0),
+    };
+    let mut output = StateOutput::default();
+    // SAFETY: All inputs and the output context remain valid until the main-thread call returns.
+    // This pure operation cannot touch shared processing state.
+    let status = unsafe {
+        prepare(
+            std::ptr::from_ref(plugin).cast(),
+            edit_bytes.as_ptr(),
+            edit_len as u32,
+            state_bytes,
+            state_len,
+            std::ptr::from_mut(&mut output).cast(),
+            write_state,
+        )
+    };
+    match status {
+        edit_state::UNCHANGED if !output.called => Ok(None),
+        edit_state::REPLACED => output.state.map(Some).ok_or(edit_state::Rejected),
+        _ => Err(edit_state::Rejected),
     }
 }
 

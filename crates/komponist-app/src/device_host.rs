@@ -55,9 +55,9 @@ use komponist_model::project::SavedPluginState;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project};
 use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{
-    AssetEdit, Catalog, DeviceSnapshots, DeviceStatus, FailReason, MissingPlugin, PluginDirs,
-    PluginError, PluginManager, PluginManagerConfig, PluginManagerEvent, ProcessorSetup,
-    SaveSnapshots, ScanReport,
+    AssetEdit, AssetEditPreparation, Catalog, DeviceSnapshots, DeviceStatus, FailReason,
+    MissingPlugin, PluginDirs, PluginError, PluginManager, PluginManagerConfig, PluginManagerEvent,
+    ProcessorSetup, SaveSnapshots, ScanReport,
 };
 use komponist_sampler as sampler;
 use komponist_sampler::SamplerHandle;
@@ -394,13 +394,20 @@ pub trait DeviceHost {
         None
     }
 
+    fn supports_asset_edit_state(&self, _device: DeviceId) -> bool {
+        false
+    }
+
     fn prepare_asset_edit(
-        &self,
+        &mut self,
         _device: &Device,
         _changes: &[AssetEdit],
-    ) -> Result<Option<SavedPluginState>, DeviceId> {
-        Ok(None)
+        _request: u64,
+    ) -> Result<AssetEditPreparation, DeviceId> {
+        Ok(AssetEditPreparation::Ready(None))
     }
+
+    fn cancel_asset_edit(&mut self, _device: DeviceId) {}
 
     /// Queue an update containing resolved runtime paths.
     fn set_asset_bindings(&mut self, _device: DeviceId, _bindings: &Bindings) -> bool {
@@ -1192,12 +1199,21 @@ impl DeviceHost for PluginHost {
         self.manager.asset_slots(device)
     }
 
+    fn supports_asset_edit_state(&self, device: DeviceId) -> bool {
+        self.manager.supports_asset_edit_state(device)
+    }
+
     fn prepare_asset_edit(
-        &self,
+        &mut self,
         device: &Device,
         changes: &[AssetEdit],
-    ) -> Result<Option<SavedPluginState>, DeviceId> {
-        self.manager.prepare_asset_edit(device, changes)
+        request: u64,
+    ) -> Result<AssetEditPreparation, DeviceId> {
+        self.manager.prepare_asset_edit(device, changes, request)
+    }
+
+    fn cancel_asset_edit(&mut self, device: DeviceId) {
+        self.manager.cancel_asset_edit(device);
     }
 
     fn set_asset_bindings(&mut self, device: DeviceId, bindings: &Bindings) -> bool {

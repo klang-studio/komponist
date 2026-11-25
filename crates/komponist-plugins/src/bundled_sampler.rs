@@ -195,7 +195,7 @@ pub fn edit_link(
     };
     edit_state(state, |wrapper, assets| {
         let updated = links::write(Some(assets.as_bytes()), pad, link);
-        let updated = reset_region(wrapper, updated, kind, pad, link.is_some(), relinking)?;
+        let updated = reset_region(wrapper, updated, kind, pad, link.is_some(), relinking, true)?;
         if link.is_some() {
             let mut updated: Value = serde_json::from_slice(&updated).ok()?;
             links::touch(&mut updated, pad);
@@ -227,7 +227,7 @@ fn reset_trim_parameters(
         })
 }
 
-fn should_reset_trim(kind: Internal, attaching: bool, relinking: bool) -> bool {
+pub(crate) fn should_reset_trim(kind: Internal, attaching: bool, relinking: bool) -> bool {
     attaching && (pad_count(kind) != 1 || !relinking)
 }
 
@@ -286,6 +286,7 @@ fn reset_region(
     pad: usize,
     attaching: bool,
     relinking: bool,
+    include_slices: bool,
 ) -> Option<Vec<u8>> {
     let mut trim = reset_trim_parameters(kind, pad, attaching, relinking).peekable();
     if trim.peek().is_some() {
@@ -297,7 +298,11 @@ fn reset_region(
             );
         }
     }
-    Some(reset_slices(assets, kind, relinking))
+    Some(if include_slices {
+        reset_slices(assets, kind, relinking)
+    } else {
+        assets
+    })
 }
 
 fn reset_slices(assets: Vec<u8>, kind: Internal, relinking: bool) -> Vec<u8> {
@@ -338,6 +343,7 @@ pub(crate) fn edit_native_regions(
     changes: &[crate::AssetEdit],
     layout: Option<&NativeLayout>,
     params: &[ClapParamInfo],
+    include_slices: bool,
 ) -> Option<SavedPluginState> {
     let kind = kind(&device.plugin)?;
     let current_layout = layout.filter(|layout| layout.schema_version == 2);
@@ -371,7 +377,9 @@ pub(crate) fn edit_native_regions(
             if let Some(defaults) = defaults {
                 // Reapply the live CLAP defaults through the saved state on both host routes.
                 parameter_bases.extend(defaults);
-                updated = reset_slices(updated, kind, change.relinking);
+                if include_slices {
+                    updated = reset_slices(updated, kind, change.relinking);
+                }
             } else {
                 // The stored trim can take effect only after removing its competing bases.
                 if let Some(ids) = trim_ids {
@@ -396,6 +404,7 @@ pub(crate) fn edit_native_regions(
                     pad,
                     change.attaching,
                     change.relinking,
+                    include_slices,
                 )?;
             }
         }
@@ -586,6 +595,7 @@ mod tests {
                 }],
                 Some(&layout),
                 &[],
+                true,
             )
             .unwrap();
             let embedded = edit_saved_link(&device, 0, Some(&link), relinking, ids).unwrap();
@@ -676,6 +686,7 @@ mod tests {
                 }],
                 Some(&layout),
                 &params,
+                true,
             )
             .unwrap();
             let expected_bases = if attaching && !relinking {
@@ -709,7 +720,7 @@ mod tests {
         let changes = std::slice::from_ref(&change);
         document["pages"][0]["cells"][1]["graph"]["slots"]["end"] = 7.into();
         let ambiguous = parse(&document);
-        assert!(edit_native_regions(&device, changes, Some(&ambiguous), &params).is_none());
+        assert!(edit_native_regions(&device, changes, Some(&ambiguous), &params, true).is_none());
         document["author_ids"] = json!({"start": 7, "end": 9, "other_start": 44, "other_end": 51});
         let with_legacy_ids = parse(&document);
         for (device, layout, params, expected_bases) in [
@@ -717,7 +728,7 @@ mod tests {
             (&device, &layout, &invalid_defaults, [(31, 0.4)].into()),
             (&device, &with_legacy_ids, &params, [(31, 0.4)].into()),
         ] {
-            let after = edit_native_regions(device, changes, Some(layout), params).unwrap();
+            let after = edit_native_regions(device, changes, Some(layout), params, true).unwrap();
             assert_eq!(after.parameter_bases, expected_bases);
             assert_eq!(
                 decode(&after.bytes).unwrap()["params"],

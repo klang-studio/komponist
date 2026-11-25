@@ -437,6 +437,14 @@ impl DirectDevice {
         }
     }
 
+    pub(crate) fn prepare_asset_edit_state(
+        &self,
+        edits: &komponist_ipc::device_assets::edit_state::Edits,
+        state: Option<&[u8]>,
+    ) -> komponist_ipc::device_assets::edit_state::Prepared {
+        self.session.prepare_asset_edit_state(edits, state)
+    }
+
     pub(crate) fn poll_assets(&mut self, id: DeviceId, events: &mut Vec<PluginManagerEvent>) {
         if self.pending_restore.is_some()
             || self.pending_preset.is_some()
@@ -452,8 +460,9 @@ impl DirectDevice {
             }
         }
         if self.assets.slots_due() {
-            let (slots, file_slots, offline) = self.session.asset_slots();
-            self.assets.report_slots(slots, file_slots, offline);
+            let (slots, file_slots, offline, edit_state) = self.session.asset_slots();
+            self.assets
+                .report_slots(slots, file_slots, offline, edit_state);
         }
         if let Some(request) = self.assets.offline_due() {
             let status = self.session.prepare_offline(request);

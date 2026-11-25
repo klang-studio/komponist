@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 use komponist_builtin::{BuiltinKind, Internal};
 use komponist_engine::Processor;
 use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource, PresetLoad};
-use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot};
+use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot, edit_state};
 use komponist_ipc::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderModel};
 use komponist_ipc::shm::MAX_BLOCK;
 use komponist_ipc::waveform_markers::{self, EditStatus};
@@ -51,7 +51,7 @@ use crate::catalog::{
     Catalog, PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT, ScanCache, ScanReport,
     requires_bundled,
 };
-use crate::device_assets::DeviceAssets;
+use crate::device_assets::{AssetEditPreparation, AssetEditState, DeviceAssets};
 use crate::direct_device::DirectDevice;
 use crate::scan::{ScanJob, ScanSetup};
 use crate::waveform_markers::WaveformMarkerEditResult;
@@ -134,6 +134,12 @@ pub enum PluginManagerEvent {
         device: DeviceId,
         slot: u32,
         result: WaveformMarkerEditResult,
+    },
+    /// A bridge completed a detached state preparation for one user file edit.
+    AssetEditPrepared {
+        device: DeviceId,
+        request: u64,
+        result: Result<Option<SavedPluginState>, edit_state::Rejected>,
     },
     /// A preset has been applied and captured in project state format.
     ClapPresetLoaded {
@@ -892,6 +898,7 @@ impl PluginManager {
                 | PluginManagerEvent::ClapPresetLoaded { device: old, .. }
                 | PluginManagerEvent::ClapPresetFailed { device: old, .. }
                 | PluginManagerEvent::ClapPresetCaptured { device: old, .. }
+                | PluginManagerEvent::AssetEditPrepared { device: old, .. }
                 if *old == device
             )
         });
@@ -912,7 +919,18 @@ impl PluginManager {
                 matches!(event,
                 PluginManagerEvent::ClapPresetCaptured { device: id, .. } if *id == device)
             });
+        let asset_edit = self
+            .bridges
+            .get_mut(&device)
+            .and_then(Bridge::cancel_asset_edit);
         self.discard_queued_snapshots(device);
+        if let Some(request) = asset_edit {
+            self.pending.push(PluginManagerEvent::AssetEditPrepared {
+                device,
+                request,
+                result: Err(edit_state::Rejected),
+            });
+        }
         if capture_interrupted {
             self.pending.push(PluginManagerEvent::ClapPresetCaptured {
                 device,
@@ -1095,44 +1113,120 @@ impl PluginManager {
         let accepted = bridge.assets.queue_bindings(bindings);
         if accepted {
             bridge.invalidate_waveform_markers();
+            bridge.supersede_asset_edit();
         }
         accepted
     }
 
+    pub fn supports_asset_edit_state(&self, device: DeviceId) -> bool {
+        self.device_assets(device)
+            .is_some_and(|assets| assets.supports_edit_state && assets.snapshot.is_some())
+    }
+
+    pub fn cancel_asset_edit(&mut self, device: DeviceId) {
+        if let Some(bridge) = self.bridges.get_mut(&device) {
+            bridge.cancel_asset_edit();
+        }
+    }
+
     pub fn prepare_asset_edit(
-        &self,
-        device: &komponist_model::Device,
+        &mut self,
+        device: &Device,
         changes: &[crate::AssetEdit],
-    ) -> Result<Option<SavedPluginState>, DeviceId> {
+        request: u64,
+    ) -> Result<AssetEditPreparation, DeviceId> {
         let id = device.id;
-        if self.verified_bundled_kind(id).is_none()
-            || crate::bundled_sampler::kind(&device.plugin).is_none()
-            || self.asset_slots(id).is_none()
+        let sampler = self
+            .verified_bundled_kind(id)
+            .filter(|_| self.asset_slots(id).is_some())
+            .and_then(|_| bundled_sampler::kind(&device.plugin));
+        let supports_state = self.supports_asset_edit_state(id);
+        let requires_current_live_state = supports_state && sampler.is_none();
+        if !supports_state && sampler.is_none() {
+            return Ok(AssetEditPreparation::Ready(None));
+        }
+        if supports_state
+            && (request == 0
+                || device
+                    .state
+                    .as_deref()
+                    .is_some_and(|state| !edit_state::valid_state(state)))
         {
-            return Ok(None);
+            return Err(id);
         }
         if self
             .pending_live_state_commits()
             .any(|pending| pending == id)
-            || self
-                .direct
-                .get(&id)
-                .is_some_and(DirectDevice::is_editing_waveform_markers)
-            || self
-                .bridges
-                .get(&id)
-                .is_some_and(Bridge::is_editing_waveform_markers)
+            || self.direct.get(&id).is_some_and(|direct| {
+                direct.is_editing_waveform_markers()
+                    || supports_state && direct.is_loading_clap_preset()
+                    || requires_current_live_state && direct.needs_snapshot()
+            })
+            || self.bridges.get(&id).is_some_and(|bridge| {
+                bridge.is_editing_waveform_markers()
+                    || supports_state && !bridge.can_prepare_asset_edit()
+                    || requires_current_live_state && bridge.needs_snapshot_for_save()
+            })
         {
             return Err(id);
         }
-        let after = crate::bundled_sampler::edit_native_regions(
-            device,
-            changes,
-            self.native_layout(id).map(Arc::as_ref),
-            self.params(id).unwrap_or_default(),
-        )
-        .ok_or(id)?;
-        Ok((!device.has_saved_state(&after)).then_some(after))
+        let trim = sampler
+            .filter(|&kind| {
+                !supports_state
+                    || changes.iter().any(|change| {
+                        bundled_sampler::should_reset_trim(kind, change.attaching, change.relinking)
+                    })
+            })
+            .map(|_| {
+                bundled_sampler::edit_native_regions(
+                    device,
+                    changes,
+                    self.native_layout(id).map(Arc::as_ref),
+                    self.params(id).unwrap_or_default(),
+                    !supports_state,
+                )
+                .ok_or(id)
+            })
+            .transpose()?
+            .filter(|after| !device.has_saved_state(after));
+        if !supports_state {
+            return Ok(AssetEditPreparation::Ready(trim));
+        }
+        let edits = edit_state::Edits {
+            slots: changes.iter().map(crate::AssetEdit::as_wire_edit).collect(),
+        };
+        let trim_changed = trim.is_some();
+        let (source, parameter_bases) = match trim {
+            Some(state) => (Some(state.bytes), state.parameter_bases),
+            None => (device.state.clone(), device.parameter_bases.clone()),
+        };
+        if source
+            .as_deref()
+            .is_some_and(|state| !edit_state::valid_state(state))
+            || parameter_bases.len() > komponist_ipc::control::MAX_STATE_PARAMETER_BASES
+        {
+            return Err(id);
+        }
+        let state = AssetEditState {
+            source,
+            parameter_bases,
+            trim_changed,
+        };
+        if let Some(direct) = self.direct.get(&id) {
+            let prepared = direct.prepare_asset_edit_state(&edits, state.source.as_deref());
+            return state
+                .finish(prepared)
+                .map(AssetEditPreparation::Ready)
+                .map_err(|edit_state::Rejected| id);
+        }
+        if self
+            .bridges
+            .get_mut(&id)
+            .is_some_and(|bridge| bridge.prepare_asset_edit(request, edits, state))
+        {
+            return Ok(AssetEditPreparation::Pending);
+        }
+        Err(id)
     }
 
     pub fn asset_slots(&self, device: DeviceId) -> Option<&Snapshot> {

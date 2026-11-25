@@ -778,6 +778,22 @@ impl Bridge {
         match msg {
             ControlMsg::GetDeviceAssets(request) => self.report_device_assets(request),
             ControlMsg::SetDeviceAssets(request, bytes) => self.set_device_assets(request, &bytes),
+            ControlMsg::PrepareDeviceAssetEdit {
+                request,
+                edits,
+                state,
+            } => {
+                use komponist_ipc::device_assets::edit_state::{Rejected, State};
+                let prepared = self
+                    .plugin
+                    .as_ref()
+                    .ok_or(Rejected)
+                    .and_then(|plugin| {
+                        plugin.prepare_asset_edit_state(&edits, state.as_ref().map(State::as_bytes))
+                    })
+                    .and_then(|result| result.map(State::try_from).transpose());
+                self.send(BridgeMsg::DeviceAssetEditPrepared(request, prepared));
+            }
             ControlMsg::PrepareDeviceOffline(request, work) => {
                 self.prepare_device_offline(request, work);
             }
@@ -1406,11 +1422,16 @@ impl Bridge {
             .plugin
             .as_ref()
             .is_some_and(|plugin| plugin.supports_offline_preparation());
+        let edit_state = self
+            .plugin
+            .as_ref()
+            .is_some_and(|plugin| plugin.supports_asset_edit_state());
         self.send(BridgeMsg::DeviceAssets {
             request,
             snapshot: encoded,
             file_slots,
             offline,
+            edit_state,
         });
     }
 
