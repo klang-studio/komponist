@@ -202,3 +202,12 @@ The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is 
     shown in the demo project `komponist --demo` (`komponist_app::showcase::bundled_demo()`), in a musically
     sensible way, in the same WP. Keep the mix balanced (`showcase::render_levels`, ignored test: master peak ≤ −0.3 dBFS,
     limiter ≤ ~2 dB, no silent track) and update the showcase tests (owner, 2026-11-15).
+
+16. **No backward compatibility before 1.0 (owner, 2026-11-25):** komponist is below 1.0 and breaking changes are
+    explicitly accepted. Of everything there is exactly one valid version: the current one. Do not write migrations,
+    readers for older project, preset or device-state formats, compatibility aliases, fallbacks to older interface
+    versions or tests against historical files. Change the format or the interface and update every user in the
+    same change (app, bundled devices, SDK, test plugins, demo, docs). Do not put versions into names: no `v2`,
+    `/1`, `-legacy`, `_old` in extension IDs, types, files, snapshots or doc titles. Not affected: version checks
+    that only detect a mismatch and reject it (project file marker, bridge protocol, cache invalidation), and the
+    versions of external standards (CLAP, VST3). The rule ends with 1.0.

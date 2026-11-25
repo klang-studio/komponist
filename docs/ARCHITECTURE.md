@@ -66,6 +66,8 @@ The **nice-plug** fixtures in `test-plugins/` export both formats from the same 
 | D7 | Versioned `*.komponist` JSON project file and linked audio assets |
 | D8 | Immutable document snapshots with `Arc` structural sharing for undo/redo |
 | D9 | Signed 64-bit musical ticks at 960 PPQ; position display at 240 ticks per beat |
+| D10 | No backward compatibility before 1.0: only the current project, preset and device-state formats and the current komponist CLAP extensions are supported. Other versions are rejected with a clear message, never migrated; names carry no version. Mismatch checks (project marker, bridge protocol, caches) stay. Existing migration code is being removed (epic #296). |
+| D11 | Bundled devices are hosted in-process. The bridge is the hosting option for third-party plugins, whose stability komponist cannot control. The komponist CLAP extensions work through the bridge too (community plugins may run there); that path is tested with the test plugins, not with every bundled device. |
 
 ## 3. Processes and threads
 
