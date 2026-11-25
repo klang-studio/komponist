@@ -108,7 +108,7 @@ Many ordinary operations have no such bound:
 | File or network IO, logging, `println!` | The kernel may block for milliseconds or more. |
 | Most system calls | Same reason. |
 
-komponist states this as CLAUDE.md **rule 4**: inside `Engine::process`, `Processor::process` and
+komponist states this as AGENTS.md **rule 4**: inside `Engine::process`, `Processor::process` and
 the bridge's realtime loop there is no allocation or freeing, no locks, no logging, no IO and no
 blocking system call except the specified wait with a deadline.
 
@@ -1099,7 +1099,7 @@ scripts/check.sh                # fmt --check, clippy -D warnings, cargo test --
 
 While working, iterate narrowly (`cargo check -p <crate>`, one test module). Run `check.sh` once
 before you report; it takes a shared build lock so that parallel builds do not freeze the machine.
-See CLAUDE.md for worktrees and build load rules.
+See AGENTS.md for worktrees and build load rules.
 
 ### 17.4 Seeing your change live
 
@@ -1138,7 +1138,7 @@ version in `persist.rs` only if needed, add a migration and tests for old files.
 ARCHITECTURE §5.5.
 
 **… build new UI.** Use the existing widgets and tokens. A new screen or a larger change needs a
-proposal with mockups in the internal notes and the owner's approval first (CLAUDE.md, rule 3).
+proposal with mockups in the internal notes and the owner's approval first (AGENTS.md, rule 3).
 
 ## 19. Pitfalls
 
@@ -1159,7 +1159,7 @@ proposal with mockups in the internal notes and the owner's approval first (CLAU
 - **New `tests/*.rs` files.** They create another heavy test binary; use a module in `tests/it/`.
 - **Stable ids.** Never rename a catalog id, parameter id or serialized field name; projects and
   automation depend on them.
-- **`cargo clean` in a worktree.** It deletes the `target` symlink to the fast disk (CLAUDE.md).
+- **`cargo clean` in a worktree.** It deletes the `target` symlink to the fast disk (AGENTS.md).
 
 ## 20. Glossary
 

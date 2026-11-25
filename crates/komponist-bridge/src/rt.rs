@@ -17,7 +17,7 @@
 //! ([`komponist_ipc::BlockRequest::deadline_ticks`]) before serving it, `finish` after. Blocks
 //! without a deadline (offline render) are not marked. It leaves the interval before it ends.
 //!
-//! Realtime rules (CLAUDE.md rule 4): everything is allocated before the loop; inside it there is
+//! Realtime rules (AGENTS.md rule 4): everything is allocated before the loop; inside it there is
 //! no allocation, lock, logging or IO, and the only blocking call is the futex wait with a deadline.
 //! Debug builds run the loop inside `assert_no_alloc`, so an allocation aborts the bridge. Plugin
 //! log lines from this thread are dropped ([`crate::notify`]).

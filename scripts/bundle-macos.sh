@@ -59,7 +59,7 @@ if [ -z "$bundled_clap" ]; then
 fi
 
 if [ "$skip_build" = 0 ]; then
-    # One heavy build at a time across worktrees, at low priority (CLAUDE.md, "Build load").
+    # One heavy build at a time across worktrees, at low priority (AGENTS.md, "Build load").
     (
         source scripts/build-lock.sh
         if [ "$stage_bundled_clap" = 1 ]; then

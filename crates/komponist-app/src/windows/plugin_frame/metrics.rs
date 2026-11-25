@@ -1,4 +1,4 @@
-//! Sizes of the plugin frame that the handoff gives only in the screen data (`CLAUDE.md` rule 2).
+//! Sizes of the plugin frame that the handoff gives only in the screen data (`AGENTS.md` rule 2).
 //!
 //! Sources: `Screens.dc.html` S05 (`s.ovPlugin` markup, the frame header), `ks-view.js`
 //! `pluginView` (window sizes, parameter grid) and `Prototyp.dc.html` (the parameter grid

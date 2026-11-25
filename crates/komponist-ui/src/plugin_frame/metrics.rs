@@ -1,5 +1,5 @@
 //! Sizes of the plugin frame's header that the handoff gives only in the screen data
-//! (`CLAUDE.md` rule 2). The app's frame (`komponist-app` `windows::plugin_frame::metrics`) adds the
+//! (`AGENTS.md` rule 2). The app's frame (`komponist-app` `windows::plugin_frame::metrics`) adds the
 //! body's; the bridge's own frame window (macOS, #52) uses these.
 //!
 //! Sources: `Screens.dc.html` S05 (`s.ovPlugin` markup, the frame header) and `ks-view.js`

@@ -2,7 +2,7 @@
 //!
 //! `design/tokens.json` is the single source of truth. The build script turns it into the constants
 //! of the modules below and fails on any token it does not understand. No other crate hard-codes a
-//! design value (rule 2 in `CLAUDE.md`).
+//! design value (rule 2 in `AGENTS.md`).
 //!
 //! - Colours ([`color`], track colours in [`track`]) are [`Srgba`]: `[r, g, b, a]`, 8-bit sRGB with
 //!   straight (not premultiplied) alpha.

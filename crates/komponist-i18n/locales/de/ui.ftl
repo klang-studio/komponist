@@ -81,7 +81,7 @@ ui-pad-name = Pad { $name }
 # AccessKit description of a pad; `$note` is the note name ("C1").
 ui-pad-note = Note { $note }
 
-## Timeline and canvas names for AccessKit (`timeline/`; CLAUDE.md rule 12).
+## Timeline and canvas names for AccessKit (`timeline/`; AGENTS.md rule 12).
 
 # Bar range of a clip (en dash).
 a11y-bars = Takt { $first }–{ $last }
