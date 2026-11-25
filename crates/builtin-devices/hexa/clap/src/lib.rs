@@ -27,8 +27,6 @@ const EMPTY_EVENT: Event = Event {
     kind: EventKind::AllNotesOff,
 };
 
-/// Convert a project-era patch or a factory preset to the current CLAP state stream.
-
 fn infos(lang: Lang) -> &'static [ParamInfo] {
     static INFOS: [OnceLock<Vec<ParamInfo>>; Lang::ALL.len()] =
         [const { OnceLock::new() }; Lang::ALL.len()];

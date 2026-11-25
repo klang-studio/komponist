@@ -266,7 +266,7 @@ fn patch_from_saved_state(stream: &[u8]) -> komponist_hexa::Patch {
 
 /// The pinned CLAP state stream of `patch`.
 fn clap_state(patch: &komponist_hexa::Patch) -> Vec<u8> {
-    komponist_hexa::state::encode_clap_patch(patch.clone(), env!("CARGO_PKG_VERSION"))
+    komponist_hexa::state::encode_clap_patch(*patch, env!("CARGO_PKG_VERSION"))
 }
 
 fn load_patch(instance: &Instance, patch: &komponist_hexa::Patch) {
