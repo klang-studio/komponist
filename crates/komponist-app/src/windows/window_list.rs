@@ -26,7 +26,12 @@ pub struct WindowEntry {
 
 /// The entries for `windows` in `lang`, in project order; windows of devices that are gone are left
 /// out.
-pub fn entries(lang: Lang, project: &Project, windows: &[PluginWindow]) -> Vec<WindowEntry> {
+pub fn entries(
+    lang: Lang,
+    project: &Project,
+    windows: &[PluginWindow],
+    catalog: &komponist_plugins::Catalog,
+) -> Vec<WindowEntry> {
     let open = |id: DeviceId| windows.iter().any(|w| w.device == id);
     let tracks = project
         .tracks
@@ -42,7 +47,10 @@ pub fn entries(lang: Lang, project: &Project, windows: &[PluginWindow]) -> Vec<W
         .filter(|(_, d)| open(d.id))
         .map(|(track, d)| WindowEntry {
             device: d.id,
-            label: lang.app_menu_plugin_window(crate::views::plugin_name(lang, &d.plugin), track),
+            label: lang.app_menu_plugin_window(
+                crate::views::catalog_plugin_name(lang, catalog, &d.plugin),
+                track,
+            ),
         })
         .collect()
 }
@@ -50,7 +58,12 @@ pub fn entries(lang: Lang, project: &Project, windows: &[PluginWindow]) -> Vec<W
 impl App {
     /// The open plugin windows as the menus list them (module docs).
     pub fn plugin_window_entries(&self) -> Vec<WindowEntry> {
-        entries(self.lang, self.project(), &self.ui.plugin_windows)
+        entries(
+            self.lang,
+            self.project(),
+            &self.ui.plugin_windows,
+            self.engine.host().catalog(),
+        )
     }
 }
 

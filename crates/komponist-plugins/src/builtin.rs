@@ -6,7 +6,9 @@
 //! projects saved with the old built-in entry (`BUILTIN_KLOPFER`) resolve to the scanned plugin
 //! ([`crate::Catalog::resolve`]).
 
+use komponist_i18n::Lang;
 use komponist_ipc::PluginKind;
+use komponist_ipc::native_layout::LocalizedPlugin;
 use komponist_model::DeviceRole;
 
 use crate::catalog::{BuiltinKind, CatalogEntry, EffectCategory, PluginLocation};
@@ -26,7 +28,14 @@ pub(crate) fn entries() -> Vec<CatalogEntry> {
                 .map(|feature| (*feature).into())
                 .collect();
             CatalogEntry {
-                localized: None,
+                localized: Some(LocalizedPlugin {
+                    default_locale: Lang::De.code().into(),
+                    names: Lang::ALL
+                        .into_iter()
+                        .map(|lang| (lang.code().into(), (spec.name_in)(lang).into()))
+                        .collect(),
+                    descriptions: Default::default(),
+                }),
                 clap_presets: crate::presets::legacy_inventory(builtin),
                 plugin: spec.plugin_ref(),
                 kind: match spec.role {

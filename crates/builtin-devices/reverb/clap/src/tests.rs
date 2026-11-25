@@ -49,6 +49,8 @@ fn legacy_factory_selection_survives_adapter_state_callbacks() {
 fn advertised_layout_contains_every_binding_and_stable_room_ids() {
     assert_localized_bindings::<HallPlugin>(Hall::SPEC.params().len());
     let layout = read_layout::<HallPlugin>();
+    assert_eq!(layout["metadata"]["names"]["de"], "Hall");
+    assert_eq!(layout["metadata"]["names"]["en"], "Reverb");
     let first = Instance::new::<HallPlugin>();
     // SAFETY: The instance is live and initialized on this test thread.
     unsafe {

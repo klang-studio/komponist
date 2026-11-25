@@ -480,11 +480,12 @@ impl PluginManager {
                 })
         };
         descriptors.retain(|descriptor| {
-            !self
-                .private_clap_dir
-                .as_ref()
-                .is_some_and(|path| descriptor.bundle.starts_with(path))
-                || shipped(descriptor)
+            descriptor.bundle.exists()
+                && (!self
+                    .private_clap_dir
+                    .as_ref()
+                    .is_some_and(|path| descriptor.bundle.starts_with(path))
+                    || shipped(descriptor))
         });
         for descriptor in &mut descriptors {
             if shipped(descriptor)
@@ -638,7 +639,25 @@ impl PluginManager {
         self.last_scan.as_ref()
     }
 
-    /// Devices of `project` whose plugin is not in the catalog (S06 dialog on open).
+    /// A failed probe cannot confirm that an already-running instance's bundle was removed.
+    pub fn device_probe_failed(&self, device: DeviceId) -> bool {
+        self.last_scan.as_ref().is_some_and(|scan| {
+            scan.skipped.iter().any(|skip| {
+                let bundle = &skip.path;
+                (self
+                    .bridges
+                    .get(&device)
+                    .is_some_and(|bridge| bridge.is_running_from(bundle))
+                    || self
+                        .direct
+                        .get(&device)
+                        .is_some_and(|direct| direct.is_running_from(bundle)))
+                    && !matches!(bundle.try_exists(), Ok(false))
+            })
+        })
+    }
+
+    /// Devices of `project` with neither a catalog entry nor a live instance (S06 dialog).
     pub fn missing_plugins(&self, project: &Project) -> Vec<MissingPlugin> {
         let chains = project
             .tracks
@@ -648,7 +667,14 @@ impl PluginManager {
         let mut missing = Vec::new();
         for (track, devices) in chains {
             for (index, device) in devices.iter().enumerate() {
-                if self.catalog.resolve(&device.plugin).is_none() {
+                if self.catalog.resolve(&device.plugin).is_none()
+                    && !((self.bridges.contains_key(&device.id)
+                        || self.direct.contains_key(&device.id))
+                        && matches!(
+                            self.status(device.id),
+                            DeviceStatus::Ok | DeviceStatus::Loading
+                        ))
+                {
                     missing.push(MissingPlugin {
                         track,
                         device: device.id,
@@ -1596,11 +1622,22 @@ impl PluginManager {
     /// Collects current plug-in states under one shared deadline. An unanswered request from an
     /// otherwise running bridge is reported separately from a known unsaved persistent edit.
     pub fn snapshot_for_save(&mut self, timeout: Duration) -> SaveSnapshots {
+        self.snapshot_for_save_if(timeout, |_| true)
+    }
+
+    fn snapshot_for_save_if(
+        &mut self,
+        timeout: Duration,
+        include: impl Fn(DeviceId) -> bool,
+    ) -> SaveSnapshots {
         let deadline = Instant::now() + timeout;
         let mut expected = BTreeSet::new();
         let mut required = BTreeSet::new();
-        let mut state_change_pending: BTreeSet<_> = self.pending_live_state_commits().collect();
-        for (&device, bridge) in &self.bridges {
+        let mut state_change_pending: BTreeSet<_> = self
+            .pending_live_state_commits()
+            .filter(|&device| include(device))
+            .collect();
+        for (&device, bridge) in self.bridges.iter().filter(|&(&device, _)| include(device)) {
             if bridge.is_editing_waveform_markers()
                 || bridge.is_loading_clap_preset()
                 || state_change_pending.contains(&device)
@@ -1615,7 +1652,7 @@ impl PluginManager {
                 required.insert(device);
             }
         }
-        for (&device, direct) in &self.direct {
+        for (&device, direct) in self.direct.iter().filter(|&(&device, _)| include(device)) {
             if direct.is_editing_waveform_markers()
                 || direct.is_loading_clap_preset()
                 || state_change_pending.contains(&device)
@@ -1632,7 +1669,7 @@ impl PluginManager {
         }
         let mut captured = self.snapshot_states_if(
             deadline.saturating_duration_since(Instant::now()),
-            |device| !state_change_pending.contains(&device),
+            |device| include(device) && !state_change_pending.contains(&device),
         );
         loop {
             for (device, _) in &captured {
@@ -1664,6 +1701,47 @@ impl PluginManager {
             unavailable: expected.difference(&required).copied().collect(),
             blocked: required.into_iter().collect(),
         }
+    }
+
+    /// Captures states of selected devices and reports pending captures under one deadline.
+    pub fn snapshot_available_states(
+        &mut self,
+        devices: &[DeviceId],
+        timeout: Duration,
+    ) -> SaveSnapshots {
+        let mut snapshots = self.snapshot_for_save_if(timeout, |device| devices.contains(&device));
+        // A definitive bridge error (e.g. no state extension) only leaves the saved state.
+        // In-flight requests and deferred retries can still deliver usable state.
+        snapshots.unavailable.retain(|device| {
+            self.bridges
+                .get(device)
+                .is_some_and(Bridge::snapshot_capture_pending)
+                || self.direct.contains_key(device)
+        });
+        snapshots
+    }
+
+    /// Ensures a deferred retirement has a nonblocking capture queued.
+    pub fn schedule_retiring_snapshot(&mut self, device: DeviceId) {
+        if let Some(bridge) = self.bridges.get_mut(&device) {
+            bridge.schedule_retiring_snapshot();
+        } else if let Some(direct) = self.direct.get_mut(&device) {
+            direct.request_state();
+        }
+    }
+
+    /// Whether the live device can still deliver a more recent capture or commit.
+    pub fn retiring_snapshot_pending(&self, device: DeviceId) -> bool {
+        self.pending_live_state_commits().any(|id| id == device)
+            || self.bridges.get(&device).is_some_and(|bridge| {
+                bridge.snapshot_capture_pending()
+                    || bridge.needs_snapshot_for_save()
+                    || bridge.is_loading_clap_preset()
+            })
+            || self
+                .direct
+                .get(&device)
+                .is_some_and(DirectDevice::snapshot_capture_pending)
     }
 
     /// Captures every running bridge on the track to be replaced. Devices without a running
@@ -1772,6 +1850,12 @@ impl PluginManager {
             // Windows: a pipe cannot be waited on for "readable"; look again shortly.
             #[cfg(windows)]
             std::thread::sleep((deadline - now).min(Duration::from_millis(1)));
+        }
+        for (device, request) in waiting {
+            if let Some(bridge) = self.bridges.get_mut(&device) {
+                // Report a late answer in wire order with any newer device state commits.
+                bridge.report_late_snapshot_as_event(request);
+            }
         }
         states.sort_by_key(|(device, _)| *device);
         states

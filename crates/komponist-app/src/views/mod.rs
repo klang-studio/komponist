@@ -210,29 +210,23 @@ pub fn format_tag(lang: Lang, format: PluginFormat) -> &'static str {
 
 /// The catalog label distinguishes a shipped bundle from an external CLAP with the same ID.
 pub fn catalog_plugin_tag(lang: Lang, plugin: &komponist_model::PluginRef) -> &'static str {
-    if komponist_plugins::packaged_kind(plugin).is_some() {
+    if komponist_plugins::requires_bundled(plugin) {
         lang.browser_bundled_clap()
     } else {
         format_tag(lang, plugin.format)
     }
 }
 
-/// The name a device is shown under: a built-in device's name in `lang` ("Hall" is "Reverb" in
-/// English), any other plugin's own name. The stored [`komponist_model::PluginRef::name`] stays German.
-pub fn plugin_name(lang: Lang, plugin: &komponist_model::PluginRef) -> String {
-    komponist_builtin::device_name(lang, plugin).map_or_else(|| plugin.name.clone(), str::to_owned)
-}
-
-pub(crate) fn catalog_plugin_name(
+/// The scanned device name in the UI language, or the name saved in a missing device's reference.
+pub fn catalog_plugin_name(
     lang: Lang,
     catalog: &komponist_plugins::Catalog,
     plugin: &komponist_model::PluginRef,
 ) -> String {
-    catalog
-        .resolve(plugin)
-        .and_then(|entry| entry.localized.as_ref())
-        .and_then(|metadata| metadata.name(lang.code()))
-        .map_or_else(|| plugin_name(lang, plugin), str::to_owned)
+    catalog.resolve(plugin).map_or_else(
+        || plugin.name.clone(),
+        |entry| entry.display_name(lang.code()).to_owned(),
+    )
 }
 
 /// The name of track hue `index` (0 ..= 13, the order of `komponist_tokens::track::HUES`) in `lang`.

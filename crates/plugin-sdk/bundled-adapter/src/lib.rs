@@ -12,10 +12,12 @@ pub mod presets;
 use std::ffi::{CStr, c_void};
 use std::sync::Arc;
 
-use komponist_device_core::{Dsp, SAMPLE_RATES, Spec};
+use komponist_device_core::{CatalogSpec, Dsp, SAMPLE_RATES, Spec};
 use komponist_i18n::Lang;
 use komponist_model::params::ParamInfo;
-use komponist_native_clap_sdk::{DeviceLayout, NativeClapLayout, PageLabels, Panel, PanelV2};
+use komponist_native_clap_sdk::{
+    DeviceLayout, NativeClapLayout, PageLabels, Panel, PanelV2, PluginLabels,
+};
 use nice_plug::prelude::*;
 
 pub use instrument::{Instrument, to_device_note};
@@ -285,7 +287,9 @@ impl<T: AudioDefinition> NativeClapLayout for Effect<T> {
     }
 
     fn panel_v2() -> Option<PanelV2> {
-        T::panel_v2()
+        let mut panel = T::panel_v2()?;
+        panel.panel.device_labels = Some(device_labels(&T::SPEC.catalog));
+        Some(panel)
     }
 }
 
@@ -295,8 +299,23 @@ pub fn panel_for<T: DeviceDefinition>() -> Panel {
         T::SPEC.params_in(Lang::En),
         T::SPEC.params_in(Lang::De),
     );
+    panel.device_labels = Some(device_labels(&T::SPEC.catalog));
     T::configure_panel(&mut panel);
     panel
+}
+
+/// Publish the device's catalog labels with its CLAP panel.
+pub fn device_labels(catalog: &CatalogSpec) -> PluginLabels {
+    let labels = |text: fn(Lang) -> &'static str| {
+        Lang::ALL
+            .into_iter()
+            .map(|lang| (lang.code().into(), text(lang).into()))
+            .collect()
+    };
+    PluginLabels {
+        names: labels(catalog.name_in),
+        descriptions: catalog.description_in.map_or_else(Default::default, labels),
+    }
 }
 
 /// Construct the bilingual public SDK panel from a device's model metadata.

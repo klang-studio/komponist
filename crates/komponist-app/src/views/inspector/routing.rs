@@ -38,7 +38,7 @@ pub(super) fn section(
         } else {
             sends(ui, ctx, col, project, track);
         }
-        sidechain_line(ui, t, col, project, track);
+        sidechain_line(ui, t, col, project, track, ctx.engine.host().catalog());
     });
 }
 
@@ -154,8 +154,15 @@ fn inputs(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, project: &Project, 
 }
 
 /// „Sidechain-Quelle für:“ and the devices that take this track as their source.
-fn sidechain_line(ui: &mut Ui, t: Lang, col: &mut Col, project: &Project, track: &Track) {
-    let users = rt::sidechain_users(t, project, track.id);
+fn sidechain_line(
+    ui: &mut Ui,
+    t: Lang,
+    col: &mut Col,
+    project: &Project,
+    track: &Track,
+    catalog: &komponist_plugins::Catalog,
+) {
+    let users = rt::sidechain_users(t, project, track.id, catalog);
     if users.is_empty() {
         return;
     }

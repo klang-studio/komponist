@@ -9,8 +9,8 @@
 //! plugin started (a process group, Windows: a job object; #218). Scan processes end with the app. The finished job writes the new cache file and hands a
 //! [`ScanOutcome`] to the plugin manager, which polls for it.
 //!
-//! What gets cached: successful scans, bundles without plugins, crashes and load errors (a bundle
-//! that fails the same way again is not rescanned until it changes). Standard CLAP preset discovery
+//! Successful descriptors are reused until the bundle changes. The cache retains crash and load
+//! errors for diagnostics and retries their probes on the next scan. Standard CLAP preset discovery
 //! runs in another disposable process after a successful CLAP descriptor scan. A crash, timeout or
 //! malformed reply in that optional pass leaves the plug-in available and is retried next scan.
 //! Descriptor timeouts and unsupported formats are retried on the next scan.
@@ -324,6 +324,7 @@ fn run(setup: &ScanSetup, cancel: &AtomicBool) -> Option<ScanOutcome> {
                 path: bundle.path.clone(),
                 mtime_secs: bundle.mtime_secs,
                 descriptors: result.descriptors,
+                descriptor_revision: crate::catalog::CLAP_DESCRIPTOR_REVISION,
                 clap_presets: result.clap_presets,
                 preset_discovery_complete: result.preset_discovery_complete,
                 error: result.error,

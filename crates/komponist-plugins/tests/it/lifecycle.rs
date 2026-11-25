@@ -1114,6 +1114,8 @@ enum FakeBridge {
     FailsStartupRestore,
     /// Removes a parameter from the inventory when the parent edits it.
     RemovesParameter,
+    /// Defers the first snapshot of a quiet device, then supplies a state on retry.
+    DefersQuietSnapshot,
 }
 
 #[cfg(unix)]
@@ -1124,6 +1126,7 @@ impl FakeBridge {
             FakeBridge::SendsSlowly => "sends-slowly",
             FakeBridge::FailsStartupRestore => "fails-startup-restore",
             FakeBridge::RemovesParameter => "removes-parameter",
+            FakeBridge::DefersQuietSnapshot => "defers-quiet-snapshot",
         }
     }
 }
@@ -1162,6 +1165,7 @@ fn fake_bridge_entry() {
         FakeBridge::SendsSlowly,
         FakeBridge::FailsStartupRestore,
         FakeBridge::RemovesParameter,
+        FakeBridge::DefersQuietSnapshot,
     ]
     .into_iter()
     .find(|mode| mode.arg() == args[at - 2])
@@ -1208,6 +1212,7 @@ fn fake_bridge_entry() {
     let mut activated = false;
     let mut pending_restore = None;
     let mut ready_for_edit = false;
+    let mut deferred_snapshot = false;
     loop {
         match channel.recv() {
             Ok(ControlMsg::Load { bundle, .. }) => send(BridgeMsg::Loaded(Box::new(LoadedInfo {
@@ -1242,6 +1247,18 @@ fn fake_bridge_entry() {
                 activated = true;
             }
             Ok(ControlMsg::SetState { request, .. }) => pending_restore = Some(request),
+            Ok(ControlMsg::GetState { request }) if mode == FakeBridge::DefersQuietSnapshot => {
+                if deferred_snapshot {
+                    send(BridgeMsg::State {
+                        request,
+                        state: b"quiet plugin state".to_vec(),
+                        verified: Vec::new(),
+                    });
+                } else {
+                    send(BridgeMsg::StateDeferred { request });
+                    deferred_snapshot = true;
+                }
+            }
             Ok(ControlMsg::SetParam { id: 8, .. }) if mode == FakeBridge::RemovesParameter => {
                 send(BridgeMsg::Params {
                     params: vec![param(7)],
@@ -1322,6 +1339,35 @@ fn fake_bridge_entry() {
             }]));
         }
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_quiet_bridge_stays_pending_after_deferral_until_its_retry_succeeds() {
+    let dir = scratch("deferred-retirement-capture");
+    let Some((manager, _)) = fake_bridge_manager(&dir, FakeBridge::DefersQuietSnapshot) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(device_id.0, DeviceStatus::Ok);
+
+    let outcome = rig
+        .manager
+        .snapshot_available_states(&[device_id], PATIENCE);
+    assert_eq!(
+        outcome,
+        SaveSnapshots {
+            unavailable: vec![device_id],
+            ..Default::default()
+        }
+    );
+    assert!(rig.manager.retiring_snapshot_pending(device_id));
+    rig.manager.schedule_retiring_snapshot(device_id);
+    let state = next_snapshot(&mut rig, device_id.0);
+    assert_eq!(&*state.bytes, b"quiet plugin state");
+    assert!(!rig.manager.retiring_snapshot_pending(device_id));
 }
 
 #[cfg(unix)]

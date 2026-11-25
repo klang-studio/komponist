@@ -1,5 +1,5 @@
-//! The plugin catalog: built-in entries plus scanned CLAP and VST3 bundles (ARCHITECTURE §8.3,
-//! §8.5).
+//! The plugin catalog: scanned CLAP and VST3 bundles (ARCHITECTURE §8.3, §8.5).
+//! Reference hosts can also include the legacy in-process entries.
 //!
 //! Scanning runs `komponist-bridge --scan <bundle>` per bundle as separate processes, in parallel,
 //! with [`SCAN_TIMEOUT`] each, and caches results by path and modification time in
@@ -35,7 +35,7 @@ pub(crate) fn bundled_module(file_name: &str) -> Box<str> {
 
 /// A bundled reference may resolve only through the packaged catalog. The module
 /// suffix is a file name for diagnostics; it is never interpreted as a load path.
-pub(crate) fn requires_bundled(plugin: &PluginRef) -> bool {
+pub fn requires_bundled(plugin: &PluginRef) -> bool {
     plugin.format == komponist_model::PluginFormat::Clap
         && plugin.module.starts_with(BUNDLED_MODULE_PREFIX)
 }
@@ -139,7 +139,20 @@ pub struct CatalogEntry {
 }
 
 impl CatalogEntry {
-    /// Whether this is a built-in ("INTERN").
+    /// Name from the layout's locale with the descriptor name as fallback.
+    pub fn display_name(&self, language: &str) -> &str {
+        self.localized
+            .as_ref()
+            .and_then(|labels| labels.name(language))
+            .unwrap_or(&self.plugin.name)
+    }
+
+    /// Localized description, or the standard descriptor's description.
+    pub fn description(&self, language: &str) -> Option<&str> {
+        self.localized.as_ref()?.description(language)
+    }
+
+    /// Whether this is a legacy built-in ("INTERN").
     pub fn is_builtin(&self) -> bool {
         self.plugin.format == komponist_model::PluginFormat::Builtin
     }
@@ -426,6 +439,10 @@ impl PluginDirs {
     }
 }
 
+/// Per-bundle CLAP descriptor data revision. Earlier entries can populate the startup
+/// catalog while a full scan refreshes their display metadata.
+pub(crate) const CLAP_DESCRIPTOR_REVISION: u8 = 1;
+
 /// One cached scan result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedBundle {
@@ -435,6 +452,9 @@ pub struct CachedBundle {
     pub mtime_secs: u64,
     /// What the scan found (empty if it failed).
     pub descriptors: Vec<PluginDescriptor>,
+    /// Descriptor revision of the CLAP scanner that populated this entry.
+    #[serde(default)]
+    pub descriptor_revision: u8,
     /// Optional standard CLAP discovery output from a separate scan process.
     #[serde(default)]
     pub clap_presets: Vec<ClapPreset>,
@@ -497,11 +517,16 @@ impl ScanCache {
         })
     }
 
-    /// The cached result for `path` scanned at `mtime_secs`, if any.
+    /// A reusable scan of `path` at `mtime_secs`. Failed probes are retried on each scan.
     pub(crate) fn lookup(&self, path: &Path, mtime_secs: u64) -> Option<&CachedBundle> {
         self.bundles
             .iter()
             .find(|b| b.path == path && b.mtime_secs == mtime_secs)
+            .filter(|b| b.error.is_none())
+            .filter(|b| {
+                b.descriptor_revision == CLAP_DESCRIPTOR_REVISION
+                    || b.descriptors.iter().all(|d| d.format != BundleFormat::Clap)
+            })
     }
 
     /// Presets for the selected descriptor, with bundle path as well as plug-in ID.
@@ -1056,6 +1081,7 @@ mod tests {
                     path: "/usr/lib/clap/A.clap".into(),
                     mtime_secs: 1_700_000_000,
                     descriptors: vec![localized.clone()],
+                    descriptor_revision: CLAP_DESCRIPTOR_REVISION,
                     clap_presets: vec![clap_preset("a", "Factory")],
                     preset_discovery_complete: true,
                     error: None,
@@ -1064,6 +1090,7 @@ mod tests {
                     path: "/usr/lib/clap/B.clap".into(),
                     mtime_secs: 3,
                     descriptors: Vec::new(),
+                    descriptor_revision: CLAP_DESCRIPTOR_REVISION,
                     clap_presets: Vec::new(),
                     preset_discovery_complete: true,
                     error: Some("crashed (signal 11)".into()),
@@ -1072,12 +1099,24 @@ mod tests {
         };
         cache.save(&file).unwrap();
         assert_eq!(ScanCache::load(&file), cache);
+        let mut previous_scan = cache.clone();
+        previous_scan.bundles[0].descriptor_revision = 0;
+        previous_scan.save(&file).unwrap();
+        let previous_scan = ScanCache::load(&file);
+        assert_eq!(previous_scan.descriptors(), [localized.clone()]);
+        assert!(
+            previous_scan
+                .lookup(Path::new("/usr/lib/clap/A.clap"), 1_700_000_000)
+                .is_none()
+        );
+        cache.save(&file).unwrap();
         assert!(
             cache
                 .lookup(Path::new("/usr/lib/clap/A.clap"), 1_700_000_000)
                 .is_some()
         );
         assert!(cache.lookup(Path::new("/usr/lib/clap/A.clap"), 1).is_none());
+        assert!(cache.lookup(Path::new("/usr/lib/clap/B.clap"), 3).is_none());
         let descriptors = ScanCache::load(&file).descriptors();
         assert_eq!(descriptors, [localized]);
         let mut catalog = Catalog::default();

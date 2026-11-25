@@ -61,6 +61,7 @@ pub static SPEC: Spec = Spec {
         id: "presse",
         name: "Presse",
         name_in: Lang::device_name_presse,
+        description_in: Some(Lang::device_description_presse),
         role: komponist_model::DeviceRole::Effect,
         features: &["audio-effect", "compressor", "dynamics"],
         vendor: "komponist",

@@ -163,6 +163,10 @@ fn load_saved_state(
 }
 
 impl DirectDevice {
+    pub(crate) fn is_running_from(&self, path: &std::path::Path) -> bool {
+        !matches!(self.status, DeviceStatus::Crashed(_)) && self.session.is_from_bundle(path)
+    }
+
     pub(crate) fn has_clap_presets_from(&self, path: &std::path::Path) -> bool {
         self.status == DeviceStatus::Ok && self.session.is_from_bundle(path)
     }
@@ -839,6 +843,10 @@ impl DirectDevice {
         if self.state_warning.is_none() {
             self.snapshot_due = Some(Instant::now());
         }
+    }
+
+    pub(crate) fn snapshot_capture_pending(&self) -> bool {
+        self.needs_snapshot() || self.state_warning.is_none() && self.snapshot_due.is_some()
     }
 
     pub(crate) fn is_current_param_snapshot(&self, state: &Arc<[u8]>) -> bool {

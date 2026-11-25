@@ -128,7 +128,7 @@ pub fn model(t: Lang, project: &Project, missing: &[MissingPlugin]) -> Model {
             };
             Row {
                 name: mp.plugin.name.clone(),
-                format: format_label(t, mp.plugin.format),
+                format: crate::views::catalog_plugin_tag(t, &mp.plugin),
                 place: t.missing_place(owner, role),
                 module: module_label(&mp.plugin),
                 search: None,
@@ -231,7 +231,12 @@ pub fn missing_audio(
 }
 
 /// Missing host-managed plugin files, preserving the slot identity for relinking.
-pub fn missing_assets(t: Lang, project: &Project, dir: Option<&std::path::Path>) -> Vec<Row> {
+pub fn missing_assets(
+    t: Lang,
+    project: &Project,
+    dir: Option<&std::path::Path>,
+    catalog: &komponist_plugins::Catalog,
+) -> Vec<Row> {
     let devices = project
         .tracks
         .iter()
@@ -257,7 +262,10 @@ pub fn missing_assets(t: Lang, project: &Project, dir: Option<&std::path::Path>)
             rows.push(Row {
                 name,
                 format: t.plugin_file_chip(),
-                place: t.missing_place(owner_label(t, track), &device.plugin.name),
+                place: t.missing_place(
+                    owner_label(t, track),
+                    crate::views::catalog_plugin_name(t, catalog, &device.plugin),
+                ),
                 module: String::new(),
                 search: None,
                 audio: None,

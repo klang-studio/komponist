@@ -371,11 +371,7 @@ impl App {
             ExportError::InvalidTrack => self.flatten_failed(self.lang.flatten_no_clips()),
             ExportError::WavTooLarge => self.flatten_failed(self.lang.export_wav_too_large()),
             ExportError::DeviceFailed(id) => {
-                let device = self
-                    .project()
-                    .find_device(id)
-                    .map(|(_, _, device)| device.plugin.name.as_str())
-                    .unwrap_or_default();
+                let device = self.device_name(id);
                 self.flatten_failed(self.lang.flatten_device_failed(device));
             }
             ExportError::MissingAudio(path) => {

@@ -288,7 +288,11 @@ impl ClapPlugin for HexaPlugin {
 
 impl NativeClapLayout for HexaPlugin {
     fn panel() -> Panel {
-        panel_from_parts(layout, infos(Lang::En), infos(Lang::De))
+        let mut panel = panel_from_parts(layout, infos(Lang::En), infos(Lang::De));
+        panel.device_labels = Some(komponist_bundled_clap_adapter::device_labels(
+            &komponist_hexa::CATALOG,
+        ));
+        panel
     }
 }
 

@@ -34,7 +34,7 @@ pub(crate) mod recovery;
 mod track_edits;
 mod track_macro_edits;
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,12 +49,13 @@ use komponist_ipc::LogLevel;
 use komponist_model::automation::AutomationOwner;
 use komponist_model::edits::{self, EditResult, NewDevice, NewTrack, ProjectProp, TrackProp};
 use komponist_model::project::BUILTIN_HEXA;
+use komponist_model::project::SavedPluginState;
 use komponist_model::{
     AudioInput, ChannelRef, ClipContent, DeviceId, DeviceRole, Document, EditError, PluginFormat,
     PluginRef, Project, Tick, TickRange, TrackId,
 };
 use komponist_plugins::manager::STATE_LOG_PREFIX;
-use komponist_plugins::{DeviceStatus, FailReason, PluginManagerEvent};
+use komponist_plugins::{DeviceStatus, FailReason, PluginManagerEvent, SaveSnapshots};
 
 use crate::actions::{
     Action, DropTarget, EditAction, GridTarget, PluginAction, ProjectAction, SelectMode,
@@ -187,6 +188,8 @@ pub(crate) struct ShellState {
     title: Option<String>,
     /// The device host's events of this frame ([`App::device_events`]).
     device_events: Vec<PluginManagerEvent>,
+    /// Removed devices still awaiting safe retirement, with any late state capture.
+    catalog_retirements: BTreeMap<DeviceId, Option<SavedPluginState>>,
     /// A text editor had focus at the start of the last frame.
     text_edit_focused: bool,
     /// Where the last recording started (or starts after its count-in).
@@ -708,6 +711,10 @@ impl App {
             self.handle_device_event(&event);
             self.shell.device_events.push(event);
         }
+        if self.finish_catalog_retirements() {
+            self.refresh_missing_plugin_dialogs();
+            self.check_missing_plugins();
+        }
         self.poll_preset_preparations();
         self.poll_user_presets();
         if let Some(rec) = &mut self.recording {
@@ -923,7 +930,11 @@ impl App {
     fn handle_device_event(&mut self, event: &PluginManagerEvent) {
         match event {
             PluginManagerEvent::StateSnapshot { device, state } => {
-                self.store_snapshot(*device, state);
+                if let Some(captured) = self.shell.catalog_retirements.get_mut(device) {
+                    *captured = Some(state.clone());
+                } else {
+                    self.store_snapshot(*device, state);
+                }
             }
             PluginManagerEvent::WaveformMarkersEdited { device, result, .. } => {
                 use komponist_ipc::waveform_markers::EditStatus;
@@ -934,6 +945,7 @@ impl App {
                         previous_state,
                         state,
                     } => {
+                        self.invalidate_retiring_snapshot(*device);
                         self.record_waveform_marker_edit(*device, previous_state, state);
                     }
                     WaveformMarkerEditResult::Rejected(EditStatus::Unchanged) => {}
@@ -951,6 +963,7 @@ impl App {
                 previous_state,
                 state,
             } => {
+                self.invalidate_retiring_snapshot(*device);
                 self.record_clap_preset(*device, previous_state, state);
                 self.frame_preset_finished(*device, true);
             }
@@ -967,7 +980,8 @@ impl App {
                 status: DeviceStatus::Ok,
             } => self.device_up(*device),
             PluginManagerEvent::StateApplied { device } => {
-                self.cancel_frame_preset_requests(*device)
+                self.invalidate_retiring_snapshot(*device);
+                self.cancel_frame_preset_requests(*device);
             }
             PluginManagerEvent::StatusChanged {
                 device,
@@ -984,8 +998,8 @@ impl App {
                 self.set_status(text, StatusKind::Error);
             }
             PluginManagerEvent::ScanFinished(_) => {
-                self.load_found_devices();
-                if self.dialogs.missing_check {
+                let newly_missing = self.sync_catalog_devices();
+                if self.dialogs.missing_check || newly_missing {
                     self.check_missing_plugins();
                 }
             }
@@ -1035,22 +1049,116 @@ impl App {
         self.release_keyboard_notes_if(|id| after.track(id).is_none());
     }
 
-    /// After a scan: devices that were missing and whose plugin is now in the catalog get a
-    /// processor (into the slot they already have).
-    fn load_found_devices(&mut self) {
-        let project = Arc::clone(self.doc.project());
+    /// Apply changes in catalog availability without replacing the project's saved devices.
+    fn sync_catalog_devices(&mut self) -> bool {
         let host = self.engine.host();
-        let found: Vec<DeviceId> = project
+        let changes: Vec<_> = self
+            .project()
             .tracks
             .iter()
             .flat_map(|t| t.channel.devices.iter())
-            .chain(project.master.devices.iter())
-            .filter(|d| host.status(d.id) == DeviceStatus::Missing)
-            .filter(|d| host.catalog().resolve(&d.plugin).is_some())
-            .map(|d| d.id)
+            .chain(self.project().master.devices.iter())
+            .filter_map(|device| {
+                let available = host.catalog().resolve(&device.plugin).is_some();
+                let missing = host.status(device.id) == DeviceStatus::Missing;
+                (available == missing
+                    && (available
+                        || (!host.device_probe_failed(device.id)
+                            && !self.shell.catalog_retirements.contains_key(&device.id))))
+                .then_some((device.id, available))
+            })
             .collect();
-        for device in found {
+        let removed: Vec<_> = changes
+            .iter()
+            .filter_map(|&(device, available)| (!available).then_some(device))
+            .collect();
+        let SaveSnapshots {
+            captured,
+            unavailable,
+            blocked,
+        } = if removed.is_empty() {
+            SaveSnapshots::default()
+        } else {
+            self.engine
+                .host_mut()
+                .snapshot_available_states(&removed, SNAPSHOT_TIMEOUT)
+        };
+        for (device, state) in captured {
+            self.store_retiring_snapshot(device, &state);
+        }
+        let project = Arc::clone(self.project());
+        let mut newly_missing = false;
+        for (device, available) in changes {
+            if (blocked.contains(&device) || unavailable.contains(&device))
+                && matches!(
+                    self.engine.host().status(device),
+                    DeviceStatus::Ok | DeviceStatus::Loading
+                )
+            {
+                self.shell.catalog_retirements.insert(device, None);
+                self.engine.host_mut().schedule_retiring_snapshot(device);
+                continue;
+            }
             self.engine.reload_device(&project, device);
+            newly_missing |= !available;
+        }
+        self.refresh_missing_plugin_dialogs();
+        newly_missing
+    }
+
+    fn invalidate_retiring_snapshot(&mut self, device: DeviceId) {
+        if let Some(captured) = self.shell.catalog_retirements.get_mut(&device) {
+            *captured = None;
+        }
+    }
+
+    /// Complete retirements after the host delivered captures and state commits for this poll.
+    fn finish_catalog_retirements(&mut self) -> bool {
+        let mut retirements = std::mem::take(&mut self.shell.catalog_retirements);
+        let mut newly_missing = false;
+        retirements.retain(|&device, captured| {
+            let Some((_, _, entry)) = self.project().find_device(device) else {
+                return false;
+            };
+            let host = self.engine.host();
+            if host.catalog().resolve(&entry.plugin).is_some() || host.device_probe_failed(device) {
+                if let Some(state) = captured.take() {
+                    self.store_snapshot(device, &state);
+                }
+                return false;
+            }
+            if matches!(
+                host.status(device),
+                DeviceStatus::Ok | DeviceStatus::Loading
+            ) && host.retiring_snapshot_pending(device)
+            {
+                return true;
+            }
+            if let Some(state) = captured.take() {
+                self.store_retiring_snapshot(device, &state);
+            }
+            let project = Arc::clone(self.project());
+            self.engine.reload_device(&project, device);
+            newly_missing = true;
+            false
+        });
+        self.shell.catalog_retirements = retirements;
+        newly_missing
+    }
+
+    fn refresh_missing_plugin_dialogs(&mut self) {
+        let queued = &mut self.dialogs.queued;
+        let active = &mut self.ui.dialog;
+        if [&*active, &*queued]
+            .iter()
+            .any(|dialog| matches!(dialog, Some(Dialog::MissingPlugins(_))))
+        {
+            let missing = self.engine.host().missing_plugins(self.doc.project());
+            for dialog in [active, queued] {
+                if let Some(Dialog::MissingPlugins(plugins)) = dialog {
+                    plugins.clone_from(&missing);
+                }
+            }
         }
     }
 
@@ -1058,8 +1166,13 @@ impl App {
     pub(crate) fn device_name(&self, device: DeviceId) -> String {
         self.project().find_device(device).map_or_else(
             || self.lang.status_device_unnamed(device.0),
-            // A built-in device shows its name in the UI language ("Hall" is "Reverb").
-            |(_, _, d)| crate::views::plugin_name(self.lang, &d.plugin),
+            |(_, _, d)| {
+                crate::views::catalog_plugin_name(
+                    self.lang,
+                    self.engine.host().catalog(),
+                    &d.plugin,
+                )
+            },
         )
     }
 
@@ -1969,11 +2082,16 @@ impl App {
         if self.ui.dialog.is_some() || self.dialogs.overlay.is_some() {
             return;
         }
-        let instrument = self
-            .dialogs
-            .last_instrument
-            .clone()
-            .unwrap_or_else(|| self.default_hexa());
+        let catalog = self.engine.host().catalog();
+        let instrument = match &self.dialogs.last_instrument {
+            Some(None) => None,
+            Some(Some(last)) => catalog
+                .resolve(last)
+                .filter(|entry| entry.kind == komponist_ipc::PluginKind::Instrument)
+                .map(|entry| entry.plugin.clone())
+                .or_else(|| self.default_hexa()),
+            None => self.default_hexa(),
+        };
         let mut state = crate::dialogs::new_track::State::new(instrument);
         state.choose_default_input(self.project(), &self.engine);
         self.open_overlay(crate::dialogs::Overlay::NewTrack(state));
@@ -2813,6 +2931,7 @@ impl App {
         self.doc = doc;
         self.dialogs.repaired = 0;
         self.param_undo.forget();
+        self.shell.catalog_retirements.clear();
         self.preset_preparations.clear();
         self.user_presets = Default::default();
         self.dialogs.samples.forget_device_state();
@@ -3248,6 +3367,26 @@ fn worker_notice(
 mod tests {
     use super::*;
     use komponist_model::fixtures::empty_project;
+
+    #[test]
+    fn catalog_restoration_refreshes_the_missing_dialog_waiting_behind_flatten() {
+        let mut app = App::headless(Project::new("Restored device"));
+        app.ui.dialog = Some(Dialog::Flatten);
+        app.dialogs.queued = Some(Dialog::MissingPlugins(vec![
+            komponist_plugins::MissingPlugin {
+                track: None,
+                device: DeviceId(1),
+                role: DeviceRole::Instrument,
+                index: 0,
+                plugin: hexa_ref(),
+            },
+        ]));
+        assert!(!app.sync_catalog_devices());
+        assert!(matches!(app.ui.dialog, Some(Dialog::Flatten)));
+        assert!(
+            matches!(app.dialogs.queued, Some(Dialog::MissingPlugins(missing)) if missing.is_empty())
+        );
+    }
 
     /// #221: panel sizes count as saved only after a write that worked. A failed one is not
     /// retried every frame, but shutdown writes it again.

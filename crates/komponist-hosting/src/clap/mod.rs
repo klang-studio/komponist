@@ -53,6 +53,7 @@ use clack_host::events::Match;
 use clack_host::prelude::*;
 use komponist_ipc::clap_presets::{ClapPreset, ClapPresetLocation};
 use komponist_ipc::control::param_flags;
+use komponist_ipc::native_layout::LocalizedPlugin;
 use komponist_ipc::shm::MAX_BLOCK;
 use komponist_ipc::{
     GuiSize, LogLevel, NoteName, ParamInfo, PluginDescriptor, PluginFormat, RenderMode, WireEvent,
@@ -152,7 +153,14 @@ fn descriptor_of(d: &clack_host::plugin::PluginDescriptor, bundle: &Path) -> Plu
         format: PluginFormat::Clap,
         id: c_str(d.id()),
         name: c_str(d.name()),
-        localized: None,
+        localized: d
+            .description()
+            .filter(|text| !text.to_bytes().is_empty())
+            .map(|text| LocalizedPlugin {
+                default_locale: "en".into(),
+                names: Default::default(),
+                descriptions: [("en".into(), text.to_string_lossy().into_owned())].into(),
+            }),
         vendor: c_str(d.vendor()),
         version: c_str(d.version()),
         kind: crate::scan::kind_from_features(PluginFormat::Clap, &features),
@@ -342,7 +350,17 @@ impl ClapPlugin {
                 Ok(layout)
             }) {
                 Ok(Some(layout)) => {
-                    plugin.descriptor.localized = layout.1.localized_plugin();
+                    if let Some(mut labels) = layout.1.localized_plugin() {
+                        if let Some(fallback) = plugin.descriptor.localized.take()
+                            && labels.descriptions.is_empty()
+                            && let Some(description) = fallback.description(&labels.default_locale)
+                        {
+                            labels
+                                .descriptions
+                                .insert(labels.default_locale.clone(), description.into());
+                        }
+                        plugin.descriptor.localized = Some(labels);
+                    }
                     plugin.native_layout = Some(layout);
                     break;
                 }

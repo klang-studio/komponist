@@ -351,10 +351,14 @@ impl<'a> Catalog<'a> {
                 .collect();
             sections.push((lang.macros_title().to_owned(), targets));
         }
+        let host = self.engine.host();
         for device in self.channel.devices.iter() {
-            let name = catalog_plugin_name(lang, self.engine.host().catalog(), &device.plugin);
+            let Some(entry) = host.catalog().resolve(&device.plugin) else {
+                continue;
+            };
+            let name = entry.display_name(lang.code()).to_owned();
             let mut targets = self.device_targets(device, &name);
-            if let Some(infos) = self.engine.host().params(device.id) {
+            if let Some(infos) = host.params(device.id) {
                 let modules: HashMap<_, _> = infos
                     .iter()
                     .filter(|info| !info.module.is_empty())
@@ -372,6 +376,12 @@ impl<'a> Catalog<'a> {
             .recent
             .iter()
             .filter_map(|touch| {
+                let device = self
+                    .channel
+                    .devices
+                    .iter()
+                    .find(|device| device.id == touch.device)?;
+                host.catalog().resolve(&device.plugin)?;
                 self.resolve(&AutomationTarget::Param {
                     device: touch.device,
                     param: touch.param.clone(),

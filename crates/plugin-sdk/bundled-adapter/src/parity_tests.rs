@@ -22,6 +22,7 @@ static SPEC: Spec = Spec {
         id: "parity-probe",
         name: "Probe",
         name_in: |_| "Probe",
+        description_in: None,
         role: DeviceRole::Instrument,
         features: &[],
         vendor: "komponist",

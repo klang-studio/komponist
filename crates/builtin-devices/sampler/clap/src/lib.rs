@@ -105,18 +105,9 @@ impl SampledDefinition for DrumSampler {
             Self::SPEC.params_in(Lang::En),
             Self::SPEC.params_in(Lang::De),
         );
-        panel.device_labels = Some(komponist_native_clap_sdk::PluginLabels {
-            names: [Lang::De, Lang::En]
-                .into_iter()
-                .map(|lang| {
-                    (
-                        lang.code().into(),
-                        (Self::SPEC.catalog.name_in)(lang).into(),
-                    )
-                })
-                .collect(),
-            descriptions: Default::default(),
-        });
+        panel.device_labels = Some(komponist_bundled_clap_adapter::device_labels(
+            &Self::SPEC.catalog,
+        ));
         let graph_labels = panel
             .grid
             .pages

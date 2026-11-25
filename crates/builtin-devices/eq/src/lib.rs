@@ -30,6 +30,7 @@ pub static SPEC: Spec = Spec {
         id: "eq",
         name: "EQ",
         name_in: Lang::device_name_eq,
+        description_in: Some(Lang::device_description_eq),
         role: komponist_model::DeviceRole::Effect,
         features: &["audio-effect", "equalizer", "filter"],
         vendor: "komponist",

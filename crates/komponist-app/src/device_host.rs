@@ -178,6 +178,11 @@ pub trait DeviceHost {
         )
     }
 
+    /// Whether a scan failed to probe the bundle of a device that is still running.
+    fn device_probe_failed(&self, _device: DeviceId) -> bool {
+        false
+    }
+
     /// Devices of `project` whose plugin is not in the catalog (S06 dialog on open).
     fn missing_plugins(&self, project: &Project) -> Vec<MissingPlugin> {
         missing_in(self.catalog(), project)
@@ -493,6 +498,23 @@ pub trait DeviceHost {
             captured: self.snapshot_states(timeout),
             ..Default::default()
         }
+    }
+
+    /// Collects states of selected running devices and reports those still pending at the deadline.
+    fn snapshot_available_states(
+        &mut self,
+        _devices: &[DeviceId],
+        _timeout: Duration,
+    ) -> SaveSnapshots {
+        SaveSnapshots::default()
+    }
+
+    /// Ensures the deferred retirement can capture state in a later poll.
+    fn schedule_retiring_snapshot(&mut self, _device: DeviceId) {}
+
+    /// Whether the live instance still owes a capture or state commit before retirement.
+    fn retiring_snapshot_pending(&self, _device: DeviceId) -> bool {
+        false
     }
 
     /// Snapshots bridged devices on a MIDI track before replacing its chain. Hosts with running
@@ -975,6 +997,10 @@ impl DeviceHost for PluginHost {
         self.manager.catalog()
     }
 
+    fn device_probe_failed(&self, device: DeviceId) -> bool {
+        self.manager.device_probe_failed(device)
+    }
+
     fn missing_plugins(&self, project: &Project) -> Vec<MissingPlugin> {
         self.manager.missing_plugins(project)
     }
@@ -1259,6 +1285,22 @@ impl DeviceHost for PluginHost {
 
     fn snapshot_for_save(&mut self, timeout: Duration) -> SaveSnapshots {
         self.manager.snapshot_for_save(timeout)
+    }
+
+    fn snapshot_available_states(
+        &mut self,
+        devices: &[DeviceId],
+        timeout: Duration,
+    ) -> SaveSnapshots {
+        self.manager.snapshot_available_states(devices, timeout)
+    }
+
+    fn schedule_retiring_snapshot(&mut self, device: DeviceId) {
+        self.manager.schedule_retiring_snapshot(device);
+    }
+
+    fn retiring_snapshot_pending(&self, device: DeviceId) -> bool {
+        self.manager.retiring_snapshot_pending(device)
     }
 
     fn snapshot_selected_states(

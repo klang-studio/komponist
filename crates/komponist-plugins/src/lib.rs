@@ -39,7 +39,7 @@ mod waveform_markers;
 
 pub use catalog::{
     BuiltinKind, Catalog, CatalogEntry, EffectCategory, PluginDirs, PluginLocation, ScanCache,
-    ScanReport, packaged_kind, presets,
+    ScanReport, packaged_kind, presets, requires_bundled,
 };
 pub use device_assets::AssetEdit;
 pub use external::ExternalProcessor;

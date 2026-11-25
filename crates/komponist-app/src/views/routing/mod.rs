@@ -312,7 +312,12 @@ pub fn inputs_of(project: &Project, bus: TrackId) -> Vec<(TrackId, Option<SendId
 
 /// „Bass › presse (Vor Fader)“: the devices that take `track` as their sidechain source, as
 /// the inspector lists them. Empty when none does.
-pub fn sidechain_users(lang: Lang, project: &Project, track: TrackId) -> Vec<String> {
+pub fn sidechain_users(
+    lang: Lang,
+    project: &Project,
+    track: TrackId,
+    catalog: &komponist_plugins::Catalog,
+) -> Vec<String> {
     let mut out = Vec::new();
     let holders = project
         .tracks
@@ -328,7 +333,7 @@ pub fn sidechain_users(lang: Lang, project: &Project, track: TrackId) -> Vec<Str
                 };
                 out.push(format!(
                     "{name} › {} ({tap})",
-                    crate::views::plugin_name(lang, &d.plugin)
+                    crate::views::catalog_plugin_name(lang, catalog, &d.plugin)
                 ));
             }
         }

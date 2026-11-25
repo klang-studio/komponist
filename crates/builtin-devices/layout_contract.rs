@@ -89,7 +89,19 @@ pub(crate) fn read_layout_extension<P: NativeClapLayout>(extension_id: &CStr) ->
     let second = Instance::new::<P>();
     let bytes = layout_bytes(&first, extension_id);
     assert_eq!(bytes, layout_bytes(&second, extension_id));
-    serde_json::from_slice(&bytes).unwrap()
+    let layout: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    for locale in ["en", "de"] {
+        for label in ["names", "descriptions"] {
+            assert!(
+                layout["metadata"][label][locale]
+                    .as_str()
+                    .is_some_and(|text| !text.is_empty()),
+                "{} has no {locale} {label} in its CLAP layout",
+                P::NAME,
+            );
+        }
+    }
+    layout
 }
 
 pub(crate) fn assert_localized_bindings<P: NativeClapLayout>(count: usize) {

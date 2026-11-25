@@ -985,6 +985,31 @@ impl Bridge {
             .any(|pending| pending.request == request)
     }
 
+    pub(crate) fn report_late_snapshot_as_event(&mut self, request: u32) {
+        if let Some(pending) = self
+            .state_requests
+            .iter_mut()
+            .find(|pending| pending.request == request)
+        {
+            pending.purpose = StatePurpose::Event;
+        }
+    }
+
+    pub(crate) fn snapshot_capture_pending(&self) -> bool {
+        !self.keep_stored_state
+            && (self.snapshot_due.is_some()
+                || self
+                    .state_requests
+                    .iter()
+                    .any(|pending| !pending.superseded))
+    }
+
+    pub(crate) fn schedule_retiring_snapshot(&mut self) {
+        if !self.snapshot_capture_pending() {
+            self.snapshot_soon();
+        }
+    }
+
     fn take_state_request(&mut self, request: u32) -> Option<StateRequest> {
         let index = self
             .state_requests
@@ -1126,6 +1151,10 @@ impl Bridge {
 
     pub(crate) fn is_loading_clap_preset(&self) -> bool {
         self.pending_clap_preset.is_some()
+    }
+
+    pub(crate) fn is_running_from(&self, bundle: &Path) -> bool {
+        self.is_running() && self.bundle == bundle
     }
 
     pub(crate) fn has_clap_presets_from(&self, bundle: &Path) -> bool {
@@ -1435,6 +1464,7 @@ impl Bridge {
         if self.phase == Phase::Running
             && self.state_restores.is_empty()
             && !self.is_editing_waveform_markers()
+            && !self.is_loading_clap_preset()
             && let Some(due) = self.snapshot_due
             && now >= due
         {

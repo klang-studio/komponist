@@ -139,8 +139,10 @@ shows an empty meter. A meter has no parameter, label or choice bindings.
 An optional root `metadata` object contains `names` and optional `descriptions`
 maps, keyed by the document's locales. Each nonempty map includes the default
 locale. The host obtains these labels at scan time. It falls back to the CLAP
-descriptor name when the plugin supplies no valid localized names. Vendor,
-plugin ID, role and features still come from the descriptor.
+descriptor name when the plugin supplies no valid localized names, and to
+the descriptor description when the layout supplies no descriptions. Vendor,
+plugin ID, role and features come from the descriptor. The browser groups
+audio effects by their declared features.
 
 The same field is accepted as optional decoration in v1. Invalid decoration
 does not affect a v1 panel, and older v1 hosts ignore the field.

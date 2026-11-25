@@ -104,10 +104,7 @@ fn labels<S: Into<String>>(localize: impl Fn(Lang) -> S) -> Labels {
 pub(super) fn panel() -> PanelV2 {
     let spec = GeneralSampler::SPEC;
     let mut panel = panel_from_parts(layout, spec.params_in(Lang::En), spec.params_in(Lang::De));
-    panel.device_labels = Some(komponist_native_clap_sdk::PluginLabels {
-        names: labels(spec.catalog.name_in),
-        descriptions: Default::default(),
-    });
+    panel.device_labels = Some(komponist_bundled_clap_adapter::device_labels(&spec.catalog));
     panel.pages[0].key = "sample".into();
     panel.pages[1].key = "modulation".into();
 

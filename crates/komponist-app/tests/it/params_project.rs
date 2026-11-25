@@ -136,6 +136,7 @@ fn a_file_with_lowercase_device_names_shows_hexa_volt_and_presse() {
 
     let project = persist::from_json(&old).expect("the old file loads");
     let mut shown = std::collections::BTreeSet::new();
+    let catalog = komponist_plugins::Catalog::builtin();
     for device in project
         .tracks
         .iter()
@@ -145,7 +146,7 @@ fn a_file_with_lowercase_device_names_shows_hexa_volt_and_presse() {
         for lang in [Lang::De, Lang::En] {
             shown.insert((
                 device.plugin.id.clone(),
-                komponist_app::views::plugin_name(lang, &device.plugin),
+                komponist_app::views::catalog_plugin_name(lang, &catalog, &device.plugin),
             ));
         }
     }

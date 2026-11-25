@@ -171,7 +171,7 @@ pub fn device_rows(
             (
                 DeviceRow {
                     device: d.id,
-                    name: crate::views::plugin_name(lang, &d.plugin),
+                    name: crate::views::catalog_plugin_name(lang, host.catalog(), &d.plugin),
                     instrument: d.role == DeviceRole::Instrument,
                     bypass: d.bypass,
                     status,

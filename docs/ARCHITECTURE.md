@@ -789,18 +789,24 @@ A layout rejection leaves the generic parameter view available.
 
 ### 8.5 Built-in devices
 
-Built-ins run in process and use the normal document/processor/device-card interfaces:
+Bundled devices are installed as authenticated CLAP bundles. The scanner supplies their
+identity, vendor, role and features from the CLAP descriptor and reads localized device
+names and descriptions from the native layout. The browser, device pickers and live device
+labels use the scan catalog. Projects refer to devices by stable plugin ID. When a bundle
+is missing, the saved device stays in the project and the missing-plugin dialog shows it.
+
+The bundled devices use the normal document, processor and device-card interfaces:
 
 - **Hexa:** six-operator FM via `hexa-core`, sample-accurate events, serialized patches, macros and
-  factory presets. The persistent plugin ID remains `pisynth` for project compatibility.
+  factory presets. Migration recognizes the historical plugin ID `pisynth`.
 - **Volt:** subtractive synthesis with two oscillators, sub oscillator, filter and modulation.
 - **Surf:** wavetable synthesis on Volt's engine: the voice, filter, envelopes, LFOs, matrix and
   voice modes are shared (`Engine<O: Oscillators>`), only the two oscillators differ. Sixteen
   original factory tables are generated at first use from recipes in
   `komponist_model::params::wavetable`, which the 3D graph reads too, into ten band-limited
   levels each. User tables are a later issue (#184).
-- **Klopfer:** drum sampler with eight pads on MIDI notes 36–43. The existing built-in ID
-  remains `sampler` for project compatibility.
+- **Klopfer:** drum sampler with eight pads on MIDI notes 36–43. Migration recognizes the
+  historical built-in ID `sampler`.
 - **Sampler:** general-purpose instrument with chromatic and slice modes, waveform regions,
   fades, tempo sync and modulation. Both instruments share the voice engine, background sample
   loading and linked-source storage.
@@ -808,7 +814,9 @@ Built-ins run in process and use the normal document/processor/device-card inter
   Limiter. EQ spectrum and other device visualizations use leased taps, analyzed outside RT.
 - **MIDI effects:** Arpeggiator and Scale (`Tonleiter` internally), run before the instrument.
 
-Device specifications define parameters, layouts, defaults and localized catalog names.
+Device specifications author parameters, layouts, defaults and catalog text inside each
+device. The bundled adapters publish this metadata through CLAP. Legacy in-process
+references remain available to compatibility tests and project migration.
 Built-in processing uses `klang-dsp` primitives where shared; sample-derived buffers use the
 process-wide audio file pool.
 

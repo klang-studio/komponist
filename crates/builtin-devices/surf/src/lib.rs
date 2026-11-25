@@ -62,6 +62,7 @@ pub static SPEC: Spec = Spec {
         id: ID,
         name: NAME,
         name_in: Lang::device_name_surf,
+        description_in: Some(Lang::device_description_surf),
         role: komponist_model::DeviceRole::Instrument,
         features: &["instrument", "synthesizer", "wavetable"],
         vendor: "komponist",
