@@ -275,7 +275,9 @@ impl DirectSession {
         self.host.device_display()
     }
 
-    pub(crate) fn asset_slots(&self) -> (Option<Snapshot>, bool, bool, bool) {
+    pub(crate) fn asset_slots(
+        &self,
+    ) -> (Option<Snapshot>, bool, bool, Option<edit_state::Version>) {
         self.host.asset_slots()
     }
 
@@ -283,7 +285,7 @@ impl DirectSession {
         &self,
         edits: &edit_state::Edits,
         state: Option<&[u8]>,
-    ) -> edit_state::Prepared {
+    ) -> edit_state::PreparedChange {
         self.host.prepare_asset_edit_state(edits, state)
     }
 

@@ -64,6 +64,26 @@ typedef struct komponist_clap_device_asset_edit_state {
                                  komponist_clap_asset_write_state_t write);
 } komponist_clap_device_asset_edit_state_t;
 
+#define KOMPONIST_CLAP_EXT_DEVICE_ASSET_EDIT_STATE_V2 "org.klang-studio.komponist.device-asset-edit-state/2"
+#define KOMPONIST_CLAP_ASSET_MAX_PARAMETER_BASE_RESETS UINT32_C(32)
+
+typedef bool (CLAP_ABI *komponist_clap_asset_reset_parameter_bases_t)(
+    void *output, const uint32_t *parameter_ids, uint32_t count);
+
+typedef struct komponist_clap_device_asset_edit_state_v2 {
+    /* Inherits the detached-state rules. Either sink may be called once.
+     * Return REPLACED after at least one accepted sink or UNCHANGED with no output.
+     * The IDs name parameters whose default values are represented in the prepared state. */
+    uint32_t (CLAP_ABI *prepare)(const clap_plugin_t *plugin,
+                                 const uint8_t *edits,
+                                 uint32_t edits_length,
+                                 const uint8_t *state,
+                                 uint32_t state_length,
+                                 void *output,
+                                 komponist_clap_asset_write_state_t write,
+                                 komponist_clap_asset_reset_parameter_bases_t reset_parameter_bases);
+} komponist_clap_device_asset_edit_state_v2_t;
+
 #ifdef __cplusplus
 }
 #endif

@@ -96,12 +96,14 @@ impl DirectClap {
         self.plugin.device_display()
     }
 
-    pub(crate) fn asset_slots(&self) -> (Option<Snapshot>, bool, bool, bool) {
+    pub(crate) fn asset_slots(
+        &self,
+    ) -> (Option<Snapshot>, bool, bool, Option<edit_state::Version>) {
         (
             self.plugin.asset_slots(),
             self.plugin.supports_asset_slots(),
             self.plugin.supports_offline_preparation(),
-            self.plugin.supports_asset_edit_state(),
+            self.plugin.asset_edit_state_version(),
         )
     }
 
@@ -109,7 +111,7 @@ impl DirectClap {
         &self,
         edits: &edit_state::Edits,
         state: Option<&[u8]>,
-    ) -> edit_state::Prepared {
+    ) -> edit_state::PreparedChange {
         self.plugin.prepare_asset_edit_state(edits, state)
     }
 

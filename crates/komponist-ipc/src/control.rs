@@ -105,7 +105,7 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 21 (#287) restores CLAP parameter bases separately from opaque state bytes.
 /// 22 (#286) applies discovered CLAP presets and captures project state.
 /// 23 (#285) prepares persisted state for a user file edit.
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// Maximum number of parameter bases that can follow an active state restore.
 pub const MAX_STATE_PARAMETER_BASES: usize = crate::shm::INPUT_EVENT_CAPACITY;
@@ -473,17 +473,11 @@ pub enum BridgeMsg {
         snapshot: Option<Vec<u8>>,
         file_slots: bool,
         offline: bool,
-        edit_state: bool,
+        edit_state: Option<crate::device_assets::edit_state::Version>,
     },
     /// Whether the plugin accepted the file-slot update.
     DeviceAssetsApplied(u32, bool),
-    DeviceAssetEditPrepared(
-        u64,
-        Result<
-            Option<crate::device_assets::edit_state::State>,
-            crate::device_assets::edit_state::Rejected,
-        >,
-    ),
+    DeviceAssetEditPrepared(u64, crate::device_assets::edit_state::PreparedChange),
     /// Preparation result. Absent when the extension is unavailable.
     DeviceOfflineStatus(u32, Option<crate::device_assets::OfflineStatus>),
     /// First message after start.
@@ -2053,15 +2047,18 @@ mod tests {
                 snapshot: None,
                 file_slots: true,
                 offline: false,
-                edit_state: true,
+                edit_state: Some(crate::device_assets::edit_state::Version::V2),
             },
             BridgeMsg::DeviceAssetEditPrepared(
                 7,
-                Ok(Some(
-                    crate::device_assets::edit_state::State::try_from(vec![1, 2, 3]).unwrap(),
-                )),
+                Ok(crate::device_assets::edit_state::Change {
+                    state: Some(
+                        crate::device_assets::edit_state::State::try_from(vec![1, 2, 3]).unwrap(),
+                    ),
+                    reset_parameter_bases: vec![3, 412],
+                }),
             ),
-            BridgeMsg::DeviceAssetEditPrepared(8, Ok(None)),
+            BridgeMsg::DeviceAssetEditPrepared(8, Ok(Default::default())),
             BridgeMsg::DeviceAssetEditPrepared(9, Err(crate::device_assets::edit_state::Rejected)),
             BridgeMsg::Hello {
                 protocol: PROTOCOL_VERSION,

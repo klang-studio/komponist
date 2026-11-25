@@ -728,8 +728,9 @@ fn tune_and_relink(app: &mut App, drums: DeviceId, tune: u32, other: &Path) {
         slot: 1,
         path: Some(other.to_owned()),
     }));
-    app.step();
-    assert_eq!(asset_link(app, drums, 1).abs, other);
+    step_until(app, "the sampler file edit was committed", |app| {
+        asset_link(app, drums, 1).abs == other
+    });
 }
 
 fn kit_file(pad: usize) -> String {

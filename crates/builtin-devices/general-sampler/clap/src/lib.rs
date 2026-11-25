@@ -8,7 +8,7 @@ use komponist_device_core::{Dsp, Spec};
 use komponist_i18n::Lang;
 use komponist_model::params::layout::{Cell, DeviceLayout, Half, Page, WidgetKind};
 use komponist_model::params::{ParamInfo, ParamKind};
-use komponist_sampler_clap::{Sampled, SampledDefinition, SliceSettingsCodec};
+use komponist_sampler_clap::{AssetEditIntent, Sampled, SampledDefinition, SliceSettingsCodec};
 use komponist_sampler_shared::{ManagedLoader, SamplerHandle};
 use nice_plug::prelude::*;
 
@@ -163,6 +163,18 @@ impl SampledDefinition for GeneralSampler {
         read: |assets| komponist_general_sampler::read_settings(Some(assets)),
         write: |assets, settings| komponist_general_sampler::write_settings(Some(assets), settings),
     });
+
+    fn trim_for_asset_edit(_slot: usize, intent: AssetEditIntent) -> Option<[usize; 2]> {
+        (intent == AssetEditIntent::Assign).then(|| {
+            ["start", "end"].map(|id| {
+                Self::SPEC
+                    .params()
+                    .iter()
+                    .position(|parameter| parameter.id.as_str() == id)
+                    .expect("the sampler declares both trim controls")
+            })
+        })
+    }
 
     fn panel_v2() -> Option<komponist_native_clap_sdk::PanelV2> {
         Some(panel::panel())

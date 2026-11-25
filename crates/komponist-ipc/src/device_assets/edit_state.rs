@@ -5,6 +5,8 @@ use std::ffi::{CStr, c_void};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 
 pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.device-asset-edit-state/1";
+pub const EXTENSION_ID_V2: &CStr = c"org.klang-studio.komponist.device-asset-edit-state/2";
+pub const MAX_PARAMETER_BASE_RESETS: usize = super::MAX_SLOTS;
 pub const MAX_EDITS_BYTES: usize = 256;
 pub const MAX_STATE_BYTES: usize = 2 * 1024 * 1024;
 
@@ -29,6 +31,32 @@ pub struct Extension {
             write: WriteState,
         ) -> u32,
     >,
+}
+
+/// Records the CLAP parameter IDs whose persisted host overrides must be removed.
+pub type ResetParameterBases = unsafe extern "C" fn(*mut c_void, *const u32, u32) -> bool;
+
+/// Version 2 adds a sink for the IDs reset by the device in its replacement state.
+#[repr(C)]
+pub struct ExtensionV2 {
+    pub prepare: Option<
+        unsafe extern "C" fn(
+            plugin: *const c_void,
+            edits: *const u8,
+            edits_len: u32,
+            state: *const u8,
+            state_len: u32,
+            output: *mut c_void,
+            write_state: WriteState,
+            reset_parameter_bases: ResetParameterBases,
+        ) -> u32,
+    >,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub enum Version {
+    V1,
+    V2,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -121,6 +149,50 @@ impl<'de> Deserialize<'de> for State {
     }
 }
 
+/// The device's staged replacement and the host overrides it supersedes, if any.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct Change {
+    pub state: Option<State>,
+    #[serde(
+        deserialize_with = "decode_base_resets",
+        serialize_with = "encode_base_resets"
+    )]
+    pub reset_parameter_bases: Vec<u32>,
+}
+
+pub fn valid_base_resets(ids: &[u32]) -> bool {
+    ids.len() <= MAX_PARAMETER_BASE_RESETS
+        && ids
+            .iter()
+            .enumerate()
+            .all(|(index, id)| *id != u32::MAX && !ids[..index].contains(id))
+}
+
+fn decode_base_resets<'de, D>(deserializer: D) -> Result<Vec<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let ids = super::bounded_slots(deserializer)?;
+    if !valid_base_resets(&ids) {
+        return Err(D::Error::custom("asset edit parameter base reset IDs"));
+    }
+    Ok(ids)
+}
+
+fn encode_base_resets<S>(ids: &[u32], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if !valid_base_resets(ids) {
+        return Err(serde::ser::Error::custom(
+            "asset edit parameter base reset IDs",
+        ));
+    }
+    ids.serialize(serializer)
+}
+
+pub type PreparedChange = Result<Change, Rejected>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +223,32 @@ mod tests {
             .is_none()
         );
         assert!(Edits { slots: Vec::new() }.encode(&mut bytes).is_none());
+    }
+
+    #[test]
+    fn prepared_change_has_bounded_unique_parameter_ids() {
+        let change = Change {
+            state: Some(State::try_from(vec![1, 2, 3]).unwrap()),
+            reset_parameter_bases: vec![4, 17],
+        };
+        let encoded = postcard::to_stdvec(&change).unwrap();
+        assert_eq!(postcard::from_bytes::<Change>(&encoded).unwrap(), change);
+
+        for ids in [
+            vec![8, 8],
+            vec![u32::MAX],
+            (0..=MAX_PARAMETER_BASE_RESETS as u32).collect(),
+        ] {
+            let bytes = postcard::to_stdvec(&(Option::<State>::None, &ids)).unwrap();
+            assert!(postcard::from_bytes::<Change>(&bytes).is_err());
+            assert!(
+                postcard::to_stdvec(&Change {
+                    state: None,
+                    reset_parameter_bases: ids
+                })
+                .is_err()
+            );
+        }
     }
 
     #[test]

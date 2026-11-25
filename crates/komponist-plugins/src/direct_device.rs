@@ -441,7 +441,7 @@ impl DirectDevice {
         &self,
         edits: &komponist_ipc::device_assets::edit_state::Edits,
         state: Option<&[u8]>,
-    ) -> komponist_ipc::device_assets::edit_state::Prepared {
+    ) -> komponist_ipc::device_assets::edit_state::PreparedChange {
         self.session.prepare_asset_edit_state(edits, state)
     }
 

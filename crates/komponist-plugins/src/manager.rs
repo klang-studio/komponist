@@ -1119,8 +1119,13 @@ impl PluginManager {
     }
 
     pub fn supports_asset_edit_state(&self, device: DeviceId) -> bool {
-        self.device_assets(device)
-            .is_some_and(|assets| assets.supports_edit_state && assets.snapshot.is_some())
+        self.asset_edit_state_version(device).is_some()
+    }
+
+    fn asset_edit_state_version(&self, device: DeviceId) -> Option<edit_state::Version> {
+        let assets = self.device_assets(device)?;
+        assets.snapshot.as_ref()?;
+        assets.edit_state_version
     }
 
     pub fn cancel_asset_edit(&mut self, device: DeviceId) {
@@ -1153,7 +1158,8 @@ impl PluginManager {
         let sampler = self
             .bundled_sampler_for_asset_edit(device)
             .filter(|_| self.asset_slots(id).is_some());
-        let supports_state = self.supports_asset_edit_state(id);
+        let version = self.asset_edit_state_version(id);
+        let supports_state = version.is_some();
         let requires_current_live_state = supports_state && sampler.is_none();
         if !supports_state && sampler.is_none() {
             return Ok(AssetEditPreparation::Ready(None));
@@ -1185,10 +1191,15 @@ impl PluginManager {
         }
         let trim = sampler
             .filter(|&kind| {
-                !supports_state
-                    || changes.iter().any(|change| {
-                        bundled_sampler::should_reset_trim(kind, change.attaching, change.relinking)
-                    })
+                version != Some(edit_state::Version::V2)
+                    && (!supports_state
+                        || changes.iter().any(|change| {
+                            bundled_sampler::should_reset_trim(
+                                kind,
+                                change.attaching,
+                                change.relinking,
+                            )
+                        }))
             })
             .map(|_| {
                 bundled_sampler::edit_native_regions(

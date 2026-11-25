@@ -17,6 +17,8 @@ use clap_sys::plugin::clap_plugin;
 use komponist_bundled_clap_adapter::{DeviceDefinition, Parameters, panel_for, to_device_note};
 use komponist_device_core::pinned_clap_state::{MAX_SAMPLE_ASSET_BYTES, SAMPLE_ASSETS_FIELD};
 use komponist_device_core::{Dsp, SAMPLE_RATES, dispatch_note};
+use komponist_ipc::device_assets::edit_state;
+pub use komponist_ipc::device_assets::edit_state::Intent as AssetEditIntent;
 use komponist_ipc::sampler_ui::{self, EXTENSION_ID, Pad, Snapshot, Status, Sync as WireSync};
 use komponist_native_clap_sdk::{NativeClapLayout, Panel, PanelV2};
 use komponist_sampler_shared::{
@@ -33,6 +35,11 @@ pub trait SampledDefinition: DeviceDefinition {
     const DISPLAY: Option<fn(&Parameters, &mut komponist_native_clap_sdk::display::Display)> = None;
 
     fn panel_v2() -> Option<PanelV2> {
+        None
+    }
+
+    /// Defaults affected by a user edit of this device's file slot.
+    fn trim_for_asset_edit(_slot: usize, _intent: AssetEditIntent) -> Option<[usize; 2]> {
         None
     }
 
@@ -428,9 +435,9 @@ impl<T: SampledDefinition> ClapPlugin for Sampled<T> {
         } else if id == komponist_ipc::waveform_preview::EXTENSION_ID && T::SLICE_SETTINGS.is_some()
         {
             std::ptr::from_ref(&Self::WAVEFORM_PREVIEW).cast()
-        } else if id == komponist_ipc::device_assets::edit_state::EXTENSION_ID
-            && T::SLICE_SETTINGS.is_some()
-        {
+        } else if id == edit_state::EXTENSION_ID_V2 {
+            asset_edit::extension_v2::<T>()
+        } else if id == edit_state::EXTENSION_ID && T::SLICE_SETTINGS.is_some() {
             asset_edit::extension::<T>()
         } else if id == komponist_ipc::device_assets::EXTENSION_ID {
             komponist_native_clap_sdk::assets::extension::<Self, SampleParameters<T>>(id)

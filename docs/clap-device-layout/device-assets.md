@@ -101,3 +101,11 @@ edits. It leaves live state, processing, bindings and files untouched. The host 
 discard the result if its source changed while the request was in flight. On success,
 the host commits the prepared state and file links as one document edit. Undo, redo,
 project loading and offline rendering restore their saved state and bindings directly.
+
+Version 2, `org.klang-studio.komponist.device-asset-edit-state/2`, adds a second
+synchronous sink for 1–32 distinct, valid numeric CLAP parameter IDs. The device uses
+it to remove saved host overrides for parameters whose defaults are reflected in the
+prepared state. Call each sink at most once. Return `Replaced` after at least one sink
+accepted its output, or `Unchanged` without calling either sink. The host removes only
+the reported overrides and retains the others in the same document edit. Hosts prefer
+version 2 and keep using version 1 for older bundles.
