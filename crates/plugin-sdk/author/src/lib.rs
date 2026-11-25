@@ -26,12 +26,13 @@ use clap_sys::{
 };
 use komponist_ipc::control::{ParamInfo, param_flags};
 use komponist_ipc::native_layout::{
-    CAP_CONDITIONAL_CONTROLS, CAP_PAD_BANK, CAP_PARAMETER_DISPLAY, CAP_SOURCE_FRACTION_TRIM,
-    EXTENSION_V1, EXTENSION_V2, GraphKind, MAX_AUTHOR_IDS, MAX_BYTES, NativeLayout,
-    valid_author_id,
+    CAP_CONDITIONAL_CONTROLS, CAP_EQ_BAND_CONTROLS, CAP_PAD_BANK, CAP_PARAMETER_DISPLAY,
+    CAP_SOURCE_FRACTION_TRIM, EXTENSION_V1, EXTENSION_V2, GraphKind, MAX_AUTHOR_IDS, MAX_BYTES,
+    NativeLayout, valid_author_id,
 };
-use komponist_model::params::ParamContext;
+use komponist_model::params::context::BAND;
 use komponist_model::params::layout::validate;
+use komponist_model::params::{ParamContext, resolve};
 use nice_plug::prelude::ClapPlugin;
 use nice_plug::wrapper::clap::Wrapper;
 use serde_json::{Value, json};
@@ -150,6 +151,8 @@ pub struct PanelV2 {
     pub headings: BTreeMap<usize, Vec<Heading>>,
     /// Physical ranges and units of normalized CLAP parameters, keyed by author ID.
     pub parameter_display: BTreeMap<ParamId, ParameterDisplay>,
+    /// Optional full names for a selected band's compact choice labels.
+    pub full_band_choice_labels: BTreeMap<ParamId, Vec<Labels>>,
 }
 
 /// A nice-plug plugin supplying an immutable native layout.
@@ -264,11 +267,20 @@ unsafe fn compile_layout<P: ClapPlugin>(
     };
     let mut pages = Vec::new();
     let mut conditional_controls = false;
+    let mut eq_band_controls = false;
     for (page_index, (page, text)) in panel.grid.pages.iter().zip(&panel.pages).enumerate() {
         if v2.is_none() && !page.dividers.is_empty() {
             return Err(error("native CLAP v1 has no grid dividers"));
         }
         let mut cells = Vec::new();
+        let bands = page.cells.iter().find_map(|cell| match &cell.param {
+            CellParam::Graph(GraphBinding {
+                config: GraphConfig::Eq { bands },
+                select: Some(BAND),
+                ..
+            }) => Some(*bands),
+            _ => None,
+        });
         for (cell_index, cell) in page.cells.iter().enumerate() {
             let index = (page_index, cell_index);
             if cell.widget == WidgetKind::PadGrid {
@@ -330,18 +342,20 @@ unsafe fn compile_layout<P: ClapPlugin>(
                 && let Some(labels) = v2.and_then(|panel| panel.graph_labels.get(&index))
             {
                 cells.push(compile_graph(cell, binding, labels, &mut resolve_id)?);
+                eq_band_controls |= binding.select.is_some()
+                    || binding
+                        .bind
+                        .iter()
+                        .any(|(slot, _)| slot == "spectrum_enabled");
                 continue;
             }
-            let id = fixed_binding(cell, v2.is_some())?;
             let widget = widget_name(cell.widget, v2.is_some())?;
-            let param_id = resolve_id(id)?;
             let mut wire_cell = json!({
                 "widget": widget,
                 "col": cell.col,
                 "row": cell.row,
                 "cols": cell.cols,
                 "rows": cell.rows,
-                "param_id": param_id,
             });
             if let Some(driver) = &cell.disabled_by {
                 wire_cell["disabled_by"] = json!(resolve_id(driver)?);
@@ -353,19 +367,29 @@ unsafe fn compile_layout<P: ClapPlugin>(
                     Half::Bottom => "bottom",
                 });
             }
-            if let Some(labels) = panel.parameter_labels.get(id) {
-                wire_cell["labels"] = json!(labels);
-            }
-            if matches!(cell.widget, WidgetKind::Segment | WidgetKind::Dropdown) {
-                let param = inventory
-                    .iter()
-                    .find(|param| param.id == param_id)
-                    .ok_or_else(|| error(format!("missing CLAP inventory entry for {id}")))?;
-                let labels = panel
-                    .choice_labels
-                    .get(id)
-                    .ok_or_else(|| error(format!("missing choice labels for {id}")))?;
-                wire_cell["choices"] = Value::Array(compile_choices(param, labels)?);
+            let mut binding = |id: &ParamId, full: Option<&[Labels]>| {
+                compile_control_binding(id, cell.widget, panel, full, &inventory, &mut resolve_id)
+            };
+            if let CellParam::Template(template) = &cell.param
+                && let Some(v2) = v2
+                && let Some(bands) = bands.filter(|count| (1..=8).contains(count))
+                && cell.carrier.is_none()
+                && cell.disabled_by.is_none()
+            {
+                let controls = (1..=bands)
+                    .map(|band| {
+                        let id = resolve(template, &ParamContext::new().with(BAND, band))
+                            .map_err(|failure| error(failure.to_string()))?;
+                        let full = v2.full_band_choice_labels.get(&id).map(Vec::as_slice);
+                        binding(&id, full).map(Value::Object)
+                    })
+                    .collect::<Result<Vec<_>, LayoutError>>()?;
+                wire_cell["band_controls"] = Value::Array(controls);
+            } else {
+                wire_cell
+                    .as_object_mut()
+                    .expect("cell object")
+                    .extend(binding(fixed_binding(cell, v2.is_some())?, None)?);
             }
             cells.push(wire_cell);
         }
@@ -389,17 +413,17 @@ unsafe fn compile_layout<P: ClapPlugin>(
         .map(|(id, display)| Ok((resolve_id(id)?, display)))
         .collect::<Result<BTreeMap<_, _>, LayoutError>>()?;
     let pad_bank = v2.and_then(|v2| v2.pad_bank.as_ref());
-    if let Some(failure) = validate(&panel.grid, &ParamContext::new(), &|id| {
-        resolved.contains_key(id)
-    })
-    .into_iter()
-    .find(|error| {
-        pad_bank.is_none()
-            || !matches!(
-                error,
-                komponist_model::params::layout::LayoutError::TooManyPages(_)
-            )
-    }) {
+    let context = ParamContext::new().with(BAND, 1);
+    if let Some(failure) = validate(&panel.grid, &context, &|id| resolved.contains_key(id))
+        .into_iter()
+        .find(|error| {
+            pad_bank.is_none()
+                || !matches!(
+                    error,
+                    komponist_model::params::layout::LayoutError::TooManyPages(_)
+                )
+        })
+    {
         return Err(error(failure.to_string()));
     }
     let mut document = json!({
@@ -409,6 +433,9 @@ unsafe fn compile_layout<P: ClapPlugin>(
         "pages": pages,
     });
     let mut capabilities = Vec::new();
+    if eq_band_controls {
+        capabilities.push(CAP_EQ_BAND_CONTROLS);
+    }
     if conditional_controls {
         capabilities.push(CAP_CONDITIONAL_CONTROLS);
     }
@@ -501,13 +528,18 @@ fn compile_graph(
         || cell.half.is_some()
         || cell.carrier.is_some()
         || cell.disabled_by.is_some()
-        || binding.select.is_some()
+        || binding
+            .select
+            .is_some_and(|key| key != BAND || !matches!(binding.config, GraphConfig::Eq { .. }))
     {
         return Err(error(
             "native CLAP v2 requires an unconditional graph with fixed bindings",
         ));
     }
     let mut graph = json!({"name": labels.name, "description": labels.description});
+    if binding.select.is_some() {
+        graph["select_band"] = Value::Bool(true);
+    }
     if labels.hide_title {
         graph["hide_title"] = json!(true);
     }
@@ -575,6 +607,43 @@ fn compile_graph(
         "rows": cell.rows,
         "graph": graph,
     }))
+}
+
+fn compile_control_binding(
+    id: &ParamId,
+    widget: WidgetKind,
+    panel: &Panel,
+    full: Option<&[Labels]>,
+    inventory: &[ParamInfo],
+    resolve_id: &mut impl FnMut(&ParamId) -> Result<u32, LayoutError>,
+) -> Result<serde_json::Map<String, Value>, LayoutError> {
+    let mut binding = serde_json::Map::new();
+    let param_id = resolve_id(id)?;
+    binding.insert("param_id".into(), json!(param_id));
+    if let Some(labels) = panel.parameter_labels.get(id) {
+        binding.insert("labels".into(), json!(labels));
+    }
+    if matches!(widget, WidgetKind::Segment | WidgetKind::Dropdown) {
+        let param = inventory
+            .iter()
+            .find(|param| param.id == param_id)
+            .ok_or_else(|| error(format!("missing CLAP inventory entry for {id}")))?;
+        let labels = panel
+            .choice_labels
+            .get(id)
+            .ok_or_else(|| error(format!("missing choice labels for {id}")))?;
+        let mut choices = compile_choices(param, labels)?;
+        if let Some(full) = full {
+            if full.len() != choices.len() {
+                return Err(error("full and short band choice counts must match"));
+            }
+            for (choice, labels) in choices.iter_mut().zip(full) {
+                choice["full_labels"] = json!(labels);
+            }
+        }
+        binding.insert("choices".into(), Value::Array(choices));
+    }
+    Ok(binding)
 }
 
 fn fixed_binding(cell: &Cell, v2: bool) -> Result<&ParamId, LayoutError> {

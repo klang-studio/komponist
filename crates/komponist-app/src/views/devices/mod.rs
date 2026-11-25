@@ -47,6 +47,7 @@ mod viewport;
 mod waveform_slices;
 
 use egui::{Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
+use komponist_model::params::ParamId;
 use komponist_model::{ChannelRef, DeviceId, PluginRef, Track, TrackId};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
@@ -336,8 +337,14 @@ impl View for Devices {
                         let key = graph.signal_taps.get(role)?;
                         host.signal_tap(c.device, key)
                     };
-                    let analysis = named("spectrum")
-                        .and_then(|tap| ctx.meters.named_analysis(c.device, tap, show, now));
+                    let analysis = named("spectrum").and_then(|tap| {
+                        let enabled = graph.slots.get("spectrum_enabled").is_none_or(|&wire| {
+                            c.param(&ParamId::plugin(wire))
+                                .is_some_and(|param| param.value >= 0.5)
+                        });
+                        ctx.meters
+                            .named_analysis(c.device, tap, show && enabled, now)
+                    });
                     let (detector, reduction) = (named("level"), named("reduction"));
                     let dynamics =
                         (show && (detector.is_some() || reduction.is_some())).then(|| {
