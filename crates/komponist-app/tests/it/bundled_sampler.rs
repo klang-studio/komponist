@@ -1008,18 +1008,39 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             "the unautomated replacement sample is silent: peak {peak}"
         );
     };
-    let assert_live_automation = |app: &mut App| {
+    let assert_live_automation = |app: &mut App, phase: &str| {
         let ready_after = app.engine().stats().callbacks() + 2;
-        step_until(
-            app,
-            "the audio callback received the restored automation",
-            |app| app.engine().stats().callbacks() >= ready_after,
-        );
-        let peak = sample_peak(app);
+        step_until(app, &format!("{phase}: audio callbacks advanced"), |app| {
+            app.engine().stats().callbacks() >= ready_after
+        });
+
+        // Ready and StateApplied can precede the first sounding block after a bridge
+        // restore. A silent probe cannot measure gain. Retry only silence, and check
+        // the first audible probe so an incorrect automation value still fails at once.
+        let deadline = Instant::now() + PATIENCE;
+        let late_at_start = app.engine().host().late_blocks(general);
+        let mut silent_notes = 0;
+        let peak = loop {
+            let peak = sample_peak(app);
+            if peak != 0.0 {
+                break peak;
+            }
+            silent_notes += 1;
+            assert!(
+                Instant::now() < deadline,
+                "{phase}: sampler stayed silent after {silent_notes} notes; \
+                 asset status {:?}, bridge late blocks {} (started at {late_at_start})",
+                asset_status(app, general, 0),
+                app.engine().host().late_blocks(general),
+            );
+        };
+        if silent_notes > 0 {
+            eprintln!("{phase}: sampler sounded after {silent_notes} silent notes");
+        }
         let ratio = peak / base_peak;
         assert!(
             (0.01..0.05).contains(&ratio),
-            "the -42 dB lane did not attenuate the -9 dB base: peak {peak}, base {base_peak}"
+            "{phase}: the -42 dB lane did not attenuate the -9 dB base: peak {peak}, base {base_peak}"
         );
     };
     let owner = AutomationOwner::Track(general_track);
@@ -1062,7 +1083,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
                     .is_some_and(|program| program.automation_reads(owner, &target))
         },
     );
-    assert_live_automation(h.state_mut());
+    assert_live_automation(h.state_mut(), "after installing the gain lane");
     let before = slice_state(h.state());
     let prior: Vec<_> = before.slices.iter().map(|slice| slice.time).collect();
     let seconds = 0.08;
@@ -1092,12 +1113,12 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     assert_eq!(slice_state(h.state()), before);
     assert!(gain_saved(h.state(), -9.0));
     wait_for_restore(h.state_mut());
-    assert_live_automation(h.state_mut());
+    assert_live_automation(h.state_mut(), "after undoing the marker edit");
     h.state_mut().dispatch(Action::Edit(EditAction::Redo));
     assert_eq!(slice_state(h.state()), after);
     assert!(gain_saved(h.state(), -9.0));
     wait_for_restore(h.state_mut());
-    assert_live_automation(h.state_mut());
+    assert_live_automation(h.state_mut(), "after redoing the marker edit");
     assert_eq!(sample_name(h.state()), "replacement");
     h.state_mut().shutdown();
 }
