@@ -549,6 +549,12 @@ fn general_sampler_file_edits_preserve_slice_history() {
                 value: pending_gain,
             }));
         }
+        let before_reload = (case == "reload").then(|| {
+            let peak = audible_note_peak(&mut app, track, 60);
+            step_for(&mut app, Duration::from_millis(250));
+            write_wav(before_path.unwrap(), 2_000);
+            peak
+        });
         assert_eq!(app.doc().undo_label(), None, "{case}");
         app.dispatch(Action::Plugin(PluginAction::SetPluginAsset {
             device: sampler,
@@ -585,6 +591,13 @@ fn general_sampler_file_edits_preserve_slice_history() {
 
         revision = wait_for(&mut app, "edit", after_path, after_slices, Some(revision));
         check_bases(&mut app, "edit", after_start);
+        if let Some(before) = before_reload {
+            let after = audible_note_peak(&mut app, track, 60);
+            assert!(
+                (0.08..0.35).contains(&(after / before)),
+                "same-path reload did not play the quieter replacement: {before} -> {after}"
+            );
+        }
         assert_eq!(
             app.undo_text().as_deref(),
             Some("Change Plug-in File Link"),
@@ -1397,8 +1410,17 @@ fn assert_sample_sources(project: &Project, project_dir: &Path, source: &Path) {
 }
 
 fn assert_audible(app: &mut App, track: TrackId, key: u8) {
+    audible_note_peak(app, track, key);
+}
+
+fn audible_note_peak(app: &mut App, track: TrackId, key: u8) -> f32 {
     let deadline = Instant::now() + PATIENCE;
-    while note_peak(app, track, key) <= 1e-4 {
+    loop {
+        app.engine().track_meter(track).unwrap().take();
+        let peak = note_peak(app, track, key);
+        if peak > 1e-4 {
+            return peak;
+        }
         assert!(
             Instant::now() < deadline,
             "relocated sampler track {track:?} is silent"

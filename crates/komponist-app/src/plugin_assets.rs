@@ -18,6 +18,7 @@ pub(crate) struct PendingAssetEdit {
     request: u64,
     source: Arc<Device>,
     project_path: Option<PathBuf>,
+    updates: BTreeMap<u32, Option<AssetLink>>,
     links: BTreeMap<u32, AssetLink>,
     reloads: Vec<Binding>,
     approved_files: Vec<PathBuf>,
@@ -91,23 +92,38 @@ impl App {
         let Some((_, _, target)) = self.project().find_device(device) else {
             return;
         };
+        let pending = self
+            .dialogs
+            .samples
+            .pending_asset_edits
+            .get(&device)
+            .filter(|edit| edit.matches_source(target, self.project_path()));
+        let mut staged = pending.map_or_else(BTreeMap::new, |edit| edit.updates.clone());
+        for (slot, link) in updates {
+            if link.is_none() && !target.asset_links.contains_key(&slot) {
+                staged.remove(&slot);
+            } else {
+                staged.insert(slot, link);
+            }
+        }
+        if pending.is_some_and(|edit| edit.updates == staged) {
+            return;
+        }
+        if staged.is_empty() {
+            // Clearing an uncommitted assignment withdraws it without making a history step.
+            if pending.is_some() {
+                self.cancel_plugin_asset_edit(device);
+            }
+            return;
+        }
+
         let dir = self.project_dir();
         let mut links = target.asset_links.clone();
         let mut changes = Vec::new();
         let mut reloads = Vec::new();
         let mut approved_files = Vec::new();
-        let mut clears_pending_link = false;
-        for (slot, link) in updates {
-            let previous = links.get(&slot);
-            if previous.is_none() && link.is_none() {
-                clears_pending_link |= self
-                    .dialogs
-                    .samples
-                    .pending_asset_edits
-                    .get(&device)
-                    .is_some_and(|edit| edit.links.contains_key(&slot));
-                continue;
-            }
+        for (&slot, link) in &staged {
+            let previous = target.asset_links.get(&slot);
             let resolved = previous.and_then(|old| old.resolve(dir.as_deref()));
             changes.push(AssetEdit {
                 slot,
@@ -125,17 +141,10 @@ impl App {
                         reload: true,
                     });
                 }
-                links.insert(slot, link);
+                links.insert(slot, link.clone());
             } else {
                 links.remove(&slot);
             }
-        }
-        if changes.is_empty() {
-            // A clear can supersede a first assignment the bridge hasn't prepared yet.
-            if clears_pending_link {
-                self.cancel_plugin_asset_edit(device);
-            }
-            return;
         }
         // A bridge may still be waiting for the audio thread to deliver a knob turn.
         // The sampler journal has its persistent value and records it before the file edit.
@@ -164,6 +173,7 @@ impl App {
             request,
             source,
             project_path,
+            updates: staged,
             links,
             reloads,
             approved_files,
@@ -348,6 +358,54 @@ mod tests {
         ) -> Result<AssetEditPreparation, DeviceId> {
             Ok(AssetEditPreparation::Pending)
         }
+    }
+
+    #[test]
+    fn pending_asset_edits_merge_slots_and_survive_empty_redo() {
+        use crate::actions::EditAction;
+
+        let project = komponist_model::fixtures::demo_project();
+        let device = project.tracks[0].channel.devices[0].id;
+        let mut app = App::new(
+            Document::new(project),
+            EngineSync::null(Box::new(PreparingHost(BuiltinHost::new()))),
+            Default::default(),
+            None,
+        );
+        let first = AssetLink::new(Path::new("/samples/first.wav"), None);
+        let second = AssetLink::new(Path::new("/samples/second.wav"), None);
+        let replaced = AssetLink::new(Path::new("/samples/replaced.wav"), None);
+        let cancelled = AssetLink::new(Path::new("/samples/cancelled.wav"), None);
+
+        app.update_plugin_assets(device, [(0, Some(first))]);
+        let stale = app.dialogs.samples.pending_asset_edits[&device].request;
+        app.update_plugin_assets(device, [(1, Some(second.clone())), (2, Some(cancelled))]);
+        app.update_plugin_assets(device, [(0, Some(replaced.clone())), (2, None)]);
+        let request = app.dialogs.samples.pending_asset_edits[&device].request;
+        assert_ne!(stale, request);
+
+        app.dispatch(crate::Action::Edit(EditAction::Redo));
+        assert_eq!(
+            app.dialogs.samples.pending_asset_edits[&device].request,
+            request
+        );
+        app.finish_plugin_asset_edit(device, stale, &Ok(None));
+        assert!(app.doc.top_step().is_none());
+        app.finish_plugin_asset_edit(device, request, &Ok(None));
+        assert_eq!(
+            app.project().find_device(device).unwrap().2.asset_links,
+            [(0, replaced), (1, second)].into()
+        );
+        assert!(app.doc.undo());
+        assert!(
+            app.project()
+                .find_device(device)
+                .unwrap()
+                .2
+                .asset_links
+                .is_empty()
+        );
+        assert!(app.doc.top_step().is_none());
     }
 
     #[test]
