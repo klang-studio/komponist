@@ -44,7 +44,7 @@ if ! command -v "$python" >/dev/null; then
     python=python
 fi
 CARGO_TARGET_DIR="$root/target" "$python" "$root/scripts/bundled-clap.py" \
-    --target "$target" --inventory sampler-fixtures stage "$fixture_stage/payload" >/dev/null
+    --target "$target" --inventory native-fixtures stage "$fixture_stage/payload" >/dev/null
 fixture_dir="$out/builtin-clap"
 mkdir -p "$fixture_dir"
 install_fixture() {
@@ -56,3 +56,4 @@ install_fixture() {
 }
 install_fixture komponist_sampler klopfer
 install_fixture komponist_general_sampler general-sampler
+install_fixture komponist_limiter limiter
