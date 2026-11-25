@@ -70,6 +70,12 @@ oscillators A and B in that order. The filter and wavetable can also bind
 `mod1_src` through `mod4_amt`, `lfo1_uni` and `lfo2_uni` to show
 their modulation range. A filter can also bind `at_cut` for aftertouch.
 
+A `signal` graph displays the oscillator mix over two periods of oscillator A.
+It uses `wave_a` and `wave_b` (sine, triangle, saw, square at indices 0–3),
+`pw_a` and `pw_b` (pulse widths), `b_oct` and `b_fine` (oscillator B pitch
+offsets in octaves and cents), and `mix` and `sub` (balance and sub level).
+The graph is read-only.
+
 ## Sample waveforms
 
 A waveform graph can declare an optional `asset_slot` with the numeric ID of an

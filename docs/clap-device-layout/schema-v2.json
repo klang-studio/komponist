@@ -489,7 +489,8 @@
             "gr_history",
             "filter_va",
             "lfo_shape",
-            "wavetable"
+            "wavetable",
+            "signal"
           ]
         },
         "name": {

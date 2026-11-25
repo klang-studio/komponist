@@ -227,6 +227,7 @@ pub enum GraphKind {
     FilterVa,
     LfoShape,
     Wavetable,
+    Signal,
 }
 
 /// Units of the two waveform trim bindings as sent to the CLAP parameters.
@@ -317,6 +318,10 @@ impl Graph {
                 matches!(slot, "table" | "position") || synth_modulation_slot(slot)
             }
             GraphKind::LfoShape => slot == "shape",
+            GraphKind::Signal => matches!(
+                slot,
+                "wave_a" | "wave_b" | "pw_a" | "pw_b" | "b_oct" | "b_fine" | "mix" | "sub"
+            ),
         }
     }
 }
