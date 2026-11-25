@@ -26,8 +26,9 @@ use clap_sys::{
 };
 use komponist_ipc::control::{ParamInfo, param_flags};
 use komponist_ipc::native_layout::{
-    CAP_PAD_BANK, CAP_PARAMETER_DISPLAY, CAP_SOURCE_FRACTION_TRIM, EXTENSION_V1, EXTENSION_V2,
-    GraphKind, MAX_AUTHOR_IDS, MAX_BYTES, NativeLayout, valid_author_id,
+    CAP_CONDITIONAL_CONTROLS, CAP_PAD_BANK, CAP_PARAMETER_DISPLAY, CAP_SOURCE_FRACTION_TRIM,
+    EXTENSION_V1, EXTENSION_V2, GraphKind, MAX_AUTHOR_IDS, MAX_BYTES, NativeLayout,
+    valid_author_id,
 };
 use komponist_model::params::ParamContext;
 use komponist_model::params::layout::validate;
@@ -262,6 +263,7 @@ unsafe fn compile_layout<P: ClapPlugin>(
         Ok(wire_id)
     };
     let mut pages = Vec::new();
+    let mut conditional_controls = false;
     for (page_index, (page, text)) in panel.grid.pages.iter().zip(&panel.pages).enumerate() {
         if v2.is_none() && !page.dividers.is_empty() {
             return Err(error("native CLAP v1 has no grid dividers"));
@@ -330,7 +332,7 @@ unsafe fn compile_layout<P: ClapPlugin>(
                 cells.push(compile_graph(cell, binding, labels, &mut resolve_id)?);
                 continue;
             }
-            let id = fixed_binding(cell)?;
+            let id = fixed_binding(cell, v2.is_some())?;
             let widget = widget_name(cell.widget, v2.is_some())?;
             let param_id = resolve_id(id)?;
             let mut wire_cell = json!({
@@ -341,6 +343,10 @@ unsafe fn compile_layout<P: ClapPlugin>(
                 "rows": cell.rows,
                 "param_id": param_id,
             });
+            if let Some(driver) = &cell.disabled_by {
+                wire_cell["disabled_by"] = json!(resolve_id(driver)?);
+                conditional_controls = true;
+            }
             if let Some(half) = cell.half {
                 wire_cell["half"] = Value::from(match half {
                     Half::Top => "top",
@@ -403,6 +409,9 @@ unsafe fn compile_layout<P: ClapPlugin>(
         "pages": pages,
     });
     let mut capabilities = Vec::new();
+    if conditional_controls {
+        capabilities.push(CAP_CONDITIONAL_CONTROLS);
+    }
     if !parameter_display.is_empty() {
         capabilities.push(CAP_PARAMETER_DISPLAY);
         document["parameter_display"] = json!(parameter_display);
@@ -568,12 +577,10 @@ fn compile_graph(
     }))
 }
 
-fn fixed_binding(cell: &Cell) -> Result<&ParamId, LayoutError> {
+fn fixed_binding(cell: &Cell, v2: bool) -> Result<&ParamId, LayoutError> {
     match &cell.param {
-        CellParam::Id(id) if cell.carrier.is_none() && cell.disabled_by.is_none() => Ok(id),
-        _ => Err(error(
-            "native CLAP v1 needs a fixed, unconditional parameter binding",
-        )),
+        CellParam::Id(id) if cell.carrier.is_none() && (v2 || cell.disabled_by.is_none()) => Ok(id),
+        _ => Err(error("unsupported native CLAP parameter binding")),
     }
 }
 

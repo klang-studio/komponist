@@ -14,9 +14,10 @@ use std::sync::Arc;
 
 use komponist_device_core::{CatalogSpec, Dsp, SAMPLE_RATES, Spec};
 use komponist_i18n::Lang;
-use komponist_model::params::ParamInfo;
+use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 use komponist_native_clap_sdk::{
-    DeviceLayout, NativeClapLayout, PageLabels, Panel, PanelV2, PluginLabels,
+    DeviceLayout, DisplayScale, DisplayUnit, NativeClapLayout, PageLabels, Panel, PanelV2,
+    ParameterDisplay, PluginLabels,
 };
 use nice_plug::prelude::*;
 
@@ -291,6 +292,46 @@ impl<T: AudioDefinition> NativeClapLayout for Effect<T> {
         panel.panel.device_labels = Some(device_labels(&T::SPEC.catalog));
         Some(panel)
     }
+}
+
+/// Describe supported physical parameters using the normalized CLAP adapter's display domains.
+pub fn parameter_display(
+    params: &[ParamInfo],
+) -> std::collections::BTreeMap<ParamId, ParameterDisplay> {
+    params
+        .iter()
+        .filter_map(|param| {
+            let ParamKind::Float {
+                min,
+                max,
+                scale,
+                steps: 0,
+            } = param.kind
+            else {
+                return None;
+            };
+            if param.format.is_some() {
+                return None;
+            }
+            let scale = match scale {
+                Scale::Lin => DisplayScale::Linear,
+                Scale::Log => DisplayScale::Logarithmic,
+                _ => return None,
+            };
+            let unit = match param.unit {
+                Unit::Hz => DisplayUnit::Hertz,
+                Unit::Ms => DisplayUnit::Milliseconds,
+                Unit::Percent => DisplayUnit::Percent,
+                Unit::None => DisplayUnit::None,
+                Unit::Db => DisplayUnit::Decibels,
+                Unit::DbWidth => DisplayUnit::DecibelWidth,
+                Unit::Ratio => DisplayUnit::Ratio,
+                _ => return None,
+            };
+            ParameterDisplay::new(min, max, param.default, scale, unit)
+                .map(|display| (param.id.clone(), display))
+        })
+        .collect()
 }
 
 pub fn panel_for<T: DeviceDefinition>() -> Panel {

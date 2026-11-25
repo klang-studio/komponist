@@ -18,6 +18,8 @@ pub const CAP_SOURCE_FRACTION_TRIM: &str = "source-fraction-trim";
 pub const CAP_PAD_BANK: &str = "pad-bank";
 /// Required capability for panels that show physical values for normalized parameters.
 pub const CAP_PARAMETER_DISPLAY: &str = "parameter-display";
+/// Required capability for Boolean-controlled knobs.
+pub const CAP_CONDITIONAL_CONTROLS: &str = "conditional-controls";
 /// Maximum number of pad-selected pages.
 pub const MAX_PADS: usize = 16;
 
@@ -69,6 +71,9 @@ pub enum DisplayUnit {
     Hertz,
     Milliseconds,
     Percent,
+    Decibels,
+    DecibelWidth,
+    Ratio,
 }
 
 /// Presentation of a normalized CLAP parameter within a layout v2 panel.
@@ -312,6 +317,8 @@ pub struct Cell {
     pub rows: u8,
     pub half: Option<Half>,
     pub param_id: Option<u32>,
+    /// Boolean toggle on the same page that disables this knob when on.
+    pub disabled_by: Option<u32>,
     pub labels: Option<Labels>,
     pub choices: Option<Vec<Choice>>,
     pub graph: Option<Graph>,
@@ -323,7 +330,7 @@ pub struct Cell {
 impl Cell {
     /// Every numeric parameter referenced by this cell.
     pub fn parameter_ids(&self) -> impl Iterator<Item = u32> + '_ {
-        self.param_id.into_iter().chain(
+        self.param_id.into_iter().chain(self.disabled_by).chain(
             self.graph
                 .iter()
                 .flat_map(|graph| graph.slots.values().copied().chain(graph.audition_note)),
@@ -428,6 +435,7 @@ impl NativeLayout {
         let mut fractional_trim_supported = false;
         let mut pad_bank_supported = false;
         let mut parameter_display_supported = false;
+        let mut conditional_controls_supported = false;
         if let Some(caps) = value.get("required_capabilities") {
             let caps = caps
                 .as_array()
@@ -445,7 +453,10 @@ impl NativeLayout {
                 version != 2
                     || !matches!(
                         *cap,
-                        CAP_SOURCE_FRACTION_TRIM | CAP_PAD_BANK | CAP_PARAMETER_DISPLAY
+                        CAP_SOURCE_FRACTION_TRIM
+                            | CAP_PAD_BANK
+                            | CAP_PARAMETER_DISPLAY
+                            | CAP_CONDITIONAL_CONTROLS
                     )
             }) {
                 return Err(LayoutError::Unsupported);
@@ -453,6 +464,7 @@ impl NativeLayout {
             fractional_trim_supported = seen.contains(CAP_SOURCE_FRACTION_TRIM);
             pad_bank_supported = seen.contains(CAP_PAD_BANK);
             parameter_display_supported = seen.contains(CAP_PARAMETER_DISPLAY);
+            conditional_controls_supported = seen.contains(CAP_CONDITIONAL_CONTROLS);
         }
         let display = value.get("parameter_display");
         check(
@@ -507,6 +519,7 @@ impl NativeLayout {
                             cell.remove("graph");
                             cell.remove("canvas");
                             cell.remove("reduction_tap");
+                            cell.remove("disabled_by");
                         }
                         let widget = cell
                             .get("widget")
@@ -525,6 +538,12 @@ impl NativeLayout {
                         check(
                             cell.get("reduction_tap").is_none_or(Value::is_string),
                             "reduction tap key",
+                        )?;
+                        check(
+                            cell.get("disabled_by").is_none_or(|binding| {
+                                conditional_controls_supported && binding.is_u64()
+                            }),
+                            "conditional control binding",
                         )?;
                         if let Some(graph) = cell.get("graph") {
                             check(
@@ -723,6 +742,17 @@ impl NativeLayout {
                         && cell.col.saturating_add(cell.cols) <= page.columns,
                     "cell geometry",
                 )?;
+                if let Some(driver) = cell.disabled_by {
+                    check(
+                        matches!(cell.widget, Widget::Knob | Widget::KnobLarge)
+                            && cell.param_id != Some(driver)
+                            && page.cells.iter().any(|control| {
+                                control.widget == Widget::ToggleButton
+                                    && control.param_id == Some(driver)
+                            }),
+                        "conditional control requires a separate toggle on the same page",
+                    )?;
+                }
                 let mask = match cell.half {
                     None => 3,
                     Some(Half::Top) => 1,
@@ -1052,6 +1082,12 @@ impl NativeLayout {
                 continue;
             };
             let p = ids[&id];
+            if let Some(driver) = cell.disabled_by {
+                check(
+                    ids[&driver].flags & param_flags::ENUM == 0,
+                    "conditional control requires a Boolean parameter",
+                )?;
+            }
             if cell.widget == Widget::ToggleButton {
                 check(
                     p.min == 0.0
@@ -1222,6 +1258,37 @@ mod tests {
         let labels = &layout.pages[0].labels;
         assert_eq!(layout.label(labels, "de-CH"), Some("Übersicht"));
         assert_eq!(layout.label(labels, "fr"), Some("Main"));
+    }
+
+    #[test]
+    fn a_conditional_knob_requires_a_distinct_boolean_toggle_on_the_same_page() {
+        use serde_json::json;
+
+        let mut value: Value = serde_json::from_slice(EXAMPLE).unwrap();
+        value["pages"][0]["cells"] = json!([
+            {"widget":"knob","col":0,"row":0,"cols":1,"rows":1,"param_id":42,"disabled_by":7},
+            {"widget":"toggle_button","col":1,"row":0,"cols":1,"rows":1,"half":"top","param_id":7}
+        ]);
+        let parse = |value: &Value| NativeLayout::parse(&serde_json::to_vec(value).unwrap());
+        assert_eq!(parse(&value).unwrap().pages[0].cells[0].disabled_by, None);
+        value["schema_version"] = json!(2);
+        assert!(parse(&value).is_err(), "the capability must be declared");
+        value["required_capabilities"] = json!(["conditional-controls"]);
+        let layout = parse(&value).unwrap();
+        assert_eq!(layout.pages[0].cells[0].disabled_by, Some(7));
+        let knob = parameter(42, 1.0, 0, 0);
+        let mut toggle = parameter(7, 1.0, 1, param_flags::STEPPED);
+        assert!(
+            layout
+                .validate_params(&[knob.clone(), toggle.clone()])
+                .is_ok()
+        );
+        toggle.flags |= param_flags::ENUM;
+        assert!(layout.validate_params(&[knob, toggle]).is_err());
+        for invalid in [json!(42), json!(8), json!(null)] {
+            value["pages"][0]["cells"][0]["disabled_by"] = invalid;
+            assert!(parse(&value).is_err());
+        }
     }
 
     #[test]

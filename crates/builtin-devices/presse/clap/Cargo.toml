@@ -19,9 +19,9 @@ komponist-device-core.workspace = true
 komponist-i18n.workspace = true
 komponist-presse.workspace = true
 komponist-model.workspace = true
+komponist-native-clap-sdk.workspace = true
 nice-plug.workspace = true
 
 [dev-dependencies]
 clap-sys.workspace = true
 serde_json.workspace = true
-komponist-native-clap-sdk.workspace = true

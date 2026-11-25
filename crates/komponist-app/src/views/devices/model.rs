@@ -451,12 +451,10 @@ pub(crate) fn card(
                     // supplies scales and localized value text for gestures and previews.
                     _ if native.has_audio_asset_editor() => None,
                     Internal::Hall => None,
-                    _ if kind.clap_v1_grid_fallback() => {
-                        legacy.then(|| kind.layout_in(lang).clone())
-                    }
-                    Internal::Volt | Internal::Surf | Internal::Eq | Internal::Presse if legacy => {
+                    _ if legacy && kind.clap_v1_grid_fallback() => {
                         Some(kind.layout_in(lang).clone())
                     }
+                    _ if kind.clap_v2_legacy_parameters() => None,
                     _ => return None,
                 };
                 Some((
@@ -789,7 +787,7 @@ pub(super) fn native_card_layout(
                         let param = CellParam::Id(ParamId::plugin(
                             cell.param_id.expect("validated control binding"),
                         ));
-                        match cell.half {
+                        let mut model_cell = match cell.half {
                             Some(half) => Cell::half(
                                 cell.col,
                                 cell.row,
@@ -804,7 +802,9 @@ pub(super) fn native_card_layout(
                             None => {
                                 Cell::span(cell.col, cell.row, cell.cols, cell.rows, widget, param)
                             }
-                        }
+                        };
+                        model_cell.disabled_by = cell.disabled_by.map(ParamId::plugin);
+                        model_cell
                     })
                     .collect(),
                 dividers: page.dividers.clone(),
@@ -940,6 +940,9 @@ pub(super) fn native_param(
             DisplayUnit::Hertz => Unit::Hz,
             DisplayUnit::Milliseconds => Unit::Ms,
             DisplayUnit::Percent => Unit::Percent,
+            DisplayUnit::Decibels => Unit::Db,
+            DisplayUnit::DecibelWidth => Unit::DbWidth,
+            DisplayUnit::Ratio => Unit::Ratio,
         };
         info.default = display.default_value();
         if raw == wire.default {

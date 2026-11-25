@@ -161,8 +161,19 @@ and the CLAP parameter inventory keep their existing wire values. Bounds must
 be finite, increasing, and have a finite span. A logarithmic range must start
 above zero and have a finite ratio. The physical default must lie within the
 range and map to the CLAP default, allowing for single-precision rounding.
-Units are `none`, `hertz`, `milliseconds`, and `percent`. A
-percentage uses fractional values, so 0.42 displays as 42%.
+Units are `none`, `hertz`, `milliseconds`, `percent`, `decibels`,
+`decibel_width`, and `ratio`. A percentage uses fractional values, so 0.42
+displays as 42%. Use `decibel_width` for whole dB widths without a leading
+plus sign, and `ratio` for values such as 4.0:1.
+
+## Conditional knobs
+
+A `knob` or `knob_large` can set `disabled_by` to the CLAP parameter ID of
+a separate Boolean toggle on the same page. Declare `conditional-controls`
+in `required_capabilities`. The knob remains visible and accessible, and
+the host disables its edits while the toggle is on. The condition changes
+the UI only. The plugin keeps both parameters and is responsible for how
+their values affect processing.
 
 ## Device catalog labels
 
