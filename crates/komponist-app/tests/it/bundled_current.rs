@@ -24,12 +24,12 @@ use komponist_model::{
     Tick, TickRange, TrackId,
 };
 use komponist_plugins::{DeviceStatus, FailReason, PluginDirs, PluginManagerEvent, ProcessorSetup};
-use serde_json::{Value, json};
 
 use crate::common::{PATIENCE, app_with, config, devices, step_for, step_until};
 use crate::export::{export_settings, read};
 
 const DEVICE_PREFIX: &str = "org.klang-studio.komponist.";
+const DELAY_PRESET: &str = "Slapback";
 
 fn package_env() -> (PathBuf, PathBuf) {
     let required = |key| {
@@ -81,10 +81,21 @@ struct Fixture {
     delay: DeviceId,
 }
 
+fn initial_device(
+    host: &PluginHost,
+    slug: &str,
+    preset: Option<&str>,
+    edits: &[(&str, f64)],
+) -> komponist_plugins::bundled_initial_state::InitialDevice {
+    host.manager()
+        .prepare_bundled_device(&format!("{DEVICE_PREFIX}{slug}"), preset, edits, &[])
+        .unwrap_or_else(|error| panic!("fixture {slug}: {error}"))
+}
+
 fn project(host: &PluginHost, sample: &Path) -> Fixture {
     let mut project = Project::new("Bundled CLAP project");
     let mut tracks = Vec::new();
-    let sampler_key = komponist_sampler::note_of_pad(0);
+    let sampler_key = 36; // The first Klopfer pad plays C2.
     for (index, (name, note)) in [
         ("hexa", 60),
         ("volt", 64),
@@ -96,12 +107,18 @@ fn project(host: &PluginHost, sample: &Path) -> Fixture {
     .into_iter()
     .enumerate()
     {
+        let changes: &[(&str, f64)] = if name == "general-sampler" {
+            &[("sync", 1.0)]
+        } else {
+            &[]
+        };
+        let prepared = initial_device(host, name, None, changes);
         let (next, track) = edits::add_track(
             &project,
             NewTrack {
                 name: Some(name.into()),
                 hue: None,
-                instrument: Some(shipped(host, name)),
+                instrument: Some(prepared.plugin),
                 index: None,
                 arm_exclusive: false,
             },
@@ -126,53 +143,39 @@ fn project(host: &PluginHost, sample: &Path) -> Fixture {
             },
         )
         .unwrap();
-        project = next;
+        let instrument = next.track(track).unwrap().channel.instrument().unwrap().1;
+        project = edits::set_device_state(&next, instrument.id, prepared.state).unwrap();
         tracks.push(track);
     }
 
     let [hexa, volt, sampler, general, _surf] = tracks[..] else {
         unreachable!("fixture always creates five tracks");
     };
-    let mut insert = |slug, track, role, index, state| {
+    let mut insert = |slug, track, index, preset| {
+        let prepared = initial_device(host, slug, preset, &[]);
         let (next, device) = edits::insert_device(
             &project,
             ChannelRef::Track(track),
             index,
             NewDevice {
-                role,
-                plugin: shipped(host, slug),
+                role: prepared.role,
+                plugin: prepared.plugin,
                 sidechain: None,
-                state,
+                state: prepared.state,
             },
         )
         .unwrap();
         project = next;
         device
     };
-    insert("arpeggiator", hexa, DeviceRole::MidiEffect, 0, None);
-    let scale = insert("scale", hexa, DeviceRole::MidiEffect, 1, None);
-    let eq = insert("eq", hexa, DeviceRole::Effect, 3, None);
-    insert("hall", hexa, DeviceRole::Effect, 4, None);
-    let delay = insert(
-        "delay",
-        general,
-        DeviceRole::Effect,
-        1,
-        Some(factory_delay(&shipped(host, "delay").version).into()),
-    );
-    let presse = insert("presse", volt, DeviceRole::Effect, 1, None);
-    insert("limiter", volt, DeviceRole::Effect, 2, None);
+    insert("arpeggiator", hexa, 0, None);
+    let scale = insert("scale", hexa, 1, None);
+    let eq = insert("eq", hexa, 3, None);
+    insert("hall", hexa, 4, None);
+    let delay = insert("delay", general, 1, Some(DELAY_PRESET));
+    let presse = insert("presse", volt, 1, None);
+    insert("limiter", volt, 2, None);
     project = edits::set_sidechain(&project, presse, Some(Sidechain::new(sampler))).unwrap();
-    for (_, device) in devices(&project) {
-        if device.state.is_none() {
-            let state = pinned_clap_state::encode(
-                &device.plugin.version,
-                Default::default(),
-                Default::default(),
-            );
-            project = edits::set_device_state(&project, device.id, Some(state.into())).unwrap();
-        }
-    }
     let link = AssetLink::new(sample, sample.parent());
     for track in [sampler, general] {
         let device = project
@@ -183,15 +186,6 @@ fn project(host: &PluginHost, sample: &Path) -> Fixture {
             .unwrap()
             .1;
         let id = device.id;
-        let params = if track == general {
-            [("sync".into(), json!({"bool": true}))]
-                .into_iter()
-                .collect()
-        } else {
-            Default::default()
-        };
-        let state = pinned_clap_state::encode(&device.plugin.version, params, Default::default());
-        project = edits::set_device_state(&project, id, Some(state.into())).unwrap();
         project = edits::set_device_asset_links(&project, id, [(0, link.clone())].into()).unwrap();
     }
 
@@ -203,29 +197,6 @@ fn project(host: &PluginHost, sample: &Path) -> Fixture {
         scale,
         delay,
     }
-}
-
-fn factory_delay(version: &str) -> Vec<u8> {
-    let device = Internal::Delay;
-    let params = device
-        .params()
-        .iter()
-        .zip(device.preset_values(0).unwrap())
-        .map(|(info, value)| {
-            (
-                info.id.as_str().to_owned(),
-                pinned_clap_state::parameter(info, value).0,
-            )
-        })
-        .collect();
-    let name = device.presets()[0].name;
-    let fields = [(
-        pinned_clap_state::FACTORY_PRESET_FIELD.to_owned(),
-        Value::String(serde_json::to_string(name).unwrap()),
-    )]
-    .into_iter()
-    .collect();
-    pinned_clap_state::encode(version, params, fields)
 }
 
 fn open(app: &mut App, path: &Path) {
@@ -575,10 +546,10 @@ fn current_project_round_trip_and_offline_render() {
     }
     assert_eq!(saved, with_current_state);
     let (_, _, delay) = saved.find_device(fixture.delay).unwrap();
-    let raw: Value = serde_json::from_slice(&delay.state.as_ref().unwrap()[8..]).unwrap();
+    let state = pinned_clap_state::decode(delay.state.as_deref().unwrap()).unwrap();
     assert_eq!(
-        raw["fields"][pinned_clap_state::FACTORY_PRESET_FIELD],
-        json!(serde_json::to_string(Internal::Delay.presets()[0].name).unwrap()),
+        state["fields"][pinned_clap_state::FACTORY_PRESET_FIELD].as_str(),
+        Some(serde_json::to_string(DELAY_PRESET).unwrap().as_str()),
     );
 
     app.shutdown();
@@ -1010,27 +981,18 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
         },
     )
     .unwrap();
-    let plugin = shipped(&host, "eq");
-    let info = Internal::Eq
-        .params()
-        .iter()
-        .find(|info| info.id.as_str() == "b1_freq")
-        .unwrap();
-    let (base_state, base_wire) = pinned_clap_state::parameter(info, BASE_FREQUENCY);
-    let state = pinned_clap_state::encode(
-        &plugin.version,
-        [("b1_freq".into(), base_state)].into_iter().collect(),
-        Default::default(),
-    );
+    // The bundled EQ's frequency control exposes a normalized CLAP value.
+    let base_wire = (BASE_FREQUENCY / 20.0).ln() / 1000.0_f64.ln();
+    let prepared = initial_device(&host, "eq", None, &[("b1_freq", base_wire)]);
     let (project, eq) = edits::insert_device(
         &project,
         ChannelRef::Track(track),
         0,
         NewDevice {
             role: DeviceRole::Effect,
-            plugin,
+            plugin: prepared.plugin,
             sidechain: None,
-            state: Some(state.into()),
+            state: prepared.state,
         },
     )
     .unwrap();
@@ -1262,11 +1224,7 @@ fn packaged_effect_cards_and_presets() {
     let lang = if bridge { Lang::En } else { Lang::De };
     let mut project = Project::new("Bundled CLAP effect cards");
     let mut cards = Vec::new();
-    for (slug, kind) in [
-        ("eq", Internal::Eq),
-        ("presse", Internal::Presse),
-        ("limiter", Internal::Limiter),
-    ] {
+    for slug in ["eq", "presse", "limiter"] {
         let (next, track) = edits::add_track(
             &project,
             NewTrack {
@@ -1291,13 +1249,13 @@ fn packaged_effect_cards_and_presets() {
         )
         .unwrap();
         project = next;
-        cards.push((slug, kind, track, device));
+        cards.push((slug, track, device));
     }
     let expected = devices(&project);
     let mut app = app_with(project, host).with_lang(lang);
     assert_ready(&mut app, &expected, bridge);
     let mut harness = crate::acceptance_support::harness(app);
-    for (slug, kind, track, device) in cards {
+    for (slug, track, device) in cards {
         let app = harness.state_mut();
         app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
             tracks: vec![track],
@@ -1305,8 +1263,8 @@ fn packaged_effect_cards_and_presets() {
         })));
         app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
         app.dispatch(Action::Ui(UiAction::RevealDevice(device)));
-        if kind == Internal::Eq {
-            let preset = kind.presets()[1].name;
+        if slug == "eq" {
+            let preset = "Low Cut 80 Hz";
             let target = app.project().find_device(device).unwrap().2;
             let source = app
                 .engine()
