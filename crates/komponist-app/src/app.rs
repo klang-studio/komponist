@@ -2772,13 +2772,22 @@ impl App {
             PluginAction::DropPluginAssets { device, files } => {
                 self.drop_plugin_assets(device, &files);
             }
-            PluginAction::LoadSample { .. }
-            | PluginAction::ClearSample { .. }
-            | PluginAction::PickSample { .. }
-            | PluginAction::AuditionNote { .. }
-            | PluginAction::PreviewWaveform { .. }
-            | PluginAction::SetSamplerSlices { .. } => {
-                self.sampler_action(&action);
+            PluginAction::LoadSample { device, pad, path } => {
+                self.set_sample_file(device, pad, Some(&path));
+            }
+            PluginAction::ClearSample { device, pad } => self.set_sample_file(device, pad, None),
+            PluginAction::PickSample { device, pad } => self.pick_sample_file(device, pad),
+            PluginAction::AuditionNote { device, key } => self.audition_note(device, key),
+            PluginAction::PreviewWaveform {
+                device,
+                slot,
+                key,
+                slice_time,
+            } => {
+                self.preview_waveform(device, slot, key, slice_time);
+            }
+            PluginAction::SetSamplerSlices { device, settings } => {
+                self.set_sampler_slices(device, &settings);
             }
             PluginAction::BeginParamGesture { device, id } => {
                 let intercept =
@@ -2942,6 +2951,7 @@ impl App {
         self.preset_preparations.clear();
         self.user_presets = Default::default();
         self.dialogs.samples.forget_device_state();
+        self.dialogs.plugin_assets.forget_device_state();
         self.project_path = path;
         // Relative sample paths resolve against the project file's folder, before the devices of
         // the project get their processors.

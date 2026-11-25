@@ -17,25 +17,21 @@
 //!
 //! Thread: UI thread.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use egui::Context;
 use komponist_builtin::Internal;
-use komponist_engine::Command;
 use komponist_general_sampler as general_sampler;
 use komponist_model::params::ParamInfo;
 use komponist_model::project::SavedPluginState;
-use komponist_model::{ChannelRef, ClipContent, Device, DeviceId, DeviceRole, TrackId};
-use komponist_plugins::{DeviceStatus, bundled_sampler};
+use komponist_model::{ClipContent, Device, DeviceId, DeviceRole, TrackId};
+use komponist_plugins::bundled_sampler;
 use komponist_sampler as sampler;
 use komponist_sampler::{PadField, SampleLink, links};
 
 use crate::actions::PluginAction;
 use crate::app::App;
-use crate::dialogs::file::Purpose;
 use crate::dialogs::missing_plugins::missing_samples;
 use crate::ui_state::{StatusKind, StepCursor};
 
@@ -85,29 +81,11 @@ pub fn demo_with_kit(
     Ok(project)
 }
 
-/// How long a click on a pad holds its note (a gate pad needs a note off).
-const AUDITION: Duration = Duration::from_millis(250);
-
-/// Velocity of a pad click.
-const AUDITION_VELOCITY: u8 = 100;
-
-/// Transient state of the samples: the pad a file browser is open for, held audition notes, the
-/// pad selection of the last frame.
+/// Transient state for recording sampler controls and synchronizing legacy pad selection.
 #[derive(Default)]
 pub(crate) struct State {
-    /// "Sample laden …" / "Suchen …" waits for a file for this pad.
-    pub(crate) target: Option<(DeviceId, usize)>,
     /// A "Sammeln und speichern" without a project file waits for the save.
     pub(crate) collect_after_save: bool,
-    /// Canonical plugin files the user explicitly picked or dropped for this document.
-    pub(crate) approved_plugin_files: HashSet<PathBuf>,
-    pub(crate) pending_asset_edits:
-        std::collections::HashMap<DeviceId, crate::plugin_assets::PendingAssetEdit>,
-    pub(crate) asset_edit_request: u64,
-    /// Held audition notes: when to release, track, key.
-    auditions: Vec<(Instant, TrackId, u8)>,
-    /// Waveform preview held by the primary pointer button.
-    waveform_preview: Option<WaveformPreview>,
     /// Per sampler: the pad of the step row, the selected pad and the hit counter of the last
     /// frame.
     pads: std::collections::HashMap<DeviceId, PadSync>,
@@ -119,14 +97,7 @@ impl State {
     pub(crate) fn forget_device_state(&mut self) {
         self.pads.clear();
         self.pending_params.clear();
-        self.approved_plugin_files.clear();
-        self.pending_asset_edits.clear();
     }
-}
-
-enum WaveformPreview {
-    Sample { track: TrackId, key: u8 },
-    Asset { device: DeviceId, slot: u32 },
 }
 
 /// A sampler device of the project: id, track (`None`: master), state.
@@ -269,44 +240,16 @@ impl App {
         }
     }
 
-    /// The actions of the sampler's samples; `false` if `action` is not one of them.
-    pub(crate) fn sampler_action(&mut self, action: &PluginAction) -> bool {
-        match action {
-            PluginAction::LoadSample { device, pad, path } => self.load_sample(*device, *pad, path),
-            PluginAction::ClearSample { device, pad } => self.clear_sample(*device, *pad),
-            PluginAction::PickSample { device, pad } => {
-                self.dialogs.samples.target = Some((*device, *pad));
-                self.open_file_browser(Purpose::Sample);
-            }
-            PluginAction::AuditionNote { device, key } => self.audition_note(*device, *key),
-            PluginAction::PreviewWaveform {
-                device,
-                slot,
-                key,
-                slice_time,
-            } => {
-                self.preview_waveform(*device, *slot, *key, *slice_time);
-            }
-            PluginAction::SetSamplerSlices { device, settings } => {
-                self.set_sampler_slices(*device, settings);
-            }
-            _ => return false,
-        }
-        true
-    }
-
     /// Links `path` to the pad: the pad's start and end return to the whole sample, the link goes
     /// into the device state, the sample loads. One undo step ("Sample laden").
-    fn load_sample(&mut self, device: DeviceId, pad: usize, path: &Path) {
+    pub(crate) fn load_embedded_sample(&mut self, device: DeviceId, pad: usize, path: &Path) {
         self.flush_sampler_params(device);
-        self.in_one_step("undo-sample-load", |app| app.link_sample(device, pad, path));
+        self.in_one_step("undo-sample-load", |app| {
+            app.link_embedded_sample(device, pad, path)
+        });
     }
 
-    fn link_sample(&mut self, device: DeviceId, pad: usize, path: &Path) {
-        if self.engine.host().asset_slots(device).is_some() {
-            self.set_plugin_asset(device, pad as u32, Some(path));
-            return;
-        }
+    fn link_embedded_sample(&mut self, device: DeviceId, pad: usize, path: &Path) {
         let Some((_, _, found)) = self.project().find_device(device) else {
             return;
         };
@@ -409,11 +352,7 @@ impl App {
         self.set_status(status, StatusKind::Info);
     }
 
-    fn clear_sample(&mut self, device: DeviceId, pad: usize) {
-        if self.engine.host().asset_slots(device).is_some() {
-            self.set_plugin_asset(device, pad as u32, None);
-            return;
-        }
+    pub(crate) fn clear_embedded_sample(&mut self, device: DeviceId, pad: usize) {
         self.flush_sampler_params(device);
         let Some((_, _, found)) = self.project().find_device(device) else {
             return;
@@ -444,7 +383,11 @@ impl App {
         }
     }
 
-    fn set_sampler_slices(&mut self, device: DeviceId, settings: &general_sampler::Settings) {
+    pub(crate) fn set_sampler_slices(
+        &mut self,
+        device: DeviceId,
+        settings: &general_sampler::Settings,
+    ) {
         self.flush_sampler_params(device);
         let Some((_, _, found)) = self.project().find_device(device) else {
             return;
@@ -472,104 +415,16 @@ impl App {
         }
     }
 
-    fn audition_note(&mut self, device: DeviceId, key: u8) {
-        let Some((ChannelRef::Track(track), _, _)) = self.project().find_device(device) else {
-            return;
-        };
-        if key > 127 {
-            return;
-        }
-        self.engine.send(Command::LiveNote {
-            track,
-            key,
-            velocity: AUDITION_VELOCITY,
-        });
-        self.dialogs
-            .samples
-            .auditions
-            .push((Instant::now() + AUDITION, track, key));
-    }
-
-    fn preview_waveform(&mut self, device: DeviceId, slot: u32, key: u8, time: Option<f64>) {
-        let Some((ChannelRef::Track(track), _, found)) = self.project().find_device(device) else {
-            return;
-        };
-        if key > 127
-            || !found.asset_links.contains_key(&slot)
-            || self.engine.host().status(device) != DeviceStatus::Ok
-            || komponist_ipc::waveform_preview::encode_time(time).is_none()
-        {
-            return;
-        }
-        self.stop_waveform_preview();
-        if let Some(time) = time {
-            self.engine
-                .host()
-                .preview_waveform(device, slot, Some(time));
-            self.dialogs.samples.waveform_preview = Some(WaveformPreview::Asset { device, slot });
-        } else {
-            self.start_waveform_note(track, key);
-        }
-    }
-
-    fn start_waveform_note(&mut self, track: TrackId, key: u8) {
-        self.dialogs.samples.waveform_preview = Some(WaveformPreview::Sample { track, key });
-        self.engine.send(Command::LiveNote {
-            track,
-            key,
-            velocity: AUDITION_VELOCITY,
-        });
-    }
-
-    pub(crate) fn stop_waveform_preview(&mut self) {
-        match self.dialogs.samples.waveform_preview.take() {
-            Some(WaveformPreview::Sample { track, key }) => {
-                self.engine.send(Command::LiveNote {
-                    track,
-                    key,
-                    velocity: 0,
-                });
-            }
-            Some(WaveformPreview::Asset { device, slot }) => {
-                self.engine.host().preview_waveform(device, slot, None);
-            }
-            None => {}
-        }
-    }
-
-    /// Releases the audition notes that are due; asks for a frame when one is still held.
-    pub(crate) fn release_auditions(&mut self, ctx: &Context) {
-        if ctx.input(|input| !input.focused || !input.pointer.primary_down()) {
-            self.stop_waveform_preview();
-        }
-        let now = Instant::now();
-        let held = &mut self.dialogs.samples.auditions;
-        let due: Vec<(TrackId, u8)> = held
-            .iter()
-            .filter(|(at, ..)| *at <= now)
-            .map(|(_, t, k)| (*t, *k))
-            .collect();
-        held.retain(|(at, ..)| *at > now);
-        let next = held.iter().map(|(at, ..)| *at).min();
-        for (track, key) in due {
-            self.engine.send(Command::LiveNote {
-                track,
-                key,
-                velocity: 0,
-            });
-        }
-        if let Some(at) = next {
-            ctx.request_repaint_after(at.saturating_duration_since(now));
-        }
-    }
-
     /// The file browser chose `path` for the pad it was opened for ("Sample laden …", "Suchen
     /// …"). A missing sample that is found pulls the other missing samples with it: those whose
     /// file name is in the chosen folder.
-    pub(crate) fn sample_chosen(&mut self, path: PathBuf) {
-        let Some((device, pad)) = self.dialogs.samples.target.take() else {
+    pub(crate) fn embedded_sample_chosen(&mut self, device: DeviceId, pad: usize, path: PathBuf) {
+        if let Ok(slot) = u32::try_from(pad)
+            && self.uses_plugin_asset_slot(device, slot)
+        {
+            self.set_plugin_asset(device, slot, Some(&path));
             return;
-        };
+        }
         let dir = self.project_dir();
         let others = missing_samples(self.project(), dir.as_deref());
         let was_missing = others
@@ -578,7 +433,11 @@ impl App {
         let mut links = vec![(device, pad, path.clone())];
         if let Some(folder) = path.parent().filter(|_| was_missing) {
             links.extend(others.into_iter().filter_map(|other| {
-                if (other.device, other.pad) == (device, pad) || other.file.is_empty() {
+                if (other.device, other.pad) == (device, pad)
+                    || other.file.is_empty()
+                    || u32::try_from(other.pad)
+                        .is_ok_and(|slot| self.uses_plugin_asset_slot(other.device, slot))
+                {
                     return None;
                 }
                 let candidate = folder.join(other.file);
@@ -593,7 +452,7 @@ impl App {
         // The chosen sample and the ones it finds with it are one undo step.
         self.in_one_step("undo-sample-load", |app| {
             for (device, pad, path) in links {
-                app.link_sample(device, pad, &path);
+                app.link_embedded_sample(device, pad, &path);
             }
         });
     }

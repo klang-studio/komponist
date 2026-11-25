@@ -894,7 +894,7 @@ impl App {
                 self.project(),
                 collector,
                 old_dir.as_deref(),
-                &self.dialogs.samples.approved_plugin_files,
+                &self.dialogs.plugin_assets.approved_plugin_files,
                 plugin_snapshot,
             )
         {
@@ -1236,7 +1236,9 @@ impl App {
                     self.proceed(next);
                 }
             }
-            Purpose::Sample => self.sample_chosen(path),
+            Purpose::EmbeddedSample { device, pad } => {
+                self.embedded_sample_chosen(device, pad, path)
+            }
             Purpose::OpenPreset(device) => self.load_user_preset_file(device, path),
             Purpose::SavePreset(device) => self.save_user_preset_file(device, path),
             Purpose::PluginAsset { device, slot, .. } => {
