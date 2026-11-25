@@ -14,7 +14,7 @@ use komponist_hosting::host_loop::{Observed, PollLoop, notification_bits};
 use komponist_hosting::{
     ActivateConfig, EventOut, HostedPlugin, HostedProcessor, HostingError, ProcessBlock,
 };
-use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot};
+use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot, edit_state};
 use komponist_ipc::shm::{INPUT_EVENT_CAPACITY, MAX_BLOCK, OUTPUT_EVENT_CAPACITY};
 use komponist_ipc::{PluginFormat, WireEvent, WireEventKind};
 use komponist_model::DeviceRole;
@@ -96,12 +96,21 @@ impl DirectClap {
         self.plugin.device_display()
     }
 
-    pub(crate) fn asset_slots(&self) -> (Option<Snapshot>, bool, bool) {
+    pub(crate) fn asset_slots(&self) -> (Option<Snapshot>, bool, bool, bool) {
         (
             self.plugin.asset_slots(),
             self.plugin.supports_asset_slots(),
             self.plugin.supports_offline_preparation(),
+            self.plugin.supports_asset_edit_state(),
         )
+    }
+
+    pub(crate) fn prepare_asset_edit_state(
+        &self,
+        edits: &edit_state::Edits,
+        state: Option<&[u8]>,
+    ) -> edit_state::Prepared {
+        self.plugin.prepare_asset_edit_state(edits, state)
     }
 
     pub(crate) fn set_asset_bindings(&mut self, bindings: &Bindings) -> bool {

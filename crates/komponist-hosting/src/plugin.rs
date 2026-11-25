@@ -177,6 +177,19 @@ pub trait HostedPlugin {
         false
     }
 
+    /// Optional, pure transformation of persisted state for a user file edit.
+    fn supports_asset_edit_state(&self) -> bool {
+        false
+    }
+
+    fn prepare_asset_edit_state(
+        &self,
+        _edits: &komponist_ipc::device_assets::edit_state::Edits,
+        _state: Option<&[u8]>,
+    ) -> komponist_ipc::device_assets::edit_state::Prepared {
+        Err(komponist_ipc::device_assets::edit_state::Rejected)
+    }
+
     fn supports_offline_preparation(&self) -> bool {
         false
     }

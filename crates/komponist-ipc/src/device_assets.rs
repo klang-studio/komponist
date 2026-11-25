@@ -7,6 +7,8 @@ use std::marker::PhantomData;
 use serde::de::{Error, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
+pub mod edit_state;
+
 pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.device-assets/1";
 pub const MAX_SLOTS: usize = 32;
 pub const MAX_LABEL_BYTES: usize = 128;

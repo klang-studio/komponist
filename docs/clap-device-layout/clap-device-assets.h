@@ -1,6 +1,7 @@
 #ifndef KOMPONIST_CLAP_DEVICE_ASSETS_H
 #define KOMPONIST_CLAP_DEVICE_ASSETS_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <clap/plugin.h>
 
@@ -37,6 +38,31 @@ typedef struct komponist_clap_device_assets {
                                          double sample_rate,
                                          double tempo);
 } komponist_clap_device_assets_t;
+
+#define KOMPONIST_CLAP_EXT_DEVICE_ASSET_EDIT_STATE "org.klang-studio.komponist.device-asset-edit-state/1"
+#define KOMPONIST_CLAP_ASSET_MAX_EDITS_BYTES UINT32_C(256)
+#define KOMPONIST_CLAP_ASSET_MAX_STATE_BYTES UINT32_C(2097152)
+#define KOMPONIST_CLAP_ASSET_EDIT_REJECTED UINT32_C(0)
+#define KOMPONIST_CLAP_ASSET_EDIT_UNCHANGED UINT32_C(1)
+#define KOMPONIST_CLAP_ASSET_EDIT_REPLACED UINT32_C(2)
+
+typedef bool (CLAP_ABI *komponist_clap_asset_write_state_t)(void *output,
+                                                           const uint8_t *state,
+                                                           uint32_t state_length);
+
+typedef struct komponist_clap_device_asset_edit_state {
+    /* Prepares one user edit from detached project-state bytes on the main thread.
+     * A null state with zero length means the default state. Call write exactly once
+     * before returning REPLACED, and only return REPLACED if it accepted the bytes.
+     * May run during audio processing. Do not use or mutate live state or file bindings. */
+    uint32_t (CLAP_ABI *prepare)(const clap_plugin_t *plugin,
+                                 const uint8_t *edits,
+                                 uint32_t edits_length,
+                                 const uint8_t *state,
+                                 uint32_t state_length,
+                                 void *output,
+                                 komponist_clap_asset_write_state_t write);
+} komponist_clap_device_asset_edit_state_t;
 
 #ifdef __cplusplus
 }

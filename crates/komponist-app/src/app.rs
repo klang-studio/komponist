@@ -936,6 +936,13 @@ impl App {
                     self.store_snapshot(*device, state);
                 }
             }
+            PluginManagerEvent::AssetEditPrepared {
+                device,
+                request,
+                result,
+            } => {
+                self.finish_plugin_asset_edit(*device, *request, result);
+            }
             PluginManagerEvent::WaveformMarkersEdited { device, result, .. } => {
                 use komponist_ipc::waveform_markers::EditStatus;
                 use komponist_plugins::WaveformMarkerEditResult;

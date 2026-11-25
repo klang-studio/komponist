@@ -2,14 +2,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_ipc::LogLevel;
 use komponist_ipc::device_assets::{
-    Binding, Bindings, MAX_SLOTS, OfflineRequest, OfflineStatus, Snapshot,
+    Binding, Bindings, MAX_SLOTS, OfflineRequest, OfflineStatus, Snapshot, edit_state,
 };
 use komponist_model::DeviceId;
 use komponist_model::plugin_assets::AssetLink;
+use komponist_model::project::SavedPluginState;
 
 use crate::manager::PluginManagerEvent;
 
@@ -20,6 +22,54 @@ pub struct AssetEdit {
     pub slot: u32,
     pub attaching: bool,
     pub relinking: bool,
+}
+
+impl AssetEdit {
+    pub(crate) fn as_wire_edit(&self) -> edit_state::Edit {
+        let intent = if self.relinking {
+            edit_state::Intent::Relink
+        } else if self.attaching {
+            edit_state::Intent::Assign
+        } else {
+            edit_state::Intent::Clear
+        };
+        edit_state::Edit {
+            slot: self.slot,
+            intent,
+        }
+    }
+}
+
+/// Direct and compatibility edits complete in the caller. The bridge replies on its next polls.
+pub enum AssetEditPreparation {
+    Ready(Option<SavedPluginState>),
+    Pending,
+}
+
+#[derive(Debug)]
+pub(crate) struct AssetEditState {
+    pub source: Option<Arc<[u8]>>,
+    pub parameter_bases: BTreeMap<u32, f64>,
+    pub trim_changed: bool,
+}
+
+impl AssetEditState {
+    pub(crate) fn finish(
+        self,
+        prepared: edit_state::Prepared,
+    ) -> Result<Option<SavedPluginState>, edit_state::Rejected> {
+        let replacement = prepared?;
+        let bytes = match replacement {
+            Some(bytes) if edit_state::valid_state(&bytes) => Arc::from(bytes),
+            Some(_) => return Err(edit_state::Rejected),
+            None if self.trim_changed => self.source.ok_or(edit_state::Rejected)?,
+            None => return Ok(None),
+        };
+        Ok(Some(SavedPluginState {
+            bytes,
+            parameter_bases: self.parameter_bases,
+        }))
+    }
 }
 
 pub(crate) fn binding_rejected(device: DeviceId) -> PluginManagerEvent {
@@ -66,6 +116,7 @@ pub(crate) fn project_bindings(
 pub(crate) struct DeviceAssets {
     pub snapshot: Option<Snapshot>,
     pub supports_offline: bool,
+    pub supports_edit_state: bool,
     file_slots: Option<bool>,
     slot_poll_at: Instant,
     desired_bindings: BTreeMap<u32, Binding>,
@@ -86,6 +137,7 @@ impl DeviceAssets {
         Self {
             snapshot: None,
             supports_offline: false,
+            supports_edit_state: false,
             file_slots: None,
             slot_poll_at: now,
             desired_bindings: BTreeMap::new(),
@@ -120,6 +172,7 @@ impl DeviceAssets {
         snapshot: Option<Snapshot>,
         file_slots: bool,
         offline: bool,
+        edit_state: bool,
     ) {
         self.file_slots = Some(file_slots);
         if !file_slots {
@@ -128,6 +181,7 @@ impl DeviceAssets {
             self.snapshot = Some(snapshot);
         }
         self.supports_offline = offline;
+        self.supports_edit_state = file_slots && edit_state;
     }
 
     pub(crate) fn queue_bindings(&mut self, bindings: &Bindings) -> bool {
@@ -308,7 +362,7 @@ mod tests {
     fn retries_a_missing_file_slot_snapshot_only_for_supported_plugins() {
         let mut assets = DeviceAssets::new();
         assert!(assets.slots_due());
-        assets.report_slots(None, true, true);
+        assets.report_slots(None, true, true, false);
         assert!(assets.inventory_pending());
         assert!(assets.queue_bindings(&bindings(0)));
         assets.slot_poll_at = Instant::now();
@@ -323,13 +377,13 @@ mod tests {
                 status: AssetStatus::Empty,
             }],
         };
-        assets.report_slots(Some(snapshot.clone()), true, true);
-        assets.report_slots(None, true, true);
+        assets.report_slots(Some(snapshot.clone()), true, true, false);
+        assets.report_slots(None, true, true, false);
         assert!(!assets.inventory_pending());
         assert_eq!(assets.snapshot, Some(snapshot));
 
         let mut unsupported = DeviceAssets::new();
-        unsupported.report_slots(None, false, true);
+        unsupported.report_slots(None, false, true, false);
         assert!(!unsupported.inventory_pending());
         assert!(!unsupported.slots_due());
         assert!(!unsupported.queue_bindings(&bindings(0)));
@@ -338,7 +392,7 @@ mod tests {
     #[test]
     fn restore_replays_latest_bindings_then_retires_and_restarts_offline_work() {
         let mut assets = DeviceAssets::new();
-        assets.report_slots(None, true, true);
+        assets.report_slots(None, true, true, false);
         let load = |id, path: &str, reload| Binding {
             id,
             path: Some(path.into()),
@@ -413,7 +467,7 @@ mod tests {
     #[test]
     fn rejected_bindings_hold_offline_preparation_until_those_slots_are_accepted() {
         let mut assets = DeviceAssets::new();
-        assets.report_slots(None, true, true);
+        assets.report_slots(None, true, true, false);
         let request = Some(OfflineRequest {
             id: 1,
             sample_rate: 48_000.0,

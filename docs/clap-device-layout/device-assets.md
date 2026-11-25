@@ -74,3 +74,30 @@ render request is still active, the host reapplies its bindings, clears the old 
 and starts preparation again for the same render under a new ID. A later render also uses a
 new ID even if the sample rate and tempo are unchanged. The control callback should return promptly while decoding or
 time-stretching proceeds on a worker.
+
+## Preparing saved state for a user file edit
+
+The optional `org.klang-studio.komponist.device-asset-edit-state/1` extension lets a
+device update dependent settings when a user edits a file link. It has one main-thread
+callback and is independent of the binding and offline callbacks. The callback receives
+a complete list of edits and the opaque state stored by the project. A null input
+pointer and zero state length represent the device's defaults. A present state contains
+1–2,097,152 bytes. The host keeps separately stored parameter bases.
+
+The edits payload uses postcard, with a sequence of 1–32 records `(slot: u32, intent)`
+and no trailing bytes. Slot IDs must be distinct. The ordered intent variants are
+`Assign` (first assignment, replacement or explicit reload of the same file),
+`Relink` (repair of an unresolved project link with a file), and `Clear`. The
+payload limit is 256 bytes. No file path is passed to the callback.
+
+Return `Unchanged` to retain the supplied state, or write one complete, nonempty
+replacement of at most 2,097,152 bytes to the host's synchronous sink and return
+`Replaced`. The host copies those bytes during the sink call. Return `Rejected` for
+an unsupported edit, invalid input, or a failed write. All pointers are borrowed for
+the call only. An invalid response rejects the edit.
+
+Preparation can run while audio is active. It depends only on the supplied bytes and
+edits. It leaves live state, processing, bindings and files untouched. The host can
+discard the result if its source changed while the request was in flight. On success,
+the host commits the prepared state and file links as one document edit. Undo, redo,
+project loading and offline rendering restore their saved state and bindings directly.

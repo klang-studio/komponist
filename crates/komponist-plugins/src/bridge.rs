@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 use komponist_builtin::BuiltinKind;
 use komponist_ipc::clap_presets::PresetLoad;
 use komponist_ipc::control::{AppliedClapPreset, PROTOCOL_VERSION, StateRestoreError, socket_pair};
-use komponist_ipc::device_assets::{MAX_BINDINGS_BYTES, OfflineRequest, Snapshot};
+use komponist_ipc::device_assets::{MAX_BINDINGS_BYTES, OfflineRequest, Snapshot, edit_state};
 use komponist_ipc::waveform_markers::{self, EditResult, EditStatus};
 use komponist_ipc::{
     AppChannel, BridgeClient, BridgeMsg, ChannelError, ControlMsg, ErrorContext, GuiTarget,
@@ -205,6 +205,17 @@ struct StateRestore {
 }
 
 #[derive(Debug)]
+struct PendingAssetEdit {
+    request: u64,
+    deadline: Instant,
+    state: crate::device_assets::AssetEditState,
+    prepared: Option<edit_state::Prepared>,
+    superseded: bool,
+}
+
+const ASSET_EDIT_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Debug)]
 struct MarkerEdit {
     slot: u32,
     view_request: waveform_markers::Request,
@@ -288,6 +299,7 @@ pub(crate) struct Bridge {
     pub params: Vec<ParamInfo>,
     pub(crate) assets: crate::device_assets::DeviceAssets,
     asset_slots_waiting: Option<u32>,
+    pending_asset_edit: Option<PendingAssetEdit>,
     asset_bindings_waiting: Option<u32>,
     asset_offline_waiting: Option<(u32, Option<OfflineRequest>)>,
     pub(crate) markers: MarkerCache,
@@ -455,6 +467,7 @@ impl Bridge {
             params: Vec::new(),
             assets: crate::device_assets::DeviceAssets::new(),
             asset_slots_waiting: None,
+            pending_asset_edit: None,
             asset_bindings_waiting: None,
             asset_offline_waiting: None,
             markers: MarkerCache::default(),
@@ -531,6 +544,78 @@ impl Bridge {
             && let Some(writer) = &self.writer
         {
             let _ = writer.send(msg);
+        }
+    }
+
+    pub(crate) fn prepare_asset_edit(
+        &mut self,
+        request: u64,
+        edits: edit_state::Edits,
+        state: crate::device_assets::AssetEditState,
+    ) -> bool {
+        if self.pending_asset_edit.is_some() || !self.can_prepare_asset_edit() {
+            return false;
+        }
+        let Ok(source) = state
+            .source
+            .as_deref()
+            .map(|bytes| edit_state::State::try_from(bytes.to_vec()))
+            .transpose()
+        else {
+            return false;
+        };
+        self.send(ControlMsg::PrepareDeviceAssetEdit {
+            request,
+            edits,
+            state: source,
+        });
+        self.pending_asset_edit = Some(PendingAssetEdit {
+            request,
+            deadline: Instant::now() + ASSET_EDIT_TIMEOUT,
+            state,
+            prepared: None,
+            superseded: false,
+        });
+        true
+    }
+
+    pub(crate) fn can_prepare_asset_edit(&self) -> bool {
+        self.running()
+            && !self.plugin_state_dirty
+            && self.state_restores.is_empty()
+            && !self.is_editing_waveform_markers()
+            && !self.is_loading_clap_preset()
+    }
+
+    pub(crate) fn cancel_asset_edit(&mut self) -> Option<u64> {
+        self.pending_asset_edit.take().map(|edit| edit.request)
+    }
+
+    pub(crate) fn supersede_asset_edit(&mut self) {
+        if let Some(edit) = &mut self.pending_asset_edit {
+            edit.superseded = true;
+        }
+    }
+
+    fn finish_asset_edit(&mut self, now: Instant, events: &mut Vec<PluginManagerEvent>) {
+        let available = self.can_prepare_asset_edit();
+        if let Some(edit) = &self.pending_asset_edit
+            && (edit.prepared.is_some() || edit.superseded || !available || now >= edit.deadline)
+        {
+            let edit = self
+                .pending_asset_edit
+                .take()
+                .expect("completed asset edit");
+            let result = if edit.superseded || !available || now >= edit.deadline {
+                Err(edit_state::Rejected)
+            } else {
+                edit.state.finish(edit.prepared.expect("asset edit result"))
+            };
+            events.push(PluginManagerEvent::AssetEditPrepared {
+                device: self.device,
+                request: edit.request,
+                result,
+            });
         }
     }
 
@@ -1034,6 +1119,7 @@ impl Bridge {
     /// The user changed something on the device: from now on its snapshots replace a stored
     /// state that failed to load.
     fn user_changed(&mut self) {
+        self.supersede_asset_edit();
         self.keep_stored_state = false;
         self.state_warning = None;
     }
@@ -1334,6 +1420,13 @@ impl Bridge {
         self.gui_requests = 0;
         self.state_requests.clear();
         self.state_restores.clear();
+        if let Some(request) = self.cancel_asset_edit() {
+            events.push(PluginManagerEvent::AssetEditPrepared {
+                device: self.device,
+                request,
+                result: Err(edit_state::Rejected),
+            });
+        }
         self.invalidate_waveform_markers();
         if let Some(edit) = self.marker_edit.take() {
             events.push(PluginManagerEvent::WaveformMarkersEdited {
@@ -1455,6 +1548,7 @@ impl Bridge {
         self.check_ready(now, events);
         self.poll_marker_retry(now, events);
         self.poll_preset_capture(now, events);
+        self.finish_asset_edit(now, events);
         if let Some(deadline) = self.stop_deadline
             && now >= deadline
         {
@@ -1771,6 +1865,7 @@ impl Bridge {
                 snapshot,
                 file_slots,
                 offline,
+                edit_state,
             } => {
                 if self.asset_slots_waiting == Some(request) {
                     self.asset_slots_waiting = None;
@@ -1778,7 +1873,16 @@ impl Bridge {
                         snapshot.as_deref().and_then(Snapshot::decode),
                         file_slots,
                         offline,
+                        edit_state,
                     );
+                }
+            }
+            BridgeMsg::DeviceAssetEditPrepared(request, result) => {
+                if let Some(edit) = &mut self.pending_asset_edit
+                    && edit.request == request
+                {
+                    edit.prepared =
+                        Some(result.map(|state| state.map(edit_state::State::into_bytes)));
                 }
             }
             BridgeMsg::DeviceAssetsApplied(request, accepted) => {

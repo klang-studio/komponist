@@ -104,7 +104,8 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 20 (#290) replaces sampler UI snapshots with asset-slot waveform commands.
 /// 21 (#287) restores CLAP parameter bases separately from opaque state bytes.
 /// 22 (#286) applies discovered CLAP presets and captures project state.
-pub const PROTOCOL_VERSION: u32 = 22;
+/// 23 (#285) prepares persisted state for a user file edit.
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// Maximum number of parameter bases that can follow an active state restore.
 pub const MAX_STATE_PARAMETER_BASES: usize = crate::shm::INPUT_EVENT_CAPACITY;
@@ -341,6 +342,12 @@ pub enum ControlMsg {
     GetDeviceAssets(u32),
     /// Apply a bounded atomic file-slot update on the main thread.
     SetDeviceAssets(u32, Vec<u8>),
+    /// Prepare persisted state for a user file edit without touching live state.
+    PrepareDeviceAssetEdit {
+        request: u64,
+        edits: crate::device_assets::edit_state::Edits,
+        state: Option<crate::device_assets::edit_state::State>,
+    },
     /// Start, poll or clear a detached offline preparation request.
     PrepareDeviceOffline(u32, Option<crate::device_assets::OfflineRequest>),
     /// Apply a discovered CLAP preset and capture the resulting project state.
@@ -466,9 +473,17 @@ pub enum BridgeMsg {
         snapshot: Option<Vec<u8>>,
         file_slots: bool,
         offline: bool,
+        edit_state: bool,
     },
     /// Whether the plugin accepted the file-slot update.
     DeviceAssetsApplied(u32, bool),
+    DeviceAssetEditPrepared(
+        u64,
+        Result<
+            Option<crate::device_assets::edit_state::State>,
+            crate::device_assets::edit_state::Rejected,
+        >,
+    ),
     /// Preparation result. Absent when the extension is unavailable.
     DeviceOfflineStatus(u32, Option<crate::device_assets::OfflineStatus>),
     /// First message after start.
@@ -1974,6 +1989,18 @@ mod tests {
                 edit: vec![4, 2, 1],
                 expected: vec![(12, 0.5)],
             },
+            ControlMsg::PrepareDeviceAssetEdit {
+                request: 7,
+                edits: crate::device_assets::edit_state::Edits {
+                    slots: vec![crate::device_assets::edit_state::Edit {
+                        slot: 42,
+                        intent: crate::device_assets::edit_state::Intent::Relink,
+                    }],
+                },
+                state: Some(
+                    crate::device_assets::edit_state::State::try_from(vec![1, 2, 3]).unwrap(),
+                ),
+            },
             ControlMsg::Ping { seq: u32::MAX },
             ControlMsg::LoadClapPreset(
                 9,
@@ -2026,7 +2053,16 @@ mod tests {
                 snapshot: None,
                 file_slots: true,
                 offline: false,
+                edit_state: true,
             },
+            BridgeMsg::DeviceAssetEditPrepared(
+                7,
+                Ok(Some(
+                    crate::device_assets::edit_state::State::try_from(vec![1, 2, 3]).unwrap(),
+                )),
+            ),
+            BridgeMsg::DeviceAssetEditPrepared(8, Ok(None)),
+            BridgeMsg::DeviceAssetEditPrepared(9, Err(crate::device_assets::edit_state::Rejected)),
             BridgeMsg::Hello {
                 protocol: PROTOCOL_VERSION,
                 pid: 4242,

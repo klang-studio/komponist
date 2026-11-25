@@ -3,6 +3,7 @@
 // Missing SAFETY comments: 1. Remove this allow when the crate is clean (#241 follow-up).
 #![allow(clippy::undocumented_unsafe_blocks)]
 
+mod asset_edit;
 mod assets;
 mod display;
 mod markers;
@@ -427,6 +428,10 @@ impl<T: SampledDefinition> ClapPlugin for Sampled<T> {
         } else if id == komponist_ipc::waveform_preview::EXTENSION_ID && T::SLICE_SETTINGS.is_some()
         {
             std::ptr::from_ref(&Self::WAVEFORM_PREVIEW).cast()
+        } else if id == komponist_ipc::device_assets::edit_state::EXTENSION_ID
+            && T::SLICE_SETTINGS.is_some()
+        {
+            asset_edit::extension::<T>()
         } else if id == komponist_ipc::device_assets::EXTENSION_ID {
             komponist_native_clap_sdk::assets::extension::<Self, SampleParameters<T>>(id)
         } else if id == komponist_native_clap_sdk::display::EXTENSION_ID && T::DISPLAY.is_some() {

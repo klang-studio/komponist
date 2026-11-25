@@ -101,6 +101,9 @@ pub(crate) struct State {
     pub(crate) collect_after_save: bool,
     /// Canonical plugin files the user explicitly picked or dropped for this document.
     pub(crate) approved_plugin_files: HashSet<PathBuf>,
+    pub(crate) pending_asset_edits:
+        std::collections::HashMap<DeviceId, crate::plugin_assets::PendingAssetEdit>,
+    pub(crate) asset_edit_request: u64,
     /// Held audition notes: when to release, track, key.
     auditions: Vec<(Instant, TrackId, u8)>,
     /// Waveform preview held by the primary pointer button.
@@ -117,6 +120,7 @@ impl State {
         self.pads.clear();
         self.pending_params.clear();
         self.approved_plugin_files.clear();
+        self.pending_asset_edits.clear();
     }
 }
 
@@ -204,6 +208,10 @@ impl App {
         }
     }
 
+    pub(crate) fn has_pending_sampler_params(&self, device: DeviceId) -> bool {
+        self.dialogs.samples.pending_params.contains_key(&device)
+    }
+
     pub(crate) fn forget_sampler_params(&mut self, device: DeviceId) {
         self.dialogs.samples.pending_params.remove(&device);
     }
@@ -243,12 +251,19 @@ impl App {
         else {
             return;
         };
-        let params = kind.params().iter().filter_map(|info| {
-            let id = *ids.get(info.id.as_str()).filter(|id| wires.contains(id))?;
-            // The host orders plugin-side and application-side edits on one parameter base.
-            Some((id, info, host.param_base(device, id)?))
-        });
-        if let Some(state) = sampler_knob_state(d, params) {
+        let params: Vec<_> = kind
+            .params()
+            .iter()
+            .filter_map(|info| {
+                let id = *ids.get(info.id.as_str()).filter(|id| wires.contains(id))?;
+                // The host orders plugin-side and application-side edits on one parameter base.
+                let value = host.param_base(device, id)?;
+                value.is_finite().then_some((id, info, value))
+            })
+            .collect();
+        if params.len() == wires.len()
+            && let Some(state) = sampler_knob_state(d, params.into_iter())
+        {
             self.store_sampler_knob_state(device, &state);
             self.forget_sampler_params(device);
         }
