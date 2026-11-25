@@ -97,6 +97,55 @@ fn layout_uses_stable_ids_and_covers_every_synth_parameter() {
     }
 }
 
+#[test]
+fn layout_v2_exports_the_existing_grid_and_numeric_selection_bindings() {
+    let instance = Instance::new();
+    // SAFETY: The instance remains initialized and owned by this thread.
+    let (old, new) = unsafe {
+        let old = compile::<SurfPlugin>(instance.0, &SurfPlugin::panel()).unwrap();
+        let new = komponist_native_clap_sdk::compile_v2::<SurfPlugin>(
+            instance.0,
+            &SurfPlugin::panel_v2().unwrap(),
+        )
+        .unwrap();
+        (old, new)
+    };
+    let old: serde_json::Value = serde_json::from_slice(&old).unwrap();
+    let new: serde_json::Value = serde_json::from_slice(&new).unwrap();
+    assert_eq!(new["author_ids"], old["author_ids"]);
+    let ids = &new["author_ids"];
+    let pages = new["pages"].as_array().unwrap();
+    assert_eq!(pages.len(), 3);
+    let sound = &pages[0]["cells"];
+    assert_eq!(sound[0]["half"], "top");
+    assert_eq!(sound[0]["graph"]["kind"], "wavetable");
+    assert_eq!(
+        sound[0]["graph"]["variants"][1]["slots"]["position"],
+        ids["osc_b_pos"]
+    );
+    assert_eq!(sound[0]["graph"]["slots"]["mod2_dst"], ids["mod2_dst"]);
+    assert_eq!(
+        sound[1]["selector"]["labels"]["de"],
+        Lang::De.label_surf_osc()
+    );
+    assert_eq!(sound[4]["variants"][1]["param_id"], ids["osc_b_pos"]);
+    assert_eq!(sound[7]["graph"]["slots"]["cutoff"], ids["cutoff"]);
+    let envelopes = &pages[1]["cells"];
+    assert_eq!(
+        envelopes[0]["graph"]["variants"][1]["name"]["en"],
+        Lang::En.graph_title_volt_envelope("Filter")
+    );
+    assert_eq!(
+        envelopes[0]["graph"]["variants"][1]["slots"]["attack"],
+        ids["filt_a"]
+    );
+    assert_eq!(
+        envelopes[6]["graph"]["variants"][1]["slots"]["shape"],
+        ids["lfo2_shape"]
+    );
+    assert_eq!(pages[2]["dividers"], serde_json::json!([4]));
+}
+
 unsafe extern "C" fn event_count(_: *const clap_input_events) -> u32 {
     2
 }

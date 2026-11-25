@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use komponist_device_core::{DeviceNote, Dsp, SAMPLE_RATES, dispatch_note, pitch_bend_bytes};
-use komponist_native_clap_sdk::{NativeClapLayout, Panel};
+use komponist_native_clap_sdk::{NativeClapLayout, Panel, PanelV2};
 use nice_plug::midi::{Channel, Key, VoiceID};
 use nice_plug::prelude::*;
 
@@ -305,6 +305,12 @@ impl<T: AudioDefinition> ClapPlugin for Instrument<T> {
 impl<T: AudioDefinition> NativeClapLayout for Instrument<T> {
     fn panel() -> Panel {
         panel_for::<T>()
+    }
+
+    fn panel_v2() -> Option<PanelV2> {
+        let mut panel = T::panel_v2()?;
+        panel.panel.device_labels = Some(crate::device_labels(&T::SPEC.catalog));
+        Some(panel)
     }
 }
 

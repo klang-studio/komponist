@@ -26,11 +26,11 @@ use clap_sys::{
 };
 use komponist_ipc::control::{ParamInfo, param_flags};
 use komponist_ipc::native_layout::{
-    CAP_CONDITIONAL_CONTROLS, CAP_EQ_BAND_CONTROLS, CAP_PAD_BANK, CAP_PARAMETER_DISPLAY,
-    CAP_SOURCE_FRACTION_TRIM, EXTENSION_V1, EXTENSION_V2, GraphKind, MAX_AUTHOR_IDS, MAX_BYTES,
-    NativeLayout, valid_author_id,
+    CAP_CELL_SELECTIONS, CAP_CONDITIONAL_CONTROLS, CAP_EQ_BAND_CONTROLS, CAP_PAD_BANK,
+    CAP_PARAMETER_DISPLAY, CAP_SOURCE_FRACTION_TRIM, EXTENSION_V1, EXTENSION_V2, GraphKind,
+    MAX_AUTHOR_IDS, MAX_BYTES, NativeLayout, valid_author_id,
 };
-use komponist_model::params::context::BAND;
+use komponist_model::params::context::{BAND, placeholders};
 use komponist_model::params::layout::validate;
 use komponist_model::params::{ParamContext, resolve};
 use nice_plug::prelude::ClapPlugin;
@@ -80,14 +80,17 @@ pub struct Panel {
     pub default_locale: String,
     /// Declared locales, including the configured default.
     pub locales: Vec<String>,
-    /// The device core grid. The adaptor accepts fixed parameter bindings.
+    /// The device core grid. V1 accepts fixed bindings. A v2 `CellParam::Choice` can
+    /// select numeric bindings for control and graph author-ID templates on its page.
     pub grid: DeviceLayout,
     /// Page labels in the same order as the pages of the grid.
     pub pages: Vec<PageLabels>,
-    /// Optional translated labels keyed by nice-plug author parameter ID.
+    /// Optional translated labels keyed by nice-plug author parameter ID, or by the
+    /// context key of a v2 selector.
     pub parameter_labels: BTreeMap<ParamId, Labels>,
     /// Labels for segments and dropdowns, keyed by author ID and ordered by the CLAP plain value.
-    /// Each choice needs a label in the default locale.
+    /// A v2 selector uses its context key and option order. Each choice needs a label
+    /// in the default locale.
     pub choice_labels: BTreeMap<ParamId, Vec<Labels>>,
     /// Optional localized names and descriptions shown in the device catalog.
     pub device_labels: Option<PluginLabels>,
@@ -104,6 +107,7 @@ pub struct PluginLabels {
 /// Localized labels required for each graph in a version 2 panel.
 pub struct GraphLabels {
     /// Accessible name and default visible title, including the default locale.
+    /// The SDK expands `{selection}` to the localized option for a following graph.
     pub name: Labels,
     /// Accessible description, including the default locale.
     pub description: Labels,
@@ -268,9 +272,27 @@ unsafe fn compile_layout<P: ClapPlugin>(
     let mut pages = Vec::new();
     let mut conditional_controls = false;
     let mut eq_band_controls = false;
+    let mut cell_selections = false;
+    let mut context = ParamContext::new().with(BAND, 1);
     for (page_index, (page, text)) in panel.grid.pages.iter().zip(&panel.pages).enumerate() {
         if v2.is_none() && !page.dividers.is_empty() {
             return Err(error("native CLAP v1 has no grid dividers"));
+        }
+        let selectors: BTreeMap<_, _> = page
+            .cells
+            .iter()
+            .filter_map(|cell| {
+                if let CellParam::Choice { key, options, .. } = &cell.param {
+                    Some((*key, options.as_slice()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (key, options) in &selectors {
+            if let Some((value, _)) = options.first() {
+                context.set(key, value);
+            }
         }
         let mut cells = Vec::new();
         let bands = page.cells.iter().find_map(|cell| match &cell.param {
@@ -341,12 +363,67 @@ unsafe fn compile_layout<P: ClapPlugin>(
             if let CellParam::Graph(binding) = &cell.param
                 && let Some(labels) = v2.and_then(|panel| panel.graph_labels.get(&index))
             {
-                cells.push(compile_graph(cell, binding, labels, &mut resolve_id)?);
+                let selector =
+                    selector_for(binding.bind.iter().map(|(_, id)| id.as_str()), &selectors)?;
+                let choice_labels =
+                    selector.and_then(|(key, _)| panel.choice_labels.get(&ParamId::new(key)));
+                cells.push(compile_graph(
+                    cell,
+                    binding,
+                    labels,
+                    selector,
+                    choice_labels.map(Vec::as_slice),
+                    &mut resolve_id,
+                )?);
                 eq_band_controls |= binding.select.is_some()
                     || binding
                         .bind
                         .iter()
                         .any(|(slot, _)| slot == "spectrum_enabled");
+                continue;
+            }
+            if let CellParam::Choice {
+                key,
+                label,
+                options,
+            } = &cell.param
+            {
+                if v2.is_none()
+                    || cell.widget != WidgetKind::Segment
+                    || cell.carrier.is_some()
+                    || cell.disabled_by.is_some()
+                {
+                    return Err(error("native selectors require an unbound v2 segment"));
+                }
+                let id = ParamId::new(*key);
+                let localized = |text: &str| {
+                    [(panel.default_locale.clone(), text.to_owned())]
+                        .into_iter()
+                        .collect::<Labels>()
+                };
+                let title = panel
+                    .parameter_labels
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| localized(label));
+                let names =
+                    panel.choice_labels.get(&id).cloned().unwrap_or_else(|| {
+                        options.iter().map(|(_, name)| localized(name)).collect()
+                    });
+                if names.len() != options.len() {
+                    return Err(error("selector labels must match its options"));
+                }
+                let half = match cell.half {
+                    Some(Half::Top) => "top",
+                    Some(Half::Bottom) => "bottom",
+                    None => return Err(error("native selector requires a half cell")),
+                };
+                cells.push(json!({
+                    "widget": "selector", "col": cell.col, "row": cell.row,
+                    "cols": cell.cols, "rows": cell.rows, "half": half,
+                    "selector": {"key": key, "labels": title, "options": names},
+                }));
+                cell_selections = true;
                 continue;
             }
             let widget = widget_name(cell.widget, v2.is_some())?;
@@ -370,7 +447,27 @@ unsafe fn compile_layout<P: ClapPlugin>(
             let mut binding = |id: &ParamId, full: Option<&[Labels]>| {
                 compile_control_binding(id, cell.widget, panel, full, &inventory, &mut resolve_id)
             };
-            if let CellParam::Template(template) = &cell.param
+            let selector = match &cell.param {
+                CellParam::Template(template) => selector_for([template.as_str()], &selectors)?,
+                _ => None,
+            };
+            if v2.is_some()
+                && let (CellParam::Template(template), Some((key, options))) =
+                    (&cell.param, selector)
+                && cell.carrier.is_none()
+                && cell.disabled_by.is_none()
+            {
+                let variants = options
+                    .iter()
+                    .map(|(value, _)| {
+                        let id = resolve(template, &ParamContext::new().with(key, value))
+                            .map_err(|failure| error(failure.to_string()))?;
+                        binding(&id, None).map(Value::Object)
+                    })
+                    .collect::<Result<Vec<_>, LayoutError>>()?;
+                wire_cell["follows"] = json!(key);
+                wire_cell["variants"] = json!(variants);
+            } else if let CellParam::Template(template) = &cell.param
                 && let Some(v2) = v2
                 && let Some(bands) = bands.filter(|count| (1..=8).contains(count))
                 && cell.carrier.is_none()
@@ -413,7 +510,6 @@ unsafe fn compile_layout<P: ClapPlugin>(
         .map(|(id, display)| Ok((resolve_id(id)?, display)))
         .collect::<Result<BTreeMap<_, _>, LayoutError>>()?;
     let pad_bank = v2.and_then(|v2| v2.pad_bank.as_ref());
-    let context = ParamContext::new().with(BAND, 1);
     if let Some(failure) = validate(&panel.grid, &context, &|id| resolved.contains_key(id))
         .into_iter()
         .find(|error| {
@@ -435,6 +531,9 @@ unsafe fn compile_layout<P: ClapPlugin>(
     let mut capabilities = Vec::new();
     if eq_band_controls {
         capabilities.push(CAP_EQ_BAND_CONTROLS);
+    }
+    if cell_selections {
+        capabilities.push(CAP_CELL_SELECTIONS);
     }
     if conditional_controls {
         capabilities.push(CAP_CONDITIONAL_CONTROLS);
@@ -518,14 +617,37 @@ unsafe fn compile_layout<P: ClapPlugin>(
     Ok(bytes)
 }
 
+type SelectionOptions<'a> = &'a [(&'static str, &'static str)];
+
+fn selector_for<'a>(
+    texts: impl IntoIterator<Item = &'a str>,
+    selectors: &BTreeMap<&'static str, SelectionOptions<'a>>,
+) -> Result<Option<(&'static str, SelectionOptions<'a>)>, LayoutError> {
+    let mut current = None;
+    for text in texts {
+        for key in placeholders(text).map_err(|failure| error(failure.to_string()))? {
+            let Some((&key, &options)) = selectors.get_key_value(key) else {
+                continue;
+            };
+            if current.is_some_and(|(previous, _)| previous != key) {
+                return Err(error("a cell may follow only one selector"));
+            }
+            current = Some((key, options));
+        }
+    }
+    Ok(current)
+}
+
 fn compile_graph(
     cell: &Cell,
     binding: &GraphBinding,
     labels: &GraphLabels,
+    selector: Option<(&str, SelectionOptions<'_>)>,
+    choice_labels: Option<&[Labels]>,
     resolve_id: &mut impl FnMut(&ParamId) -> Result<u32, LayoutError>,
 ) -> Result<Value, LayoutError> {
     if cell.widget != WidgetKind::Graph
-        || cell.half.is_some()
+        || cell.half == Some(Half::Bottom)
         || cell.carrier.is_some()
         || cell.disabled_by.is_some()
         || binding
@@ -584,6 +706,9 @@ fn compile_graph(
         }
         GraphConfig::Compressor => GraphKind::Compressor,
         GraphConfig::GrHistory => GraphKind::GrHistory,
+        GraphConfig::FilterVa => GraphKind::FilterVa,
+        GraphConfig::LfoShape => GraphKind::LfoShape,
+        GraphConfig::Wavetable => GraphKind::Wavetable,
         _ => {
             return Err(error(
                 "graph configuration is unavailable in native CLAP v2",
@@ -593,20 +718,69 @@ fn compile_graph(
     graph["kind"] = json!(kind);
     let mut bindings = BTreeMap::new();
     for (slot, author) in &binding.bind {
+        if selector.is_some() && author.contains('{') {
+            continue;
+        }
         let wire = resolve_id(&ParamId::new(author))?;
         if bindings.insert(slot, wire).is_some() {
             return Err(error(format!("duplicate graph slot {slot}")));
         }
     }
     graph["slots"] = json!(bindings);
-    Ok(json!({
+    let mut cell_value = json!({
         "widget": "graph",
         "col": cell.col,
         "row": cell.row,
         "cols": cell.cols,
         "rows": cell.rows,
         "graph": graph,
-    }))
+    });
+    if let Some((key, options)) = selector {
+        let mut variants = Vec::new();
+        for (index, (value, label)) in options.iter().enumerate() {
+            let ctx = ParamContext::new().with(key, value);
+            let mut slots = BTreeMap::new();
+            for (slot, author) in binding
+                .bind
+                .iter()
+                .filter(|(_, author)| author.contains('{'))
+            {
+                let id = resolve(author, &ctx).map_err(|failure| error(failure.to_string()))?;
+                if slots.insert(slot, resolve_id(&id)?).is_some() {
+                    return Err(error(format!("duplicate graph slot {slot}")));
+                }
+            }
+            let mut variant = json!({"slots": slots});
+            if labels
+                .name
+                .values()
+                .any(|name| name.contains("{selection}"))
+            {
+                let names: Labels = labels
+                    .name
+                    .iter()
+                    .map(|(locale, name)| {
+                        let translated = choice_labels
+                            .and_then(|labels| labels.get(index))
+                            .and_then(|labels| labels.get(locale))
+                            .map_or(*label, String::as_str);
+                        (locale.clone(), name.replace("{selection}", translated))
+                    })
+                    .collect();
+                variant["name"] = json!(names);
+            }
+            variants.push(variant);
+        }
+        if let Some(name) = variants.first().and_then(|variant| variant.get("name")) {
+            cell_value["graph"]["name"] = name.clone();
+        }
+        cell_value["follows"] = json!(key);
+        cell_value["graph"]["variants"] = json!(variants);
+    }
+    if cell.half.is_some() {
+        cell_value["half"] = json!("top");
+    }
+    Ok(cell_value)
 }
 
 fn compile_control_binding(

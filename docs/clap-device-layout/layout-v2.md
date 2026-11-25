@@ -42,6 +42,34 @@ availability and range rules as for controls.
 The [schema](schema-v2.json) describes the structure and the
 [example](example-v2.json) uses the layout from an independent C fixture.
 
+## Cell selections and synth graphs
+
+A panel can list `cell-selections` in `required_capabilities` to add
+page-local segmented selectors. A `selector` cell declares its selection
+key, localized `labels` and two to four localized `options`. It occupies
+a half cell and changes only the editor selection. The first option is
+selected initially.
+
+Another cell on the same page can set `follows` to the selector's key.
+For a parameter control, `variants` replaces the fixed CLAP parameter
+binding. List one object per option, each with `param_id` and any
+localized `labels` or enum `choices`. An envelope, LFO shape or wavetable
+graph instead declares `graph.variants`, which supplies the same slot
+names with potentially different numeric IDs and an optional `name` per
+option. The regular
+`graph.slots` apply to every option and must be distinct from the variant
+slots.
+
+A graph can set `half` to `top` to occupy only the top half of its last
+row. Each preceding row in its span remains full. A `filter_va` graph
+shows a synth's VA filter response, with `cutoff`, `resonance` and
+`type` slots. An `lfo_shape` graph displays one period using `shape`.
+A `wavetable` graph draws the table stack and edits its `position`
+using `table` and `position` slots. Its two selection variants address
+oscillators A and B in that order. The filter and wavetable can also bind
+`mod1_src` through `mod4_amt`, `lfo1_uni` and `lfo2_uni` to show
+their modulation range. A filter can also bind `at_cut` for aftertouch.
+
 ## Sample waveforms
 
 A waveform graph can declare an optional `asset_slot` with the numeric ID of an

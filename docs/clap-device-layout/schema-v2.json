@@ -236,6 +236,79 @@
         }
       }
     },
+    "control_geometry": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "widget": {
+                "enum": [
+                  "knob",
+                  "knob_large",
+                  "mini_fader"
+                ]
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "half"
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "half"
+            ]
+          }
+        },
+        {
+          "if": { "properties": { "widget": { "const": "mini_fader" } } },
+          "then": { "properties": { "cols": { "const": 1 } } },
+          "else": { "properties": { "rows": { "const": 1 } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "widget": {
+                "const": "knob"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cols": {
+                "const": 1
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "widget": { "const": "number" } } },
+          "then": { "properties": { "cols": { "maximum": 2 } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "widget": {
+                "enum": [
+                  "knob_large",
+                  "dropdown"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cols": {
+                "const": 2
+              }
+            }
+          }
+        }
+      ]
+    },
     "control": {
       "type": "object",
       "required": [
@@ -347,75 +420,7 @@
           "if": { "required": ["disabled_by"] },
           "then": { "properties": { "widget": { "enum": ["knob", "knob_large"] } } }
         },
-        {
-          "if": {
-            "properties": {
-              "widget": {
-                "enum": [
-                  "knob",
-                  "knob_large",
-                  "mini_fader"
-                ]
-              }
-            }
-          },
-          "then": {
-            "not": {
-              "required": [
-                "half"
-              ]
-            }
-          },
-          "else": {
-            "required": [
-              "half"
-            ]
-          }
-        },
-        {
-          "if": { "properties": { "widget": { "const": "mini_fader" } } },
-          "then": { "properties": { "cols": { "const": 1 } } },
-          "else": { "properties": { "rows": { "const": 1 } } }
-        },
-        {
-          "if": {
-            "properties": {
-              "widget": {
-                "const": "knob"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "cols": {
-                "const": 1
-              }
-            }
-          }
-        },
-        {
-          "if": { "properties": { "widget": { "const": "number" } } },
-          "then": { "properties": { "cols": { "maximum": 2 } } }
-        },
-        {
-          "if": {
-            "properties": {
-              "widget": {
-                "enum": [
-                  "knob_large",
-                  "dropdown"
-                ]
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "cols": {
-                "const": 2
-              }
-            }
-          }
-        },
+        { "$ref": "#/$defs/control_geometry" },
         {
           "if": {
             "properties": {
@@ -444,6 +449,9 @@
       ],
       "not": {
         "anyOf": [
+          { "required": ["selector"] },
+          { "required": ["follows"] },
+          { "required": ["variants"] },
           {
             "required": [
               "graph"
@@ -478,7 +486,10 @@
             "xy",
             "lfo",
             "compressor",
-            "gr_history"
+            "gr_history",
+            "filter_va",
+            "lfo_shape",
+            "wavetable"
           ]
         },
         "name": {
@@ -498,6 +509,24 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 4294967294
+          }
+        },
+        "variants": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "required": ["slots"],
+            "properties": {
+              "name": { "$ref": "#/$defs/labels" },
+              "slots": {
+                "type": "object",
+                "minProperties": 1,
+                "maxProperties": 41,
+                "additionalProperties": { "type": "integer", "minimum": 0, "maximum": 4294967294 }
+              }
+            }
           }
         },
         "asset_slot": {
@@ -599,11 +628,6 @@
         "anyOf": [
           {
             "required": [
-              "half"
-            ]
-          },
-          {
-            "required": [
               "param_id"
             ]
           },
@@ -627,6 +651,9 @@
           }
         ]
       },
+      "if": { "required": ["follows"] },
+      "then": { "properties": { "graph": { "required": ["variants"] } } },
+      "else": { "properties": { "graph": { "not": { "required": ["variants"] } } } },
       "properties": {
         "widget": {
           "const": "graph"
@@ -651,13 +678,107 @@
           "minimum": 1,
           "maximum": 3
         },
+        "half": { "const": "top" },
+        "follows": { "$ref": "#/$defs/selection_key" },
         "graph": {
           "$ref": "#/$defs/graph"
         }
       }
     },
+    "selection_key": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,31}(?![\\s\\S])"
+    },
+    "selector_cell": {
+      "type": "object",
+      "required": ["widget", "col", "row", "cols", "rows", "half", "selector"],
+      "properties": {
+        "widget": { "const": "selector" },
+        "col": { "type": "integer", "minimum": 0, "maximum": 13 },
+        "row": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "cols": { "type": "integer", "minimum": 1, "maximum": 14 },
+        "rows": { "const": 1 },
+        "half": { "enum": ["top", "bottom"] },
+        "selector": {
+          "type": "object",
+          "required": ["key", "labels", "options"],
+          "properties": {
+            "key": { "$ref": "#/$defs/selection_key" },
+            "labels": { "$ref": "#/$defs/labels" },
+            "options": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 4,
+              "items": { "$ref": "#/$defs/labels" }
+            }
+          }
+        }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["param_id"] },
+          { "required": ["follows"] },
+          { "required": ["variants"] },
+          { "required": ["band_controls"] },
+          { "required": ["graph"] },
+          { "required": ["canvas"] },
+          { "required": ["labels"] },
+          { "required": ["choices"] },
+          { "required": ["disabled_by"] },
+          { "required": ["reduction_tap"] }
+        ]
+      }
+    },
+    "selected_control": {
+      "type": "object",
+      "required": ["widget", "col", "row", "cols", "rows", "follows", "variants"],
+      "properties": {
+        "widget": { "enum": ["knob", "knob_large", "number", "toggle_button", "segment", "dropdown", "mini_fader"] },
+        "col": { "type": "integer", "minimum": 0, "maximum": 13 },
+        "row": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "cols": { "type": "integer", "minimum": 1, "maximum": 14 },
+        "rows": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "half": { "enum": ["top", "bottom"] },
+        "follows": { "$ref": "#/$defs/selection_key" },
+        "variants": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "required": ["param_id"],
+            "properties": {
+              "param_id": { "type": "integer", "minimum": 0, "maximum": 4294967294 },
+              "labels": { "$ref": "#/$defs/labels" },
+              "choices": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 16,
+                "items": { "$ref": "#/$defs/choice" }
+              }
+            }
+          }
+        }
+      },
+      "allOf": [{ "$ref": "#/$defs/control_geometry" }],
+      "not": {
+        "anyOf": [
+          { "required": ["param_id"] },
+          { "required": ["selector"] },
+          { "required": ["band_controls"] },
+          { "required": ["graph"] },
+          { "required": ["canvas"] },
+          { "required": ["labels"] },
+          { "required": ["choices"] },
+          { "required": ["disabled_by"] },
+          { "required": ["reduction_tap"] }
+        ]
+      }
+    },
     "cell": {
       "oneOf": [
+        { "$ref": "#/$defs/selector_cell" },
+        { "$ref": "#/$defs/selected_control" },
         {
           "$ref": "#/$defs/control"
         },
