@@ -236,6 +236,79 @@
         }
       }
     },
+    "control_geometry": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "widget": {
+                "enum": [
+                  "knob",
+                  "knob_large",
+                  "mini_fader"
+                ]
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "half"
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "half"
+            ]
+          }
+        },
+        {
+          "if": { "properties": { "widget": { "const": "mini_fader" } } },
+          "then": { "properties": { "cols": { "const": 1 } } },
+          "else": { "properties": { "rows": { "const": 1 } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "widget": {
+                "const": "knob"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cols": {
+                "const": 1
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "widget": { "const": "number" } } },
+          "then": { "properties": { "cols": { "maximum": 2 } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "widget": {
+                "enum": [
+                  "knob_large",
+                  "dropdown"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cols": {
+                "const": 2
+              }
+            }
+          }
+        }
+      ]
+    },
     "control": {
       "type": "object",
       "required": [
@@ -346,75 +419,7 @@
           "if": { "required": ["disabled_by"] },
           "then": { "properties": { "widget": { "enum": ["knob", "knob_large"] } } }
         },
-        {
-          "if": {
-            "properties": {
-              "widget": {
-                "enum": [
-                  "knob",
-                  "knob_large",
-                  "mini_fader"
-                ]
-              }
-            }
-          },
-          "then": {
-            "not": {
-              "required": [
-                "half"
-              ]
-            }
-          },
-          "else": {
-            "required": [
-              "half"
-            ]
-          }
-        },
-        {
-          "if": { "properties": { "widget": { "const": "mini_fader" } } },
-          "then": { "properties": { "cols": { "const": 1 } } },
-          "else": { "properties": { "rows": { "const": 1 } } }
-        },
-        {
-          "if": {
-            "properties": {
-              "widget": {
-                "const": "knob"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "cols": {
-                "const": 1
-              }
-            }
-          }
-        },
-        {
-          "if": { "properties": { "widget": { "const": "number" } } },
-          "then": { "properties": { "cols": { "maximum": 2 } } }
-        },
-        {
-          "if": {
-            "properties": {
-              "widget": {
-                "enum": [
-                  "knob_large",
-                  "dropdown"
-                ]
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "cols": {
-                "const": 2
-              }
-            }
-          }
-        },
+        { "$ref": "#/$defs/control_geometry" },
         {
           "if": {
             "properties": {
@@ -754,6 +759,7 @@
           }
         }
       },
+      "allOf": [{ "$ref": "#/$defs/control_geometry" }],
       "not": {
         "anyOf": [
           { "required": ["param_id"] },

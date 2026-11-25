@@ -1650,6 +1650,15 @@ mod tests {
         let params: Vec<_> = (1..=4).map(|id| parameter(id, 1.0, 0, 0)).collect();
         assert!(layout.validate_params(&params).is_ok());
         assert!(layout.validate_params(&params[..3]).is_err());
+        for (key, field) in [
+            ("cols", json!(2)),
+            ("rows", json!(2)),
+            ("half", json!("top")),
+        ] {
+            let mut invalid = value.clone();
+            invalid["pages"][0]["cells"][2][key] = field;
+            assert_eq!(parse(&invalid), Err(LayoutError::Invalid("cell geometry")));
+        }
         value["pages"][0]["cells"][1]["row"] = json!(0);
         assert!(parse(&value).is_err(), "the earlier row is full");
         value["pages"][0]["cells"][1]["row"] = json!(1);

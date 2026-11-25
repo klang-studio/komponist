@@ -131,22 +131,22 @@ pub(crate) fn draw_cell(
     if let Some(selector) = native.and_then(|cell| cell.selector.as_ref()) {
         let layout = card.native_layout.as_ref().expect("native selector");
         let locale = komponist_ui::lang(cu.ctx()).code();
-        let key = native_selection_key(card.page, &selector.key);
-        let values = (0..selector.options.len())
-            .map(|index| index.to_string())
-            .collect::<Vec<_>>();
-        let options = values
+        let entries: Vec<_> = selector
+            .options
             .iter()
-            .zip(&selector.options)
-            .map(|(value, labels)| {
-                (
-                    value.as_str(),
-                    layout.label(labels, locale).unwrap_or_default(),
-                )
-            })
-            .collect::<Vec<_>>();
+            .map(|labels| SegmentOption::text(layout.label(labels, locale).unwrap_or_default()))
+            .collect();
         let label = layout.label(&selector.labels, locale).unwrap_or_default();
-        choice_segment(cu, card, cell, (&key, label), &options, &ctx, rect);
+        let id = native_selection_id(card, &selector.key);
+        let mut selected = native_selection(cu.ctx(), id, entries.len());
+        let response = cu.put(
+            rect,
+            Segment::new(label, &entries, &mut selected).cols(cell.cols),
+        );
+        if response.changed() {
+            cu.ctx().data_mut(|data| data.insert_temp(id, selected));
+            cu.ctx().request_repaint();
+        }
         return;
     }
     if let CellParam::Select { key, count } = &cell.param {
@@ -177,9 +177,10 @@ pub(crate) fn draw_cell(
         .unwrap_or(1);
     let variant_control = native.and_then(|cell| {
         if let Some(key) = &cell.follows {
+            let id = native_selection_id(card, key);
             return cell
                 .variants
-                .get(native_selection(&ctx, card.page, key, cell.variants.len()));
+                .get(native_selection(cu.ctx(), id, cell.variants.len()));
         }
         let last = cell.band_controls.len().checked_sub(1)?;
         cell.band_controls.get(band.saturating_sub(1).min(last))
@@ -823,14 +824,13 @@ fn select_segment(
     }
 }
 
-/// Native selections are local to their own page and independent of legacy card state.
-fn native_selection_key(page: usize, key: &str) -> String {
-    format!("layout/{page}/{key}")
+/// A native selector stores only its index. Its localized labels remain in the layout.
+fn native_selection_id(card: &Card, key: &str) -> Id {
+    Id::unique(("native-device-selection", card.device, card.page, key))
 }
 
-fn native_selection(ctx: &ParamContext, page: usize, key: &str, count: usize) -> usize {
-    ctx.get(&native_selection_key(page, key))
-        .and_then(|index| index.parse().ok())
+fn native_selection(ctx: &egui::Context, id: Id, count: usize) -> usize {
+    ctx.data(|data| data.get_temp::<usize>(id))
         .filter(|&index| index < count)
         .unwrap_or_default()
 }
@@ -1247,12 +1247,8 @@ fn graph(
     let native_graph = native.and_then(|cell| cell.graph.as_ref());
     let selected = native.and_then(|cell| {
         let key = cell.follows.as_deref()?;
-        Some(native_selection(
-            ctx,
-            card.page,
-            key,
-            native_graph?.variants.len(),
-        ))
+        let id = native_selection_id(card, key);
+        Some(native_selection(cu.ctx(), id, native_graph?.variants.len()))
     });
     let variant = selected.and_then(|index| native_graph?.variants.get(index));
     let lookup = |slot: &str| {
@@ -1983,6 +1979,49 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn native_selectors_can_use_another_selectors_label_suffix() {
+        let layout = komponist_ipc::native_layout::NativeLayout::parse(
+            br#"{
+              "schema_version":2,"default_locale":"en","locales":["en"],
+              "required_capabilities":["cell-selections"],
+              "pages":[{"key":"main","labels":{"en":"Main"},"columns":2,"cells":[
+                {"widget":"selector","col":0,"row":0,"cols":1,"rows":1,"half":"top",
+                 "selector":{"key":"osc","labels":{"en":"First"},"options":[{"en":"A"},{"en":"B"}]}},
+                {"widget":"selector","col":1,"row":0,"cols":1,"rows":1,"half":"top",
+                 "selector":{"key":"osc_label","labels":{"en":"Second"},"options":[{"en":"A"},{"en":"B"}]}},
+                {"widget":"knob","col":0,"row":1,"cols":1,"rows":1,"follows":"osc",
+                 "variants":[{"param_id":41},{"param_id":42}]},
+                {"widget":"knob","col":1,"row":1,"cols":1,"rows":1,"follows":"osc_label",
+                 "variants":[{"param_id":43},{"param_id":44}]}
+              ]}]
+            }"#,
+        )
+        .unwrap();
+        let mut h = harness();
+        let card = &mut h.state_mut().0;
+        card.layout = model::native_card_layout(&layout, Lang::En);
+        card.native_layout = Some(std::sync::Arc::new(layout));
+        card.params = [
+            (41, "First A"),
+            (42, "First B"),
+            (43, "Second A"),
+            (44, "Second B"),
+        ]
+        .into_iter()
+        .map(|(id, name)| param(id, name, ParamKind::lin(0.0, 1.0), 0.5, 0.5))
+        .collect();
+        h.run_steps(3);
+
+        for label in ["Second: B", "First: B"] {
+            h.get_by_role_and_label(Role::RadioButton, label).click();
+            h.run_steps(3);
+        }
+        h.get_by_role_and_label(Role::Slider, "First B");
+        h.get_by_role_and_label(Role::Slider, "Second B");
+        assert!(h.state().1.is_empty());
     }
 
     #[test]
