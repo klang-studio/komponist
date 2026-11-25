@@ -153,6 +153,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Delay {
             headings: Default::default(),
             pad_bank: None,
             parameter_display: parameter_display(english_params),
+            full_band_choice_labels: Default::default(),
         })
     }
 

@@ -78,6 +78,7 @@ impl NativeClapLayout for NativeGain {
         });
         Some(PanelV2 {
             parameter_display: Default::default(),
+            full_band_choice_labels: Default::default(),
             panel,
             graph_labels: [(
                 (1, 0),

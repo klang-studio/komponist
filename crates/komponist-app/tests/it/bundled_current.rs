@@ -1318,11 +1318,126 @@ fn packaged_effect_cards_and_presets() {
             let path = PathBuf::from(dir).join(format!("{slug}-{}.png", lang.code()));
             harness.render().unwrap().save(path).unwrap();
         }
+        if slug == "eq" {
+            check_eq_panel(&mut harness, track, device, lang);
+        }
         if slug == "presse" {
             check_presse_panel(&mut harness, track, device, lang);
         }
     }
     harness.state_mut().shutdown();
+}
+
+fn check_eq_panel(
+    harness: &mut egui_kittest::Harness<'_, App>,
+    track: TrackId,
+    device: DeviceId,
+    lang: komponist_i18n::Lang,
+) {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+
+    let host = harness.state().engine().host();
+    let layout = host.native_layout(device).unwrap();
+    assert_eq!(layout.schema_version, 2);
+    let ids = layout.author_ids().unwrap();
+    let freq = ids["b2_freq"];
+    let kind = ids["b2_type"];
+    let analyse = ids["analyse"];
+    let spectrum = host
+        .signal_tap(device, "spectrum")
+        .unwrap()
+        .samples()
+        .clone();
+
+    harness.get_by_role_and_label(Role::Slider, &lang.param_eq_band_freq(1));
+    let axis = format!("{} {}", lang.ui_graph_band(2), lang.ui_graph_frequency());
+    let handle = harness.get_by_role_and_label(Role::Slider, &axis);
+    let pos = handle.rect().center();
+    harness.hover_at(pos);
+    harness.step();
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+    }
+    harness.run_steps(3);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Slider, &lang.param_eq_band_freq(1))
+            .is_none()
+    );
+    harness.get_by_role_and_label(Role::Slider, &lang.param_eq_band_freq(2));
+    harness
+        .get_by_role_and_label(Role::Slider, &axis)
+        .increment_accesskit();
+    let low_cut = format!(
+        "{}: {}",
+        lang.param_eq_band_type(2),
+        lang.choice_eq_type_low_cut_short()
+    );
+    harness
+        .get_by_role_and_label(Role::RadioButton, &low_cut)
+        .click();
+    harness.run_steps(3);
+    assert!(harness.state().dispatched().any(|action| matches!(
+        action,
+        Action::Plugin(PluginAction::SetParam { device: id, id: wire, value })
+            if *id == device && *wire == freq && (0.0..=1.0).contains(value)
+    )));
+    assert!(harness.state().dispatched().any(|action| matches!(
+        action,
+        Action::Plugin(PluginAction::SetParam { device: id, id: wire, value })
+            if *id == device && *wire == kind && *value == 0.0
+    )));
+
+    harness.state_mut().engine_mut().send(Command::LiveNote {
+        track,
+        key: 60,
+        velocity: 120,
+    });
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        harness.run_steps(2);
+        let mut samples = [0.0; 32];
+        if spectrum.read_latest(&mut samples).is_some()
+            && samples.into_iter().any(|sample| sample.abs() > 0.0001)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the EQ graph must lease its live spectrum"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    harness
+        .get_by_role_and_label(Role::Button, lang.param_eq_analyse())
+        .click();
+    harness.run_steps(3);
+    assert!(harness.state().dispatched().any(|action| matches!(
+        action,
+        Action::Plugin(PluginAction::SetParam { device: id, id: wire, value })
+            if *id == device && *wire == analyse && *value == 0.0
+    )));
+    let deadline = Instant::now() + PATIENCE;
+    while spectrum.is_wanted() {
+        harness.run_steps(2);
+        assert!(
+            Instant::now() < deadline,
+            "Analyse off must stop renewing the spectrum lease"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    harness.state_mut().engine_mut().send(Command::LiveNote {
+        track,
+        key: 60,
+        velocity: 0,
+    });
 }
 
 fn check_presse_panel(

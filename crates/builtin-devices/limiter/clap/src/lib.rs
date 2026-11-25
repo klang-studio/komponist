@@ -65,6 +65,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Limiter {
             .collect();
         Some(PanelV2 {
             parameter_display: Default::default(),
+            full_band_choice_labels: Default::default(),
             panel,
             graph_labels: Default::default(),
             canvases: Default::default(),

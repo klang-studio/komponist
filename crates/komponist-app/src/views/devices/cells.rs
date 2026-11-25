@@ -15,7 +15,7 @@ use komponist_i18n::Lang;
 use komponist_ipc::device_assets::{AssetKind, AssetStatus};
 use komponist_model::DeviceId;
 use komponist_model::params::eq_curve::CURVE_RATE;
-use komponist_model::params::{ParamContext, ParamKind, Scale, Unit, resolve};
+use komponist_model::params::{ParamContext, ParamId, ParamKind, Scale, Unit, resolve};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
 use komponist_tokens::{TrackPalette, color, device, radius};
@@ -149,17 +149,34 @@ pub(crate) fn draw_cell(
         }
         return;
     }
-    let param = match &cell.param {
-        CellParam::Id(id) => card.param(id),
-        CellParam::Template(t) => resolve(t, &ctx).ok().and_then(|id| card.param(&id)),
-        _ => None,
+    let native = card.native_cell(cell);
+    let band = ctx
+        .get(BAND)
+        .and_then(|band| band.parse::<usize>().ok())
+        .unwrap_or(1);
+    let band_control = native.and_then(|cell| {
+        let last = cell.band_controls.len().checked_sub(1)?;
+        cell.band_controls.get(band.saturating_sub(1).min(last))
+    });
+    let param = if let Some(binding) = band_control {
+        card.param(&ParamId::plugin(binding.param_id))
+    } else {
+        match &cell.param {
+            CellParam::Id(id) => card.param(id),
+            CellParam::Template(t) => resolve(t, &ctx).ok().and_then(|id| card.param(&id)),
+            _ => None,
+        }
     };
     if param.is_some_and(|p| waveform_slices::hides_control(card, p.wire)) {
         return;
     }
     let localized = param.and_then(|param| {
         let layout = card.native_layout.as_ref()?;
-        let labels = card.native_cell(cell)?.labels.as_ref()?;
+        let labels = if let Some(binding) = band_control {
+            binding.labels.as_ref()?
+        } else {
+            native?.labels.as_ref()?
+        };
         let label = layout.label(labels, komponist_ui::lang(cu.ctx()).code())?;
         let mut localized = param.clone();
         localized.info.name = label.to_owned();
@@ -546,7 +563,16 @@ fn choices<'a>(
 ) -> Option<(std::borrow::Cow<'a, [String]>, f64)> {
     use std::borrow::Cow;
     if let Some(layout) = &card.native_layout
-        && let Some(choices) = &card.native_cell(cell)?.choices
+        && let Some(choices) = {
+            let native = card.native_cell(cell)?;
+            native
+                .band_controls
+                .iter()
+                .find(|binding| binding.param_id == p.wire)
+                .map_or(native.choices.as_deref(), |binding| {
+                    binding.choices.as_deref()
+                })
+        }
     {
         let names = choices
             .iter()

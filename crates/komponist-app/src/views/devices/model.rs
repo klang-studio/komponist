@@ -394,7 +394,20 @@ pub fn touched(
         ChannelRef::Master => (None, lang.devices_master().to_owned()),
     };
     let mut parts = vec![card.name.clone()];
-    parts.extend(place_of(lang, &p.info.id));
+    let place = place_of(lang, &p.info.id).or_else(|| {
+        card.native_layout
+            .as_ref()?
+            .pages
+            .iter()
+            .flat_map(|page| &page.cells)
+            .find_map(|cell| {
+                cell.band_controls
+                    .iter()
+                    .position(|binding| binding.param_id == p.wire)
+            })
+            .map(|index| format!("{} {}", lang.devices_band(), index + 1))
+    });
+    parts.extend(place);
     parts.push(track_name);
     Some(TouchedParam {
         track,
@@ -743,6 +756,9 @@ pub(super) fn native_card_layout(
                                 GraphKind::GrHistory => GraphConfig::GrHistory,
                             };
                             let mut binding = GraphBinding::new(config);
+                            if graph.select_band {
+                                binding = binding.selecting(layout::BAND);
+                            }
                             binding.bind = graph
                                 .slots
                                 .iter()
@@ -785,7 +801,11 @@ pub(super) fn native_card_layout(
                             }
                         };
                         let param = CellParam::Id(ParamId::plugin(
-                            cell.param_id.expect("validated control binding"),
+                            cell.param_id
+                                .or_else(|| {
+                                    cell.band_controls.first().map(|binding| binding.param_id)
+                                })
+                                .expect("validated control binding"),
                         ));
                         let mut model_cell = match cell.half {
                             Some(half) => Cell::half(
@@ -895,23 +915,29 @@ pub(super) fn native_param(
     known: Option<&ParamValue>,
 ) -> Param {
     let mut info = plugin_info(lang, wire);
-    if !layout.has_parameter_display() {
+    if !layout.has_parameter_display() && !layout.has_eq_band_controls() {
         return plugin_param(wire, info, known);
     }
-    if let Some(cell) = layout
-        .pages
-        .iter()
-        .flat_map(|page| &page.cells)
-        .find(|cell| cell.param_id == Some(wire.id))
+    if let Some((labels, choices)) =
+        layout
+            .pages
+            .iter()
+            .flat_map(|page| &page.cells)
+            .find_map(|cell| {
+                if cell.param_id == Some(wire.id) {
+                    Some((cell.labels.as_ref(), cell.choices.as_deref()))
+                } else {
+                    cell.band_controls
+                        .iter()
+                        .find(|binding| binding.param_id == wire.id)
+                        .map(|binding| (binding.labels.as_ref(), binding.choices.as_deref()))
+                }
+            })
     {
-        if let Some(label) = cell
-            .labels
-            .as_ref()
-            .and_then(|labels| layout.label(labels, lang.code()))
-        {
+        if let Some(label) = labels.and_then(|labels| layout.label(labels, lang.code())) {
             info.name = label.to_owned();
         }
-        if let Some(choices) = &cell.choices
+        if let Some(choices) = choices
             && choices.first().is_some_and(|choice| choice.value == 0)
         {
             info.kind = ParamKind::Enum(
@@ -919,7 +945,10 @@ pub(super) fn native_param(
                     .iter()
                     .map(|choice| {
                         layout
-                            .label(&choice.labels, lang.code())
+                            .label(
+                                choice.full_labels.as_ref().unwrap_or(&choice.labels),
+                                lang.code(),
+                            )
                             .unwrap_or_default()
                             .to_owned()
                     })

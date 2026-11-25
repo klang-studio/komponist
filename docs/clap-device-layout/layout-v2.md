@@ -134,6 +134,27 @@ level readings where available. If the stream is absent or has a different
 kind, the host uses its existing effect readings when available and otherwise
 shows an empty meter. A meter has no parameter, label or choice bindings.
 
+## EQ band controls
+
+An EQ panel may list `eq-band-controls` in `required_capabilities`. Set
+`select_band` to `true` on one EQ graph per page to make its selected band
+available to controls on that page. A selectable EQ graph binds
+`bN_on`, `bN_type`, `bN_freq`, `bN_gain` and `bN_q` for every band.
+The selection starts at band 1 and follows the graph handles.
+
+A band-dependent knob, toggle or segment declares `band_controls` in place of
+`param_id`, `labels` and `choices`. Include one object per band in ascending
+order. Each object supplies a numeric `param_id` and optional localized
+`labels`. Each ID must match the same graph slot role for its band.
+Knobs bind frequency, gain or Q. Toggles bind enabled state. Segments bind
+filter type and supply the five type choices in CLAP order. A choice can
+provide `full_labels` for longer text in the parameter inspector while the
+segment uses `labels`.
+
+An EQ graph may also bind a Boolean `spectrum_enabled` slot while declaring
+this capability. The host leases the named `spectrum` stream only while the
+graph is visible and active and this parameter is on.
+
 ## Physical parameter display
 
 A panel can present a continuous CLAP parameter with a wire range of 0–1 in

@@ -168,6 +168,7 @@ fn source_fraction_waveforms_declare_the_required_layout_capability() {
     let instance = Instance::new::<P>();
     let panel = PanelV2 {
         parameter_display: Default::default(),
+        full_band_choice_labels: Default::default(),
         panel: panel(Cell::graph(
             0,
             0,
