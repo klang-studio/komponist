@@ -61,7 +61,7 @@ pub(super) fn scan(launcher: &Path, work: &Path) -> PluginHost {
     host
 }
 
-fn shipped(host: &PluginHost, slug: &str) -> PluginRef {
+pub(super) fn shipped(host: &PluginHost, slug: &str) -> PluginRef {
     let id = format!("{DEVICE_PREFIX}{slug}");
     host.catalog()
         .entries()

@@ -114,6 +114,33 @@ fn project(dir: &Path, kit: bool) -> Project {
     p
 }
 
+/// Old projects store the sample link inside the legacy sampler's state.
+#[test]
+fn an_unreadable_legacy_pad_blocks_flattening() {
+    let dir = tempfile::tempdir().unwrap();
+    let sample = dir.path().join("corrupt.wav");
+    std::fs::write(&sample, b"unreadable sample").unwrap();
+    let project = project(dir.path(), false);
+    let track = project.tracks[0].id;
+    let sampler = &project.tracks[0].channel.devices[0];
+    let device = sampler.id;
+    let name = sampler.plugin.name.clone();
+    let state = links::write(None, 0, Some(&SampleLink::new(&sample, None)));
+    let project = edits::set_device_state(&project, device, Some(state.into())).unwrap();
+    let project = crate::flatten::clip(&project, track, Tick(1920), note_of_pad(0), Tick(480));
+    let output = dir.path().join("render");
+    let mut app = App::headless(project.clone()).with_recording_directory(&output);
+    app.step();
+    crate::flatten::flatten(&mut app, track);
+    let lang = app.lang();
+    assert_eq!(
+        app.ui().status.as_ref().unwrap().text,
+        lang.flatten_failed(lang.flatten_pad_failed(&name, 1, "corrupt"))
+    );
+    assert_eq!(app.project().as_ref(), &project);
+    assert!(output.read_dir().unwrap().next().is_none());
+}
+
 fn authored_project(dir: &Path, kit: bool) -> Option<(Project, PluginHost)> {
     let (host, plugin) = native_fixture(dir, "klopfer.clap", "org.klang-studio.komponist.sampler")?;
     let (mut project, _) = edits::add_track(

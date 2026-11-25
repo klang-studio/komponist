@@ -12,8 +12,7 @@ use komponist_app::device_host::{BuiltinHost, DeviceHost};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::ui_state::{FocusArea, StatusKind};
 use komponist_app::{Action, App, EditAction, ProjectAction};
-use komponist_builtin::Internal;
-use komponist_engine::testing::TestPanic;
+use komponist_engine::testing::{TestMidiFx, TestPanic};
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
@@ -30,6 +29,10 @@ use komponist_plugins::{
     Catalog, DeviceSnapshots, DeviceStatus, PluginManagerEvent, ProcessorSetup,
 };
 
+use crate::common::{
+    SYNTH, app_with, clap_plugin, fixture_dirs, instrument_project, native_fixture,
+    scan_fixture_host,
+};
 use crate::export::{read, step_until};
 
 const FIRST: Tick = Tick(1920);
@@ -49,7 +52,13 @@ fn plugin(id: &str) -> PluginRef {
     }
 }
 
-fn clip(project: &Project, track: TrackId, start: Tick, pitch: u8, length: Tick) -> Project {
+pub(super) fn clip(
+    project: &Project,
+    track: TrackId,
+    start: Tick,
+    pitch: u8,
+    length: Tick,
+) -> Project {
     edits::add_clip(
         project,
         track,
@@ -72,7 +81,7 @@ fn clip(project: &Project, track: TrackId, start: Tick, pitch: u8, length: Tick)
     .0
 }
 
-fn fixture() -> (Project, TrackId, DeviceId) {
+fn fixture(midi_effect: Option<PluginRef>) -> (Project, TrackId, DeviceId) {
     let (project, side) = edits::add_track(
         &Project::new("Flatten"),
         NewTrack {
@@ -95,22 +104,28 @@ fn fixture() -> (Project, TrackId, DeviceId) {
         },
     )
     .unwrap();
-    let (project, _) = edits::insert_device(
-        &project,
-        ChannelRef::Track(track),
-        0,
-        NewDevice {
-            role: DeviceRole::MidiEffect,
-            plugin: Internal::Tonleiter.plugin_ref(),
-            state: None,
-            sidechain: None,
-        },
-    )
-    .unwrap();
+    let project = if let Some(plugin) = midi_effect {
+        edits::insert_device(
+            &project,
+            ChannelRef::Track(track),
+            0,
+            NewDevice {
+                role: DeviceRole::MidiEffect,
+                plugin,
+                state: None,
+                sidechain: None,
+            },
+        )
+        .unwrap()
+        .0
+    } else {
+        project
+    };
+    let device_count = project.track(track).unwrap().channel.devices.len();
     let (project, effect) = edits::insert_device(
         &project,
         ChannelRef::Track(track),
-        2,
+        device_count,
         NewDevice {
             role: DeviceRole::Effect,
             plugin: plugin("tail"),
@@ -123,7 +138,7 @@ fn fixture() -> (Project, TrackId, DeviceId) {
     )
     .unwrap();
     let project = clip(&project, side, Tick(960), 80, Tick(7000));
-    let project = clip(&project, track, FIRST, 61, LENGTH); // Tonleiter maps this C♯ to C.
+    let project = clip(&project, track, FIRST, 61, LENGTH); // The MIDI stage maps this C♯ to C in the full-chain tests.
     let project = clip(&project, track, SECOND, 62, LENGTH);
     let (project, bus) = edits::add_bus(&project, NewBus::default()).unwrap();
     let project =
@@ -267,7 +282,7 @@ enum Fixture {
 }
 
 struct Host {
-    builtins: BuiltinHost,
+    backend: Box<dyn DeviceHost>,
     state: DeviceId,
     fixture: Fixture,
     assets: Option<Snapshot>,
@@ -283,6 +298,7 @@ impl DeviceHost for Host {
     ) -> Option<Box<dyn Processor>> {
         match device.plugin.id.as_str() {
             "instrument" => Some(Box::new(TestProcessor::Instrument(0.0))),
+            "transpose" => Some(Box::new(TestMidiFx::transposing(-1))),
             "tail" if self.fixture == Fixture::Broken => Some(Box::new(TestProcessor::Broken)),
             "tail" if self.fixture == Fixture::Panic => {
                 Some(Box::new(TestProcessor::Panic(TestPanic)))
@@ -296,21 +312,21 @@ impl DeviceHost for Host {
                     0
                 },
             })),
-            _ => self.builtins.create_processor(device, setup),
+            _ => self.backend.create_processor(device, setup),
         }
     }
     fn release(&mut self, device: DeviceId) {
-        self.builtins.release(device);
+        self.backend.release(device);
     }
     fn status(&self, device: DeviceId) -> DeviceStatus {
         if self.fixture == Fixture::Loading && self.state == device {
             DeviceStatus::Loading
         } else {
-            self.builtins.status(device)
+            self.backend.status(device)
         }
     }
     fn latency(&self, device: DeviceId) -> u32 {
-        self.builtins.latency(device)
+        self.backend.latency(device)
     }
     fn asset_slots(&self, device: DeviceId) -> Option<&Snapshot> {
         self.assets.as_ref().filter(|_| device == self.state)
@@ -319,56 +335,56 @@ impl DeviceHost for Host {
         self.bindings_pending && device == self.state
     }
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
-        self.builtins.poll()
+        self.backend.poll()
     }
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
-        self.builtins.role(plugin)
+        self.backend.role(plugin)
     }
     fn catalog(&self) -> &Catalog {
-        self.builtins.catalog()
+        self.backend.catalog()
     }
     fn snapshot_selected_states(
         &mut self,
         ids: &[DeviceId],
-        _: std::time::Duration,
+        timeout: std::time::Duration,
     ) -> Result<DeviceSnapshots, DeviceId> {
-        if !ids.contains(&self.state) {
-            return Ok(Vec::new());
+        let mut snapshots = self.backend.snapshot_selected_states(ids, timeout)?;
+        if ids.contains(&self.state) {
+            if self.fixture == Fixture::WasNotSnapshotted {
+                return Err(self.state);
+            }
+            snapshots.push((
+                self.state,
+                Arc::<[u8]>::from(&b"latest plugin settings"[..]).into(),
+            ));
         }
-        if self.fixture == Fixture::WasNotSnapshotted {
-            return Err(self.state);
-        }
-        Ok(vec![(
-            self.state,
-            Arc::<[u8]>::from(&b"latest plugin settings"[..]).into(),
-        )])
+        Ok(snapshots)
     }
     fn set_render_mode(&mut self, _: RenderMode) {
         self.global_mode_changes.fetch_add(1, Ordering::Relaxed);
     }
+    fn set_selected_render_mode(&mut self, ids: &[DeviceId], mode: RenderMode) {
+        self.backend.set_selected_render_mode(ids, mode);
+    }
+    fn bridge_pid(&self, device: DeviceId) -> Option<u32> {
+        self.backend.bridge_pid(device)
+    }
+    fn shutdown(&mut self) {
+        self.backend.shutdown();
+    }
 }
 
 fn app(project: Project, folder: &Path, effect: DeviceId, fixture: Fixture) -> App {
-    app_with_mode_counter(project, folder, effect, fixture, Arc::default())
-}
-
-fn app_with_mode_counter(
-    project: Project,
-    folder: &Path,
-    effect: DeviceId,
-    fixture: Fixture,
-    global_mode_changes: Arc<AtomicUsize>,
-) -> App {
     app_with_host(
         project,
         folder,
         Host {
-            builtins: BuiltinHost::new(),
+            backend: Box::new(BuiltinHost::new()),
             state: effect,
             fixture,
             assets: None,
             bindings_pending: false,
-            global_mode_changes,
+            global_mode_changes: Arc::default(),
         },
     )
 }
@@ -382,7 +398,7 @@ fn app_with_host(project: Project, folder: &Path, host: Host) -> App {
     app
 }
 
-fn flatten(app: &mut App, track: TrackId) {
+pub(super) fn flatten(app: &mut App, track: TrackId) {
     app.dispatch(Action::Edit(EditAction::FlattenMidiTrack(track)));
     step_until(app, "flatten", |app| !app.is_exporting());
 }
@@ -400,15 +416,59 @@ fn audio_path(app: &App, track: TrackId) -> PathBuf {
 #[test]
 fn flatten_isolates_the_complete_chain_and_undo_restores_the_live_state() {
     let dir = tempfile::tempdir().unwrap();
-    let (project, track, effect) = fixture();
-    let count = Arc::new(AtomicUsize::new(0));
-    let mut app = app_with_mode_counter(
-        project.clone(),
+    assert_complete_chain(
         dir.path(),
-        effect,
-        Fixture::Ready,
-        Arc::clone(&count),
+        plugin("transpose"),
+        Box::new(BuiltinHost::new()),
+        0.61,
+        None,
     );
+}
+
+#[test]
+#[ignore = "requires a verified all-device package; run with scripts/measure-bundled-clap.py --current-projects"]
+fn flatten_processes_verified_clap_scale_and_restores_its_state() {
+    let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").expect("package executable");
+    let bridge =
+        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
+    let dir = tempfile::tempdir().unwrap();
+    let host = crate::bundled_current::scan(Path::new(&launcher), dir.path());
+    let scale = crate::bundled_current::shipped(&host, "scale");
+    assert!(komponist_plugins::requires_bundled(&scale));
+    assert_complete_chain(dir.path(), scale, Box::new(host), 0.62, Some(bridge));
+}
+
+fn assert_complete_chain(
+    dir: &Path,
+    midi_effect: PluginRef,
+    backend: Box<dyn DeviceHost>,
+    second_note: f32,
+    packaged_bridge: Option<bool>,
+) {
+    let (project, track, effect) = fixture(Some(midi_effect));
+    let midi_effect = project.track(track).unwrap().channel.devices[0].id;
+    let count = Arc::new(AtomicUsize::new(0));
+    let mut app = app_with_host(
+        project.clone(),
+        &dir.join("render"),
+        Host {
+            backend,
+            state: effect,
+            fixture: Fixture::Ready,
+            assets: None,
+            bindings_pending: false,
+            global_mode_changes: Arc::clone(&count),
+        },
+    );
+    step_until(&mut app, "the MIDI stage ready", |app| {
+        app.engine().device_status(midi_effect) == DeviceStatus::Ok
+    });
+    if let Some(bridge) = packaged_bridge {
+        assert_eq!(
+            app.engine().host().bridge_pid(midi_effect).is_some(),
+            bridge
+        );
+    }
     flatten(&mut app, track);
     assert_eq!(
         count.load(Ordering::Relaxed),
@@ -444,7 +504,7 @@ fn flatten_isolates_the_complete_chain_and_undo_restores_the_live_state() {
         "sidechain, MIDI effect and instrument"
     );
     assert!(
-        (left(relative(SECOND) + 128) - 0.62 * 0.80).abs() < 1e-5,
+        (left(relative(SECOND) + 128) - second_note * 0.80).abs() < 1e-5,
         "second clip at its original offset"
     );
     let end = relative(SECOND + LENGTH);
@@ -460,9 +520,24 @@ fn flatten_isolates_the_complete_chain_and_undo_restores_the_live_state() {
     assert_eq!(restored.kind, TrackKind::Midi);
     assert_eq!(restored.clips, old.clips);
     assert_eq!(restored.channel.devices.len(), old.channel.devices.len());
+    if packaged_bridge.is_some() {
+        assert!(
+            app.project()
+                .find_device(midi_effect)
+                .unwrap()
+                .2
+                .state
+                .is_some()
+        );
+    }
     assert_eq!(
-        &**restored.channel.devices[2].state.as_ref().unwrap(),
-        b"latest plugin settings"
+        app.project()
+            .find_device(effect)
+            .unwrap()
+            .2
+            .state
+            .as_deref(),
+        Some(b"latest plugin settings".as_slice())
     );
     assert!(app.doc().undo_label().is_none());
     app.dispatch(Action::Edit(EditAction::Redo));
@@ -473,7 +548,7 @@ fn flatten_isolates_the_complete_chain_and_undo_restores_the_live_state() {
 #[test]
 fn a_failed_render_leaves_the_original_project_history_and_no_wav() {
     let dir = tempfile::tempdir().unwrap();
-    let (project, track, effect) = fixture();
+    let (project, track, effect) = fixture(None);
     let mut app = app(project.clone(), dir.path(), effect, Fixture::Broken);
     flatten(&mut app, track);
     assert_eq!(app.project().as_ref(), &project);
@@ -490,7 +565,7 @@ fn a_failed_render_leaves_the_original_project_history_and_no_wav() {
 fn a_panic_in_the_flatten_render_rebuilds_the_engine() {
     for lang in [Lang::De, Lang::En] {
         let dir = tempfile::tempdir().unwrap();
-        let (project, track, effect) = fixture();
+        let (project, track, effect) = fixture(None);
         let mut app = app(project.clone(), dir.path(), effect, Fixture::Panic).with_lang(lang);
         // Single-threaded, so the render panics on the flatten worker itself.
         app.engine_mut().set_workers(Some(0)).unwrap();
@@ -521,7 +596,7 @@ fn a_panic_in_the_flatten_render_rebuilds_the_engine() {
 #[test]
 fn a_failed_live_snapshot_blocks_replacing_the_chain() {
     let dir = tempfile::tempdir().unwrap();
-    let (project, track, effect) = fixture();
+    let (project, track, effect) = fixture(None);
     let mut app = app(
         project.clone(),
         dir.path(),
@@ -543,7 +618,7 @@ fn a_failed_live_snapshot_blocks_replacing_the_chain() {
 #[test]
 fn flatten_keeps_a_wet_only_echo_after_four_seconds_of_silence() {
     let dir = tempfile::tempdir().unwrap();
-    let (project, track, effect) = fixture();
+    let (project, track, effect) = fixture(None);
     let mut app = app(project.clone(), dir.path(), effect, Fixture::DelayedEcho);
     flatten(&mut app, track);
     let wav = read(&audio_path(&app, track));
@@ -563,7 +638,7 @@ fn flatten_keeps_a_wet_only_echo_after_four_seconds_of_silence() {
 #[test]
 fn flatten_checks_linked_audio_assets_without_an_authored_layout() {
     let dir = tempfile::tempdir().unwrap();
-    let (project, track, effect) = fixture();
+    let (project, track, effect) = fixture(None);
     let slot = 42;
     let asset = AssetLink::new(&dir.path().join("corrupt.wav"), None);
     let project = edits::set_device_asset_links(&project, effect, [(slot, asset)].into()).unwrap();
@@ -580,7 +655,7 @@ fn flatten_checks_linked_audio_assets_without_an_authored_layout() {
             project.clone(),
             dir.path(),
             Host {
-                builtins: BuiltinHost::new(),
+                backend: Box::new(BuiltinHost::new()),
                 state: effect,
                 fixture: Fixture::Ready,
                 assets: Some(Snapshot {
@@ -629,37 +704,44 @@ fn flatten_checks_linked_audio_assets_without_an_authored_layout() {
 }
 
 #[test]
-fn an_unreadable_linked_pad_blocks_flattening() {
-    use komponist_sampler::links::{self, SampleLink};
-
+fn an_unreadable_clap_pad_blocks_flattening() {
     let dir = tempfile::tempdir().unwrap();
+    let Some((host, plugin)) = native_fixture(
+        dir.path(),
+        "klopfer.clap",
+        "org.klang-studio.komponist.sampler",
+    ) else {
+        return;
+    };
+    let device_name = plugin.name.clone();
+    let (project, track, drums) = instrument_project("Sampler", plugin);
     let sample = dir.path().join("corrupt.wav");
     std::fs::write(&sample, b"unreadable sample").unwrap();
-    let (project, track) = edits::add_track(
-        &Project::new("Sampler"),
-        NewTrack {
-            name: None,
-            hue: None,
-            index: None,
-            arm_exclusive: false,
-            instrument: Some(Internal::Sampler.plugin_ref()),
-        },
-    )
-    .unwrap();
-    let id = project.track(track).unwrap().channel.devices[0].id;
-    let state = links::write(None, 0, Some(&SampleLink::new(&sample, None)));
-    let project = edits::set_device_state(&project, id, Some(state.into())).unwrap();
+    let project =
+        edits::set_device_asset_links(&project, drums, [(0, AssetLink::new(&sample, None))].into())
+            .unwrap();
     let project = clip(&project, track, FIRST, 36, LENGTH);
     let output = dir.path().join("render");
-    let mut app = App::headless(project.clone()).with_recording_directory(&output);
-    app.step();
+    let mut app = app_with(project, host).with_recording_directory(&output);
+    step_until(&mut app, "the unreadable CLAP asset", |app| {
+        let host = app.engine().host();
+        host.native_layout(drums).is_some()
+            && host.asset_slots(drums).is_some_and(|inventory| {
+                inventory
+                    .slots
+                    .iter()
+                    .any(|slot| slot.id == 0 && matches!(slot.status, AssetStatus::Failed(_)))
+            })
+    });
+    let project = Arc::clone(app.project());
     flatten(&mut app, track);
     let lang = app.lang();
     assert_eq!(
         app.ui().status.as_ref().unwrap().text,
-        lang.flatten_failed(lang.flatten_pad_failed(Internal::Sampler.name(), 1, "corrupt"))
+        lang.flatten_failed(lang.flatten_pad_failed(&device_name, 1, "corrupt"))
     );
-    assert_eq!(app.project().as_ref(), &project);
+    assert_eq!(app.project(), &project);
+    assert!(app.doc().undo_label().is_none());
     assert!(output.read_dir().unwrap().next().is_none());
 }
 
@@ -681,7 +763,7 @@ fn a_warp_failure_names_the_sidechain_clip_in_both_languages() {
         writer.write_sample(2048.0_f32).unwrap();
     }
     writer.finalize().unwrap();
-    let (project, track, effect) = fixture();
+    let (project, track, effect) = fixture(None);
     let (project, sidechain) =
         edits::add_audio_track(&project, edits::NewAudioTrack::default()).unwrap();
     let (project, clip) = edits::add_clip(
@@ -716,7 +798,7 @@ fn a_warp_failure_names_the_sidechain_clip_in_both_languages() {
 #[test]
 fn opening_a_project_cancels_flatten_without_waiting_on_the_ui_thread() {
     let dir = tempfile::tempdir().unwrap();
-    let (project, track, effect) = fixture();
+    let (project, track, effect) = fixture(None);
     let path = dir.path().join("Next.komponist");
     save_project(&path, &Project::new("Next")).unwrap();
     let output = dir.path().join("render");
@@ -737,7 +819,7 @@ fn opening_a_project_cancels_flatten_without_waiting_on_the_ui_thread() {
 #[test]
 fn finishing_flatten_keeps_the_quit_prompt_and_its_save_action() {
     let dir = tempfile::tempdir().unwrap();
-    let (project, track, effect) = fixture();
+    let (project, track, effect) = fixture(None);
     let path = dir.path().join("Work.komponist");
     save_project(&path, &project).unwrap();
     let mut app = app(Project::new(""), dir.path(), effect, Fixture::Ready);
@@ -775,7 +857,7 @@ fn finishing_flatten_keeps_the_quit_prompt_and_its_save_action() {
 fn a_saved_render_reopens_from_the_project_takes_folder() {
     let scratch = tempfile::tempdir().unwrap();
     let dir = scratch.path();
-    let (mut project, track, effect) = fixture();
+    let (mut project, track, effect) = fixture(None);
     let source = Arc::make_mut(project.tracks.iter_mut().find(|t| t.id == track).unwrap());
     source.channel.mute = false;
     source.output = komponist_model::TrackOutput::Master;
@@ -831,19 +913,19 @@ fn click_at(h: &mut Harness<'_, App>, pos: Pos2, button: PointerButton) {
 }
 
 #[test]
-fn first_save_moves_the_demo_render_even_when_it_is_only_in_redo_history() {
+fn first_save_moves_a_render_even_when_it_is_only_in_redo_history() {
+    let Some(dirs) = fixture_dirs() else {
+        return;
+    };
     let dir = tempfile::tempdir().unwrap();
     let dir = dir.path();
-    let project = komponist_app::showcase::showcase_project();
-    let track = project
-        .tracks
-        .iter()
-        .find(|track| track.name == "Arp")
-        .unwrap()
-        .id;
-    let mut app = App::headless(project).with_recording_directory(dir.join("provisional"));
-    app.engine_mut().hold_engine().unwrap();
-    app.step();
+    let host = scan_fixture_host(dir, &dirs);
+    let (project, track, synth) = instrument_project("Unsaved render", clap_plugin(SYNTH));
+    let project = clip(&project, track, FIRST, 60, LENGTH);
+    let mut app = app_with(project, host).with_recording_directory(dir.join("provisional"));
+    step_until(&mut app, "the test synth ready", |app| {
+        app.engine().device_status(synth) == DeviceStatus::Ok
+    });
     flatten(&mut app, track);
     let file = audio_path(&app, track);
     let wav = read(&file);
@@ -879,7 +961,7 @@ fn the_localized_track_menu_opens_a_cancellable_flatten_dialog() {
     let mut results = SnapshotResults::new();
     for (lang, name) in [(Lang::De, "flatten-wait-de"), (Lang::En, "flatten-wait-en")] {
         let dir = tempfile::tempdir().unwrap();
-        let (project, track, effect) = fixture();
+        let (project, track, effect) = fixture(None);
         let app = app(project.clone(), dir.path(), effect, Fixture::Loading).with_lang(lang);
         let mut h = komponist_ui::snapshot::builder::<App>(1.0)
             .with_size(vec2(1440.0, 900.0))
@@ -928,7 +1010,7 @@ fn oversized_clip_automation_reports_the_limit_before_rendering() {
         AutomationMode, AutomationOwner, AutomationTarget, Point, Points,
     };
 
-    let (project, track, _) = fixture();
+    let (project, track, _) = fixture(None);
     let clip = project.track(track).unwrap().clips[0].id;
     let project = edits::set_clip_loop(&project, clip, Some(Tick(2)), Tick(1_000_000_000)).unwrap();
     let target = AutomationTarget::Pan;
