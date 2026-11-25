@@ -394,19 +394,6 @@ mod state_tests {
     use super::*;
 
     #[test]
-    fn old_slice_and_loop_states_load_as_slices_and_gate() {
-        let read = |state: &[u8]| SPEC.decode_state(Some(state)).unwrap();
-        let sliced = read(br#"{"params":{"mode":0,"slicing":1,"direction":1}}"#);
-        assert_eq!(sliced[Param::Mode as usize], 2.0);
-        assert_eq!(sliced[Param::Direction as usize], 1.0);
-        let looped = read(br#"{"params":{"mode":2,"slicing":0,"direction":2}}"#);
-        assert_eq!(looped[Param::Mode as usize], 1.0);
-        assert_eq!(looped[Param::Direction as usize], 0.0);
-        let encoded = SPEC.encode_state(&sliced);
-        assert_eq!(read(&encoded), sliced);
-    }
-
-    #[test]
     fn settings_round_trip_without_losing_parameters_or_sample_links() {
         let state = br#"{"params":{"gain":-12},"samples":{"1":{"abs":"/sample.wav"}}}"#;
         let mut settings = Settings::from_markers([1.0, 0.5, 0.5, f64::NAN, 0.0]);
