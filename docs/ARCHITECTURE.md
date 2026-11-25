@@ -226,17 +226,13 @@ Pure formatting functions provide musical positions, elapsed time, dB, pan and n
 A `*.komponist` file is JSON with `format: "komponist"`, **version 5** and a `project` object.
 Plugin states are base64 and survive a missing plugin unchanged. Loading validates data and
 routing, repairs defined dangling-reference cases and rejects cycles or invalid track content.
-Explicit migrations give v1 files master outputs and add the audio-capable v3 schema after v2.
-Version 4 adds optional track, clip and master automation. The v3 → v4 migration leaves the
-project JSON unchanged and missing automation fields default to empty. Version 5 adds an optional
-eight-slot macro array to each track. The v4 → v5 migration also leaves the project JSON
-unchanged. Newer unsupported file versions are rejected.
+Version 4 added optional track, clip and master automation, version 5 an optional eight-slot macro
+array on each track. There is no migration: below 1.0 exactly one version is valid (D10), and a file
+with any other `version` (older or newer) is rejected with a clear message.
 
 Audio assets remain linked by relative and absolute paths. Save As rebases resolving links;
 Collect and Save copies audio and Sampler sources into the project's sample folder, deduplicating
-identical content. Audio takes and optional Warp metadata extend v3. Legacy active-source fields
-remain serialized: older v3 readers play the active source without Warp, can shorten stretched
-spans, and discard optional data on save. Compatibility is checked against a pinned pre-Warp reader.
+identical content. An audio clip stores its take list and the active take; Warp metadata is optional.
 
 | Platform | Settings and recent projects | Plugin cache |
 |---|---|---|
@@ -905,12 +901,11 @@ PDC delay storage belong to the engine. Realtime thread setup belongs to audio/R
 
 | Level | Existing coverage |
 |---|---|
-| Model | Pure edits, routing/ID invariants, undo/redo, time/formatting, persistence and migrations |
+| Model | Pure edits, routing/ID invariants, undo/redo, time/formatting, persistence (current format, other versions rejected) |
 | Engine | Deterministic offline audio, sample positions, tails/loops, PDC, recording, serial/parallel equivalence, allocator guards |
 | Audio sources | Decoding/resampling, peak/RMS caches, source analysis, streaming and Warp seek/split/error behavior |
 | Hosting/IPC | CLAP/VST3 fixtures, state, sidechains, deadlines, crashes/reload, process lifecycle and platform frames |
 | UI | `egui_kittest` interaction, AccessKit and DE/EN snapshots; headless app acceptance |
-| Compatibility | `scripts/check-warp-compat.sh` exchanges files with a pinned pre-Warp reader |
 | Live GUI | `scripts/check-gui.sh` on Linux/Xvfb; inspection and platform-specific frame tests |
 | Performance | Dedicated render, scheduling, streaming and UI probes described in PERFORMANCE.md |
 

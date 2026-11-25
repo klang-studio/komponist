@@ -562,11 +562,10 @@ count combination starts in a fresh process so allocator and library state from 
 does not affect its startup and memory measurements.
 Each case checks device readiness, CLAP layout, state restore warnings and bridge PIDs.
 
-The same generated 48 kHz project runs with legacy built-ins, verified in-process CLAP and
-forced bridge CLAP. Sixteen parallel Hexa instruments play the same four presets and four-bar
+The same generated 48 kHz project runs with verified in-process CLAP and forced bridge CLAP. Sixteen parallel Hexa instruments play the same four presets and four-bar
 note sequence. The serial variant adds Delay and Hall on four tracks and EQ, Presse and
 Limiter on the master. The MIDI variant adds Arpeggiator and Scale before eight instruments.
-The CLAP routes select verified bundles by plugin ID and load the Hexa factory presets before
+Both routes select verified bundles by plugin ID and load the Hexa factory presets before
 measurement. Effects and MIDI devices start at their defaults. Buffer sizes default
 to 64, 128 and 256 frames, worker counts to 0 and 4, and each measurement to 10 seconds after
 a one-second warm-up. Set `KOMPONIST_PERF_WORKLOAD` to a comma-separated subset of

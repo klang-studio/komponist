@@ -28,9 +28,7 @@ const PLUCK: &str = "Acid Pluck";
 #[ignore = "requires an authenticated all-device release package"]
 fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     let launcher = PathBuf::from(
-        std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP")
-            .or_else(|| std::env::var_os("KOMPONIST_HISTORICAL_BUNDLED_APP"))
-            .expect("set the unpacked app executable"),
+        std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").expect("set the unpacked app executable"),
     );
     let force_bridge =
         std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");

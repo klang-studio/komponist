@@ -138,13 +138,9 @@ def run_staged(app, runner, digest, projects):
         if hashlib.sha256((destination / "manifest.json").read_bytes()).hexdigest() != digest:
             raise SystemExit("Staged manifest differs from the digest reported by the packaged app")
 
-        modes = ("direct", "bridge") if projects else ("legacy", "direct", "bridge")
+        modes = ("direct", "bridge")
         test_names = {
             None: ("bundled::bundled_clap_workloads",),
-            "historical": (
-                "legacy_bundled::historical_projects_migrate_and_play",
-                "bundled_sampler::both_samplers_play_assets_after_the_project_moves",
-            ),
             "current": (
                 "bundled_current::demo_and_new_tracks_use_verified_clap_only",
                 "bundled_current::current_project_round_trip_and_offline_render",
@@ -162,9 +158,7 @@ def run_staged(app, runner, digest, projects):
         }[projects]
         environment = os.environ.copy()
         environment.pop("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE", None)
-        if projects == "historical":
-            environment["KOMPONIST_HISTORICAL_BUNDLED_APP"] = str(app)
-        elif projects == "current":
+        if projects == "current":
             environment["KOMPONIST_CURRENT_BUNDLED_APP"] = str(app)
             environment["KOMPONIST_CURRENT_BUNDLED_RESULTS"] = scratch
         else:
@@ -179,12 +173,10 @@ def run_staged(app, runner, digest, projects):
                 route["KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE"] = "1"
             if not projects:
                 benchmark_failures.extend(run_benchmarks(staged_runner, route, test_names[0]))
-            elif projects == "current":
+            else:
                 route.setdefault("KOMPONIST_SYNTH_UI_LANG", "en" if mode == "bridge" else "de")
                 for test in test_names:
                     run_test(staged_runner, route, test)
-            else:
-                run_test(staged_runner, route, *test_names)
 
         if projects == "current":
             reject_unavailable_bundle(staged_runner, destination, environment, scratch)
@@ -195,12 +187,7 @@ def run_staged(app, runner, digest, projects):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("app", type=Path, help="packaged app executable from the unpacked archive")
-    projects = parser.add_mutually_exclusive_group()
-    projects.add_argument(
-        "--historical-projects", dest="projects", action="store_const", const="historical",
-        help="validate historical project migration and relocated sampler asset playback",
-    )
-    projects.add_argument(
+    parser.add_argument(
         "--current-projects", dest="projects", action="store_const", const="current",
         help="validate current-format project state and offline audio against both host paths",
     )
