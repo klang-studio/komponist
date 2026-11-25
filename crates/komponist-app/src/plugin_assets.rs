@@ -390,7 +390,10 @@ impl App {
     /// A parameter edit of `device` went to the plugin; its snapshot is not in the document yet.
     pub(crate) fn remember_param_edit(&mut self, device: DeviceId) {
         if self.engine.host().supports_asset_edit_state(device) {
-            self.dialogs.plugin_assets.unsnapshotted_params.insert(device);
+            self.dialogs
+                .plugin_assets
+                .unsnapshotted_params
+                .insert(device);
         }
     }
 

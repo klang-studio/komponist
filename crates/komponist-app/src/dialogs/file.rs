@@ -353,7 +353,7 @@ impl FileBrowser {
             self.purpose,
             Purpose::Open
                 | Purpose::OpenPreset(_)
-                    | Purpose::PluginAsset { .. }
+                | Purpose::PluginAsset { .. }
                 | Purpose::ImportAudio
                 | Purpose::ReplaceAudio(_)
         ) && path.is_file()

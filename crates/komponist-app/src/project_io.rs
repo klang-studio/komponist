@@ -1454,8 +1454,8 @@ pub(crate) mod tests {
     #[test]
     fn save_as_only_rebases_clip_and_plugin_file_links_after_the_write() {
         use komponist_model::edits::{self, NewAudioTrack, NewClip, NewClipContent};
-        use komponist_model::{AudioFile, ClipContent, Tick};
         use komponist_model::plugin_assets::AssetLink;
+        use komponist_model::{AudioFile, ClipContent, Tick};
 
         let dir = scratch("save-as-links");
         let old_dir = dir.join("old");
