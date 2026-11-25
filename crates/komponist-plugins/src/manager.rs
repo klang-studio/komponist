@@ -1129,6 +1129,20 @@ impl PluginManager {
         }
     }
 
+    fn bundled_sampler_for_asset_edit(&self, device: &Device) -> Option<Internal> {
+        let identity = self.verified_bundles.get(&device.id)?;
+        // Audio may still be warming up after the bridge is ready for file edits.
+        if crate::catalog::packaged_kind(&device.plugin).as_ref() != Some(identity)
+            || !matches!(
+                self.status(device.id),
+                DeviceStatus::Ok | DeviceStatus::Loading
+            )
+        {
+            return None;
+        }
+        bundled_sampler::kind(&device.plugin)
+    }
+
     pub fn prepare_asset_edit(
         &mut self,
         device: &Device,
@@ -1137,9 +1151,8 @@ impl PluginManager {
     ) -> Result<AssetEditPreparation, DeviceId> {
         let id = device.id;
         let sampler = self
-            .verified_bundled_kind(id)
-            .filter(|_| self.asset_slots(id).is_some())
-            .and_then(|_| bundled_sampler::kind(&device.plugin));
+            .bundled_sampler_for_asset_edit(device)
+            .filter(|_| self.asset_slots(id).is_some());
         let supports_state = self.supports_asset_edit_state(id);
         let requires_current_live_state = supports_state && sampler.is_none();
         if !supports_state && sampler.is_none() {
@@ -2147,6 +2160,47 @@ fn is_sampler_kind(kind: Option<BuiltinKind>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authenticated_sampler_keeps_asset_edit_policy_during_audio_warmup() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = PluginManager::new_with_bundled_clap(
+            PluginManagerConfig::defaults(dir.path()),
+            false,
+            false,
+        );
+        let device = Device {
+            id: DeviceId(1),
+            role: DeviceRole::Instrument,
+            plugin: PluginRef {
+                format: komponist_model::PluginFormat::Clap,
+                id: "org.klang-studio.komponist.general-sampler".into(),
+                name: "Sampler".into(),
+                vendor: String::new(),
+                version: "0.1.0".into(),
+                module: crate::catalog::bundled_module("sampler.clap"),
+            },
+            bypass: false,
+            parameter_bases: Default::default(),
+            asset_links: Default::default(),
+            state: None,
+            sidechain: None,
+        };
+        manager.statuses.insert(device.id, DeviceStatus::Loading);
+        assert_eq!(manager.bundled_sampler_for_asset_edit(&device), None);
+
+        let identity = crate::catalog::packaged_kind(&device.plugin).unwrap();
+        manager.verified_bundles.insert(device.id, identity);
+        assert_eq!(manager.verified_bundled_kind(device.id), None);
+        let sampler = bundled_sampler::kind(&device.plugin).unwrap();
+        assert_eq!(
+            manager.bundled_sampler_for_asset_edit(&device),
+            Some(sampler)
+        );
+
+        manager.statuses.insert(device.id, DeviceStatus::Missing);
+        assert_eq!(manager.bundled_sampler_for_asset_edit(&device), None);
+    }
 
     #[test]
     fn release_discards_only_the_retired_devices_queued_snapshots() {
