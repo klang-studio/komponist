@@ -1,9 +1,12 @@
 use egui::{Align2, Painter, Pos2, Rect, Role, Sense, Shape, Stroke, StrokeKind, Ui, WidgetInfo};
-use komponist_ipc::device_canvas::{Alignment, Point, Primitive, REFRESH, Tone};
+use komponist_ipc::device_canvas::{Alignment, FmFrame, Point, Primitive, REFRESH, Tone};
+use komponist_ipc::native_layout::{Canvas, FmDiagram};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{TrackPalette, color, radius, typography, widget};
+use komponist_ui::widgets::device::fm_algorithm::{FmAlgorithm, Topology};
 use komponist_ui::{fonts, px};
 
+use super::cells::{native_selection, native_selection_id};
 use super::layout::Cell;
 use super::model::Card;
 use super::viewport::Viewport;
@@ -26,6 +29,44 @@ pub(super) fn draw(
     };
     let lang = komponist_ui::lang(ui.ctx()).code();
     let name = layout.label(&canvas.name, lang).unwrap_or_default();
+    let description = layout.label(&canvas.description, lang);
+    ui.ctx().request_repaint_after(REFRESH);
+    if let Some(diagram) = &canvas.fm_topology
+        && let Some(frame) = fm_frame(card, canvas, diagram)
+    {
+        let selection = native_selection_id(card, &diagram.selector);
+        let selected = native_selection(ui.ctx(), selection, frame.modulates.len());
+        let topology = Topology {
+            modulates: &frame.modulates,
+            outputs: Some(frame.outputs),
+            feedback: frame.feedback.map(usize::from),
+        };
+        let mut widget =
+            FmAlgorithm::new(frame.algorithm.map_or(1, usize::from), topology, palette);
+        if frame.algorithm.is_none() {
+            widget = widget.titled(name);
+        }
+        let response = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                widget
+                    .cells(cell.cols, cell.rows)
+                    .selected(Some(selected))
+                    .show(ui)
+            })
+            .inner;
+        if let Some(description) = description {
+            ui.ctx()
+                .accesskit_node_builder(response.response.id, |node| {
+                    node.set_description(description);
+                });
+        }
+        if let Some(operator) = response.clicked {
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(selection, operator));
+            ui.ctx().request_repaint();
+        }
+        return true;
+    }
     let id = ui.scope_id().with((&canvas.key, card.device));
     let sense = if canvas.horizontal_viewport {
         Sense::click()
@@ -34,16 +75,16 @@ pub(super) fn draw(
     };
     let response = ui.interact(rect, id, sense);
     response.widget_info(|| WidgetInfo::labeled(Role::Group, true, name));
-    if let Some(description) = layout.label(&canvas.description, lang) {
+    if let Some(description) = description {
         ui.ctx()
             .accesskit_node_builder(response.id, |node| node.set_description(description));
     }
     px::fill(ui.painter(), rect, radius::M, color32(color::SURFACE_1));
-    ui.ctx().request_repaint_after(REFRESH);
-    if let Some(frame) = card
-        .display
-        .as_ref()
-        .and_then(|display| display.frames.iter().find(|frame| frame.key == canvas.key))
+    if canvas.fm_topology.is_none()
+        && let Some(frame) = card
+            .display
+            .as_ref()
+            .and_then(|display| display.frames.iter().find(|frame| frame.key == canvas.key))
     {
         let painter = ui.painter().with_clip_rect(rect);
         let content = if canvas.horizontal_viewport {
@@ -89,6 +130,40 @@ pub(super) fn draw(
         );
     }
     true
+}
+
+fn fm_frame<'a>(card: &'a Card, canvas: &Canvas, diagram: &FmDiagram) -> Option<&'a FmFrame> {
+    let operators = card
+        .native_page()?
+        .cells
+        .iter()
+        .filter_map(|cell| cell.selector.as_ref())
+        .find(|selector| selector.key == diagram.selector)?
+        .options
+        .len();
+    card.display
+        .as_ref()?
+        .fm_topologies
+        .iter()
+        .find(|frame| frame.key == canvas.key && frame.modulates.len() == operators)
+}
+
+pub(super) fn fm_carrier(card: &Card, cell: &Cell) -> Option<bool> {
+    card.native_page()?
+        .cells
+        .iter()
+        .filter_map(|cell| cell.canvas.as_ref())
+        .find_map(|canvas| {
+            let diagram = canvas.fm_topology.as_ref()?;
+            let binding = diagram
+                .carriers
+                .iter()
+                .find(|binding| binding.col == cell.col && binding.row == cell.row)?;
+            Some(
+                fm_frame(card, canvas, diagram)
+                    .is_some_and(|frame| frame.is_carrier(usize::from(binding.operator))),
+            )
+        })
 }
 
 fn paint(painter: &Painter, rect: Rect, palette: &TrackPalette, primitive: &Primitive) {

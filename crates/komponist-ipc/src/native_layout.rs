@@ -26,6 +26,8 @@ pub const CAP_EQ_BAND_CONTROLS: &str = "eq-band-controls";
 pub const CAP_CELL_SELECTIONS: &str = "cell-selections";
 /// Supports six-operator-style selectors, panel-wide state and column overlays.
 pub const CAP_PANEL_SELECTIONS: &str = "panel-selections";
+/// A host-rendered FM topology with linked operator controls.
+pub const CAP_FM_TOPOLOGY: &str = "fm-topology";
 /// Maximum number of pad-selected pages.
 pub const MAX_PADS: usize = 16;
 
@@ -212,6 +214,27 @@ pub struct Canvas {
     /// Allow the host to zoom and pan the display along its horizontal axis.
     #[serde(default)]
     pub horizontal_viewport: bool,
+    /// Use host-rendered operator nodes instead of display primitives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fm_topology: Option<FmDiagram>,
+}
+
+/// Selection and carrier styling for a host-rendered FM diagram.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct FmDiagram {
+    /// The operator selector on this page, in operator order.
+    pub selector: String,
+    /// Mini faders styled from the displayed operator routing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carriers: Vec<FmCarrier>,
+}
+
+/// A mini fader's grid position and its zero-based operator index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct FmCarrier {
+    pub col: u8,
+    pub row: u8,
+    pub operator: u8,
 }
 
 /// The host's declarative graph configurations available to plugins.
@@ -542,6 +565,7 @@ impl NativeLayout {
         let mut eq_band_controls_supported = false;
         let mut cell_selections_supported = false;
         let mut panel_selections_supported = false;
+        let mut fm_topology_supported = false;
         if let Some(caps) = value.get("required_capabilities") {
             let caps = caps
                 .as_array()
@@ -566,6 +590,7 @@ impl NativeLayout {
                             | CAP_EQ_BAND_CONTROLS
                             | CAP_CELL_SELECTIONS
                             | CAP_PANEL_SELECTIONS
+                            | CAP_FM_TOPOLOGY
                     )
             }) {
                 return Err(LayoutError::Unsupported);
@@ -577,6 +602,7 @@ impl NativeLayout {
             eq_band_controls_supported = seen.contains(CAP_EQ_BAND_CONTROLS);
             cell_selections_supported = seen.contains(CAP_CELL_SELECTIONS);
             panel_selections_supported = seen.contains(CAP_PANEL_SELECTIONS);
+            fm_topology_supported = seen.contains(CAP_FM_TOPOLOGY);
         }
         check(
             !panel_selections_supported || cell_selections_supported,
@@ -751,7 +777,18 @@ impl NativeLayout {
                             check(
                                 canvas.is_object()
                                     && canvas["name"].is_object()
-                                    && canvas["description"].is_object(),
+                                    && canvas["description"].is_object()
+                                    && canvas.get("fm_topology").is_none_or(|fm| {
+                                        fm_topology_supported
+                                            && fm.is_object()
+                                            && fm.get("carriers").is_none_or(|carriers| {
+                                                carriers.as_array().is_some_and(|carriers| {
+                                                    carriers.len()
+                                                        <= crate::device_canvas::MAX_FM_OPERATORS
+                                                        && carriers.iter().all(Value::is_object)
+                                                })
+                                            })
+                                    }),
                                 "canvas object",
                             )?;
                         }
@@ -923,6 +960,7 @@ impl NativeLayout {
                 "one selectable EQ graph per page",
             )?;
             let mut selectors = BTreeMap::new();
+            let mut carrier_cells = BTreeSet::new();
             for selector in page.cells.iter().filter_map(|cell| cell.selector.as_ref()) {
                 check(
                     identifier(&selector.key, false)
@@ -1167,6 +1205,24 @@ impl NativeLayout {
                     )?;
                     self.validate_labels(&canvas.name, &locales, true)?;
                     self.validate_labels(&canvas.description, &locales, true)?;
+                    if let Some(fm) = &canvas.fm_topology {
+                        let count = selectors.get(fm.selector.as_str()).copied().unwrap_or(0);
+                        check(
+                            (2..=crate::device_canvas::MAX_FM_OPERATORS).contains(&count)
+                                && !canvas.show_title
+                                && !canvas.horizontal_viewport
+                                && fm.carriers.iter().all(|carrier| {
+                                    usize::from(carrier.operator) < count
+                                        && carrier_cells.insert((carrier.col, carrier.row))
+                                        && page.cells.iter().any(|cell| {
+                                            cell.widget == Widget::MiniFader
+                                                && cell.col == carrier.col
+                                                && cell.row == carrier.row
+                                        })
+                                }),
+                            "FM topology selector or carrier binding",
+                        )?;
+                    }
                 } else if matches!(
                     cell.widget,
                     Widget::MeterGr | Widget::PadGrid | Widget::Selector | Widget::ColumnSelector

@@ -154,6 +154,7 @@ pub(super) fn panel() -> PanelV2 {
         canvases: [(
             (1, 1),
             Canvas {
+                fm_topology: None,
                 key: FILTER_ENVELOPE.into(),
                 name: labels(Lang::devices_sampler_filter_envelope),
                 description: labels(|lang| {

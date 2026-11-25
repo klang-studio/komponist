@@ -1,5 +1,6 @@
 //! Hexa CLAP instrument with native SDK bindings and complete preset patch state.
 
+mod panel;
 mod state;
 
 use std::ffi::{CStr, c_void};
@@ -15,7 +16,7 @@ use komponist_hexa::{HexaProcessor, default_patch};
 use komponist_i18n::Lang;
 use komponist_model::params::layout::{Cell, DeviceLayout, Half, Page, WidgetKind};
 use komponist_model::params::{ParamInfo, ParamKind};
-use komponist_native_clap_sdk::{NativeClapLayout, Panel};
+use komponist_native_clap_sdk::{NativeClapLayout, Panel, PanelV2};
 use nice_plug::prelude::*;
 
 use crate::state::{HexaParams, Snapshot};
@@ -300,6 +301,10 @@ impl NativeClapLayout for HexaPlugin {
             &komponist_hexa::CATALOG,
         ));
         panel
+    }
+
+    fn panel_v2() -> Option<PanelV2> {
+        Some(panel::panel())
     }
 }
 

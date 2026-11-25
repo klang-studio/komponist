@@ -567,6 +567,20 @@ pub fn layout() -> DeviceLayout {
     layout_in(Lang::De)
 }
 
+/// The CLAP card exposes the remaining macros on Global and omits empty pages.
+pub fn clap_editor_layout(lang: Lang) -> DeviceLayout {
+    let mut layout = layout_in(lang);
+    layout.pages[3].cells.extend(
+        Macro::ALL
+            .into_iter()
+            .filter(|item| !matches!(item, Macro::Algorithm | Macro::Feedback))
+            .enumerate()
+            .map(|(col, item)| Cell::knob(col as u8, 0, id(item.key()))),
+    );
+    layout.pages.retain(|page| !page.cells.is_empty());
+    layout
+}
+
 /// [`layout`] with the page names and the graph title of `t`.
 pub fn layout_in(t: Lang) -> DeviceLayout {
     let select = || CellParam::Select {

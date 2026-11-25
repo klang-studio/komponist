@@ -14,7 +14,7 @@ use nice_plug::prelude::{ParamPtr, Params};
 use serde::{Deserialize, Serialize};
 
 const PATCH_FIELD: &str = "hexa-patch-v1";
-const FM_ROUTING_KEY: &str = "fm-routing";
+pub(super) const FM_ROUTING_KEY: &str = "fm-routing";
 
 /// The patch includes derived controls and fields that may never be exposed. The
 /// companion wrapper values distinguish new automation from stale overlapping macros

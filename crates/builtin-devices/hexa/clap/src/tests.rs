@@ -15,7 +15,7 @@ use clap_sys::process::{CLAP_PROCESS_ERROR, clap_process};
 use clap_sys::stream::{clap_istream, clap_ostream};
 use clap_sys::version::CLAP_VERSION;
 use komponist_native_clap_sdk::display::{DisplayList, EXTENSION_ID as DISPLAY_ID, FmFrame};
-use komponist_native_clap_sdk::{NativeClapLayout, compile};
+use komponist_native_clap_sdk::{NativeClapLayout, compile, compile_v2};
 use nice_plug::wrapper::clap::Wrapper;
 
 use super::*;
@@ -89,6 +89,54 @@ fn layout_uses_stable_ids_and_covers_every_synth_parameter() {
         assert_eq!(expected.len(), infos(Lang::En).len());
         assert_eq!(ids, expected);
     }
+}
+
+#[test]
+fn native_editor_preserves_wire_ids_and_links_the_operator_selector() {
+    let instance = Instance::new();
+    // SAFETY: This instance and its layout queries are confined to this thread.
+    let (v1, v2) = unsafe {
+        (
+            compile::<HexaPlugin>(instance.0, &HexaPlugin::panel()).unwrap(),
+            compile_v2::<HexaPlugin>(instance.0, &HexaPlugin::panel_v2().unwrap()).unwrap(),
+        )
+    };
+    let legacy: serde_json::Value = serde_json::from_slice(&v1).unwrap();
+    let native: serde_json::Value = serde_json::from_slice(&v2).unwrap();
+    assert_eq!(native["author_ids"], legacy["author_ids"]);
+    let pages = native["pages"].as_array().unwrap();
+    assert_eq!(pages.len(), 3);
+    assert_eq!(pages[0]["labels"]["de"], "Operatoren");
+    assert_eq!(pages[1]["labels"]["en"], "Envelopes");
+    let selectors: Vec<_> = pages[..2]
+        .iter()
+        .map(|page| {
+            page["cells"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find_map(|cell| cell.get("selector"))
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(selectors[0], selectors[1]);
+    assert_eq!(selectors[0]["shared"], true);
+    let canvas = pages[0]["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|cell| cell.get("canvas"))
+        .unwrap();
+    assert_eq!(canvas["key"], fm_frame(&instance).key);
+    assert_eq!(canvas["fm_topology"]["selector"], selectors[0]["key"]);
+    assert_eq!(
+        canvas["fm_topology"]["carriers"].as_array().unwrap().len(),
+        6
+    );
+    assert_eq!(
+        pages[1]["cells"][0]["graph"]["variants"][5]["slots"]["attack"],
+        native["author_ids"]["op6_attack"]
+    );
 }
 
 unsafe extern "C" fn event_count(_: *const clap_input_events) -> u32 {
