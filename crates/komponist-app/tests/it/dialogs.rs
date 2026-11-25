@@ -2260,3 +2260,32 @@ fn jack_port_choices_survive_a_settings_file_round_trip() {
     assert_eq!(loaded.audio.jack_routes, settings.audio.jack_routes);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// Below 1.0 only the current project version opens: a file of an older or a newer version is
+/// refused, and the status bar names the reason in the UI language.
+#[test]
+fn a_project_of_another_version_is_refused_with_its_reason() {
+    use komponist_model::persist::{FORMAT_TAG, FORMAT_VERSION};
+    let dir = scratch("other-version");
+    for lang in Lang::ALL {
+        for (name, version) in [("older", FORMAT_VERSION - 1), ("newer", FORMAT_VERSION + 1)] {
+            let path = dir.join(format!("{name}.komponist"));
+            let text = serde_json::json!({
+                "format": FORMAT_TAG,
+                "version": version,
+                "project": serde_json::to_value(Project::new("Other")).unwrap(),
+            });
+            std::fs::write(&path, text.to_string()).unwrap();
+            let mut app = App::headless(Project::new("Open")).with_lang(lang);
+            app.dispatch(Action::Project(ProjectAction::OpenPath(path)));
+            let reason = if version > FORMAT_VERSION {
+                lang.project_reason_too_new(version)
+            } else {
+                lang.project_reason_unsupported_version(version)
+            };
+            let h = harness(app);
+            h.get_by_label_contains(&reason);
+            assert_eq!(h.state().project().name, "Open", "the open project stays");
+        }
+    }
+}

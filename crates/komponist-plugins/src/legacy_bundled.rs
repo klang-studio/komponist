@@ -5,7 +5,10 @@ use std::path::Path;
 
 use komponist_builtin::{BuiltinKind, Internal};
 use komponist_device_core::pinned_clap_state;
-use komponist_hexa::device::{Field, WIRE_COUNT};
+use komponist_hexa::{
+    self as hexa,
+    device::{Field, WIRE_COUNT},
+};
 use komponist_hosting::HostedPlugin;
 use komponist_i18n::Lang;
 use komponist_ipc::control::param_flags;
@@ -302,8 +305,8 @@ fn convert_state(
         return Ok((None, None));
     };
     let BuiltinKind::Internal(device) = kind else {
-        let patch = komponist_hexa::decode_state(Some(old)).map_err(|error| error.to_string())?;
-        let state = komponist_hexa::state::encode_clap_patch(patch, version);
+        let patch = hexa::decode_state(Some(old)).map_err(|error| error.to_string())?;
+        let state = hexa::state::encode_clap_patch(patch, version);
         return Ok((Some(state), None));
     };
 

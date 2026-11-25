@@ -1,6 +1,7 @@
 //! Packaged sampler state tests, launched by `scripts/measure-bundled-clap.py --current-projects`.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -15,6 +16,7 @@ use komponist_engine::Command;
 use komponist_general_sampler as general_sampler;
 use komponist_ipc::device_assets::AssetStatus;
 use komponist_model::edits::{self, NewTrack};
+use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{DeviceId, Project, TrackId};
 use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent};
 
@@ -30,6 +32,225 @@ fn asset_status(app: &App, device: DeviceId, id: u32) -> Option<&AssetStatus> {
         .iter()
         .find(|slot| slot.id == id)
         .map(|slot| &slot.status)
+}
+
+#[test]
+#[ignore = "requires a verified all-device package; run with scripts/measure-bundled-clap.py --current-projects"]
+fn both_samplers_play_assets_after_the_project_moves() {
+    let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP")
+        .expect("set the unpacked app with scripts/measure-bundled-clap.py --current-projects");
+    let force_bridge =
+        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
+    let scratch = tempfile::tempdir().unwrap();
+    let before_dir = scratch.path().join("before");
+    std::fs::create_dir(&before_dir).unwrap();
+    let asset = before_dir.join("tone.wav");
+    write_sample(&asset);
+    let link = AssetLink::new(&asset, Some(&before_dir));
+
+    // The current format: bundled sampler references with a host-managed link in slot 0.
+    let host = scanned_packaged_sampler_host(scratch.path(), launcher.clone().into());
+    let mut source = Project::new("Moved sampler project");
+    for id in [
+        "org.klang-studio.komponist.sampler",
+        "org.klang-studio.komponist.general-sampler",
+    ] {
+        let prepared = host
+            .manager()
+            .prepare_bundled_device(id, None, &[], &[])
+            .unwrap();
+        let state = prepared.state.clone();
+        let (next, track) = edits::add_track(
+            &source,
+            NewTrack {
+                name: None,
+                hue: None,
+                instrument: Some(prepared.plugin),
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        let device = next
+            .track(track)
+            .unwrap()
+            .channel
+            .instrument()
+            .unwrap()
+            .1
+            .id;
+        let next = edits::set_device_state(&next, device, state).unwrap();
+        source = edits::set_device_asset_links(&next, device, [(0, link.clone())].into()).unwrap();
+    }
+    drop(host);
+    let project = source;
+    let filename = "samples.komponist";
+    save_project(&before_dir.join(filename), &project).unwrap();
+    let moved = scratch.path().join("moved");
+    std::fs::rename(&before_dir, &moved).unwrap();
+    assert!(!asset.exists());
+    let reopened_path = moved.join(filename);
+    assert_eq!(load_project(&reopened_path).unwrap(), project);
+
+    let mut config = config(scratch.path());
+    config.bridge_exe = launcher.into();
+    let mut host = PluginHost::new(config);
+    host.start_scan(&PluginDirs {
+        clap: Vec::new(),
+        vst3: Vec::new(),
+    });
+    let deadline = Instant::now() + PATIENCE;
+    while !host
+        .poll()
+        .iter()
+        .any(|event| matches!(event, PluginManagerEvent::ScanFinished(_)))
+    {
+        assert!(Instant::now() < deadline, "bundled CLAP scan timed out");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let mut app = app_with(Project::new("Empty"), host);
+    app.dispatch(Action::Project(ProjectAction::OpenPath(reopened_path)));
+    for (index, key) in [komponist_sampler::note_of_pad(0), 60]
+        .into_iter()
+        .enumerate()
+    {
+        let track = &project.tracks[index];
+        let device = track.channel.instrument().unwrap().1;
+        step_until(&mut app, "relocated sampler ready", |app| {
+            app.engine().device_status(device.id) == DeviceStatus::Ok
+        });
+        assert_eq!(
+            app.engine().host().bridge_pid(device.id).is_some(),
+            force_bridge
+        );
+        assert_audible(&mut app, track.id, key);
+    }
+    assert_eq!(app.project().as_ref(), &project);
+    assert!(
+        !app.doc().is_dirty(),
+        "runtime path refresh must not edit the project"
+    );
+
+    // Exercise state restore with the original stale absolute fallback too.
+    let track = &project.tracks[1];
+    let device = track.channel.instrument().unwrap().1;
+    let linked = device.state.as_ref().unwrap();
+    let empty = Arc::from(pinned_clap_state::encode(
+        &device.plugin.version,
+        Default::default(),
+        Default::default(),
+    ));
+    assert!(app.engine_mut().host_mut().set_state(device.id, &empty));
+    let restored = |app: &App| {
+        app.device_events().iter().any(|event| {
+        matches!(event, PluginManagerEvent::StateApplied { device: id } if *id == device.id)
+    })
+    };
+    step_until(&mut app, "empty sampler state applied", restored);
+    step_for(&mut app, Duration::from_millis(300));
+    if device.asset_links.contains_key(&0) {
+        // Parameter-state changes leave a host-managed asset in place.
+        assert_audible(&mut app, track.id, 60);
+    } else {
+        app.engine().track_meter(track.id).unwrap().take();
+        assert_eq!(note_peak(&mut app, track.id, 60), 0.0);
+    }
+    assert!(app.engine_mut().host_mut().set_state(device.id, linked));
+    step_until(&mut app, "original sampler state restored", restored);
+    assert_audible(&mut app, track.id, 60);
+
+    // Saving into another folder must keep the moved source, even when a silent
+    // sample with the same file name exists next to the new project.
+    let destination = scratch.path().join("destination");
+    std::fs::create_dir(&destination).unwrap();
+    let silent = destination.join("tone.wav");
+    write_wav(&silent, 0);
+    assert!(
+        hound::WavReader::open(silent)
+            .unwrap()
+            .samples::<i16>()
+            .all(|sample| sample.unwrap() == 0)
+    );
+    let copy = destination.join("copy.komponist");
+    let mut h = harness(app);
+    h.state_mut()
+        .dispatch(Action::Project(ProjectAction::SaveAs));
+    h.run_steps(3);
+    h.get_by_label("Dateiname").focus();
+    h.run_steps(1);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.get_by_label("Dateiname")
+        .type_text(copy.to_str().unwrap());
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    let app = h.state_mut();
+    assert_eq!(app.project_path(), Some(copy.as_path()));
+    // Capture the live sampler state a second time, after adopting the new folder.
+    app.dispatch(Action::Project(ProjectAction::Save));
+    let source = moved.join("tone.wav");
+    assert_sample_sources(&load_project(&copy).unwrap(), &destination, &source);
+
+    // Both bundled samplers still advertise missing assets and accept a relink.
+    let replacement = scratch.path().join("found.wav");
+    std::fs::rename(&source, &replacement).unwrap();
+    let missing =
+        komponist_app::dialogs::missing_plugins::missing_samples(app.project(), Some(&destination));
+    let missing_assets = |app: &App| {
+        komponist_app::dialogs::missing_plugins::missing_assets(
+            komponist_i18n::Lang::De,
+            app.project(),
+            Some(&destination),
+            app.engine().host().catalog(),
+        )
+    };
+    let external = missing_assets(app);
+    assert_eq!(missing.len() + external.len(), 2);
+    for sample in missing {
+        app.dispatch(Action::Plugin(PluginAction::LoadSample {
+            device: sample.device,
+            pad: sample.pad,
+            path: replacement.clone(),
+        }));
+    }
+    for row in external {
+        let (device, slot) = row.asset.unwrap();
+        app.dispatch(Action::Plugin(PluginAction::SetPluginAsset {
+            device,
+            slot,
+            path: Some(replacement.clone()),
+        }));
+    }
+    step_until(app, "both repaired sample links", |app| {
+        komponist_app::dialogs::missing_plugins::missing_samples(app.project(), Some(&destination))
+            .is_empty()
+            && missing_assets(app).is_empty()
+    });
+    assert_audible(app, track.id, 60);
+
+    // Both CLAP instances still have the original source in their live state when
+    // collection begins. Their next snapshots must adopt the collected file too.
+    app.dispatch(Action::Project(ProjectAction::CollectAndSave));
+    let collected = destination.join("copy Samples/found.wav");
+    assert!(collected.is_file());
+    assert_eq!(
+        std::fs::read_dir(collected.parent().unwrap())
+            .unwrap()
+            .count(),
+        1
+    );
+    assert_sample_sources(&load_project(&copy).unwrap(), &destination, &collected);
+    std::fs::remove_file(&replacement).unwrap();
+    app.dispatch(Action::Project(ProjectAction::Save));
+    assert_sample_sources(&load_project(&copy).unwrap(), &destination, &collected);
+    for (track, key) in project
+        .tracks
+        .iter()
+        .zip([komponist_sampler::note_of_pad(0), 60])
+    {
+        assert_audible(app, track.id, key);
+    }
+    app.shutdown();
 }
 
 fn scanned_packaged_sampler_host(scratch: &Path, launcher: std::path::PathBuf) -> PluginHost {
@@ -1172,6 +1393,14 @@ fn has_waveform_peaks(harness: &egui_kittest::Harness<'_, App>, label: &str) -> 
             && bounds.height() > 1.0
             && rect.expand(1.0).contains_rect(bounds)
     })
+}
+
+fn assert_sample_sources(project: &Project, project_dir: &Path, source: &Path) {
+    for track in &project.tracks {
+        let device = track.channel.instrument().unwrap().1;
+        let link = device.asset_links.get(&0).expect("a host-managed link");
+        assert_eq!(link.resolve(Some(project_dir)).as_deref(), Some(source));
+    }
 }
 
 fn assert_audible(app: &mut App, track: TrackId, key: u8) {
