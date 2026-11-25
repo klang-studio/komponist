@@ -142,6 +142,30 @@
         "required": ["required_capabilities"],
         "properties": { "required_capabilities": { "contains": { "const": "parameter-display" } } }
       }
+    },
+    {
+      "if": {
+        "required": ["required_capabilities"],
+        "properties": { "required_capabilities": { "contains": { "const": "panel-selections" } } }
+      },
+      "then": {
+        "properties": { "required_capabilities": { "contains": { "const": "cell-selections" } } }
+      },
+      "else": {
+        "properties": {
+          "pages": { "items": { "properties": {
+            "cells": { "items": { "properties": {
+              "widget": { "not": { "const": "column_selector" } },
+              "selector": { "properties": {
+                "shared": { "const": false },
+                "options": { "maxItems": 4 }
+              } },
+              "variants": { "maxItems": 4 },
+              "graph": { "properties": { "variants": { "maxItems": 4 } } }
+            } } }
+          } } }
+        }
+      }
     }
   ],
   "$defs": {
@@ -515,7 +539,7 @@
         "variants": {
           "type": "array",
           "minItems": 2,
-          "maxItems": 4,
+          "maxItems": 8,
           "items": {
             "type": "object",
             "required": ["slots"],
@@ -690,31 +714,22 @@
       "type": "string",
       "pattern": "^[a-z][a-z0-9_-]{0,31}(?![\\s\\S])"
     },
-    "selector_cell": {
+    "selector_payload": {
       "type": "object",
-      "required": ["widget", "col", "row", "cols", "rows", "half", "selector"],
+      "required": ["key", "labels", "options"],
       "properties": {
-        "widget": { "const": "selector" },
-        "col": { "type": "integer", "minimum": 0, "maximum": 13 },
-        "row": { "type": "integer", "minimum": 0, "maximum": 2 },
-        "cols": { "type": "integer", "minimum": 1, "maximum": 14 },
-        "rows": { "const": 1 },
-        "half": { "enum": ["top", "bottom"] },
-        "selector": {
-          "type": "object",
-          "required": ["key", "labels", "options"],
-          "properties": {
-            "key": { "$ref": "#/$defs/selection_key" },
-            "labels": { "$ref": "#/$defs/labels" },
-            "options": {
-              "type": "array",
-              "minItems": 2,
-              "maxItems": 4,
-              "items": { "$ref": "#/$defs/labels" }
-            }
-          }
+        "key": { "$ref": "#/$defs/selection_key" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "shared": { "type": "boolean", "default": false },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/labels" }
         }
-      },
+      }
+    },
+    "unbound_selector": {
       "not": {
         "anyOf": [
           { "required": ["param_id"] },
@@ -730,6 +745,34 @@
         ]
       }
     },
+    "selector_cell": {
+      "type": "object",
+      "required": ["widget", "col", "row", "cols", "rows", "half", "selector"],
+      "properties": {
+        "widget": { "const": "selector" },
+        "col": { "type": "integer", "minimum": 0, "maximum": 13 },
+        "row": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "cols": { "type": "integer", "minimum": 1, "maximum": 14 },
+        "rows": { "const": 1 },
+        "half": { "enum": ["top", "bottom"] },
+        "selector": { "$ref": "#/$defs/selector_payload" }
+      },
+      "allOf": [{ "$ref": "#/$defs/unbound_selector" }]
+    },
+    "column_selector_cell": {
+      "type": "object",
+      "required": ["widget", "col", "row", "cols", "rows", "selector"],
+      "properties": {
+        "widget": { "const": "column_selector" },
+        "col": { "type": "integer", "minimum": 0, "maximum": 13 },
+        "row": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "cols": { "type": "integer", "minimum": 2, "maximum": 8 },
+        "rows": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "selector": { "$ref": "#/$defs/selector_payload" }
+      },
+      "allOf": [{ "$ref": "#/$defs/unbound_selector" }],
+      "not": { "required": ["half"] }
+    },
     "selected_control": {
       "type": "object",
       "required": ["widget", "col", "row", "cols", "rows", "follows", "variants"],
@@ -744,7 +787,7 @@
         "variants": {
           "type": "array",
           "minItems": 2,
-          "maxItems": 4,
+          "maxItems": 8,
           "items": {
             "type": "object",
             "required": ["param_id"],
@@ -779,6 +822,7 @@
     "cell": {
       "oneOf": [
         { "$ref": "#/$defs/selector_cell" },
+        { "$ref": "#/$defs/column_selector_cell" },
         { "$ref": "#/$defs/selected_control" },
         {
           "$ref": "#/$defs/control"

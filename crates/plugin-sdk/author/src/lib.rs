@@ -27,8 +27,8 @@ use clap_sys::{
 use komponist_ipc::control::{ParamInfo, param_flags};
 use komponist_ipc::native_layout::{
     CAP_CELL_SELECTIONS, CAP_CONDITIONAL_CONTROLS, CAP_EQ_BAND_CONTROLS, CAP_PAD_BANK,
-    CAP_PARAMETER_DISPLAY, CAP_SOURCE_FRACTION_TRIM, EXTENSION_V1, EXTENSION_V2, GraphKind,
-    MAX_AUTHOR_IDS, MAX_BYTES, NativeLayout, valid_author_id,
+    CAP_PANEL_SELECTIONS, CAP_PARAMETER_DISPLAY, CAP_SOURCE_FRACTION_TRIM, EXTENSION_V1,
+    EXTENSION_V2, GraphKind, MAX_AUTHOR_IDS, MAX_BYTES, NativeLayout, valid_author_id,
 };
 use komponist_model::params::context::{BAND, placeholders};
 use komponist_model::params::layout::validate;
@@ -80,8 +80,10 @@ pub struct Panel {
     pub default_locale: String,
     /// Declared locales, including the configured default.
     pub locales: Vec<String>,
-    /// The device core grid. V1 accepts fixed bindings. A v2 `CellParam::Choice` can
-    /// select numeric bindings for control and graph author-ID templates on its page.
+    /// The device core grid. V1 accepts fixed bindings. In v2, a `CellParam::Choice`
+    /// or `CellParam::Select` selects bindings for control and graph author-ID
+    /// templates. Numeric selectors with the same key share their selection across
+    /// pages.
     pub grid: DeviceLayout,
     /// Page labels in the same order as the pages of the grid.
     pub pages: Vec<PageLabels>,
@@ -273,6 +275,13 @@ unsafe fn compile_layout<P: ClapPlugin>(
     let mut conditional_controls = false;
     let mut eq_band_controls = false;
     let mut cell_selections = false;
+    let mut panel_selections = false;
+    let mut numeric_selectors = BTreeMap::new();
+    for cell in panel.grid.pages.iter().flat_map(|page| &page.cells) {
+        if let CellParam::Select { key, .. } = &cell.param {
+            *numeric_selectors.entry(*key).or_insert(0usize) += 1;
+        }
+    }
     let mut context = ParamContext::new().with(BAND, 1);
     for (page_index, (page, text)) in panel.grid.pages.iter().zip(&panel.pages).enumerate() {
         if v2.is_none() && !page.dividers.is_empty() {
@@ -281,13 +290,7 @@ unsafe fn compile_layout<P: ClapPlugin>(
         let selectors: BTreeMap<_, _> = page
             .cells
             .iter()
-            .filter_map(|cell| {
-                if let CellParam::Choice { key, options, .. } = &cell.param {
-                    Some((*key, options.as_slice()))
-                } else {
-                    None
-                }
-            })
+            .filter_map(|cell| selector_options(&cell.param))
             .collect();
         for (key, options) in &selectors {
             if let Some((value, _)) = options.first() {
@@ -382,20 +385,24 @@ unsafe fn compile_layout<P: ClapPlugin>(
                         .any(|(slot, _)| slot == "spectrum_enabled");
                 continue;
             }
-            if let CellParam::Choice {
-                key,
-                label,
-                options,
-            } = &cell.param
-            {
-                if v2.is_none()
-                    || cell.widget != WidgetKind::Segment
-                    || cell.carrier.is_some()
-                    || cell.disabled_by.is_some()
-                {
-                    return Err(error("native selectors require an unbound v2 segment"));
+            if let Some((key, options)) = selector_options(&cell.param) {
+                if v2.is_none() || cell.carrier.is_some() || cell.disabled_by.is_some() {
+                    return Err(error("native selectors require an unbound v2 cell"));
                 }
-                let id = ParamId::new(*key);
+                let widget = match (cell.widget, cell.half) {
+                    (WidgetKind::Segment, Some(_)) => "selector",
+                    (WidgetKind::ColumnSelect, None)
+                        if matches!(cell.param, CellParam::Select { .. }) =>
+                    {
+                        "column_selector"
+                    }
+                    _ => return Err(error("invalid native selector geometry")),
+                };
+                let default_label = match &cell.param {
+                    CellParam::Choice { label, .. } => *label,
+                    _ => key,
+                };
+                let id = ParamId::new(key);
                 let localized = |text: &str| {
                     [(panel.default_locale.clone(), text.to_owned())]
                         .into_iter()
@@ -405,7 +412,7 @@ unsafe fn compile_layout<P: ClapPlugin>(
                     .parameter_labels
                     .get(&id)
                     .cloned()
-                    .unwrap_or_else(|| localized(label));
+                    .unwrap_or_else(|| localized(default_label));
                 let names =
                     panel.choice_labels.get(&id).cloned().unwrap_or_else(|| {
                         options.iter().map(|(_, name)| localized(name)).collect()
@@ -413,17 +420,25 @@ unsafe fn compile_layout<P: ClapPlugin>(
                 if names.len() != options.len() {
                     return Err(error("selector labels must match its options"));
                 }
-                let half = match cell.half {
-                    Some(Half::Top) => "top",
-                    Some(Half::Bottom) => "bottom",
-                    None => return Err(error("native selector requires a half cell")),
-                };
-                cells.push(json!({
-                    "widget": "selector", "col": cell.col, "row": cell.row,
-                    "cols": cell.cols, "rows": cell.rows, "half": half,
-                    "selector": {"key": key, "labels": title, "options": names},
-                }));
+                let mut selector = json!({"key": key, "labels": title, "options": names});
+                let shared = matches!(cell.param, CellParam::Select { .. })
+                    && numeric_selectors.get(key).is_some_and(|count| *count > 1);
+                if shared {
+                    selector["shared"] = json!(true);
+                }
+                let mut wire_cell = json!({
+                    "widget": widget, "col": cell.col, "row": cell.row,
+                    "cols": cell.cols, "rows": cell.rows, "selector": selector,
+                });
+                if let Some(half) = cell.half {
+                    wire_cell["half"] = json!(match half {
+                        Half::Top => "top",
+                        Half::Bottom => "bottom",
+                    });
+                }
+                cells.push(wire_cell);
                 cell_selections = true;
+                panel_selections |= shared || options.len() > 4 || widget == "column_selector";
                 continue;
             }
             let widget = widget_name(cell.widget, v2.is_some())?;
@@ -535,6 +550,9 @@ unsafe fn compile_layout<P: ClapPlugin>(
     if cell_selections {
         capabilities.push(CAP_CELL_SELECTIONS);
     }
+    if panel_selections {
+        capabilities.push(CAP_PANEL_SELECTIONS);
+    }
     if conditional_controls {
         capabilities.push(CAP_CONDITIONAL_CONTROLS);
     }
@@ -618,6 +636,26 @@ unsafe fn compile_layout<P: ClapPlugin>(
 }
 
 type SelectionOptions<'a> = &'a [(&'static str, &'static str)];
+
+fn selector_options(param: &CellParam) -> Option<(&'static str, SelectionOptions<'_>)> {
+    const NUMBERS: SelectionOptions<'static> = &[
+        ("1", "1"),
+        ("2", "2"),
+        ("3", "3"),
+        ("4", "4"),
+        ("5", "5"),
+        ("6", "6"),
+        ("7", "7"),
+        ("8", "8"),
+    ];
+    match param {
+        CellParam::Choice { key, options, .. } => Some((key, options)),
+        CellParam::Select { key, count } if (2..=8).contains(count) => {
+            Some((key, &NUMBERS[..usize::from(*count)]))
+        }
+        _ => None,
+    }
+}
 
 fn selector_for<'a>(
     texts: impl IntoIterator<Item = &'a str>,

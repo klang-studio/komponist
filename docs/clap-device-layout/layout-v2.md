@@ -60,6 +60,18 @@ option. The regular
 `graph.slots` apply to every option and must be distinct from the variant
 slots.
 
+Add both `panel-selections` and `cell-selections` to use up to eight
+options. Set `selector.shared` to `true` on each page that shares the
+selection. Selectors with the same shared key must have the same number
+and order of options. Each following cell still declares its selector on
+its own page. Shared and page-local selections use independent state.
+
+The same capabilities allow a `column_selector` overlay. Give it one option
+per column, omit `half`, and list it first on the page. It can span one to
+three rows behind the normal controls. Clicking a column, including the
+area covered by one of its controls, selects that option. Each option is
+also an accessible button.
+
 A graph can set `half` to `top` to occupy only the top half of its last
 row. Each preceding row in its span remains full. A `filter_va` graph
 shows a synth's VA filter response, with `cutoff`, `resonance` and
