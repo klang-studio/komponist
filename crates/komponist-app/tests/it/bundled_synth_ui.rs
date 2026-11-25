@@ -1,62 +1,63 @@
 //! Device editor and preset flows against an authenticated all-device release payload.
 
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
 
 use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::Queryable as _};
 use komponist_app::actions::{DropTarget, EditAction};
-use komponist_app::device_host::{DeviceHost, PluginHost};
+use komponist_app::device_host::DeviceHost;
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, PluginAction, UiAction};
-use komponist_builtin::{BuiltinKind, Internal};
-use komponist_device_core::pinned_clap_state;
-use komponist_hexa::device::{Field, OpField};
 use komponist_i18n::Lang;
-use komponist_model::params::ParamId;
-use komponist_model::{Device, DeviceId, PluginFormat, Project};
-use komponist_plugins::{PluginDirs, PluginManagerEvent};
+use komponist_model::edits::{self, NewTrack};
+use komponist_model::project::SavedPluginState;
+use komponist_model::{Device, DeviceId, PluginRef, Project};
+use komponist_plugins::{CatalogEntry, PluginManagerEvent, requires_bundled};
 
 use crate::acceptance_support::{click, drag, harness, rect_of};
-use crate::common::{PATIENCE, app_with, config, step_until};
+use crate::bundled_current::scan;
+use crate::common::{PATIENCE, app_with, step_until};
+
+const HEXA: &str = "org.klang-studio.komponist.hexa";
+const VOLT: &str = "org.klang-studio.komponist.volt";
+const PIANO: &str = "E-Piano";
+const PLUCK: &str = "Acid Pluck";
 
 #[test]
 #[ignore = "requires an authenticated all-device release package"]
 fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
-    let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP")
-        .or_else(|| std::env::var_os("KOMPONIST_HISTORICAL_BUNDLED_APP"))
-        .expect("set the unpacked app executable");
+    let launcher = PathBuf::from(
+        std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP")
+            .or_else(|| std::env::var_os("KOMPONIST_HISTORICAL_BUNDLED_APP"))
+            .expect("set the unpacked app executable"),
+    );
     let force_bridge =
         std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
     let scratch = tempfile::tempdir().unwrap();
-    let mut cfg = config(scratch.path());
-    cfg.bridge_exe = launcher.into();
-    let mut host = PluginHost::new(cfg);
-    host.start_scan(&PluginDirs {
-        clap: Vec::new(),
-        vst3: Vec::new(),
-    });
-    let deadline = Instant::now() + PATIENCE;
-    while !host
-        .poll()
-        .iter()
-        .any(|event| matches!(event, PluginManagerEvent::ScanFinished(_)))
-    {
-        assert!(Instant::now() < deadline, "bundled synth scan timed out");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    let host = scan(&launcher, scratch.path());
+    let expected_piano = host
+        .manager()
+        .prepare_bundled_device(HEXA, Some(PIANO), &[], &[])
+        .expect("authenticated Hexa preset")
+        .state
+        .expect("Hexa factory state");
+    let pluck_position = host
+        .manager()
+        .prepare_bundled_device(VOLT, Some(PLUCK), &[], &["cutoff"])
+        .expect("authenticated Volt preset")
+        .targets["cutoff"]
+        .1;
     let lang = match std::env::var("KOMPONIST_SYNTH_UI_LANG").as_deref() {
         Ok("en") => Lang::En,
         _ => Lang::De,
     };
     let mut app = app_with(Project::new("Bundled synths"), host).with_lang(lang);
-    let hexa_kind = BuiltinKind::Hexa;
-    let hexa_entry = app.engine().host().catalog().packaged(hexa_kind).unwrap();
+    let hexa_entry = packaged(app.engine().host(), HEXA);
     let plugin = hexa_entry.plugin.clone();
     let source = hexa_entry
         .clap_presets
         .iter()
-        .find(|preset| preset.name == "E-Piano")
+        .find(|preset| preset.name == PIANO)
         .unwrap()
         .source
         .clone();
@@ -69,18 +70,14 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
         !app.project().tracks.is_empty()
     });
     let hexa = newest_instrument(&app).id;
-    assert_eq!(newest_instrument(&app).plugin.format, PluginFormat::Clap);
     assert_eq!(
-        newest_instrument(&app)
-            .state
-            .as_deref()
-            .and_then(komponist_hexa::state::decode_clap_patch),
-        komponist_hexa::preset_patch(1)
+        newest_instrument(&app).state.as_ref(),
+        Some(&expected_piano)
     );
-    wait_for_verified(&mut app, hexa, hexa_kind, force_bridge);
+    wait_for_verified(&mut app, hexa, HEXA, force_bridge);
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
     let mut h = harness(app);
-    h.get_by_role_and_label(Role::Button, &lang.devices_preset_name("E-Piano"));
+    h.get_by_role_and_label(Role::Button, &lang.devices_preset_name(PIANO));
 
     let algorithm = alias(h.state(), hexa, "algorithm");
     h.state_mut()
@@ -94,56 +91,27 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     snapshot(&mut h, "hexa-operators", lang);
     click(&mut h, Role::Slider, "Ratio 3");
     page(&mut h, hexa, 1);
-    h.get_by_role_and_label(
-        Role::Slider,
-        &Field::Op(2, OpField::Attack).info_in(lang).name,
-    );
+    h.get_by_role_and_label(Role::Slider, &format!("{} 3", lang.param_attack()));
     click(
         &mut h,
         Role::RadioButton,
         &format!("{}: 5", lang.devices_operator()),
     );
-    h.get_by_role_and_label(
-        Role::Slider,
-        &Field::Op(4, OpField::Attack).info_in(lang).name,
-    );
+    h.get_by_role_and_label(Role::Slider, &format!("{} 5", lang.param_attack()));
     snapshot(&mut h, "hexa-envelopes", lang);
     // The card reacts to the host's optimistic value. Commit Hexa's actual edit before
     // testing Volt's history so a late Hexa snapshot cannot become the next undo step.
-    h.state_mut().engine_mut().host_mut().request_state(hexa);
-    step_until(
-        h.state_mut(),
-        "Hexa algorithm captured in project history",
-        |app| {
-            let recorded = app.device_events().iter().any(|event| {
-            matches!(event, PluginManagerEvent::StateSnapshot { device, .. } if *device == hexa)
-        });
-            recorded
-                && app
-                    .project()
-                    .find_device(hexa)
-                    .and_then(|(_, _, device)| device.state.as_deref())
-                    .and_then(komponist_hexa::state::decode_clap_patch)
-                    .is_some_and(|patch| komponist_hexa::Macro::Algorithm.get(&patch) == 7.0)
-        },
-    );
+    wait_for_value(h.state_mut(), hexa, algorithm, 7.0, "edit Hexa algorithm");
+    let hexa_state = capture_document_state(h.state_mut(), hexa, "Hexa algorithm captured");
+    let hexa_plugin = newest_instrument(h.state()).plugin.clone();
 
-    let volt_kind = BuiltinKind::Internal(Internal::Volt);
-    let plugin = h
-        .state()
-        .engine()
-        .host()
-        .catalog()
-        .packaged(volt_kind)
-        .unwrap()
-        .plugin
-        .clone();
+    let plugin = packaged(h.state().engine().host(), VOLT).plugin.clone();
     h.state_mut().dispatch(Action::Plugin(PluginAction::Add {
         plugin,
         target: DropTarget::NewTrack { index: None },
     }));
     let volt = newest_instrument(h.state()).id;
-    wait_for_verified(h.state_mut(), volt, volt_kind, force_bridge);
+    wait_for_verified(h.state_mut(), volt, VOLT, force_bridge);
 
     let target = h.state().project().find_device(volt).unwrap().2;
     let source = h
@@ -152,7 +120,7 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
         .host()
         .clap_presets(target)
         .iter()
-        .find(|preset| preset.name == "Acid Pluck")
+        .find(|preset| preset.name == PLUCK)
         .unwrap()
         .source
         .clone();
@@ -161,13 +129,17 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
         source,
     });
     let cutoff = alias(h.state(), volt, "cutoff");
-    let cutoff_info = Internal::Volt
-        .params()
+    let host = h.state().engine().host();
+    let cutoff_info = host
+        .params(volt)
+        .unwrap()
         .iter()
-        .find(|p| p.id == ParamId::new("cutoff"))
+        .find(|param| param.id == cutoff)
         .unwrap();
-    let preset_cutoff = pinned_clap_state::to_clap(cutoff_info, 350.0);
-    let default_cutoff = pinned_clap_state::to_clap(cutoff_info, cutoff_info.default);
+    let preset_cutoff =
+        cutoff_info.min + f64::from(pluck_position) * (cutoff_info.max - cutoff_info.min);
+    let default_cutoff = cutoff_info.default;
+    assert_ne!(default_cutoff, preset_cutoff);
     assert!(newest_instrument(h.state()).state.is_none());
     h.state_mut().dispatch(apply_volt.clone());
     wait_for_value(
@@ -177,8 +149,14 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
         preset_cutoff,
         "apply Volt preset",
     );
+    step_until(h.state_mut(), "Acid Pluck reports a 350 Hz cutoff", |app| {
+        app.engine()
+            .host()
+            .param_value(volt, cutoff)
+            .is_some_and(|value| value.text == "350 Hz")
+    });
     h.run_steps(3);
-    h.get_by_role_and_label(Role::Button, &lang.devices_preset_name("Acid Pluck"));
+    h.get_by_role_and_label(Role::Button, &lang.devices_preset_name(PLUCK));
     snapshot(&mut h, "volt-sound", lang);
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
     wait_for_value(
@@ -199,19 +177,16 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     );
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
     h.state_mut().dispatch(Action::Edit(EditAction::Redo));
-    wait_for_verified(h.state_mut(), volt, volt_kind, force_bridge);
+    wait_for_verified(h.state_mut(), volt, VOLT, force_bridge);
     let snapshots = h
         .state_mut()
         .engine_mut()
         .host_mut()
         .snapshot_selected_states(&[volt], PATIENCE)
         .expect("snapshot after immediate redo");
-    let state = pinned_clap_state::decode(&snapshots[0].1.bytes).unwrap();
-    let actual = state["params"]["cutoff"]["f32"].as_f64().unwrap();
-    assert!(
-        (actual - preset_cutoff).abs() < 1e-6,
-        "cutoff after immediate redo: {actual}"
-    );
+    let [(captured, redo_state)] = snapshots.try_into().expect("one Volt snapshot");
+    assert_eq!(captured, volt);
+    let volt_plugin = newest_instrument(h.state()).plugin.clone();
 
     page(&mut h, volt, 1);
     click(
@@ -239,30 +214,11 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     );
     let two_edited = h.state().engine().host().param_base(volt, second).unwrap();
     assert_eq!(h.state().engine().host().param_base(volt, first), Some(one));
-    h.state_mut().engine_mut().host_mut().request_state(volt);
-    step_until(h.state_mut(), "Volt saved the LFO 2 edit", |app| {
-        app.device_events().iter().any(|event| {
-            let PluginManagerEvent::StateSnapshot { device, state } = event else {
-                return false;
-            };
-            if *device != volt {
-                return false;
-            }
-            let Some(snapshot) = pinned_clap_state::decode(&state.bytes) else {
-                return false;
-            };
-            let matches = |id: &str, expected: f64| {
-                snapshot["params"][id]["f32"]
-                    .as_f64()
-                    .is_some_and(|actual| (actual - expected).abs() < 1e-6)
-            };
-            matches("lfo1_rate", one) && matches("lfo2_rate", two_edited)
-        })
-    });
+    let lfo_state = capture_document_state(h.state_mut(), volt, "Volt saved the LFO 2 edit");
     h.run_steps(3);
     snapshot(&mut h, "volt-envelopes", lang);
 
-    if !force_bridge {
+    let stepped_state = if !force_bridge {
         let app = h.state_mut();
         let parameter = alias(app, volt, "osc_b_oct");
         app.dispatch(Action::Plugin(PluginAction::SetParam {
@@ -280,21 +236,54 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
             })
         });
         let previous = events
-            .iter()
+            .into_iter()
             .find_map(|event| match event {
                 PluginManagerEvent::ClapPresetLoaded {
                     device,
                     previous_state,
                     ..
-                } if *device == volt => pinned_clap_state::decode(previous_state),
+                } if device == volt => Some(previous_state),
                 _ => None,
             })
             .expect("the prior plugin state contains the snapped edit");
-        // Volt's CLAP octave range is 0–6 for the stored range of -3–3.
-        assert_eq!(previous["params"]["osc_b_oct"]["i32"].as_i64(), Some(2));
-    }
-
+        Some(previous.into())
+    } else {
+        None
+    };
     h.state_mut().shutdown();
+    drop(h);
+
+    // Read the opaque blobs by restoring them into a fresh authenticated processor.
+    assert_restored_params(
+        &launcher,
+        &hexa_plugin,
+        &hexa_state,
+        &[("algorithm", 7.0)],
+        force_bridge,
+    );
+    assert_restored_params(
+        &launcher,
+        &volt_plugin,
+        &redo_state,
+        &[("cutoff", preset_cutoff)],
+        force_bridge,
+    );
+    assert_restored_params(
+        &launcher,
+        &volt_plugin,
+        &lfo_state,
+        &[("lfo1_rate", one), ("lfo2_rate", two_edited)],
+        force_bridge,
+    );
+    if let Some(state) = stepped_state {
+        assert_restored_params(
+            &launcher,
+            &volt_plugin,
+            &state,
+            &[("osc_b_oct", 5.0)],
+            force_bridge,
+        );
+    }
 }
 
 fn newest_instrument(app: &App) -> &Device {
@@ -308,13 +297,84 @@ fn newest_instrument(app: &App) -> &Device {
         .1
 }
 
-fn wait_for_verified(app: &mut App, device: DeviceId, kind: BuiltinKind, bridge: bool) {
+fn packaged<'a>(host: &'a dyn DeviceHost, id: &str) -> &'a CatalogEntry {
+    host.catalog()
+        .entries()
+        .iter()
+        .find(|entry| entry.plugin.id == id && requires_bundled(&entry.plugin))
+        .unwrap_or_else(|| panic!("missing authenticated synth {id}"))
+}
+
+fn wait_for_verified(app: &mut App, device: DeviceId, id: &str, bridge: bool) {
+    let plugin = &app.project().find_device(device).unwrap().2.plugin;
+    assert_eq!(plugin.id, id);
+    assert!(requires_bundled(plugin));
     step_until(app, "authenticated synth ready", |app| {
-        app.engine().host().verified_bundled_kind(device) == Some(kind)
-            && app.engine().host().native_layout(device).is_some()
+        let host = app.engine().host();
+        host.verified_bundled_kind(device).is_some() && host.native_layout(device).is_some()
     });
     assert_eq!(app.engine().host().bridge_pid(device).is_some(), bridge);
     assert!(app.engine().host().state_warning(device).is_none());
+}
+
+fn capture_document_state(app: &mut App, device: DeviceId, what: &str) -> SavedPluginState {
+    app.engine_mut().host_mut().request_state(device);
+    step_until(app, what, |app| {
+        app.device_events().iter().any(|event| {
+            matches!(event, PluginManagerEvent::StateSnapshot { device: updated, state }
+                if *updated == device
+                    && app.engine().host().is_current_param_snapshot(device, &state.bytes)
+                    && app.project().find_device(device).unwrap().2.has_saved_state(state))
+        })
+    });
+    app.project()
+        .find_device(device)
+        .unwrap()
+        .2
+        .saved_state()
+        .unwrap()
+}
+
+fn assert_restored_params(
+    launcher: &Path,
+    plugin: &PluginRef,
+    state: &SavedPluginState,
+    params: &[(&str, f64)],
+    bridge: bool,
+) {
+    assert!(
+        state.parameter_bases.is_empty(),
+        "read the plug-in's own state"
+    );
+    let scratch = tempfile::tempdir().unwrap();
+    let host = scan(launcher, scratch.path());
+    let (project, track) = edits::add_track(
+        &Project::new("Captured synth state"),
+        NewTrack {
+            instrument: Some(plugin.clone()),
+            name: None,
+            hue: None,
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let device = project
+        .track(track)
+        .unwrap()
+        .channel
+        .instrument()
+        .unwrap()
+        .1
+        .id;
+    let project = edits::set_saved_plugin_state(&project, device, state).unwrap();
+    let mut app = app_with(project, host);
+    wait_for_verified(&mut app, device, &plugin.id, bridge);
+    for &(name, expected) in params {
+        let wire = alias(&app, device, name);
+        wait_for_value(&mut app, device, wire, expected, name);
+    }
+    app.shutdown();
 }
 
 fn alias(app: &App, device: DeviceId, author: &str) -> u32 {
@@ -327,7 +387,7 @@ fn alias(app: &App, device: DeviceId, author: &str) -> u32 {
 }
 
 fn wait_for_value(app: &mut App, device: DeviceId, wire: u32, value: f64, phase: &str) {
-    step_until(app, &format!("{phase} reached cutoff {value}"), |app| {
+    step_until(app, &format!("{phase} reached {value}"), |app| {
         let host = app.engine().host();
         host.verified_bundled_kind(device).is_some()
             && host
