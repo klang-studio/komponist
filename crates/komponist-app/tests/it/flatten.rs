@@ -19,7 +19,9 @@ use komponist_engine::{
 };
 use komponist_i18n::Lang;
 use komponist_ipc::RenderMode;
+use komponist_ipc::device_assets::{AssetKind, AssetStatus, Slot, Snapshot};
 use komponist_model::edits::{self, NewBus, NewClip, NewClipContent, NewDevice, NewNote, NewTrack};
+use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{
     ChannelRef, ClipContent, Device, DeviceId, DeviceRole, PluginFormat, PluginRef, Project,
     Sidechain, Tap, Tick, TrackId, TrackKind,
@@ -268,6 +270,8 @@ struct Host {
     builtins: BuiltinHost,
     state: DeviceId,
     fixture: Fixture,
+    assets: Option<Snapshot>,
+    bindings_pending: bool,
     global_mode_changes: Arc<AtomicUsize>,
 }
 
@@ -307,6 +311,12 @@ impl DeviceHost for Host {
     }
     fn latency(&self, device: DeviceId) -> u32 {
         self.builtins.latency(device)
+    }
+    fn asset_slots(&self, device: DeviceId) -> Option<&Snapshot> {
+        self.assets.as_ref().filter(|_| device == self.state)
+    }
+    fn render_asset_bindings_pending(&self, device: DeviceId) -> bool {
+        self.bindings_pending && device == self.state
     }
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
         self.builtins.poll()
@@ -349,12 +359,21 @@ fn app_with_mode_counter(
     fixture: Fixture,
     global_mode_changes: Arc<AtomicUsize>,
 ) -> App {
-    let host = Host {
-        builtins: BuiltinHost::new(),
-        state: effect,
-        fixture,
-        global_mode_changes,
-    };
+    app_with_host(
+        project,
+        folder,
+        Host {
+            builtins: BuiltinHost::new(),
+            state: effect,
+            fixture,
+            assets: None,
+            bindings_pending: false,
+            global_mode_changes,
+        },
+    )
+}
+
+fn app_with_host(project: Project, folder: &Path, host: Host) -> App {
     let mut app = App::headless(project)
         .with_device_host(Box::new(host))
         .with_recording_directory(folder);
@@ -539,6 +558,74 @@ fn flatten_keeps_a_wet_only_echo_after_four_seconds_of_silence() {
             .iter()
             .any(|&sample| sample > 0.08)
     );
+}
+
+#[test]
+fn flatten_checks_linked_audio_assets_without_an_authored_layout() {
+    let dir = tempfile::tempdir().unwrap();
+    let (project, track, effect) = fixture();
+    let slot = 42;
+    let asset = AssetLink::new(&dir.path().join("corrupt.wav"), None);
+    let project = edits::set_device_asset_links(&project, effect, [(slot, asset)].into()).unwrap();
+
+    for (status, bindings_pending) in [
+        (AssetStatus::Empty, false),
+        (AssetStatus::Loading, false),
+        (AssetStatus::Missing, false),
+        (AssetStatus::Failed("Unsupported audio".into()), false),
+        (AssetStatus::Ready, true),
+        (AssetStatus::Ready, false),
+    ] {
+        let mut app = app_with_host(
+            project.clone(),
+            dir.path(),
+            Host {
+                builtins: BuiltinHost::new(),
+                state: effect,
+                fixture: Fixture::Ready,
+                assets: Some(Snapshot {
+                    slots: vec![Slot {
+                        id: slot,
+                        role: "sample".into(),
+                        label: "Source".into(),
+                        kind: AssetKind::AudioSample,
+                        status: status.clone(),
+                    }],
+                }),
+                bindings_pending,
+                global_mode_changes: Arc::default(),
+            },
+        );
+        assert!(app.engine().host().native_layout(effect).is_none());
+        app.dispatch(Action::Edit(EditAction::FlattenMidiTrack(track)));
+        match (status, bindings_pending) {
+            (status, true) | (status @ (AssetStatus::Empty | AssetStatus::Loading), false) => {
+                app.step();
+                assert!(app.is_exporting());
+                assert!(!app.engine().is_detached(), "{status:?}");
+                app.dispatch(Action::Project(ProjectAction::CancelExport));
+            }
+            (AssetStatus::Missing | AssetStatus::Failed(_), false) => {
+                step_until(&mut app, "reject the unavailable asset", |app| {
+                    !app.is_exporting()
+                });
+                let lang = app.lang();
+                assert_eq!(
+                    app.ui().status.as_ref().unwrap().text,
+                    lang.flatten_failed(lang.flatten_sampler_failed("tail", "corrupt"))
+                );
+            }
+            (AssetStatus::Ready, false) => {
+                step_until(&mut app, "flatten with the ready asset", |app| {
+                    !app.is_exporting()
+                });
+                assert!(audio_path(&app, track).is_file());
+                continue;
+            }
+        }
+        assert_eq!(app.project().as_ref(), &project);
+        assert!(dir.path().read_dir().unwrap().next().is_none());
+    }
 }
 
 #[test]

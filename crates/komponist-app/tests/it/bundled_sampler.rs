@@ -1254,10 +1254,26 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         );
     };
     let assert_live_automation = |app: &mut App, phase: &str| {
-        let ready_after = app.engine().stats().callbacks() + 2;
-        step_until(app, &format!("{phase}: audio callbacks advanced"), |app| {
-            app.engine().stats().callbacks() >= ready_after
-        });
+        // StateApplied queues automation reassertion to the audio thread. A host
+        // callback that fell back on a busy bridge did not confirm its delivery.
+        let callback_window = |app: &App| {
+            (
+                app.engine().stats().callbacks(),
+                app.engine().host().late_blocks(general),
+            )
+        };
+        let (mut start, mut late) = callback_window(app);
+        step_until(
+            app,
+            &format!("{phase}: audio callbacks reached the sampler"),
+            |app| {
+                let (callbacks, current_late) = callback_window(app);
+                if current_late != late {
+                    (start, late) = (callbacks, current_late);
+                }
+                callbacks >= start + 2
+            },
+        );
 
         // Ready and StateApplied can precede the first sounding block after a bridge
         // restore. A silent probe cannot measure gain. Retry only silence, and check
@@ -1351,6 +1367,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         });
         step_until(app, "restored sampler asset ready", |app| {
             asset_status(app, general, 0) == Some(&AssetStatus::Ready)
+                && !app.engine().host().render_asset_bindings_pending(general)
                 && app.engine().transport() == komponist_engine::TransportState::Playing
         });
     };

@@ -1267,6 +1267,12 @@ impl PluginManager {
             .is_some_and(DeviceAssets::inventory_pending)
     }
 
+    /// A queued file update is still being applied or has yet to publish its slot status.
+    pub fn render_asset_bindings_pending(&self, device: DeviceId) -> bool {
+        self.device_assets(device)
+            .is_some_and(DeviceAssets::render_bindings_pending)
+    }
+
     /// Whether the current plugin instance advertises detached render preparation.
     pub fn supports_offline_preparation(&self, device: DeviceId) -> bool {
         self.device_assets(device)

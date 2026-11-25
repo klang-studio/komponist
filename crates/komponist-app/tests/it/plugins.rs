@@ -1542,15 +1542,39 @@ fn third_party_clap_macros_and_automation_restore_their_bases() {
     let fx_gain = gain_id(fx);
     let synth_base = app.engine().host().param_base(synth, synth_gain).unwrap();
     let fx_default = app.engine().host().param_base(fx, fx_gain).unwrap();
-    let note = |app: &mut App| {
-        app.engine_mut().send(Command::LiveNote {
-            track,
-            key: 60,
-            velocity: 127,
-        });
+    let note_level = |app: &mut App, phase: &str| {
+        let note = |app: &mut App, velocity| {
+            app.engine_mut().send(Command::LiveNote {
+                track,
+                key: 60,
+                velocity,
+            });
+        };
+        let late_blocks = |app: &App| [synth, fx].map(|id| app.engine().host().late_blocks(id));
+        let meter = app.engine().track_meter(track).unwrap().clone();
+        let initial_late = late_blocks(app);
+        let deadline = Instant::now() + PATIENCE;
+        let mut silent_notes = 0;
+        loop {
+            meter.take();
+            note(app, 127);
+            step_for(app, Duration::from_millis(160));
+            let (left, right) = meter.take();
+            note(app, 0);
+            let peak = left.max(right);
+            // A late bridge can miss a note. Only a sounding probe measures the gain.
+            if peak != 0.0 {
+                break peak;
+            }
+            silent_notes += 1;
+            assert!(
+                Instant::now() < deadline,
+                "{phase}: {silent_notes} silent notes. Late blocks (synth, effect) {:?}, initially {initial_late:?}",
+                late_blocks(app),
+            );
+        }
     };
-    note(&mut app);
-    let baseline = level(&mut app, track, Duration::from_millis(160));
+    let baseline = note_level(&mut app, "the reference tone");
     assert!(baseline > 0.01, "the base values produce a reference tone");
 
     let target = |device, id| AutomationTarget::Param {
@@ -1606,7 +1630,7 @@ fn third_party_clap_macros_and_automation_restore_their_bases() {
         });
     };
     open(&mut app);
-    let automated_level = |app: &mut App| {
+    let automated_level = |app: &mut App, phase| {
         app.engine_mut().send(Command::Play);
         step_until(app, "track macro automation applied", |app| {
             app.engine()
@@ -1614,10 +1638,9 @@ fn third_party_clap_macros_and_automation_restore_their_bases() {
                 .macro_values(track)
                 .is_some_and(|values| (values[0] - 0.2).abs() < 1e-6)
         });
-        note(app);
-        level(app, track, Duration::from_millis(160))
+        note_level(app, phase)
     };
-    let automated = automated_level(&mut app);
+    let automated = automated_level(&mut app, "automation before save");
     assert!(
         automated > 0.0 && automated < baseline * 0.2,
         "both lanes attenuate the reference tone: {baseline} -> {automated}"
@@ -1650,7 +1673,7 @@ fn third_party_clap_macros_and_automation_restore_their_bases() {
         (restored_fx - fx_base).abs() < 0.002,
         "plugin may quantize a base"
     );
-    let reopened = automated_level(&mut app);
+    let reopened = automated_level(&mut app, "automation after reopening");
     assert!(
         (reopened - automated).abs() < automated * 0.05,
         "reopened automation level {reopened}, before save {automated}"
