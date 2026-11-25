@@ -9,7 +9,7 @@ use komponist_builtin::Internal;
 use komponist_general_sampler::{Settings, write_settings};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewNote, NewTrack};
 use komponist_model::plugin_assets::AssetLink;
-use komponist_model::{Hue, Project, Tick};
+use komponist_model::{Hue, PluginRef, Project, Tempo, Tick, TrackId};
 use komponist_sampler::{SampleLink, links};
 
 use super::{DeviceSource, log_position};
@@ -23,42 +23,107 @@ const MELODY_TRACK: &str = "Glass Pluck";
 const SLICE_TRACK: &str = "Glass Slices";
 const HIT_POSITIONS: [f64; 6] = [0.0, 0.75, 1.5, 2.5, 3.0, 3.5];
 
+struct GlassTrack {
+    name: &'static str,
+    hue: Hue,
+    clip: &'static str,
+    bar: i64,
+    clip_bars: i64,
+    notes: [(i64, i64, u8, u8); 4],
+}
+
+const GLASS_TRACKS: [GlassTrack; 2] = [
+    GlassTrack {
+        name: MELODY_TRACK,
+        hue: Hue::VERMILION,
+        clip: "Glass Melody",
+        bar: 4,
+        clip_bars: 2,
+        notes: [
+            (0, 7, 72, 82),
+            (9, 4, 76, 70),
+            (16, 6, 79, 88),
+            (26, 5, 76, 74),
+        ],
+    },
+    GlassTrack {
+        name: SLICE_TRACK,
+        hue: Hue::VIOLET,
+        clip: "Glass Fill",
+        bar: 7,
+        clip_bars: 1,
+        notes: [
+            (2, 2, 48, 84),
+            (7, 2, 51, 73),
+            (11, 2, 49, 95),
+            (14, 2, 53, 81),
+        ],
+    },
+];
+
+impl GlassTrack {
+    fn melody(&self) -> bool {
+        self.name == MELODY_TRACK
+    }
+
+    fn markers(&self) -> &'static [f64] {
+        if self.melody() {
+            &[]
+        } else {
+            &HIT_POSITIONS[1..]
+        }
+    }
+
+    fn add(&self, project: &Project, instrument: PluginRef) -> (Project, TrackId) {
+        let (next, id) = edits::add_track(
+            project,
+            NewTrack {
+                name: Some(self.name.into()),
+                hue: Some(self.hue),
+                instrument: Some(instrument),
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .expect("showcase sampler track");
+        let notes = self.notes.map(|(step, duration, pitch, velocity)| NewNote {
+            start: Tick::from_steps(step),
+            length: Tick::from_steps(duration),
+            pitch,
+            velocity,
+        });
+        let (mut next, _) = edits::add_clip(
+            &next,
+            id,
+            NewClip {
+                start: Tick::from_steps(self.bar * 16),
+                length: Tick::from_steps(self.clip_bars * 16),
+                name: self.clip.into(),
+                content: NewClipContent::Midi {
+                    notes: notes.to_vec(),
+                    take_name: String::new(),
+                },
+            },
+        )
+        .expect("showcase sampler clip");
+        let index = next.track_index(id).expect("showcase sampler track");
+        let track = Arc::make_mut(&mut next.tracks[index]);
+        track.channel.volume_db = -24.0;
+        track.channel.pan = if self.melody() { -0.14 } else { 0.14 };
+        (next, id)
+    }
+}
+
 pub(super) fn add_tracks(project: &mut Project, source: DeviceSource<'_>) -> Result<(), String> {
-    for (name, hue, clip_name, bar, pattern) in [
-        (
-            MELODY_TRACK,
-            Hue::VERMILION,
-            "Glass Melody",
-            4,
-            [
-                (0, 7, 72, 82),
-                (9, 4, 76, 70),
-                (16, 6, 79, 88),
-                (26, 5, 76, 74),
-            ],
-        ),
-        (
-            SLICE_TRACK,
-            Hue::VIOLET,
-            "Glass Fill",
-            7,
-            [
-                (2, 2, 48, 84),
-                (7, 2, 51, 73),
-                (11, 2, 49, 95),
-                (14, 2, 53, 81),
-            ],
-        ),
-    ] {
-        let melody = name == MELODY_TRACK;
-        let values = sampler_values(melody);
+    for glass in GLASS_TRACKS {
+        let values = sampler_values(glass.melody());
         let mut prepared = source.prepare("general-sampler", None, &values, &[])?;
-        if !melody {
+        if !glass.markers().is_empty() {
             let state = prepared
                 .state
                 .as_deref()
                 .ok_or("missing sampler demo state")?;
-            let times = HIT_POSITIONS[1..].iter().copied();
+            let times = glass.markers().iter().copied();
             let state = match source {
                 DeviceSource::Packaged(_) => {
                     komponist_plugins::bundled_sampler::edit_slice_markers(state, times)
@@ -70,51 +135,49 @@ pub(super) fn add_tracks(project: &mut Project, source: DeviceSource<'_>) -> Res
             };
             prepared.state = Some(state.into());
         }
-        let clip_bars = if name == MELODY_TRACK { 2 } else { 1 };
-        let (next, track) = edits::add_track(
-            project,
-            NewTrack {
-                name: Some(name.into()),
-                hue: Some(hue),
-                instrument: Some(prepared.plugin.clone()),
-                index: None,
-                arm_exclusive: false,
-            },
-        )
-        .expect("showcase sampler track");
-        let notes = pattern.map(|(step, duration, pitch, velocity)| NewNote {
-            start: Tick::from_steps(step),
-            length: Tick::from_steps(duration),
-            pitch,
-            velocity,
-        });
-        let (mut next, _) = edits::add_clip(
-            &next,
-            track,
-            NewClip {
-                start: Tick::from_steps(bar * 16),
-                length: Tick::from_steps(clip_bars * 16),
-                name: clip_name.into(),
-                content: NewClipContent::Midi {
-                    notes: notes.to_vec(),
-                    take_name: String::new(),
-                },
-            },
-        )
-        .expect("showcase sampler clip");
-        let track = next
-            .tracks
-            .iter_mut()
-            .find(|candidate| candidate.id == track)
-            .expect("showcase sampler track");
-        let track = Arc::make_mut(track);
-        track.channel.volume_db = -24.0;
-        track.channel.pan = if name == MELODY_TRACK { -0.14 } else { 0.14 };
-        let id = track.channel.devices[0].id;
-        track.channel.devices[0] = Arc::new(prepared.into_device(id));
+        let (mut next, id) = glass.add(project, prepared.plugin.clone());
+        let index = next.track_index(id).expect("showcase sampler track");
+        let track = Arc::make_mut(&mut next.tracks[index]);
+        let device = &mut track.channel.devices[0];
+        *device = Arc::new(prepared.into_device(device.id));
         *project = next;
     }
     Ok(())
+}
+
+/// Glass melody or slices, with a host-managed sample and authored CLAP setup values.
+#[doc(hidden)]
+pub struct GeneralSamplerFixture {
+    pub project: Project,
+    pub params: Vec<(&'static str, f64)>,
+    pub markers: &'static [f64],
+}
+
+/// Builds only the requested Glass track, using the supplied scanned sampler.
+#[doc(hidden)]
+pub fn general_sampler_fixture(
+    name: &str,
+    plugin: PluginRef,
+    dir: &Path,
+) -> io::Result<GeneralSamplerFixture> {
+    let glass = GLASS_TRACKS
+        .iter()
+        .find(|glass| glass.name == name)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "unknown Glass track"))?;
+    let mut project = Project::new(komponist_model::fixtures::DEMO_PROJECT_NAME);
+    project.tempo = Tempo::new(124.0);
+    let (mut project, _) = glass.add(&project, plugin);
+    super::add_master_fade(&mut project);
+    let track = Arc::make_mut(&mut project.tracks[0]);
+    let device = Arc::make_mut(&mut track.channel.devices[0]);
+    device
+        .asset_links
+        .insert(0, AssetLink::new(&write_sample(dir)?, None));
+    Ok(GeneralSamplerFixture {
+        project,
+        params: sampler_values(glass.melody()),
+        markers: glass.markers(),
+    })
 }
 
 /// Values in the bundle's published CLAP parameter ranges. The time knobs are normalized.
