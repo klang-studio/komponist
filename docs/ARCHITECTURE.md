@@ -63,7 +63,7 @@ The **nice-plug** fixtures in `test-plugins/` export both formats from the same 
 | D4 | One bridge process per external plugin instance |
 | D5 | Klopfer and the Sampler share `sampler-core` and sample loading. The separate Klopfer CLAP plugin is scanned normally. |
 | D6 | Internal Hexa backed by `hexa-core` with `alloc` and `serde` |
-| D7 | Versioned `*.komponist` JSON project file and linked audio assets |
+| D7 | Versioned `*.komponist` JSON project file (exactly one valid version, no migration, D10) and linked audio assets |
 | D8 | Immutable document snapshots with `Arc` structural sharing for undo/redo |
 | D9 | Signed 64-bit musical ticks at 960 PPQ; position display at 240 ticks per beat |
 | D10 | No backward compatibility before 1.0: only the current project, preset and device-state formats and the current komponist CLAP extensions are supported. Other versions are rejected with a clear message, never migrated; names carry no version. Mismatch checks (project marker, bridge protocol, caches) stay. The migration code was removed with #335 (epic #296). |
