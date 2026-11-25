@@ -568,7 +568,7 @@ mod legacy {
     use komponist_model::DeviceRole;
     use komponist_model::params::ParamId;
     use komponist_plugins::bundled_initial_state::InitialDevice;
-    use komponist_plugins::legacy_bundled::bundled_clap_id;
+    use komponist_plugins::catalog::clap_id;
 
     pub(super) fn prepare(
         id: &str,
@@ -602,7 +602,7 @@ mod legacy {
         let (kind, plugin) = Internal::ALL
             .into_iter()
             .map(|kind| (kind, kind.plugin_ref()))
-            .find(|(_, plugin)| bundled_clap_id(plugin) == Some(id))
+            .find(|(_, plugin)| clap_id(&plugin.id) == id)
             .ok_or_else(|| format!("no reference device for {id}"))?;
         let mut result = InitialDevice {
             plugin,

@@ -18,7 +18,7 @@ use komponist_model::params::{ParamId, ParamInfo, ParamKind};
 /// The built-in device specification.
 pub static SPEC: Spec = Spec {
     catalog: CatalogSpec {
-        id: "tonleiter",
+        id: "scale",
         name: "Tonleiter",
         name_in: Lang::device_name_tonleiter,
         description_in: Some(Lang::device_description_tonleiter),

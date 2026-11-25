@@ -37,6 +37,12 @@ pub fn requires_bundled(plugin: &PluginRef) -> bool {
         && plugin.module.starts_with(BUNDLED_MODULE_PREFIX)
 }
 
+/// The CLAP ID of the packaged bundle for the built-in with catalog id `builtin_id`: every
+/// bundle is named after the device it replaces.
+pub fn clap_id(builtin_id: &str) -> String {
+    format!("org.klang-studio.komponist.{builtin_id}")
+}
+
 /// The built-in kind requested by a packaged CLAP reference. This identifies the stored
 /// catalog address only; the running instance must still be authenticated by the manager.
 pub fn packaged_kind(plugin: &PluginRef) -> Option<BuiltinKind> {

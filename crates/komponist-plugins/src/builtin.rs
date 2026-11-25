@@ -79,7 +79,7 @@ mod tests {
             "limiter",
             "presse",
             "arpeggiator",
-            "tonleiter",
+            "scale",
             "volt",
             "surf",
             "general-sampler",
