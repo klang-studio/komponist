@@ -6,7 +6,7 @@
 # so nothing reaches the real home or ~/.config.
 #
 # Linux only (Xvfb, xdotool): on macOS it says so and exits with 0. The plugin frame tests there are covered
-# by hand, see the macOS section of CLAUDE.md.
+# by hand, see the macOS section of AGENTS.md.
 set -euo pipefail
 
 if [ "$(uname -s)" != "Linux" ]; then

@@ -24,7 +24,7 @@ pub const DEADLINE_SHARE: f64 = 0.6;
 ///
 /// `Send` because it is created on the UI thread and moved to the audio thread. Methods marked RT
 /// run on the audio thread or on one of the engine's worker threads (never on two threads at
-/// once) and must not allocate, free, lock, log, do IO or block (CLAUDE.md rule 4). Tests wrap
+/// once) and must not allocate, free, lock, log, do IO or block (AGENTS.md rule 4). Tests wrap
 /// them in `assert_no_alloc`.
 pub trait Processor: Send {
     /// Non-RT. Prepares for `sample_rate` Hz and calls of at most `max_block` frames

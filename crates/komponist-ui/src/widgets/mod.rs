@@ -14,7 +14,7 @@
 //! - computes its [`State`](crate::State) with [`State::of`](crate::State::of) and its colours
 //!   in one `look(…, State)` function of its module, which the snapshot tests cover state by
 //!   state;
-//! - gives AccessKit a role and a German accessible name (`CLAUDE.md` rule 12);
+//! - gives AccessKit a role and a German accessible name (`AGENTS.md` rule 12);
 //! - is a still picture when a state is forced around it ([`crate::state::force`]): it senses
 //!   hover only, so it takes no clicks and no keyboard focus ([`sense`]). The gallery shows its
 //!   samples that way, so Tab skips them; every gallery card also has a live row.

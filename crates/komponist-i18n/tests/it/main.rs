@@ -1,4 +1,4 @@
-//! The one integration binary of komponist-i18n (CLAUDE.md, WP-66).
+//! The one integration binary of komponist-i18n (AGENTS.md, WP-66).
 
 #[path = "../../generator.rs"]
 mod generator;

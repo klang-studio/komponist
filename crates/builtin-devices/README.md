@@ -23,7 +23,7 @@ have separate DSP cores; [Surf](surf/) runs on [Volt](volt/)'s engine with its o
 4. Add the crate as a dependency of the registry and register its spec and factory. Check the
    order, role and category in the browser.
 5. Add a musically useful example to `showcase::showcase_project()` and test it with `--demo`.
-   Follow [CLAUDE.md rule 15](../../CLAUDE.md#rules-for-all-agents) for the mix and showcase tests.
+   Follow [AGENTS.md rule 15](../../AGENTS.md#rules-for-all-agents) for the mix and showcase tests.
 6. Test the processor, parameter and layout contracts, preset/state round trips and realtime
    allocation behavior. Run the catalog and app tests as well as `scripts/check.sh`. Build the
    CLAP and VST3 test fixtures with `scripts/build-test-plugins.sh` before the workspace check.
