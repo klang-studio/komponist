@@ -13,7 +13,7 @@ undo, parameter descriptions and project serialization independently of the UI a
 - [src/edits/](src/edits/) — Implements pure, fallible project edits.
 - [src/routing.rs](src/routing.rs) — Validates routing and computes dependencies and mute/solo
   gates.
-- [src/persist.rs](src/persist.rs) — Reads, migrates and writes versioned project files.
+- [src/persist.rs](src/persist.rs) — Reads and writes versioned project files (one valid version, no migration).
 - [src/validate.rs](src/validate.rs) — Checks every project invariant and repairs files on load.
 
 ## How it works

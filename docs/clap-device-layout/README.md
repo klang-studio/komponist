@@ -158,4 +158,4 @@ examples of discovery, buffer transfer, validation and stable CLAP parameter IDs
 The [author guide](../../crates/plugin-sdk/README.md) covers writing a Rust device with the SDK,
 building and validating its CLAP bundle, and installing it in komponist.
 
-See [CLAP preset interoperability](presets.md) for factory discovery, compatibility aliases and localized preset names.
+See [CLAP preset interoperability](presets.md) for factory discovery and localized preset names.
