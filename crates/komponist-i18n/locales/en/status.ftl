@@ -149,15 +149,6 @@ status-midi-fx-need-track = MIDI effects need a track
 # An effect dropped where no track is selected.
 status-fx-need-track = Effects need a track
 
-# A sample was linked to a pad (`$pad` counts from 1).
-status-sample-on-pad = “{ $name }” is on pad { $pad }
-
-# A sample was linked in the general-purpose Sampler.
-status-sampler-loaded = Loaded “{ $name }” into Sampler
-
-# Name of a sample without a name.
-status-sample-unnamed = Sample
-
 # Collect and save: nothing had to be copied.
 status-collected-none = Saved · no samples to collect ({ $folder })
 

@@ -2763,7 +2763,7 @@ impl App {
             PluginAction::FocusWindow(device) => self.focus_plugin_window(device),
             PluginAction::Reload(device) => {
                 self.cancel_frame_preset_requests(device);
-                self.reset_sampler_hit(device);
+                self.reset_pad_hit(device);
                 self.engine.reload_device(self.doc.project(), device);
             }
             PluginAction::PickPluginAsset { device, slot } => self.pick_plugin_asset(device, slot),
@@ -2773,11 +2773,6 @@ impl App {
             PluginAction::DropPluginAssets { device, files } => {
                 self.drop_plugin_assets(device, &files);
             }
-            PluginAction::LoadSample { device, pad, path } => {
-                self.set_sample_file(device, pad, Some(&path));
-            }
-            PluginAction::ClearSample { device, pad } => self.set_sample_file(device, pad, None),
-            PluginAction::PickSample { device, pad } => self.pick_sample_file(device, pad),
             PluginAction::AuditionNote { device, key } => self.audition_note(device, key),
             PluginAction::PreviewWaveform {
                 device,
@@ -2786,9 +2781,6 @@ impl App {
                 slice_time,
             } => {
                 self.preview_waveform(device, slot, key, slice_time);
-            }
-            PluginAction::SetSamplerSlices { device, settings } => {
-                self.set_sampler_slices(device, &settings);
             }
             PluginAction::BeginParamGesture { device, id } => {
                 let intercept =

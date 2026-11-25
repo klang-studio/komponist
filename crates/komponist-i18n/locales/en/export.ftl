@@ -12,14 +12,11 @@ flatten-no-clips = Choose a MIDI track with clips.
 flatten-track-changed = The track or its signal sources changed during rendering.
 flatten-worker-failed = Rendering was interrupted.
 flatten-automation-too-large = Repeated clip automation would generate too many automation points.
-flatten-missing-sample = Sample missing · { $file }
 flatten-pad-failed = Could not load { $device } pad { $pad } “{ $sample }”.
 
 # A linked source unavailable before flattening the general-purpose Sampler.
 flatten-sampler-failed = { $device } could not load “{ $sample }”.
 
-# The Sampler cannot prepare a pitch-preserving stretch for the linked source.
-flatten-sampler-sync-failed = { $device } could not stretch the sample to the project tempo.
 flatten-state-failed = Could not capture the current state of “{ $device }” for undo.
 flatten-warp-failed = Warp in audio clip “{ $clip }” · { $reason }
 

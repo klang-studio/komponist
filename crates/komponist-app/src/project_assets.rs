@@ -4,9 +4,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use komponist_model::asset_collection::{Collector, is_audio_file, samples_folder_name};
-use komponist_model::project::SavedPluginState;
-use komponist_model::{AudioFile, ClipContent, Device, DeviceId, Project, edits};
-use komponist_plugins::bundled_sampler;
+use komponist_model::{AudioFile, ClipContent, Project, edits};
 
 use crate::app::App;
 use crate::dialogs::file::Purpose;
@@ -104,12 +102,11 @@ fn audio_files(project: &Project) -> Vec<&AudioFile> {
 }
 
 /// Collect the current sample and audio-clip sources before rewriting the file or history.
-pub(crate) fn collect_project_files<'a>(
+pub(crate) fn collect_project_files(
     project: &Project,
     collector: &mut Collector,
     project_dir: Option<&Path>,
     approved_plugin_files: &HashSet<PathBuf>,
-    plugin_snapshot: impl Fn(DeviceId) -> Option<&'a [u8]>,
 ) -> std::io::Result<()> {
     for device in project
         .tracks
@@ -132,12 +129,6 @@ pub(crate) fn collect_project_files<'a>(
                 }
             }
         }
-        bundled_sampler::collect_embedded_links(
-            device,
-            collector,
-            plugin_snapshot(device.id),
-            project_dir,
-        )?;
     }
     for file in audio_files(project) {
         if let Some(found) = file.resolve(project_dir) {
@@ -156,15 +147,10 @@ pub(crate) fn rebase_project_links(
     destination: impl Fn(PathBuf) -> PathBuf,
     asset_destination: impl Fn(PathBuf) -> PathBuf,
 ) -> Option<Project> {
-    let after_embedded = rewrite_embedded_links(project, |device| {
-        bundled_sampler::rebase_embedded_links(device, None, old_dir, new_dir, &destination)
+    let after_samples = edits::rewrite_audio_files(project, |file| {
+        let path = destination(file.resolve(old_dir)?);
+        Some(file.moved_to(&path, new_dir))
     });
-    let after_samples =
-        edits::rewrite_audio_files(after_embedded.as_ref().unwrap_or(project), |file| {
-            let path = destination(file.resolve(old_dir)?);
-            Some(file.moved_to(&path, new_dir))
-        })
-        .or(after_embedded);
     let base = after_samples.as_ref().unwrap_or(project);
     let mut result = None;
     for device in base
@@ -195,31 +181,4 @@ pub(crate) fn rebase_project_links(
         }
     }
     result.or(after_samples)
-}
-
-/// Rewrite embedded paths without discarding the companion parameter bases.
-fn rewrite_embedded_links(
-    project: &Project,
-    rewrite: impl Fn(&Device) -> Option<Vec<u8>>,
-) -> Option<Project> {
-    let devices = project
-        .tracks
-        .iter()
-        .flat_map(|t| t.channel.devices.iter())
-        .chain(project.master.devices.iter());
-    let mut result = None;
-    for device in devices {
-        let Some(bytes) = rewrite(device) else {
-            continue;
-        };
-        let state = SavedPluginState {
-            bytes: bytes.into(),
-            parameter_bases: device.parameter_bases.clone(),
-        };
-        result = Some(
-            edits::set_saved_plugin_state(result.as_ref().unwrap_or(project), device.id, &state)
-                .ok()?,
-        );
-    }
-    result
 }

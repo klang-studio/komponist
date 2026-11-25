@@ -77,7 +77,7 @@ mod project_assets;
 pub mod project_io;
 pub mod record;
 pub mod recovery;
-pub mod samples;
+mod samples;
 pub mod settings;
 mod shell;
 pub mod showcase;

@@ -9,9 +9,6 @@ file-save-title = Save Project
 # Title when choosing a plugin folder (S07 "+ Ordner").
 file-folder-title = Add Plugin Folder
 
-# Title when choosing a sample for a sampler pad.
-file-sample-title = Load Sample
-
 # Primary button when opening.
 file-open = Open
 

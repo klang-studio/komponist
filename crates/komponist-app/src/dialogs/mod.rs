@@ -506,7 +506,10 @@ impl crate::App {
                             Action::Project(crate::actions::ProjectAction::CheckPluginFolders)
                         }
                         missing_plugins::Output::Search(device, pad) => {
-                            Action::Plugin(crate::actions::PluginAction::PickSample { device, pad })
+                            Action::Plugin(crate::actions::PluginAction::PickPluginAsset {
+                                device,
+                                slot: pad as u32,
+                            })
                         }
                         missing_plugins::Output::SearchAsset(device, slot) => {
                             Action::Plugin(crate::actions::PluginAction::PickPluginAsset {

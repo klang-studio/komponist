@@ -139,12 +139,6 @@ undo-add-midi-effect = Add MIDI Effect
 # Undo step: Effekt hinzufügen.
 undo-add-effect = Add Effect
 
-# Undo step: Sample laden.
-undo-sample-load = Load Sample
-
-# Undo step: Sample entfernen.
-undo-sample-clear = Remove Sample
-
 # Undo label for changing the sample's slice markers.
 undo-sample-slices = Edit Slices
 

@@ -1696,8 +1696,8 @@ mod tests {
 
     #[test]
     fn saving_during_capture_keeps_live_sources_referenced_in_redo() {
-        use komponist_builtin::Internal;
-        use komponist_sampler::links::{self, SampleLink};
+        use komponist_model::plugin_assets::AssetLink;
+        use komponist_model::{PluginFormat, PluginRef};
 
         let (root, mut app, track) = rig();
         begin(&mut app, track);
@@ -1718,20 +1718,27 @@ mod tests {
         let linked_source = source.clone();
         let sampler = app
             .doc
-            .apply_with("Add Sampler with the live source", |project| {
+            .apply_with("Add a device with the live source", |project| {
                 let (project, track) = edits::add_track(
                     project,
                     edits::NewTrack {
                         name: None,
                         hue: None,
-                        instrument: Some(Internal::Sampler.plugin_ref()),
+                        instrument: Some(PluginRef {
+                            format: PluginFormat::Clap,
+                            id: "org.example.file-player".into(),
+                            name: "File player".into(),
+                            vendor: String::new(),
+                            version: String::new(),
+                            module: Box::default(),
+                        }),
                         index: None,
                         arm_exclusive: false,
                     },
                 )?;
                 let device = project.track(track).unwrap().channel.devices[0].id;
-                let state = links::write(None, 0, Some(&SampleLink::new(&linked_source, None)));
-                let project = edits::set_device_state(&project, device, Some(state.into()))?;
+                let link = AssetLink::new(&linked_source, None);
+                let project = edits::set_device_asset_links(&project, device, [(0, link)].into())?;
                 Ok((project, device))
             })
             .unwrap();
@@ -1741,8 +1748,8 @@ mod tests {
         assert!(source.is_file());
         assert!(app.doc.redo());
         let check_sample = |app: &App| {
-            let (_, _, sampler) = app.project().find_device(sampler).unwrap();
-            links::read(sampler.state.as_deref()).remove(0).1
+            let (_, _, player) = app.project().find_device(sampler).unwrap();
+            player.asset_links[&0].clone()
         };
         assert_eq!(check_sample(&app).resolve(Some(&root)), Some(linked_source));
 

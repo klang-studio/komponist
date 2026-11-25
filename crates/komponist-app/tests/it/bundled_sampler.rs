@@ -207,10 +207,10 @@ fn both_samplers_play_assets_after_the_project_moves() {
     let external = missing_assets(app);
     assert_eq!(missing.len() + external.len(), 2);
     for sample in missing {
-        app.dispatch(Action::Plugin(PluginAction::LoadSample {
+        app.dispatch(Action::Plugin(PluginAction::SetPluginAsset {
             device: sample.device,
-            pad: sample.pad,
-            path: replacement.clone(),
+            slot: sample.pad as u32,
+            path: Some(replacement.clone()),
         }));
     }
     for row in external {
