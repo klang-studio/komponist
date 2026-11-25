@@ -26,8 +26,8 @@ use komponist_audiofile::fixtures as testkit;
 use komponist_builtin::Internal;
 use komponist_engine::Command;
 use komponist_hexa::Patch;
-use komponist_hexa::device::{self, Field};
-use komponist_model::edits::{self, NewTrack};
+use komponist_hexa::device;
+use komponist_model::edits::{self, NewDevice, NewTrack};
 use komponist_model::fixtures::demo_project;
 use komponist_model::params::ParamId;
 use komponist_model::plugin_assets::AssetLink;
@@ -285,22 +285,6 @@ fn escape_during_a_drag_puts_the_value_back_in_the_document_and_the_engine() {
     assert_eq!(depth(&mut app), start, "no step");
 }
 
-#[test]
-fn a_drag_that_changes_nothing_leaves_no_step() {
-    let (mut app, _, synth) = hexa_app(1);
-    let start = depth(&mut app);
-    let value = Field::Macro(komponist_hexa::Macro::Feedback).get(&patch_of(&app, synth));
-    drag_param(&mut app, synth, wire("volume"), &[]);
-    set(
-        &mut app,
-        synth,
-        Field::Macro(komponist_hexa::Macro::Feedback).wire(),
-        value,
-    );
-    app.step();
-    assert_eq!(depth(&mut app), start);
-}
-
 // ------------------------------------------------------------------------------------------------
 // The real card: a knob drag and a wheel burst (the cells' gesture wiring)
 
@@ -407,65 +391,139 @@ fn dragging_a_card_knob_and_a_wheel_burst_are_one_undo_step_each() {
 }
 
 // ------------------------------------------------------------------------------------------------
-// An internal device
-
-fn limiter_app() -> (App, TrackId, DeviceId) {
-    let mut app = App::headless(demo_project());
-    app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: Internal::Limiter.plugin_ref(),
-        target: DropTarget::Chain {
-            channel: ChannelRef::Master,
-            index: 0,
-        },
-    }));
-    let limiter = app.project().master.devices[0].id;
-    let track = app
-        .project()
-        .tracks
-        .iter()
-        .find(|t| {
-            t.channel
-                .devices
-                .iter()
-                .any(|d| komponist_app::device_host::is_hexa(d))
-        })
-        .unwrap()
-        .id;
-    (app, track, limiter)
-}
+// The shipped Limiter: a ceiling gesture audibly follows undo and redo.
 
 #[test]
-fn an_internal_devices_drag_is_one_step_and_undo_redo_restore_the_sound() {
-    let (mut app, track, limiter) = limiter_app();
-    let id = |key: &str| Internal::Limiter.wire(&ParamId::new(key)).unwrap();
-    // Drive it hard into a high ceiling first.
-    set(&mut app, limiter, id("gain"), 24.0);
-    set(&mut app, limiter, id("ceiling"), -0.3);
-    hold(&mut app);
-    let start = depth(&mut app);
-    let before = state_of(&app, limiter);
-    let loud = note_peak(&mut app, track, 60);
+#[ignore = "requires the authenticated release payload; run measure-bundled-clap.py --current-projects"]
+fn packaged_limiter_drag_is_one_step_and_undo_redo_restore_the_sound() {
+    let launcher = PathBuf::from(
+        std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").expect("packaged launcher"),
+    );
+    let bridge =
+        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
+    let work = tempfile::tempdir().unwrap();
+    let host = super::bundled_current::scan(&launcher, work.path());
+    let hexa = host
+        .manager()
+        .prepare_bundled_device("org.klang-studio.komponist.hexa", Some("E-Piano"), &[], &[])
+        .unwrap();
+    // Drive the limiter hard enough to reach its ceiling. The CLAP gain control is normalized.
+    let limiter = host
+        .manager()
+        .prepare_bundled_device(
+            "org.klang-studio.komponist.limiter",
+            None,
+            &[("gain", 1.0)],
+            &[],
+        )
+        .unwrap();
+    let (project, track) = edits::add_track(
+        &Project::new("Limiter undo"),
+        NewTrack {
+            name: None,
+            hue: None,
+            instrument: Some(hexa.plugin),
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let synth = project
+        .track(track)
+        .unwrap()
+        .channel
+        .instrument()
+        .unwrap()
+        .1
+        .id;
+    let project = edits::set_device_state(&project, synth, hexa.state).unwrap();
+    let (project, limiter) = edits::insert_device(
+        &project,
+        ChannelRef::Master,
+        0,
+        NewDevice {
+            role: limiter.role,
+            plugin: limiter.plugin,
+            state: limiter.state,
+            sidechain: None,
+        },
+    )
+    .unwrap();
+    let mut app = app_with(project, host);
+    step_until(&mut app, "both authenticated devices", |app| {
+        let host = app.engine().host();
+        [synth, limiter].into_iter().all(|id| {
+            host.status(id) == DeviceStatus::Ok
+                && host.verified_bundled_kind(id).is_some()
+                && host.native_layout(id).is_some()
+        })
+    });
+    for id in [synth, limiter] {
+        assert_eq!(app.engine().host().bridge_pid(id).is_some(), bridge);
+    }
 
+    let ceiling = app
+        .engine()
+        .host()
+        .native_layout(limiter)
+        .unwrap()
+        .author_ids()
+        .unwrap()["ceiling"];
+    let original_ceiling = app
+        .engine()
+        .host()
+        .param_value(limiter, ceiling)
+        .unwrap()
+        .value;
+    let before = state_of(&app, limiter);
+    let peak = |app: &mut App| {
+        // Hold only for the probe. The live callback keeps running while CLAP applies edits
+        // and publishes their state.
+        hold(app);
+        let peak = note_peak(app, track, 60);
+        app.engine_mut().release_engine();
+        peak
+    };
+    let loud = peak(&mut app);
     let reloads = app.engine().device_reloads();
-    drag_param(&mut app, limiter, id("ceiling"), &[-3.0, -6.0, -9.0, -12.0]);
-    assert_eq!(app.engine().device_reloads(), reloads);
-    let quiet = note_peak(&mut app, track, 60);
-    assert!(quiet <= 0.26 && loud > quiet * 1.5, "{loud} {quiet}");
-    assert_eq!(depth(&mut app), start + 1);
+
+    // The ceiling's normalized CLAP domain is -12 dB to 0 dB.
+    drag_param(&mut app, limiter, ceiling, &[0.75, 0.5, 0.25, 0.0]);
+    let after = super::bundled_synth_ui::capture_document_state(
+        &mut app,
+        limiter,
+        "the final ceiling captured in the document",
+    );
+    assert_ne!(before.as_ref(), Some(&after.bytes));
+    let quiet = peak(&mut app);
+    assert!(
+        (0.2..=0.26).contains(&quiet) && loud > quiet * 1.5,
+        "{loud} → {quiet}"
+    );
     let label = app.undo_text().unwrap();
     assert!(label.ends_with(" ändern"), "{label}");
 
     undo(&mut app);
+    assert_eq!(app.doc().undo_label(), None, "the drag made one undo step");
     assert_eq!(state_of(&app, limiter), before);
-    assert!(
-        note_peak(&mut app, track, 60) > quiet * 1.5,
-        "undo: the old ceiling"
-    );
+    wait_for_param_value(&mut app, limiter, ceiling, original_ceiling);
+    assert!(peak(&mut app) > quiet * 1.5, "undo: the old ceiling");
+
     redo(&mut app);
     assert!(
-        note_peak(&mut app, track, 60) <= 0.26,
-        "redo: the new ceiling"
+        app.project()
+            .find_device(limiter)
+            .unwrap()
+            .2
+            .has_saved_state(&after)
     );
+    wait_for_param_value(&mut app, limiter, ceiling, 0.0);
+    let redone = peak(&mut app);
+    assert!(
+        (0.2..=0.26).contains(&redone),
+        "redo: the new ceiling, peak {redone}"
+    );
+    assert_eq!(app.engine().device_reloads(), reloads);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -649,11 +707,11 @@ fn asset_link(app: &App, drums: DeviceId, slot: u32) -> &AssetLink {
     &asset_links(app, drums)[&slot]
 }
 
-fn wait_for_tuning(app: &mut App, drums: DeviceId, tune: u32, value: f64) {
-    step_until(app, "the live sampler tuning", |app| {
+fn wait_for_param_value(app: &mut App, device: DeviceId, id: u32, value: f64) {
+    step_until(app, "the live parameter value", |app| {
         app.engine()
             .host()
-            .param_value(drums, tune)
+            .param_value(device, id)
             .is_some_and(|param| param.value == value)
     });
 }
@@ -661,7 +719,7 @@ fn wait_for_tuning(app: &mut App, drums: DeviceId, tune: u32, value: f64) {
 fn tune_and_relink(app: &mut App, drums: DeviceId, tune: u32, other: &Path) {
     let before = state_of(app, drums);
     set(app, drums, tune, TUNE_OCTAVE_UP);
-    wait_for_tuning(app, drums, tune, TUNE_OCTAVE_UP);
+    wait_for_param_value(app, drums, tune, TUNE_OCTAVE_UP);
     step_until(app, "the tuning edit was saved in the document", |app| {
         state_of(app, drums).is_some_and(|state| Some(state) != before)
     });
@@ -717,15 +775,15 @@ fn undo_after_save_restores_the_samplers_parameters_and_samples() {
     undo(&mut app);
     assert_eq!(asset_link(&app, drums, 1).abs, first[&1].abs);
     assert_eq!(asset_link(&app, drums, 1).rel, snare);
-    wait_for_tuning(&mut app, drums, tune, TUNE_OCTAVE_UP);
+    wait_for_param_value(&mut app, drums, tune, TUNE_OCTAVE_UP);
     undo(&mut app);
-    wait_for_tuning(&mut app, drums, tune, TUNE_DEFAULT);
+    wait_for_param_value(&mut app, drums, tune, TUNE_DEFAULT);
     assert_eq!(app.doc().undo_label(), None);
     assert_eq!(asset_link(&app, drums, 0).rel, kick);
     assert_missing_link(&app, drums, &first[&7], &missing);
 
     redo(&mut app);
-    wait_for_tuning(&mut app, drums, tune, TUNE_OCTAVE_UP);
+    wait_for_param_value(&mut app, drums, tune, TUNE_OCTAVE_UP);
     assert_eq!(asset_link(&app, drums, 1).abs, first[&1].abs);
     redo(&mut app);
     assert_eq!(asset_link(&app, drums, 1).abs, other);
@@ -772,7 +830,7 @@ fn undo_after_save_as_into_another_folder_resolves_the_old_steps_links_from_ther
     );
 
     undo(app);
-    wait_for_tuning(app, drums, tune, TUNE_OCTAVE_UP);
+    wait_for_param_value(app, drums, tune, TUNE_OCTAVE_UP);
     let pad2 = asset_link(app, drums, 1);
     assert_eq!(pad2.abs, first[&1].abs);
     let relative_only = AssetLink {
@@ -784,7 +842,7 @@ fn undo_after_save_as_into_another_folder_resolves_the_old_steps_links_from_ther
         Some(first[&1].abs.clone())
     );
     undo(app);
-    wait_for_tuning(app, drums, tune, TUNE_DEFAULT);
+    wait_for_param_value(app, drums, tune, TUNE_DEFAULT);
     assert_missing_link(
         app,
         drums,
@@ -825,7 +883,7 @@ fn undo_after_collect_and_save_keeps_each_steps_samples_and_copies_only_the_curr
     assert_eq!(asset_link(&app, drums, 1).abs, other_copy);
 
     undo(&mut app);
-    wait_for_tuning(&mut app, drums, tune, TUNE_OCTAVE_UP);
+    wait_for_param_value(&mut app, drums, tune, TUNE_OCTAVE_UP);
     let pad2 = asset_link(&app, drums, 1);
     assert_eq!(pad2.abs, first[&1].abs);
     assert_eq!(pad2.resolve(Some(&home)), Some(first[&1].abs.clone()));
@@ -837,7 +895,7 @@ fn undo_after_collect_and_save_keeps_each_steps_samples_and_copies_only_the_curr
         Path::new("Song Samples").join(&kick)
     );
     undo(&mut app);
-    wait_for_tuning(&mut app, drums, tune, TUNE_DEFAULT);
+    wait_for_param_value(&mut app, drums, tune, TUNE_DEFAULT);
     assert_eq!(asset_link(&app, drums, 0).abs, folder.join(&kick));
     assert_missing_link(
         &app,
@@ -846,7 +904,7 @@ fn undo_after_collect_and_save_keeps_each_steps_samples_and_copies_only_the_curr
         &Path::new("../library").join(kit_file(7)),
     );
     redo(&mut app);
-    wait_for_tuning(&mut app, drums, tune, TUNE_OCTAVE_UP);
+    wait_for_param_value(&mut app, drums, tune, TUNE_OCTAVE_UP);
     redo(&mut app);
     assert_eq!(asset_link(&app, drums, 1).abs, other_copy);
     drop(app);
@@ -859,10 +917,7 @@ fn undo_after_collect_and_save_keeps_each_steps_samples_and_copies_only_the_curr
 fn bridged_app(name: &str) -> Option<(App, DeviceId, u32)> {
     let dirs = fixture_dirs()?;
     let dir = scratch(name);
-    let mut app = app_with(
-        Project::new("Bridge"),
-        PluginHost::with_reference_devices(config(&dir)),
-    );
+    let mut app = app_with(Project::new("Bridge"), PluginHost::new(config(&dir)));
     app.engine_mut().host_mut().start_scan(&dirs);
     step_until(&mut app, "scan", |a| {
         a.engine()
@@ -910,6 +965,24 @@ fn plugin_state(app: &mut App, synth: DeviceId) -> Arc<[u8]> {
             _ => None,
         })
         .unwrap()
+}
+
+#[test]
+fn a_drag_that_changes_nothing_leaves_no_step() {
+    let Some((mut app, synth, gain)) = bridged_app("param-undo-unchanged") else {
+        return;
+    };
+    let baseline = plugin_state(&mut app, synth);
+    let start = app.doc().top_step();
+    let value = app.engine().host().param_value(synth, gain).unwrap().value;
+
+    drag_param(&mut app, synth, gain, &[]);
+    assert!(!app.doc().in_gesture());
+    set(&mut app, synth, gain, value);
+
+    assert_eq!(plugin_state(&mut app, synth), baseline);
+    assert!(state_of(&app, synth).is_none());
+    assert_eq!(app.doc().top_step(), start);
 }
 
 #[test]

@@ -410,7 +410,11 @@ fn wait_for_verified(app: &mut App, device: DeviceId, id: &str, bridge: bool) {
     assert!(app.engine().host().state_warning(device).is_none());
 }
 
-fn capture_document_state(app: &mut App, device: DeviceId, what: &str) -> SavedPluginState {
+pub(super) fn capture_document_state(
+    app: &mut App,
+    device: DeviceId,
+    what: &str,
+) -> SavedPluginState {
     app.engine_mut().host_mut().request_state(device);
     step_until(app, what, |app| {
         app.device_events().iter().any(|event| {

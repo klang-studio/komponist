@@ -28,6 +28,7 @@ on:
       - "crates/komponist-app/tests/it/bundled_current.rs"
       - "crates/komponist-app/tests/it/bundled_sampler.rs"
       - "crates/komponist-app/tests/it/bundled_synth_ui.rs"
+      - "crates/komponist-app/tests/it/param_undo.rs"
       - "crates/komponist-app/tests/it/showcase.rs"
       - "crates/komponist-app/src/views/devices/**"
       - "crates/komponist-bridge/**"
