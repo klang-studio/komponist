@@ -163,6 +163,65 @@ impl NativeClapLayout for TestPlugin<ChoiceParams> {
 }
 
 #[test]
+fn six_numeric_options_publish_shared_column_and_segment_selectors() {
+    type P = TestPlugin<ChoiceParams>;
+    let instance = Instance::new::<P>();
+    let select = || CellParam::Select {
+        key: "op",
+        count: 6,
+    };
+    let mut panel = panel(Cell::span(0, 0, 6, 3, WidgetKind::ColumnSelect, select()));
+    panel.grid.pages[0].cols = 6;
+    panel.grid.pages[0]
+        .cells
+        .push(Cell::knob(0, 0, ParamId::new("plain")));
+    panel.grid.pages.push(Page {
+        name: "Envelopes".into(),
+        cols: 6,
+        cells: vec![Cell::half(
+            0,
+            0,
+            6,
+            Half::Top,
+            WidgetKind::Segment,
+            select(),
+        )],
+        dividers: Vec::new(),
+    });
+    panel.pages.push(PageLabels {
+        key: "env".into(),
+        labels: bilingual("Envelopes", "Hüllkurven"),
+    });
+    panel
+        .parameter_labels
+        .insert(ParamId::new("op"), bilingual("Operator", "Operator"));
+    let panel = PanelV2 {
+        panel,
+        graph_labels: Default::default(),
+        canvases: Default::default(),
+        reduction_taps: Default::default(),
+        pad_bank: None,
+        headings: Default::default(),
+        parameter_display: Default::default(),
+        full_band_choice_labels: Default::default(),
+    };
+    // SAFETY: The instance is the initialized wrapper for P.
+    let bytes = unsafe { compile_v2::<P>(instance.0, &panel) }.unwrap();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        value["required_capabilities"],
+        json!([CAP_CELL_SELECTIONS, CAP_PANEL_SELECTIONS])
+    );
+    let columns = &value["pages"][0]["cells"][0];
+    let segment = &value["pages"][1]["cells"][0];
+    assert_eq!(columns["widget"], "column_selector");
+    assert_eq!(segment["widget"], "selector");
+    assert_eq!(columns["selector"], segment["selector"]);
+    assert_eq!(columns["selector"]["shared"], true);
+    assert_eq!(columns["selector"]["options"][5]["en"], "6");
+}
+
+#[test]
 fn source_fraction_waveforms_declare_the_required_layout_capability() {
     type P = TestPlugin<ChoiceParams>;
     let instance = Instance::new::<P>();
