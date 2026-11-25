@@ -21,6 +21,15 @@ points in a path. The host scales positions from normalized `[x, y]` to the
 canvas, with the origin at the top left. All coordinates and the radius are
 finite numbers in the inclusive range 0–1. Circle radii use the shorter side.
 
+The optional `fm_topologies` array carries the current routing for host-rendered
+FM diagrams. These entries share the frame limit and key namespace with
+`frames`. Each entry includes `key` and one to eight `modulates` masks, one per
+operator. Bit `n` in a mask describes an edge to operator index `n`. `outputs`
+is a mask of operators that contribute audio, including operators that also
+modulate. A self-edge uses the optional zero-based `feedback` index. `algorithm`
+is a number from 1 to 255 for a fixed algorithm and can be absent for free
+routing. The host rejects bits and indices outside the operator inventory.
+
 | `kind` | Fields in addition to `tone` |
 | --- | --- |
 | `line` | `from`, `to` |

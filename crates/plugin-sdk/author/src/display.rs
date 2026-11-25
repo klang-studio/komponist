@@ -8,7 +8,7 @@ use nice_plug::prelude::ClapPlugin;
 use nice_plug::wrapper::clap::Wrapper;
 
 pub use komponist_ipc::device_canvas::{
-    Alignment, DisplayList, EXTENSION_ID, Frame, Point, Primitive, Tone,
+    Alignment, DisplayList, EXTENSION_ID, FmFrame, Frame, MAX_FM_OPERATORS, Point, Primitive, Tone,
 };
 
 /// Collects a canvas's display primitives in painter order.
@@ -35,6 +35,7 @@ impl Painter {
 #[derive(Default)]
 pub struct Display {
     frames: Vec<Frame>,
+    fm_topologies: Vec<FmFrame>,
 }
 
 impl Display {
@@ -48,10 +49,16 @@ impl Display {
         });
     }
 
+    /// Publish the current topology of a host-rendered FM diagram.
+    pub fn fm_topology(&mut self, topology: FmFrame) {
+        self.fm_topologies.push(topology);
+    }
+
     /// Finish the frame for the public transfer format.
     pub fn finish(self) -> DisplayList {
         DisplayList {
             frames: self.frames,
+            fm_topologies: self.fm_topologies,
         }
     }
 }

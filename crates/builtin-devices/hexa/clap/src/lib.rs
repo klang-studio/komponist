@@ -276,13 +276,20 @@ impl ClapPlugin for HexaPlugin {
         ClapFeature::Stereo,
     ];
 
+    fn clap_custom_extension_data(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        Some(self.params.clone())
+    }
+
     unsafe fn clap_custom_extension(id: &CStr) -> *const c_void {
         let preset = embedded_load_extension::<Self>(id);
-        if preset.is_null() {
-            komponist_native_clap_sdk::extension::<Self>(id)
-        } else {
-            preset
+        if !preset.is_null() {
+            return preset;
         }
+        let display = komponist_native_clap_sdk::display::extension::<Self, HexaParams>(id);
+        if !display.is_null() {
+            return display;
+        }
+        komponist_native_clap_sdk::extension::<Self>(id)
     }
 }
 

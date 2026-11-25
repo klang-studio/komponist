@@ -5,12 +5,16 @@ use std::sync::Mutex;
 
 use crossbeam_queue::ArrayQueue;
 use komponist_bundled_clap_adapter::Parameters;
-use komponist_hexa::device::WIRE_COUNT;
+use komponist_hexa::algorithms::{ALGORITHMS, routing};
+use komponist_hexa::device::{Field, OpField, WIRE_COUNT};
+use komponist_hexa::macros::Macro;
 use komponist_hexa::{Patch, default_patch};
+use komponist_native_clap_sdk::display::{Display, DisplaySource, FmFrame};
 use nice_plug::prelude::{ParamPtr, Params};
 use serde::{Deserialize, Serialize};
 
 const PATCH_FIELD: &str = "hexa-patch-v1";
+const FM_ROUTING_KEY: &str = "fm-routing";
 
 /// The patch includes derived controls and fields that may never be exposed. The
 /// companion wrapper values distinguish new automation from stale overlapping macros
@@ -79,6 +83,54 @@ impl HexaParams {
             *last = snapshot;
         }
         *last
+    }
+
+    fn fm_routing(&self) -> FmFrame {
+        let mut snapshot = self.snapshot();
+        // Preview only routing changes while the instance is idle. Use the same
+        // wire order as the audio callback so algorithm edits and individual
+        // output edits remain consistent with the next processed patch.
+        for (wire, applied) in snapshot.applied.iter_mut().enumerate() {
+            let Some(
+                field @ (Field::Macro(Macro::Algorithm | Macro::Feedback)
+                | Field::Op(_, OpField::Output)),
+            ) = Field::from_wire(wire as u32)
+            else {
+                continue;
+            };
+            let mut current = Some(*applied);
+            if let Some(value) = self.bindings.changed_value(wire, &mut current) {
+                field.set(&mut snapshot.patch, value);
+                *applied = current.expect("initialized routing parameter");
+            }
+        }
+
+        let routing = routing(&snapshot.patch);
+        let number = snapshot.applied[Macro::Algorithm.id() as usize] as u8;
+        let fixed = number
+            .checked_sub(1)
+            .and_then(|index| ALGORITHMS.get(usize::from(index)))
+            .filter(|algorithm| {
+                algorithm.modulates == routing.modulates
+                    && (0..routing.modulates.len())
+                        .all(|op| algorithm.is_carrier(op) == (routing.outputs & (1 << op) != 0))
+            });
+        FmFrame {
+            key: FM_ROUTING_KEY.into(),
+            algorithm: fixed.map(|_| number),
+            modulates: routing.modulates.to_vec(),
+            outputs: routing.outputs,
+            feedback: routing
+                .feedback
+                .or_else(|| fixed.map(|algorithm| algorithm.feedback))
+                .map(|op| op as u8),
+        }
+    }
+}
+
+impl DisplaySource for HexaParams {
+    fn paint(&self, display: &mut Display) {
+        display.fm_topology(self.fm_routing());
     }
 }
 
