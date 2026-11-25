@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost, is_hexa};
+use komponist_app::device_host::{BuiltinHost, DeviceHost, is_hexa};
 use komponist_app::engine_sync::{EngineSync, MidiSetup, SyncEvent};
 use komponist_audio::{HostKind, StreamConfig};
 use komponist_audiofile::fixtures as testkit;
@@ -17,12 +17,12 @@ use komponist_builtin::Internal;
 use komponist_engine::Command;
 use komponist_ipc::control::RenderMode;
 use komponist_ipc::device_assets::AssetStatus;
-use komponist_model::edits::{self, NewDevice, NewTrack};
+use komponist_model::edits::{self, NewDevice};
 use komponist_model::fixtures::demo_project;
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::project::SavedPluginState;
-use komponist_model::{ChannelRef, DeviceId, DeviceRole, Document, PluginRef, Project, TrackId};
-use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent};
+use komponist_model::{ChannelRef, DeviceId, DeviceRole, Document, Project, TrackId};
+use komponist_plugins::{DeviceStatus, PluginManagerEvent};
 
 fn null_sync(host: Box<dyn DeviceHost>) -> EngineSync {
     let config = StreamConfig {
@@ -208,29 +208,6 @@ fn undo_and_redo_of_a_legacy_hexa_knob_keep_a_held_note_sounding() {
     assert_eq!(sync.device_reloads(), reloads + 2);
 }
 
-fn instrument_project(plugin: PluginRef) -> (Project, TrackId, DeviceId) {
-    let (project, track) = edits::add_track(
-        &Project::new("State sync"),
-        NewTrack {
-            name: None,
-            hue: None,
-            instrument: Some(plugin),
-            index: None,
-            arm_exclusive: false,
-        },
-    )
-    .unwrap();
-    let device = project
-        .track(track)
-        .unwrap()
-        .channel
-        .instrument()
-        .unwrap()
-        .1
-        .id;
-    (project, track, device)
-}
-
 /// Capture the device's own bytes and the host-owned parameter bases together.
 fn snapshot(sync: &mut EngineSync, device: DeviceId) -> SavedPluginState {
     sync.host_mut().request_state(device);
@@ -294,8 +271,8 @@ fn undo_and_redo_of_clap_effect_state_reach_the_running_processor() {
     dirs.clap.extend(synth_dirs.clap);
 
     let dir = scratch("undo-limiter");
-    let host = scan_clap_host(&dir, &dirs);
-    let (project, track, synth) = instrument_project(clap_plugin(SYNTH));
+    let host = scan_fixture_host(&dir, &dirs);
+    let (project, track, synth) = instrument_project("State sync", clap_plugin(SYNTH));
     let plugin = host
         .catalog()
         .entries()
@@ -386,7 +363,7 @@ fn undo_and_redo_of_asset_links_reach_the_clap_sampler() {
     else {
         return;
     };
-    let (project, track, drums) = instrument_project(plugin);
+    let (project, track, drums) = instrument_project("State sync", plugin);
     // The two files have the same short waveform at different levels. The running
     // processor's peak distinguishes their identities independently of the project's links.
     let write_sample = |name: &str, amplitude: f32| {
@@ -523,29 +500,14 @@ fn wait(
     }
 }
 
-fn scan_clap_host(dir: &std::path::Path, dirs: &PluginDirs) -> PluginHost {
-    let mut host = PluginHost::new(config(dir));
-    host.start_scan(dirs);
-    let deadline = Instant::now() + PATIENCE;
-    while !host
-        .poll()
-        .iter()
-        .any(|event| matches!(event, PluginManagerEvent::ScanFinished(_)))
-    {
-        assert!(Instant::now() < deadline, "no scan");
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    host
-}
-
 #[test]
 fn undo_and_redo_of_a_bridged_plugins_state_reach_the_plugin() {
     let Some(dirs) = fixture_dirs() else {
         return;
     };
     let dir = scratch("undo-bridge");
-    let host = scan_clap_host(&dir, &dirs);
-    let (project, _, synth) = instrument_project(clap_plugin(SYNTH));
+    let host = scan_fixture_host(&dir, &dirs);
+    let (project, _, synth) = instrument_project("State sync", clap_plugin(SYNTH));
     let mut doc = Document::new(project);
     let mut sync = null_sync(Box::new(host));
     sync.sync(&doc);

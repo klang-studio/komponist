@@ -22,6 +22,7 @@ use komponist_app::device_host::{DeviceHost as _, PluginHost, is_hexa};
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::settings::Settings;
 use komponist_audio::{HostKind, StreamConfig};
+use komponist_model::edits::{self, NewTrack};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{
     Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, Project, TrackId,
@@ -61,11 +62,6 @@ pub fn fixture_dirs() -> Option<PluginDirs> {
     }
 }
 
-/// Real native CLAP fixtures use a separate scan directory from the WP-27 test plugins.
-pub fn native_fixture_dirs(bundle: &str) -> Option<PluginDirs> {
-    clap_fixture_dirs("builtin-clap", bundle)
-}
-
 /// Scan only the fixture group that contains the required bundle.
 pub fn clap_fixture_dirs(group: &str, bundle: &str) -> Option<PluginDirs> {
     let dir = target_dir()
@@ -78,20 +74,30 @@ pub fn clap_fixture_dirs(group: &str, bundle: &str) -> Option<PluginDirs> {
     })
 }
 
-/// Scan a real device fixture as an ordinary external CLAP.
-pub fn native_fixture(dir: &Path, bundle: &str, id: &str) -> Option<(PluginHost, PluginRef)> {
-    let dirs = native_fixture_dirs(bundle)?;
+/// Scan test folders through the ordinary external CLAP host.
+pub fn scan_fixture_host(dir: &Path, dirs: &PluginDirs) -> PluginHost {
     let mut host = PluginHost::new(config(dir));
-    host.start_scan(&dirs);
+    host.start_scan(dirs);
     let deadline = Instant::now() + PATIENCE;
     while !host
         .poll()
         .iter()
         .any(|event| matches!(event, PluginManagerEvent::ScanFinished(_)))
     {
-        assert!(Instant::now() < deadline, "{bundle} fixture scan timed out");
+        assert!(
+            Instant::now() < deadline,
+            "fixture scan timed out for {:?}",
+            dirs.clap
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
+    host
+}
+
+/// Scan a real device fixture as an ordinary external CLAP.
+pub fn native_fixture(dir: &Path, bundle: &str, id: &str) -> Option<(PluginHost, PluginRef)> {
+    let dirs = clap_fixture_dirs("builtin-clap", bundle)?;
+    let host = scan_fixture_host(dir, &dirs);
     let plugin = host
         .catalog()
         .entries()
@@ -105,6 +111,30 @@ pub fn native_fixture(dir: &Path, bundle: &str, id: &str) -> Option<(PluginHost,
         .plugin
         .clone();
     Some((host, plugin))
+}
+
+/// A project with one instrument and its track and device IDs.
+pub fn instrument_project(name: &str, plugin: PluginRef) -> (Project, TrackId, DeviceId) {
+    let (project, track) = edits::add_track(
+        &Project::new(name),
+        NewTrack {
+            name: None,
+            hue: None,
+            instrument: Some(plugin),
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let device = project
+        .track(track)
+        .unwrap()
+        .channel
+        .instrument()
+        .unwrap()
+        .1
+        .id;
+    (project, track, device)
 }
 
 /// A fresh scratch folder for one test.
