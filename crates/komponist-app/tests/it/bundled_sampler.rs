@@ -13,6 +13,7 @@ use komponist_app::{Action, App, ProjectAction};
 use komponist_builtin::Internal;
 use komponist_device_core::pinned_clap_state;
 use komponist_engine::Command;
+use komponist_general_sampler as general_sampler;
 use komponist_ipc::device_assets::AssetStatus;
 use komponist_model::edits::{self, NewTrack};
 use komponist_model::{DeviceId, Project, TrackId};
@@ -226,11 +227,11 @@ fn both_samplers_play_assets_after_the_project_moves() {
             path: Some(replacement.clone()),
         }));
     }
-    assert!(komponist_app::dialogs::missing_plugins::missing_samples(
-        app.project(),
-        Some(&destination),
-    ).is_empty());
-    assert!(missing_assets(app).is_empty());
+    step_until(app, "both repaired sample links", |app| {
+        komponist_app::dialogs::missing_plugins::missing_samples(app.project(), Some(&destination))
+            .is_empty()
+            && missing_assets(app).is_empty()
+    });
     assert_audible(app, track.id, 60);
 
     // Both CLAP instances still have the original source in their live state when
@@ -389,6 +390,244 @@ fn bundled_sampler_restores_saved_parameter_bases() {
 
 #[test]
 #[ignore = "requires a verified all-device package; run with scripts/measure-bundled-clap.py --current-projects"]
+fn general_sampler_file_edits_preserve_slice_history() {
+    use komponist_app::actions::EditAction;
+    use komponist_ipc::waveform_markers::SliceOptions;
+    use komponist_model::plugin_assets::AssetLink;
+
+    let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").expect("packaged launcher");
+    let force_bridge =
+        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
+    let scratch = tempfile::tempdir().unwrap();
+    let original = scratch.path().join("original.wav");
+    let replacement = scratch.path().join("replacement.wav");
+    let missing = scratch.path().join("missing.wav");
+    write_sample(&original);
+    write_wav(&replacement, 9_000);
+    let original = Some(original.as_path());
+    let replacement = Some(replacement.as_path());
+    let cases = [
+        ("assign", None, replacement, true, true),
+        ("replace", original, replacement, true, true),
+        ("clear", original, None, true, true),
+        ("reload", original, original, true, true),
+        ("relink", Some(missing.as_path()), replacement, true, false),
+        ("hidden", original, replacement, false, true),
+    ];
+
+    let mut slices = general_sampler::Settings::from_markers([0.04, 0.10]);
+    slices.first.reverse = Some(true);
+    slices.first.fade_out_ms = Some(3.0);
+    slices.slices[0].options.gate = true;
+    slices.slices[1].options.fade_in_ms = Some(7.0);
+    let empty_slices = general_sampler::Settings::default();
+
+    for (case, before_path, after_path, slice_mode, reset) in cases {
+        let mode = if slice_mode { 2.0 } else { 0.0 };
+        let host = scanned_packaged_sampler_host(scratch.path(), launcher.clone().into());
+        let prepared = host
+            .manager()
+            .prepare_bundled_device(
+                "org.klang-studio.komponist.general-sampler",
+                None,
+                &[("mode", mode), ("start", 0.1)],
+                &[],
+            )
+            .unwrap();
+        let (project, track) = edits::add_track(
+            &Project::new(case),
+            NewTrack {
+                name: None,
+                hue: None,
+                instrument: Some(prepared.plugin),
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        let sampler = project
+            .track(track)
+            .unwrap()
+            .channel
+            .instrument()
+            .unwrap()
+            .1
+            .id;
+        let seeded = komponist_plugins::bundled_sampler::edit_slices(
+            prepared.state.as_deref().unwrap(),
+            &slices,
+        )
+        .unwrap();
+        let project = edits::set_device_state(&project, sampler, Some(seeded.into())).unwrap();
+        let initial_links = before_path.map(|path| (0, AssetLink::new(path, None)));
+        let project =
+            edits::set_device_asset_links(&project, sampler, initial_links.into_iter().collect())
+                .unwrap();
+        let file = scratch.path().join(format!("{case}.komponist"));
+        save_project(&file, &project).unwrap();
+        let mut app =
+            app_with(load_project(&file).unwrap(), host).with_lang(komponist_i18n::Lang::En);
+
+        let wait_for = |app: &mut App,
+                        phase,
+                        path: Option<&Path>,
+                        settings: &general_sampler::Settings,
+                        previous_revision: Option<u64>| {
+            let status = match path {
+                Some(path) if path.is_file() => AssetStatus::Ready,
+                Some(_) => AssetStatus::Missing,
+                None => AssetStatus::Empty,
+            };
+            let positions: Vec<_> = settings.slices.iter().map(|slice| slice.time).collect();
+            let options: Option<Vec<_>> = slice_mode.then(|| {
+                std::iter::once(settings.first)
+                    .chain(settings.slices.iter().map(|slice| slice.options))
+                    .map(|options| SliceOptions {
+                        gate: options.gate,
+                        reverse: options.reverse,
+                        fade_in_ms: options.fade_in_ms,
+                        fade_out_ms: options.fade_out_ms,
+                    })
+                    .collect()
+            });
+            step_until(
+                app,
+                &format!("{case} {phase}: committed file link and slices"),
+                |app| {
+                    let device = app.project().find_device(sampler).unwrap().2;
+                    device.asset_links.get(&0).map(|link| link.abs.as_path()) == path
+                        && sampler_slice_settings(app, sampler) == *settings
+                        && asset_status(app, sampler, 0) == Some(&status)
+                },
+            );
+
+            let deadline = Instant::now() + PATIENCE;
+            loop {
+                app.dispatch(Action::Plugin(PluginAction::RequestWaveformMarkers {
+                    device: sampler,
+                    slot: 0,
+                }));
+                app.step();
+                let live = app.engine().host().waveform_markers(sampler, 0);
+                if let Some(markers) = live
+                    && Some(markers.revision) != previous_revision
+                    && markers.positions == positions
+                    && markers.slice_options == options
+                    && markers.editable == (slice_mode && status == AssetStatus::Ready)
+                {
+                    return markers.revision;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "{case} {phase}: live marker state {live:?}"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+
+        let mut revision = wait_for(&mut app, "reopen", before_path, &slices, None);
+        let host = app.engine().host();
+        assert!(host.verified_bundled_kind(sampler).is_some(), "{case}");
+        assert!(
+            host.supports_asset_edit_state(sampler),
+            "{case}: expected authored file edits"
+        );
+        assert_eq!(host.bridge_pid(sampler).is_some(), force_bridge, "{case}");
+        let ids = host.native_layout(sampler).unwrap().author_ids().unwrap();
+        let start = ids["start"];
+        let mode_id = ids["mode"];
+        let gain = ids["gain"];
+        let default_gain = host.param_base(sampler, gain).unwrap();
+        let edit_gain = matches!(case, "replace" | "clear");
+        let pending_gain = if edit_gain { 0.25 } else { default_gain };
+        if edit_gain {
+            assert_ne!(pending_gain, default_gain);
+            // Submit the file edit before another frame can capture this knob turn.
+            app.dispatch(Action::Plugin(PluginAction::SetParam {
+                device: sampler,
+                id: gain,
+                value: pending_gain,
+            }));
+        }
+        let before_reload = (case == "reload").then(|| {
+            let peak = audible_note_peak(&mut app, track, 60);
+            step_for(&mut app, Duration::from_millis(250));
+            write_wav(before_path.unwrap(), 2_000);
+            peak
+        });
+        assert_eq!(app.doc().undo_label(), None, "{case}");
+        app.dispatch(Action::Plugin(PluginAction::SetPluginAsset {
+            device: sampler,
+            slot: 0,
+            path: after_path.map(Path::to_owned),
+        }));
+        let after_slices = if reset { &empty_slices } else { &slices };
+        let after_start = if reset && after_path.is_some() {
+            0.0
+        } else {
+            0.1
+        };
+        let check_bases = |app: &mut App, phase, expected_start| {
+            step_until(
+                app,
+                &format!("{case} {phase}: parameter bases restored"),
+                |app| {
+                    let host = app.engine().host();
+                    let device = app.project().find_device(sampler).unwrap().2;
+                    let saved_gain = device.parameter_bases.get(&gain).copied().or_else(|| {
+                        let blob = pinned_clap_state::decode(device.state.as_deref()?)?;
+                        blob["params"]["gain"]["f32"].as_f64()
+                    });
+                    let near = |value: Option<f64>, expected: f64| {
+                        value.is_some_and(|value| (value - expected).abs() < 1e-6)
+                    };
+                    near(saved_gain, pending_gain)
+                        && near(host.param_base(sampler, start), expected_start)
+                        && near(host.param_base(sampler, mode_id), mode)
+                        && near(host.param_base(sampler, gain), pending_gain)
+                },
+            );
+        };
+
+        revision = wait_for(&mut app, "edit", after_path, after_slices, Some(revision));
+        check_bases(&mut app, "edit", after_start);
+        if let Some(before) = before_reload {
+            let after = audible_note_peak(&mut app, track, 60);
+            assert!(
+                (0.08..0.35).contains(&(after / before)),
+                "same-path reload did not play the quieter replacement: {before} -> {after}"
+            );
+        }
+        assert_eq!(
+            app.undo_text().as_deref(),
+            Some("Change Plug-in File Link"),
+            "{case}"
+        );
+
+        app.dispatch(Action::Edit(EditAction::Undo));
+        revision = wait_for(&mut app, "undo", before_path, &slices, Some(revision));
+        check_bases(&mut app, "undo", 0.1);
+        assert_eq!(app.doc().undo_label().is_some(), edit_gain, "{case}");
+
+        app.dispatch(Action::Edit(EditAction::Redo));
+        wait_for(&mut app, "redo", after_path, after_slices, Some(revision));
+        check_bases(&mut app, "redo", after_start);
+        assert_eq!(app.doc().redo_label(), None, "{case}");
+        app.shutdown();
+    }
+}
+
+fn sampler_slice_settings(app: &App, sampler: DeviceId) -> general_sampler::Settings {
+    let device = app.project().find_device(sampler).unwrap().2;
+    let assets = device
+        .state
+        .as_deref()
+        .and_then(komponist_plugins::bundled_sampler::assets);
+    general_sampler::read_settings(assets.as_deref().map(str::as_bytes))
+}
+
+#[test]
+#[ignore = "requires a verified all-device package; run with scripts/measure-bundled-clap.py --current-projects"]
 fn bundled_sampler_panels_edit_and_restore_current_state() {
     use egui::accesskit::Role;
     use komponist_app::actions::{
@@ -525,14 +764,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             .is_some_and(|state| state["params"]["mode"]["string"] == "slices")
     });
     let settings = komponist_general_sampler::Settings::from_markers([0.04, 0.10]);
-    let slice_state = |app: &App| {
-        let device = app.project().find_device(general).unwrap().2;
-        let assets = device
-            .state
-            .as_deref()
-            .and_then(komponist_plugins::bundled_sampler::assets);
-        komponist_general_sampler::read_settings(assets.as_deref().map(str::as_bytes))
-    };
+    let slice_state = |app: &App| sampler_slice_settings(app, general);
     let edit_marker = |app: &mut App, prior: &[f64], operation, expected| {
         let deadline = Instant::now() + PATIENCE;
         let mut request_at = Instant::now();
@@ -956,15 +1188,29 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             .unwrap()
             .into_owned()
     };
-    assert_eq!(sample_name(h.state()), "replacement");
+    step_until(h.state_mut(), "file picker replacement committed", |app| {
+        sample_name(app) == "replacement"
+    });
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
     assert_eq!(sample_name(h.state()), "tone");
-    let stored_gain = hosted_state(h.state())["params"]["gain"]["f32"]
-        .as_f64()
-        .unwrap();
+    let model = h.state().project().find_device(general).unwrap().2;
+    let stored_gain = model
+        .parameter_bases
+        .get(&gain)
+        .copied()
+        .unwrap_or_else(|| {
+            hosted_state(h.state())["params"]["gain"]["f32"]
+                .as_f64()
+                .unwrap()
+        });
     assert!((stored_gain - raw(-22.0)).abs() < 1e-6);
     step_until(h.state_mut(), "sample undo completed", |app| {
         asset_status(app, general, 0) == Some(&AssetStatus::Ready)
+            && app
+                .engine()
+                .host()
+                .param_base(general, gain)
+                .is_some_and(|value| (value - raw(-22.0)).abs() < 1e-6)
     });
 
     set_gain(h.state_mut(), -28.0);
@@ -986,12 +1232,11 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             slot: 0,
             path: Some(replacement),
         }));
-    assert_eq!(sample_name(h.state()), "replacement");
-    assert!(gain_saved(h.state(), -9.0));
-
     step_until(h.state_mut(), "replacement is ready for playback", |app| {
-        asset_status(app, general, 0) == Some(&AssetStatus::Ready)
+        sample_name(app) == "replacement"
+            && asset_status(app, general, 0) == Some(&AssetStatus::Ready)
     });
+    assert!(gain_saved(h.state(), -9.0));
     let sample_peak = |app: &mut App| {
         app.engine().track_meter(general_track).unwrap().take();
         note_peak(app, general_track, 60)
@@ -1182,8 +1427,17 @@ fn assert_sample_sources(project: &Project, project_dir: &Path, source: &Path) {
 }
 
 fn assert_audible(app: &mut App, track: TrackId, key: u8) {
+    audible_note_peak(app, track, key);
+}
+
+fn audible_note_peak(app: &mut App, track: TrackId, key: u8) -> f32 {
     let deadline = Instant::now() + PATIENCE;
-    while note_peak(app, track, key) <= 1e-4 {
+    loop {
+        app.engine().track_meter(track).unwrap().take();
+        let peak = note_peak(app, track, key);
+        if peak > 1e-4 {
+            return peak;
+        }
         assert!(
             Instant::now() < deadline,
             "relocated sampler track {track:?} is silent"

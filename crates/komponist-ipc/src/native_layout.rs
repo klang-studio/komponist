@@ -24,6 +24,8 @@ pub const CAP_CONDITIONAL_CONTROLS: &str = "conditional-controls";
 pub const CAP_EQ_BAND_CONTROLS: &str = "eq-band-controls";
 /// Layout selections that change the bindings of other cells without editing a parameter.
 pub const CAP_CELL_SELECTIONS: &str = "cell-selections";
+/// Supports six-operator-style selectors, panel-wide state and column overlays.
+pub const CAP_PANEL_SELECTIONS: &str = "panel-selections";
 /// Maximum number of pad-selected pages.
 pub const MAX_PADS: usize = 16;
 
@@ -174,6 +176,7 @@ pub enum Widget {
     Dropdown,
     MiniFader,
     Selector,
+    ColumnSelector,
     PadGrid,
     Graph,
     Canvas,
@@ -367,6 +370,8 @@ pub struct Selector {
     pub key: String,
     pub labels: Labels,
     pub options: Vec<Labels>,
+    #[serde(default)]
+    pub shared: bool,
 }
 
 /// A single parameter binding and its position.
@@ -462,6 +467,8 @@ pub struct NativeLayout {
     eq_band_controls: bool,
     #[serde(skip)]
     cell_selections: bool,
+    #[serde(skip)]
+    panel_selections: bool,
     metadata: Option<Metadata>,
 }
 
@@ -534,6 +541,7 @@ impl NativeLayout {
         let mut conditional_controls_supported = false;
         let mut eq_band_controls_supported = false;
         let mut cell_selections_supported = false;
+        let mut panel_selections_supported = false;
         if let Some(caps) = value.get("required_capabilities") {
             let caps = caps
                 .as_array()
@@ -557,6 +565,7 @@ impl NativeLayout {
                             | CAP_CONDITIONAL_CONTROLS
                             | CAP_EQ_BAND_CONTROLS
                             | CAP_CELL_SELECTIONS
+                            | CAP_PANEL_SELECTIONS
                     )
             }) {
                 return Err(LayoutError::Unsupported);
@@ -567,7 +576,13 @@ impl NativeLayout {
             conditional_controls_supported = seen.contains(CAP_CONDITIONAL_CONTROLS);
             eq_band_controls_supported = seen.contains(CAP_EQ_BAND_CONTROLS);
             cell_selections_supported = seen.contains(CAP_CELL_SELECTIONS);
+            panel_selections_supported = seen.contains(CAP_PANEL_SELECTIONS);
         }
+        check(
+            !panel_selections_supported || cell_selections_supported,
+            "panel selections require cell selections",
+        )?;
+        let max_selection_options = if panel_selections_supported { 8 } else { 4 };
         let display = value.get("parameter_display");
         check(
             display.is_some() == parameter_display_supported
@@ -653,13 +668,18 @@ impl NativeLayout {
                         let variants = cell.get("variants");
                         check(
                             cell.get("selector").is_none_or(|selector| {
-                                cell_selections_supported && selector.is_object()
+                                cell_selections_supported
+                                    && selector.is_object()
+                                    && selector.get("shared").is_none_or(|shared| {
+                                        shared.as_bool() == Some(false)
+                                            || panel_selections_supported
+                                    })
                             }) && cell.get("follows").is_none_or(|follows| {
                                 cell_selections_supported && follows.is_string()
                             }) && variants.is_none_or(|bindings| {
                                 cell_selections_supported
                                     && bindings.as_array().is_some_and(|bindings| {
-                                        (2..=4).contains(&bindings.len())
+                                        (2..=max_selection_options).contains(&bindings.len())
                                             && bindings.iter().all(control_binding_object)
                                     })
                             }),
@@ -671,7 +691,12 @@ impl NativeLayout {
                                 || version == 2
                                     && matches!(
                                         widget,
-                                        "graph" | "canvas" | "meter_gr" | "pad_grid" | "selector"
+                                        "graph"
+                                            | "canvas"
+                                            | "meter_gr"
+                                            | "pad_grid"
+                                            | "selector"
+                                            | "column_selector"
                                     )
                             {
                                 !cell.contains_key("param_id")
@@ -704,7 +729,7 @@ impl NativeLayout {
                                 graph.get("variants").is_none_or(|variants| {
                                     cell_selections_supported
                                         && variants.as_array().is_some_and(|variants| {
-                                            (2..=4).contains(&variants.len())
+                                            (2..=max_selection_options).contains(&variants.len())
                                                 && variants.iter().all(|variant| {
                                                     variant.is_object()
                                                         && variant["slots"].is_object()
@@ -755,6 +780,7 @@ impl NativeLayout {
             serde_json::from_value(value).map_err(|_| LayoutError::Invalid("document fields"))?;
         layout.eq_band_controls = eq_band_controls_supported;
         layout.cell_selections = cell_selections_supported;
+        layout.panel_selections = panel_selections_supported;
         check(
             layout.pad_bank.is_some() == pad_bank_supported,
             "pad bank capability",
@@ -851,6 +877,8 @@ impl NativeLayout {
         let mut canvas_keys = BTreeSet::new();
         let v2 = self.schema_version == 2;
         let max_columns = if v2 { 14 } else { 12 };
+        let max_selection_options = if self.panel_selections { 8 } else { 4 };
+        let mut shared_counts = BTreeMap::new();
         for page in &self.pages {
             check(
                 identifier(&page.key, false) && keys.insert(&page.key),
@@ -898,18 +926,27 @@ impl NativeLayout {
             for selector in page.cells.iter().filter_map(|cell| cell.selector.as_ref()) {
                 check(
                     identifier(&selector.key, false)
-                        && (2..=4).contains(&selector.options.len())
+                        && (2..=max_selection_options).contains(&selector.options.len())
                         && selectors
                             .insert(selector.key.as_str(), selector.options.len())
                             .is_none(),
                     "selection key or options",
                 )?;
+                if selector.shared {
+                    let count = selector.options.len();
+                    check(
+                        shared_counts
+                            .insert(selector.key.as_str(), count)
+                            .is_none_or(|previous| previous == count),
+                        "shared selector option count",
+                    )?;
+                }
                 self.validate_labels(&selector.labels, &locales, true)?;
                 for labels in &selector.options {
                     self.validate_labels(labels, &locales, true)?;
                 }
             }
-            for cell in &page.cells {
+            for (cell_index, cell) in page.cells.iter().enumerate() {
                 let (min, max, half, rows) = match cell.widget {
                     Widget::Knob => (1, 1, false, 1..=1),
                     Widget::KnobLarge => (2, 2, false, 1..=1),
@@ -919,6 +956,7 @@ impl NativeLayout {
                         (1, max_columns, true, 1..=1)
                     }
                     Widget::Graph | Widget::Canvas => (1, max_columns, false, 1..=3),
+                    Widget::ColumnSelector => (2, 8, false, 1..=3),
                     Widget::MeterGr => (1, 1, false, 3..=3),
                     Widget::MiniFader => (1, 1, false, 1..=3),
                     Widget::PadGrid => (1, max_columns, false, 1..=3),
@@ -943,17 +981,29 @@ impl NativeLayout {
                         "conditional control requires a separate toggle on the same page",
                     )?;
                 }
-                let rows = &mut slots[usize::from(cell.row)..usize::from(cell.row + cell.rows)];
-                let last = rows.len() - 1;
-                for (index, row) in rows.iter_mut().enumerate() {
-                    let mask = match cell.half {
-                        Some(Half::Top) if index == last => 1,
-                        Some(Half::Bottom) => 2,
-                        _ => 3,
-                    };
-                    for slot in &mut row[usize::from(cell.col)..usize::from(cell.col + cell.cols)] {
-                        check(*slot & mask == 0, "overlapping cells")?;
-                        *slot |= mask;
+                if cell.widget == Widget::ColumnSelector {
+                    check(
+                        cell_index == 0
+                            && cell.selector.as_ref().is_some_and(|selector| {
+                                selector.options.len() == usize::from(cell.cols)
+                            }),
+                        "column selector overlay",
+                    )?;
+                } else {
+                    let rows = &mut slots[usize::from(cell.row)..usize::from(cell.row + cell.rows)];
+                    let last = rows.len() - 1;
+                    for (index, row) in rows.iter_mut().enumerate() {
+                        let mask = match cell.half {
+                            Some(Half::Top) if index == last => 1,
+                            Some(Half::Bottom) => 2,
+                            _ => 3,
+                        };
+                        for slot in
+                            &mut row[usize::from(cell.col)..usize::from(cell.col + cell.cols)]
+                        {
+                            check(*slot & mask == 0, "overlapping cells")?;
+                            *slot |= mask;
+                        }
                     }
                 }
                 if let Some(labels) = &cell.labels {
@@ -1119,7 +1169,7 @@ impl NativeLayout {
                     self.validate_labels(&canvas.description, &locales, true)?;
                 } else if matches!(
                     cell.widget,
-                    Widget::MeterGr | Widget::PadGrid | Widget::Selector
+                    Widget::MeterGr | Widget::PadGrid | Widget::Selector | Widget::ColumnSelector
                 ) {
                     check(
                         self.schema_version == 2
@@ -1155,7 +1205,8 @@ impl NativeLayout {
             .as_ref()
             .map_or(&[][..], |graph| graph.variants.as_slice());
         check(
-            cell.selector.is_some() == (cell.widget == Widget::Selector),
+            cell.selector.is_some()
+                == matches!(cell.widget, Widget::Selector | Widget::ColumnSelector),
             "selector binding",
         )?;
         let Some(key) = &cell.follows else {
@@ -1631,6 +1682,56 @@ mod tests {
         let labels = &layout.pages[0].labels;
         assert_eq!(layout.label(labels, "de-CH"), Some("Übersicht"));
         assert_eq!(layout.label(labels, "fr"), Some("Main"));
+    }
+
+    #[test]
+    fn column_overlays_share_six_options_across_pages() {
+        use serde_json::json;
+
+        let options: Vec<_> = (1..=6).map(|n| json!({"en":n.to_string()})).collect();
+        let selector =
+            json!({"key":"op","labels":{"en":"Operator"},"options":options,"shared":true});
+        let variants: Vec<_> = (1..=6).map(|id| json!({"param_id":id})).collect();
+        let mut value = json!({
+            "schema_version":2,"default_locale":"en","locales":["en"],
+            "required_capabilities":[CAP_CELL_SELECTIONS,CAP_PANEL_SELECTIONS],
+            "pages":[
+                {"key":"operators","labels":{"en":"Operators"},"columns":6,"cells":[
+                    {"widget":"column_selector","col":0,"row":0,"cols":6,"rows":3,"selector":selector},
+                    {"widget":"knob","col":0,"row":0,"cols":1,"rows":1,"param_id":10}
+                ]},
+                {"key":"envelopes","labels":{"en":"Envelopes"},"columns":6,"cells":[
+                    {"widget":"selector","col":0,"row":0,"cols":6,"rows":1,"half":"top","selector":selector},
+                    {"widget":"knob","col":0,"row":1,"cols":1,"rows":1,"follows":"op","variants":variants}
+                ]}
+            ]
+        });
+        let parse = |value: &Value| NativeLayout::parse(&serde_json::to_vec(value).unwrap());
+        let layout = parse(&value).unwrap();
+        assert_eq!(
+            layout.pages[1].cells[1].parameter_ids().collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5, 6]
+        );
+        let mut invalid = value.clone();
+        invalid["required_capabilities"] = json!([CAP_CELL_SELECTIONS]);
+        assert!(parse(&invalid).is_err());
+        let mut invalid = value.clone();
+        invalid["pages"][0]["cells"]
+            .as_array_mut()
+            .unwrap()
+            .swap(0, 1);
+        assert_eq!(
+            parse(&invalid),
+            Err(LayoutError::Invalid("column selector overlay"))
+        );
+        value["pages"][1]["cells"][0]["selector"]["options"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        assert_eq!(
+            parse(&value),
+            Err(LayoutError::Invalid("shared selector option count"))
+        );
     }
 
     #[test]

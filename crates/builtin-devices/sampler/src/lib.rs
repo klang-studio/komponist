@@ -37,8 +37,7 @@ use komponist_model::params::layout::{
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 
 pub use komponist_sampler_shared::{
-    Collector, ManagedLoader, PadStatus, PadView, SampleLink, SamplerHandle, SyncStatus, links,
-    load, settings,
+    ManagedLoader, PadStatus, PadView, SampleLink, SamplerHandle, SyncStatus, links, load, settings,
 };
 
 /// The device's name in the browser and on the card. The only place it is written.

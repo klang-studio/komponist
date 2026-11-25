@@ -8,7 +8,7 @@ use komponist_hexa::Macro;
 use komponist_i18n::Lang;
 use komponist_ipc::ParamValue;
 use komponist_ipc::control::ParamInfo as WireInfo;
-use komponist_ipc::native_layout::{DisplayScale, DisplayUnit, NativeLayout};
+use komponist_ipc::native_layout::{DisplayScale, DisplayUnit, NativeLayout, Widget};
 use komponist_model::automation::AutomationOwner;
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit, auto_layout};
 use komponist_model::{Device, DeviceId, DeviceRole, Track};
@@ -298,9 +298,13 @@ impl Card {
             layout::Half::Top => komponist_ipc::native_layout::Half::Top,
             layout::Half::Bottom => komponist_ipc::native_layout::Half::Bottom,
         });
-        page.cells
-            .iter()
-            .find(|native| native.row == cell.row && native.col == cell.col && native.half == half)
+        page.cells.iter().find(|native| {
+            native.row == cell.row
+                && native.col == cell.col
+                && native.half == half
+                && (native.widget == Widget::ColumnSelector)
+                    == (cell.widget == layout::WidgetKind::ColumnSelect)
+        })
     }
 
     /// The layout page shown (the last one if `page` is out of range).
@@ -794,11 +798,13 @@ pub(super) fn native_card_layout(
                             Widget::Canvas
                             | Widget::MeterGr
                             | Widget::PadGrid
-                            | Widget::Selector => {
+                            | Widget::Selector
+                            | Widget::ColumnSelector => {
                                 let widget = match cell.widget {
                                     Widget::Canvas => WidgetKind::Canvas,
                                     Widget::MeterGr => WidgetKind::MeterGr,
                                     Widget::Selector => WidgetKind::Segment,
+                                    Widget::ColumnSelector => WidgetKind::ColumnSelect,
                                     _ => WidgetKind::PadGrid,
                                 };
                                 if let Some(half) = cell.half {

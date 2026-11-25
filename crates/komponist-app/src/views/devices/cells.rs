@@ -131,19 +131,29 @@ pub(crate) fn draw_cell(
     if let Some(selector) = native.and_then(|cell| cell.selector.as_ref()) {
         let layout = card.native_layout.as_ref().expect("native selector");
         let locale = komponist_ui::lang(cu.ctx()).code();
-        let entries: Vec<_> = selector
-            .options
-            .iter()
-            .map(|labels| SegmentOption::text(layout.label(labels, locale).unwrap_or_default()))
-            .collect();
-        let label = layout.label(&selector.labels, locale).unwrap_or_default();
+        let text = |labels| layout.label(labels, locale).unwrap_or_default();
+        let label = text(&selector.labels);
         let id = native_selection_id(card, &selector.key);
-        let mut selected = native_selection(cu.ctx(), id, entries.len());
-        let response = cu.put(
-            rect,
-            Segment::new(label, &entries, &mut selected).cols(cell.cols),
-        );
-        if response.changed() {
+        let count = selector.options.len();
+        let mut selected = native_selection(cu.ctx(), id, count);
+        let changed = if cell.widget == WidgetKind::ColumnSelect {
+            draw_column_selector(cu, cell, rect, count, selected, |index| {
+                format!("{label} {}", text(&selector.options[index]))
+            })
+        } else {
+            let entries: Vec<_> = selector
+                .options
+                .iter()
+                .map(|labels| SegmentOption::text(text(labels)))
+                .collect();
+            cu.put(
+                rect,
+                Segment::new(label, &entries, &mut selected).cols(cell.cols),
+            )
+            .changed()
+            .then_some(selected)
+        };
+        if let Some(selected) = changed {
             cu.ctx().data_mut(|data| data.insert_temp(id, selected));
             cu.ctx().request_repaint();
         }
@@ -826,7 +836,14 @@ fn select_segment(
 
 /// A native selector stores only its index. Its localized labels remain in the layout.
 fn native_selection_id(card: &Card, key: &str) -> Id {
-    Id::unique(("native-device-selection", card.device, card.page, key))
+    let shared = card.native_page().is_some_and(|page| {
+        page.cells
+            .iter()
+            .filter_map(|cell| cell.selector.as_ref())
+            .any(|selector| selector.key == key && selector.shared)
+    });
+    let page = (!shared).then_some(card.page);
+    Id::unique(("native-device-selection", card.device, page, key))
 }
 
 fn native_selection(ctx: &egui::Context, id: Id, count: usize) -> usize {
@@ -905,7 +922,25 @@ fn column_select(
     rect: Rect,
 ) {
     let t = komponist_ui::lang(cu.ctx());
-    let selected = selected_entry(ctx, key, count);
+    let selected = selected_entry(ctx, key, count) - 1;
+    if let Some(index) =
+        draw_column_selector(cu, cell, rect, usize::from(count), selected, |index| {
+            t.devices_operator_n(index + 1)
+        })
+        && set_context(cu.ctx(), card.device, key, index + 1)
+    {
+        cu.ctx().request_repaint();
+    }
+}
+
+fn draw_column_selector(
+    cu: &mut Ui,
+    cell: &Cell,
+    rect: Rect,
+    count: usize,
+    selected: usize,
+    label: impl Fn(usize) -> String,
+) -> Option<usize> {
     let step = device::grid::CELL[0] + device::grid::GAP;
     let pressed = cu.input(|i| {
         i.pointer
@@ -913,28 +948,30 @@ fn column_select(
             .then(|| i.pointer.interact_pos())
             .flatten()
     });
-    for n in 1..=usize::from(count) {
-        let left = rect.left() + (n - 1) as f32 * step;
+    let mut changed = None;
+    for index in 0..count {
+        let left = rect.left() + index as f32 * step;
         let column = Rect::from_min_max(
             egui::pos2(left, rect.top()),
             egui::pos2(left + device::grid::CELL[0], rect.bottom()),
         );
-        let name = t.devices_operator_n(n);
+        let name = label(index);
         let r = cu.interact(
             column,
-            slot(cu, cell, "column").with(n),
+            slot(cu, cell, "column").with(index + 1),
             komponist_ui::widgets::sense(cu, Sense::click()),
         );
-        r.widget_info(|| WidgetInfo::selected(Role::Button, true, n == selected, &name));
-        komponist_ui::widgets::accesskit(&r, |node| node.set_selected(n == selected));
-        let hit = r.clicked() || pressed.is_some_and(|p| column.contains(p));
-        if hit && set_context(cu.ctx(), card.device, key, n) {
-            cu.ctx().request_repaint();
+        let selected = index == selected;
+        r.widget_info(|| WidgetInfo::selected(Role::Button, true, selected, &name));
+        komponist_ui::widgets::accesskit(&r, |node| node.set_selected(selected));
+        if r.clicked() || pressed.is_some_and(|p| column.contains(p)) {
+            changed = Some(index);
         }
-        if n == selected {
+        if selected {
             komponist_ui::state::paint_select_ring(cu.painter(), column, radius::M);
         }
     }
+    changed
 }
 
 /// The gain-reduction meter: In, GR and Out from the device's level feed (`card.levels`, WP-89;
@@ -1979,6 +2016,83 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn native_column_and_segment_keep_the_same_selection_across_pages() {
+        use serde_json::json;
+
+        let options: Vec<_> = (1..=6).map(|n| json!({"en":n.to_string()})).collect();
+        let selector =
+            json!({"key":"op","labels":{"en":"Operator"},"options":options,"shared":true});
+        let variants: Vec<_> = (1..=6).map(|id| json!({"param_id":id})).collect();
+        let document = json!({
+            "schema_version":2,"default_locale":"en","locales":["en"],
+            "required_capabilities":["cell-selections","panel-selections"],
+            "pages":[
+                {"key":"operators","labels":{"en":"Operators"},"columns":6,"cells":[
+                    {"widget":"column_selector","col":0,"row":0,"cols":6,"rows":3,"selector":selector},
+                    {"widget":"knob","col":0,"row":0,"cols":1,"rows":1,"param_id":10}
+                ]},
+                {"key":"envelopes","labels":{"en":"Envelopes"},"columns":6,"cells":[
+                    {"widget":"selector","col":0,"row":0,"cols":6,"rows":1,"half":"top","selector":selector},
+                    {"widget":"knob","col":0,"row":1,"cols":1,"rows":1,"follows":"op","variants":variants}
+                ]}
+            ]
+        });
+        let layout = komponist_ipc::native_layout::NativeLayout::parse(
+            &serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        let mut card = card();
+        card.layout = model::native_card_layout(&layout, Lang::En);
+        card.native_layout = Some(std::sync::Arc::new(layout));
+        card.params = (1..=6)
+            .map(|id| {
+                param(
+                    id,
+                    &format!("Attack {id}"),
+                    ParamKind::lin(0.0, 1.0),
+                    0.5,
+                    0.5,
+                )
+            })
+            .chain(std::iter::once(param(
+                10,
+                "Ratio",
+                ParamKind::lin(0.0, 1.0),
+                0.5,
+                0.5,
+            )))
+            .collect();
+
+        let mut h = graph_harness_sized(card, egui::vec2(440.0, 240.0));
+        h.get_by_role_and_label(Role::Button, "Operator 6")
+            .click_accesskit();
+        h.run_steps(3);
+        h.state_mut().0.page = 1;
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::Slider, "Attack 6");
+        h.get_by_role_and_label(Role::RadioButton, "Operator: 2")
+            .click();
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::Slider, "Attack 2");
+        h.state_mut().0.page = 0;
+        h.run_steps(3);
+        assert_eq!(
+            h.get_by_role_and_label(Role::Button, "Operator 2")
+                .accesskit_node()
+                .is_selected(),
+            Some(true),
+        );
+        assert!(h.state().1.is_empty());
+        h.get_by_role_and_label(Role::Slider, "Ratio")
+            .increment_accesskit();
+        h.run_steps(3);
+        let values = set_params(&h);
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].0, 10);
+        assert!(values[0].1 > 0.5);
     }
 
     #[test]
