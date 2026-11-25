@@ -71,6 +71,7 @@ pub(crate) struct DeviceAssets {
     desired_bindings: BTreeMap<u32, Binding>,
     pending_bindings: BTreeMap<u32, Binding>,
     applying_bindings: Vec<u32>,
+    binding_snapshot_pending: bool,
     rejected_bindings: BTreeSet<u32>,
     offline_request: Option<OfflineRequest>,
     offline_work_id: u32,
@@ -91,6 +92,7 @@ impl DeviceAssets {
             desired_bindings: BTreeMap::new(),
             pending_bindings: BTreeMap::new(),
             applying_bindings: Vec::new(),
+            binding_snapshot_pending: false,
             rejected_bindings: BTreeSet::new(),
             offline_request: None,
             offline_work_id: 0,
@@ -124,8 +126,10 @@ impl DeviceAssets {
         self.file_slots = Some(file_slots);
         if !file_slots {
             self.snapshot = None;
+            self.binding_snapshot_pending = false;
         } else if let Some(snapshot) = snapshot.filter(|snapshot| !snapshot.slots.is_empty()) {
             self.snapshot = Some(snapshot);
+            self.binding_snapshot_pending = false;
         }
         self.supports_offline = offline;
     }
@@ -173,7 +177,15 @@ impl DeviceAssets {
         !self.pending_bindings.is_empty() || !self.applying_bindings.is_empty()
     }
 
+    pub(crate) fn render_bindings_pending(&self) -> bool {
+        self.bindings_pending()
+            || self.binding_snapshot_pending
+            || self.restoring && !self.desired_bindings.is_empty()
+    }
+
     pub(crate) fn report_bindings(&mut self, accepted: bool) {
+        // The acknowledgement can arrive one poll before the post-binding inventory.
+        self.binding_snapshot_pending |= accepted && !self.applying_bindings.is_empty();
         for slot in self.applying_bindings.drain(..) {
             if accepted {
                 self.rejected_bindings.remove(&slot);
@@ -333,6 +345,42 @@ mod tests {
         assert!(!unsupported.inventory_pending());
         assert!(!unsupported.slots_due());
         assert!(!unsupported.queue_bindings(&bindings(0)));
+    }
+
+    #[test]
+    fn render_waits_for_a_fresh_inventory_after_the_binding_acknowledgement() {
+        let mut assets = DeviceAssets::new();
+        let snapshot = |status| Snapshot {
+            slots: vec![Slot {
+                id: 0,
+                role: "sample".into(),
+                label: "Sample".into(),
+                kind: AssetKind::AudioSample,
+                status,
+            }],
+        };
+        assets.report_slots(Some(snapshot(AssetStatus::Ready)), true, true);
+        assert!(!assets.render_bindings_pending());
+        assert!(assets.queue_bindings(&bindings(0)));
+        assert!(assets.render_bindings_pending());
+        assert!(assets.take_bindings().is_some());
+        assets.report_slots(Some(snapshot(AssetStatus::Ready)), true, true);
+        assert!(assets.render_bindings_pending());
+
+        assets.report_bindings(true);
+        assert!(!assets.bindings_pending());
+        assert!(!assets.inventory_pending());
+        assert!(assets.render_bindings_pending());
+        assets.report_slots(None, true, true);
+        assert!(assets.render_bindings_pending());
+
+        assets.report_slots(Some(snapshot(AssetStatus::Loading)), true, true);
+        assert!(!assets.render_bindings_pending());
+
+        assets.begin_restore();
+        assert!(assets.render_bindings_pending());
+        assets.finish_restore();
+        assert!(assets.render_bindings_pending());
     }
 
     #[test]

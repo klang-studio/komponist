@@ -375,6 +375,7 @@ pub trait DeviceHost {
     /// Whether the file inventory or an asset is still being prepared for rendering.
     fn render_assets_pending(&self, device: &Device) -> bool {
         self.asset_inventory_pending(device.id)
+            || self.render_asset_bindings_pending(device.id)
             || self.asset_slots(device.id).is_some_and(|inventory| {
                 inventory.slots.iter().any(|slot| {
                     slot.status == AssetStatus::Loading
@@ -421,6 +422,10 @@ pub trait DeviceHost {
     }
 
     fn asset_inventory_pending(&self, _device: DeviceId) -> bool {
+        false
+    }
+
+    fn render_asset_bindings_pending(&self, _device: DeviceId) -> bool {
         false
     }
 
@@ -1220,6 +1225,10 @@ impl DeviceHost for PluginHost {
 
     fn asset_inventory_pending(&self, device: DeviceId) -> bool {
         self.manager.asset_inventory_pending(device)
+    }
+
+    fn render_asset_bindings_pending(&self, device: DeviceId) -> bool {
+        self.manager.render_asset_bindings_pending(device)
     }
 
     fn supports_offline_preparation(&self, device: DeviceId) -> bool {
