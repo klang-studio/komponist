@@ -1,11 +1,13 @@
-//! Volt using its existing voice engine and public native CLAP parameter layout.
+//! Volt using its existing voice engine and authored native CLAP layouts.
 
-use komponist_bundled_clap_adapter::{Binding, DeviceDefinition, Instrument};
+use std::collections::BTreeMap;
+
+use komponist_bundled_clap_adapter::{Binding, DeviceDefinition, Instrument, panel_from_parts};
 use komponist_device_core::Spec;
 use komponist_i18n::Lang;
-use komponist_model::params::ParamInfo;
-use komponist_model::params::layout::{CellParam, DeviceLayout, Page};
-use komponist_native_clap_sdk::Panel;
+use komponist_model::params::layout::{CellParam, DeviceLayout, GraphConfig, Page};
+use komponist_model::params::{ParamId, ParamInfo};
+use komponist_native_clap_sdk::{GraphLabels, Labels, Panel, PanelV2};
 use nice_plug::prelude::*;
 
 struct Volt;
@@ -138,9 +140,7 @@ fn volt_layout(lang: Lang) -> DeviceLayout {
         .clone()
         .try_into()
         .expect("Volt has three builtin pages");
-    // Public v1 supports fixed parameters. Keep every control, including the dedicated
-    // tempo divisions. The builtin signal/filter/envelope/LFO graphs require layout
-    // capabilities or an editor before Volt can replace the builtin device.
+    // Public v1 supports fixed parameters, including the dedicated tempo divisions.
     sound
         .cells
         .retain(|cell| matches!(cell.param, CellParam::Id(_)));
@@ -156,6 +156,95 @@ fn volt_layout(lang: Lang) -> DeviceLayout {
 type VoltPlugin = Instrument<Volt>;
 
 impl komponist_bundled_clap_adapter::AudioDefinition for Volt {
+    fn panel_v2() -> Option<PanelV2> {
+        let english = Self::SPEC.layout_in(Lang::En);
+        let german = Self::SPEC.layout_in(Lang::De);
+        let mut panel = panel_from_parts(
+            |lang| Self::SPEC.layout_in(lang).clone(),
+            Self::SPEC.params_in(Lang::En),
+            Self::SPEC.params_in(Lang::De),
+        );
+        let labels = |en: &str, de: &str| -> Labels {
+            [("en".into(), en.into()), ("de".into(), de.into())].into()
+        };
+        let mut graph_labels = BTreeMap::new();
+        for (page_index, (en, de)) in english.pages.iter().zip(&german.pages).enumerate() {
+            for (cell_index, (en, de)) in en.cells.iter().zip(&de.cells).enumerate() {
+                match (&en.param, &de.param) {
+                    (
+                        CellParam::Choice {
+                            key,
+                            label: en,
+                            options: en_options,
+                        },
+                        CellParam::Choice {
+                            label: de,
+                            options: de_options,
+                            ..
+                        },
+                    ) => {
+                        let key = ParamId::new(*key);
+                        panel.parameter_labels.insert(key.clone(), labels(en, de));
+                        panel.choice_labels.insert(
+                            key,
+                            en_options
+                                .iter()
+                                .zip(de_options)
+                                .map(|((_, en), (_, de))| labels(en, de))
+                                .collect(),
+                        );
+                    }
+                    (CellParam::Graph(graph), _) => {
+                        let text = |lang: Lang| match graph.config {
+                            GraphConfig::Envelope => (
+                                lang.graph_title_volt_envelope("{selection}"),
+                                lang.ui_graph_envelope(),
+                            ),
+                            GraphConfig::LfoShape => {
+                                (lang.ui_graph_lfo_shape().into(), lang.ui_graph_lfo_shape())
+                            }
+                            GraphConfig::FilterVa => {
+                                (lang.ui_graph_filter().into(), lang.ui_graph_filter())
+                            }
+                            GraphConfig::Signal => {
+                                (lang.ui_graph_signal().into(), lang.ui_graph_signal())
+                            }
+                            _ => unreachable!("Volt graph"),
+                        };
+                        let (en, en_description) = text(Lang::En);
+                        let (de, de_description) = text(Lang::De);
+                        graph_labels.insert(
+                            (page_index, cell_index),
+                            GraphLabels {
+                                name: labels(&en, &de),
+                                description: labels(en_description, de_description),
+                                hide_title: false,
+                                signal_taps: Default::default(),
+                                asset_slot: None,
+                                waveform_markers: false,
+                                waveform_toolbar: false,
+                                waveform_slice_controls: None,
+                                audition_note: None,
+                                trim_unit: None,
+                            },
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Some(PanelV2 {
+            panel,
+            graph_labels,
+            canvases: Default::default(),
+            reduction_taps: Default::default(),
+            headings: Default::default(),
+            pad_bank: None,
+            parameter_display: Default::default(),
+            full_band_choice_labels: Default::default(),
+        })
+    }
+
     fn dsp() -> Box<dyn komponist_device_core::Dsp> {
         komponist_volt::dsp()
     }

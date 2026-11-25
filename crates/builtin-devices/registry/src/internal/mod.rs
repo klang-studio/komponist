@@ -160,12 +160,12 @@ impl Internal {
 
     /// Shipped v1 bundles whose card used the full grid from the legacy registry.
     pub fn clap_v1_grid_fallback(self) -> bool {
-        self.clap_v2_legacy_parameters() || matches!(self, Self::Volt | Self::Eq | Self::Presse)
+        self.clap_v2_legacy_parameters() || matches!(self, Self::Eq | Self::Presse)
     }
 
     /// Bundles whose native v2 grid previously shared the legacy physical parameter model.
     pub fn clap_v2_legacy_parameters(self) -> bool {
-        matches!(self, Self::Delay | Self::Limiter | Self::Surf)
+        matches!(self, Self::Delay | Self::Limiter | Self::Volt | Self::Surf)
     }
 
     /// The factory presets in menu order (empty: the device has none).

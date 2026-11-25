@@ -709,11 +709,7 @@ fn compile_graph(
         GraphConfig::FilterVa => GraphKind::FilterVa,
         GraphConfig::LfoShape => GraphKind::LfoShape,
         GraphConfig::Wavetable => GraphKind::Wavetable,
-        _ => {
-            return Err(error(
-                "graph configuration is unavailable in native CLAP v2",
-            ));
-        }
+        GraphConfig::Signal => GraphKind::Signal,
     };
     graph["kind"] = json!(kind);
     let mut bindings = BTreeMap::new();

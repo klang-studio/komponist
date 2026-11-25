@@ -11,7 +11,7 @@ use clap_sys::host::clap_host;
 use clap_sys::plugin::clap_plugin;
 use clap_sys::process::{CLAP_PROCESS_ERROR, clap_process};
 use clap_sys::version::CLAP_VERSION;
-use komponist_native_clap_sdk::{NativeClapLayout, compile};
+use komponist_native_clap_sdk::{NativeClapLayout, compile, compile_v2};
 use nice_plug::wrapper::clap::Wrapper;
 
 use super::*;
@@ -95,6 +95,65 @@ fn layout_uses_stable_ids_and_covers_every_synth_parameter() {
             );
         }
     }
+}
+
+#[test]
+fn layout_v2_keeps_volts_signal_and_selected_controls_bound_to_clap_ids() {
+    let instance = Instance::new();
+    // SAFETY: The initialized instance belongs to this thread for both compiles.
+    let (v1, v2) = unsafe {
+        (
+            compile::<VoltPlugin>(instance.0, &VoltPlugin::panel()).unwrap(),
+            compile_v2::<VoltPlugin>(instance.0, &VoltPlugin::panel_v2().unwrap()).unwrap(),
+        )
+    };
+    let v1: serde_json::Value = serde_json::from_slice(&v1).unwrap();
+    let v2: serde_json::Value = serde_json::from_slice(&v2).unwrap();
+    assert_eq!(v2["author_ids"], v1["author_ids"]);
+    let ids = &v2["author_ids"];
+    let [sound, envelopes, matrix] = v2["pages"].as_array().unwrap().as_slice() else {
+        panic!("Volt has three authored pages");
+    };
+    assert_eq!(sound["dividers"], serde_json::json!([2, 6]));
+    let sound_cells = &sound["cells"];
+    assert_eq!(sound_cells[0]["param_id"], ids["osc_a_wave"]);
+    assert_eq!(sound_cells[1]["param_id"], ids["osc_b_wave"]);
+    assert_eq!(sound_cells[9]["graph"]["kind"], "filter_va");
+    assert_eq!(sound_cells[9]["graph"]["slots"]["cutoff"], ids["cutoff"]);
+    let signal = &sound_cells[16]["graph"];
+    assert_eq!(signal["kind"], "signal");
+    assert_eq!(sound_cells[16]["half"], "top");
+    for (slot, author) in [
+        ("wave_a", "osc_a_wave"),
+        ("wave_b", "osc_b_wave"),
+        ("pw_a", "osc_a_pw"),
+        ("pw_b", "osc_b_pw"),
+        ("b_oct", "osc_b_oct"),
+        ("b_fine", "osc_b_fine"),
+        ("mix", "osc_mix"),
+        ("sub", "sub_level"),
+    ] {
+        assert_eq!(signal["slots"][slot], ids[author]);
+    }
+    assert_eq!(signal["name"]["de"], Lang::De.ui_graph_signal());
+    assert_eq!(signal["name"]["en"], Lang::En.ui_graph_signal());
+
+    let envelopes = &envelopes["cells"];
+    assert_eq!(
+        envelopes[0]["graph"]["variants"][1]["slots"]["attack"],
+        ids["filt_a"]
+    );
+    assert_eq!(
+        envelopes[0]["graph"]["variants"][1]["name"]["en"],
+        Lang::En.graph_title_volt_envelope("Filter")
+    );
+    assert_eq!(
+        envelopes[6]["graph"]["variants"][1]["slots"]["shape"],
+        ids["lfo2_shape"]
+    );
+    assert_eq!(envelopes[10]["variants"][1]["param_id"], ids["lfo2_sync"]);
+    assert_eq!(envelopes[11]["variants"][1]["param_id"], ids["lfo2_rate"]);
+    assert_eq!(matrix["dividers"], serde_json::json!([4]));
 }
 
 unsafe extern "C" fn event_count(_: *const clap_input_events) -> u32 {

@@ -113,6 +113,9 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     }));
     let volt = newest_instrument(h.state()).id;
     wait_for_verified(h.state_mut(), volt, VOLT, force_bridge);
+    let layout = h.state().engine().host().native_layout(volt).unwrap();
+    assert_eq!(layout.schema_version, 2);
+    assert_eq!(layout.pages.len(), 3);
 
     let target = h.state().project().find_device(volt).unwrap().2;
     let source = h
@@ -158,6 +161,7 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     });
     h.run_steps(3);
     h.get_by_role_and_label(Role::Button, &lang.devices_preset_name(PLUCK));
+    h.get_by_role_and_label(Role::Group, lang.ui_graph_signal());
     snapshot(&mut h, "volt-sound", lang);
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
     wait_for_value(
@@ -218,6 +222,30 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     let lfo_state = capture_document_state(h.state_mut(), volt, "Volt saved the LFO 2 edit");
     h.run_steps(3);
     snapshot(&mut h, "volt-envelopes", lang);
+
+    click(
+        &mut h,
+        Role::RadioButton,
+        &format!("{}: Filter", lang.label_volt_envelope()),
+    );
+    h.get_by_role_and_label(Role::Group, &lang.graph_title_volt_envelope("Filter"));
+    let sync = alias(h.state(), volt, "lfo2_sync");
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::SetParam {
+            device: volt,
+            id: sync,
+            value: 1.0,
+        }));
+    wait_for_value(h.state_mut(), volt, sync, 1.0, "enable Volt LFO 2 sync");
+    h.run_steps(3);
+    assert!(
+        h.query_by_role_and_label(Role::Slider, lang.param_rate())
+            .is_none()
+    );
+    h.get_by_role_and_label(Role::Slider, lang.param_volt_lfo_div());
+    page(&mut h, volt, 2);
+    h.get_by_role_and_label(Role::ComboBox, &lang.param_volt_target(1));
+    snapshot(&mut h, "volt-matrix", lang);
 
     let stepped_state = if !force_bridge {
         let app = h.state_mut();

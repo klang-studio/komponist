@@ -757,6 +757,7 @@ pub(super) fn native_card_layout(
                                 GraphKind::FilterVa => GraphConfig::FilterVa,
                                 GraphKind::LfoShape => GraphConfig::LfoShape,
                                 GraphKind::Wavetable => GraphConfig::Wavetable,
+                                GraphKind::Signal => GraphConfig::Signal,
                             };
                             let mut binding = GraphBinding::new(config);
                             if graph.select_band {
