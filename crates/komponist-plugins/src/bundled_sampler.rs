@@ -8,10 +8,11 @@ use komponist_builtin::Internal;
 use komponist_ipc::ParamInfo as ClapParamInfo;
 use komponist_ipc::control::MAX_STATE_PARAMETER_BASES;
 use komponist_ipc::native_layout::{GraphKind, NativeLayout};
+use komponist_model::asset_collection::Collector;
 use komponist_model::params::ParamInfo;
 use komponist_model::project::SavedPluginState;
 use komponist_model::{Device, PluginRef};
-use komponist_sampler::links::{self, Collector, SampleLink};
+use komponist_sampler::links::{self, SampleLink};
 use komponist_sampler::settings::Settings;
 use komponist_sampler::{PADS, PadField};
 

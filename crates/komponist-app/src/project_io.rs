@@ -33,10 +33,10 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use komponist_i18n::Lang;
+use komponist_model::asset_collection::Collector;
 use komponist_model::edits::ProjectProp;
 use komponist_model::persist::{self, FILE_EXTENSION, PersistError};
 use komponist_model::{Document, Project, Repairs};
-use komponist_sampler::links::Collector;
 
 use crate::actions::{Action, ProjectAction, SettingsAction, UiAction};
 use crate::app::App;
@@ -890,7 +890,7 @@ impl App {
                 .find_map(|(id, state)| (*id == device).then_some(state.bytes.as_ref()))
         };
         if let Some(collector) = &mut collector
-            && let Err(error) = crate::samples::collect_sample_sources(
+            && let Err(error) = crate::project_assets::collect_project_files(
                 self.project(),
                 collector,
                 old_dir.as_deref(),
@@ -913,7 +913,7 @@ impl App {
         };
         let mut document = self.doc.clone();
         document.rewrite_untracked(|project| {
-            crate::samples::rebase_project_links(
+            crate::project_assets::rebase_project_links(
                 project,
                 old_dir.as_deref(),
                 &new_dir,

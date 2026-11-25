@@ -73,6 +73,7 @@ pub mod panels;
 pub mod param_undo;
 pub mod platform;
 mod plugin_assets;
+mod project_assets;
 pub mod project_io;
 pub mod record;
 pub mod recovery;

@@ -783,7 +783,7 @@ impl App {
                                 .unwrap_or(source)
                         };
                         self.doc.rewrite_untracked(|project| {
-                            crate::samples::rebase_project_links(
+                            crate::project_assets::rebase_project_links(
                                 project,
                                 Some(&directory),
                                 &directory,
