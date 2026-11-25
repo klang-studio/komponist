@@ -1,7 +1,6 @@
 //! The sampler waveform, modes and modulation controls.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egui::accesskit::Role;
@@ -9,39 +8,23 @@ use egui::{Event, Modifiers, PointerButton, Pos2, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{EditAction, SelectMode, SelectionChange};
+use komponist_app::device_host::PluginHost;
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, PluginAction, UiAction};
-use komponist_general_sampler::{Settings, Slice, read_settings};
 use komponist_i18n::Lang;
 use komponist_ipc::device_assets::AssetStatus;
-use komponist_ipc::waveform_markers::{Edit, Request};
-use komponist_model::plugin_assets::AssetLink;
-use komponist_model::{DeviceId, Project, TrackId};
+use komponist_ipc::waveform_markers::{Edit, Request, SliceOptions};
+use komponist_model::edits::{self, NewDevice};
+use komponist_model::project::SavedPluginState;
+use komponist_model::{ChannelRef, DeviceId, DeviceRole, Project, TrackId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
-use komponist_sampler::links;
 
-use crate::bundled_sampler::sampler_fixture_value;
-use crate::common::{PATIENCE, app_with, native_fixture, scratch, step_until};
+use crate::common::{
+    FX, PATIENCE, app_with, clap_plugin, config, native_fixture, scratch, step_until,
+};
 
-const REFERENCE_SAMPLER: komponist_builtin::Internal = komponist_builtin::Internal::GeneralSampler;
 const CLAP_ID: &str = "org.klang-studio.komponist.general-sampler";
 const FIXTURE_BUNDLE: &str = "general-sampler.clap";
-
-fn demo_source(lang: Lang, name: &str, scenario: &str) -> (Project, PathBuf, TrackId, DeviceId) {
-    let demo = komponist_app::showcase::showcase_project();
-    let dir = scratch(&format!("general-sampler-ui-{scenario}-{}", lang.code()));
-    let mut project = komponist_app::samples::demo_with_kit(demo, &dir).unwrap();
-    let track = project
-        .tracks
-        .iter()
-        .find(|track| track.name == name)
-        .unwrap();
-    let id = track.id;
-    let device = track.channel.devices[0].id;
-    // The sampler is the subject of these images. Other demo tracks load their own waveforms.
-    project.tracks.retain(|track| track.id == id);
-    (project, dir, id, device)
-}
 
 fn show_device(app: &mut App, track: TrackId) {
     app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
@@ -51,47 +34,9 @@ fn show_device(app: &mut App, track: TrackId) {
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
 }
 
-/// Run the production bundle as an ordinary external CLAP on the null backend.
-fn authored_harness(
-    lang: Lang,
-    name: &str,
-    scenario: &str,
-    fades_ms: Option<[f64; 2]>,
-) -> Option<(Harness<'static, App>, DeviceId)> {
-    let (mut project, dir, track, device) = demo_source(lang, name, scenario);
-    let (host, plugin) = native_fixture(&dir, FIXTURE_BUNDLE, CLAP_ID)?;
-
-    let fixture = Arc::make_mut(&mut Arc::make_mut(&mut project.tracks[0]).channel.devices[0]);
-    let state = fixture.state.as_deref().unwrap();
-    let initial = REFERENCE_SAMPLER.decode_state(Some(state)).unwrap();
-    let settings = read_settings(Some(state));
-    let (slot, link) = links::read(Some(state)).into_iter().next().unwrap();
-    assert_eq!(slot, 0);
-    let params = REFERENCE_SAMPLER
-        .params()
-        .iter()
-        .zip(initial)
-        .map(|(info, value)| {
-            let value = match (info.id.as_str(), fades_ms) {
-                ("fade_in", Some([fade_in, _])) => fade_in,
-                ("fade_out", Some([_, fade_out])) => fade_out,
-                _ => value,
-            };
-            (info, sampler_fixture_value(info, value))
-        });
-    let state = komponist_plugins::bundled_sampler::edit_params(&plugin.version, None, params)
-        .expect("the sampler fixture parameters encode as CLAP state");
-    let state = if settings == Settings::default() {
-        state
-    } else {
-        komponist_plugins::bundled_sampler::edit_slices(&state, &settings)
-            .expect("the sampler fixture settings encode as CLAP state")
-    };
-    fixture.plugin = plugin;
-    fixture.state = Some(state.into());
-    fixture
-        .asset_links
-        .insert(0, AssetLink::new(&link.abs, None));
+fn ready_sampler(project: Project, host: PluginHost, lang: Lang) -> (App, DeviceId) {
+    let track = project.tracks[0].id;
+    let device = project.tracks[0].channel.devices[0].id;
     let mut app = app_with(project, host).with_lang(lang);
     show_device(&mut app, track);
     step_until(
@@ -114,33 +59,83 @@ fn authored_harness(
     let host = app.engine().host();
     assert!(host.verified_bundled_kind(device).is_none());
     assert!(host.bridge_pid(device).is_some());
-    if let Some([fade_in, fade_out]) = fades_ms {
-        let ids = host.native_layout(device).unwrap().author_ids().unwrap();
-        for (name, milliseconds) in [("fade_in", fade_in), ("fade_out", fade_out)] {
-            let parameter = host.param_value(device, ids[name]).unwrap();
-            let reported_ms = parameter
-                .text
-                .strip_suffix(" ms")
-                .and_then(|time| time.parse::<f64>().ok());
-            assert!(
-                reported_ms.is_some_and(|time| (time - milliseconds).abs() < 0.01),
-                "{name} should report {milliseconds} ms, got {:?}",
-                parameter.text
-            );
+    (app, device)
+}
+
+/// Run the production bundle as an ordinary external CLAP on the null backend.
+fn authored_harness(
+    lang: Lang,
+    name: &str,
+    scenario: &str,
+    fades_ms: Option<[f64; 2]>,
+) -> Option<(Harness<'static, App>, DeviceId)> {
+    let dir = scratch(&format!("general-sampler-ui-{scenario}-{}", lang.code()));
+    let (host, plugin) = native_fixture(&dir, FIXTURE_BUNDLE, CLAP_ID)?;
+    let fixture = komponist_app::showcase::general_sampler_fixture(name, plugin, &dir).unwrap();
+    // Keep the populated master row from the showcase framing. Its effect is outside this test.
+    let (project, master_effect) = edits::insert_device(
+        &fixture.project,
+        ChannelRef::Master,
+        0,
+        NewDevice {
+            role: DeviceRole::Effect,
+            plugin: clap_plugin(FX),
+            state: None,
+            sidechain: None,
+        },
+    )
+    .unwrap();
+    let project = edits::set_device_bypass(&project, master_effect, true).unwrap();
+    let (mut app, device) = ready_sampler(project, host, lang);
+    wait_for_sampler_state(&mut app, device);
+    let host = app.engine_mut().host_mut();
+    let layout = host.native_layout(device).cloned().unwrap();
+    let ids = layout.author_ids().unwrap();
+    let fades = fades_ms.map(|[fade_in, fade_out]| [("fade_in", fade_in), ("fade_out", fade_out)]);
+    for (name, value) in fixture.params {
+        if fades_ms.is_none() || !matches!(name, "fade_in" | "fade_out") {
+            assert!(host.set_param(device, ids[name], value), "set {name}");
         }
     }
-    if !settings.slices.is_empty() {
-        wait_for_editable_markers(&mut app, device, settings.slices.len());
-        let snapshot = app.engine().host().waveform_markers(device, 0).unwrap();
+    for (name, milliseconds) in fades.into_iter().flatten() {
+        assert!(host.set_param(device, ids[name], milliseconds / 10_000.0));
+    }
+    wait_for_sampler_state(&mut app, device);
+    for (count, &seconds) in fixture.markers.iter().enumerate() {
+        edit_markers(&mut app, device, count, Edit::Insert { seconds });
+    }
+    assert!(saved_state(&app, device).is_some());
+    // The bridge authored the initial state. Load it into a clean document so fixture edits
+    // are outside the test's undo history and the UI starts at its saved baseline.
+    app.shutdown();
+    let project = app.project().as_ref().clone();
+    drop(app);
+    let (mut app, device) = ready_sampler(project, PluginHost::new(config(&dir)), lang);
+    for (name, milliseconds) in fades.into_iter().flatten() {
+        let parameter = app.engine().host().param_value(device, ids[name]).unwrap();
+        let reported_ms = parameter
+            .text
+            .strip_suffix(" ms")
+            .and_then(|time| time.parse::<f64>().ok());
         assert!(
-            snapshot
-                .positions
-                .iter()
-                .zip(&settings.slices)
-                .all(|(position, slice)| (*position - slice.time).abs() < 1e-6),
-            "the live CLAP restored the fixture marker positions"
+            reported_ms.is_some_and(|time| (time - milliseconds).abs() < 0.01),
+            "{name} should report {milliseconds} ms, got {:?}",
+            parameter.text
         );
     }
+    if !fixture.markers.is_empty() {
+        wait_for_editable_markers(&mut app, device, fixture.markers.len());
+        assert_eq!(
+            app.engine()
+                .host()
+                .waveform_markers(device, 0)
+                .unwrap()
+                .positions,
+            fixture.markers
+        );
+    }
+    app.clear_dispatched();
+    assert!(!app.doc().is_dirty());
 
     let mut harness = komponist_ui::snapshot::builder::<App>(1.0)
         .with_size(vec2(1920.0, 1080.0))
@@ -172,8 +167,9 @@ fn wait_for_sampler_state(app: &mut App, device: DeviceId) {
         "the current sampler parameter state is persisted",
         |app| {
             app.device_events().iter().any(|event| {
-            matches!(event, PluginManagerEvent::StateSnapshot { device: updated, .. } if *updated == device)
-        })
+                matches!(event, PluginManagerEvent::StateSnapshot { device: updated, state }
+                    if *updated == device && app.engine().host().is_current_param_snapshot(device, &state.bytes))
+            })
         },
     );
 }
@@ -205,20 +201,40 @@ fn wait_for_editable_markers(app: &mut App, device: DeviceId, count: usize) -> u
     }
 }
 
-fn authored_slices(app: &App, device: DeviceId) -> Vec<Slice> {
-    authored_settings(app, device).slices
+fn saved_state(app: &App, device: DeviceId) -> Option<SavedPluginState> {
+    app.project().find_device(device).unwrap().2.saved_state()
 }
 
-fn authored_settings(app: &App, device: DeviceId) -> Settings {
-    let state = app
-        .project()
-        .find_device(device)
-        .unwrap()
-        .2
-        .state
-        .as_deref();
-    let assets = state.and_then(komponist_plugins::bundled_sampler::assets);
-    read_settings(assets.as_deref().map(str::as_bytes))
+fn edit_markers(app: &mut App, device: DeviceId, count: usize, operation: Edit) {
+    let previous = saved_state(app, device);
+    let revision = wait_for_editable_markers(app, device, count);
+    app.dispatch(Action::Plugin(PluginAction::EditWaveformMarkers {
+        device,
+        slot: 0,
+        request: Request {
+            revision,
+            operation,
+        },
+    }));
+    step_until(app, "the sampler marker edit to persist", |app| {
+        marker_edit_persisted(app, device) && saved_state(app, device) != previous
+    });
+}
+
+fn marker_edit_persisted(app: &App, device: DeviceId) -> bool {
+    use komponist_plugins::WaveformMarkerEditResult;
+    app.device_events().iter().any(|event| {
+        matches!(event, PluginManagerEvent::WaveformMarkersEdited {
+            device: edited,
+            result: WaveformMarkerEditResult::Applied { state, .. },
+            ..
+        } if *edited == device
+            && saved_state(app, device).is_some_and(|recorded| recorded.bytes == *state))
+    })
+}
+
+fn live_markers(app: &App, device: DeviceId) -> Option<&komponist_ipc::waveform_markers::Snapshot> {
+    app.engine().host().waveform_markers(device, 0)
 }
 
 fn snapshot(harness: &mut Harness<'_, App>, lang: Lang, name: String) {
@@ -351,9 +367,12 @@ fn waveform_zoom_slice_editing_and_pages_are_accessible() {
             .get_by_role_and_label(Role::Button, lang.devices_sampler_add_slice())
             .rect()
             .center();
+        let initial = saved_state(slices.state(), device);
         click(&mut slices, add);
         wait_for_ui(&mut slices, "the added marker to persist", |harness| {
-            authored_slices(harness.state(), device).len() == 6
+            saved_state(harness.state(), device) != initial
+                && live_markers(harness.state(), device)
+                    .is_some_and(|snapshot| snapshot.positions.len() == 6)
         });
         snapshots.extend_harness(&mut slices);
     }
@@ -662,49 +681,19 @@ fn authored_undo_keeps_slice_selection_and_cancels_an_in_progress_marker_drag() 
     else {
         return;
     };
-    check_slice_undo(
-        &mut harness,
-        device,
-        lang,
-        |app| authored_settings(app, device),
-        |app, expected, operation| {
-            let revision =
-                wait_for_editable_markers(app, device, authored_slices(app, device).len());
-            app.engine_mut()
-                .host_mut()
-                .edit_waveform_markers(
-                    device,
-                    0,
-                    Request {
-                        revision,
-                        operation,
-                    },
-                )
-                .expect("the hosted sampler accepts the setup edit");
-            step_until(app, "the sampler setup edit to persist", |app| {
-                authored_settings(app, device) == expected
-            });
-        },
-    );
+    check_slice_undo(&mut harness, device, lang);
 }
 
-fn check_slice_undo(
-    harness: &mut Harness<'_, App>,
-    device: DeviceId,
-    lang: Lang,
-    state: impl Fn(&App) -> Settings,
-    edit: impl Fn(&mut App, Settings, Edit),
-) {
-    let initial = state(harness.state());
-    let mut inserted = initial.clone();
-    inserted.slices.insert(
-        0,
-        Slice {
-            time: 0.4,
-            ..Default::default()
-        },
+fn check_slice_undo(harness: &mut Harness<'_, App>, device: DeviceId, lang: Lang) {
+    let initial = saved_state(harness.state(), device);
+    let markers = live_markers(harness.state(), device).unwrap().clone();
+    let count = markers.positions.len();
+    edit_markers(
+        harness.state_mut(),
+        device,
+        count,
+        Edit::Insert { seconds: 0.4 },
     );
-    edit(harness.state_mut(), inserted, Edit::Insert { seconds: 0.4 });
     harness.run_steps(3);
     wait_for_ui(harness, "slice controls after the insertion", |harness| {
         harness
@@ -731,14 +720,14 @@ fn check_slice_undo(
         },
     );
 
-    let mut edited = initial.clone();
-    edited.slices[1].options.gate = true;
-    edit(
+    assert_eq!(saved_state(harness.state(), device), initial);
+    edit_markers(
         harness.state_mut(),
-        edited,
+        device,
+        count,
         Edit::SetSliceOptions {
             slice: 2,
-            options: komponist_ipc::waveform_markers::SliceOptions {
+            options: SliceOptions {
                 gate: true,
                 ..Default::default()
             },
@@ -780,31 +769,21 @@ fn check_slice_undo(
         modifiers: Modifiers::NONE,
     });
     harness.run_steps(3);
-    if harness
-        .state()
-        .engine()
-        .host()
-        .native_layout(device)
-        .is_some()
-    {
-        wait_for_ui(
-            harness,
-            "the host to finish restoring the marker options",
-            |harness| {
-                harness
-                    .state()
-                    .engine()
-                    .host()
-                    .waveform_markers(device, 0)
-                    .and_then(|markers| markers.slice_options.as_ref())
-                    .is_some_and(|options| !options[2].gate)
-            },
-        );
-        assert!(!harness.state().dispatched().any(|action| matches!(action,
-            Action::Plugin(PluginAction::EditWaveformMarkers { device: edited, request: Request { operation: Edit::Move { .. }, .. }, .. }) if *edited == device
-        )), "undo must discard the draft move");
-    }
-    assert_eq!(state(harness.state()), initial);
+    wait_for_ui(
+        harness,
+        "the host to finish restoring the marker options",
+        |harness| {
+            live_markers(harness.state(), device).is_some_and(|snapshot| {
+                snapshot.editable
+                    && snapshot.positions == markers.positions
+                    && snapshot.slice_options == markers.slice_options
+            })
+        },
+    );
+    assert!(!harness.state().dispatched().any(|action| matches!(action,
+        Action::Plugin(PluginAction::EditWaveformMarkers { device: edited, request: Request { operation: Edit::Move { .. }, .. }, .. }) if *edited == device
+    )), "undo must discard the draft move");
+    assert_eq!(saved_state(harness.state(), device), initial);
 }
 
 #[test]
@@ -815,17 +794,10 @@ fn authored_slice_click_shows_and_edits_only_that_slices_options() {
     else {
         return;
     };
-    check_slice_options(&mut harness, device, lang, |app| {
-        authored_settings(app, device)
-    });
+    check_slice_options(&mut harness, device, lang);
 }
 
-fn check_slice_options(
-    harness: &mut Harness<'_, App>,
-    device: DeviceId,
-    lang: Lang,
-    state: impl Fn(&App) -> Settings,
-) {
+fn check_slice_options(harness: &mut Harness<'_, App>, device: DeviceId, lang: Lang) {
     wait_for_ui(harness, "slice tools before editing options", |harness| {
         harness
             .query_by_role_and_label(Role::Button, lang.devices_sampler_add_slice())
@@ -840,7 +812,11 @@ fn check_slice_options(
             waveform.center().y,
         )
     };
-    let initial = state(harness.state());
+    let initial = live_markers(harness.state(), device)
+        .unwrap()
+        .slice_options
+        .clone()
+        .unwrap();
     let toggle = harness
         .get_by_role_and_label(Role::Button, lang.devices_sampler_click_preview())
         .rect()
@@ -856,15 +832,6 @@ fn check_slice_options(
             .query_by_role_and_label(role, label)
             .is_some_and(|control| !control.accesskit_node().is_disabled())
     };
-    let live_options = |harness: &Harness<'_, App>| {
-        let snapshot = harness
-            .state()
-            .engine()
-            .host()
-            .waveform_markers(device, 0)?;
-        snapshot.editable.then_some(())?;
-        snapshot.slice_options.as_ref()?.get(1).copied()
-    };
     let choose = |harness: &mut Harness<'_, App>, field, option| {
         // An accepted edit can reach the project before the bridge re-enables the controls.
         wait_for_ui(harness, field, |harness| {
@@ -879,24 +846,32 @@ fn check_slice_options(
             .click_accesskit();
         harness.run_steps(2);
     };
+    let previous = saved_state(harness.state(), device);
     choose(
         harness,
         lang.devices_sampler_slice_trigger(),
         lang.choice_sampler_mode_gate(),
     );
-    wait_for_ui(harness, "the edited trigger mode", |harness| {
-        state(harness.state()).slices[0].options.gate
-            && live_options(harness).is_some_and(|options| options.gate)
-    });
+    wait_for_slice_option(
+        harness,
+        device,
+        "the edited trigger mode",
+        previous,
+        |options| options.gate,
+    );
+    let previous = saved_state(harness.state(), device);
     choose(
         harness,
         lang.param_general_sampler_direction(),
         lang.param_general_sampler_forward(),
     );
-    wait_for_ui(harness, "the edited slice direction", |harness| {
-        state(harness.state()).slices[0].options.reverse == Some(false)
-            && live_options(harness).is_some_and(|options| options.reverse == Some(false))
-    });
+    wait_for_slice_option(
+        harness,
+        device,
+        "the edited slice direction",
+        previous,
+        |options| options.reverse == Some(false),
+    );
     let fade = |harness: &mut Harness<'_, App>, label| {
         wait_for_ui(harness, label, |harness| {
             control_ready(harness, Role::SpinButton, label)
@@ -907,27 +882,33 @@ fn check_slice_options(
             .center();
         wheel(harness, field, 72.0, Modifiers::NONE);
     };
+    let previous = saved_state(harness.state(), device);
     fade(harness, lang.param_general_sampler_fade_in());
-    wait_for_ui(harness, "the edited attack fade", |harness| {
-        state(harness.state()).slices[0]
-            .options
-            .fade_in_ms
-            .is_some()
-            && live_options(harness).is_some_and(|options| options.fade_in_ms.is_some())
-    });
+    wait_for_slice_option(
+        harness,
+        device,
+        "the edited attack fade",
+        previous,
+        |options| options.fade_in_ms.is_some(),
+    );
+    let previous = saved_state(harness.state(), device);
     fade(harness, lang.param_general_sampler_fade_out());
-    wait_for_ui(harness, "the edited release fade", |harness| {
-        state(harness.state()).slices[0]
-            .options
-            .fade_out_ms
-            .is_some()
-            && live_options(harness).is_some_and(|options| options.fade_out_ms.is_some())
-    });
+    wait_for_slice_option(
+        harness,
+        device,
+        "the edited release fade",
+        previous,
+        |options| options.fade_out_ms.is_some(),
+    );
 
-    let edited = state(harness.state());
-    assert_eq!(edited.first, initial.first);
-    assert_eq!(edited.slices[1..], initial.slices[1..]);
-    let options = edited.slices[0].options;
+    let edited = live_markers(harness.state(), device)
+        .unwrap()
+        .slice_options
+        .as_ref()
+        .unwrap();
+    assert_eq!(edited[0], initial[0]);
+    assert_eq!(edited[2..], initial[2..]);
+    let options = edited[1];
     assert!(options.gate);
     assert_eq!(options.reverse, Some(false));
     assert!(options.fade_in_ms.is_some() && options.fade_out_ms.is_some());
@@ -950,6 +931,24 @@ fn check_slice_options(
     assert_eq!(previews(harness.state()), 1);
 }
 
+fn wait_for_slice_option(
+    harness: &mut Harness<'_, App>,
+    device: DeviceId,
+    what: &str,
+    previous: Option<SavedPluginState>,
+    matches: impl Fn(SliceOptions) -> bool,
+) {
+    wait_for_ui(harness, what, |harness| {
+        let app = harness.state();
+        saved_state(app, device) != previous
+            && live_markers(app, device)
+                .filter(|snapshot| snapshot.editable)
+                .and_then(|snapshot| snapshot.slice_options.as_ref())
+                .and_then(|options| options.get(1).copied())
+                .is_some_and(&matches)
+    });
+}
+
 #[test]
 fn authored_slice_tools_and_markers_follow_the_mode_on_the_sample_page() {
     let lang = Lang::De;
@@ -958,9 +957,7 @@ fn authored_slice_tools_and_markers_follow_the_mode_on_the_sample_page() {
     else {
         return;
     };
-    check_slice_modes(&mut harness, lang, device, |app| {
-        authored_slices(app, device)
-    });
+    check_slice_modes(&mut harness, lang, device);
 }
 
 fn wait_for_ui(
@@ -976,12 +973,7 @@ fn wait_for_ui(
     }
 }
 
-fn check_slice_modes(
-    harness: &mut Harness<'_, App>,
-    lang: Lang,
-    device: DeviceId,
-    markers: impl Fn(&App) -> Vec<Slice>,
-) {
+fn check_slice_modes(harness: &mut Harness<'_, App>, lang: Lang, device: DeviceId) {
     let slice = format!(
         "{} {}",
         komponist_model::format::note_name(49),
@@ -1037,22 +1029,19 @@ fn check_slice_modes(
                 .query_by_role_and_label(Role::Button, lang.devices_sampler_add_slice())
                 .is_some()
     });
-    let authored = harness
-        .state()
-        .engine()
-        .host()
-        .native_layout(device)
-        .is_some();
-    if authored {
-        wait_for_sampler_state(harness.state_mut(), device);
-        harness.run_steps(1);
-    }
+    wait_for_sampler_state(harness.state_mut(), device);
+    wait_for_editable_markers(harness.state_mut(), device, 5);
+    harness.run_steps(1);
     let marker = harness
         .get_by_role_and_label(Role::Slider, &slice)
         .rect()
         .center();
-    let original = markers(harness.state());
+    let original = live_markers(harness.state(), device)
+        .unwrap()
+        .positions
+        .clone();
     assert_eq!(original.len(), 5);
+    let previous = saved_state(harness.state(), device);
     harness.hover_at(marker);
     harness.step();
     harness.event(Event::PointerButton {
@@ -1072,30 +1061,27 @@ fn check_slice_modes(
         modifiers: Modifiers::NONE,
     });
     harness.run_steps(1);
-    if authored {
-        let operations: Vec<_> = harness
-            .state()
-            .dispatched()
-            .filter_map(|action| match action {
-                Action::Plugin(PluginAction::EditWaveformMarkers {
-                    device: edited,
-                    slot: 0,
-                    request,
-                }) if *edited == device => Some(request.operation),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            matches!(operations.as_slice(), [Edit::Move { index: 0, seconds }] if *seconds > original[0].time),
-            "the marker drag should emit one move on release: {operations:?}"
-        );
-    }
+    let operations: Vec<_> = harness
+        .state()
+        .dispatched()
+        .filter_map(|action| match action {
+            Action::Plugin(PluginAction::EditWaveformMarkers {
+                device: edited,
+                slot: 0,
+                request,
+            }) if *edited == device => Some(request.operation),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        matches!(operations.as_slice(), [Edit::Move { index: 0, seconds }] if *seconds > original[0]),
+        "the marker drag should emit one move on release: {operations:?}"
+    );
     wait_for_ui(harness, "the dragged marker to be persisted", |harness| {
-        markers(harness.state())
-            .first()
-            .is_some_and(|slice| slice.time > original[0].time)
+        let app = harness.state();
+        saved_state(app, device) != previous
+            && live_markers(app, device).is_some_and(|snapshot| {
+                snapshot.positions[0] > original[0] && snapshot.positions[1..] == original[1..]
+            })
     });
-    let edited = markers(harness.state());
-    assert!(edited[0].time > original[0].time);
-    assert_eq!(edited[1..], original[1..]);
 }

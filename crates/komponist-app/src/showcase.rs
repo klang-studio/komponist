@@ -46,6 +46,8 @@ use komponist_plugins::bundled_initial_state::InitialDevice;
 
 pub(crate) mod audio;
 mod sampler;
+#[doc(hidden)]
+pub use sampler::{GeneralSamplerFixture, general_sampler_fixture};
 pub mod surf;
 
 /// Builds the demo from the authenticated installed plugins and generates its audio assets.
@@ -532,17 +534,28 @@ fn add_automation(project: &mut Project, d: &Devices<'_>) {
     *project =
         edits::set_shown(project, AutomationOwner::Track(lead), true).expect("showcase Lead lanes");
 
-    let master_level = project.master.volume_db;
-    lane(
-        project,
-        AutomationOwner::Master,
-        AutomationTarget::Volume,
-        "Volume",
-        vec![
-            Point::linear(bars(15), 1.0 - db_to_p(master_level)),
-            Point::linear(bars(16), 0.0),
-        ],
-    );
+    add_master_fade(project);
+}
+
+fn add_master_fade(project: &mut Project) {
+    use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points};
+    use komponist_model::edits::automation as edits;
+    use komponist_model::params::db_to_p;
+
+    let owner = AutomationOwner::Master;
+    let base = 1.0 - db_to_p(project.master.volume_db);
+    let (next, lane) = edits::add_lane(project, owner, AutomationTarget::Volume, "Volume".into())
+        .expect("showcase master volume lane");
+    *project = edits::set_lane_points(
+        &next,
+        owner,
+        lane,
+        Points::new(vec![
+            Point::linear(Tick::from_steps(15 * 16), base),
+            Point::linear(Tick::from_steps(16 * 16), 0.0),
+        ]),
+    )
+    .expect("showcase master volume envelope");
 }
 
 mod legacy {

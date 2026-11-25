@@ -37,10 +37,6 @@ fn asset_status(app: &App, device: DeviceId, id: u32) -> Option<&AssetStatus> {
         .map(|slot| &slot.status)
 }
 
-pub(super) fn sampler_fixture_value(info: &komponist_model::params::ParamInfo, value: f64) -> f64 {
-    pinned_clap_state::to_clap(info, value)
-}
-
 #[test]
 #[ignore = "requires a verified all-device package; run with scripts/measure-bundled-clap.py --historical-projects"]
 fn both_samplers_play_assets_after_the_project_moves() {
