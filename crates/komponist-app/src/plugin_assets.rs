@@ -22,6 +22,8 @@ pub(crate) struct State {
     /// Canonical plugin files the user explicitly picked or dropped for this document.
     pub(crate) approved_plugin_files: HashSet<PathBuf>,
     pending_asset_edits: HashMap<DeviceId, PendingAssetEdit>,
+    /// Edits the device could not prepare yet, retried every frame until the deadline.
+    waiting_asset_edits: HashMap<DeviceId, WaitingAssetEdit>,
     asset_edit_request: u64,
     auditions: Vec<(Instant, TrackId, u8)>,
     waveform_preview: Option<WaveformPreview>,
@@ -31,6 +33,7 @@ impl State {
     pub(crate) fn forget_device_state(&mut self) {
         self.approved_plugin_files.clear();
         self.pending_asset_edits.clear();
+        self.waiting_asset_edits.clear();
         self.auditions.clear();
     }
 }
@@ -44,6 +47,14 @@ const AUDITION_VELOCITY: u8 = 100;
 enum WaveformPreview {
     Sample { track: TrackId, key: u8 },
     Asset { device: DeviceId, slot: u32 },
+}
+
+/// How long an edit waits for a pending snapshot, preset or restore before it fails.
+const ASSET_EDIT_WAIT: Duration = Duration::from_secs(5);
+
+struct WaitingAssetEdit {
+    updates: BTreeMap<u32, Option<AssetLink>>,
+    deadline: Instant,
 }
 
 struct PendingAssetEdit {
@@ -163,7 +174,11 @@ impl App {
             .pending_asset_edits
             .get(&device)
             .filter(|edit| edit.matches_source(target, self.project_path()));
-        let mut staged = pending.map_or_else(BTreeMap::new, |edit| edit.updates.clone());
+        let waiting = self.dialogs.plugin_assets.waiting_asset_edits.get(&device);
+        let mut staged = pending
+            .map(|edit| edit.updates.clone())
+            .or_else(|| waiting.map(|edit| edit.updates.clone()))
+            .unwrap_or_default();
         for (slot, link) in updates {
             if link.is_none() && !target.asset_links.contains_key(&slot) {
                 staged.remove(&slot);
@@ -179,9 +194,38 @@ impl App {
             if pending.is_some() {
                 self.cancel_plugin_asset_edit(device);
             }
+            self.dialogs
+                .plugin_assets
+                .waiting_asset_edits
+                .remove(&device);
             return;
         }
+        self.begin_plugin_asset_edit(device, staged, None);
+    }
 
+    /// Retries the edits that waited for their device, and fails those past their deadline.
+    pub(crate) fn retry_waiting_asset_edits(&mut self) {
+        let waiting = std::mem::take(&mut self.dialogs.plugin_assets.waiting_asset_edits);
+        let now = Instant::now();
+        for (device, edit) in waiting {
+            if now >= edit.deadline {
+                self.report_asset_edit_failed(device);
+            } else {
+                self.begin_plugin_asset_edit(device, edit.updates, Some(edit.deadline));
+            }
+        }
+    }
+
+    /// Prepares and commits the staged file updates, or parks them while the device is busy.
+    fn begin_plugin_asset_edit(
+        &mut self,
+        device: DeviceId,
+        staged: BTreeMap<u32, Option<AssetLink>>,
+        deadline: Option<Instant>,
+    ) {
+        let Some((_, _, target)) = self.project().find_device(device) else {
+            return;
+        };
         let dir = self.project_dir();
         let mut links = target.asset_links.clone();
         let mut changes = Vec::new();
@@ -217,8 +261,7 @@ impl App {
         let uses_prepare = self.engine.host().supports_asset_edit_state(device);
         if uses_prepare {
             if self.has_pending_sampler_params(device) {
-                self.report_asset_edit_failed(device);
-                return;
+                return self.wait_for_asset_edit(device, staged, deadline);
             }
             // Keep any preceding parameter gesture separate from the file edit's history.
             if self.doc.in_gesture() {
@@ -255,8 +298,24 @@ impl App {
                     .pending_asset_edits
                     .insert(device, edit);
             }
+            Ok(AssetEditPreparation::Busy) => {
+                self.wait_for_asset_edit(device, edit.updates, deadline)
+            }
             Err(_) => self.report_asset_edit_failed(device),
         }
+    }
+
+    fn wait_for_asset_edit(
+        &mut self,
+        device: DeviceId,
+        updates: BTreeMap<u32, Option<AssetLink>>,
+        deadline: Option<Instant>,
+    ) {
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + ASSET_EDIT_WAIT);
+        self.dialogs
+            .plugin_assets
+            .waiting_asset_edits
+            .insert(device, WaitingAssetEdit { updates, deadline });
     }
 
     fn cancel_plugin_asset_edit(&mut self, device: DeviceId) {
@@ -272,6 +331,7 @@ impl App {
     }
 
     pub(crate) fn cancel_plugin_asset_edits(&mut self) {
+        self.dialogs.plugin_assets.waiting_asset_edits.clear();
         for (device, _) in std::mem::take(&mut self.dialogs.plugin_assets.pending_asset_edits) {
             self.engine.host_mut().cancel_asset_edit(device);
         }

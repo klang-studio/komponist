@@ -1147,6 +1147,8 @@ impl PluginManager {
         {
             return Err(id);
         }
+        // A pending snapshot, preset or restore only delays the edit: the caller retries with the
+        // device's refreshed state.
         if self
             .pending_live_state_commits()
             .any(|pending| pending == id)
@@ -1161,7 +1163,7 @@ impl PluginManager {
                     || bridge.needs_snapshot_for_save()
             })
         {
-            return Err(id);
+            return Ok(AssetEditPreparation::Busy);
         }
         let edits = edit_state::Edits {
             slots: changes.iter().map(crate::AssetEdit::as_wire_edit).collect(),
@@ -1186,14 +1188,15 @@ impl PluginManager {
                 .map(AssetEditPreparation::Ready)
                 .map_err(|edit_state::Rejected| id);
         }
-        if self
-            .bridges
-            .get_mut(&id)
-            .is_some_and(|bridge| bridge.prepare_asset_edit(request, edits, state))
-        {
-            return Ok(AssetEditPreparation::Pending);
+        let Some(bridge) = self.bridges.get_mut(&id) else {
+            return Err(id);
+        };
+        if bridge.prepare_asset_edit(request, edits, state) {
+            Ok(AssetEditPreparation::Pending)
+        } else {
+            // Another preparation is still in flight.
+            Ok(AssetEditPreparation::Busy)
         }
-        Err(id)
     }
 
     pub fn asset_slots(&self, device: DeviceId) -> Option<&Snapshot> {

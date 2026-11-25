@@ -44,6 +44,8 @@ impl AssetEdit {
 pub enum AssetEditPreparation {
     Ready(Option<SavedPluginState>),
     Pending,
+    /// The device is not ready to prepare yet. Retry with its refreshed saved state.
+    Busy,
 }
 
 #[derive(Debug)]

@@ -748,6 +748,32 @@ fn assert_missing_link(app: &App, drums: DeviceId, original: &AssetLink, relativ
 }
 
 #[test]
+fn a_file_edit_right_after_a_knob_turn_waits_for_the_snapshot_instead_of_failing() {
+    let dir = scratch("param-undo-edit-after-knob");
+    let one = dir.join("one");
+    let Some((mut app, drums, tune)) =
+        opened_sampler_app(&one.join("Kit"), &one.join("Song.komponist"))
+    else {
+        return;
+    };
+    let other = kit_in(&one.join("More"))[3].clone();
+    set(&mut app, drums, tune, TUNE_OCTAVE_UP);
+    app.step();
+    // No wait for the live value or the snapshot: the edit arrives while both are in flight.
+    app.dispatch(Action::Plugin(PluginAction::SetPluginAsset {
+        device: drums,
+        slot: 1,
+        path: Some(other.clone()),
+    }));
+    step_until(&mut app, "the sampler file edit was committed", |app| {
+        asset_link(app, drums, 1).abs == other
+    });
+    wait_for_param_value(&mut app, drums, tune, TUNE_OCTAVE_UP);
+    drop(app);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn undo_after_save_restores_the_samplers_parameters_and_samples() {
     let dir = scratch("param-undo-save-rebase");
     let one = dir.join("one");

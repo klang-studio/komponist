@@ -717,6 +717,7 @@ impl App {
         }
         self.poll_preset_preparations();
         self.poll_user_presets();
+        self.retry_waiting_asset_edits();
         if let Some(rec) = &mut self.recording {
             rec.update(playhead);
         }
