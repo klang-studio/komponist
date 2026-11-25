@@ -45,7 +45,9 @@ use std::time::Duration;
 pub(crate) use komponist_builtin::{BuiltinKind, BuiltinProcessor, Internal, LegacyParameters};
 use komponist_engine::{DeviceMeter, Processor};
 use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource};
-use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot};
+use komponist_ipc::device_assets::{
+    AssetKind, AssetStatus, Bindings, OfflineRequest, OfflineStatus, Snapshot,
+};
 use komponist_ipc::frame::HeaderModel;
 use komponist_ipc::{
     GuiSize, GuiTarget, LogLevel, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode,
@@ -365,18 +367,21 @@ pub trait DeviceHost {
         None
     }
 
-    /// Whether a sampler still needs to hand its decoded samples or stretch to audio.
+    /// Whether a legacy sampler still needs to hand its decoded samples or stretch to audio.
     fn sampler_is_loading(&self, device: DeviceId) -> bool {
-        if let Some(handle) = self.sampler(device) {
-            return !handle.is_idle();
-        }
-        self.native_layout(device)
-            .is_some_and(|layout| layout.has_audio_asset_editor())
-            && self.asset_slots(device).is_none_or(|snapshot| {
-                snapshot
-                    .slots
-                    .iter()
-                    .any(|slot| slot.status == komponist_ipc::device_assets::AssetStatus::Loading)
+        self.sampler(device).is_some_and(|handle| !handle.is_idle())
+    }
+
+    /// Whether the file inventory or an asset is still being prepared for rendering.
+    fn render_assets_pending(&self, device: &Device) -> bool {
+        self.asset_inventory_pending(device.id)
+            || self.asset_slots(device.id).is_some_and(|inventory| {
+                inventory.slots.iter().any(|slot| {
+                    slot.status == AssetStatus::Loading
+                        || slot.kind == AssetKind::AudioSample
+                            && slot.status == AssetStatus::Empty
+                            && device.asset_links.contains_key(&slot.id)
+                })
             })
     }
 

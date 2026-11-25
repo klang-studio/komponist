@@ -569,7 +569,7 @@ impl App {
             for d in devices.iter().filter(|device| !device.bypass) {
                 let state = match self.engine.device_status(d.id) {
                     DeviceStatus::Ok
-                        if self.engine.host().asset_inventory_pending(d.id)
+                        if self.engine.host().render_assets_pending(d)
                             || self.engine.host().sampler_is_loading(d.id) =>
                     {
                         DeviceState::Loading
@@ -848,7 +848,7 @@ impl App {
                 Some((_, DeviceStatus::Loading)) if prepared.elapsed() < READY_TIMEOUT => return,
                 Some((id, _)) => Err(ExportError::DeviceFailed(id)),
                 None => flatten
-                    .bad_sampler_pad(self)
+                    .unavailable_audio_asset(self)
                     .map_or(Ok(()), |(id, _)| Err(ExportError::DeviceFailed(id))),
             }
         } else {

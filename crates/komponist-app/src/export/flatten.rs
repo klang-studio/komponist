@@ -68,7 +68,7 @@ impl Flatten {
             return Err(changed());
         }
         self.scope = Arc::new(scope);
-        if let Some((_, problem)) = self.bad_sampler_pad(app) {
+        if let Some((_, problem)) = self.unavailable_audio_asset(app) {
             return Err(problem);
         }
         let ids: Vec<_> = track
@@ -93,7 +93,10 @@ impl Flatten {
                 let host = app.engine.host();
                 match host.status(id) {
                     DeviceStatus::Ok
-                        if host.asset_inventory_pending(id)
+                        if app
+                            .project()
+                            .find_device(id)
+                            .is_some_and(|(_, _, device)| host.render_assets_pending(device))
                             || host.sampler_is_loading(id)
                             || Self::sampler_pads(app, id).is_some_and(|(_, pads)| {
                                 pads.iter().any(|pad| {
@@ -114,7 +117,7 @@ impl Flatten {
             .min_by_key(|(_, status)| *status == DeviceStatus::Loading)
     }
 
-    pub(super) fn bad_sampler_pad(&self, app: &App) -> Option<(DeviceId, String)> {
+    pub(super) fn unavailable_audio_asset(&self, app: &App) -> Option<(DeviceId, String)> {
         for id in self.scope.devices() {
             let host = app.engine.host();
             if host.sampler_sync_unavailable(id) {
@@ -123,18 +126,11 @@ impl Flatten {
                     app.lang.flatten_sampler_sync_failed(app.device_name(id)),
                 ));
             }
-            if let Some(layout) = host
-                .native_layout(id)
-                .filter(|layout| layout.has_audio_asset_editor())
-            {
+            if let Some(assets) = host.asset_slots(id) {
                 let Some((_, _, device)) = app.project().find_device(id) else {
                     continue;
                 };
-                for slot in host
-                    .asset_slots(id)
-                    .into_iter()
-                    .flat_map(|assets| &assets.slots)
-                {
+                for slot in &assets.slots {
                     if slot.kind == AssetKind::AudioSample
                         && matches!(slot.status, AssetStatus::Missing | AssetStatus::Failed(_))
                         && let Some(link) = device.asset_links.get(&slot.id)
@@ -143,9 +139,13 @@ impl Flatten {
                             .name()
                             .map_or_else(|| slot.label.clone(), std::borrow::Cow::into_owned);
                         let name = app.device_name(id);
-                        let message = if let Some(pad) = layout.pad_bank.as_ref().and_then(|bank| {
-                            bank.pads.iter().position(|pad| pad.asset_slot == slot.id)
-                        }) {
+                        let pad = host
+                            .native_layout(id)
+                            .and_then(|layout| layout.pad_bank.as_ref())
+                            .and_then(|bank| {
+                                bank.pads.iter().position(|pad| pad.asset_slot == slot.id)
+                            });
+                        let message = if let Some(pad) = pad {
                             app.lang.flatten_pad_failed(name, pad + 1, file)
                         } else {
                             app.lang.flatten_sampler_failed(name, file)
@@ -184,7 +184,7 @@ impl Flatten {
     pub(super) fn finish(self, app: &mut App, result: Result<ExportReport, ExportError>) {
         match result {
             Err(ExportError::DeviceFailed(id))
-                if let Some((failed, problem)) = self.bad_sampler_pad(app)
+                if let Some((failed, problem)) = self.unavailable_audio_asset(app)
                     && failed == id =>
             {
                 app.flatten_failed(problem);
@@ -194,7 +194,7 @@ impl Flatten {
                 app.flatten_error(error);
                 return;
             }
-            Ok(_) if let Some((_, problem)) = self.bad_sampler_pad(app) => {
+            Ok(_) if let Some((_, problem)) = self.unavailable_audio_asset(app) => {
                 app.flatten_failed(problem);
                 return;
             }
