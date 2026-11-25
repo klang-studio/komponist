@@ -61,6 +61,12 @@ INVENTORIES = {
     ),
 }
 
+LIMITER = Device(
+    "komponist-bundled-limiter",
+    "komponist_limiter",
+    "org.klang-studio.komponist.limiter",
+    "komponist_limiter_clap",
+)
 INVENTORIES["effects"] = INVENTORIES["hall"] + tuple(
     Device(
         f"komponist-bundled-{name}",
@@ -68,8 +74,8 @@ INVENTORIES["effects"] = INVENTORIES["hall"] + tuple(
         f"org.klang-studio.komponist.{name}",
         f"komponist_{name}_clap",
     )
-    for name in ("delay", "eq", "presse", "limiter")
-)
+    for name in ("delay", "eq", "presse")
+) + (LIMITER,)
 
 KLOPFER = Device(
     "komponist-bundled-sampler",
@@ -93,7 +99,7 @@ INVENTORIES["all"] = INVENTORIES["effects"] + (
     Device("komponist-bundled-arpeggiator", "komponist_arpeggiator_clap", "org.klang-studio.komponist.arpeggiator"),
     Device("komponist-bundled-scale", "komponist_scale_clap", "org.klang-studio.komponist.scale"),
 )
-INVENTORIES["sampler-fixtures"] = (KLOPFER, GENERAL_SAMPLER)
+INVENTORIES["native-fixtures"] = (KLOPFER, GENERAL_SAMPLER, LIMITER)
 
 
 def bundle_name(device):
