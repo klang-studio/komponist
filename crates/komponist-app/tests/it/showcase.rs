@@ -1,19 +1,70 @@
-//! The app's demo project (`komponist --demo`): built-in devices only, same song as the design
-//! fixture, and an offline render of it for the levels (`render_levels`, ignored).
+//! The shipped demo's arrangement, authentic device state and generated assets. The packaged
+//! acceptance suite calls these checks on both host routes; the level render also has a manual
+//! historical reference mode.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use komponist_app::App;
 use komponist_app::actions::{BitDepth, ExportRange};
-use komponist_app::showcase::showcase_project;
-use komponist_builtin::Internal;
-use komponist_model::fixtures::{demo_project, demo_song};
+use komponist_app::device_host::{DeviceHost, PluginHost};
+use komponist_app::showcase::{bundled_demo, showcase_project};
+use komponist_ipc::device_assets::AssetStatus;
+use komponist_model::automation::AutomationTarget;
+use komponist_model::fixtures::demo_song;
+use komponist_model::params::ParamId;
 use komponist_model::{
-    ClipContent, Device, DeviceRole, PluginFormat, Project, Tap, Track, TrackOutput,
+    ClipContent, Device, DeviceId, DeviceRole, Project, Tap, Track, TrackOutput,
 };
-use komponist_plugins::Catalog;
+use komponist_plugins::{DeviceStatus, requires_bundled};
 
+use crate::common::step_until;
 use crate::export::{app_in, export, export_settings, peak_db, read, scratch};
+
+const DEVICE_PREFIX: &str = "org.klang-studio.komponist.";
+
+pub(super) fn assert_packaged_showcase(
+    app: &mut App,
+    project: &Project,
+    factory: &PluginHost,
+    repeat: &Project,
+    bridged: bool,
+) {
+    step_until(app, "all shipped demo devices ready", |app| {
+        all_devices(project).all(|device| {
+            app.engine()
+                .host()
+                .verified_bundled_kind(device.id)
+                .is_some()
+        })
+    });
+    let host = app.engine().host();
+    check_device_catalog(project, host, bridged);
+    check_factory_presets(project, host, factory);
+    check_song(project);
+    check_routing(project);
+    check_audio_tracks(project);
+    check_generated_audio(project, repeat);
+    check_warp(project);
+    check_automation(project, host);
+    check_surf(project, host);
+    check_sampler_assets(app, project);
+}
+
+fn device_id_is(device: &Device, slug: &str) -> bool {
+    device.plugin.id.strip_prefix(DEVICE_PREFIX) == Some(slug)
+}
+
+fn authored_control(host: &dyn DeviceHost, device: DeviceId, name: &str) -> u32 {
+    host.native_layout(device).unwrap().author_ids().unwrap()[name]
+}
+
+fn authored_target(host: &dyn DeviceHost, device: DeviceId, name: &str) -> AutomationTarget {
+    AutomationTarget::Param {
+        device,
+        param: ParamId::plugin(authored_control(host, device, name)),
+    }
+}
 
 fn all_devices(project: &Project) -> impl Iterator<Item = &Arc<Device>> {
     project
@@ -46,34 +97,21 @@ fn notes_of(project: &Project, track: usize) -> Vec<Vec<(i64, i64, u8, u8)>> {
         .collect()
 }
 
-#[test]
-fn every_device_is_built_in_and_resolves_in_the_catalog() {
-    let project = showcase_project();
-    let catalog = Catalog::builtin();
+fn check_device_catalog(project: &Project, host: &dyn DeviceHost, bridged: bool) {
     let mut count = 0;
-    for device in all_devices(&project) {
+    for device in all_devices(project) {
         count += 1;
-        assert_eq!(
-            device.plugin.format,
-            PluginFormat::Builtin,
-            "{:?}",
-            device.plugin
-        );
-        assert!(
-            catalog.resolve(&device.plugin).is_some(),
-            "{} is not in the built-in catalog",
-            device.plugin.name
-        );
-        assert!(
-            device.state.is_some()
-                || Internal::from_plugin(&device.plugin) == Some(Internal::Sampler)
-        );
+        assert!(requires_bundled(&device.plugin), "{:?}", device.plugin);
+        assert!(host.catalog().resolve(&device.plugin).is_some());
+        assert_eq!(host.bridge_pid(device.id).is_some(), bridged);
+        assert!(host.state_warning(device.id).is_none());
+        assert!(device.state.is_some() || device_id_is(device, "sampler"));
     }
     // Drums 2, Bass 3, Lead 3, Pad 2, Keys 2, Arp 4, sampler demos 2, surf 1, Reverb bus 1,
     // master 1.
     assert_eq!(count, 2 + 3 + 3 + 2 + 2 + 4 + 2 + 1 + 1 + 1);
     // The Arp's MIDI effects come first, the Limiter is on the master.
-    let arp = &track_named(&project, "Arp").channel.devices;
+    let arp = &track_named(project, "Arp").channel.devices;
     let roles: Vec<_> = arp.iter().map(|d| d.role).collect();
     assert_eq!(
         roles,
@@ -84,43 +122,57 @@ fn every_device_is_built_in_and_resolves_in_the_catalog() {
             DeviceRole::Effect
         ]
     );
-    assert_eq!(
-        Internal::from_plugin(&project.master.devices[0].plugin),
-        Some(Internal::Limiter)
-    );
-    assert!(!track_named(&project, "Arp").channel.mute);
+    assert!(device_id_is(&project.master.devices[0], "limiter"));
+    assert!(!track_named(project, "Arp").channel.mute);
 }
 
-#[test]
-fn internal_devices_show_their_preset_names() {
-    let project = showcase_project();
-    for device in all_devices(&project) {
-        let Some(kind) = Internal::from_plugin(&device.plugin) else {
-            continue;
-        };
-        if matches!(
-            kind,
-            Internal::Sampler | Internal::GeneralSampler | Internal::Limiter
-        ) {
-            continue;
+fn check_factory_presets(project: &Project, host: &dyn DeviceHost, factory: &PluginHost) {
+    for (track, presets) in [
+        ("Drums", &[(1, "Tight Drums")][..]),
+        ("Bass", &[(0, "Fat Saw"), (1, "Warm Bass"), (2, "Ducking")]),
+        (
+            "Lead",
+            &[(0, "Saw Lead"), (1, "Low Cut 80 Hz"), (2, "Dotted Eighths")],
+        ),
+        ("Pad", &[(0, "Wide Pad"), (1, "Low Cut 80 Hz")]),
+        ("Keys", &[(0, "E-Piano"), (1, "Soft Tape")]),
+        (
+            "Arp",
+            &[
+                (0, "A Minor Pentatonic"),
+                (1, "Sixteenths Up/Down"),
+                (2, "Synth Pluck"),
+                (3, "Eighth Ping-Pong"),
+            ],
+        ),
+        ("Reverb", &[(0, "Large Hall")]),
+        ("Vowel Pad", &[(0, "Vowel Pad")]),
+    ] {
+        for &(index, expected) in presets {
+            let device = &track_named(project, track).channel.devices[index];
+            let catalog = host.clap_presets(device);
+            let (selected, _) = host
+                .saved_preset(device, catalog)
+                .unwrap_or_else(|| panic!("{track}: no preset for {}", device.plugin.id));
+            assert!(catalog[selected].factory && catalog[selected].matches_name(expected));
+            let factory_state = factory
+                .manager()
+                .prepare_bundled_device(&device.plugin.id, Some(expected), &[], &[])
+                .unwrap()
+                .state
+                .expect("factory preset state");
+            // The Bass preset is deliberately gentler for the demo's pre-fader kick.
+            assert_eq!(
+                device.state.as_ref() == Some(&factory_state),
+                track != "Bass" || expected != "Ducking",
+                "{track}: {expected}"
+            );
         }
-        let (index, changed) = kind
-            .loaded_preset(device.state.as_deref())
-            .unwrap_or_else(|| panic!("{} has no loaded preset", kind.name()));
-        // presse on the Bass is „Ducking“ with a gentler setting; every other device is a factory preset.
-        assert!(
-            !changed || kind == Internal::Presse,
-            "{} {}",
-            kind.name(),
-            kind.presets()[index].name
-        );
     }
 }
 
-#[test]
-fn the_song_is_the_design_fixtures_song() {
-    let fixture = demo_project();
-    let showcase = showcase_project();
+fn check_song(showcase: &Project) {
+    let fixture = demo_song();
     assert_eq!(showcase.name, fixture.name);
     assert_eq!(showcase.tempo, fixture.tempo);
     assert!(!showcase.loop_on);
@@ -162,11 +214,9 @@ fn the_song_is_the_design_fixtures_song() {
                         .unwrap(),
                 )
             };
-            assert_eq!(notes(&showcase), notes(&fixture), "track {i}");
+            assert_eq!(notes(showcase), notes(&fixture), "track {i}");
         }
     }
-    // The fixture's own Arp clip is the song's.
-    assert_eq!(notes_of(&demo_song(), 5), notes_of(&fixture, 5));
     // Unique ids across the project.
     let mut ids = Vec::new();
     for t in &showcase.tracks {
@@ -198,33 +248,25 @@ fn the_song_is_the_design_fixtures_song() {
     assert!(ids.iter().all(|&i| i < showcase.next_id));
 }
 
-#[test]
-fn the_demo_shows_group_effect_bus_and_sidechain() {
-    let project = showcase_project();
-    let rhythm = track_named(&project, "Rhythm");
+fn check_routing(project: &Project) {
+    let rhythm = track_named(project, "Rhythm");
     assert!(rhythm.is_bus() && rhythm.folder);
     assert_eq!(rhythm.output, TrackOutput::Master);
-    let (drums, bass) = (
-        track_named(&project, "Drums"),
-        track_named(&project, "Bass"),
-    );
+    let (drums, bass) = (track_named(project, "Drums"), track_named(project, "Bass"));
     assert_eq!(drums.output, TrackOutput::Bus(rhythm.id));
     assert_eq!(bass.output, TrackOutput::Bus(rhythm.id));
-    let members = komponist_model::routing::group_members(&project, rhythm.id);
+    let members = komponist_model::routing::group_members(project, rhythm.id);
     assert_eq!(
         members,
-        [drums.id, bass.id, track_named(&project, "Shaker").id]
+        [drums.id, bass.id, track_named(project, "Shaker").id]
     );
 
-    let hall = track_named(&project, "Reverb");
+    let hall = track_named(project, "Reverb");
     assert!(hall.is_bus() && !hall.folder);
     assert_eq!(hall.channel.devices.len(), 1);
-    assert_eq!(
-        Internal::from_plugin(&hall.channel.devices[0].plugin),
-        Some(Internal::Hall)
-    );
+    assert!(device_id_is(&hall.channel.devices[0], "hall"));
     for name in ["Lead", "Pad"] {
-        let track = track_named(&project, name);
+        let track = track_named(project, name);
         let send = track
             .send_to(hall.id)
             .unwrap_or_else(|| panic!("{name} sends to Reverb"));
@@ -240,40 +282,35 @@ fn the_demo_shows_group_effect_bus_and_sidechain() {
                 .channel
                 .devices
                 .iter()
-                .all(|d| Internal::from_plugin(&d.plugin) != Some(Internal::Hall))
+                .all(|d| !device_id_is(d, "hall"))
         );
     }
     // The Lead keeps its Delay as an insert.
     assert!(
-        track_named(&project, "Lead")
+        track_named(project, "Lead")
             .channel
             .devices
             .iter()
-            .any(|d| Internal::from_plugin(&d.plugin) == Some(Internal::Delay))
+            .any(|d| device_id_is(d, "delay"))
     );
 
     // presse on the Bass is keyed by the Drums, pre-fader; the Drums' own presse has no sidechain.
-    let keyed: Vec<_> = all_devices(&project)
+    let keyed: Vec<_> = all_devices(project)
         .filter(|d| d.sidechain.is_some())
         .collect();
     assert_eq!(keyed.len(), 1);
-    assert_eq!(
-        Internal::from_plugin(&keyed[0].plugin),
-        Some(Internal::Presse)
-    );
+    assert!(device_id_is(keyed[0], "presse"));
     assert!(bass.channel.devices.iter().any(|d| d.id == keyed[0].id));
     let sc = keyed[0].sidechain.unwrap();
     assert_eq!((sc.source, sc.tap), (drums.id, Tap::Pre));
-    assert_eq!(komponist_model::routing::check(&project), Ok(()));
+    assert_eq!(komponist_model::routing::check(project), Ok(()));
 }
 
-#[test]
-fn the_demo_shows_repitch_gain_fades_and_mono_and_stereo_audio() {
+fn check_audio_tracks(project: &Project) {
     use komponist_model::{AudioInput, ClipTimeMode, Hue, MonitorMode, Tick};
-    let project = showcase_project();
     assert_eq!(project.tempo.bpm, 124.0);
-    let shaker = track_named(&project, "Shaker");
-    let sweep = track_named(&project, "Sweep");
+    let shaker = track_named(project, "Shaker");
+    let sweep = track_named(project, "Sweep");
     assert_eq!(shaker.hue, Hue::TEAL);
     assert_eq!(sweep.hue, Hue::ORANGE);
     for track in [shaker, sweep] {
@@ -315,20 +352,16 @@ fn the_demo_shows_repitch_gain_fades_and_mono_and_stereo_audio() {
     assert_eq!(audio.time_mode, ClipTimeMode::Fixed);
 }
 
-#[test]
-fn loading_the_demo_synthesizes_deterministic_non_silent_audio_files() {
-    let dir = scratch("demo-audio");
-    let p = komponist_app::samples::demo_with_kit(showcase_project(), &dir.join("a")).unwrap();
-    let second = komponist_app::samples::demo_with_kit(showcase_project(), &dir.join("b")).unwrap();
+fn check_generated_audio(project: &Project, repeat: &Project) {
     for name in ["Shaker", "Sweep", "Pulse 90"] {
-        let clip = &track_named(&p, name).clips[0];
+        let clip = &track_named(project, name).clips[0];
         let ClipContent::Audio(audio) = &clip.content else {
             panic!("audio clip");
         };
-        let ClipContent::Audio(other) = &track_named(&second, name).clips[0].content else {
+        let ClipContent::Audio(other) = &track_named(repeat, name).clips[0].content else {
             panic!("audio clip");
         };
-        assert!(audio.file.abs.starts_with(dir.join("a")));
+        assert_ne!(audio.file.abs, other.file.abs);
         assert_eq!(
             std::fs::read(&audio.file.abs).unwrap(),
             std::fs::read(&other.file.abs).unwrap()
@@ -348,35 +381,63 @@ fn loading_the_demo_synthesizes_deterministic_non_silent_audio_files() {
     }
 }
 
-#[test]
-fn the_demo_plays_one_sample_chromatically_and_as_slices() {
-    use komponist_general_sampler::read_settings;
-    use komponist_model::params::ParamId;
-    use komponist_sampler::links;
+fn check_sampler_assets(app: &mut App, project: &Project) {
+    for (track, count) in [("Drums", 8), ("Glass Pluck", 1), ("Glass Slices", 1)] {
+        let sampler = track_named(project, track).channel.instrument().unwrap().1;
+        assert_eq!(sampler.asset_links.len(), count);
+        assert!(
+            sampler
+                .asset_links
+                .values()
+                .all(|link| link.resolve(None).is_some())
+        );
+        step_until(app, &format!("{track}: linked samples ready"), |app| {
+            app.engine()
+                .host()
+                .asset_slots(sampler.id)
+                .is_some_and(|assets| {
+                    assets.slots.len() == count
+                        && assets
+                            .slots
+                            .iter()
+                            .all(|slot| slot.status == AssetStatus::Ready)
+                })
+        });
+    }
 
-    let dir = scratch("demo-sampler");
-    let project = komponist_app::samples::demo_with_kit(showcase_project(), &dir).unwrap();
     let mut files = Vec::new();
     for (name, slice_mode) in [("Glass Pluck", false), ("Glass Slices", true)] {
-        let track = track_named(&project, name);
+        let track = track_named(project, name);
         let device = &track.channel.devices[0];
-        let kind = Internal::GeneralSampler;
-        assert_eq!(Internal::from_plugin(&device.plugin), Some(kind));
-        let state = device.state.as_deref();
-        let values = kind.decode_state(state).expect("sampler state");
-        let value = |id| values[kind.wire(&ParamId::new(id)).unwrap() as usize];
-        assert_eq!(value("root"), 48.0);
-        assert_eq!(value("mode"), if slice_mode { 2.0 } else { 1.0 });
-        assert_eq!(value("sync"), f64::from(u8::from(!slice_mode)));
-        assert_eq!(
-            read_settings(state).slices.len(),
-            if slice_mode { 5 } else { 0 }
-        );
-        let links = links::read(state);
-        let [(0, link)] = links.as_slice() else {
-            panic!("one linked sample in slot zero");
+        assert!(device_id_is(device, "general-sampler"));
+        let host = app.engine().host();
+        let value = |name| host.param_base(device.id, authored_control(host, device.id, name));
+        assert_eq!(value("root"), Some(48.0));
+        assert_eq!(value("mode"), Some(if slice_mode { 2.0 } else { 1.0 }));
+        assert_eq!(value("sync"), Some(f64::from(u8::from(!slice_mode))));
+        app.engine_mut()
+            .host_mut()
+            .request_waveform_markers(device.id, 0);
+        step_until(app, &format!("{name}: live markers ready"), |app| {
+            app.engine()
+                .host()
+                .waveform_markers(device.id, 0)
+                .is_some_and(|markers| {
+                    if slice_mode {
+                        markers.editable
+                    } else {
+                        markers.default_options.is_some()
+                    }
+                })
+        });
+        let markers = app.engine().host().waveform_markers(device.id, 0).unwrap();
+        let expected: &[f64] = if slice_mode {
+            &[0.75, 1.5, 2.5, 3.0, 3.5]
+        } else {
+            &[]
         };
-        files.push(link.abs.clone());
+        assert_eq!(markers.positions, expected);
+        files.push(device.asset_links[&0].resolve(None).unwrap());
         let ClipContent::Midi(midi) = &track.clips[0].content else {
             panic!("the sampler is played from MIDI");
         };
@@ -411,7 +472,10 @@ fn render_levels() {
             let mut app = crate::common::app_with(project, host(launcher));
             crate::common::step_until(&mut app, "demo plugins", |app| {
                 all_devices(app.project()).all(|device| {
-                    app.engine().host().status(device.id) == komponist_plugins::DeviceStatus::Ok
+                    let host = app.engine().host();
+                    host.status(device.id) == DeviceStatus::Ok
+                        && host.verified_bundled_kind(device.id).is_some()
+                        && host.state_warning(device.id).is_none()
                 })
             });
             app
@@ -446,7 +510,7 @@ fn render_levels() {
     };
     let kit = out.join("kit");
     let base = if let Some(launcher) = &launcher {
-        komponist_app::showcase::bundled_demo(&host(launcher), &kit).unwrap()
+        bundled_demo(&host(launcher), &kit).unwrap()
     } else {
         komponist_app::samples::demo_with_kit(showcase_project(), &kit).unwrap()
     };
@@ -491,15 +555,13 @@ fn render_levels() {
     assert!(reduction <= 2.0, "limiter peak reduction {reduction} dB");
 }
 
-#[test]
-fn synthesized_pulse_loop_uses_opt_in_warp_without_changing_the_showcase_tempo() {
-    let p = showcase_project();
-    let pulse = track_named(&p, "Pulse 90");
+fn check_warp(project: &Project) {
+    let pulse = track_named(project, "Pulse 90");
     let c = &pulse.clips[0];
     let ClipContent::Audio(a) = &c.content else {
         panic!("audio")
     };
-    assert_eq!(p.tempo.bpm, 124.0);
+    assert_eq!(project.tempo.bpm, 124.0);
     assert_eq!(
         (c.start, c.length),
         (
@@ -513,26 +575,22 @@ fn synthesized_pulse_loop_uses_opt_in_warp_without_changing_the_showcase_tempo()
         (a.file.frames, a.file.sample_rate, a.file.channels),
         (256000, 48000, 2)
     );
-    assert_eq!(a.source_frames(c.length, p.tempo), 256000);
+    assert_eq!(a.source_frames(c.length, project.tempo), 256000);
 }
 
-#[test]
-fn the_demo_has_track_clip_and_master_automation() {
+fn check_automation(project: &Project, host: &dyn DeviceHost) {
     use komponist_model::Tick;
-    use komponist_model::automation::{AutomationTarget, effective_value_at};
-    use komponist_model::params::ParamId;
+    use komponist_model::automation::effective_value_at;
 
-    let project = showcase_project();
-    let lead = track_named(&project, "Lead");
-    let pad = track_named(&project, "Pad");
-    let cutoff = AutomationTarget::Param {
-        device: pad.channel.devices[0].id,
-        param: ParamId::new("cutoff"),
-    };
-    let feedback = AutomationTarget::Param {
-        device: lead.channel.devices[0].id,
-        param: ParamId::new("feedback"),
-    };
+    let lead = track_named(project, "Lead");
+    let pad = track_named(project, "Pad");
+    let cutoff = authored_target(host, pad.channel.devices[0].id, "cutoff");
+    let feedback = authored_target(host, lead.channel.devices[0].id, "feedback");
+    let delay = lead.channel.devices.last().unwrap().id;
+    assert_eq!(
+        lead.macros.0[0].mappings[0].target,
+        authored_target(host, delay, "mix")
+    );
     let clip = lead
         .clips
         .iter()
@@ -566,7 +624,7 @@ fn the_demo_has_track_clip_and_master_automation() {
         effective_value_at(pad, &macro_target, Tick::ZERO),
         Some(1.0)
     );
-    let keys = track_named(&project, "Keys");
+    let keys = track_named(project, "Keys");
     assert!(keys.automation.lane(&AutomationTarget::Volume).is_some());
     let master = project
         .master_automation
@@ -584,40 +642,26 @@ fn the_demo_has_track_clip_and_master_automation() {
     );
 }
 
-#[test]
-fn surf_plays_over_the_pad_and_its_positions_morph() {
+fn check_surf(project: &Project, host: &dyn DeviceHost) {
     use komponist_model::Tick;
-    use komponist_model::automation::{AutomationTarget, effective_value_at};
-    use komponist_model::params::ParamId;
+    use komponist_model::automation::effective_value_at;
 
-    let project = showcase_project();
-    let track = track_named(&project, komponist_app::showcase::surf::TRACK);
+    let track = track_named(project, komponist_app::showcase::surf::TRACK);
     let device = &track.channel.devices[0];
-    assert_eq!(Internal::from_plugin(&device.plugin), Some(Internal::Surf));
-    let (preset, changed) = Internal::Surf
-        .loaded_preset(device.state.as_deref())
-        .expect("a preset");
-    assert!(!changed);
-    assert_eq!(Internal::Surf.presets()[preset].name, "Vowel Pad");
+    assert!(device_id_is(device, "surf"));
     let index = project
         .tracks
         .iter()
         .position(|t| t.id == track.id)
         .unwrap();
-    let notes = notes_of(&project, index);
+    let notes = notes_of(project, index);
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].len(), 8);
-    let target = AutomationTarget::Param {
-        device: device.id,
-        param: ParamId::new("osc_b_pos"),
-    };
+    let target = authored_target(host, device.id, "osc_b_pos");
     let at = |bar: i64| effective_value_at(track, &target, Tick::from_steps(bar * 16)).unwrap();
     assert!(at(8) < 0.2 && at(16) > 0.8 && at(12) > at(9));
     // Position A runs through the whole table and back.
-    let a = AutomationTarget::Param {
-        device: device.id,
-        param: ParamId::new("osc_a_pos"),
-    };
+    let a = authored_target(host, device.id, "osc_a_pos");
     let at = |bar: i64| effective_value_at(track, &a, Tick::from_steps(bar * 16)).unwrap();
     assert_eq!((at(8), at(12)), (0.0, 1.0));
     assert!(at(10) > 0.2 && at(10) < 0.8 && at(16) < 0.5);
