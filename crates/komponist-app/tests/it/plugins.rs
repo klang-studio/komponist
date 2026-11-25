@@ -1096,6 +1096,100 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
 }
 
 #[test]
+fn standalone_clap_layout_v2_renders_three_graphs() {
+    use egui::accesskit::Role;
+    use egui_kittest::{SnapshotOptions, SnapshotResults, kittest::Queryable as _};
+    use komponist_app::UiAction;
+    use komponist_app::ui_state::Panel;
+    use komponist_i18n::Lang;
+    use komponist_model::ChannelRef;
+    use komponist_model::edits::{NewDevice, NewTrack, add_track, insert_device};
+    use std::path::PathBuf;
+
+    let Some(bundle) = std::env::var_os("KOMPONIST_LAYOUT_FIXTURE") else {
+        eprintln!("set KOMPONIST_LAYOUT_FIXTURE to the standalone C CLAP fixture");
+        return;
+    };
+    let bundle = PathBuf::from(bundle);
+    assert!(bundle.is_file());
+    let plugin = clap_plugin("org.klang-studio.komponist.layout-fixture.version-two");
+    let (project, track) = add_track(
+        &Project::new("Layout v2"),
+        NewTrack {
+            name: None,
+            hue: None,
+            instrument: None,
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let (project, device) = insert_device(
+        &project,
+        ChannelRef::Track(track),
+        0,
+        NewDevice {
+            plugin,
+            role: DeviceRole::Effect,
+            state: None,
+            sidechain: None,
+        },
+    )
+    .unwrap();
+
+    let mut snapshots = SnapshotResults::new();
+    for (lang, page, envelope, waveform) in [
+        (Lang::De, "Diagramme", "Hüllkurve", "Wellenform"),
+        (Lang::En, "Graphs", "Envelope", "Waveform"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = PluginHost::new(config(dir.path()));
+        host.start_scan(&PluginDirs {
+            clap: vec![bundle.parent().unwrap().to_owned()],
+            vst3: Vec::new(),
+        });
+        poll_until(&mut host, "standalone layout fixture scan", |event| {
+            matches!(event, PluginManagerEvent::ScanFinished(_))
+        });
+        let mut app = app_with(project.clone(), host).with_lang(lang);
+        step_until(&mut app, "standalone layout v2 through the bridge", |app| {
+            let host = app.engine().host();
+            host.status(device) == DeviceStatus::Ok && host.native_layout(device).is_some()
+        });
+        let host = app.engine().host();
+        assert_eq!(host.native_layout(device).unwrap().schema_version, 2);
+        assert!(host.bridge_pid(device).is_some());
+        app.dispatch(Action::Ui(UiAction::TogglePanel(Panel::Browser)));
+        app.dispatch(Action::Ui(UiAction::TogglePanel(Panel::Inspector)));
+        app.dispatch(Action::Ui(UiAction::RevealDevice(device)));
+
+        let mut h = komponist_ui::snapshot::builder::<App>(1.0)
+            .with_size(egui::vec2(1260.0, 600.0))
+            .with_options(
+                SnapshotOptions::new()
+                    .output_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots")),
+            )
+            .build_ui_state(|ui, app| app.show(ui), app);
+        h.run_steps(3);
+        h.get_by_label(page);
+        for graph in ["Equalizer", envelope, waveform] {
+            h.get_by_role_and_label(Role::Group, graph);
+        }
+        // These diagnostics depend on the test machine's audio scheduling.
+        h.state_mut().ui_mut().status = None;
+        h.step();
+        let cpu = h
+            .get_by_role_and_label(Role::Status, lang.transport_cpu())
+            .rect();
+        h.mask(cpu.expand(2.0));
+        h.snapshot(format!("standalone-clap-layout-v2-{}", lang.code()));
+        snapshots.extend_harness(&mut h);
+        h.state_mut().shutdown();
+    }
+    snapshots.unwrap();
+}
+
+#[test]
 fn sdk_example_uses_native_layout_and_falls_back() {
     use egui::accesskit::Role;
     use egui_kittest::kittest::Queryable as _;
