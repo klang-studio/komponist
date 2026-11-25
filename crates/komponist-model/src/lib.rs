@@ -8,6 +8,7 @@
 //! - [`audio`]: audio files, audio clips, audio track input and monitoring (epic #8).
 //! - [`warp`]: optional affine Warp state and exact native frame/tick mapping (#14).
 //! - [`paths`]: lexical path helpers for file links.
+//! - [`asset_collection`]: the filesystem placement used by Collect and Save.
 //! - [`ids`]: stable ids from one per-project counter.
 //! - [`time`]: [`Tick`], [`Tempo`], [`Meter`], [`TickRange`], [`TempoMap`], grids.
 //! - [`project`]: the document tree ([`Project`], [`Track`], [`Clip`], [`Device`], …).
@@ -21,11 +22,12 @@
 //!   topological order, solo and mute gates (ARCHITECTURE §6.8).
 //! - [`fixtures`]: the demo project "Night Drive" and the empty project.
 //!
-//! Threads: everything here is plain data and pure functions, used on the UI thread and on workers.
-//! Nothing in this crate runs on the audio thread.
+//! Document operations use plain data on the UI thread and on workers. File resolution and
+//! collection touch the filesystem. Nothing in this crate runs on the audio thread.
 
 #![forbid(unsafe_code)]
 
+pub mod asset_collection;
 pub mod audio;
 pub mod automation;
 pub mod document;

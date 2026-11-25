@@ -7,15 +7,8 @@
 //!   "Sample laden …" or found with "Suchen …" becomes a link in the device state
 //!   (`komponist_sampler::links`: absolute path and path relative to the project file);
 //!   the device host loads it in the background.
-//! - **Saving** rewrites the links that resolve for the file being written ([`rebase_project_links`]),
-//!   so "Speichern unter" into another folder keeps relative paths right. The rewrite is outside the
-//!   history and reaches every undo and redo step, each from its own state: undo after a save
-//!   still restores that step's parameters and samples, with paths for the new folder (#86).
-//! - **"Sammeln und speichern"** ([`ProjectAction::CollectAndSave`]) copies every sample that lies
-//!   outside `<project name> Samples/` into it, next to the project file, and saves. Identical
-//!   files are copied once. It is the only action that creates a folder. The files of audio clips
-//!   (`komponist_model::AudioFile`, epic #8) are linked the same way and collected into the same
-//!   folder by the same collector; saving rebases their links like the Sampler's.
+//! - **Project files**: saving, collecting, and rebasing linked files happen in
+//!   `crate::project_assets`.
 //! - **Missing samples** are listed in the S06 dialog ([`crate::dialogs::missing_plugins`]) and
 //!   found again with "Suchen …"; the other missing samples that lie in the chosen folder follow.
 //! - **Pad selection**: the pad the device frame has selected (`{sel}`), the pad of the step
@@ -33,15 +26,12 @@ use egui::Context;
 use komponist_builtin::Internal;
 use komponist_engine::Command;
 use komponist_general_sampler as general_sampler;
-use komponist_model::edits;
 use komponist_model::params::ParamInfo;
 use komponist_model::project::SavedPluginState;
-use komponist_model::{
-    AudioFile, ChannelRef, ClipContent, Device, DeviceId, DeviceRole, Project, TrackId,
-};
+use komponist_model::{ChannelRef, ClipContent, Device, DeviceId, DeviceRole, TrackId};
 use komponist_plugins::{DeviceStatus, bundled_sampler};
 use komponist_sampler as sampler;
-use komponist_sampler::{Collector, PadField, SampleLink, links};
+use komponist_sampler::{PadField, SampleLink, links};
 
 use crate::actions::PluginAction;
 use crate::app::App;
@@ -593,81 +583,6 @@ impl App {
         });
     }
 
-    /// "Sammeln und speichern": collects into the samples folder of the project file, then saves.
-    pub(crate) fn collect_and_save(&mut self) {
-        // A recovered copy whose file is gone has no file to collect next to (as Ctrl S).
-        let file = self
-            .project_path
-            .clone()
-            .filter(|_| !self.recovery_ui.save_asks);
-        let Some(file) = file else {
-            // The folder of the samples depends on the file: ask for it, then collect.
-            self.dialogs.samples.collect_after_save = true;
-            self.open_file_browser(Purpose::Save);
-            return;
-        };
-        let mut collector = Collector::new(&file);
-        if !self.save_to_collected(&file, &mut collector) {
-            return;
-        }
-        for path in &collector.skipped {
-            eprintln!(
-                "komponist: not collected, not an audio file: {}",
-                path.display()
-            );
-        }
-        let save_warning = self
-            .ui
-            .status
-            .as_ref()
-            .filter(|status| status.kind == StatusKind::Error)
-            .map(|status| status.text.clone());
-        let copied = collector.log.iter().filter(|c| c.copied).count();
-        let folder = sampler::links::samples_folder_name(&file);
-        let text = match copied {
-            0 => self.lang.status_collected_none(&folder),
-            n => self.lang.status_collected(n, &folder),
-        };
-        let (mut text, mut kind) = if collector.skipped.is_empty() {
-            (text, StatusKind::Success)
-        } else {
-            let files = collector
-                .skipped
-                .iter()
-                .map(|p| p.file_name().unwrap_or(p.as_os_str()).to_string_lossy())
-                .collect::<Vec<_>>()
-                .join(", ");
-            (
-                format!(
-                    "{text} · {}",
-                    self.lang
-                        .status_collect_skipped(collector.skipped.len(), files)
-                ),
-                StatusKind::Error,
-            )
-        };
-        if !collector.unapproved_assets.is_empty() {
-            let files = collector
-                .unapproved_assets
-                .iter()
-                .map(|path| {
-                    path.file_name()
-                        .unwrap_or(path.as_os_str())
-                        .to_string_lossy()
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            let warning = self.lang.status_collect_unapproved(files);
-            text = format!("{text} · {warning}");
-            kind = StatusKind::Error;
-        }
-        if let Some(warning) = save_warning {
-            text = format!("{warning} · {text}");
-            kind = StatusKind::Error;
-        }
-        self.set_status(text, kind);
-    }
-
     // --------------------------------------------------------------------------------------------
     // The pad selection
 
@@ -818,141 +733,6 @@ impl App {
         );
         inputs
     }
-}
-
-/// All audio take files of `project`, including inactive passes, in track and clip order.
-fn audio_files(project: &Project) -> Vec<&AudioFile> {
-    project
-        .tracks
-        .iter()
-        .flat_map(|t| t.clips.iter())
-        .flat_map(|c| match &c.content {
-            ClipContent::Audio(a) => a.takes.as_slice(),
-            _ => &[],
-        })
-        .map(|take| &take.file)
-        .collect()
-}
-
-/// Collect the current sample and audio-clip sources before rewriting the file or history.
-pub(crate) fn collect_sample_sources<'a>(
-    project: &Project,
-    collector: &mut Collector,
-    project_dir: Option<&Path>,
-    approved_plugin_files: &HashSet<PathBuf>,
-    plugin_snapshot: impl Fn(DeviceId) -> Option<&'a [u8]>,
-) -> std::io::Result<()> {
-    for device in project
-        .tracks
-        .iter()
-        .flat_map(|track| track.channel.devices.iter())
-        .chain(project.master.devices.iter())
-    {
-        for link in device.asset_links.values() {
-            if let Some(found) = link.resolve(project_dir) {
-                let canonical = std::fs::canonicalize(&found)?;
-                if links::is_audio_file(&found) || approved_plugin_files.contains(&canonical) {
-                    collector.collect_asset_file(&found)?;
-                } else if !(found.starts_with(collector.samples_dir())
-                    && std::fs::canonicalize(collector.samples_dir())
-                        .is_ok_and(|folder| canonical.starts_with(folder)))
-                {
-                    // Existing files in this project's collection need no copy. A stored
-                    // link alone never authorizes copying another non-audio file.
-                    collector.unapproved_assets.push(found);
-                }
-            }
-        }
-        bundled_sampler::collect_embedded_links(
-            device,
-            collector,
-            plugin_snapshot(device.id),
-            project_dir,
-        )?;
-    }
-    for file in audio_files(project) {
-        if let Some(found) = file.resolve(project_dir) {
-            collector.collect_file(&found)?;
-        }
-    }
-    Ok(())
-}
-
-/// Rewrites a project or history entry for the destination folder while it still resolves
-/// through the current project directory. Recording copies already have their final paths.
-pub(crate) fn rebase_project_links(
-    project: &Project,
-    old_dir: Option<&Path>,
-    new_dir: &Path,
-    destination: impl Fn(PathBuf) -> PathBuf,
-    asset_destination: impl Fn(PathBuf) -> PathBuf,
-) -> Option<Project> {
-    let after_embedded = rewrite_embedded_links(project, |device| {
-        bundled_sampler::rebase_embedded_links(device, None, old_dir, new_dir, &destination)
-    });
-    let after_samples =
-        edits::rewrite_audio_files(after_embedded.as_ref().unwrap_or(project), |file| {
-            let path = destination(file.resolve(old_dir)?);
-            Some(file.moved_to(&path, new_dir))
-        })
-        .or(after_embedded);
-    let base = after_samples.as_ref().unwrap_or(project);
-    let mut result = None;
-    for device in base
-        .tracks
-        .iter()
-        .flat_map(|track| &track.channel.devices)
-        .chain(&base.master.devices)
-    {
-        if device.asset_links.is_empty() {
-            continue;
-        }
-        let links = device
-            .asset_links
-            .iter()
-            .map(|(&id, link)| {
-                let link = link.runtime_path(old_dir).map_or_else(
-                    || link.clone(),
-                    |source| link.moved_to(&asset_destination(source), Some(new_dir)),
-                );
-                (id, link)
-            })
-            .collect();
-        if links != device.asset_links {
-            result = Some(
-                edits::set_device_asset_links(result.as_ref().unwrap_or(base), device.id, links)
-                    .ok()?,
-            );
-        }
-    }
-    result.or(after_samples)
-}
-
-/// Rewrite embedded paths without discarding the companion parameter bases.
-fn rewrite_embedded_links(
-    project: &Project,
-    rewrite: impl Fn(&Device) -> Option<Vec<u8>>,
-) -> Option<Project> {
-    let devices = project
-        .tracks
-        .iter()
-        .flat_map(|t| t.channel.devices.iter())
-        .chain(project.master.devices.iter());
-    let mut result = None;
-    for device in devices {
-        let Some(bytes) = rewrite(device) else {
-            continue;
-        };
-        let state = SavedPluginState {
-            bytes: bytes.into(),
-            parameter_bases: device.parameter_bases.clone(),
-        };
-        result = Some(
-            edits::set_saved_plugin_state(result.as_ref().unwrap_or(project), device.id, &state)
-                .ok()?,
-        );
-    }
-    result
 }
 
 #[cfg(test)]
