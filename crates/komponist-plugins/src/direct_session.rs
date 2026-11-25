@@ -275,9 +275,7 @@ impl DirectSession {
         self.host.device_display()
     }
 
-    pub(crate) fn asset_slots(
-        &self,
-    ) -> (Option<Snapshot>, bool, bool, Option<edit_state::Version>) {
+    pub(crate) fn asset_slots(&self) -> (Option<Snapshot>, bool, bool, bool) {
         self.host.asset_slots()
     }
 

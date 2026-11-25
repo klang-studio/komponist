@@ -1420,7 +1420,7 @@ impl Bridge {
         let edit_state = self
             .plugin
             .as_ref()
-            .and_then(|plugin| plugin.asset_edit_state_version());
+            .is_some_and(|plugin| plugin.supports_asset_edit_state());
         self.send(BridgeMsg::DeviceAssets {
             request,
             snapshot: encoded,

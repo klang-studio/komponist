@@ -40,7 +40,7 @@ impl AssetEdit {
     }
 }
 
-/// Direct and compatibility edits complete in the caller. The bridge replies on its next polls.
+/// Direct edits complete in the caller. The bridge replies on its next polls.
 pub enum AssetEditPreparation {
     Ready(Option<SavedPluginState>),
     Pending,
@@ -50,7 +50,6 @@ pub enum AssetEditPreparation {
 pub(crate) struct AssetEditState {
     pub source: Option<Arc<[u8]>>,
     pub parameter_bases: BTreeMap<u32, f64>,
-    pub trim_changed: bool,
 }
 
 impl AssetEditState {
@@ -68,7 +67,7 @@ impl AssetEditState {
         }
         let bytes = match change.state {
             Some(state) => Arc::from(state.into_bytes()),
-            None if self.trim_changed || self.parameter_bases.len() != before => {
+            None if self.parameter_bases.len() != before => {
                 self.source.ok_or(edit_state::Rejected)?
             }
             None => return Ok(None),
@@ -124,7 +123,7 @@ pub(crate) fn project_bindings(
 pub(crate) struct DeviceAssets {
     pub snapshot: Option<Snapshot>,
     pub supports_offline: bool,
-    pub edit_state_version: Option<edit_state::Version>,
+    pub supports_edit_state: bool,
     file_slots: Option<bool>,
     slot_poll_at: Instant,
     desired_bindings: BTreeMap<u32, Binding>,
@@ -146,7 +145,7 @@ impl DeviceAssets {
         Self {
             snapshot: None,
             supports_offline: false,
-            edit_state_version: None,
+            supports_edit_state: false,
             file_slots: None,
             slot_poll_at: now,
             desired_bindings: BTreeMap::new(),
@@ -182,7 +181,7 @@ impl DeviceAssets {
         snapshot: Option<Snapshot>,
         file_slots: bool,
         offline: bool,
-        edit_state: Option<edit_state::Version>,
+        edit_state: bool,
     ) {
         self.file_slots = Some(file_slots);
         if !file_slots {
@@ -193,7 +192,7 @@ impl DeviceAssets {
             self.binding_snapshot_pending = false;
         }
         self.supports_offline = offline;
-        self.edit_state_version = edit_state.filter(|_| file_slots);
+        self.supports_edit_state = file_slots && edit_state;
     }
 
     pub(crate) fn queue_bindings(&mut self, bindings: &Bindings) -> bool {
@@ -385,7 +384,6 @@ mod tests {
         let input = || AssetEditState {
             source: Some(source.clone()),
             parameter_bases: bases.clone(),
-            trim_changed: false,
         };
         let change = edit_state::Change {
             state: Some(edit_state::State::try_from(vec![3, 4]).unwrap()),
@@ -408,7 +406,7 @@ mod tests {
     fn retries_a_missing_file_slot_snapshot_only_for_supported_plugins() {
         let mut assets = DeviceAssets::new();
         assert!(assets.slots_due());
-        assets.report_slots(None, true, true, None);
+        assets.report_slots(None, true, true, false);
         assert!(assets.inventory_pending());
         assert!(assets.queue_bindings(&bindings(0)));
         assets.slot_poll_at = Instant::now();
@@ -423,13 +421,13 @@ mod tests {
                 status: AssetStatus::Empty,
             }],
         };
-        assets.report_slots(Some(snapshot.clone()), true, true, None);
-        assets.report_slots(None, true, true, None);
+        assets.report_slots(Some(snapshot.clone()), true, true, false);
+        assets.report_slots(None, true, true, false);
         assert!(!assets.inventory_pending());
         assert_eq!(assets.snapshot, Some(snapshot));
 
         let mut unsupported = DeviceAssets::new();
-        unsupported.report_slots(None, false, true, None);
+        unsupported.report_slots(None, false, true, false);
         assert!(!unsupported.inventory_pending());
         assert!(!unsupported.slots_due());
         assert!(!unsupported.queue_bindings(&bindings(0)));
@@ -447,22 +445,22 @@ mod tests {
                 status,
             }],
         };
-        assets.report_slots(Some(snapshot(AssetStatus::Ready)), true, true, None);
+        assets.report_slots(Some(snapshot(AssetStatus::Ready)), true, true, false);
         assert!(!assets.render_bindings_pending());
         assert!(assets.queue_bindings(&bindings(0)));
         assert!(assets.render_bindings_pending());
         assert!(assets.take_bindings().is_some());
-        assets.report_slots(Some(snapshot(AssetStatus::Ready)), true, true, None);
+        assets.report_slots(Some(snapshot(AssetStatus::Ready)), true, true, false);
         assert!(assets.render_bindings_pending());
 
         assets.report_bindings(true);
         assert!(!assets.bindings_pending());
         assert!(!assets.inventory_pending());
         assert!(assets.render_bindings_pending());
-        assets.report_slots(None, true, true, None);
+        assets.report_slots(None, true, true, false);
         assert!(assets.render_bindings_pending());
 
-        assets.report_slots(Some(snapshot(AssetStatus::Loading)), true, true, None);
+        assets.report_slots(Some(snapshot(AssetStatus::Loading)), true, true, false);
         assert!(!assets.render_bindings_pending());
 
         assets.begin_restore();
@@ -474,7 +472,7 @@ mod tests {
     #[test]
     fn restore_replays_latest_bindings_then_retires_and_restarts_offline_work() {
         let mut assets = DeviceAssets::new();
-        assets.report_slots(None, true, true, None);
+        assets.report_slots(None, true, true, false);
         let load = |id, path: &str, reload| Binding {
             id,
             path: Some(path.into()),
@@ -549,7 +547,7 @@ mod tests {
     #[test]
     fn rejected_bindings_hold_offline_preparation_until_those_slots_are_accepted() {
         let mut assets = DeviceAssets::new();
-        assets.report_slots(None, true, true, None);
+        assets.report_slots(None, true, true, false);
         let request = Some(OfflineRequest {
             id: 1,
             sample_rate: 48_000.0,

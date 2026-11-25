@@ -4,8 +4,7 @@ use std::ffi::{CStr, c_void};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 
-pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.device-asset-edit-state/1";
-pub const EXTENSION_ID_V2: &CStr = c"org.klang-studio.komponist.device-asset-edit-state/2";
+pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.device-asset-edit-state";
 pub const MAX_PARAMETER_BASE_RESETS: usize = super::MAX_SLOTS;
 pub const MAX_EDITS_BYTES: usize = 256;
 pub const MAX_STATE_BYTES: usize = 2 * 1024 * 1024;
@@ -17,28 +16,13 @@ pub const REPLACED: u32 = 2;
 /// Copies one complete replacement state into host-owned storage. Call at most once.
 pub type WriteState = unsafe extern "C" fn(*mut c_void, *const u8, u32) -> bool;
 
-/// Main-thread callback for a detached input state. It may run while audio is active.
-#[repr(C)]
-pub struct Extension {
-    pub prepare: Option<
-        unsafe extern "C" fn(
-            plugin: *const c_void,
-            edits: *const u8,
-            edits_len: u32,
-            state: *const u8,
-            state_len: u32,
-            output: *mut c_void,
-            write: WriteState,
-        ) -> u32,
-    >,
-}
-
 /// Records the CLAP parameter IDs whose persisted host overrides must be removed.
 pub type ResetParameterBases = unsafe extern "C" fn(*mut c_void, *const u32, u32) -> bool;
 
-/// Version 2 adds a sink for the IDs reset by the device in its replacement state.
+/// Main-thread callback for a detached input state. It may run while audio is active. The device
+/// writes its replacement state and the IDs of the parameters it reset, each at most once.
 #[repr(C)]
-pub struct ExtensionV2 {
+pub struct Extension {
     pub prepare: Option<
         unsafe extern "C" fn(
             plugin: *const c_void,
@@ -51,12 +35,6 @@ pub struct ExtensionV2 {
             reset_parameter_bases: ResetParameterBases,
         ) -> u32,
     >,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-pub enum Version {
-    V1,
-    V2,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]

@@ -435,9 +435,7 @@ impl<T: SampledDefinition> ClapPlugin for Sampled<T> {
         } else if id == komponist_ipc::waveform_preview::EXTENSION_ID && T::SLICE_SETTINGS.is_some()
         {
             std::ptr::from_ref(&Self::WAVEFORM_PREVIEW).cast()
-        } else if id == edit_state::EXTENSION_ID_V2 {
-            asset_edit::extension_v2::<T>()
-        } else if id == edit_state::EXTENSION_ID && T::SLICE_SETTINGS.is_some() {
+        } else if id == edit_state::EXTENSION_ID {
             asset_edit::extension::<T>()
         } else if id == komponist_ipc::device_assets::EXTENSION_ID {
             komponist_native_clap_sdk::assets::extension::<Self, SampleParameters<T>>(id)

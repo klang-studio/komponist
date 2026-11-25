@@ -178,10 +178,8 @@ pub trait HostedPlugin {
     }
 
     /// Optional, pure transformation of persisted state for a user file edit.
-    fn asset_edit_state_version(
-        &self,
-    ) -> Option<komponist_ipc::device_assets::edit_state::Version> {
-        None
+    fn supports_asset_edit_state(&self) -> bool {
+        false
     }
 
     fn prepare_asset_edit_state(

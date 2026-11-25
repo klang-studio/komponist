@@ -105,6 +105,7 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 21 (#287) restores CLAP parameter bases separately from opaque state bytes.
 /// 22 (#286) applies discovered CLAP presets and captures project state.
 /// 23 (#285) prepares persisted state for a user file edit.
+/// 24 (#285) returns the parameter IDs a device reset while preparing a file edit.
 pub const PROTOCOL_VERSION: u32 = 24;
 
 /// Maximum number of parameter bases that can follow an active state restore.
@@ -473,7 +474,7 @@ pub enum BridgeMsg {
         snapshot: Option<Vec<u8>>,
         file_slots: bool,
         offline: bool,
-        edit_state: Option<crate::device_assets::edit_state::Version>,
+        edit_state: bool,
     },
     /// Whether the plugin accepted the file-slot update.
     DeviceAssetsApplied(u32, bool),
@@ -2047,7 +2048,7 @@ mod tests {
                 snapshot: None,
                 file_slots: true,
                 offline: false,
-                edit_state: Some(crate::device_assets::edit_state::Version::V2),
+                edit_state: true,
             },
             BridgeMsg::DeviceAssetEditPrepared(
                 7,

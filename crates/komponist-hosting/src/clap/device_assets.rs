@@ -67,23 +67,8 @@ fn edit_state_callback(plugin: &clap_plugin) -> Option<&edit_state::Extension> {
     }
 }
 
-fn edit_state_v2_callback(plugin: &clap_plugin) -> Option<&edit_state::ExtensionV2> {
-    // SAFETY: The initialized CLAP instance owns this immutable table for its lifetime.
-    unsafe {
-        plugin.get_extension?(plugin, edit_state::EXTENSION_ID_V2.as_ptr())
-            .cast::<edit_state::ExtensionV2>()
-            .as_ref()
-    }
-}
-
-pub(super) fn edit_state_version(plugin: &clap_plugin) -> Option<edit_state::Version> {
-    if edit_state_v2_callback(plugin).is_some_and(|table| table.prepare.is_some()) {
-        Some(edit_state::Version::V2)
-    } else if edit_state_callback(plugin).is_some_and(|table| table.prepare.is_some()) {
-        Some(edit_state::Version::V1)
-    } else {
-        None
-    }
+pub(super) fn supports_edit_state(plugin: &clap_plugin) -> bool {
+    edit_state_callback(plugin).is_some_and(|table| table.prepare.is_some())
 }
 
 #[derive(Default)]
@@ -133,6 +118,9 @@ pub(super) fn prepare_edit_state(
     edits: &edit_state::Edits,
     state: Option<&[u8]>,
 ) -> edit_state::PreparedChange {
+    let prepare = edit_state_callback(plugin)
+        .and_then(|table| table.prepare)
+        .ok_or(edit_state::Rejected)?;
     let mut edit_bytes = [0; edit_state::MAX_EDITS_BYTES];
     let edit_len = edits.encode(&mut edit_bytes).ok_or(edit_state::Rejected)?;
     let (state_bytes, state_len) = match state {
@@ -146,31 +134,16 @@ pub(super) fn prepare_edit_state(
     // SAFETY: All inputs and the output context remain valid until the main-thread call returns.
     // This pure operation cannot touch shared processing state.
     let status = unsafe {
-        if let Some(prepare) = edit_state_v2_callback(plugin).and_then(|table| table.prepare) {
-            prepare(
-                instance,
-                edit_bytes.as_ptr(),
-                edit_len as u32,
-                state_bytes,
-                state_len,
-                context,
-                write_state,
-                reset_parameter_bases,
-            )
-        } else {
-            let prepare = edit_state_callback(plugin)
-                .and_then(|table| table.prepare)
-                .ok_or(edit_state::Rejected)?;
-            prepare(
-                instance,
-                edit_bytes.as_ptr(),
-                edit_len as u32,
-                state_bytes,
-                state_len,
-                context,
-                write_state,
-            )
-        }
+        prepare(
+            instance,
+            edit_bytes.as_ptr(),
+            edit_len as u32,
+            state_bytes,
+            state_len,
+            context,
+            write_state,
+            reset_parameter_bases,
+        )
     };
     let changed = output.change.state.is_some() || !output.change.reset_parameter_bases.is_empty();
     if !output.failed

@@ -20,14 +20,7 @@ pub(crate) fn extension<T: SampledDefinition>() -> *const c_void {
     std::ptr::from_ref(extension).cast()
 }
 
-pub(crate) fn extension_v2<T: SampledDefinition>() -> *const c_void {
-    let extension = &edit_state::ExtensionV2 {
-        prepare: Some(prepare_v2::<T>),
-    };
-    std::ptr::from_ref(extension).cast()
-}
-
-unsafe extern "C" fn prepare_v2<T: SampledDefinition>(
+unsafe extern "C" fn prepare<T: SampledDefinition>(
     plugin: *const c_void,
     edits: *const u8,
     edits_len: u32,
@@ -156,33 +149,6 @@ unsafe fn read_request<'a>(
         _ => return None,
     };
     Some((edits, state))
-}
-
-unsafe extern "C" fn prepare<T: SampledDefinition>(
-    _plugin: *const c_void,
-    edits: *const u8,
-    edits_len: u32,
-    state: *const u8,
-    state_len: u32,
-    output: *mut c_void,
-    write: edit_state::WriteState,
-) -> u32 {
-    // SAFETY: The host retains the two read buffers for this synchronous callback.
-    let Some((edits, state)) = (unsafe { read_request(edits, edits_len, state, state_len) }) else {
-        return edit_state::REJECTED;
-    };
-    match reset::<T>(&edits, state) {
-        Ok(None) => edit_state::UNCHANGED,
-        Ok(Some(state)) if edit_state::valid_state(&state) => {
-            // SAFETY: The host supplied this output sink. The bytes remain live until it returns.
-            if unsafe { write(output, state.as_ptr(), state.len() as u32) } {
-                edit_state::REPLACED
-            } else {
-                edit_state::REJECTED
-            }
-        }
-        _ => edit_state::REJECTED,
-    }
 }
 
 fn reset<T: SampledDefinition>(edits: &Edits, state: Option<&[u8]>) -> Prepared {
