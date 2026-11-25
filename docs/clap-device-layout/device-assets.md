@@ -77,7 +77,7 @@ time-stretching proceeds on a worker.
 
 ## Preparing saved state for a user file edit
 
-The optional `org.klang-studio.komponist.device-asset-edit-state/1` extension lets a
+The optional `org.klang-studio.komponist.device-asset-edit-state` extension lets a
 device update dependent settings when a user edits a file link. It has one main-thread
 callback and is independent of the binding and offline callbacks. The callback receives
 a complete list of edits and the opaque state stored by the project. A null input
@@ -90,10 +90,14 @@ and no trailing bytes. Slot IDs must be distinct. The ordered intent variants ar
 `Relink` (repair of an unresolved project link with a file), and `Clear`. The
 payload limit is 256 bytes. No file path is passed to the callback.
 
-Return `Unchanged` to retain the supplied state, or write one complete, nonempty
-replacement of at most 2,097,152 bytes to the host's synchronous sink and return
-`Replaced`. The host copies those bytes during the sink call. Return `Rejected` for
-an unsupported edit, invalid input, or a failed write. All pointers are borrowed for
+The callback has two synchronous sinks, each called at most once. The state sink takes
+one complete, nonempty replacement of at most 2,097,152 bytes. The host copies those bytes
+during the sink call. The parameter sink takes 1–32 distinct, valid numeric CLAP parameter
+IDs. The device uses it to remove saved host overrides for parameters whose defaults are
+reflected in the prepared state. Return `Replaced` after at least one sink accepted its
+output, or `Unchanged` without calling either sink to retain the supplied state. The host
+removes only the reported overrides and retains the others. Return `Rejected` for an
+unsupported edit, invalid input, or a failed write. All pointers are borrowed for
 the call only. An invalid response rejects the edit.
 
 Preparation can run while audio is active. It depends only on the supplied bytes and
@@ -101,11 +105,3 @@ edits. It leaves live state, processing, bindings and files untouched. The host 
 discard the result if its source changed while the request was in flight. On success,
 the host commits the prepared state and file links as one document edit. Undo, redo,
 project loading and offline rendering restore their saved state and bindings directly.
-
-Version 2, `org.klang-studio.komponist.device-asset-edit-state/2`, adds a second
-synchronous sink for 1–32 distinct, valid numeric CLAP parameter IDs. The device uses
-it to remove saved host overrides for parameters whose defaults are reflected in the
-prepared state. Call each sink at most once. Return `Replaced` after at least one sink
-accepted its output, or `Unchanged` without calling either sink. The host removes only
-the reported overrides and retains the others in the same document edit. Hosts prefer
-version 2 and keep using version 1 for older bundles.
