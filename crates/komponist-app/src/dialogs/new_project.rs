@@ -12,6 +12,7 @@ use egui::{Context, vec2};
 use komponist_i18n::Lang;
 use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack, StepProp};
 use komponist_model::{ClipId, Hue, PPQ, PluginRef, Project, Tick, TrackId};
+use komponist_plugins::{Catalog, requires_bundled};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, typography};
 use komponist_ui::widgets::button::Kind;
@@ -119,24 +120,28 @@ const TEMPLATE_BEAT: [(usize, &[usize]); 4] = [
     (3, &[0, 2, 4, 6, 8, 10, 12, 14]),
 ];
 
+/// The in-process Sampler of a reference host: the pad rows of the template and, without
+/// packaged bundles, its drum instrument.
+fn reference_sampler() -> PluginRef {
+    komponist_builtin::Internal::Sampler.plugin_ref()
+}
+
 /// The instruments of the template for `catalog`: the drum sampler and hexa, from the packaged
 /// bundles, or the in-process devices of a reference host. `None` when the catalog has neither.
-pub fn template_instruments(
-    catalog: &komponist_plugins::Catalog,
-) -> Option<(PluginRef, PluginRef)> {
-    use komponist_builtin::{BuiltinKind, Internal};
-    let find = |kind: BuiltinKind, reference: PluginRef| {
+pub fn template_instruments(catalog: &Catalog) -> Option<(PluginRef, PluginRef)> {
+    let packaged = |id: &str| {
         catalog
-            .packaged(kind)
-            .or_else(|| catalog.resolve(&reference))
+            .entries()
+            .iter()
+            .find(|entry| entry.plugin.id == id && requires_bundled(&entry.plugin))
             .map(|entry| entry.plugin.clone())
     };
+    let reference = |plugin: PluginRef| catalog.resolve(&plugin).map(|entry| entry.plugin.clone());
     Some((
-        find(
-            BuiltinKind::Internal(Internal::Sampler),
-            Internal::Sampler.plugin_ref(),
-        )?,
-        find(BuiltinKind::Hexa, crate::app::hexa_ref())?,
+        packaged("org.klang-studio.komponist.sampler")
+            .or_else(|| reference(reference_sampler()))?,
+        packaged("org.klang-studio.komponist.hexa")
+            .or_else(|| reference(crate::app::hexa_ref()))?,
     ))
 }
 
@@ -163,11 +168,7 @@ pub fn template(t: Lang, drums: PluginRef, hexa: PluginRef) -> Project {
         return p;
     };
     // The pad rows of the Sampler, whichever package plays them.
-    let rows = step_rows::rows_for_in(
-        t,
-        Some(&komponist_builtin::Internal::Sampler.plugin_ref()),
-        &[],
-    );
+    let rows = step_rows::rows_for_in(t, Some(&reference_sampler()), &[]);
     let bar = Tick(PPQ * i64::from(p.meter.num));
     let clip = NewClip {
         start: Tick::ZERO,
@@ -209,7 +210,7 @@ mod tests {
 
     #[test]
     fn the_template_has_a_sampler_beat_and_two_hexa_tracks() {
-        let (drums, hexa) = template_instruments(&komponist_plugins::Catalog::builtin()).unwrap();
+        let (drums, hexa) = template_instruments(&Catalog::builtin()).unwrap();
         let p = template(Lang::De, drums.clone(), hexa.clone());
         assert_eq!(p.name, "Beat-Skizze");
         assert_eq!(template(Lang::En, drums, hexa).name, "Beat Sketch");
