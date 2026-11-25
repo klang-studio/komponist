@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_WARP_TICK: i64 = 1 << 40;
 
 /// Optional v1 warp state. Its presence alone does not enable warp.
-/// Serialized inside `AudioClip` while the legacy `time_mode` remains `fixed` when enabled.
+/// Serialized inside `AudioClip` while `time_mode` remains `fixed` when enabled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "StoredWarp", into = "StoredWarp")]
 pub struct AudioWarp {
@@ -94,7 +94,7 @@ impl WarpError {
             Self::SourcePosition => "audio warp source frame out of range",
             Self::Inactive => "audio warp is not enabled",
             Self::Take => "audio warp has no such take",
-            Self::Mode => "enabled audio warp requires fixed legacy time mode",
+            Self::Mode => "enabled audio warp requires fixed time mode",
         }
     }
 }

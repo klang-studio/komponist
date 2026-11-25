@@ -61,5 +61,5 @@ project-reason-too-new = file version { $found } is newer than this komponist
 # The file is a project but its content is wrong.
 project-reason-damaged = file is damaged
 
-# A migration of an older file failed.
-project-reason-migration = file could not be upgraded
+# The file was written by an older komponist; there are no migrations below 1.0.
+project-reason-unsupported-version = file version { $found } is no longer supported by this komponist

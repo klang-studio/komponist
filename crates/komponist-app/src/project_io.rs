@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use komponist_i18n::Lang;
 use komponist_model::asset_collection::Collector;
 use komponist_model::edits::ProjectProp;
-use komponist_model::persist::{self, FILE_EXTENSION, PersistError};
+use komponist_model::persist::{self, FILE_EXTENSION, FORMAT_VERSION, PersistError};
 use komponist_model::{Document, Project, Repairs};
 
 use crate::actions::{Action, ProjectAction, SettingsAction, UiAction};
@@ -90,11 +90,12 @@ impl ProjectIoError {
             ProjectIoError::Format(_, PersistError::NotAProject) => {
                 t.project_reason_not_project().to_owned()
             }
-            ProjectIoError::Format(_, PersistError::TooNew { found }) => {
-                t.project_reason_too_new(found)
-            }
-            ProjectIoError::Format(_, PersistError::Migration { .. }) => {
-                t.project_reason_migration().to_owned()
+            ProjectIoError::Format(_, PersistError::UnsupportedVersion { found }) => {
+                if *found > FORMAT_VERSION {
+                    t.project_reason_too_new(*found)
+                } else {
+                    t.project_reason_unsupported_version(*found)
+                }
             }
             ProjectIoError::Format(..) | ProjectIoError::Recent(..) => {
                 t.project_reason_damaged().to_owned()

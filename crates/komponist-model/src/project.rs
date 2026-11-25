@@ -759,8 +759,7 @@ pub struct PluginRef {
     /// Version string at the time the device was added (informational).
     pub version: String,
     /// File name of the plugin module at the time the device was added ("Vital.vst3",
-    /// "Surge XT.clap"); shown in the missing-plugins list (S06). Empty for built-ins and for
-    /// projects saved before this field existed; not written then, so such files stay unchanged.
+    /// "Surge XT.clap"); shown in the missing-plugins list (S06). Empty for built-ins; not written then.
     /// Bundled CLAP references use the stable `bundled-clap/` prefix and require the packaged
     /// catalog. A project cannot use this prefix to establish trust in a library.
     ///

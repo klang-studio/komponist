@@ -2,22 +2,9 @@
 //!
 //! One JSON file: `{ "format": "komponist", "version": 5, "project": { … } }`. Plugin states are
 //! base64 strings. A missing plugin keeps its state byte-identical through load and save (S06).
-//! Older versions are upgraded on load by a chain of `migrate_vN_to_vN+1` functions on the JSON
-//! value, one per version step, each with its own test.
-//!
-//! Versions:
-//! - 1: up to WP-100; every track plays into the master.
-//! - 2 (WP-101, wave 9): routing. Every track has an `output` (`"master"` or `{"bus": id}`);
-//!   optional `sends`, `folder`, `folded` on tracks and `sidechain` on devices; track kind `"bus"`.
-//!   `migrate_v1_to_v2` gives every track `"output": "master"`.
-//! - 3 (#9, wave 10): audio tracks. Track kind `"audio"`, optional `audio` (input and monitoring)
-//!   on tracks, clip content `{"kind": "audio", …}` ([`crate::AudioClip`]). Everything is new
-//!   optional data, so `migrate_v2_to_v3` changes nothing; the bump keeps builds from before audio
-//!   from opening a project that may hold audio clips as if it were complete.
-//! - 4 (#65): optional track and master automation and MIDI/step clip envelopes.
-//! - 5 (macros): optional `macros` on tracks, a fixed array of eight slots with names, values and
-//!   mappings to automation targets. Tracks without it get the default slots, so
-//!   `migrate_v4_to_v5` changes nothing.
+//! Below 1.0 there is exactly one valid version (owner decision D10, `AGENTS.md` rule 16): a file
+//! with any other `version` is rejected ([`PersistError::UnsupportedVersion`]), there is no migration.
+//! Change [`FORMAT_VERSION`] when the format changes in a way an older or newer build must not read.
 //!
 //! Loading never trusts the file: after parsing, [`crate::validate`] repairs what has an obvious
 //! safe value, drops what is unusable and rejects the rest, so [`Project::validate`] holds for
@@ -30,16 +17,13 @@ use std::fmt;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::project::{
-    BUILTIN_HEXA, BUILTIN_SAMPLER, BUILTIN_VOLT, DRUM_SAMPLER_NAME, HEXA_NAME, PRESSE_NAME,
-    Project, VOLT_NAME,
-};
+use crate::project::Project;
 use crate::validate::{Repairs, collect_deserialize_repairs, repair_loaded};
 
 /// Value of the `format` field.
 pub const FORMAT_TAG: &str = "komponist";
 
-/// Version written by this build; files with a higher version are rejected.
+/// Version written and read by this build; files with any other version are rejected.
 pub const FORMAT_VERSION: u32 = 5;
 
 /// File name extension, without the dot.
@@ -52,17 +36,10 @@ pub enum PersistError {
     Malformed(String),
     /// The `format` field is missing or not [`FORMAT_TAG`].
     NotAProject,
-    /// The file was written by a newer komponist.
-    TooNew {
+    /// The file has another `version` than [`FORMAT_VERSION`] (older or newer).
+    UnsupportedVersion {
         /// Version in the file.
         found: u32,
-    },
-    /// A migration step failed.
-    Migration {
-        /// Version the failed step started from.
-        from: u32,
-        /// What went wrong.
-        message: String,
     },
 }
 
@@ -71,14 +48,11 @@ impl fmt::Display for PersistError {
         match self {
             PersistError::Malformed(m) => write!(f, "malformed project file: {m}"),
             PersistError::NotAProject => write!(f, "not a komponist project file"),
-            PersistError::TooNew { found } => {
+            PersistError::UnsupportedVersion { found } => {
                 write!(
                     f,
-                    "project file version {found} is newer than {FORMAT_VERSION}"
+                    "project file version {found} is not supported (this build reads version {FORMAT_VERSION})"
                 )
-            }
-            PersistError::Migration { from, message } => {
-                write!(f, "migration from version {from} failed: {message}")
             }
         }
     }
@@ -105,15 +79,15 @@ pub struct Loaded {
     pub repairs: Repairs,
 }
 
-/// Parses a project file of any supported version, migrating it to the current schema, repairing
-/// it ([`crate::validate`]) and dropping the repair notes. Use [`load`] to show them.
+/// Parses a project file of the current version, repairing it ([`crate::validate`]) and dropping
+/// the repair notes. Use [`load`] to show them.
 pub fn from_json(text: &str) -> Result<Project, PersistError> {
     load(text).map(|loaded| loaded.project)
 }
 
-/// Parses a project file of any supported version, migrating it to the current schema and
-/// repairing it ([`crate::validate`]). The result passes [`Project::validate`]; what was repaired
-/// is in [`Loaded::repairs`]. A file that cannot be repaired is an error.
+/// Parses a project file of the current version and repairs it ([`crate::validate`]). The result
+/// passes [`Project::validate`]; what was repaired is in [`Loaded::repairs`]. A file that cannot be
+/// repaired, or has another version, is an error.
 pub fn load(text: &str) -> Result<Loaded, PersistError> {
     let malformed = |e: serde_json::Error| PersistError::Malformed(e.to_string());
     let file: Value = serde_json::from_str(text).map_err(malformed)?;
@@ -129,14 +103,12 @@ pub fn load(text: &str) -> Result<Loaded, PersistError> {
         .ok_or_else(|| PersistError::Malformed("missing or invalid version".to_owned()))?;
     let version = u32::try_from(version)
         .map_err(|_| PersistError::Malformed(format!("version {version} out of range")))?;
-    if version > FORMAT_VERSION {
-        return Err(PersistError::TooNew { found: version });
+    if version != FORMAT_VERSION {
+        return Err(PersistError::UnsupportedVersion { found: version });
     }
     let project = file
         .remove("project")
         .ok_or_else(|| PersistError::Malformed("missing project".to_owned()))?;
-    let mut project = migrate(project, version)?;
-    rename_builtins(&mut project);
     let (project, mut repairs) =
         collect_deserialize_repairs(|| serde_json::from_value::<Project>(project));
     let mut project = project.map_err(malformed)?;
@@ -147,110 +119,12 @@ pub fn load(text: &str) -> Result<Loaded, PersistError> {
     Ok(Loaded { project, repairs })
 }
 
-/// Upgrades the `project` JSON value of a file with version `from` to [`FORMAT_VERSION`] by
-/// running the migration steps in order. Identity for `from == FORMAT_VERSION`.
-pub fn migrate(project: serde_json::Value, from: u32) -> Result<serde_json::Value, PersistError> {
-    if from > FORMAT_VERSION {
-        return Err(PersistError::TooNew { found: from });
-    }
-    if from == 0 {
-        return Err(PersistError::Migration {
-            from,
-            message: "there is no version 0".to_owned(),
-        });
-    }
-    let mut project = project;
-    for (from, step) in (from..).zip(&MIGRATIONS[from as usize - 1..]) {
-        project = step(project).map_err(|message| PersistError::Migration { from, message })?;
-    }
-    Ok(project)
-}
-
 /// The file envelope as written.
 #[derive(Serialize)]
 struct FileOut<'a> {
     format: &'static str,
     version: u32,
     project: &'a Project,
-}
-
-/// Built-in devices whose display name changed: `(stored id, old name, new name)`. The stored id stays (so
-/// every existing project loads); the stored display name of such a plugin reference is replaced on load,
-/// without a format version bump, so every view shows the new name and a later save writes it.
-/// "pisynth" became hexa, "knurr" became volt; since 2026-11-16 the names of Hexa, Volt and Presse start with
-/// a capital (the lowercase names of earlier files are replaced).
-const RENAMED_BUILTINS: [(&str, &str, &str); 6] = [
-    (BUILTIN_HEXA, "pisynth", HEXA_NAME),
-    (BUILTIN_VOLT, "knurr", VOLT_NAME),
-    (BUILTIN_HEXA, "hexa", HEXA_NAME),
-    (BUILTIN_VOLT, "volt", VOLT_NAME),
-    ("presse", "presse", PRESSE_NAME),
-    (BUILTIN_SAMPLER, "Sampler", DRUM_SAMPLER_NAME),
-];
-
-fn rename_builtins(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            if map.get("format").and_then(Value::as_str) == Some("builtin") {
-                let id = map.get("id").and_then(Value::as_str);
-                let name = map.get("name").and_then(Value::as_str);
-                let renamed = RENAMED_BUILTINS
-                    .iter()
-                    .find(|(rid, old, _)| Some(*rid) == id && Some(*old) == name);
-                if let Some((_, _, new)) = renamed {
-                    map.insert("name".to_owned(), Value::from(*new));
-                }
-            }
-            map.values_mut().for_each(rename_builtins);
-        }
-        Value::Array(items) => items.iter_mut().for_each(rename_builtins),
-        _ => {}
-    }
-}
-
-/// A migration step on the `project` value: `MIGRATIONS[i]` upgrades version `i + 1` to `i + 2`.
-/// Add `migrate_vN_to_vN+1` functions here (with a test each) when [`FORMAT_VERSION`] grows.
-type MigrationStep = fn(Value) -> Result<Value, String>;
-
-/// All migration steps, oldest first.
-const MIGRATIONS: [MigrationStep; FORMAT_VERSION as usize - 1] = [
-    migrate_v1_to_v2,
-    migrate_v2_to_v3,
-    migrate_v3_to_v4,
-    migrate_v4_to_v5,
-];
-
-/// Version 1 → 2 (wave 9, routing): every track outputs to the master. Sends, groups and
-/// sidechains are optional fields and absent in version 1, which means none. A malformed track
-/// list is left alone for the schema check to report.
-fn migrate_v1_to_v2(mut project: Value) -> Result<Value, String> {
-    let tracks = project.get_mut("tracks").and_then(Value::as_array_mut);
-    for track in tracks
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_object_mut)
-    {
-        track
-            .entry("output")
-            .or_insert_with(|| Value::String("master".to_owned()));
-    }
-    Ok(project)
-}
-
-/// Version 2 → 3 (wave 10, audio tracks): nothing to rewrite. Audio tracks, their `audio` settings
-/// and audio clips are optional additions, absent in version 2, which means none.
-fn migrate_v2_to_v3(project: Value) -> Result<Value, String> {
-    Ok(project)
-}
-
-/// Version 3 → 4 (automation): all automation fields have empty defaults.
-fn migrate_v3_to_v4(project: Value) -> Result<Value, String> {
-    Ok(project)
-}
-
-/// Version 4 → 5 (track macros): tracks without slots deserialize to the default array.
-fn migrate_v4_to_v5(project: Value) -> Result<Value, String> {
-    Ok(project)
 }
 
 /// serde helper for [`crate::Device::state`]: `Option<Arc<[u8]>>` as an optional standard base64
@@ -300,7 +174,8 @@ mod tests {
     use crate::{DeviceId, Tick};
 
     fn file(project: Value) -> String {
-        serde_json::json!({ "format": "komponist", "version": 1, "project": project }).to_string()
+        serde_json::json!({ "format": FORMAT_TAG, "version": FORMAT_VERSION, "project": project })
+            .to_string()
     }
 
     fn demo_value() -> Value {
@@ -479,17 +354,17 @@ mod tests {
         );
     }
 
-    /// WP-88: a MIDI effect is one more device role in the same chain list. A file saved before it
-    /// existed has none and loads and saves unchanged; one with MIDI effects round-trips.
+    /// WP-88: a MIDI effect is one more device role in the same chain list. A project without one
+    /// loads and saves unchanged; one with MIDI effects round-trips.
     #[test]
-    fn midi_effects_are_part_of_the_chain_and_old_files_load() {
+    fn midi_effects_are_part_of_the_chain() {
         use crate::{DeviceRole, edits::NewDevice};
         let project = demo_project();
-        let old_text = to_json(&project).unwrap();
-        assert!(!old_text.contains("midieffect"));
-        let old = from_json(&old_text).unwrap();
-        assert_eq!(old.tracks[0].channel.midi_effect_count(), 0);
-        assert_eq!(to_json(&old).unwrap(), old_text);
+        let plain_text = to_json(&project).unwrap();
+        assert!(!plain_text.contains("midieffect"));
+        let plain = from_json(&plain_text).unwrap();
+        assert_eq!(plain.tracks[0].channel.midi_effect_count(), 0);
+        assert_eq!(to_json(&plain).unwrap(), plain_text);
 
         let track = project.tracks[0].id;
         let spec = NewDevice {
@@ -516,8 +391,8 @@ mod tests {
             "[]",
             "42",
             "{}",
-            r#"{"format": "ableton", "version": 1, "project": {}}"#,
-            r#"{"format": 1, "version": 1}"#,
+            r#"{"format": "ableton", "version": 5, "project": {}}"#,
+            r#"{"format": 1, "version": 5}"#,
         ];
         for text in not_a_project {
             assert_eq!(from_json(text), Err(PersistError::NotAProject), "{text}");
@@ -525,29 +400,37 @@ mod tests {
         assert!(matches!(from_json("{"), Err(PersistError::Malformed(_))));
         assert!(matches!(from_json(""), Err(PersistError::Malformed(_))));
         let malformed = [
-            r#"{"format": "komponist", "project": {}}"#,
-            r#"{"format": "komponist", "version": "1", "project": {}}"#,
-            r#"{"format": "komponist", "version": 1}"#,
-            r#"{"format": "komponist", "version": 1, "project": {"name": "x"}}"#,
-            r#"{"format": "komponist", "version": 99999999999, "project": {}}"#,
+            r#"{"format": "komponist", "project": {}}"#.to_owned(),
+            r#"{"format": "komponist", "version": "1", "project": {}}"#.to_owned(),
+            format!(r#"{{"format": "komponist", "version": {FORMAT_VERSION}}}"#),
+            format!(
+                r#"{{"format": "komponist", "version": {FORMAT_VERSION}, "project": {{"name": "x"}}}}"#
+            ),
+            r#"{"format": "komponist", "version": 99999999999, "project": {}}"#.to_owned(),
         ];
         for text in malformed {
             assert!(
-                matches!(from_json(text), Err(PersistError::Malformed(_))),
+                matches!(from_json(&text), Err(PersistError::Malformed(_))),
                 "{text}"
             );
         }
-        let version = FORMAT_VERSION + 1;
-        let too_new =
-            serde_json::json!({ "format": FORMAT_TAG, "version": version, "project": {} });
-        assert_eq!(
-            from_json(&too_new.to_string()),
-            Err(PersistError::TooNew { found: version })
-        );
-        assert!(matches!(
-            from_json(r#"{"format": "komponist", "version": 0, "project": {}}"#),
-            Err(PersistError::Migration { from: 0, .. })
-        ));
+    }
+
+    /// Below 1.0 exactly one version is valid: older and newer files are rejected, none is migrated.
+    #[test]
+    fn any_other_version_is_rejected() {
+        let current = file(demo_value());
+        assert!(from_json(&current).is_ok());
+        for version in [0, 1, FORMAT_VERSION - 1, FORMAT_VERSION + 1, 99] {
+            let text = serde_json::json!({
+                "format": FORMAT_TAG, "version": version, "project": demo_value()
+            });
+            assert_eq!(
+                from_json(&text.to_string()),
+                Err(PersistError::UnsupportedVersion { found: version }),
+                "version {version}"
+            );
+        }
     }
 
     #[test]
@@ -622,78 +505,6 @@ mod tests {
             .reverse();
         let p = from_json(&file(v)).unwrap();
         assert_eq!(p, demo_project());
-    }
-
-    #[test]
-    fn a_stored_pisynth_name_loads_as_hexa_with_the_same_id() {
-        let file = |name: &str, id: &str| serde_json::json!({"plugin": {"format": "builtin", "id": id, "name": name}});
-        let mut v =
-            serde_json::json!({"a": [file("pisynth", "pisynth"), file("pisynth", "sampler")]});
-        rename_builtins(&mut v);
-        assert_eq!(v["a"][0]["plugin"]["name"], "Hexa");
-        assert_eq!(v["a"][0]["plugin"]["id"], "pisynth");
-        // Only the built-in hexa is renamed; anything else keeps what it stored.
-        assert_eq!(v["a"][1]["plugin"]["name"], "pisynth");
-    }
-
-    #[test]
-    fn a_stored_knurr_name_loads_as_volt_with_the_same_id() {
-        let file = |name: &str, id: &str| serde_json::json!({"plugin": {"format": "builtin", "id": id, "name": name}});
-        let mut v = serde_json::json!({"a": [file("knurr", "knurr"), file("knurr", "sampler"), file("Volt", "knurr")]});
-        rename_builtins(&mut v);
-        assert_eq!(v["a"][0]["plugin"]["name"], "Volt");
-        assert_eq!(v["a"][0]["plugin"]["id"], "knurr");
-        assert_eq!(v["a"][1]["plugin"]["name"], "knurr");
-        assert_eq!(v["a"][2]["plugin"]["name"], "Volt");
-    }
-
-    #[test]
-    fn a_stored_drum_sampler_name_loads_as_klopfer_with_the_same_id() {
-        let mut value = demo_value();
-        value["tracks"][0]["channel"]["devices"][0]["plugin"]["name"] = "Sampler".into();
-        let bytes = file(value);
-        let project = from_json(&bytes).unwrap();
-        let plugin = &project.tracks[0].channel.devices[0].plugin;
-        assert_eq!(plugin.id, BUILTIN_SAMPLER);
-        assert_eq!(plugin.name, DRUM_SAMPLER_NAME);
-    }
-
-    #[test]
-    fn lowercase_device_names_of_earlier_files_load_capitalised_with_the_same_ids() {
-        let file = |name: &str, id: &str| serde_json::json!({"plugin": {"format": "builtin", "id": id, "name": name}});
-        let mut v = serde_json::json!({"a": [
-            file("hexa", "pisynth"), file("volt", "knurr"), file("presse", "presse"),
-            file("presse", "sampler"), file("Hexa", "pisynth")]});
-        rename_builtins(&mut v);
-        let shown = |i: usize| {
-            (
-                v["a"][i]["plugin"]["id"].clone(),
-                v["a"][i]["plugin"]["name"].clone(),
-            )
-        };
-        assert_eq!(shown(0), ("pisynth".into(), "Hexa".into()));
-        assert_eq!(shown(1), ("knurr".into(), "Volt".into()));
-        assert_eq!(shown(2), ("presse".into(), "Presse".into()));
-        // Only the built-ins are renamed; a name that is already right stays.
-        assert_eq!(shown(3), ("sampler".into(), "presse".into()));
-        assert_eq!(shown(4), ("pisynth".into(), "Hexa".into()));
-    }
-
-    #[test]
-    fn migration_hook() {
-        let v = demo_value();
-        assert_eq!(migrate(v.clone(), FORMAT_VERSION).unwrap(), v);
-        assert_eq!(
-            migrate(v.clone(), FORMAT_VERSION + 1),
-            Err(PersistError::TooNew {
-                found: FORMAT_VERSION + 1
-            })
-        );
-        assert!(matches!(
-            migrate(v, 0),
-            Err(PersistError::Migration { from: 0, .. })
-        ));
-        assert_eq!(MIGRATIONS.len() as u32, FORMAT_VERSION - 1);
     }
 
     #[test]
@@ -798,43 +609,6 @@ mod tests {
         );
     }
 
-    /// A file from before wave 9 (version 1, no `output`) loads as every track into the master,
-    /// without sends, and equals the project it was saved from.
-    #[test]
-    fn version_1_files_load_into_the_master() {
-        let mut v = demo_value();
-        for track in v["tracks"].as_array_mut().unwrap() {
-            assert_eq!(
-                track.as_object_mut().unwrap().remove("output").unwrap(),
-                "master"
-            );
-        }
-        let migrated = migrate(v.clone(), 1).unwrap();
-        assert!(
-            migrated["tracks"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|t| t["output"] == "master")
-        );
-        let old = from_json(&file(v.clone())).unwrap();
-        assert_eq!(old, demo_project());
-        assert!(
-            old.tracks
-                .iter()
-                .all(|t| t.output == crate::TrackOutput::Master && t.sends.is_empty() && !t.folder)
-        );
-        // The same project as version 2 must name the output.
-        let v2 = serde_json::json!({ "format": "komponist", "version": 2, "project": v });
-        assert!(matches!(
-            from_json(&v2.to_string()),
-            Err(PersistError::Malformed(_))
-        ));
-        // A broken track list is left to the schema check.
-        assert!(migrate_v1_to_v2(serde_json::json!({ "tracks": [1, "x"] })).is_ok());
-        assert!(migrate_v1_to_v2(serde_json::json!({})).is_ok());
-    }
-
     #[test]
     fn repairs_broken_routing_references() {
         let p = routed_project();
@@ -928,8 +702,10 @@ mod tests {
     #[test]
     fn errors_display() {
         assert_eq!(
-            PersistError::TooNew { found: 6 }.to_string(),
-            "project file version 6 is newer than 5"
+            PersistError::UnsupportedVersion { found: 6 }.to_string(),
+            format!(
+                "project file version 6 is not supported (this build reads version {FORMAT_VERSION})"
+            )
         );
     }
 
@@ -990,7 +766,7 @@ mod tests {
     fn audio_projects_round_trip() {
         let p = audio_project();
         let text = to_json(&p).unwrap();
-        assert!(text.contains("\"version\": 5"));
+        assert!(text.contains(&format!("\"version\": {FORMAT_VERSION}")));
         assert!(text.contains("\"kind\": \"audio\""));
         assert!(text.contains("\"time_mode\": \"repitch\""));
         assert_eq!(from_json(&text).unwrap(), p);
@@ -1005,15 +781,12 @@ mod tests {
     }
 
     #[test]
-    fn a_version_2_file_loads_as_it_is_and_migration_changes_nothing() {
-        let v = demo_value();
-        assert_eq!(migrate_v2_to_v3(v.clone()).unwrap(), v);
-        let v2 = serde_json::json!({ "format": "komponist", "version": 2, "project": v });
-        let loaded = from_json(&v2.to_string()).unwrap();
-        assert_eq!(loaded, demo_project());
-        assert!(loaded.tracks.iter().all(|t| !t.is_audio()));
-        // Saving writes the current format version.
-        assert!(to_json(&loaded).unwrap().contains("\"version\": 5"));
+    fn audio_clips_without_optional_fields_read_the_defaults() {
+        assert!(
+            to_json(&demo_project())
+                .unwrap()
+                .contains(&format!("\"version\": {FORMAT_VERSION}"))
+        );
         // Audio clip fields that are missing read as the defaults (Fixed, 0 dB, no fades).
         let mut av = serde_json::to_value(audio_project()).unwrap();
         let clip = &mut av["tracks"][1]["clips"][0]["content"];
@@ -1033,11 +806,7 @@ mod tests {
     #[test]
     fn loading_repairs_audio_files_that_break_and_rejects_what_cannot_work() {
         let value = |p: &Project| serde_json::to_value(p).unwrap();
-        let load = |v: serde_json::Value| {
-            from_json(&format!(
-                r#"{{"format":"komponist","version":3,"project":{v}}}"#
-            ))
-        };
+        let load = |v: serde_json::Value| from_json(&file(v));
         // Clip 1 is track 1's clip.
         let mut v = value(&audio_project());
         v["tracks"][1]["clips"][0]["length"] = 99_999_999.into();
@@ -1054,10 +823,10 @@ mod tests {
         assert!(a.fade_in + a.fade_out <= clip.length);
         // An offset behind the end, a file without frames: malformed.
         let mut v = value(&audio_project());
-        v["tracks"][1]["clips"][0]["content"]["offset"] = 480_000.into();
+        v["tracks"][1]["clips"][0]["content"]["takes"][0]["offset"] = 480_000.into();
         assert!(matches!(load(v), Err(PersistError::Malformed(_))));
         let mut v = value(&audio_project());
-        v["tracks"][1]["clips"][0]["content"]["file"]["frames"] = 0.into();
+        v["tracks"][1]["clips"][0]["content"]["takes"][0]["file"]["frames"] = 0.into();
         assert!(matches!(load(v), Err(PersistError::Malformed(_))));
         // An audio clip on a MIDI track is rejected.
         let mut v = value(&audio_project());
@@ -1090,15 +859,13 @@ mod tests {
     }
 
     #[test]
-    fn audio_take_lists_round_trip_legacy_sources_and_reject_invalid_shapes() {
+    fn audio_take_lists_round_trip_and_reject_invalid_shapes() {
         let p = audio_project();
         let clip = p.tracks[1].clips[0].id;
-        let legacy = serde_json::to_value(&p).unwrap();
-        assert!(
-            legacy["tracks"][1]["clips"][0]["content"]
-                .get("takes")
-                .is_none()
-        );
+        let single = serde_json::to_value(&p).unwrap();
+        let content = &single["tracks"][1]["clips"][0]["content"];
+        assert_eq!(content["takes"].as_array().map(Vec::len), Some(1));
+        assert!(content.get("file").is_none() && content.get("offset").is_none());
         let (p, _) = edits::add_audio_take(
             &p,
             clip,
@@ -1116,8 +883,6 @@ mod tests {
         let value = serde_json::to_value(&p).unwrap();
         let content = &value["tracks"][1]["clips"][0]["content"];
         assert_eq!(content["active_take"], 1);
-        assert_eq!(content["file"], content["takes"][1]["file"]);
-        assert_eq!(content["offset"], content["takes"][1]["offset"]);
         for malformed in [
             {
                 let mut v = value.clone();
@@ -1131,7 +896,7 @@ mod tests {
             },
             {
                 let mut v = value.clone();
-                v["tracks"][1]["clips"][0]["content"]["offset"] = 1.into();
+                v["tracks"][1]["clips"][0]["content"]["takes"][0]["offset"] = "x".into();
                 v
             },
         ] {
@@ -1140,7 +905,8 @@ mod tests {
         // Structural checks run in Deserialize, before field Deref can index an empty take list.
         let mut empty = value;
         empty["tracks"][1]["clips"][0]["content"]["takes"] = serde_json::json!([]);
-        let envelope = serde_json::json!({"format":"komponist", "version":3, "project":empty});
+        let envelope =
+            serde_json::json!({"format": FORMAT_TAG, "version": FORMAT_VERSION, "project": empty});
         assert!(matches!(
             from_json(&envelope.to_string()),
             Err(PersistError::Malformed(_))
@@ -1170,33 +936,20 @@ mod tests {
         assert_eq!(from_json(&to_json(&p).unwrap()).unwrap(), p);
         let mut value = serde_json::to_value(&p).unwrap();
         value["tracks"][1]["clips"][0]["content"]["takes"][1]["file"]["sample_rate"] = 0.into();
-        let envelope = serde_json::json!({"format":"komponist", "version":3, "project":value});
+        let envelope =
+            serde_json::json!({"format": FORMAT_TAG, "version": FORMAT_VERSION, "project": value});
         assert!(matches!(
             from_json(&envelope.to_string()),
             Err(PersistError::Malformed(_))
         ));
     }
     #[test]
-    fn projects_without_automation_keep_their_wire_content() {
-        let p = audio_project();
-        let current = to_json(&p).unwrap();
-        let previous = current.replacen("\"version\": 5", "\"version\": 3", 1);
+    fn projects_without_automation_or_macros_keep_their_wire_content() {
+        let current = to_json(&audio_project()).unwrap();
         assert!(!current.contains("automation"));
-        assert_eq!(
-            migrate_v3_to_v4(serde_json::to_value(&p).unwrap()).unwrap(),
-            serde_json::to_value(&p).unwrap()
-        );
-        assert_eq!(from_json(&previous).unwrap(), p);
-        assert_eq!(to_json(&from_json(&previous).unwrap()).unwrap(), current);
-    }
-
-    #[test]
-    fn version_4_projects_have_default_macros_after_migration() {
+        assert!(!current.contains("\"macros\""));
         let project = crate::fixtures::automation_project();
-        let value = serde_json::to_value(&project).unwrap();
-        assert_eq!(migrate_v4_to_v5(value.clone()).unwrap(), value);
-        let old = serde_json::json!({ "format": FORMAT_TAG, "version": 4, "project": value });
-        let loaded = from_json(&old.to_string()).unwrap();
+        let loaded = from_json(&to_json(&project).unwrap()).unwrap();
         assert_eq!(loaded, project);
         assert!(!to_json(&loaded).unwrap().contains("\"macros\""));
     }
@@ -1318,9 +1071,7 @@ mod tests {
         let duplicate = lanes[0].clone();
         let id = lanes[0]["id"].clone();
         lanes.push(duplicate);
-        let file =
-            serde_json::json!({ "format": "komponist", "version": 4, "project": serialized });
-        let loaded = from_json(&file.to_string()).unwrap();
+        let loaded = from_json(&file(serialized)).unwrap();
         let repaired = &loaded.tracks[2].automation.lanes[0];
         assert_eq!(repaired.id.0, id.as_u64().unwrap());
         assert_eq!(repaired.mode, AutomationMode::Read);

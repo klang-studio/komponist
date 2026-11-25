@@ -10,7 +10,7 @@
 //! - Clip **positions** follow the bar grid ([`crate::Clip::start`] in ticks); the **content** stays
 //!   fixed in Fixed mode. Fixed clips keep seconds across tempo changes; Re-Pitch and enabled
 //!   Warp keep ticks. Warp describes pitch-preserving tempo-follow mapping for the worker;
-//!   the legacy resampling speed does not implement it.
+//!   the resampling speed does not implement it.
 //! - Files are **linked** like the Sampler's samples ([`AudioFile`]: absolute path and path relative
 //!   to the project file); „Sammeln und speichern“ copies them next to the project.
 //! - No Reverse in v1.
@@ -169,8 +169,8 @@ pub(crate) mod path_text {
     }
 }
 
-/// Legacy playback mode understood by pre-Warp readers. Enabled [`AudioClip::warp`] requires
-/// Fixed here; [`AudioClip::warp_enabled`] selects the separate pitch-preserving mapping.
+/// Playback mode of the resampling path. Enabled [`AudioClip::warp`] requires Fixed here;
+/// [`AudioClip::warp_enabled`] selects the separate pitch-preserving mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ClipTimeMode {
@@ -220,11 +220,11 @@ pub struct AudioClip {
     pub fade_in: Tick,
     /// Fade-out length in timeline ticks, shared by every take.
     pub fade_out: Tick,
-    /// Legacy Fixed/RePitch fallback; enabled Warp is selected by the separate optional data.
+    /// Fixed or Re-Pitch; enabled Warp is selected by the separate optional data.
     pub time_mode: ClipTimeMode,
     /// Shared source tempo for Re-Pitch/Warp, retained in Fixed mode too.
     pub original_tempo: Tempo,
-    /// Optional tempo-follow warp state; enabled Warp requires `time_mode == Fixed` for old readers.
+    /// Optional tempo-follow warp state; enabled Warp requires `time_mode == Fixed`.
     pub warp: Option<AudioWarp>,
 }
 
@@ -242,33 +242,25 @@ impl std::ops::DerefMut for AudioClip {
     }
 }
 
-// Version 3 originally stored one file/offset pair. Keep writing the active pair so older
-// readers play the selected take, while newer readers retain the optional complete take list.
 impl Serialize for AudioClip {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let active = self
-            .takes
-            .get(self.active_take)
-            .ok_or_else(|| <S::Error as serde::ser::Error>::custom("invalid audio take index"))?;
-        let extended = self.takes.len() > 1 || !active.name.is_empty();
+        if self.active_take >= self.takes.len() {
+            return Err(<S::Error as serde::ser::Error>::custom(
+                "invalid audio take index",
+            ));
+        }
         self.validate_warp(Tick::ZERO)
             .map_err(<S::Error as serde::ser::Error>::custom)?;
-        let mut s = serializer.serialize_struct(
-            "AudioClip",
-            (if extended { 9 } else { 7 }) + usize::from(self.warp.is_some()),
-        )?;
-        s.serialize_field("file", &active.file)?;
-        s.serialize_field("offset", &active.offset)?;
+        let mut s =
+            serializer.serialize_struct("AudioClip", 7 + usize::from(self.warp.is_some()))?;
+        s.serialize_field("takes", &self.takes)?;
+        s.serialize_field("active_take", &self.active_take)?;
         s.serialize_field("gain_db", &self.gain_db)?;
         s.serialize_field("fade_in", &self.fade_in)?;
         s.serialize_field("fade_out", &self.fade_out)?;
         s.serialize_field("time_mode", &self.time_mode)?;
         s.serialize_field("original_tempo", &self.original_tempo)?;
-        if extended {
-            s.serialize_field("takes", &self.takes)?;
-            s.serialize_field("active_take", &self.active_take)?;
-        }
         if let Some(warp) = self.warp {
             s.serialize_field("warp", &warp)?;
         }
@@ -280,11 +272,7 @@ impl<'de> Deserialize<'de> for AudioClip {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         struct Stored {
-            file: AudioFile,
-            offset: u64,
-            #[serde(default)]
-            takes: Option<Vec<AudioTake>>,
-            #[serde(default)]
+            takes: Vec<AudioTake>,
             active_take: usize,
             #[serde(default)]
             gain_db: f32,
@@ -299,23 +287,13 @@ impl<'de> Deserialize<'de> for AudioClip {
             warp: Option<AudioWarp>,
         }
         let s = Stored::deserialize(deserializer)?;
-        let takes = s.takes.unwrap_or_else(|| {
-            vec![AudioTake {
-                name: String::new(),
-                file: s.file.clone(),
-                offset: s.offset,
-            }]
-        });
-        let active = takes.get(s.active_take).ok_or_else(|| {
-            <D::Error as serde::de::Error>::custom("invalid audio take index or empty takes")
-        })?;
-        if active.file != s.file || active.offset != s.offset {
+        if s.takes.get(s.active_take).is_none() {
             return Err(<D::Error as serde::de::Error>::custom(
-                "audio take disagrees with legacy source",
+                "invalid audio take index or empty takes",
             ));
         }
         let clip = Self {
-            takes,
+            takes: s.takes,
             active_take: s.active_take,
             gain_db: s.gain_db,
             fade_in: s.fade_in,
@@ -355,7 +333,7 @@ impl AudioClip {
         &self.takes[self.active_take]
     }
 
-    /// Whether the optional Warp mode is enabled. `speed` remains the legacy resampling path;
+    /// Whether the optional Warp mode is enabled. `speed` remains the resampling path;
     /// use `warp_map` for pitch-preserving source/tick mapping.
     pub fn warp_enabled(&self) -> bool {
         self.warp.is_some_and(AudioWarp::enabled)
@@ -450,7 +428,7 @@ impl AudioClip {
         60.0 / (bpm * PPQ as f64)
     }
 
-    /// Legacy playback speed: `project / original` with Re-Pitch, else 1. Warp is not implemented
+    /// Playback speed of the resampling path: `project / original` with Re-Pitch, else 1. Warp is not implemented
     /// by this resampling factor; a pitch-preserving worker must use [`AudioClip::warp_map`].
     pub fn speed(&self, project: Tempo) -> f64 {
         match self.time_mode {
@@ -464,7 +442,7 @@ impl AudioClip {
         self.take_source_frames(self.active(), ticks, project)
     }
 
-    /// Whole timeline ticks for this source-frame budget: legacy durations are floored;
+    /// Whole timeline ticks for this source-frame budget: Fixed and Re-Pitch durations are floored;
     /// Warp uses the longest duration whose rounded native mapping fits the budget.
     pub fn frames_to_ticks(&self, frames: u64, project: Tempo) -> Tick {
         if self.warp_enabled() {
