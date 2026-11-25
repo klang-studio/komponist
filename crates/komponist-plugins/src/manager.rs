@@ -1128,8 +1128,8 @@ impl PluginManager {
         let after = crate::bundled_sampler::edit_native_regions(
             device,
             changes,
-            self.native_layout(id)
-                .and_then(|layout| layout.author_ids()),
+            self.native_layout(id).map(Arc::as_ref),
+            self.params(id).unwrap_or_default(),
         )
         .ok_or(id)?;
         Ok((!device.has_saved_state(&after)).then_some(after))
