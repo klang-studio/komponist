@@ -29,8 +29,6 @@ pub static SPEC: Spec = Spec {
     params,
     layout,
     presets: no_presets,
-    preset_aliases: &[],
-    migrate_params: Some(migrate_params),
     cache: SpecCache::new(),
 };
 
@@ -348,25 +346,6 @@ fn params(t: Lang) -> Vec<ParamInfo> {
         )
         .unit(Unit::Percent),
     ]
-}
-
-// Earlier states stored slice mode separately and used mode 2 for looping.
-fn migrate_params(params: &mut komponist_device_core::StateParams) {
-    if !params.contains_key("slicing") && !params.contains_key("loop_start") {
-        return;
-    }
-    if params
-        .get("slicing")
-        .and_then(Value::as_f64)
-        .is_some_and(|slicing| slicing >= 0.5)
-    {
-        params.insert("mode".into(), serde_json::json!(2.0));
-    } else if params.get("mode").and_then(Value::as_f64) == Some(2.0) {
-        params.insert("mode".into(), serde_json::json!(1.0));
-    }
-    if params.get("direction").and_then(Value::as_f64) == Some(2.0) {
-        params.insert("direction".into(), serde_json::json!(0.0));
-    }
 }
 
 /// Source tempo and sync switch stored in project state.

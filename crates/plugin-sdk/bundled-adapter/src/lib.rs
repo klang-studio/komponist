@@ -51,10 +51,6 @@ pub trait DeviceDefinition: Send + 'static {
         None
     }
 
-    /// Rewrite the saved state of an older release before it is applied, e.g. to rename a stable
-    /// choice ID. Runs on every restore, so the rewrite must not touch current IDs.
-    fn migrate_state(_state: &mut PluginState) {}
-
     /// Override only when a device has additional controls outside the public v1 layout.
     fn layout(lang: Lang) -> DeviceLayout {
         Self::SPEC.layout_in(lang).clone()
@@ -162,10 +158,6 @@ impl<T: AudioDefinition> Plugin for Effect<T> {
     type Editor = ();
     type SysExMessage = ();
     type BackgroundTask = ();
-
-    fn filter_state(state: &mut PluginState) {
-        T::migrate_state(state);
-    }
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()

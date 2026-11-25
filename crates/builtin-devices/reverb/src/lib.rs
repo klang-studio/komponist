@@ -48,13 +48,6 @@ pub static SPEC: Spec = Spec {
     params,
     layout,
     presets,
-    preset_aliases: &[
-        ("Kleiner Raum", "Small Room"),
-        ("Studio-Platte", "Studio Plate"),
-        ("Große Halle", "Large Hall"),
-        ("Kirche", "Church"),
-    ],
-    migrate_params: None,
     cache: komponist_device_core::SpecCache::new(),
 };
 

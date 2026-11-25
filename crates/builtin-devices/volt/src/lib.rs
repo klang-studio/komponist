@@ -99,18 +99,6 @@ pub static SPEC: Spec = Spec {
     params,
     layout,
     presets: presets::presets,
-    preset_aliases: &[
-        ("Fette Säge", "Fat Saw"),
-        ("Sub-Brumm", "Sub Rumble"),
-        ("Acid-Zupf", "Acid Pluck"),
-        ("Mono-Lead", "Mono Lead"),
-        ("Breiter Pad", "Wide Pad"),
-        ("Blechstab", "Brass Stab"),
-        ("Zufalls-Zupf", "Random Pluck"),
-        ("Kick-Bass", "Kick Bass"),
-        ("Rauschwind", "Noise Wind"),
-    ],
-    migrate_params: None,
     cache: SpecCache::new(),
 };
 

@@ -55,10 +55,6 @@ pub struct Spec {
     pub layout: fn(Lang) -> DeviceLayout,
     /// The factory presets in menu order (WP-96); none for [`no_presets`].
     pub presets: fn() -> &'static [Preset],
-    /// Earlier preset names and the names they resolve to today.
-    pub preset_aliases: &'static [(&'static str, &'static str)],
-    /// Compatibility migration applied to persisted parameters before snapping them.
-    pub migrate_params: Option<fn(&mut StateParams)>,
     /// Per-language caches dedicated to this device.
     pub cache: SpecCache,
 }
@@ -149,14 +145,6 @@ impl Spec {
         (self.presets)()
     }
 
-    /// Resolves a former preset name, leaving names without an alias as they are.
-    pub fn current_preset_name<'a>(&self, name: &'a str) -> &'a str {
-        self.preset_aliases
-            .iter()
-            .find(|(old, _)| *old == name)
-            .map_or(name, |(_, current)| current)
-    }
-
     /// All plain values (by wire id) of preset `index`: the defaults with the preset's changes
     /// (snapped). `None` if there is no such preset.
     pub fn preset_values(&'static self, index: usize) -> Option<Vec<f64>> {
@@ -183,11 +171,10 @@ impl Spec {
     }
 
     /// The preset a device state says it loaded (`"preset"`) and whether the values differ from it
-    /// now („ *“). `None` for a state without a (known) preset, as every project saved before
-    /// WP-96. Earlier names resolve through [`Spec::preset_aliases`].
+    /// now („ *“). `None` for a state without a (known) preset.
     pub fn loaded_preset(&'static self, state: Option<&[u8]>) -> Option<(usize, bool)> {
         let value: serde_json::Value = serde_json::from_slice(state?).ok()?;
-        let name = self.current_preset_name(value.get("preset")?.as_str()?);
+        let name = value.get("preset")?.as_str()?;
         let index = self.presets().iter().position(|p| p.name == name)?;
         let now = self.decode_state(state).ok()?;
         Some((index, Some(&now) != self.preset_values(index).as_ref()))
@@ -219,9 +206,6 @@ impl Spec {
             .get_mut("params")
             .and_then(serde_json::Value::as_object_mut)
             .ok_or(StateError::NoParams)?;
-        if let Some(migrate) = self.migrate_params {
-            migrate(params);
-        }
         Ok(self
             .params()
             .iter()
@@ -356,28 +340,22 @@ mod tests {
             static PRESETS: [Preset; 1] = [Preset::new("Loud", &[("level", 1.0)])];
             &PRESETS
         },
-        preset_aliases: &[("Laut", "Loud")],
-        migrate_params: Some(|params| {
-            if let Some(gain) = params.remove("gain") {
-                params.entry("level").or_insert(gain);
-            }
-        }),
         cache: SpecCache::new(),
     };
 
     #[test]
-    fn state_migration_runs_before_snapping_and_preserves_extra_state_when_editing() {
-        let old = br#"{"params":{"gain":10},"extra":true}"#;
-        assert_eq!(TEST_DEVICE.decode_state(Some(old)).unwrap(), vec![1.0]);
+    fn editing_preserves_extra_state() {
+        let state = br#"{"params":{"level":10},"extra":true}"#;
+        assert_eq!(TEST_DEVICE.decode_state(Some(state)).unwrap(), vec![1.0]);
         assert_eq!(
-            TEST_DEVICE.with_value(Some(old), 0, 0.25).unwrap(),
+            TEST_DEVICE.with_value(Some(state), 0, 0.25).unwrap(),
             br#"{"extra":true,"params":{"level":0.25}}"#,
         );
     }
 
     #[test]
-    fn former_preset_name_resolves_and_the_dirty_flag_tracks_current_values() {
-        let old = br#"{"params":{"level":1},"preset":"Laut"}"#;
+    fn the_dirty_flag_tracks_current_values() {
+        let old = br#"{"params":{"level":1},"preset":"Loud"}"#;
         assert_eq!(TEST_DEVICE.loaded_preset(Some(old)), Some((0, false)));
         let edited = TEST_DEVICE.with_value(Some(old), 0, 0.25).unwrap();
         assert_eq!(TEST_DEVICE.loaded_preset(Some(&edited)), Some((0, true)));

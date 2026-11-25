@@ -524,7 +524,6 @@ static bool CLAP_ABI preset_provider_metadata(const clap_preset_discovery_provid
         return false;
     const clap_universal_plugin_id_t id = {.abi = "clap", .id = FIXTURE_ID "valid"};
     receiver->add_plugin_id(receiver, &id);
-    receiver->add_extra_info(receiver, "org.klang-studio.komponist.preset-alias", "Older Boost");
     receiver->add_extra_info(receiver, "org.klang-studio.komponist.preset-name.de", "Testanhebung");
     return true;
 }

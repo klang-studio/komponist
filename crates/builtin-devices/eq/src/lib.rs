@@ -39,14 +39,6 @@ pub static SPEC: Spec = Spec {
     params,
     layout,
     presets,
-    preset_aliases: &[
-        ("Flach", "Flat"),
-        ("Gesang Präsenz", "Vocal Presence"),
-        ("Bass Wärme", "Warm Bass"),
-        ("Höhen Glanz", "Treble Sheen"),
-        ("Telefon", "Telephone"),
-    ],
-    migrate_params: None,
     cache: komponist_device_core::SpecCache::new(),
 };
 

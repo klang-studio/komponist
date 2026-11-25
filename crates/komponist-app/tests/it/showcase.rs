@@ -154,7 +154,7 @@ fn check_factory_presets(project: &Project, host: &dyn DeviceHost, factory: &Plu
             let (selected, _) = host
                 .saved_preset(device, catalog)
                 .unwrap_or_else(|| panic!("{track}: no preset for {}", device.plugin.id));
-            assert!(catalog[selected].factory && catalog[selected].matches_name(expected));
+            assert!(catalog[selected].factory && catalog[selected].name == expected);
             let factory_state = factory
                 .manager()
                 .prepare_bundled_device(&device.plugin.id, Some(expected), &[], &[])

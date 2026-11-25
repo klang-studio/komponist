@@ -31,8 +31,6 @@ static SPEC: Spec = Spec {
     params: |_| Vec::new(),
     layout: |_| DeviceLayout::knob_grid([], 1),
     presets: no_presets,
-    preset_aliases: &[],
-    migrate_params: None,
     cache: SpecCache::new(),
 };
 

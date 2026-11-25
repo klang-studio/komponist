@@ -53,7 +53,6 @@ pub fn run_preset_state(bundle: &Path, preset: &str) -> u8 {
             source,
             name: String::new(),
             localized_names: Default::default(),
-            aliases: Vec::new(),
             features: Vec::new(),
             factory: false,
         })?;

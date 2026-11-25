@@ -624,7 +624,6 @@ mod tests {
             },
             name: name.into(),
             localized_names: Default::default(),
-            aliases: Vec::new(),
             features: Vec::new(),
             factory: true,
         }

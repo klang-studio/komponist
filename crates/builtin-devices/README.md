@@ -14,12 +14,12 @@ have separate DSP cores; [Surf](surf/) runs on [Volt](volt/)'s engine with its o
 
 1. Add a crate here and declare its path in the root `Cargo.toml` under `[workspace.dependencies]`.
    Keep the DSP, parameter table, layout, state and factory presets with the device.
-2. Define its `Spec` and `CatalogSpec`. Choose a permanent catalog ID for project files and stable
-   parameter IDs for state and automation. Implement the processor and add any state migrations
-   next to the device's state handling.
+2. Define its `Spec` and `CatalogSpec`. Choose a catalog ID for project files and
+   parameter IDs for state and automation. Implement the processor; there are no state migrations
+   below 1.0 (`AGENTS.md` rule 16).
 3. Add the DE and EN catalog keys and wire the generated name accessor to `CatalogSpec::name_in`.
    Follow [I18N §8](../../docs/I18N.md#8-built-in-devices-and-default-names-4) for parameter and layout
-   labels, preset names and aliases.
+   labels and preset names.
 4. Add the crate as a dependency of the registry and register its spec and factory. Check the
    order, role and category in the browser.
 5. Add a musically useful example to `showcase::showcase_project()` and test it with `--demo`.

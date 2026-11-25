@@ -913,7 +913,6 @@ fn frame_keeps_queued_and_applied_preset_identity_when_discovery_reorders_entrie
         },
         name: name.into(),
         localized_names: Default::default(),
-        aliases: Vec::new(),
         features: Vec::new(),
         factory: true,
     };

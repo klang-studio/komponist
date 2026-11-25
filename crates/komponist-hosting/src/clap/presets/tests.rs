@@ -19,7 +19,6 @@ use super::*;
 
 const ID: &CStr = c"org.example.community-presets";
 const PRESET_KEY: &CStr = c"number://42";
-const ALIAS: &CStr = c"Former name";
 const PROVIDER: clap_preset_discovery_provider_descriptor =
     clap_preset_discovery_provider_descriptor {
         clap_version: CLAP_VERSION,
@@ -158,11 +157,6 @@ unsafe extern "C" fn metadata(
         let extra = (*receiver).add_extra_info.unwrap();
         extra(
             receiver,
-            c"org.klang-studio.komponist.preset-alias".as_ptr(),
-            ALIAS.as_ptr(),
-        );
-        extra(
-            receiver,
             c"org.klang-studio.komponist.preset-name.de".as_ptr(),
             c"Neuer Name".as_ptr(),
         );
@@ -297,8 +291,6 @@ fn community_clap_discovers_loads_and_round_trips_a_preset() {
     assert_eq!(preset.plugin_id, ID.to_str().unwrap());
     assert_eq!(preset.display_name("DE"), "Neuer Name");
     assert_eq!(preset.display_name("fr"), "New name");
-    assert!(preset.matches_name("Former name"));
-    assert_eq!(preset.aliases, ["Former name"]);
     assert_eq!(preset.features, ["keys"]);
     assert!(preset.factory);
     assert_eq!(

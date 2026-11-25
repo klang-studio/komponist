@@ -173,11 +173,6 @@ impl Internal {
         self.spec().presets()
     }
 
-    /// Names of factory presets saved by older projects and their current names.
-    pub fn preset_aliases(self) -> &'static [(&'static str, &'static str)] {
-        self.spec().preset_aliases
-    }
-
     /// All plain values (by wire id) of preset `index`: the defaults with the preset's changes
     /// (snapped). `None` if there is no such preset.
     pub fn preset_values(self, index: usize) -> Option<Vec<f64>> {
@@ -192,9 +187,7 @@ impl Internal {
     }
 
     /// The preset a device state says it loaded (`"preset"`) and whether the values differ from it
-    /// now („ *“). `None` for a state without a (known) preset, as every project saved before
-    /// WP-96. A name from before the presets were renamed in English finds
-    /// its preset.
+    /// now („ *“). `None` for a state without a (known) preset.
     pub fn loaded_preset(self, state: Option<&[u8]>) -> Option<(usize, bool)> {
         self.spec().loaded_preset(state)
     }
@@ -294,8 +287,6 @@ impl Internal {
 mod fx_tests;
 #[cfg(test)]
 mod midi_tests;
-#[cfg(test)]
-mod preset_names;
 #[cfg(test)]
 mod presse_tests;
 #[cfg(test)]

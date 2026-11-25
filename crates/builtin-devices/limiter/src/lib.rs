@@ -42,13 +42,6 @@ pub static SPEC: Spec = Spec {
     params,
     layout,
     presets,
-    preset_aliases: &[
-        ("Master sanft", "Gentle Master"),
-        ("Master laut", "Loud Master"),
-        ("Spitzenschutz", "Peak Guard"),
-        ("Drums hart", "Hard Drums"),
-    ],
-    migrate_params: None,
     cache: komponist_device_core::SpecCache::new(),
 };
 

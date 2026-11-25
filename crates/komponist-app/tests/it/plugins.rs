@@ -477,7 +477,6 @@ fn standalone_clap_preset_round_trips_through_catalog_browser_and_bridge() {
     let plugin = clap_plugin("org.klang-studio.komponist.layout-fixture.valid");
     let preset = &host.catalog().resolve(&plugin).unwrap().clap_presets[0];
     assert_eq!(preset.display_name("de"), "Testanhebung");
-    assert!(preset.matches_name("Older Boost"));
     let source = preset.source.clone();
     let (project, track) = add_track(
         &Project::new("CLAP presets"),

@@ -70,17 +70,6 @@ pub static SPEC: Spec = Spec {
     params,
     layout,
     presets,
-    preset_aliases: &[
-        ("Gesang weich", "Soft Vocal"),
-        ("Gesang vorn", "Forward Vocal"),
-        ("Drums fest", "Tight Drums"),
-        ("Drums parallel", "Parallel Drums"),
-        ("Bass stabil", "Steady Bass"),
-        ("Gitarre/Keys sanft", "Gentle Guitar & Keys"),
-        ("Limitieren (hart)", "Hard Limit"),
-        ("Pumpen", "Pumping"),
-    ],
-    migrate_params: None,
     cache: komponist_device_core::SpecCache::new(),
 };
 

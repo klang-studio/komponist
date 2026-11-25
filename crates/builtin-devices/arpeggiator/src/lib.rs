@@ -42,14 +42,6 @@ pub static SPEC: Spec = Spec {
     params,
     layout,
     presets,
-    preset_aliases: &[
-        ("Achtel auf", "Eighths Up"),
-        ("Sechzehntel Auf/Ab", "Sixteenths Up/Down"),
-        ("Triolen ab", "Triplets Down"),
-        ("Zufall", "Random"),
-        ("Gespielt weich", "Soft As Played"),
-    ],
-    migrate_params: None,
     cache: SpecCache::new(),
 };
 
