@@ -359,19 +359,7 @@ impl App {
         let state = candidate.file_state();
         let original = candidate.project_path().map(Path::to_path_buf);
         let written = candidate.written();
-        let project_dir = original
-            .as_deref()
-            .and_then(Path::parent)
-            .map(komponist_model::paths::absolute);
-        let host = self.engine.host();
-        let migration = host.migrate_project_for_open(
-            project,
-            project_dir.as_deref().unwrap_or_else(|| Path::new(".")),
-        );
         let mut doc = Document::new(Arc::unwrap_or_clone(Arc::clone(project)));
-        if let Ok(Some(migrated)) = migration {
-            doc = Document::new(migrated);
-        }
         // Nothing of it is in a file: unsaved until the first save.
         doc.forget_saved();
         let repaired = repairs.total();
