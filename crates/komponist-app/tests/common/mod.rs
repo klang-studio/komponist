@@ -63,10 +63,15 @@ pub fn fixture_dirs() -> Option<PluginDirs> {
 
 /// Real native CLAP fixtures use a separate scan directory from the WP-27 test plugins.
 pub fn native_fixture_dirs(bundle: &str) -> Option<PluginDirs> {
+    clap_fixture_dirs("builtin-clap", bundle)
+}
+
+/// Scan only the fixture group that contains the required bundle.
+pub fn clap_fixture_dirs(group: &str, bundle: &str) -> Option<PluginDirs> {
     let dir = target_dir()
         .join("test-plugins")
         .join(std::env::consts::OS)
-        .join("builtin-clap");
+        .join(group);
     test_fixtures::available(&dir.join(bundle)).then(|| PluginDirs {
         clap: vec![std::fs::canonicalize(dir).unwrap()],
         vst3: Vec::new(),

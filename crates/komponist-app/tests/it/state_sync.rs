@@ -15,6 +15,7 @@ use komponist_audio::{HostKind, StreamConfig};
 use komponist_audiofile::fixtures as testkit;
 use komponist_builtin::Internal;
 use komponist_engine::Command;
+use komponist_ipc::control::RenderMode;
 use komponist_ipc::device_assets::AssetStatus;
 use komponist_model::edits::{self, NewDevice, NewTrack};
 use komponist_model::fixtures::demo_project;
@@ -62,22 +63,25 @@ fn redo(sync: &mut EngineSync, doc: &mut Document) {
     follow(sync, doc, &before);
 }
 
-/// One live note on `track`, rendered for a while: the peak of the output.
-fn note_peak(sync: &mut EngineSync, track: TrackId) -> f32 {
+/// Render a live note and drain its release before probing again.
+fn note_peak_with_tail(sync: &mut EngineSync, track: TrackId, key: u8, tail_frames: usize) -> f32 {
     sync.send(Command::LiveNote {
         track,
-        key: 60,
+        key,
         velocity: 100,
     });
     let (l, r) = sync.run_held_capture(9600, &[], 0).expect("held engine");
     sync.send(Command::LiveNote {
         track,
-        key: 60,
+        key,
         velocity: 0,
     });
-    // The release tail, so the next note starts from silence.
-    sync.run_held(96_000, &[], 0);
+    sync.run_held(tail_frames, &[], 0);
     l.iter().chain(&r).fold(0.0_f32, |m, s| m.max(s.abs()))
+}
+
+fn note_peak(sync: &mut EngineSync, track: TrackId) -> f32 {
+    note_peak_with_tail(sync, track, 60, 96_000)
 }
 
 fn hexa_track(project: &Project) -> (TrackId, DeviceId) {
@@ -267,10 +271,21 @@ fn wait_for_state(sync: &mut EngineSync, device: DeviceId) {
     });
 }
 
+/// Keep the live processors but wait for their audio blocks outside real-time deadlines.
+fn hold_offline(sync: &mut EngineSync, devices: &[DeviceId]) {
+    sync.hold_engine().expect("engine held");
+    sync.host_mut().set_render_mode(RenderMode::Offline);
+    wait(sync, "the processors' offline render mode", |sync, _| {
+        devices
+            .iter()
+            .all(|&device| sync.device_status(device) == DeviceStatus::Ok)
+    });
+}
+
 #[test]
 fn undo_and_redo_of_clap_effect_state_reach_the_running_processor() {
     const LIMITER_ID: &str = "org.klang-studio.komponist.limiter";
-    let Some(mut dirs) = native_fixture_dirs("limiter.clap") else {
+    let Some(mut dirs) = clap_fixture_dirs("state-sync-clap", "limiter.clap") else {
         return;
     };
     let Some(synth_dirs) = fixture_dirs() else {
@@ -330,7 +345,7 @@ fn undo_and_redo_of_clap_effect_state_reach_the_running_processor() {
     let loud = capture(&mut sync, 1.0);
     let quiet = capture(&mut sync, 0.0);
     assert_ne!(loud, quiet);
-    sync.hold_engine().expect("engine held");
+    hold_offline(&mut sync, &[synth, limiter]);
 
     apply_snapshot(&mut sync, &mut doc, limiter, &loud);
     wait_for_state(&mut sync, limiter);
@@ -364,38 +379,68 @@ fn undo_and_redo_of_clap_effect_state_reach_the_running_processor() {
 
 #[test]
 fn undo_and_redo_of_asset_links_reach_the_clap_sampler() {
+    const SLOTS: u32 = 8;
     let dir = scratch("undo-sampler");
     let Some((host, plugin)) =
         native_fixture(&dir, "klopfer.clap", "org.klang-studio.komponist.sampler")
     else {
         return;
     };
-    let (project, _, drums) = instrument_project(plugin);
-    let kit = testkit::write_kit(&dir).unwrap();
-    let links: BTreeMap<_, _> = kit
-        .iter()
-        .enumerate()
-        .map(|(id, path)| (id as u32, AssetLink::new(path, None)))
-        .collect();
+    let (project, track, drums) = instrument_project(plugin);
+    // The two files have the same short waveform at different levels. The running
+    // processor's peak distinguishes their identities independently of the project's links.
+    let write_sample = |name: &str, amplitude: f32| {
+        let path = dir.join(name);
+        let samples: Vec<_> = (0..2048)
+            .map(|frame| (std::f32::consts::TAU * frame as f32 / 64.0).sin() * amplitude)
+            .collect();
+        testkit::write_wav(&path, &samples, testkit::RATE).unwrap();
+        AssetLink::new(&path, None)
+    };
+    let original = write_sample("Original.wav", 0.125);
+    let replacement = write_sample("Replacement.wav", 0.5);
+    let links: BTreeMap<_, _> = (0..SLOTS).map(|slot| (slot, original.clone())).collect();
     let project = edits::set_device_asset_links(&project, drums, links.clone()).unwrap();
     let mut doc = Document::new(project);
     let mut sync = null_sync(Box::new(host));
     sync.sync(&doc);
+    wait(&mut sync, "the sampler pad layout", |sync, _| {
+        sync.device_status(drums) == DeviceStatus::Ok
+            && sync
+                .host()
+                .native_layout(drums)
+                .is_some_and(|layout| layout.pad_bank.is_some())
+    });
+    let pads = sync
+        .host()
+        .native_layout(drums)
+        .unwrap()
+        .pad_bank
+        .as_ref()
+        .unwrap()
+        .pads
+        .clone();
+    assert_eq!(pads.len(), SLOTS as usize);
+    hold_offline(&mut sync, &[drums]);
 
-    let expect_slots = |sync: &mut EngineSync, first: AssetStatus| {
-        wait(sync, "the sampler file slots", |sync, _| {
-            sync.host().asset_slots(drums).is_some_and(|snapshot| {
-                snapshot.slots.len() == kit.len()
-                    && snapshot.slots.iter().all(|slot| {
-                        slot.status
-                            == if slot.id == 0 {
-                                first.clone()
-                            } else {
-                                AssetStatus::Ready
-                            }
-                    })
-            })
-        });
+    let expect_slots = |sync: &mut EngineSync, target: u32, expected: AssetStatus| {
+        wait(
+            sync,
+            &format!("slot {target} to be {expected:?} and the rest ready"),
+            |sync, _| {
+                sync.host().asset_slots(drums).is_some_and(|snapshot| {
+                    snapshot.slots.len() == SLOTS as usize
+                        && snapshot
+                            .slots
+                            .iter()
+                            .any(|slot| slot.id == target && slot.status == expected)
+                        && snapshot
+                            .slots
+                            .iter()
+                            .all(|slot| slot.id == target || slot.status == AssetStatus::Ready)
+                })
+            },
+        );
     };
     let apply_links = |sync: &mut EngineSync, doc: &mut Document, links: &BTreeMap<_, _>| {
         let before = Arc::clone(doc.project());
@@ -405,25 +450,53 @@ fn undo_and_redo_of_asset_links_reach_the_clap_sampler() {
         .unwrap();
         follow(sync, doc, &before);
     };
+    let peak = |sync: &mut EngineSync, key| note_peak_with_tail(sync, track, key, 256);
 
-    expect_slots(&mut sync, AssetStatus::Ready);
-    let mut cleared = links.clone();
-    cleared.remove(&0);
-    apply_links(&mut sync, &mut doc, &cleared);
-    expect_slots(&mut sync, AssetStatus::Empty);
-    undo(&mut sync, &mut doc);
-    expect_slots(&mut sync, AssetStatus::Ready);
-    redo(&mut sync, &mut doc);
-    expect_slots(&mut sync, AssetStatus::Empty);
+    for pad in pads {
+        let slot = pad.asset_slot;
+        expect_slots(&mut sync, slot, AssetStatus::Ready);
+        let reference = peak(&mut sync, pad.note);
+        assert!(
+            reference > 1e-3,
+            "original asset in slot {slot}: {reference}"
+        );
 
-    let mut relinked = cleared;
-    relinked.insert(0, AssetLink::new(&kit[3], None));
-    apply_links(&mut sync, &mut doc, &relinked);
-    expect_slots(&mut sync, AssetStatus::Ready);
-    undo(&mut sync, &mut doc);
-    expect_slots(&mut sync, AssetStatus::Empty);
-    redo(&mut sync, &mut doc);
-    expect_slots(&mut sync, AssetStatus::Ready);
+        let mut cleared = links.clone();
+        assert!(cleared.remove(&slot).is_some());
+        apply_links(&mut sync, &mut doc, &cleared);
+        expect_slots(&mut sync, slot, AssetStatus::Empty);
+        undo(&mut sync, &mut doc);
+        expect_slots(&mut sync, slot, AssetStatus::Ready);
+        let restored = peak(&mut sync, pad.note);
+        assert!(
+            (restored / reference - 1.0).abs() < 0.03,
+            "undo must restore the original asset in slot {slot}: {restored} vs {reference}"
+        );
+        redo(&mut sync, &mut doc);
+        expect_slots(&mut sync, slot, AssetStatus::Empty);
+
+        let mut relinked = cleared;
+        relinked.insert(slot, replacement.clone());
+        apply_links(&mut sync, &mut doc, &relinked);
+        expect_slots(&mut sync, slot, AssetStatus::Ready);
+        let relinked = peak(&mut sync, pad.note);
+        assert!(
+            (relinked / reference - 4.0).abs() < 0.12,
+            "relink must load the replacement in slot {slot}: {relinked} vs {reference}"
+        );
+        undo(&mut sync, &mut doc);
+        expect_slots(&mut sync, slot, AssetStatus::Empty);
+        redo(&mut sync, &mut doc);
+        expect_slots(&mut sync, slot, AssetStatus::Ready);
+        let redone = peak(&mut sync, pad.note);
+        assert!(
+            (redone / reference - 4.0).abs() < 0.12,
+            "redo must load the replacement in slot {slot}: {redone} vs {reference}"
+        );
+
+        apply_links(&mut sync, &mut doc, &links);
+        expect_slots(&mut sync, slot, AssetStatus::Ready);
+    }
 }
 
 /// Polls `sync` until `done` accepts it and the device events of that poll.

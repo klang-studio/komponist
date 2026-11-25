@@ -45,15 +45,16 @@ if ! command -v "$python" >/dev/null; then
 fi
 CARGO_TARGET_DIR="$root/target" "$python" "$root/scripts/bundled-clap.py" \
     --target "$target" --inventory native-fixtures stage "$fixture_stage/payload" >/dev/null
-fixture_dir="$out/builtin-clap"
-mkdir -p "$fixture_dir"
 install_fixture() {
     local source="$1"
-    local fixture="$fixture_dir/$2.clap"
+    local fixture="$2"
+    mkdir -p "$(dirname "$fixture")"
     rm -rf "$fixture"
     mv "$fixture_stage/payload/$source.clap" "$fixture"
     echo "$fixture"
 }
-install_fixture komponist_sampler klopfer
-install_fixture komponist_general_sampler general-sampler
-install_fixture komponist_limiter limiter
+install_fixture komponist_sampler "$out/builtin-clap/klopfer.clap"
+install_fixture komponist_general_sampler "$out/builtin-clap/general-sampler.clap"
+# State sync uses Limiter without adding an entry to the sampler snapshots' browser.
+rm -rf "$out/builtin-clap/limiter.clap"
+install_fixture komponist_limiter "$out/state-sync-clap/limiter.clap"
