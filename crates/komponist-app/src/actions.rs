@@ -521,10 +521,7 @@ pub enum PluginAction {
         /// Plain value.
         value: f64,
     },
-    /// Link the sample file `path` to pad `pad` (0-based) of a sampler: dropped on the pad, chosen
-    /// in the file browser ("Sample laden …", "Suchen …"). The link goes into the device state
-    /// (absolute path and the path relative to the project file), the sample loads in the
-    /// background, the pad's start and end return to the whole sample.
+    /// Link a file from a legacy sampler action, using a managed slot if available.
     LoadSample {
         /// The sampler device.
         device: DeviceId,
@@ -533,15 +530,14 @@ pub enum PluginAction {
         /// The WAV file.
         path: PathBuf,
     },
-    /// Empty pad `pad` of a sampler ("Sample entfernen").
+    /// Clear a slot addressed by a legacy sampler action.
     ClearSample {
         /// The sampler device.
         device: DeviceId,
         /// The pad, 0-based.
         pad: usize,
     },
-    /// "Sample laden …" / "Suchen …": open the file browser for pad `pad`; the choice becomes a
-    /// [`PluginAction::LoadSample`].
+    /// Open the picker for a pad addressed by a legacy sampler action.
     PickSample {
         /// The sampler device.
         device: DeviceId,

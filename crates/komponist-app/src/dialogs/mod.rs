@@ -84,8 +84,10 @@ pub(crate) struct DialogState {
     pub(crate) settings: settings::Cache,
     /// The recent projects' summaries for the start screen.
     pub(crate) start: start::Cache,
-    /// The sampler's pending file choice, held audition notes and pad selection (WP-87).
+    /// Sampler parameter journal and pad selection.
     pub(crate) samples: crate::samples::State,
+    /// Host-managed file edits and device previews.
+    pub(crate) plugin_assets: crate::plugin_assets::State,
 }
 
 /// A dialog without a [`crate::ui_state::Dialog`] variant.
