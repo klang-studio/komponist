@@ -5,6 +5,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use komponist_builtin::Internal;
+use komponist_ipc::ParamInfo as ClapParamInfo;
+use komponist_ipc::control::MAX_STATE_PARAMETER_BASES;
+use komponist_ipc::native_layout::{GraphKind, NativeLayout};
 use komponist_model::params::ParamInfo;
 use komponist_model::project::SavedPluginState;
 use komponist_model::{Device, PluginRef};
@@ -210,6 +213,7 @@ fn reset_trim_parameters(
     relinking: bool,
 ) -> impl Iterator<Item = &'static ParamInfo> {
     let general = pad_count(kind) == 1;
+    let reset = should_reset_trim(kind, attaching, relinking);
     kind.params()
         .iter()
         .enumerate()
@@ -219,8 +223,12 @@ fn reset_trim_parameters(
             } else {
                 [PadField::Start.wire(pad), PadField::End.wire(pad)].contains(&wire)
             };
-            (attaching && (!general || !relinking) && trim).then_some(parameter)
+            (reset && trim).then_some(parameter)
         })
+}
+
+fn should_reset_trim(kind: Internal, attaching: bool, relinking: bool) -> bool {
+    attaching && (pad_count(kind) != 1 || !relinking)
 }
 
 fn remove_reset_trim_bases(
@@ -279,7 +287,6 @@ fn reset_region(
     attaching: bool,
     relinking: bool,
 ) -> Option<Vec<u8>> {
-    let general = pad_count(kind) == 1;
     let mut trim = reset_trim_parameters(kind, pad, attaching, relinking).peekable();
     if trim.peek().is_some() {
         let params = wrapper.get_mut("params")?.as_object_mut()?;
@@ -290,11 +297,41 @@ fn reset_region(
             );
         }
     }
-    Some(if general && !relinking {
+    Some(reset_slices(assets, kind, relinking))
+}
+
+fn reset_slices(assets: Vec<u8>, kind: Internal, relinking: bool) -> Vec<u8> {
+    if pad_count(kind) == 1 && !relinking {
         komponist_general_sampler::write_settings(Some(&assets), &Settings::default())
     } else {
         assets
-    })
+    }
+}
+
+fn waveform_trim_defaults(
+    layout: &NativeLayout,
+    params: &[ClapParamInfo],
+    slot: u32,
+) -> Option<[(u32, f64); 2]> {
+    let mut bindings = layout
+        .pages
+        .iter()
+        .flat_map(|page| &page.cells)
+        .filter_map(|cell| cell.graph.as_ref())
+        .filter(|graph| graph.kind == GraphKind::Waveform && graph.asset_slot == Some(slot))
+        .map(|graph| ["start", "end"].map(|name| graph.slots.get(name).copied()));
+    let [Some(start), Some(end)] = bindings.next()? else {
+        return None;
+    };
+    if start == end || bindings.any(|ids| ids != [Some(start), Some(end)]) {
+        return None;
+    }
+    let [start, end] = [start, end].map(|id| {
+        let info = params.iter().find(|info| info.id == id)?;
+        (info.default.is_finite() && (info.min..=info.max).contains(&info.default))
+            .then_some((id, info.default))
+    });
+    Some([start?, end?])
 }
 
 /// Prepare the bundled sampler's stored trim and slice state for a user file edit.
@@ -302,9 +339,11 @@ fn reset_region(
 pub(crate) fn edit_native_regions(
     device: &Device,
     changes: &[crate::AssetEdit],
-    author_ids: Option<&BTreeMap<String, u32>>,
+    layout: Option<&NativeLayout>,
+    params: &[ClapParamInfo],
 ) -> Option<SavedPluginState> {
     let kind = kind(&device.plugin)?;
+    let current_layout = layout.filter(|layout| layout.schema_version == 2);
     let initial;
     let state = if let Some(state) = device.state.as_deref() {
         state
@@ -320,25 +359,45 @@ pub(crate) fn edit_native_regions(
             if pad >= pad_count(kind) {
                 return None;
             }
-            remove_reset_trim_bases(
-                &mut parameter_bases,
-                kind,
-                pad,
-                change.attaching,
-                change.relinking,
-                author_ids,
-            )?;
-            updated = reset_region(
-                wrapper,
-                updated,
-                kind,
-                pad,
-                change.attaching,
-                change.relinking,
-            )?;
+            let defaults = current_layout
+                .filter(|_| should_reset_trim(kind, change.attaching, change.relinking))
+                .and_then(|layout| waveform_trim_defaults(layout, params, change.slot))
+                .filter(|defaults| {
+                    let additional_bases = defaults
+                        .iter()
+                        .filter(|(id, _)| !parameter_bases.contains_key(id))
+                        .count();
+                    parameter_bases.len() + additional_bases <= MAX_STATE_PARAMETER_BASES
+                });
+            if let Some(defaults) = defaults {
+                // Reapply the live CLAP defaults through the saved state on both host routes.
+                parameter_bases.extend(defaults);
+                updated = reset_slices(updated, kind, change.relinking);
+            } else {
+                // Older bundles and edits without room for the overrides can use the stored trim.
+                remove_reset_trim_bases(
+                    &mut parameter_bases,
+                    kind,
+                    pad,
+                    change.attaching,
+                    change.relinking,
+                    layout.and_then(NativeLayout::author_ids),
+                )?;
+                updated = reset_region(
+                    wrapper,
+                    updated,
+                    kind,
+                    pad,
+                    change.attaching,
+                    change.relinking,
+                )?;
+            }
         }
         String::from_utf8(updated).ok()
     })?;
+    if parameter_bases.len() > MAX_STATE_PARAMETER_BASES {
+        return None;
+    }
     Some(SavedPluginState {
         bytes: bytes.into(),
         parameter_bases,
@@ -490,12 +549,26 @@ mod tests {
     }
 
     #[test]
-    fn native_sample_replacement_clears_only_the_reset_trim_bases() {
+    fn older_sampler_replacement_clears_only_the_reset_trim_bases() {
         let device = Device {
             parameter_bases: [(7, 0.25), (9, 0.75), (31, 0.4)].into(),
             ..bundled_general_sampler()
         };
-        let ids = [("start".to_owned(), 7), ("end".to_owned(), 9)].into();
+        let layout = NativeLayout::parse(
+            br#"{
+                "schema_version": 1, "default_locale": "en", "locales": ["en"],
+                "author_ids": {"start": 7, "end": 9},
+                "pages": [{
+                    "key": "sample", "labels": {"en": "Sample"}, "columns": 2,
+                    "cells": [
+                        {"widget": "knob", "col": 0, "row": 0, "cols": 1, "rows": 1, "param_id": 7},
+                        {"widget": "knob", "col": 1, "row": 0, "cols": 1, "rows": 1, "param_id": 9}
+                    ]
+                }]
+            }"#,
+        )
+        .unwrap();
+        let ids = layout.author_ids();
         let link = SampleLink::new(std::path::Path::new("/samples/tone.wav"), None);
         for relinking in [false, true] {
             let native = edit_native_regions(
@@ -505,10 +578,11 @@ mod tests {
                     attaching: true,
                     relinking,
                 }],
-                Some(&ids),
+                Some(&layout),
+                &[],
             )
             .unwrap();
-            let embedded = edit_saved_link(&device, 0, Some(&link), relinking, Some(&ids)).unwrap();
+            let embedded = edit_saved_link(&device, 0, Some(&link), relinking, ids).unwrap();
             for after in [native, embedded] {
                 if relinking {
                     assert_eq!(after.parameter_bases, device.parameter_bases);
@@ -520,13 +594,126 @@ mod tests {
                 }
             }
         }
-        let linked = edit_saved_link(&device, 0, Some(&link), true, Some(&ids)).unwrap();
+        let linked = edit_saved_link(&device, 0, Some(&link), true, ids).unwrap();
         let device = Device {
             state: Some(linked.bytes),
             ..device
         };
         let cleared = edit_saved_link(&device, 0, None, false, None).unwrap();
         assert_eq!(cleared.parameter_bases, device.parameter_bases);
+    }
+
+    #[test]
+    fn native_sample_edits_use_clap_trim_defaults_for_the_asset_slot() {
+        let mut document: Value = serde_json::from_str(
+            r#"{
+                "schema_version": 2, "default_locale": "en", "locales": ["en"],
+                "pages": [{
+                    "key": "sample", "labels": {"en": "Sample"}, "columns": 6,
+                    "cells": [
+                        {
+                            "widget": "graph", "col": 0, "row": 0, "cols": 3, "rows": 3,
+                            "graph": {
+                                "kind": "waveform", "name": {"en": "Other"},
+                                "description": {"en": "Other asset"}, "asset_slot": 1,
+                                "slots": {"start": 44, "end": 51}
+                            }
+                        },
+                        {
+                            "widget": "graph", "col": 3, "row": 0, "cols": 3, "rows": 3,
+                            "graph": {
+                                "kind": "waveform", "name": {"en": "Waveform"},
+                                "description": {"en": "Sample range"}, "asset_slot": 0,
+                                "slots": {"start": 7, "end": 9}
+                            }
+                        }
+                    ]
+                }]
+            }"#,
+        )
+        .unwrap();
+        let parse =
+            |document: &Value| NativeLayout::parse(&serde_json::to_vec(document).unwrap()).unwrap();
+        let layout = parse(&document);
+        assert!(layout.author_ids().is_none());
+        let params =
+            [(7, 0.1), (9, 0.9), (44, 0.2), (51, 0.8)].map(|(id, default)| ClapParamInfo {
+                id,
+                name: id.to_string(),
+                module: String::new(),
+                min: 0.0,
+                max: 1.0,
+                default,
+                step_count: 0,
+                flags: 0,
+            });
+        layout.validate_params(&params).unwrap();
+        let opaque_trim = Map::from_iter([
+            ("start".into(), json!({"f32": 0.3})),
+            ("end".into(), json!({"f32": 0.6})),
+        ]);
+        let opaque = pinned_clap_state::encode("0.1.0", opaque_trim.clone(), Map::new());
+        let sliced = edit_slices(&opaque, &Settings::from_markers([0.25, 0.5])).unwrap();
+        let cleared = edit_slices(&sliced, &Settings::default()).unwrap();
+        let device = Device {
+            state: Some(sliced.clone().into()),
+            parameter_bases: [(7, 0.35), (31, 0.4)].into(),
+            ..bundled_general_sampler()
+        };
+        for (attaching, relinking) in [(true, false), (true, true), (false, false)] {
+            let after = edit_native_regions(
+                &device,
+                &[crate::AssetEdit {
+                    slot: 0,
+                    attaching,
+                    relinking,
+                }],
+                Some(&layout),
+                &params,
+            )
+            .unwrap();
+            let expected_bases = if attaching && !relinking {
+                [(7, 0.1), (9, 0.9), (31, 0.4)].into()
+            } else {
+                device.parameter_bases.clone()
+            };
+            assert_eq!(after.parameter_bases, expected_bases);
+            assert_eq!(decode(&after.bytes).unwrap()["params"], json!(opaque_trim));
+            let expected = if relinking { &sliced } else { &cleared };
+            assert_eq!(assets(&after.bytes), assets(expected));
+        }
+
+        document["author_ids"] = json!({"start": 7, "end": 9, "other_start": 44, "other_end": 51});
+        let with_ids = parse(&document);
+        let full_bases: BTreeMap<_, _> = (1_000..)
+            .take(MAX_STATE_PARAMETER_BASES)
+            .map(|id| (id, 0.4))
+            .collect();
+        let full = Device {
+            parameter_bases: full_bases.clone(),
+            ..device.clone()
+        };
+        document["pages"][0]["cells"][1]["graph"]["slots"]["end"] = 7.into();
+        let duplicate = parse(&document);
+        let change = crate::AssetEdit {
+            slot: 0,
+            attaching: true,
+            relinking: false,
+        };
+        for (device, layout, expected_bases) in [
+            (&full, &with_ids, full_bases),
+            (&device, &duplicate, [(31, 0.4)].into()),
+        ] {
+            let after =
+                edit_native_regions(device, std::slice::from_ref(&change), Some(layout), &params)
+                    .unwrap();
+            assert_eq!(after.parameter_bases, expected_bases);
+            assert_eq!(
+                decode(&after.bytes).unwrap()["params"],
+                json!({"start": {"f32": 0.0}, "end": {"f32": 1.0}})
+            );
+            assert_eq!(assets(&after.bytes), assets(&cleared));
+        }
     }
 
     #[test]

@@ -837,6 +837,16 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             slot: 2,
             path: Some(alternate.clone()),
         }));
+    assert_eq!(
+        h.state()
+            .project()
+            .find_device(drum)
+            .unwrap()
+            .2
+            .parameter_bases
+            .get(&start),
+        Some(&default_trim)
+    );
     step_until(
         h.state_mut(),
         "replacement reset the selected pad trim",
