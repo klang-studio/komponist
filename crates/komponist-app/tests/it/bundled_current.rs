@@ -255,54 +255,12 @@ fn demo_and_new_tracks_use_verified_clap_only() {
             .iter()
             .all(|(_, device)| device.plugin.format == PluginFormat::Clap)
     );
-    let mut app = app_with(project, host);
+    let mut app = app_with(project.clone(), host);
     assert_ready(&mut app, &expected, bridge);
 
-    let project = app.project();
-    let host = app.engine().host();
-    let target = |device: DeviceId, author: &str| AutomationTarget::Param {
-        device,
-        param: ParamId::plugin(host.native_layout(device).unwrap().author_ids().unwrap()[author]),
-    };
-    let track = |name: &str| {
-        project
-            .tracks
-            .iter()
-            .find(|track| track.name == name)
-            .unwrap()
-    };
-    let lead = track("Lead");
-    let delay = lead.channel.devices.last().unwrap().id;
-    assert_eq!(lead.macros.0[0].mappings[0].target, target(delay, "mix"));
-    assert!(
-        lead.automation
-            .lane(&target(lead.channel.devices[0].id, "feedback"))
-            .is_some()
-    );
-    let pad = track("Pad");
-    assert!(
-        pad.automation
-            .lane(&target(pad.channel.devices[0].id, "cutoff"))
-            .is_some()
-    );
-    let surf = track("Vowel Pad");
-    for author in ["osc_a_pos", "osc_b_pos"] {
-        assert!(
-            surf.automation
-                .lane(&target(surf.channel.devices[0].id, author))
-                .is_some()
-        );
-    }
-    for (track_name, slots) in [("Drums", 8), ("Glass Pluck", 1), ("Glass Slices", 1)] {
-        let sampler = track(track_name).channel.instrument().unwrap().1;
-        assert_eq!(sampler.asset_links.len(), slots);
-        assert!(
-            sampler
-                .asset_links
-                .values()
-                .all(|link| link.resolve(None).is_some())
-        );
-    }
+    let repeat =
+        komponist_app::showcase::bundled_demo(&cold_host, &work.path().join("repeat-kit")).unwrap();
+    super::showcase::assert_packaged_showcase(&mut app, &project, &cold_host, &repeat, bridge);
 
     let count = app.project().tracks.len();
     app.dispatch(Action::Edit(EditAction::NewMidiTrack));
