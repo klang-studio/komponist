@@ -934,9 +934,9 @@ impl App {
             };
         let rebase_bundled = |device, state: &std::sync::Arc<[u8]>| {
             let (_, _, model) = document.project().find_device(device)?;
-            komponist_plugins::bundled_sampler::kind(&model.plugin)?;
-            komponist_plugins::bundled_sampler::rebase_links(
-                state,
+            komponist_plugins::bundled_sampler::rebase_embedded_links(
+                model,
+                Some(state),
                 old_dir.as_deref(),
                 &new_dir,
                 |source| collected(&source).unwrap_or_else(|| recordings.destination(source)),
@@ -1647,8 +1647,12 @@ pub(crate) mod tests {
         }
         let project = demo_project();
         let sampler = project.tracks[0].channel.devices[0].id;
-        let state = links::write(None, 0, Some(&SampleLink::new(&old_sample, Some(&old_dir))));
-        let project = edits::set_device_state(&project, sampler, Some(state.into())).unwrap();
+        let bytes = links::write(None, 0, Some(&SampleLink::new(&old_sample, Some(&old_dir))));
+        let state = komponist_model::project::SavedPluginState {
+            bytes: bytes.into(),
+            parameter_bases: [(7, 0.25)].into(),
+        };
+        let project = edits::set_saved_plugin_state(&project, sampler, &state).unwrap();
         let (project, track) = edits::add_audio_track(&project, NewAudioTrack::default()).unwrap();
         let (project, clip) = edits::add_clip(
             &project,
@@ -1682,6 +1686,7 @@ pub(crate) mod tests {
 
         let check_links = |project: &Project, directory: &Path, relative: &Path| {
             let (_, _, device) = project.find_device(sampler).unwrap();
+            assert_eq!(device.parameter_bases, state.parameter_bases);
             let sample = &links::read(device.state.as_deref())[0].1;
             assert_eq!(sample.rel, relative);
             assert_eq!(

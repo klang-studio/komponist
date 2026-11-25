@@ -54,15 +54,43 @@ pub fn missing_links(state: &[u8], project_dir: Option<&Path>) -> Vec<(usize, Sa
     links::missing(assets, project_dir)
 }
 
-/// Collect the sample files referenced by the bundled wrapper state.
-pub fn collect_links(
+enum EmbeddedLinkState<'a> {
+    Bundled(&'a [u8]),
+    Legacy(&'a [u8]),
+}
+
+impl<'a> EmbeddedLinkState<'a> {
+    fn from_device(device: &'a Device, snapshot: Option<&'a [u8]>) -> Option<Self> {
+        if kind(&device.plugin).is_some() {
+            Some(Self::Bundled(snapshot.or(device.state.as_deref())?))
+        } else {
+            kind_by_id(crate::legacy_bundled::bundled_clap_id(&device.plugin)?)?;
+            Some(Self::Legacy(device.state.as_deref()?))
+        }
+    }
+}
+
+/// Collect legacy embedded files, including links an older bundle may still use.
+pub fn collect_embedded_links(
+    device: &Device,
     collector: &mut Collector,
-    state: Option<&[u8]>,
+    snapshot: Option<&[u8]>,
     project_dir: Option<&Path>,
 ) -> std::io::Result<()> {
-    let wrapper = state.and_then(decode);
-    let assets = wrapper.as_ref().and_then(asset_field).map(str::as_bytes);
-    collector.collect(assets, project_dir)?;
+    let wrapper;
+    let state = match EmbeddedLinkState::from_device(device, snapshot) {
+        Some(EmbeddedLinkState::Bundled(state)) => {
+            wrapper = decode(state);
+            wrapper.as_ref().and_then(asset_field).map(str::as_bytes)
+        }
+        Some(EmbeddedLinkState::Legacy(state)) => Some(state),
+        None => return Ok(()),
+    };
+    for (_, link) in links::read(state) {
+        if let Some(found) = link.resolve(project_dir) {
+            collector.collect_file(&found)?;
+        }
+    }
     Ok(())
 }
 
@@ -330,22 +358,22 @@ pub fn edit_slice_markers(state: &[u8], times: impl IntoIterator<Item = f64>) ->
     edit_slices(state, &Settings::from_markers(times))
 }
 
-/// Resolve the old links before rebasing them for the destination project folder.
-pub fn rebase_links(
-    state: &[u8],
+/// Rebase the device's legacy links for the destination, including deferred CLAP snapshots.
+pub fn rebase_embedded_links(
+    device: &Device,
+    snapshot: Option<&[u8]>,
     old_dir: Option<&Path>,
     new_dir: &Path,
     destination: impl Fn(PathBuf) -> PathBuf,
 ) -> Option<Vec<u8>> {
-    update_assets(state, |assets| {
-        String::from_utf8(links::rebase_with(
-            Some(assets.as_bytes()),
-            old_dir,
-            new_dir,
-            destination,
-        )?)
-        .ok()
-    })
+    let rebase = |state: &[u8]| links::rebase_with(Some(state), old_dir, new_dir, &destination);
+    match EmbeddedLinkState::from_device(device, snapshot)? {
+        // Only the CLAP host supplies a separate saved snapshot.
+        EmbeddedLinkState::Legacy(state) => snapshot.is_none().then(|| rebase(state)).flatten(),
+        EmbeddedLinkState::Bundled(state) => update_assets(state, |assets| {
+            String::from_utf8(rebase(assets.as_bytes())?).ok()
+        }),
+    }
 }
 
 /// Refresh only the bundled asset field before a runtime restore.
@@ -394,6 +422,26 @@ mod tests {
     use super::*;
     use komponist_device_core::pinned_clap_state;
     use serde_json::{Map, json};
+
+    fn bundled_general_sampler() -> Device {
+        Device {
+            id: komponist_model::DeviceId(1),
+            role: komponist_model::DeviceRole::Instrument,
+            plugin: PluginRef {
+                format: komponist_model::PluginFormat::Clap,
+                id: "org.klang-studio.komponist.general-sampler".into(),
+                name: "General Sampler".into(),
+                vendor: String::new(),
+                version: "0.1.0".into(),
+                module: crate::catalog::bundled_module("general-sampler.clap"),
+            },
+            bypass: false,
+            state: None,
+            parameter_bases: Default::default(),
+            asset_links: Default::default(),
+            sidechain: None,
+        }
+    }
 
     #[test]
     fn editing_an_empty_bundled_sampler_starts_with_linked_state_and_uses_normalized_defaults() {
@@ -444,21 +492,8 @@ mod tests {
     #[test]
     fn native_sample_replacement_clears_only_the_reset_trim_bases() {
         let device = Device {
-            id: komponist_model::DeviceId(1),
-            role: komponist_model::DeviceRole::Instrument,
-            plugin: PluginRef {
-                format: komponist_model::PluginFormat::Clap,
-                id: "org.klang-studio.komponist.general-sampler".into(),
-                name: "General Sampler".into(),
-                vendor: String::new(),
-                version: "0.1.0".into(),
-                module: crate::catalog::bundled_module("general-sampler.clap"),
-            },
-            bypass: false,
-            state: None,
             parameter_bases: [(7, 0.25), (9, 0.75), (31, 0.4)].into(),
-            asset_links: Default::default(),
-            sidechain: None,
+            ..bundled_general_sampler()
         };
         let ids = [("start".to_owned(), 7), ("end".to_owned(), 9)].into();
         let link = SampleLink::new(std::path::Path::new("/samples/tone.wav"), None);
@@ -496,6 +531,8 @@ mod tests {
 
     #[test]
     fn save_as_keeps_the_original_link_even_when_the_destination_has_a_matching_name() {
+        use komponist_model::plugin_assets::AssetLink;
+
         let scratch = tempfile::tempdir().unwrap();
         let old = scratch.path().join("old");
         let new = scratch.path().join("new");
@@ -514,7 +551,12 @@ mod tests {
             Map::new(),
             Map::from_iter([(SAMPLE_ASSETS_FIELD.into(), json!(original.to_string()))]),
         );
-        let rebased = rebase_links(&state, Some(&old), &new, |path| path).unwrap();
+        let device = Device {
+            asset_links: [(0, AssetLink::new(&unrelated, Some(&new)))].into(),
+            ..bundled_general_sampler()
+        };
+        let rebased =
+            rebase_embedded_links(&device, Some(&state), Some(&old), &new, |path| path).unwrap();
         let wrapper = decode(&rebased).unwrap();
         let assets = asset_field(&wrapper).unwrap();
         let [(pad, link)] = links::read(Some(assets.as_bytes())).try_into().unwrap();

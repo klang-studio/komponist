@@ -863,12 +863,12 @@ pub(crate) fn collect_sample_sources<'a>(
                 }
             }
         }
-        if bundled_sampler::kind(&device.plugin).is_some() {
-            let state = plugin_snapshot(device.id).or(device.state.as_deref());
-            bundled_sampler::collect_links(collector, state, project_dir)?;
-        } else if sample_device_kind(device).is_some() {
-            collector.collect(device.state.as_deref(), project_dir)?;
-        }
+        bundled_sampler::collect_embedded_links(
+            device,
+            collector,
+            plugin_snapshot(device.id),
+            project_dir,
+        )?;
     }
     for file in audio_files(project) {
         if let Some(found) = file.resolve(project_dir) {
@@ -887,26 +887,15 @@ pub(crate) fn rebase_project_links(
     destination: impl Fn(PathBuf) -> PathBuf,
     asset_destination: impl Fn(PathBuf) -> PathBuf,
 ) -> Option<Project> {
-    let after_samples = rewrite_links(
-        project,
-        |device| {
-            if bundled_sampler::kind(&device.plugin).is_some() {
-                bundled_sampler::rebase_links(
-                    device.state.as_deref()?,
-                    old_dir,
-                    new_dir,
-                    &destination,
-                )
-            } else {
-                sample_device_kind(device)?;
-                links::rebase_with(device.state.as_deref(), old_dir, new_dir, &destination)
-            }
-        },
-        |file| {
+    let after_embedded = rewrite_embedded_links(project, |device| {
+        bundled_sampler::rebase_embedded_links(device, None, old_dir, new_dir, &destination)
+    });
+    let after_samples =
+        edits::rewrite_audio_files(after_embedded.as_ref().unwrap_or(project), |file| {
             let path = destination(file.resolve(old_dir)?);
             Some(file.moved_to(&path, new_dir))
-        },
-    );
+        })
+        .or(after_embedded);
     let base = after_samples.as_ref().unwrap_or(project);
     let mut result = None;
     for device in base
@@ -939,42 +928,31 @@ pub(crate) fn rebase_project_links(
     result.or(after_samples)
 }
 
-/// `project` with the Sampler links rewritten by `samplers` and the audio clip files by `audio`
-/// (`None`: unchanged); `None` if nothing changed.
-fn rewrite_links(
+/// Rewrite embedded paths without discarding the companion parameter bases.
+fn rewrite_embedded_links(
     project: &Project,
-    samplers: impl FnMut(&komponist_model::Device) -> Option<Vec<u8>>,
-    audio: impl FnMut(&AudioFile) -> Option<AudioFile>,
+    rewrite: impl Fn(&Device) -> Option<Vec<u8>>,
 ) -> Option<Project> {
-    let after_samplers = rewrite_samplers(project, samplers);
-    let base = after_samplers.as_ref().unwrap_or(project);
-    match edits::rewrite_audio_files(base, audio) {
-        Some(next) => Some(next),
-        None => after_samplers,
-    }
-}
-
-/// `project` with `rewrite` applied to the state of every sampler (tracks and master); `None` if
-/// no state changed. `rewrite` returns the new state, `None` for "as it is".
-fn rewrite_samplers(
-    project: &Project,
-    mut rewrite: impl FnMut(&komponist_model::Device) -> Option<Vec<u8>>,
-) -> Option<Project> {
-    let changes: Vec<(DeviceId, Arc<[u8]>)> = project
+    let devices = project
         .tracks
         .iter()
         .flat_map(|t| t.channel.devices.iter())
-        .chain(project.master.devices.iter())
-        .filter_map(|d| rewrite(d).map(|s| (d.id, Arc::from(s))))
-        .collect();
-    if changes.is_empty() {
-        return None;
+        .chain(project.master.devices.iter());
+    let mut result = None;
+    for device in devices {
+        let Some(bytes) = rewrite(device) else {
+            continue;
+        };
+        let state = SavedPluginState {
+            bytes: bytes.into(),
+            parameter_bases: device.parameter_bases.clone(),
+        };
+        result = Some(
+            edits::set_saved_plugin_state(result.as_ref().unwrap_or(project), device.id, &state)
+                .ok()?,
+        );
     }
-    let mut next = project.clone();
-    for (device, state) in changes {
-        next = edits::set_device_state(&next, device, Some(state)).ok()?;
-    }
-    Some(next)
+    result
 }
 
 #[cfg(test)]
