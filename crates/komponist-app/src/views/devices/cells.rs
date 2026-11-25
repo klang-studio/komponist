@@ -127,6 +127,28 @@ pub(crate) fn draw_cell(
     rect: Rect,
 ) {
     let ctx = context(cu.ctx(), card.device);
+    let native = card.native_cell(cell);
+    if let Some(selector) = native.and_then(|cell| cell.selector.as_ref()) {
+        let layout = card.native_layout.as_ref().expect("native selector");
+        let locale = komponist_ui::lang(cu.ctx()).code();
+        let key = native_selection_key(card.page, &selector.key);
+        let values = (0..selector.options.len())
+            .map(|index| index.to_string())
+            .collect::<Vec<_>>();
+        let options = values
+            .iter()
+            .zip(&selector.options)
+            .map(|(value, labels)| {
+                (
+                    value.as_str(),
+                    layout.label(labels, locale).unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let label = layout.label(&selector.labels, locale).unwrap_or_default();
+        choice_segment(cu, card, cell, (&key, label), &options, &ctx, rect);
+        return;
+    }
     if let CellParam::Select { key, count } = &cell.param {
         match cell.widget {
             WidgetKind::Segment => select_segment(cu, card, cell, key, *count, &ctx, rect),
@@ -149,16 +171,20 @@ pub(crate) fn draw_cell(
         }
         return;
     }
-    let native = card.native_cell(cell);
     let band = ctx
         .get(BAND)
         .and_then(|band| band.parse::<usize>().ok())
         .unwrap_or(1);
-    let band_control = native.and_then(|cell| {
+    let variant_control = native.and_then(|cell| {
+        if let Some(key) = &cell.follows {
+            return cell
+                .variants
+                .get(native_selection(&ctx, card.page, key, cell.variants.len()));
+        }
         let last = cell.band_controls.len().checked_sub(1)?;
         cell.band_controls.get(band.saturating_sub(1).min(last))
     });
-    let param = if let Some(binding) = band_control {
+    let param = if let Some(binding) = variant_control {
         card.param(&ParamId::plugin(binding.param_id))
     } else {
         match &cell.param {
@@ -172,7 +198,7 @@ pub(crate) fn draw_cell(
     }
     let localized = param.and_then(|param| {
         let layout = card.native_layout.as_ref()?;
-        let labels = if let Some(binding) = band_control {
+        let labels = if let Some(binding) = variant_control {
             binding.labels.as_ref()?
         } else {
             native?.labels.as_ref()?
@@ -492,7 +518,8 @@ fn number(
         ParamKind::Float { .. } => None,
         _ => return false,
     };
-    let native = card.native_layout.is_some();
+    // The compatibility parameter model keeps compact localized values such as "15%".
+    let native = card.native_layout.is_some() && !card.bundled_editor;
     let current = p.text_at(p.value);
     let unit = split_unit(&current, native).1.to_owned();
     let plain_text = |v: f64| {
@@ -566,8 +593,7 @@ fn choices<'a>(
         && let Some(choices) = {
             let native = card.native_cell(cell)?;
             native
-                .band_controls
-                .iter()
+                .variant_bindings()
                 .find(|binding| binding.param_id == p.wire)
                 .map_or(native.choices.as_deref(), |binding| {
                     binding.choices.as_deref()
@@ -795,6 +821,18 @@ fn select_segment(
     if r.changed() && set_context(cu.ctx(), card.device, key, selected + 1) {
         cu.ctx().request_repaint();
     }
+}
+
+/// Native selections are local to their own page and independent of legacy card state.
+fn native_selection_key(page: usize, key: &str) -> String {
+    format!("layout/{page}/{key}")
+}
+
+fn native_selection(ctx: &ParamContext, page: usize, key: &str, count: usize) -> usize {
+    ctx.get(&native_selection_key(page, key))
+        .and_then(|index| index.parse().ok())
+        .filter(|&index| index < count)
+        .unwrap_or_default()
 }
 
 /// A switch with named entries bound to context placeholder `key` ([`CellParam::Choice`]): the
@@ -1205,7 +1243,24 @@ fn graph(
     let CellParam::Graph(binding) = &cell.param else {
         return false;
     };
-    let lookup = |slot: &str| slot_param(card, binding, ctx, slot);
+    let native = card.native_cell(cell);
+    let native_graph = native.and_then(|cell| cell.graph.as_ref());
+    let selected = native.and_then(|cell| {
+        let key = cell.follows.as_deref()?;
+        Some(native_selection(
+            ctx,
+            card.page,
+            key,
+            native_graph?.variants.len(),
+        ))
+    });
+    let variant = selected.and_then(|index| native_graph?.variants.get(index));
+    let lookup = |slot: &str| {
+        variant
+            .and_then(|variant| variant.slots.get(slot))
+            .and_then(|&wire| card.param(&ParamId::plugin(wire)))
+            .or_else(|| slot_param(card, binding, ctx, slot))
+    };
     let mut title = resolve(&binding.title, ctx).map_or(String::new(), |t| t.as_str().to_owned());
     // volt: the filter names its type, the LFO its number and shape.
     let text_of = |slot: &str| lookup(slot).map(|p| p.text_at(p.value));
@@ -1216,21 +1271,37 @@ fn graph(
             }
         }
         GraphConfig::LfoShape => {
-            if let (Some(shape), Some(n)) = (text_of("shape"), ctx.get(LFO_VIEW)) {
-                title = format!("{} {n} · {shape}", t.devices_lfo());
+            if let Some(shape) = text_of("shape") {
+                if let Some(index) = selected {
+                    title = format!("{} {} · {shape}", t.devices_lfo(), index + 1);
+                } else if let Some(n) = ctx.get(LFO_VIEW) {
+                    title = format!("{} {n} · {shape}", t.devices_lfo());
+                }
             }
         }
         // surf: „Osz A · Vokale“.
         GraphConfig::Wavetable => {
-            if let (Some(table), Some(osc)) =
-                (text_of("table"), ctx.get(&format!("{OSC_VIEW}_label")))
-            {
-                title = format!("{} {osc} · {table}", t.devices_osc());
+            if let Some(table) = text_of("table") {
+                let label = native
+                    .and_then(|cell| {
+                        let key = cell.follows.as_deref()?;
+                        let page = card.native_page()?;
+                        let selector = page
+                            .cells
+                            .iter()
+                            .filter_map(|cell| cell.selector.as_ref())
+                            .find(|selector| selector.key == key)?;
+                        let labels = selector.options.get(selected?)?;
+                        card.native_layout.as_ref()?.label(labels, t.code())
+                    })
+                    .or_else(|| ctx.get(&format!("{OSC_VIEW}_label")));
+                if let Some(label) = label {
+                    title = format!("{} {label} · {table}", t.devices_osc());
+                }
             }
         }
         _ => {}
     }
-    let native_graph = card.native_cell(cell).and_then(|cell| cell.graph.as_ref());
     let asset_slot = native_graph.and_then(|graph| graph.asset_slot);
     let fractional_trim = native_graph.is_some_and(|graph| {
         graph.trim_unit == Some(komponist_ipc::native_layout::TrimUnit::SourceFraction)
@@ -1241,14 +1312,23 @@ fn graph(
     let analysis = signals.map_or(card.analysis.as_ref(), |signals| signals.analysis.as_ref());
     let rate = analysis.map(|a| a.rate).filter(|r| *r > 0.0);
     // surf: the range on the stack follows the shown oscillator's position.
-    let osc = usize::from(ctx.get(OSC_VIEW) == Some("b"));
+    let osc = selected.unwrap_or_else(|| usize::from(ctx.get(OSC_VIEW) == Some("b")));
     let (title, description) = card.native_layout.as_ref().zip(native_graph).map_or(
         (title.as_str(), None),
         |(layout, graph)| {
-            (
-                layout.label(&graph.name, t.code()).unwrap_or(&title),
-                layout.label(&graph.description, t.code()),
-            )
+            let labels = variant
+                .and_then(|variant| variant.name.as_ref())
+                .unwrap_or(&graph.name);
+            let name = if matches!(
+                binding.config,
+                GraphConfig::FilterVa | GraphConfig::LfoShape | GraphConfig::Wavetable
+            ) && !title.is_empty()
+            {
+                &title
+            } else {
+                layout.label(labels, t.code()).unwrap_or(&title)
+            };
+            (name, layout.label(&graph.description, t.code()))
         },
     );
     let pad_title = card.pad_for_asset(asset_slot).map(|pad| {

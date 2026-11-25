@@ -20,6 +20,7 @@ use crate::common::{PATIENCE, app_with, step_until};
 
 const HEXA: &str = "org.klang-studio.komponist.hexa";
 const VOLT: &str = "org.klang-studio.komponist.volt";
+const SURF: &str = "org.klang-studio.komponist.surf";
 const PIANO: &str = "E-Piano";
 const PLUCK: &str = "Acid Pluck";
 
@@ -250,6 +251,7 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     } else {
         None
     };
+    check_surf(&mut h, lang, force_bridge);
     h.state_mut().shutdown();
     drop(h);
 
@@ -284,6 +286,69 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
             force_bridge,
         );
     }
+}
+
+fn check_surf(h: &mut Harness<'_, App>, lang: Lang, force_bridge: bool) {
+    let plugin = packaged(h.state().engine().host(), SURF).plugin.clone();
+    h.state_mut().dispatch(Action::Plugin(PluginAction::Add {
+        plugin,
+        target: DropTarget::NewTrack { index: None },
+    }));
+    let surf = newest_instrument(h.state()).id;
+    wait_for_verified(h.state_mut(), surf, SURF, force_bridge);
+    let layout = h.state().engine().host().native_layout(surf).unwrap();
+    assert_eq!(layout.schema_version, 2);
+    assert_eq!(layout.pages.len(), 3);
+    let a = alias(h.state(), surf, "osc_a_pos");
+    let b = alias(h.state(), surf, "osc_b_pos");
+    let a_before = h.state().engine().host().param_base(surf, a).unwrap();
+    let b_before = h.state().engine().host().param_base(surf, b).unwrap();
+    h.run_steps(3);
+    let title = |osc| {
+        format!(
+            "{} {osc} · {}",
+            lang.devices_osc(),
+            lang.choice_surf_table_basic()
+        )
+    };
+    h.get_by_role_and_label(Role::Group, &title("A"));
+    h.get_by_role_and_label(Role::Slider, lang.param_surf_position_a());
+    snapshot(h, "surf-sound-a", lang);
+    click(
+        h,
+        Role::RadioButton,
+        &format!("{}: B", lang.label_surf_osc()),
+    );
+    h.get_by_role_and_label(Role::Group, &title("B"));
+    h.get_by_role_and_label(Role::Slider, lang.param_surf_position_b());
+    snapshot(h, "surf-sound-b", lang);
+    let axis = format!("{} {}", lang.ui_graph_wavetable(), lang.ui_graph_position());
+    h.get_by_role_and_label(Role::Slider, &axis)
+        .decrement_accesskit();
+    h.run_steps(3);
+    assert_eq!(
+        h.state().engine().host().param_base(surf, a),
+        Some(a_before)
+    );
+    assert!(h.state().engine().host().param_base(surf, b).unwrap() < b_before);
+
+    page(h, surf, 1);
+    click(
+        h,
+        Role::RadioButton,
+        &format!("{}: Filter", lang.label_volt_envelope()),
+    );
+    h.get_by_role_and_label(Role::Group, &lang.graph_title_volt_envelope("Filter"));
+    click(
+        h,
+        Role::RadioButton,
+        &format!("{}: LFO 2", lang.label_volt_lfo()),
+    );
+    assert!(rect_of(h, Role::Group, &format!("{} 2 ·", lang.devices_lfo())).is_positive());
+    snapshot(h, "surf-envelopes", lang);
+    page(h, surf, 2);
+    h.get_by_role_and_label(Role::ComboBox, &lang.param_volt_target(1));
+    snapshot(h, "surf-matrix", lang);
 }
 
 fn newest_instrument(app: &App) -> &Device {

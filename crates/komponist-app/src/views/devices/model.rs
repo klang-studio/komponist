@@ -754,6 +754,9 @@ pub(super) fn native_card_layout(
                                 },
                                 GraphKind::Compressor => GraphConfig::Compressor,
                                 GraphKind::GrHistory => GraphConfig::GrHistory,
+                                GraphKind::FilterVa => GraphConfig::FilterVa,
+                                GraphKind::LfoShape => GraphConfig::LfoShape,
+                                GraphKind::Wavetable => GraphConfig::Wavetable,
                             };
                             let mut binding = GraphBinding::new(config);
                             if graph.select_band {
@@ -766,14 +769,17 @@ pub(super) fn native_card_layout(
                                     (slot.clone(), ParamId::plugin(*id).as_str().to_owned())
                                 })
                                 .collect();
-                            return Cell::span(
-                                cell.col,
-                                cell.row,
-                                cell.cols,
-                                cell.rows,
-                                WidgetKind::Graph,
-                                CellParam::Graph(binding),
-                            );
+                            return if cell.half.is_some() {
+                                Cell::graph_half(
+                                    cell.col,
+                                    cell.row,
+                                    cell.cols,
+                                    cell.rows - 1,
+                                    binding,
+                                )
+                            } else {
+                                Cell::graph(cell.col, cell.row, cell.cols, cell.rows, binding)
+                            };
                         }
                         let widget = match cell.widget {
                             Widget::Knob => WidgetKind::Knob,
@@ -784,12 +790,30 @@ pub(super) fn native_card_layout(
                             Widget::Dropdown => WidgetKind::Dropdown,
                             Widget::MiniFader => WidgetKind::MiniFader,
                             Widget::Graph => unreachable!("validated graph binding"),
-                            Widget::Canvas | Widget::MeterGr | Widget::PadGrid => {
+                            Widget::Canvas
+                            | Widget::MeterGr
+                            | Widget::PadGrid
+                            | Widget::Selector => {
                                 let widget = match cell.widget {
                                     Widget::Canvas => WidgetKind::Canvas,
                                     Widget::MeterGr => WidgetKind::MeterGr,
+                                    Widget::Selector => WidgetKind::Segment,
                                     _ => WidgetKind::PadGrid,
                                 };
+                                if let Some(half) = cell.half {
+                                    let half = match half {
+                                        Half::Top => layout::Half::Top,
+                                        Half::Bottom => layout::Half::Bottom,
+                                    };
+                                    return Cell::half(
+                                        cell.col,
+                                        cell.row,
+                                        cell.cols,
+                                        half,
+                                        widget,
+                                        CellParam::None,
+                                    );
+                                }
                                 return Cell::span(
                                     cell.col,
                                     cell.row,
@@ -803,7 +827,9 @@ pub(super) fn native_card_layout(
                         let param = CellParam::Id(ParamId::plugin(
                             cell.param_id
                                 .or_else(|| {
-                                    cell.band_controls.first().map(|binding| binding.param_id)
+                                    cell.variant_bindings()
+                                        .next()
+                                        .map(|binding| binding.param_id)
                                 })
                                 .expect("validated control binding"),
                         ));
@@ -915,7 +941,10 @@ pub(super) fn native_param(
     known: Option<&ParamValue>,
 ) -> Param {
     let mut info = plugin_info(lang, wire);
-    if !layout.has_parameter_display() && !layout.has_eq_band_controls() {
+    if !layout.has_parameter_display()
+        && !layout.has_eq_band_controls()
+        && !layout.has_cell_selections()
+    {
         return plugin_param(wire, info, known);
     }
     if let Some((labels, choices)) =
@@ -927,8 +956,7 @@ pub(super) fn native_param(
                 if cell.param_id == Some(wire.id) {
                     Some((cell.labels.as_ref(), cell.choices.as_deref()))
                 } else {
-                    cell.band_controls
-                        .iter()
+                    cell.variant_bindings()
                         .find(|binding| binding.param_id == wire.id)
                         .map(|binding| (binding.labels.as_ref(), binding.choices.as_deref()))
                 }

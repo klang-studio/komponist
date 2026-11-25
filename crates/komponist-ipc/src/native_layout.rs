@@ -22,6 +22,8 @@ pub const CAP_PARAMETER_DISPLAY: &str = "parameter-display";
 pub const CAP_CONDITIONAL_CONTROLS: &str = "conditional-controls";
 /// Required capability for controls following the selected band of an EQ graph.
 pub const CAP_EQ_BAND_CONTROLS: &str = "eq-band-controls";
+/// Layout selections that change the bindings of other cells without editing a parameter.
+pub const CAP_CELL_SELECTIONS: &str = "cell-selections";
 /// Maximum number of pad-selected pages.
 pub const MAX_PADS: usize = 16;
 
@@ -171,6 +173,7 @@ pub enum Widget {
     Segment,
     Dropdown,
     MiniFader,
+    Selector,
     PadGrid,
     Graph,
     Canvas,
@@ -221,6 +224,9 @@ pub enum GraphKind {
     Lfo,
     Compressor,
     GrHistory,
+    FilterVa,
+    LfoShape,
+    Wavetable,
 }
 
 /// Units of the two waveform trim bindings as sent to the CLAP parameters.
@@ -263,6 +269,14 @@ pub struct Graph {
     #[serde(default)]
     pub select_band: bool,
     pub points: Option<u8>,
+    #[serde(default)]
+    pub variants: Vec<GraphVariant>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct GraphVariant {
+    pub name: Option<Labels>,
+    pub slots: BTreeMap<String, u32>,
 }
 
 impl Graph {
@@ -295,8 +309,27 @@ impl Graph {
                 (1..=self.points.unwrap_or_default()).any(|index| point == index.to_string())
             }),
             GraphKind::GrHistory => false,
+            GraphKind::FilterVa => {
+                matches!(slot, "cutoff" | "resonance" | "type" | "at_cut")
+                    || synth_modulation_slot(slot)
+            }
+            GraphKind::Wavetable => {
+                matches!(slot, "table" | "position") || synth_modulation_slot(slot)
+            }
+            GraphKind::LfoShape => slot == "shape",
         }
     }
+}
+
+/// Named inputs of the four-slot modulation matrix and the two LFO polarities.
+fn synth_modulation_slot(slot: &str) -> bool {
+    matches!(slot, "lfo1_uni" | "lfo2_uni")
+        || slot
+            .strip_prefix("mod")
+            .and_then(|slot| slot.split_once('_'))
+            .is_some_and(|(entry, role)| {
+                matches!(entry, "1" | "2" | "3" | "4") && matches!(role, "src" | "dst" | "amt")
+            })
 }
 
 /// The occupied half of a cell.
@@ -315,12 +348,20 @@ pub struct Choice {
     pub full_labels: Option<Labels>,
 }
 
-/// A cell's binding for one band of the page's selectable EQ graph, in band order.
+/// A control's binding for one selection, in the selection's order.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub struct BandControl {
+pub struct ControlBinding {
     pub param_id: u32,
     pub labels: Option<Labels>,
     pub choices: Option<Vec<Choice>>,
+}
+
+/// A page-local segmented control that picks which bindings its followers use.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Selector {
+    pub key: String,
+    pub labels: Labels,
+    pub options: Vec<Labels>,
 }
 
 /// A single parameter binding and its position.
@@ -338,7 +379,11 @@ pub struct Cell {
     pub labels: Option<Labels>,
     pub choices: Option<Vec<Choice>>,
     #[serde(default)]
-    pub band_controls: Vec<BandControl>,
+    pub band_controls: Vec<ControlBinding>,
+    pub selector: Option<Selector>,
+    pub follows: Option<String>,
+    #[serde(default)]
+    pub variants: Vec<ControlBinding>,
     pub graph: Option<Graph>,
     pub canvas: Option<Canvas>,
     /// Signal tap key providing the latest gain reduction in positive dB.
@@ -351,12 +396,24 @@ impl Cell {
         self.param_id
             .into_iter()
             .chain(self.disabled_by)
-            .chain(self.band_controls.iter().map(|binding| binding.param_id))
-            .chain(
-                self.graph
-                    .iter()
-                    .flat_map(|graph| graph.slots.values().copied().chain(graph.audition_note)),
-            )
+            .chain(self.variant_bindings().map(|binding| binding.param_id))
+            .chain(self.graph.iter().flat_map(|graph| {
+                graph
+                    .slots
+                    .values()
+                    .copied()
+                    .chain(graph.audition_note)
+                    .chain(
+                        graph
+                            .variants
+                            .iter()
+                            .flat_map(|variant| variant.slots.values().copied()),
+                    )
+            }))
+    }
+
+    pub fn variant_bindings(&self) -> impl Iterator<Item = &ControlBinding> {
+        self.band_controls.iter().chain(&self.variants)
     }
 }
 
@@ -398,6 +455,8 @@ pub struct NativeLayout {
     parameter_display: BTreeMap<u32, ParameterDisplay>,
     #[serde(skip)]
     eq_band_controls: bool,
+    #[serde(skip)]
+    cell_selections: bool,
     metadata: Option<Metadata>,
 }
 
@@ -420,6 +479,10 @@ impl NativeLayout {
 
     pub fn has_eq_band_controls(&self) -> bool {
         self.eq_band_controls
+    }
+
+    pub fn has_cell_selections(&self) -> bool {
+        self.cell_selections
     }
 
     /// The editor uses host-managed audio files for a waveform or its pad bank.
@@ -465,6 +528,7 @@ impl NativeLayout {
         let mut parameter_display_supported = false;
         let mut conditional_controls_supported = false;
         let mut eq_band_controls_supported = false;
+        let mut cell_selections_supported = false;
         if let Some(caps) = value.get("required_capabilities") {
             let caps = caps
                 .as_array()
@@ -487,6 +551,7 @@ impl NativeLayout {
                             | CAP_PARAMETER_DISPLAY
                             | CAP_CONDITIONAL_CONTROLS
                             | CAP_EQ_BAND_CONTROLS
+                            | CAP_CELL_SELECTIONS
                     )
             }) {
                 return Err(LayoutError::Unsupported);
@@ -496,6 +561,7 @@ impl NativeLayout {
             parameter_display_supported = seen.contains(CAP_PARAMETER_DISPLAY);
             conditional_controls_supported = seen.contains(CAP_CONDITIONAL_CONTROLS);
             eq_band_controls_supported = seen.contains(CAP_EQ_BAND_CONTROLS);
+            cell_selections_supported = seen.contains(CAP_CELL_SELECTIONS);
         }
         let display = value.get("parameter_display");
         check(
@@ -552,6 +618,9 @@ impl NativeLayout {
                             cell.remove("reduction_tap");
                             cell.remove("disabled_by");
                             cell.remove("band_controls");
+                            cell.remove("selector");
+                            cell.remove("follows");
+                            cell.remove("variants");
                         }
                         if !eq_band_controls_supported
                             && let Some(choices) =
@@ -571,17 +640,33 @@ impl NativeLayout {
                                 eq_band_controls_supported
                                     && bindings.as_array().is_some_and(|bindings| {
                                         (1..=8).contains(&bindings.len())
-                                            && bindings.iter().all(band_control_object)
+                                            && bindings.iter().all(control_binding_object)
                                     })
                             }),
                             "EQ band controls",
                         )?;
+                        let variants = cell.get("variants");
+                        check(
+                            cell.get("selector").is_none_or(|selector| {
+                                cell_selections_supported && selector.is_object()
+                            }) && cell.get("follows").is_none_or(|follows| {
+                                cell_selections_supported && follows.is_string()
+                            }) && variants.is_none_or(|bindings| {
+                                cell_selections_supported
+                                    && bindings.as_array().is_some_and(|bindings| {
+                                        (2..=4).contains(&bindings.len())
+                                            && bindings.iter().all(control_binding_object)
+                                    })
+                            }),
+                            "cell selections",
+                        )?;
                         check(
                             if band_controls.is_some()
+                                || variants.is_some()
                                 || version == 2
                                     && matches!(
                                         widget,
-                                        "graph" | "canvas" | "meter_gr" | "pad_grid"
+                                        "graph" | "canvas" | "meter_gr" | "pad_grid" | "selector"
                                     )
                             {
                                 !cell.contains_key("param_id")
@@ -609,6 +694,19 @@ impl NativeLayout {
                                     && graph.get("slots").is_none_or(Value::is_object)
                                     && graph.get("signal_taps").is_none_or(Value::is_object),
                                 "graph object",
+                            )?;
+                            check(
+                                graph.get("variants").is_none_or(|variants| {
+                                    cell_selections_supported
+                                        && variants.as_array().is_some_and(|variants| {
+                                            (2..=4).contains(&variants.len())
+                                                && variants.iter().all(|variant| {
+                                                    variant.is_object()
+                                                        && variant["slots"].is_object()
+                                                })
+                                        })
+                                }),
+                                "graph binding variants",
                             )?;
                             check(
                                 eq_band_controls_supported
@@ -651,6 +749,7 @@ impl NativeLayout {
         let mut layout: Self =
             serde_json::from_value(value).map_err(|_| LayoutError::Invalid("document fields"))?;
         layout.eq_band_controls = eq_band_controls_supported;
+        layout.cell_selections = cell_selections_supported;
         check(
             layout.pad_bank.is_some() == pad_bank_supported,
             "pad bank capability",
@@ -790,22 +889,40 @@ impl NativeLayout {
                 selections.next().is_none(),
                 "one selectable EQ graph per page",
             )?;
+            let mut selectors = BTreeMap::new();
+            for selector in page.cells.iter().filter_map(|cell| cell.selector.as_ref()) {
+                check(
+                    identifier(&selector.key, false)
+                        && (2..=4).contains(&selector.options.len())
+                        && selectors
+                            .insert(selector.key.as_str(), selector.options.len())
+                            .is_none(),
+                    "selection key or options",
+                )?;
+                self.validate_labels(&selector.labels, &locales, true)?;
+                for labels in &selector.options {
+                    self.validate_labels(labels, &locales, true)?;
+                }
+            }
             for cell in &page.cells {
                 let (min, max, half, rows) = match cell.widget {
                     Widget::Knob => (1, 1, false, 1..=1),
                     Widget::KnobLarge => (2, 2, false, 1..=1),
                     Widget::Number => (1, if v2 { 2 } else { 1 }, true, 1..=1),
                     Widget::Dropdown => (2, 2, true, 1..=1),
-                    Widget::Segment | Widget::ToggleButton => (1, max_columns, true, 1..=1),
+                    Widget::Segment | Widget::ToggleButton | Widget::Selector => {
+                        (1, max_columns, true, 1..=1)
+                    }
                     Widget::Graph | Widget::Canvas => (1, max_columns, false, 1..=3),
                     Widget::MeterGr => (1, 1, false, 3..=3),
                     Widget::MiniFader => (1, 1, false, 1..=3),
                     Widget::PadGrid => (1, max_columns, false, 1..=3),
                 };
+                let half_graph = cell.widget == Widget::Graph && cell.half == Some(Half::Top);
                 check(
                     rows.contains(&cell.rows)
                         && cell.row.saturating_add(cell.rows) <= 3
-                        && cell.half.is_some() == half
+                        && (half_graph || cell.half.is_some() == half)
                         && (min..=max).contains(&cell.cols)
                         && cell.col.saturating_add(cell.cols) <= page.columns,
                     "cell geometry",
@@ -821,12 +938,14 @@ impl NativeLayout {
                         "conditional control requires a separate toggle on the same page",
                     )?;
                 }
-                let mask = match cell.half {
-                    None => 3,
-                    Some(Half::Top) => 1,
-                    Some(Half::Bottom) => 2,
-                };
-                for row in &mut slots[usize::from(cell.row)..usize::from(cell.row + cell.rows)] {
+                let rows = &mut slots[usize::from(cell.row)..usize::from(cell.row + cell.rows)];
+                let last = rows.len() - 1;
+                for (index, row) in rows.iter_mut().enumerate() {
+                    let mask = match cell.half {
+                        Some(Half::Top) if index == last => 1,
+                        Some(Half::Bottom) => 2,
+                        _ => 3,
+                    };
                     for slot in &mut row[usize::from(cell.col)..usize::from(cell.col + cell.cols)] {
                         check(*slot & mask == 0, "overlapping cells")?;
                         *slot |= mask;
@@ -835,9 +954,10 @@ impl NativeLayout {
                 if let Some(labels) = &cell.labels {
                     self.validate_labels(labels, &locales, false)?;
                 }
+                self.validate_selection(cell, &selectors, &locales)?;
                 if !cell.band_controls.is_empty() {
                     self.validate_band_controls(cell, selection, &locales)?;
-                } else {
+                } else if cell.variants.is_empty() {
                     self.validate_control_choices(cell.widget, cell.choices.as_deref(), &locales)?;
                 }
                 check(
@@ -992,7 +1112,10 @@ impl NativeLayout {
                     )?;
                     self.validate_labels(&canvas.name, &locales, true)?;
                     self.validate_labels(&canvas.description, &locales, true)?;
-                } else if matches!(cell.widget, Widget::MeterGr | Widget::PadGrid) {
+                } else if matches!(
+                    cell.widget,
+                    Widget::MeterGr | Widget::PadGrid | Widget::Selector
+                ) {
                     check(
                         self.schema_version == 2
                             && (cell.widget != Widget::PadGrid || self.pad_bank.is_some())
@@ -1004,13 +1127,83 @@ impl NativeLayout {
                     )?;
                 } else {
                     check(
-                        (cell.param_id.is_some() || !cell.band_controls.is_empty())
+                        (cell.param_id.is_some() || cell.variant_bindings().next().is_some())
                             && cell.graph.is_none()
                             && cell.canvas.is_none()
                             && (cell.widget != Widget::MiniFader || self.schema_version == 2),
                         "control binding",
                     )?;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_selection(
+        &self,
+        cell: &Cell,
+        selectors: &BTreeMap<&str, usize>,
+        locales: &BTreeSet<String>,
+    ) -> Result<(), LayoutError> {
+        let graph_variants = cell
+            .graph
+            .as_ref()
+            .map_or(&[][..], |graph| graph.variants.as_slice());
+        check(
+            cell.selector.is_some() == (cell.widget == Widget::Selector),
+            "selector binding",
+        )?;
+        let Some(key) = &cell.follows else {
+            return check(
+                cell.variants.is_empty() && graph_variants.is_empty(),
+                "variants require a selector",
+            );
+        };
+        let count = selectors
+            .get(key.as_str())
+            .ok_or(LayoutError::Invalid("missing selector"))?;
+        check(
+            cell.selector.is_none()
+                && cell.param_id.is_none()
+                && cell.labels.is_none()
+                && cell.choices.is_none()
+                && cell.disabled_by.is_none()
+                && cell.band_controls.is_empty(),
+            "mixed selection bindings",
+        )?;
+        if let Some(graph) = &cell.graph {
+            check(
+                cell.variants.is_empty()
+                    && matches!(
+                        graph.kind,
+                        GraphKind::Envelope | GraphKind::LfoShape | GraphKind::Wavetable
+                    )
+                    && (graph.kind != GraphKind::Wavetable || *count == 2)
+                    && graph_variants.len() == *count
+                    && graph_variants.iter().all(|variant| {
+                        !variant.slots.is_empty()
+                            && variant
+                                .slots
+                                .keys()
+                                .all(|slot| graph.has_slot(slot) && !graph.slots.contains_key(slot))
+                    })
+                    && graph_variants
+                        .windows(2)
+                        .all(|pair| pair[0].slots.keys().eq(pair[1].slots.keys())),
+                "graph variant slots",
+            )?;
+            for variant in graph_variants {
+                if let Some(name) = &variant.name {
+                    self.validate_labels(name, locales, true)?;
+                }
+            }
+        } else {
+            check(cell.variants.len() == *count, "control variants")?;
+            for binding in &cell.variants {
+                if let Some(labels) = &binding.labels {
+                    self.validate_labels(labels, locales, false)?;
+                }
+                self.validate_control_choices(cell.widget, binding.choices.as_deref(), locales)?;
             }
         }
         Ok(())
@@ -1246,8 +1439,7 @@ impl NativeLayout {
                 .into_iter()
                 .map(|id| (id, cell.choices.as_deref()))
                 .chain(
-                    cell.band_controls
-                        .iter()
+                    cell.variant_bindings()
                         .map(|binding| (binding.param_id, binding.choices.as_deref())),
                 );
             for (id, choices) in bindings {
@@ -1293,7 +1485,7 @@ fn choice_objects(value: &Value) -> bool {
         .is_some_and(|choices| choices.iter().all(Value::is_object))
 }
 
-fn band_control_object(value: &Value) -> bool {
+fn control_binding_object(value: &Value) -> bool {
     value.is_object()
         && value["param_id"].is_u64()
         && value.get("labels").is_none_or(Value::is_object)
@@ -1434,6 +1626,41 @@ mod tests {
         let labels = &layout.pages[0].labels;
         assert_eq!(layout.label(labels, "de-CH"), Some("Übersicht"));
         assert_eq!(layout.label(labels, "fr"), Some("Main"));
+    }
+
+    #[test]
+    fn a_selector_switches_graph_and_control_bindings_in_its_page() {
+        use serde_json::json;
+
+        let mut value: Value = serde_json::from_slice(EXAMPLE).unwrap();
+        value["schema_version"] = json!(2);
+        value["pages"][0]["cells"] = json!([
+            {"widget":"graph","col":0,"row":0,"cols":2,"rows":2,"half":"top","follows":"osc",
+             "graph":{"kind":"wavetable","name":{"en":"Wavetable"},"description":{"en":"Wavetable"},
+                      "variants":[{"slots":{"table":1,"position":2}},{"slots":{"table":3,"position":4}}]}},
+            {"widget":"selector","col":0,"row":1,"cols":1,"rows":1,"half":"bottom",
+             "selector":{"key":"osc","labels":{"en":"Oscillator"},"options":[{"en":"A"},{"en":"B"}]}},
+            {"widget":"knob","col":0,"row":2,"cols":1,"rows":1,"follows":"osc",
+             "variants":[{"param_id":2},{"param_id":4}]}
+        ]);
+        let parse = |value: &Value| NativeLayout::parse(&serde_json::to_vec(value).unwrap());
+        assert!(parse(&value).is_err(), "selectors require a capability");
+        value["required_capabilities"] = json!([CAP_CELL_SELECTIONS]);
+        let layout = parse(&value).unwrap();
+        let params: Vec<_> = (1..=4).map(|id| parameter(id, 1.0, 0, 0)).collect();
+        assert!(layout.validate_params(&params).is_ok());
+        assert!(layout.validate_params(&params[..3]).is_err());
+        value["pages"][0]["cells"][1]["row"] = json!(0);
+        assert!(parse(&value).is_err(), "the earlier row is full");
+        value["pages"][0]["cells"][1]["row"] = json!(1);
+        value["pages"][0]["cells"][2]["follows"] = json!("unknown");
+        assert!(parse(&value).is_err(), "the selector belongs to this page");
+        value["pages"][0]["cells"][2]["follows"] = json!("osc");
+        value["pages"][0]["cells"][0]["graph"]["variants"][1]["slots"] = json!({"position":4});
+        assert!(
+            parse(&value).is_err(),
+            "variants must have the same graph roles"
+        );
     }
 
     #[test]
