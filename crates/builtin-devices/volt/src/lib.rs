@@ -80,9 +80,8 @@ mod tests;
 /// The device's name in the browser and on the card. The only place it is written.
 pub const NAME: &str = "Volt";
 
-/// The stored id of the device in project files. It keeps the synth's former name "knurr" so existing
-/// projects load; only [`NAME`] is shown to users.
-pub const ID: &str = "knurr";
+/// The stored id of the device in project files; only [`NAME`] is shown to users.
+pub const ID: &str = "volt";
 
 /// Catalog, parameters, layout, presets and DSP for Volt.
 pub static SPEC: Spec = Spec {

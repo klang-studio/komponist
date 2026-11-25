@@ -28,7 +28,6 @@ const EMPTY_EVENT: Event = Event {
 };
 
 /// Convert a project-era patch or a factory preset to the current CLAP state stream.
-pub use state::legacy_patch_to_clap_state;
 
 fn infos(lang: Lang) -> &'static [ParamInfo] {
     static INFOS: [OnceLock<Vec<ParamInfo>>; Lang::ALL.len()] =

@@ -26,7 +26,6 @@ use komponist_engine::{
     Command as EngineCommand, Engine, EngineConfig, EngineEvent, EngineHandle, LiveInput, MidiPort,
     Program, SlotId,
 };
-use komponist_model::project::BUILTIN_KLOPFER;
 use komponist_model::{
     Channel, Device, DeviceId, DeviceRole, Hue, MidiChannelSel, MidiInputSel, PluginFormat,
     PluginRef, Project, Track, TrackId, TrackKind,
@@ -217,18 +216,6 @@ pub fn clap_plugin(id: &str) -> PluginRef {
         id: id.into(),
         name: id.rsplit('.').next().unwrap().into(),
         vendor: "klang-studio".into(),
-        version: "0.1.0".into(),
-        module: Box::default(),
-    }
-}
-
-/// The reference a project from before the sampler (WP-87) holds for klopfer ("INTERN").
-pub fn klopfer() -> PluginRef {
-    PluginRef {
-        format: PluginFormat::Builtin,
-        id: BUILTIN_KLOPFER.into(),
-        name: "klopfer".into(),
-        vendor: "Klopfer".into(),
         version: "0.1.0".into(),
         module: Box::default(),
     }

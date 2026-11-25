@@ -67,11 +67,6 @@ pub fn decode_state(state: Option<&[u8]>) -> Result<Patch, StateError> {
     }
 }
 
-/// Convert a complete legacy project patch into the pinned Hexa CLAP state stream.
-pub fn legacy_patch_to_clap_state(legacy: &[u8], version: &str) -> Result<Vec<u8>, StateError> {
-    Ok(encode_clap_patch(decode_state(Some(legacy))?, version))
-}
-
 const CLAP_PATCH_FIELD: &str = "hexa-patch-v1";
 
 /// Read the complete patch from a pinned Hexa CLAP state.

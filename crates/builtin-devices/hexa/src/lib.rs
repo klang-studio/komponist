@@ -97,10 +97,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_keeps_the_persisted_id_and_localized_name() {
+    fn catalog_has_the_project_id_and_localized_name() {
         let plugin = CATALOG.plugin_ref();
         assert_eq!(plugin.format, PluginFormat::Builtin);
-        assert_eq!(plugin.id, "pisynth");
+        assert_eq!(plugin.id, "hexa");
         assert_eq!(plugin.name, "Hexa");
         assert_eq!(plugin.vendor, "klang-studio");
         assert_eq!(CATALOG.role, DeviceRole::Instrument);

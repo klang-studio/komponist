@@ -77,8 +77,6 @@ fn klopfer_as_a_scanned_plugin() {
         return;
     };
     assert!(!entry.is_builtin());
-    // A project saved with the old built-in entry finds the same plugin.
-    assert_eq!(manager.catalog().resolve(&klopfer()), Some(entry));
     let plugin = entry.plugin.clone();
     // Pad 1 = note 36; the default kit may be empty, so only loading is required.
     load_and_play(manager, plugin, 36);

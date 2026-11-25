@@ -302,8 +302,8 @@ fn convert_state(
         return Ok((None, None));
     };
     let BuiltinKind::Internal(device) = kind else {
-        let state = komponist_hexa::state::legacy_patch_to_clap_state(old, version)
-            .map_err(|error| error.to_string())?;
+        let patch = komponist_hexa::decode_state(Some(old)).map_err(|error| error.to_string())?;
+        let state = komponist_hexa::state::encode_clap_patch(patch, version);
         return Ok((Some(state), None));
     };
 

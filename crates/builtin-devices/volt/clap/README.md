@@ -1,7 +1,6 @@
 # Volt CLAP bundle
 
-Stable plugin ID `org.klang-studio.komponist.volt`. Existing project devices use
-the builtin ID `knurr`. The same device parameter keys back the CLAP bindings,
+Stable plugin ID `org.klang-studio.komponist.volt`. The same device parameter keys back the CLAP bindings,
 and categorical state uses stable choice IDs.
 
 The layout v2 panel publishes Volt's Sound, Envelopes and Matrix pages,

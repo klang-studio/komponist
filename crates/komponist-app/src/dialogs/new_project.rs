@@ -206,7 +206,7 @@ mod tests {
             .iter()
             .map(|t| t.channel.devices[0].plugin.id.as_str())
             .collect();
-        assert_eq!(instruments, ["sampler", "pisynth", "pisynth"]);
+        assert_eq!(instruments, ["sampler", "hexa", "hexa"]);
         let ClipContent::Step(steps) = &p.tracks[0].clips[0].content else {
             panic!("the beat is a step clip");
         };

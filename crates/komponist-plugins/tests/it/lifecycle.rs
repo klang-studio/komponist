@@ -404,10 +404,15 @@ fn missing_plugin_keeps_its_state_byte_identical_through_a_save() {
                 device(11, DeviceRole::Effect, clap_plugin(FX), None),
             ],
         ),
-        // klopfer is not configured in this manager: missing too.
+        // This plugin is not installed in this manager: missing too.
         track(
             2,
-            vec![device(20, DeviceRole::Instrument, klopfer(), Some(b"kit"))],
+            vec![device(
+                20,
+                DeviceRole::Instrument,
+                clap_plugin("com.klopfer.drum-sampler"),
+                Some(b"kit"),
+            )],
         ),
         track(
             3,
@@ -434,7 +439,7 @@ fn missing_plugin_keeps_its_state_byte_identical_through_a_save() {
                 device: DeviceId(20),
                 role: DeviceRole::Instrument,
                 index: 0,
-                plugin: klopfer(),
+                plugin: clap_plugin("com.klopfer.drum-sampler"),
             },
         ]
     );

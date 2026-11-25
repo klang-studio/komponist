@@ -66,7 +66,7 @@ The **nice-plug** fixtures in `test-plugins/` export both formats from the same 
 | D7 | Versioned `*.komponist` JSON project file and linked audio assets |
 | D8 | Immutable document snapshots with `Arc` structural sharing for undo/redo |
 | D9 | Signed 64-bit musical ticks at 960 PPQ; position display at 240 ticks per beat |
-| D10 | No backward compatibility before 1.0: only the current project, preset and device-state formats and the current komponist CLAP extensions are supported. Other versions are rejected with a clear message, never migrated; names carry no version. Mismatch checks (project marker, bridge protocol, caches) stay. Existing migration code is being removed (epic #296). |
+| D10 | No backward compatibility before 1.0: only the current project, preset and device-state formats and the current komponist CLAP extensions are supported. Other versions are rejected with a clear message, never migrated; names carry no version. Mismatch checks (project marker, bridge protocol, caches) stay. The migration code was removed with #335 (epic #296). |
 | D11 | Bundled devices are hosted in-process. The bridge is the hosting option for third-party plugins, whose stability komponist cannot control. The komponist CLAP extensions work through the bridge too (community plugins may run there); that path is tested with the test plugins, not with every bundled device. |
 
 ## 3. Processes and threads
@@ -563,10 +563,7 @@ keys and ranges are resolved by the built-in registry.
 A third-party CLAP state snapshot keeps the plugin's opaque bytes and can also store plain values
 by ID in the optional `parameter_bases` device field. The bridge gives the plugin its bytes first,
 then restores the host-owned bases. The engine reasserts macros and automation through the same
-parameter event path. Older projects omit the field and load their state as before.
-Older builds open projects from the opaque state alone. Saving in an older build drops
-`parameter_bases`. Reopening that saved copy can restore a value captured during automation
-in place of the original base.
+parameter event path. A device without the field loads its opaque state alone.
 
 An unmuted clip envelope overrides its arrangement lane while the clip plays. The later-starting
 clip wins on overlap, with the clip ID breaking ties. Splitting a clip preserves the original
@@ -796,15 +793,14 @@ is missing, the saved device stays in the project and the missing-plugin dialog 
 The bundled devices use the normal document, processor and device-card interfaces:
 
 - **Hexa:** six-operator FM via `hexa-core`, sample-accurate events, serialized patches, macros and
-  factory presets. Migration recognizes the historical plugin ID `pisynth`.
+  factory presets.
 - **Volt:** subtractive synthesis with two oscillators, sub oscillator, filter and modulation.
 - **Surf:** wavetable synthesis on Volt's engine: the voice, filter, envelopes, LFOs, matrix and
   voice modes are shared (`Engine<O: Oscillators>`), only the two oscillators differ. Sixteen
   original factory tables are generated at first use from recipes in
   `komponist_model::params::wavetable`, which the 3D graph reads too, into ten band-limited
   levels each. User tables are a later issue (#184).
-- **Klopfer:** drum sampler with eight pads on MIDI notes 36–43. Migration recognizes the
-  historical built-in ID `sampler`.
+- **Klopfer:** drum sampler with eight pads on MIDI notes 36–43.
 - **Sampler:** general-purpose instrument with chromatic and slice modes, waveform regions,
   fades, tempo sync and modulation. Both instruments share the voice engine, background sample
   loading and linked-source storage.
@@ -813,8 +809,8 @@ The bundled devices use the normal document, processor and device-card interface
 - **MIDI effects:** Arpeggiator and Scale (`Tonleiter` internally), run before the instrument.
 
 Device specifications author parameters, layouts, defaults and catalog text inside each
-device. The bundled adapters publish this metadata through CLAP. Legacy in-process
-references remain available to compatibility tests and project migration.
+device. The bundled adapters publish this metadata through CLAP. The in-process built-in
+references that remain serve tests and headless runs until #294 removes them.
 Built-in processing uses `klang-dsp` primitives where shared; sample-derived buffers use the
 process-wide audio file pool.
 
@@ -932,7 +928,7 @@ editors require platform window/input tooling because their contents are outside
 - Automation covers parameter lanes and clip envelopes (§6.12). MIDI learn, MIDI CC lanes and
   track macros are separate work.
 - Warp is affine from original/project tempo. Fresh seeks re-prime DSP history; optional Warp data
-  is not preserved by older v3 readers (§5.5, §6.11).
+  is part of the project format (§5.5, §6.11).
 - Automated backend coverage does not establish compatibility with every hardware driver or
   third-party plugin. Release signing state is documented in §8.7–§8.8 and INSTALL.md.
 
