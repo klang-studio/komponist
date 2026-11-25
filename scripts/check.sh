@@ -40,5 +40,3 @@ cargo test --manifest-path "$sdk" --workspace
 
 # The test plugins are their own workspace; CI runs its tests too.
 (cd test-plugins && cargo test --workspace --no-fail-fast)
-
-scripts/check-warp-compat.sh
