@@ -1318,20 +1318,13 @@ impl Bridge {
     }
 
     pub(crate) fn requires_control_param_edit(&self) -> bool {
+        // Keep persistent edits in the same ordered stream as marker edits and their
+        // restores. The render transport can retry a value after a restore.
         !self.state_restores.is_empty()
-            || self.native_layout.as_ref().is_some_and(|layout| {
-                // Keep persistent edits in the same ordered stream as marker edits and
-                // their restores. The render transport can retry a value after a restore.
-                layout
-                    .pages
-                    .iter()
-                    .flat_map(|page| &page.cells)
-                    .any(|cell| {
-                        cell.graph
-                            .as_ref()
-                            .is_some_and(|graph| graph.waveform_markers)
-                    })
-            })
+            || self
+                .native_layout
+                .as_deref()
+                .is_some_and(crate::waveform_markers::has_marker_graph)
     }
 
     pub(crate) fn restore_result(&self, request: u32) -> Option<Result<(), String>> {

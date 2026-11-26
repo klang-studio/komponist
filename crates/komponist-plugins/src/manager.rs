@@ -1402,7 +1402,7 @@ impl PluginManager {
             || self
                 .direct
                 .get(&device)
-                .is_some_and(DirectDevice::is_loading_clap_preset)
+                .is_some_and(DirectDevice::requires_control_param_edit)
         {
             return false;
         }

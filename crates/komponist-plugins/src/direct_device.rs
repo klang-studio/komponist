@@ -704,6 +704,18 @@ impl DirectDevice {
         self.pending_preset.is_some()
     }
 
+    /// Persistent edits that must take the epoch-ordered control queue instead of the render
+    /// path: during a preset load or a restore, and for devices that edit waveform markers
+    /// (restored bases reach the processor on that queue too, as in the bridge).
+    pub(crate) fn requires_control_param_edit(&self) -> bool {
+        self.pending_preset.is_some()
+            || self.pending_restore.is_some()
+            || self
+                .layout
+                .as_deref()
+                .is_some_and(crate::waveform_markers::has_marker_graph)
+    }
+
     fn service_preset(&mut self, device: DeviceId, events: &mut Vec<PluginManagerEvent>) {
         let Some((preset, deadline)) = self.pending_preset.as_ref() else {
             return;

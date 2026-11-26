@@ -497,8 +497,13 @@ fn current_project_round_trip_and_offline_render() {
             "{} has no saved CLAP state",
             device.plugin.id
         );
-        with_current_state =
-            edits::set_device_state(&with_current_state, device.id, device.state).unwrap();
+        // Automated controls keep their persistent values as host-owned parameter bases.
+        with_current_state = edits::set_saved_plugin_state(
+            &with_current_state,
+            device.id,
+            &device.saved_state().unwrap(),
+        )
+        .unwrap();
     }
     assert_eq!(saved, with_current_state);
     let (_, _, delay) = saved.find_device(fixture.delay).unwrap();
@@ -1085,13 +1090,22 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
         project.find_device(eq).unwrap().2.state,
         "saving with an automated parameter and a pending edit must update the file",
     );
+    // Driven controls keep their persistent values as host-owned parameter bases next to the
+    // opaque state; other controls are in the state itself.
     let state = pinned_clap_state::decode(saved_device.state.as_deref().unwrap()).unwrap();
-    let saved_base = state["params"]["b1_freq"]["f32"].as_f64().unwrap();
+    let saved_value = |author: &str, wire| {
+        saved_device
+            .parameter_bases
+            .get(&wire)
+            .copied()
+            .unwrap_or_else(|| state["params"][author]["f32"].as_f64().unwrap())
+    };
+    let saved_base = saved_value("b1_freq", frequency);
     assert!(
         (saved_base - base_wire).abs() < 1e-6,
         "saved automation sample as the EQ base value: {saved_base}"
     );
-    let saved_gain = state["params"]["b1_gain"]["f32"].as_f64().unwrap();
+    let saved_gain = saved_value("b1_gain", gain);
     assert!(
         (saved_gain - gain_base).abs() < 1e-6,
         "saved automated macro output as the EQ gain base value: {saved_gain}"

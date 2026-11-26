@@ -60,6 +60,21 @@ impl WaveformMarkerEditResult {
     }
 }
 
+/// Whether a layout edits waveform markers. Persistent parameter edits of such a device share
+/// the ordered control stream with marker edits and state restores, so a value still on the
+/// render path cannot land after a restore.
+pub(crate) fn has_marker_graph(layout: &NativeLayout) -> bool {
+    layout
+        .pages
+        .iter()
+        .flat_map(|page| &page.cells)
+        .any(|cell| {
+            cell.graph
+                .as_ref()
+                .is_some_and(|graph| graph.waveform_markers)
+        })
+}
+
 /// Parameter values to verify and persist around one marker edit. Values that automation or
 /// macros drive stay host-owned bases next to the captured state, as for any snapshot.
 #[derive(Debug, PartialEq)]

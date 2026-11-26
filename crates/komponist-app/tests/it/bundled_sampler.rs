@@ -347,23 +347,21 @@ fn bundled_sampler_restores_saved_parameter_bases() {
         parameter_bases: [(gain, restored_gain)].into(),
     };
 
-    // The direct path can apply a queued active restore as part of taking the snapshot.
     assert!(
         app.engine_mut()
             .host_mut()
             .restore_saved_state(device, &state)
     );
-    if force_bridge {
-        // The child acknowledges the asynchronous restore before offering a new snapshot.
-        step_until(&mut app, "bridged restore applied", |app| {
-            app.engine()
-                .host()
-                .param_base(device, gain)
-                .is_some_and(|value| (value - restored_gain).abs() < 1e-6)
-        });
-        // An empty instrument needs a processing block to consume its queued bases.
-        note_peak(&mut app, track, 60);
-    }
+    // Both paths load the bytes, then send the bases as CLAP parameter values: the child
+    // acknowledges the asynchronous restore, the in-process host queues them for the audio thread.
+    step_until(&mut app, "restore applied", |app| {
+        app.engine()
+            .host()
+            .param_base(device, gain)
+            .is_some_and(|value| (value - restored_gain).abs() < 1e-6)
+    });
+    // An empty instrument needs a processing block to consume its queued bases.
+    note_peak(&mut app, track, 60);
     let captured = snapshot(&mut app);
     assert_ne!(captured.bytes, baseline.bytes);
     assert!(captured.parameter_bases.is_empty());
@@ -1130,11 +1128,6 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         let (_, _, d) = app.project().find_device(general).unwrap();
         pinned_clap_state::decode(d.state.as_deref().unwrap()).unwrap()
     };
-    let gain_saved = |app: &App, db| {
-        hosted_state(app)["params"]["gain"]["f32"]
-            .as_f64()
-            .is_some_and(|gain| (gain - raw(db)).abs() < 1e-6)
-    };
     let set_gain = |app: &mut App, db| {
         app.dispatch(Action::Plugin(PluginAction::SetParam {
             device: general,
@@ -1152,6 +1145,8 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             .copied()
             .unwrap_or_else(|| hosted_state(app)["params"]["gain"]["f32"].as_f64().unwrap())
     };
+    // The persistent gain: a host-owned base while automation drives it, else the state's.
+    let gain_saved = |app: &App, db| (effective_gain(app) - raw(db)).abs() < 1e-6;
     let gain_applied = |app: &App, expected: f64| {
         asset_status(app, general, 0) == Some(&AssetStatus::Ready)
             && app
