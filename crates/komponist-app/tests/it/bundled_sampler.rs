@@ -447,11 +447,7 @@ fn general_sampler_file_edits_preserve_slice_history() {
             .unwrap()
             .1
             .id;
-        let seeded = komponist_plugins::bundled_sampler::edit_slices(
-            prepared.state.as_deref().unwrap(),
-            &slices,
-        )
-        .unwrap();
+        let seeded = with_slice_settings(prepared.state.as_deref().unwrap(), &slices).unwrap();
         let project = edits::set_device_state(&project, sampler, Some(seeded.into())).unwrap();
         let initial_links = before_path.map(|path| (0, AssetLink::new(path, None)));
         let project =
@@ -521,7 +517,7 @@ fn general_sampler_file_edits_preserve_slice_history() {
 
         let mut revision = wait_for(&mut app, "reopen", before_path, &slices, None);
         let host = app.engine().host();
-        assert!(host.verified_bundled_kind(sampler).is_some(), "{case}");
+        assert!(host.verified_bundle(sampler).is_some(), "{case}");
         assert!(
             host.supports_asset_edit_state(sampler),
             "{case}: expected authored file edits"
@@ -611,12 +607,32 @@ fn general_sampler_file_edits_preserve_slice_history() {
     }
 }
 
+/// The sample document the General Sampler bundle keeps in its own state.
+fn sample_document(state: &[u8]) -> Option<String> {
+    pinned_clap_state::decode(state)?["fields"][pinned_clap_state::SAMPLE_ASSETS_FIELD]
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// The General Sampler state with its slice map replaced.
+fn with_slice_settings(state: &[u8], settings: &general_sampler::Settings) -> Option<Vec<u8>> {
+    let mut document = pinned_clap_state::decode(state)?;
+    let fields = document.get_mut("fields")?.as_object_mut()?;
+    let assets = fields
+        .get(pinned_clap_state::SAMPLE_ASSETS_FIELD)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("{}");
+    let updated = general_sampler::write_settings(Some(assets.as_bytes()), settings);
+    fields.insert(
+        pinned_clap_state::SAMPLE_ASSETS_FIELD.into(),
+        String::from_utf8(updated).ok()?.into(),
+    );
+    Some(pinned_clap_state::encode_document(&document))
+}
+
 fn sampler_slice_settings(app: &App, sampler: DeviceId) -> general_sampler::Settings {
     let device = app.project().find_device(sampler).unwrap().2;
-    let assets = device
-        .state
-        .as_deref()
-        .and_then(komponist_plugins::bundled_sampler::assets);
+    let assets = device.state.as_deref().and_then(sample_document);
     general_sampler::read_settings(assets.as_deref().map(str::as_bytes))
 }
 
@@ -655,7 +671,9 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     for kind in [Internal::Sampler, Internal::GeneralSampler] {
         let instrument = host
             .catalog()
-            .packaged(BuiltinKind::Internal(kind))
+            .packaged(&komponist_plugins::catalog::clap_id(
+                BuiltinKind::Internal(kind).catalog().id,
+            ))
             .unwrap()
             .plugin
             .clone();

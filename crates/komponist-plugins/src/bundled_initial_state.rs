@@ -1,9 +1,15 @@
 //! Prepare project state for verified built-in CLAPs before creating audio processors.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use komponist_hosting::HostedPlugin;
 
 use komponist_ipc::clap_presets::ClapPresetLocation;
+use komponist_ipc::device_assets::{AssetStatus, Binding, Bindings};
+use komponist_ipc::waveform_markers::{Edit, EditStatus, Request};
 use komponist_ipc::{PluginKind, WireEvent, WireEventKind};
 use komponist_model::params::ParamId;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef};
@@ -11,6 +17,19 @@ use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef};
 use crate::bundled_clap::BundledClap;
 use crate::catalog::bundled_module;
 use crate::direct::DirectClap;
+
+/// How long an initial file may take to load before its markers are written.
+const FILE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// An authored file for an asset slot and the waveform markers to place on it. The file binds
+/// through the device-assets extension; the markers go through the waveform-markers extension.
+/// The project keeps the file as a host-managed link; the state keeps the markers.
+#[derive(Clone, Copy, Debug)]
+pub struct InitialMarkers<'a> {
+    pub slot: u32,
+    pub file: &'a Path,
+    pub positions: &'a [f64],
+}
 
 /// An initialized device and the authored controls requested for project automation.
 pub struct InitialDevice {
@@ -41,6 +60,7 @@ pub(crate) fn prepare(
     preset: Option<&str>,
     edits: &[(&str, f64)],
     targets: &[&str],
+    markers: Option<InitialMarkers<'_>>,
 ) -> Result<InitialDevice, String> {
     let (path, _) = inventory
         .bundle_entries()
@@ -141,6 +161,9 @@ pub(crate) fn prepare(
                     Ok((author.to_owned(), (ParamId::plugin(info.id), normalized)))
                 })
                 .collect::<Result<_, String>>()?;
+            if let Some(markers) = markers {
+                place_markers(plugin, markers)?;
+            }
             let state = plugin.save_state().map_err(|error| error.to_string())?;
             Ok(InitialDevice {
                 plugin: reference,
@@ -150,4 +173,54 @@ pub(crate) fn prepare(
             })
         })
         .ok_or_else(|| "bundled CLAP control is busy".to_owned())?
+}
+
+fn place_markers(plugin: &mut dyn HostedPlugin, markers: InitialMarkers<'_>) -> Result<(), String> {
+    let path = markers
+        .file
+        .to_str()
+        .ok_or("the initial file path is not UTF-8")?;
+    let bindings = Bindings {
+        slots: vec![Binding {
+            id: markers.slot,
+            path: Some(path.to_owned()),
+            reload: false,
+        }],
+    };
+    if !plugin.set_asset_bindings(&bindings) {
+        return Err("the device did not accept the initial file".into());
+    }
+    let deadline = Instant::now() + FILE_TIMEOUT;
+    loop {
+        let status = plugin
+            .asset_slots()
+            .and_then(|snapshot| {
+                snapshot
+                    .slots
+                    .into_iter()
+                    .find(|slot| slot.id == markers.slot)
+            })
+            .map(|slot| slot.status);
+        match status {
+            Some(AssetStatus::Ready) => break,
+            Some(AssetStatus::Loading) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            status => return Err(format!("the initial file did not load: {status:?}")),
+        }
+    }
+    for &seconds in markers.positions {
+        let snapshot = plugin
+            .waveform_markers(markers.slot)
+            .ok_or("the device has no waveform markers for the initial file")?;
+        let request = Request {
+            revision: snapshot.revision,
+            operation: Edit::Insert { seconds },
+        };
+        match plugin.edit_waveform_markers(markers.slot, request) {
+            Some(EditStatus::Applied) => {}
+            status => return Err(format!("marker at {seconds} s was not placed: {status:?}")),
+        }
+    }
+    Ok(())
 }
