@@ -1,35 +1,20 @@
-# Native CLAP device layout v1
+# Native CLAP device layout
 
-A CLAP plugin can publish a native device panel for komponist through a plugin-side extension. This
-document, [the C header](clap-device-layout.h) and [the JSON schema](schema.json) define the v1
-interoperability contract. [The example payload](example.json) is valid for a plugin with a continuous
-Gain parameter at CLAP ID `42` and a stepped enum Mode parameter at CLAP ID `7` with plain values
-`0`, `1` and `2`.
+A CLAP plugin can publish a native device panel for komponist. This document, the
+[C header](clap-device-layout.h), the [JSON schema](schema.json), and the
+[layout reference](layout.md) define the contract. The [example](example.json) shows graphs
+and a canvas. The [C control fixture](../../test-plugins/native-layout/c-fixture/controls.json)
+binds a continuous Gain at CLAP ID `42` and a stepped Mode enum at CLAP ID `7`.
 
-Plugins can also publish an independent [sidechain fallback extension](sidechain-fallback.md)
-to define how the host supplies a disconnected auxiliary input.
-
-For graphs and canvases, see [layout version 2](layout-v2.md).
-
-The independent [device assets extension](device-assets.md) exposes linked files and
-offline preparation to komponist.
-
-## Device catalog labels
-
-A layout may provide an optional top-level `metadata` object. Its `names`
-map contains a name in the default locale and may include other declared
-locales. The optional `descriptions` map follows the same label rules.
-komponist displays these labels in the browser and uses them in search.
-Missing or invalid metadata falls back to the CLAP descriptor name and
-leaves the panel available. Hosts that ignore this field can use the same
-layout.
+Plugins can also publish [device assets](device-assets.md) for linked files and offline
+preparation, and [sidechain fallback](sidechain-fallback.md) for disconnected inputs.
 
 ## Discovery and lifetime
 
 After a successful `clap_plugin_t.init`, the host calls `clap_plugin_t.get_extension` on the CLAP
-main thread with the exact ID `org.klang-studio.komponist.device-layout/1`. The plugin returns
+main thread with the exact ID `org.klang-studio.komponist.device-layout`. The plugin returns
 either a pointer to a const `komponist_clap_device_layout_t` table or null. Null indicates that
-this extension major is unavailable. The bundle uses the standard CLAP entry and factory for
+the extension is unavailable. The bundle uses the standard CLAP entry and factory for
 discovery and initialization. The reference fixture builds against these pinned CLAP headers.
 [CLAP 1.2.8 plugin header](https://github.com/free-audio/clap/blob/ca1b43ee2b4f381e94e4170e622d60b92108b128/include/clap/plugin.h)
 
@@ -38,12 +23,6 @@ for this extension occur on the CLAP main thread between successful initializati
 The host supplies the same initialized plugin pointer that returned the extension. The layout and
 its byte count are immutable for that instance. Each call borrows the two output pointers only for
 its duration. The host owns the destination buffer and any copy of the descriptor.
-
-A breaking ABI table or document revision receives a new extension ID with a new major suffix.
-The host queries the exact IDs of the majors it supports, in descending order. When a major is
-unavailable or the descriptor requires unsupported functionality, the host may try an earlier
-supported major. Extension major, JSON schema version, plugin version and CLAP version are
-independent.
 
 ## Buffer protocol
 
@@ -72,13 +51,14 @@ length delimits the bytes for validation.
 
 ## Document and geometry
 
-The payload is a single UTF-8 JSON object with unique member names and `schema_version` equal to
-`1`. Integer fields use JSON number tokens without a fraction or exponent. It declares 1–8 locales, a default locale and 1–4 pages. Page keys
-are unique in the document, stable across updates and match `[a-z][a-z0-9_-]{0,31}`. Pages and cells appear in array order.
-Each page has 1–12 columns, exactly 3 available rows and 1–72 cells.
+The payload is a single UTF-8 JSON object with unique member names. Integer fields use JSON
+number tokens without a fraction or exponent. It declares 1–8 locales, a default locale and
+1–4 pages, or one page per pad for a pad-selected panel. Page keys are unique within the
+document, stable across updates and match `[a-z][a-z0-9_-]{0,31}`. Pages and cells appear in
+array order. Each page has 1–14 columns, exactly 3 available rows and 1–84 cells.
 
 Cell coordinates are zero-based. `col` and `row` name the upper-left grid position, while `cols`
-and `rows` give a positive span. V1 widgets all have `rows: 1`. Every cell fits inside the page
+and `rows` give a positive span. Every cell fits inside the page
 rectangle. A full cell omits `half` and occupies both halves of all columns it spans. A half cell
 sets `half` to `top` or `bottom` and occupies that half of each column it spans. Two cells may
 share a grid position when they occupy opposite halves. Any shared occupied half is an overlap.
@@ -87,12 +67,12 @@ share a grid position when they occupy opposite halves. Any shared occupied half
 | --- | ---: | --- | --- |
 | `knob` | 1 | Full | Numeric |
 | `knob_large` | 2 | Full | Numeric |
-| `number` | 1 | Top or bottom | Numeric |
-| `toggle_button` | 1–12 | Top or bottom | Stepped with plain range `[0, 1]` |
-| `segment` | 1–12 | Top or bottom | Stepped enum with 2–16 choices |
+| `number` | 1–2 | Top or bottom | Numeric |
+| `toggle_button` | 1–14 | Top or bottom | Stepped with plain range `[0, 1]` |
+| `segment` | 1–14 | Top or bottom | Stepped enum with 2–16 choices |
 | `dropdown` | 2 | Top or bottom | Stepped enum with 2–16 choices |
 
-These widgets correspond to the fixed-parameter subset of the device core layout vocabulary. A
+The [layout reference](layout.md) describes graphs, canvases and additional controls. A
 binding supplies its numeric CLAP ID in `param_id`. The valid ID range is 0–4,294,967,294.
 `CLAP_INVALID_ID` is reserved. A parameter can appear in multiple cells or pages. The host maps
 the ID with `ParamId::plugin`. The same ID identifies the control in UI edits, automation, undo
@@ -127,26 +107,21 @@ non-whitespace character and excludes C0 and C1 controls. Labels are displayed a
 For a localized label, look up the requested locale, then its primary language subtag, then
 `default_locale`. A cell with no matching label uses the CLAP parameter name.
 
-## Compatibility and fallback
+## Layout validation
 
-An optional `author_ids` object maps stable author keys to the actual numeric CLAP parameter IDs.
-If supplied, it contains one to 256 entries and is a bijection to the live parameter inventory.
-Keys are nonblank UTF-8 strings of at most 128 bytes without control characters. The SDK only emits
-the mapping when the current wrapper can authoritatively resolve every parameter. This mapping can
-help a host migrate project references. It grants no trust or permission to load a bundle.
+The optional `author_ids` map contains one to 256 stable author keys mapped to numeric
+CLAP IDs. It must be a bijection with the live parameter inventory. Keys are nonblank
+UTF-8 strings of at most 128 bytes without control characters.
 
-Unknown optional object fields are ignored. A compatible addition can define new optional
-fields under the same major. A document that requires an added capability lists its identifier
-in `required_capabilities`, an optional array of at most eight unique strings matching
-`[a-z][a-z0-9._-]{0,31}`. This revision recognizes no required capability identifiers. A
-well-formed document requiring an unrecognized capability, or using an unsupported schema
-version, is unsupported. The host validates the supported document against the structural
-schema, the byte and cross-field rules here, and its CLAP parameter inventory before creating
-UI objects. An unknown widget or invalid binding invalidates the layout.
+The host ignores unknown optional fields and rejects unknown required capabilities. A
+plugin declares required capabilities as up to eight unique strings matching
+`[a-z][a-z0-9._-]{0,31}`. The [layout reference](layout.md) describes the supported
+capabilities. The host validates geometry, labels and bindings against the live CLAP
+inventory before drawing the panel and revalidates it after inventory changes.
 
-A missing, unsupported or malformed descriptor leaves standard plugin hosting available. The
-host uses a bounded diagnostic for invalid metadata and revalidates the descriptor after a
-parameter inventory change. The audio path and normal CLAP editor keep their existing lifecycle.
+Before 1.0, komponist supports the current contract under one extension ID. A missing,
+unsupported or malformed layout leaves the standard CLAP parameter view and plugin
+editor available.
 
 ## Interoperability prototype
 

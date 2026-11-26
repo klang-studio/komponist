@@ -82,16 +82,9 @@ fn probe(path: &Path, collision: bool) -> Value {
                 "default": info.default_value,
             }));
         }
-        assert!(
-            extension(
-                instance,
-                c"org.klang-studio.komponist.device-layout/99".as_ptr()
-            )
-            .is_null()
-        );
         let layout = (extension(instance, EXTENSION_ID.as_ptr()) as *const LayoutExtension)
             .as_ref()
-            .expect("custom v1 extension table");
+            .expect("native layout extension table");
         let get_layout = layout.get_layout;
         let mut needed = u32::MAX;
         let status = get_layout(instance, ptr::null_mut(), 0, &mut needed);
@@ -133,7 +126,6 @@ fn probe(path: &Path, collision: bool) -> Value {
                 "bytes beyond capacity are untouched"
             );
             let descriptor: Value = serde_json::from_slice(&dest[..needed as usize]).unwrap();
-            assert_eq!(descriptor["schema_version"], 1);
             let cells = descriptor["pages"][0]["cells"].as_array().unwrap();
             assert_eq!(cells.len(), 2);
             for (cell, (name, expected)) in

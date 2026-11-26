@@ -430,7 +430,7 @@ impl PluginDirs {
 
 /// Per-bundle CLAP descriptor data revision. Earlier entries can populate the startup
 /// catalog while a full scan refreshes their display metadata.
-pub(crate) const CLAP_DESCRIPTOR_REVISION: u8 = 1;
+pub(crate) const CLAP_DESCRIPTOR_REVISION: u8 = 2;
 
 /// One cached scan result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

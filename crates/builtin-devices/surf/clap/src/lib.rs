@@ -3,13 +3,10 @@
 
 use komponist_bundled_clap_adapter::{Binding, DeviceDefinition, Instrument, panel_from_parts};
 use komponist_device_core::Spec;
-use komponist_device_core::layout::{knob, param};
 use komponist_i18n::Lang;
-use komponist_model::params::layout::{
-    Cell, CellParam, DeviceLayout, GraphConfig, Half, Page, WidgetKind,
-};
+use komponist_model::params::layout::{CellParam, GraphConfig};
 use komponist_model::params::{ParamId, ParamInfo};
-use komponist_native_clap_sdk::{GraphLabels, Labels, Panel, PanelV2};
+use komponist_native_clap_sdk::{GraphLabels, Labels, Panel};
 use nice_plug::prelude::*;
 
 struct Surf;
@@ -124,72 +121,12 @@ impl DeviceDefinition for Surf {
             _ => return None,
         })
     }
-
-    fn layout(lang: Lang) -> DeviceLayout {
-        surf_layout(lang)
-    }
-
-    fn configure_panel(panel: &mut Panel) {
-        for (id, labels) in &mut panel.parameter_labels {
-            for (prefix, group) in [
-                ("amp_", "Amp"),
-                ("filt_", "Filter"),
-                ("mod_", "Mod"),
-                ("lfo1_", "LFO 1"),
-                ("lfo2_", "LFO 2"),
-            ] {
-                if id.as_str().starts_with(prefix) {
-                    for label in labels.values_mut() {
-                        *label = format!("{group} {label}");
-                    }
-                    break;
-                }
-            }
-        }
-    }
-}
-
-/// The public v1 layout: fixed parameters only, so the first page shows both oscillators side by
-/// side where surf's card has the wavetable graph and the A/B switch; envelopes and LFOs are volt's
-/// public pages; the matrix page is surf's.
-fn surf_layout(lang: Lang) -> DeviceLayout {
-    let [mut sound, _, mut matrix]: [Page; 3] = Surf::SPEC
-        .layout_in(lang)
-        .pages
-        .clone()
-        .try_into()
-        .expect("Surf has three builtin pages");
-    sound
-        .cells
-        .retain(|cell| matches!(cell.param, CellParam::Id(_)));
-    let half =
-        |col, row, cols, half, widget, id| Cell::half(col, row, cols, half, widget, param(id));
-    sound.cells.extend([
-        half(0, 0, 2, Half::Top, WidgetKind::Dropdown, "osc_a_table"),
-        half(0, 0, 2, Half::Bottom, WidgetKind::Dropdown, "osc_b_table"),
-        knob(2, 0, "osc_a_pos"),
-        knob(3, 0, "osc_b_pos"),
-        half(0, 1, 1, Half::Top, WidgetKind::Number, "osc_a_oct"),
-        half(0, 1, 1, Half::Bottom, WidgetKind::Number, "osc_b_oct"),
-        knob(1, 1, "osc_a_fine"),
-        knob(2, 1, "osc_b_fine"),
-    ]);
-    sound.dividers.clear();
-    matrix.dividers.clear();
-    DeviceLayout {
-        pages: vec![
-            sound,
-            komponist_volt::public_envelope_page(lang),
-            komponist_volt::public_lfo_page(lang),
-            matrix,
-        ],
-    }
 }
 
 type SurfPlugin = Instrument<Surf>;
 
 impl komponist_bundled_clap_adapter::AudioDefinition for Surf {
-    fn panel_v2() -> Option<PanelV2> {
+    fn authored_panel() -> Option<Panel> {
         let english = Self::SPEC.layout_in(Lang::En);
         let german = Self::SPEC.layout_in(Lang::De);
         let mut panel = panel_from_parts(
@@ -266,8 +203,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Surf {
                 }
             }
         }
-        Some(PanelV2 {
-            panel,
+        Some(Panel {
             graph_labels,
             canvases: Default::default(),
             reduction_taps: Default::default(),
@@ -275,6 +211,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Surf {
             pad_bank: None,
             parameter_display: Default::default(),
             full_band_choice_labels: Default::default(),
+            ..panel
         })
     }
 

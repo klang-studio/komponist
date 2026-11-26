@@ -1484,7 +1484,7 @@ fn a_window_picked_in_a_menu_comes_to_the_front() {
 #[test]
 fn failure_to_open_the_plugin_editor_shows_the_native_layout_instead() {
     let layout = br#"{
-        "schema_version":1, "default_locale":"en","locales":["en"],
+        "default_locale":"en","locales":["en"],
         "pages":[
             {"key":"main","labels":{"en":"Main"},"columns":4,"cells":[
                 {"widget":"number","row":0,"col":0,"rows":1,"cols":1,"half":"top","param_id":7,

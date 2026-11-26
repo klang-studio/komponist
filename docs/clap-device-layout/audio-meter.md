@@ -1,7 +1,7 @@
-# CLAP effect meter extension v1
+# CLAP effect meter extension
 
-`org.klang-studio.komponist.audio-meter/1` supplies actual DSP gain reduction and optional
-detector data. Hosts without the extension continue using standard CLAP and layout v1.
+`org.klang-studio.komponist.audio-meter` supplies actual DSP gain reduction and optional
+detector data. Hosts without the extension continue using standard CLAP and the device layout.
 
 ```c
 #include <stdint.h>

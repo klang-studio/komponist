@@ -55,7 +55,7 @@ impl Drop for Instance {
 }
 
 #[test]
-fn layout_uses_stable_ids_and_covers_every_synth_parameter() {
+fn layout_keeps_author_ids_for_the_live_parameter_inventory() {
     let first = Instance::new();
     let second = Instance::new();
     // SAFETY: Both instances belong to this thread and remain initialized throughout the check.
@@ -64,17 +64,11 @@ fn layout_uses_stable_ids_and_covers_every_synth_parameter() {
         let bytes = compile::<SurfPlugin>(first.0, &panel).unwrap();
         assert_eq!(bytes, compile::<SurfPlugin>(second.0, &panel).unwrap());
         let layout: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let pages = layout["pages"].as_array().unwrap();
-        assert_eq!(pages.len(), 4);
-        let ids = pages
-            .iter()
-            .flat_map(|page| {
-                page["cells"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|cell| cell["param_id"].as_u64().unwrap() as u32)
-            })
+        let ids = layout["author_ids"]
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|id| id.as_u64().unwrap() as u32)
             .collect::<BTreeSet<_>>();
         let expected = Surf::SPEC
             .params()
@@ -98,23 +92,13 @@ fn layout_uses_stable_ids_and_covers_every_synth_parameter() {
 }
 
 #[test]
-fn layout_v2_exports_the_existing_grid_and_numeric_selection_bindings() {
+fn layout_exports_the_existing_grid_and_numeric_selection_bindings() {
     let instance = Instance::new();
     // SAFETY: The instance remains initialized and owned by this thread.
-    let (old, new) = unsafe {
-        let old = compile::<SurfPlugin>(instance.0, &SurfPlugin::panel()).unwrap();
-        let new = komponist_native_clap_sdk::compile_v2::<SurfPlugin>(
-            instance.0,
-            &SurfPlugin::panel_v2().unwrap(),
-        )
-        .unwrap();
-        (old, new)
-    };
-    let old: serde_json::Value = serde_json::from_slice(&old).unwrap();
-    let new: serde_json::Value = serde_json::from_slice(&new).unwrap();
-    assert_eq!(new["author_ids"], old["author_ids"]);
-    let ids = &new["author_ids"];
-    let pages = new["pages"].as_array().unwrap();
+    let native = unsafe { compile::<SurfPlugin>(instance.0, &SurfPlugin::panel()).unwrap() };
+    let layout: serde_json::Value = serde_json::from_slice(&native).unwrap();
+    let ids = &layout["author_ids"];
+    let pages = layout["pages"].as_array().unwrap();
     assert_eq!(pages.len(), 3);
     let sound = &pages[0]["cells"];
     assert_eq!(sound[0]["half"], "top");

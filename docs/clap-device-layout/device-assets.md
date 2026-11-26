@@ -1,8 +1,8 @@
-# CLAP device assets v1
+# CLAP device assets
 
 A CLAP plugin can publish file slots for host-managed project links and request time to
 prepare its assets for an offline render. The [C header](clap-device-assets.h) defines the
-ABI for `org.klang-studio.komponist.device-assets/1`.
+ABI for `org.klang-studio.komponist.device-assets`.
 
 The host queries the extension on the CLAP main thread after successful initialization.
 The returned table is immutable and valid until instance destruction. The host uses the

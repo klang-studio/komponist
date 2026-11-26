@@ -1,8 +1,8 @@
-# CLAP waveform markers v1
+# CLAP waveform markers
 
 The General Sampler bundle exposes a control-thread endpoint for reading and editing slice
 markers on its `AudioSample` [asset slot](device-assets.md) `0`. The [C header](clap-waveform-markers.h)
-defines the ABI for `org.klang-studio.komponist.waveform-markers/1`. This endpoint is separate
+defines the ABI for `org.klang-studio.komponist.waveform-markers`. This endpoint is separate
 from the layout, display canvas, and [waveform preview](clap-waveform-preview.h) callbacks.
 
 Query the exact extension ID after successful CLAP initialization. Use the original plugin

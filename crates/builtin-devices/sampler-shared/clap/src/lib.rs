@@ -14,13 +14,13 @@ use std::ffi::{CStr, c_void};
 use std::sync::{Arc, Mutex};
 
 use clap_sys::plugin::clap_plugin;
-use komponist_bundled_clap_adapter::{DeviceDefinition, Parameters, panel_for, to_device_note};
+use komponist_bundled_clap_adapter::{DeviceDefinition, Parameters, to_device_note};
 use komponist_device_core::pinned_clap_state::{MAX_SAMPLE_ASSET_BYTES, SAMPLE_ASSETS_FIELD};
 use komponist_device_core::{Dsp, SAMPLE_RATES, dispatch_note};
 use komponist_ipc::device_assets::edit_state;
 pub use komponist_ipc::device_assets::edit_state::Intent as AssetEditIntent;
 use komponist_ipc::sampler_ui::{self, EXTENSION_ID, Pad, Snapshot, Status, Sync as WireSync};
-use komponist_native_clap_sdk::{NativeClapLayout, Panel, PanelV2};
+use komponist_native_clap_sdk::{NativeClapLayout, Panel};
 use komponist_sampler_shared::{
     ManagedLoader, PadStatus, SamplerHandle, SyncStatus, links, settings::Settings,
 };
@@ -34,9 +34,7 @@ pub trait SampledDefinition: DeviceDefinition {
     const SLICE_SETTINGS: Option<SliceSettingsCodec> = None;
     const DISPLAY: Option<fn(&Parameters, &mut komponist_native_clap_sdk::display::Display)> = None;
 
-    fn panel_v2() -> Option<PanelV2> {
-        None
-    }
+    fn panel() -> Panel;
 
     /// Defaults affected by a user edit of this device's file slot.
     fn trim_for_asset_edit(_slot: usize, _intent: AssetEditIntent) -> Option<[usize; 2]> {
@@ -454,10 +452,6 @@ impl<T: SampledDefinition> ClapPlugin for Sampled<T> {
 
 impl<T: SampledDefinition> NativeClapLayout for Sampled<T> {
     fn panel() -> Panel {
-        panel_for::<T>()
-    }
-
-    fn panel_v2() -> Option<PanelV2> {
-        T::panel_v2()
+        T::panel()
     }
 }

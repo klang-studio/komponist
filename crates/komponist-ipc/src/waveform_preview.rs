@@ -2,7 +2,7 @@
 
 use std::ffi::{CStr, c_void};
 
-pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.waveform-preview/1";
+pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.waveform-preview";
 
 #[repr(C)]
 pub struct Extension {

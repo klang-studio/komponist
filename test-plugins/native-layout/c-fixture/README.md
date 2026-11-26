@@ -24,19 +24,18 @@ The probe reports CLAP parameter IDs, flags, names, and ranges alongside the lay
 status as JSON. Successful transfers preserve the raw UTF-8 JSON bytes. The probe emits `null`
 for absent or inconsistent transfers. It leaves schema and parameter-link validation to the caller.
 
-The factory publishes twelve variants under the prefix `org.klang-studio.komponist.layout-fixture.`.
+The factory publishes eleven variants under the prefix `org.klang-studio.komponist.layout-fixture.`.
 
 | Suffix | Response |
 | --- | --- |
-| `valid` | The normative layout document |
+| `valid` | The control panel example |
 | `missing` | No layout extension |
-| `absent` | v1 extension reports `ABSENT` |
-| `incompatible` | Only a different extension ID |
+| `absent` | The extension reports `ABSENT` |
 | `invalid-length` | Zero byte count in the length query |
 | `wrong-copy-length` | Byte count changes between the query and copy |
 | `oversize` | Length query above the maximum |
 | `unknown-param` | A cell refers to parameter ID 999 |
 | `optional-field` | Unknown optional metadata on the root and a cell |
 | `required-capability` | Unknown required capability |
-| `version-two` | Declarative graph panel and an authored canvas |
-| `invalid-version-two` | A v2 graph refers to unknown parameter ID 999. The v1 panel remains available |
+| `graphs` | Declarative graph panel and an authored canvas |
+| `invalid-graphs` | A graph refers to unknown parameter ID 999 |

@@ -18,7 +18,7 @@ impl DeviceDefinition for Scale {
     const FEATURES: &'static [ClapFeature] = &[ClapFeature::NoteEffect];
 
     fn layout(lang: Lang) -> DeviceLayout {
-        // Public layout v1 permits only two-column dropdowns. The built-in editor uses
+        // The public layout permits only two-column dropdowns. The built-in editor uses
         // wider dropdowns for Scale and Mode; all three controls remain available.
         let mut layout = Self::SPEC.layout_in(lang).clone();
         for cell in layout.pages.iter_mut().flat_map(|page| &mut page.cells) {

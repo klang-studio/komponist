@@ -316,14 +316,6 @@ pub(crate) fn sample_asset_roundtrip<P: ClapPlugin>(key: u8, gate_param: &str, h
         })
         .to_string()
     };
-    // SAFETY: This is an initialized instance and the versioned ID is NUL-terminated.
-    assert!(unsafe {
-        ((*plugin).get_extension.unwrap())(
-            plugin,
-            c"org.klang-studio.komponist.sampler-ui/1".as_ptr(),
-        )
-        .is_null()
-    });
     let initial = read_snapshot(&instance);
     let pad_count = initial.pads.len();
     assert_eq!(initial.pads[0].status, Status::Empty);

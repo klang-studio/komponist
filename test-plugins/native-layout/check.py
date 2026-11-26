@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the C ABI fixture and the v1 descriptor rules with the standalone host."""
+"""Exercise the C ABI fixture and the control descriptor rules with the standalone host."""
 
 import argparse
 from copy import deepcopy
@@ -64,9 +64,11 @@ def check_descriptors(layout, params, size):
     bad_enum = deepcopy(layout)
     bad_enum["pages"][0]["cells"][1]["choices"][2]["value"] = 3
     expect_rejection(InvalidLayout, lambda: validate(bad_enum, params, size), "incorrect enum range")
-    for override in ({"schema_version": 2}, {"required_capabilities": ["custom-widget"]}):
-        expect_rejection(UnsupportedLayout, lambda: validate({**layout, **override}, params, size),
-                         "unsupported v1 descriptor")
+    expect_rejection(
+        UnsupportedLayout,
+        lambda: validate({**layout, "required_capabilities": ["custom-widget"]}, params, size),
+        "unsupported capability",
+    )
 
     for raw in (b'{"pages":[],"pages":[]}', b'{"labels":"\xff"}', b'{"param_id":NaN}'):
         expect_rejection((InvalidLayout, UnicodeDecodeError), lambda: read_json(raw), "invalid JSON")
@@ -104,8 +106,11 @@ def main():
         return run_probe(probe, fixture, f"{FIXTURE_ID}.{name}")
 
     example = args.example.read_bytes()
-    valid = run_probe(probe, fixture, f"{FIXTURE_ID}.valid", expected_payload=example)
-    require(valid["size"] == len(example), "probe reported the wrong layout size")
+    graphs = run_probe(probe, fixture, f"{FIXTURE_ID}.graphs", expected_payload=example)
+    require(graphs["size"] == len(example), "probe reported the wrong graph layout size")
+    controls = Path(__file__).with_name("c-fixture").joinpath("controls.json").read_bytes()
+    valid = run_probe(probe, fixture, f"{FIXTURE_ID}.valid", expected_payload=controls)
+    require(valid["size"] == len(controls), "probe reported the wrong control layout size")
     check_descriptors(valid["layout"], valid["params"], valid["size"])
 
     optional = variant("optional-field")
@@ -118,7 +123,7 @@ def main():
         expect_rejection(error_type,
                          lambda: validate(report["layout"], report["params"], report["size"]),
                          name)
-    print("Layout v1 semantic checks passed")
+    print("Control layout semantic checks passed")
     if args.nice_plug_artifacts:
         check_nice_plug(probe, args.nice_plug_artifacts.resolve())
 

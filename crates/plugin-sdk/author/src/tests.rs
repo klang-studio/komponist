@@ -100,7 +100,7 @@ fn panel(cell: Cell) -> Panel {
         }],
         parameter_labels: BTreeMap::new(),
         choice_labels: BTreeMap::new(),
-        device_labels: None,
+        ..Panel::default()
     }
 }
 
@@ -195,8 +195,7 @@ fn six_numeric_options_publish_shared_column_and_segment_selectors() {
     panel
         .parameter_labels
         .insert(ParamId::new("op"), bilingual("Operator", "Operator"));
-    let panel = PanelV2 {
-        panel,
+    let panel = Panel {
         graph_labels: Default::default(),
         canvases: Default::default(),
         reduction_taps: Default::default(),
@@ -204,9 +203,10 @@ fn six_numeric_options_publish_shared_column_and_segment_selectors() {
         headings: Default::default(),
         parameter_display: Default::default(),
         full_band_choice_labels: Default::default(),
+        ..panel
     };
     // SAFETY: The instance is the initialized wrapper for P.
-    let bytes = unsafe { compile_v2::<P>(instance.0, &panel) }.unwrap();
+    let bytes = unsafe { compile::<P>(instance.0, &panel) }.unwrap();
     let value: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
         value["required_capabilities"],
@@ -225,16 +225,14 @@ fn six_numeric_options_publish_shared_column_and_segment_selectors() {
 fn source_fraction_waveforms_declare_the_required_layout_capability() {
     type P = TestPlugin<ChoiceParams>;
     let instance = Instance::new::<P>();
-    let panel = PanelV2 {
-        parameter_display: Default::default(),
-        full_band_choice_labels: Default::default(),
-        panel: panel(Cell::graph(
-            0,
-            0,
-            4,
-            2,
-            GraphBinding::new(GraphConfig::Waveform).bind("end", "plain"),
-        )),
+    let panel = panel(Cell::graph(
+        0,
+        0,
+        4,
+        2,
+        GraphBinding::new(GraphConfig::Waveform).bind("end", "plain"),
+    ));
+    let panel = Panel {
         graph_labels: [(
             (0, 0),
             GraphLabels {
@@ -251,13 +249,10 @@ fn source_fraction_waveforms_declare_the_required_layout_capability() {
             },
         )]
         .into(),
-        canvases: BTreeMap::new(),
-        headings: Default::default(),
-        pad_bank: None,
-        reduction_taps: BTreeMap::new(),
+        ..panel
     };
     // SAFETY: The instance is the initialized wrapper for P.
-    let bytes = unsafe { compile_v2::<P>(instance.0, &panel) }.unwrap();
+    let bytes = unsafe { compile::<P>(instance.0, &panel) }.unwrap();
     let document: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
         document["required_capabilities"],

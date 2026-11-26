@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <clap/plugin.h>
 
-#define KOMPONIST_SIGNAL_TAPS_ID "org.klang-studio.komponist.signal-taps/1"
+#define KOMPONIST_SIGNAL_TAPS_ID "org.klang-studio.komponist.signal-taps"
 #define KOMPONIST_SIGNAL_TAPS_MAX 4
 #define KOMPONIST_TAP_SPECTRUM_SOURCE 1
 #define KOMPONIST_TAP_LEVEL_HISTORY 2

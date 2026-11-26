@@ -1,6 +1,6 @@
 use komponist_native_clap_sdk::{
     Canvas, Cell, CellParam, DeviceLayout, GraphBinding, GraphConfig, GraphLabels, Labels,
-    NativeClapLayout, Page, PageLabels, Panel, PanelV2, ParamId, PluginLabels, WidgetKind,
+    NativeClapLayout, Page, PageLabels, Panel, ParamId, PluginLabels, WidgetKind,
     display::{Display, DisplaySource, Tone},
     layout::knob,
 };
@@ -13,7 +13,7 @@ fn labels(en: &str, de: &str) -> Labels {
 
 impl NativeClapLayout for NativeGain {
     fn panel() -> Panel {
-        Panel {
+        let mut panel = Panel {
             default_locale: "en".into(),
             locales: vec!["en".into(), "de".into()],
             grid: DeviceLayout::single(Page {
@@ -50,11 +50,8 @@ impl NativeClapLayout for NativeGain {
                 names: labels("Native Gain Example", "Pegelbeispiel"),
                 descriptions: labels("Stereo gain and mix.", "Stereo-Pegel und Mischung."),
             }),
-        }
-    }
-
-    fn panel_v2() -> Option<PanelV2> {
-        let mut panel = Self::panel();
+            ..Panel::default()
+        };
         panel.grid.pages.push(Page {
             name: "Display".into(),
             cols: 8,
@@ -76,10 +73,9 @@ impl NativeClapLayout for NativeGain {
             key: "display".into(),
             labels: labels("Display", "Anzeige"),
         });
-        Some(PanelV2 {
+        Panel {
             parameter_display: Default::default(),
             full_band_choice_labels: Default::default(),
-            panel,
             graph_labels: [(
                 (1, 0),
                 GraphLabels {
@@ -117,7 +113,8 @@ impl NativeClapLayout for NativeGain {
             headings: Default::default(),
             pad_bank: None,
             reduction_taps: Default::default(),
-        })
+            ..panel
+        }
     }
 }
 

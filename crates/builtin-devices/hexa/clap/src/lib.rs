@@ -6,17 +6,16 @@ mod state;
 use std::ffi::{CStr, c_void};
 use std::sync::{Arc, OnceLock};
 
+use komponist_bundled_clap_adapter::Parameters;
 use komponist_bundled_clap_adapter::presets::{
     FactoryPreset, FactoryPresets, embedded_load_extension,
 };
-use komponist_bundled_clap_adapter::{Parameters, panel_from_parts};
 use komponist_engine::{Event, EventKind, NOTE_ID_NONE, Processor};
-use komponist_hexa::device::{self, Field, WIRE_COUNT};
+use komponist_hexa::device::{Field, WIRE_COUNT};
 use komponist_hexa::{HexaProcessor, default_patch};
 use komponist_i18n::Lang;
-use komponist_model::params::layout::{Cell, DeviceLayout, Half, Page, WidgetKind};
-use komponist_model::params::{ParamInfo, ParamKind};
-use komponist_native_clap_sdk::{NativeClapLayout, Panel, PanelV2};
+use komponist_model::params::ParamInfo;
+use komponist_native_clap_sdk::{NativeClapLayout, Panel};
 use nice_plug::prelude::*;
 
 use crate::state::{HexaParams, Snapshot};
@@ -215,54 +214,6 @@ fn engine_event(event: NoteEvent<()>) -> Option<EventKind> {
     })
 }
 
-fn layout(lang: Lang) -> DeviceLayout {
-    let page = |label: String, params: &[ParamInfo]| {
-        let cells = params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| {
-                let col = (index % 12) as u8;
-                let row = (index / 12) as u8;
-                match param.kind {
-                    ParamKind::Bool => Cell::half(
-                        col,
-                        row,
-                        1,
-                        Half::Top,
-                        WidgetKind::ToggleButton,
-                        komponist_model::params::layout::CellParam::Id(param.id.clone()),
-                    ),
-                    _ => Cell::knob(col, row, param.id.clone()),
-                }
-            })
-            .collect();
-        Page {
-            name: label,
-            cols: 12,
-            cells,
-            dividers: Vec::new(),
-        }
-    };
-    let params = infos(lang);
-    let globals = params[..device::FIRST_WIRE as usize]
-        .iter()
-        .chain(&params[device::GLOBAL_BASE as usize..])
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut pages = vec![page(lang.param_hexa_global_page().into(), &globals)];
-    for (pair, fields) in params[device::FIRST_WIRE as usize..device::GLOBAL_BASE as usize]
-        .chunks(2 * device::OpField::COUNT)
-        .enumerate()
-    {
-        let first = 2 * pair + 1;
-        pages.push(page(
-            lang.param_hexa_operator_page(first, first + 1),
-            fields,
-        ));
-    }
-    DeviceLayout { pages }
-}
-
 impl ClapPlugin for HexaPlugin {
     const CLAP_ID: &'static str = "org.klang-studio.komponist.hexa";
     const CLAP_DESCRIPTION: Option<&'static str> = None;
@@ -293,15 +244,7 @@ impl ClapPlugin for HexaPlugin {
 
 impl NativeClapLayout for HexaPlugin {
     fn panel() -> Panel {
-        let mut panel = panel_from_parts(layout, infos(Lang::En), infos(Lang::De));
-        panel.device_labels = Some(komponist_bundled_clap_adapter::device_labels(
-            &komponist_hexa::CATALOG,
-        ));
-        panel
-    }
-
-    fn panel_v2() -> Option<PanelV2> {
-        Some(panel::panel())
+        panel::panel()
     }
 }
 

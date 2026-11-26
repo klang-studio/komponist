@@ -1,9 +1,7 @@
 //! Main-thread reader for the C ABI in docs/clap-device-layout/clap-device-layout.h.
 
-use std::ffi::CStr;
-
 use clap_sys::plugin::clap_plugin;
-use komponist_ipc::native_layout::{LayoutError, MAX_BYTES, NativeLayout};
+use komponist_ipc::native_layout::{EXTENSION_ID, LayoutError, MAX_BYTES, NativeLayout};
 
 const OK: u32 = 0;
 const ABSENT: u32 = 1;
@@ -14,16 +12,16 @@ struct Extension {
     get_layout: Option<unsafe extern "C" fn(*const clap_plugin, *mut u8, u32, *mut u32) -> u32>,
 }
 
-pub(super) fn read(
-    plugin: &clap_plugin,
-    id: &CStr,
-    version: u8,
-) -> Result<Option<(Vec<u8>, NativeLayout)>, LayoutError> {
+pub(super) fn read(plugin: &clap_plugin) -> Result<Option<(Vec<u8>, NativeLayout)>, LayoutError> {
     let Some(extension) = plugin.get_extension else {
         return Ok(None);
     };
     // SAFETY: this is the live initialized instance, queried on its CLAP main thread.
-    let table = unsafe { extension(plugin, id.as_ptr()).cast::<Extension>().as_ref() };
+    let table = unsafe {
+        extension(plugin, EXTENSION_ID.as_ptr())
+            .cast::<Extension>()
+            .as_ref()
+    };
     let Some(table) = table else {
         return Ok(None);
     };
@@ -46,8 +44,5 @@ pub(super) fn read(
         return Err(LayoutError::Invalid("layout copy"));
     }
     let layout = NativeLayout::parse(&bytes)?;
-    if layout.schema_version != version {
-        return Err(LayoutError::Unsupported);
-    }
     Ok(Some((bytes, layout)))
 }

@@ -7,8 +7,8 @@ use komponist_bundled_clap_adapter::{
 use komponist_device_core::Spec;
 use komponist_i18n::Lang;
 use komponist_model::params::ParamInfo;
-use komponist_model::params::layout::{CellParam, DeviceLayout, GraphConfig, WidgetKind};
-use komponist_native_clap_sdk::{GraphLabels, Labels, PanelV2};
+use komponist_model::params::layout::{CellParam, GraphConfig, WidgetKind};
+use komponist_native_clap_sdk::{GraphLabels, Labels, Panel};
 use nice_plug::prelude::*;
 
 struct Presse;
@@ -44,20 +44,6 @@ impl DeviceDefinition for Presse {
     fn choice(info: &'static ParamInfo) -> Option<Binding> {
         (info.id.as_str() == "detector").then(|| Binding::choice::<Detector>(info))
     }
-
-    fn layout(lang: Lang) -> DeviceLayout {
-        let mut grid = Self::SPEC.layout_in(lang).clone();
-        for page in &mut grid.pages {
-            page.cols = 7;
-            page.dividers.clear();
-            page.cells
-                .retain(|cell| !matches!(cell.widget, WidgetKind::Graph | WidgetKind::MeterGr));
-            for cell in &mut page.cells {
-                cell.disabled_by = None;
-            }
-        }
-        grid
-    }
 }
 
 type PressePlugin = Effect<Presse>;
@@ -70,7 +56,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Presse {
             .at_reference_rate(48_000),
     ];
 
-    fn panel_v2() -> Option<PanelV2> {
+    fn authored_panel() -> Option<Panel> {
         let english = Self::SPEC.params_in(Lang::En);
         let mut panel = panel_from_parts(
             |lang| Self::SPEC.layout_in(lang).clone(),
@@ -126,8 +112,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Presse {
                 },
             );
         }
-        Some(PanelV2 {
-            panel,
+        Some(Panel {
             graph_labels,
             reduction_taps,
             canvases: Default::default(),
@@ -135,6 +120,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Presse {
             pad_bank: None,
             parameter_display: parameter_display(english),
             full_band_choice_labels: Default::default(),
+            ..panel
         })
     }
 
@@ -151,27 +137,24 @@ mod layout_contract;
 
 #[cfg(test)]
 #[test]
-fn localized_fixed_layout_matches_the_exported_clap_parameters() {
-    layout_contract::assert_localized_bindings::<PressePlugin>(14);
+fn localized_layout_matches_the_exported_clap_parameters() {
+    layout_contract::assert_localized_bindings::<PressePlugin>(Presse::SPEC.params().len());
 }
 
 #[cfg(test)]
 #[test]
-fn the_v2_panel_carries_the_compressor_controls_and_live_feeds() {
+fn the_panel_carries_the_compressor_controls_and_live_feeds() {
     use serde_json::json;
 
-    let v1 = layout_contract::read_layout::<PressePlugin>();
-    let v2 = layout_contract::read_layout_extension::<PressePlugin>(
-        komponist_native_clap_sdk::EXTENSION_ID_V2,
-    );
-    let ids = &v2["author_ids"];
-    assert_eq!(ids, &v1["author_ids"]);
-    let page = &v2["pages"][0];
+    let layout = layout_contract::read_layout::<PressePlugin>();
+    let ids = &layout["author_ids"];
+    let page = &layout["pages"][0];
     let cells = page["cells"].as_array().unwrap();
     assert_eq!(page["columns"], 8);
     assert_eq!(page["dividers"], json!([2, 4, 6]));
     assert_eq!(cells.len(), 17);
-    let display = |param: &str| &v2["parameter_display"][ids[param].as_u64().unwrap().to_string()];
+    let display =
+        |param: &str| &layout["parameter_display"][ids[param].as_u64().unwrap().to_string()];
     assert_eq!(display("threshold")["unit"], "decibels");
     assert_eq!(display("knee")["unit"], "decibel_width");
     assert_eq!(display("ratio")["unit"], "ratio");
@@ -187,13 +170,6 @@ fn the_v2_panel_carries_the_compressor_controls_and_live_feeds() {
         json!({"level": DETECTOR, "reduction": REDUCTION})
     );
     assert_eq!(cells[16]["reduction_tap"], REDUCTION);
-    assert!(
-        v1["pages"][0]["cells"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|cell| cell.get("disabled_by").is_none())
-    );
 }
 
 #[cfg(test)]
@@ -219,7 +195,7 @@ fn defaults_to_stereo_and_advertises_the_alternate_sidechain_configuration() {
 
         let fallback = get(
             plugin,
-            c"org.klang-studio.komponist.sidechain-fallback/1".as_ptr(),
+            c"org.klang-studio.komponist.sidechain-fallback".as_ptr(),
         )
         .cast::<[u32; 2]>()
         .as_ref()

@@ -5,7 +5,7 @@ use core::ffi::{CStr, c_void};
 use serde::{Deserialize, Serialize};
 
 /// Plugin extension ID. Inventory is read on the main thread at initialization.
-pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.signal-taps/1";
+pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.signal-taps";
 /// Maximum number of streams in one instance.
 pub const MAX_TAPS: usize = 4;
 /// The wire block holds one sample per audio frame per stream.

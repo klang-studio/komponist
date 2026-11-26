@@ -147,19 +147,15 @@ def check_cell(cell, columns, params, locales, default_locale):
 
 
 def validate(layout, params, size):
-    """Check a decoded Layout v1 descriptor against the plugin's CLAP inventory."""
-    integer(size, 1, MAX_BYTES, "layout size outside v1 limit")
+    """Check a decoded fixed-control layout descriptor against the plugin's CLAP inventory."""
+    integer(size, 1, MAX_BYTES, "layout size outside limit")
     require(isinstance(layout, dict), "layout must be an object")
-    version = layout.get("schema_version")
-    require(type(version) is int, "missing or invalid schema version")
-    if version != 1:
-        raise UnsupportedLayout(f"unsupported layout version {version}")
     capabilities = sequence(layout.get("required_capabilities", []), 0, 8, "invalid capabilities")
     require(all(isinstance(cap, str) and CAPABILITY.fullmatch(cap) for cap in capabilities),
             "invalid capability name")
     require(len(set(capabilities)) == len(capabilities), "duplicate capability")
     if capabilities:
-        raise UnsupportedLayout("required capabilities unavailable in v1")
+        raise UnsupportedLayout("capabilities outside the fixed-control fixture")
 
     tags = sequence(layout.get("locales"), 1, 8, "invalid locale count")
     require(all(isinstance(tag, str) and LOCALE.fullmatch(tag) for tag in tags),
@@ -179,9 +175,9 @@ def validate(layout, params, size):
         require(key not in page_keys, "duplicate page key")
         page_keys.add(key)
         label_map(page.get("labels"), locales, default)
-        columns = integer(page.get("columns"), 1, 12, "invalid column count")
+        columns = integer(page.get("columns"), 1, 14, "invalid column count")
         occupied = set()
-        for cell in sequence(page.get("cells"), 1, 72, "invalid cell count"):
+        for cell in sequence(page.get("cells"), 1, 84, "invalid cell count"):
             slots = check_cell(cell, columns, inventory, locales, default)
             require(occupied.isdisjoint(slots), "overlapping cells")
             occupied.update(slots)

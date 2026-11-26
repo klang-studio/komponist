@@ -2,7 +2,7 @@
 
 This workspace contains a source-pinned [Rust SDK](author/) and a [stereo gain example](example/).
 The example is an ordinary CLAP audio effect. It reports Gain and Mix through the standard CLAP
-parameter extension and supplies a localized native panel through the [device-layout v1
+parameter extension and supplies a localized native panel through the [device-layout
 extension](../../docs/clap-device-layout/README.md). A CLAP host can load the bundle as usual.
 Komponist runs DSP in its plugin bridge and draws the validated panel in the app.
 
@@ -127,7 +127,7 @@ to its nice-plug author ID, such as `layout::knob(0, 0, "gain")`.
 
 In `ClapPlugin::clap_custom_extension`, return `extension::<Self>(id)` and export the CLAP
 entry with `nice_export_clap!`. The SDK resolves the author strings through the live
-wrapper's parameter mapping and validates the resulting v1 metadata against the standard
+wrapper's parameter mapping and validates the resulting metadata against the standard
 CLAP parameter inventory.
 [Example plugin](example/src/lib.rs), [bilingual panel](example/src/native.rs).
 
@@ -138,13 +138,13 @@ automation. Keep page keys stable for layout compatibility. When you update the 
 compare the CLAP IDs reported by an independent host to those from your previous release. The
 workspace's `validate` command is specific to Native Gain Example. Its scan code shows how to
 check a bundle against your own expected plugin descriptor, parameter IDs and layout. Resolve ID
-collisions before a first release and plan an explicit migration before changing an existing ID.
+collisions before a first release.
 
-Implement `panel_v2()` to add [graphs and canvases](../../docs/clap-device-layout/layout-v2.md).
-Supply localized names and descriptions for each graph and canvas. For a canvas,
-implement `display::DisplaySource` on the instance data and register `display::extension`.
-The example publishes both layout versions and draws the current gain response.
-Run the example's bundle scanner to verify both layouts and the display callback.
+Add [graphs and canvases](../../docs/clap-device-layout/layout.md) to the panel grid and supply
+their localized names and descriptions in `Panel::graph_labels` and `Panel::canvases`.
+For a canvas, implement `display::DisplaySource` on the instance data and register
+`display::extension`. The example draws the current gain response. Run the example's bundle
+scanner to verify the layout and display callback.
 
 ### Optional sidechain fallback
 
@@ -152,7 +152,7 @@ A device with a separate auxiliary audio port can call the SDK's
 `sidechain_fallback_to_main::<AUX_CONFIG_ID>(id)` from `ClapPlugin::clap_custom_extension`.
 The ID must match the standard CLAP audio ports configuration that exposes the auxiliary
 input. The host can then feed the main signal to the auxiliary input whenever the sidechain
-has no connected source. [Sidechain fallback v1](../../docs/clap-device-layout/sidechain-fallback.md)
+has no connected source. [Sidechain fallback](../../docs/clap-device-layout/sidechain-fallback.md)
 
 ### Choice controls
 
@@ -163,7 +163,7 @@ standard CLAP value text for every choice. A plain stepped integer reports only 
 flag, so use a numeric control for it.
 
 Bind the cell to the enum's author ID and add a matching entry in `Panel::choice_labels`.
-V1 allows 2–16 choices. Supply one label map per advertised integer value, in ascending
+A choice control supports 2–16 choices. Supply one label map per advertised integer value, in ascending
 order from the CLAP minimum to its maximum. Each choice needs a label for `default_locale`. For example, for a `mode`
 enum with CLAP values 0 and 1 and English and German labels:
 
@@ -210,7 +210,7 @@ files, and scans the extracted bundle. With the default Cargo target directory, 
 and JSON metadata are in `target/native-clap-dist/`.
 
 The JSON records the discovered CLAP plugin ID and version, the platform target, the layout
-extension and schema version, the source revision and license, and the archive name, size
+extension ID, the source revision and license, and the archive name, size
 in bytes and SHA-256. Keep the JSON beside the archive it describes.
 
 [#59](https://github.com/klang-studio/komponist/issues/59) owns the community repository and

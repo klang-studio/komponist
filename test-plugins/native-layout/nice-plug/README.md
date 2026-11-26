@@ -1,6 +1,6 @@
 # nice-plug CLAP layout prototype
 
-Spike for [komponist #180](https://github.com/klang-studio/komponist/issues/180). The prototype is a headless stereo gain effect. A regular CLAP host can enumerate its parameters. A host that supports `org.klang-studio.komponist.device-layout/1` can also read a two-knob layout through the C ABI.
+Spike for [komponist #180](https://github.com/klang-studio/komponist/issues/180). The prototype is a headless stereo gain effect. A regular CLAP host can enumerate its parameters. A host that supports `org.klang-studio.komponist.device-layout` can also read a two-knob layout through the C ABI.
 
 ## Run the check
 
@@ -23,7 +23,7 @@ Each variant has a `nice-layout-prototype.clap` binary and an `ids.json` report.
 | `reordered` | Mix = 108124, Gain = 3165055 | Same descriptor |
 | `collision` | Mix = 2112 at both indexes | `ABSENT`, zero bytes |
 
-The Rust host loads each binary with `libloading` and the published CLAP types from `clap-sys`. It drives the exported entry/factory/instance lifecycle, calls `clap.params` and then calls the versioned layout extension on the same instance. It checks IDs against the parameter names reported by CLAP, verifies a missing major returns null, and checks the size query, short buffer, exact copy, output guard byte and invalid pointer combinations defined in the v1 prototype. The rebuild comparison includes the actual CLAP parameter metadata and the parsed layout document.
+The Rust host loads each binary with `libloading` and the published CLAP types from `clap-sys`. It drives the exported entry/factory/instance lifecycle, calls `clap.params` and then calls the layout extension on the same instance. It checks IDs against the parameter names reported by CLAP, and checks the size query, short buffer, exact copy, output guard byte and invalid pointer combinations defined by the layout contract. The rebuild comparison includes the actual CLAP parameter metadata and the parsed layout document.
 
 ## Wrapper patch
 
@@ -34,8 +34,8 @@ The patch adds two opt-in APIs at the pinned nice-plug revision.
 
 The pinned wrapper's CLAP parameter inventory enumerates `param_hashes` and resolves metadata by the same hash. The prototype's layout obtains its wire IDs from these existing maps. It avoids a second implementation of the hash, whose behavior is shared with nice-plug's VST3 wrapper. The colliding strings `Aa` and `BB` both reach 2112. Existing nice-plug lookup behavior surfaces the last metadata entry under both indexes in that case. The prototype rejects the entire native descriptor before it can bind any controls.
 
-For a production SDK, prefer a safe author-facing adapter that builds from the wrapper's canonical mapping during initialization, validates the complete author ID set, and stores the immutable bytes for the v1 callback. The low-level hook can support that adapter without taking a komponist dependency in nice-plug. Define and verify the supported path for existing layouts, including official nice-plug support or a maintained fork. Further nice-plug revisions should run the same CLAP checks and compare against a released plugin's recorded IDs. Changing an author ID or its nested parameter prefix changes the identity used by automation. Source order and localized labels can change without changing the author IDs.
+For a production SDK, prefer a safe author-facing adapter that builds from the wrapper's canonical mapping during initialization, validates the complete author ID set, and stores the immutable bytes for the layout callback. The low-level hook can support that adapter without taking a komponist dependency in nice-plug. Define and verify the supported path for existing layouts, including official nice-plug support or a maintained fork. Further nice-plug revisions should run the same CLAP checks and compare against a released plugin's recorded IDs. Changing an author ID or its nested parameter prefix changes the identity used by automation. Source order and localized labels can change without changing the author IDs.
 
-The pinned CLAP wrapper sets `CLAP_PARAM_IS_STEPPED` for a stepped `EnumParam` but does not publish `CLAP_PARAM_IS_ENUM`. The v1 `segment` and `dropdown` controls require a typed CLAP enumeration, so [#182](https://github.com/klang-studio/komponist/issues/182) must verify or add that flag in the SDK's supported wrapper before enabling those controls. CLAP remains authoritative for numeric values and flags. A step count or a set of labels cannot establish enum semantics.
+The pinned CLAP wrapper sets `CLAP_PARAM_IS_STEPPED` for a stepped `EnumParam` but does not publish `CLAP_PARAM_IS_ENUM`. The `segment` and `dropdown` controls require a typed CLAP enumeration, so [#182](https://github.com/klang-studio/komponist/issues/182) must verify or add that flag in the SDK's supported wrapper before enabling those controls. CLAP remains authoritative for numeric values and flags. A step count or a set of labels cannot establish enum semantics.
 
 This spike exercises binary discovery on Linux x86-64. It leaves cross-platform bundling, SDK distribution, app-side validation and bridge integration to their respective work items.

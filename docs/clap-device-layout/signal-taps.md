@@ -2,8 +2,8 @@
 
 A plugin can expose mono samples for a spectrum, detector levels in dBFS,
 gain reduction in positive dB, an audio asset's playhead, or pad activity. The host draws
-these layers as described by [layout v2](layout-v2.md). The [C header](clap-signal-taps.h) defines
-the optional `org.klang-studio.komponist.signal-taps/1` extension.
+these layers as described by [device layout](layout.md). The [C header](clap-signal-taps.h) defines
+the optional `org.klang-studio.komponist.signal-taps` extension.
 
 The host calls `count` and `info` on the main thread after initialization.
 The ordered inventory contains one to four streams and is fixed for the

@@ -16,8 +16,8 @@ use komponist_device_core::{CatalogSpec, Dsp, SAMPLE_RATES, Spec};
 use komponist_i18n::Lang;
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 use komponist_native_clap_sdk::{
-    DeviceLayout, DisplayScale, DisplayUnit, NativeClapLayout, PageLabels, Panel, PanelV2,
-    ParameterDisplay, PluginLabels,
+    DeviceLayout, DisplayScale, DisplayUnit, NativeClapLayout, PageLabels, Panel, ParameterDisplay,
+    PluginLabels,
 };
 use nice_plug::prelude::*;
 
@@ -51,13 +51,10 @@ pub trait DeviceDefinition: Send + 'static {
         None
     }
 
-    /// Override only when a device has additional controls outside the public v1 layout.
+    /// Override only when a device has additional controls for the exported grid.
     fn layout(lang: Lang) -> DeviceLayout {
         Self::SPEC.layout_in(lang).clone()
     }
-
-    /// Adjust labels when a native device card uses view switches outside public v1.
-    fn configure_panel(_panel: &mut Panel) {}
 }
 
 /// Builds the DSP for an effect or instrument.
@@ -65,8 +62,8 @@ pub trait AudioDefinition: DeviceDefinition {
     /// Named streams backed by the DSP's audio tap or gain-reduction reporting.
     const SIGNAL_TAPS: &'static [signal_taps::Descriptor] = &[];
 
-    /// An authored version 2 panel, when the device supplies one.
-    fn panel_v2() -> Option<PanelV2> {
+    /// An authored panel, when the device supplies more than the standard grid.
+    fn authored_panel() -> Option<Panel> {
         None
     }
 
@@ -276,14 +273,16 @@ impl<T: AudioDefinition> ClapPlugin for Effect<T> {
 
 impl<T: AudioDefinition> NativeClapLayout for Effect<T> {
     fn panel() -> Panel {
-        panel_for::<T>()
+        audio_panel_for::<T>()
     }
+}
 
-    fn panel_v2() -> Option<PanelV2> {
-        let mut panel = T::panel_v2()?;
-        panel.panel.device_labels = Some(device_labels(&T::SPEC.catalog));
-        Some(panel)
-    }
+fn audio_panel_for<T: AudioDefinition>() -> Panel {
+    let Some(mut panel) = T::authored_panel() else {
+        return panel_for::<T>();
+    };
+    panel.device_labels = Some(device_labels(&T::SPEC.catalog));
+    panel
 }
 
 /// Describe supported physical parameters using the normalized CLAP adapter's display domains.
@@ -333,7 +332,6 @@ pub fn panel_for<T: DeviceDefinition>() -> Panel {
         T::SPEC.params_in(Lang::De),
     );
     panel.device_labels = Some(device_labels(&T::SPEC.catalog));
-    T::configure_panel(&mut panel);
     panel
 }
 
@@ -404,6 +402,6 @@ pub fn panel_from_parts(
         pages,
         parameter_labels,
         choice_labels,
-        device_labels: None,
+        ..Panel::default()
     }
 }

@@ -1,6 +1,6 @@
 //! Common native-layout ABI checks for the bundled plugins.
 
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::{c_char, c_void};
 use std::ptr;
 use std::sync::Arc;
 
@@ -55,11 +55,11 @@ struct LayoutExtension {
     get_layout: unsafe extern "C" fn(*const clap_plugin, *mut u8, u32, *mut u32) -> u32,
 }
 
-fn layout_bytes(instance: &Instance, extension_id: &CStr) -> Vec<u8> {
+fn layout_bytes(instance: &Instance) -> Vec<u8> {
     let plugin = instance.0;
     // SAFETY: The plugin is initialized and this table follows the published C layout.
     unsafe {
-        let extension = ((*plugin).get_extension.unwrap())(plugin, extension_id.as_ptr());
+        let extension = ((*plugin).get_extension.unwrap())(plugin, EXTENSION_ID.as_ptr());
         assert!(!extension.is_null());
         let layout = &*extension.cast::<LayoutExtension>();
         let mut size = 0;
@@ -81,14 +81,10 @@ fn layout_bytes(instance: &Instance, extension_id: &CStr) -> Vec<u8> {
 
 /// Check the exported native layout on two instances.
 pub(crate) fn read_layout<P: NativeClapLayout>() -> serde_json::Value {
-    read_layout_extension::<P>(EXTENSION_ID)
-}
-
-pub(crate) fn read_layout_extension<P: NativeClapLayout>(extension_id: &CStr) -> serde_json::Value {
     let first = Instance::new::<P>();
     let second = Instance::new::<P>();
-    let bytes = layout_bytes(&first, extension_id);
-    assert_eq!(bytes, layout_bytes(&second, extension_id));
+    let bytes = layout_bytes(&first);
+    assert_eq!(bytes, layout_bytes(&second));
     let layout: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     for locale in ["en", "de"] {
         for label in ["names", "descriptions"] {
@@ -107,12 +103,6 @@ pub(crate) fn read_layout_extension<P: NativeClapLayout>(extension_id: &CStr) ->
 pub(crate) fn assert_localized_bindings<P: NativeClapLayout>(count: usize) {
     let layout = read_layout::<P>();
     assert_eq!(layout["locales"], serde_json::json!(["en", "de"]));
-    let ids: std::collections::BTreeSet<_> = layout["pages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .flat_map(|page| page["cells"].as_array().unwrap())
-        .map(|cell| cell["param_id"].as_u64().unwrap())
-        .collect();
+    let ids = layout["author_ids"].as_object().unwrap();
     assert_eq!(ids.len(), count);
 }

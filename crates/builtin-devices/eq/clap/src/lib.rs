@@ -5,11 +5,10 @@ use komponist_bundled_clap_adapter::{
     Binding, DeviceDefinition, Effect, panel_from_parts, parameter_display,
 };
 use komponist_device_core::Spec;
-use komponist_device_core::layout::{knob, param, toggle};
 use komponist_i18n::Lang;
-use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, Page, WidgetKind};
+use komponist_model::params::layout::CellParam;
 use komponist_model::params::{ParamInfo, ParamKind};
-use komponist_native_clap_sdk::{GraphLabels, PanelV2};
+use komponist_native_clap_sdk::{GraphLabels, Panel};
 use nice_plug::prelude::*;
 
 struct Eq;
@@ -52,49 +51,6 @@ impl DeviceDefinition for Eq {
             .ends_with("_type")
             .then(|| Binding::choice::<Shape>(info))
     }
-
-    fn layout(lang: Lang) -> DeviceLayout {
-        // The v1 layout uses fixed bindings; each pair of bands has its own page.
-        let prefix = match lang {
-            Lang::De => "Bänder",
-            _ => "Bands",
-        };
-        DeviceLayout {
-            pages: (1..=komponist_eq::BANDS)
-                .step_by(2)
-                .map(|first| {
-                    let mut cells = Vec::new();
-                    for (row, band) in (first..=first + 1).enumerate() {
-                        let row = row as u8;
-                        let key = |suffix: &str| format!("b{band}_{suffix}");
-                        cells.extend([
-                            toggle(0, row, 2, Half::Top, param(&key("on"))),
-                            Cell::half(
-                                0,
-                                row,
-                                2,
-                                Half::Bottom,
-                                WidgetKind::Dropdown,
-                                param(&key("type")),
-                            ),
-                            knob(2, row, &key("freq")),
-                            knob(3, row, &key("gain")),
-                            knob(4, row, &key("q")),
-                        ]);
-                    }
-                    if first == 1 {
-                        cells.push(knob(2, 2, "out"));
-                    }
-                    Page {
-                        name: format!("{prefix} {first}–{}", first + 1),
-                        cols: 5,
-                        cells,
-                        dividers: Vec::new(),
-                    }
-                })
-                .collect(),
-        }
-    }
 }
 
 type EqPlugin = Effect<Eq>;
@@ -107,7 +63,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Eq {
         16_384,
     )];
 
-    fn panel_v2() -> Option<PanelV2> {
+    fn authored_panel() -> Option<Panel> {
         let en = Self::SPEC.params_in(Lang::En);
         let de = Self::SPEC.params_in(Lang::De);
         let mut panel = panel_from_parts(|lang| Self::SPEC.layout_in(lang).clone(), en, de);
@@ -161,8 +117,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Eq {
                 Some((en.id.clone(), choices))
             })
             .collect();
-        Some(PanelV2 {
-            panel,
+        Some(Panel {
             graph_labels: [((0, index), graphs)].into(),
             canvases: Default::default(),
             reduction_taps: Default::default(),
@@ -170,6 +125,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Eq {
             headings: Default::default(),
             parameter_display: parameter_display(en),
             full_band_choice_labels,
+            ..panel
         })
     }
 
@@ -186,8 +142,8 @@ mod layout_contract;
 
 #[cfg(test)]
 #[test]
-fn localized_fixed_layout_matches_the_exported_clap_parameters() {
-    layout_contract::assert_localized_bindings::<EqPlugin>(31);
+fn localized_layout_matches_the_exported_clap_parameters() {
+    layout_contract::assert_localized_bindings::<EqPlugin>(Eq::SPEC.params().len());
 }
 
 #[cfg(test)]
@@ -198,14 +154,10 @@ fn choice_bindings_match_the_model() {
 
 #[cfg(test)]
 #[test]
-fn the_v2_panel_preserves_the_fixed_parameter_ids_and_binds_all_bands() {
-    let v1 = layout_contract::read_layout::<EqPlugin>();
-    let v2 = layout_contract::read_layout_extension::<EqPlugin>(
-        komponist_native_clap_sdk::EXTENSION_ID_V2,
-    );
-    let ids = &v2["author_ids"];
-    assert_eq!(ids, &v1["author_ids"]);
-    let page = &v2["pages"][0];
+fn the_panel_preserves_the_fixed_parameter_ids_and_binds_all_bands() {
+    let layout = layout_contract::read_layout::<EqPlugin>();
+    let ids = &layout["author_ids"];
+    let page = &layout["pages"][0];
     assert_eq!(page["columns"], 6);
     let cells = page["cells"].as_array().unwrap();
     assert_eq!(cells.len(), 8);
@@ -235,7 +187,7 @@ fn the_v2_panel_preserves_the_fixed_parameter_ids_and_binds_all_bands() {
             lang.choice_eq_type_low_cut()
         );
     }
-    let freq = &v2["parameter_display"][ids["b1_freq"].as_u64().unwrap().to_string()];
+    let freq = &layout["parameter_display"][ids["b1_freq"].as_u64().unwrap().to_string()];
     assert_eq!(freq["unit"], "hertz");
     assert_eq!(freq["scale"], "logarithmic");
 }

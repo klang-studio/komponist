@@ -75,11 +75,8 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     );
     wait_for_verified(&mut app, hexa, HEXA, force_bridge);
     let hexa_layout = app.engine().host().native_layout(hexa).unwrap();
-    let native_routing = hexa_layout.schema_version == 2;
-    if native_routing {
-        assert_eq!(hexa_layout.pages.len(), 3);
-        assert!(hexa_layout.has_canvas());
-    }
+    assert_eq!(hexa_layout.pages.len(), 3);
+    assert!(hexa_layout.has_canvas());
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
     let mut h = harness(app);
     h.get_by_role_and_label(Role::Button, &lang.devices_preset_name(PIANO));
@@ -91,19 +88,17 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
             id: algorithm,
             value: 7.0,
         }));
-    if native_routing {
-        step_until(h.state_mut(), "Hexa reports algorithm 7 routing", |app| {
-            app.engine()
-                .host()
-                .device_display(hexa)
-                .is_some_and(|display| {
-                    display
-                        .fm_topologies
-                        .iter()
-                        .any(|frame| frame.algorithm == Some(7) && frame.outputs == 0b000101)
-                })
-        });
-    }
+    step_until(h.state_mut(), "Hexa reports algorithm 7 routing", |app| {
+        app.engine()
+            .host()
+            .device_display(hexa)
+            .is_some_and(|display| {
+                display
+                    .fm_topologies
+                    .iter()
+                    .any(|frame| frame.algorithm == Some(7) && frame.outputs == 0b000101)
+            })
+    });
     h.run_steps(3);
     h.get_by_role_and_label(Role::Group, &lang.ui_fm_algorithm(7));
     snapshot(&mut h, "hexa-operators", lang);
@@ -131,7 +126,6 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     let volt = newest_instrument(h.state()).id;
     wait_for_verified(h.state_mut(), volt, VOLT, force_bridge);
     let layout = h.state().engine().host().native_layout(volt).unwrap();
-    assert_eq!(layout.schema_version, 2);
     assert_eq!(layout.pages.len(), 3);
 
     let target = h.state().project().find_device(volt).unwrap().2;
@@ -342,7 +336,6 @@ fn check_surf(h: &mut Harness<'_, App>, lang: Lang, force_bridge: bool) {
     let surf = newest_instrument(h.state()).id;
     wait_for_verified(h.state_mut(), surf, SURF, force_bridge);
     let layout = h.state().engine().host().native_layout(surf).unwrap();
-    assert_eq!(layout.schema_version, 2);
     assert_eq!(layout.pages.len(), 3);
     let a = alias(h.state(), surf, "osc_a_pos");
     let b = alias(h.state(), surf, "osc_b_pos");

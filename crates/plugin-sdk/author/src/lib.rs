@@ -1,7 +1,7 @@
 //! Source-pinned adaptor from komponist device layouts to the native CLAP layout ABI.
 //!
 //! The layout uses nice-plug author parameter IDs. The adaptor resolves them through the
-//! wrapper's live ID map and validates the resulting bytes with the same v1 validator as the host.
+//! wrapper's live ID map and validates the resulting bytes with the same validator as the host.
 
 #![deny(missing_docs)]
 
@@ -27,9 +27,8 @@ use clap_sys::{
 use komponist_ipc::control::{ParamInfo, param_flags};
 use komponist_ipc::native_layout::{
     CAP_CELL_SELECTIONS, CAP_CONDITIONAL_CONTROLS, CAP_EQ_BAND_CONTROLS, CAP_FM_TOPOLOGY,
-    CAP_PAD_BANK, CAP_PANEL_SELECTIONS, CAP_PARAMETER_DISPLAY, CAP_SOURCE_FRACTION_TRIM,
-    EXTENSION_V1, EXTENSION_V2, GraphKind, MAX_AUTHOR_IDS, MAX_BYTES, NativeLayout,
-    valid_author_id,
+    CAP_PAD_BANK, CAP_PANEL_SELECTIONS, CAP_PARAMETER_DISPLAY, CAP_SOURCE_FRACTION_TRIM, GraphKind,
+    MAX_AUTHOR_IDS, MAX_BYTES, NativeLayout, valid_author_id,
 };
 use komponist_model::params::context::{BAND, placeholders};
 use komponist_model::params::layout::validate;
@@ -52,14 +51,10 @@ pub use komponist_model::params::{
     layout::{Cell, CellParam, DeviceLayout, GraphBinding, GraphConfig, Half, Page, WidgetKind},
 };
 
-/// Extension ID from the v1 C header.
-pub const EXTENSION_ID: &CStr = EXTENSION_V1;
-
-/// Extension ID for version 2 of the layout contract.
-pub const EXTENSION_ID_V2: &CStr = EXTENSION_V2;
+/// ID of the native device layout extension.
+pub use komponist_ipc::native_layout::EXTENSION_ID;
 
 const OK: u32 = 0;
-const ABSENT: u32 = 1;
 const BUFFER_TOO_SMALL: u32 = 2;
 const ERROR: u32 = 3;
 
@@ -77,12 +72,13 @@ pub struct PageLabels {
 }
 
 /// A device core grid and its localized presentation. Cell parameters use nice-plug author IDs.
+#[derive(Default)]
 pub struct Panel {
     /// Fallback locale for page and parameter labels.
     pub default_locale: String,
     /// Declared locales, including the configured default.
     pub locales: Vec<String>,
-    /// The device core grid. V1 accepts fixed bindings. In v2, a `CellParam::Choice`
+    /// The device core grid. A `CellParam::Choice`
     /// or `CellParam::Select` selects bindings for control and graph author-ID
     /// templates. Numeric selectors with the same key share their selection across
     /// pages.
@@ -90,14 +86,28 @@ pub struct Panel {
     /// Page labels in the same order as the pages of the grid.
     pub pages: Vec<PageLabels>,
     /// Optional translated labels keyed by nice-plug author parameter ID, or by the
-    /// context key of a v2 selector.
+    /// context key of a selector.
     pub parameter_labels: BTreeMap<ParamId, Labels>,
     /// Labels for segments and dropdowns, keyed by author ID and ordered by the CLAP plain value.
-    /// A v2 selector uses its context key and option order. Each choice needs a label
+    /// A selector uses its context key and option order. Each choice needs a label
     /// in the default locale.
     pub choice_labels: BTreeMap<ParamId, Vec<Labels>>,
     /// Optional localized names and descriptions shown in the device catalog.
     pub device_labels: Option<PluginLabels>,
+    /// Labels for every graph cell in the grid.
+    pub graph_labels: BTreeMap<(usize, usize), GraphLabels>,
+    /// The metadata of every canvas cell, by zero-based page and cell indices.
+    pub canvases: BTreeMap<(usize, usize), Canvas>,
+    /// Signal tap keys for gain-reduction meter cells, by zero-based page and cell indices.
+    pub reduction_taps: BTreeMap<(usize, usize), String>,
+    /// Select pages from a pad grid instead of from the panel header.
+    pub pad_bank: Option<PadBank>,
+    /// Section labels keyed by zero-based page index.
+    pub headings: BTreeMap<usize, Vec<Heading>>,
+    /// Physical ranges and units of normalized CLAP parameters, keyed by author ID.
+    pub parameter_display: BTreeMap<ParamId, ParameterDisplay>,
+    /// Optional full names for a selected band's compact choice labels.
+    pub full_band_choice_labels: BTreeMap<ParamId, Vec<Labels>>,
 }
 
 /// Localized presentation alongside the standard CLAP descriptor.
@@ -108,7 +118,7 @@ pub struct PluginLabels {
     pub descriptions: Labels,
 }
 
-/// Localized labels required for each graph in a version 2 panel.
+/// Localized labels required for each graph in a panel.
 pub struct GraphLabels {
     /// Accessible name and default visible title, including the default locale.
     /// The SDK expands `{selection}` to the localized option for a following graph.
@@ -143,39 +153,14 @@ pub struct PadBank {
     pub follow_param: Option<ParamId>,
 }
 
-/// A version 2 panel with display bindings keyed by zero-based page and cell indices.
-pub struct PanelV2 {
-    /// Layout grid, regular control labels and graph bindings.
-    pub panel: Panel,
-    /// Labels for every graph cell in the grid.
-    pub graph_labels: BTreeMap<(usize, usize), GraphLabels>,
-    /// The metadata of every canvas cell, by zero-based page and cell indices.
-    pub canvases: BTreeMap<(usize, usize), Canvas>,
-    /// Signal tap keys for gain-reduction meter cells, by zero-based page and cell indices.
-    pub reduction_taps: BTreeMap<(usize, usize), String>,
-    /// Select pages from a pad grid instead of from the panel header.
-    pub pad_bank: Option<PadBank>,
-    /// Section labels keyed by zero-based page index.
-    pub headings: BTreeMap<usize, Vec<Heading>>,
-    /// Physical ranges and units of normalized CLAP parameters, keyed by author ID.
-    pub parameter_display: BTreeMap<ParamId, ParameterDisplay>,
-    /// Optional full names for a selected band's compact choice labels.
-    pub full_band_choice_labels: BTreeMap<ParamId, Vec<Labels>>,
-}
-
 /// A nice-plug plugin supplying an immutable native layout.
 pub trait NativeClapLayout: ClapPlugin {
     /// Returns the panel definition. Each call must produce the same panel for a plugin type.
     /// The host invokes this on its control thread after successful CLAP initialization.
     fn panel() -> Panel;
-
-    /// Optionally supplies a separate version 2 panel with declarative graphs.
-    fn panel_v2() -> Option<PanelV2> {
-        None
-    }
 }
 
-/// The layout could not be represented as native CLAP v1 metadata.
+/// The layout could not be represented as native CLAP metadata.
 #[derive(Debug)]
 pub struct LayoutError(String);
 
@@ -196,19 +181,16 @@ fn error(message: impl Into<String>) -> LayoutError {
 /// Call this from `ClapPlugin::clap_custom_extension`. Standard extensions still come
 /// from the nice-plug wrapper.
 pub fn extension<P: NativeClapLayout>(id: &CStr) -> *const c_void {
-    let table: &'static LayoutExtension = match id {
-        id if id == EXTENSION_ID_V2 => &LayoutExtension {
-            get_layout: get_layout::<P, true>,
-        },
-        id if id == EXTENSION_ID => &LayoutExtension {
-            get_layout: get_layout::<P, false>,
-        },
-        _ => return ptr::null(),
+    if id != EXTENSION_ID {
+        return ptr::null();
+    }
+    let table: &'static LayoutExtension = &LayoutExtension {
+        get_layout: get_layout::<P>,
     };
     ptr::from_ref(table).cast()
 }
 
-/// Advertises the public v1 sidechain fallback to the main input.
+/// Advertises the public sidechain fallback to the main input.
 ///
 /// `AUX_CONFIGURATION_ID` is the standard CLAP audio ports config with a main stereo input
 /// and an auxiliary sidechain. Pass `u32::MAX` if the default configuration already has one.
@@ -226,7 +208,7 @@ pub fn sidechain_fallback_to_main<const AUX_CONFIGURATION_ID: u32>(id: &CStr) ->
     ptr::from_ref(table).cast()
 }
 
-/// Compiles a panel to bounded UTF-8 v1 JSON. Call on the CLAP main thread.
+/// Compiles a panel to bounded UTF-8 JSON. Call on the CLAP main thread.
 ///
 /// # Safety
 ///
@@ -235,27 +217,6 @@ pub fn sidechain_fallback_to_main<const AUX_CONFIGURATION_ID: u32>(id: &CStr) ->
 pub unsafe fn compile<P: ClapPlugin>(
     plugin: *const clap_plugin,
     panel: &Panel,
-) -> Result<Vec<u8>, LayoutError> {
-    // SAFETY: The caller supplies the exact live wrapper for P.
-    unsafe { compile_layout::<P>(plugin, panel, None) }
-}
-
-/// Compiles a panel to bounded UTF-8 v2 JSON. Call on the CLAP main thread.
-/// # Safety
-/// `plugin` must point to a live, successfully initialized instance of the nice-plug wrapper
-/// for `P`, with its standard CLAP parameter extension available.
-pub unsafe fn compile_v2<P: ClapPlugin>(
-    plugin: *const clap_plugin,
-    panel: &PanelV2,
-) -> Result<Vec<u8>, LayoutError> {
-    // SAFETY: The caller supplies the exact live wrapper for P.
-    unsafe { compile_layout::<P>(plugin, &panel.panel, Some(panel)) }
-}
-
-unsafe fn compile_layout<P: ClapPlugin>(
-    plugin: *const clap_plugin,
-    panel: &Panel,
-    v2: Option<&PanelV2>,
 ) -> Result<Vec<u8>, LayoutError> {
     if panel.grid.pages.len() != panel.pages.len() {
         return Err(error("every grid page needs a key and localized labels"));
@@ -286,9 +247,6 @@ unsafe fn compile_layout<P: ClapPlugin>(
     }
     let mut context = ParamContext::new().with(BAND, 1);
     for (page_index, (page, text)) in panel.grid.pages.iter().zip(&panel.pages).enumerate() {
-        if v2.is_none() && !page.dividers.is_empty() {
-            return Err(error("native CLAP v1 has no grid dividers"));
-        }
         let selectors: BTreeMap<_, _> = page
             .cells
             .iter()
@@ -311,14 +269,14 @@ unsafe fn compile_layout<P: ClapPlugin>(
         for (cell_index, cell) in page.cells.iter().enumerate() {
             let index = (page_index, cell_index);
             if cell.widget == WidgetKind::PadGrid {
-                if v2.and_then(|v2| v2.pad_bank.as_ref()).is_none()
+                if panel.pad_bank.as_ref().is_none()
                     || cell.half.is_some()
                     || cell.carrier.is_some()
                     || cell.disabled_by.is_some()
                     || cell.param != CellParam::None
                 {
                     return Err(error(
-                        "a v2 pad grid requires a pad bank and an unbound full cell",
+                        "a pad grid requires a pad bank and an unbound full cell",
                     ));
                 }
                 cells.push(json!({
@@ -328,9 +286,10 @@ unsafe fn compile_layout<P: ClapPlugin>(
                 continue;
             }
             if cell.widget == WidgetKind::MeterGr {
-                let reduction_tap = v2
-                    .and_then(|panel| panel.reduction_taps.get(&index))
-                    .ok_or_else(|| error("missing v2 gain-reduction meter tap"))?;
+                let reduction_tap = panel
+                    .reduction_taps
+                    .get(&index)
+                    .ok_or_else(|| error("missing gain-reduction meter tap"))?;
                 if cell.half.is_some()
                     || cell.carrier.is_some()
                     || cell.disabled_by.is_some()
@@ -347,9 +306,10 @@ unsafe fn compile_layout<P: ClapPlugin>(
                 continue;
             }
             if cell.widget == WidgetKind::Canvas {
-                let canvas = v2
-                    .and_then(|panel| panel.canvases.get(&index))
-                    .ok_or_else(|| error("missing v2 canvas metadata"))?;
+                let canvas = panel
+                    .canvases
+                    .get(&index)
+                    .ok_or_else(|| error("missing canvas metadata"))?;
                 if cell.half.is_some()
                     || cell.carrier.is_some()
                     || cell.disabled_by.is_some()
@@ -365,9 +325,11 @@ unsafe fn compile_layout<P: ClapPlugin>(
                 }));
                 continue;
             }
-            if let CellParam::Graph(binding) = &cell.param
-                && let Some(labels) = v2.and_then(|panel| panel.graph_labels.get(&index))
-            {
+            if let CellParam::Graph(binding) = &cell.param {
+                let labels = panel
+                    .graph_labels
+                    .get(&index)
+                    .ok_or_else(|| error("missing graph labels"))?;
                 let selector =
                     selector_for(binding.bind.iter().map(|(_, id)| id.as_str()), &selectors)?;
                 let choice_labels =
@@ -388,8 +350,8 @@ unsafe fn compile_layout<P: ClapPlugin>(
                 continue;
             }
             if let Some((key, options)) = selector_options(&cell.param) {
-                if v2.is_none() || cell.carrier.is_some() || cell.disabled_by.is_some() {
-                    return Err(error("native selectors require an unbound v2 cell"));
+                if cell.carrier.is_some() || cell.disabled_by.is_some() {
+                    return Err(error("native selectors require an unbound cell"));
                 }
                 let widget = match (cell.widget, cell.half) {
                     (WidgetKind::Segment, Some(_)) => "selector",
@@ -443,7 +405,7 @@ unsafe fn compile_layout<P: ClapPlugin>(
                 panel_selections |= shared || options.len() > 4 || widget == "column_selector";
                 continue;
             }
-            let widget = widget_name(cell.widget, v2.is_some())?;
+            let widget = widget_name(cell.widget)?;
             let mut wire_cell = json!({
                 "widget": widget,
                 "col": cell.col,
@@ -468,9 +430,7 @@ unsafe fn compile_layout<P: ClapPlugin>(
                 CellParam::Template(template) => selector_for([template.as_str()], &selectors)?,
                 _ => None,
             };
-            if v2.is_some()
-                && let (CellParam::Template(template), Some((key, options))) =
-                    (&cell.param, selector)
+            if let (CellParam::Template(template), Some((key, options))) = (&cell.param, selector)
                 && cell.carrier.is_none()
                 && cell.disabled_by.is_none()
             {
@@ -485,7 +445,6 @@ unsafe fn compile_layout<P: ClapPlugin>(
                 wire_cell["follows"] = json!(key);
                 wire_cell["variants"] = json!(variants);
             } else if let CellParam::Template(template) = &cell.param
-                && let Some(v2) = v2
                 && let Some(bands) = bands.filter(|count| (1..=8).contains(count))
                 && cell.carrier.is_none()
                 && cell.disabled_by.is_none()
@@ -494,7 +453,7 @@ unsafe fn compile_layout<P: ClapPlugin>(
                     .map(|band| {
                         let id = resolve(template, &ParamContext::new().with(BAND, band))
                             .map_err(|failure| error(failure.to_string()))?;
-                        let full = v2.full_band_choice_labels.get(&id).map(Vec::as_slice);
+                        let full = panel.full_band_choice_labels.get(&id).map(Vec::as_slice);
                         binding(&id, full).map(Value::Object)
                     })
                     .collect::<Result<Vec<_>, LayoutError>>()?;
@@ -503,7 +462,7 @@ unsafe fn compile_layout<P: ClapPlugin>(
                 wire_cell
                     .as_object_mut()
                     .expect("cell object")
-                    .extend(binding(fixed_binding(cell, v2.is_some())?, None)?);
+                    .extend(binding(fixed_binding(cell)?, None)?);
             }
             cells.push(wire_cell);
         }
@@ -516,17 +475,17 @@ unsafe fn compile_layout<P: ClapPlugin>(
         if !page.dividers.is_empty() {
             wire_page["dividers"] = json!(page.dividers);
         }
-        if let Some(headings) = v2.and_then(|panel| panel.headings.get(&page_index)) {
+        if let Some(headings) = panel.headings.get(&page_index) {
             wire_page["headings"] = json!(headings);
         }
         pages.push(wire_page);
     }
-    let parameter_display = v2
-        .into_iter()
-        .flat_map(|panel| &panel.parameter_display)
+    let parameter_display = panel
+        .parameter_display
+        .iter()
         .map(|(id, display)| Ok((resolve_id(id)?, display)))
         .collect::<Result<BTreeMap<_, _>, LayoutError>>()?;
-    let pad_bank = v2.and_then(|v2| v2.pad_bank.as_ref());
+    let pad_bank = panel.pad_bank.as_ref();
     if let Some(failure) = validate(&panel.grid, &context, &|id| resolved.contains_key(id))
         .into_iter()
         .find(|error| {
@@ -540,7 +499,6 @@ unsafe fn compile_layout<P: ClapPlugin>(
         return Err(error(failure.to_string()));
     }
     let mut document = json!({
-        "schema_version": if v2.is_some() { 2 } else { 1 },
         "default_locale": panel.default_locale,
         "locales": panel.locales,
         "pages": pages,
@@ -555,11 +513,11 @@ unsafe fn compile_layout<P: ClapPlugin>(
     if panel_selections {
         capabilities.push(CAP_PANEL_SELECTIONS);
     }
-    if v2.is_some_and(|v2| {
-        v2.canvases
-            .values()
-            .any(|canvas| canvas.fm_topology.is_some())
-    }) {
+    if panel
+        .canvases
+        .values()
+        .any(|canvas| canvas.fm_topology.is_some())
+    {
         capabilities.push(CAP_FM_TOPOLOGY);
     }
     if conditional_controls {
@@ -569,11 +527,11 @@ unsafe fn compile_layout<P: ClapPlugin>(
         capabilities.push(CAP_PARAMETER_DISPLAY);
         document["parameter_display"] = json!(parameter_display);
     }
-    if v2.is_some_and(|v2| {
-        v2.graph_labels
-            .values()
-            .any(|labels| labels.trim_unit == Some(TrimUnit::SourceFraction))
-    }) {
+    if panel
+        .graph_labels
+        .values()
+        .any(|labels| labels.trim_unit == Some(TrimUnit::SourceFraction))
+    {
         capabilities.push(CAP_SOURCE_FRACTION_TRIM);
     }
     if let Some(bank) = pad_bank {
@@ -702,7 +660,7 @@ fn compile_graph(
             .is_some_and(|key| key != BAND || !matches!(binding.config, GraphConfig::Eq { .. }))
     {
         return Err(error(
-            "native CLAP v2 requires an unconditional graph with fixed bindings",
+            "the native CLAP layout requires an unconditional graph with fixed bindings",
         ));
     }
     let mut graph = json!({"name": labels.name, "description": labels.description});
@@ -863,14 +821,14 @@ fn compile_control_binding(
     Ok(binding)
 }
 
-fn fixed_binding(cell: &Cell, v2: bool) -> Result<&ParamId, LayoutError> {
+fn fixed_binding(cell: &Cell) -> Result<&ParamId, LayoutError> {
     match &cell.param {
-        CellParam::Id(id) if cell.carrier.is_none() && (v2 || cell.disabled_by.is_none()) => Ok(id),
+        CellParam::Id(id) if cell.carrier.is_none() => Ok(id),
         _ => Err(error("unsupported native CLAP parameter binding")),
     }
 }
 
-fn widget_name(widget: WidgetKind, v2: bool) -> Result<&'static str, LayoutError> {
+fn widget_name(widget: WidgetKind) -> Result<&'static str, LayoutError> {
     match widget {
         WidgetKind::Knob => Ok("knob"),
         WidgetKind::KnobLarge => Ok("knob_large"),
@@ -878,8 +836,8 @@ fn widget_name(widget: WidgetKind, v2: bool) -> Result<&'static str, LayoutError
         WidgetKind::ToggleButton => Ok("toggle_button"),
         WidgetKind::Segment => Ok("segment"),
         WidgetKind::Dropdown => Ok("dropdown"),
-        WidgetKind::MiniFader if v2 => Ok("mini_fader"),
-        _ => Err(error("widget is unavailable in native CLAP v1")),
+        WidgetKind::MiniFader => Ok("mini_fader"),
+        _ => Err(error("widget is unavailable in the native CLAP layout")),
     }
 }
 
@@ -966,7 +924,7 @@ unsafe fn inventory(plugin: *const clap_plugin) -> Result<Vec<ParamInfo>, Layout
     Ok(result)
 }
 
-unsafe extern "C" fn get_layout<P: NativeClapLayout, const V2: bool>(
+unsafe extern "C" fn get_layout<P: NativeClapLayout>(
     plugin: *const clap_plugin,
     destination: *mut u8,
     capacity: u32,
@@ -975,22 +933,13 @@ unsafe extern "C" fn get_layout<P: NativeClapLayout, const V2: bool>(
     if required_or_written.is_null() {
         return ERROR;
     }
-    // SAFETY: The v1 caller supplies a writable length pointer and a separate destination.
+    // SAFETY: The caller supplies a writable length pointer and a separate destination.
     unsafe { required_or_written.write(0) };
     if plugin.is_null() || (destination.is_null() && capacity != 0) {
         return ERROR;
     }
-    // SAFETY: The v1 caller supplies the initialized Wrapper<P> that returned this table.
-    let result = if V2 {
-        let Some(panel) = P::panel_v2() else {
-            return ABSENT;
-        };
-        // SAFETY: The caller supplies the initialized Wrapper<P> that returned this table.
-        unsafe { compile_v2::<P>(plugin, &panel) }
-    } else {
-        // SAFETY: The caller supplies the initialized Wrapper<P> that returned this table.
-        unsafe { compile::<P>(plugin, &P::panel()) }
-    };
+    // SAFETY: The caller supplies the initialized Wrapper<P> that returned this table.
+    let result = unsafe { compile::<P>(plugin, &P::panel()) };
     let Ok(bytes) = result else {
         return ERROR;
     };

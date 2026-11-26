@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use komponist_bundled_clap_adapter::{Binding, DeviceDefinition, Instrument, panel_from_parts};
 use komponist_device_core::Spec;
 use komponist_i18n::Lang;
-use komponist_model::params::layout::{CellParam, DeviceLayout, GraphConfig, Page};
+use komponist_model::params::layout::{CellParam, GraphConfig};
 use komponist_model::params::{ParamId, ParamInfo};
-use komponist_native_clap_sdk::{GraphLabels, Labels, Panel, PanelV2};
+use komponist_native_clap_sdk::{GraphLabels, Labels, Panel};
 use nice_plug::prelude::*;
 
 struct Volt;
@@ -108,55 +108,12 @@ impl DeviceDefinition for Volt {
             _ => return None,
         })
     }
-
-    fn layout(lang: Lang) -> DeviceLayout {
-        volt_layout(lang)
-    }
-
-    fn configure_panel(panel: &mut Panel) {
-        for (id, labels) in &mut panel.parameter_labels {
-            for (prefix, group) in [
-                ("amp_", "Amp"),
-                ("filt_", "Filter"),
-                ("mod_", "Mod"),
-                ("lfo1_", "LFO 1"),
-                ("lfo2_", "LFO 2"),
-            ] {
-                if id.as_str().starts_with(prefix) {
-                    for label in labels.values_mut() {
-                        *label = format!("{group} {label}");
-                    }
-                    break;
-                }
-            }
-        }
-    }
-}
-
-fn volt_layout(lang: Lang) -> DeviceLayout {
-    let [mut sound, _, mut matrix]: [Page; 3] = Volt::SPEC
-        .layout_in(lang)
-        .pages
-        .clone()
-        .try_into()
-        .expect("Volt has three builtin pages");
-    // Public v1 supports fixed parameters, including the dedicated tempo divisions.
-    sound
-        .cells
-        .retain(|cell| matches!(cell.param, CellParam::Id(_)));
-    sound.dividers.clear();
-    matrix.dividers.clear();
-    let envelopes = komponist_volt::public_envelope_page(lang);
-    let lfo = komponist_volt::public_lfo_page(lang);
-    DeviceLayout {
-        pages: vec![sound, envelopes, lfo, matrix],
-    }
 }
 
 type VoltPlugin = Instrument<Volt>;
 
 impl komponist_bundled_clap_adapter::AudioDefinition for Volt {
-    fn panel_v2() -> Option<PanelV2> {
+    fn authored_panel() -> Option<Panel> {
         let english = Self::SPEC.layout_in(Lang::En);
         let german = Self::SPEC.layout_in(Lang::De);
         let mut panel = panel_from_parts(
@@ -233,8 +190,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Volt {
                 }
             }
         }
-        Some(PanelV2 {
-            panel,
+        Some(Panel {
             graph_labels,
             canvases: Default::default(),
             reduction_taps: Default::default(),
@@ -242,6 +198,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Volt {
             pad_bank: None,
             parameter_display: Default::default(),
             full_band_choice_labels: Default::default(),
+            ..panel
         })
     }
 

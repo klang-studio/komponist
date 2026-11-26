@@ -68,7 +68,7 @@ pub enum BodyModel {
     },
     /// The generic parameter grid.
     Params(ParamGrid),
-    /// The plugin's validated v1 device card in the parameter view.
+    /// The plugin's validated device card in the parameter view.
     Native(Box<Card>),
 }
 

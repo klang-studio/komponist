@@ -1,24 +1,55 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "komponist CLAP device layout v1",
+  "title": "komponist CLAP device layout",
   "description": "Structural schema only. The README specifies byte limits, cross-field constraints, compatible capabilities and validation against the CLAP parameter inventory.",
   "type": "object",
-  "required": ["schema_version", "default_locale", "locales", "pages"],
+  "required": [
+    "default_locale",
+    "locales",
+    "pages"
+  ],
   "properties": {
-    "schema_version": { "const": 1 },
-    "default_locale": { "$ref": "#/$defs/locale" },
+    "default_locale": {
+      "$ref": "#/$defs/locale"
+    },
     "locales": {
       "type": "array",
       "minItems": 1,
       "maxItems": 8,
       "uniqueItems": true,
-      "items": { "$ref": "#/$defs/locale" }
+      "items": {
+        "$ref": "#/$defs/locale"
+      }
     },
     "pages": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 4,
-      "items": { "$ref": "#/$defs/page" }
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/page"
+      }
+    },
+    "pad_bank": {
+      "type": "object",
+      "required": ["pads"],
+      "properties": {
+        "pads": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "required": ["note", "asset_slot"],
+            "properties": {
+              "note": { "type": "integer", "minimum": 0, "maximum": 127 },
+              "asset_slot": { "type": "integer", "minimum": 0, "maximum": 4294967294 }
+            }
+          }
+        },
+        "activity_tap": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}(?![\\s\\S])" },
+        "follow_param": { "type": "integer", "minimum": 0, "maximum": 4294967294 }
+      },
+      "dependentRequired": { "follow_param": ["activity_tap"] }
     },
     "author_ids": {
       "type": "object",
@@ -28,9 +59,15 @@
         "type": "string",
         "minLength": 1,
         "maxLength": 128,
-        "not": { "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]" }
+        "not": {
+          "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+        }
       },
-      "additionalProperties": { "type": "integer", "minimum": 0, "maximum": 4294967294 }
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 4294967294
+      }
     },
     "required_capabilities": {
       "type": "array",
@@ -40,8 +77,130 @@
         "type": "string",
         "pattern": "^[a-z][a-z0-9._-]{0,31}(?![\\s\\S])"
       }
+    },
+    "parameter_display": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 256,
+      "propertyNames": {
+        "pattern": "^(0|[1-9][0-9]{0,9})(?![\\s\\S])"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["min", "max", "default", "scale", "unit"],
+        "properties": {
+          "min": { "type": "number" },
+          "max": { "type": "number" },
+          "default": { "type": "number" },
+          "scale": { "enum": ["linear", "logarithmic"] },
+          "unit": {
+            "enum": ["none", "hertz", "milliseconds", "percent", "decibels", "decibel_width", "ratio"]
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "names"
+      ],
+      "properties": {
+        "names": {
+          "$ref": "#/$defs/labels"
+        },
+        "descriptions": {
+          "oneOf": [
+            {
+              "const": {}
+            },
+            {
+              "$ref": "#/$defs/labels"
+            }
+          ]
+        }
+      }
     }
   },
+  "allOf": [
+    {
+      "if": { "required": ["pad_bank"] },
+      "then": {
+        "required": ["required_capabilities"],
+        "properties": { "required_capabilities": { "contains": { "const": "pad-bank" } } }
+      },
+      "else": {
+        "properties": { "pages": { "maxItems": 4 } }
+      }
+    },
+    {
+      "if": { "required": ["parameter_display"] },
+      "then": {
+        "required": ["required_capabilities"],
+        "properties": { "required_capabilities": { "contains": { "const": "parameter-display" } } }
+      }
+    },
+    {
+      "if": {
+        "not": {
+          "required": ["required_capabilities"],
+          "properties": { "required_capabilities": { "contains": { "const": "fm-topology" } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "pages": { "items": { "properties": {
+            "cells": { "items": { "properties": {
+              "canvas": { "not": { "required": ["fm_topology"] } }
+            } } }
+          } } }
+        }
+      }
+    },
+    {
+      "if": {
+        "not": {
+          "required": ["required_capabilities"],
+          "properties": { "required_capabilities": { "contains": { "const": "cell-selections" } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "pages": { "items": { "properties": {
+            "cells": { "items": { "properties": {
+              "selector": false,
+              "follows": false,
+              "variants": false,
+              "graph": { "properties": { "variants": false } }
+            } } }
+          } } }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["required_capabilities"],
+        "properties": { "required_capabilities": { "contains": { "const": "panel-selections" } } }
+      },
+      "then": {
+        "properties": { "required_capabilities": { "contains": { "const": "cell-selections" } } }
+      },
+      "else": {
+        "properties": {
+          "pages": { "items": { "properties": {
+            "cells": { "items": { "properties": {
+              "widget": { "not": { "const": "column_selector" } },
+              "selector": { "properties": {
+                "shared": { "const": false },
+                "options": { "maxItems": 4 }
+              } },
+              "variants": { "maxItems": 4 },
+              "graph": { "properties": { "variants": { "maxItems": 4 } } }
+            } } }
+          } } }
+        }
+      }
+    }
+  ],
   "$defs": {
     "locale": {
       "type": "string",
@@ -51,78 +210,853 @@
       "type": "object",
       "minProperties": 1,
       "maxProperties": 8,
-      "propertyNames": { "$ref": "#/$defs/locale" },
+      "propertyNames": {
+        "$ref": "#/$defs/locale"
+      },
       "additionalProperties": {
         "type": "string",
         "minLength": 1,
         "maxLength": 128,
-        "not": { "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]" }
+        "not": {
+          "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+        }
       }
     },
     "page": {
       "type": "object",
-      "required": ["key", "labels", "columns", "cells"],
+      "required": [
+        "key",
+        "labels",
+        "columns",
+        "cells"
+      ],
       "properties": {
-        "key": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}(?![\\s\\S])" },
-        "labels": { "$ref": "#/$defs/labels" },
-        "columns": { "type": "integer", "minimum": 1, "maximum": 12 },
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,31}(?![\\s\\S])"
+        },
+        "labels": {
+          "$ref": "#/$defs/labels"
+        },
+        "columns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 14
+        },
         "cells": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 72,
-          "items": { "$ref": "#/$defs/cell" }
+          "maxItems": 84,
+          "items": {
+            "$ref": "#/$defs/cell"
+          }
+        },
+        "dividers": {
+          "type": "array",
+          "maxItems": 13,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 0, "maximum": 12 }
+        },
+        "headings": {
+          "type": "array",
+          "maxItems": 14,
+          "items": {
+            "type": "object",
+            "required": ["col", "row", "cols", "labels"],
+            "properties": {
+              "col": { "type": "integer", "minimum": 0, "maximum": 13 },
+              "row": { "type": "integer", "minimum": 0, "maximum": 2 },
+              "cols": { "type": "integer", "minimum": 1, "maximum": 14 },
+              "labels": { "$ref": "#/$defs/labels" }
+            }
+          }
         }
       }
     },
     "choice": {
       "type": "object",
-      "required": ["value", "labels"],
+      "required": [
+        "value",
+        "labels"
+      ],
       "properties": {
-        "value": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
-        "labels": { "$ref": "#/$defs/labels" }
+        "value": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        },
+        "labels": {
+          "$ref": "#/$defs/labels"
+        },
+        "full_labels": {
+          "$ref": "#/$defs/labels"
+        }
       }
     },
-    "cell": {
+    "control_geometry": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "widget": {
+                "enum": [
+                  "knob",
+                  "knob_large",
+                  "mini_fader"
+                ]
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "half"
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "half"
+            ]
+          }
+        },
+        {
+          "if": { "properties": { "widget": { "const": "mini_fader" } } },
+          "then": { "properties": { "cols": { "const": 1 } } },
+          "else": { "properties": { "rows": { "const": 1 } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "widget": {
+                "const": "knob"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cols": {
+                "const": 1
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "widget": { "const": "number" } } },
+          "then": { "properties": { "cols": { "maximum": 2 } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "widget": {
+                "enum": [
+                  "knob_large",
+                  "dropdown"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cols": {
+                "const": 2
+              }
+            }
+          }
+        }
+      ]
+    },
+    "control": {
       "type": "object",
-      "required": ["widget", "col", "row", "cols", "rows", "param_id"],
+      "required": [
+        "widget",
+        "col",
+        "row",
+        "cols",
+        "rows"
+      ],
       "properties": {
         "widget": {
-          "enum": ["knob", "knob_large", "number", "toggle_button", "segment", "dropdown"]
+          "enum": [
+            "knob",
+            "knob_large",
+            "number",
+            "toggle_button",
+            "segment",
+            "dropdown",
+            "mini_fader"
+          ]
         },
-        "col": { "type": "integer", "minimum": 0, "maximum": 11 },
-        "row": { "type": "integer", "minimum": 0, "maximum": 2 },
-        "cols": { "type": "integer", "minimum": 1, "maximum": 12 },
-        "rows": { "const": 1 },
-        "half": { "enum": ["top", "bottom"] },
-        "param_id": { "type": "integer", "minimum": 0, "maximum": 4294967294 },
-        "labels": { "$ref": "#/$defs/labels" },
+        "col": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 13
+        },
+        "row": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 14
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "half": {
+          "enum": [
+            "top",
+            "bottom"
+          ]
+        },
+        "param_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967294
+        },
+        "band_controls": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "required": ["param_id"],
+            "properties": {
+              "param_id": { "type": "integer", "minimum": 0, "maximum": 4294967294 },
+              "labels": { "$ref": "#/$defs/labels" },
+              "choices": {
+                "type": "array",
+                "minItems": 5,
+                "maxItems": 5,
+                "items": { "$ref": "#/$defs/choice" }
+              }
+            }
+          }
+        },
+        "disabled_by": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967294
+        },
+        "labels": {
+          "$ref": "#/$defs/labels"
+        },
         "choices": {
           "type": "array",
           "minItems": 2,
           "maxItems": 16,
-          "items": { "$ref": "#/$defs/choice" }
+          "items": {
+            "$ref": "#/$defs/choice"
+          }
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["param_id"],
+          "not": { "required": ["band_controls"] }
+        },
+        {
+          "required": ["band_controls"],
+          "not": {
+            "anyOf": [
+              { "required": ["param_id"] },
+              { "required": ["labels"] },
+              { "required": ["choices"] },
+              { "required": ["disabled_by"] }
+            ]
+          },
+          "properties": { "widget": { "enum": ["knob", "knob_large", "toggle_button", "segment"] } }
+        }
+      ],
+      "allOf": [
+        {
+          "if": { "required": ["disabled_by"] },
+          "then": { "properties": { "widget": { "enum": ["knob", "knob_large"] } } }
+        },
+        { "$ref": "#/$defs/control_geometry" },
+        {
+          "if": {
+            "properties": {
+              "widget": {
+                "enum": [
+                  "segment",
+                  "dropdown"
+                ]
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              { "required": ["choices"] },
+              { "required": ["band_controls"] }
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "choices"
+              ]
+            }
+          }
+        }
+      ],
+      "not": {
+        "anyOf": [
+          { "required": ["selector"] },
+          { "required": ["follows"] },
+          { "required": ["variants"] },
+          {
+            "required": [
+              "graph"
+            ]
+          },
+          {
+            "required": [
+              "canvas"
+            ]
+          },
+          {
+            "required": ["reduction_tap"]
+          }
+        ]
+      }
+    },
+    "graph": {
+      "type": "object",
+      "required": [
+        "kind",
+        "name",
+        "description"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "envelope",
+            "eq",
+            "filter",
+            "transfer",
+            "waveform",
+            "xy",
+            "lfo",
+            "compressor",
+            "gr_history",
+            "filter_va",
+            "lfo_shape",
+            "wavetable",
+            "signal"
+          ]
+        },
+        "name": {
+          "$ref": "#/$defs/labels"
+        },
+        "description": {
+          "$ref": "#/$defs/labels"
+        },
+        "hide_title": {
+          "type": "boolean",
+          "default": false
+        },
+        "slots": {
+          "type": "object",
+          "maxProperties": 41,
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967294
+          }
+        },
+        "variants": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "required": ["slots"],
+            "properties": {
+              "name": { "$ref": "#/$defs/labels" },
+              "slots": {
+                "type": "object",
+                "minProperties": 1,
+                "maxProperties": 41,
+                "additionalProperties": { "type": "integer", "minimum": 0, "maximum": 4294967294 }
+              }
+            }
+          }
+        },
+        "asset_slot": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "waveform_markers": {
+          "type": "boolean"
+        },
+        "audition_note": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967294
+        },
+        "waveform_toolbar": {
+          "type": "boolean"
+        },
+        "waveform_slice_controls": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 0, "maximum": 4294967294 }
+        },
+        "trim_unit": {
+          "enum": ["milliseconds", "source_fraction"]
+        },
+        "signal_taps": {
+          "type": "object",
+          "propertyNames": {
+            "enum": ["spectrum", "level", "reduction", "playhead"]
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+          }
+        },
+        "select_band": { "type": "boolean", "default": false },
+        "bands": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "points": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 16
         }
       },
       "allOf": [
         {
-          "if": { "properties": { "widget": { "enum": ["knob", "knob_large"] } } },
-          "then": { "not": { "required": ["half"] } },
-          "else": { "required": ["half"] }
+          "if": { "required": ["audition_note"] },
+          "then": { "required": ["asset_slot"] }
         },
         {
-          "if": { "properties": { "widget": { "enum": ["knob", "number"] } } },
-          "then": { "properties": { "cols": { "const": 1 } } }
+          "if": {
+            "anyOf": [
+              { "required": ["asset_slot"] },
+              { "required": ["trim_unit"] }
+            ]
+          },
+          "then": { "properties": { "kind": { "const": "waveform" } } }
         },
         {
-          "if": { "properties": { "widget": { "enum": ["knob_large", "dropdown"] } } },
-          "then": { "properties": { "cols": { "const": 2 } } }
+          "if": {
+            "required": ["waveform_markers"],
+            "properties": { "waveform_markers": { "const": true } }
+          },
+          "then": { "required": ["asset_slot"] }
         },
         {
-          "if": { "properties": { "widget": { "enum": ["segment", "dropdown"] } } },
-          "then": { "required": ["choices"] },
-          "else": { "not": { "required": ["choices"] } }
+          "if": {
+            "required": ["waveform_toolbar"],
+            "properties": { "waveform_toolbar": { "const": true } }
+          },
+          "then": { "required": ["asset_slot"] }
+        },
+        {
+          "if": {
+            "required": ["trim_unit"],
+            "properties": { "trim_unit": { "const": "source_fraction" } }
+          },
+          "then": { "required": ["asset_slot"] }
         }
       ]
+    },
+    "graph_cell": {
+      "type": "object",
+      "required": [
+        "widget",
+        "col",
+        "row",
+        "cols",
+        "rows",
+        "graph"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "param_id"
+            ]
+          },
+          {
+            "required": [
+              "labels"
+            ]
+          },
+          {
+            "required": [
+              "choices"
+            ]
+          },
+          {
+            "required": [
+              "canvas"
+            ]
+          },
+          {
+            "required": ["reduction_tap"]
+          }
+        ]
+      },
+      "if": { "required": ["follows"] },
+      "then": { "properties": { "graph": { "required": ["variants"] } } },
+      "else": { "properties": { "graph": { "not": { "required": ["variants"] } } } },
+      "properties": {
+        "widget": {
+          "const": "graph"
+        },
+        "col": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 13
+        },
+        "row": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 14
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "half": { "const": "top" },
+        "follows": { "$ref": "#/$defs/selection_key" },
+        "graph": {
+          "$ref": "#/$defs/graph"
+        }
+      }
+    },
+    "selection_key": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,31}(?![\\s\\S])"
+    },
+    "selector_payload": {
+      "type": "object",
+      "required": ["key", "labels", "options"],
+      "properties": {
+        "key": { "$ref": "#/$defs/selection_key" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "shared": { "type": "boolean", "default": false },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/labels" }
+        }
+      }
+    },
+    "unbound_selector": {
+      "not": {
+        "anyOf": [
+          { "required": ["param_id"] },
+          { "required": ["follows"] },
+          { "required": ["variants"] },
+          { "required": ["band_controls"] },
+          { "required": ["graph"] },
+          { "required": ["canvas"] },
+          { "required": ["labels"] },
+          { "required": ["choices"] },
+          { "required": ["disabled_by"] },
+          { "required": ["reduction_tap"] }
+        ]
+      }
+    },
+    "selector_cell": {
+      "type": "object",
+      "required": ["widget", "col", "row", "cols", "rows", "half", "selector"],
+      "properties": {
+        "widget": { "const": "selector" },
+        "col": { "type": "integer", "minimum": 0, "maximum": 13 },
+        "row": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "cols": { "type": "integer", "minimum": 1, "maximum": 14 },
+        "rows": { "const": 1 },
+        "half": { "enum": ["top", "bottom"] },
+        "selector": { "$ref": "#/$defs/selector_payload" }
+      },
+      "allOf": [{ "$ref": "#/$defs/unbound_selector" }]
+    },
+    "column_selector_cell": {
+      "type": "object",
+      "required": ["widget", "col", "row", "cols", "rows", "selector"],
+      "properties": {
+        "widget": { "const": "column_selector" },
+        "col": { "type": "integer", "minimum": 0, "maximum": 13 },
+        "row": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "cols": { "type": "integer", "minimum": 2, "maximum": 8 },
+        "rows": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "selector": { "$ref": "#/$defs/selector_payload" }
+      },
+      "allOf": [{ "$ref": "#/$defs/unbound_selector" }],
+      "not": { "required": ["half"] }
+    },
+    "selected_control": {
+      "type": "object",
+      "required": ["widget", "col", "row", "cols", "rows", "follows", "variants"],
+      "properties": {
+        "widget": { "enum": ["knob", "knob_large", "number", "toggle_button", "segment", "dropdown", "mini_fader"] },
+        "col": { "type": "integer", "minimum": 0, "maximum": 13 },
+        "row": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "cols": { "type": "integer", "minimum": 1, "maximum": 14 },
+        "rows": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "half": { "enum": ["top", "bottom"] },
+        "follows": { "$ref": "#/$defs/selection_key" },
+        "variants": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "required": ["param_id"],
+            "properties": {
+              "param_id": { "type": "integer", "minimum": 0, "maximum": 4294967294 },
+              "labels": { "$ref": "#/$defs/labels" },
+              "choices": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 16,
+                "items": { "$ref": "#/$defs/choice" }
+              }
+            }
+          }
+        }
+      },
+      "allOf": [{ "$ref": "#/$defs/control_geometry" }],
+      "if": { "properties": { "widget": { "enum": ["segment", "dropdown"] } } },
+      "then": {
+        "properties": { "variants": { "items": { "required": ["choices"] } } }
+      },
+      "else": {
+        "properties": { "variants": { "items": { "not": { "required": ["choices"] } } } }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["param_id"] },
+          { "required": ["selector"] },
+          { "required": ["band_controls"] },
+          { "required": ["graph"] },
+          { "required": ["canvas"] },
+          { "required": ["labels"] },
+          { "required": ["choices"] },
+          { "required": ["disabled_by"] },
+          { "required": ["reduction_tap"] }
+        ]
+      }
+    },
+    "cell": {
+      "oneOf": [
+        { "$ref": "#/$defs/selector_cell" },
+        { "$ref": "#/$defs/column_selector_cell" },
+        { "$ref": "#/$defs/selected_control" },
+        {
+          "$ref": "#/$defs/control"
+        },
+        {
+          "$ref": "#/$defs/graph_cell"
+        },
+        {
+          "$ref": "#/$defs/canvas_cell"
+        },
+        {
+          "$ref": "#/$defs/meter_gr_cell"
+        },
+        {
+          "$ref": "#/$defs/pad_grid_cell"
+        }
+      ]
+    },
+    "pad_grid_cell": {
+      "type": "object",
+      "required": ["widget", "col", "row", "cols", "rows"],
+      "not": {
+        "anyOf": [
+          { "required": ["half"] },
+          { "required": ["param_id"] },
+          { "required": ["labels"] },
+          { "required": ["choices"] },
+          { "required": ["graph"] },
+          { "required": ["canvas"] },
+          { "required": ["reduction_tap"] }
+        ]
+      },
+      "properties": {
+        "widget": { "const": "pad_grid" },
+        "col": { "type": "integer", "minimum": 0, "maximum": 13 },
+        "row": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "cols": { "type": "integer", "minimum": 1, "maximum": 14 },
+        "rows": { "type": "integer", "minimum": 1, "maximum": 3 }
+      }
+    },
+    "canvas": {
+      "type": "object",
+      "required": [
+        "key",
+        "name",
+        "description"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,31}(?![\\s\\S])"
+        },
+        "name": {
+          "$ref": "#/$defs/labels"
+        },
+        "description": {
+          "$ref": "#/$defs/labels"
+        },
+        "show_title": {
+          "type": "boolean",
+          "default": false
+        },
+        "horizontal_viewport": {
+          "type": "boolean",
+          "default": false
+        },
+        "fm_topology": {
+          "type": "object",
+          "required": ["selector"],
+          "properties": {
+            "selector": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,31}(?![\\s\\S])"
+            },
+            "carriers": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "required": ["col", "row", "operator"],
+                "properties": {
+                  "col": { "type": "integer", "minimum": 0, "maximum": 13 },
+                  "row": { "type": "integer", "minimum": 0, "maximum": 2 },
+                  "operator": { "type": "integer", "minimum": 0, "maximum": 7 }
+                }
+              }
+            }
+          }
+        }
+      },
+      "if": { "required": ["fm_topology"] },
+      "then": {
+        "properties": {
+          "show_title": { "const": false },
+          "horizontal_viewport": { "const": false }
+        }
+      }
+    },
+    "canvas_cell": {
+      "type": "object",
+      "required": [
+        "widget",
+        "col",
+        "row",
+        "cols",
+        "rows",
+        "canvas"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "half"
+            ]
+          },
+          {
+            "required": [
+              "param_id"
+            ]
+          },
+          {
+            "required": [
+              "labels"
+            ]
+          },
+          {
+            "required": [
+              "choices"
+            ]
+          },
+          {
+            "required": [
+              "graph"
+            ]
+          },
+          {
+            "required": ["reduction_tap"]
+          }
+        ]
+      },
+      "properties": {
+        "widget": {
+          "const": "canvas"
+        },
+        "col": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 13
+        },
+        "row": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 14
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "canvas": {
+          "$ref": "#/$defs/canvas"
+        }
+      }
+    },
+    "meter_gr_cell": {
+      "type": "object",
+      "required": ["widget", "col", "row", "cols", "rows", "reduction_tap"],
+      "not": {
+        "anyOf": [
+          { "required": ["half"] },
+          { "required": ["param_id"] },
+          { "required": ["labels"] },
+          { "required": ["choices"] },
+          { "required": ["graph"] },
+          { "required": ["canvas"] }
+        ]
+      },
+      "properties": {
+        "widget": { "const": "meter_gr" },
+        "col": { "type": "integer", "minimum": 0, "maximum": 13 },
+        "row": { "const": 0 },
+        "cols": { "const": 1 },
+        "rows": { "const": 3 },
+        "reduction_tap": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,31}(?![\\s\\S])"
+        }
+      }
     }
-  }
+  },
+  "$id": "schema.json"
 }

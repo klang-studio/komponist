@@ -7,7 +7,7 @@ use komponist_model::params::ParamId;
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, GraphBinding, GraphConfig};
 use komponist_model::params::layout::{Half, Page, WidgetKind};
 use komponist_native_clap_sdk::display::{Display, Primitive, Tone};
-use komponist_native_clap_sdk::{Canvas, GraphLabels, Heading, Labels, PanelV2, TrimUnit};
+use komponist_native_clap_sdk::{Canvas, GraphLabels, Heading, Labels, Panel, TrimUnit};
 
 use super::GeneralSampler;
 
@@ -101,7 +101,7 @@ fn labels<S: Into<String>>(localize: impl Fn(Lang) -> S) -> Labels {
         .collect()
 }
 
-pub(super) fn panel() -> PanelV2 {
+pub(super) fn panel() -> Panel {
     let spec = GeneralSampler::SPEC;
     let mut panel = panel_from_parts(layout, spec.params_in(Lang::En), spec.params_in(Lang::De));
     panel.device_labels = Some(komponist_bundled_clap_adapter::device_labels(&spec.catalog));
@@ -146,10 +146,9 @@ pub(super) fn panel() -> PanelV2 {
         audition_note: None,
         trim_unit: None,
     };
-    PanelV2 {
+    Panel {
         parameter_display: Default::default(),
         full_band_choice_labels: Default::default(),
-        panel,
         graph_labels: [((0, 0), waveform), ((1, 0), envelope)].into(),
         canvases: [(
             (1, 1),
@@ -189,6 +188,7 @@ pub(super) fn panel() -> PanelV2 {
             ],
         )]
         .into(),
+        ..panel
     }
 }
 
@@ -238,19 +238,12 @@ mod tests {
 
     #[test]
     fn native_layout_keeps_both_pages_and_the_complete_parameter_inventory() {
-        let layout = layout_contract::read_layout_extension::<GeneralSamplerPlugin>(
-            komponist_native_clap_sdk::EXTENSION_ID_V2,
-        );
+        let layout = layout_contract::read_layout::<GeneralSamplerPlugin>();
         let ids = &layout["author_ids"];
-        assert_eq!(
-            ids,
-            &layout_contract::read_layout::<GeneralSamplerPlugin>()["author_ids"]
-        );
         assert_eq!(
             ids.as_object().unwrap().len(),
             GeneralSampler::SPEC.params().len()
         );
-        assert_eq!(layout["schema_version"], 2);
         let pages = layout["pages"].as_array().unwrap();
         assert_eq!(pages.len(), 2);
         assert_eq!(pages[0]["key"], "sample");

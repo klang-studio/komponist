@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.device-display/1";
+pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.device-display";
 pub const MAX_BYTES: usize = 65_536;
 pub const REFRESH: Duration = Duration::from_millis(80);
 pub(crate) const MAX_CANVASES: usize = 16;

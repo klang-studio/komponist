@@ -12,7 +12,7 @@ pub(super) fn configure(handle: &PluginMainThreadHandle) -> bool {
         return false;
     };
     // SAFETY: The CLAP plugin is initialized, inactive and on its main thread. For this ID the
-    // plugin either returns null or its immutable v1 table.
+    // plugin either returns null or its immutable table.
     let fallback = unsafe {
         extension(plugin, EXTENSION_ID.as_ptr())
             .cast::<SidechainFallback>()

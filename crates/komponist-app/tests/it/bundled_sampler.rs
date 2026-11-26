@@ -685,7 +685,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             let Some(layout) = app.engine().host().native_layout(*device) else {
                 return false;
             };
-            assert!(layout.has_audio_asset_editor() && layout.schema_version == 2);
+            assert!(layout.has_audio_asset_editor());
             asset_status(app, *device, pad as u32) == Some(&AssetStatus::Empty)
         });
         assert_eq!(

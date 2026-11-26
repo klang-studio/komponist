@@ -19,7 +19,7 @@ const PLUGIN_ID: &str = "org.klang-studio.komponist.native-clap-example";
 const PLUGIN_PACKAGE: &str = "native-clap-example";
 const PLUGIN_BINARY: &str = "native_clap_example";
 const BUNDLE_NAME: &str = "native_clap_example.clap";
-const EXTENSION_ID: &std::ffi::CStr = c"org.klang-studio.komponist.device-layout/1";
+use komponist_ipc::native_layout::EXTENSION_ID;
 const USAGE: &str = "usage: native-clap-xtask bundle [--release] [--target TRIPLE] [--no-default-features] [--out-dir DIR]\n\
        native-clap-xtask validate BUNDLE [--plain]\n\
        native-clap-xtask metadata BUNDLE ARCHIVE TARGET SOURCE_REV OUTPUT";
@@ -102,7 +102,6 @@ fn metadata(bundle: &Path, archive: &Path, target: &str, source_rev: &str) -> Re
         "target": target,
         "layout_compatibility": {
             "extension_id": EXTENSION_ID.to_str()?,
-            "schema_version": scan["layout"]["schema_version"],
         },
         "source_revision": source_rev,
         "license": env!("CARGO_PKG_LICENSE"),

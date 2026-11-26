@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define KOMPONIST_CLAP_EXT_DEVICE_DISPLAY "org.klang-studio.komponist.device-display/1"
+#define KOMPONIST_CLAP_EXT_DEVICE_DISPLAY "org.klang-studio.komponist.device-display"
 #define KOMPONIST_CLAP_DISPLAY_MAX_BYTES UINT32_C(65536)
 
 typedef struct komponist_clap_device_display {

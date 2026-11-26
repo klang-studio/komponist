@@ -10,8 +10,7 @@ use serde_json::{Map, Number, Value};
 
 use crate::control::{ParamInfo, param_flags};
 
-pub const EXTENSION_V1: &CStr = c"org.klang-studio.komponist.device-layout/1";
-pub const EXTENSION_V2: &CStr = c"org.klang-studio.komponist.device-layout/2";
+pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.device-layout";
 /// Required capability for layouts using source-fraction trim.
 pub const CAP_SOURCE_FRACTION_TRIM: &str = "source-fraction-trim";
 /// Required capability for panels whose pages are selected from a pad grid.
@@ -36,7 +35,7 @@ pub const MAX_BYTES: u32 = 65_536;
 /// The maximum number of optional author IDs in a layout.
 pub const MAX_AUTHOR_IDS: usize = 256;
 
-/// Whether a key fits the v1 optional author-ID map.
+/// Whether a key fits the optional author-ID map.
 pub fn valid_author_id(key: &str) -> bool {
     !key.is_empty() && key.chars().count() <= 128 && !key.chars().any(char::is_control)
 }
@@ -44,7 +43,7 @@ pub fn valid_author_id(key: &str) -> bool {
 /// A descriptor rejected by the host. Diagnostics contain only host-defined text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayoutError {
-    /// A malformed v1 descriptor or transfer.
+    /// A malformed descriptor or transfer.
     Invalid(&'static str),
     /// An unsupported schema or required capability.
     Unsupported,
@@ -53,9 +52,7 @@ impl fmt::Display for LayoutError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Invalid(reason) => write!(f, "invalid native CLAP layout: {reason}"),
-            Self::Unsupported => {
-                f.write_str("unsupported native CLAP layout version or capability")
-            }
+            Self::Unsupported => f.write_str("unsupported native CLAP layout capability"),
         }
     }
 }
@@ -84,7 +81,7 @@ pub enum DisplayUnit {
     Ratio,
 }
 
-/// Presentation of a normalized CLAP parameter within a layout v2 panel.
+/// Presentation of a normalized CLAP parameter within a device panel.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ParameterDisplay {
     min: Number,
@@ -477,7 +474,6 @@ pub struct Heading {
 /// both sides before use. Parameter bindings must also pass `validate_params` for the inventory.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct NativeLayout {
-    pub schema_version: u8,
     pub default_locale: String,
     locales: Vec<String>,
     pub pages: Vec<Page>,
@@ -538,23 +534,7 @@ impl NativeLayout {
         )?;
         let Unique(mut value) = serde_json::from_slice(bytes)
             .map_err(|_| LayoutError::Invalid("JSON syntax or duplicate keys"))?;
-        let version = value["schema_version"]
-            .as_i64()
-            .ok_or(LayoutError::Invalid("schema version"))?;
-        if !matches!(version, 1 | 2) {
-            return Err(LayoutError::Unsupported);
-        }
-        let metadata_v1 = if version == 1 {
-            if let Some(root) = value.as_object_mut() {
-                root.remove("pad_bank");
-                root.remove("parameter_display");
-            }
-            value
-                .as_object_mut()
-                .and_then(|root| root.remove("metadata"))
-        } else {
-            None
-        };
+        check(value.is_object(), "document object")?;
         if let Some(metadata) = value.get("metadata") {
             check(metadata_object(metadata), "plugin metadata")?;
         }
@@ -580,18 +560,17 @@ impl NativeLayout {
                 "capability list",
             )?;
             if seen.iter().any(|cap| {
-                version != 2
-                    || !matches!(
-                        *cap,
-                        CAP_SOURCE_FRACTION_TRIM
-                            | CAP_PAD_BANK
-                            | CAP_PARAMETER_DISPLAY
-                            | CAP_CONDITIONAL_CONTROLS
-                            | CAP_EQ_BAND_CONTROLS
-                            | CAP_CELL_SELECTIONS
-                            | CAP_PANEL_SELECTIONS
-                            | CAP_FM_TOPOLOGY
-                    )
+                !matches!(
+                    *cap,
+                    CAP_SOURCE_FRACTION_TRIM
+                        | CAP_PAD_BANK
+                        | CAP_PARAMETER_DISPLAY
+                        | CAP_CONDITIONAL_CONTROLS
+                        | CAP_EQ_BAND_CONTROLS
+                        | CAP_CELL_SELECTIONS
+                        | CAP_PANEL_SELECTIONS
+                        | CAP_FM_TOPOLOGY
+                )
             }) {
                 return Err(LayoutError::Unsupported);
             }
@@ -633,17 +612,13 @@ impl NativeLayout {
                 "pad bank object",
             )?;
         }
-        // Serde also accepts positional structs and externally tagged enum objects. V1
+        // Serde also accepts positional structs and externally tagged enum objects. The contract
         // requires named objects and string tags, while allowing unknown object members.
         if let Some(pages) = value.get_mut("pages").and_then(Value::as_array_mut) {
             for page in pages {
                 let page = page
                     .as_object_mut()
                     .ok_or(LayoutError::Invalid("page object"))?;
-                if version == 1 {
-                    page.remove("dividers");
-                    page.remove("headings");
-                }
                 if let Some(headings) = page.get("headings") {
                     check(
                         headings.as_array().is_some_and(|items| {
@@ -657,17 +632,6 @@ impl NativeLayout {
                         let cell = cell
                             .as_object_mut()
                             .ok_or(LayoutError::Invalid("cell object"))?;
-                        if version == 1 {
-                            // This was an unknown object member in v1.
-                            cell.remove("graph");
-                            cell.remove("canvas");
-                            cell.remove("reduction_tap");
-                            cell.remove("disabled_by");
-                            cell.remove("band_controls");
-                            cell.remove("selector");
-                            cell.remove("follows");
-                            cell.remove("variants");
-                        }
                         if !eq_band_controls_supported
                             && let Some(choices) =
                                 cell.get_mut("choices").and_then(Value::as_array_mut)
@@ -714,16 +678,15 @@ impl NativeLayout {
                         check(
                             if band_controls.is_some()
                                 || variants.is_some()
-                                || version == 2
-                                    && matches!(
-                                        widget,
-                                        "graph"
-                                            | "canvas"
-                                            | "meter_gr"
-                                            | "pad_grid"
-                                            | "selector"
-                                            | "column_selector"
-                                    )
+                                || matches!(
+                                    widget,
+                                    "graph"
+                                        | "canvas"
+                                        | "meter_gr"
+                                        | "pad_grid"
+                                        | "selector"
+                                        | "column_selector"
+                                )
                             {
                                 !cell.contains_key("param_id")
                             } else {
@@ -833,12 +796,6 @@ impl NativeLayout {
                     .any(|graph| graph.trim_unit == Some(TrimUnit::SourceFraction)),
             "waveform source fraction capability",
         )?;
-        if let Some(metadata) = metadata_v1.filter(metadata_object) {
-            layout.metadata = serde_json::from_value(metadata).ok();
-            if layout.validate_metadata(&layout.locale_set()).is_err() {
-                layout.metadata = None;
-            }
-        }
         if let Some(author_ids) = &layout.author_ids {
             let mut seen = BTreeSet::new();
             check(
@@ -912,8 +869,7 @@ impl NativeLayout {
         self.validate_metadata(&locales)?;
         let mut keys = BTreeSet::new();
         let mut canvas_keys = BTreeSet::new();
-        let v2 = self.schema_version == 2;
-        let max_columns = if v2 { 14 } else { 12 };
+        let max_columns = 14;
         let max_selection_options = if self.panel_selections { 8 } else { 4 };
         let mut shared_counts = BTreeMap::new();
         for page in &self.pages {
@@ -988,7 +944,7 @@ impl NativeLayout {
                 let (min, max, half, rows) = match cell.widget {
                     Widget::Knob => (1, 1, false, 1..=1),
                     Widget::KnobLarge => (2, 2, false, 1..=1),
-                    Widget::Number => (1, if v2 { 2 } else { 1 }, true, 1..=1),
+                    Widget::Number => (1, 2, true, 1..=1),
                     Widget::Dropdown => (2, 2, true, 1..=1),
                     Widget::Segment | Widget::ToggleButton | Widget::Selector => {
                         (1, max_columns, true, 1..=1)
@@ -1065,9 +1021,7 @@ impl NativeLayout {
                 )?;
                 if cell.widget == Widget::Graph {
                     check(
-                        self.schema_version == 2
-                            && cell.param_id.is_none()
-                            && cell.labels.is_none(),
+                        cell.param_id.is_none() && cell.labels.is_none(),
                         "graph binding",
                     )?;
                     check(cell.canvas.is_none(), "unexpected canvas")?;
@@ -1187,10 +1141,7 @@ impl NativeLayout {
                     )?;
                 } else if cell.widget == Widget::Canvas {
                     check(
-                        self.schema_version == 2
-                            && cell.param_id.is_none()
-                            && cell.labels.is_none()
-                            && cell.graph.is_none(),
+                        cell.param_id.is_none() && cell.labels.is_none() && cell.graph.is_none(),
                         "canvas binding",
                     )?;
                     let canvas = cell
@@ -1228,8 +1179,7 @@ impl NativeLayout {
                     Widget::MeterGr | Widget::PadGrid | Widget::Selector | Widget::ColumnSelector
                 ) {
                     check(
-                        self.schema_version == 2
-                            && (cell.widget != Widget::PadGrid || self.pad_bank.is_some())
+                        (cell.widget != Widget::PadGrid || self.pad_bank.is_some())
                             && cell.param_id.is_none()
                             && cell.labels.is_none()
                             && cell.graph.is_none()
@@ -1240,8 +1190,7 @@ impl NativeLayout {
                     check(
                         (cell.param_id.is_some() || cell.variant_bindings().next().is_some())
                             && cell.graph.is_none()
-                            && cell.canvas.is_none()
-                            && (cell.widget != Widget::MiniFader || self.schema_version == 2),
+                            && cell.canvas.is_none(),
                         "control binding",
                     )?;
                 }
@@ -1700,7 +1649,8 @@ impl<'de> Deserialize<'de> for Unique {
 mod tests {
     use super::*;
 
-    const EXAMPLE: &[u8] = include_bytes!("../../../docs/clap-device-layout/example.json");
+    const EXAMPLE: &[u8] =
+        include_bytes!("../../../test-plugins/native-layout/c-fixture/controls.json");
 
     fn parameter(id: u32, max: f64, step_count: u32, flags: u32) -> ParamInfo {
         ParamInfo {
@@ -1716,7 +1666,7 @@ mod tests {
     }
 
     #[test]
-    fn the_normative_layout_binds_to_the_live_inventory() {
+    fn the_control_layout_binds_to_the_live_inventory() {
         let layout = NativeLayout::parse(EXAMPLE).unwrap();
         let gain = parameter(42, 1.0, 0, 0);
         let mode = parameter(7, 2.0, 2, param_flags::STEPPED | param_flags::ENUM);
@@ -1749,7 +1699,7 @@ mod tests {
             json!({"key":"op","labels":{"en":"Operator"},"options":options,"shared":true});
         let variants: Vec<_> = (1..=6).map(|id| json!({"param_id":id})).collect();
         let mut value = json!({
-            "schema_version":2,"default_locale":"en","locales":["en"],
+            "default_locale":"en","locales":["en"],
             "required_capabilities":[CAP_CELL_SELECTIONS,CAP_PANEL_SELECTIONS],
             "pages":[
                 {"key":"operators","labels":{"en":"Operators"},"columns":6,"cells":[
@@ -1795,7 +1745,6 @@ mod tests {
         use serde_json::json;
 
         let mut value: Value = serde_json::from_slice(EXAMPLE).unwrap();
-        value["schema_version"] = json!(2);
         value["pages"][0]["cells"] = json!([
             {"widget":"graph","col":0,"row":0,"cols":2,"rows":2,"half":"top","follows":"osc",
              "graph":{"kind":"wavetable","name":{"en":"Wavetable"},"description":{"en":"Wavetable"},
@@ -1839,7 +1788,6 @@ mod tests {
         use serde_json::json;
 
         let mut value: Value = serde_json::from_slice(EXAMPLE).unwrap();
-        value["schema_version"] = json!(2);
         value["pages"][0]["columns"] = json!(2);
         value["pages"][0]["cells"] = json!([
             {"widget":"graph","col":0,"row":0,"cols":2,"rows":2,
@@ -1895,8 +1843,6 @@ mod tests {
             {"widget":"toggle_button","col":1,"row":0,"cols":1,"rows":1,"half":"top","param_id":7}
         ]);
         let parse = |value: &Value| NativeLayout::parse(&serde_json::to_vec(value).unwrap());
-        assert_eq!(parse(&value).unwrap().pages[0].cells[0].disabled_by, None);
-        value["schema_version"] = json!(2);
         assert!(parse(&value).is_err(), "the capability must be declared");
         value["required_capabilities"] = json!(["conditional-controls"]);
         let layout = parse(&value).unwrap();
@@ -1928,9 +1874,7 @@ mod tests {
             }
         });
         let parse = |value: &Value| NativeLayout::parse(&serde_json::to_vec(value).unwrap());
-        assert!(parse(&value).unwrap().parameter_display(42).is_none());
-        value["schema_version"] = json!(2);
-        assert!(parse(&value).is_err(), "older v2 hosts must fall back");
+        assert!(parse(&value).is_err(), "the capability must be declared");
         value["required_capabilities"] = json!(["parameter-display"]);
         let layout = parse(&value).unwrap();
         let mut time = parameter(42, 1.0, 0, 0);
@@ -1958,9 +1902,8 @@ mod tests {
     }
 
     #[test]
-    fn version_two_supports_wide_pages_number_fields_and_dividers() {
+    fn wide_pages_support_number_fields_and_dividers() {
         let mut value: Value = serde_json::from_slice(EXAMPLE).unwrap();
-        value["schema_version"] = 2.into();
         let page = &mut value["pages"][0];
         page["columns"] = 14.into();
         page["dividers"] = serde_json::json!([9, 11]);
@@ -1986,30 +1929,18 @@ mod tests {
             invalid["pages"][0]["dividers"] = dividers;
             assert!(parse(&invalid).is_err());
         }
-        value["schema_version"] = 1.into();
-        assert!(parse(&value).is_err());
-        value["pages"][0]["columns"] = 12.into();
-        value["pages"][0]["cells"][0]["col"] = 10.into();
-        assert!(parse(&value).is_err());
-        value["pages"][0]["cells"][0]["cols"] = 1.into();
-        value["pages"][0]["dividers"] = false.into();
-        let layout = parse(&value).unwrap();
-        assert!(layout.pages[0].dividers.is_empty());
-        assert!(layout.pages[0].headings.is_empty());
     }
 
     #[test]
-    fn version_two_limits_graph_and_canvas_bindings() {
-        let source = include_bytes!("../../../docs/clap-device-layout/example-v2.json");
+    fn graph_and_canvas_bindings_are_validated() {
+        let source = include_bytes!("../../../docs/clap-device-layout/example.json");
         let layout = NativeLayout::parse(source).unwrap();
-        assert_eq!(layout.schema_version, 2);
         assert!(layout.has_canvas());
         assert!(layout.validate_params(&[]).is_err());
         assert!(layout.validate_params(&[parameter(42, 1.0, 0, 0)]).is_ok());
 
         let value: Value = serde_json::from_slice(source).unwrap();
         for (path, invalid) in [
-            ("/schema_version", 1.into()),
             ("/pages/0/cells/0/graph/bands", 9.into()),
             (
                 "/pages/0/cells/1/graph/slots",
@@ -2032,7 +1963,7 @@ mod tests {
     }
 
     fn layout_with_waveform_asset() -> Value {
-        let source = include_bytes!("../../../docs/clap-device-layout/example-v2.json");
+        let source = include_bytes!("../../../docs/clap-device-layout/example.json");
         let mut value: Value = serde_json::from_slice(source).unwrap();
         value["pages"][0]["cells"][2]["graph"]["asset_slot"] = 5.into();
         value
@@ -2058,7 +1989,7 @@ mod tests {
 
     #[test]
     fn tap_bindings_match_the_graph_role_and_key_syntax() {
-        let source = include_bytes!("../../../docs/clap-device-layout/example-v2.json");
+        let source = include_bytes!("../../../docs/clap-device-layout/example.json");
         let mut value: Value = serde_json::from_slice(source).unwrap();
         let graph = value.pointer_mut("/pages/0/cells/0/graph").unwrap();
         graph["signal_taps"] = serde_json::json!({"spectrum": "main-output"});
@@ -2079,7 +2010,7 @@ mod tests {
         use serde_json::json;
 
         let document = json!({
-            "schema_version": 2, "default_locale": "en", "locales": ["en"],
+            "default_locale": "en", "locales": ["en"],
             "pages": [{"key": "main", "labels": {"en": "Main"}, "columns": 4, "cells": [
                 {"widget": "meter_gr", "col": 3, "row": 0, "cols": 1, "rows": 3,
                  "reduction_tap": "limiter-gr"}
@@ -2113,9 +2044,6 @@ mod tests {
             .remove("reduction_tap");
         assert!(parse(&invalid).is_err());
         let mut invalid = document.clone();
-        invalid["schema_version"] = 1.into();
-        assert!(parse(&invalid).is_err());
-        let mut invalid = document.clone();
         invalid["pages"][0]["cells"].as_array_mut().unwrap().push(
             json!({"widget": "number", "col": 3, "row": 2, "cols": 1, "rows": 1,
                    "half": "bottom", "param_id": 42}),
@@ -2130,7 +2058,7 @@ mod tests {
         let toggle = json!({"widget":"toggle_button", "col": 0, "row": 1, "cols": 2,
                             "rows": 1, "half": "top", "param_id": 7});
         let document = json!({
-            "schema_version": 2, "default_locale": "en", "locales": ["en", "de"],
+            "default_locale": "en", "locales": ["en", "de"],
             "required_capabilities": [CAP_PAD_BANK],
             "pad_bank": {
                 "pads": [{"note": 36, "asset_slot": 4}, {"note": 42, "asset_slot": 9}],
@@ -2259,6 +2187,15 @@ mod tests {
     fn rejects_positional_objects_and_non_string_tags() {
         use serde_json::json;
         let example: Value = serde_json::from_slice(EXAMPLE).unwrap();
+        let array = json!([
+            example["default_locale"],
+            example["locales"],
+            example["pages"]
+        ]);
+        assert_eq!(
+            NativeLayout::parse(&serde_json::to_vec(&array).unwrap()),
+            Err(LayoutError::Invalid("document object"))
+        );
         let mut modified = example.clone();
         modified["pages"][0]["future"] = json!(true);
         modified["pages"][0]["cells"][0]["future"] = json!([]);
@@ -2318,7 +2255,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_documents_and_falls_back_for_future_capabilities() {
+    fn rejects_bad_documents_and_unsupported_capabilities() {
         assert!(NativeLayout::parse(&vec![b' '; MAX_BYTES as usize + 1]).is_err());
         let mut example: Value = serde_json::from_slice(EXAMPLE).unwrap();
         example["required_capabilities"] = serde_json::json!(["extra"]);
@@ -2328,13 +2265,10 @@ mod tests {
         );
         example["required_capabilities"] = serde_json::json!([]);
         example["optional"] = serde_json::json!({"forward": true});
-        example["pages"][0]["cells"][1]["band_controls"] = serde_json::json!("ignored by v1");
-        example["pages"][0]["cells"][1]["choices"][0]["full_labels"] =
-            serde_json::json!("ignored by v1");
         assert!(NativeLayout::parse(&serde_json::to_vec(&example).unwrap()).is_ok());
         example["pages"][0]["cells"][1]["col"] = 0.into();
         assert!(NativeLayout::parse(&serde_json::to_vec(&example).unwrap()).is_err());
-        let duplicate = br#"{"schema_version":1,"unknown":{"key":0,"key":1}}"#;
+        let duplicate = br#"{"unknown":{"key":0,"key":1}}"#;
         assert_eq!(
             NativeLayout::parse(duplicate),
             Err(LayoutError::Invalid("JSON syntax or duplicate keys"))

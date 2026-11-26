@@ -39,7 +39,7 @@ pub struct Display {
 }
 
 impl Display {
-    /// Record one canvas declared in the version 2 layout.
+    /// Record one canvas declared in the device layout.
     pub fn canvas(&mut self, key: impl Into<String>, paint: impl FnOnce(&mut Painter)) {
         let mut painter = Painter(Vec::new());
         paint(&mut painter);

@@ -1,4 +1,4 @@
-# CLAP sidechain fallback v1
+# CLAP sidechain fallback
 
 A CLAP plugin such as a compressor can use its main signal as a detector source when its
 sidechain is disconnected. The [C header](clap-sidechain-fallback.h) defines a plugin-side
@@ -7,7 +7,7 @@ and audio ports configuration interfaces for the actual buffers and configuratio
 
 After a successful plugin initialization, while the instance is still inactive and on the CLAP
 main thread, the host queries `clap_plugin_t.get_extension` using
-`org.klang-studio.komponist.sidechain-fallback/1`. The plugin returns a pointer to an immutable
+`org.klang-studio.komponist.sidechain-fallback`. The plugin returns a pointer to an immutable
 `komponist_clap_sidechain_fallback_t` table valid until destruction, or null if unavailable.
 
 For mode `KOMPONIST_CLAP_SIDECHAIN_MAIN_INPUT` (1), the table's `auxiliary_config_id` is a

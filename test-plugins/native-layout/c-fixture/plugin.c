@@ -20,21 +20,19 @@
 #include "fixture-layouts.h"
 
 #define FIXTURE_ID "org.klang-studio.komponist.layout-fixture."
-#define INCOMPATIBLE_EXTENSION "org.klang-studio.komponist.device-layout/99"
 
 enum variant {
     VALID,
     MISSING,
     ABSENT,
-    INCOMPATIBLE,
     INVALID_LENGTH,
     WRONG_COPY_LENGTH,
     OVERSIZE,
     UNKNOWN_PARAM,
     OPTIONAL_FIELD,
     REQUIRED_CAPABILITY,
-    VERSION_TWO,
-    INVALID_VERSION_TWO,
+    GRAPHS,
+    INVALID_GRAPHS,
     VARIANT_COUNT
 };
 
@@ -56,15 +54,14 @@ static const clap_plugin_descriptor_t descriptors[VARIANT_COUNT] = {
     [VALID] = DESCRIPTOR("valid"),
     [MISSING] = DESCRIPTOR("missing"),
     [ABSENT] = DESCRIPTOR("absent"),
-    [INCOMPATIBLE] = DESCRIPTOR("incompatible"),
     [INVALID_LENGTH] = DESCRIPTOR("invalid-length"),
     [WRONG_COPY_LENGTH] = DESCRIPTOR("wrong-copy-length"),
     [OVERSIZE] = DESCRIPTOR("oversize"),
     [UNKNOWN_PARAM] = DESCRIPTOR("unknown-param"),
     [OPTIONAL_FIELD] = DESCRIPTOR("optional-field"),
     [REQUIRED_CAPABILITY] = DESCRIPTOR("required-capability"),
-    [VERSION_TWO] = DESCRIPTOR("version-two"),
-    [INVALID_VERSION_TWO] = DESCRIPTOR("invalid-version-two"),
+    [GRAPHS] = DESCRIPTOR("graphs"),
+    [INVALID_GRAPHS] = DESCRIPTOR("invalid-graphs"),
 };
 
 static const clap_param_info_t parameter_info[PARAM_COUNT] = {
@@ -219,8 +216,8 @@ static uint32_t CLAP_ABI get_layout(const clap_plugin_t *plugin, uint8_t *buffer
     if (!written)
         return KOMPONIST_CLAP_LAYOUT_ERROR;
     *written = 0;
-    const uint8_t *payload = example_layout;
-    uint32_t size = sizeof(example_layout);
+    const uint8_t *payload = control_layout;
+    uint32_t size = sizeof(control_layout);
     switch (instance(plugin)->variant) {
     case ABSENT:
         return KOMPONIST_CLAP_LAYOUT_ABSENT;
@@ -236,6 +233,14 @@ static uint32_t CLAP_ABI get_layout(const clap_plugin_t *plugin, uint8_t *buffer
     case OPTIONAL_FIELD:
         payload = optional_field_layout;
         size = sizeof(optional_field_layout);
+        break;
+    case GRAPHS:
+        payload = graph_layout;
+        size = sizeof(graph_layout);
+        break;
+    case INVALID_GRAPHS:
+        payload = invalid_graph_layout;
+        size = sizeof(invalid_graph_layout);
         break;
     case REQUIRED_CAPABILITY:
         payload = required_capability_layout;
@@ -256,25 +261,6 @@ static uint32_t CLAP_ABI get_layout(const clap_plugin_t *plugin, uint8_t *buffer
 }
 
 static const komponist_clap_device_layout_t layout_extension = {.get_layout = get_layout};
-
-static uint32_t CLAP_ABI get_layout_v2(const clap_plugin_t *plugin, uint8_t *buffer,
-                                       uint32_t capacity, uint32_t *written) {
-    if (!written)
-        return KOMPONIST_CLAP_LAYOUT_ERROR;
-    *written = 0;
-    if (!buffer && capacity != 0)
-        return KOMPONIST_CLAP_LAYOUT_ERROR;
-    const bool valid = instance(plugin)->variant == VERSION_TWO;
-    const uint8_t *payload = valid ? version_two_layout : invalid_version_two_layout;
-    const uint32_t size = valid ? sizeof(version_two_layout) : sizeof(invalid_version_two_layout);
-    *written = size;
-    if (capacity < size)
-        return KOMPONIST_CLAP_LAYOUT_BUFFER_TOO_SMALL;
-    memcpy(buffer, payload, size);
-    return KOMPONIST_CLAP_LAYOUT_OK;
-}
-
-static const komponist_clap_device_layout_t layout_v2_extension = {.get_layout = get_layout_v2};
 
 static uint32_t CLAP_ABI draw(const clap_plugin_t *plugin, uint8_t *buffer,
                              uint32_t capacity) {
@@ -437,15 +423,8 @@ static const void *CLAP_ABI get_extension(const clap_plugin_t *plugin, const cha
     const enum variant variant = instance(plugin)->variant;
     if (variant == MISSING)
         return NULL;
-    if (variant == INCOMPATIBLE)
-        return strcmp(id, INCOMPATIBLE_EXTENSION) == 0 ? &layout_extension : NULL;
-    if (variant == VERSION_TWO && strcmp(id, KOMPONIST_CLAP_EXT_DEVICE_DISPLAY) == 0)
+    if (variant == GRAPHS && strcmp(id, KOMPONIST_CLAP_EXT_DEVICE_DISPLAY) == 0)
         return &display_extension;
-    if ((variant == VERSION_TWO || variant == INVALID_VERSION_TWO) &&
-        strcmp(id, KOMPONIST_CLAP_EXT_DEVICE_LAYOUT_V2) == 0)
-        return &layout_v2_extension;
-    if (variant == VERSION_TWO)
-        return NULL;
     return strcmp(id, KOMPONIST_CLAP_EXT_DEVICE_LAYOUT) == 0 ? &layout_extension : NULL;
 }
 

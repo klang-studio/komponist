@@ -3,7 +3,7 @@
 use core::ffi::{CStr, c_void};
 
 /// Plugin extension ID. See `docs/clap-device-layout/audio-meter.md`.
-pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.audio-meter/1";
+pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.audio-meter";
 /// The largest detector frame count one block can report.
 pub const DETECTOR_FRAMES: usize = 64;
 

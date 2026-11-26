@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define KOMPONIST_CLAP_EXT_DEVICE_ASSETS "org.klang-studio.komponist.device-assets/1"
+#define KOMPONIST_CLAP_EXT_DEVICE_ASSETS "org.klang-studio.komponist.device-assets"
 #define KOMPONIST_CLAP_ASSET_MAX_SLOTS UINT32_C(32)
 #define KOMPONIST_CLAP_ASSET_MAX_SNAPSHOT_BYTES UINT32_C(16384)
 #define KOMPONIST_CLAP_ASSET_MAX_BINDINGS_BYTES UINT32_C(135168)

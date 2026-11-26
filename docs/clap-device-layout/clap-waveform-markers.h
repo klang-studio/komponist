@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define KOMPONIST_CLAP_EXT_WAVEFORM_MARKERS "org.klang-studio.komponist.waveform-markers/1"
+#define KOMPONIST_CLAP_EXT_WAVEFORM_MARKERS "org.klang-studio.komponist.waveform-markers"
 #define KOMPONIST_CLAP_WAVEFORM_MAX_MARKERS UINT32_C(127)
 #define KOMPONIST_CLAP_WAVEFORM_MAX_SNAPSHOT_BYTES UINT32_C(4096)
 #define KOMPONIST_CLAP_WAVEFORM_MAX_EDIT_BYTES UINT32_C(32)

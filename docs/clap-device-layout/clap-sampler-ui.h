@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define KOMPONIST_CLAP_EXT_SAMPLER_UI "org.klang-studio.komponist.sampler-ui/2"
+#define KOMPONIST_CLAP_EXT_SAMPLER_UI "org.klang-studio.komponist.sampler-ui"
 #define KOMPONIST_CLAP_SAMPLER_UI_MAX_BYTES UINT32_C(32768)
 
 typedef struct komponist_clap_sampler_ui {

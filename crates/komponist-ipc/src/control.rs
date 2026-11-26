@@ -106,7 +106,8 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 22 (#286) applies discovered CLAP presets and captures project state.
 /// 23 (#285) prepares persisted state for a user file edit.
 /// 24 (#285) returns the parameter IDs a device reset while preparing a file edit.
-pub const PROTOCOL_VERSION: u32 = 24;
+/// 25 (#336) carries layout descriptors for the single current CLAP layout contract.
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// Maximum number of parameter bases that can follow an active state restore.
 pub const MAX_STATE_PARAMETER_BASES: usize = crate::shm::INPUT_EVENT_CAPACITY;

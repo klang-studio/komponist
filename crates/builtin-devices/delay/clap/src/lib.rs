@@ -4,11 +4,10 @@ use komponist_bundled_clap_adapter::{
     Binding, DeviceDefinition, Effect, device_labels, panel_from_parts, parameter_display,
 };
 use komponist_device_core::Spec;
-use komponist_device_core::layout::{knob, param, single_page, toggle};
 use komponist_i18n::Lang;
 use komponist_model::params::ParamInfo;
-use komponist_model::params::layout::{Cell, DeviceLayout, Half, WidgetKind};
-use komponist_native_clap_sdk::{GraphLabels, PanelV2};
+use komponist_model::params::layout::WidgetKind;
+use komponist_native_clap_sdk::{GraphLabels, Panel};
 use nice_plug::prelude::*;
 
 struct Delay;
@@ -71,30 +70,12 @@ impl DeviceDefinition for Delay {
     fn choice(info: &'static ParamInfo) -> Option<Binding> {
         (info.id.as_str() == "note").then(|| Binding::choice::<SyncNote>(info))
     }
-
-    fn layout(_: Lang) -> DeviceLayout {
-        // Native v1 can expose the two XY axes as controls.
-        single_page(
-            4,
-            vec![
-                knob(0, 0, "time"),
-                knob(1, 0, "feedback"),
-                knob(2, 0, "low_cut"),
-                knob(3, 0, "high_cut"),
-                knob(0, 1, "width"),
-                knob(1, 1, "mix"),
-                toggle(2, 1, 1, Half::Top, param("ping_pong")),
-                toggle(3, 1, 1, Half::Top, param("sync")),
-                Cell::half(2, 1, 2, Half::Bottom, WidgetKind::Dropdown, param("note")),
-            ],
-        )
-    }
 }
 
 type DelayPlugin = Effect<Delay>;
 
 impl komponist_bundled_clap_adapter::AudioDefinition for Delay {
-    fn panel_v2() -> Option<PanelV2> {
+    fn authored_panel() -> Option<Panel> {
         let english_params = Self::SPEC.params_in(Lang::En);
         let mut panel = panel_from_parts(
             |lang| Self::SPEC.layout_in(lang).clone(),
@@ -129,8 +110,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Delay {
             audition_note: None,
             trim_unit: None,
         };
-        Some(PanelV2 {
-            panel,
+        Some(Panel {
             graph_labels: [((0, graph), graph_labels)].into(),
             canvases: Default::default(),
             reduction_taps: Default::default(),
@@ -138,6 +118,7 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Delay {
             pad_bank: None,
             parameter_display: parameter_display(english_params),
             full_band_choice_labels: Default::default(),
+            ..panel
         })
     }
 
@@ -154,26 +135,22 @@ mod layout_contract;
 
 #[cfg(test)]
 #[test]
-fn localized_fixed_layout_matches_the_exported_clap_parameters() {
-    layout_contract::assert_localized_bindings::<DelayPlugin>(9);
+fn localized_layout_matches_the_exported_clap_parameters() {
+    layout_contract::assert_localized_bindings::<DelayPlugin>(Delay::SPEC.params().len());
 }
 
 #[cfg(test)]
 #[test]
-fn the_v2_panel_keeps_the_xy_grid_and_clap_parameter_ids() {
+fn the_panel_keeps_the_xy_grid_and_clap_parameter_ids() {
     use serde_json::json;
 
-    let v1 = layout_contract::read_layout::<DelayPlugin>();
-    let v2 = layout_contract::read_layout_extension::<DelayPlugin>(
-        komponist_native_clap_sdk::EXTENSION_ID_V2,
-    );
-    assert_eq!(v1["schema_version"], 1);
-    assert!(v1.get("parameter_display").is_none());
-    assert_eq!(v2["schema_version"], 2);
-    assert_eq!(v2["author_ids"], v1["author_ids"]);
-    let time = v2["author_ids"]["time"].as_u64().unwrap().to_string();
-    let feedback = v2["author_ids"]["feedback"].as_u64().unwrap().to_string();
-    let page = &v2["pages"][0];
+    let layout = layout_contract::read_layout::<DelayPlugin>();
+    let time = layout["author_ids"]["time"].as_u64().unwrap().to_string();
+    let feedback = layout["author_ids"]["feedback"]
+        .as_u64()
+        .unwrap()
+        .to_string();
+    let page = &layout["pages"][0];
     assert_eq!(page["columns"], 4);
     assert_eq!(page["cells"].as_array().unwrap().len(), 10);
     assert_eq!(
@@ -187,23 +164,19 @@ fn the_v2_panel_keeps_the_xy_grid_and_clap_parameter_ids() {
                     "de": format!("{} · {}", Lang::De.param_time(), Lang::De.param_feedback()),
                     "en": format!("{} · {}", Lang::En.param_time(), Lang::En.param_feedback()),
                 },
-                "slots": {"x": v2["author_ids"]["time"], "y": v2["author_ids"]["feedback"]},
+                "slots": {"x": layout["author_ids"]["time"], "y": layout["author_ids"]["feedback"]},
             }
         })
     );
     assert_eq!(
-        v2["parameter_display"][time],
+        layout["parameter_display"][time],
         json!({"min": 1.0, "max": 2000.0, "default": 375.0,
                "scale": "logarithmic", "unit": "milliseconds"})
     );
     assert_eq!(
-        v2["parameter_display"][feedback],
+        layout["parameter_display"][feedback],
         json!({"min": 0.0, "max": 0.95, "default": 0.42,
                "scale": "linear", "unit": "percent"})
-    );
-    assert_eq!(
-        page["cells"][3]["choices"],
-        v1["pages"][0]["cells"][8]["choices"]
     );
 }
 
