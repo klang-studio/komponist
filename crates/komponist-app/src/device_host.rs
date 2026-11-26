@@ -1431,22 +1431,28 @@ mod tests {
 
     fn shipped(host: &PluginHost, name: &str) -> Option<PluginRef> {
         let id = format!("org.klang-studio.komponist.{name}");
-        host.catalog()
+        let plugin = host
+            .catalog()
             .entries()
             .iter()
             .find(|entry| {
                 entry.plugin.id == id && komponist_plugins::requires_bundled(&entry.plugin)
             })
-            .map(|entry| entry.plugin.clone())
+            .map(|entry| entry.plugin.clone());
+        if plugin.is_none() {
+            assert!(
+                !std::env::var_os("KOMPONIST_REQUIRE_FIXTURES").is_some_and(|value| value == "1"),
+                "required bundled fixture {id} is missing from the catalog"
+            );
+            eprintln!("skipping: build {id} with scripts/build-test-plugins.sh");
+        }
+        plugin
     }
 
     #[test]
     fn the_fixture_catalog_resolves_shipped_devices_and_reports_unavailable_plugins() {
         let mut host = App::headless_plugin_host();
         let Some(hexa) = shipped(&host, "hexa") else {
-            eprintln!(
-                "skipping: build the verified CLAP fixtures with scripts/build-test-plugins.sh"
-            );
             return;
         };
         assert_eq!(host.catalog().entries().len(), 12);
@@ -1486,9 +1492,6 @@ mod tests {
 
         let host = App::headless_plugin_host();
         let Some(sampler) = shipped(&host, "sampler") else {
-            eprintln!(
-                "skipping: build the verified CLAP fixtures with scripts/build-test-plugins.sh"
-            );
             return;
         };
         let dir = tempfile::tempdir().unwrap();

@@ -471,6 +471,26 @@ mod tests {
         use komponist_engine::MAX_PDC_FRAMES;
         use komponist_model::edits::{self, NewDevice, NewTrack};
         use komponist_model::{ChannelRef, DeviceRole, Project};
+        use std::time::Duration;
+
+        let wait_for_shortfall = |app: &mut App, expected| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                app.step();
+                let actual = app
+                    .engine()
+                    .program()
+                    .map(|program| program.routing.pdc_shortfall);
+                if actual == Some(expected) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "expected a PDC shortfall of {expected} frames, got {actual:?}"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
 
         let track = NewTrack {
             name: None,
@@ -512,7 +532,7 @@ mod tests {
 
         for lang in [Lang::De, Lang::En] {
             let mut app = App::headless(project.clone()).with_lang(lang);
-            app.step();
+            wait_for_shortfall(&mut app, frames);
             let warning = lang.status_pdc_shortfall(frames);
             let status = model(&app, Instant::now());
             assert_eq!(status.left, warning);
@@ -544,8 +564,7 @@ mod tests {
                 device,
                 bypass: true,
             }));
-            app.step();
-            assert_eq!(app.engine().program().unwrap().routing.pdc_shortfall, 0);
+            wait_for_shortfall(&mut app, 0);
             assert_ne!(model(&app, Instant::now()).left, warning);
         }
     }
