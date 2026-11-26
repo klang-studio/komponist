@@ -70,13 +70,13 @@ fn note_peak_with_tail(sync: &mut EngineSync, track: TrackId, key: u8, tail_fram
         key,
         velocity: 100,
     });
-    let (l, r) = sync.run_held_capture(9600, &[], 0).expect("held engine");
+    let (l, r) = sync.render_held(9600).expect("held engine");
     sync.send(Command::LiveNote {
         track,
         key,
         velocity: 0,
     });
-    sync.run_held(tail_frames, &[], 0);
+    sync.render_held(tail_frames);
     l.iter().chain(&r).fold(0.0_f32, |m, s| m.max(s.abs()))
 }
 
@@ -248,7 +248,8 @@ fn wait_for_state(sync: &mut EngineSync, device: DeviceId) {
     });
 }
 
-/// Keep the live processors but wait for their audio blocks outside real-time deadlines.
+/// Keep the live processors in offline mode, like an export. The probes render the held engine
+/// offline (`render_held`), so they wait for every bridge block instead of a deadline (#347).
 fn hold_offline(sync: &mut EngineSync, devices: &[DeviceId]) {
     sync.hold_engine().expect("engine held");
     sync.host_mut().set_render_mode(RenderMode::Offline);
