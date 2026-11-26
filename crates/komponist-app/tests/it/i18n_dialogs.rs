@@ -395,11 +395,8 @@ fn the_unsaved_changes_prompt_speaks_english() {
 fn a_new_project_and_the_template_are_named_in_english() {
     assert_eq!(new_project::empty_project(Lang::En).name, "Untitled");
     assert_eq!(new_project::empty_project(Lang::De).name, "Unbenannt");
-    let p = {
-        let (drums, hexa) =
-            new_project::template_instruments(&komponist_plugins::Catalog::builtin()).unwrap();
-        new_project::template(Lang::En, drums, hexa)
-    };
+    let instrument = komponist_app::app::hexa_ref();
+    let p = new_project::template(Lang::En, instrument.clone(), instrument);
     assert_eq!(p.name, "Beat Sketch");
     // The "From Template" button carries the template's name as its hint.
     assert_eq!(en::NEW_PROJECT_TEMPLATE_NAME, "Beat Sketch");
