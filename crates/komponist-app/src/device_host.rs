@@ -1421,178 +1421,130 @@ impl DeviceHost for PluginHost {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use komponist_model::fixtures::demo_project;
+    use crate::app::App;
+    use komponist_model::plugin_assets::AssetLink;
 
     const SETUP: ProcessorSetup = ProcessorSetup {
         sample_rate: 48_000.0,
         max_block: komponist_engine::MAX_BLOCK,
     };
 
-    #[test]
-    fn hexa_plays_and_everything_else_is_missing() {
-        let project = demo_project();
-        let mut host = BuiltinHost::new();
-        let mut made = Vec::new();
-        for track in &project.tracks {
-            for device in &track.channel.devices {
-                let p = host.create_processor(device, SETUP);
-                made.push((
-                    device.plugin.name.clone(),
-                    p.is_some(),
-                    host.status(device.id),
-                ));
-            }
-        }
-        for (name, has_processor, status) in &made {
-            if name == "Hexa" || name == komponist_sampler::NAME {
-                assert!(has_processor);
-                assert_eq!(*status, DeviceStatus::Ok);
-            } else {
-                assert!(!has_processor, "{name}");
-                assert_eq!(*status, DeviceStatus::Missing, "{name}");
-            }
-        }
-        let events = host.poll();
-        assert_eq!(events.len(), made.len(), "one status event per device");
-        assert!(host.poll().is_empty());
-        // Unknown devices are Ok, released devices forgotten.
-        let lead = &project.tracks[2].channel.devices[0];
-        host.release(lead.id);
-        assert_eq!(host.status(lead.id), DeviceStatus::Ok);
-        assert_eq!(host.latency(lead.id), 0);
-    }
-
-    #[test]
-    fn the_builtin_host_offers_hexa_and_reports_the_rest_missing() {
-        let project = demo_project();
-        let mut host = BuiltinHost::new();
-        let names: Vec<&str> = host
-            .catalog()
+    fn shipped(host: &PluginHost, name: &str) -> Option<PluginRef> {
+        let id = format!("org.klang-studio.komponist.{name}");
+        host.catalog()
             .entries()
             .iter()
-            .map(|e| e.plugin.name.as_str())
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "Hexa",
-                "Klopfer",
-                "EQ",
-                "Delay",
-                "Hall",
-                "Limiter",
-                "Presse",
-                "Arpeggiator",
-                "Tonleiter",
-                "Volt",
-                "Surf",
-                "Sampler",
-            ]
-        );
+            .find(|entry| {
+                entry.plugin.id == id && komponist_plugins::requires_bundled(&entry.plugin)
+            })
+            .map(|entry| entry.plugin.clone())
+    }
+
+    #[test]
+    fn the_fixture_catalog_resolves_shipped_devices_and_reports_unavailable_plugins() {
+        let mut host = App::headless_plugin_host();
+        let Some(hexa) = shipped(&host, "hexa") else {
+            eprintln!(
+                "skipping: build the verified CLAP fixtures with scripts/build-test-plugins.sh"
+            );
+            return;
+        };
+        assert_eq!(host.catalog().entries().len(), 12);
+        assert_eq!(host.role(&hexa), Some(DeviceRole::Instrument));
+        let mut unavailable = hexa.clone();
+        unavailable.id = "de.klang-studio.test.unavailable".into();
+        unavailable.module = "not-installed.clap".into();
+        let (project, _) = komponist_model::edits::add_track(
+            &Project::new("Fixture inventory"),
+            komponist_model::edits::NewTrack {
+                name: None,
+                hue: None,
+                instrument: Some(unavailable.clone()),
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(host.role(&unavailable), None);
         let missing = host.missing_plugins(&project);
-        let in_process = project
-            .tracks
-            .iter()
-            .flat_map(|t| &t.channel.devices)
-            .filter(|d| is_in_process(d))
-            .count();
-        let all = project
-            .tracks
-            .iter()
-            .map(|t| t.channel.devices.len())
-            .sum::<usize>();
-        assert_eq!(missing.len(), all - in_process);
-        assert!(missing.iter().all(|m| m.plugin.name != "Hexa"));
-        // Drums: the Sampler (in process) is at index 0, so the compressor behind it is the
-        // first missing device.
-        assert_eq!(missing[0].track, Some(project.tracks[0].id));
-        assert_eq!(missing[0].index, 1);
-        assert_eq!(missing[0].role, DeviceRole::Effect);
-        // No plugin manager: no parameters, no GUI, no scan.
-        let device = project.tracks[0].channel.devices[0].id;
-        assert!(host.params(device).is_none());
-        assert!(!host.set_param(device, 0, 0.5));
-        assert!(!host.has_gui(device));
-        assert!(
-            host.open_gui(device, GuiTarget::X11Child { xid: 1, scale: 1.0 })
-                .is_err()
-        );
-        host.start_scan(&PluginDirs::defaults());
-        assert!(!host.is_scanning() && !host.needs_polling());
-        assert!(host.snapshot_states(Duration::ZERO).is_empty());
-    }
-}
-
-#[cfg(test)]
-mod sampler_tests {
-    use super::*;
-    use komponist_audiofile::fixtures as testkit;
-    use komponist_model::DeviceRole;
-    use komponist_sampler::{SampleLink, links};
-
-    const SETUP: ProcessorSetup = ProcessorSetup {
-        sample_rate: 48_000.0,
-        max_block: komponist_engine::MAX_BLOCK,
-    };
-
-    fn sampler_device(state: Option<Vec<u8>>) -> Device {
-        Device {
-            id: DeviceId(7),
-            role: DeviceRole::Instrument,
-            plugin: Internal::Sampler.plugin_ref(),
-            bypass: false,
-            parameter_bases: Default::default(),
-            asset_links: Default::default(),
-            state: state.map(Arc::from),
-            sidechain: None,
-        }
-    }
-
-    #[test]
-    fn the_demo_names_the_sampler_like_the_builtin() {
-        let drums = &komponist_model::fixtures::demo_project().tracks[0]
-            .channel
-            .devices[0];
-        let own = Internal::Sampler.plugin_ref();
-        assert_eq!(
-            (&drums.plugin.format, &drums.plugin.id),
-            (&own.format, &own.id)
-        );
-        assert_eq!(drums.plugin.name, sampler::NAME);
-    }
-
-    #[test]
-    fn a_sampler_is_loading_until_its_samples_are_in_and_reports_its_pad_names() {
-        let dir = std::env::temp_dir().join(format!("kp-host-sampler-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let kit = testkit::write_kit(&dir).unwrap();
-        let mut state = None;
-        for (pad, path) in kit.iter().take(2).enumerate() {
-            state = Some(links::write(
-                state.as_deref(),
-                pad,
-                Some(&SampleLink::new(path, None)),
-            ));
-        }
-        let device = sampler_device(state);
-        let mut host = BuiltinHost::new();
-        host.set_project_dir(Some(dir.clone()));
-        assert!(host.create_processor(&device, SETUP).is_some());
-        let handle = host.sampler(device.id).expect("a sampler").clone();
-        assert!(handle.wait_idle(std::time::Duration::from_secs(5)));
-        // Once the loader is idle the next poll says Ok.
-        host.poll();
-        assert_eq!(host.status(device.id), DeviceStatus::Ok);
-        // The pads that hold a sample name their notes; the empty ones report none.
-        let names: Vec<(u8, &str)> = host
-            .note_names(device.id)
-            .iter()
-            .map(|n| (n.key, n.name.as_str()))
-            .collect();
-        assert_eq!(names, [(36, "Kick"), (37, "Snare")]);
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].plugin, unavailable);
+        assert_eq!(missing[0].role, DeviceRole::Instrument);
+        let device = &project.tracks[0].channel.devices[0];
+        assert!(host.create_processor(device, SETUP).is_none());
+        assert_eq!(host.status(device.id), DeviceStatus::Missing);
+        assert!(host.params(device.id).is_none());
+        assert!(!host.has_gui(device.id));
         host.release(device.id);
-        assert!(host.sampler(device.id).is_none());
-        assert!(host.note_names(device.id).is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(host.status(device.id), DeviceStatus::Ok);
+    }
+
+    #[test]
+    fn the_shipped_sampler_loads_linked_audio_into_its_authored_pad_bank() {
+        use komponist_ipc::device_assets::AssetStatus;
+        use std::time::Instant;
+
+        let host = App::headless_plugin_host();
+        let Some(sampler) = shipped(&host, "sampler") else {
+            eprintln!(
+                "skipping: build the verified CLAP fixtures with scripts/build-test-plugins.sh"
+            );
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let kit = komponist_audiofile::fixtures::write_kit(dir.path()).unwrap();
+        let (project, _) = komponist_model::edits::add_track(
+            &Project::new("Sampler assets"),
+            komponist_model::edits::NewTrack {
+                name: None,
+                hue: None,
+                instrument: Some(sampler),
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        let device = project.tracks[0].channel.devices[0].id;
+        let links = kit
+            .iter()
+            .take(2)
+            .enumerate()
+            .map(|(pad, path)| (pad as u32, AssetLink::new(path, None)))
+            .collect();
+        let project =
+            komponist_model::edits::set_device_asset_links(&project, device, links).unwrap();
+        let mut app = App::headless(project);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            app.step();
+            let host = app.engine().host();
+            if host.status(device) == DeviceStatus::Ok
+                && host.asset_slots(device).is_some_and(|assets| {
+                    assets
+                        .slots
+                        .iter()
+                        .filter(|slot| slot.status == AssetStatus::Ready)
+                        .count()
+                        == 2
+                })
+            {
+                let layout = host.native_layout(device).unwrap();
+                let bank = layout.pad_bank.as_ref().unwrap();
+                assert_eq!(
+                    bank.pads
+                        .iter()
+                        .take(2)
+                        .map(|pad| pad.note)
+                        .collect::<Vec<_>>(),
+                    [36, 37]
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the sampler fixture did not load its kit"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
