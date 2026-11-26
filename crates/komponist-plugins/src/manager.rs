@@ -446,7 +446,24 @@ impl PluginManager {
             false,
             Vec::new(),
         );
-        manager.start_bundled_scan();
+        let ready = manager.bundled_clap.as_ref().is_some_and(|bundled| {
+            bundled.bundle_entries().all(|(path, id)| {
+                manager
+                    .cache
+                    .lookup(path, crate::scan::bundle_mtime(path))
+                    .is_some_and(|entry| {
+                        entry.preset_discovery_complete
+                            && entry.descriptors.iter().any(|descriptor| {
+                                descriptor.format == komponist_ipc::PluginFormat::Clap
+                                    && descriptor.bundle == path
+                                    && descriptor.id == id
+                            })
+                    })
+            })
+        });
+        if !ready {
+            manager.start_bundled_scan();
+        }
         Ok(manager)
     }
 
