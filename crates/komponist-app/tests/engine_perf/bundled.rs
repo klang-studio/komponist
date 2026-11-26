@@ -354,6 +354,7 @@ fn bundled_clap_startup_and_memory() {
             std::thread::sleep(Duration::from_micros(200));
         }
         let elapsed = started.elapsed();
+        let create = created.elapsed();
         assert!(
             host.bridge_pid(device.id).is_none(),
             "{id} must run in-process"
@@ -367,7 +368,7 @@ fn bundled_clap_startup_and_memory() {
             "device: {slug} load_ms={:.2} prepare_ms={:.2} create_ms={:.2} rss_delta_mib={}",
             elapsed.as_secs_f64() * 1e3,
             prepare.as_secs_f64() * 1e3,
-            created.elapsed().as_secs_f64() * 1e3,
+            create.as_secs_f64() * 1e3,
             mib_value(delta)
         );
         processors.push(processor);

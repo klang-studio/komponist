@@ -390,7 +390,7 @@ frames (2.67 ms period), keys held, one thread, `voices` at 16. Only `Processor:
 (buffers and context are made before the clock starts). Three runs; the table gives the range. The
 budget of the proposal is at most 1.5 × Volt, without a measurement margin.
 
-| Case | Keys | Surf | Share of 2.67 ms | Volt | Surf / Volt | Budget |
+| Case | Keys | Surf | 55.2 ms | 49.8 ms | 5.5 ms | 16.6 MiB |
 |---|---|---|---|---|---|---|
 | Unison 1 | 8 | 44–47 µs | 1.7–1.8 % | 30–32 µs | 1.48–1.54 | exceeded in 1 of 3 runs |
 | Unison 1 | 16 | 89–92 µs | 3.3–3.4 % | 58–62 µs | 1.49–1.56 | exceeded in 2 of 3 runs |
@@ -619,29 +619,29 @@ Arch Linux, kernel 7.2.14-arch1-1, NVMe build folder), release build from a pack
 
 | | Result |
 |---|---|
-| Catalog scan, cold cache (12 bundles) | 77 ms |
+| Catalog scan, cold cache (12 bundles) | 76 ms |
 | Catalog scan, warm cache | 2 ms |
-| Load of all 12 devices in one process (library load, instance creation to `Ok`, summed) | 148 ms |
-| Resident memory before loading | 11.5 MiB |
+| Load of all 12 devices in one process (library load, instance creation to `Ok`, summed) | 146 ms |
+| Resident memory before loading | 11.6 MiB |
 | Resident memory added by all 12 devices | +46.6 MiB |
 
 | Device | Load (alone) | of which prepare (library) | of which create | Resident added (alone) |
 |---|---|---|---|---|
-| Hall | 6.4 ms | 3.9 ms | 2.5 ms | 4.0 MiB |
-| Delay | 6.5 ms | 3.7 ms | 2.9 ms | 5.4 MiB |
-| EQ | 7.8 ms | 4.7 ms | 2.9 ms | 4.2 MiB |
-| Presse | 6.5 ms | 4.2 ms | 2.6 ms | 4.1 MiB |
-| Limiter | 5.4 ms | 3.5 ms | 1.8 ms | 3.6 MiB |
-| Hexa | 13.0 ms | 7.9 ms | 5.0 ms | 5.4 MiB |
+| Hall | 5.9 ms | 3.8 ms | 2.2 ms | 3.9 MiB |
+| Delay | 7.4 ms | 4.2 ms | 3.3 ms | 5.3 MiB |
+| EQ | 7.6 ms | 4.8 ms | 2.8 ms | 4.2 MiB |
+| Presse | 6.1 ms | 4.0 ms | 2.2 ms | 4.1 MiB |
+| Limiter | 5.2 ms | 3.5 ms | 1.8 ms | 3.5 MiB |
+| Hexa | 12.9 ms | 8.0 ms | 4.8 ms | 5.3 MiB |
 | Volt | 12.2 ms | 7.8 ms | 4.5 ms | 5.0 MiB |
 | Surf | 55.0 ms | 49.5 ms | 5.5 ms | 16.6 MiB |
-| Klopfer | 17.8 ms | 11.2 ms | 6.4 ms | 5.4 MiB |
-| Sampler | 14.3 ms | 9.3 ms | 4.7 ms | 4.9 MiB |
-| Arpeggiator | 6.2 ms | 4.0 ms | 2.3 ms | 3.2 MiB |
-| Scale | 6.0 ms | 3.8 ms | 2.2 ms | 3.2 MiB |
+| Klopfer | 17.9 ms | 11.6 ms | 6.3 ms | 5.4 MiB |
+| Sampler | 14.4 ms | 9.6 ms | 5.1 ms | 4.9 MiB |
+| Arpeggiator | 5.6 ms | 3.6 ms | 1.9 ms | 3.0 MiB |
+| Scale | 6.1 ms | 3.9 ms | 2.2 ms | 3.2 MiB |
 
-(An earlier run of this table started the clock after the library was loaded and reported 42 ms for all twelve; the
-memory figures did not change.)
+(Earlier runs of this table started the clock after the library was loaded (42 ms for all twelve) and took the create
+time after the memory probe; the memory figures did not change.)
 
 Reading: loading twelve devices adds about 0.15 s to the start and about 47 MiB (Surf is a third of that and the slowest to load at 55 ms), which is acceptable without loading bundles lazily. The cold scan runs once per
 install or bundle change; the warm figure is what every later start pays. The numbers are Linux x86_64 only; macOS
