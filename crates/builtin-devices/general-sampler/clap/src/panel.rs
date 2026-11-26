@@ -105,6 +105,9 @@ pub(super) fn panel() -> Panel {
     let spec = GeneralSampler::SPEC;
     let mut panel = panel_from_parts(layout, spec.params_in(Lang::En), spec.params_in(Lang::De));
     panel.device_labels = Some(komponist_bundled_clap_adapter::device_labels(&spec.catalog));
+    if cfg!(feature = "fixture-without-parameter-display") {
+        panel.parameter_display.clear();
+    }
     panel.pages[0].key = "sample".into();
     panel.pages[1].key = "modulation".into();
 
@@ -147,7 +150,6 @@ pub(super) fn panel() -> Panel {
         trim_unit: None,
     };
     Panel {
-        parameter_display: Default::default(),
         full_band_choice_labels: Default::default(),
         graph_labels: [((0, 0), waveform), ((1, 0), envelope)].into(),
         canvases: [(
@@ -245,6 +247,12 @@ mod tests {
             GeneralSampler::SPEC.params().len()
         );
         let pages = layout["pages"].as_array().unwrap();
+        if cfg!(feature = "fixture-without-parameter-display") {
+            assert!(layout.get("parameter_display").is_none());
+        } else {
+            let wire = ids["gain"].as_u64().unwrap().to_string();
+            assert_eq!(layout["parameter_display"][&wire]["unit"], "decibels");
+        }
         assert_eq!(pages.len(), 2);
         assert_eq!(pages[0]["key"], "sample");
         assert_eq!(pages[1]["key"], "modulation");

@@ -1,7 +1,7 @@
-//! The live picture of a compressor (WP-93): the UI side of the [`SampleTap`] of `presse`.
+//! The live picture of a dynamics processor from its paired telemetry tap.
 //!
-//! The device appends pairs `[level in dB, reduction in dB (≥ 0)]` while the UI looks (see
-//! `komponist_presse`). A [`GainTrace`] reads the latest four seconds of pairs at
+//! The device appends pairs `[level in dB, reduction in dB (≥ 0)]` while the UI looks.
+//! A [`GainTrace`] reads the latest four seconds of pairs at
 //! most every [`INTERVAL`] and turns them into what the card draws:
 //!
 //! - the **level point** on the transfer curve: the loudest level of the last interval,
@@ -17,7 +17,9 @@
 use std::sync::Arc;
 
 use komponist_engine::SampleTap;
-use komponist_presse::{HISTORY_SECONDS, pair_frames};
+use komponist_engine::tap::{
+    DYNAMICS_HISTORY_SECONDS as HISTORY_SECONDS, dynamics_pair_frames as pair_frames,
+};
 
 /// Columns of the history.
 pub const POINTS: usize = 128;

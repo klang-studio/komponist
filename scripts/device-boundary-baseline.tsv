@@ -82,32 +82,19 @@
 1	dependency	komponist-plugins	komponist-surf	komponist-device-core	komponist_device_core	normal	*
 1	dependency	komponist-plugins	komponist-surf	komponist-volt	komponist_volt	normal	*
 1	dependency	komponist-plugins	komponist-volt	komponist-device-core	komponist_device_core	normal	*
-1	source	crates/komponist-app/src/app.rs	BuiltinKind
-1	source	crates/komponist-app/src/app.rs	komponist_builtin
 9	source	crates/komponist-app/src/device_host.rs	BuiltinKind
 7	source	crates/komponist-app/src/device_host.rs	Internal::
 2	source	crates/komponist-app/src/device_host.rs	komponist_builtin
 3	source	crates/komponist-app/src/device_host.rs	komponist_sampler
-4	source	crates/komponist-app/src/dialogs/missing_plugins.rs	Internal::
-1	source	crates/komponist-app/src/dialogs/missing_plugins.rs	komponist_builtin
 1	source	crates/komponist-app/src/dialogs/missing_plugins.rs	komponist_sampler
 1	source	crates/komponist-app/src/dialogs/new_project.rs	Internal::
 1	source	crates/komponist-app/src/dialogs/new_project.rs	komponist_builtin
-8	source	crates/komponist-app/src/engine_sync.rs	Internal::
-3	source	crates/komponist-app/src/engine_sync.rs	komponist_builtin
-2	source	crates/komponist-app/src/engine_sync.rs	komponist_general_sampler
-1	source	crates/komponist-app/src/engine_sync.rs	komponist_hexa
-1	source	crates/komponist-app/src/engine_sync.rs	komponist_sampler
-2	source	crates/komponist-app/src/gain_trace.rs	komponist_presse
-2	source	crates/komponist-app/src/param_undo.rs	Internal::
-1	source	crates/komponist-app/src/param_undo.rs	komponist_builtin
-2	source	crates/komponist-app/src/step_rows.rs	komponist_sampler
-3	source	crates/komponist-app/src/views/automation/chooser.rs	komponist_device_core
-1	source	crates/komponist-app/src/views/browser/model.rs	komponist_device_core
+5	source	crates/komponist-app/src/engine_sync.rs	Internal::
+1	source	crates/komponist-app/src/engine_sync.rs	komponist_builtin
+1	source	crates/komponist-app/src/step_rows.rs	komponist_sampler
 2	source	crates/komponist-app/src/views/devices/cells.rs	Internal::
 2	source	crates/komponist-app/src/views/devices/cells.rs	komponist_builtin
 3	source	crates/komponist-app/src/views/devices/cells.rs	komponist_hexa
-1	source	crates/komponist-app/src/views/devices/frame.rs	komponist_device_core
 1	source	crates/komponist-app/src/views/devices/layout.rs	komponist-builtin
 4	source	crates/komponist-app/src/views/devices/model.rs	Internal::
 1	source	crates/komponist-app/src/views/devices/model.rs	komponist_builtin

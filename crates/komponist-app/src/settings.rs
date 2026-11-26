@@ -206,7 +206,7 @@ impl Favorite {
         Favorite {
             format: plugin.format,
             id: plugin.id.clone(),
-            bundled: komponist_plugins::packaged_kind(plugin).is_some(),
+            bundled: komponist_plugins::requires_bundled(plugin),
         }
     }
 
@@ -214,7 +214,7 @@ impl Favorite {
     pub fn matches(&self, plugin: &PluginRef) -> bool {
         self.format == plugin.format
             && self.id == plugin.id
-            && self.bundled == komponist_plugins::packaged_kind(plugin).is_some()
+            && self.bundled == komponist_plugins::requires_bundled(plugin)
     }
 }
 

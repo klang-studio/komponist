@@ -58,7 +58,7 @@ pub struct Open<'p> {
     pub pattern: &'p StepClip,
     /// Row names shown: the instrument's note names where it has one, else the model's.
     pub names: Vec<String>,
-    /// The label right of each row's name: sampler pad ("P1") or note name ("C2").
+    /// The label right of each row's name: pad ("P1") or note name ("C2").
     pub labels: Vec<String>,
     /// The step cursor, if it is in this clip.
     pub cursor: Option<StepCursor>,
@@ -80,10 +80,11 @@ impl<'p> Open<'p> {
         let instrument = step_rows::instrument(track);
         let note_names = step_rows::device_note_names(instrument, host);
         let names = step_rows::row_names(pattern, &note_names);
+        let bank = step_rows::pad_bank(instrument, host);
         let labels = pattern
             .rows
             .iter()
-            .map(|r| step_rows::row_label(instrument.map(|d| &d.plugin), r.note))
+            .map(|r| step_rows::device_row_label(bank, instrument.map(|d| &d.plugin), r.note))
             .collect();
         let cursor = ctx
             .ui

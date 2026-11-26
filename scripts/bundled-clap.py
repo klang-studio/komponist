@@ -131,6 +131,12 @@ def build(target, devices):
     for device in devices:
         command += ["--package", device.package]
 
+    if devices == INVENTORIES["native-fixtures"]:
+        command += ["--features", ",".join(
+            f"{device.package}/fixture-without-parameter-display"
+            for device in (KLOPFER, GENERAL_SAMPLER)
+        )]
+
     suffix = TARGET_LIB_SUFFIX[target]
     names = {device.artifact for device in devices}
     artifacts = {}

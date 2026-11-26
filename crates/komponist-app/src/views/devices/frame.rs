@@ -761,7 +761,7 @@ fn preset_menu(
         .iter()
         .zip(&groups)
         .map(|(category, group)| {
-            Entry::scrollable_submenu(komponist_device_core::category_text(t, category), group)
+            Entry::scrollable_submenu(komponist_i18n::preset_category_text(t, category), group)
         })
         .collect();
     entries.extend(entries_for(None));

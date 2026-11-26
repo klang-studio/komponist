@@ -43,7 +43,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) use komponist_builtin::{
-    BuiltinFmRouting, BuiltinKind, BuiltinProcessor, Internal, LegacyParameter, LegacyParameters,
+    BuiltinFmRouting, BuiltinKind, BuiltinProcessor, Internal, LegacyParameters,
     builtin_fm_algorithm, builtin_fm_carrier, from_legacy_clap, legacy_clap_range, to_legacy_clap,
 };
 use komponist_engine::{DeviceMeter, Processor};
@@ -102,7 +102,8 @@ pub trait DeviceHost {
     /// catalog).
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole>;
 
-    /// Device-specific presentation for an active authenticated bundled CLAP instance.
+    /// Test probe for the identity used in the packaged loader.
+    #[doc(hidden)]
     fn verified_bundled_kind(&self, _device: DeviceId) -> Option<BuiltinKind> {
         None
     }
@@ -169,18 +170,9 @@ pub trait DeviceHost {
         None
     }
 
-    /// The selected preset in the stored state, including older names.
+    /// The selected preset in the stored state and whether it has been edited.
     fn saved_preset(&self, device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
-        let native = self.native_layout(device.id);
-        komponist_plugins::presets::saved_preset(
-            device,
-            self.verified_bundled_kind(device.id),
-            presets,
-            |id| {
-                let wire = native.as_ref()?.author_ids()?.get(id)?;
-                self.param_base(device.id, *wire)
-            },
-        )
+        komponist_plugins::presets::saved_preset(device, None, presets, |_| None)
     }
 
     /// Whether a scan failed to probe the bundle of a device that is still running.
@@ -274,48 +266,6 @@ pub trait DeviceHost {
         false
     }
 
-    /// Physical controls for the authenticated Sampler editors that lack native display metadata.
-    fn sampler_editor_params(
-        &self,
-        device: DeviceId,
-        lang: komponist_i18n::Lang,
-    ) -> Option<Vec<LegacyParameter>> {
-        let native = self.native_layout(device)?;
-        if native.has_parameter_display() || !native.has_audio_asset_editor() {
-            return None;
-        }
-        let infos =
-            LegacyParameters::sampler_editor_infos(self.verified_bundled_kind(device)?, lang)?;
-        let ids = native.author_ids()?;
-        let inventory = self.params(device)?;
-        infos
-            .iter()
-            .map(|info| {
-                let wire = *ids.get(info.id.as_str())?;
-                let param = inventory.iter().find(|param| param.id == wire)?;
-                if !komponist_plugins::params::is_listed(param)
-                    || (param.min, param.max) != legacy_clap_range(info)
-                    || param.step_count != info.steps()
-                {
-                    return None;
-                }
-                let raw = self
-                    .param_value(device, wire)
-                    .map_or(param.default, |value| value.value);
-                let value = if raw == param.default {
-                    info.default
-                } else {
-                    from_legacy_clap(info, raw)
-                };
-                Some(LegacyParameter {
-                    info: info.clone(),
-                    wire,
-                    value,
-                })
-            })
-            .collect()
-    }
-
     /// The last known value and cached text. The view formats live values without cached text.
     fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {
         let _ = (device, id);
@@ -407,6 +357,19 @@ pub trait DeviceHost {
         None
     }
 
+    /// Prepare transport-dependent reference-host assets on setup, tempo changes, and edits.
+    fn prepare_device_assets(&self, _device: &Device, _tempo: f64, _edited_param: Option<u32>) {}
+
+    /// Follow embedded assets supported by the in-process reference host.
+    fn follow_embedded_assets(
+        &self,
+        _before: &Device,
+        _after: &Device,
+        _tempo: f64,
+        _project_dir: Option<&std::path::Path>,
+    ) {
+    }
+
     /// The UI side of a sampler device (loading samples, what the pads show); `None` for every
     /// other device.
     fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {
@@ -414,14 +377,11 @@ pub trait DeviceHost {
         None
     }
 
-    /// Whether a legacy sampler still needs to hand its decoded samples or stretch to audio.
-    fn sampler_is_loading(&self, device: DeviceId) -> bool {
-        self.sampler(device).is_some_and(|handle| !handle.is_idle())
-    }
-
     /// Whether the file inventory or an asset is still being prepared for rendering.
     fn render_assets_pending(&self, device: &Device) -> bool {
-        self.asset_inventory_pending(device.id)
+        self.sampler(device.id)
+            .is_some_and(|handle| !handle.is_idle())
+            || self.asset_inventory_pending(device.id)
             || self.render_asset_bindings_pending(device.id)
             || self.asset_slots(device.id).is_some_and(|inventory| {
                 inventory.slots.iter().any(|slot| {
@@ -433,7 +393,8 @@ pub trait DeviceHost {
             })
     }
 
-    fn sampler_sync_unavailable(&self, device: DeviceId) -> bool {
+    /// Whether asset preparation failed before offline rendering could begin.
+    fn render_asset_preparation_failed(&self, device: DeviceId) -> bool {
         self.sampler(device).is_some_and(|handle| {
             handle.sync_status() == Some(komponist_sampler::SyncStatus::Unavailable)
         })
@@ -823,6 +784,30 @@ impl DeviceHost for BuiltinHost {
 
     fn project_dir(&self) -> Option<PathBuf> {
         self.project_dir.clone()
+    }
+
+    fn prepare_device_assets(&self, device: &Device, tempo: f64, edited_param: Option<u32>) {
+        if let (Some(handle), Some(kind)) = (self.sampler(device.id), internal_kind(device)) {
+            kind.prepare_assets(handle, device.state.as_deref(), tempo, edited_param);
+        }
+    }
+
+    fn follow_embedded_assets(
+        &self,
+        before: &Device,
+        after: &Device,
+        tempo: f64,
+        project_dir: Option<&std::path::Path>,
+    ) {
+        if let (Some(handle), Some(kind)) = (self.sampler(after.id), internal_kind(after)) {
+            kind.follow_assets(
+                handle,
+                before.state.as_deref(),
+                after.state.as_deref(),
+                tempo,
+                project_dir,
+            );
+        }
     }
 
     fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {
@@ -1223,6 +1208,10 @@ impl DeviceHost for PluginHost {
         self.manager.prepare_clap_preset(plugin, source)
     }
 
+    fn saved_preset(&self, device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
+        self.manager.saved_preset(device, presets)
+    }
+
     fn clap_presets(&self, device: &Device) -> &[ClapPreset] {
         self.manager.clap_presets(device)
     }
@@ -1321,6 +1310,24 @@ impl DeviceHost for PluginHost {
 
     fn offline_preparation_status(&self, device: DeviceId) -> Option<OfflineStatus> {
         self.manager.offline_preparation_status(device)
+    }
+
+    fn prepare_device_assets(&self, device: &Device, tempo: f64, edited_param: Option<u32>) {
+        if let Some(reference) = &self.reference {
+            reference.prepare_device_assets(device, tempo, edited_param);
+        }
+    }
+
+    fn follow_embedded_assets(
+        &self,
+        before: &Device,
+        after: &Device,
+        tempo: f64,
+        project_dir: Option<&std::path::Path>,
+    ) {
+        if let Some(reference) = &self.reference {
+            reference.follow_embedded_assets(before, after, tempo, project_dir);
+        }
     }
 
     fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {

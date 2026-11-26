@@ -45,16 +45,6 @@ impl<'a> LegacyParameters<'a> {
         })
     }
 
-    /// Author model still used by the authenticated Sampler editors until they publish it.
-    pub fn sampler_editor_infos(verified: BuiltinKind, lang: Lang) -> Option<&'static [ParamInfo]> {
-        match verified {
-            BuiltinKind::Internal(
-                kind @ (crate::Internal::Sampler | crate::Internal::GeneralSampler),
-            ) => Some(kind.params_in(lang)),
-            _ => None,
-        }
-    }
-
     pub fn wire(&self, id: &ParamId) -> Option<u32> {
         match self.kind {
             BuiltinKind::Hexa => hexa::device::param(id).map(|p| p.wire).or_else(|| {

@@ -44,36 +44,5 @@ pub fn macro_param(
         .flags(true, modulatable)
 }
 
-/// The name of preset category `category` in `lang`. Categories are stored as their German
-/// names (`hexa_core::categories`, [`Preset::category`]); a category the catalog
-/// does not know is returned as it is. Preset names are English everywhere and not translated.
-pub fn category_text(lang: Lang, category: &str) -> &str {
-    match category {
-        "Init" => lang.preset_category_init(),
-        "Tasten" => lang.preset_category_keys(),
-        "Mallets & Glocken" => lang.preset_category_mallets(),
-        "Gezupft" => lang.preset_category_plucked(),
-        "Bass" => lang.preset_category_bass(),
-        "Blech & Holz" => lang.preset_category_winds(),
-        "Streicher & Pads" => lang.preset_category_strings_pads(),
-        "Leads" => lang.preset_category_leads(),
-        "Synth" => lang.preset_category_synth(),
-        "Effekte & Perkussion" => lang.preset_category_fx_percussion(),
-        "Verzerrt & Lo-Fi" => lang.preset_category_distorted(),
-        "Wavefolder" => lang.preset_category_wavefolder(),
-        "Rhythmisch" => lang.preset_category_rhythmic(),
-        "Filter-Operatoren" => lang.preset_category_filter_operators(),
-        "Matrix" => lang.preset_category_matrix(),
-        "Techno & House" => lang.preset_category_techno_house(),
-        "Trance & Rave" => lang.preset_category_trance_rave(),
-        "Synthbass" => lang.preset_category_synthbass(),
-        "Chiptune" => lang.preset_category_chiptune(),
-        "Ambient & Glitch" => lang.preset_category_ambient(),
-        "Lead" => lang.preset_category_lead(),
-        "Pad" => lang.preset_category_pad(),
-        "Pluck" => lang.preset_category_pluck(),
-        "Brass" => lang.preset_category_brass(),
-        "FX" => lang.preset_category_fx(),
-        other => other,
-    }
-}
+/// The localized name of a preset category.
+pub use komponist_i18n::preset_category_text as category_text;

@@ -281,18 +281,7 @@ impl View for Devices {
                     .named_pad_activity(c.device, tap, bank.pads.len(), now)
             });
             let spectrum = model::shows_spectrum(c);
-            let bundled_signal = |name| {
-                (c.bundled_editor && c.native_layout.is_none())
-                    .then(|| host.signal_tap(c.device, name))
-                    .flatten()
-            };
-            let (detector, reduction) = (bundled_signal("detector"), bundled_signal("reduction"));
-            c.analysis = if let Some(tap) = bundled_signal("spectrum") {
-                ctx.meters
-                    .named_analysis(c.device, tap, show && spectrum, now)
-            } else {
-                ctx.meters.analysis(c.device, show && spectrum, now)
-            };
+            c.analysis = ctx.meters.analysis(c.device, show && spectrum, now);
             // The compressor's level point and reduction history likewise.
             let authored_dynamics = c.native_page().is_some_and(|page| {
                 use komponist_ipc::native_layout::GraphKind;
@@ -304,21 +293,7 @@ impl View for Devices {
                 })
             });
             if model::has_dynamics_graph(c) && (!show || !authored_dynamics) {
-                c.dynamics = if show && (detector.is_some() || reduction.is_some()) {
-                    Some(
-                        ctx.meters
-                            .named_dynamics(c.device, detector, reduction, now),
-                    )
-                } else {
-                    ctx.meters.dynamics(c.device, show, now)
-                };
-            }
-            if show
-                && c.native_layout.is_none()
-                && let Some(tap) = reduction
-                && let Some(levels) = ctx.meters.named_device_levels(c.device, tap, now)
-            {
-                c.levels = Some(levels);
+                c.dynamics = ctx.meters.dynamics(c.device, show, now);
             }
             c.native_meter_levels = c
                 .native_page()

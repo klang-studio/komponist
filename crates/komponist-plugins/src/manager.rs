@@ -1560,6 +1560,20 @@ impl PluginManager {
         true
     }
 
+    /// The factory preset represented by the current saved state, if known.
+    pub fn saved_preset(&self, device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
+        let layout = self.native_layout(device.id);
+        crate::presets::saved_preset(
+            device,
+            self.verified_bundled_kind(device.id),
+            presets,
+            |id| {
+                let wire = layout?.author_ids()?.get(id)?;
+                self.param_base(device.id, *wire)
+            },
+        )
+    }
+
     /// Presets discovered for the exact bundle of a running CLAP instance.
     pub fn clap_presets(&self, device: &Device) -> &[ClapPreset] {
         let Some(entry) = self.catalog.resolve(&device.plugin) else {

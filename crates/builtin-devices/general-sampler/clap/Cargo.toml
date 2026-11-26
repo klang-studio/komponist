@@ -13,6 +13,10 @@ workspace = true
 name = "komponist_general_sampler_clap"
 crate-type = ["cdylib"]
 
+[features]
+# The external asset-editor fixtures exercise layouts without physical presentation.
+fixture-without-parameter-display = []
+
 [dependencies]
 komponist-bundled-clap-adapter.workspace = true
 komponist-device-core.workspace = true
