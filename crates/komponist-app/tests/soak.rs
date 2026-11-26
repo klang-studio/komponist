@@ -422,6 +422,15 @@ fn random_edits_during_playback_cause_no_xrun() {
         return;
     };
     let mut app = App::headless_with_midi(soak_project(&hexa), receiver);
+    let instruments: Vec<_> = app
+        .project()
+        .tracks
+        .iter()
+        .map(|track| track.channel.instrument().expect("soak instrument").1.id)
+        .collect();
+    for device in instruments {
+        common::wait_for_layout(&mut app, device);
+    }
     if let Some(workers) = std::env::var("KOMPONIST_SOAK_WORKERS")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
