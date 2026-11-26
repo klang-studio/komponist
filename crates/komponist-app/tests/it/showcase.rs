@@ -1,6 +1,6 @@
 //! The shipped demo's arrangement, authentic device state and generated assets. The packaged
-//! acceptance suite calls these checks on both host routes; the level render also has a manual
-//! historical reference mode.
+//! acceptance suite calls these checks on both host routes. The level render also runs against
+//! the verified development fixtures.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -451,11 +451,34 @@ fn check_sampler_assets(app: &mut App, project: &Project) {
     assert!(peak_db(&wav.samples) > -12.0);
 }
 
+#[test]
+fn headless_loads_a_shipped_device_from_the_verified_fixture_inventory() {
+    let host = App::headless_plugin_host();
+    let Some(hexa) = host.catalog().entries().iter().find(|entry| {
+        entry.plugin.id == "org.klang-studio.komponist.hexa" && requires_bundled(&entry.plugin)
+    }) else {
+        assert!(
+            !std::env::var_os("KOMPONIST_REQUIRE_FIXTURES").is_some_and(|value| value == "1"),
+            "verified headless fixtures are missing"
+        );
+        return;
+    };
+    let (project, _, device) = crate::common::instrument_project("Headless", hexa.plugin.clone());
+    let mut app = App::headless(project);
+    step_until(&mut app, "verified headless Hexa", |app| {
+        app.engine().host().status(device) == DeviceStatus::Ok
+    });
+    let host = app.engine().host();
+    assert!(host.verified_bundled_kind(device).is_some());
+    assert!(host.native_layout(device).is_some());
+    assert_eq!(host.bridge_pid(device), None);
+}
+
 /// Levels of the demo: renders every track alone and the master with and without the Limiter,
 /// offline (no audio device). `SHOWCASE_RENDER_DIR` names the folder for the WAV files.
 /// `cargo test -p komponist-app --test it showcase::render_levels -- --ignored --nocapture`
-/// KOMPONIST_CURRENT_BUNDLED_APP names a verified package: the shipped project and plugins are
-/// measured.
+/// The test uses the locally built verified fixtures, or the verified package named by
+/// `KOMPONIST_CURRENT_BUNDLED_APP`.
 #[test]
 #[ignore = "slow analysis, run by hand"]
 fn render_levels() {
@@ -463,14 +486,18 @@ fn render_levels() {
         .map(PathBuf::from)
         .unwrap_or_else(|| scratch("levels"));
     std::fs::create_dir_all(&out).unwrap();
-    let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP")
-        .map(PathBuf::from)
-        .expect("set KOMPONIST_CURRENT_BUNDLED_APP to the unpacked app");
-    let host = |launcher: &std::path::Path| super::bundled_current::scan(launcher, &out);
+    let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").map(PathBuf::from);
+    let host = || {
+        if let Some(launcher) = &launcher {
+            super::bundled_current::scan(launcher, &out)
+        } else {
+            App::headless_plugin_host()
+        }
+    };
     let db = |x: f32| 20.0 * x.max(1e-9).log10();
     let measure = |project: Project, name: &str, depth: BitDepth| {
         let dir = scratch(name);
-        let mut app = crate::common::app_with(project, host(&launcher));
+        let mut app = crate::common::app_with(project, host());
         crate::common::step_until(&mut app, "demo plugins", |app| {
             all_devices(app.project()).all(|device| {
                 let host = app.engine().host();
@@ -506,7 +533,7 @@ fn render_levels() {
         peak_db(&wav.samples)
     };
     let kit = out.join("kit");
-    let base = bundled_demo(&host(&launcher), &kit).unwrap();
+    let base = bundled_demo(&host(), &kit).unwrap();
     // Each track alone with its routing (the buses stay, they are silent without input), so the
     // level of Lead and Pad includes their Hall send. A sidechain whose source is gone is cleared.
     for keep in base.tracks.iter().filter(|t| !t.is_bus()) {
