@@ -503,8 +503,11 @@ fn standalone_clap_preset_round_trips_through_catalog_browser_and_bridge() {
     );
     let row = rows
         .iter()
-        .find(|row| row.name.contains("Testanhebung"))
+        .find(|row| {
+            matches!(&row.kind, model::RowKind::Preset { source: row_source, .. } if row_source == &source)
+        })
         .expect("localized name finds the preset");
+    assert!(row.name.contains("Testanhebung"));
     let actions = model::activate(row, &project, Some(track));
     let mut app = app_with(project, host);
     for action in actions {
