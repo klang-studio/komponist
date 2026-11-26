@@ -88,13 +88,42 @@
       "additionalProperties": {
         "type": "object",
         "required": ["min", "max", "default", "scale", "unit"],
+        "allOf": [
+          {
+            "if": { "required": ["step_labels"], "properties": { "step_labels": { "minProperties": 1 } } },
+            "then": { "required": ["steps"] }
+          },
+          {
+            "if": { "required": ["unit_labels"] },
+            "then": { "properties": { "unit": { "const": "none" } } }
+          },
+          {
+            "if": { "required": ["integer"], "properties": { "integer": { "const": true } } },
+            "then": { "required": ["steps"] }
+          }
+        ],
         "properties": {
           "min": { "type": "number" },
           "max": { "type": "number" },
           "default": { "type": "number" },
-          "scale": { "enum": ["linear", "logarithmic"] },
+          "scale": { "enum": ["linear", "logarithmic", "decibel_taper", "pan"] },
+          "steps": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+          "integer": { "type": "boolean" },
+          "plugin_text": { "type": "boolean" },
+          "unit_labels": { "$ref": "#/$defs/labels" },
+          "minimum_label": { "$ref": "#/$defs/labels" },
+          "maximum_label": { "$ref": "#/$defs/labels" },
+          "step_labels": {
+            "type": "object",
+            "maxProperties": 64,
+            "propertyNames": { "pattern": "^(0|[1-9][0-9]{0,9})(?![\\s\\S])" },
+            "additionalProperties": { "$ref": "#/$defs/labels" }
+          },
           "unit": {
-            "enum": ["none", "hertz", "milliseconds", "percent", "decibels", "decibel_width", "ratio"]
+            "enum": [
+              "none", "hertz", "milliseconds", "percent", "decibels", "decibel_width",
+              "ratio", "seconds", "semitones", "cents", "octaves", "meters"
+            ]
           }
         }
       }

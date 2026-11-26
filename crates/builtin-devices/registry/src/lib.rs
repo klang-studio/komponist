@@ -15,7 +15,9 @@ mod legacy_params;
 pub mod presets;
 
 pub use internal::Internal;
-pub use legacy_params::{LegacyParameter, LegacyParameters};
+pub use legacy_params::{
+    BuiltinFmRouting, LegacyParameter, LegacyParameters, builtin_fm_algorithm, builtin_fm_carrier,
+};
 
 /// Which built-in a catalog entry or project device refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

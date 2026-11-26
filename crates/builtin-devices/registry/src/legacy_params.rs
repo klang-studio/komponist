@@ -21,6 +21,19 @@ pub struct LegacyParameters<'a> {
     state: Option<&'a [u8]>,
 }
 
+pub use komponist_hexa::algorithms::Routing as BuiltinFmRouting;
+
+/// The numbered topology for the linked-in instrument's panel.
+pub fn builtin_fm_algorithm(number: usize) -> (&'static [u8], usize) {
+    let algorithms = &hexa::algorithms::ALGORITHMS;
+    let algorithm = &algorithms[number.saturating_sub(1).min(algorithms.len() - 1)];
+    (&algorithm.modulates, algorithm.feedback)
+}
+
+pub fn builtin_fm_carrier(number: usize, op: usize) -> bool {
+    hexa::device::is_carrier(number, op)
+}
+
 impl<'a> LegacyParameters<'a> {
     pub fn new(device: &'a Device) -> Option<Self> {
         Some(Self {
@@ -91,6 +104,31 @@ impl<'a> LegacyParameters<'a> {
                 .map_or(info.default, |values| values[wire as usize]),
         };
         Some(LegacyParameter { info, wire, value })
+    }
+
+    /// Static layout used by the linked-in test host.
+    pub fn card_layout(&self, lang: Lang) -> komponist_model::params::layout::DeviceLayout {
+        match self.kind {
+            BuiltinKind::Hexa => hexa::device::layout_in(lang),
+            BuiltinKind::Internal(kind) => kind.layout_in(lang).clone(),
+        }
+    }
+
+    /// Parameters displayed on the linked-in device card.
+    pub fn card(&self, lang: Lang) -> Vec<LegacyParameter> {
+        let mut params = self.all(lang);
+        if self.kind == BuiltinKind::Hexa {
+            // The standalone frame also exposes macros that the card doesn't show.
+            params.truncate(hexa::device::params_in(lang).len());
+        }
+        params
+    }
+
+    pub fn fm_routing(&self) -> Option<BuiltinFmRouting> {
+        (self.kind == BuiltinKind::Hexa).then(|| {
+            let patch = hexa::decode_state(self.state).unwrap_or_else(|_| hexa::default_patch());
+            hexa::algorithms::routing(&patch)
+        })
     }
 
     pub fn all(&self, lang: Lang) -> Vec<LegacyParameter> {

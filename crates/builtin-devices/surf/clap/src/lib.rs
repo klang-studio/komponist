@@ -209,7 +209,6 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Surf {
             reduction_taps: Default::default(),
             headings: Default::default(),
             pad_bank: None,
-            parameter_display: Default::default(),
             full_band_choice_labels: Default::default(),
             ..panel
         })

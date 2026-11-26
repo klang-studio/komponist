@@ -104,7 +104,7 @@ pub struct Panel {
     pub pad_bank: Option<PadBank>,
     /// Section labels keyed by zero-based page index.
     pub headings: BTreeMap<usize, Vec<Heading>>,
-    /// Physical ranges and units of normalized CLAP parameters, keyed by author ID.
+    /// Physical ranges and units keyed by author ID. The SDK exports entries bound by a cell.
     pub parameter_display: BTreeMap<ParamId, ParameterDisplay>,
     /// Optional full names for a selected band's compact choice labels.
     pub full_band_choice_labels: BTreeMap<ParamId, Vec<Labels>>,
@@ -483,8 +483,8 @@ pub unsafe fn compile<P: ClapPlugin>(
     let parameter_display = panel
         .parameter_display
         .iter()
-        .map(|(id, display)| Ok((resolve_id(id)?, display)))
-        .collect::<Result<BTreeMap<_, _>, LayoutError>>()?;
+        .filter_map(|(id, display)| Some((*resolved.get(id)?, display)))
+        .collect::<BTreeMap<_, _>>();
     let pad_bank = panel.pad_bank.as_ref();
     if let Some(failure) = validate(&panel.grid, &context, &|id| resolved.contains_key(id))
         .into_iter()

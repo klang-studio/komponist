@@ -20,6 +20,20 @@ def main(example_path, output_path):
     controls = Path(__file__).with_name("controls.json").read_bytes()
     layout = json.loads(controls)
 
+    presentation = copy.deepcopy(layout)
+    presentation["required_capabilities"] = ["parameter-display"]
+    presentation["parameter_display"] = {
+        "42": {
+            "min": 10,
+            "max": 1000,
+            "default": 100,
+            "scale": "logarithmic",
+            "unit": "milliseconds",
+            "plugin_text": True,
+            "minimum_label": {"en": "Off", "de": "Aus"},
+        }
+    }
+
     unknown_param = copy.deepcopy(layout)
     gain = next(
         cell
@@ -43,6 +57,7 @@ def main(example_path, output_path):
     output = [
         "/* Generated from the layout examples during the fixture build. */\n",
         declaration("control_layout", controls),
+        declaration("presentation_layout", encode(presentation)),
         declaration("unknown_param_layout", encode(unknown_param)),
         declaration("optional_field_layout", encode(optional_field)),
         declaration("required_capability_layout", encode(required_capability)),

@@ -42,7 +42,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub(crate) use komponist_builtin::{BuiltinKind, BuiltinProcessor, Internal, LegacyParameters};
+pub(crate) use komponist_builtin::{
+    BuiltinFmRouting, BuiltinKind, BuiltinProcessor, Internal, LegacyParameters,
+    builtin_fm_algorithm, builtin_fm_carrier,
+};
 use komponist_engine::{DeviceMeter, Processor};
 use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource};
 use komponist_ipc::device_assets::{
@@ -261,6 +264,16 @@ pub trait DeviceHost {
 
     /// The last known value and text of parameter `id`. Values from the plugin's own GUI arrive
     /// without text; format them in the view.
+    fn request_param_text(
+        &mut self,
+        _device: DeviceId,
+        _request: u64,
+        _id: u32,
+        _text: String,
+    ) -> bool {
+        false
+    }
+
     fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {
         let _ = (device, id);
         None
@@ -1047,6 +1060,16 @@ impl DeviceHost for PluginHost {
         key: &str,
     ) -> Option<&komponist_plugins::signal_taps::SignalTap> {
         self.manager.signal_tap(device, key)
+    }
+
+    fn request_param_text(
+        &mut self,
+        device: DeviceId,
+        request: u64,
+        id: u32,
+        text: String,
+    ) -> bool {
+        self.is_external(device) && self.manager.request_param_text(device, request, id, text)
     }
 
     fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {

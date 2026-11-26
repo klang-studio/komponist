@@ -664,6 +664,15 @@ impl HostedPlugin for ClapPlugin {
         Some(c_bytes(text))
     }
 
+    fn parse_param_text(&self, id: u32, text: &str) -> Option<f64> {
+        let params = self.ext.params?;
+        let id = ClapId::from_raw(id)?;
+        let text = std::ffi::CString::new(text).ok()?;
+        let mut instance = self.instance.borrow_mut();
+        let value = params.text_to_value(&instance.plugin_handle(), id, &text)?;
+        value.is_finite().then_some(value)
+    }
+
     fn set_param(&mut self, _id: u32, _value: f64) {
         // CLAP has no separate main-thread parameter view: the value reaches the plugin as an
         // event in the next block or through `flush_params`.

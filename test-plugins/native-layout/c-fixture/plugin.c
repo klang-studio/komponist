@@ -23,6 +23,7 @@
 
 enum variant {
     VALID,
+    PRESENTATION,
     MISSING,
     ABSENT,
     INVALID_LENGTH,
@@ -52,6 +53,7 @@ static const char *const features[] = {CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
 
 static const clap_plugin_descriptor_t descriptors[VARIANT_COUNT] = {
     [VALID] = DESCRIPTOR("valid"),
+    [PRESENTATION] = DESCRIPTOR("presentation"),
     [MISSING] = DESCRIPTOR("missing"),
     [ABSENT] = DESCRIPTOR("absent"),
     [INVALID_LENGTH] = DESCRIPTOR("invalid-length"),
@@ -127,19 +129,22 @@ static bool CLAP_ABI param_value(const clap_plugin_t *plugin, clap_id id, double
 
 static bool CLAP_ABI param_to_text(const clap_plugin_t *plugin, clap_id id, double value,
                                    char *out, uint32_t capacity) {
-    (void)plugin;
     const int index = parameter_index(id);
     if (index < 0 || !out || capacity == 0 || !isfinite(value) ||
         value < parameter_info[index].min_value || value > parameter_info[index].max_value)
         return false;
-    const int size = index == MODE ? snprintf(out, capacity, "%s", mode_labels[(int)value])
-                                   : snprintf(out, capacity, "%.3f", value);
+    const char *label = NULL;
+    if (index == MODE)
+        label = mode_labels[(int)value];
+    else if (instance(plugin)->variant == PRESENTATION && value == 0.625)
+        label = "Focus";
+    const int size = label ? snprintf(out, capacity, "%s", label)
+                           : snprintf(out, capacity, "%.3f", value);
     return size >= 0 && (uint32_t)size < capacity;
 }
 
 static bool CLAP_ABI text_to_param(const clap_plugin_t *plugin, clap_id id, const char *text,
                                    double *out) {
-    (void)plugin;
     const int index = parameter_index(id);
     if (index < 0 || !text || !out)
         return false;
@@ -151,6 +156,10 @@ static bool CLAP_ABI text_to_param(const clap_plugin_t *plugin, clap_id id, cons
             }
         }
         return false;
+    }
+    if (instance(plugin)->variant == PRESENTATION && strcmp(text, "Focus") == 0) {
+        *out = 0.625;
+        return true;
     }
     char *end;
     const double value = strtod(text, &end);
@@ -219,6 +228,10 @@ static uint32_t CLAP_ABI get_layout(const clap_plugin_t *plugin, uint8_t *buffer
     const uint8_t *payload = control_layout;
     uint32_t size = sizeof(control_layout);
     switch (instance(plugin)->variant) {
+    case PRESENTATION:
+        payload = presentation_layout;
+        size = sizeof(presentation_layout);
+        break;
     case ABSENT:
         return KOMPONIST_CLAP_LAYOUT_ABSENT;
     case INVALID_LENGTH:

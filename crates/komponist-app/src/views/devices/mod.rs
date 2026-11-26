@@ -118,6 +118,10 @@ impl View for Devices {
                 .filter(|mapping| matches!(&mapping.target, komponist_model::automation::AutomationTarget::Param { device, .. } if *device == c.device))
                 .count();
             for param in &mut c.params {
+                let display = c
+                    .native_layout
+                    .as_ref()
+                    .and_then(|layout| layout.parameter_display(param.wire));
                 let target = komponist_model::automation::AutomationTarget::Param {
                     device: c.device,
                     param: param.project_id(c.bundled_editor),
@@ -129,11 +133,15 @@ impl View for Devices {
                     .flatten();
                 let driven = control.as_ref().and_then(|control| control.driver.as_ref());
                 if let Some(driver) = driven {
-                    param.value =
-                        param.value_at_normalized(c.bundled_editor, f64::from(driver.value));
+                    param.value = param.display_at_position(
+                        display,
+                        c.bundled_editor,
+                        f64::from(driver.value),
+                    );
                     param.text = param.info.format(param.value);
                 } else if let Some(value) = ctx.automation_value(owner, &target) {
-                    param.value = param.value_at_normalized(c.bundled_editor, f64::from(value));
+                    param.value =
+                        param.display_at_position(display, c.bundled_editor, f64::from(value));
                     param.text = param.info.format(param.value);
                     let ink = if ctx
                         .automation_capture

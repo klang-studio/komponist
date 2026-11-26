@@ -10,7 +10,6 @@
 //! (selected pad, held reduction) in egui memory until the device runtime (WP-85, WP-87) feeds it.
 
 use egui::{Id, Rect, Role, Sense, Ui, WidgetInfo};
-use komponist_hexa::algorithms::ALGORITHMS;
 use komponist_i18n::Lang;
 use komponist_ipc::device_assets::{AssetKind, AssetStatus};
 use komponist_model::DeviceId;
@@ -38,12 +37,10 @@ use komponist_ui::widgets::device::pad_grid::{Pad, PadGrid};
 use komponist_ui::widgets::dropdown::Item;
 use komponist_ui::widgets::number_field::{open_value_entry, parse_number};
 use komponist_ui::{fonts, px};
-use komponist_volt as volt;
 
 use super::asset_waveform::{self, TrimScale};
 use super::layout::{
-    BAND, Cell, CellParam, ENV_OP, ENV_VIEW, GraphBinding, GraphConfig, LFO_VIEW, OSC_VIEW, SEL,
-    WidgetKind,
+    BAND, Cell, CellParam, ENV_OP, GraphBinding, GraphConfig, LFO_VIEW, OSC_VIEW, SEL, WidgetKind,
 };
 use super::metrics;
 use super::model::{self, Card, Param};
@@ -62,14 +59,24 @@ fn context_id(device: DeviceId) -> Id {
 /// The placeholders a device's layout resolves with until a view sets them: operator 1, band 1,
 /// pad 1.
 pub(super) fn default_context() -> ParamContext {
-    let mut ctx = ParamContext::new()
+    ParamContext::new()
         .with(ENV_OP, 1)
         .with(BAND, 1)
-        .with(SEL, 1);
-    // volt's switches start on their first entry (Amp envelope, LFO 1), surf's on oscillator A.
-    choose(&mut ctx, ENV_VIEW, volt::ENVELOPES, 0);
-    choose(&mut ctx, LFO_VIEW, volt::LFOS, 0);
-    choose(&mut ctx, OSC_VIEW, komponist_surf::OSCILLATORS, 0);
+        .with(SEL, 1)
+}
+
+/// Populate a panel's named choices before any selector has been used.
+pub(super) fn with_choice_defaults(
+    mut ctx: ParamContext,
+    layout: &super::layout::DeviceLayout,
+) -> ParamContext {
+    for cell in layout.pages.iter().flat_map(|page| &page.cells) {
+        if let CellParam::Choice { key, options, .. } = &cell.param
+            && ctx.get(key).is_none()
+        {
+            choose(&mut ctx, key, options, 0);
+        }
+    }
     ctx
 }
 
@@ -126,7 +133,7 @@ pub(crate) fn draw_cell(
     cell: &Cell,
     rect: Rect,
 ) {
-    let ctx = context(cu.ctx(), card.device);
+    let ctx = with_choice_defaults(context(cu.ctx(), card.device), &card.layout);
     let native = card.native_cell(cell);
     if let Some(selector) = native.and_then(|cell| cell.selector.as_ref()) {
         let layout = card.native_layout.as_ref().expect("native selector");
@@ -305,8 +312,8 @@ pub(super) fn touch(
     if let Some(control) = control {
         let range = control.driver.as_ref().map(|driver| {
             t.devices_range(
-                p.text_at(p.value_at_normalized(card.bundled_editor, f64::from(driver.range.0))),
-                p.text_at(p.value_at_normalized(card.bundled_editor, f64::from(driver.range.1))),
+                p.text_at(card.value_at_normalized(p, f64::from(driver.range.0))),
+                p.text_at(card.value_at_normalized(p, f64::from(driver.range.1))),
             )
         });
         control.decorate(cu, r, r.rect, range.as_deref());
@@ -433,10 +440,30 @@ fn split_unit(text: &str, native: bool) -> (&str, &str) {
     }
 }
 
+/// Keep a typed edit out of the frame's numeric gesture until CLAP parses it.
+fn commit_param_text(
+    out: &mut Vec<Action>,
+    card: &Card,
+    p: &Param,
+    edit: std::cell::RefCell<Option<String>>,
+    fallback: impl FnOnce(&str) -> Option<f64>,
+) {
+    if let Some(text) = edit.into_inner() {
+        let fallback = fallback(&text).map(|plain| card.wire_value(p, plain));
+        out.push(Action::Plugin(PluginAction::SetParamText {
+            device: card.device,
+            id: p.wire,
+            text,
+            fallback,
+        }));
+    }
+}
+
 /// A knob, driven in normalised space (so log and dB parameters turn evenly).
 fn knob(cu: &mut Ui, out: &mut Vec<Action>, card: &Card, cell: &Cell, p: &Param, rect: Rect) {
     let info = &p.info;
     let mut value = info.to_normalized(p.value);
+    let text_entry = std::cell::RefCell::new(None);
     let mut w = KnobCell::new(&mut value, p.name().to_owned())
         .default_value(info.default_normalized())
         .redirect(
@@ -452,6 +479,15 @@ fn knob(cu: &mut Ui, out: &mut Vec<Action>, card: &Card, cell: &Cell, p: &Param,
             }
         ))
         .format(|n| p.text_at(info.to_plain(n)));
+    if card
+        .parameter_display(p)
+        .is_some_and(|display| display.plugin_text)
+    {
+        w = w.parse(|text| {
+            text_entry.replace(Some(text.to_owned()));
+            None
+        });
+    }
     if cell.widget == WidgetKind::KnobLarge {
         w = w.large();
     }
@@ -481,6 +517,17 @@ fn knob(cu: &mut Ui, out: &mut Vec<Action>, card: &Card, cell: &Cell, p: &Param,
         true,
         r.changed().then(|| info.to_plain(value)),
     );
+    let current = p.text_at(p.value);
+    let unit = split_unit(&current, true).1;
+    commit_param_text(out, card, p, text_entry, |text| {
+        parse_number(text, unit).map(|value| {
+            if info.unit == Unit::Percent {
+                value / 100.0
+            } else {
+                value
+            }
+        })
+    });
 }
 
 /// A compact number field: plain values for integer and stepped parameters, normalised for
@@ -542,6 +589,24 @@ fn number(
             text
         }
     };
+    let text_entry = std::cell::RefCell::new(None);
+    let use_plugin_text = card
+        .parameter_display(p)
+        .is_some_and(|display| display.plugin_text);
+    let unit_scale = if unit == "%" && info.unit == Unit::Percent {
+        100.0
+    } else {
+        1.0
+    };
+    let parse_plain = |text: &str| parse_number(text, &unit).map(|value| value / unit_scale);
+    let read_text = |text: &str| {
+        if use_plugin_text {
+            text_entry.replace(Some(text.to_owned()));
+            None
+        } else {
+            parse_plain(text)
+        }
+    };
     match plain_step {
         Some(step) => {
             let mut value = p.value;
@@ -551,7 +616,8 @@ fn number(
                 .default_value(info.default)
                 .unit(unit.clone())
                 .cols(cell.cols)
-                .format(plain_text);
+                .format(plain_text)
+                .parse(read_text);
             let r = cu.put(rect, w);
             touch(
                 cu,
@@ -566,17 +632,12 @@ fn number(
         }
         None => {
             let mut value = info.to_normalized(p.value);
-            let unit_scale = if native && unit == "%" && info.unit == Unit::Percent {
-                100.0
-            } else {
-                1.0
-            };
             let w = Number::new(&mut value, p.name().to_owned())
                 .default_value(info.default_normalized())
                 .unit(unit.clone())
                 .cols(cell.cols)
                 .format(|n| plain_text(info.to_plain(n)))
-                .parse(|t| parse_number(t, &unit).map(|v| info.to_normalized(v / unit_scale)));
+                .parse(|t| read_text(t).map(|plain| info.to_normalized(plain)));
             let r = cu.put(rect, w);
             touch(
                 cu,
@@ -590,6 +651,7 @@ fn number(
             );
         }
     }
+    commit_param_text(out, card, p, text_entry, parse_plain);
     true
 }
 
@@ -800,7 +862,7 @@ fn carrier(card: &Card, cell: &Cell) -> bool {
         return if number == 0 {
             routing.outputs & (1 << op) != 0
         } else {
-            komponist_hexa::device::is_carrier(number, op)
+            crate::device_host::builtin_fm_carrier(number, op)
         };
     }
     card.param(id).is_none_or(|p| p.value >= 0.5)
@@ -1138,13 +1200,11 @@ fn fm(
     rect: Rect,
 ) {
     let t = komponist_ui::lang(cu.ctx());
-    let ctx = context(cu.ctx(), card.device);
-    let selected = selected_entry(&ctx, ENV_OP, ALGORITHMS[0].modulates.len() as u8) - 1;
+    let ctx = with_choice_defaults(context(cu.ctx(), card.device), &card.layout);
     // Algorithm 0 is free routing: the display draws the routing the patch really has.
     let value = p.map_or(1, |p| p.value.round().max(0.0) as usize);
     let free = value == 0 && card.routing.is_some();
     let number = value.max(1);
-    let algo = &ALGORITHMS[(number - 1).min(ALGORITHMS.len() - 1)];
     let routing = card.routing.filter(|_| free);
     let topology = match &routing {
         Some(r) => Topology {
@@ -1152,12 +1212,16 @@ fn fm(
             outputs: Some(r.outputs),
             feedback: r.feedback,
         },
-        None => Topology {
-            modulates: &algo.modulates,
-            outputs: None,
-            feedback: Some(algo.feedback),
-        },
+        None => {
+            let (modulates, feedback) = crate::device_host::builtin_fm_algorithm(number);
+            Topology {
+                modulates,
+                outputs: None,
+                feedback: Some(feedback),
+            }
+        }
     };
+    let selected = selected_entry(&ctx, ENV_OP, topology.modulates.len() as u8) - 1;
     let mut display = FmAlgorithm::new(number, topology, palette);
     if free {
         display = display.titled(t.devices_fm_free());

@@ -1779,6 +1779,17 @@ impl Bridge {
                 self.update_native_layout(native_layout, events);
                 events.push(PluginManagerEvent::ParamsChanged { device });
             }
+            BridgeMsg::ParamTextParsed { request, id, value } => {
+                if let Some(param) = self.params.iter().find(|param| param.id == id) {
+                    let value = value.filter(|value| (param.min..=param.max).contains(value));
+                    events.push(PluginManagerEvent::ParamTextParsed {
+                        device,
+                        request,
+                        id,
+                        value,
+                    });
+                }
+            }
             BridgeMsg::ParamValues(values) => {
                 for value in values {
                     if !self.params.iter().any(|param| param.id == value.id) {

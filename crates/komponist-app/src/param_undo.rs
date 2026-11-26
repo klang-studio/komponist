@@ -75,6 +75,8 @@ const TURN_LABEL: Duration = Duration::from_secs(5);
 pub(crate) struct ParamUndo {
     /// How long snapshots of one device amend one step ([`COALESCE`]; tests shorten it).
     window: Duration,
+    next_text_edit: u64,
+    text_edits: HashMap<(DeviceId, u32), (u64, Option<f64>)>,
     /// The device of the open parameter gesture.
     gesture_device: Option<DeviceId>,
     /// Bridged devices a parameter was turned on inside the open gesture.
@@ -107,6 +109,8 @@ impl Default for ParamUndo {
     fn default() -> Self {
         ParamUndo {
             window: COALESCE,
+            next_text_edit: 0,
+            text_edits: HashMap::new(),
             gesture_device: None,
             gesture_bridged: BTreeSet::new(),
             macro_gesture: BTreeSet::new(),
@@ -123,15 +127,25 @@ impl Default for ParamUndo {
 }
 
 impl ParamUndo {
+    pub(crate) fn cancel_text_edits(&mut self, device: DeviceId) {
+        self.text_edits.retain(|(owner, _), _| *owner != device);
+    }
+
+    pub(crate) fn cancel_text_edit(&mut self, device: DeviceId, id: u32) {
+        self.text_edits.remove(&(device, id));
+    }
+
     /// A new document: device ids restart, nothing carries over.
     pub(crate) fn forget(&mut self) {
         *self = ParamUndo {
             window: self.window,
+            next_text_edit: self.next_text_edit,
             ..ParamUndo::default()
         };
     }
 
     fn forget_device(&mut self, device: DeviceId) {
+        self.cancel_text_edits(device);
         if self.gesture_device == Some(device) {
             self.gesture_device = None;
         }
@@ -299,6 +313,50 @@ impl App {
         }
         for (device, state) in std::mem::take(&mut self.param_undo.deferred) {
             self.store_snapshot(device, &state);
+        }
+    }
+
+    pub(crate) fn set_param_text(
+        &mut self,
+        device: DeviceId,
+        id: u32,
+        text: String,
+        fallback: Option<f64>,
+    ) {
+        self.param_undo.cancel_text_edit(device, id);
+        self.param_undo.next_text_edit = self.param_undo.next_text_edit.wrapping_add(1);
+        let request = self.param_undo.next_text_edit;
+        if self
+            .engine
+            .host_mut()
+            .request_param_text(device, request, id, text)
+        {
+            self.param_undo
+                .text_edits
+                .insert((device, id), (request, fallback));
+        } else if let Some(value) = fallback {
+            self.dispatch(crate::actions::Action::Plugin(
+                crate::actions::PluginAction::SetParam { device, id, value },
+            ));
+        }
+    }
+
+    pub(crate) fn finish_param_text(
+        &mut self,
+        device: DeviceId,
+        id: u32,
+        request: u64,
+        value: Option<f64>,
+    ) {
+        if let Some(&(current, fallback)) = self.param_undo.text_edits.get(&(device, id))
+            && current == request
+        {
+            self.param_undo.cancel_text_edit(device, id);
+            if let Some(value) = value.or(fallback) {
+                self.dispatch(crate::actions::Action::Plugin(
+                    crate::actions::PluginAction::SetParam { device, id, value },
+                ));
+            }
         }
     }
 
@@ -702,6 +760,7 @@ impl App {
             if (old.state != device.state || old.parameter_bases != device.parameter_bases)
                 && LegacyParameters::new(device).is_none()
             {
+                self.param_undo.cancel_text_edits(device.id);
                 self.forget_param_edits(device.id);
                 if komponist_plugins::packaged_kind(&device.plugin).is_some() {
                     self.param_undo.awaiting.remove(&device.id);

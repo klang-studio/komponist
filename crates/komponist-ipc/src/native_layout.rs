@@ -60,12 +60,26 @@ impl fmt::Display for LayoutError {
 /// Localized labels keyed by a document locale tag.
 pub type Labels = BTreeMap<String, String>;
 
-/// Mapping from a continuous CLAP parameter's normalized value to its display range.
+/// Mapping between a parameter's display value and the position of its control.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayScale {
     Linear,
     Logarithmic,
+    DecibelTaper,
+    Pan,
+}
+
+impl DisplayScale {
+    pub fn model_scale(self) -> komponist_model::params::Scale {
+        use komponist_model::params::Scale;
+        match self {
+            Self::Linear => Scale::Lin,
+            Self::Logarithmic => Scale::Log,
+            Self::DecibelTaper => Scale::Db,
+            Self::Pan => Scale::Pan,
+        }
+    }
 }
 
 /// Unit used when describing the physical display value.
@@ -79,9 +93,14 @@ pub enum DisplayUnit {
     Decibels,
     DecibelWidth,
     Ratio,
+    Seconds,
+    Semitones,
+    Cents,
+    Octaves,
+    Meters,
 }
 
-/// Presentation of a normalized CLAP parameter within a device panel.
+/// Presentation of a physical value for a CLAP parameter referenced by a device panel.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ParameterDisplay {
     min: Number,
@@ -89,6 +108,26 @@ pub struct ParameterDisplay {
     default: Number,
     pub scale: DisplayScale,
     pub unit: DisplayUnit,
+    /// A positive interval count describes stepped CLAP indices with an evenly spaced display range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u32>,
+    /// Use integer number formatting for whole-valued displays.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub integer: bool,
+    /// Prefer the plugin's CLAP text to deterministic unit formatting.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plugin_text: bool,
+    /// A localized suffix for a display with no standard unit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_labels: Option<Labels>,
+    /// A localized text for a named endpoint, such as the Off position of a time control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_label: Option<Labels>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_label: Option<Labels>,
+    /// Optional localized names for individual CLAP step indices.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub step_labels: BTreeMap<u32, Labels>,
 }
 
 impl ParameterDisplay {
@@ -105,8 +144,22 @@ impl ParameterDisplay {
             default: Number::from_f64(default)?,
             scale,
             unit,
+            steps: None,
+            integer: false,
+            plugin_text: false,
+            unit_labels: None,
+            minimum_label: None,
+            maximum_label: None,
+            step_labels: BTreeMap::new(),
         };
         display.valid().then_some(display)
+    }
+
+    /// Describe a physical range mapped over consecutive CLAP step indices.
+    pub fn stepped(mut self, steps: u32, integer: bool) -> Option<Self> {
+        self.steps = Some(steps);
+        self.integer = integer;
+        self.valid().then_some(self)
     }
 
     pub fn range(&self) -> (f64, f64) {
@@ -126,14 +179,30 @@ impl ParameterDisplay {
             && (max - min).is_finite()
             && (min..=max).contains(&self.default_value())
             && (self.scale != DisplayScale::Logarithmic || min > 0.0 && (max / min).is_finite())
+            && self.steps.is_none_or(|steps| steps > 0)
+            && (self.unit_labels.is_none() || self.unit == DisplayUnit::None)
+            && self.step_labels.len() <= 64
+            && self
+                .step_labels
+                .keys()
+                .all(|&step| self.steps.is_some_and(|last| step <= last))
+            && (!self.integer
+                || self
+                    .steps
+                    .is_some_and(|steps| max - min == f64::from(steps))
+                    && min >= f64::from(i32::MIN)
+                    && max <= f64::from(i32::MAX)
+                    && min.fract() == 0.0
+                    && self.default_value().fract() == 0.0)
     }
 
-    fn normalized_default(&self) -> f64 {
+    fn wire_default(&self) -> f64 {
         let (min, max) = self.range();
         let default = self.default_value();
-        match self.scale {
-            DisplayScale::Linear => (default - min) / (max - min),
-            DisplayScale::Logarithmic => (default / min).ln() / (max / min).ln(),
+        if let Some(steps) = self.steps {
+            ((default - min) / ((max - min) / f64::from(steps))).round()
+        } else {
+            komponist_model::params::to_normalized(self.scale.model_scale(), min, max, default)
         }
     }
 }
@@ -867,6 +936,19 @@ impl NativeLayout {
             check((1..=4).contains(&self.pages.len()), "page count")?;
         }
         self.validate_metadata(&locales)?;
+        for display in self.parameter_display.values() {
+            for labels in [
+                &display.unit_labels,
+                &display.minimum_label,
+                &display.maximum_label,
+            ]
+            .into_iter()
+            .flatten()
+            .chain(display.step_labels.values())
+            {
+                self.validate_labels(labels, &locales, true)?;
+            }
+        }
         let mut keys = BTreeSet::new();
         let mut canvas_keys = BTreeSet::new();
         let max_columns = 14;
@@ -1428,9 +1510,13 @@ impl NativeLayout {
                 .get(&id)
                 .ok_or(LayoutError::Invalid("unknown parameter display ID"))?;
             check(
-                (param.min, param.max, param.step_count) == (0.0, 1.0, 0)
-                    && (param.default - display.normalized_default()).abs()
-                        <= f64::from(f32::EPSILON)
+                (param.min, param.max, param.step_count)
+                    == (
+                        0.0,
+                        f64::from(display.steps.unwrap_or(1)),
+                        display.steps.unwrap_or(0),
+                    )
+                    && (param.default - display.wire_default()).abs() <= f64::from(f32::EPSILON)
                     && self
                         .pages
                         .iter()
@@ -1899,6 +1985,46 @@ mod tests {
             parse(&value).is_err(),
             "logarithmic bounds must be positive"
         );
+    }
+
+    #[test]
+    fn physical_steps_require_matching_inventory_and_valid_localized_labels() {
+        use serde_json::json;
+
+        let mut value: Value = serde_json::from_slice(EXAMPLE).unwrap();
+        value["required_capabilities"] = json!(["parameter-display"]);
+        value["parameter_display"] = json!({
+            "42": {
+                "min": -2, "max": 2, "default": 0, "steps": 4, "integer": true,
+                "scale": "linear", "unit": "none",
+                "unit_labels": {"en": "oct", "de": "Okt."},
+                "step_labels": { "2": {"en": "Neutral", "de": "Mitte"} }
+            }
+        });
+        let parse = |value: &Value| NativeLayout::parse(&serde_json::to_vec(value).unwrap());
+        let layout = parse(&value).unwrap();
+        let display = layout.parameter_display(42).unwrap();
+        assert_eq!(layout.label(&display.step_labels[&2], "de"), Some("Mitte"));
+        assert_eq!(
+            layout.label(display.unit_labels.as_ref().unwrap(), "de"),
+            Some("Okt.")
+        );
+
+        let mut position = parameter(42, 4.0, 4, param_flags::STEPPED);
+        position.default = 2.0;
+        let mode = parameter(7, 2.0, 2, param_flags::STEPPED | param_flags::ENUM);
+        assert!(
+            layout
+                .validate_params(&[position.clone(), mode.clone()])
+                .is_ok()
+        );
+        position.default = 0.0;
+        assert!(layout.validate_params(&[position, mode]).is_err());
+
+        value["parameter_display"]["42"]["step_labels"] = json!({"5": {"en": "Outside"}});
+        assert!(parse(&value).is_err());
+        value["parameter_display"]["42"]["step_labels"] = json!({"2": {"de": "Mitte"}});
+        assert!(parse(&value).is_err(), "a default-locale label is required");
     }
 
     #[test]

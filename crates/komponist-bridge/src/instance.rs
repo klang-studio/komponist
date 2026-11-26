@@ -894,6 +894,16 @@ impl Bridge {
                     plugin.preview_waveform(slot, time);
                 }
             }
+            ControlMsg::ParseParamText { request, id, text } => {
+                let value = self.plugin.as_ref().and_then(|plugin| {
+                    if text.len() <= 256 {
+                        plugin.parse_param_text(id, &text)
+                    } else {
+                        None
+                    }
+                });
+                self.send(BridgeMsg::ParamTextParsed { request, id, value });
+            }
             ControlMsg::SetParam { id, value } => self.set_param(id, value),
             ControlMsg::OpenGui(target) => self.open_gui(target),
             ControlMsg::SetGuiSize(size) => {
@@ -1201,11 +1211,26 @@ impl Bridge {
             self.queue_value(id, value);
         }
         match result {
-            Ok(Some((state, verified))) => self.send(BridgeMsg::State {
-                request,
-                state,
-                verified,
-            }),
+            Ok(Some((state, verified))) => {
+                // Shared-memory edits have no control-path echo. Use the already
+                // debounced, verified delivery to refresh custom display text.
+                for &(id, value) in &verified {
+                    if self
+                        .plugin
+                        .as_ref()
+                        .and_then(|plugin| plugin.native_layout())
+                        .and_then(|(_, layout)| layout.parameter_display(id))
+                        .is_some_and(|display| display.plugin_text)
+                    {
+                        self.queue_value(id, value);
+                    }
+                }
+                self.send(BridgeMsg::State {
+                    request,
+                    state,
+                    verified,
+                });
+            }
             // A capture that timed out waiting for the current block is a retry, not a failure.
             Ok(None) | Err(SnapshotError::Timeout) => {
                 self.send(BridgeMsg::StateDeferred { request });

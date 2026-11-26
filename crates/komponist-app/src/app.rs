@@ -930,6 +930,14 @@ impl App {
     /// The app's part of a device host event (module docs).
     fn handle_device_event(&mut self, event: &PluginManagerEvent) {
         match event {
+            PluginManagerEvent::ParamTextParsed {
+                device,
+                id,
+                request,
+                value,
+            } => {
+                self.finish_param_text(*device, *id, *request, *value);
+            }
             PluginManagerEvent::StateSnapshot { device, state } => {
                 if let Some(captured) = self.shell.catalog_retirements.get_mut(device) {
                     *captured = Some(state.clone());
@@ -988,6 +996,7 @@ impl App {
                 status: DeviceStatus::Ok,
             } => self.device_up(*device),
             PluginManagerEvent::StateApplied { device } => {
+                self.param_undo.cancel_text_edits(*device);
                 self.invalidate_retiring_snapshot(*device);
                 self.cancel_frame_preset_requests(*device);
             }
@@ -2762,6 +2771,7 @@ impl App {
             PluginAction::CloseWindow(device) => self.close_plugin_window(device),
             PluginAction::FocusWindow(device) => self.focus_plugin_window(device),
             PluginAction::Reload(device) => {
+                self.param_undo.cancel_text_edits(device);
                 self.cancel_frame_preset_requests(device);
                 self.reset_pad_hit(device);
                 self.engine.reload_device(self.doc.project(), device);
@@ -2783,6 +2793,7 @@ impl App {
                 self.preview_waveform(device, slot, key, slice_time);
             }
             PluginAction::BeginParamGesture { device, id } => {
+                self.param_undo.cancel_text_edit(device, id);
                 let intercept =
                     self.device_automation_target(device, id)
                         .is_some_and(|(owner, target)| {
@@ -2792,7 +2803,16 @@ impl App {
                     self.begin_param_gesture(device, id);
                 }
             }
+            PluginAction::SetParamText {
+                device,
+                id,
+                text,
+                fallback,
+            } => {
+                self.set_param_text(device, id, text, fallback);
+            }
             PluginAction::SetParam { device, id, value } => {
+                self.param_undo.cancel_text_edit(device, id);
                 let handled = self
                     .device_automation_target(device, id)
                     .is_some_and(|(owner, target)| self.handle_macro_target_edit(owner, &target));

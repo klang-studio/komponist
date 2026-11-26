@@ -8,8 +8,6 @@
 1	dependency	komponist-app	komponist-app	komponist-plugins	komponist_plugins	normal	*
 1	dependency	komponist-app	komponist-app	komponist-presse	komponist_presse	normal	*
 1	dependency	komponist-app	komponist-app	komponist-sampler	komponist_sampler	normal	*
-1	dependency	komponist-app	komponist-app	komponist-surf	komponist_surf	normal	*
-1	dependency	komponist-app	komponist-app	komponist-volt	komponist_volt	normal	*
 1	dependency	komponist-app	komponist-arpeggiator	komponist-device-core	komponist_device_core	normal	*
 1	dependency	komponist-app	komponist-builtin	komponist-arpeggiator	komponist_arpeggiator	normal	*
 1	dependency	komponist-app	komponist-builtin	komponist-delay	komponist_delay	normal	*
@@ -116,16 +114,13 @@
 1	source	crates/komponist-app/src/views/browser/model.rs	komponist_device_core
 2	source	crates/komponist-app/src/views/devices/cells.rs	Internal::
 2	source	crates/komponist-app/src/views/devices/cells.rs	komponist_builtin
-5	source	crates/komponist-app/src/views/devices/cells.rs	komponist_hexa
-1	source	crates/komponist-app/src/views/devices/cells.rs	komponist_surf
-1	source	crates/komponist-app/src/views/devices/cells.rs	komponist_volt
+3	source	crates/komponist-app/src/views/devices/cells.rs	komponist_hexa
 1	source	crates/komponist-app/src/views/devices/frame.rs	komponist_device_core
 1	source	crates/komponist-app/src/views/devices/layout.rs	komponist-builtin
-3	source	crates/komponist-app/src/views/devices/model.rs	BuiltinKind
 4	source	crates/komponist-app/src/views/devices/model.rs	Internal::
-3	source	crates/komponist-app/src/views/devices/model.rs	komponist_builtin
-2	source	crates/komponist-app/src/views/devices/model.rs	komponist_device_core
-12	source	crates/komponist-app/src/views/devices/model.rs	komponist_hexa
+1	source	crates/komponist-app/src/views/devices/model.rs	komponist_builtin
+1	source	crates/komponist-app/src/views/devices/model.rs	komponist_device_core
+1	source	crates/komponist-app/src/views/devices/model.rs	komponist_hexa
 1	source	crates/komponist-app/tests/engine_perf.rs	komponist_hexa
 1	source	crates/komponist-app/tests/fake_host/mod.rs	BuiltinKind
 1	source	crates/komponist-app/tests/it/acceptance_flow3.rs	Internal::

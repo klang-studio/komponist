@@ -147,7 +147,6 @@ pub(super) fn panel() -> Panel {
         trim_unit: None,
     };
     Panel {
-        parameter_display: Default::default(),
         full_band_choice_labels: Default::default(),
         graph_labels: [((0, 0), waveform), ((1, 0), envelope)].into(),
         canvases: [(

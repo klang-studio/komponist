@@ -95,7 +95,6 @@ pub(super) fn panel() -> Panel {
         reduction_taps: Default::default(),
         headings: Default::default(),
         pad_bank: None,
-        parameter_display: Default::default(),
         full_band_choice_labels: Default::default(),
         ..panel
     }
