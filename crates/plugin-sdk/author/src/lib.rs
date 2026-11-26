@@ -106,6 +106,8 @@ pub struct Panel {
     pub headings: BTreeMap<usize, Vec<Heading>>,
     /// Physical ranges and units keyed by author ID. The SDK exports entries bound by a cell.
     pub parameter_display: BTreeMap<ParamId, ParameterDisplay>,
+    /// A knob's alternate parameter and the Boolean selecting it, keyed by the primary ID.
+    pub parameter_alternates: BTreeMap<ParamId, (ParamId, ParamId)>,
     /// Optional full names for a selected band's compact choice labels.
     pub full_band_choice_labels: BTreeMap<ParamId, Vec<Labels>>,
 }
@@ -480,6 +482,20 @@ pub unsafe fn compile<P: ClapPlugin>(
         }
         pages.push(wire_page);
     }
+    let mut parameter_alternates = BTreeMap::new();
+    for (param, (alternate, when)) in &panel.parameter_alternates {
+        let primary = resolve_id(param)?;
+        let when = resolve_id(when)?;
+        let widget = if panel.choice_labels.contains_key(alternate) {
+            WidgetKind::Segment
+        } else {
+            WidgetKind::Knob
+        };
+        let mut binding =
+            compile_control_binding(alternate, widget, panel, None, &inventory, &mut resolve_id)?;
+        binding.insert("when".into(), json!(when));
+        parameter_alternates.insert(primary, binding);
+    }
     let parameter_display = panel
         .parameter_display
         .iter()
@@ -520,8 +536,11 @@ pub unsafe fn compile<P: ClapPlugin>(
     {
         capabilities.push(CAP_FM_TOPOLOGY);
     }
-    if conditional_controls {
+    if conditional_controls || !parameter_alternates.is_empty() {
         capabilities.push(CAP_CONDITIONAL_CONTROLS);
+    }
+    if !parameter_alternates.is_empty() {
+        document["parameter_alternates"] = json!(parameter_alternates);
     }
     if !parameter_display.is_empty() {
         capabilities.push(CAP_PARAMETER_DISPLAY);

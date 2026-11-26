@@ -257,6 +257,15 @@ the host disables its edits while the toggle is on. The condition changes
 the UI only. The plugin keeps both parameters and is responsible for how
 their values affect processing.
 
+With the same capability, `parameter_alternates` can give a knob a second
+parameter when an independent Boolean CLAP parameter is on. The map uses
+the knob's primary CLAP ID. Each entry declares the Boolean ID in `when`
+and the replacement ID in `param_id`. It may include localized `labels`
+and enum `choices` using the same format as control bindings, with choices
+starting at zero. Both parameters use the same knob position in the layout,
+including knobs that follow a page selector. Their underlying parameter IDs
+and automation addresses stay independent.
+
 ## Device catalog labels
 
 An optional root `metadata` object contains `names` and optional `descriptions`

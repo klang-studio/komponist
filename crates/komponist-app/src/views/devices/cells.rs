@@ -227,8 +227,7 @@ pub(crate) fn draw_cell(
         Some(localized)
     });
     let param = localized.as_ref().or(param);
-    // The rate knob of a synced LFO shows its divider instead.
-    let param = param.map(|p| synced_divider(card, p));
+    let param = param.map(|p| control_alternate(card, p));
     if let Some(control) = param.and_then(|p| card.macros.get(&p.info.id)) {
         control.paint_ground(cu, rect);
     }
@@ -954,9 +953,25 @@ fn choice_segment(
     }
 }
 
-/// The parameter a cell for `p` shows: for the rate of an LFO whose `Sync` is on (`lfoN_rate` with
-/// `lfoN_sync`), the divider `lfoN_div`.
-fn synced_divider<'c>(card: &'c Card, p: &'c Param) -> &'c Param {
+/// The parameter the cell presents while its declared switch is on.
+fn control_alternate<'c>(card: &'c Card, p: &'c Param) -> &'c Param {
+    if let Some(layout) = &card.native_layout {
+        return layout
+            .parameter_alternate(p.wire)
+            .filter(|alternate| {
+                card.param(&ParamId::plugin(alternate.when))
+                    .is_some_and(|toggle| toggle.value >= 0.5)
+            })
+            .and_then(|alternate| card.param(&ParamId::plugin(alternate.binding.param_id)))
+            .unwrap_or(p);
+    }
+    if p.info.id.plugin_id().is_some() {
+        return p;
+    }
+    legacy_synced_divider(card, p)
+}
+
+fn legacy_synced_divider<'c>(card: &'c Card, p: &'c Param) -> &'c Param {
     let Some(prefix) = p.info.id.as_str().strip_suffix("_rate") else {
         return p;
     };

@@ -539,6 +539,14 @@ pub struct Heading {
     pub labels: Labels,
 }
 
+/// A replacement for a control while a separate Boolean parameter is on.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ParameterAlternate {
+    pub when: u32,
+    #[serde(flatten)]
+    pub binding: ControlBinding,
+}
+
 /// A parsed native descriptor. The raw IPC payload is bounded and parsed independently on
 /// both sides before use. Parameter bindings must also pass `validate_params` for the inventory.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -551,6 +559,8 @@ pub struct NativeLayout {
     author_ids: Option<BTreeMap<String, u32>>,
     #[serde(default)]
     parameter_display: BTreeMap<u32, ParameterDisplay>,
+    #[serde(default)]
+    parameter_alternates: BTreeMap<u32, ParameterAlternate>,
     #[serde(skip)]
     eq_band_controls: bool,
     #[serde(skip)]
@@ -571,6 +581,14 @@ fn check(condition: bool, reason: &'static str) -> Result<(), LayoutError> {
 impl NativeLayout {
     pub fn parameter_display(&self, id: u32) -> Option<&ParameterDisplay> {
         self.parameter_display.get(&id)
+    }
+
+    pub fn parameter_alternate(&self, id: u32) -> Option<&ParameterAlternate> {
+        self.parameter_alternates.get(&id)
+    }
+
+    pub fn parameter_alternates(&self) -> impl Iterator<Item = &ParameterAlternate> {
+        self.parameter_alternates.values()
     }
 
     pub fn has_parameter_display(&self) -> bool {
@@ -672,6 +690,18 @@ impl NativeLayout {
                 }),
             "parameter display map",
         )?;
+        if let Some(alternates) = value.get("parameter_alternates") {
+            check(
+                conditional_controls_supported
+                    && alternates.as_object().is_some_and(|entries| {
+                        (1..=MAX_AUTHOR_IDS).contains(&entries.len())
+                            && entries.keys().all(|key| {
+                                key.parse::<u32>().is_ok_and(|id| id.to_string() == *key)
+                            })
+                    }),
+                "parameter alternates",
+            )?;
+        }
         if let Some(bank) = value.get("pad_bank") {
             check(
                 bank.is_object()
@@ -947,6 +977,33 @@ impl NativeLayout {
             .chain(display.step_labels.values())
             {
                 self.validate_labels(labels, &locales, true)?;
+            }
+        }
+        for (&id, alternate) in &self.parameter_alternates {
+            let binding = &alternate.binding;
+            check(
+                id != alternate.when
+                    && id != binding.param_id
+                    && alternate.when != binding.param_id
+                    && self.parameter_alternate(binding.param_id).is_none()
+                    && self.pages.iter().flat_map(|page| &page.cells).any(|cell| {
+                        matches!(cell.widget, Widget::Knob | Widget::KnobLarge)
+                            && (cell.param_id == Some(id)
+                                || cell
+                                    .variant_bindings()
+                                    .any(|binding| binding.param_id == id))
+                    }),
+                "alternate requires a distinct knob binding",
+            )?;
+            if let Some(labels) = &binding.labels {
+                self.validate_labels(labels, &locales, true)?;
+            }
+            if binding.choices.is_some() {
+                self.validate_control_choices(
+                    Widget::Segment,
+                    binding.choices.as_deref(),
+                    &locales,
+                )?;
             }
         }
         let mut keys = BTreeSet::new();
@@ -1505,6 +1562,42 @@ impl NativeLayout {
                 "author ID map inventory mismatch",
             )?;
         }
+        for alternate in self.parameter_alternates() {
+            let toggle = ids
+                .get(&alternate.when)
+                .ok_or(LayoutError::Invalid("unknown alternate toggle"))?;
+            let binding = &alternate.binding;
+            let param = ids
+                .get(&binding.param_id)
+                .ok_or(LayoutError::Invalid("unknown alternate parameter"))?;
+            check(
+                is_toggle(toggle)
+                    && toggle.flags
+                        & (param_flags::ENUM | param_flags::HIDDEN | param_flags::BYPASS)
+                        == 0
+                    && param.flags
+                        & (param_flags::HIDDEN | param_flags::READ_ONLY | param_flags::BYPASS)
+                        == 0
+                    && param.min.is_finite()
+                    && param.max.is_finite()
+                    && param.min < param.max,
+                "alternate parameter inventory",
+            )?;
+            if let Some(choices) = &binding.choices {
+                check(
+                    param.flags & (param_flags::STEPPED | param_flags::ENUM)
+                        == param_flags::STEPPED | param_flags::ENUM
+                        && param.min == 0.0
+                        && param.step_count == (choices.len() - 1) as u32
+                        && param.max == f64::from(param.step_count)
+                        && choices
+                            .iter()
+                            .enumerate()
+                            .all(|(i, choice)| i as i32 == choice.value),
+                    "alternate enum values",
+                )?;
+            }
+        }
         for (&id, display) in &self.parameter_display {
             let param = ids
                 .get(&id)
@@ -1517,11 +1610,12 @@ impl NativeLayout {
                         display.steps.unwrap_or(0),
                     )
                     && (param.default - display.wire_default()).abs() <= f64::from(f32::EPSILON)
-                    && self
-                        .pages
-                        .iter()
-                        .flat_map(|page| &page.cells)
-                        .any(|cell| cell.parameter_ids().any(|bound| bound == id)),
+                    && self.pages.iter().flat_map(|page| &page.cells).any(|cell| {
+                        cell.parameter_ids().any(|bound| bound == id)
+                            || self
+                                .parameter_alternates()
+                                .any(|alternate| alternate.binding.param_id == id)
+                    }),
                 "normalized parameter display",
             )?;
         }
@@ -1867,6 +1961,41 @@ mod tests {
             parse(&value).is_err(),
             "variants must have the same graph roles"
         );
+    }
+
+    #[test]
+    fn an_alternate_knob_tracks_an_independent_clap_toggle() {
+        use serde_json::json;
+
+        let mut value: Value = serde_json::from_slice(EXAMPLE).unwrap();
+        value["parameter_alternates"] = json!({
+            "42": { "when": 8, "param_id": 9, "labels": {"en": "Division"} }
+        });
+        let parse = |value: &Value| NativeLayout::parse(&serde_json::to_vec(value).unwrap());
+        assert!(
+            parse(&value).is_err(),
+            "the alternate requires its capability"
+        );
+        value["required_capabilities"] = json!([CAP_CONDITIONAL_CONTROLS]);
+        let layout = parse(&value).unwrap();
+        let replacement = layout.parameter_alternate(42).unwrap();
+        assert_eq!((replacement.when, replacement.binding.param_id), (8, 9));
+
+        let mut params = [
+            parameter(42, 1.0, 0, 0),
+            parameter(7, 2.0, 2, param_flags::STEPPED | param_flags::ENUM),
+            parameter(8, 1.0, 1, param_flags::STEPPED),
+            parameter(9, 7.0, 7, param_flags::STEPPED),
+        ];
+        layout.validate_params(&params).unwrap();
+        params[2].flags |= param_flags::ENUM;
+        assert!(
+            layout.validate_params(&params).is_err(),
+            "the driver is Boolean"
+        );
+
+        value["parameter_alternates"]["42"]["param_id"] = json!(42);
+        assert!(parse(&value).is_err(), "the alternate uses a different ID");
     }
 
     #[test]

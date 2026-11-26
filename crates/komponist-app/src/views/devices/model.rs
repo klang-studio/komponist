@@ -494,13 +494,17 @@ pub(crate) fn card(
                 .map(|infos| {
                     let value = |id| host.param_value(device.id, id);
                     if let Some(native) = &native_layout {
-                        let ids: std::collections::BTreeSet<_> = native
-                            .pages
-                            .iter()
-                            .flat_map(|page| {
-                                page.cells.iter().flat_map(|cell| cell.parameter_ids())
-                            })
-                            .collect();
+                        let ids: std::collections::BTreeSet<_> =
+                            native
+                                .pages
+                                .iter()
+                                .flat_map(|page| {
+                                    page.cells.iter().flat_map(|cell| cell.parameter_ids())
+                                })
+                                .chain(native.parameter_alternates().flat_map(|alternate| {
+                                    [alternate.when, alternate.binding.param_id]
+                                }))
+                                .collect();
                         infos
                             .iter()
                             .filter(|info| ids.contains(&info.id))
@@ -817,23 +821,30 @@ pub(super) fn native_param(
     if !layout.has_parameter_display()
         && !layout.has_eq_band_controls()
         && !layout.has_cell_selections()
+        && layout.parameter_alternates().next().is_none()
     {
         return plugin_param(wire, info, known);
     }
-    if let Some((labels, choices)) =
-        layout
-            .pages
-            .iter()
-            .flat_map(|page| &page.cells)
-            .find_map(|cell| {
-                if cell.param_id == Some(wire.id) {
-                    Some((cell.labels.as_ref(), cell.choices.as_deref()))
-                } else {
-                    cell.variant_bindings()
-                        .find(|binding| binding.param_id == wire.id)
-                        .map(|binding| (binding.labels.as_ref(), binding.choices.as_deref()))
-                }
-            })
+    if let Some((labels, choices)) = layout
+        .pages
+        .iter()
+        .flat_map(|page| &page.cells)
+        .find_map(|cell| {
+            if cell.param_id == Some(wire.id) {
+                Some((cell.labels.as_ref(), cell.choices.as_deref()))
+            } else {
+                cell.variant_bindings()
+                    .find(|binding| binding.param_id == wire.id)
+                    .map(|binding| (binding.labels.as_ref(), binding.choices.as_deref()))
+            }
+        })
+        .or_else(|| {
+            layout
+                .parameter_alternates()
+                .map(|alternate| &alternate.binding)
+                .find(|binding| binding.param_id == wire.id)
+                .map(|binding| (binding.labels.as_ref(), binding.choices.as_deref()))
+        })
     {
         if let Some(label) = labels.and_then(|labels| layout.label(labels, lang.code())) {
             info.name = label.to_owned();

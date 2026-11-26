@@ -137,6 +137,15 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Surf {
         let labels = |en: &str, de: &str| -> Labels {
             [("en".into(), en.into()), ("de".into(), de.into())].into()
         };
+        for lfo in 1..=2 {
+            panel.parameter_alternates.insert(
+                ParamId::new(format!("lfo{lfo}_rate")),
+                (
+                    ParamId::new(format!("lfo{lfo}_div")),
+                    ParamId::new(format!("lfo{lfo}_sync")),
+                ),
+            );
+        }
         let mut graph_labels = std::collections::BTreeMap::new();
         for (page_index, (en, de)) in english.pages.iter().zip(&german.pages).enumerate() {
             for (cell_index, (en, de)) in en.cells.iter().zip(&de.cells).enumerate() {
