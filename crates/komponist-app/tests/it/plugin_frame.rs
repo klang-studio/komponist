@@ -566,7 +566,7 @@ fn scripted_app(layout: Option<&[u8]>) -> (App, Rc<RefCell<Script>>, DeviceId) {
         .flat_map(|t| t.channel.devices.iter())
         .find(|d| d.plugin.name == "Surge XT")
         .unwrap();
-    let mut catalog = Catalog::builtin();
+    let mut catalog = Catalog::default();
     catalog.set_scanned(&[PluginDescriptor {
         localized: None,
         format: BundleFormat::Clap,
@@ -791,13 +791,30 @@ fn the_frame_shows_loading_crashed_and_reloads() {
 
 #[test]
 fn two_frame_preset_steps_in_one_event_batch_advance_twice() {
-    let (app, script, _) = app();
-    let mut h = harness(app);
-    let device = device_named(h.state(), "Hexa");
-    h.state_mut()
-        .dispatch(Action::Plugin(PluginAction::OpenWindow(device)));
-    h.run_steps(3);
-
+    let (mut h, script, device) = bridge_frame_harness();
+    let plugin_id = h
+        .state()
+        .project()
+        .find_device(device)
+        .unwrap()
+        .2
+        .plugin
+        .id
+        .clone();
+    let preset = |name: &str| ClapPreset {
+        plugin_id: plugin_id.clone(),
+        source: ClapPresetSource {
+            location: ClapPresetLocation::Plugin,
+            load_key: Some(name.as_bytes().to_vec()),
+        },
+        name: name.into(),
+        localized_names: Default::default(),
+        features: Vec::new(),
+        factory: true,
+    };
+    let (a, b, c) = (preset("A"), preset("B"), preset("C"));
+    script.borrow_mut().new_presets = Some(vec![a.clone(), b, c.clone()]);
+    h.run_steps(2);
     push(
         &script,
         PluginManagerEvent::FrameHeaderAction {
@@ -805,6 +822,13 @@ fn two_frame_preset_steps_in_one_event_batch_advance_twice() {
             event: HeaderEvent::Preset(0),
         },
     );
+    h.run_steps(3);
+    let loaded = |n: u8| PluginManagerEvent::ClapPresetLoaded {
+        device,
+        previous_state: std::sync::Arc::from([n]),
+        state: std::sync::Arc::from([n + 1]),
+    };
+    push(&script, loaded(0));
     h.run_steps(3);
     for _ in 0..2 {
         push(
@@ -816,11 +840,13 @@ fn two_frame_preset_steps_in_one_event_batch_advance_twice() {
         );
     }
     h.run_steps(3);
-    let app = h.state();
-    let target = app.project().find_device(device).unwrap().2;
-    let expected = &app.engine().host().clap_presets(target)[2].name;
-    let field = h.get_by_role_and_label(Role::ComboBox, de::PLUGIN_FRAME_PRESET);
-    assert_eq!(field.value().as_deref(), Some(expected.as_str()));
+    // Both steps land on one load of the preset two further on.
+    assert_eq!(script.borrow().preset_loads, [a.source, c.source]);
+    push(&script, loaded(1));
+    h.run_steps(3);
+    let script = script.borrow();
+    let (_, header, _) = script.headers.last().unwrap();
+    assert_eq!(header.preset, Some(2));
 }
 
 #[test]
@@ -1319,7 +1345,7 @@ fn the_window_list_names_the_open_windows_in_project_order() {
         label: label.to_owned(),
     };
     assert_eq!(
-        window_list::entries(Lang::De, &project, &windows, &Catalog::builtin()),
+        window_list::entries(Lang::De, &project, &windows, &Catalog::default()),
         vec![
             entry(hexa, "Hexa · Bass"),
             entry(eq, "LSP Para EQ x8 · Bass"),
@@ -1327,9 +1353,9 @@ fn the_window_list_names_the_open_windows_in_project_order() {
             entry(DeviceId(9_000), "Surge XT · Master"),
         ]
     );
-    let en = window_list::entries(Lang::En, &project, &windows, &Catalog::builtin());
+    let en = window_list::entries(Lang::En, &project, &windows, &Catalog::default());
     assert_eq!(en[0].label, "Hexa · Bass");
-    assert!(window_list::entries(Lang::De, &project, &[], &Catalog::builtin()).is_empty());
+    assert!(window_list::entries(Lang::De, &project, &[], &Catalog::default()).is_empty());
 }
 
 #[test]
