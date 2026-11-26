@@ -942,6 +942,21 @@ impl PluginHost {
         }
     }
 
+    /// Open and begin scanning an explicit, manifest-verified fixture inventory.
+    #[doc(hidden)]
+    pub fn for_test_fixtures(
+        config: PluginManagerConfig,
+        bundled_dir: &std::path::Path,
+        expected_digest: &str,
+    ) -> Result<Self, komponist_plugins::bundled_clap::BundleVerificationError> {
+        Ok(Self {
+            manager: PluginManager::for_test_fixtures(config, bundled_dir, expected_digest)?,
+            reference: None,
+            project_dir: None,
+            external: HashSet::new(),
+        })
+    }
+
     /// Supplies the legacy processors to integration tests and performance comparisons.
     #[doc(hidden)]
     pub fn with_reference_devices(config: PluginManagerConfig) -> Self {

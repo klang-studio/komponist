@@ -429,13 +429,33 @@ impl PluginManager {
         Self::with_catalog(config, Catalog::builtin(), true, force_bridge)
     }
 
+    /// Open an explicit test inventory using the fixture builder's expected manifest hash.
+    #[doc(hidden)]
+    pub fn for_test_fixtures(
+        config: PluginManagerConfig,
+        root: &Path,
+        expected_digest: &str,
+    ) -> Result<Self, BundleVerificationError> {
+        let cache_dir = config.cache_file.parent().unwrap_or_else(|| Path::new("."));
+        let bundled_clap = BundledClap::open_fixture(root, cache_dir, expected_digest)?;
+        let mut manager = Self::from_inventory(
+            config,
+            Catalog::default(),
+            Some(bundled_clap.directory().to_owned()),
+            Some(bundled_clap),
+            false,
+            Vec::new(),
+        );
+        manager.start_bundled_scan();
+        Ok(manager)
+    }
+
     fn with_catalog(
         config: PluginManagerConfig,
         catalog: Catalog,
         enable_bundles: bool,
         force_bundled_bridge: bool,
     ) -> PluginManager {
-        let cache = ScanCache::load(&config.cache_file);
         let mut pending = Vec::new();
         let mut report = |error: BundleVerificationError| {
             pending.push(PluginManagerEvent::Log {
@@ -458,6 +478,25 @@ impl PluginManager {
         } else {
             None
         };
+        Self::from_inventory(
+            config,
+            catalog,
+            private_clap_dir,
+            bundled_clap,
+            force_bundled_bridge,
+            pending,
+        )
+    }
+
+    fn from_inventory(
+        config: PluginManagerConfig,
+        catalog: Catalog,
+        private_clap_dir: Option<PathBuf>,
+        bundled_clap: Option<BundledClap>,
+        force_bundled_bridge: bool,
+        pending: Vec<PluginManagerEvent>,
+    ) -> PluginManager {
+        let cache = ScanCache::load(&config.cache_file);
         let mut manager = PluginManager {
             config,
             catalog,
