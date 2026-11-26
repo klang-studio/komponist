@@ -1544,7 +1544,8 @@ impl EngineSync {
     }
 
     /// [`EngineSync::run_held`] that also returns what the engine rendered (left, right); `None`
-    /// if no engine is held.
+    /// if no engine is held. The blocks keep a callback's realtime deadline, so a bridge that is
+    /// late on a loaded machine falls back for that block; [`EngineSync::render_held`] waits.
     pub fn run_held_capture(
         &mut self,
         frames: usize,
@@ -1579,6 +1580,26 @@ impl EngineSync {
             engine.process(&mut left[..n], &mut right[..n], &input);
             out.0.extend_from_slice(&left[..n]);
             out.1.extend_from_slice(&right[..n]);
+            done += n;
+        }
+        Some(out)
+    }
+
+    /// Tests: renders `frames` frames of the held engine offline ([`Engine::render`], blocks of
+    /// 256) and returns them (left, right); `None` if no engine is held. Unlike
+    /// [`EngineSync::run_held_capture`], whose blocks keep the realtime deadline of a callback,
+    /// bridges get their offline wait here, so a loaded machine never turns a block into the
+    /// fallback (#347). No live MIDI: send `Command::LiveNote` instead.
+    pub fn render_held(&mut self, frames: usize) -> Option<(Vec<f32>, Vec<f32>)> {
+        let engine = &mut self.held.as_mut()?.engine;
+        let mut out = (Vec::with_capacity(frames), Vec::with_capacity(frames));
+        let mut done = 0;
+        while done < frames {
+            let n = HELD_BLOCK.min(frames - done);
+            for frame in engine.render(n).chunks_exact(2) {
+                out.0.push(frame[0]);
+                out.1.push(frame[1]);
+            }
             done += n;
         }
         Some(out)
