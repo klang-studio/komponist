@@ -29,7 +29,11 @@ use komponist_model::{
 };
 use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerConfig, PluginManagerEvent};
 
-/// Build a screenshot scene with the catalogue used by the checked-in reference images.
+/// A screenshot scene with the catalogue of the checked-in reference images: the in-binary
+/// `BuiltinHost` lists the built-in devices as "INTERN" rows in the browser, which every full-window
+/// reference PNG shows. Until #294 removes the in-binary host and regenerates those images on the
+/// Linux reference renderer, only snapshot tests that cannot keep their pixels on the packaged
+/// catalogue use this seam (a packaged catalogue lists "CLAP" rows and a different tag).
 pub fn reference_app(project: Project) -> App {
     App::headless(project)
         .with_device_host(Box::new(komponist_app::device_host::BuiltinHost::new()))
@@ -128,6 +132,13 @@ pub fn shipped_plugin(host: &dyn DeviceHost, id: &str) -> Option<PluginRef> {
         .map(|entry| entry.plugin.clone())
 }
 
+/// The shipped bundle with CLAP ID `org.klang-studio.komponist.<name>` from `host`'s catalogue.
+pub fn shipped(host: &dyn DeviceHost, name: &str) -> PluginRef {
+    let id = format!("org.klang-studio.komponist.{name}");
+    shipped_plugin(host, &id)
+        .unwrap_or_else(|| panic!("build {id} with scripts/build-test-plugins.sh"))
+}
+
 /// The model test song played by shipped instruments on Drums, Bass and Lead.
 pub fn song_with_shipped_instruments(host: &dyn DeviceHost) -> Project {
     let mut project = demo_project();
@@ -166,6 +177,11 @@ pub fn author_parameter(app: &App, device: DeviceId, key: &str) -> u32 {
 /// Converts a fixture's physical test value through the metadata submitted by the bundle.
 pub fn author_wire_value(app: &App, device: DeviceId, id: u32, plain: f64) -> f64 {
     let layout = app.engine().host().native_layout(device).unwrap();
+    wire_value(layout, id, plain)
+}
+
+/// [`author_wire_value`] from the bundle's layout itself.
+pub fn wire_value(layout: &komponist_ipc::native_layout::NativeLayout, id: u32, plain: f64) -> f64 {
     let Some(display) = layout.parameter_display(id) else {
         return plain;
     };
@@ -216,6 +232,39 @@ pub fn project_with_snapshot(app: &mut App, device: DeviceId) -> Project {
     let [(captured, state)] = states.try_into().expect("single fixture snapshot");
     assert_eq!(captured, device);
     edits::set_saved_plugin_state(app.project(), device, &state).unwrap()
+}
+
+/// A project with one Drums track on the sampler bundle (scanned as an ordinary external CLAP
+/// fixture); `kit` links the synthesized kit in `dir` to the pads.
+pub fn authored_project(dir: &Path, kit: bool) -> Option<(Project, PluginHost)> {
+    let (host, plugin) = native_fixture(dir, "klopfer.clap", "org.klang-studio.komponist.sampler")?;
+    let (mut project, _) = edits::add_track(
+        &Project::new(komponist_model::project::DEFAULT_PROJECT_NAME),
+        NewTrack {
+            name: Some("Drums".into()),
+            hue: None,
+            instrument: Some(plugin),
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    if kit {
+        let device = project.tracks[0].channel.devices[0].id;
+        let links = komponist_audiofile::fixtures::write_kit(dir)
+            .unwrap()
+            .into_iter()
+            .enumerate()
+            .map(|(pad, file)| {
+                (
+                    pad as u32,
+                    komponist_model::plugin_assets::AssetLink::new(&file, None),
+                )
+            })
+            .collect();
+        project = edits::set_device_asset_links(&project, device, links).unwrap();
+    }
+    Some((project, host))
 }
 
 /// A project with one instrument and its track and device IDs.
