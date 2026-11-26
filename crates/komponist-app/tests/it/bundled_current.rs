@@ -524,7 +524,7 @@ fn current_project_round_trip_and_offline_render() {
     let host = app.engine().host();
     let presets = host.clap_presets(delay);
     assert_eq!(
-        komponist_ipc::clap_presets::selected_preset(delay.preset.as_ref(), presets)
+        komponist_app::device_host::selected_preset(delay, presets)
             .map(|(index, edited)| (presets[index].name.as_str(), edited)),
         Some((DELAY_PRESET, false)),
     );

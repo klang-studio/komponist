@@ -2,7 +2,7 @@
 
 use crate::BuiltinKind;
 use komponist_ipc::clap_presets::{ClapPreset, ClapPresetLocation, ClapPresetSource};
-use komponist_model::PluginRef;
+use komponist_model::{Device, PluginRef};
 
 impl BuiltinKind {
     /// The pre-CLAP browser only listed presets from the original instrument bank.
@@ -74,4 +74,41 @@ pub fn legacy_state(
         }
         BuiltinKind::Internal(kind) => kind.preset_state(state, index),
     }
+}
+
+/// The preset an in-binary reference device's own state names, and whether it was edited. These
+/// devices (`PluginFormat::Builtin`, the test host until #294) have no CLAP preset-load; every
+/// CLAP device, bundled or not, uses the selection the host recorded instead.
+pub fn legacy_selection(device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
+    let (source, changed) = match BuiltinKind::from_plugin(&device.plugin)? {
+        BuiltinKind::Hexa => {
+            let patch = komponist_hexa::decode_state(device.state.as_deref())
+                .unwrap_or_else(|_| komponist_hexa::default_patch());
+            let encoded = komponist_hexa::encode_state(&patch);
+            (
+                legacy_source(hexa_states().iter().position(|state| *state == encoded)?),
+                false,
+            )
+        }
+        BuiltinKind::Internal(kind) => {
+            let (index, changed) = kind.loaded_preset(device.state.as_deref())?;
+            (legacy_source(index), changed)
+        }
+    };
+    Some((
+        presets.iter().position(|preset| preset.source == source)?,
+        changed,
+    ))
+}
+
+fn hexa_states() -> &'static [Vec<u8>] {
+    static STATES: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+    STATES.get_or_init(|| {
+        komponist_hexa::presets()
+            .filter_map(|preset| {
+                komponist_hexa::preset_patch(preset.index)
+                    .map(|patch| komponist_hexa::encode_state(&patch))
+            })
+            .collect()
+    })
 }

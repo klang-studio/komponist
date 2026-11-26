@@ -582,8 +582,13 @@ static bool CLAP_ABI preset_provider_metadata(const clap_preset_discovery_provid
     const clap_universal_plugin_id_t valid = {.abi = "clap", .id = FIXTURE_ID "valid"};
     const clap_universal_plugin_id_t program = {.abi = "clap", .id = FIXTURE_ID "program"};
     receiver->add_plugin_id(receiver, &valid);
-    receiver->add_plugin_id(receiver, &program);
     receiver->add_extra_info(receiver, "org.klang-studio.komponist.preset-name.de", "Testanhebung");
+    /* The program variant's presets; the first shares the embedded Boost data. */
+    if (!receiver->begin_preset(receiver, "Program Boost", "fixture-boost"))
+        return false;
+    receiver->add_plugin_id(receiver, &program);
+    receiver->add_extra_info(receiver, "org.klang-studio.komponist.preset-name.de",
+                             "Programmanhebung");
     if (!receiver->begin_preset(receiver, "Fixture Calm", "fixture-calm"))
         return false;
     receiver->add_plugin_id(receiver, &program);

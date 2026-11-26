@@ -553,8 +553,7 @@ pub(crate) fn card(
         );
     }
     let preset_entries = host.clap_presets(device);
-    let selected =
-        komponist_ipc::clap_presets::selected_preset(device.preset.as_ref(), preset_entries);
+    let selected = crate::device_host::selected_preset(device, preset_entries);
     Card {
         device: device.id,
         automation_owner: None,

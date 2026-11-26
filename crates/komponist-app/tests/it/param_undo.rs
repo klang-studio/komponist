@@ -210,8 +210,7 @@ fn a_preset_and_a_discrete_edit_are_separate_undo_steps() {
         let device = app.project().find_device(synth).unwrap().2;
         let host = app.engine().host();
         let inventory = host.clap_presets(device);
-        let (index, _) =
-            komponist_ipc::clap_presets::selected_preset(device.preset.as_ref(), inventory)?;
+        let (index, _) = komponist_app::device_host::selected_preset(device, inventory)?;
         Some(inventory[index].name.clone())
     };
     let original_preset = preset_name(&app);

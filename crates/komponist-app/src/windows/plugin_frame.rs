@@ -1582,15 +1582,17 @@ impl App {
         }
     }
 
-    /// The preset the device last loaded and whether it was modified since
-    /// ([`komponist_model::Device::preset`]).
+    /// The preset the device shows and whether it was modified since
+    /// ([`crate::device_host::selected_preset`]).
     fn update_preset_state(&mut self, i: usize) {
         let device = self.frames.frames[i].device;
         let Some((_, _, d)) = self.project().find_device(device) else {
             return;
         };
-        let preset = d.preset.as_ref().map(|preset| preset.source.clone());
-        let changed = d.preset.as_ref().is_some_and(|preset| preset.modified);
+        let entries = self.engine.host().clap_presets(d);
+        let selected = crate::device_host::selected_preset(d, entries);
+        let preset = selected.map(|(index, _)| entries[index].source.clone());
+        let changed = selected.is_some_and(|(_, modified)| modified);
         let f = &mut self.frames.frames[i];
         if f.preset == preset && f.preset_changed == changed {
             return;

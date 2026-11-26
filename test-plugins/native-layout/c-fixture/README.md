@@ -40,4 +40,4 @@ The factory publishes thirteen variants under the prefix `org.klang-studio.kompo
 | `required-capability` | Unknown required capability |
 | `graphs` | Declarative graph panel and an authored canvas |
 | `invalid-graphs` | A graph refers to unknown parameter ID 999 |
-| `program` | Like `valid`, plus a `Program` parameter (ID 9). Setting it loads `Fixture Boost` (1) or `Fixture Calm` (2) on the main thread and reports the load through the host side of CLAP preset-load; 3 reports a failed load (`on_error`) |
+| `program` | Like `valid`, plus a `Program` parameter (ID 9). Setting it loads `Program Boost` (1) or `Fixture Calm` (2) on the main thread and reports the load through the host side of CLAP preset-load; 3 reports a failed load (`on_error`) |

@@ -123,7 +123,7 @@ fn presets(app: &App, device: DeviceId) -> &[ClapPreset] {
 fn loaded(app: &App, device: DeviceId) -> Option<(&str, bool)> {
     let model = app.project().find_device(device).unwrap().2;
     let presets = presets(app, device);
-    komponist_ipc::clap_presets::selected_preset(model.preset.as_ref(), presets)
+    komponist_app::device_host::selected_preset(model, presets)
         .map(|(index, edited)| (presets[index].name.as_str(), edited))
 }
 
@@ -259,7 +259,7 @@ fn loading_a_preset_stores_the_factory_state_and_an_unknown_source_changes_nothi
 }
 
 #[test]
-fn the_dropdown_shows_the_loaded_preset_and_a_star_while_a_value_differs() {
+fn the_dropdown_shows_the_loaded_preset_and_a_star_after_an_edit_until_undo() {
     let (app, _, device) = app_with("delay");
     let mut h = harness(app);
     assert_eq!(
@@ -294,7 +294,24 @@ fn the_dropdown_shows_the_loaded_preset_and_a_star_while_a_value_differs() {
             .as_deref(),
         Some(starred.as_str())
     );
+    // Turning the value back is another edit: the mark stays until undo takes the edits back.
     set_param(h.state_mut(), device, "mix", original);
+    h.run_steps(3);
+    assert_eq!(
+        preset_button(&h, "Delay")
+            .accesskit_node()
+            .label()
+            .as_deref(),
+        Some(starred.as_str())
+    );
+    let app = h.state_mut();
+    while loaded(app, device) != Some(("Slapback", false)) {
+        assert!(
+            app.doc().undo_label().is_some(),
+            "undo reaches the loaded preset"
+        );
+        app.dispatch(Action::Edit(EditAction::Undo));
+    }
     h.run_steps(3);
     assert_eq!(
         preset_button(&h, "Delay")

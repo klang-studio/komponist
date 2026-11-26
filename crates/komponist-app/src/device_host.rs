@@ -67,6 +67,18 @@ use komponist_plugins::{
 use komponist_sampler as sampler;
 use komponist_sampler::SamplerHandle;
 
+/// The index of the preset `device` shows among `presets` and whether it was modified since: the
+/// selection the host recorded through CLAP preset-load ([`Device::preset`]). In-binary reference
+/// devices (`PluginFormat::Builtin`, the test host until #294) have no preset-load and name their
+/// preset in their own state.
+pub fn selected_preset(device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
+    if device.plugin.format == komponist_model::PluginFormat::Builtin {
+        komponist_plugins::presets::legacy_selection(device, presets)
+    } else {
+        komponist_ipc::clap_presets::selected_preset(device.preset.as_ref(), presets)
+    }
+}
+
 /// Creates processors for devices and reports their runtime status.
 ///
 /// The methods after [`DeviceHost::role`] have defaults for a host without plugin manager (no

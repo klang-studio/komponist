@@ -146,9 +146,8 @@ fn check_factory_presets(project: &Project, host: &dyn DeviceHost, factory: &Plu
         for &(index, expected) in presets {
             let device = &track_named(project, track).channel.devices[index];
             let catalog = host.clap_presets(device);
-            let (selected, _) =
-                komponist_ipc::clap_presets::selected_preset(device.preset.as_ref(), catalog)
-                    .unwrap_or_else(|| panic!("{track}: no preset for {}", device.plugin.id));
+            let (selected, _) = komponist_app::device_host::selected_preset(device, catalog)
+                .unwrap_or_else(|| panic!("{track}: no preset for {}", device.plugin.id));
             assert!(catalog[selected].factory && catalog[selected].name == expected);
             let factory_state = factory
                 .manager()

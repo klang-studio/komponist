@@ -726,7 +726,10 @@ impl App {
         }) {
             Ok(_) => {
                 if let Some(step) = self.doc.top_step().filter(|step| Some(*step) != top) {
-                    self.param_undo.steps.insert(device, (step, Instant::now()));
+                    // The snapshot follows the plugin's debounce: the window starts a little
+                    // later, as after a gesture.
+                    let at = Instant::now() + SNAPSHOT_SLACK;
+                    self.param_undo.steps.insert(device, (step, at));
                     self.param_undo.turned.remove(&device);
                     self.param_undo.tails.remove(&device);
                 }

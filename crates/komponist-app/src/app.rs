@@ -2812,10 +2812,8 @@ impl App {
                         target.state.as_deref(),
                         &source,
                     ) {
-                        let preset = komponist_model::DevicePreset::loaded(source);
                         self.apply("undo-load-preset", |p| {
-                            let p = edits::set_device_state(p, device, Some(state.into()))?;
-                            edits::set_device_preset(&p, device, Some(preset))
+                            edits::set_device_state(p, device, Some(state.into()))
                         });
                         self.frame_preset_finished(device, true);
                     } else {

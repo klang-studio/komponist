@@ -530,6 +530,171 @@ fn standalone_clap_preset_round_trips_through_catalog_browser_and_bridge() {
     app.shutdown();
 }
 
+/// The selected preset of a community CLAP over the bridge, through standard preset-load only:
+/// a load the host requests, a parameter edit, a load the plugin starts and reports itself, a
+/// failure it reports, and saving and reopening the project.
+#[test]
+fn standalone_clap_preset_selection_follows_loads_reports_and_saving() {
+    use komponist_app::actions::EditAction;
+    use komponist_i18n::Lang;
+    use komponist_model::ChannelRef;
+    use komponist_model::edits::{NewDevice, NewTrack, add_track, insert_device};
+
+    let Some(bundle) = std::env::var_os("KOMPONIST_LAYOUT_FIXTURE") else {
+        eprintln!("set KOMPONIST_LAYOUT_FIXTURE to the standalone C CLAP fixture");
+        return;
+    };
+    let bundle = std::path::PathBuf::from(bundle);
+    let dir = scratch("external-clap-preset-selection");
+    let installed = dir.join("installed");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::copy(&bundle, installed.join("layout-fixture.clap")).unwrap();
+    let dirs = PluginDirs {
+        clap: vec![installed],
+        vst3: Vec::new(),
+    };
+    let plugin = clap_plugin("org.klang-studio.komponist.layout-fixture.program");
+    let (project, track) = add_track(
+        &Project::new("Preset selection"),
+        NewTrack {
+            name: None,
+            hue: None,
+            instrument: None,
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let (project, device) = insert_device(
+        &project,
+        ChannelRef::Track(track),
+        0,
+        NewDevice {
+            role: DeviceRole::Effect,
+            plugin,
+            state: None,
+            sidechain: None,
+            preset: None,
+        },
+    )
+    .unwrap();
+    let file = dir.join("Selection.komponist");
+    std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
+    let mut app = app_with(Project::new("Empty"), PluginHost::new(config(&dir)));
+    app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
+    app.engine_mut().host_mut().start_scan(&dirs);
+    step_until(&mut app, "the fixture in its bridge", |app| {
+        app.engine().host().status(device) == DeviceStatus::Ok
+    });
+    // What the device card shows: the preset name and its modified mark.
+    let shown = |app: &App| {
+        let model = app.project().find_device(device).unwrap().2;
+        let presets = app.engine().host().clap_presets(model);
+        komponist_app::device_host::selected_preset(model, presets)
+            .map(|(index, modified)| (presets[index].display_name("de").to_owned(), modified))
+    };
+    let shows = |name: &str, modified: bool| Some((name.to_owned(), modified));
+    let source = |app: &App, name: &str| {
+        let model = app.project().find_device(device).unwrap().2;
+        app.engine()
+            .host()
+            .clap_presets(model)
+            .iter()
+            .find(|preset| preset.name == name)
+            .unwrap_or_else(|| panic!("the fixture advertises {name}"))
+            .source
+            .clone()
+    };
+    assert_eq!(shown(&app), None, "no preset was loaded");
+
+    // A load the host requests.
+    let boost = source(&app, "Program Boost");
+    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
+        device,
+        source: boost,
+    }));
+    step_until(&mut app, "the requested preset", |app| {
+        shown(app) == shows("Programmanhebung", false)
+    });
+    assert_eq!(app.engine().host().param_base(device, 42), Some(0.75));
+
+    // A parameter edit marks it as modified.
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device,
+        id: 42,
+        value: 0.5,
+    }));
+    assert_eq!(shown(&app), shows("Programmanhebung", true));
+
+    // The plugin loads another preset itself (Program 2) and reports it through preset-load.
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device,
+        id: 9,
+        value: 2.0,
+    }));
+    step_until(&mut app, "the preset the plugin reported", |app| {
+        shown(app) == shows("Testruhe", false)
+            && app.engine().host().param_base(device, 42) == Some(0.25)
+    });
+    let calm = source(&app, "Fixture Calm");
+    // Its state follows the report into the document, in the same undo step.
+    step_until(&mut app, "the reported preset's state", |app| {
+        app.project()
+            .find_device(device)
+            .unwrap()
+            .2
+            .state
+            .as_deref()
+            .is_some_and(|state| state.get(..8) == Some(&0.25_f64.to_ne_bytes()[..]))
+    });
+    assert_eq!(app.undo_text().as_deref(), Some("Preset laden"));
+
+    // A failed load the plugin reports reaches the status bar; the selection stays.
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device,
+        id: 9,
+        value: 3.0,
+    }));
+    step_until(&mut app, "the reported failure", |app| {
+        app.ui().status.as_ref().is_some_and(|status| {
+            status.kind == StatusKind::Error && status.text == Lang::De.devices_preset_load_failed()
+        })
+    });
+    assert_eq!(
+        app.project()
+            .find_device(device)
+            .unwrap()
+            .2
+            .preset
+            .as_ref()
+            .map(|p| &p.source),
+        Some(&calm)
+    );
+    // Undo takes the Program edit back; the reported preset is unmodified again.
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(shown(&app), shows("Testruhe", false));
+
+    // Saving and reopening keeps the selection with the device.
+    app.dispatch(Action::Project(ProjectAction::Save));
+    let saved = persist::from_json(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let preset = saved.find_device(device).unwrap().2.preset.clone();
+    assert_eq!(
+        preset.map(|preset| (preset.source, preset.modified)),
+        Some((calm, false))
+    );
+    app.shutdown();
+
+    let mut reopened = app_with(Project::new("Empty"), PluginHost::new(config(&dir)));
+    reopened.dispatch(Action::Project(ProjectAction::OpenPath(file)));
+    reopened.engine_mut().host_mut().start_scan(&dirs);
+    step_until(&mut reopened, "the reopened selection", |app| {
+        app.engine().host().status(device) == DeviceStatus::Ok
+            && shown(app) == shows("Testruhe", false)
+    });
+    assert_eq!(reopened.engine().host().param_base(device, 42), Some(0.25));
+    reopened.shutdown();
+}
+
 #[test]
 fn scanned_device_metadata_and_availability_follow_the_bundle() {
     use komponist_app::settings::Favorites;
