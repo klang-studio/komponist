@@ -158,14 +158,6 @@ impl Internal {
         self.spec().layout_in(lang)
     }
 
-    /// Native panels still using the device's physical parameter model for value presentation.
-    pub fn uses_device_parameter_model(self) -> bool {
-        matches!(
-            self,
-            Self::Hall | Self::Delay | Self::Limiter | Self::Volt | Self::Surf
-        )
-    }
-
     /// The factory presets in menu order (empty: the device has none).
     pub fn presets(self) -> &'static [Preset] {
         self.spec().presets()

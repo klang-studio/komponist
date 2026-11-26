@@ -107,7 +107,7 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 23 (#285) prepares persisted state for a user file edit.
 /// 24 (#285) returns the parameter IDs a device reset while preparing a file edit.
 /// 25 (#336) carries layout descriptors for the single current CLAP layout contract.
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 26;
 
 /// Maximum number of parameter bases that can follow an active state restore.
 pub const MAX_STATE_PARAMETER_BASES: usize = crate::shm::INPUT_EVENT_CAPACITY;
@@ -400,6 +400,8 @@ pub enum ControlMsg {
     },
     /// Ask for the parameter list. Answer: `Params`.
     ListParams,
+    /// Parse a committed text entry through CLAP's main-thread conversion.
+    ParseParamText { request: u64, id: u32, text: String },
     /// Set a parameter from the generic view (main thread side; the bridge also feeds it to the
     /// audio side: an event at offset 0 of the next block while active, `flush` while inactive).
     /// The value comes back in `ParamValues` with the plugin's text for it.
@@ -522,6 +524,12 @@ pub enum BridgeMsg {
     /// rescans and the echo of `SetParam`. GUI edits during processing also arrive as output
     /// events in shared memory.
     ParamValues(Vec<ParamValue>),
+    /// The parsed CLAP value, or no value if the conversion is unsupported or rejected.
+    ParamTextParsed {
+        request: u64,
+        id: u32,
+        value: Option<f64>,
+    },
     /// Parameter edits emitted by a plugin-requested flush with no host input while
     /// inactive. Edits emitted during processing use the shared output ring.
     PluginParamEdits(Vec<(u32, f64)>),
@@ -1937,6 +1945,11 @@ mod tests {
                 parameter_bases: [(4, -0.25), (42, 0.75)].into(),
             },
             ControlMsg::ListParams,
+            ControlMsg::ParseParamText {
+                request: 8,
+                id: 3,
+                text: "Focus".into(),
+            },
             ControlMsg::SetParam { id: 3, value: -0.5 },
             ControlMsg::OpenGui(GuiTarget::X11Child {
                 xid: 0x0400_0007,
@@ -2094,6 +2107,11 @@ mod tests {
                 ),
             },
             BridgeMsg::ParamValues(vec![value.clone()]),
+            BridgeMsg::ParamTextParsed {
+                request: 8,
+                id: 3,
+                value: Some(0.125),
+            },
             BridgeMsg::PluginParamEdits(vec![(value.id, value.value)]),
             BridgeMsg::StateApplied {
                 request: 8,

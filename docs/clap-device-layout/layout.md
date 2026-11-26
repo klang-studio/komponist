@@ -197,8 +197,8 @@ graph is visible and active and this parameter is on.
 
 ## Physical parameter display
 
-A panel can present a continuous CLAP parameter with a wire range of 0–1 in
-physical units. Add `parameter-display` to `required_capabilities` and place
+A panel can present parameters bound by its cells in physical units.
+Add `parameter-display` to `required_capabilities` and place
 the mappings in the top-level `parameter_display` object, keyed by decimal
 CLAP parameter ID. Mapped IDs must be bound by a control or a graph in the
 panel.
@@ -215,17 +215,41 @@ For example, parameter 42 can display delay time as 1–2000 ms with a
 }
 ```
 
-The host maps normalized position `n` to `min + n × (max − min)` for
-`linear`, or `min × (max / min)^n` for `logarithmic`. The inverse maps a
-physical edit back to the existing CLAP wire value. Automation, plugin state,
-and the CLAP parameter inventory keep their existing wire values. Bounds must
+For a continuous CLAP range of 0–1, the host maps position `n` to
+`min + n × (max − min)` for `linear`, or `min × (max / min)^n` for
+`logarithmic`. The `decibel_taper` scale uses the mixer taper for bounds
+inside −70 to +6 dB and a linear scale over larger ranges. A `pan` scale
+uses linear mapping and a centered display. The physical edit maps back
+to the existing CLAP value. Automation and plugin state keep the CLAP
+parameter inventory's wire values.
+
+For stepped controls, add a positive integer `steps`, matching the last
+CLAP step index in the wire range from 0 to `steps`. The physical values
+are evenly spaced between the display bounds. The default must lie on
+the step grid. The scale specifies the
+control's visual taper. Add `integer: true` for whole numbers with
+unit increments. `step_labels` maps individual CLAP indices to localized
+labels. Segment and dropdown choices remain on their control bindings.
+A segment choice can set `glyph` to `wave_sine`, `wave_triangle`,
+`wave_saw` or `wave_square`. The localized label remains its accessible name. Bounds must
 be finite, increasing, and have a finite span. A logarithmic range must start
 above zero and have a finite ratio. The physical default must lie within the
 range and map to the CLAP default, allowing for single-precision rounding.
-Units are `none`, `hertz`, `milliseconds`, `percent`, `decibels`,
-`decibel_width`, and `ratio`. A percentage uses fractional values, so 0.42
-displays as 42%. Use `decibel_width` for whole dB widths without a leading
-plus sign, and `ratio` for values such as 4.0:1.
+Units are `none`, `hertz`, `milliseconds`, `seconds`, `percent`,
+`decibels`, `decibel_width`, `ratio`, `semitones`, `cents`, `octaves`,
+and `meters`. A percentage uses fractional values, so 0.42 displays
+as 42%. Use `decibel_width` for whole dB widths and `ratio` for values
+such as 4.0:1. A mapping with `unit: "none"` can supply `unit_labels`
+for a localized suffix. The optional `minimum_label` and `maximum_label`
+can name endpoint positions such as Off.
+
+Set `plugin_text: true` for values with free-form text. The host uses
+the latest text cached from the CLAP `value_to_text` callback for the
+matching wire value. Controls can preview a pending edit with their
+declarative format. A text entry is converted with CLAP's
+`text_to_value` once when committed. The plugin can reject the text;
+a recognized numeric display value can still be entered. Localized
+step and endpoint labels take precedence over automatic text for those values.
 
 ## Conditional knobs
 
@@ -235,6 +259,15 @@ in `required_capabilities`. The knob remains visible and accessible, and
 the host disables its edits while the toggle is on. The condition changes
 the UI only. The plugin keeps both parameters and is responsible for how
 their values affect processing.
+
+With the same capability, `parameter_alternates` can give a knob a second
+parameter when an independent Boolean CLAP parameter is on. The map uses
+the knob's primary CLAP ID. Each entry declares the Boolean ID in `when`
+and the replacement ID in `param_id`. It may include localized `labels`
+and enum `choices` using the same format as control bindings, with choices
+starting at zero. Both parameters use the same knob position in the layout,
+including knobs that follow a page selector. Their underlying parameter IDs
+and automation addresses stay independent.
 
 ## Device catalog labels
 

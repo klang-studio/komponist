@@ -265,6 +265,7 @@ static bool self_test(const struct module *module) {
         uint32_t status;
     } cases[] = {
         {FIXTURE_ID "valid", KOMPONIST_CLAP_LAYOUT_OK},
+        {FIXTURE_ID "presentation", KOMPONIST_CLAP_LAYOUT_OK},
         {FIXTURE_ID "missing", KOMPONIST_CLAP_LAYOUT_ABSENT},
         {FIXTURE_ID "absent", KOMPONIST_CLAP_LAYOUT_ABSENT},
         {FIXTURE_ID "invalid-length", KOMPONIST_CLAP_LAYOUT_ERROR},
@@ -306,7 +307,7 @@ static bool self_test(const struct module *module) {
             return false;
         }
     }
-    puts("C CLAP layout ABI passed for 11 fixture variants");
+    printf("C CLAP layout ABI passed for %zu fixture variants\n", sizeof(cases) / sizeof(*cases));
     return true;
 }
 

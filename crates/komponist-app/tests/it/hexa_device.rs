@@ -260,10 +260,22 @@ fn carriers_fill_in_the_track_colour_and_modulators_in_text_2() {
         );
     }
     // The fader colours are in the snapshot; here the card's own carrier values.
-    let params = komponist_app::views::devices::model::hexa_params(
+    let (komponist_model::ChannelRef::Track(track), _, _) =
+        app.project().find_device(device).unwrap()
+    else {
+        panic!("Hexa belongs to its instrument track");
+    };
+    let cards = komponist_app::views::devices::model::cards(
         Lang::De,
-        &app.project().find_device(device).unwrap().2.clone(),
+        app.project().track(track).unwrap(),
+        app.engine().host(),
+        &[],
     );
+    let params = &cards
+        .iter()
+        .find(|card| card.device == device)
+        .unwrap()
+        .params;
     let carrier = |n: usize| {
         params
             .iter()

@@ -285,42 +285,45 @@ fn audio_panel_for<T: AudioDefinition>() -> Panel {
     panel
 }
 
-/// Describe supported physical parameters using the normalized CLAP adapter's display domains.
+/// Describe physical parameters using the CLAP adapter's wire domains.
 pub fn parameter_display(
     params: &[ParamInfo],
 ) -> std::collections::BTreeMap<ParamId, ParameterDisplay> {
     params
         .iter()
         .filter_map(|param| {
-            let ParamKind::Float {
-                min,
-                max,
-                scale,
-                steps: 0,
-            } = param.kind
-            else {
-                return None;
+            let (scale, integer) = match param.kind {
+                ParamKind::Float { scale, .. } => (scale, false),
+                ParamKind::Int { .. } => (Scale::Lin, true),
+                ParamKind::Bool | ParamKind::Enum(_) => return None,
             };
-            if param.format.is_some() {
-                return None;
-            }
             let scale = match scale {
                 Scale::Lin => DisplayScale::Linear,
                 Scale::Log => DisplayScale::Logarithmic,
-                _ => return None,
+                Scale::Db => DisplayScale::DecibelTaper,
+                Scale::Pan => DisplayScale::Pan,
             };
             let unit = match param.unit {
                 Unit::Hz => DisplayUnit::Hertz,
                 Unit::Ms => DisplayUnit::Milliseconds,
+                Unit::S => DisplayUnit::Seconds,
                 Unit::Percent => DisplayUnit::Percent,
                 Unit::None => DisplayUnit::None,
                 Unit::Db => DisplayUnit::Decibels,
                 Unit::DbWidth => DisplayUnit::DecibelWidth,
+                Unit::Semitones => DisplayUnit::Semitones,
+                Unit::Cents => DisplayUnit::Cents,
+                Unit::Octaves => DisplayUnit::Octaves,
                 Unit::Ratio => DisplayUnit::Ratio,
-                _ => return None,
+                Unit::Meters => DisplayUnit::Meters,
             };
-            ParameterDisplay::new(min, max, param.default, scale, unit)
-                .map(|display| (param.id.clone(), display))
+            let (min, max) = param.range();
+            let mut display = ParameterDisplay::new(min, max, param.default, scale, unit)?;
+            if param.is_stepped() {
+                display = display.stepped(param.steps(), integer)?;
+            }
+            display.plugin_text = param.format.is_some();
+            Some((param.id.clone(), display))
         })
         .collect()
 }
@@ -378,12 +381,34 @@ pub fn panel_from_parts(
         .collect();
     let mut parameter_labels = std::collections::BTreeMap::new();
     let mut choice_labels = std::collections::BTreeMap::new();
+    let mut displays = parameter_display(english_params);
     for en in english_params {
         let de = german_params
             .iter()
             .find(|param| param.id == en.id)
             .unwrap_or(en);
         parameter_labels.insert(en.id.clone(), label(&en.name, &de.name));
+        if let Some(display) = displays.get_mut(&en.id)
+            && display.plugin_text
+        {
+            let localized_value = |value| {
+                let english = en.format(value);
+                let german = de.format(value);
+                (english != german).then(|| label(&english, &german))
+            };
+            let (min, max) = display.range();
+            if let Some(steps) = display.steps.filter(|steps| *steps < 64) {
+                display.step_labels = (0..=steps)
+                    .filter_map(|index| {
+                        let value = min + (max - min) * f64::from(index) / f64::from(steps);
+                        localized_value(value).map(|labels| (index, labels))
+                    })
+                    .collect();
+            } else {
+                display.minimum_label = localized_value(min);
+                display.maximum_label = localized_value(max);
+            }
+        }
         if let (Some(en_choices), Some(de_choices)) = (en.switch_choices(), de.switch_choices()) {
             choice_labels.insert(
                 en.id.clone(),
@@ -402,6 +427,7 @@ pub fn panel_from_parts(
         pages,
         parameter_labels,
         choice_labels,
+        parameter_display: displays,
         ..Panel::default()
     }
 }

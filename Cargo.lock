@@ -2664,10 +2664,8 @@ dependencies = [
  "komponist-plugins",
  "komponist-presse",
  "komponist-sampler",
- "komponist-surf",
  "komponist-tokens",
  "komponist-ui",
- "komponist-volt",
  "libc",
  "midir",
  "objc2 0.6.5",
@@ -3082,6 +3080,7 @@ name = "komponist-ipc"
 version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
+ "komponist-model",
  "komponist-rt",
  "postcard",
  "rustix 1.1.6",

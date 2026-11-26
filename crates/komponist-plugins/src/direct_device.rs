@@ -42,6 +42,8 @@ pub(crate) struct DirectDevice {
     pub(crate) markers: MarkerCache,
     pub(crate) layout: Option<Arc<NativeLayout>>,
     pub(crate) values: BTreeMap<u32, ParamValue>,
+    pending_param_text: BTreeMap<u32, (u64, String)>,
+    pending_value_text: BTreeMap<u32, f64>,
     pub(crate) base: BTreeMap<u32, f64>,
     last_state: Option<SavedPluginState>,
     pub(crate) state_warning: Option<String>,
@@ -208,6 +210,8 @@ impl DirectDevice {
             markers: MarkerCache::default(),
             layout: None,
             values: BTreeMap::new(),
+            pending_param_text: BTreeMap::new(),
+            pending_value_text: BTreeMap::new(),
             base: BTreeMap::new(),
             last_state: state,
             state_warning: warning,
@@ -472,8 +476,67 @@ impl DirectDevice {
         }
     }
 
+    pub(crate) fn queue_param_text(&mut self, request: u64, id: u32, text: String) {
+        self.pending_param_text.insert(id, (request, text));
+    }
+
     pub(crate) fn poll(&mut self, id: DeviceId, events: &mut Vec<PluginManagerEvent>) {
         self.service(id, events);
+        if self.status == DeviceStatus::Ok
+            && self.pending_restore.is_none()
+            && !self.pending_param_text.is_empty()
+            && let Some(parsed) = self.session.try_control(|plugin| {
+                self.pending_param_text
+                    .iter()
+                    .map(|(&param_id, (request, text))| {
+                        (*request, param_id, plugin.parse_param_text(param_id, text))
+                    })
+                    .collect::<Vec<_>>()
+            })
+        {
+            self.pending_param_text.clear();
+            for (request, param_id, value) in parsed {
+                let value = self
+                    .params
+                    .iter()
+                    .find(|param| param.id == param_id)
+                    .and_then(|param| {
+                        value.filter(|value| (param.min..=param.max).contains(value))
+                    });
+                events.push(PluginManagerEvent::ParamTextParsed {
+                    device: id,
+                    request,
+                    id: param_id,
+                    value,
+                });
+            }
+        }
+        if self.status == DeviceStatus::Ok
+            && self.pending_restore.is_none()
+            && !self.pending_value_text.is_empty()
+            && let Some(texts) = self.session.try_control(|plugin| {
+                self.pending_value_text
+                    .iter()
+                    .map(|(&id, &value)| (id, value, plugin.param_text(id, value)))
+                    .collect::<Vec<_>>()
+            })
+        {
+            self.pending_value_text.clear();
+            let mut changed = false;
+            for (param_id, value, text) in texts {
+                if let Some(text) = text
+                    && let Some(cached) = self.values.get_mut(&param_id)
+                    && cached.value == value
+                    && cached.text != text
+                {
+                    cached.text = text;
+                    changed = true;
+                }
+            }
+            if changed {
+                events.push(PluginManagerEvent::ParamValuesChanged { device: id });
+            }
+        }
         self.poll_marker_edit(id, events);
         if self.snapshot_due.is_some_and(|due| Instant::now() >= due)
             && let Some(state) = self.capture()
@@ -778,6 +841,14 @@ impl DirectDevice {
         {
             previous.value = value;
             previous.text.clear();
+            if self
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.parameter_display(id))
+                .is_some_and(|display| display.plugin_text)
+            {
+                self.pending_value_text.insert(id, value);
+            }
         }
     }
 

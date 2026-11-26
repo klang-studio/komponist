@@ -170,6 +170,14 @@ pub enum PluginManagerEvent {
         /// The device.
         device: DeviceId,
     },
+    /// The result of converting a user-entered parameter value.
+    ParamTextParsed {
+        device: DeviceId,
+        request: u64,
+        id: u32,
+        value: Option<f64>,
+    },
+
     /// The latency changed: recompile the program (delay compensation).
     LatencyChanged {
         /// The device.
@@ -1261,6 +1269,35 @@ impl PluginManager {
         } else if let Some(bridge) = self.bridges.get(&device).filter(|bridge| bridge.running()) {
             bridge.send(ControlMsg::PreviewWaveform { slot, time });
         }
+    }
+
+    /// Queue main-thread conversion of one committed CLAP text edit.
+    pub fn request_param_text(
+        &mut self,
+        device: DeviceId,
+        request: u64,
+        id: u32,
+        text: String,
+    ) -> bool {
+        if text.len() > 256 {
+            return false;
+        }
+        if let Some(direct) = self
+            .direct
+            .get_mut(&device)
+            .filter(|direct| direct.status == DeviceStatus::Ok)
+        {
+            direct.queue_param_text(request, id, text);
+        } else if let Some(bridge) = self
+            .bridges
+            .get(&device)
+            .filter(|bridge| bridge.status() == DeviceStatus::Ok)
+        {
+            bridge.send(ControlMsg::ParseParamText { request, id, text });
+        } else {
+            return false;
+        }
+        true
     }
 
     /// The last known value and text of parameter `id`.

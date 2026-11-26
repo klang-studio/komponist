@@ -130,6 +130,11 @@ jobs:
           KOMPONIST_LAYOUT_FIXTURE="$fixture/layout-fixture.clap" \
             cargo test --locked -p komponist-app --test it standalone_clap_preset_round_trips
 
+      - name: Verify standalone CLAP parameter presentation
+        env:
+          KOMPONIST_LAYOUT_FIXTURE: ${{ runner.temp }}/clap-preset-fixture/layout-fixture.clap
+        run: cargo test --locked -p komponist-app --test it native_layout_is_discovered_edited_saved_and_revalidated
+
       # Without the bundles the plugin tests skip silently.
       - name: Build test plugins
         run: scripts/build-test-plugins.sh

@@ -520,9 +520,37 @@ pub fn fmt_bpm(bpm: f64) -> String {
 // The app's lifecycle
 // ------------------------------------------------------------------------------------------------
 
+#[derive(Debug)]
+pub(crate) enum AfterParamText {
+    Save(ProjectAction),
+    Leave(Pending),
+    SaveAnswer,
+    SaveFile(PathBuf),
+}
+
 impl App {
+    pub(crate) fn resume_after_param_text(&mut self) {
+        self.expire_param_text();
+        if self.param_undo.has_pending_text() {
+            return;
+        }
+        match self.dialogs.after_param_text.take() {
+            Some(AfterParamText::Save(action)) => self.lifecycle_action(action),
+            Some(AfterParamText::Leave(next)) => self.guard(next),
+            Some(AfterParamText::SaveAnswer) => self.answer_unsaved(Answer::Save),
+            Some(AfterParamText::SaveFile(path)) => self.file_chosen(Purpose::Save, path),
+            None => {}
+        }
+    }
+
     /// New, open, save, save as and the S06 answers (`ProjectAction`, module docs).
     pub(crate) fn lifecycle_action(&mut self, action: ProjectAction) {
+        if matches!(action, ProjectAction::Save | ProjectAction::CollectAndSave)
+            && self.param_undo.has_pending_text()
+        {
+            self.dialogs.after_param_text = Some(AfterParamText::Save(action));
+            return;
+        }
         match action {
             ProjectAction::New => self.guard(Pending::New),
             ProjectAction::Open => self.guard(Pending::Open),
@@ -595,12 +623,17 @@ impl App {
     fn has_unsaved(&self) -> bool {
         self.doc.is_dirty()
             || self.has_unsaved_take()
+            || self.param_undo.has_pending_text()
             || self.engine.host().has_pending_state_edits()
             || !self.deferred_plugin_states().is_empty()
     }
 
     /// `next` replaces the open project: asks first if it has unsaved changes.
     fn guard(&mut self, next: Pending) {
+        if self.param_undo.has_pending_text() {
+            self.dialogs.after_param_text = Some(AfterParamText::Leave(next));
+            return;
+        }
         // Native menu and desktop file-open requests can arrive above the render modal. Cancel
         // without blocking the UI and reconsider unsaved changes once the engine is back.
         if next == Pending::Quit {
@@ -1102,6 +1135,12 @@ impl App {
     /// Closes the overlay (if any) and gives the focus back; `true` if one was open. A pending
     /// step is dropped (the user cancelled).
     pub(crate) fn close_overlay(&mut self) -> bool {
+        if matches!(
+            self.dialogs.after_param_text,
+            Some(AfterParamText::SaveAnswer | AfterParamText::SaveFile(_))
+        ) {
+            self.dialogs.after_param_text = None;
+        }
         let Some(overlay) = self.dialogs.overlay.take() else {
             return false;
         };
@@ -1118,6 +1157,10 @@ impl App {
 
     /// The unsaved-changes prompt was answered.
     pub(crate) fn answer_unsaved(&mut self, answer: Answer) {
+        if answer == Answer::Save && self.param_undo.has_pending_text() {
+            self.dialogs.after_param_text = Some(AfterParamText::SaveAnswer);
+            return;
+        }
         let pending = self.dialogs.pending.take();
         self.close_overlay();
         let Some(next) = pending else {
@@ -1157,6 +1200,10 @@ impl App {
 
     /// The file browser chose `path`.
     pub(crate) fn file_chosen(&mut self, purpose: Purpose, path: PathBuf) {
+        if purpose == Purpose::Save && self.param_undo.has_pending_text() {
+            self.dialogs.after_param_text = Some(AfterParamText::SaveFile(path));
+            return;
+        }
         let pending = self.dialogs.pending.take();
         self.close_overlay();
         // The next file browser starts where this file is.

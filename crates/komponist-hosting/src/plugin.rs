@@ -230,6 +230,11 @@ pub trait HostedPlugin {
     /// The plugin's text for `value` of parameter `id` ("80 Hz").
     fn param_text(&self, id: u32, value: f64) -> Option<String>;
 
+    /// Parse a user-entered value on the plugin's main thread, where the format supports it.
+    fn parse_param_text(&self, _id: u32, _text: &str) -> Option<f64> {
+        None
+    }
+
     /// A parameter change from the app (generic view). Updates the main-thread side (VST3
     /// controller `setParamNormalized`; nothing for CLAP). The bridge additionally delivers the value
     /// to the audio side: as a `ParamValue` event in the next block while processing, else through

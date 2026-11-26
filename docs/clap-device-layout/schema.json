@@ -78,6 +78,27 @@
         "pattern": "^[a-z][a-z0-9._-]{0,31}(?![\\s\\S])"
       }
     },
+    "parameter_alternates": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 256,
+      "propertyNames": { "pattern": "^(0|[1-9][0-9]{0,9})(?![\\s\\S])" },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["when", "param_id"],
+        "properties": {
+          "when": { "type": "integer", "minimum": 0, "maximum": 4294967294 },
+          "param_id": { "type": "integer", "minimum": 0, "maximum": 4294967294 },
+          "labels": { "$ref": "#/$defs/labels" },
+          "choices": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 16,
+            "items": { "$ref": "#/$defs/choice" }
+          }
+        }
+      }
+    },
     "parameter_display": {
       "type": "object",
       "minProperties": 1,
@@ -88,13 +109,42 @@
       "additionalProperties": {
         "type": "object",
         "required": ["min", "max", "default", "scale", "unit"],
+        "allOf": [
+          {
+            "if": { "required": ["step_labels"], "properties": { "step_labels": { "minProperties": 1 } } },
+            "then": { "required": ["steps"] }
+          },
+          {
+            "if": { "required": ["unit_labels"] },
+            "then": { "properties": { "unit": { "const": "none" } } }
+          },
+          {
+            "if": { "required": ["integer"], "properties": { "integer": { "const": true } } },
+            "then": { "required": ["steps"] }
+          }
+        ],
         "properties": {
           "min": { "type": "number" },
           "max": { "type": "number" },
           "default": { "type": "number" },
-          "scale": { "enum": ["linear", "logarithmic"] },
+          "scale": { "enum": ["linear", "logarithmic", "decibel_taper", "pan"] },
+          "steps": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+          "integer": { "type": "boolean" },
+          "plugin_text": { "type": "boolean" },
+          "unit_labels": { "$ref": "#/$defs/labels" },
+          "minimum_label": { "$ref": "#/$defs/labels" },
+          "maximum_label": { "$ref": "#/$defs/labels" },
+          "step_labels": {
+            "type": "object",
+            "maxProperties": 64,
+            "propertyNames": { "pattern": "^(0|[1-9][0-9]{0,9})(?![\\s\\S])" },
+            "additionalProperties": { "$ref": "#/$defs/labels" }
+          },
           "unit": {
-            "enum": ["none", "hertz", "milliseconds", "percent", "decibels", "decibel_width", "ratio"]
+            "enum": [
+              "none", "hertz", "milliseconds", "percent", "decibels", "decibel_width",
+              "ratio", "seconds", "semitones", "cents", "octaves", "meters"
+            ]
           }
         }
       }
@@ -122,6 +172,13 @@
     }
   },
   "allOf": [
+    {
+      "if": { "required": ["parameter_alternates"] },
+      "then": {
+        "required": ["required_capabilities"],
+        "properties": { "required_capabilities": { "contains": { "const": "conditional-controls" } } }
+      }
+    },
     {
       "if": { "required": ["pad_bank"] },
       "then": {
@@ -280,6 +337,7 @@
         "labels"
       ],
       "properties": {
+        "glyph": { "enum": ["wave_sine", "wave_triangle", "wave_saw", "wave_square"] },
         "value": {
           "type": "integer",
           "minimum": -2147483648,

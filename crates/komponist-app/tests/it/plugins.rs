@@ -902,7 +902,7 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
     .unwrap();
     let mut device_ids = Vec::new();
     for (index, name) in [
-        "valid",
+        "presentation",
         "missing",
         "unknown-param",
         "graphs",
@@ -985,6 +985,12 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
     let cards = cards(Lang::De, app.project().track(track).unwrap(), host, &[]);
     assert_eq!(cards[0].layout.pages[0].name, "Übersicht");
     let valid_card_label = Lang::De.devices_card(&cards[0].name);
+    let gain = cards[0].param(&ParamId::plugin(42)).unwrap();
+    assert_eq!(gain.name(), "Verstärkung");
+    assert_eq!(gain.info.unit, komponist_model::params::Unit::Ms);
+    assert_eq!(gain.info.range(), (10.0, 1000.0));
+    assert!((gain.info.to_plain(0.5) - 100.0).abs() < 1e-9);
+
     assert_eq!(cards[0].param(&ParamId::plugin(7)).unwrap().wire, 7);
     assert!(
         cards[0]
@@ -1051,13 +1057,70 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
         app.engine().host().param_base(valid, 7) == Some(1.0)
     });
     app.dispatch(Action::Project(ProjectAction::Save));
-    app.dispatch(Action::Project(ProjectAction::OpenPath(file)));
+    app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
     step_until(app, "reopened native layout and state", |app| {
         let host = app.engine().host();
         host.status(valid) == DeviceStatus::Ok
             && host.native_layout(valid).is_some()
             && host.param_base(valid, 7) == Some(1.0)
     });
+
+    let saved_before = std::fs::read(&file).unwrap();
+    app.dispatch(Action::Plugin(PluginAction::SetParamText {
+        device: valid,
+        id: 42,
+        text: "Focus".into(),
+        fallback: None,
+    }));
+    app.dispatch(Action::Project(ProjectAction::Save));
+    assert_eq!(std::fs::read(&file).unwrap(), saved_before);
+    step_until(
+        app,
+        "committed CLAP text converted, displayed and saved",
+        |app| {
+            let host = app.engine().host();
+            let saved = komponist_app::project_io::load_project(&file).unwrap();
+            let state = saved
+                .find_device(valid)
+                .unwrap()
+                .2
+                .state
+                .as_deref()
+                .unwrap();
+            f64::from_ne_bytes(state[..8].try_into().unwrap()) == 0.625
+                && host
+                    .param_value(valid, 42)
+                    .is_some_and(|value| value.value == 0.625 && value.text == "Focus")
+        },
+    );
+
+    let refreshed = komponist_app::views::devices::model::cards(
+        Lang::De,
+        app.project().track(track).unwrap(),
+        app.engine().host(),
+        &[],
+    );
+    let gain = refreshed[0].param(&ParamId::plugin(42)).unwrap();
+    assert_eq!(gain.text_at(gain.value), "Focus");
+    // During a gesture the next value is already shown before the plugin sends its text.
+    assert_eq!(gain.text_at(100.0), "100 ms");
+    assert_eq!(gain.text_at(10.0), "Aus");
+
+    app.dispatch(Action::Plugin(PluginAction::SetParamText {
+        device: valid,
+        id: 42,
+        text: "invalid parameter input".into(),
+        fallback: None,
+    }));
+    assert!(!app.close_requested(), "wait for the committed entry");
+    step_until(app, "rejected text keeps the document open", |app| {
+        app.ui()
+            .status
+            .as_ref()
+            .is_some_and(|status| status.text == app.lang().devices_parameter_text_failed())
+    });
+    assert_eq!(app.ui().screen, komponist_app::ui_state::Screen::Project);
+    assert_eq!(app.engine().host().param_base(valid, 42), Some(0.625));
 
     let state = |hidden| -> Arc<[u8]> {
         [0.5f64, 1.0, hidden]

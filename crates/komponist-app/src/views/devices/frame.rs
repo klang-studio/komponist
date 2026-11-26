@@ -1064,11 +1064,12 @@ fn cells_body(
             }
         }
     }
+    let choice_defaults = super::cells::choice_defaults(&card.layout);
     for cell in &page.cells {
         let rect = super::layout::cell_rect(cell).translate(origin.to_vec2());
         if rect.bottom() <= body.bottom() {
             let mut out = Vec::new();
-            super::cells::draw_cell(cu, &mut out, card, &palette, cell, rect);
+            super::cells::draw_cell(cu, &mut out, card, &palette, cell, rect, &choice_defaults);
             for action in out {
                 ctx.send(action);
             }

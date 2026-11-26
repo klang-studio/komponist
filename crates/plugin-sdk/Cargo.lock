@@ -473,6 +473,7 @@ dependencies = [
 name = "komponist-ipc"
 version = "0.2.0"
 dependencies = [
+ "komponist-model",
  "komponist-rt",
  "postcard",
  "rustix",

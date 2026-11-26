@@ -521,6 +521,13 @@ pub enum PluginAction {
         /// Plain value.
         value: f64,
     },
+    /// Commit a user-entered value through CLAP text conversion, with a numeric fallback.
+    SetParamText {
+        device: DeviceId,
+        id: u32,
+        text: String,
+        fallback: Option<f64>,
+    },
     /// Play an authored MIDI note briefly on the device's track.
     AuditionNote { device: DeviceId, key: u8 },
     /// Start a press-and-release audition from an authored waveform.

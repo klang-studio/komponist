@@ -41,7 +41,7 @@ pub use komponist_device_core::layout;
 pub use komponist_ipc::device_assets;
 pub use komponist_ipc::effect_meter;
 pub use komponist_ipc::native_layout::{
-    Canvas, DisplayScale, DisplayUnit, FmCarrier, FmDiagram, Heading, Labels, Pad,
+    Canvas, ChoiceGlyph, DisplayScale, DisplayUnit, FmCarrier, FmDiagram, Heading, Labels, Pad,
     ParameterDisplay, TrimUnit,
 };
 pub use komponist_ipc::sampler_ui;
@@ -92,6 +92,8 @@ pub struct Panel {
     /// A selector uses its context key and option order. Each choice needs a label
     /// in the default locale.
     pub choice_labels: BTreeMap<ParamId, Vec<Labels>>,
+    /// Optional glyphs for the first choices on a parameter; the choice labels stay accessible.
+    pub choice_glyphs: BTreeMap<ParamId, Vec<ChoiceGlyph>>,
     /// Optional localized names and descriptions shown in the device catalog.
     pub device_labels: Option<PluginLabels>,
     /// Labels for every graph cell in the grid.
@@ -104,8 +106,10 @@ pub struct Panel {
     pub pad_bank: Option<PadBank>,
     /// Section labels keyed by zero-based page index.
     pub headings: BTreeMap<usize, Vec<Heading>>,
-    /// Physical ranges and units of normalized CLAP parameters, keyed by author ID.
+    /// Physical ranges and units keyed by author ID. The SDK exports entries bound by a cell.
     pub parameter_display: BTreeMap<ParamId, ParameterDisplay>,
+    /// A knob's alternate parameter and the Boolean selecting it, keyed by the primary ID.
+    pub parameter_alternates: BTreeMap<ParamId, (ParamId, ParamId)>,
     /// Optional full names for a selected band's compact choice labels.
     pub full_band_choice_labels: BTreeMap<ParamId, Vec<Labels>>,
 }
@@ -480,11 +484,25 @@ pub unsafe fn compile<P: ClapPlugin>(
         }
         pages.push(wire_page);
     }
+    let mut parameter_alternates = BTreeMap::new();
+    for (param, (alternate, when)) in &panel.parameter_alternates {
+        let primary = resolve_id(param)?;
+        let when = resolve_id(when)?;
+        let widget = if panel.choice_labels.contains_key(alternate) {
+            WidgetKind::Segment
+        } else {
+            WidgetKind::Knob
+        };
+        let mut binding =
+            compile_control_binding(alternate, widget, panel, None, &inventory, &mut resolve_id)?;
+        binding.insert("when".into(), json!(when));
+        parameter_alternates.insert(primary, binding);
+    }
     let parameter_display = panel
         .parameter_display
         .iter()
-        .map(|(id, display)| Ok((resolve_id(id)?, display)))
-        .collect::<Result<BTreeMap<_, _>, LayoutError>>()?;
+        .filter_map(|(id, display)| Some((*resolved.get(id)?, display)))
+        .collect::<BTreeMap<_, _>>();
     let pad_bank = panel.pad_bank.as_ref();
     if let Some(failure) = validate(&panel.grid, &context, &|id| resolved.contains_key(id))
         .into_iter()
@@ -520,8 +538,11 @@ pub unsafe fn compile<P: ClapPlugin>(
     {
         capabilities.push(CAP_FM_TOPOLOGY);
     }
-    if conditional_controls {
+    if conditional_controls || !parameter_alternates.is_empty() {
         capabilities.push(CAP_CONDITIONAL_CONTROLS);
+    }
+    if !parameter_alternates.is_empty() {
+        document["parameter_alternates"] = json!(parameter_alternates);
     }
     if !parameter_display.is_empty() {
         capabilities.push(CAP_PARAMETER_DISPLAY);
@@ -808,6 +829,14 @@ fn compile_control_binding(
             .get(id)
             .ok_or_else(|| error(format!("missing choice labels for {id}")))?;
         let mut choices = compile_choices(param, labels)?;
+        if let Some(glyphs) = panel.choice_glyphs.get(id) {
+            if glyphs.len() > choices.len() {
+                return Err(error("choice glyph count exceeds choice count"));
+            }
+            for (choice, glyph) in choices.iter_mut().zip(glyphs) {
+                choice["glyph"] = json!(glyph);
+            }
+        }
         if let Some(full) = full {
             if full.len() != choices.len() {
                 return Err(error("full and short band choice counts must match"));

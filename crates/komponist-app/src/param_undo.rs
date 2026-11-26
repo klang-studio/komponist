@@ -60,6 +60,9 @@ use crate::undo_label;
 /// Snapshots of a device that arrive within this time of the last one amend its undo step.
 pub const COALESCE: Duration = Duration::from_secs(1);
 
+// A lost plugin reply must not leave a project operation waiting indefinitely.
+const PARAM_TEXT_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Snapshots of a bridged device within this time after the document handed it a state are the
 /// plugin's echo and stay out of the history.
 pub const ECHO_QUIET: Duration = Duration::from_secs(2);
@@ -75,6 +78,8 @@ const TURN_LABEL: Duration = Duration::from_secs(5);
 pub(crate) struct ParamUndo {
     /// How long snapshots of one device amend one step ([`COALESCE`]; tests shorten it).
     window: Duration,
+    next_text_edit: u64,
+    text_edits: HashMap<(DeviceId, u32), PendingTextEdit>,
     /// The device of the open parameter gesture.
     gesture_device: Option<DeviceId>,
     /// Bridged devices a parameter was turned on inside the open gesture.
@@ -103,10 +108,19 @@ pub(crate) struct ParamUndo {
     baseline: HashMap<DeviceId, SavedPluginState>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PendingTextEdit {
+    request: u64,
+    fallback: Option<f64>,
+    deadline: Instant,
+}
+
 impl Default for ParamUndo {
     fn default() -> Self {
         ParamUndo {
             window: COALESCE,
+            next_text_edit: 0,
+            text_edits: HashMap::new(),
             gesture_device: None,
             gesture_bridged: BTreeSet::new(),
             macro_gesture: BTreeSet::new(),
@@ -123,15 +137,29 @@ impl Default for ParamUndo {
 }
 
 impl ParamUndo {
+    pub(crate) fn has_pending_text(&self) -> bool {
+        !self.text_edits.is_empty()
+    }
+
+    pub(crate) fn cancel_text_edits(&mut self, device: DeviceId) {
+        self.text_edits.retain(|(owner, _), _| *owner != device);
+    }
+
+    pub(crate) fn cancel_text_edit(&mut self, device: DeviceId, id: u32) {
+        self.text_edits.remove(&(device, id));
+    }
+
     /// A new document: device ids restart, nothing carries over.
     pub(crate) fn forget(&mut self) {
         *self = ParamUndo {
             window: self.window,
+            next_text_edit: self.next_text_edit,
             ..ParamUndo::default()
         };
     }
 
     fn forget_device(&mut self, device: DeviceId) {
+        self.cancel_text_edits(device);
         if self.gesture_device == Some(device) {
             self.gesture_device = None;
         }
@@ -299,6 +327,95 @@ impl App {
         }
         for (device, state) in std::mem::take(&mut self.param_undo.deferred) {
             self.store_snapshot(device, &state);
+        }
+    }
+
+    pub(crate) fn set_param_text(
+        &mut self,
+        device: DeviceId,
+        id: u32,
+        text: String,
+        fallback: Option<f64>,
+    ) {
+        self.param_undo.cancel_text_edit(device, id);
+        self.param_undo.next_text_edit = self.param_undo.next_text_edit.wrapping_add(1);
+        let request = self.param_undo.next_text_edit;
+        if self
+            .engine
+            .host_mut()
+            .request_param_text(device, request, id, text)
+        {
+            self.param_undo.text_edits.insert(
+                (device, id),
+                PendingTextEdit {
+                    request,
+                    fallback,
+                    deadline: Instant::now() + PARAM_TEXT_TIMEOUT,
+                },
+            );
+        } else if let Some(value) = fallback {
+            self.dispatch(crate::actions::Action::Plugin(
+                crate::actions::PluginAction::SetParam { device, id, value },
+            ));
+        } else {
+            self.reject_param_text();
+        }
+    }
+
+    pub(crate) fn finish_param_text(
+        &mut self,
+        device: DeviceId,
+        id: u32,
+        request: u64,
+        value: Option<f64>,
+    ) {
+        let Some(edit) = self
+            .param_undo
+            .text_edits
+            .get(&(device, id))
+            .copied()
+            .filter(|edit| edit.request == request)
+        else {
+            return;
+        };
+        self.param_undo.cancel_text_edit(device, id);
+        if let Some(value) = value.or(edit.fallback)
+            && self.doc.project().find_device(device).is_some()
+            && self.engine.host().status(device) == komponist_plugins::DeviceStatus::Ok
+            && self.engine.host().params(device).is_some_and(|params| {
+                params
+                    .iter()
+                    .any(|param| param.id == id && (param.min..=param.max).contains(&value))
+            })
+        {
+            self.dispatch(crate::actions::Action::Plugin(
+                crate::actions::PluginAction::SetParam { device, id, value },
+            ));
+        } else {
+            self.reject_param_text();
+        }
+    }
+
+    fn reject_param_text(&mut self) {
+        // An explicit save or close would otherwise silently lose a value the user entered.
+        self.dialogs.after_param_text = None;
+        self.set_status(
+            self.lang.devices_parameter_text_failed(),
+            crate::ui_state::StatusKind::Error,
+        );
+    }
+
+    pub(crate) fn expire_param_text(&mut self) {
+        let now = Instant::now();
+        let expired: Vec<_> = self
+            .param_undo
+            .text_edits
+            .iter()
+            .filter(|(_, edit)| edit.deadline <= now)
+            .map(|(&(device, id), edit)| (device, id, edit.request))
+            .collect();
+        for (device, id, request) in expired {
+            self.finish_param_text(device, id, request, None);
         }
     }
 
@@ -702,6 +819,7 @@ impl App {
             if (old.state != device.state || old.parameter_bases != device.parameter_bases)
                 && LegacyParameters::new(device).is_none()
             {
+                self.param_undo.cancel_text_edits(device.id);
                 self.forget_param_edits(device.id);
                 if komponist_plugins::packaged_kind(&device.plugin).is_some() {
                     self.param_undo.awaiting.remove(&device.id);

@@ -6,7 +6,7 @@ use komponist_device_core::Spec;
 use komponist_i18n::Lang;
 use komponist_model::params::layout::{CellParam, GraphConfig};
 use komponist_model::params::{ParamId, ParamInfo};
-use komponist_native_clap_sdk::{GraphLabels, Labels, Panel};
+use komponist_native_clap_sdk::{ChoiceGlyph, GraphLabels, Labels, Panel};
 use nice_plug::prelude::*;
 
 struct Surf;
@@ -137,6 +137,26 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Surf {
         let labels = |en: &str, de: &str| -> Labels {
             [("en".into(), en.into()), ("de".into(), de.into())].into()
         };
+        for id in ["lfo1_shape", "lfo2_shape"] {
+            panel.choice_glyphs.insert(
+                ParamId::new(id),
+                vec![
+                    ChoiceGlyph::WaveSine,
+                    ChoiceGlyph::WaveTriangle,
+                    ChoiceGlyph::WaveSaw,
+                    ChoiceGlyph::WaveSquare,
+                ],
+            );
+        }
+        for lfo in 1..=2 {
+            panel.parameter_alternates.insert(
+                ParamId::new(format!("lfo{lfo}_rate")),
+                (
+                    ParamId::new(format!("lfo{lfo}_div")),
+                    ParamId::new(format!("lfo{lfo}_sync")),
+                ),
+            );
+        }
         let mut graph_labels = std::collections::BTreeMap::new();
         for (page_index, (en, de)) in english.pages.iter().zip(&german.pages).enumerate() {
             for (cell_index, (en, de)) in en.cells.iter().zip(&de.cells).enumerate() {
@@ -209,7 +229,6 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Surf {
             reduction_taps: Default::default(),
             headings: Default::default(),
             pad_bank: None,
-            parameter_display: Default::default(),
             full_band_choice_labels: Default::default(),
             ..panel
         })

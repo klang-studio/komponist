@@ -8,6 +8,7 @@ devices-opened = Opened
 
 # The open button of a plugin without own GUI (`openT:'Parameter'`): opens the generic view.
 devices-params = Parameters
+devices-parameter-text-failed = The parameter value could not be entered.
 
 # Title of a loading card (`msg`).
 devices-loading = Loading…

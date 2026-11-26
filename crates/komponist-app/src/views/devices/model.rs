@@ -2,14 +2,12 @@
 //! parameters its body shows, and the drop arithmetic of reordering. Pure, so the chain is
 //! tested without pixels.
 
-use komponist_builtin::BuiltinKind;
-use komponist_device_core::pinned_clap_state;
 use komponist_i18n::Lang;
 use komponist_ipc::ParamValue;
 use komponist_ipc::control::ParamInfo as WireInfo;
-use komponist_ipc::native_layout::{DisplayScale, DisplayUnit, NativeLayout, Widget};
+use komponist_ipc::native_layout::{DisplayUnit, NativeLayout, ParameterDisplay, Widget};
 use komponist_model::automation::AutomationOwner;
-use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit, auto_layout};
+use komponist_model::params::{ParamId, ParamInfo, ParamKind, Unit, auto_layout};
 use komponist_model::{Device, DeviceId, DeviceRole, Track};
 use komponist_plugins::params::{is_listed, param_info};
 use komponist_plugins::{DeviceStatus, FailReason};
@@ -17,7 +15,7 @@ use komponist_tokens::device;
 
 use super::layout::{self, DeviceLayout};
 use super::metrics;
-use crate::device_host::{DeviceHost, LegacyParameters, internal_kind, is_hexa};
+use crate::device_host::{BuiltinFmRouting, DeviceHost, LegacyParameters, internal_kind};
 use crate::gain_trace::Dynamics;
 use crate::meters::DeviceLevels;
 use crate::spectrum::Analysis;
@@ -123,10 +121,23 @@ impl Param {
     /// The display value at an automation or macro position in the project's parameter domain.
     pub(super) fn value_at_normalized(&self, bundled_editor: bool, position: f64) -> f64 {
         if bundled_editor {
-            let (min, max) = pinned_clap_state::clap_range(&self.info);
-            pinned_clap_state::from_clap(&self.info, min + position * (max - min))
+            let (min, max) = crate::device_host::legacy_clap_range(&self.info);
+            return crate::device_host::from_legacy_clap(&self.info, min + position * (max - min));
+        }
+        self.info.to_plain(position)
+    }
+
+    pub(super) fn display_at_position(
+        &self,
+        display: Option<&ParameterDisplay>,
+        bundled_editor: bool,
+        position: f64,
+    ) -> f64 {
+        if let Some(display) = display {
+            let raw = position * f64::from(display.steps.unwrap_or(1));
+            display_value(display, &self.info, raw)
         } else {
-            self.info.to_plain(position)
+            self.value_at_normalized(bundled_editor, position)
         }
     }
 
@@ -218,7 +229,7 @@ pub struct Card {
     /// Blocks that missed their deadline, while the head shows "zu spät" (set by the view).
     pub late: Option<u64>,
     /// hexa's routing as the patch has it: the FM display draws it for algorithm 0 („Frei“).
-    pub routing: Option<komponist_hexa::algorithms::Routing>,
+    pub routing: Option<BuiltinFmRouting>,
     /// The levels of the device's gain-reduction meter (set by the view from `Meters`); `None`
     /// for a device without a level feed.
     pub levels: Option<DeviceLevels>,
@@ -267,20 +278,30 @@ impl Card {
 
     pub(super) fn wire_value(&self, param: &Param, plain: f64) -> f64 {
         if self.bundled_editor {
-            pinned_clap_state::to_clap(&param.info, plain)
-        } else if self.has_normalized_display(param) {
-            param.info.to_normalized(plain)
+            return crate::device_host::to_legacy_clap(&param.info, plain);
+        }
+        if let Some(display) = self.parameter_display(param) {
+            if let Some(steps) = display.steps {
+                f64::from(step_index(&param.info, steps, plain))
+            } else {
+                param.info.to_normalized(plain)
+            }
         } else {
             plain
         }
     }
 
+    pub(super) fn parameter_display(&self, param: &Param) -> Option<&ParameterDisplay> {
+        self.native_layout.as_ref()?.parameter_display(param.wire)
+    }
+
     pub(super) fn has_normalized_display(&self, param: &Param) -> bool {
-        !self.bundled_editor
-            && self
-                .native_layout
-                .as_ref()
-                .is_some_and(|layout| layout.parameter_display(param.wire).is_some())
+        self.parameter_display(param)
+            .is_some_and(|display| display.steps.is_none())
+    }
+
+    pub(super) fn value_at_normalized(&self, param: &Param, position: f64) -> f64 {
+        param.display_at_position(self.parameter_display(param), self.bundled_editor, position)
     }
 
     pub(super) fn native_page(&self) -> Option<&komponist_ipc::native_layout::Page> {
@@ -450,41 +471,49 @@ pub(crate) fn card(
         } else {
             None
         };
-    let verified = host.verified_bundled_kind(device.id);
-    let editor = native_layout.as_ref().and_then(|native| {
-        if native.has_parameter_display() {
-            return None;
-        }
-        match verified? {
-            BuiltinKind::Hexa => bundled_params(device.id, host, native, hexa_editor_infos(lang)),
-            BuiltinKind::Internal(kind)
-                if native.has_audio_asset_editor() || kind.uses_device_parameter_model() =>
-            {
-                bundled_params(device.id, host, native, kind.params_in(lang))
-            }
-            _ => None,
-        }
-    });
-    let bundled_editor = editor.is_some();
-    let params = if let Some(params) = editor {
-        params
+    let sampler = native_layout
+        .as_ref()
+        .and_then(|_| host.sampler_editor_params(device.id, lang));
+    let bundled_editor = sampler.is_some();
+    let builtin = LegacyParameters::new(device);
+    let params = if let Some(sampler) = sampler {
+        sampler
+            .into_iter()
+            .map(|p| Param {
+                wire: p.wire,
+                text: p.info.format(p.value),
+                info: p.info,
+                value: p.value,
+            })
+            .collect()
     } else if state == CardState::Ok {
-        if is_hexa(device) {
-            hexa_params(lang, device)
-        } else if let Some(kind) = internal_kind(device) {
-            internal_params(lang, kind, device)
+        if let Some(builtin) = &builtin {
+            builtin
+                .card(lang)
+                .into_iter()
+                .map(|p| Param {
+                    wire: p.wire,
+                    text: p.info.format(p.value),
+                    info: p.info,
+                    value: p.value,
+                })
+                .collect()
         } else {
             host.params(device.id)
                 .map(|infos| {
                     let value = |id| host.param_value(device.id, id);
                     if let Some(native) = &native_layout {
-                        let ids: std::collections::BTreeSet<_> = native
-                            .pages
-                            .iter()
-                            .flat_map(|page| {
-                                page.cells.iter().flat_map(|cell| cell.parameter_ids())
-                            })
-                            .collect();
+                        let ids: std::collections::BTreeSet<_> =
+                            native
+                                .pages
+                                .iter()
+                                .flat_map(|page| {
+                                    page.cells.iter().flat_map(|cell| cell.parameter_ids())
+                                })
+                                .chain(native.parameter_alternates().flat_map(|alternate| {
+                                    [alternate.when, alternate.binding.param_id]
+                                }))
+                                .collect();
                         infos
                             .iter()
                             .filter(|info| ids.contains(&info.id))
@@ -503,17 +532,15 @@ pub(crate) fn card(
     let midi_effect = device.role == DeviceRole::MidiEffect;
     let layout = if let Some(native) = &native_layout {
         native_card_layout(native, lang)
-    } else if is_hexa(device) {
-        komponist_hexa::device::layout_in(lang)
     } else {
-        internal_kind(device).map_or_else(
+        builtin.as_ref().map_or_else(
             || {
                 DeviceLayout::knob_grid(
                     params.iter().map(|p| p.info.id.clone()),
                     metrics::COLUMNS as u8,
                 )
             },
-            |kind| kind.layout_in(lang).clone(),
+            |builtin| builtin.card_layout(lang),
         )
     };
     #[cfg(debug_assertions)]
@@ -523,7 +550,9 @@ pub(crate) fn card(
                 .iter()
                 .any(|p| p.info.id == *id || (bundled_editor && id.plugin_id() == Some(p.wire)))
         };
-        let mut errors = layout::validate(&layout, &super::cells::default_context(), &known);
+        let mut context = super::cells::default_context();
+        context.fill_missing(&super::cells::choice_defaults(&layout));
+        let mut errors = layout::validate(&layout, &context, &known);
         if native_layout
             .as_ref()
             .is_some_and(|native| native.pad_bank.is_some())
@@ -536,11 +565,6 @@ pub(crate) fn card(
             device.plugin.name
         );
     }
-    let hexa = is_hexa(device);
-    let hexa_patch = hexa.then(|| {
-        komponist_hexa::decode_state(device.state.as_deref())
-            .unwrap_or_else(|_| komponist_hexa::default_patch())
-    });
     let preset_entries = host.clap_presets(device);
     let selected = host.saved_preset(device, preset_entries);
     Card {
@@ -596,70 +620,9 @@ pub(crate) fn card(
         analysis: None,
         dynamics: None,
         graph_signals: Default::default(),
-        routing: hexa_patch.as_ref().map(komponist_hexa::algorithms::routing),
+        routing: builtin.and_then(|builtin| builtin.fm_routing()),
         state,
     }
-}
-
-fn hexa_editor_infos(lang: Lang) -> &'static [ParamInfo] {
-    use std::sync::OnceLock;
-
-    static INFOS: [OnceLock<Vec<ParamInfo>>; Lang::ALL.len()] =
-        [const { OnceLock::new() }; Lang::ALL.len()];
-    INFOS[lang as usize].get_or_init(|| {
-        use komponist_hexa::device::{Field, WIRE_COUNT};
-        let patch = komponist_hexa::default_patch();
-        (0..WIRE_COUNT)
-            .map(|wire| {
-                let field = Field::from_wire(wire as u32).expect("valid Hexa wire ID");
-                let mut info = field.info_in(lang);
-                info.default = info.snap(field.get(&patch));
-                info
-            })
-            .collect()
-    })
-}
-
-/// The parameters of an internal effect with the values in its device state (the defaults for a
-/// state that does not load); the wire id is the index in `kind.params()`.
-pub fn internal_params(
-    lang: Lang,
-    kind: komponist_builtin::Internal,
-    device: &Device,
-) -> Vec<Param> {
-    let values = kind
-        .decode_state(device.state.as_deref())
-        .unwrap_or_else(|_| kind.defaults());
-    kind.params_in(lang)
-        .iter()
-        .zip(values)
-        .enumerate()
-        .map(|(i, (info, value))| Param {
-            wire: i as u32,
-            text: info.format(value),
-            info: info.clone(),
-            value,
-        })
-        .collect()
-}
-
-/// The parameters of hexa's card (`komponist_hexa::device`), read from the patch in the
-/// device state; the wire id is `Field::wire`.
-pub fn hexa_params(lang: Lang, device: &Device) -> Vec<Param> {
-    let patch = komponist_hexa::decode_state(device.state.as_deref())
-        .unwrap_or_else(|_| komponist_hexa::default_patch());
-    komponist_hexa::device::params_in(lang)
-        .iter()
-        .map(|p| {
-            let value = p.field.get(&patch);
-            Param {
-                wire: p.wire,
-                text: p.info.format(value),
-                info: p.info.clone(),
-                value,
-            }
-        })
-        .collect()
 }
 
 /// The standalone frame parameters read from a legacy device's saved state.
@@ -820,46 +783,6 @@ pub(super) fn native_card_layout(
     }
 }
 
-/// Bind an authored device editor to the authoritative CLAP inventory. The editor uses the
-/// device's localized names and units, while events and automation use the live CLAP wire IDs.
-pub(super) fn bundled_params<'a>(
-    device: DeviceId,
-    host: &dyn DeviceHost,
-    native: &komponist_ipc::native_layout::NativeLayout,
-    infos: impl IntoIterator<Item = &'a ParamInfo>,
-) -> Option<Vec<Param>> {
-    let ids = native.author_ids()?;
-    let inventory = host.params(device)?;
-    infos
-        .into_iter()
-        .map(|info| {
-            let id = *ids.get(info.id.as_str())?;
-            let wire = inventory.iter().find(|wire| wire.id == id)?;
-            if !is_listed(wire)
-                || (wire.min, wire.max) != pinned_clap_state::clap_range(info)
-                || wire.step_count != info.steps()
-            {
-                return None;
-            }
-            let raw = host
-                .param_value(device, id)
-                .map_or(wire.default, |p| p.value);
-            // Use the exact device default when the wrapper still has its rounded f32 default.
-            let value = if raw == wire.default {
-                info.default
-            } else {
-                pinned_clap_state::from_clap(info, raw)
-            };
-            Some(Param {
-                wire: id,
-                info: info.clone(),
-                value,
-                text: info.format(value),
-            })
-        })
-        .collect()
-}
-
 /// The knobs of a foreign plugin's card: the auto-layout of the parameters a generic view lists
 /// (not hidden, not read-only, not the plugin's own bypass): its macros if it reports any, else
 /// the first 12, with their last known value and text.
@@ -891,7 +814,11 @@ pub fn all_plugin_params<'a>(
 
 /// A bridged plugin's parameter: its own names, our value words ("Off", "40%").
 fn plugin_info(lang: Lang, wire: &WireInfo) -> ParamInfo {
-    param_info(wire).texts(komponist_device_core::value_texts(lang))
+    param_info(wire).texts(komponist_model::params::ValueTexts {
+        on: lang.value_on(),
+        off: lang.value_off(),
+        percent: lang.value_percent(),
+    })
 }
 
 /// Apply the panel's display domain while retaining the live CLAP ID and flags.
@@ -905,23 +832,30 @@ pub(super) fn native_param(
     if !layout.has_parameter_display()
         && !layout.has_eq_band_controls()
         && !layout.has_cell_selections()
+        && layout.parameter_alternates().next().is_none()
     {
         return plugin_param(wire, info, known);
     }
-    if let Some((labels, choices)) =
-        layout
-            .pages
-            .iter()
-            .flat_map(|page| &page.cells)
-            .find_map(|cell| {
-                if cell.param_id == Some(wire.id) {
-                    Some((cell.labels.as_ref(), cell.choices.as_deref()))
-                } else {
-                    cell.variant_bindings()
-                        .find(|binding| binding.param_id == wire.id)
-                        .map(|binding| (binding.labels.as_ref(), binding.choices.as_deref()))
-                }
-            })
+    if let Some((labels, choices)) = layout
+        .pages
+        .iter()
+        .flat_map(|page| &page.cells)
+        .find_map(|cell| {
+            if cell.param_id == Some(wire.id) {
+                Some((cell.labels.as_ref(), cell.choices.as_deref()))
+            } else {
+                cell.variant_bindings()
+                    .find(|binding| binding.param_id == wire.id)
+                    .map(|binding| (binding.labels.as_ref(), binding.choices.as_deref()))
+            }
+        })
+        .or_else(|| {
+            layout
+                .parameter_alternates()
+                .map(|alternate| &alternate.binding)
+                .find(|binding| binding.param_id == wire.id)
+                .map(|binding| (binding.labels.as_ref(), binding.choices.as_deref()))
+        })
     {
         if let Some(label) = labels.and_then(|labels| layout.label(labels, lang.code())) {
             info.name = label.to_owned();
@@ -946,39 +880,123 @@ pub(super) fn native_param(
         }
     }
     let raw = known.map_or(wire.default, |value| value.value);
-    let value = if let Some(display) = layout.parameter_display(wire.id) {
+    if let Some(display) = layout.parameter_display(wire.id) {
         let (min, max) = display.range();
-        let scale = match display.scale {
-            DisplayScale::Linear => Scale::Lin,
-            DisplayScale::Logarithmic => Scale::Log,
+        info.kind = if display.integer {
+            ParamKind::Int {
+                min: min as i32,
+                max: max as i32,
+            }
+        } else {
+            ParamKind::Float {
+                min,
+                max,
+                scale: display.scale.model_scale(),
+                steps: display.steps.unwrap_or(0),
+            }
         };
-        info.kind = ParamKind::scaled(min, max, scale);
         info.unit = match display.unit {
             DisplayUnit::None => Unit::None,
             DisplayUnit::Hertz => Unit::Hz,
             DisplayUnit::Milliseconds => Unit::Ms,
+            DisplayUnit::Seconds => Unit::S,
             DisplayUnit::Percent => Unit::Percent,
             DisplayUnit::Decibels => Unit::Db,
             DisplayUnit::DecibelWidth => Unit::DbWidth,
+            DisplayUnit::Semitones => Unit::Semitones,
+            DisplayUnit::Cents => Unit::Cents,
+            DisplayUnit::Octaves => Unit::Octaves,
+            DisplayUnit::Meters => Unit::Meters,
             DisplayUnit::Ratio => Unit::Ratio,
         };
         info.default = display.default_value();
-        if raw == wire.default {
-            // A normalized CLAP default can be rounded to single precision.
+        let value = if raw == wire.default {
+            // The normalized CLAP default can be rounded to single precision.
             info.default
         } else {
-            info.to_plain(raw)
+            display_value(display, &info, raw)
+        };
+        let unit = display
+            .unit_labels
+            .as_ref()
+            .and_then(|labels| layout.label(labels, lang.code()))
+            .map(str::to_owned);
+        let step_labels: std::collections::BTreeMap<_, _> = display
+            .step_labels
+            .iter()
+            .filter_map(|(&index, labels)| {
+                Some((index, layout.label(labels, lang.code())?.to_owned()))
+            })
+            .collect();
+        let localize = |labels: &komponist_ipc::native_layout::Labels| {
+            layout.label(labels, lang.code()).map(str::to_owned)
+        };
+        let minimum_label = display.minimum_label.as_ref().and_then(localize);
+        let maximum_label = display.maximum_label.as_ref().and_then(localize);
+        let steps = display.steps;
+        let range = info.clone();
+        let has_labels =
+            minimum_label.is_some() || maximum_label.is_some() || !step_labels.is_empty();
+        let value_label = move |value| {
+            if let Some(label) =
+                steps.and_then(|steps| step_labels.get(&step_index(&range, steps, value)))
+            {
+                Some(label.clone())
+            } else if value == min {
+                minimum_label.clone()
+            } else if value == max {
+                maximum_label.clone()
+            } else {
+                None
+            }
+        };
+        let labeled_value = value_label(value).is_some();
+        if unit.is_some() || has_labels {
+            let format = info.clone();
+            info = info.formatted(move |value| {
+                if let Some(label) = value_label(value) {
+                    return label;
+                }
+                let text = format.format(value);
+                if let Some(unit) = &unit {
+                    format!("{text} {unit}")
+                } else {
+                    text
+                }
+            });
         }
-    } else if matches!(info.kind, ParamKind::Bool | ParamKind::Enum(_)) {
-        raw
+        let text = known
+            .filter(|known| display.plugin_text && !labeled_value && !known.text.is_empty())
+            .map_or_else(|| info.format(value), |known| known.text.clone());
+        return Param {
+            wire: wire.id,
+            info,
+            value,
+            text,
+        };
+    }
+    if matches!(info.kind, ParamKind::Bool | ParamKind::Enum(_)) {
+        return Param {
+            wire: wire.id,
+            text: info.format(raw),
+            info,
+            value: raw,
+        };
+    }
+    plugin_param(wire, info, known)
+}
+
+fn step_index(info: &ParamInfo, steps: u32, plain: f64) -> u32 {
+    let (min, max) = info.range();
+    ((info.snap(plain) - min) / ((max - min) / f64::from(steps))).round() as u32
+}
+
+fn display_value(display: &ParameterDisplay, info: &ParamInfo, raw: f64) -> f64 {
+    if let Some(steps) = display.steps {
+        let (min, max) = display.range();
+        info.snap(min + raw * ((max - min) / f64::from(steps)))
     } else {
-        return plugin_param(wire, info, known);
-    };
-    Param {
-        wire: wire.id,
-        text: info.format(value),
-        info,
-        value,
+        info.to_plain(raw)
     }
 }
 
