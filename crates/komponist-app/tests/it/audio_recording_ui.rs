@@ -389,7 +389,6 @@ fn capture_device_choices_distinguish_disabled_default_and_disconnected() {
 
 #[test]
 fn reselecting_the_same_input_retries_saving_settings() {
-    use komponist_app::device_host::BuiltinHost;
     use komponist_app::engine_sync::EngineSync;
     use komponist_app::settings::Settings;
     use komponist_audio::{DeviceId, HostKind, InputConfig};
@@ -413,7 +412,7 @@ fn reselecting_the_same_input_retries_saving_settings() {
     let previous_file = path.with_extension("backup");
     std::fs::rename(&path, &previous_file).unwrap();
     std::fs::create_dir(&path).unwrap();
-    let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
     let (project, _) = audio(AudioInput::None);
     let mut app = App::new(Document::new(project), engine, settings, Some(path.clone()));
     let choose = || Action::Settings(SettingsAction::SetAudioInput(Some(other.clone())));
@@ -432,7 +431,6 @@ fn reselecting_the_same_input_retries_saving_settings() {
 
 #[test]
 fn failed_track_input_selection_keeps_the_previous_route_and_device() {
-    use komponist_app::device_host::BuiltinHost;
     use komponist_app::engine_sync::EngineSync;
     use komponist_app::settings::Settings;
     use komponist_audio::{DeviceId, HostKind, InputConfig, StreamConfig};
@@ -451,7 +449,7 @@ fn failed_track_input_selection_keeps_the_previous_route_and_device() {
     settings.audio_input = Some(previous.clone());
     settings.save(&path).unwrap();
 
-    let mut engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    let mut engine = EngineSync::null(Box::new(App::headless_plugin_host()));
     engine.set_audio_input(Some(previous.clone())).unwrap();
     // Reject the stream launch without asking a hardware backend to open a device.
     assert!(

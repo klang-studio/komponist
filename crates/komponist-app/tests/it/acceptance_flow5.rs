@@ -27,7 +27,7 @@ const BAR: i64 = 3840;
 const PATIENCE: Duration = Duration::from_secs(120);
 
 /// The demo's first bar, hexa for every instrument, no effects.
-fn one_bar_song() -> Project {
+fn one_bar_song(instrument: &komponist_model::PluginRef) -> Project {
     let mut p = demo_project();
     for track in &mut p.tracks {
         let track = Arc::make_mut(track);
@@ -36,11 +36,9 @@ fn one_bar_song() -> Project {
             .devices
             .retain(|d| d.role == DeviceRole::Instrument);
         for device in &mut track.channel.devices {
-            if !komponist_app::device_host::is_hexa(device) {
-                let device = Arc::make_mut(device);
-                device.plugin = komponist_app::app::hexa_ref();
-                device.state = None;
-            }
+            let device = Arc::make_mut(device);
+            device.plugin = instrument.clone();
+            device.state = None;
         }
         track.clips.retain(|c| c.start == Tick::ZERO);
         for clip in &mut track.clips {
@@ -53,9 +51,12 @@ fn one_bar_song() -> Project {
 fn app_in(dir: &Path) -> App {
     let mut settings = Settings::default();
     settings.audio.host = komponist_audio::HostKind::Null;
-    let engine = EngineSync::null(Box::new(komponist_app::device_host::BuiltinHost::new()));
+    let host = App::headless_plugin_host();
+    let instrument = super::common::shipped_plugin(&host, "org.klang-studio.komponist.hexa")
+        .expect("build the Hexa fixture with scripts/build-test-plugins.sh");
+    let engine = EngineSync::null(Box::new(host));
     App::new(
-        Document::new(one_bar_song()),
+        Document::new(one_bar_song(&instrument)),
         engine,
         settings,
         Some(dir.join("config").join(settings::FILE_NAME)),
