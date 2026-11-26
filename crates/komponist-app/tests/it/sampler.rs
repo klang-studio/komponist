@@ -169,7 +169,7 @@ fn show_authored_pads(app: &mut App, kit: bool) {
             })
     });
     let host = app.engine().host();
-    assert!(host.verified_bundled_kind(device).is_none());
+    assert!(host.verified_bundle(device).is_none());
     assert!(host.bridge_pid(device).is_some());
 }
 

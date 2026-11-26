@@ -57,7 +57,7 @@ fn ready_sampler(project: Project, host: PluginHost, lang: Lang) -> (App, Device
         },
     );
     let host = app.engine().host();
-    assert!(host.verified_bundled_kind(device).is_none());
+    assert!(host.verified_bundle(device).is_none());
     assert!(host.bridge_pid(device).is_some());
     (app, device)
 }
@@ -229,7 +229,7 @@ fn marker_edit_persisted(app: &App, device: DeviceId) -> bool {
             result: WaveformMarkerEditResult::Applied { state, .. },
             ..
         } if *edited == device
-            && saved_state(app, device).is_some_and(|recorded| recorded.bytes == *state))
+            && saved_state(app, device).is_some_and(|recorded| recorded == *state))
     })
 }
 

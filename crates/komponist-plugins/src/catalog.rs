@@ -43,15 +43,6 @@ pub fn clap_id(builtin_id: &str) -> String {
     format!("org.klang-studio.komponist.{builtin_id}")
 }
 
-/// The built-in kind requested by a packaged CLAP reference. This identifies the stored
-/// catalog address only; the running instance must still be authenticated by the manager.
-pub fn packaged_kind(plugin: &PluginRef) -> Option<BuiltinKind> {
-    if !requires_bundled(plugin) {
-        return None;
-    }
-    crate::bundled_state::kind_for_id(&plugin.id)
-}
-
 /// Where a catalog entry's code comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PluginLocation {
@@ -175,11 +166,11 @@ impl Catalog {
         }
     }
 
-    /// Find the packaged CLAP entry of a built-in, if it was included in the scan.
-    pub fn packaged(&self, kind: BuiltinKind) -> Option<&CatalogEntry> {
+    /// The packaged entry with this CLAP ID, if the verified package includes it.
+    pub fn packaged(&self, clap_id: &str) -> Option<&CatalogEntry> {
         self.entries
             .iter()
-            .find(|entry| packaged_kind(&entry.plugin) == Some(kind))
+            .find(|entry| requires_bundled(&entry.plugin) && entry.plugin.id == clap_id)
     }
 
     /// All entries: built-ins first, then scanned plugins sorted by name (case-insensitive).
@@ -195,7 +186,8 @@ impl Catalog {
             }
             match entry.location {
                 PluginLocation::InProcess(kind) => {
-                    kind.browsable_legacy_presets() && self.packaged(kind).is_none()
+                    kind.browsable_legacy_presets()
+                        && self.packaged(&clap_id(kind.catalog().id)).is_none()
                 }
                 PluginLocation::Bundle { .. } => true,
             }

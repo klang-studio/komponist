@@ -42,7 +42,6 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak, mpsc};
 use std::time::{Duration, Instant};
 
-use komponist_builtin::BuiltinKind;
 use komponist_ipc::clap_presets::PresetLoad;
 use komponist_ipc::control::{AppliedClapPreset, PROTOCOL_VERSION, StateRestoreError, socket_pair};
 use komponist_ipc::device_assets::{MAX_BINDINGS_BYTES, OfflineRequest, Snapshot, edit_state};
@@ -55,12 +54,11 @@ use komponist_ipc::{
 use komponist_model::project::SavedPluginState;
 use komponist_model::{DeviceId, DeviceRole};
 
-use crate::bundled_state::{MarkerParameters, ParameterState};
 use crate::external::{ExternalProcessor, RUN_ACTIVE, RUN_DEAD, RUN_LOADING, Shared};
 use crate::manager::{
     DeviceStatus, FailReason, PluginError, PluginManagerEvent, ProcessorSetup, STATE_LOG_PREFIX,
 };
-use crate::waveform_markers::{MarkerCache, WaveformMarkerEditResult};
+use crate::waveform_markers::{MarkerCache, MarkerParameters, WaveformMarkerEditResult};
 
 /// Watchdog and shutdown timing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,7 +309,6 @@ pub(crate) struct Bridge {
     pub native_layout: Option<Arc<komponist_ipc::native_layout::NativeLayout>>,
     pub values: BTreeMap<u32, ParamValue>,
     pub base_values: BTreeMap<u32, f64>,
-    verified_bundled_kind: Option<BuiltinKind>,
     bundle: PathBuf,
     automated_params: BTreeMap<u32, Option<f64>>,
     temporary_params: BTreeSet<u32>,
@@ -372,7 +369,6 @@ pub(crate) struct SpawnSetup<'a> {
     pub bundle: &'a Path,
     pub catalog_bundle: &'a Path,
     pub plugin_id: &'a str,
-    pub verified_bundled_kind: Option<BuiltinKind>,
     pub state: Option<SavedPluginState>,
     pub setup: ProcessorSetup,
     pub timing: Timing,
@@ -479,7 +475,6 @@ impl Bridge {
             native_layout: None,
             values: BTreeMap::new(),
             base_values: BTreeMap::new(),
-            verified_bundled_kind: s.verified_bundled_kind,
             bundle: s.catalog_bundle.to_path_buf(),
             automated_params: BTreeMap::new(),
             temporary_params: BTreeSet::new(),
@@ -717,7 +712,6 @@ impl Bridge {
             && !self.assets.bindings_pending()
             && self.pending_params.is_empty()
             && self.released_macro_params.is_empty()
-            && (self.verified_bundled_kind.is_some() || self.temporary_params.is_empty())
     }
 
     fn marker_parameters(&self, slot: u32, prior: &[u32]) -> Option<MarkerParameters> {
@@ -727,16 +721,9 @@ impl Bridge {
             &self.automated_params,
             &self.macro_params,
             &self.params,
-            self.parameter_state(),
+            self.native_layout.as_deref(),
             self.temporary_params.iter().chain(prior).copied(),
         )
-    }
-
-    fn parameter_state(&self) -> Option<ParameterState<'_>> {
-        Some(ParameterState {
-            kind: self.verified_bundled_kind?,
-            layout: self.native_layout.as_deref()?,
-        })
     }
 
     fn send_marker_edit(&mut self, mut edit: MarkerEdit) {
@@ -842,17 +829,19 @@ impl Bridge {
             self.markers.refresh(edit.slot);
         }
         let device = self.device;
-        let result = if !edit.superseded && matches!(result, EditResult::Applied { .. }) {
-            match self.marker_parameters(edit.slot, edit.params.persisted_ids()) {
-                Some(latest) => latest.normalize(result),
-                None => EditResult::Failed {
+        let latest = (!edit.superseded && matches!(result, EditResult::Applied { .. }))
+            .then(|| self.marker_parameters(edit.slot, &edit.params.persisted_ids()));
+        let (result, bases) = match latest {
+            Some(Some(latest)) => (result, latest.bases().clone()),
+            Some(None) => (
+                EditResult::Failed {
                     message: "could not determine persistent parameter values after editing waveform markers"
                         .into(),
                     rollback_failed: true,
                 },
-            }
-        } else {
-            result
+                BTreeMap::new(),
+            ),
+            None => (result, BTreeMap::new()),
         };
         let result = if let EditResult::Failed {
             message,
@@ -865,9 +854,9 @@ impl Bridge {
             WaveformMarkerEditResult::Rejected(EditStatus::Stale)
         } else {
             let mut last_state = None;
-            let result = WaveformMarkerEditResult::from_wire(result, &mut last_state);
+            let result = WaveformMarkerEditResult::from_wire(result, &bases, &mut last_state);
             if let Some(state) = last_state {
-                self.last_state = Some(state.into());
+                self.last_state = Some(state);
             }
             result
         };
@@ -1034,20 +1023,13 @@ impl Bridge {
         if corrections.is_empty() {
             return Some(Arc::<[u8]>::from(state).into());
         }
-        if self.verified_bundled_kind.is_some() {
-            let bytes = self
-                .parameter_state()?
-                .restore_param_bases(&state, corrections)?;
-            Some(Arc::<[u8]>::from(bytes).into())
-        } else {
-            if corrections.len() > komponist_ipc::control::MAX_STATE_PARAMETER_BASES {
-                return None;
-            }
-            Some(SavedPluginState {
-                bytes: state.into(),
-                parameter_bases: corrections,
-            })
+        if corrections.len() > komponist_ipc::control::MAX_STATE_PARAMETER_BASES {
+            return None;
         }
+        Some(SavedPluginState {
+            bytes: state.into(),
+            parameter_bases: corrections,
+        })
     }
 
     /// A running device normally owes a fresh snapshot. An opaque plug-in state's temporary

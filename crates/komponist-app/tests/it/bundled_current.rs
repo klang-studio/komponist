@@ -8,7 +8,6 @@ use komponist_app::actions::{BitDepth, EditAction, ExportRange, PluginAction, Pr
 use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::{Action, App};
-use komponist_builtin::{BuiltinKind, Internal};
 use komponist_device_core::pinned_clap_state;
 use komponist_engine::compile::{self, NoEnv};
 use komponist_engine::testing::{Logged, TestSine};
@@ -208,8 +207,7 @@ fn assert_ready(app: &mut App, expected: &[(TrackId, komponist_model::Device)], 
     step_until(app, "authenticated packaged CLAP instances", |app| {
         expected.iter().all(|(_, device)| {
             let host = app.engine().host();
-            host.verified_bundled_kind(device.id).is_some()
-                && host.native_layout(device.id).is_some()
+            host.verified_bundle(device.id).is_some() && host.native_layout(device.id).is_some()
         })
     });
     for (_, device) in expected {
@@ -404,8 +402,8 @@ fn current_project_round_trip_and_offline_render() {
     assert_ready(&mut app, &expected, bridge);
     let host = app.engine().host();
     assert_eq!(
-        host.verified_bundled_kind(fixture.eq),
-        Some(BuiltinKind::Internal(Internal::Eq))
+        host.verified_bundle(fixture.eq),
+        Some("org.klang-studio.komponist.eq")
     );
     let ids = host
         .native_layout(fixture.eq)
@@ -702,7 +700,7 @@ fn midi_chain_events(
     }
     for device in [arpeggiator, scale] {
         assert_eq!(host.bridge_pid(device.id).is_some(), bridge);
-        assert!(host.verified_bundled_kind(device.id).is_some());
+        assert!(host.verified_bundle(device.id).is_some());
     }
     let rate_id = host
         .native_layout(arpeggiator.id)
@@ -1190,7 +1188,7 @@ fn unavailable_bundle_keeps_saved_project_intact() {
         _ => panic!("expected missing or altered EQ case"),
     }
     let host = app.engine().host();
-    assert!(host.verified_bundled_kind(eq.id).is_none());
+    assert!(host.verified_bundle(eq.id).is_none());
     assert!(host.bridge_pid(eq.id).is_none());
     assert_eq!(app.project().as_ref(), &saved);
     assert_eq!(std::fs::read(&path).unwrap(), bytes);

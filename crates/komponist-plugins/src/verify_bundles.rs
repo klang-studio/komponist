@@ -155,7 +155,7 @@ fn smoke_live_manager(
         duplicate.id,
         "external Hall with bundled CLAP ID",
     )?;
-    if manager.verified_bundled_kind(duplicate.id).is_some() {
+    if manager.verified_bundle(duplicate.id).is_some() {
         return Err("external Hall with bundled CLAP ID was granted bundle trust".into());
     }
     drop(external_audio);
@@ -414,7 +414,6 @@ fn smoke_bridge(
         device: id,
         role,
         format: PluginFormat::Clap,
-        verified_bundled_kind: crate::bundled_state::kind_for_id(bundle.plugin_id()),
         bundle: bundle.bundle_path(),
         catalog_bundle: bundle.original_path(),
         plugin_id: &descriptor.id,

@@ -4,26 +4,26 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
-use komponist_builtin::BuiltinKind;
 use komponist_hosting::host_loop::notification_bits;
 use komponist_hosting::{HostedPlugin, HostingError};
 use komponist_ipc::clap_presets::PresetLoad;
 use komponist_ipc::control::{MAX_STATE_PARAMETER_BASES, param_flags};
 use komponist_ipc::native_layout::NativeLayout;
 use komponist_ipc::waveform_markers::{EditResult, EditStatus, Request};
-use komponist_ipc::{LogLevel, NoteName, ParamInfo, ParamValue, RenderMode};
+use komponist_ipc::{
+    LogLevel, NoteName, ParamInfo, ParamValue, RenderMode, WireEvent, WireEventKind,
+};
 use komponist_model::project::SavedPluginState;
 use komponist_model::{DeviceId, DeviceRole};
 
 use crate::bundled_clap::VerifiedClap;
-use crate::bundled_state::{self, MarkerParameters, ParameterState};
 use crate::direct::DirectClap;
 use crate::direct_session::{DirectEngine, DirectSession};
 use crate::manager::{
     DeviceStatus, FailReason, PluginManagerEvent, ProcessorSetup, STATE_LOG_PREFIX,
 };
 
-use crate::waveform_markers::{MarkerCache, WaveformMarkerEditResult};
+use crate::waveform_markers::{MarkerCache, MarkerParameters, WaveformMarkerEditResult};
 
 const MARKER_EDIT_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -37,7 +37,6 @@ struct PendingMarkerEdit {
 pub(crate) struct DirectDevice {
     pub(crate) assets: crate::device_assets::DeviceAssets,
     session: DirectSession,
-    bundled_kind: Option<BuiltinKind>,
     pub(crate) params: Vec<ParamInfo>,
     pub(crate) markers: MarkerCache,
     pub(crate) layout: Option<Arc<NativeLayout>>,
@@ -121,10 +120,13 @@ impl Inventory {
     }
 }
 
+/// Load the opaque bytes, then the host-owned parameter bases through CLAP parameters. An
+/// inactive instance takes the bases at once; an active one returns them for the audio thread.
 fn load_saved_state(
     plugin: &mut dyn HostedPlugin,
     state: &SavedPluginState,
-) -> Result<(), HostingError> {
+    active: bool,
+) -> Result<BTreeMap<u32, f64>, HostingError> {
     if state.parameter_bases.len() > MAX_STATE_PARAMETER_BASES
         || state
             .parameter_bases
@@ -133,11 +135,12 @@ fn load_saved_state(
     {
         return Err(HostingError::State("invalid host parameter state".into()));
     }
+    plugin.load_state(&state.bytes)?;
     if state.parameter_bases.is_empty() {
-        return plugin.load_state(&state.bytes);
+        return Ok(BTreeMap::new());
     }
     let excluded = param_flags::HIDDEN | param_flags::READ_ONLY | param_flags::BYPASS;
-    let corrections: Vec<_> = plugin
+    let bases: BTreeMap<_, _> = plugin
         .params()
         .iter()
         .filter_map(|info| {
@@ -149,19 +152,15 @@ fn load_saved_state(
                 .then(|| (info.id, value.clamp(info.min, info.max)))
         })
         .collect();
-    if corrections.is_empty() {
-        return plugin.load_state(&state.bytes);
+    if active {
+        return Ok(bases);
     }
-
-    // Authenticated bundles use a known state codec. Apply the bases to a copy before loading
-    // it under the control guard, so even an immediate snapshot sees the restored values.
-    let bytes = bundled_state::kind_for_id(&plugin.descriptor().id)
-        .zip(plugin.native_layout())
-        .and_then(|(kind, (_, layout))| {
-            ParameterState { kind, layout }.restore_param_bases(&state.bytes, corrections)
-        })
-        .ok_or_else(|| HostingError::State("could not apply bundled parameter bases".into()))?;
-    plugin.load_state(&bytes)
+    let input: Vec<_> = bases
+        .iter()
+        .map(|(&id, &value)| WireEvent::new(0, WireEventKind::ParamValue { id, value }))
+        .collect();
+    plugin.flush_params(&input, &mut Vec::new());
+    Ok(BTreeMap::new())
 }
 
 impl DirectDevice {
@@ -184,12 +183,11 @@ impl DirectDevice {
         state: Option<SavedPluginState>,
         debounce: Duration,
     ) -> Result<(Self, DirectEngine), HostingError> {
-        let bundled_kind = bundled_state::kind_for_id(proof.plugin_id());
         let mut host = DirectClap::load(proof)?;
         let (warning, inventory, sidechain) = host
             .try_control(|plugin| {
                 let warning = state.as_ref().and_then(|state| {
-                    load_saved_state(plugin, state)
+                    load_saved_state(plugin, state, false)
                         .err()
                         .map(|error| error.to_string())
                 });
@@ -204,7 +202,6 @@ impl DirectDevice {
         let mut device = Self {
             latency: session.latency(),
             session,
-            bundled_kind,
             params: Vec::new(),
             assets: crate::device_assets::DeviceAssets::new(),
             markers: MarkerCache::default(),
@@ -350,16 +347,9 @@ impl DirectDevice {
             &self.automated_params,
             &self.macro_params,
             &self.params,
-            self.parameter_state(),
+            self.layout.as_deref(),
             [],
         )
-    }
-
-    fn parameter_state(&self) -> Option<ParameterState<'_>> {
-        Some(ParameterState {
-            kind: self.bundled_kind?,
-            layout: self.layout.as_deref()?,
-        })
     }
 
     fn try_marker_edit(&mut self, edit: &PendingMarkerEdit) -> Option<EditResult> {
@@ -394,7 +384,6 @@ impl DirectDevice {
             return;
         };
         let slot = edit.slot;
-        let result = edit.params.normalize(result);
         if let EditResult::Failed {
             message,
             rollback_failed: true,
@@ -413,9 +402,10 @@ impl DirectDevice {
             self.snapshot_due = None;
         }
         let mut last_state = None;
-        let result = WaveformMarkerEditResult::from_wire(result, &mut last_state);
+        let result =
+            WaveformMarkerEditResult::from_wire(result, edit.params.bases(), &mut last_state);
         if let Some(state) = last_state {
-            self.last_state = Some(state.into());
+            self.last_state = Some(state);
         }
         events.push(PluginManagerEvent::WaveformMarkersEdited {
             device,
@@ -593,15 +583,31 @@ impl DirectDevice {
             });
         }
         if let Some(state) = self.pending_restore.as_ref()
-            && let Some((result, inventory)) = self
-                .session
-                .restore(|plugin| load_saved_state(plugin, state), Inventory::read)
+            && let Some((result, inventory)) = self.session.restore(
+                |plugin| load_saved_state(plugin, state, true),
+                Inventory::read,
+            )
         {
             self.last_state = self.pending_restore.take();
             self.assets.finish_restore();
-            self.state_warning = result.err().map(|error| error.to_string());
+            let bases = match result {
+                Ok(bases) => {
+                    self.state_warning = None;
+                    bases
+                }
+                Err(error) => {
+                    self.state_warning = Some(error.to_string());
+                    BTreeMap::new()
+                }
+            };
             self.report_warning(id, events);
+            // The restored bases reach the processor with the next block, like a user edit.
+            self.unconfirmed_writes.extend(bases.keys().copied());
+            self.pending_writes.extend(bases);
             self.accept_inventory(inventory, true);
+            for (param, value) in self.pending_writes.clone() {
+                self.preview_param(param, value);
+            }
             Self::report_metadata(id, events);
             if self.state_warning.is_none() {
                 events.push(PluginManagerEvent::StateApplied { device: id });
@@ -964,7 +970,7 @@ impl DirectDevice {
         self.state_warning.is_none() && self.status == DeviceStatus::Ok
     }
 
-    pub(crate) fn capture(&mut self) -> Option<Arc<[u8]>> {
+    pub(crate) fn capture(&mut self) -> Option<SavedPluginState> {
         if !self.can_snapshot()
             || self.pending_restore.is_some()
             || self.pending_marker_edit.is_some()
@@ -978,11 +984,10 @@ impl DirectDevice {
         let automated = &self.automated_params;
         let unconfirmed = &self.unconfirmed_writes;
         let released = &self.released_automation;
-        let can_restore_bases = self.parameter_state().is_some();
         let (state, corrections) = self
             .session
             .try_control(|plugin| {
-                let mut corrections = Vec::new();
+                let mut corrections = BTreeMap::new();
                 for (&id, &base) in base {
                     let expected = automated
                         .get(&id)
@@ -999,33 +1004,32 @@ impl DirectDevice {
                     }
                     // Do not acknowledge a persistent hand edit until the processor received
                     // it. Differences on playback-owned parameters have an authoritative base
-                    // and can be repaired on the detached copy of the known bundle's state.
+                    // that the project stores next to the opaque state.
                     if unconfirmed.contains(&id)
-                        || !can_restore_bases
                         || !(automated.contains_key(&id)
                             || macros.contains_key(&id)
                             || released.contains(&id))
                     {
                         return None;
                     }
-                    corrections.push((id, expected));
+                    corrections.insert(id, expected);
+                }
+                if corrections.len() > MAX_STATE_PARAMETER_BASES {
+                    return None;
                 }
                 Some((plugin.save_state().ok()?, corrections))
             })
             .flatten()?;
-        let captured: Arc<[u8]> = if corrections.is_empty() {
-            state.into()
-        } else {
-            self.parameter_state()?
-                .restore_param_bases(&state, corrections)?
-                .into()
+        let captured = SavedPluginState {
+            bytes: state.into(),
+            parameter_bases: corrections,
         };
         self.unconfirmed_writes.clear();
-        self.macro_snapshot =
-            (!self.user_edit && !self.macro_params.is_empty()).then(|| Arc::downgrade(&captured));
+        self.macro_snapshot = (!self.user_edit && !self.macro_params.is_empty())
+            .then(|| Arc::downgrade(&captured.bytes));
         self.user_edit = false;
         self.snapshot_due = None;
-        self.last_state = Some(captured.clone().into());
+        self.last_state = Some(captured.clone());
         Some(captured)
     }
 }
