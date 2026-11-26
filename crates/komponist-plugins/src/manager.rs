@@ -1729,7 +1729,12 @@ impl PluginManager {
                 result: WaveformMarkerEditResult::Applied { .. },
                 ..
             }
-            | PluginManagerEvent::ClapPresetLoaded { device, .. } => Some(*device),
+            | PluginManagerEvent::ClapPresetLoaded { device, .. }
+            | PluginManagerEvent::ClapPresetReported {
+                device,
+                startup: false,
+                ..
+            } => Some(*device),
             _ => None,
         })
     }
@@ -2208,6 +2213,16 @@ mod tests {
                 source: None,
                 previous_state: Arc::from([2]),
                 state: Arc::from([3]),
+            },
+            // A load the plugin reported: the state captured before it must not be saved
+            // with its source.
+            PluginManagerEvent::ClapPresetReported {
+                device,
+                source: komponist_ipc::clap_presets::ClapPresetSource {
+                    location: komponist_ipc::clap_presets::ClapPresetLocation::Plugin,
+                    load_key: Some(b"B".to_vec()),
+                },
+                startup: false,
             },
         ];
         for event in events {

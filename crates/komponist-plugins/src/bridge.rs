@@ -1780,6 +1780,24 @@ impl Bridge {
                 }
                 events.push(PluginManagerEvent::ParamValuesChanged { device });
             }
+            BridgeMsg::PresetValues(values) => {
+                // A load the plugin reported replaced its values: they are the persistent bases
+                // now. Edits sent after it and playback-owned parameters keep theirs.
+                for value in values {
+                    if !self.params.iter().any(|param| param.id == value.id) {
+                        continue;
+                    }
+                    if !self.pending_params.contains(&value.id)
+                        && !self.automated_params.contains_key(&value.id)
+                        && !self.macro_params.contains_key(&value.id)
+                    {
+                        self.base_values.insert(value.id, value.value);
+                    }
+                    self.values.insert(value.id, value);
+                }
+                events.push(PluginManagerEvent::ParamsChanged { device });
+                events.push(PluginManagerEvent::ParamValuesChanged { device });
+            }
             BridgeMsg::PluginParamEdits(edits) => {
                 if self.snapshots_preserve_bases() && self.phase == Phase::Running {
                     for (id, value) in edits {

@@ -68,6 +68,8 @@ pub(crate) struct DirectDevice {
     snapshot_due: Option<Instant>,
     macro_snapshot: Option<Weak<[u8]>>,
     user_edit: bool,
+    /// A load the plugin reported whose values have not become the bases yet.
+    reported_load: bool,
     debounce: Duration,
 }
 
@@ -230,6 +232,7 @@ impl DirectDevice {
             snapshot_due: None,
             macro_snapshot: None,
             user_edit: false,
+            reported_load: false,
             debounce,
         };
         device.accept_inventory(inventory, true);
@@ -661,6 +664,7 @@ impl DirectDevice {
             }
             None => {}
         }
+        self.refresh_reported_load(id, events);
         self.report_presets(id, events);
         if observed.has(notification_bits::STATE_DIRTY) {
             self.user_edit = true;
@@ -670,12 +674,30 @@ impl DirectDevice {
 
     /// Preset loads the plugin reported on its own (CLAP preset-load): the selection for the
     /// app and a snapshot of the state the plugin loaded.
+    /// Takes the values a load the plugin reported as the new bases, keeping edits sent after it;
+    /// retried on the next poll while an engine worker holds the instance.
+    fn refresh_reported_load(&mut self, device: DeviceId, events: &mut Vec<PluginManagerEvent>) {
+        if !self.reported_load || self.pending_restore.is_some() || self.pending_preset.is_some() {
+            return;
+        }
+        if let Some(inventory) = self.session.try_control(Inventory::read) {
+            self.reported_load = false;
+            self.accept_inventory(inventory, true);
+            Self::report_metadata(device, events);
+        }
+    }
+
     fn report_presets(&mut self, device: DeviceId, events: &mut Vec<PluginManagerEvent>) {
         for report in self.session.take_preset_reports() {
             match report {
                 PresetReport::Loaded { source, startup } => {
                     if !startup {
-                        // The plugin changed its own state: the snapshot follows.
+                        // The plugin replaced its state: a stored state that failed to load no
+                        // longer matters, the loaded values are the new bases, and the snapshot
+                        // follows.
+                        self.state_warning = None;
+                        self.reported_load = true;
+                        self.refresh_reported_load(device, events);
                         self.user_edit = true;
                         self.snapshot_due = Some(Instant::now() + self.debounce);
                     }
