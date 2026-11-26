@@ -1514,7 +1514,9 @@ fn third_party_clap_macros_and_automation_restore_their_bases() {
         app.engine_mut()
             .hold_engine()
             .expect("hold the null backend for the tone probe");
-        // Offline mode removes the bridge deadlines from this amplitude comparison.
+        // Rendered like an export: the bridges in offline mode, the held engine offline. A
+        // realtime block (`run_held_capture`) has a callback's deadline, and on a loaded machine
+        // one late block falls back to the plugin's fallback output (#347).
         app.engine_mut()
             .host_mut()
             .set_render_mode(RenderMode::Offline);
@@ -1529,13 +1531,13 @@ fn third_party_clap_macros_and_automation_restore_their_bases() {
             key: 60,
             velocity: 127,
         });
-        let (left, right) = engine.run_held_capture(8192, &[], 0).unwrap();
+        let (left, right) = engine.render_held(8192).unwrap();
         engine.send(Command::LiveNote {
             track,
             key: 60,
             velocity: 0,
         });
-        assert!(engine.run_held(8192, &[], 0));
+        assert!(engine.render_held(8192).is_some());
         engine.host_mut().set_render_mode(RenderMode::Realtime);
         engine.release_engine();
         let peak = left
@@ -1649,5 +1651,64 @@ fn third_party_clap_macros_and_automation_restore_their_bases() {
         (reopened - automated).abs() < automated * 0.05,
         "reopened automation level {reopened}, before save {automated}"
     );
+    app.shutdown();
+}
+
+/// #347: `render_held` waits for a bridge block, as an export does. kp-test-slow sleeps 50 ms in
+/// `process` for a note-on of key 126, far beyond the deadline of a realtime 256-frame block
+/// (`run_held_capture`), which would give up after about 3 ms and play the fallback.
+#[test]
+fn held_offline_render_waits_for_a_slow_bridge() {
+    use komponist_ipc::control::RenderMode;
+    use komponist_model::edits::{self, NewTrack};
+
+    const SLOW: &str = "de.klang-studio.kp-test-slow";
+    const SLOW_KEY: u8 = 126;
+    let Some(dirs) = fixture_dirs() else {
+        return;
+    };
+    let dir = scratch("held-offline-render");
+    let mut host = PluginHost::new(config(&dir));
+    host.start_scan(&dirs);
+    poll_until(&mut host, "ScanFinished", |event| {
+        matches!(event, PluginManagerEvent::ScanFinished(_))
+    });
+    let (project, track) = edits::add_track(
+        &Project::new("Slow bridge"),
+        NewTrack {
+            name: None,
+            hue: None,
+            instrument: Some(clap_plugin(SLOW)),
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let slow = project.track(track).unwrap().channel.devices[0].id;
+    let mut app = app_with(project, host);
+    step_until(&mut app, "the slow plugin ready", all_ok);
+    app.engine_mut().hold_engine().unwrap();
+    app.engine_mut()
+        .host_mut()
+        .set_render_mode(RenderMode::Offline);
+    step_until(&mut app, "offline bridge reactivation", all_ok);
+    let late = app.engine().host().late_blocks(slow);
+    app.engine_mut().send(Command::LiveNote {
+        track,
+        key: SLOW_KEY,
+        velocity: 127,
+    });
+    let started = Instant::now();
+    assert!(app.engine_mut().render_held(512).is_some());
+    assert!(
+        started.elapsed() >= Duration::from_millis(50),
+        "the render waited for the stalled block"
+    );
+    assert_eq!(
+        app.engine().host().late_blocks(slow),
+        late,
+        "an offline render waits for the bridge"
+    );
+    app.engine_mut().release_engine();
     app.shutdown();
 }
