@@ -2,8 +2,6 @@
 //! parameters its body shows, and the drop arithmetic of reordering. Pure, so the chain is
 //! tested without pixels.
 
-#[cfg(test)]
-use komponist_device_core::pinned_clap_state;
 use komponist_i18n::Lang;
 use komponist_ipc::ParamValue;
 use komponist_ipc::control::ParamInfo as WireInfo;
@@ -121,11 +119,10 @@ impl Param {
     }
 
     /// The display value at an automation or macro position in the project's parameter domain.
-    pub(super) fn value_at_normalized(&self, _bundled_editor: bool, position: f64) -> f64 {
-        #[cfg(test)]
-        if _bundled_editor {
-            let (min, max) = pinned_clap_state::clap_range(&self.info);
-            return pinned_clap_state::from_clap(&self.info, min + position * (max - min));
+    pub(super) fn value_at_normalized(&self, bundled_editor: bool, position: f64) -> f64 {
+        if bundled_editor {
+            let (min, max) = crate::device_host::legacy_clap_range(&self.info);
+            return crate::device_host::from_legacy_clap(&self.info, min + position * (max - min));
         }
         self.info.to_plain(position)
     }
@@ -280,9 +277,8 @@ impl Card {
     }
 
     pub(super) fn wire_value(&self, param: &Param, plain: f64) -> f64 {
-        #[cfg(test)]
         if self.bundled_editor {
-            return pinned_clap_state::to_clap(&param.info, plain);
+            return crate::device_host::to_legacy_clap(&param.info, plain);
         }
         if let Some(display) = self.parameter_display(param) {
             if let Some(steps) = display.steps {
@@ -475,9 +471,22 @@ pub(crate) fn card(
         } else {
             None
         };
-    let bundled_editor = false;
+    let sampler = native_layout
+        .as_ref()
+        .and_then(|_| host.sampler_editor_params(device.id, lang));
+    let bundled_editor = sampler.is_some();
     let builtin = LegacyParameters::new(device);
-    let params = if state == CardState::Ok {
+    let params = if let Some(sampler) = sampler {
+        sampler
+            .into_iter()
+            .map(|p| Param {
+                wire: p.wire,
+                text: p.info.format(p.value),
+                info: p.info,
+                value: p.value,
+            })
+            .collect()
+    } else if state == CardState::Ok {
         if let Some(builtin) = &builtin {
             builtin
                 .card(lang)
@@ -536,12 +545,14 @@ pub(crate) fn card(
     };
     #[cfg(debug_assertions)]
     if state == CardState::Ok {
-        let known = |id: &ParamId| params.iter().any(|p| p.info.id == *id);
-        let mut errors = layout::validate(
-            &layout,
-            &super::cells::with_choice_defaults(super::cells::default_context(), &layout),
-            &known,
-        );
+        let known = |id: &ParamId| {
+            params
+                .iter()
+                .any(|p| p.info.id == *id || (bundled_editor && id.plugin_id() == Some(p.wire)))
+        };
+        let mut context = super::cells::default_context();
+        context.fill_missing(&super::cells::choice_defaults(&layout));
+        let mut errors = layout::validate(&layout, &context, &known);
         if native_layout
             .as_ref()
             .is_some_and(|native| native.pad_bank.is_some())

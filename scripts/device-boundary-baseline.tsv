@@ -119,7 +119,6 @@
 1	source	crates/komponist-app/src/views/devices/layout.rs	komponist-builtin
 4	source	crates/komponist-app/src/views/devices/model.rs	Internal::
 1	source	crates/komponist-app/src/views/devices/model.rs	komponist_builtin
-1	source	crates/komponist-app/src/views/devices/model.rs	komponist_device_core
 1	source	crates/komponist-app/src/views/devices/model.rs	komponist_hexa
 1	source	crates/komponist-app/tests/engine_perf.rs	komponist_hexa
 1	source	crates/komponist-app/tests/fake_host/mod.rs	BuiltinKind

@@ -225,10 +225,13 @@ parameter inventory's wire values.
 
 For stepped controls, add a positive integer `steps`, matching the last
 CLAP step index in the wire range from 0 to `steps`. The physical values
-are evenly spaced between the display bounds. The scale specifies the
+are evenly spaced between the display bounds. The default must lie on
+the step grid. The scale specifies the
 control's visual taper. Add `integer: true` for whole numbers with
 unit increments. `step_labels` maps individual CLAP indices to localized
-labels. Segment and dropdown choices remain on their control bindings. Bounds must
+labels. Segment and dropdown choices remain on their control bindings.
+A segment choice can set `glyph` to `wave_sine`, `wave_triangle`,
+`wave_saw` or `wave_square`. The localized label remains its accessible name. Bounds must
 be finite, increasing, and have a finite span. A logarithmic range must start
 above zero and have a finite ratio. The physical default must lie within the
 range and map to the CLAP default, allowing for single-precision rounding.

@@ -17,6 +17,7 @@ pub mod presets;
 pub use internal::Internal;
 pub use legacy_params::{
     BuiltinFmRouting, LegacyParameter, LegacyParameters, builtin_fm_algorithm, builtin_fm_carrier,
+    from_legacy_clap, legacy_clap_range, to_legacy_clap,
 };
 
 /// Which built-in a catalog entry or project device refers to.

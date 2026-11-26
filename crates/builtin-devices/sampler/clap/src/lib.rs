@@ -91,6 +91,7 @@ impl SampledDefinition for DrumSampler {
             })
             .collect();
         Panel {
+            parameter_display: Default::default(),
             full_band_choice_labels: Default::default(),
             graph_labels,
             canvases: Default::default(),

@@ -41,7 +41,7 @@ pub use komponist_device_core::layout;
 pub use komponist_ipc::device_assets;
 pub use komponist_ipc::effect_meter;
 pub use komponist_ipc::native_layout::{
-    Canvas, DisplayScale, DisplayUnit, FmCarrier, FmDiagram, Heading, Labels, Pad,
+    Canvas, ChoiceGlyph, DisplayScale, DisplayUnit, FmCarrier, FmDiagram, Heading, Labels, Pad,
     ParameterDisplay, TrimUnit,
 };
 pub use komponist_ipc::sampler_ui;
@@ -92,6 +92,8 @@ pub struct Panel {
     /// A selector uses its context key and option order. Each choice needs a label
     /// in the default locale.
     pub choice_labels: BTreeMap<ParamId, Vec<Labels>>,
+    /// Optional glyphs for the first choices on a parameter; the choice labels stay accessible.
+    pub choice_glyphs: BTreeMap<ParamId, Vec<ChoiceGlyph>>,
     /// Optional localized names and descriptions shown in the device catalog.
     pub device_labels: Option<PluginLabels>,
     /// Labels for every graph cell in the grid.
@@ -827,6 +829,14 @@ fn compile_control_binding(
             .get(id)
             .ok_or_else(|| error(format!("missing choice labels for {id}")))?;
         let mut choices = compile_choices(param, labels)?;
+        if let Some(glyphs) = panel.choice_glyphs.get(id) {
+            if glyphs.len() > choices.len() {
+                return Err(error("choice glyph count exceeds choice count"));
+            }
+            for (choice, glyph) in choices.iter_mut().zip(glyphs) {
+                choice["glyph"] = json!(glyph);
+            }
+        }
         if let Some(full) = full {
             if full.len() != choices.len() {
                 return Err(error("full and short band choice counts must match"));

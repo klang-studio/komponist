@@ -337,6 +337,7 @@
         "labels"
       ],
       "properties": {
+        "glyph": { "enum": ["wave_sine", "wave_triangle", "wave_saw", "wave_square"] },
         "value": {
           "type": "integer",
           "minimum": -2147483648,

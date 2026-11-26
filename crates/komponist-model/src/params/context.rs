@@ -47,6 +47,15 @@ impl ParamContext {
         self.values.insert(key.to_owned(), value.to_string());
     }
 
+    /// Fill only the placeholders the current selection has not set.
+    pub fn fill_missing(&mut self, defaults: &Self) {
+        for (key, value) in &defaults.values {
+            if !self.values.contains_key(key) {
+                self.values.insert(key.clone(), value.clone());
+            }
+        }
+    }
+
     /// The value of `key`.
     pub fn get(&self, key: &str) -> Option<&str> {
         self.values.get(key).map(String::as_str)

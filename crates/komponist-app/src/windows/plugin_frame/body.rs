@@ -19,7 +19,7 @@ use komponist_ui::{fonts, px};
 use super::metrics as m;
 use crate::actions::{Action, PluginAction};
 use crate::views::devices::{
-    cells::draw_cell,
+    cells::{choice_defaults, draw_cell},
     model::{Card, Param, failure_texts},
 };
 use crate::views::mixer::gesture_actions;
@@ -153,6 +153,7 @@ fn native_card(ui: &mut Ui, card: &mut Card, events: &mut Vec<BodyEvent>) {
     let Some(page) = card.current_page() else {
         return;
     };
+    let defaults = choice_defaults(&card.layout);
     ScrollArea::both().show(ui, |ui| {
         let (_, body) = ui.allocate_space(vec2(page.width(), device::grid::BODY_H));
         let palette = TrackPalette::new(150);
@@ -162,7 +163,15 @@ fn native_card(ui: &mut Ui, card: &mut Card, events: &mut Vec<BodyEvent>) {
             let rect = Rect::from_min_size(body.min + vec2(x, y), vec2(width, height));
             let mut cell_ui =
                 ui.new_child(UiBuilder::new().id_salt((card.page, index)).max_rect(rect));
-            draw_cell(&mut cell_ui, &mut actions, card, &palette, cell, rect);
+            draw_cell(
+                &mut cell_ui,
+                &mut actions,
+                card,
+                &palette,
+                cell,
+                rect,
+                &defaults,
+            );
         }
         events.extend(actions.into_iter().map(BodyEvent::ControlAction));
     });

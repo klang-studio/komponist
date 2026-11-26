@@ -7,7 +7,7 @@ use komponist_device_core::Spec;
 use komponist_i18n::Lang;
 use komponist_model::params::layout::{CellParam, GraphConfig};
 use komponist_model::params::{ParamId, ParamInfo};
-use komponist_native_clap_sdk::{GraphLabels, Labels, Panel};
+use komponist_native_clap_sdk::{ChoiceGlyph, GraphLabels, Labels, Panel};
 use nice_plug::prelude::*;
 
 struct Volt;
@@ -124,6 +124,17 @@ impl komponist_bundled_clap_adapter::AudioDefinition for Volt {
         let labels = |en: &str, de: &str| -> Labels {
             [("en".into(), en.into()), ("de".into(), de.into())].into()
         };
+        for id in ["osc_a_wave", "osc_b_wave", "lfo1_shape", "lfo2_shape"] {
+            panel.choice_glyphs.insert(
+                ParamId::new(id),
+                vec![
+                    ChoiceGlyph::WaveSine,
+                    ChoiceGlyph::WaveTriangle,
+                    ChoiceGlyph::WaveSaw,
+                    ChoiceGlyph::WaveSquare,
+                ],
+            );
+        }
         for lfo in 1..=2 {
             panel.parameter_alternates.insert(
                 ParamId::new(format!("lfo{lfo}_rate")),

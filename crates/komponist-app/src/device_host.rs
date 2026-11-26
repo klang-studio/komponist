@@ -43,8 +43,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) use komponist_builtin::{
-    BuiltinFmRouting, BuiltinKind, BuiltinProcessor, Internal, LegacyParameters,
-    builtin_fm_algorithm, builtin_fm_carrier,
+    BuiltinFmRouting, BuiltinKind, BuiltinProcessor, Internal, LegacyParameter, LegacyParameters,
+    builtin_fm_algorithm, builtin_fm_carrier, from_legacy_clap, legacy_clap_range, to_legacy_clap,
 };
 use komponist_engine::{DeviceMeter, Processor};
 use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource};
@@ -262,8 +262,8 @@ pub trait DeviceHost {
         None
     }
 
-    /// The last known value and text of parameter `id`. Values from the plugin's own GUI arrive
-    /// without text; format them in the view.
+    /// Queue a text conversion. `true` accepts the request for asynchronous completion through
+    /// `ParamTextParsed`; `false` means the caller can apply its numeric fallback immediately.
     fn request_param_text(
         &mut self,
         _device: DeviceId,
@@ -274,6 +274,49 @@ pub trait DeviceHost {
         false
     }
 
+    /// Physical controls for the authenticated Sampler editors that lack native display metadata.
+    fn sampler_editor_params(
+        &self,
+        device: DeviceId,
+        lang: komponist_i18n::Lang,
+    ) -> Option<Vec<LegacyParameter>> {
+        let native = self.native_layout(device)?;
+        if native.has_parameter_display() || !native.has_audio_asset_editor() {
+            return None;
+        }
+        let infos =
+            LegacyParameters::sampler_editor_infos(self.verified_bundled_kind(device)?, lang)?;
+        let ids = native.author_ids()?;
+        let inventory = self.params(device)?;
+        infos
+            .iter()
+            .map(|info| {
+                let wire = *ids.get(info.id.as_str())?;
+                let param = inventory.iter().find(|param| param.id == wire)?;
+                if !komponist_plugins::params::is_listed(param)
+                    || (param.min, param.max) != legacy_clap_range(info)
+                    || param.step_count != info.steps()
+                {
+                    return None;
+                }
+                let raw = self
+                    .param_value(device, wire)
+                    .map_or(param.default, |value| value.value);
+                let value = if raw == param.default {
+                    info.default
+                } else {
+                    from_legacy_clap(info, raw)
+                };
+                Some(LegacyParameter {
+                    info: info.clone(),
+                    wire,
+                    value,
+                })
+            })
+            .collect()
+    }
+
+    /// The last known value and cached text. The view formats live values without cached text.
     fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {
         let _ = (device, id);
         None

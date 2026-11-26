@@ -21,6 +21,9 @@ pub struct LegacyParameters<'a> {
     state: Option<&'a [u8]>,
 }
 
+pub use komponist_device_core::pinned_clap_state::{
+    clap_range as legacy_clap_range, from_clap as from_legacy_clap, to_clap as to_legacy_clap,
+};
 pub use komponist_hexa::algorithms::Routing as BuiltinFmRouting;
 
 /// The numbered topology for the linked-in instrument's panel.
@@ -40,6 +43,16 @@ impl<'a> LegacyParameters<'a> {
             kind: BuiltinKind::from_plugin(&device.plugin)?,
             state: device.state.as_deref(),
         })
+    }
+
+    /// Author model still used by the authenticated Sampler editors until they publish it.
+    pub fn sampler_editor_infos(verified: BuiltinKind, lang: Lang) -> Option<&'static [ParamInfo]> {
+        match verified {
+            BuiltinKind::Internal(
+                kind @ (crate::Internal::Sampler | crate::Internal::GeneralSampler),
+            ) => Some(kind.params_in(lang)),
+            _ => None,
+        }
     }
 
     pub fn wire(&self, id: &ParamId) -> Option<u32> {

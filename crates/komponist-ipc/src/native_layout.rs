@@ -179,7 +179,10 @@ impl ParameterDisplay {
             && (max - min).is_finite()
             && (min..=max).contains(&self.default_value())
             && (self.scale != DisplayScale::Logarithmic || min > 0.0 && (max / min).is_finite())
-            && self.steps.is_none_or(|steps| steps > 0)
+            && self.steps.is_none_or(|steps| {
+                let index = self.default_step(steps);
+                steps > 0 && (index - index.round()).abs() <= 8.0 * f64::EPSILON * f64::from(steps)
+            })
             && (self.unit_labels.is_none() || self.unit == DisplayUnit::None)
             && self.step_labels.len() <= 64
             && self
@@ -196,11 +199,16 @@ impl ParameterDisplay {
                     && self.default_value().fract() == 0.0)
     }
 
+    fn default_step(&self, steps: u32) -> f64 {
+        let (min, max) = self.range();
+        ((self.default_value() - min) / (max - min)) * f64::from(steps)
+    }
+
     fn wire_default(&self) -> f64 {
         let (min, max) = self.range();
         let default = self.default_value();
         if let Some(steps) = self.steps {
-            ((default - min) / ((max - min) / f64::from(steps))).round()
+            self.default_step(steps).round()
         } else {
             komponist_model::params::to_normalized(self.scale.model_scale(), min, max, default)
         }
@@ -437,12 +445,23 @@ pub enum Half {
     Bottom,
 }
 
+/// An optional icon for the painted choice. The localized label remains its accessible name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChoiceGlyph {
+    WaveSine,
+    WaveTriangle,
+    WaveSaw,
+    WaveSquare,
+}
+
 /// Text for one plain CLAP enumeration value.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct Choice {
     pub value: i32,
     pub labels: Labels,
     pub full_labels: Option<Labels>,
+    pub glyph: Option<ChoiceGlyph>,
 }
 
 /// A control's binding for one selection, in the selection's order.
@@ -2154,6 +2173,17 @@ mod tests {
         assert!(parse(&value).is_err());
         value["parameter_display"]["42"]["step_labels"] = json!({"2": {"de": "Mitte"}});
         assert!(parse(&value).is_err(), "a default-locale label is required");
+    }
+
+    #[test]
+    fn a_physical_default_must_be_on_its_step_grid() {
+        let display = |default| {
+            ParameterDisplay::new(0.0, 2.0, default, DisplayScale::Linear, DisplayUnit::None)
+                .unwrap()
+                .stepped(2, false)
+        };
+        assert!(display(0.5).is_none());
+        assert_eq!(display(1.0 + f64::EPSILON).unwrap().wire_default(), 1.0);
     }
 
     #[test]

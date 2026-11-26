@@ -66,10 +66,8 @@ pub(super) fn default_context() -> ParamContext {
 }
 
 /// Populate a panel's named choices before any selector has been used.
-pub(super) fn with_choice_defaults(
-    mut ctx: ParamContext,
-    layout: &super::layout::DeviceLayout,
-) -> ParamContext {
+pub(crate) fn choice_defaults(layout: &super::layout::DeviceLayout) -> ParamContext {
+    let mut ctx = ParamContext::new();
     for cell in layout.pages.iter().flat_map(|page| &page.cells) {
         if let CellParam::Choice { key, options, .. } = &cell.param
             && ctx.get(key).is_none()
@@ -132,8 +130,10 @@ pub(crate) fn draw_cell(
     palette: &TrackPalette,
     cell: &Cell,
     rect: Rect,
+    defaults: &ParamContext,
 ) {
-    let ctx = with_choice_defaults(context(cu.ctx(), card.device), &card.layout);
+    let mut ctx = context(cu.ctx(), card.device);
+    ctx.fill_missing(defaults);
     let native = card.native_cell(cell);
     if let Some(selector) = native.and_then(|cell| cell.selector.as_ref()) {
         let layout = card.native_layout.as_ref().expect("native selector");
@@ -253,7 +253,7 @@ pub(crate) fn draw_cell(
             true
         }),
         (WidgetKind::FmAlgorithm, p) => {
-            fm(cu, card, cell, p, palette, rect);
+            fm(cu, card, cell, p, palette, rect, &ctx);
             true
         }
         (WidgetKind::Graph, _) => graph(cu, out, card, palette, cell, &ctx, rect),
@@ -439,6 +439,33 @@ fn split_unit(text: &str, native: bool) -> (&str, &str) {
     }
 }
 
+/// Keep a value editor attached to its wire parameter when a cell is rebound.
+fn put_param_editor(
+    cu: &mut Ui,
+    rect: Rect,
+    cell: &Cell,
+    param: &Param,
+    widget: impl egui::Widget,
+) -> egui::Response {
+    cu.scope_builder(
+        egui::UiBuilder::new()
+            .id_salt(slot(cu, cell, "parameter-entry").with(param.wire))
+            .max_rect(rect)
+            .layout(egui::Layout::centered_and_justified(
+                egui::Direction::TopDown,
+            )),
+        |ui| ui.add(widget),
+    )
+    .inner
+}
+
+fn parse_display_number(text: &str, displayed_unit: &str, unit: Unit) -> Option<f64> {
+    let percent =
+        unit == Unit::Percent && (displayed_unit == "%" || text.trim_end().ends_with('%'));
+    let suffix = if percent { "%" } else { displayed_unit };
+    parse_number(text, suffix).map(|value| if percent { value / 100.0 } else { value })
+}
+
 /// Keep a typed edit out of the frame's numeric gesture until CLAP parses it.
 fn commit_param_text(
     out: &mut Vec<Action>,
@@ -505,7 +532,7 @@ fn knob(cu: &mut Ui, out: &mut Vec<Action>, card: &Card, cell: &Cell, p: &Param,
             .and_then(|control| control.modulation()),
         ..KnobCellOptions::default()
     });
-    let r = cu.put(rect, w);
+    let r = put_param_editor(cu, rect, cell, p, w);
     touch(
         cu,
         out,
@@ -519,13 +546,7 @@ fn knob(cu: &mut Ui, out: &mut Vec<Action>, card: &Card, cell: &Cell, p: &Param,
     let current = p.text_at(p.value);
     let unit = split_unit(&current, true).1;
     commit_param_text(out, card, p, text_entry, |text| {
-        parse_number(text, unit).map(|value| {
-            if info.unit == Unit::Percent {
-                value / 100.0
-            } else {
-                value
-            }
-        })
+        parse_display_number(text, unit, info.unit)
     });
 }
 
@@ -592,12 +613,7 @@ fn number(
     let use_plugin_text = card
         .parameter_display(p)
         .is_some_and(|display| display.plugin_text);
-    let unit_scale = if unit == "%" && info.unit == Unit::Percent {
-        100.0
-    } else {
-        1.0
-    };
-    let parse_plain = |text: &str| parse_number(text, &unit).map(|value| value / unit_scale);
+    let parse_plain = |text: &str| parse_display_number(text, &unit, info.unit);
     let read_text = |text: &str| {
         if use_plugin_text {
             text_entry.replace(Some(text.to_owned()));
@@ -617,7 +633,7 @@ fn number(
                 .cols(cell.cols)
                 .format(plain_text)
                 .parse(read_text);
-            let r = cu.put(rect, w);
+            let r = put_param_editor(cu, rect, cell, p, w);
             touch(
                 cu,
                 out,
@@ -637,7 +653,7 @@ fn number(
                 .cols(cell.cols)
                 .format(|n| plain_text(info.to_plain(n)))
                 .parse(|t| read_text(t).map(|plain| info.to_normalized(plain)));
-            let r = cu.put(rect, w);
+            let r = put_param_editor(cu, rect, cell, p, w);
             touch(
                 cu,
                 out,
@@ -654,6 +670,20 @@ fn number(
     true
 }
 
+fn native_choices<'a>(
+    card: &'a Card,
+    cell: &Cell,
+    wire: u32,
+) -> Option<&'a [komponist_ipc::native_layout::Choice]> {
+    let native = card.native_cell(cell)?;
+    native
+        .variant_bindings()
+        .find(|binding| binding.param_id == wire)
+        .map_or(native.choices.as_deref(), |binding| {
+            binding.choices.as_deref()
+        })
+}
+
 fn choices<'a>(
     card: &Card,
     cell: &Cell,
@@ -662,15 +692,7 @@ fn choices<'a>(
 ) -> Option<(std::borrow::Cow<'a, [String]>, f64)> {
     use std::borrow::Cow;
     if let Some(layout) = &card.native_layout
-        && let Some(choices) = {
-            let native = card.native_cell(cell)?;
-            native
-                .variant_bindings()
-                .find(|binding| binding.param_id == p.wire)
-                .map_or(native.choices.as_deref(), |binding| {
-                    binding.choices.as_deref()
-                })
-        }
+        && let Some(choices) = native_choices(card, cell, p.wire)
     {
         let names = choices
             .iter()
@@ -704,11 +726,11 @@ fn segment(
     let Some((names, first)) = choices(card, cell, p, komponist_ui::lang(cu.ctx())) else {
         return false;
     };
-    // The four oscillator waves are drawn as their icons (their names stay the accessible ones).
+    let authored = native_choices(card, cell, p.wire);
     let options: Vec<SegmentOption<'_>> = names
         .iter()
         .enumerate()
-        .map(|(i, n)| match wave_of(p, i) {
+        .map(|(i, n)| match choice_wave(card, p, authored, i) {
             Some(wave) => SegmentOption::glyph(n, Glyph::Wave(wave)),
             None => SegmentOption::text(n),
         })
@@ -729,6 +751,24 @@ fn segment(
         r.changed().then_some(first + selected as f64),
     );
     true
+}
+
+fn choice_wave(
+    card: &Card,
+    param: &Param,
+    authored: Option<&[komponist_ipc::native_layout::Choice]>,
+    index: usize,
+) -> Option<Wave> {
+    use komponist_ipc::native_layout::ChoiceGlyph;
+    if card.native_layout.is_some() || param.info.id.plugin_id().is_some() {
+        return match authored?.get(index)?.glyph? {
+            ChoiceGlyph::WaveSine => Some(Wave::Sine),
+            ChoiceGlyph::WaveTriangle => Some(Wave::Triangle),
+            ChoiceGlyph::WaveSaw => Some(Wave::Saw),
+            ChoiceGlyph::WaveSquare => Some(Wave::Square),
+        };
+    }
+    wave_of(param, index)
 }
 
 /// The icon of choice `index` of an oscillator wave or LFO shape parameter: the first four choices
@@ -1213,9 +1253,9 @@ fn fm(
     p: Option<&Param>,
     palette: &TrackPalette,
     rect: Rect,
+    ctx: &ParamContext,
 ) {
     let t = komponist_ui::lang(cu.ctx());
-    let ctx = with_choice_defaults(context(cu.ctx(), card.device), &card.layout);
     // Algorithm 0 is free routing: the display draws the routing the patch really has.
     let value = p.map_or(1, |p| p.value.round().max(0.0) as usize);
     let free = value == 0 && card.routing.is_some();
@@ -1236,7 +1276,7 @@ fn fm(
             }
         }
     };
-    let selected = selected_entry(&ctx, ENV_OP, topology.modulates.len() as u8) - 1;
+    let selected = selected_entry(ctx, ENV_OP, topology.modulates.len() as u8) - 1;
     let mut display = FmAlgorithm::new(number, topology, palette);
     if free {
         display = display.titled(t.devices_fm_free());
@@ -1938,6 +1978,32 @@ mod tests {
     use komponist_model::DeviceId;
     use komponist_model::params::{ParamId, ParamInfo};
 
+    fn draw_test_cell(
+        ui: &mut Ui,
+        out: &mut Vec<Action>,
+        card: &Card,
+        palette: &TrackPalette,
+        cell: &Cell,
+        rect: Rect,
+    ) {
+        draw_cell(
+            ui,
+            out,
+            card,
+            palette,
+            cell,
+            rect,
+            &choice_defaults(&card.layout),
+        );
+    }
+
+    #[test]
+    fn percent_fallback_uses_the_displayed_suffix() {
+        assert_eq!(parse_display_number("0.25", "", Unit::Percent), Some(0.25));
+        assert_eq!(parse_display_number("25", "%", Unit::Percent), Some(0.25));
+        assert_eq!(parse_display_number("25 %", "", Unit::Percent), Some(0.25));
+    }
+
     fn param(wire: u32, name: &str, kind: ParamKind, default: f64, value: f64) -> Param {
         let info = ParamInfo::new(ParamId::new(format!("p{wire}")), name, kind, default);
         let text = info.format(value);
@@ -2080,7 +2146,7 @@ mod tests {
                     for cell in &page.cells {
                         let rect = crate::views::devices::layout::cell_rect(cell)
                             .translate(origin.to_vec2());
-                        draw_cell(ui, out, card, &palette, cell, rect);
+                        draw_test_cell(ui, out, card, &palette, cell, rect);
                     }
                 },
                 (card(), Vec::new()),
@@ -2330,7 +2396,7 @@ mod tests {
                         for cell in &page.cells {
                             let rect = crate::views::devices::layout::cell_rect(cell)
                                 .translate(ui.min_rect().min.to_vec2());
-                            draw_cell(ui, out, card, &palette, cell, rect);
+                            draw_test_cell(ui, out, card, &palette, cell, rect);
                         }
                     },
                     (card, Vec::new()),
@@ -2423,7 +2489,7 @@ mod tests {
                         for cell in &card.current_page().unwrap().cells {
                             let rect = crate::views::devices::layout::cell_rect(cell)
                                 .translate(origin.to_vec2());
-                            draw_cell(ui, out, card, &palette, cell, rect);
+                            draw_test_cell(ui, out, card, &palette, cell, rect);
                         }
                     },
                     (card, Vec::new()),
@@ -2509,7 +2575,7 @@ mod tests {
                         for cell in &card.current_page().unwrap().cells {
                             let rect = crate::views::devices::layout::cell_rect(cell)
                                 .translate(ui.min_rect().min.to_vec2());
-                            draw_cell(ui, out, card, &palette, cell, rect);
+                            draw_test_cell(ui, out, card, &palette, cell, rect);
                         }
                     },
                     (card, Vec::new()),
@@ -2710,7 +2776,7 @@ mod tests {
                     for cell in &page.cells {
                         let rect = crate::views::devices::layout::cell_rect(cell)
                             .translate(origin.to_vec2());
-                        draw_cell(ui, out, card, &palette, cell, rect);
+                        draw_test_cell(ui, out, card, &palette, cell, rect);
                     }
                 },
                 (card, Vec::new()),

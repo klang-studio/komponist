@@ -125,6 +125,7 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     }));
     let volt = newest_instrument(h.state()).id;
     wait_for_verified(h.state_mut(), volt, VOLT, force_bridge);
+    assert_signed_octave(h.state(), volt, "osc_b_oct");
     let layout = h.state().engine().host().native_layout(volt).unwrap();
     assert_eq!(layout.pages.len(), 3);
 
@@ -335,6 +336,7 @@ fn check_surf(h: &mut Harness<'_, App>, lang: Lang, force_bridge: bool) {
     }));
     let surf = newest_instrument(h.state()).id;
     wait_for_verified(h.state_mut(), surf, SURF, force_bridge);
+    assert_signed_octave(h.state(), surf, "osc_a_oct");
     let layout = h.state().engine().host().native_layout(surf).unwrap();
     assert_eq!(layout.pages.len(), 3);
     let a = alias(h.state(), surf, "osc_a_pos");
@@ -482,6 +484,24 @@ fn assert_restored_params(
         wait_for_value(&mut app, device, wire, expected, name);
     }
     app.shutdown();
+}
+
+fn assert_signed_octave(app: &App, device: DeviceId, author: &str) {
+    let host = app.engine().host();
+    let id = alias(app, device, author);
+    let wire = host
+        .params(device)
+        .unwrap()
+        .iter()
+        .find(|param| param.id == id)
+        .unwrap();
+    assert_eq!((wire.min, wire.max, wire.default), (0.0, 6.0, 3.0));
+    let layout = host.native_layout(device).unwrap();
+    let display = layout.parameter_display(id).unwrap();
+    assert_eq!(
+        (display.range(), display.default_value()),
+        ((-3.0, 3.0), 0.0)
+    );
 }
 
 fn alias(app: &App, device: DeviceId, author: &str) -> u32 {
