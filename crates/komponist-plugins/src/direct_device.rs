@@ -599,9 +599,21 @@ impl DirectDevice {
             };
             self.report_warning(id, events);
             // The restored bases reach the processor with the next block, like a user edit.
-            self.unconfirmed_writes.extend(bases.keys().copied());
-            self.pending_writes.extend(bases);
+            // Automation and macros drive their targets again after `StateApplied`; their
+            // bases stay host-side so a late base cannot overwrite the reasserted value.
+            let (driven, queued): (BTreeMap<_, _>, BTreeMap<_, _>) =
+                bases.into_iter().partition(|(param, _)| {
+                    self.automated_params.contains_key(param)
+                        || self.macro_params.contains_key(param)
+                });
+            self.unconfirmed_writes.extend(queued.keys().copied());
+            self.pending_writes.extend(queued);
             self.accept_inventory(inventory, true);
+            for (param, value) in driven {
+                if let Some(base) = self.base.get_mut(&param) {
+                    *base = value;
+                }
+            }
             for (param, value) in self.pending_writes.clone() {
                 self.preview_param(param, value);
             }
