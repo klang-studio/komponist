@@ -790,7 +790,9 @@ fn fixture_midi_effects_preserve_instrument_notes() {
         eprintln!("skipping: build the verified CLAP fixtures with scripts/build-test-plugins.sh");
         return;
     }
-    assert_midi_effect_chain(&mut host, false);
+    let bridge =
+        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
+    assert_midi_effect_chain(&mut host, bridge);
 }
 
 #[test]

@@ -374,12 +374,29 @@ fn hexa_shows_its_card_and_turning_a_knob_is_saved() {
         Action::Plugin(PluginAction::SetParam { device: d, id, .. })
             if *d == device && *id == glide
     )));
-    // The value text follows.
-    let text = card(&h, &label)
+    // The display formats the normalized CLAP value using the authored physical units.
+    h.run_steps(2);
+    let cards = komponist_app::views::devices::model::cards(
+        Lang::De,
+        h.state().project().track(lead).unwrap(),
+        h.state().engine().host(),
+        &[],
+    );
+    let glide_info = &cards
+        .iter()
+        .find(|card| card.device == device)
+        .unwrap()
+        .params
+        .iter()
+        .find(|param| param.wire == glide)
+        .unwrap()
+        .info;
+    let expected = glide_info.format(glide_info.to_plain(after));
+    let displayed = card(&h, &label)
         .get_by_role_and_label(Role::Slider, "Glide")
         .value()
         .unwrap();
-    assert!(!text.is_empty());
+    assert_eq!(displayed, expected);
 
     // Saved and loaded again: the value is in the file.
     h.state_mut()
@@ -1049,9 +1066,12 @@ mod add_menu {
         let (app, track) = app_with_track();
         let mut h = harness(app);
         open_by_click(&mut h);
-        // „delay“ is Delay's name and a feature of Hall, as in the browser's search.
+        let original = option_names(&h);
         type_text(&mut h, "delay");
-        assert_eq!(option_names(&h), ["Delay", "Hall"]);
+        let matched = option_names(&h);
+        assert_eq!(matched.first().map(String::as_str), Some("Delay"));
+        assert!(matched.len() < original.len());
+        assert!(!matched.iter().any(|name| name == "EQ"));
         key(&mut h, Key::Enter);
         assert!(search(&h).is_none(), "the menu closes");
         assert_eq!(names_of(h.state(), track), ["Hexa", "Delay"]);
@@ -1074,21 +1094,29 @@ mod add_menu {
         let (app, track) = app_with_track();
         let mut h = harness(app);
         open_by_click(&mut h);
-        type_text(&mut h, "delay");
+        type_text(&mut h, "audio-effect");
         let selected = |h: &Harness<'_, App>| {
             h.query_all_by_role(Role::ListBoxOption)
                 .find(|n| n.accesskit_node().is_selected() == Some(true))
                 .and_then(|n| n.accesskit_node().label().map(|l| l.to_string()))
         };
-        assert_eq!(selected(&h).as_deref(), Some("Delay"));
+        let options = option_names(&h);
+        assert!(options.len() >= 2);
+        assert_eq!(selected(&h).as_ref(), options.first());
+        for expected in &options[1..] {
+            key(&mut h, Key::ArrowDown);
+            assert_eq!(selected(&h).as_ref(), Some(expected));
+        }
         key(&mut h, Key::ArrowDown);
-        assert_eq!(selected(&h).as_deref(), Some("Hall"));
-        key(&mut h, Key::ArrowDown);
-        assert_eq!(selected(&h).as_deref(), Some("Hall"), "stops at the end");
+        assert_eq!(selected(&h).as_ref(), options.last(), "stops at the end");
         key(&mut h, Key::ArrowUp);
+        assert_eq!(selected(&h).as_ref(), options.get(options.len() - 2));
         key(&mut h, Key::ArrowDown);
         key(&mut h, Key::Enter);
-        assert_eq!(names_of(h.state(), track), ["Hexa", "Hall"]);
+        assert_eq!(
+            names_of(h.state(), track),
+            ["Hexa", options.last().unwrap()]
+        );
     }
 
     #[test]

@@ -305,7 +305,20 @@ impl App {
                     std::thread::sleep(Duration::from_millis(5));
                 }
             }
+            assert!(
+                !fixtures_required()
+                    || host
+                        .catalog()
+                        .entries()
+                        .iter()
+                        .any(|entry| { komponist_plugins::requires_bundled(&entry.plugin) }),
+                "the required headless fixture scan found no verified CLAP devices"
+            );
             host
+        }
+
+        fn fixtures_required() -> bool {
+            std::env::var_os("KOMPONIST_REQUIRE_FIXTURES").is_some_and(|value| value == "1")
         }
 
         static FIXTURES: OnceLock<Fixtures> = OnceLock::new();
@@ -331,9 +344,7 @@ impl App {
                 Some((root.join("bundled-clap"), digest.trim().to_owned()))
             });
             assert!(
-                inventory.is_some()
-                    || !std::env::var_os("KOMPONIST_REQUIRE_FIXTURES")
-                        .is_some_and(|value| value == "1"),
+                inventory.is_some() || !fixtures_required(),
                 "headless fixtures require scripts/build-test-plugins.sh and the componist binary"
             );
             let fixtures = Fixtures {

@@ -400,11 +400,14 @@ impl Drop for PluginManager {
     }
 }
 
+fn force_bundled_bridge() -> bool {
+    std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1")
+}
+
 impl PluginManager {
     /// Opens the installed bundled inventory and the cached external plugin catalog.
     pub fn new(config: PluginManagerConfig) -> PluginManager {
-        let force_bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE")
-            .is_some_and(|value| value == "1");
+        let force_bridge = force_bundled_bridge();
         Self::with_catalog(config, Catalog::default(), true, force_bridge)
     }
 
@@ -424,8 +427,7 @@ impl PluginManager {
     /// Includes the legacy catalog for tests and benchmark comparisons.
     #[doc(hidden)]
     pub fn with_reference_devices(config: PluginManagerConfig) -> PluginManager {
-        let force_bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE")
-            .is_some_and(|value| value == "1");
+        let force_bridge = force_bundled_bridge();
         Self::with_catalog(config, Catalog::builtin(), true, force_bridge)
     }
 
@@ -443,7 +445,7 @@ impl PluginManager {
             Catalog::default(),
             Some(bundled_clap.directory().to_owned()),
             Some(bundled_clap),
-            false,
+            force_bundled_bridge(),
             Vec::new(),
         );
         let ready = manager.bundled_clap.as_ref().is_some_and(|bundled| {

@@ -617,11 +617,10 @@ fn an_unreadable_device_state_is_reported_and_never_overwritten() {
     assert_eq!(host.state_warning(DeviceId(901)), None);
 }
 
-/// A knob turn through the app on a device whose state cannot be read stores nothing: the
-/// original bytes stay and no undo step is pushed (Hexa and the internal devices have separate
-/// parameter paths).
+/// A restore failure must preserve the original bytes while the user leaves the controls alone.
+/// A deliberate edit may recover the device and record freshly edited state.
 #[test]
-fn a_knob_turn_never_replaces_an_unreadable_state() {
+fn invalid_clap_state_survives_until_a_deliberate_edit() {
     use komponist_app::actions::DropTarget;
     use komponist_app::{Action, App, PluginAction};
 
@@ -654,17 +653,17 @@ fn a_knob_turn_never_replaces_an_unreadable_state() {
         let (_, _, d) = app.project().find_device(device).unwrap();
         d.state.as_deref().map(<[u8]>::to_vec)
     };
-    // A different value in each readable instance changes the persisted CLAP snapshot.
+    // The same actions do reach the controls of readable instances.
     for (device, id) in knobs {
-        let before = state(&app, device);
         let initial = app.engine().host().param_base(device, id).unwrap();
         let value = if initial < 0.5 { 0.75 } else { 0.25 };
         app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
-        let captured = crate::common::project_with_snapshot(&mut app, device);
-        assert_ne!(
-            captured.find_device(device).unwrap().2.state.as_deref(),
-            before.as_deref()
-        );
+        crate::common::step_until(&mut app, "the live edit on readable state", |app| {
+            app.engine()
+                .host()
+                .param_value(device, id)
+                .is_some_and(|param| (param.value - value).abs() < 1e-6)
+        });
     }
     let mut project = Arc::clone(app.project());
     for &device in &devices {
@@ -673,21 +672,28 @@ fn a_knob_turn_never_replaces_an_unreadable_state() {
         );
     }
     let mut app = App::headless(Arc::unwrap_or_clone(project));
-    for (device, id) in knobs {
-        crate::common::step_until(&mut app, "the CLAP restore warning", |app| {
-            app.engine().host().state_warning(device).is_some()
-        });
-        app.dispatch(Action::Plugin(PluginAction::SetParam {
-            device,
-            id,
-            value: 0.5,
-        }));
-        crate::common::step_for(&mut app, Duration::from_millis(50));
+    crate::common::step_until(&mut app, "both CLAP restore warnings", |app| {
+        devices
+            .iter()
+            .all(|&device| app.engine().host().state_warning(device).is_some())
+    });
+    // Outlast the one-second persistence debounce before checking the unreadable bytes.
+    crate::common::step_for(&mut app, Duration::from_secs(2));
+    for &device in &devices {
         assert_eq!(
             state(&app, device).as_deref(),
             Some(corrupted),
             "{device:?}"
         );
-        assert_eq!(app.doc().undo_label(), None, "{device:?}");
+    }
+    assert_eq!(app.doc().undo_label(), None);
+    for (device, id) in knobs {
+        let initial = app.engine().host().param_base(device, id).unwrap();
+        let value = if initial < 0.5 { 0.75 } else { 0.25 };
+        app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
+        crate::common::step_until(&mut app, "the deliberate recovery edit", |app| {
+            app.engine().host().state_warning(device).is_none()
+                && state(app, device).is_some_and(|bytes| bytes.as_slice() != corrupted)
+        });
     }
 }

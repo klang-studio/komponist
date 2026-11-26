@@ -784,6 +784,20 @@ fn snapshot_of_a_touched_parameter_with_its_context_menu() {
     results.unwrap();
 }
 
+// The two original diagrams use the reference layout's FM cell. Its topology comes from
+// the document patch via Card::routing. The native CLAP display is tested above.
+fn assert_reference_fm(h: &Harness<'_, App>, track: TrackId, expected: [u8; 6]) {
+    let app = h.state();
+    let cards = komponist_app::views::devices::model::cards(
+        Lang::De,
+        app.project().track(track).unwrap(),
+        app.engine().host(),
+        &[],
+    );
+    assert_eq!(cards[0].routing.unwrap().modulates, expected);
+    h.get_by_role_and_label(Role::Group, de::DEVICES_FM_FREE);
+}
+
 #[test]
 fn snapshot_of_the_fm_display_with_free_routing() {
     use komponist_hexa::{CATALOG, algorithms, default_patch, encode_state};
@@ -823,6 +837,7 @@ fn snapshot_of_the_fm_display_with_free_routing() {
     select_track(&mut app, track);
     let mut h = harness(app);
     h.run_steps(30);
+    assert_reference_fm(&h, track, [0, 1, 1, 16, 0, 0]);
     mask_cpu(&mut h);
     let mut results = SnapshotResults::new();
     h.snapshot("devices-fm-free-1x");
@@ -870,6 +885,7 @@ fn snapshot_of_the_fm_display_with_a_cycle() {
     select_track(&mut app, track);
     let mut h = harness(app);
     h.run_steps(30);
+    assert_reference_fm(&h, track, [32, 4, 8, 0, 0, 1]);
     mask_cpu(&mut h);
     let mut results = SnapshotResults::new();
     h.snapshot("devices-fm-cycle-1x");
