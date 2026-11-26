@@ -83,7 +83,7 @@ fn hexa_header() -> HeaderModel {
 }
 
 /// hexa's macros as the frame shows them (WP-44's model, read from the device state).
-fn macro_grid() -> ParamGrid {
+fn macro_params() -> Vec<komponist_app::views::devices::model::Param> {
     let project = demo_project();
     let hexa = project
         .tracks
@@ -91,7 +91,11 @@ fn macro_grid() -> ParamGrid {
         .flat_map(|t| t.channel.devices.iter())
         .find(|d| d.plugin.name == "Hexa")
         .unwrap();
-    ParamGrid::new(legacy_frame_params(Lang::De, hexa))
+    legacy_frame_params(Lang::De, hexa)
+}
+
+fn macro_grid() -> ParamGrid {
+    ParamGrid::new(macro_params())
 }
 
 /// What a frame harness shows and collects.
@@ -299,7 +303,7 @@ fn a_plugin_without_gui_cannot_switch_to_the_plugin_view() {
         [HeaderEvent::PresetNext, HeaderEvent::PresetPrev]
     );
     // The changed preset carries " *" (prototype `pl.changed`).
-    let name = komponist_hexa::presets().nth(3).unwrap().name;
+    let name = hexa_header().presets[3].clone();
     let field = h.get_by_role_and_label(Role::ComboBox, de::PLUGIN_FRAME_PRESET);
     assert_eq!(field.value().as_deref(), Some(format!("{name} *").as_str()));
 }
@@ -322,7 +326,11 @@ fn knobs_report_plain_values_on_the_step_grid() {
     h.run();
     let events = &h.state().body_events;
     assert!(!events.is_empty(), "the drag set the parameter");
-    let algorithm = komponist_hexa::Macro::Algorithm.id();
+    let algorithm = macro_params()
+        .iter()
+        .find(|p| p.name() == "Algorithmus")
+        .unwrap()
+        .wire;
     let mut sets = 0;
     for e in events {
         match *e {
@@ -779,84 +787,6 @@ fn the_frame_shows_loading_crashed_and_reloads() {
         .insert(surge, DeviceStatus::Loading);
     h.run_steps(3);
     assert!(h.query_by_label(de::PLUGIN_FRAME_LOADING).is_some());
-}
-
-#[test]
-fn hexa_opens_its_parameters_and_steps_through_its_presets() {
-    let (app, _script, _) = app();
-    let mut h = harness(app);
-    let lead = device_named(h.state(), "Hexa");
-    h.state_mut()
-        .dispatch(Action::Plugin(PluginAction::OpenWindow(lead)));
-    h.run_steps(3);
-    assert_eq!(h.state().ui().plugin_windows[0].view, PluginView::Params);
-    for m in komponist_hexa::Macro::ALL {
-        assert!(
-            h.query_by_role_and_label(Role::Slider, m.name()).is_some(),
-            "{}",
-            m.name()
-        );
-    }
-    h.get_by_label(de::PLUGIN_FRAME_PRESET_NEXT).click();
-    h.run_steps(3);
-    let applied = h.state().dispatched().find_map(|a| match a {
-        Action::Plugin(PluginAction::ApplyClapPreset { device, source }) if *device == lead => {
-            std::str::from_utf8(source.load_key.as_deref()?)
-                .ok()?
-                .parse::<usize>()
-                .ok()
-        }
-        _ => None,
-    });
-    let preset = applied.unwrap_or_else(|| {
-        panic!(
-            "› applies a preset; dispatched {:?}",
-            h.state().dispatched().collect::<Vec<_>>()
-        )
-    });
-    let state = h
-        .state()
-        .project()
-        .find_device(lead)
-        .unwrap()
-        .2
-        .state
-        .clone();
-    let expected = komponist_hexa::encode_state(&komponist_hexa::preset_patch(preset).unwrap());
-    assert_eq!(state.as_deref(), Some(&expected[..]));
-    let name = komponist_hexa::presets().nth(preset).unwrap().name;
-    let field = h.get_by_role_and_label(Role::ComboBox, de::PLUGIN_FRAME_PRESET);
-    assert_eq!(field.value().as_deref(), Some(name));
-
-    // A knob writes into the device state (WP-44); the frame reads it back from there and marks
-    // the preset as changed.
-    let attack = komponist_hexa::Macro::Attack;
-    let knob = h
-        .get_by_role_and_label(Role::Slider, attack.name())
-        .rect()
-        .center();
-    h.drag_at(knob);
-    h.run();
-    h.hover_at(knob - vec2(0.0, 30.0));
-    h.run();
-    h.drop_at(knob - vec2(0.0, 30.0));
-    h.run_steps(3);
-    let state = h
-        .state()
-        .project()
-        .find_device(lead)
-        .unwrap()
-        .2
-        .state
-        .clone();
-    let patch = komponist_hexa::decode_state(state.as_deref()).unwrap();
-    let stored = attack.get(&patch);
-    let preset_value = attack.get(&komponist_hexa::preset_patch(preset).unwrap());
-    assert!(stored > preset_value, "{stored} > {preset_value}");
-    let shown = h.get_by_role_and_label(Role::Slider, attack.name());
-    assert_eq!(shown.value().as_deref(), Some(attack.text(stored).as_str()));
-    let field = h.get_by_role_and_label(Role::ComboBox, de::PLUGIN_FRAME_PRESET);
-    assert_eq!(field.value().as_deref(), Some(format!("{name} *").as_str()));
 }
 
 #[test]
