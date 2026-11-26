@@ -122,6 +122,22 @@ pub fn shipped_plugin(host: &dyn DeviceHost, id: &str) -> Option<PluginRef> {
         .map(|entry| entry.plugin.clone())
 }
 
+/// The model test song played by shipped instruments on Drums, Bass and Lead.
+pub fn song_with_shipped_instruments(host: &dyn DeviceHost) -> Project {
+    let mut project = demo_project();
+    for (track, id) in [
+        (0, "org.klang-studio.komponist.sampler"),
+        (1, "org.klang-studio.komponist.hexa"),
+        (2, "org.klang-studio.komponist.hexa"),
+    ] {
+        let instrument = shipped_plugin(host, id)
+            .unwrap_or_else(|| panic!("build {id} with scripts/build-test-plugins.sh"));
+        let device = &mut Arc::make_mut(&mut project.tracks[track]).channel.devices[0];
+        Arc::make_mut(device).plugin = instrument;
+    }
+    project
+}
+
 /// A project with one instrument and its track and device IDs.
 pub fn instrument_project(name: &str, plugin: PluginRef) -> (Project, TrackId, DeviceId) {
     let (project, track) = edits::add_track(

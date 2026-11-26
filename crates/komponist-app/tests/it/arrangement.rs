@@ -18,6 +18,8 @@ use komponist_engine::Processor;
 use komponist_i18n::{Lang, de};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{ClipId, Device, DeviceId, DeviceRole, PluginRef, Project, Tick, TrackId};
+
+use crate::common::song_with_shipped_instruments;
 use komponist_plugins::{DeviceStatus, PluginManagerEvent, ProcessorSetup};
 
 const W: f32 = 1920.0;
@@ -76,28 +78,13 @@ fn harness(app: App) -> Harness<'static, App> {
     h
 }
 
-fn fixture_instrument(host: &dyn DeviceHost, id: &str) -> PluginRef {
-    crate::common::shipped_plugin(host, id)
-        .unwrap_or_else(|| panic!("build {id} with scripts/build-test-plugins.sh"))
-}
-
 fn hexa(app: &App) -> PluginRef {
-    fixture_instrument(app.engine().host(), "org.klang-studio.komponist.hexa")
-}
-
-fn test_song(host: &dyn DeviceHost) -> Project {
-    let mut project = demo_project();
-    let hexa = fixture_instrument(host, "org.klang-studio.komponist.hexa");
-    let sampler = fixture_instrument(host, "org.klang-studio.komponist.sampler");
-    for (track, instrument) in [(0, &sampler), (1, &hexa), (2, &hexa)] {
-        let device = &mut Arc::make_mut(&mut project.tracks[track]).channel.devices[0];
-        Arc::make_mut(device).plugin = instrument.clone();
-    }
-    project
+    crate::common::shipped_plugin(app.engine().host(), "org.klang-studio.komponist.hexa")
+        .expect("build the Hexa fixture with scripts/build-test-plugins.sh")
 }
 
 fn demo() -> App {
-    App::headless(test_song(&App::headless_plugin_host()))
+    App::headless(song_with_shipped_instruments(&App::headless_plugin_host()))
 }
 
 fn project(h: &Harness<'_, App>) -> Project {
@@ -1729,7 +1716,6 @@ fn audio_trimming_out_and_back_restores_covered_material() {
 #[test]
 fn audio_left_trim_out_and_back_restores_covered_material() {
     use komponist_model::edits::{self, NewClip, NewClipContent};
-    use std::sync::Arc;
     let (mut p, id) = audio_project();
     let track = Arc::make_mut(&mut p.tracks[0]);
     let main = Arc::make_mut(&mut track.clips[0]);
@@ -2000,7 +1986,7 @@ fn opening_an_offscreen_automation_lane_reveals_its_drop_target() {
     use komponist_model::automation::{AutomationOwner, AutomationTarget};
     use komponist_model::edits::{self, TrackProp};
 
-    let project = test_song(&App::headless_plugin_host());
+    let project = song_with_shipped_instruments(&App::headless_plugin_host());
     let tracks: Vec<_> = project.tracks.iter().map(|track| track.id).collect();
     let &track = tracks.last().unwrap();
     let project = edits::set_track_prop(&project, &tracks, TrackProp::Height(150)).unwrap();
