@@ -325,6 +325,7 @@ impl Song {
             plugin: plugin("fx"),
             state: None,
             sidechain: None,
+            preset: None,
         };
         let (project, id) = edits::insert_device(&self.project, channel, index, spec).unwrap();
         self.project = project;

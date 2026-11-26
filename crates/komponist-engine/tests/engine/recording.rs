@@ -470,6 +470,7 @@ fn bus_latency_is_compensated_once_and_its_delayed_tail_is_drained() {
             asset_links: Default::default(),
             state: None,
             sidechain: None,
+            preset: None,
         }));
     let (p, bus) = edits::add_bus(&p, NewBus::group(vec![source])).unwrap();
     let (p, record) = edits::add_audio_track(
@@ -542,6 +543,7 @@ fn double_stop_and_locate_preserve_hardware_and_bus_latency_tails() {
             asset_links: Default::default(),
             state: None,
             sidechain: None,
+            preset: None,
         }));
     let (p, bus) = edits::add_bus(&p, NewBus::group(vec![source])).unwrap();
     let (p, record) = edits::add_audio_track(

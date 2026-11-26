@@ -663,6 +663,7 @@ fn an_audio_track_routes_through_buses_and_delay_compensation() {
         },
         state: None,
         sidechain: None,
+        preset: None,
     };
     let (project, device) =
         edits::insert_device(&s.project, ChannelRef::Track(late), 0, spec).unwrap();

@@ -525,6 +525,7 @@ fn run(p: &Project, op: &Op) -> Result<Project, EditError> {
                 plugin: plugin(index),
                 state: None,
                 sidechain: None,
+                preset: None,
             };
             edits::insert_device(p, channel, usize::from(index), spec).map(|(p, _)| p)
         }
@@ -724,6 +725,7 @@ fn raw_project(nodes: &[RawNode], master_sidechain: Option<u8>, forward: bool) -
                 source: ids[usize::from(s) % sources],
                 tap: Tap::Pre,
             }),
+            preset: None,
         })
     };
     let mut p = Project::new("Graph");

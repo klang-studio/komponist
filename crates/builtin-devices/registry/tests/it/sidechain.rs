@@ -100,6 +100,7 @@ fn ducked_pad(tap: Option<Tap>, fader: f32) -> (f32, f32) {
         plugin: plugin("compressor"),
         state: None,
         sidechain: tap.map(|tap| Sidechain { source: kick, tap }),
+        preset: None,
     };
     let (project, compressor) =
         edits::insert_device(&project, ChannelRef::Track(pad), 1, spec).unwrap();

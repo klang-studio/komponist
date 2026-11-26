@@ -282,6 +282,7 @@ fn demo_track(
                 asset_links: Default::default(),
                 state: None,
                 sidechain: None,
+                preset: None,
             })
         })
         .collect();
