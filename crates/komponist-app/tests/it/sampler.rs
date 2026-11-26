@@ -131,7 +131,7 @@ fn show_authored_pads(app: &mut App, kit: bool) {
             .all(|(pad, p)| p.note == note_of_pad(pad)),
         "the sampler bundle's pad notes"
     );
-    assert!(host.verified_bundled_kind(device).is_none());
+    assert!(host.verified_bundle(device).is_none());
     assert!(host.bridge_pid(device).is_some());
 }
 

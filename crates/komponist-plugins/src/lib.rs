@@ -21,8 +21,6 @@ pub mod builtin;
 pub mod bundled_clap;
 mod bundled_effects;
 pub mod bundled_initial_state;
-pub mod bundled_sampler;
-mod bundled_state;
 pub mod catalog;
 mod device_assets;
 mod direct;
@@ -38,7 +36,7 @@ mod waveform_markers;
 
 pub use catalog::{
     BuiltinKind, Catalog, CatalogEntry, EffectCategory, PluginDirs, PluginLocation, ScanCache,
-    ScanReport, packaged_kind, presets, requires_bundled,
+    ScanReport, presets, requires_bundled,
 };
 pub use device_assets::{AssetEdit, AssetEditPreparation};
 pub use external::ExternalProcessor;

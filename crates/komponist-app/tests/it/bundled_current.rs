@@ -206,8 +206,7 @@ fn assert_ready(app: &mut App, expected: &[(TrackId, komponist_model::Device)], 
     step_until(app, "authenticated packaged CLAP instances", |app| {
         expected.iter().all(|(_, device)| {
             let host = app.engine().host();
-            host.verified_bundled_kind(device.id).is_some()
-                && host.native_layout(device.id).is_some()
+            host.verified_bundle(device.id).is_some() && host.native_layout(device.id).is_some()
         })
     });
     for (_, device) in expected {
@@ -401,7 +400,10 @@ fn current_project_round_trip_and_offline_render() {
     open(&mut app, &path);
     assert_ready(&mut app, &expected, bridge);
     let host = app.engine().host();
-    assert!(host.verified_bundled_kind(fixture.eq).is_some());
+    assert_eq!(
+        host.verified_bundle(fixture.eq),
+        Some("org.klang-studio.komponist.eq")
+    );
     let ids = host
         .native_layout(fixture.eq)
         .unwrap()
@@ -494,8 +496,13 @@ fn current_project_round_trip_and_offline_render() {
             "{} has no saved CLAP state",
             device.plugin.id
         );
-        with_current_state =
-            edits::set_device_state(&with_current_state, device.id, device.state).unwrap();
+        // Automated controls keep their persistent values as host-owned parameter bases.
+        with_current_state = edits::set_saved_plugin_state(
+            &with_current_state,
+            device.id,
+            &device.saved_state().unwrap(),
+        )
+        .unwrap();
     }
     assert_eq!(saved, with_current_state);
 
@@ -700,7 +707,7 @@ fn midi_chain_events(
     }
     for device in [arpeggiator, scale] {
         assert_eq!(host.bridge_pid(device.id).is_some(), bridge);
-        assert!(host.verified_bundled_kind(device.id).is_some());
+        assert!(host.verified_bundle(device.id).is_some());
     }
     let rate_id = host
         .native_layout(arpeggiator.id)
@@ -1175,7 +1182,7 @@ fn unavailable_bundle_keeps_saved_project_intact() {
         _ => panic!("expected missing or altered EQ case"),
     }
     let host = app.engine().host();
-    assert!(host.verified_bundled_kind(eq.id).is_none());
+    assert!(host.verified_bundle(eq.id).is_none());
     assert!(host.bridge_pid(eq.id).is_none());
     assert_eq!(app.project().as_ref(), &saved);
     assert_eq!(std::fs::read(&path).unwrap(), bytes);

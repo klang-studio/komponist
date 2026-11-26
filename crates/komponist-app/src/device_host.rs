@@ -102,9 +102,9 @@ pub trait DeviceHost {
     /// catalog).
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole>;
 
-    /// Test probe for the identity used in the packaged loader.
+    /// Test probe: the CLAP ID of a running instance from the manifest-verified package.
     #[doc(hidden)]
-    fn verified_bundled_kind(&self, _device: DeviceId) -> Option<BuiltinKind> {
+    fn verified_bundle(&self, _device: DeviceId) -> Option<&str> {
         None
     }
 
@@ -1045,8 +1045,8 @@ impl DeviceHost for PluginHost {
         }
     }
 
-    fn verified_bundled_kind(&self, device: DeviceId) -> Option<BuiltinKind> {
-        self.manager.verified_bundled_kind(device)
+    fn verified_bundle(&self, device: DeviceId) -> Option<&str> {
+        self.manager.verified_bundle(device)
     }
 
     fn catalog(&self) -> &Catalog {

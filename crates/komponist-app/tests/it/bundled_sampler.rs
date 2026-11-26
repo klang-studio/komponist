@@ -373,23 +373,21 @@ fn bundled_sampler_restores_saved_parameter_bases() {
         parameter_bases: [(gain, restored_gain)].into(),
     };
 
-    // The direct path can apply a queued active restore as part of taking the snapshot.
     assert!(
         app.engine_mut()
             .host_mut()
             .restore_saved_state(device, &state)
     );
-    if force_bridge {
-        // The child acknowledges the asynchronous restore before offering a new snapshot.
-        step_until(&mut app, "bridged restore applied", |app| {
-            app.engine()
-                .host()
-                .param_base(device, gain)
-                .is_some_and(|value| (value - restored_gain).abs() < 1e-6)
-        });
-        // An empty instrument needs a processing block to consume its queued bases.
-        note_peak(&mut app, track, 60);
-    }
+    // Both paths load the bytes, then send the bases as CLAP parameter values: the child
+    // acknowledges the asynchronous restore, the in-process host queues them for the audio thread.
+    step_until(&mut app, "restore applied", |app| {
+        app.engine()
+            .host()
+            .param_base(device, gain)
+            .is_some_and(|value| (value - restored_gain).abs() < 1e-6)
+    });
+    // An empty instrument needs a processing block to consume its queued bases.
+    note_peak(&mut app, track, 60);
     let captured = snapshot(&mut app);
     assert_ne!(captured.bytes, baseline.bytes);
     assert!(captured.parameter_bases.is_empty());
@@ -473,11 +471,7 @@ fn general_sampler_file_edits_preserve_slice_history() {
             .unwrap()
             .1
             .id;
-        let seeded = komponist_plugins::bundled_sampler::edit_slices(
-            prepared.state.as_deref().unwrap(),
-            &slices,
-        )
-        .unwrap();
+        let seeded = with_slice_settings(prepared.state.as_deref().unwrap(), &slices).unwrap();
         let project = edits::set_device_state(&project, sampler, Some(seeded.into())).unwrap();
         let initial_links = before_path.map(|path| (0, AssetLink::new(path, None)));
         let project =
@@ -547,7 +541,7 @@ fn general_sampler_file_edits_preserve_slice_history() {
 
         let mut revision = wait_for(&mut app, "reopen", before_path, &slices, None);
         let host = app.engine().host();
-        assert!(host.verified_bundled_kind(sampler).is_some(), "{case}");
+        assert!(host.verified_bundle(sampler).is_some(), "{case}");
         assert!(
             host.supports_asset_edit_state(sampler),
             "{case}: expected authored file edits"
@@ -637,12 +631,38 @@ fn general_sampler_file_edits_preserve_slice_history() {
     }
 }
 
+/// The state field in which the sampler bundles keep their sample document.
+const SAMPLE_ASSETS_FIELD: &str = "sample_assets";
+
+/// The sample document the General Sampler bundle keeps in its own state.
+fn sample_document(state: &[u8]) -> Option<String> {
+    decode_state(state)?["fields"][SAMPLE_ASSETS_FIELD]
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// The General Sampler state with its slice map replaced.
+fn with_slice_settings(state: &[u8], settings: &general_sampler::Settings) -> Option<Vec<u8>> {
+    let mut document = decode_state(state)?;
+    let fields = document.get_mut("fields")?.as_object_mut()?;
+    let assets = fields
+        .get(SAMPLE_ASSETS_FIELD)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("{}");
+    let updated = general_sampler::write_settings(Some(assets.as_bytes()), settings);
+    fields.insert(
+        SAMPLE_ASSETS_FIELD.into(),
+        String::from_utf8(updated).ok()?.into(),
+    );
+    let payload = serde_json::to_vec(&document).ok()?;
+    let mut state = (payload.len() as u64).to_le_bytes().to_vec();
+    state.extend_from_slice(&payload);
+    Some(state)
+}
+
 fn sampler_slice_settings(app: &App, sampler: DeviceId) -> general_sampler::Settings {
     let device = app.project().find_device(sampler).unwrap().2;
-    let assets = device
-        .state
-        .as_deref()
-        .and_then(komponist_plugins::bundled_sampler::assets);
+    let assets = device.state.as_deref().and_then(sample_document);
     general_sampler::read_settings(assets.as_deref().map(str::as_bytes))
 }
 
@@ -1122,11 +1142,6 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         let (_, _, d) = app.project().find_device(general).unwrap();
         decode_state(d.state.as_deref().unwrap()).unwrap()
     };
-    let gain_saved = |app: &App, db| {
-        hosted_state(app)["params"]["gain"]["f32"]
-            .as_f64()
-            .is_some_and(|gain| (gain - raw(db)).abs() < 1e-6)
-    };
     let set_gain = |app: &mut App, db| {
         app.dispatch(Action::Plugin(PluginAction::SetParam {
             device: general,
@@ -1144,6 +1159,8 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             .copied()
             .unwrap_or_else(|| hosted_state(app)["params"]["gain"]["f32"].as_f64().unwrap())
     };
+    // The persistent gain: a host-owned base while automation drives it, else the state's.
+    let gain_saved = |app: &App, db| (effective_gain(app) - raw(db)).abs() < 1e-6;
     let gain_applied = |app: &App, expected: f64| {
         asset_status(app, general, 0) == Some(&AssetStatus::Ready)
             && app

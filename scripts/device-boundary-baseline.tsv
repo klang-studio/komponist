@@ -31,10 +31,6 @@
 1	dependency	komponist-app	komponist-hexa	komponist-device-core	komponist_device_core	normal	*
 1	dependency	komponist-app	komponist-limiter	komponist-device-core	komponist_device_core	normal	*
 1	dependency	komponist-app	komponist-plugins	komponist-builtin	komponist_builtin	normal	*
-1	dependency	komponist-app	komponist-plugins	komponist-device-core	komponist_device_core	normal	*
-1	dependency	komponist-app	komponist-plugins	komponist-general-sampler	komponist_general_sampler	normal	*
-1	dependency	komponist-app	komponist-plugins	komponist-hexa	komponist_hexa	normal	*
-1	dependency	komponist-app	komponist-plugins	komponist-sampler	komponist_sampler	normal	*
 1	dependency	komponist-app	komponist-presse	komponist-device-core	komponist_device_core	normal	*
 1	dependency	komponist-app	komponist-reverb	komponist-device-core	komponist_device_core	normal	*
 1	dependency	komponist-app	komponist-sampler	komponist-device-core	komponist_device_core	normal	*
@@ -68,10 +64,6 @@
 1	dependency	komponist-plugins	komponist-hexa	komponist-device-core	komponist_device_core	normal	*
 1	dependency	komponist-plugins	komponist-limiter	komponist-device-core	komponist_device_core	normal	*
 1	dependency	komponist-plugins	komponist-plugins	komponist-builtin	komponist_builtin	normal	*
-1	dependency	komponist-plugins	komponist-plugins	komponist-device-core	komponist_device_core	normal	*
-1	dependency	komponist-plugins	komponist-plugins	komponist-general-sampler	komponist_general_sampler	normal	*
-1	dependency	komponist-plugins	komponist-plugins	komponist-hexa	komponist_hexa	normal	*
-1	dependency	komponist-plugins	komponist-plugins	komponist-sampler	komponist_sampler	normal	*
 1	dependency	komponist-plugins	komponist-presse	komponist-device-core	komponist_device_core	normal	*
 1	dependency	komponist-plugins	komponist-reverb	komponist-device-core	komponist_device_core	normal	*
 1	dependency	komponist-plugins	komponist-sampler	komponist-device-core	komponist_device_core	normal	*
@@ -82,13 +74,11 @@
 1	dependency	komponist-plugins	komponist-surf	komponist-device-core	komponist_device_core	normal	*
 1	dependency	komponist-plugins	komponist-surf	komponist-volt	komponist_volt	normal	*
 1	dependency	komponist-plugins	komponist-volt	komponist-device-core	komponist_device_core	normal	*
-9	source	crates/komponist-app/src/device_host.rs	BuiltinKind
+7	source	crates/komponist-app/src/device_host.rs	BuiltinKind
 7	source	crates/komponist-app/src/device_host.rs	Internal::
 2	source	crates/komponist-app/src/device_host.rs	komponist_builtin
 3	source	crates/komponist-app/src/device_host.rs	komponist_sampler
 1	source	crates/komponist-app/src/dialogs/missing_plugins.rs	komponist_sampler
-1	source	crates/komponist-app/src/dialogs/new_project.rs	Internal::
-1	source	crates/komponist-app/src/dialogs/new_project.rs	komponist_builtin
 1	source	crates/komponist-app/src/step_rows.rs	komponist_sampler
 1	source	crates/komponist-app/src/views/devices/layout.rs	komponist-builtin
 4	source	crates/komponist-app/tests/it/bundled_sampler.rs	komponist_general_sampler
@@ -117,29 +107,12 @@
 1	source	crates/komponist-model/src/project.rs	komponist-builtin
 1	source	crates/komponist-model/src/project.rs	komponist_builtin
 1	source	crates/komponist-model/src/project.rs	komponist_sampler
-3	source	crates/komponist-plugins/src/bridge.rs	BuiltinKind
-1	source	crates/komponist-plugins/src/bridge.rs	komponist_builtin
 2	source	crates/komponist-plugins/src/builtin.rs	BuiltinKind
 6	source	crates/komponist-plugins/src/builtin.rs	Internal::
 1	source	crates/komponist-plugins/src/builtin.rs	komponist-builtin
 1	source	crates/komponist-plugins/src/builtin.rs	komponist_builtin
-6	source	crates/komponist-plugins/src/bundled_sampler.rs	Internal::
-1	source	crates/komponist-plugins/src/bundled_sampler.rs	komponist_builtin
-2	source	crates/komponist-plugins/src/bundled_sampler.rs	komponist_device_core
-4	source	crates/komponist-plugins/src/bundled_sampler.rs	komponist_general_sampler
-4	source	crates/komponist-plugins/src/bundled_sampler.rs	komponist_sampler
-8	source	crates/komponist-plugins/src/bundled_state.rs	BuiltinKind
-1	source	crates/komponist-plugins/src/bundled_state.rs	Internal::
-2	source	crates/komponist-plugins/src/bundled_state.rs	komponist_builtin
-1	source	crates/komponist-plugins/src/bundled_state.rs	komponist_device_core
-6	source	crates/komponist-plugins/src/bundled_state.rs	komponist_hexa
-6	source	crates/komponist-plugins/src/catalog.rs	BuiltinKind
+4	source	crates/komponist-plugins/src/catalog.rs	BuiltinKind
 2	source	crates/komponist-plugins/src/catalog.rs	Internal::
 3	source	crates/komponist-plugins/src/catalog.rs	komponist_builtin
 2	source	crates/komponist-plugins/src/catalog.rs	komponist_volt
-2	source	crates/komponist-plugins/src/direct_device.rs	BuiltinKind
-1	source	crates/komponist-plugins/src/direct_device.rs	komponist_builtin
 1	source	crates/komponist-plugins/src/lib.rs	BuiltinKind
-5	source	crates/komponist-plugins/src/manager.rs	BuiltinKind
-2	source	crates/komponist-plugins/src/manager.rs	Internal::
-1	source	crates/komponist-plugins/src/manager.rs	komponist_builtin

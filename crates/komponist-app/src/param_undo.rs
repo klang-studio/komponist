@@ -545,8 +545,8 @@ impl App {
     fn record_live_state_edit(
         &mut self,
         device: DeviceId,
-        previous_state: &Arc<[u8]>,
-        state: &Arc<[u8]>,
+        previous_state: &SavedPluginState,
+        state: &SavedPluginState,
         label: &str,
     ) {
         let Some((_, _, target)) = self.project().find_device(device) else {
@@ -562,13 +562,13 @@ impl App {
             self.param_undo
                 .baseline
                 .entry(device)
-                .or_insert_with(|| previous_state.clone().into());
+                .or_insert_with(|| previous_state.clone());
         }
         if no_document_state && previous_state == state {
             return;
         }
         if let Err(error) = self.doc.apply(label, |project| {
-            edits::set_device_state(project, device, Some(Arc::clone(state)))
+            edits::set_saved_plugin_state(project, device, state)
         }) {
             self.record_edit_error(error);
         }
@@ -579,8 +579,8 @@ impl App {
     pub(crate) fn record_waveform_marker_edit(
         &mut self,
         device: DeviceId,
-        previous_state: &Arc<[u8]>,
-        state: &Arc<[u8]>,
+        previous_state: &SavedPluginState,
+        state: &SavedPluginState,
     ) {
         if previous_state == state {
             return;
@@ -590,8 +590,8 @@ impl App {
         }
         if self.reconcile_previous_live_state(device, previous_state) {
             self.record_live_state_edit(device, previous_state, state, "undo-sample-slices");
-            if self.has_state(device, state) {
-                self.reconcile_param_edits(device, state);
+            if self.has_saved_state(device, state) {
+                self.reconcile_param_edits(device, &state.bytes);
             }
         }
     }
@@ -600,7 +600,7 @@ impl App {
     fn reconcile_previous_live_state(
         &mut self,
         device: DeviceId,
-        previous_state: &Arc<[u8]>,
+        previous_state: &SavedPluginState,
     ) -> bool {
         let Some((_, _, target)) = self.project().find_device(device) else {
             return false;
@@ -611,10 +611,10 @@ impl App {
                 .get(&device)
                 .map(|state| &state.bytes)
         });
-        if recorded.is_some_and(|recorded| recorded != previous_state) {
+        if recorded.is_some_and(|recorded| *recorded != previous_state.bytes) {
             let label = undo_label::plugin_state(&self.device_name(device));
             if let Err(error) = self.doc.apply(label, |project| {
-                edits::set_device_state(project, device, Some(Arc::clone(previous_state)))
+                edits::set_saved_plugin_state(project, device, previous_state)
             }) {
                 self.record_edit_error(error);
                 return false;
@@ -633,8 +633,10 @@ impl App {
         if self.doc.in_gesture() {
             self.end_gesture();
         }
-        if self.reconcile_previous_live_state(device, previous_state) {
-            self.record_live_state_edit(device, previous_state, state, "undo-load-preset");
+        let previous_state = SavedPluginState::from(Arc::clone(previous_state));
+        if self.reconcile_previous_live_state(device, &previous_state) {
+            let state = SavedPluginState::from(Arc::clone(state));
+            self.record_live_state_edit(device, &previous_state, &state, "undo-load-preset");
         }
     }
 
