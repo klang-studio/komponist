@@ -230,11 +230,7 @@ fn tempo_detection_uses_the_active_take_and_only_confirmed_tempo_is_undoable() {
         let base = dir.join("Base.wav");
         let path = dir.join("Pulse 90.wav");
         source(&base, 48000, 1);
-        komponist_app::showcase::with_audio_files(
-            komponist_app::showcase::showcase_project(),
-            &dir,
-        )
-        .unwrap();
+        komponist_app::showcase::write_pulse_fixture(&dir).unwrap();
         let (p, c) = project(&base, 48000, 1, false);
         let p = edits::set_audio_clip_prop(
             &p,

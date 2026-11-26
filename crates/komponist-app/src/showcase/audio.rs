@@ -161,62 +161,7 @@ pub(crate) fn write_files(project: &mut Project, dir: &Path) -> io::Result<()> {
             continue;
         }
         let path = dir.join(name);
-        let mut writer = hound::WavWriter::create(
-            &path,
-            hound::WavSpec {
-                channels,
-                sample_rate: RATE,
-                bits_per_sample: 24,
-                sample_format: hound::SampleFormat::Int,
-            },
-        )
-        .map_err(io::Error::other)?;
-        let mut noise = Noise(0x7831_abc9);
-        let mut low = [0.0; 2];
-        let mut high = [0.0; 2];
-        for frame in 0..frames {
-            let progress = frame as f32 / frames as f32;
-            for channel in 0..usize::from(channels) {
-                let raw = noise.next();
-                let sample = if name == PULSE {
-                    let seconds = frame as f64 / f64::from(RATE);
-                    let age = (frame % 32000) as f64 / f64::from(RATE);
-                    let attack = (age / 0.002).min(1.0);
-                    let transient = 0.42
-                        * (-age / 0.035).exp()
-                        * attack
-                        * (std::f64::consts::TAU * 95.0 * age).sin();
-                    let carrier = 0.2 * (std::f64::consts::TAU * 440.0 * seconds).sin();
-                    let detail = 0.015
-                        * (std::f64::consts::TAU
-                            * (if channel == 0 { 660.0 } else { 880.0 })
-                            * seconds)
-                            .sin();
-                    (carrier + transient + detail) as f32
-                } else if name == SHAKER {
-                    // Eight eighth-note bursts per bar, accented on beats 1 and 3.
-                    let eighth = RATE / 4;
-                    let hit = frame / u64::from(eighth);
-                    let age = (frame % u64::from(eighth)) as f32 / RATE as f32;
-                    low[channel] += 0.35 * (raw - low[channel]);
-                    let accent = if hit.is_multiple_of(4) { 1.0 } else { 0.65 };
-                    let attack = (age / 0.002).min(1.0);
-                    (raw - low[channel]) * (-age / 0.025).exp() * attack * accent * 0.55
-                } else {
-                    // Difference of two one-pole low-passes: a stable rising band-pass.
-                    let cutoff = 250.0 * 16.0_f32.powf(progress);
-                    let coefficient =
-                        |hz: f32| 1.0 - (-std::f32::consts::TAU * hz / RATE as f32).exp();
-                    low[channel] += coefficient(cutoff * 0.5) * (raw - low[channel]);
-                    high[channel] += coefficient(cutoff * 2.0) * (raw - high[channel]);
-                    (high[channel] - low[channel]) * (0.1 + 0.6 * progress) * 0.8
-                };
-                writer
-                    .write_sample((sample.clamp(-1.0, 1.0) * 8_388_607.0) as i32)
-                    .map_err(io::Error::other)?;
-            }
-        }
-        writer.finalize().map_err(io::Error::other)?;
+        write_source(&path, name, frames, channels)?;
         for track in &mut project.tracks {
             for clip in &mut Arc::make_mut(track).clips {
                 if let ClipContent::Audio(audio) = &mut Arc::make_mut(clip).content
@@ -239,4 +184,68 @@ impl Noise {
         self.0 ^= self.0 << 5;
         self.0 as f32 / u32::MAX as f32 * 2.0 - 1.0
     }
+}
+
+/// Generate only the sample needed by the tempo-analysis fixture.
+pub(super) fn write_pulse_fixture(dir: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    write_source(&dir.join(PULSE), PULSE, PULSE_FRAMES, 2)
+}
+
+fn write_source(path: &Path, name: &str, frames: u64, channels: u16) -> io::Result<()> {
+    let mut writer = hound::WavWriter::create(
+        path,
+        hound::WavSpec {
+            channels,
+            sample_rate: RATE,
+            bits_per_sample: 24,
+            sample_format: hound::SampleFormat::Int,
+        },
+    )
+    .map_err(io::Error::other)?;
+    let mut noise = Noise(0x7831_abc9);
+    let mut low = [0.0; 2];
+    let mut high = [0.0; 2];
+    for frame in 0..frames {
+        let progress = frame as f32 / frames as f32;
+        for channel in 0..usize::from(channels) {
+            let raw = noise.next();
+            let sample = if name == PULSE {
+                let seconds = frame as f64 / f64::from(RATE);
+                let age = (frame % 32000) as f64 / f64::from(RATE);
+                let attack = (age / 0.002).min(1.0);
+                let transient = 0.42
+                    * (-age / 0.035).exp()
+                    * attack
+                    * (std::f64::consts::TAU * 95.0 * age).sin();
+                let carrier = 0.2 * (std::f64::consts::TAU * 440.0 * seconds).sin();
+                let detail = 0.015
+                    * (std::f64::consts::TAU
+                        * (if channel == 0 { 660.0 } else { 880.0 })
+                        * seconds)
+                        .sin();
+                (carrier + transient + detail) as f32
+            } else if name == SHAKER {
+                // Eight eighth-note bursts per bar, accented on beats 1 and 3.
+                let eighth = RATE / 4;
+                let hit = frame / u64::from(eighth);
+                let age = (frame % u64::from(eighth)) as f32 / RATE as f32;
+                low[channel] += 0.35 * (raw - low[channel]);
+                let accent = if hit.is_multiple_of(4) { 1.0 } else { 0.65 };
+                let attack = (age / 0.002).min(1.0);
+                (raw - low[channel]) * (-age / 0.025).exp() * attack * accent * 0.55
+            } else {
+                // Difference of two one-pole low-passes: a stable rising band-pass.
+                let cutoff = 250.0 * 16.0_f32.powf(progress);
+                let coefficient = |hz: f32| 1.0 - (-std::f32::consts::TAU * hz / RATE as f32).exp();
+                low[channel] += coefficient(cutoff * 0.5) * (raw - low[channel]);
+                high[channel] += coefficient(cutoff * 2.0) * (raw - high[channel]);
+                (high[channel] - low[channel]) * (0.1 + 0.6 * progress) * 0.8
+            };
+            writer
+                .write_sample((sample.clamp(-1.0, 1.0) * 8_388_607.0) as i32)
+                .map_err(io::Error::other)?;
+        }
+    }
+    writer.finalize().map_err(io::Error::other)
 }

@@ -8,7 +8,7 @@ use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Poin
 use komponist_model::edits::{self, NewClip, NewClipContent, NewNote, NewTrack};
 use komponist_model::{Hue, Project, Tick};
 
-use super::DeviceSource;
+use super::prepare_device;
 
 /// Name of the track.
 pub const TRACK: &str = "Vowel Pad";
@@ -25,8 +25,11 @@ const POSITION_B: [f32; 2] = [0.15, 0.85];
 /// the whole vowel table to „U“ at bar 13, then back towards „E“ by the end of bar 16.
 const POSITION_A: [(i64, f32); 3] = [(8, 0.0), (12, 1.0), (16, 0.3)];
 
-pub(super) fn add_track(project: &mut Project, source: DeviceSource<'_>) -> Result<(), String> {
-    let prepared = source.prepare("surf", Some(PRESET), &[], &["osc_a_pos", "osc_b_pos"])?;
+pub(super) fn add_track(
+    project: &mut Project,
+    host: &crate::device_host::PluginHost,
+) -> Result<(), String> {
+    let prepared = prepare_device(host, "surf", Some(PRESET), &[], &["osc_a_pos", "osc_b_pos"])?;
     let position_a = prepared.targets["osc_a_pos"].0.clone();
     let position_b = prepared.targets["osc_b_pos"].0.clone();
     let (next, track) = edits::add_track(
