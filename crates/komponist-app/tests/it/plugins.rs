@@ -1595,36 +1595,40 @@ fn third_party_clap_macros_and_automation_restore_their_bases() {
     let synth_base = app.engine().host().param_base(synth, synth_gain).unwrap();
     let fx_default = app.engine().host().param_base(fx, fx_gain).unwrap();
     let note_level = |app: &mut App, phase: &str| {
-        let note = |app: &mut App, velocity| {
-            app.engine_mut().send(Command::LiveNote {
-                track,
-                key: 60,
-                velocity,
-            });
-        };
-        let late_blocks = |app: &App| [synth, fx].map(|id| app.engine().host().late_blocks(id));
-        let meter = app.engine().track_meter(track).unwrap().clone();
-        let initial_late = late_blocks(app);
-        let deadline = Instant::now() + PATIENCE;
-        let mut silent_notes = 0;
-        loop {
-            meter.take();
-            note(app, 127);
-            step_for(app, Duration::from_millis(160));
-            let (left, right) = meter.take();
-            note(app, 0);
-            let peak = left.max(right);
-            // A late bridge can miss a note. Only a sounding probe measures the gain.
-            if peak != 0.0 {
-                break peak;
-            }
-            silent_notes += 1;
-            assert!(
-                Instant::now() < deadline,
-                "{phase}: {silent_notes} silent notes. Late blocks (synth, effect) {:?}, initially {initial_late:?}",
-                late_blocks(app),
-            );
-        }
+        use komponist_ipc::control::RenderMode;
+        app.engine_mut()
+            .hold_engine()
+            .expect("hold the null backend for the tone probe");
+        // Offline mode removes the bridge deadlines from this amplitude comparison.
+        app.engine_mut()
+            .host_mut()
+            .set_render_mode(RenderMode::Offline);
+        step_until(
+            app,
+            "offline bridge reactivation for the tone probe",
+            all_ok,
+        );
+        let engine = app.engine_mut();
+        engine.send(Command::LiveNote {
+            track,
+            key: 60,
+            velocity: 127,
+        });
+        let (left, right) = engine.run_held_capture(8192, &[], 0).unwrap();
+        engine.send(Command::LiveNote {
+            track,
+            key: 60,
+            velocity: 0,
+        });
+        assert!(engine.run_held(8192, &[], 0));
+        engine.host_mut().set_render_mode(RenderMode::Realtime);
+        engine.release_engine();
+        let peak = left
+            .iter()
+            .chain(&right)
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        assert!(peak > 0.0, "{phase} must sound");
+        peak
     };
     let baseline = note_level(&mut app, "the reference tone");
     assert!(baseline > 0.01, "the base values produce a reference tone");

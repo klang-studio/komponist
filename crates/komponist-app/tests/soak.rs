@@ -41,10 +41,8 @@ use komponist_model::edits::{
     ChannelProp, NewClip, NewClipContent, NewNote, ProjectProp, TrackProp,
 };
 use komponist_model::fixtures::demo_project;
-use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{
-    ClipContent, ClipId, Device, DeviceRole, NoteId, PluginFormat, PluginRef, Project, Tempo, Tick,
-    TickRange, TrackId,
+    ClipContent, ClipId, DeviceRole, NoteId, PluginRef, Project, Tempo, Tick, TickRange, TrackId,
 };
 use std::sync::Arc;
 
@@ -89,35 +87,22 @@ impl Rng {
     }
 }
 
-/// The demo with hexa only (`App::headless` hosts no bridges): external instruments become
-/// hexa, external effects go. Every device then runs, so an export never waits.
-fn soak_project() -> Project {
+/// The demo with one shipped Hexa per MIDI instrument track and without external effects.
+fn soak_project(hexa: &PluginRef) -> Project {
     let mut p = demo_project();
-    let hexa = PluginRef {
-        format: PluginFormat::Builtin,
-        id: BUILTIN_HEXA.into(),
-        name: "Hexa".into(),
-        vendor: "klang-studio".into(),
-        version: "0.1.0".into(),
-        module: Box::default(),
-    };
-    let builtin =
-        |d: &Device| d.plugin.format == PluginFormat::Builtin && d.plugin.id == BUILTIN_HEXA;
     for track in &mut p.tracks {
         let track = Arc::make_mut(track);
         track
             .channel
             .devices
-            .retain(|d| d.role == DeviceRole::Instrument || builtin(d));
-        for d in &mut track.channel.devices {
-            if !builtin(d) {
-                let d = Arc::make_mut(d);
-                d.plugin = hexa.clone();
-                d.state = None;
-            }
+            .retain(|device| device.role == DeviceRole::Instrument);
+        for device in &mut track.channel.devices {
+            let device = Arc::make_mut(device);
+            device.plugin = hexa.clone();
+            device.state = None;
         }
     }
-    Arc::make_mut(&mut p.master).devices.retain(|d| builtin(d));
+    Arc::make_mut(&mut p.master).devices.clear();
     p
 }
 
@@ -417,7 +402,12 @@ fn random_edits_during_playback_cause_no_xrun() {
     let mut rng = Rng(seed);
 
     let (midi, receiver) = TestMidiSource::new();
-    let mut app = App::headless_with_midi(soak_project(), receiver);
+    let host = App::headless_plugin_host();
+    let Some(hexa) = common::shipped_plugin(&host, "org.klang-studio.komponist.hexa") else {
+        eprintln!("skipping: build the verified CLAP fixtures with scripts/build-test-plugins.sh");
+        return;
+    };
+    let mut app = App::headless_with_midi(soak_project(&hexa), receiver);
     if let Some(workers) = std::env::var("KOMPONIST_SOAK_WORKERS")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
