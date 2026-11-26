@@ -1180,7 +1180,7 @@ fn the_last_settings_are_saved_and_the_dialog_opens_with_them() {
     assert_eq!(saved.export.as_ref(), Some(&used));
 
     // A new session with these settings: S08 opens with them, the file named after the project.
-    let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
     let mut app = App::new(Document::new(project), engine, saved, None);
     app.step();
     app.dispatch(Action::Project(ProjectAction::OpenExportDialog));
@@ -1359,7 +1359,7 @@ fn snapshot_next_to_s08_in_english() {
         export: Some(s08_settings()),
         ..Settings::default()
     };
-    let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
     let mut app = App::new(Document::new(demo_project()), engine, settings, None)
         .with_lang(komponist_i18n::Lang::En);
     app.dispatch(Action::Project(ProjectAction::OpenExportDialog));
@@ -1381,7 +1381,7 @@ fn snapshots_next_to_s08() {
             export: Some(s08_settings()),
             ..Settings::default()
         };
-        let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+        let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
         let mut app = App::new(Document::new(demo_project()), engine, settings, None);
         app.dispatch(Action::Project(ProjectAction::OpenExportDialog));
         let mut h = harness_at(app, ppp);

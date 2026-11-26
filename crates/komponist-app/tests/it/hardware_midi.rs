@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 
 use egui::Key;
 use egui_kittest::Harness;
-use komponist_app::device_host::BuiltinHost;
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::{Action, App, EditAction};
 use komponist_audio::{AudioError, HostKind, MidiInputHub, StreamConfig};
@@ -67,7 +66,12 @@ fn sync_on(config: &StreamConfig, port: &str) -> (EngineSync, Result<(), AudioEr
     let (mut hub, receiver) = MidiInputHub::new().expect("MIDI backend");
     hub.only_connect_to(&port_name(port));
     let _ = hub.refresh();
-    EngineSync::with_receiver(config, Some(hub), receiver, Box::new(BuiltinHost::new()))
+    EngineSync::with_receiver(
+        config,
+        Some(hub),
+        receiver,
+        Box::new(App::headless_plugin_host()),
+    )
 }
 
 /// The whole app (UI loop included) on a hub that listens to the virtual port `port` only.

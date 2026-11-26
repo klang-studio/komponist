@@ -355,9 +355,8 @@ fn panel_sizes_are_saved_in_the_settings() {
     let dir = std::env::temp_dir().join(format!("komponist-shell-settings-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("settings.json");
-    let engine = komponist_app::engine_sync::EngineSync::null(Box::new(
-        komponist_app::device_host::BuiltinHost::new(),
-    ));
+    let engine =
+        komponist_app::engine_sync::EngineSync::null(Box::new(App::headless_plugin_host()));
     let app = App::new(
         komponist_model::Document::new(demo_project()),
         engine,
@@ -384,9 +383,8 @@ fn a_splitter_drag_saves_the_settings_once_at_its_end() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("settings.json");
-    let engine = komponist_app::engine_sync::EngineSync::null(Box::new(
-        komponist_app::device_host::BuiltinHost::new(),
-    ));
+    let engine =
+        komponist_app::engine_sync::EngineSync::null(Box::new(App::headless_plugin_host()));
     let app = App::new(
         komponist_model::Document::new(demo_project()),
         engine,
