@@ -13,7 +13,7 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::SettingsAction;
-use komponist_app::device_host::{DeviceHost, PluginHost};
+use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost};
 use komponist_app::dialogs::{missing_plugins, new_project, settings, start};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::project_io::{self, RecentList};
@@ -1406,7 +1406,7 @@ fn snapshot_of_s07() {
         let (engine, _) = EngineSync::new(
             &config,
             komponist_app::engine_sync::MidiSetup::None,
-            Box::new(App::headless_plugin_host()),
+            Box::new(BuiltinHost::new()),
         );
         let app = App::new(
             Document::new(demo_project()),
@@ -1444,7 +1444,7 @@ fn snapshot_of_s07_in_english() {
     let (engine, _) = EngineSync::new(
         &config,
         komponist_app::engine_sync::MidiSetup::None,
-        Box::new(App::headless_plugin_host()),
+        Box::new(BuiltinHost::new()),
     );
     let app = App::new(
         Document::new(demo_project()),
@@ -1659,7 +1659,7 @@ fn snapshots_of_the_appearance_section() {
         (Lang::De, "dialogs-s07-display-1x"),
         (Lang::En, "dialogs-s07-display-en-1x"),
     ] {
-        let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
+        let engine = EngineSync::null(Box::new(BuiltinHost::new()));
         let app = App::new(
             Document::new(demo_project()),
             engine,
