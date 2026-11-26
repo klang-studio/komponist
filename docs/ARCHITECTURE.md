@@ -829,14 +829,18 @@ records the location and load key of each load it requests (device card, plugin 
 demo) and of each load the plugin reports itself through the host side of the extension
 (`clap_host_preset_load.loaded`, e.g. its own browser or a program change); `on_error` reaches the
 status bar. In process the reports are drained after each main-thread poll; over the bridge they
-travel as `BridgeMsg::PresetReported`. The selection is stored with the device in the project
-(`Device::preset`) and enters the undo history: a requested load with its state as one step, a
-reported load as a step that the plugin's following snapshot amends. A preset reported while the
-host activates the instance is its start preset (the bundled adapter reports the factory preset an
-instance holds at its first activation, e.g. Hexa's "Init"): a device that records no preset takes
-it outside the history without making the document dirty (`Document::restate_root`), and a
-recorded one keeps its selection and mark. The first parameter edit after
-a load (card, text entry or the plugin's own GUI) marks the preset as modified, also in the history;
+travel as `BridgeMsg::PresetReported`, followed by the loaded values (`BridgeMsg::PresetValues`),
+which become the parameter bases; in process the inventory is read again. A load the plugin
+reported before one the host requests is superseded by it. The selection is stored with the device
+in the project (`Device::preset`) and enters the undo history: a requested load with its state as
+one step, a reported load with the plugin's next snapshot as one step (undo before that snapshot
+hands the plugin the document's state and drops the report). A preset reported while the plugin is
+created, initialised, activated or restores a state is its start preset (the bundled adapter
+reports the factory preset an instance holds at its first activation, e.g. Hexa's "Init"): a device
+that records no preset takes it outside the history without making the document dirty, in every
+step where it holds the same state (`Document::restate`), and a recorded one keeps its selection
+and mark. The first parameter edit after a load (card, text entry or the plugin's own GUI) marks the
+preset as modified, also in the history (after an unrelated gesture, like the edit's state);
 loading again clears the mark. The label is the discovered preset with the recorded source.
 
 ### 8.7 macOS application bundle

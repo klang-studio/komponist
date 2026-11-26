@@ -49,7 +49,8 @@ from the plug-in's state, so every plug-in gets the label the same way:
   requested belong to that load and are not recorded twice. Call `clap_host_state.mark_dirty`
   as well, so the host stores the new state with the selection.
 - A plug-in that starts in a factory preset (a fresh instance in its `Init` patch, or a restored
-  state equal to a preset) may say so with `loaded` while the host activates it. komponist takes
+  state equal to a preset) may say so with `loaded` while it is created and initialised, while
+  the host activates it, or while it restores a state. komponist takes
   such a start preset as the selection of a device that records none, without an undo step and
   without marking the project as changed (the plug-in states it again on every load). It
   never replaces a recorded selection or its modified mark. The bundled devices report their

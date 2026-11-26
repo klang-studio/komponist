@@ -1074,7 +1074,10 @@ impl App {
                 device,
                 source,
                 startup: false,
-            } => self.record_reported_preset(*device, source),
+            } => {
+                self.invalidate_retiring_snapshot(*device);
+                self.record_reported_preset(*device, source);
+            }
             PluginManagerEvent::ClapPresetCaptured { device, result } => {
                 self.user_preset_captured(*device, result);
             }

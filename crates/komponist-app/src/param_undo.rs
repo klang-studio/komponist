@@ -39,12 +39,13 @@
 //!
 //! - **Loaded preset:** the device keeps the preset it last loaded through CLAP preset-load
 //!   ([`komponist_model::Device::preset`]). A load the host requested enters the document with its
-//!   state as one step; a load the plugin reports itself is a step of its own that the plugin's
-//!   following snapshot amends. The preset a plugin reports while it starts is no step: a device
+//!   state as one step; a load the plugin reports itself waits for the plugin's next snapshot and
+//!   enters with it as one step (after an unrelated gesture, like other snapshots). The preset a plugin reports while it starts is no step: a device
 //!   without a recorded preset takes it in the current root only; a recorded one stays. The first parameter edit after a load (card, text entry, the
-//!   plugin's GUI) marks the preset as modified at once: inside the open gesture, or as the edit's
-//!   step, which the plugin's snapshot of the edit then amends like after a gesture. Undo takes
-//!   the mark back with the edit.
+//!   plugin's GUI) marks the preset as modified at once: inside the device's own gesture, or as the
+//!   edit's step, which the plugin's snapshot of the edit then amends like after a gesture; during
+//!   an unrelated gesture the mark waits for its end with the edit's state. Undo takes the mark
+//!   back with the edit.
 //!
 //! Still outside the history: transport settings, the baseline of a bridged device taken for the
 //! file (root only, like the echo), and sample paths rewritten for the file being saved, which
@@ -115,6 +116,12 @@ pub(crate) struct ParamUndo {
     /// What a bridged device held before its state entered the document: undoing back to "no
     /// state" hands the plugin this.
     baseline: HashMap<DeviceId, SavedPluginState>,
+    /// Loads a plugin reported whose state has not arrived yet: the next snapshot of the device
+    /// enters the document with the preset as one step.
+    reported: HashMap<DeviceId, ClapPresetSource>,
+    /// Preset marks of plugin edits made during an unrelated gesture, in order: applied at its
+    /// end, before the deferred snapshots.
+    deferred_marks: Vec<(DeviceId, String)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -141,6 +148,8 @@ impl Default for ParamUndo {
             deferred: Vec::new(),
             awaiting: BTreeSet::new(),
             baseline: HashMap::new(),
+            reported: HashMap::new(),
+            deferred_marks: Vec::new(),
         }
     }
 }
@@ -182,6 +191,8 @@ impl ParamUndo {
         self.deferred.retain(|(id, _)| *id != device);
         self.awaiting.remove(&device);
         self.baseline.remove(&device);
+        self.reported.remove(&device);
+        self.deferred_marks.retain(|(id, _)| *id != device);
     }
 }
 
@@ -339,8 +350,11 @@ impl App {
 
     /// Stores the snapshots that waited for a gesture, once none is open.
     pub(crate) fn flush_deferred(&mut self) {
-        if self.doc.in_gesture() || self.param_undo.deferred.is_empty() {
+        if self.doc.in_gesture() {
             return;
+        }
+        for (device, label) in std::mem::take(&mut self.param_undo.deferred_marks) {
+            self.mark_preset_modified(device, &label);
         }
         for (device, state) in std::mem::take(&mut self.param_undo.deferred) {
             self.store_snapshot(device, &state);
@@ -565,8 +579,15 @@ impl App {
         }
         let mark = |p: &Project| edits::mark_device_preset_modified(p, device);
         if self.doc.in_gesture() {
-            if let Err(error) = self.doc.apply("", mark) {
-                self.record_edit_error(error);
+            if self.param_undo.gesture_device == Some(device) {
+                if let Err(error) = self.doc.apply("", mark) {
+                    self.record_edit_error(error);
+                }
+            } else {
+                // Not this gesture's change: like the edit's snapshot, after it.
+                self.param_undo
+                    .deferred_marks
+                    .push((device, label.to_owned()));
             }
             return;
         }
@@ -709,47 +730,61 @@ impl App {
 
     /// The preset a plugin reports while it starts: what it holds, not a change. A device whose
     /// document records no preset (fresh, or saved without one) takes it outside the history and
-    /// without making the document dirty, since the plugin restates it on every load; a recorded
-    /// preset and its mark stay as saved.
+    /// without making the document dirty, since the plugin restates it on every load: in the root
+    /// and in every step where the device holds the same state, so undoing an unrelated edit
+    /// keeps it. A recorded preset and its mark stay as saved.
     pub(crate) fn record_start_preset(&mut self, device: DeviceId, source: &ClapPresetSource) {
-        if self
-            .project()
-            .find_device(device)
-            .is_none_or(|(_, _, target)| target.preset.is_some())
-        {
+        let Some((_, _, target)) = self.project().find_device(device) else {
+            return;
+        };
+        if target.preset.is_some() {
             return;
         }
+        let held = (target.state.clone(), target.parameter_bases.clone());
         let preset = DevicePreset::loaded(source.clone());
-        if let Err(error) = self
-            .doc
-            .restate_root(|project| edits::set_device_preset(project, device, Some(preset)))
-        {
-            self.record_edit_error(error);
-        }
+        self.doc.restate(|project| {
+            let (_, _, step) = project.find_device(device)?;
+            (step.preset.is_none() && (&step.state, &step.parameter_bases) == (&held.0, &held.1))
+                .then(|| edits::set_device_preset(project, device, Some(preset.clone())).ok())
+                .flatten()
+        });
     }
 
-    /// The plugin loaded a preset on its own and reported it through CLAP preset-load: a step
-    /// of its own, which the plugin's following state snapshot amends ([`COALESCE`]). A report of
-    /// the preset that is already loaded and unmodified changes nothing.
+    /// The plugin loaded a preset on its own and reported it through CLAP preset-load. The
+    /// selection waits for the plugin's state of the load, which is asked for at once, and enters
+    /// the document with it as one step ([`App::store_snapshot`]); undo before it arrives does not
+    /// split selection and sound. A report of the preset that is already loaded and unmodified
+    /// changes nothing.
     pub(crate) fn record_reported_preset(&mut self, device: DeviceId, source: &ClapPresetSource) {
         let Some((_, _, target)) = self.project().find_device(device) else {
             return;
         };
-        let preset = DevicePreset::loaded(source.clone());
-        if target.preset.as_ref() == Some(&preset) {
+        if target.preset.as_ref() == Some(&DevicePreset::loaded(source.clone())) {
+            self.param_undo.reported.remove(&device);
             return;
         }
-        if self.doc.in_gesture() {
-            self.end_gesture();
-        }
+        self.param_undo.reported.insert(device, source.clone());
+        self.engine.host_mut().request_state(device);
+    }
+
+    /// The state that follows a reported load: one step with its selection. A baseline still
+    /// asked for when the plugin came up is no longer known to precede the load, so none is
+    /// kept; the later snapshots of the plugin's debounce amend the step.
+    fn record_reported_load(
+        &mut self,
+        device: DeviceId,
+        source: ClapPresetSource,
+        state: &SavedPluginState,
+    ) {
+        self.param_undo.awaiting.remove(&device);
+        let preset = DevicePreset::loaded(source);
         let top = self.doc.top_step();
         match self.doc.apply("undo-load-preset", |project| {
-            edits::set_device_preset(project, device, Some(preset))
+            let project = edits::set_saved_plugin_state(project, device, state)?;
+            edits::set_device_preset(&project, device, Some(preset))
         }) {
             Ok(_) => {
                 if let Some(step) = self.doc.top_step().filter(|step| Some(*step) != top) {
-                    // The snapshot follows the plugin's debounce: the window starts a little
-                    // later, as after a gesture.
                     let at = Instant::now() + SNAPSHOT_SLACK;
                     self.param_undo.steps.insert(device, (step, at));
                     self.param_undo.turned.remove(&device);
@@ -771,6 +806,16 @@ impl App {
     }
 
     fn apply_device_snapshot(&mut self, device: DeviceId, state: &SavedPluginState) {
+        if self.param_undo.reported.contains_key(&device) {
+            if self.doc.in_gesture() {
+                // Not this gesture's change: after it.
+                self.param_undo.deferred.retain(|(d, _)| *d != device);
+                self.param_undo.deferred.push((device, state.clone()));
+            } else if let Some(source) = self.param_undo.reported.remove(&device) {
+                self.record_reported_load(device, source, state);
+            }
+            return;
+        }
         if self.has_saved_state(device, state) {
             return;
         }
@@ -938,6 +983,8 @@ impl App {
             if (old.state != device.state || old.parameter_bases != device.parameter_bases)
                 && LegacyParameters::new(device).is_none()
             {
+                // The plugin gets the document's state: a load it reported before no longer holds.
+                self.param_undo.reported.remove(&device.id);
                 self.param_undo.cancel_text_edits(device.id);
                 self.forget_param_edits(device.id);
                 if komponist_plugins::requires_bundled(&device.plugin) {

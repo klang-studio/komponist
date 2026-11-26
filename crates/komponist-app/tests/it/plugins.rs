@@ -640,6 +640,10 @@ fn standalone_clap_preset_selection_follows_loads_reports_and_saving() {
         shown(app) == shows("Testruhe", false)
             && app.engine().host().param_base(device, 42) == Some(0.25)
     });
+    // The values the plugin loaded are the persistent bases now, edited or not.
+    step_until(&mut app, "the reported load's bases", |app| {
+        app.engine().host().param_base(device, 7) == Some(1.0)
+    });
     let calm = source(&app, "Fixture Calm");
     // Its state follows the report into the document, in the same undo step.
     step_until(&mut app, "the reported preset's state", |app| {

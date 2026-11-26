@@ -719,10 +719,14 @@ fn the_preset_a_plugin_starts_in_is_no_step_and_never_replaces_a_recorded_one() 
         source: source(key),
         startup: true,
     };
-    let undo = app.doc().undo_label().map(str::to_owned);
     assert_eq!(selection(&app), None);
+    app.dispatch(Action::Edit(EditAction::SetProjectProp(ProjectProp::Name(
+        "Renamed".into(),
+    ))));
+    let undo = app.doc().undo_label().map(str::to_owned);
 
-    // Without a recorded preset, the start preset becomes the selection outside the history.
+    // Without a recorded preset, the start preset becomes the selection outside the history,
+    // also in the steps before: undoing an unrelated edit keeps it.
     push(&script, start(b"Init"));
     app.step();
     assert_eq!(selection(&app), Some(DevicePreset::loaded(source(b"Init"))));
@@ -731,6 +735,9 @@ fn the_preset_a_plugin_starts_in_is_no_step_and_never_replaces_a_recorded_one() 
         undo,
         "no undo step"
     );
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(selection(&app), Some(DevicePreset::loaded(source(b"Init"))));
+    app.dispatch(Action::Edit(EditAction::Redo));
 
     // A recorded preset and its mark stay: a restart reports the preset it starts in again.
     app.dispatch(Action::Plugin(PluginAction::SetParam {
@@ -762,7 +769,8 @@ fn a_reported_preset_and_its_snapshot_are_one_step_and_an_edit_marks_it_modified
     let loaded = DevicePreset::loaded(source.clone());
     let depth = undo_depth(&mut app);
 
-    // The plugin's own browser loads a preset and reports it; its snapshot joins the step.
+    // The plugin's own browser loads a preset and reports it; the selection waits for the
+    // state of the load and enters with it as one step.
     let report = PluginManagerEvent::ClapPresetReported {
         device: surge,
         source: source.clone(),
@@ -770,7 +778,8 @@ fn a_reported_preset_and_its_snapshot_are_one_step_and_an_edit_marks_it_modified
     };
     push(&script, report.clone());
     app.step();
-    assert_eq!(selection(&app), Some(loaded.clone()));
+    assert_eq!(selection(&app), None, "not before its state");
+    assert_eq!(undo_depth(&mut app), depth);
     snapshot(&script, surge, &[4, 4]);
     app.step();
     assert_eq!(state(&app, surge).as_deref(), Some(&[4u8, 4][..]));
@@ -818,9 +827,41 @@ fn a_reported_preset_and_its_snapshot_are_one_step_and_an_edit_marks_it_modified
     assert_eq!(state(&app, surge).as_deref(), Some(&[6u8, 6][..]));
 
     // Loading the same preset again in the plugin starts it unmodified.
-    push(&script, report);
+    app.set_snapshot_window(Duration::ZERO);
+    push(&script, report.clone());
+    snapshot(&script, surge, &[7, 7]);
+    app.step();
+    assert_eq!(selection(&app), Some(loaded.clone()));
+    assert_eq!(state(&app, surge).as_deref(), Some(&[7u8, 7][..]));
+
+    // Undo before the state of a reported load arrives hands the plugin the document's state:
+    // the load no longer holds, and its late snapshot (the echo) brings no selection.
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device: surge,
+        id: 3,
+        value: 0.75,
+    }));
+    snapshot(&script, surge, &[8, 8]);
+    app.step();
+    let other = ClapPresetSource {
+        location: ClapPresetLocation::Plugin,
+        load_key: Some(b"Other".to_vec()),
+    };
+    push(
+        &script,
+        PluginManagerEvent::ClapPresetReported {
+            device: surge,
+            source: other,
+            startup: false,
+        },
+    );
+    app.step();
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(selection(&app), Some(loaded.clone()));
+    snapshot(&script, surge, &[7, 7]);
     app.step();
     assert_eq!(selection(&app), Some(loaded));
+    assert_eq!(state(&app, surge).as_deref(), Some(&[7u8, 7][..]));
 
     // A failed load the plugin reports reaches the status bar.
     push(
@@ -1606,6 +1647,48 @@ fn plugin_gui_read_override_remains_temporary_and_off_restores_the_old_base() {
     assert_eq!(script.borrow().gui_edits, [(device, id, 0.5)]);
     // An edit in the plugin's GUI modifies the loaded preset like a card edit.
     assert!(modified(&app));
+}
+
+#[test]
+fn a_plugin_gui_edit_during_a_fader_drag_marks_the_preset_after_it() {
+    use komponist_model::automation::AutomationMode;
+
+    let (mut app, _script, gui, _) = plugin_gui_automation(AutomationMode::Off);
+    let device = gui.device;
+    let modified = |app: &App| {
+        app.project()
+            .find_device(device)
+            .unwrap()
+            .2
+            .preset
+            .as_ref()
+            .unwrap()
+            .modified
+    };
+    let track = app.project().find_device(device).unwrap().0;
+    let komponist_model::ChannelRef::Track(track) = track else {
+        panic!("the synth is on a track");
+    };
+    app.dispatch(Action::Edit(EditAction::BeginGesture {
+        label: "Lautstärke".into(),
+    }));
+    app.dispatch(Action::Edit(EditAction::SetTrackProp {
+        tracks: vec![track],
+        prop: komponist_model::edits::TrackProp::Channel(
+            komponist_model::edits::ChannelProp::VolumeDb(-7.5),
+        ),
+    }));
+    gui.pending.store(0.5_f64.to_bits(), Ordering::Relaxed);
+    assert!(app.engine_mut().run_held(256, &[], 0));
+    app.step();
+    assert!(!modified(&app), "not inside the fader's step");
+    app.dispatch(Action::Edit(EditAction::EndGesture));
+    assert!(modified(&app));
+    // The fader and the plugin edit are two steps.
+    assert_eq!(app.undo_text().as_deref(), Some("Surge XT: Zustand ändern"));
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert!(!modified(&app));
+    assert_eq!(app.undo_text().as_deref(), Some("Lautstärke"));
 }
 
 #[test]

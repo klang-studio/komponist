@@ -241,24 +241,45 @@ impl Document {
         Ok(())
     }
 
-    /// Like [`Document::apply_untracked_to_root`], but for what a running device restates about
-    /// itself and states again on every load (the preset a plugin starts in): it does not make
-    /// the document dirty, and a saved root stays saved with it.
-    pub fn restate_root(
-        &mut self,
-        edit: impl FnOnce(&Project) -> Result<Project, EditError>,
-    ) -> Result<(), EditError> {
-        let saved = self
-            .saved
-            .as_ref()
-            .is_some_and(|saved| Arc::ptr_eq(saved, &self.current));
-        let dirty = self.untracked_dirty;
-        self.apply_untracked_to_root(edit)?;
-        self.untracked_dirty = dirty;
-        if saved {
-            self.saved = Some(Arc::clone(&self.current));
+    /// Rewrites, outside the history, the current root and every snapshot (undo, redo, the open
+    /// gesture's start), each from its own content like [`Document::rewrite_untracked`], for what
+    /// a running device restates about itself on every load (the preset a plugin starts in). It
+    /// does not make the document dirty: a saved root stays saved in its rewritten form. Returns
+    /// whether the root changed.
+    pub fn restate(&mut self, mut rewrite: impl FnMut(&Project) -> Option<Project>) -> bool {
+        let saved = self.saved.take();
+        let mut rebase = |snapshot: &mut Arc<Project>, saved_now: &mut Option<Arc<Project>>| {
+            if let Some(p) = rewrite(snapshot) {
+                let next = Arc::new(p);
+                if saved
+                    .as_ref()
+                    .is_some_and(|saved| Arc::ptr_eq(saved, snapshot))
+                {
+                    *saved_now = Some(Arc::clone(&next));
+                }
+                *snapshot = next;
+            }
+        };
+        let mut saved_now = None;
+        let mut current = Arc::clone(&self.current);
+        rebase(&mut current, &mut saved_now);
+        let changed = !Arc::ptr_eq(&current, &self.current);
+        for step in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            rebase(&mut step.project, &mut saved_now);
         }
-        Ok(())
+        if let Some(gesture) = &mut self.gesture {
+            if Arc::ptr_eq(&gesture.before, &self.current) {
+                gesture.before = Arc::clone(&current);
+            } else {
+                rebase(&mut gesture.before, &mut saved_now);
+            }
+        }
+        self.saved = saved_now.or(saved);
+        if changed {
+            self.current = current;
+            self.revision += 1;
+        }
+        changed
     }
 
     /// Starts a gesture labelled `label`. A gesture already open is ended first
@@ -452,26 +473,6 @@ impl Document {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn a_restated_root_stays_clean_and_saved_and_is_no_step() {
-        use crate::edits::{ProjectProp, set_project_prop};
-        let mut doc = Document::new(Project::new("Clean"));
-        doc.mark_saved();
-        doc.restate_root(|p| set_project_prop(p, ProjectProp::Name("Restated".into())))
-            .unwrap();
-        assert_eq!(doc.project().name, "Restated");
-        assert!(!doc.is_dirty());
-        assert!(doc.undo_label().is_none());
-        doc.apply("rename", |p| {
-            set_project_prop(p, ProjectProp::Name("Edited".into()))
-        })
-        .unwrap();
-        assert!(doc.is_dirty());
-        doc.undo();
-        assert_eq!(doc.project().name, "Restated");
-        assert!(!doc.is_dirty(), "undo returns to the restated saved root");
-    }
-
     use super::*;
 
     fn rename(name: &str) -> impl Fn(&Project) -> Result<Project, EditError> + '_ {
@@ -488,6 +489,32 @@ mod tests {
 
     fn name(doc: &Document) -> &str {
         &doc.project().name
+    }
+
+    #[test]
+    fn a_restatement_reaches_every_step_stays_clean_and_is_no_step() {
+        use crate::edits::{ProjectProp, set_project_prop};
+        let mut doc = Document::new(Project::new("Clean"));
+        doc.mark_saved();
+        doc.apply("rename", |p| {
+            set_project_prop(p, ProjectProp::Name("Edited".into()))
+        })
+        .unwrap();
+        // The restatement (here: the loop switch) reaches the saved root behind the edit too.
+        let restated = |p: &Project| {
+            (!p.loop_on).then(|| {
+                set_project_prop(p, ProjectProp::LoopOn(true)).expect("a project property")
+            })
+        };
+        assert!(doc.restate(restated));
+        assert!(doc.project().loop_on);
+        assert_eq!(doc.undo_label(), Some("rename"));
+        assert!(doc.is_dirty(), "the edit still is one");
+        assert!(doc.undo());
+        assert!(doc.project().loop_on, "undo keeps the restatement");
+        assert_eq!(doc.project().name, "Clean");
+        assert!(!doc.is_dirty(), "undo returns to the restated saved root");
+        assert!(!doc.restate(restated), "a restated root changes no more");
     }
 
     #[test]
