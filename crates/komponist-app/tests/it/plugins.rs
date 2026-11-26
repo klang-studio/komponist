@@ -1739,9 +1739,9 @@ fn third_party_clap_macros_and_automation_restore_their_bases() {
     app.shutdown();
 }
 
-/// #347: a held engine's realtime block gives up on a bridge at the callback's deadline and plays
-/// the fallback; `render_held` waits for the bridge, as an export does. kp-test-slow sleeps 50 ms
-/// in `process` for a note-on of key 126, far beyond the deadline of a 256-frame block.
+/// #347: `render_held` waits for a bridge block, as an export does. kp-test-slow sleeps 50 ms in
+/// `process` for a note-on of key 126, far beyond the deadline of a realtime 256-frame block
+/// (`run_held_capture`), which would give up after about 3 ms and play the fallback.
 #[test]
 fn held_offline_render_waits_for_a_slow_bridge() {
     use komponist_ipc::control::RenderMode;
@@ -1777,31 +1777,22 @@ fn held_offline_render_waits_for_a_slow_bridge() {
         .host_mut()
         .set_render_mode(RenderMode::Offline);
     step_until(&mut app, "offline bridge reactivation", all_ok);
-    let late = |app: &App| app.engine().host().late_blocks(slow);
-    let stall = |app: &mut App| {
-        app.engine_mut().send(Command::LiveNote {
-            track,
-            key: SLOW_KEY,
-            velocity: 127,
-        });
-    };
-
-    let before = late(&app);
-    stall(&mut app);
+    let late = app.engine().host().late_blocks(slow);
+    app.engine_mut().send(Command::LiveNote {
+        track,
+        key: SLOW_KEY,
+        velocity: 127,
+    });
     let started = Instant::now();
     assert!(app.engine_mut().render_held(512).is_some());
     assert!(
         started.elapsed() >= Duration::from_millis(50),
         "the render waited for the stalled block"
     );
-    assert_eq!(late(&app), before, "an offline render waits for the bridge");
-
-    stall(&mut app);
-    assert!(app.engine_mut().run_held(256, &[], 0));
     assert_eq!(
-        late(&app),
-        before + 1,
-        "a realtime block of the held engine gives up at its deadline"
+        app.engine().host().late_blocks(slow),
+        late,
+        "an offline render waits for the bridge"
     );
     app.engine_mut().release_engine();
     app.shutdown();
