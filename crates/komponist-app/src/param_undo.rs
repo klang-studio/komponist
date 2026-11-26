@@ -708,8 +708,9 @@ impl App {
     }
 
     /// The preset a plugin reports while it starts: what it holds, not a change. A device whose
-    /// document records no preset (fresh, or saved without one) takes it outside the history; a
-    /// recorded preset and its mark stay as saved.
+    /// document records no preset (fresh, or saved without one) takes it outside the history and
+    /// without making the document dirty, since the plugin restates it on every load; a recorded
+    /// preset and its mark stay as saved.
     pub(crate) fn record_start_preset(&mut self, device: DeviceId, source: &ClapPresetSource) {
         if self
             .project()
@@ -719,9 +720,10 @@ impl App {
             return;
         }
         let preset = DevicePreset::loaded(source.clone());
-        if let Err(error) = self.doc.apply_untracked_to_root(|project| {
-            edits::set_device_preset(project, device, Some(preset))
-        }) {
+        if let Err(error) = self
+            .doc
+            .restate_root(|project| edits::set_device_preset(project, device, Some(preset)))
+        {
             self.record_edit_error(error);
         }
     }

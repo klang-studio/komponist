@@ -2267,6 +2267,13 @@ fn hiding_one_automation_lane_preserves_its_points_and_its_neighbour() {
     use komponist_model::automation::{AutomationOwner, AutomationTarget};
 
     let mut app = demo();
+    // The shipped instruments state the presets they start in once they run.
+    crate::common::step_until(&mut app, "the shipped instruments", |app| {
+        crate::common::statuses(app)
+            .iter()
+            .all(|(_, _, status)| *status != DeviceStatus::Loading)
+    });
+    crate::common::step_for(&mut app, std::time::Duration::from_millis(300));
     let track = &app.project().tracks[0];
     let owner = AutomationOwner::Track(track.id);
     let name = track.name.clone();

@@ -831,7 +831,11 @@ demo) and of each load the plugin reports itself through the host side of the ex
 status bar. In process the reports are drained after each main-thread poll; over the bridge they
 travel as `BridgeMsg::PresetReported`. The selection is stored with the device in the project
 (`Device::preset`) and enters the undo history: a requested load with its state as one step, a
-reported load as a step that the plugin's following snapshot amends. The first parameter edit after
+reported load as a step that the plugin's following snapshot amends. A preset reported while the
+host activates the instance is its start preset (the bundled adapter reports the factory preset an
+instance holds at its first activation, e.g. Hexa's "Init"): a device that records no preset takes
+it outside the history without making the document dirty (`Document::restate_root`), and a
+recorded one keeps its selection and mark. The first parameter edit after
 a load (card, text entry or the plugin's own GUI) marks the preset as modified, also in the history;
 loading again clears the mark. The label is the discovered preset with the recorded source.
 

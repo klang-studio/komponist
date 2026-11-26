@@ -48,6 +48,12 @@ from the plug-in's state, so every plug-in gets the label the same way:
   `clap_host_preset_load.on_error`; komponist shows a load error. Reports during a load the host
   requested belong to that load and are not recorded twice. Call `clap_host_state.mark_dirty`
   as well, so the host stores the new state with the selection.
+- A plug-in that starts in a factory preset (a fresh instance in its `Init` patch, or a restored
+  state equal to a preset) may say so with `loaded` while the host activates it. komponist takes
+  such a start preset as the selection of a device that records none, without an undo step and
+  without marking the project as changed (the plug-in states it again on every load). It
+  never replaces a recorded selection or its modified mark. The bundled devices report their
+  start preset this way when they are first activated.
 - The project stores the selection with the device. A parameter edit after the load, on the
   device card or in the plug-in's GUI, marks the preset as modified; loading a preset again clears
   the mark. Undo restores both.

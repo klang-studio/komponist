@@ -200,7 +200,9 @@ Presets use standard CLAP only: publish them with the preset-discovery factory a
 `clap.preset-load`. komponist labels a device with the preset it last loaded through that
 extension. When your device loads a preset on its own (its editor, a program change), report it on
 the main thread through the host side, `clap_host_preset_load.loaded`, with the location and load
-key your provider declares, and mark the state dirty; report failures with `on_error`. Do not put
+key your provider declares, and mark the state dirty; report failures with `on_error`. If your
+device starts in a factory preset, report it with `loaded` while the host activates it: komponist
+shows it for a device that records no preset, without an undo step. Do not put
 the preset name into your state for the host: komponist does not read it. See
 [CLAP preset interoperability](../../docs/clap-device-layout/presets.md).
 

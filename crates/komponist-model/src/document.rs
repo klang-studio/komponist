@@ -241,6 +241,26 @@ impl Document {
         Ok(())
     }
 
+    /// Like [`Document::apply_untracked_to_root`], but for what a running device restates about
+    /// itself and states again on every load (the preset a plugin starts in): it does not make
+    /// the document dirty, and a saved root stays saved with it.
+    pub fn restate_root(
+        &mut self,
+        edit: impl FnOnce(&Project) -> Result<Project, EditError>,
+    ) -> Result<(), EditError> {
+        let saved = self
+            .saved
+            .as_ref()
+            .is_some_and(|saved| Arc::ptr_eq(saved, &self.current));
+        let dirty = self.untracked_dirty;
+        self.apply_untracked_to_root(edit)?;
+        self.untracked_dirty = dirty;
+        if saved {
+            self.saved = Some(Arc::clone(&self.current));
+        }
+        Ok(())
+    }
+
     /// Starts a gesture labelled `label`. A gesture already open is ended first
     /// ([`Document::end_gesture`]).
     pub fn begin_gesture(&mut self, label: impl Into<String>) {
@@ -432,6 +452,26 @@ impl Document {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_restated_root_stays_clean_and_saved_and_is_no_step() {
+        use crate::edits::{ProjectProp, set_project_prop};
+        let mut doc = Document::new(Project::new("Clean"));
+        doc.mark_saved();
+        doc.restate_root(|p| set_project_prop(p, ProjectProp::Name("Restated".into())))
+            .unwrap();
+        assert_eq!(doc.project().name, "Restated");
+        assert!(!doc.is_dirty());
+        assert!(doc.undo_label().is_none());
+        doc.apply("rename", |p| {
+            set_project_prop(p, ProjectProp::Name("Edited".into()))
+        })
+        .unwrap();
+        assert!(doc.is_dirty());
+        doc.undo();
+        assert_eq!(doc.project().name, "Restated");
+        assert!(!doc.is_dirty(), "undo returns to the restated saved root");
+    }
+
     use super::*;
 
     fn rename(name: &str) -> impl Fn(&Project) -> Result<Project, EditError> + '_ {
