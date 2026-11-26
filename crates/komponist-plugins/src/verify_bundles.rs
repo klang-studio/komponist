@@ -143,6 +143,7 @@ fn smoke_live_manager(
             asset_links: Default::default(),
             state: None,
             sidechain: None,
+            preset: None,
         })
     };
     let device = resolve_device(path, DeviceId(1))?;

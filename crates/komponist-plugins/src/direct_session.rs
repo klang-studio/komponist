@@ -241,6 +241,10 @@ impl DirectSession {
         Some(result)
     }
 
+    pub(crate) fn take_preset_reports(&mut self) -> Vec<komponist_ipc::clap_presets::PresetReport> {
+        self.host.take_preset_reports()
+    }
+
     pub(crate) fn set_param(&mut self, id: u32, value: f64) -> bool {
         self.control
             .push(Control {

@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use std::ptr;
 use std::sync::{Arc, OnceLock};
 
-use komponist_device_core::pinned_clap_state::{self, FACTORY_PRESET_FIELD};
+use komponist_device_core::pinned_clap_state;
 use komponist_native_clap_sdk::clap_abi::{
     ext::{preset_load::*, state::*},
     factory::{plugin_factory::*, preset_discovery::*},
@@ -67,13 +67,11 @@ impl<T: DeviceDefinition> FactoryPresets for T {
                 )
             })
             .collect();
-        let fields = [(
-            FACTORY_PRESET_FIELD.into(),
-            serde_json::json!(key).to_string().into(),
-        )]
-        .into_iter()
-        .collect();
-        Some(pinned_clap_state::encode(T::VERSION, params, fields))
+        Some(pinned_clap_state::encode(
+            T::VERSION,
+            params,
+            Default::default(),
+        ))
     }
 }
 

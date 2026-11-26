@@ -140,11 +140,19 @@ pub enum PluginManagerEvent {
         request: u64,
         result: Result<Option<SavedPluginState>, edit_state::Rejected>,
     },
-    /// A preset has been applied and captured in project state format.
+    /// A preset the host requested has been applied and captured in project state format.
     ClapPresetLoaded {
         device: DeviceId,
+        /// The discovered preset that was loaded; `None` for user preset state.
+        source: Option<ClapPresetSource>,
         previous_state: Arc<[u8]>,
         state: Arc<[u8]>,
+    },
+    /// The plugin loaded a preset on its own and reported it through CLAP preset-load. Its
+    /// new state follows as a [`PluginManagerEvent::StateSnapshot`].
+    ClapPresetReported {
+        device: DeviceId,
+        source: ClapPresetSource,
     },
     /// Opaque user preset data from the active CLAP instance.
     ClapPresetCaptured {
@@ -911,6 +919,7 @@ impl PluginManager {
                 PluginManagerEvent::StateSnapshot { device: old, .. }
                     | PluginManagerEvent::WaveformMarkersEdited { device: old, .. }
                 | PluginManagerEvent::ClapPresetLoaded { device: old, .. }
+                | PluginManagerEvent::ClapPresetReported { device: old, .. }
                 | PluginManagerEvent::ClapPresetFailed { device: old, .. }
                 | PluginManagerEvent::ClapPresetCaptured { device: old, .. }
                 | PluginManagerEvent::AssetEditPrepared { device: old, .. }
@@ -1537,7 +1546,8 @@ impl PluginManager {
             return false;
         }
         self.pending.retain(|event| {
-            !matches!(event, PluginManagerEvent::ClapPresetLoaded { device: loaded, .. } if *loaded == device)
+            !matches!(event, PluginManagerEvent::ClapPresetLoaded { device: loaded, .. }
+                | PluginManagerEvent::ClapPresetReported { device: loaded, .. } if *loaded == device)
         });
         for event in &mut self.pending {
             if let PluginManagerEvent::WaveformMarkersEdited {
@@ -1552,15 +1562,6 @@ impl PluginManager {
             }
         }
         true
-    }
-
-    /// The factory preset represented by the current saved state, if known.
-    pub fn saved_preset(&self, device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
-        let layout = self.native_layout(device.id);
-        crate::presets::saved_preset(device, self.verified_bundle(device.id), presets, |id| {
-            let wire = layout?.author_ids()?.get(id)?;
-            self.param_base(device.id, *wire)
-        })
     }
 
     /// Presets discovered for the exact bundle of a running CLAP instance.
@@ -2201,6 +2202,7 @@ mod tests {
             },
             PluginManagerEvent::ClapPresetLoaded {
                 device,
+                source: None,
                 previous_state: Arc::from([2]),
                 state: Arc::from([3]),
             },
@@ -2244,6 +2246,7 @@ mod tests {
             asset_links: Default::default(),
             state: Some(Arc::from([2])),
             sidechain: None,
+            preset: None,
         };
         let other = DeviceId(2);
         let other_snapshot = PluginManagerEvent::StateSnapshot {
@@ -2350,6 +2353,7 @@ mod tests {
             asset_links: Default::default(),
             state: None,
             sidechain: None,
+            preset: None,
         };
         let setup = ProcessorSetup {
             sample_rate: 48_000.0,

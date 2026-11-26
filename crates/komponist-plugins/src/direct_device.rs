@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use komponist_hosting::host_loop::notification_bits;
 use komponist_hosting::{HostedPlugin, HostingError};
-use komponist_ipc::clap_presets::PresetLoad;
+use komponist_ipc::clap_presets::{PresetLoad, PresetReport};
 use komponist_ipc::control::{MAX_STATE_PARAMETER_BASES, param_flags};
 use komponist_ipc::native_layout::NativeLayout;
 use komponist_ipc::waveform_markers::{EditResult, EditStatus, Request};
@@ -661,9 +661,27 @@ impl DirectDevice {
             }
             None => {}
         }
+        self.report_presets(id, events);
         if observed.has(notification_bits::STATE_DIRTY) {
             self.user_edit = true;
             self.snapshot_due = Some(Instant::now() + self.debounce);
+        }
+    }
+
+    /// Preset loads the plugin reported on its own (CLAP preset-load): the selection for the
+    /// app and a snapshot of the state the plugin loaded.
+    fn report_presets(&mut self, device: DeviceId, events: &mut Vec<PluginManagerEvent>) {
+        for report in self.session.take_preset_reports() {
+            match report {
+                PresetReport::Loaded(source) => {
+                    self.user_edit = true;
+                    self.snapshot_due = Some(Instant::now() + self.debounce);
+                    events.push(PluginManagerEvent::ClapPresetReported { device, source });
+                }
+                PresetReport::Failed { message, .. } => {
+                    events.push(PluginManagerEvent::ClapPresetFailed { device, message });
+                }
+            }
         }
     }
 
@@ -776,7 +794,10 @@ impl DirectDevice {
             };
             result
         };
-        self.pending_preset = None;
+        let source = match self.pending_preset.take() {
+            Some((PresetLoad::Discovered(preset), _)) => Some(preset.source),
+            _ => None,
+        };
         self.assets.finish_restore();
         match result {
             Ok(((before, after), inventory)) => {
@@ -791,6 +812,7 @@ impl DirectDevice {
                 Self::report_metadata(device, events);
                 events.push(PluginManagerEvent::ClapPresetLoaded {
                     device,
+                    source,
                     previous_state: before.into(),
                     state,
                 });

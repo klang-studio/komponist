@@ -96,6 +96,11 @@ impl DirectClap {
         self.plugin.device_display()
     }
 
+    /// Host-side data only: the plugin is not called, so processing need not stop.
+    pub(crate) fn take_preset_reports(&mut self) -> Vec<komponist_ipc::clap_presets::PresetReport> {
+        self.plugin.take_preset_reports()
+    }
+
     pub(crate) fn asset_slots(&self) -> (Option<Snapshot>, bool, bool, bool) {
         (
             self.plugin.asset_slots(),

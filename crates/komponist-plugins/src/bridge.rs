@@ -42,7 +42,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak, mpsc};
 use std::time::{Duration, Instant};
 
-use komponist_ipc::clap_presets::PresetLoad;
+use komponist_ipc::clap_presets::{ClapPresetSource, PresetLoad, PresetReport};
 use komponist_ipc::control::{AppliedClapPreset, PROTOCOL_VERSION, StateRestoreError, socket_pair};
 use komponist_ipc::device_assets::{MAX_BINDINGS_BYTES, OfflineRequest, Snapshot, edit_state};
 use komponist_ipc::waveform_markers::{self, EditResult, EditStatus};
@@ -285,7 +285,8 @@ pub(crate) struct Bridge {
     /// `GetState` requests without answer, in send order.
     state_requests: VecDeque<StateRequest>,
     state_restores: VecDeque<StateRestore>,
-    pending_clap_preset: Option<u32>,
+    /// The request of a preset load and the discovered source it loads (`None`: user state).
+    pending_clap_preset: Option<(u32, Option<ClapPresetSource>)>,
     pending_preset_capture: Option<PresetCapture>,
     /// A preset changed audio while a newer document restore was queued.
     superseded_preset_applied: bool,
@@ -1256,7 +1257,11 @@ impl Bridge {
         self.assets.begin_restore();
         self.asset_offline_waiting = None;
         let request = self.seq();
-        self.pending_clap_preset = Some(request);
+        let source = match &preset {
+            PresetLoad::Discovered(preset) => Some(preset.source.clone()),
+            PresetLoad::UserState(_) => None,
+        };
+        self.pending_clap_preset = Some((request, source));
         self.state_restores.push_back(StateRestore::new(request));
         self.long_call_since.get_or_insert_with(Instant::now);
         self.send(ControlMsg::LoadClapPreset(request, preset));
@@ -1838,6 +1843,23 @@ impl Bridge {
             }
             BridgeMsg::LatencyChanged(latency) => self.update_latency(latency, events),
             BridgeMsg::RestartRequested => {}
+            BridgeMsg::PresetReported(report) => {
+                if self.phase == Phase::Running {
+                    match report {
+                        PresetReport::Loaded(source) => {
+                            // The plugin changed its own state: the snapshot follows the report.
+                            self.user_changed();
+                            self.plugin_state_dirty = true;
+                            self.invalidate_state_requests();
+                            self.snapshot_soon();
+                            events.push(PluginManagerEvent::ClapPresetReported { device, source });
+                        }
+                        PresetReport::Failed { message, .. } => {
+                            events.push(PluginManagerEvent::ClapPresetFailed { device, message });
+                        }
+                    }
+                }
+            }
             BridgeMsg::StateDirty => {
                 // While loading, "dirty" comes from the plugin itself, not from the user.
                 if self.phase == Phase::Running {
@@ -2033,10 +2055,12 @@ impl Bridge {
         result: Result<AppliedClapPreset, String>,
         events: &mut Vec<PluginManagerEvent>,
     ) {
-        if self.pending_clap_preset != Some(request) {
+        let Some((_, source)) = self
+            .pending_clap_preset
+            .take_if(|(pending, _)| *pending == request)
+        else {
             return;
-        }
-        self.pending_clap_preset = None;
+        };
         self.clear_completed_long_call();
         let device = self.device;
         match result {
@@ -2061,6 +2085,7 @@ impl Bridge {
                     self.last_state = Some(state.clone().into());
                     events.push(PluginManagerEvent::ClapPresetLoaded {
                         device,
+                        source,
                         previous_state: applied.previous_state.into(),
                         state,
                     });

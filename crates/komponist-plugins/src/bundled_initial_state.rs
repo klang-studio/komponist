@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use komponist_hosting::HostedPlugin;
 
-use komponist_ipc::clap_presets::ClapPresetLocation;
+use komponist_ipc::clap_presets::{ClapPresetLocation, DevicePreset};
 use komponist_ipc::device_assets::{AssetStatus, Binding, Bindings};
 use komponist_ipc::waveform_markers::{Edit, EditStatus, Request};
 use komponist_ipc::{PluginKind, WireEvent, WireEventKind};
@@ -36,6 +36,8 @@ pub struct InitialDevice {
     pub plugin: PluginRef,
     pub role: DeviceRole,
     pub state: Option<Arc<[u8]>>,
+    /// The factory preset the state was loaded from; modified when edits followed it.
+    pub preset: Option<DevicePreset>,
     pub targets: BTreeMap<String, (ParamId, f32)>,
 }
 
@@ -50,6 +52,7 @@ impl InitialDevice {
             asset_links: Default::default(),
             parameter_bases: Default::default(),
             sidechain: None,
+            preset: self.preset,
         }
     }
 }
@@ -169,6 +172,10 @@ pub(crate) fn prepare(
                 plugin: reference,
                 role,
                 state: Some(state.into()),
+                preset: preset.as_ref().map(|preset| DevicePreset {
+                    source: preset.source.clone(),
+                    modified: !edits.is_empty(),
+                }),
                 targets,
             })
         })
