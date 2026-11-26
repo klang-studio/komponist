@@ -706,6 +706,50 @@ fn preset_undo_preserves_a_preceding_live_edit_without_a_snapshot() {
 }
 
 #[test]
+fn the_preset_a_plugin_starts_in_is_no_step_and_never_replaces_a_recorded_one() {
+    let (mut app, script) = app();
+    let surge = device(&app, "Surge XT");
+    let selection = |app: &App| app.project().find_device(surge).unwrap().2.preset.clone();
+    let source = |key: &[u8]| ClapPresetSource {
+        location: ClapPresetLocation::Plugin,
+        load_key: Some(key.to_vec()),
+    };
+    let start = |key: &[u8]| PluginManagerEvent::ClapPresetReported {
+        device: surge,
+        source: source(key),
+        startup: true,
+    };
+    let undo = app.doc().undo_label().map(str::to_owned);
+    assert_eq!(selection(&app), None);
+
+    // Without a recorded preset, the start preset becomes the selection outside the history.
+    push(&script, start(b"Init"));
+    app.step();
+    assert_eq!(selection(&app), Some(DevicePreset::loaded(source(b"Init"))));
+    assert_eq!(
+        app.doc().undo_label().map(str::to_owned),
+        undo,
+        "no undo step"
+    );
+
+    // A recorded preset and its mark stay: a restart reports the preset it starts in again.
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device: surge,
+        id: 3,
+        value: 0.5,
+    }));
+    let modified = DevicePreset {
+        source: source(b"Init"),
+        modified: true,
+    };
+    assert_eq!(selection(&app), Some(modified.clone()));
+    push(&script, start(b"Init"));
+    push(&script, start(b"Other"));
+    app.step();
+    assert_eq!(selection(&app), Some(modified));
+}
+
+#[test]
 fn a_reported_preset_and_its_snapshot_are_one_step_and_an_edit_marks_it_modified() {
     let (mut app, script) = app();
     let surge = device(&app, "Surge XT");
@@ -722,6 +766,7 @@ fn a_reported_preset_and_its_snapshot_are_one_step_and_an_edit_marks_it_modified
     let report = PluginManagerEvent::ClapPresetReported {
         device: surge,
         source: source.clone(),
+        startup: false,
     };
     push(&script, report.clone());
     app.step();

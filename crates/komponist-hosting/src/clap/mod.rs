@@ -537,16 +537,17 @@ impl HostedPlugin for ClapPlugin {
                         .is_some_and(|ports| ports.count(&handle, false) != 0),
             )
         };
-        let stopped = instance
-            .activate(
-                |_, _| (),
-                PluginAudioConfiguration {
-                    sample_rate: config.sample_rate,
-                    min_frames_count: config.min_frames,
-                    max_frames_count: config.max_frames,
-                },
-            )
-            .map_err(|e| HostingError::Activate(e.to_string()))?;
+        instance.access_handler(|host| host.set_activating(true));
+        let activated = instance.activate(
+            |_, _| (),
+            PluginAudioConfiguration {
+                sample_rate: config.sample_rate,
+                min_frames_count: config.min_frames,
+                max_frames_count: config.max_frames,
+            },
+        );
+        instance.access_handler(|host| host.set_activating(false));
+        let stopped = activated.map_err(|e| HostingError::Activate(e.to_string()))?;
         let mut processor = ClapProcessor::new(
             stopped,
             &inputs,

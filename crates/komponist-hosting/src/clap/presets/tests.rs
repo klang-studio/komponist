@@ -375,7 +375,10 @@ fn community_clap_discovers_loads_and_round_trips_a_preset() {
     plugin.on_main_thread();
     assert_eq!(
         plugin.take_preset_reports(),
-        [PresetReport::Loaded(preset.source.clone())]
+        [PresetReport::Loaded {
+            source: preset.source.clone(),
+            startup: false,
+        }]
     );
     assert_eq!(plugin.take_preset_reports(), []);
     assert_eq!(plugin.save_state().unwrap(), [42]);

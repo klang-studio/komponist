@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::marker::PhantomData;
 use std::ptr;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use komponist_device_core::pinned_clap_state;
 use komponist_native_clap_sdk::clap_abi::{
@@ -12,7 +12,7 @@ use komponist_native_clap_sdk::clap_abi::{
     factory::{plugin_factory::*, preset_discovery::*},
     host::clap_host,
     plugin::{clap_plugin, clap_plugin_descriptor},
-    stream::clap_istream,
+    stream::{clap_istream, clap_ostream},
     universal_plugin_id::clap_universal_plugin_id,
     version::CLAP_VERSION,
 };
@@ -141,7 +141,10 @@ impl<T: FactoryPresets, P: ClapPlugin> PresetEntry<T, P> {
         };
         instance.retain_background_worker(&self.workers);
         // SAFETY: The nice-plug destroy callback owns the retained Arc and releases it.
-        unsafe { (*Arc::into_raw(instance)).clap_plugin.as_ptr() }
+        let plugin = unsafe { (*Arc::into_raw(instance)).clap_plugin.as_ptr() };
+        // SAFETY: The host has not received the instance yet, so nothing calls it concurrently.
+        unsafe { start_report::install::<T>(plugin, host) };
+        plugin
     }
 
     pub fn provider(&self, index: u32) -> *const clap_preset_discovery_provider_descriptor {
@@ -463,4 +466,204 @@ pub mod abi {
         plugin::{clap_plugin, clap_plugin_descriptor},
         version::CLAP_VERSION,
     };
+}
+
+/// The start preset: an instance that holds a factory preset when it is first activated (a fresh
+/// instance in the preset it starts with, such as Hexa's "Init", or a restored state equal to a
+/// preset) reports it through the host side of standard `clap.preset-load`, as any CLAP plug-in
+/// may. The host decides what a report at startup means for a device that already records one.
+mod start_report {
+    use super::*;
+
+    type Activate = unsafe extern "C" fn(*const clap_plugin, f64, u32, u32) -> bool;
+    type Destroy = unsafe extern "C" fn(*const clap_plugin);
+
+    /// What the wrapped callbacks need, per live instance (keyed by its `clap_plugin` address).
+    struct Instance {
+        plugin: usize,
+        host: usize,
+        activate: Activate,
+        destroy: Destroy,
+        reported: bool,
+    }
+
+    static INSTANCES: Mutex<Vec<Instance>> = Mutex::new(Vec::new());
+
+    fn instances() -> std::sync::MutexGuard<'static, Vec<Instance>> {
+        INSTANCES.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Wraps the instance's `activate` and `destroy` callbacks.
+    ///
+    /// # Safety
+    /// `plugin` is a live instance the host has not received yet; `host` stays live with it.
+    pub(super) unsafe fn install<T: FactoryPresets>(
+        plugin: *mut clap_plugin,
+        host: *const clap_host,
+    ) {
+        // SAFETY: Guaranteed by the caller.
+        let table = unsafe { &mut *plugin };
+        let (Some(activate), Some(destroy)) = (table.activate, table.destroy) else {
+            return;
+        };
+        let mut instances = instances();
+        instances.retain(|instance| instance.plugin != plugin as usize);
+        instances.push(Instance {
+            plugin: plugin as usize,
+            host: host as usize,
+            activate,
+            destroy,
+            reported: false,
+        });
+        table.activate = Some(activate_and_report::<T>);
+        table.destroy = Some(destroy_and_forget);
+    }
+
+    unsafe extern "C" fn activate_and_report<T: FactoryPresets>(
+        plugin: *const clap_plugin,
+        sample_rate: f64,
+        min_frames: u32,
+        max_frames: u32,
+    ) -> bool {
+        let Some((activate, host, first)) = instances()
+            .iter_mut()
+            .find(|instance| instance.plugin == plugin as usize)
+            .map(|instance| {
+                let first = !std::mem::replace(&mut instance.reported, true);
+                (instance.activate, instance.host, first)
+            })
+        else {
+            return false;
+        };
+        // SAFETY: The host calls this on the main thread with a live instance.
+        let activated = unsafe { activate(plugin, sample_rate, min_frames, max_frames) };
+        if activated && first {
+            // SAFETY: The instance and its host are live on the main thread.
+            if let Some(key) = unsafe { held_preset::<T>(plugin) } {
+                // SAFETY: As above; the host outlives its instances.
+                unsafe { report_loaded(host as *const clap_host, &key) };
+            }
+        }
+        activated
+    }
+
+    unsafe extern "C" fn destroy_and_forget(plugin: *const clap_plugin) {
+        let destroy = {
+            let mut instances = instances();
+            let Some(index) = instances
+                .iter()
+                .position(|instance| instance.plugin == plugin as usize)
+            else {
+                return;
+            };
+            instances.swap_remove(index).destroy
+        };
+        // SAFETY: The host destroys each live instance exactly once.
+        unsafe { destroy(plugin) };
+    }
+
+    /// The factory preset whose state the instance holds, if any.
+    ///
+    /// # Safety
+    /// `plugin` is a live instance on the main thread.
+    unsafe fn held_preset<T: FactoryPresets>(plugin: *const clap_plugin) -> Option<CString> {
+        // SAFETY: Guaranteed by the caller; the extension ID requests the standard state table.
+        let table = unsafe {
+            ((*plugin).get_extension?)(plugin, CLAP_EXT_STATE.as_ptr())
+                .cast::<clap_plugin_state>()
+                .as_ref()
+        }?;
+        let mut bytes = Vec::new();
+        let output = clap_ostream {
+            ctx: ptr::from_mut(&mut bytes).cast(),
+            write: Some(write),
+        };
+        // SAFETY: The output stream and its buffer stay live through the synchronous call.
+        if !unsafe { (table.save?)(plugin, &output) } {
+            return None;
+        }
+        let held = pinned_clap_state::decode(&bytes)?;
+        T::metadata().find_map(|preset| {
+            let state = pinned_clap_state::decode(&T::state(&preset.key)?)?;
+            same_state(&held, &state)
+                .then(|| CString::new(preset.key.into_owned()).ok())
+                .flatten()
+        })
+    }
+
+    /// Equal persisted parameters and fields. Numbers compare within single-precision rounding,
+    /// and fields that hold JSON documents compare as documents, so a device may persist its
+    /// own data in any key order or precision.
+    fn same_state(held: &serde_json::Value, preset: &serde_json::Value) -> bool {
+        held.get("params").is_some()
+            && same_value(held.get("params"), preset.get("params"))
+            && same_value(held.get("fields"), preset.get("fields"))
+    }
+
+    fn same_value(a: Option<&serde_json::Value>, b: Option<&serde_json::Value>) -> bool {
+        use serde_json::Value;
+        match (a, b) {
+            (None, None) => true,
+            (Some(Value::Number(x)), Some(Value::Number(y))) => match (x.as_f64(), y.as_f64()) {
+                (Some(x), Some(y)) => (x - y).abs() <= 1e-6 * x.abs().max(y.abs()).max(1.0),
+                _ => x == y,
+            },
+            (Some(Value::Object(x)), Some(Value::Object(y))) => {
+                x.len() == y.len()
+                    && x.iter()
+                        .all(|(key, value)| same_value(Some(value), y.get(key)))
+            }
+            (Some(Value::Array(x)), Some(Value::Array(y))) => {
+                x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same_value(Some(x), Some(y)))
+            }
+            (Some(Value::String(x)), Some(Value::String(y))) => {
+                x == y
+                    || match (
+                        serde_json::from_str::<Value>(x),
+                        serde_json::from_str::<Value>(y),
+                    ) {
+                        (Ok(x @ (Value::Object(_) | Value::Array(_))), Ok(y)) => {
+                            same_value(Some(&x), Some(&y))
+                        }
+                        _ => false,
+                    }
+            }
+            (a, b) => a == b,
+        }
+    }
+
+    /// `clap_host_preset_load.loaded` for an embedded preset.
+    ///
+    /// # Safety
+    /// `host` is live and this runs on the main thread.
+    unsafe fn report_loaded(host: *const clap_host, key: &CStr) {
+        // SAFETY: Guaranteed by the caller; the ID requests the standard host table.
+        unsafe {
+            let Some(query) = (*host).get_extension else {
+                return;
+            };
+            let table = query(host, CLAP_EXT_PRESET_LOAD.as_ptr()).cast::<clap_host_preset_load>();
+            if let Some(loaded) = table.as_ref().and_then(|table| table.loaded) {
+                loaded(
+                    host,
+                    CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
+                    ptr::null(),
+                    key.as_ptr(),
+                );
+            }
+        }
+    }
+
+    unsafe extern "C" fn write(
+        stream: *const clap_ostream,
+        input: *const c_void,
+        count: u64,
+    ) -> i64 {
+        // SAFETY: The stream is the one `held_preset` created, with a live buffer.
+        let bytes = unsafe { &mut *(*stream).ctx.cast::<Vec<u8>>() };
+        let count = usize::try_from(count).unwrap_or(usize::MAX);
+        // SAFETY: The plugin passes `count` readable bytes.
+        bytes.extend_from_slice(unsafe { std::slice::from_raw_parts(input.cast::<u8>(), count) });
+        count as i64
+    }
 }

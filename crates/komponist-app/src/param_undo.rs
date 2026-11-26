@@ -40,7 +40,8 @@
 //! - **Loaded preset:** the device keeps the preset it last loaded through CLAP preset-load
 //!   ([`komponist_model::Device::preset`]). A load the host requested enters the document with its
 //!   state as one step; a load the plugin reports itself is a step of its own that the plugin's
-//!   following snapshot amends. The first parameter edit after a load (card, text entry, the
+//!   following snapshot amends. The preset a plugin reports while it starts is no step: a device
+//!   without a recorded preset takes it in the current root only; a recorded one stays. The first parameter edit after a load (card, text entry, the
 //!   plugin's GUI) marks the preset as modified at once: inside the open gesture, or as the edit's
 //!   step, which the plugin's snapshot of the edit then amends like after a gesture. Undo takes
 //!   the mark back with the edit.
@@ -703,6 +704,25 @@ impl App {
                 "undo-load-preset",
                 Some(preset),
             );
+        }
+    }
+
+    /// The preset a plugin reports while it starts: what it holds, not a change. A device whose
+    /// document records no preset (fresh, or saved without one) takes it outside the history; a
+    /// recorded preset and its mark stay as saved.
+    pub(crate) fn record_start_preset(&mut self, device: DeviceId, source: &ClapPresetSource) {
+        if self
+            .project()
+            .find_device(device)
+            .is_none_or(|(_, _, target)| target.preset.is_some())
+        {
+            return;
+        }
+        let preset = DevicePreset::loaded(source.clone());
+        if let Err(error) = self.doc.apply_untracked_to_root(|project| {
+            edits::set_device_preset(project, device, Some(preset))
+        }) {
+            self.record_edit_error(error);
         }
     }
 

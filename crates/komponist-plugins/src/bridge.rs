@@ -1844,15 +1844,21 @@ impl Bridge {
             BridgeMsg::LatencyChanged(latency) => self.update_latency(latency, events),
             BridgeMsg::RestartRequested => {}
             BridgeMsg::PresetReported(report) => {
-                if self.phase == Phase::Running {
+                if matches!(self.phase, Phase::Loading | Phase::Running) {
                     match report {
-                        PresetReport::Loaded(source) => {
-                            // The plugin changed its own state: the snapshot follows the report.
-                            self.user_changed();
-                            self.plugin_state_dirty = true;
-                            self.invalidate_state_requests();
-                            self.snapshot_soon();
-                            events.push(PluginManagerEvent::ClapPresetReported { device, source });
+                        PresetReport::Loaded { source, startup } => {
+                            if !startup {
+                                // The plugin changed its own state: the snapshot follows.
+                                self.user_changed();
+                                self.plugin_state_dirty = true;
+                                self.invalidate_state_requests();
+                                self.snapshot_soon();
+                            }
+                            events.push(PluginManagerEvent::ClapPresetReported {
+                                device,
+                                source,
+                                startup,
+                            });
                         }
                         PresetReport::Failed { message, .. } => {
                             events.push(PluginManagerEvent::ClapPresetFailed { device, message });

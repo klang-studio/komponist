@@ -673,10 +673,17 @@ impl DirectDevice {
     fn report_presets(&mut self, device: DeviceId, events: &mut Vec<PluginManagerEvent>) {
         for report in self.session.take_preset_reports() {
             match report {
-                PresetReport::Loaded(source) => {
-                    self.user_edit = true;
-                    self.snapshot_due = Some(Instant::now() + self.debounce);
-                    events.push(PluginManagerEvent::ClapPresetReported { device, source });
+                PresetReport::Loaded { source, startup } => {
+                    if !startup {
+                        // The plugin changed its own state: the snapshot follows.
+                        self.user_edit = true;
+                        self.snapshot_due = Some(Instant::now() + self.debounce);
+                    }
+                    events.push(PluginManagerEvent::ClapPresetReported {
+                        device,
+                        source,
+                        startup,
+                    });
                 }
                 PresetReport::Failed { message, .. } => {
                     events.push(PluginManagerEvent::ClapPresetFailed { device, message });

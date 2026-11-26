@@ -153,6 +153,9 @@ pub enum PluginManagerEvent {
     ClapPresetReported {
         device: DeviceId,
         source: ClapPresetSource,
+        /// Reported while the host activated the instance: the preset it starts in, not a
+        /// change.
+        startup: bool,
     },
     /// Opaque user preset data from the active CLAP instance.
     ClapPresetCaptured {

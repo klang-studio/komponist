@@ -1065,9 +1065,16 @@ impl App {
                 self.record_clap_preset(*device, source.as_ref(), previous_state, state);
                 self.frame_preset_finished(*device, true);
             }
-            PluginManagerEvent::ClapPresetReported { device, source } => {
-                self.record_reported_preset(*device, source);
-            }
+            PluginManagerEvent::ClapPresetReported {
+                device,
+                source,
+                startup: true,
+            } => self.record_start_preset(*device, source),
+            PluginManagerEvent::ClapPresetReported {
+                device,
+                source,
+                startup: false,
+            } => self.record_reported_preset(*device, source),
             PluginManagerEvent::ClapPresetCaptured { device, result } => {
                 self.user_preset_captured(*device, result);
             }

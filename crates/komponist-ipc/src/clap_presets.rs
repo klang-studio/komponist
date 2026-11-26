@@ -47,8 +47,12 @@ pub enum PresetLoad {
 /// outside a load the host requested (its own browser, a program change).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PresetReport {
-    /// `clap_host_preset_load.loaded`: the plug-in loaded this preset.
-    Loaded(ClapPresetSource),
+    /// `clap_host_preset_load.loaded`: the plug-in loaded this preset. `startup`: reported while
+    /// the instance was being activated, so it names the preset the instance starts in.
+    Loaded {
+        source: ClapPresetSource,
+        startup: bool,
+    },
     /// `clap_host_preset_load.on_error`: loading this preset failed.
     Failed {
         source: ClapPresetSource,

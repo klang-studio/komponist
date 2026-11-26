@@ -193,6 +193,8 @@ pub(crate) struct MainThreadHost<'a> {
     #[cfg(unix)]
     fds: RefCell<Vec<RawFd>>,
     preset_reports: RefCell<Vec<PresetReport>>,
+    /// Set while the host activates the plugin: a preset reported then is its start preset.
+    activating: Cell<bool>,
 }
 
 impl<'a> MainThreadHost<'a> {
@@ -204,7 +206,13 @@ impl<'a> MainThreadHost<'a> {
             #[cfg(unix)]
             fds: RefCell::new(Vec::new()),
             preset_reports: RefCell::new(Vec::new()),
+            activating: Cell::new(false),
         }
+    }
+
+    /// Brackets the host's `activate` call ([`Self::loaded`] reports then are start presets).
+    pub(crate) fn set_activating(&self, activating: bool) {
+        self.activating.set(activating);
     }
 
     /// The preset loads and failures the plugin reported since the last call, in order.
@@ -455,7 +463,10 @@ impl HostPresetLoadImpl for MainThreadHost<'_> {
     }
 
     fn loaded(&self, location: Location, load_key: Option<&CStr>) {
-        self.report_preset(PresetReport::Loaded(preset_source(location, load_key)));
+        self.report_preset(PresetReport::Loaded {
+            source: preset_source(location, load_key),
+            startup: self.activating.get(),
+        });
     }
 }
 

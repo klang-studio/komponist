@@ -103,6 +103,7 @@ struct instance {
     _Atomic double values[PARAM_COUNT];
     _Atomic float rendered_gain;
     bool hide_mode;
+    bool activated;
     atomic_int pending_program;
     const clap_host_t *host;
 };
@@ -327,10 +328,21 @@ static void CLAP_ABI plugin_destroy(const clap_plugin_t *plugin) {
     free(instance(plugin));
 }
 
+static void report_loaded(struct instance *self, const char *key);
+
+/* The program variant starts in `Program Init` (the default values) and says so when it is first
+ * activated, unless a restored state holds other values. */
 static bool CLAP_ABI plugin_activate(const clap_plugin_t *plugin, double rate,
                                     uint32_t min_frames, uint32_t max_frames) {
-    (void)plugin;
-    return isfinite(rate) && rate > 0 && min_frames > 0 && min_frames <= max_frames;
+    if (!isfinite(rate) || rate <= 0 || min_frames == 0 || min_frames > max_frames)
+        return false;
+    struct instance *self = instance(plugin);
+    if (self->variant == PROGRAM && !self->activated &&
+        self->values[GAIN] == parameter_info[GAIN].default_value &&
+        self->values[MODE] == parameter_info[MODE].default_value)
+        report_loaded(self, "fixture-init");
+    self->activated = true;
+    return true;
 }
 
 static void CLAP_ABI no_op(const clap_plugin_t *plugin) {
@@ -425,6 +437,9 @@ static bool apply_preset(struct instance *self, const char *key) {
     } else if (self->variant == PROGRAM && strcmp(key, "fixture-calm") == 0) {
         self->values[GAIN] = 0.25;
         self->values[MODE] = 1.0;
+    } else if (self->variant == PROGRAM && strcmp(key, "fixture-init") == 0) {
+        self->values[GAIN] = parameter_info[GAIN].default_value;
+        self->values[MODE] = parameter_info[MODE].default_value;
     } else {
         return false;
     }
@@ -439,6 +454,13 @@ static bool CLAP_ABI load_factory_preset(const clap_plugin_t *plugin, uint32_t k
     if (kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || location || !key)
         return false;
     return apply_preset(instance(plugin), key);
+}
+
+static void report_loaded(struct instance *self, const char *key) {
+    const clap_host_preset_load_t *host_presets =
+        self->host->get_extension(self->host, CLAP_EXT_PRESET_LOAD);
+    if (host_presets && host_presets->loaded)
+        host_presets->loaded(self->host, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, NULL, key);
 }
 
 /* A Program change loads the preset the plug-in way: on the main thread, reported to the host. */
@@ -456,8 +478,7 @@ static void CLAP_ABI plugin_on_main_thread(const clap_plugin_t *plugin) {
                                    "unknown fixture preset");
         return;
     }
-    if (host_presets && host_presets->loaded)
-        host_presets->loaded(self->host, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, NULL, key);
+    report_loaded(self, key);
     const clap_host_state_t *host_state = self->host->get_extension(self->host, CLAP_EXT_STATE);
     if (host_state)
         host_state->mark_dirty(self->host);
@@ -593,6 +614,10 @@ static bool CLAP_ABI preset_provider_metadata(const clap_preset_discovery_provid
         return false;
     receiver->add_plugin_id(receiver, &program);
     receiver->add_extra_info(receiver, "org.klang-studio.komponist.preset-name.de", "Testruhe");
+    if (!receiver->begin_preset(receiver, "Program Init", "fixture-init"))
+        return false;
+    receiver->add_plugin_id(receiver, &program);
+    receiver->add_extra_info(receiver, "org.klang-studio.komponist.preset-name.de", "Programmstart");
     return true;
 }
 

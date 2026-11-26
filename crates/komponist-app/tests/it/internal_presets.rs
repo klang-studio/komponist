@@ -17,7 +17,8 @@ use komponist_model::params::ParamId;
 use komponist_model::{DeviceId, Project, TrackId};
 
 use crate::common::{
-    author_base, set_authored_param as set_param, shipped_plugin, step_until, wait_for_layout,
+    author_base, set_authored_param as set_param, shipped_plugin, step_for, step_until,
+    wait_for_layout,
 };
 use komponist_ipc::clap_presets::ClapPreset;
 
@@ -320,6 +321,83 @@ fn the_dropdown_shows_the_loaded_preset_and_a_star_after_an_edit_until_undo() {
             .as_deref(),
         Some(label.as_str())
     );
+}
+
+#[test]
+fn a_fresh_device_shows_the_preset_it_starts_in_without_an_undo_step() {
+    let (mut app, track, _) = app_with("delay");
+    let hexa = app
+        .project()
+        .track(track)
+        .unwrap()
+        .channel
+        .instrument()
+        .unwrap()
+        .1
+        .id;
+    let undo = app.doc().undo_label().map(str::to_owned);
+    step_until(&mut app, "Hexa's start preset", |app| {
+        loaded(app, hexa) == Some(("Init", false))
+    });
+    assert_eq!(
+        app.doc().undo_label().map(str::to_owned),
+        undo,
+        "no undo step"
+    );
+}
+
+#[test]
+fn a_saved_modified_preset_reopens_with_its_mark_not_the_start_preset() {
+    use komponist_model::edits::{self, NewTrack};
+
+    const HEXA: &str = "org.klang-studio.komponist.hexa";
+    let host = App::headless_plugin_host();
+    let prepare = |preset| {
+        host.manager()
+            .prepare_bundled_device(HEXA, preset, &[], &[])
+            .unwrap()
+    };
+    // Edited back to the values of Init after loading E-Piano.
+    let (epiano, init) = (prepare(Some("E-Piano")), prepare(None));
+    let mut preset = epiano.preset.clone().expect("the prepared preset");
+    preset.modified = true;
+    let (project, track) = edits::add_track(
+        &Project::new("Presets"),
+        NewTrack {
+            name: None,
+            hue: None,
+            instrument: Some(epiano.plugin.clone()),
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let device = project
+        .track(track)
+        .unwrap()
+        .channel
+        .instrument()
+        .unwrap()
+        .1
+        .id;
+    let project = edits::set_device_state(&project, device, init.state.clone()).unwrap();
+    let project = edits::set_device_preset(&project, device, Some(preset)).unwrap();
+    let serialized = komponist_model::persist::to_json(&project).unwrap();
+
+    let mut app = App::headless(komponist_model::persist::from_json(&serialized).unwrap());
+    let mut seen = step_until(&mut app, "the reopened Hexa", |app| {
+        app.engine().host().status(device) == komponist_plugins::DeviceStatus::Ok
+    });
+    seen.extend(step_for(&mut app, std::time::Duration::from_millis(300)));
+    assert!(
+        seen.iter().any(|event| matches!(
+            event,
+            komponist_plugins::PluginManagerEvent::ClapPresetReported { startup: true, .. }
+        )),
+        "Hexa reports Init at startup: {seen:?}"
+    );
+    assert_eq!(loaded(&app, device), Some(("E-Piano", true)));
+    assert!(app.doc().undo_label().is_none());
 }
 
 #[test]

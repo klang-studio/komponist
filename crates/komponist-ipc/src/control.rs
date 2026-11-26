@@ -2143,12 +2143,13 @@ mod tests {
                 }),
             ),
             BridgeMsg::ClapPresetApplied(10, Err("preset refused".into())),
-            BridgeMsg::PresetReported(crate::clap_presets::PresetReport::Loaded(
-                crate::clap_presets::ClapPresetSource {
+            BridgeMsg::PresetReported(crate::clap_presets::PresetReport::Loaded {
+                source: crate::clap_presets::ClapPresetSource {
                     location: crate::clap_presets::ClapPresetLocation::File("/p.fxp".into()),
                     load_key: Some(vec![0xff, 42]),
                 },
-            )),
+                startup: true,
+            }),
             BridgeMsg::PresetReported(crate::clap_presets::PresetReport::Failed {
                 source: crate::clap_presets::ClapPresetSource {
                     location: crate::clap_presets::ClapPresetLocation::Plugin,

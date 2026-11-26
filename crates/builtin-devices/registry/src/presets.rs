@@ -79,7 +79,7 @@ pub fn legacy_state(
 /// The preset an in-binary reference device's own state names, and whether it was edited. These
 /// devices (`PluginFormat::Builtin`, the test host until #294) have no CLAP preset-load; every
 /// CLAP device, bundled or not, uses the selection the host recorded instead.
-pub fn legacy_selection(device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
+pub fn reference_selection(device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
     let (source, changed) = match BuiltinKind::from_plugin(&device.plugin)? {
         BuiltinKind::Hexa => {
             let patch = komponist_hexa::decode_state(device.state.as_deref())

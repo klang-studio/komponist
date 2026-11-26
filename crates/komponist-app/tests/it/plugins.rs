@@ -605,7 +605,11 @@ fn standalone_clap_preset_selection_follows_loads_reports_and_saving() {
             .source
             .clone()
     };
-    assert_eq!(shown(&app), None, "no preset was loaded");
+    // The plugin reports the preset it starts in: the selection, without an undo step.
+    step_until(&mut app, "the start preset", |app| {
+        shown(app) == shows("Programmstart", false)
+    });
+    assert_eq!(app.doc().undo_label(), None);
 
     // A load the host requests.
     let boost = source(&app, "Program Boost");
@@ -674,24 +678,55 @@ fn standalone_clap_preset_selection_follows_loads_reports_and_saving() {
     app.dispatch(Action::Edit(EditAction::Undo));
     assert_eq!(shown(&app), shows("Testruhe", false));
 
-    // Saving and reopening keeps the selection with the device.
+    // Saving and reopening keeps the selection with the device, and its mark: the values of the
+    // start preset make the plugin report it at startup, which must not replace the record.
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device,
+        id: 42,
+        value: 0.5,
+    }));
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device,
+        id: 7,
+        value: 0.0,
+    }));
+    assert_eq!(shown(&app), shows("Testruhe", true));
+    step_until(
+        &mut app,
+        "the start preset's values in the document",
+        |app| {
+            let state = app.project().find_device(device).unwrap().2.state.clone();
+            state.as_deref().is_some_and(|state| {
+                state.get(..16)
+                    == Some(&[0.5_f64.to_ne_bytes(), 0.0_f64.to_ne_bytes()].concat()[..])
+            })
+        },
+    );
     app.dispatch(Action::Project(ProjectAction::Save));
     let saved = persist::from_json(&std::fs::read_to_string(&file).unwrap()).unwrap();
     let preset = saved.find_device(device).unwrap().2.preset.clone();
     assert_eq!(
         preset.map(|preset| (preset.source, preset.modified)),
-        Some((calm, false))
+        Some((calm, true))
     );
     app.shutdown();
 
     let mut reopened = app_with(Project::new("Empty"), PluginHost::new(config(&dir)));
     reopened.dispatch(Action::Project(ProjectAction::OpenPath(file)));
     reopened.engine_mut().host_mut().start_scan(&dirs);
-    step_until(&mut reopened, "the reopened selection", |app| {
+    let mut seen = step_until(&mut reopened, "the reopened device", |app| {
         app.engine().host().status(device) == DeviceStatus::Ok
-            && shown(app) == shows("Testruhe", false)
     });
-    assert_eq!(reopened.engine().host().param_base(device, 42), Some(0.25));
+    seen.extend(step_for(&mut reopened, Duration::from_millis(300)));
+    assert!(
+        seen.iter().any(|event| matches!(
+            event,
+            PluginManagerEvent::ClapPresetReported { startup: true, .. }
+        )),
+        "the plugin reports its start preset: {seen:?}"
+    );
+    assert_eq!(shown(&reopened), shows("Testruhe", true));
+    assert_eq!(reopened.engine().host().param_base(device, 42), Some(0.5));
     reopened.shutdown();
 }
 
