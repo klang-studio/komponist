@@ -199,17 +199,6 @@ mod tests {
         assert!(p.tracks.is_empty());
     }
 
-    fn packaged(id: &str, name: &str) -> PluginRef {
-        PluginRef {
-            format: komponist_model::PluginFormat::Clap,
-            id: id.into(),
-            name: name.into(),
-            vendor: "klang-studio".into(),
-            version: "0.1.0".into(),
-            module: format!("bundled-clap/{name}.clap").into(),
-        }
-    }
-
     #[test]
     fn the_template_needs_the_packaged_instruments() {
         assert_eq!(template_instruments(&Catalog::builtin()), None);
@@ -218,8 +207,9 @@ mod tests {
 
     #[test]
     fn the_template_has_a_sampler_beat_and_two_hexa_tracks() {
-        let drums = packaged(TEMPLATE_DRUMS, "Sampler");
-        let hexa = packaged(TEMPLATE_SYNTH, "Hexa");
+        let host = crate::app::App::headless_plugin_host();
+        let (drums, hexa) =
+            template_instruments(crate::device_host::DeviceHost::catalog(&host)).unwrap();
         let p = template(Lang::De, drums.clone(), hexa.clone());
         assert_eq!(p.name, "Beat-Skizze");
         assert_eq!(template(Lang::En, drums, hexa).name, "Beat Sketch");

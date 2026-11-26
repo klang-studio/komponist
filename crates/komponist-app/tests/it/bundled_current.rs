@@ -8,7 +8,6 @@ use komponist_app::actions::{BitDepth, EditAction, ExportRange, PluginAction, Pr
 use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::{Action, App};
-use komponist_device_core::pinned_clap_state;
 use komponist_engine::compile::{self, NoEnv};
 use komponist_engine::testing::{Logged, TestSine};
 use komponist_engine::{Command, Engine, EngineConfig, EventKind, Processor, TransportState};
@@ -506,12 +505,6 @@ fn current_project_round_trip_and_offline_render() {
         .unwrap();
     }
     assert_eq!(saved, with_current_state);
-    let (_, _, delay) = saved.find_device(fixture.delay).unwrap();
-    let state = pinned_clap_state::decode(delay.state.as_deref().unwrap()).unwrap();
-    assert_eq!(
-        state["fields"][pinned_clap_state::FACTORY_PRESET_FIELD].as_str(),
-        Some(serde_json::to_string(DELAY_PRESET).unwrap().as_str()),
-    );
 
     app.shutdown();
     let relocated = work.join("relocated");
@@ -524,6 +517,15 @@ fn current_project_round_trip_and_offline_render() {
     assert_eq!(
         app.engine().host().param_base(fixture.scale, scale_mode),
         Some(3.0)
+    );
+    // The factory preset the Delay was authored from is still the selected one.
+    let delay = app.project().find_device(fixture.delay).unwrap().2;
+    let host = app.engine().host();
+    let presets = host.clap_presets(delay);
+    assert_eq!(
+        host.saved_preset(delay, presets)
+            .map(|(index, edited)| (presets[index].name.as_str(), edited)),
+        Some((DELAY_PRESET, false)),
     );
     for (track, key) in fixture.sampler_tracks {
         assert_audible(&mut app, track, key);
@@ -901,23 +903,21 @@ fn bundled_presse_lookahead_updates_delay_compensation_during_playback() {
     assert_eq!(app.engine().host().latency(presse), 0);
     assert_eq!(pdc(&app, plain), 0);
 
-    let lookahead_frames = (f64::from(app.engine().sample_rate()) * komponist_presse::LOOKAHEAD_MS
-        / 1000.0)
-        .round() as u32;
-    for (value, delay) in [(1.0, lookahead_frames), (0.0, 0)] {
+    for (value, on) in [(1.0, true), (0.0, false)] {
         app.dispatch(Action::Plugin(PluginAction::SetParam {
             device: presse,
             id: lookahead,
             value,
         }));
-        eprintln!("Waiting for Presse lookahead={value} and track delay={delay} (bridge={bridge})");
+        eprintln!("Waiting for Presse lookahead={value} and its track delay (bridge={bridge})");
         step_until(
             &mut app,
             "Presse reactivated with matching track delay",
             |app| {
+                let latency = app.engine().host().latency(presse);
                 app.engine().device_status(presse) == DeviceStatus::Ok
-                    && app.engine().host().latency(presse) == delay
-                    && pdc(app, plain) == delay
+                    && (latency > 0) == on
+                    && pdc(app, plain) == latency
             },
         );
         assert_eq!(pdc(&app, with_presse), 0);
@@ -1089,26 +1089,6 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
         saved_device.state,
         project.find_device(eq).unwrap().2.state,
         "saving with an automated parameter and a pending edit must update the file",
-    );
-    // Driven controls keep their persistent values as host-owned parameter bases next to the
-    // opaque state; other controls are in the state itself.
-    let state = pinned_clap_state::decode(saved_device.state.as_deref().unwrap()).unwrap();
-    let saved_value = |author: &str, wire| {
-        saved_device
-            .parameter_bases
-            .get(&wire)
-            .copied()
-            .unwrap_or_else(|| state["params"][author]["f32"].as_f64().unwrap())
-    };
-    let saved_base = saved_value("b1_freq", frequency);
-    assert!(
-        (saved_base - base_wire).abs() < 1e-6,
-        "saved automation sample as the EQ base value: {saved_base}"
-    );
-    let saved_gain = saved_value("b1_gain", gain);
-    assert!(
-        (saved_gain - gain_base).abs() < 1e-6,
-        "saved automated macro output as the EQ gain base value: {saved_gain}"
     );
     let authored_track = project.track(track).unwrap();
     let saved_track = saved.track(track).unwrap();

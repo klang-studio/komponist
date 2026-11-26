@@ -4,31 +4,25 @@
 //! The app runs on the null backend in real time. A double-click into the empty lane makes the
 //! step clip whose rows are the sampler's pads (named after the kit's files), clicks on the steps
 //! build the beat, Space plays: the document holds the pattern, the engine's transport runs and
-//! the track's meter shows signal. The sampler runs in process, so no bridge or installed plugin
-//! is needed.
+//! the track's meter shows signal. The sampler is the shipped bundle, scanned as a fixture.
 
 use crate::acceptance_support;
 use crate::common;
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use acceptance_support::{click_at, double_click, harness, key};
-use common::{PATIENCE, app_with, config, scratch, step_for, step_until};
+use common::{PATIENCE, app_with, scratch, step_for, step_until};
 use egui::Key;
 use egui::accesskit::Role;
 use egui::pos2;
 use egui_kittest::kittest::Queryable as _;
-use komponist_app::device_host::PluginHost;
 use komponist_audiofile::fixtures as testkit;
-use komponist_builtin::Internal;
 use komponist_engine::TransportState;
 use komponist_i18n::de;
-use komponist_model::edits::{self, NewTrack};
-use komponist_model::project::DEFAULT_PROJECT_NAME;
-use komponist_model::{ClipContent, Project, Tick};
+use komponist_ipc::device_assets::AssetStatus;
+use komponist_model::{ClipContent, Tick};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
-use komponist_sampler::{SampleLink, links};
 
 const BAR: i64 = 3840;
 
@@ -44,32 +38,6 @@ const BEAT: [(usize, usize); 8] = [
     (4, 14),
 ];
 
-/// An empty project with one sampler track whose pads hold the synthesized kit (links into
-/// `dir`).
-fn project_with_kit(dir: &std::path::Path) -> Project {
-    let spec = NewTrack {
-        name: None,
-        hue: None,
-        instrument: Some(Internal::Sampler.plugin_ref()),
-        index: None,
-        arm_exclusive: false,
-    };
-    let (mut p, _) = edits::add_track(&Project::new(DEFAULT_PROJECT_NAME), spec).unwrap();
-    let kit = testkit::write_kit(dir).unwrap();
-    let mut state: Option<Vec<u8>> = None;
-    for (pad, path) in kit.iter().enumerate() {
-        state = Some(links::write(
-            state.as_deref(),
-            pad,
-            Some(&SampleLink::new(path, None)),
-        ));
-    }
-    let track = Arc::make_mut(&mut p.tracks[0]);
-    let device = Arc::make_mut(&mut track.channel.devices[0]);
-    device.state = state.map(Arc::from);
-    p
-}
-
 fn x_of(h: &egui_kittest::Harness<'_, komponist_app::App>, tick: Tick) -> f32 {
     let ruler = h
         .get_all_by_role_and_label(Role::Slider, de::A11Y_RULER)
@@ -83,13 +51,22 @@ fn x_of(h: &egui_kittest::Harness<'_, komponist_app::App>, tick: Tick) -> f32 {
 #[test]
 fn a_drum_beat_built_in_the_step_sequencer_plays() {
     let dir = scratch("flow3");
-    let project = project_with_kit(&dir);
+    let Some((project, host)) = common::authored_project(&dir, true) else {
+        return;
+    };
     let track = project.tracks[0].id;
     let device = project.tracks[0].channel.devices[0].id;
-    let host = PluginHost::with_reference_devices(config(&dir));
     let mut app = app_with(project, host);
-    step_until(&mut app, "the instrument is loaded", |a| {
-        a.engine().device_status(device) == DeviceStatus::Ok
+    step_until(&mut app, "the instrument and its kit are loaded", |a| {
+        let host = a.engine().host();
+        host.status(device) == DeviceStatus::Ok
+            && host.asset_slots(device).is_some_and(|assets| {
+                assets.slots.len() == testkit::NAMES.len()
+                    && assets
+                        .slots
+                        .iter()
+                        .all(|slot| slot.status == AssetStatus::Ready)
+            })
     });
     let mut h = harness(app);
 

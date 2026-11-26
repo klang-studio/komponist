@@ -9,26 +9,31 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::{PATIENCE, app_with, config, native_fixture, scratch, step_until};
+use common::{PATIENCE, app_with, authored_project, scratch, step_until};
 use egui::accesskit::Role;
 use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange, TransportAction};
-use komponist_app::device_host::{DeviceHost as _, PluginHost};
+use komponist_app::device_host::PluginHost;
 use komponist_app::ui_state::{DockTab, StepCursor};
 use komponist_app::{Action, App, PluginAction, ProjectAction, UiAction};
 use komponist_audiofile::fixtures as testkit;
 use komponist_audiofile::{FilePool, PeakState};
-use komponist_builtin::Internal;
 use komponist_i18n::Lang;
 use komponist_ipc::device_assets::AssetStatus;
 use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack, StepRowSpec};
 use komponist_model::plugin_assets::AssetLink;
-use komponist_model::project::DEFAULT_PROJECT_NAME;
 use komponist_model::{DeviceId, Project, Tick, TickRange, TrackId, persist};
 use komponist_plugins::DeviceStatus;
-use komponist_sampler::{SampleLink, links, note_of_pad};
+
+/// The first of the sampler bundle's eight pad notes. `show_authored_pads` checks it against the
+/// bundle's own pad bank.
+const FIRST_PAD_NOTE: u8 = 36;
+
+fn note_of_pad(pad: usize) -> u8 {
+    FIRST_PAD_NOTE + pad as u8
+}
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
@@ -87,58 +92,6 @@ fn click(h: &mut Harness<'_, App>, pos: Pos2) {
     h.run_steps(3);
 }
 
-/// A project with one sampler track; `kit` links the synthesized kit in `dir` to the pads.
-fn project(dir: &Path, kit: bool) -> Project {
-    let spec = NewTrack {
-        name: Some("Drums".into()),
-        hue: None,
-        instrument: Some(Internal::Sampler.plugin_ref()),
-        index: None,
-        arm_exclusive: false,
-    };
-    let (mut p, _) = edits::add_track(&Project::new(DEFAULT_PROJECT_NAME), spec).unwrap();
-    if kit {
-        let files = testkit::write_kit(dir).unwrap();
-        let mut state: Option<Vec<u8>> = None;
-        for (pad, path) in files.iter().enumerate() {
-            state = Some(links::write(
-                state.as_deref(),
-                pad,
-                Some(&SampleLink::new(path, None)),
-            ));
-        }
-        let track = Arc::make_mut(&mut p.tracks[0]);
-        Arc::make_mut(&mut track.channel.devices[0]).state = state.map(Arc::from);
-    }
-    p
-}
-
-fn authored_project(dir: &Path, kit: bool) -> Option<(Project, PluginHost)> {
-    let (host, plugin) = native_fixture(dir, "klopfer.clap", "org.klang-studio.komponist.sampler")?;
-    let (mut project, _) = edits::add_track(
-        &Project::new(DEFAULT_PROJECT_NAME),
-        NewTrack {
-            name: Some("Drums".into()),
-            hue: None,
-            instrument: Some(plugin),
-            index: None,
-            arm_exclusive: false,
-        },
-    )
-    .unwrap();
-    if kit {
-        let device = project.tracks[0].channel.devices[0].id;
-        let links = testkit::write_kit(dir)
-            .unwrap()
-            .into_iter()
-            .enumerate()
-            .map(|(pad, file)| (pad as u32, AssetLink::new(&file, None)))
-            .collect();
-        project = edits::set_device_asset_links(&project, device, links).unwrap();
-    }
-    Some((project, host))
-}
-
 fn authored_app(dir: &Path, kit: bool) -> Option<App> {
     let (project, host) = authored_project(dir, kit)?;
     let mut app = app_with(project, host);
@@ -169,6 +122,15 @@ fn show_authored_pads(app: &mut App, kit: bool) {
             })
     });
     let host = app.engine().host();
+    let layout = host.native_layout(device).unwrap();
+    let bank = layout.pad_bank.as_ref().unwrap();
+    assert!(
+        bank.pads
+            .iter()
+            .enumerate()
+            .all(|(pad, p)| p.note == note_of_pad(pad)),
+        "the sampler bundle's pad notes"
+    );
     assert!(host.verified_bundle(device).is_none());
     assert!(host.bridge_pid(device).is_some());
 }
@@ -647,13 +609,19 @@ fn collect_and_save_also_copies_the_files_of_audio_clips() {
     );
 }
 
-fn step_clip_project(dir: &Path) -> (Project, komponist_model::ClipId) {
-    let p = project(dir, true);
-    let rows = komponist_app::step_rows::rows_for(
-        Some(&Internal::Sampler.plugin_ref()),
-        &komponist_app::device_host::pad_note_names(&[]),
-    );
-    add_step_clip(p, rows)
+/// The kit's sampler as an external fixture, with a step clip of one row per pad.
+fn step_clip_project(dir: &Path) -> Option<(Project, PluginHost, komponist_model::ClipId)> {
+    let (project, host) = authored_project(dir, true)?;
+    let rows = testkit::NAMES
+        .iter()
+        .enumerate()
+        .map(|(pad, &name)| StepRowSpec {
+            name: name.into(),
+            note: note_of_pad(pad),
+        })
+        .collect();
+    let (project, clip) = add_step_clip(project, rows);
+    Some((project, host, clip))
 }
 
 fn add_step_clip(p: Project, rows: Vec<StepRowSpec>) -> (Project, komponist_model::ClipId) {
@@ -823,7 +791,6 @@ fn pad_folgt_eingang_selects_the_pad_a_note_hit() {
 /// The rate of the kit's files: the render runs at it, so the samples play without resampling and
 /// the onsets compare 1:1.
 const RATE: u32 = testkit::RATE;
-const BAR: i64 = 3840;
 /// Ticks per 1/16 step.
 const STEP: i64 = 240;
 
@@ -840,79 +807,34 @@ const BEAT: [(usize, usize); 8] = [
     (7, 14),
 ];
 
-struct Env<'a>(&'a PluginHost);
-
-impl komponist_engine::compile::CompileEnv for Env<'_> {
-    fn midi_port(&self, _device_name: &str) -> Option<komponist_engine::MidiPort> {
-        None
-    }
-
-    fn device_latency(&self, device: DeviceId) -> u32 {
-        self.0.latency(device)
-    }
-}
-
-/// Renders `project` (one sampler track) for bar 1 plus a tail through the export pipeline at
-/// [`RATE`]; returns the mono mix and the first frame of each 1/16 step.
-fn render(project: &Project, dir: &Path) -> (Vec<f32>, Vec<usize>) {
-    use komponist_engine::compile;
-    use komponist_engine::export::{BitDepth, ExportJob, export};
-    use komponist_engine::{Command, Engine, EngineConfig};
-    use komponist_plugins::ProcessorSetup;
-    let mut host = PluginHost::with_reference_devices(config(dir));
-    host.set_project_dir(None);
-    let (mut engine, mut handle) = Engine::new(EngineConfig {
-        sample_rate: RATE as f32,
-        max_block: komponist_engine::MAX_BLOCK,
-        seed: 1,
-    });
-    let program = compile::build(project, None, &Env(&host));
-    let device = project.tracks[0].channel.devices[0].clone();
-    let setup = ProcessorSetup {
-        sample_rate: RATE as f32,
-        max_block: komponist_engine::MAX_BLOCK,
-    };
-    for (id, slot) in compile::slot_changes(None, &program).added {
-        assert_eq!(id, device.id);
-        let processor = host.create_processor(&device, setup).expect("the sampler");
-        handle
-            .send(Command::InsertProcessor { slot, processor })
-            .expect("command queue");
-    }
-    handle
-        .send(Command::SetProgram(Box::new(program.clone())))
-        .expect("command queue");
-    // The export waits until the samples are in (the device is `Loading` until then).
-    let sampler = host.sampler(device.id).expect("a sampler").clone();
-    assert!(sampler.wait_idle(Duration::from_secs(5)));
-    host.poll();
-    assert_eq!(host.status(device.id), komponist_plugins::DeviceStatus::Ok);
-    engine.render(256);
-    while handle.poll().is_some() {}
-
-    let map = &program.tempo_map;
-    let job = ExportJob {
-        path: dir.join("beat.wav"),
-        sample_rate: RATE,
-        range: ExportJob::frames_of(map, TickRange::new(Tick::ZERO, Tick(BAR)), RATE),
-        tail: ExportJob::tail_frames(0.5, RATE),
-        bit_depth: BitDepth::Float32,
-        normalize: None,
-        dither: false,
-    };
-    export(
-        &mut engine,
-        &mut handle,
-        &program,
-        &job,
-        &std::sync::atomic::AtomicBool::new(false),
-        |_| {},
-    )
-    .expect("export");
-    let mut wav = hound::WavReader::open(&job.path).expect("wav");
-    assert_eq!((wav.spec().sample_rate, wav.spec().channels), (RATE, 2));
-    let samples: Vec<f32> = wav.samples::<f32>().map(Result::unwrap).collect();
+/// Renders `project` (one sampler track) through the app's export at [`RATE`]; returns the mono
+/// mix and the first frame of each 1/16 step.
+fn render(project: Project, host: PluginHost, dir: &Path) -> (Vec<f32>, Vec<usize>) {
+    use komponist_app::actions::{ExportRange, ExportSettings};
+    use komponist_engine::export::ExportJob;
+    let mut app = app_with(project, host);
+    show_authored_pads(&mut app, true);
+    app.dispatch(Action::Project(ProjectAction::StartExport(
+        ExportSettings {
+            range: ExportRange::Song,
+            sample_rate: RATE,
+            tail_seconds: 0.5,
+            normalize: false,
+            file_name: "beat.wav".into(),
+            ..komponist_app::settings::default_export("Beat", dir.join("out"))
+        },
+    )));
+    step_until(&mut app, "end of the export", |app| !app.is_exporting());
+    let mut wav = hound::WavReader::open(dir.join("out").join("beat.wav")).expect("wav");
+    let spec = wav.spec();
+    assert_eq!((spec.sample_rate, spec.channels), (RATE, 2));
+    let scale = (1_i64 << (spec.bits_per_sample - 1)) as f32;
+    let samples: Vec<f32> = wav
+        .samples::<i32>()
+        .map(|sample| sample.unwrap() as f32 / scale)
+        .collect();
     let mono = samples.chunks(2).map(|f| (f[0] + f[1]) / 2.0).collect();
+    let map = &app.engine().program().expect("a program").tempo_map;
     let steps = (0..16)
         .map(|s| {
             let ticks = TickRange::new(Tick::ZERO, Tick(s * STEP));
@@ -943,12 +865,14 @@ fn correlate(audio: &[f32], at: usize, sample: &[f32]) -> (f32, i64) {
 #[test]
 fn an_offline_render_plays_the_expected_pad_exactly_on_its_step() {
     let dir = scratch("sampler-render");
-    let (mut project, clip) = step_clip_project(&dir);
+    let Some((mut project, host, clip)) = step_clip_project(&dir) else {
+        return;
+    };
     // The beat: one hit per step in `BEAT`.
     for (row, step) in BEAT {
         project = edits::set_step(&project, clip, row, step, edits::StepProp::On(true)).unwrap();
     }
-    let (audio, steps) = render(&project, &dir);
+    let (audio, steps) = render(project, host, &dir);
     let kit = testkit::kit();
     for (step, &frame) in steps.iter().enumerate() {
         let Some(&(row, _)) = BEAT.iter().find(|&&(_, s)| s == step) else {

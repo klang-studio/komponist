@@ -812,9 +812,9 @@ mod tests {
         }
     }
 
-    /// hexa, the sampler and the plugins of S01/S05.
+    /// The scanned plugins of S01/S05.
     fn catalog() -> Catalog {
-        let mut c = Catalog::builtin();
+        let mut c = Catalog::default();
         c.set_scanned(&[
             descriptor(
                 "surge",
@@ -919,36 +919,13 @@ mod tests {
             .filter(|r| r.kind == RowKind::Section)
             .map(|r| r.name.as_str())
             .collect();
-        assert_eq!(
-            sections,
-            [
-                "Favoriten",
-                "Instrumente",
-                "Effekte",
-                "MIDI-Effekte",
-                "Presets · Hexa",
-                "Projekt"
-            ]
-        );
+        assert_eq!(sections, ["Instrumente", "Effekte", "Projekt"]);
         let n = names_of(&rows);
-        assert_eq!(
-            &n[..9],
-            [
-                "Favoriten",
-                "Hexa",
-                "Klopfer",
-                "Instrumente",
-                "Hexa",
-                "Klopfer",
-                "Volt",
-                "Surf",
-                "Sampler"
-            ]
-        );
-        assert_eq!(rows[1].tag, "INTERN");
+        assert_eq!(&n[..2], ["Instrumente", "Surge XT"]);
+        assert_eq!(rows[1].tag, "CLAP");
         // Category folders with counts, collapsed; the uncategorised effect after them.
         let eq = rows.iter().find(|r| r.name == "EQ und Filter").unwrap();
-        assert_eq!(eq.tag, "2", "the internal EQ and LSP Para EQ");
+        assert_eq!(eq.tag, "1", "LSP Para EQ");
         assert!(matches!(
             eq.kind,
             RowKind::Folder {
@@ -957,12 +934,11 @@ mod tests {
             }
         ));
         let hall = rows.iter().find(|r| r.name == "Hall und Delay").unwrap();
-        assert_eq!(hall.tag, "5", "Delay and Hall (INTERN) and three scanned");
+        assert_eq!(hall.tag, "3", "three scanned");
         assert!(n.contains(&"kp-test-fx"));
         assert!(!n.contains(&"Dragonfly Hall Reverb"));
         // Projekt: Takes and Exporte folders.
         assert_eq!(&n[n.len() - 2..], ["Takes", "Exporte"]);
-        assert!(n.contains(&"Tasten"), "hexa categories as folders");
     }
 
     #[test]
@@ -980,17 +956,15 @@ mod tests {
             .position(|r| r.name == "Hall und Delay")
             .unwrap();
         assert_eq!(
-            names_of(&rows[i + 1..i + 6]),
+            names_of(&rows[i + 1..i + 4]),
             [
-                "Delay",
-                "Hall",
                 "Dragonfly Hall Reverb",
                 "Dragonfly Plate Reverb",
                 "LSP Delay"
             ]
         );
-        assert!(rows[i + 1..i + 6].iter().all(|r| r.level == 1));
-        assert_eq!(rows[i + 1].tag, "INTERN");
+        assert!(rows[i + 1..i + 4].iter().all(|r| r.level == 1));
+        assert_eq!(rows[i + 1].tag, "CLAP");
         assert_eq!(rows.last().unwrap().name, de::BROWSER_NO_EXPORTS);
     }
 
@@ -1019,9 +993,9 @@ mod tests {
             [
                 "Effekte",
                 "EQ und Filter",
-                "EQ",
                 "LSP Para EQ x8",
-                "Dynamik"
+                "Dynamik",
+                "LSP Compressor"
             ]
         );
         assert_eq!(fx[1].kind, RowKind::Plain);
@@ -1085,24 +1059,22 @@ mod tests {
             Lang::De,
             &input(&c, &f, &collapsed, &p, BrowserSegment::Effects, "hall"),
         );
-        assert_eq!(rows[0].name, "2 Treffer für „hall“");
-        assert_eq!(names_of(&rows[1..3]), ["Hall", "Dragonfly Hall Reverb"]);
+        assert_eq!(rows[0].name, "1 Treffer für „hall“");
+        assert_eq!(names_of(&rows[1..2]), ["Dragonfly Hall Reverb"]);
         let k = rows
             .iter()
             .position(|r| r.name == "Kategorie Hall und Delay")
             .unwrap();
         assert_eq!(
             names_of(&rows[k + 1..]),
-            ["Delay", "Dragonfly Plate Reverb", "LSP Delay"]
+            ["Dragonfly Plate Reverb", "LSP Delay"]
         );
         assert_eq!(effective_highlight(&rows, None, "hall"), Some(1));
         assert_eq!(effective_highlight(&rows, Some(k + 1), "hall"), Some(k + 1));
         assert_eq!(effective_highlight(&rows, Some(0), ""), None, "a section");
-        // Instruments: no categories, but presets.
+        // Instruments: no categories, and no hit without a preset provider.
         let rows = rows_for(&c, &f, &p, BrowserSegment::All, "glocke");
         assert_eq!(rows[0].name, "0 Treffer für „glocke“");
-        assert!(rows.iter().any(|r| r.name == "Presets mit „glocke“"));
-        assert!(rows.iter().any(|r| r.name.ends_with(" · Hexa")));
     }
 
     fn rows_for(
@@ -1148,7 +1120,7 @@ mod tests {
 
     #[test]
     fn bundled_and_external_clap_rows_with_the_same_id_have_separate_identity() {
-        let mut c = Catalog::builtin();
+        let mut c = Catalog::default();
         c.set_scanned(&[descriptor(
             "org.klang-studio.komponist.hall",
             "Hall",

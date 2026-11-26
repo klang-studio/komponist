@@ -17,7 +17,7 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{BitDepth, ExportRange, ExportSettings};
-use komponist_app::device_host::{BuiltinHost, DeviceHost, is_hexa};
+use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost};
 use komponist_app::dialogs::export::{self as view};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::{self, Settings};
@@ -62,9 +62,10 @@ fn snapshot_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots")
 }
 
-/// The demo "Night Drive" with hexa for every instrument and no effects, so that everything
-/// sounds on the builtin host and no device is missing.
+/// The demo "Night Drive" with the shipped Hexa for every instrument and no effects, so that
+/// everything sounds on the packaged host and no device is missing.
 fn hexa_demo() -> Project {
+    let hexa = crate::common::shipped(&App::headless_plugin_host(), "hexa");
     let mut p = demo_project();
     for track in &mut p.tracks {
         let track = Arc::make_mut(track);
@@ -73,11 +74,9 @@ fn hexa_demo() -> Project {
             .devices
             .retain(|d| d.role == DeviceRole::Instrument);
         for device in &mut track.channel.devices {
-            if !is_hexa(device) {
-                let device = Arc::make_mut(device);
-                device.plugin = komponist_app::app::hexa_ref();
-                device.state = None;
-            }
+            let device = Arc::make_mut(device);
+            device.plugin = hexa.clone();
+            device.state = None;
         }
     }
     p
@@ -95,6 +94,11 @@ fn one_bar_song() -> Project {
         }
     }
     p
+}
+
+/// The shipped Presse.
+fn presse() -> PluginRef {
+    crate::common::shipped(&App::headless_plugin_host(), "presse")
 }
 
 /// An effect device for `plugin` at the end of the first track's chain.
@@ -138,7 +142,7 @@ fn settings_path(dir: &Path) -> PathBuf {
 }
 
 pub(crate) fn app_in(dir: &Path, project: Project) -> (App, Opened) {
-    app_with(dir, project, Box::new(BuiltinHost::new()))
+    app_with(dir, project, Box::new(App::headless_plugin_host()))
 }
 
 /// Export settings into `dir/out`: the defaults, `range`, "Night Drive.wav".
@@ -562,15 +566,13 @@ fn the_export_is_aligned_with_the_song_despite_the_project_latency() {
     };
     // The same song with a presse on one track: once without lookahead (no latency), once with
     // its 3 ms lookahead (144 frames at 48 kHz) that the delay compensation puts on every path.
-    let presse = komponist_builtin::Internal::Presse;
-    let lookahead = presse.wire(&komponist_model::params::ParamId::new("lookahead"));
     let mut files = Vec::new();
     for (name, on) in [("plain.wav", false), ("lookahead.wav", true)] {
-        let (project, device) = with_effect(one_bar_song(), presse.plugin_ref());
+        let (project, device) = with_effect(one_bar_song(), presse());
         let (mut app, _) = app_in(&dir, project);
-        app.step();
+        crate::common::wait_for_layout(&mut app, device);
         if on {
-            let id = lookahead.expect("known parameter");
+            let id = crate::common::author_parameter(&app, device, "lookahead");
             app.dispatch(Action::Plugin(komponist_app::PluginAction::SetParam {
                 device,
                 id,
@@ -611,11 +613,9 @@ struct Pair {
 fn latency_pair(name: &str, pair: Pair) -> (Wav, Wav) {
     use komponist_model::edits::NewBus;
     let dir = scratch(name);
-    let presse = komponist_builtin::Internal::Presse;
-    let lookahead = presse.wire(&komponist_model::params::ParamId::new("lookahead"));
     let mut files = Vec::new();
     for (file, on) in [("plain.wav", false), ("lookahead.wav", true)] {
-        let (mut project, device) = with_effect(one_bar_song(), presse.plugin_ref());
+        let (mut project, device) = with_effect(one_bar_song(), presse());
         let presse_track = project.tracks[1].id;
         if pair.routed {
             project = edits::add_bus(&project, NewBus::effect(vec![presse_track]))
@@ -630,9 +630,9 @@ fn latency_pair(name: &str, pair: Pair) -> (Wav, Wav) {
             }
         }
         let (mut app, _) = app_in(&dir, project);
-        app.step();
+        crate::common::wait_for_layout(&mut app, device);
         if on {
-            let id = lookahead.expect("known parameter");
+            let id = crate::common::author_parameter(&app, device, "lookahead");
             app.dispatch(Action::Plugin(komponist_app::PluginAction::SetParam {
                 device,
                 id,
@@ -834,9 +834,9 @@ fn run_until(h: &mut Harness<'_, App>, what: &str, mut done: impl FnMut(&App) ->
 #[test]
 fn missing_devices_are_listed_and_the_export_goes_on_without_them_or_not_at_all() {
     let dir = scratch("missing");
-    // The plain demo on the builtin host: Surge XT, Dexed, Vital and the third-party effects are
-    // missing (the Sampler and hexa run in process).
-    let mut project = demo_project();
+    // The demo on the packaged host: Surge XT, Dexed, Vital and the third-party effects are
+    // missing (the Sampler and Hexa are the shipped ones).
+    let mut project = crate::common::song_with_shipped_instruments(&App::headless_plugin_host());
     project.loop_range = TickRange::new(Tick(8 * BAR), Tick(8 * BAR + BAR / 2));
     let (app, _) = app_in(&dir, project);
     let mut h = harness(app);
@@ -875,10 +875,10 @@ fn missing_devices_are_listed_and_the_export_goes_on_without_them_or_not_at_all(
     assert!(peak_db(&wav.samples) > -40.0);
 }
 
-/// hexa through [`BuiltinHost`]; a device with plugin id "kaputt" gets a processor that
+/// The packaged host; a device with plugin id "kaputt" gets a processor that
 /// fails as soon as it renders offline (a bridge that dies during the export).
 struct FailingHost {
-    builtin: BuiltinHost,
+    builtin: PluginHost,
     /// The latest global render mode (for the panic test).
     mode: Arc<Mutex<Option<RenderMode>>>,
 }
@@ -1038,7 +1038,7 @@ fn a_device_that_drops_out_of_the_render_is_named() {
     };
     let (project, _) = with_effect(project, kaputt);
     let host = FailingHost {
-        builtin: BuiltinHost::new(),
+        builtin: App::headless_plugin_host(),
         mode: Arc::default(),
     };
     let (mut app, _) = app_with(&dir, project, Box::new(host));
@@ -1087,7 +1087,7 @@ fn a_panic_on_the_export_worker_leaves_a_playing_session() {
         let (project, _) = with_effect(project, panik);
         let mode = Arc::new(Mutex::new(None));
         let host = FailingHost {
-            builtin: BuiltinHost::new(),
+            builtin: App::headless_plugin_host(),
             mode: Arc::clone(&mode),
         };
         let (app, _) = app_with(&dir, project, Box::new(host));

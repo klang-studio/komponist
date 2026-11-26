@@ -10,8 +10,6 @@ use komponist_app::actions::PluginAction;
 use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::{Action, App, ProjectAction};
-use komponist_builtin::Internal;
-use komponist_device_core::pinned_clap_state;
 use komponist_engine::Command;
 use komponist_general_sampler as general_sampler;
 use komponist_ipc::device_assets::AssetStatus;
@@ -24,6 +22,45 @@ use crate::acceptance_support::harness;
 use crate::common::{NULL_BUFFER, PATIENCE, app_with, config, step_for, step_until};
 
 const SAMPLE_FRAMES: u32 = 8192;
+
+/// The first of the Sampler bundle's eight pad notes (the pad bank's own `note` fields).
+const FIRST_PAD_NOTE: u8 = 36;
+
+fn note_of_pad(pad: usize) -> u8 {
+    FIRST_PAD_NOTE + pad as u8
+}
+
+/// The pinned wrapper's state document: an 8-byte little-endian length, then JSON.
+fn decode_state(state: &[u8]) -> Option<serde_json::Value> {
+    let (length, payload) = state.split_first_chunk::<8>()?;
+    (u64::from_le_bytes(*length) == payload.len() as u64)
+        .then(|| serde_json::from_slice(payload).ok())?
+}
+
+/// The pinned wrapper's state document without parameters and fields.
+fn encode_empty_state(version: &str) -> Vec<u8> {
+    let payload =
+        serde_json::to_vec(&serde_json::json!({"version": version, "params": {}, "fields": {}}))
+            .unwrap();
+    let mut state = (payload.len() as u64).to_le_bytes().to_vec();
+    state.extend_from_slice(&payload);
+    state
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sampler {
+    Pads,
+    General,
+}
+
+impl Sampler {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Pads => "org.klang-studio.komponist.sampler",
+            Self::General => "org.klang-studio.komponist.general-sampler",
+        }
+    }
+}
 
 fn asset_status(app: &App, device: DeviceId, id: u32) -> Option<&AssetStatus> {
     let slots = app.engine().host().asset_slots(device)?;
@@ -110,10 +147,7 @@ fn both_samplers_play_assets_after_the_project_moves() {
     }
     let mut app = app_with(Project::new("Empty"), host);
     app.dispatch(Action::Project(ProjectAction::OpenPath(reopened_path)));
-    for (index, key) in [komponist_sampler::note_of_pad(0), 60]
-        .into_iter()
-        .enumerate()
-    {
+    for (index, key) in [note_of_pad(0), 60].into_iter().enumerate() {
         let track = &project.tracks[index];
         let device = track.channel.instrument().unwrap().1;
         step_until(&mut app, "relocated sampler ready", |app| {
@@ -135,11 +169,7 @@ fn both_samplers_play_assets_after_the_project_moves() {
     let track = &project.tracks[1];
     let device = track.channel.instrument().unwrap().1;
     let linked = device.state.as_ref().unwrap();
-    let empty = Arc::from(pinned_clap_state::encode(
-        &device.plugin.version,
-        Default::default(),
-        Default::default(),
-    ));
+    let empty = Arc::from(encode_empty_state(&device.plugin.version));
     assert!(app.engine_mut().host_mut().set_state(device.id, &empty));
     let restored = |app: &App| {
         app.device_events().iter().any(|event| {
@@ -243,11 +273,7 @@ fn both_samplers_play_assets_after_the_project_moves() {
     std::fs::remove_file(&replacement).unwrap();
     app.dispatch(Action::Project(ProjectAction::Save));
     assert_sample_sources(&load_project(&copy).unwrap(), &destination, &collected);
-    for (track, key) in project
-        .tracks
-        .iter()
-        .zip([komponist_sampler::note_of_pad(0), 60])
-    {
+    for (track, key) in project.tracks.iter().zip([note_of_pad(0), 60]) {
         assert_audible(app, track.id, key);
     }
     app.shutdown();
@@ -563,7 +589,7 @@ fn general_sampler_file_edits_preserve_slice_history() {
                     let host = app.engine().host();
                     let device = app.project().find_device(sampler).unwrap().2;
                     let saved_gain = device.parameter_bases.get(&gain).copied().or_else(|| {
-                        let blob = pinned_clap_state::decode(device.state.as_deref()?)?;
+                        let blob = decode_state(device.state.as_deref()?)?;
                         blob["params"]["gain"]["f32"].as_f64()
                     });
                     let near = |value: Option<f64>, expected: f64| {
@@ -605,27 +631,33 @@ fn general_sampler_file_edits_preserve_slice_history() {
     }
 }
 
+/// The state field in which the sampler bundles keep their sample document.
+const SAMPLE_ASSETS_FIELD: &str = "sample_assets";
+
 /// The sample document the General Sampler bundle keeps in its own state.
 fn sample_document(state: &[u8]) -> Option<String> {
-    pinned_clap_state::decode(state)?["fields"][pinned_clap_state::SAMPLE_ASSETS_FIELD]
+    decode_state(state)?["fields"][SAMPLE_ASSETS_FIELD]
         .as_str()
         .map(str::to_owned)
 }
 
 /// The General Sampler state with its slice map replaced.
 fn with_slice_settings(state: &[u8], settings: &general_sampler::Settings) -> Option<Vec<u8>> {
-    let mut document = pinned_clap_state::decode(state)?;
+    let mut document = decode_state(state)?;
     let fields = document.get_mut("fields")?.as_object_mut()?;
     let assets = fields
-        .get(pinned_clap_state::SAMPLE_ASSETS_FIELD)
+        .get(SAMPLE_ASSETS_FIELD)
         .and_then(serde_json::Value::as_str)
         .unwrap_or("{}");
     let updated = general_sampler::write_settings(Some(assets.as_bytes()), settings);
     fields.insert(
-        pinned_clap_state::SAMPLE_ASSETS_FIELD.into(),
+        SAMPLE_ASSETS_FIELD.into(),
         String::from_utf8(updated).ok()?.into(),
     );
-    Some(pinned_clap_state::encode_document(&document))
+    let payload = serde_json::to_vec(&document).ok()?;
+    let mut state = (payload.len() as u64).to_le_bytes().to_vec();
+    state.extend_from_slice(&payload);
+    Some(state)
 }
 
 fn sampler_slice_settings(app: &App, sampler: DeviceId) -> general_sampler::Settings {
@@ -643,7 +675,6 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     };
     use komponist_app::views::automation::{Action as Automation, Source};
     use komponist_app::{settings::Language, ui_state::DockTab};
-    use komponist_builtin::BuiltinKind;
     use komponist_ipc::waveform_markers::{Edit as MarkerEdit, Request as MarkerRequest};
     use komponist_model::Tick;
     use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points};
@@ -666,15 +697,9 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
 
     let mut project = Project::new("Packaged samplers");
     let mut tracks = Vec::new();
-    for kind in [Internal::Sampler, Internal::GeneralSampler] {
-        let instrument = host
-            .catalog()
-            .packaged(&komponist_plugins::catalog::clap_id(
-                BuiltinKind::Internal(kind).catalog().id,
-            ))
-            .unwrap()
-            .plugin
-            .clone();
+    for kind in [Sampler::Pads, Sampler::General] {
+        let instrument =
+            crate::common::shipped_plugin(&host, kind.id()).expect("verified sampler bundle");
         let (next, track) = edits::add_track(
             &project,
             NewTrack {
@@ -696,7 +721,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     let mut app = app_with(Project::new("Empty"), host).with_lang(komponist_i18n::Lang::De);
     app.dispatch(Action::Project(ProjectAction::OpenPath(project_path)));
     for (kind, track, device) in &tracks {
-        let pad = usize::from(*kind == Internal::Sampler) * 2;
+        let pad = usize::from(*kind == Sampler::Pads) * 2;
         step_until(&mut app, "initial sampler UI", |app| {
             let Some(layout) = app.engine().host().native_layout(*device) else {
                 return false;
@@ -709,7 +734,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             force_bridge
         );
         // Turn a knob and replace the sample before the host has captured the knob turn.
-        let edited = if *kind == Internal::GeneralSampler {
+        let edited = if *kind == Sampler::General {
             let wire = app
                 .engine()
                 .host()
@@ -717,12 +742,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
                 .unwrap()
                 .author_ids()
                 .unwrap()["gain"];
-            let info = kind
-                .params()
-                .iter()
-                .find(|param| param.id.as_str() == "gain")
-                .unwrap();
-            let value = komponist_device_core::pinned_clap_state::to_clap(info, -12.0);
+            let value = crate::common::author_wire_value(&app, *device, wire, -12.0);
             app.dispatch(Action::Plugin(PluginAction::SetParam {
                 device: *device,
                 id: wire,
@@ -745,8 +765,8 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             }
             asset_status(app, *device, pad as u32) == Some(&AssetStatus::Ready)
         });
-        let key = if *kind == Internal::Sampler {
-            komponist_sampler::note_of_pad(pad)
+        let key = if *kind == Sampler::Pads {
+            note_of_pad(pad)
         } else {
             60
         };
@@ -770,7 +790,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         device
             .state
             .as_deref()
-            .and_then(pinned_clap_state::decode)
+            .and_then(decode_state)
             .is_some_and(|state| state["params"]["mode"]["string"] == "slices")
     });
     let settings = komponist_general_sampler::Settings::from_markers([0.04, 0.10]);
@@ -866,7 +886,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     let tone_peak = preview_peak(&mut app, 0.08);
     assert!(tone_peak > 1e-3, "second slice peak: {tone_peak}");
 
-    let (drum_kind, drum_track, drum) = tracks[0];
+    let (_, drum_track, drum) = tracks[0];
     let select = |app: &mut App, track| {
         app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
             tracks: vec![track],
@@ -1043,21 +1063,17 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         key: note,
         velocity: 0,
     });
-    let start = h
-        .state()
-        .engine()
-        .host()
-        .native_layout(drum)
+    let host = h.state().engine().host();
+    let drum_layout = host.native_layout(drum).unwrap().clone();
+    let start = drum_layout.author_ids().unwrap()["pad3_start"];
+    let trim = crate::common::wire_value(&drum_layout, start, 10.0);
+    let default_trim = host
+        .params(drum)
         .unwrap()
-        .author_ids()
-        .unwrap()["pad3_start"];
-    let start_info = drum_kind
-        .params()
         .iter()
-        .find(|param| param.id.as_str() == "pad3_start")
-        .unwrap();
-    let trim = pinned_clap_state::to_clap(start_info, 10.0);
-    let default_trim = pinned_clap_state::to_clap(start_info, start_info.default);
+        .find(|info| info.id == start)
+        .unwrap()
+        .default;
     h.state_mut()
         .dispatch(Action::Plugin(PluginAction::SetParam {
             device: drum,
@@ -1089,10 +1105,12 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     );
     let replaced_pad = h.state().project().find_device(drum).unwrap().2;
     assert!(!replaced_pad.parameter_bases.contains_key(&start));
-    let device_state = pinned_clap_state::decode(replaced_pad.state.as_deref().unwrap()).unwrap();
-    assert_eq!(
-        device_state["params"][start_info.id.as_str()],
-        pinned_clap_state::parameter(start_info, start_info.default).0
+    let device_state = decode_state(replaced_pad.state.as_deref().unwrap()).unwrap();
+    assert!(
+        device_state["params"]["pad3_start"]["f32"]
+            .as_f64()
+            .is_some_and(|saved| (saved - default_trim).abs() < 1e-6),
+        "the replaced pad's saved trim is the default"
     );
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
     step_until(
@@ -1117,16 +1135,12 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
         asset_status(app, drum, 2) == Some(&AssetStatus::Ready)
     });
     let host = h.state().engine().host();
-    let gain = host.native_layout(general).unwrap().author_ids().unwrap()["gain"];
-    let info = Internal::GeneralSampler
-        .params()
-        .iter()
-        .find(|p| p.id.as_str() == "gain")
-        .unwrap();
-    let raw = |db| pinned_clap_state::to_clap(info, db);
+    let layout = host.native_layout(general).unwrap().clone();
+    let gain = layout.author_ids().unwrap()["gain"];
+    let raw = |db| crate::common::wire_value(&layout, gain, db);
     let hosted_state = |app: &App| {
         let (_, _, d) = app.project().find_device(general).unwrap();
-        pinned_clap_state::decode(d.state.as_deref().unwrap()).unwrap()
+        decode_state(d.state.as_deref().unwrap()).unwrap()
     };
     let set_gain = |app: &mut App, db| {
         app.dispatch(Action::Plugin(PluginAction::SetParam {
