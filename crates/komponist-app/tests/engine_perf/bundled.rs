@@ -211,7 +211,7 @@ fn run(label: &str, mut app: komponist_app::App, buffer: u32, ids: &[DeviceId], 
         );
         assert!(host.state_warning(id).is_none(), "state refused for {id:?}");
         assert!(
-            host.native_layout(id).is_some() && host.verified_bundled_kind(id).is_some(),
+            host.native_layout(id).is_some() && host.verified_bundle(id).is_some(),
             "missing verified native layout for {id:?}"
         );
     }

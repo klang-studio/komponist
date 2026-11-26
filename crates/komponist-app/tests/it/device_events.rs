@@ -352,7 +352,7 @@ fn app() -> (App, Rc<RefCell<Script>>) {
 
 fn app_with_presets(clap_presets: Vec<ClapPreset>) -> (App, Rc<RefCell<Script>>) {
     let script = Rc::new(RefCell::new(Script::default()));
-    let mut catalog = Catalog::builtin();
+    let mut catalog = Catalog::default();
     if let Some(preset) = clap_presets.first() {
         catalog.set_scanned(&[super::fake_host::descriptor(
             &preset.plugin_id,
@@ -1381,7 +1381,7 @@ fn plugin_gui_automation(
     };
     let host = FakeHost {
         script: Rc::clone(&script),
-        catalog: Catalog::builtin(),
+        catalog: Catalog::default(),
         statuses: HashMap::new(),
         gui: Some(gui.clone()),
         clap_presets: Vec::new(),

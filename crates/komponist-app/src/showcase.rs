@@ -55,9 +55,9 @@ pub fn bundled_demo(
     host: &crate::device_host::PluginHost,
     kit_dir: &Path,
 ) -> Result<Project, String> {
-    let mut project = build(host)?;
+    std::fs::create_dir_all(kit_dir).map_err(|error| error.to_string())?;
+    let mut project = build(host, kit_dir)?;
     let mut write_audio = || -> std::io::Result<()> {
-        std::fs::create_dir_all(kit_dir)?;
         let drums = komponist_audiofile::fixtures::write_kit(kit_dir)?;
         let drum_track = project
             .tracks
@@ -70,8 +70,7 @@ pub fn bundled_demo(
             .enumerate()
             .map(|(slot, path)| (slot as u32, AssetLink::new(path, Some(kit_dir))))
             .collect();
-        audio::write_files(&mut project, kit_dir)?;
-        sampler::write_packaged_sample(&mut project, kit_dir)
+        audio::write_files(&mut project, kit_dir)
     };
     write_audio().map_err(|error| error.to_string())?;
     Ok(project)
@@ -175,7 +174,7 @@ impl Devices<'_> {
     }
 }
 
-fn build(host: &crate::device_host::PluginHost) -> Result<Project, String> {
+fn build(host: &crate::device_host::PluginHost, kit_dir: &Path) -> Result<Project, String> {
     let mut project = demo_song();
     let mut d = Devices {
         host,
@@ -251,7 +250,7 @@ fn build(host: &crate::device_host::PluginHost) -> Result<Project, String> {
     project.next_id = d.next;
     add_routing(&mut project, &mut d)?;
     audio::add_tracks(&mut project);
-    sampler::add_tracks(&mut project, host)?;
+    sampler::add_tracks(&mut project, host, kit_dir)?;
     surf::add_track(&mut project, host)?;
     add_automation(&mut project, &d);
     add_track_macros(&mut project, &d);

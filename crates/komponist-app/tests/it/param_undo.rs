@@ -419,7 +419,7 @@ fn packaged_limiter_drag_is_one_step_and_undo_redo_restore_the_sound() {
         let host = app.engine().host();
         [synth, limiter].into_iter().all(|id| {
             host.status(id) == DeviceStatus::Ok
-                && host.verified_bundled_kind(id).is_some()
+                && host.verified_bundle(id).is_some()
                 && host.native_layout(id).is_some()
         })
     });

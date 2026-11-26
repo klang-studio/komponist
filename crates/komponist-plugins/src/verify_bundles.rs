@@ -137,7 +137,7 @@ fn smoke_live_manager(
         duplicate.id,
         "external Hall with bundled CLAP ID",
     )?;
-    if manager.verified_bundled_kind(duplicate.id).is_some() {
+    if manager.verified_bundle(duplicate.id).is_some() {
         return Err("external Hall with bundled CLAP ID was granted bundle trust".into());
     }
     drop(external_audio);

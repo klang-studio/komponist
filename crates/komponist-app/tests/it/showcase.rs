@@ -30,12 +30,7 @@ pub(super) fn assert_packaged_showcase(
     repeat: &Project,
 ) {
     step_until(app, "all shipped demo devices ready", |app| {
-        all_devices(project).all(|device| {
-            app.engine()
-                .host()
-                .verified_bundled_kind(device.id)
-                .is_some()
-        })
+        all_devices(project).all(|device| app.engine().host().verified_bundle(device.id).is_some())
     });
     let host = app.engine().host();
     check_device_catalog(project, host);
@@ -477,7 +472,7 @@ fn headless_loads_a_shipped_device_from_the_verified_fixture_inventory() {
         app.engine().host().status(device) == DeviceStatus::Ok
     });
     let host = app.engine().host();
-    assert!(host.verified_bundled_kind(device).is_some());
+    assert!(host.verified_bundle(device).is_some());
     assert!(host.native_layout(device).is_some());
     assert!(host.bridge_pid(device).is_none());
 }
@@ -510,7 +505,7 @@ fn render_levels() {
             all_devices(app.project()).all(|device| {
                 let host = app.engine().host();
                 host.status(device.id) == DeviceStatus::Ok
-                    && host.verified_bundled_kind(device.id).is_some()
+                    && host.verified_bundle(device.id).is_some()
                     && host.state_warning(device.id).is_none()
             })
         });

@@ -1,25 +1,30 @@
 //! Runtime cache of the markers requested by a device's waveform view.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use komponist_ipc::ParamInfo;
+use komponist_ipc::control::{MAX_STATE_PARAMETER_BASES, param_flags};
 use komponist_ipc::device_assets::MAX_SLOTS;
+use komponist_ipc::native_layout::NativeLayout;
 use komponist_ipc::waveform_markers::{
     Edit, EditResult, EditStatus, MAX_EDIT_BYTES, Request, Snapshot,
 };
+use komponist_model::project::SavedPluginState;
 
 const REFRESH: Duration = Duration::from_millis(80);
 static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
 
 /// The result of one accepted waveform marker edit request.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum WaveformMarkerEditResult {
-    /// The plugin applied and saved the edit. Both states use the plugin's project state format.
+    /// The plugin applied and saved the edit. Both states use the plugin's project state format
+    /// and carry the host-owned bases of parameters that automation or macros drive.
     Applied {
-        previous_state: Arc<[u8]>,
-        state: Arc<[u8]>,
+        previous_state: SavedPluginState,
+        state: SavedPluginState,
     },
     /// The plugin declined the edit, or the target changed before it could be accepted.
     Rejected(EditStatus),
@@ -28,22 +33,121 @@ pub enum WaveformMarkerEditResult {
 }
 
 impl WaveformMarkerEditResult {
-    pub(crate) fn from_wire(result: EditResult, last_state: &mut Option<Arc<[u8]>>) -> Self {
+    pub(crate) fn from_wire(
+        result: EditResult,
+        bases: &BTreeMap<u32, f64>,
+        last_state: &mut Option<SavedPluginState>,
+    ) -> Self {
         match result {
             EditResult::Applied {
                 previous_state,
                 state,
             } => {
-                let state: Arc<[u8]> = state.into();
-                *last_state = Some(Arc::clone(&state));
+                let saved = |bytes: Vec<u8>| SavedPluginState {
+                    bytes: Arc::from(bytes),
+                    parameter_bases: bases.clone(),
+                };
+                let state = saved(state);
+                *last_state = Some(state.clone());
                 Self::Applied {
-                    previous_state: previous_state.into(),
+                    previous_state: saved(previous_state),
                     state,
                 }
             }
             EditResult::Rejected(status) => Self::Rejected(status),
             EditResult::Failed { message, .. } => Self::Failed(message),
         }
+    }
+}
+
+/// Whether a layout edits waveform markers. Persistent parameter edits of such a device share
+/// the ordered control stream with marker edits and state restores, so a value still on the
+/// render path cannot land after a restore.
+pub(crate) fn has_marker_graph(layout: &NativeLayout) -> bool {
+    layout
+        .pages
+        .iter()
+        .flat_map(|page| &page.cells)
+        .any(|cell| {
+            cell.graph
+                .as_ref()
+                .is_some_and(|graph| graph.waveform_markers)
+        })
+}
+
+/// Parameter values to verify and persist around one marker edit. Values that automation or
+/// macros drive stay host-owned bases next to the captured state, as for any snapshot.
+#[derive(Debug, PartialEq)]
+pub(crate) struct MarkerParameters {
+    pub(crate) expected: Vec<(u32, f64)>,
+    bases: BTreeMap<u32, f64>,
+}
+
+impl MarkerParameters {
+    pub(crate) fn new(
+        slot: u32,
+        base: &BTreeMap<u32, f64>,
+        automated: &BTreeMap<u32, Option<f64>>,
+        macros: &BTreeMap<u32, f64>,
+        inventory: &[ParamInfo],
+        layout: Option<&NativeLayout>,
+        retain: impl IntoIterator<Item = u32>,
+    ) -> Option<Self> {
+        let retained: BTreeSet<_> = retain.into_iter().collect();
+        if automated.is_empty() && macros.is_empty() && retained.is_empty() {
+            return Some(Self {
+                expected: base.iter().map(|(&id, &value)| (id, value)).collect(),
+                bases: BTreeMap::new(),
+            });
+        }
+
+        // Driven values need the layout's marker graph to know which controls affect the edit.
+        let marker_graphs: Vec<_> = layout?
+            .pages
+            .iter()
+            .flat_map(|page| &page.cells)
+            .filter_map(|cell| cell.graph.as_ref())
+            .filter(|graph| graph.waveform_markers && graph.asset_slot == Some(slot))
+            .collect();
+        if marker_graphs.is_empty() {
+            return None;
+        }
+        // Trim and discrete mode controls can affect which operations the plugin accepts.
+        // Leave those controls in the live comparison with their persistent values.
+        let affects_edit = |id| {
+            inventory
+                .iter()
+                .find(|param| param.id == id)
+                .is_none_or(|param| param.flags & param_flags::STEPPED != 0)
+                || marker_graphs
+                    .iter()
+                    .any(|graph| graph.slots.values().any(|&wire| wire == id))
+        };
+        let mut expected = Vec::with_capacity(base.len());
+        let mut bases = BTreeMap::new();
+        for (&id, &value) in base {
+            let saved = automated
+                .get(&id)
+                .map(|automated| automated.unwrap_or(value))
+                .or_else(|| macros.get(&id).copied())
+                .or_else(|| retained.contains(&id).then_some(value));
+            if let Some(saved) = saved {
+                bases.insert(id, saved);
+            }
+            if saved.is_none() || affects_edit(id) {
+                expected.push((id, saved.unwrap_or(value)));
+            }
+        }
+        (bases.len() <= MAX_STATE_PARAMETER_BASES).then_some(Self { expected, bases })
+    }
+
+    pub(crate) fn persisted_ids(&self) -> Vec<u32> {
+        self.bases.keys().copied().collect()
+    }
+
+    /// The persistent values to store next to the captured states.
+    pub(crate) fn bases(&self) -> &BTreeMap<u32, f64> {
+        &self.bases
     }
 }
 
@@ -188,6 +292,87 @@ mod tests {
     use komponist_ipc::waveform_markers::SliceOptions;
 
     use super::*;
+
+    #[test]
+    fn marker_edits_keep_driven_values_as_bases_next_to_the_state() {
+        let layout = NativeLayout::parse(
+            br#"{
+                "default_locale":"en", "locales":["en"],
+                "author_ids":{"b1_freq":42,"b1_type":7,"b2_gain":9},
+                "pages":[{"key":"main","labels":{"en":"Main"},"columns":1,
+                          "cells":[{"col":0,"row":0,"cols":1,"rows":1,"widget":"graph",
+                                    "graph":{"kind":"waveform","asset_slot":0,
+                                             "waveform_markers":true,"slots":{"start":9},
+                                             "name":{"en":"Waveform"},"description":{"en":"Range"}}}]}]
+            }"#,
+        )
+        .unwrap();
+        let parameter = |id, flags| ParamInfo {
+            id,
+            name: String::new(),
+            module: String::new(),
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            step_count: 0,
+            flags,
+        };
+        let inventory = [
+            parameter(42, 0),
+            parameter(7, param_flags::STEPPED),
+            parameter(9, 0),
+        ];
+        let base = [(42, 0.625), (7, 2.0), (9, 0.75)].into();
+        let automated = [(42, None), (7, None)].into();
+        let macros = [(9, 0.5)].into();
+        let plan =
+            MarkerParameters::new(0, &base, &automated, &macros, &inventory, Some(&layout), [])
+                .unwrap();
+        // Stepped and graph-bound controls must match live; the free control is persisted only.
+        assert_eq!(plan.expected, [(7, 2.0), (9, 0.5)]);
+        assert_eq!(plan.bases(), &[(7, 2.0), (9, 0.5), (42, 0.625)].into());
+        // Driven values need the marker graph of the edited slot.
+        assert!(
+            MarkerParameters::new(0, &base, &automated, &macros, &inventory, None, []).is_none()
+        );
+        assert!(
+            MarkerParameters::new(1, &base, &automated, &macros, &inventory, Some(&layout), [])
+                .is_none()
+        );
+        // A driver can be removed after submission while the instance still holds its value.
+        let latest = MarkerParameters::new(
+            0,
+            &[(42, 0.75), (7, 2.0), (9, 0.75)].into(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &inventory,
+            Some(&layout),
+            plan.persisted_ids(),
+        )
+        .unwrap();
+        assert_eq!(latest.bases(), &[(7, 2.0), (9, 0.75), (42, 0.75)].into());
+
+        let mut last = None;
+        let result = WaveformMarkerEditResult::from_wire(
+            EditResult::Applied {
+                previous_state: vec![1],
+                state: vec![2],
+            },
+            latest.bases(),
+            &mut last,
+        );
+        let WaveformMarkerEditResult::Applied {
+            previous_state,
+            state,
+        } = result
+        else {
+            panic!("an applied edit keeps both states");
+        };
+        assert_eq!(&*previous_state.bytes, [1]);
+        assert_eq!(&*state.bytes, [2]);
+        assert_eq!(previous_state.parameter_bases, *latest.bases());
+        assert_eq!(last, Some(state));
+    }
 
     fn snapshot(positions: Vec<f64>) -> Snapshot {
         Snapshot {

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use komponist_model::edits::{self, NewClip, NewClipContent, NewNote, NewTrack};
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{Hue, PluginRef, Project, Tempo, Tick, TrackId};
+use komponist_plugins::bundled_initial_state::InitialMarkers;
 
 use super::{log_position, prepare_device};
 
@@ -111,28 +112,37 @@ impl GlassTrack {
     }
 }
 
+/// Adds both Glass tracks. The slice track's markers are placed on the generated sample through
+/// the bundle's waveform-marker extension; the project links the sample as a host-managed file.
 pub(super) fn add_tracks(
     project: &mut Project,
     host: &crate::device_host::PluginHost,
+    dir: &Path,
 ) -> Result<(), String> {
+    let path = write_sample(dir).map_err(|error| error.to_string())?;
+    let link = AssetLink::new(&path, Some(dir));
     for glass in GLASS_TRACKS {
         let values = sampler_values(glass.melody());
-        let mut prepared = prepare_device(host, "general-sampler", None, &values, &[])?;
-        if !glass.markers().is_empty() {
-            let state = prepared
-                .state
-                .as_deref()
-                .ok_or("missing sampler demo state")?;
-            let times = glass.markers().iter().copied();
-            let state = komponist_plugins::bundled_sampler::edit_slice_markers(state, times)
-                .ok_or("could not initialize the sampler's slice map")?;
-            prepared.state = Some(state.into());
-        }
+        let prepared = if glass.markers().is_empty() {
+            prepare_device(host, "general-sampler", None, &values, &[])?
+        } else {
+            host.manager().prepare_bundled_device_with_markers(
+                "org.klang-studio.komponist.general-sampler",
+                &values,
+                InitialMarkers {
+                    slot: 0,
+                    file: &path,
+                    positions: glass.markers(),
+                },
+            )?
+        };
         let (mut next, id) = glass.add(project, prepared.plugin.clone());
         let index = next.track_index(id).expect("showcase sampler track");
         let track = Arc::make_mut(&mut next.tracks[index]);
         let device = &mut track.channel.devices[0];
-        *device = Arc::new(prepared.into_device(device.id));
+        let mut prepared = prepared.into_device(device.id);
+        prepared.asset_links.insert(0, link.clone());
+        *device = Arc::new(prepared);
         *project = next;
     }
     Ok(())
@@ -209,18 +219,6 @@ fn sampler_values(melody: bool) -> Vec<(&'static str, f64)> {
         ]
     });
     values
-}
-
-pub(super) fn write_packaged_sample(project: &mut Project, dir: &Path) -> io::Result<()> {
-    let path = write_sample(dir)?;
-    let link = AssetLink::new(&path, Some(dir));
-    for track in &mut project.tracks {
-        if matches!(track.name.as_str(), MELODY_TRACK | SLICE_TRACK) {
-            let device = &mut Arc::make_mut(track).channel.devices[0];
-            Arc::make_mut(device).asset_links.insert(0, link.clone());
-        }
-    }
-    Ok(())
 }
 
 fn write_sample(dir: &Path) -> io::Result<std::path::PathBuf> {

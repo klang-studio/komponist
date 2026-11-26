@@ -30,7 +30,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use komponist_builtin::{BuiltinKind, Internal};
 use komponist_engine::Processor;
 use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource, PresetLoad};
 use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot, edit_state};
@@ -47,6 +46,7 @@ use rustix::event::{PollFd, PollFlags, Timespec};
 
 use crate::bridge::{Bridge, Collected, SpawnSetup, StatePurpose, Timing, kill_and_reap};
 use crate::bundled_clap::{BundleVerificationError, BundledClap, VerifiedClap};
+use crate::bundled_effects;
 use crate::catalog::{
     Catalog, PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT, ScanCache, ScanReport,
     requires_bundled,
@@ -55,7 +55,6 @@ use crate::device_assets::{AssetEditPreparation, AssetEditState, DeviceAssets};
 use crate::direct_device::DirectDevice;
 use crate::scan::{ScanJob, ScanSetup};
 use crate::waveform_markers::WaveformMarkerEditResult;
-use crate::{bundled_effects, bundled_sampler};
 
 /// How long a released bridge may take for `Shutdown` before it is killed.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
@@ -378,7 +377,8 @@ pub struct PluginManager {
     private_clap_dir: Option<PathBuf>,
     bundled_clap: Option<BundledClap>,
     project_dir: Option<PathBuf>,
-    verified_bundles: BTreeMap<DeviceId, BuiltinKind>,
+    /// CLAP IDs of running instances that were loaded from the manifest-verified package.
+    verified_bundles: BTreeMap<DeviceId, String>,
     effect_meters: BTreeMap<DeviceId, Arc<bundled_effects::Meter>>,
     direct: BTreeMap<DeviceId, DirectDevice>,
     retiring_direct: Vec<DirectDevice>,
@@ -569,7 +569,21 @@ impl PluginManager {
         let inventory = self.bundled_clap.as_ref().ok_or_else(|| {
             "the demo requires the packaged CLAP inventory; run scripts/run.sh --demo".to_owned()
         })?;
-        crate::bundled_initial_state::prepare(inventory, plugin_id, preset, edits, targets)
+        crate::bundled_initial_state::prepare(inventory, plugin_id, preset, edits, targets, None)
+            .map_err(|error| format!("{plugin_id}: {error}"))
+    }
+
+    /// [`Self::prepare_bundled_device`] with an authored file and its waveform markers.
+    pub fn prepare_bundled_device_with_markers(
+        &self,
+        plugin_id: &str,
+        edits: &[(&str, f64)],
+        markers: crate::bundled_initial_state::InitialMarkers<'_>,
+    ) -> Result<crate::bundled_initial_state::InitialDevice, String> {
+        let inventory = self.bundled_clap.as_ref().ok_or_else(|| {
+            "the demo requires the packaged CLAP inventory; run scripts/run.sh --demo".to_owned()
+        })?;
+        crate::bundled_initial_state::prepare(inventory, plugin_id, None, edits, &[], Some(markers))
             .map_err(|error| format!("{plugin_id}: {error}"))
     }
 
@@ -750,7 +764,6 @@ impl PluginManager {
         // A project device has one instance. A local instance keeps its control half alive until
         // the engine returns the audio half; external bridge retirement remains asynchronous.
         self.retire(device.id, false);
-        let mut state = state;
         if self.requires_bundle_verification(&device.plugin, &bundle) {
             let verified = self.verify_catalog_bundle(&bundle, &plugin_id);
             let proof = match verified {
@@ -763,14 +776,8 @@ impl PluginManager {
                     return Err(error);
                 }
             };
-            let verified_kind = crate::bundled_state::kind_for_id(proof.plugin_id());
+            let verified_id = proof.plugin_id().to_owned();
             let effect_meter = bundled_effects::Meter::new(&features, setup.sample_rate);
-            if is_sampler_kind(verified_kind)
-                && let Some(original) = state.as_mut()
-                && let Some(runtime) = self.sampler_runtime_state(&original.bytes)
-            {
-                original.bytes = runtime;
-            }
             return match DirectDevice::start(
                 proof,
                 device.role,
@@ -793,9 +800,7 @@ impl PluginManager {
                     instance.set_render_mode(device.id, self.render_mode, &mut self.pending);
                     self.direct.insert(device.id, instance);
                     self.sync_asset_links(device.id, &BTreeMap::new(), &device.asset_links);
-                    if let Some(kind) = verified_kind {
-                        self.verified_bundles.insert(device.id, kind);
-                    }
+                    self.verified_bundles.insert(device.id, verified_id);
                     Ok(Box::new(processor))
                 }
                 Err(error) => {
@@ -814,7 +819,6 @@ impl PluginManager {
             device: device.id,
             role: device.role,
             format,
-            verified_bundled_kind: None,
             bundle: bundle.as_path(),
             catalog_bundle: &bundle,
             plugin_id: &plugin_id,
@@ -944,11 +948,11 @@ impl PluginManager {
         }
     }
 
-    /// The built-in device an active authenticated package instance implements.
-    /// Project references and ordinary scanned plug-ins cannot set this identity.
-    pub fn verified_bundled_kind(&self, device: DeviceId) -> Option<BuiltinKind> {
-        let kind = self.verified_bundles.get(&device).copied()?;
-        (self.status(device) == DeviceStatus::Ok).then_some(kind)
+    /// The CLAP ID of an active instance loaded from the manifest-verified package. Project
+    /// references and ordinary scanned plug-ins cannot set this identity.
+    pub fn verified_bundle(&self, device: DeviceId) -> Option<&str> {
+        let id = self.verified_bundles.get(&device)?;
+        (self.status(device) == DeviceStatus::Ok).then_some(id.as_str())
     }
 
     /// Status of a device; `Ok` for devices this manager does not manage (in-process built-ins).
@@ -1357,7 +1361,7 @@ impl PluginManager {
             || self
                 .direct
                 .get(&device)
-                .is_some_and(DirectDevice::is_loading_clap_preset)
+                .is_some_and(DirectDevice::requires_control_param_edit)
         {
             return false;
         }
@@ -1458,10 +1462,6 @@ impl PluginManager {
         self.project_dir = dir;
     }
 
-    fn sampler_runtime_state(&self, state: &[u8]) -> Option<Arc<[u8]>> {
-        bundled_sampler::runtime_state(state, self.project_dir.as_deref()?).map(Arc::from)
-    }
-
     /// Restores `state` in the running plugin of `device` (undo or redo changed the device's
     /// state in the document); `false` if the device has no running bridge.
     pub fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
@@ -1470,14 +1470,6 @@ impl PluginManager {
 
     /// Restores opaque bytes and the host-owned parameter bases as one operation.
     pub fn restore_saved_state(&mut self, device: DeviceId, state: &SavedPluginState) -> bool {
-        let runtime = is_sampler_kind(self.verified_bundles.get(&device).copied())
-            .then(|| self.sampler_runtime_state(&state.bytes))
-            .flatten();
-        let runtime = runtime.map(|bytes| SavedPluginState {
-            bytes,
-            parameter_bases: state.parameter_bases.clone(),
-        });
-        let state = runtime.as_ref().unwrap_or(state);
         if let Some(direct) = self.direct.get_mut(&device) {
             if matches!(direct.status, DeviceStatus::Crashed(_)) {
                 return false;
@@ -1524,15 +1516,10 @@ impl PluginManager {
     /// The factory preset represented by the current saved state, if known.
     pub fn saved_preset(&self, device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
         let layout = self.native_layout(device.id);
-        crate::presets::saved_preset(
-            device,
-            self.verified_bundled_kind(device.id),
-            presets,
-            |id| {
-                let wire = layout?.author_ids()?.get(id)?;
-                self.param_base(device.id, *wire)
-            },
-        )
+        crate::presets::saved_preset(device, self.verified_bundle(device.id), presets, |id| {
+            let wire = layout?.author_ids()?.get(id)?;
+            self.param_base(device.id, *wire)
+        })
     }
 
     /// Presets discovered for the exact bundle of a running CLAP instance.
@@ -1887,7 +1874,7 @@ impl PluginManager {
                 };
                 direct.service(*device, &mut self.pending);
                 if let Some(state) = direct.capture() {
-                    states.push((*device, state.into()));
+                    states.push((*device, state));
                     false
                 } else {
                     direct.awaits_snapshot()
@@ -2124,15 +2111,6 @@ impl PluginManager {
     }
 }
 
-fn is_sampler_kind(kind: Option<BuiltinKind>) -> bool {
-    matches!(
-        kind,
-        Some(BuiltinKind::Internal(
-            Internal::Sampler | Internal::GeneralSampler
-        ))
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2176,8 +2154,8 @@ mod tests {
                 device,
                 slot: 0,
                 result: WaveformMarkerEditResult::Applied {
-                    previous_state: Arc::from([1]),
-                    state: Arc::from([2]),
+                    previous_state: Arc::<[u8]>::from([1]).into(),
+                    state: Arc::<[u8]>::from([2]).into(),
                 },
             },
             PluginManagerEvent::ClapPresetLoaded {

@@ -2,9 +2,9 @@
 //!
 //! - Ctrl N / "Neues Projekt": an empty project "Unbenannt" at 120 BPM, 4/4 (S10; the arrangement
 //!   shows the "Leeres Projekt" hint).
-//! - "Aus Vorlage · Beat-Skizze" (S09): three tracks to start a beat: "Drums" with the Sampler and a one-bar step pattern whose rows the drum instrument decides
-//!   ([`crate::step_rows::rows_for`]: the sampler's pads 1–8), "Bass" and
-//!   "Keys" with hexa.
+//! - "Aus Vorlage · Beat-Skizze" (S09): three tracks to start a beat: "Drums" with the packaged
+//!   Sampler and a one-bar step pattern on its pads 1–8 ([`TEMPLATE_FIRST_NOTE`]), "Bass" and
+//!   "Keys" with the packaged Hexa.
 //! - A project with unsaved changes asks first: "Speichern" (Enter), "Nicht speichern",
 //!   "Abbrechen" (Esc). The screens have no such dialog; its texts are komponist's own.
 
@@ -12,7 +12,7 @@ use egui::{Context, vec2};
 use komponist_i18n::Lang;
 use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack, StepProp};
 use komponist_model::{ClipId, Hue, PPQ, PluginRef, Project, Tick, TrackId};
-use komponist_plugins::{Catalog, requires_bundled};
+use komponist_plugins::Catalog;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, typography};
 use komponist_ui::widgets::button::Kind;
@@ -120,29 +120,20 @@ const TEMPLATE_BEAT: [(usize, &[usize]); 4] = [
     (3, &[0, 2, 4, 6, 8, 10, 12, 14]),
 ];
 
-/// The in-process Sampler of a reference host: the pad rows of the template and, without
-/// packaged bundles, its drum instrument.
-fn reference_sampler() -> PluginRef {
-    komponist_builtin::Internal::Sampler.plugin_ref()
-}
+/// The CLAP IDs of the template's drum and synth instruments in the packaged catalog.
+const TEMPLATE_DRUMS: &str = "org.klang-studio.komponist.sampler";
+const TEMPLATE_SYNTH: &str = "org.klang-studio.komponist.hexa";
 
-/// The instruments of the template for `catalog`: the drum sampler and hexa, from the packaged
-/// bundles, or the in-process devices of a reference host. `None` when the catalog has neither.
+/// The note of the template beat's first row: the drum bundle's pad 1 (C1). The beat is authored
+/// for pads 1–8, which follow on consecutive notes. The project is built before the device runs,
+/// so its pad bank is not available yet.
+pub const TEMPLATE_FIRST_NOTE: u8 = 36;
+
+/// The instruments of the template for `catalog`: the drum sampler and Hexa from the packaged
+/// bundles. `None` when the package lacks one of them.
 pub fn template_instruments(catalog: &Catalog) -> Option<(PluginRef, PluginRef)> {
-    let packaged = |id: &str| {
-        catalog
-            .entries()
-            .iter()
-            .find(|entry| entry.plugin.id == id && requires_bundled(&entry.plugin))
-            .map(|entry| entry.plugin.clone())
-    };
-    let reference = |plugin: PluginRef| catalog.resolve(&plugin).map(|entry| entry.plugin.clone());
-    Some((
-        packaged("org.klang-studio.komponist.sampler")
-            .or_else(|| reference(reference_sampler()))?,
-        packaged("org.klang-studio.komponist.hexa")
-            .or_else(|| reference(crate::app::hexa_ref()))?,
-    ))
+    let packaged = |id: &str| catalog.packaged(id).map(|entry| entry.plugin.clone());
+    Some((packaged(TEMPLATE_DRUMS)?, packaged(TEMPLATE_SYNTH)?))
 }
 
 /// The template project "Beat-Skizze" (see the module docs): the drums play `drums` (the
@@ -167,8 +158,8 @@ pub fn template(t: Lang, drums: PluginRef, hexa: PluginRef) -> Project {
     let Some(&drums) = tracks.first() else {
         return p;
     };
-    // The pad rows of the Sampler, whichever package plays them.
-    let rows = step_rows::rows_for_in(t, Some(&reference_sampler()), &[]);
+    // The drum instrument's pads 1–8, with the default row names.
+    let rows = step_rows::rows_for_pads(t, TEMPLATE_FIRST_NOTE.., &[]);
     let bar = Tick(PPQ * i64::from(p.meter.num));
     let clip = NewClip {
         start: Tick::ZERO,
@@ -209,8 +200,16 @@ mod tests {
     }
 
     #[test]
+    fn the_template_needs_the_packaged_instruments() {
+        assert_eq!(template_instruments(&Catalog::builtin()), None);
+        assert_eq!(template_instruments(&Catalog::default()), None);
+    }
+
+    #[test]
     fn the_template_has_a_sampler_beat_and_two_hexa_tracks() {
-        let (drums, hexa) = template_instruments(&Catalog::builtin()).unwrap();
+        let host = crate::app::App::headless_plugin_host();
+        let (drums, hexa) =
+            template_instruments(crate::device_host::DeviceHost::catalog(&host)).unwrap();
         let p = template(Lang::De, drums.clone(), hexa.clone());
         assert_eq!(p.name, "Beat-Skizze");
         assert_eq!(template(Lang::En, drums, hexa).name, "Beat Sketch");
@@ -223,7 +222,10 @@ mod tests {
             .iter()
             .map(|t| t.channel.devices[0].plugin.id.as_str())
             .collect();
-        assert_eq!(instruments, ["sampler", "hexa", "hexa"]);
+        assert_eq!(
+            instruments,
+            [TEMPLATE_DRUMS, TEMPLATE_SYNTH, TEMPLATE_SYNTH]
+        );
         let ClipContent::Step(steps) = &p.tracks[0].clips[0].content else {
             panic!("the beat is a step clip");
         };

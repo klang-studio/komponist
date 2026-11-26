@@ -160,8 +160,9 @@ pub struct MissingSample {
     pub file: String,
 }
 
-/// The missing samples of every sampler device of `project`, resolved against `project_dir`, in
-/// document order.
+/// The missing samples embedded in the state of the in-process reference samplers of
+/// `project`, resolved against `project_dir`, in document order. Plugins report their files as
+/// host-managed links instead ([`missing_assets`]).
 pub fn missing_samples(
     project: &Project,
     project_dir: Option<&std::path::Path>,
@@ -174,21 +175,14 @@ pub fn missing_samples(
     let mut out = Vec::new();
     for (track, devices) in chains {
         for device in devices.iter() {
-            let bundled = komponist_plugins::bundled_sampler::kind(&device.plugin);
-            let Some(kind) = bundled
-                .or_else(|| crate::device_host::internal_kind(device))
+            let Some(kind) = crate::device_host::internal_kind(device)
                 .filter(|kind| kind.has_embedded_samples())
             else {
                 continue;
             };
-            let links = if bundled.is_some() {
-                device.state.as_deref().map_or_else(Vec::new, |state| {
-                    komponist_plugins::bundled_sampler::missing_links(state, project_dir)
-                })
-            } else {
+            for (pad, link) in
                 komponist_sampler::links::missing(device.state.as_deref(), project_dir)
-            };
-            for (pad, link) in links {
+            {
                 if kind.has_one_embedded_sample() && pad != 0 {
                     continue;
                 }
@@ -322,8 +316,7 @@ pub fn with_samples(
         .map(|s| {
             let owner = owner_label(t, s.track.and_then(|id| project.track(id)).map(|t| &**t));
             let general = project.find_device(s.device).is_some_and(|(_, _, device)| {
-                komponist_plugins::bundled_sampler::kind(&device.plugin)
-                    .or_else(|| crate::device_host::internal_kind(device))
+                crate::device_host::internal_kind(device)
                     .is_some_and(|kind| kind.has_one_embedded_sample())
             });
             Row {

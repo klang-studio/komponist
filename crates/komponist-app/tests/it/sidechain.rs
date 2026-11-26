@@ -70,11 +70,30 @@ struct Scene {
     presse: DeviceId,
     eq: DeviceId,
     project: Project,
+    /// Built from the in-binary devices of the reference screenshots.
+    reference: bool,
 }
 
+/// The scene on the shipped bundles.
 fn scene() -> Scene {
-    let probe = crate::common::reference_app(Project::new("probe"));
-    let pisynth = probe.engine().host().catalog().entries()[0].plugin.clone();
+    scene_of(false)
+}
+
+/// The scene on the in-binary devices, for the one test that compares reference screenshots
+/// (the full-window images list the in-binary devices in the browser; #294 regenerates them).
+fn reference_scene() -> Scene {
+    scene_of(true)
+}
+
+fn scene_of(reference: bool) -> Scene {
+    let host = App::headless_plugin_host();
+    let shipped = |name: &str| crate::common::shipped(&host, name);
+    let pisynth = if reference {
+        let probe = crate::common::reference_app(Project::new("probe"));
+        probe.engine().host().catalog().entries()[0].plugin.clone()
+    } else {
+        shipped("hexa")
+    };
     let mut p = Project::new("Sidechain");
     let track = |p: &mut Project, name: &str| {
         let spec = NewTrack {
@@ -91,11 +110,11 @@ fn scene() -> Scene {
     let drums = track(&mut p, "Drums");
     let pad = track(&mut p, "Pad");
     let _lead = track(&mut p, "Lead");
-    let device = |p: &mut Project, kind: Internal| {
+    let device = |p: &mut Project, plugin: komponist_model::PluginRef| {
         let at = p.track(pad).unwrap().channel.devices.len();
         let spec = NewDevice {
             role: DeviceRole::Effect,
-            plugin: kind.plugin_ref(),
+            plugin,
             state: None,
             sidechain: None,
         };
@@ -103,8 +122,22 @@ fn scene() -> Scene {
         *p = next;
         id
     };
-    let presse = device(&mut p, Internal::Presse);
-    let eq = device(&mut p, Internal::Eq);
+    let presse = device(
+        &mut p,
+        if reference {
+            Internal::Presse.plugin_ref()
+        } else {
+            shipped("presse")
+        },
+    );
+    let eq = device(
+        &mut p,
+        if reference {
+            Internal::Eq.plugin_ref()
+        } else {
+            shipped("eq")
+        },
+    );
     let (next, _) = edits::add_bus(
         &p,
         NewBus {
@@ -128,11 +161,16 @@ fn scene() -> Scene {
         presse,
         eq,
         project: next,
+        reference,
     }
 }
 
 fn app(s: &Scene) -> App {
-    let mut app = crate::common::reference_app(s.project.clone());
+    let mut app = if s.reference {
+        crate::common::reference_app(s.project.clone())
+    } else {
+        App::headless(s.project.clone())
+    };
     app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
         tracks: vec![s.pad],
         mode: SelectMode::Replace,
@@ -262,10 +300,7 @@ fn a_device_without_a_sidechain_input_has_no_chip() {
         .count();
     // presse has one, the EQ does not.
     assert_eq!(chips, 1);
-    let eq = h.get_by_role_and_label(
-        Role::Group,
-        Lang::De.devices_card(Internal::Eq.name()).leak(),
-    );
+    let eq = h.get_by_role_and_label(Role::Group, Lang::De.devices_card("EQ").leak());
     assert!(eq.query_all_by_role(Role::Button).all(|b| {
         !b.accesskit_node()
             .label()
@@ -395,7 +430,7 @@ fn the_context_menu_of_the_chip_removes_the_source() {
 
 #[test]
 fn snapshots_of_the_head_with_the_chip_off_on_and_the_popover_open() {
-    let s = scene();
+    let s = reference_scene();
     let mut results = SnapshotResults::new();
     let mask = |h: &mut Harness<'_, App>| {
         let cpu = h

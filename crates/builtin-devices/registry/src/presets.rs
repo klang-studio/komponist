@@ -78,13 +78,18 @@ pub fn legacy_state(
 }
 
 /// The preset represented in a previously saved device state and whether it was edited.
+/// `bundled_id` is the CLAP ID of a running instance from the verified package.
 pub fn saved_preset(
     device: &Device,
-    bundled_kind: Option<BuiltinKind>,
+    bundled_id: Option<&str>,
     presets: &[ClapPreset],
     param_base: impl Fn(&str) -> Option<f64>,
 ) -> Option<(usize, bool)> {
     let legacy = BuiltinKind::from_plugin(&device.plugin);
+    let bundled_kind = bundled_id.and_then(|id| {
+        BuiltinKind::all()
+            .find(|kind| format!("org.klang-studio.komponist.{}", kind.catalog().id) == id)
+    });
     let (source, changed) = match (legacy, bundled_kind) {
         (Some(BuiltinKind::Hexa), _) | (_, Some(BuiltinKind::Hexa)) => {
             let patch = if legacy.is_some() {

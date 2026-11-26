@@ -401,7 +401,7 @@ fn wait_for_verified(app: &mut App, device: DeviceId, id: &str) {
     assert!(requires_bundled(plugin));
     step_until(app, "authenticated synth ready", |app| {
         let host = app.engine().host();
-        host.verified_bundled_kind(device).is_some() && host.native_layout(device).is_some()
+        host.verified_bundle(device).is_some() && host.native_layout(device).is_some()
     });
     assert!(app.engine().host().bridge_pid(device).is_none());
     assert!(app.engine().host().state_warning(device).is_none());
@@ -500,7 +500,7 @@ fn alias(app: &App, device: DeviceId, author: &str) -> u32 {
 fn wait_for_value(app: &mut App, device: DeviceId, wire: u32, value: f64, phase: &str) {
     step_until(app, &format!("{phase} reached {value}"), |app| {
         let host = app.engine().host();
-        host.verified_bundled_kind(device).is_some()
+        host.verified_bundle(device).is_some()
             && host
                 .param_base(device, wire)
                 .is_some_and(|actual| (actual - value).abs() < 1e-6)

@@ -95,7 +95,12 @@ pub(crate) fn device_row_label(
     }
 }
 
-fn rows_for_pads(t: Lang, notes: impl Iterator<Item = u8>, names: &[NoteName]) -> Vec<StepRowSpec> {
+/// Rows for pads on `notes`, named after `names` or the default row names of `t`.
+pub(crate) fn rows_for_pads(
+    t: Lang,
+    notes: impl Iterator<Item = u8>,
+    names: &[NoteName],
+) -> Vec<StepRowSpec> {
     default_rows(t)
         .iter()
         .zip(notes)

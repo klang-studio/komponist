@@ -112,15 +112,7 @@ pub fn plugin(catalog: &Catalog, id: &str) -> PluginRef {
     catalog
         .entries()
         .iter()
-        .find(|e| {
-            e.plugin.id == id
-                && !matches!(
-                    e.location,
-                    komponist_plugins::PluginLocation::InProcess(
-                        komponist_plugins::BuiltinKind::Internal(_)
-                    )
-                )
-        })
+        .find(|e| e.plugin.id == id && !e.is_builtin())
         .unwrap_or_else(|| panic!("{id} in the catalog"))
         .plugin
         .clone()

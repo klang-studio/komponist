@@ -1,7 +1,5 @@
 //! Tracked preset, paste, and asset-link edits reach the running processor through
-//! `EngineSync::sync_device_states`, including on undo and redo. Current-format tests use real
-//! CLAP processors. The legacy Hexa and unreadable-state tests cover the compatibility paths
-//! used when opening older projects.
+//! `EngineSync::sync_device_states`, including on undo and redo, over real CLAP processors.
 
 use crate::common::*;
 
@@ -9,16 +7,14 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use komponist_app::device_host::{BuiltinHost, DeviceHost, is_hexa};
+use komponist_app::device_host::DeviceHost;
 use komponist_app::engine_sync::{EngineSync, MidiSetup, SyncEvent};
 use komponist_audio::{HostKind, StreamConfig};
 use komponist_audiofile::fixtures as testkit;
-use komponist_builtin::Internal;
 use komponist_engine::Command;
 use komponist_ipc::control::RenderMode;
 use komponist_ipc::device_assets::AssetStatus;
 use komponist_model::edits::{self, NewDevice};
-use komponist_model::fixtures::demo_project;
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::project::SavedPluginState;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, Document, Project, TrackId};
@@ -33,16 +29,6 @@ fn null_sync(host: Box<dyn DeviceHost>) -> EngineSync {
     let (sync, started) = EngineSync::new(&config, MidiSetup::None, host);
     started.expect("null backend");
     sync
-}
-
-fn set_state(doc: &mut Document, device: DeviceId, state: Vec<u8>) -> Arc<Project> {
-    let before = Arc::clone(doc.project());
-    let state: Arc<[u8]> = state.into();
-    doc.apply("Zustand", |p| {
-        edits::set_device_state(p, device, Some(Arc::clone(&state)))
-    })
-    .unwrap();
-    before
 }
 
 /// Sends the document to the engine and moves the engine to the document after `before`.
@@ -70,142 +56,18 @@ fn note_peak_with_tail(sync: &mut EngineSync, track: TrackId, key: u8, tail_fram
         key,
         velocity: 100,
     });
-    let (l, r) = sync.run_held_capture(9600, &[], 0).expect("held engine");
+    let (l, r) = sync.render_held(9600).expect("held engine");
     sync.send(Command::LiveNote {
         track,
         key,
         velocity: 0,
     });
-    sync.run_held(tail_frames, &[], 0);
+    sync.render_held(tail_frames);
     l.iter().chain(&r).fold(0.0_f32, |m, s| m.max(s.abs()))
 }
 
 fn note_peak(sync: &mut EngineSync, track: TrackId) -> f32 {
     note_peak_with_tail(sync, track, 60, 96_000)
-}
-
-fn hexa_track(project: &Project) -> (TrackId, DeviceId) {
-    project
-        .tracks
-        .iter()
-        .find_map(|t| {
-            t.channel
-                .devices
-                .iter()
-                .find(|d| is_hexa(d))
-                .map(|d| (t.id, d.id))
-        })
-        .expect("a hexa track")
-}
-
-fn hexa_state(preset: usize) -> Vec<u8> {
-    komponist_hexa::encode_state(&komponist_hexa::preset_patch(preset).unwrap())
-}
-
-#[test]
-fn undo_and_redo_of_a_legacy_hexa_patch_change_reach_the_running_processor() {
-    let project = demo_project();
-    let (track, synth) = hexa_track(&project);
-    let mut doc = Document::new(project);
-    let mut sync = null_sync(Box::new(BuiltinHost::new()));
-    sync.sync(&doc);
-    sync.hold_engine().expect("engine held");
-
-    // A patch with a clearly different level from the first.
-    let (a, b) = (0, 17);
-    let before = set_state(&mut doc, synth, hexa_state(a));
-    follow(&mut sync, &doc, &before);
-    let peak_a = note_peak(&mut sync, track);
-    let before = set_state(&mut doc, synth, hexa_state(b));
-    follow(&mut sync, &doc, &before);
-    let peak_b = note_peak(&mut sync, track);
-    assert!(peak_a > 0.0 && peak_b > 0.0, "{peak_a} {peak_b}");
-    assert!(
-        (peak_a - peak_b).abs() > 0.02 * peak_a.max(peak_b),
-        "the two patches must sound different: {peak_a} {peak_b}"
-    );
-
-    undo(&mut sync, &mut doc);
-    assert_eq!(note_peak(&mut sync, track), peak_a, "undo: the old patch");
-    redo(&mut sync, &mut doc);
-    assert_eq!(note_peak(&mut sync, track), peak_b, "redo: the new patch");
-}
-
-/// Peak of `frames` frames of the held engine, in pieces of 10 ms: the quietest piece.
-fn quietest(sync: &mut EngineSync, frames: usize) -> f32 {
-    let (l, r) = sync.run_held_capture(frames, &[], 0).expect("held engine");
-    l.chunks(480)
-        .zip(r.chunks(480))
-        .map(|(l, r)| l.iter().chain(r).fold(0.0_f32, |m, s| m.max(s.abs())))
-        .fold(f32::INFINITY, f32::min)
-}
-
-#[test]
-fn undo_and_redo_of_a_legacy_hexa_knob_keep_a_held_note_sounding() {
-    // #19: the patch is diffed into parameters, so the running processor stays and a held note
-    // sounds on through undo and redo; only a change no parameter reaches makes a fresh one.
-    let project = demo_project();
-    let (track, synth) = hexa_track(&project);
-    let mut doc = Document::new(project);
-    let mut sync = null_sync(Box::new(BuiltinHost::new()));
-    sync.sync(&doc);
-    sync.hold_engine().expect("engine held");
-    let patch = |doc: &Document| {
-        let device = doc.project().find_device(synth).unwrap().2;
-        komponist_hexa::decode_state(device.state.as_deref()).unwrap()
-    };
-    // A sustaining patch, so the note is heard as long as it is held.
-    let before = set_state(&mut doc, synth, hexa_state(0));
-    follow(&mut sync, &doc, &before);
-    let original = patch(&doc);
-
-    sync.send(Command::LiveNote {
-        track,
-        key: 60,
-        velocity: 100,
-    });
-    assert!(quietest(&mut sync, 9600) > 1e-3, "the note sounds");
-    let reloads = sync.device_reloads();
-
-    // A tracked knob change (as a paste over or a cancelled gesture would be), undo, redo.
-    let volume = komponist_hexa::device::param(&komponist_model::params::ParamId::new("volume"))
-        .unwrap()
-        .field;
-    let mut turned = original;
-    volume.set(&mut turned, volume.get(&original) * 0.5);
-    let before = set_state(&mut doc, synth, komponist_hexa::encode_state(&turned));
-    follow(&mut sync, &doc, &before);
-    assert!(quietest(&mut sync, 9600) > 1e-3, "sounds after the change");
-    undo(&mut sync, &mut doc);
-    assert_eq!(patch(&doc), original);
-    assert!(quietest(&mut sync, 9600) > 1e-3, "sounds after undo");
-    redo(&mut sync, &mut doc);
-    assert_eq!(patch(&doc), turned);
-    assert!(quietest(&mut sync, 9600) > 1e-3, "sounds after redo");
-    assert_eq!(sync.device_reloads(), reloads, "no fresh processor");
-
-    // The same patch from a fresh processor sounds the same: the parameters arrived.
-    sync.send(Command::LiveNote {
-        track,
-        key: 60,
-        velocity: 0,
-    });
-    sync.run_held(96_000, &[], 0);
-    let held = note_peak(&mut sync, track);
-    sync.reload_device(doc.project(), synth);
-    assert_eq!(
-        note_peak(&mut sync, track),
-        held,
-        "redo reached the processor"
-    );
-
-    // A preset with other filters or effects is no parameter: a fresh processor.
-    let reloads = sync.device_reloads();
-    let before = set_state(&mut doc, synth, hexa_state(17));
-    follow(&mut sync, &doc, &before);
-    assert_eq!(sync.device_reloads(), reloads + 1);
-    undo(&mut sync, &mut doc);
-    assert_eq!(sync.device_reloads(), reloads + 2);
 }
 
 /// Capture the device's own bytes and the host-owned parameter bases together.
@@ -248,7 +110,8 @@ fn wait_for_state(sync: &mut EngineSync, device: DeviceId) {
     });
 }
 
-/// Keep the live processors but wait for their audio blocks outside real-time deadlines.
+/// Keep the live processors in offline mode, like an export. The probes render the held engine
+/// offline (`render_held`), so they wait for every bridge block instead of a deadline (#347).
 fn hold_offline(sync: &mut EngineSync, devices: &[DeviceId]) {
     sync.hold_engine().expect("engine held");
     sync.host_mut().set_render_mode(RenderMode::Offline);
@@ -544,77 +407,6 @@ fn undo_and_redo_of_a_bridged_plugins_state_reach_the_plugin() {
     redo(&mut sync, &mut doc);
     wait_for_state(&mut sync, synth);
     assert_eq!(snapshot(&mut sync, synth), quiet, "redo: the new state");
-}
-
-/// A corrupted state, or one a newer build wrote, plays as the defaults, but the host reports it
-/// (device warning plus a state log event, which the app turns into a status message), the document
-/// keeps the bytes and no knob turn saves defaults over them (#224).
-#[test]
-fn an_unreadable_device_state_is_reported_and_never_overwritten() {
-    use komponist_builtin::BuiltinKind;
-    use komponist_model::PluginRef;
-    use komponist_plugins::manager::STATE_LOG_PREFIX;
-
-    let corrupted: &[u8] = b"{\"params\": {\"gain\": ";
-    let newer: &[u8] = br#"{"version":9,"params":"packed-v9"}"#;
-    let base = demo_project()
-        .tracks
-        .iter()
-        .flat_map(|track| &track.channel.devices)
-        .find(|device| is_hexa(device))
-        .cloned()
-        .expect("the demo has a Hexa");
-    let device_for = |plugin: PluginRef, state: &[u8], id: u64| komponist_model::Device {
-        id: DeviceId(id),
-        plugin,
-        state: Some(state.to_vec().into()),
-        ..(*base).clone()
-    };
-    let setup = komponist_plugins::ProcessorSetup {
-        sample_rate: 48_000.0,
-        max_block: 512,
-    };
-    let mut host = BuiltinHost::new();
-    let mut id = 900u64;
-    for state in [corrupted, newer] {
-        for plugin in [
-            Internal::Limiter.plugin_ref(),
-            komponist_hexa::CATALOG.plugin_ref(),
-        ] {
-            id += 1;
-            let device = device_for(plugin, state, id);
-            assert!(host.create_processor(&device, setup).is_some());
-            assert!(host.state_warning(device.id).is_some(), "{state:?}");
-            let logged = host.poll().into_iter().any(|e| {
-                matches!(&e, PluginManagerEvent::Log { device: Some(d), message, .. }
-                    if *d == device.id && message.starts_with(STATE_LOG_PREFIX))
-            });
-            assert!(logged, "state log event for {state:?}");
-            // The stored bytes are untouched and no knob turn replaces them.
-            assert_eq!(device.state.as_deref(), Some(state));
-            let kind = BuiltinKind::from_plugin(&device.plugin).unwrap();
-            assert!(kind.state_error(device.state.as_deref()).is_some());
-        }
-    }
-    let limiter_gain = Internal::Limiter
-        .wire(&komponist_model::params::ParamId::new("gain"))
-        .unwrap();
-    for state in [corrupted, newer] {
-        assert_eq!(
-            Internal::Limiter.with_value(Some(state), limiter_gain, 6.0),
-            None
-        );
-    }
-
-    // A readable state, and a device without one, carry no warning; releasing clears it.
-    let fine = Internal::Limiter
-        .with_value(None, limiter_gain, 6.0)
-        .unwrap();
-    let device = device_for(Internal::Limiter.plugin_ref(), &fine, 950);
-    host.create_processor(&device, setup).unwrap();
-    assert_eq!(host.state_warning(device.id), None);
-    host.release(DeviceId(901));
-    assert_eq!(host.state_warning(DeviceId(901)), None);
 }
 
 /// A restore failure must preserve the original bytes while the user leaves the controls alone.

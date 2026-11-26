@@ -1544,7 +1544,8 @@ impl EngineSync {
     }
 
     /// [`EngineSync::run_held`] that also returns what the engine rendered (left, right); `None`
-    /// if no engine is held.
+    /// if no engine is held. The blocks keep a callback's realtime deadline, so a bridge that is
+    /// late on a loaded machine falls back for that block; [`EngineSync::render_held`] waits.
     pub fn run_held_capture(
         &mut self,
         frames: usize,
@@ -1579,6 +1580,27 @@ impl EngineSync {
             engine.process(&mut left[..n], &mut right[..n], &input);
             out.0.extend_from_slice(&left[..n]);
             out.1.extend_from_slice(&right[..n]);
+            done += n;
+        }
+        Some(out)
+    }
+
+    /// Tests: renders `frames` frames of the held engine offline ([`Engine::render`], blocks of
+    /// 256) and returns them (left, right); `None` if no engine is held. Unlike
+    /// [`EngineSync::run_held_capture`], whose blocks keep the realtime deadline of a callback,
+    /// bridges get their offline wait here, so a loaded machine never turns a block into the
+    /// fallback (#347). No live MIDI: send `Command::LiveNote` instead.
+    pub fn render_held(&mut self, frames: usize) -> Option<(Vec<f32>, Vec<f32>)> {
+        let engine = &mut self.held.as_mut()?.engine;
+        let mut out = (Vec::with_capacity(frames), Vec::with_capacity(frames));
+        let mut done = 0;
+        while done < frames {
+            let n = HELD_BLOCK.min(frames - done);
+            let (frames_out, _) = engine.render(n).as_chunks::<2>();
+            for &[left, right] in frames_out {
+                out.0.push(left);
+                out.1.push(right);
+            }
             done += n;
         }
         Some(out)
@@ -1729,7 +1751,6 @@ mod tests {
 
     use super::*;
     use crate::app::App;
-    use crate::device_host::BuiltinHost;
     use komponist_model::edits::{self, ChannelProp, TrackProp};
     use komponist_model::fixtures::demo_project;
     use std::time::Instant;
@@ -2252,32 +2273,32 @@ mod tests {
     #[test]
     fn sync_reuses_full_processor_slots_after_retiring_the_old_device() {
         use edits::NewDevice;
-        use komponist_builtin::Internal;
         use komponist_model::automation::{AutomationOwner, AutomationTarget};
-        use komponist_model::params::ParamId;
         use komponist_model::{ChannelRef, DeviceRole};
 
-        let effect = |kind: Internal| NewDevice {
-            role: DeviceRole::Effect,
-            plugin: kind.plugin_ref(),
-            state: None,
-            sidechain: None,
+        const LIMITER: &str = "org.klang-studio.komponist.limiter";
+        let host = App::headless_plugin_host();
+        let prepare = |plugin: &str, edits: &[(&str, f64)], targets: &[&str]| {
+            host.manager()
+                .prepare_bundled_device(plugin, None, edits, targets)
+                .unwrap_or_else(|error| panic!("{error}; build the bundles for the tests"))
         };
+        let new_device =
+            |prepared: komponist_plugins::bundled_initial_state::InitialDevice| NewDevice {
+                role: DeviceRole::Effect,
+                plugin: prepared.plugin,
+                state: prepared.state,
+                sidechain: None,
+            };
+        let eq = new_device(prepare("org.klang-studio.komponist.eq", &[], &[]));
+        let limiter = new_device(prepare(LIMITER, &[], &[]));
         let owner = AutomationOwner::Master;
+        let gain = prepare(LIMITER, &[], &["gain"]).targets["gain"].0.clone();
         let parameter = |device| AutomationTarget::Param {
             device,
-            param: ParamId::new("gain"),
+            param: gain.clone(),
         };
-        let lookahead = Internal::Limiter.wire(&ParamId::new("lookahead")).unwrap();
-        let zero_latency_limiter = NewDevice {
-            state: Some(
-                Internal::Limiter
-                    .with_value(None, lookahead, 0.0)
-                    .unwrap()
-                    .into(),
-            ),
-            ..effect(Internal::Limiter)
-        };
+        let zero_latency_limiter = new_device(prepare(LIMITER, &[("lookahead", 0.0)], &[]));
         // With one initial spare, the first new limiter causes a latency recompile while
         // the second limiter still needs to wait for the removed device's slot.
         for spare in [0, 1] {
@@ -2290,14 +2311,13 @@ mod tests {
             .unwrap();
             for index in 1..MAX_SLOTS - spare {
                 (project, _) =
-                    edits::insert_device(&project, ChannelRef::Master, index, effect(Internal::Eq))
-                        .unwrap();
+                    edits::insert_device(&project, ChannelRef::Master, index, eq.clone()).unwrap();
             }
             (project, _) =
                 edits::automation::add_lane(&project, owner, parameter(removed), "Gain".into())
                     .unwrap();
             let mut doc = Document::new(project);
-            let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
+            let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
             sync.hold_engine().unwrap();
             sync.sync(&doc);
             let original = sync.program().unwrap();
@@ -2322,7 +2342,7 @@ mod tests {
                             &project,
                             ChannelRef::Master,
                             index,
-                            effect(Internal::Limiter),
+                            limiter.clone(),
                         )?;
                         replacements.push(id);
                     }
