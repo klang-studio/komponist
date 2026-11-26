@@ -84,8 +84,6 @@
 1	dependency	komponist-plugins	komponist-volt	komponist-device-core	komponist_device_core	normal	*
 1	source	crates/komponist-app/src/app.rs	BuiltinKind
 1	source	crates/komponist-app/src/app.rs	komponist_builtin
-1	source	crates/komponist-app/src/app/track_macro_edits.rs	Internal::
-1	source	crates/komponist-app/src/app/track_macro_edits.rs	komponist_builtin
 9	source	crates/komponist-app/src/device_host.rs	BuiltinKind
 7	source	crates/komponist-app/src/device_host.rs	Internal::
 2	source	crates/komponist-app/src/device_host.rs	komponist_builtin
@@ -101,8 +99,6 @@
 1	source	crates/komponist-app/src/engine_sync.rs	komponist_hexa
 1	source	crates/komponist-app/src/engine_sync.rs	komponist_sampler
 2	source	crates/komponist-app/src/gain_trace.rs	komponist_presse
-1	source	crates/komponist-app/src/panels/statusbar.rs	Internal::
-1	source	crates/komponist-app/src/panels/statusbar.rs	komponist_builtin
 2	source	crates/komponist-app/src/param_undo.rs	Internal::
 1	source	crates/komponist-app/src/param_undo.rs	komponist_builtin
 2	source	crates/komponist-app/src/step_rows.rs	komponist_sampler

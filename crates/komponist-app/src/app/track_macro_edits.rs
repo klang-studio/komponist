@@ -530,7 +530,6 @@ fn preserve_unmapped_value(
 mod tests {
     use super::*;
     use crate::actions::{Action as AppAction, EditAction, TransportAction};
-    use komponist_builtin::Internal;
 
     #[test]
     fn macro_touch_records_into_its_own_lane_and_keeps_the_base() {
@@ -727,11 +726,22 @@ mod tests {
 
     #[test]
     fn mapping_mode_preserves_pan_then_the_macro_pans_a_real_synth() {
+        use crate::device_host::DeviceHost as _;
+
+        let host = App::headless_plugin_host();
+        let instrument = host
+            .catalog()
+            .entries()
+            .iter()
+            .find(|entry| entry.plugin.id == "org.klang-studio.komponist.volt")
+            .expect("build the Volt fixture with scripts/build-test-plugins.sh")
+            .plugin
+            .clone();
         let (project, track) = edits::add_track(
             &Project::new("Macro test"),
             edits::NewTrack {
                 name: Some("Volt".into()),
-                instrument: Some(Internal::Volt.plugin_ref()),
+                instrument: Some(instrument),
                 hue: None,
                 index: None,
                 arm_exclusive: false,

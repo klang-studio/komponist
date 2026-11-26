@@ -466,8 +466,8 @@ mod tests {
     #[test]
     fn compensation_warning_shows_in_both_languages_and_clears_after_a_recompile() {
         use crate::actions::{Action, EditAction};
+        use crate::device_host::DeviceHost as _;
         use egui_kittest::kittest::Queryable as _;
-        use komponist_builtin::Internal;
         use komponist_engine::MAX_PDC_FRAMES;
         use komponist_model::edits::{self, NewDevice, NewTrack};
         use komponist_model::{ChannelRef, DeviceRole, Project};
@@ -481,9 +481,18 @@ mod tests {
         };
         let (project, slow) = edits::add_track(&Project::new("Latency"), track.clone()).unwrap();
         let (mut project, _) = edits::add_track(&project, track).unwrap();
+        let host = App::headless_plugin_host();
+        let limiter = host
+            .catalog()
+            .entries()
+            .iter()
+            .find(|entry| entry.plugin.id == "org.klang-studio.komponist.limiter")
+            .expect("build the Limiter fixture with scripts/build-test-plugins.sh")
+            .plugin
+            .clone();
         let limiter = NewDevice {
             role: DeviceRole::Effect,
-            plugin: Internal::Limiter.plugin_ref(),
+            plugin: limiter,
             state: None,
             sidechain: None,
         };
