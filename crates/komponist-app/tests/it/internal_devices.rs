@@ -11,7 +11,9 @@ use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::ui_state::{BrowserSegment, DockTab};
 use komponist_app::{Action, App, PluginAction, ProjectAction, UiAction};
+use komponist_builtin::Internal;
 use komponist_i18n::Lang;
+use komponist_model::params::ParamId;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, PluginFormat, Project, TrackId};
 use komponist_plugins::DeviceStatus;
 
@@ -80,6 +82,18 @@ fn select_track(app: &mut App, track: TrackId) {
 }
 
 /// A project with one hexa track and the dock on „Geräte“.
+fn reference_app_with_track() -> (App, TrackId) {
+    let mut app = crate::common::reference_app(Project::new("Intern"));
+    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
+    app.dispatch(Action::Plugin(PluginAction::Add {
+        plugin: hexa,
+        target: DropTarget::NewTrack { index: None },
+    }));
+    let track = app.project().tracks[0].id;
+    select_track(&mut app, track);
+    (app, track)
+}
+
 fn app_with_track() -> (App, TrackId) {
     let mut app = App::headless(Project::new("Intern"));
     let hexa = shipped(&app, "hexa");
@@ -98,6 +112,13 @@ fn shipped(app: &App, id: &str) -> komponist_model::PluginRef {
     let id = format!("org.klang-studio.komponist.{id}");
     shipped_plugin(app.engine().host(), &id)
         .unwrap_or_else(|| panic!("build {id} with scripts/build-test-plugins.sh"))
+}
+
+fn reference_add(app: &mut App, kind: Internal, target: DropTarget) {
+    app.dispatch(Action::Plugin(PluginAction::Add {
+        plugin: kind.plugin_ref(),
+        target,
+    }));
 }
 
 fn add(app: &mut App, id: &str, target: DropTarget) {
@@ -282,9 +303,14 @@ fn double_click_or_click(h: &mut Harness<'_, App>, pos: Pos2) {
 
 #[test]
 fn snapshot_of_the_four_effect_frames() {
-    let (mut app, track) = app_with_track();
-    for kind in ["eq", "delay", "hall", "limiter"] {
-        add(&mut app, kind, DropTarget::Track(track));
+    let (mut app, track) = reference_app_with_track();
+    for kind in [
+        Internal::Eq,
+        Internal::Delay,
+        Internal::Hall,
+        Internal::Limiter,
+    ] {
+        reference_add(&mut app, kind, DropTarget::Track(track));
     }
     let ids = chain(&app, track);
     let (eq, delay) = (ids[1].0, ids[2].0);
@@ -296,9 +322,9 @@ fn snapshot_of_the_four_effect_frames() {
         ("b5_type", 4.0),
         ("b5_freq", 12_000.0),
     ] {
-        set_param(&mut app, eq, key, v);
+        set_reference_param(&mut app, eq, Internal::Eq, key, v);
     }
-    set_param(&mut app, delay, "time", 250.0);
+    set_reference_param(&mut app, delay, Internal::Delay, "time", 250.0);
     app.dispatch(Action::Ui(UiAction::ToggleDeviceCollapsed {
         device: ids[0].0,
         all: false,
@@ -324,6 +350,22 @@ fn names_of(app: &App, track: TrackId) -> Vec<String> {
 }
 
 /// hexa with the arpeggiator and the Tonleiter in front of it and an EQ behind it.
+fn reference_app_with_midi_effects() -> (App, TrackId) {
+    let (mut app, track) = reference_app_with_track();
+    reference_add(&mut app, Internal::Arpeggiator, DropTarget::Track(track));
+    // Dropped behind everything, a MIDI effect still lands in the MIDI part.
+    reference_add(
+        &mut app,
+        Internal::Tonleiter,
+        DropTarget::Chain {
+            channel: ChannelRef::Track(track),
+            index: 99,
+        },
+    );
+    reference_add(&mut app, Internal::Eq, DropTarget::Track(track));
+    (app, track)
+}
+
 fn app_with_midi_effects() -> (App, TrackId) {
     let (mut app, track) = app_with_track();
     add(&mut app, "arpeggiator", DropTarget::Track(track));
@@ -533,12 +575,12 @@ fn midi_effects_reorder_inside_their_part_and_never_behind_the_instrument() {
 
 #[test]
 fn snapshot_of_a_chain_with_midi_effects_left_of_the_instrument() {
-    let (mut app, track) = app_with_midi_effects();
+    let (mut app, track) = reference_app_with_midi_effects();
     let ids = chain(&app, track);
-    set_param(&mut app, ids[0].0, "mode", 2.0);
-    set_param(&mut app, ids[0].0, "octaves", 2.0);
-    set_param(&mut app, ids[1].0, "scale", 1.0);
-    set_param(&mut app, ids[1].0, "root", 9.0);
+    set_reference_param(&mut app, ids[0].0, Internal::Arpeggiator, "mode", 2.0);
+    set_reference_param(&mut app, ids[0].0, Internal::Arpeggiator, "octaves", 2.0);
+    set_reference_param(&mut app, ids[1].0, Internal::Tonleiter, "scale", 1.0);
+    set_reference_param(&mut app, ids[1].0, Internal::Tonleiter, "root", 9.0);
     let mut h = harness(app);
     h.run_steps(4);
     // The order the signal runs in, left to right.
@@ -770,6 +812,34 @@ fn tap_of(app: &App, device: DeviceId) -> std::sync::Arc<komponist_engine::Sampl
 
 /// Plays one second of a note through a track with `presse` (threshold −40 dB, so it compresses)
 /// and gives the harness and the device.
+fn reference_playing_presse() -> (Harness<'static, App>, DeviceId) {
+    use komponist_engine::{MidiInEvent, MidiPort};
+    let (mut app, track) = reference_app_with_track();
+    reference_add(&mut app, Internal::Presse, DropTarget::Track(track));
+    let presse = chain(&app, track)[1].0;
+    for (key, v) in [("threshold", -40.0), ("ratio", 8.0), ("detector", 0.0)] {
+        set_reference_param(&mut app, presse, Internal::Presse, key, v);
+    }
+    app.dispatch(Action::Edit(komponist_app::EditAction::SetTrackProp {
+        tracks: vec![track],
+        prop: komponist_model::edits::TrackProp::Arm(true),
+    }));
+    app.engine_mut().hold_engine().expect("engine held");
+    let mut h = harness(app);
+    let note = MidiInEvent {
+        frame: 0,
+        port: MidiPort(1),
+        data: [0x90, 57, 127],
+    };
+    h.run_steps(2);
+    for chunk in 0..10 {
+        let events: &[MidiInEvent] = if chunk == 0 { &[note] } else { &[] };
+        assert!(h.state_mut().engine_mut().run_held(4800, events, 0));
+        h.run_steps(2);
+    }
+    (h, presse)
+}
+
 fn playing_presse() -> (Harness<'static, App>, DeviceId) {
     use komponist_engine::{MidiInEvent, MidiPort};
     let (mut app, track) = app_with_track();
@@ -839,7 +909,7 @@ fn the_presse_meter_shows_the_reduction_the_engine_measured() {
 
 #[test]
 fn snapshot_of_the_presse_frame_while_playing() {
-    let (mut h, _) = playing_presse();
+    let (mut h, _) = reference_playing_presse();
     let cpu = h
         .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
         .rect();
@@ -848,4 +918,9 @@ fn snapshot_of_the_presse_frame_while_playing() {
     h.snapshot("devices-presse-live-1x");
     results.extend_harness(&mut h);
     results.unwrap();
+}
+
+fn set_reference_param(app: &mut App, device: DeviceId, kind: Internal, key: &str, value: f64) {
+    let id = kind.wire(&ParamId::new(key)).expect("known parameter");
+    app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
 }

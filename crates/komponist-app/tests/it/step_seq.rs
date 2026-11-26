@@ -88,6 +88,13 @@ fn pattern(app: &App, clip: ClipId) -> StepClip {
 }
 
 /// `project` with "Beat B" open in the step sequencer.
+fn reference_opened_in(project: Project) -> App {
+    let mut app = crate::common::reference_app(project);
+    let (_, clip) = beat_b(&app);
+    app.dispatch(ui(UiAction::OpenClip(clip)));
+    app
+}
+
 fn opened_in(project: Project) -> App {
     let mut app = App::headless(project);
     let (_, clip) = beat_b(&app);
@@ -104,7 +111,7 @@ fn opened() -> App {
 /// `PADS`, `prob`, `ratch` and swing 12 %, the cursor on step 11 of "Closed Hat", the dock 380 high
 /// as in the screens, playhead at 10.2.120.
 fn s03_in(project: Project) -> App {
-    let mut app = opened_in(project);
+    let mut app = reference_opened_in(project);
     let (_, clip) = beat_b(&app);
     let set = |row, step, prop| {
         edit(EditAction::SetStep {

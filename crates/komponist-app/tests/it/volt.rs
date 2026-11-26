@@ -10,7 +10,9 @@ use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, PluginAction, UiAction};
+use komponist_builtin::Internal;
 use komponist_i18n::Lang;
+use komponist_model::params::ParamId;
 use komponist_model::{DeviceId, DeviceRole, Project};
 
 use crate::common::{
@@ -56,6 +58,22 @@ fn click(h: &mut Harness<'_, App>, pos: Pos2) {
 }
 
 /// A project with one volt track and the dock on „Geräte“.
+fn reference_app_with_volt() -> (App, DeviceId) {
+    let mut app = crate::common::reference_app(Project::new("Volt"));
+    app.dispatch(Action::Plugin(PluginAction::Add {
+        plugin: Internal::Volt.plugin_ref(),
+        target: DropTarget::NewTrack { index: None },
+    }));
+    let track = app.project().tracks[0].id;
+    let device = app.project().tracks[0].channel.devices[0].id;
+    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+        tracks: vec![track],
+        mode: SelectMode::Replace,
+    })));
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+    (app, device)
+}
+
 fn app_with_volt() -> (App, DeviceId) {
     let mut app = App::headless(Project::new("Volt"));
     app.dispatch(Action::Plugin(PluginAction::Add {
@@ -92,7 +110,7 @@ fn mask_cpu(h: &mut Harness<'_, App>) {
 
 #[test]
 fn snapshot_of_the_three_pages() {
-    let (mut app, device) = app_with_volt();
+    let (mut app, device) = reference_app_with_volt();
     // The state of the proposal's mockups: LFO 1 → cutoff, velocity → volume, Hk. 3 → pulse width
     // A, mod wheel → drive; the filter envelope is the second, shorter one.
     for (key, v) in [
@@ -111,7 +129,7 @@ fn snapshot_of_the_three_pages() {
         ("filt_a", 0.002),
         ("filt_d", 0.35),
     ] {
-        set(&mut app, device, key, v);
+        set_reference_param(&mut app, device, key, v);
     }
     page(&mut app, device, 0);
     let mut h = harness(app);
@@ -260,4 +278,9 @@ fn knob_turns_and_routing_are_saved_in_the_project_and_load_again() {
     wait_for_layout(&mut reopened, device);
     assert_authored_plain(&reopened, device, "cutoff", 640.0);
     assert_authored_plain(&reopened, device, "mod2_amt", -0.25);
+}
+
+fn set_reference_param(app: &mut App, device: DeviceId, key: &str, value: f64) {
+    let id = Internal::Volt.wire(&ParamId::new(key)).expect(key);
+    app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
 }

@@ -73,7 +73,7 @@ struct Scene {
 }
 
 fn scene() -> Scene {
-    let probe = App::headless(Project::new("probe"));
+    let probe = crate::common::reference_app(Project::new("probe"));
     let pisynth = probe.engine().host().catalog().entries()[0].plugin.clone();
     let mut p = Project::new("Sidechain");
     let track = |p: &mut Project, name: &str| {
@@ -132,7 +132,7 @@ fn scene() -> Scene {
 }
 
 fn app(s: &Scene) -> App {
-    let mut app = App::headless(s.project.clone());
+    let mut app = crate::common::reference_app(s.project.clone());
     app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
         tracks: vec![s.pad],
         mode: SelectMode::Replace,

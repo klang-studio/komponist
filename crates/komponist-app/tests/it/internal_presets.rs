@@ -11,7 +11,9 @@ use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, EditAction, PluginAction, TransportAction, UiAction};
+use komponist_builtin::Internal;
 use komponist_i18n::{Lang, de};
+use komponist_model::params::ParamId;
 use komponist_model::{DeviceId, Project, TrackId};
 
 use crate::common::{
@@ -52,6 +54,27 @@ fn click(h: &mut Harness<'_, App>, pos: Pos2) {
 }
 
 /// A project with a hexa track and one `kind` device behind it; the dock shows the devices.
+fn reference_app_with(kind: Internal) -> (App, TrackId, DeviceId) {
+    let mut app = crate::common::reference_app(Project::new("Presets"));
+    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
+    app.dispatch(Action::Plugin(PluginAction::Add {
+        plugin: hexa,
+        target: DropTarget::NewTrack { index: None },
+    }));
+    let track = app.project().tracks[0].id;
+    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+        tracks: vec![track],
+        mode: SelectMode::Replace,
+    })));
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+    app.dispatch(Action::Plugin(PluginAction::Add {
+        plugin: kind.plugin_ref(),
+        target: DropTarget::Track(track),
+    }));
+    let device = app.project().tracks[0].channel.devices.last().unwrap().id;
+    (app, track, device)
+}
+
 fn app_with(id: &str) -> (App, TrackId, DeviceId) {
     let mut app = App::headless(Project::new("Presets"));
     let hexa = plugin(&app, "hexa");
@@ -122,6 +145,12 @@ fn factory(app: &mut App, device: DeviceId, name: &str) {
     });
 }
 
+fn reference_card<'h>(h: &'h Harness<'_, App>, kind: Internal) -> egui_kittest::Node<'h> {
+    // Test code: leaking the name keeps the node's borrow simple.
+    let label: &'static str = Box::leak(Lang::De.devices_card(kind.name()).into_boxed_str());
+    h.get_by_role_and_label(Role::Group, label)
+}
+
 fn card<'h>(h: &'h Harness<'_, App>, name: &str) -> egui_kittest::Node<'h> {
     // Test code: leaking the name keeps the node's borrow simple.
     let label: &'static str = Box::leak(Lang::De.devices_card(name).into_boxed_str());
@@ -129,6 +158,17 @@ fn card<'h>(h: &'h Harness<'_, App>, name: &str) -> egui_kittest::Node<'h> {
 }
 
 /// The preset button of the card: „Preset“ or „Preset: <name>“.
+fn reference_preset_button<'h>(h: &'h Harness<'_, App>, kind: Internal) -> egui_kittest::Node<'h> {
+    reference_card(h, kind)
+        .query_all_by_role(Role::Button)
+        .find(|b| {
+            b.accesskit_node()
+                .label()
+                .is_some_and(|l| l.starts_with(de::DEVICES_PRESET))
+        })
+        .expect("a preset button")
+}
+
 fn preset_button<'h>(h: &'h Harness<'_, App>, name: &str) -> egui_kittest::Node<'h> {
     card(h, name)
         .query_all_by_role(Role::Button)
@@ -138,6 +178,11 @@ fn preset_button<'h>(h: &'h Harness<'_, App>, name: &str) -> egui_kittest::Node<
                 .is_some_and(|l| l.starts_with(de::DEVICES_PRESET))
         })
         .expect("a preset button")
+}
+
+fn reference_open_menu(h: &mut Harness<'_, App>, kind: Internal) {
+    let rect = reference_preset_button(h, kind).rect();
+    click(h, rect.center());
 }
 
 fn open_menu(h: &mut Harness<'_, App>, name: &str) {
@@ -333,12 +378,16 @@ fn the_loaded_preset_survives_saving_and_reopening() {
 
 #[test]
 fn snapshot_of_the_eq_head_with_the_open_preset_dropdown() {
-    let (mut app, _, device) = app_with("eq");
-    factory(&mut app, device, "Low Cut 80 Hz");
-    set_param(&mut app, device, "out", 1.5);
+    let kind = Internal::Eq;
+    let (mut app, _, device) = reference_app_with(kind);
+    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
+        device,
+        source: komponist_plugins::presets::legacy_source(2),
+    }));
+    set_reference_param(&mut app, device, kind, "out", 1.5);
     let mut h = harness(app);
     h.run_steps(2);
-    open_menu(&mut h, "EQ");
+    reference_open_menu(&mut h, kind);
     h.run_steps(4);
     let cpu = h
         .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
@@ -348,4 +397,9 @@ fn snapshot_of_the_eq_head_with_the_open_preset_dropdown() {
     h.snapshot("devices-preset-dropdown-eq-1x");
     results.extend_harness(&mut h);
     results.unwrap();
+}
+
+fn set_reference_param(app: &mut App, device: DeviceId, kind: Internal, key: &str, value: f64) {
+    let id = kind.wire(&ParamId::new(key)).expect("known parameter");
+    app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
 }

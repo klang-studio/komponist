@@ -29,6 +29,12 @@ use komponist_model::{
 };
 use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerConfig, PluginManagerEvent};
 
+/// Build a screenshot scene with the catalogue used by the checked-in reference images.
+pub fn reference_app(project: Project) -> App {
+    App::headless(project)
+        .with_device_host(Box::new(komponist_app::device_host::BuiltinHost::new()))
+}
+
 /// How long loading, scans and answers may take on a loaded machine.
 pub const PATIENCE: Duration = Duration::from_secs(30);
 

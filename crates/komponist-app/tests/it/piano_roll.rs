@@ -65,6 +65,14 @@ fn toolbar_field<'h>(h: &'h Harness<'_, App>, label: &'h str) -> egui_kittest::N
 const TEST_DOCK: f32 = 500.0;
 
 /// The demo with Lead A (bars 9–10) open in the piano roll, the dock [`TEST_DOCK`] high.
+fn reference_lead_a() -> (App, ClipId) {
+    let mut app = crate::common::reference_app(demo_project());
+    app.ui_mut().layout.dock_height = TEST_DOCK;
+    let clip = app.project().tracks[2].clips[0].id;
+    app.dispatch(Action::Ui(UiAction::OpenClip(clip)));
+    (app, clip)
+}
+
 fn lead_a() -> (App, ClipId) {
     let mut app = App::headless(demo_project());
     app.ui_mut().layout.dock_height = TEST_DOCK;
@@ -804,6 +812,25 @@ fn notes_past_the_clip_end_lengthen_it() {
 // Empty clip, playback, accessibility
 
 /// S10 "Leerer Clip — Piano Roll zeigt Raster und Klaviatur, Stift ist vorausgewählt."
+fn reference_empty_clip_app() -> (App, ClipId) {
+    let mut app = crate::common::reference_app(demo_project());
+    let track = app.project().tracks[2].id;
+    app.dispatch(Action::Edit(EditAction::AddClip {
+        track,
+        clip: NewClip {
+            start: Tick(16 * BAR),
+            length: Tick(BAR),
+            name: "MIDI-Clip".to_owned(),
+            content: NewClipContent::Midi {
+                notes: Vec::new(),
+                take_name: String::new(),
+            },
+        },
+    }));
+    let clip = app.ui().editor.clip.expect("opened");
+    (app, clip)
+}
+
 fn empty_clip_app() -> (App, ClipId) {
     let mut app = App::headless(demo_project());
     let track = app.project().tracks[2].id;
@@ -908,7 +935,7 @@ fn notes_and_keys_light_up_while_playing() {
 /// The S01 state of the dock: Lead A, notes 7 and 8 selected (`pianoRoll({sel:[6,7]})`),
 /// playhead at 10.2.120, stopped.
 fn s01() -> App {
-    let (mut app, clip) = lead_a();
+    let (mut app, clip) = reference_lead_a();
     app.ui_mut().layout.dock_height = size::dock::DEFAULT;
     let notes = notes_of(&app, clip);
     select(&mut app, vec![notes[6].id, notes[7].id]);
@@ -956,7 +983,7 @@ fn snapshots_of_the_piano_roll() {
         h.snapshot(format!("piano-roll-s01-{ppp}x"));
         results.extend_harness(&mut h);
     }
-    let (app, _) = empty_clip_app();
+    let (app, _) = reference_empty_clip_app();
     let mut h = harness_at(app, 1.0);
     h.run_steps(3);
     mask_cpu(&mut h);
@@ -1056,7 +1083,7 @@ fn every_raster_draws_its_own_grid_and_thins_at_low_zoom() {
 fn snapshots_of_the_piano_roll_grid() {
     let mut results = SnapshotResults::new();
     for px_per_bar in [160.0, 640.0] {
-        let (mut app, _) = lead_a();
+        let (mut app, _) = reference_lead_a();
         app.ui_mut().piano_roll.px_per_bar = px_per_bar;
         app.ui_mut().piano_roll.grid = Grid::ThirtySecond;
         let mut h = harness(app);
@@ -1474,7 +1501,7 @@ fn snapshot_of_clip_automation_in_german_and_english() {
         (komponist_i18n::Lang::De, "automation-clip-de-1x"),
         (komponist_i18n::Lang::En, "automation-clip-en-1x"),
     ] {
-        let (app, clip) = lead_a();
+        let (app, clip) = reference_lead_a();
         let mut app = app.with_lang(lang);
         app.dispatch(Action::Automation(Automation::AddClip(
             clip,

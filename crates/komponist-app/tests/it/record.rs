@@ -501,7 +501,7 @@ fn edits_and_undo_go_on_while_recording_and_deleted_tracks_drop_their_take() {
 /// playhead at 14.3 with three keys held.
 #[test]
 fn snapshot_next_to_s02() {
-    let mut app = App::headless(demo_project());
+    let mut app = crate::common::reference_app(demo_project());
     let lead = app.project().tracks[2].clone();
     // S02 has no "Lead B" at bar 13, and the loop is off.
     app.dispatch(Action::Edit(EditAction::RemoveClips(vec![

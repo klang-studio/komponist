@@ -11,7 +11,7 @@ use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange};
-use komponist_app::device_host::{DeviceHost, PluginHost};
+use komponist_app::device_host::{BuiltinHost, DeviceHost};
 use komponist_app::ui_state::FocusArea;
 use komponist_app::{Action, App, EditAction, TransportAction, UiAction};
 use komponist_engine::Processor;
@@ -30,7 +30,7 @@ fn snapshot_dir() -> PathBuf {
 }
 
 /// The reference screens show external instruments as installed, even without those bundles.
-struct AllInstalled(PluginHost);
+struct AllInstalled(BuiltinHost);
 
 impl DeviceHost for AllInstalled {
     fn create_processor(
@@ -81,6 +81,10 @@ fn harness(app: App) -> Harness<'static, App> {
 fn hexa(app: &App) -> PluginRef {
     crate::common::shipped_plugin(app.engine().host(), "org.klang-studio.komponist.hexa")
         .expect("build the Hexa fixture with scripts/build-test-plugins.sh")
+}
+
+fn reference_demo() -> App {
+    crate::common::reference_app(demo_project())
 }
 
 fn demo() -> App {
@@ -207,7 +211,7 @@ fn undo(h: &mut Harness<'_, App>) {
 
 /// The S01 state: Lead A open in the piano roll, playhead at 10.2.120, every device installed.
 fn s01() -> App {
-    let mut app = demo().with_device_host(Box::new(AllInstalled(App::headless_plugin_host())));
+    let mut app = reference_demo().with_device_host(Box::new(AllInstalled(BuiltinHost::new())));
     let lead = app.project().tracks[2].clone();
     app.dispatch(Action::Ui(UiAction::OpenClip(lead.clips[0].id)));
     app.dispatch(Action::Transport(TransportAction::Locate(Tick(36_000))));
@@ -1163,7 +1167,7 @@ fn the_grid_dropdown_changes_the_lane_grid_lines() {
 fn snapshots_of_the_arrangement_grid() {
     let mut results = SnapshotResults::new();
     for px_per_bar in [72.0, 288.0] {
-        let mut app = demo();
+        let mut app = reference_demo();
         app.ui_mut().arrangement.px_per_bar = px_per_bar;
         app.ui_mut().arrangement.grid = komponist_model::Grid::Sixteenth;
         let mut h = harness(app);
@@ -1262,7 +1266,7 @@ fn an_empty_project_shows_the_hint_and_its_primary_action() {
 #[test]
 fn snapshot_of_an_empty_project_next_to_s10() {
     let mut h = harness_at(
-        App::headless(komponist_model::fixtures::empty_project()),
+        crate::common::reference_app(komponist_model::fixtures::empty_project()),
         1.0,
     );
     h.run_steps(3);
@@ -1501,14 +1505,14 @@ mod new_track {
     #[test]
     fn snapshots_of_the_box_and_the_dialog() {
         let mut results = SnapshotResults::new();
-        let mut h = harness(demo());
+        let mut h = harness(reference_demo());
         let at = new_track_box(&h).center();
         h.event(Event::PointerMoved(at));
         h.run_steps(3);
         mask_cpu(&mut h);
         h.snapshot("arrangement-new-track-hover-1x");
         results.extend_harness(&mut h);
-        let mut h = harness(demo());
+        let mut h = harness(reference_demo());
         open_by_click(&mut h);
         h.run_steps(3);
         mask_cpu(&mut h);
@@ -2172,7 +2176,7 @@ fn snapshot_of_arrangement_automation_in_german_and_english() {
             "automation-mode-menu-en-1x",
         ),
     ] {
-        let mut app = demo().with_lang(lang);
+        let mut app = reference_demo().with_lang(lang);
         app.ui_mut().layout.dock_open = false;
         let owner = AutomationOwner::Track(app.project().tracks[2].id);
         for (owner, target, label, mode) in [

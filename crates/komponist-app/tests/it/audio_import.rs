@@ -309,7 +309,7 @@ fn release(h: &mut Harness<'_, App>, at: egui::Pos2) {
 fn audio_track_dialog_and_file_browser_render_in_both_languages() {
     let mut results = SnapshotResults::new();
     for lang in [Lang::De, Lang::En] {
-        let app = App::headless(project()).with_lang(lang);
+        let app = crate::common::reference_app(project()).with_lang(lang);
         let mut h = harness(app);
         h.key_press_modifiers(
             Modifiers {
@@ -349,7 +349,7 @@ fn audio_track_dialog_and_file_browser_render_in_both_languages() {
             "audio-browser-en"
         });
         wav(&dir, "Shaker Loop.wav", 48_000, 1);
-        let mut app = App::headless(project()).with_lang(lang);
+        let mut app = crate::common::reference_app(project()).with_lang(lang);
         app.ui_mut().browser.segment = BrowserSegment::Files;
         app.ui_mut().browser.directory = Some(dir.clone());
         let mut h = harness(app);
@@ -418,7 +418,7 @@ fn audio_track_dialog_and_file_browser_render_in_both_languages() {
         );
         results.extend_harness(&mut h);
 
-        let mut app = App::headless(project()).with_lang(lang);
+        let mut app = crate::common::reference_app(project()).with_lang(lang);
         let source = wav(&dir, "Missing.wav", 48_000, 1);
         import(&mut app, vec![source.clone()], None, 0);
         let clip = app.project().tracks[0].clips[0].id;

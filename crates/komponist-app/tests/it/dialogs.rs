@@ -1274,7 +1274,7 @@ fn snapshots_of_s06_and_s10() {
     let mut results = SnapshotResults::new();
     for ppp in [1.0, 2.0] {
         let (project, missing) = s06();
-        let mut app = App::headless(project);
+        let mut app = crate::common::reference_app(project);
         app.ui_mut().dialog = Some(Dialog::MissingPlugins(missing));
         app.ui_mut().focus = FocusArea::Dialog;
         app.set_status(
@@ -1287,7 +1287,7 @@ fn snapshots_of_s06_and_s10() {
         h.snapshot(format!("dialogs-s06-{ppp}x"));
         results.extend_harness(&mut h);
     }
-    let mut app = App::headless(demo_project());
+    let mut app = crate::common::reference_app(demo_project());
     app.dispatch(Action::Project(ProjectAction::New));
     let mut h = harness_at(app, 1.0);
     h.run_steps(3);

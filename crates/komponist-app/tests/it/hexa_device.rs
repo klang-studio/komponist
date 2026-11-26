@@ -9,11 +9,13 @@ use egui::accesskit::Role;
 use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::actions::{SelectMode, SelectionChange};
+use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, PluginAction, UiAction};
+use komponist_hexa::device;
 use komponist_i18n::Lang;
-use komponist_model::DeviceId;
+use komponist_model::params::ParamId;
+use komponist_model::{DeviceId, Project};
 use komponist_plugins::DeviceStatus;
 
 use crate::common::{instrument_project, step_until};
@@ -67,6 +69,27 @@ fn drag(h: &mut Harness<'_, App>, from: Pos2, to: Pos2) {
 }
 
 /// A project with one verified Hexa instrument and its shipped factory preset.
+fn reference_app_with_hexa(preset: usize) -> (App, DeviceId) {
+    let mut app = crate::common::reference_app(Project::new("Synth"));
+    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
+    app.dispatch(Action::Plugin(PluginAction::Add {
+        plugin: hexa,
+        target: DropTarget::NewTrack { index: None },
+    }));
+    let track = app.project().tracks[0].id;
+    let device = app.project().tracks[0].channel.devices[0].id;
+    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
+        device,
+        source: komponist_plugins::presets::legacy_source(preset),
+    }));
+    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+        tracks: vec![track],
+        mode: SelectMode::Replace,
+    })));
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+    (app, device)
+}
+
 fn app_with_hexa(preset: &str) -> (App, DeviceId) {
     let host = App::headless_plugin_host();
     let prepared = host
@@ -267,17 +290,17 @@ fn mask_cpu(h: &mut Harness<'_, App>) {
 
 #[test]
 fn snapshot_of_both_pages() {
-    let (mut app, device) = app_with_hexa("E-Piano");
+    let (mut app, device) = reference_app_with_hexa(1);
     // A modulated operator to look at: operator 2 selected, a slower envelope.
     for (key, v) in [
         ("op2_attack", 0.08),
         ("op2_decay", 1.2),
         ("op2_sustain", 0.4),
     ] {
-        let id = parameter(&app, device, key);
+        let p = device::param(&ParamId::new(key)).unwrap();
         app.dispatch(Action::Plugin(PluginAction::SetParam {
             device,
-            id,
+            id: p.wire,
             value: v,
         }));
     }
