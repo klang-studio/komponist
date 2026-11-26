@@ -171,8 +171,8 @@ pub trait DeviceHost {
     }
 
     /// The selected preset in the stored state and whether it has been edited.
-    fn saved_preset(&self, _device: &Device, _presets: &[ClapPreset]) -> Option<(usize, bool)> {
-        None
+    fn saved_preset(&self, device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
+        komponist_plugins::presets::saved_preset(device, None, presets, |_| None)
     }
 
     /// Whether a scan failed to probe the bundle of a device that is still running.
@@ -810,10 +810,6 @@ impl DeviceHost for BuiltinHost {
         }
     }
 
-    fn saved_preset(&self, device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
-        komponist_plugins::presets::saved_preset(device, None, presets, |_| None)
-    }
-
     fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {
         self.samplers.get(&device)
     }
@@ -1213,13 +1209,6 @@ impl DeviceHost for PluginHost {
     }
 
     fn saved_preset(&self, device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
-        if let Some(selection) = self
-            .reference
-            .as_ref()
-            .and_then(|host| host.saved_preset(device, presets))
-        {
-            return Some(selection);
-        }
         self.manager.saved_preset(device, presets)
     }
 
