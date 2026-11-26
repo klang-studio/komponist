@@ -3473,6 +3473,20 @@ mod tests {
     #[test]
     fn catalog_restoration_refreshes_the_missing_dialog_waiting_behind_flatten() {
         let mut app = App::headless(Project::new("Restored device"));
+        let Some(plugin) = app
+            .engine
+            .host()
+            .catalog()
+            .entries()
+            .iter()
+            .find(|entry| komponist_plugins::requires_bundled(&entry.plugin))
+            .map(|entry| entry.plugin.clone())
+        else {
+            eprintln!(
+                "skipping: build the verified CLAP fixtures with scripts/build-test-plugins.sh"
+            );
+            return;
+        };
         app.ui.dialog = Some(Dialog::Flatten);
         app.dialogs.queued = Some(Dialog::MissingPlugins(vec![
             komponist_plugins::MissingPlugin {
@@ -3480,7 +3494,7 @@ mod tests {
                 device: DeviceId(1),
                 role: DeviceRole::Instrument,
                 index: 0,
-                plugin: hexa_ref(),
+                plugin,
             },
         ]));
         assert!(!app.sync_catalog_devices());
@@ -3502,7 +3516,7 @@ mod tests {
         let blocker = dir.join("config");
         std::fs::write(&blocker, b"").unwrap();
         let path = blocker.join("settings.json");
-        let engine = EngineSync::null(Box::new(crate::device_host::BuiltinHost::new()));
+        let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
         let mut app = App::new(
             Document::new(empty_project()),
             engine,
@@ -3531,7 +3545,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
-        let engine = EngineSync::null(Box::new(crate::device_host::BuiltinHost::new()));
+        let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
         let mut app = App::new(
             Document::new(empty_project()),
             engine,
