@@ -495,7 +495,7 @@ fn standalone_clap_preset_round_trips_through_catalog_browser_and_bridge() {
             catalog: host.catalog(),
             favorites: &Favorites::default(),
             segment: BrowserSegment::Effects,
-            query: "Older Boost",
+            query: "Testanhebung",
             collapsed: &BTreeSet::new(),
             project: &project,
             exports: &[],
@@ -504,7 +504,7 @@ fn standalone_clap_preset_round_trips_through_catalog_browser_and_bridge() {
     let row = rows
         .iter()
         .find(|row| row.name.contains("Testanhebung"))
-        .expect("alias finds localized preset");
+        .expect("localized name finds the preset");
     let actions = model::activate(row, &project, Some(track));
     let mut app = app_with(project, host);
     for action in actions {
