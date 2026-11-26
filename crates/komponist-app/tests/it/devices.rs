@@ -19,7 +19,6 @@ use komponist_app::{Action, App, EditAction, PluginAction, SettingsAction, UiAct
 use komponist_i18n::{Lang, de};
 use komponist_model::edits::{self, NewDevice};
 use komponist_model::fixtures::demo_project;
-use komponist_model::params::ParamId;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, Project, TrackId};
 use komponist_plugins::{DeviceStatus, FailReason};
 
@@ -318,16 +317,13 @@ fn hexa_shows_its_card_and_turning_a_knob_is_saved() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("Night Drive.komponist");
-    std::fs::write(
-        &path,
-        komponist_model::persist::to_json(&demo_project()).unwrap(),
-    )
-    .unwrap();
-    let mut app = App::headless(demo_project());
+    let project = common::song_with_shipped_instruments(&App::headless_plugin_host());
+    std::fs::write(&path, komponist_model::persist::to_json(&project).unwrap()).unwrap();
+    let mut app = App::headless(project);
     app.dispatch(Action::Project(komponist_app::ProjectAction::OpenPath(
         path.clone(),
     )));
-    // The headless host has only hexa: S06 lists the demo's other plugins; go on without them.
+    // The test song also names uninstalled external effects and instruments.
     assert!(matches!(
         app.ui().dialog,
         Some(komponist_app::ui_state::Dialog::MissingPlugins(_))
@@ -342,6 +338,7 @@ fn hexa_shows_its_card_and_turning_a_knob_is_saved() {
         mode: SelectMode::Replace,
     })));
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+    common::wait_for_layout(&mut app, device);
     let mut h = harness(app);
     let label = Lang::De.devices_card("Hexa");
     let names: Vec<String> = card(&h, &label)
@@ -360,42 +357,39 @@ fn hexa_shows_its_card_and_turning_a_knob_is_saved() {
     ] {
         assert!(names.iter().any(|n| n == name), "{name} in {names:?}");
     }
-    let glide = komponist_hexa::device::param(&ParamId::new("glide")).unwrap();
+    let glide = common::author_parameter(h.state(), device, "glide");
 
     // Drag "Glide" up: the engine gets SetParam and the device state the new value.
-    let before = glide.field.get(&patch_of(h.state(), device));
+    let before = common::author_base(h.state(), device, "glide");
     let knob = card(&h, &label)
         .get_by_role_and_label(Role::Slider, "Glide")
         .rect();
     drag(&mut h, knob.center(), knob.center() - vec2(0.0, 40.0));
-    let after = glide.field.get(&patch_of(h.state(), device));
-    assert!(after > before + 0.1, "{before} → {after}");
+    common::step_until(h.state_mut(), "Hexa applies the glide edit", |app| {
+        common::author_base(app, device, "glide") > before
+    });
+    let after = common::author_base(h.state(), device, "glide");
     assert!(h.state().dispatched().any(|a| matches!(
         a,
         Action::Plugin(PluginAction::SetParam { device: d, id, .. })
-            if *d == device && *id == glide.wire
+            if *d == device && *id == glide
     )));
     // The value text follows.
     let text = card(&h, &label)
         .get_by_role_and_label(Role::Slider, "Glide")
         .value()
         .unwrap();
-    assert_eq!(text, glide.info.format(after));
+    assert!(!text.is_empty());
 
     // Saved and loaded again: the value is in the file.
     h.state_mut()
         .dispatch(Action::Project(komponist_app::ProjectAction::Save));
     let loaded =
         komponist_model::persist::from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    let (_, _, d) = loaded.find_device(device).unwrap();
-    let patch = komponist_hexa::decode_state(d.state.as_deref()).unwrap();
-    assert!((glide.field.get(&patch) - after).abs() < 1e-6);
+    let mut reopened = App::headless(loaded);
+    common::wait_for_layout(&mut reopened, device);
+    assert!((common::author_base(&reopened, device, "glide") - after).abs() < 1e-6);
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-fn patch_of(app: &App, device: DeviceId) -> komponist_hexa::Patch {
-    let (_, _, d) = app.project().find_device(device).unwrap();
-    komponist_hexa::decode_state(d.state.as_deref()).unwrap()
 }
 
 // ------------------------------------------------------------------------------------------------

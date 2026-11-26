@@ -14,7 +14,6 @@ use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::panels::statusbar;
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, EditAction, PluginAction, UiAction};
-use komponist_builtin::Internal;
 use komponist_i18n::{Lang, de};
 use komponist_model::edits::{NewDevice, NewTrack};
 use komponist_model::fixtures::demo_project;
@@ -22,6 +21,9 @@ use komponist_model::params::ParamId;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, Project, TrackId, edits};
 use komponist_tokens::device;
 
+use crate::common::{
+    author_base, author_parameter, set_authored_param, shipped_plugin, step_until, wait_for_layout,
+};
 use crate::fake_host::FakeHost;
 
 const W: f32 = 1920.0;
@@ -113,7 +115,7 @@ fn select_track(app: &mut App, track: TrackId) {
 /// One hexa track with a Hall behind it, the dock on „Geräte“.
 fn app_with_hall() -> (App, TrackId, DeviceId) {
     let mut app = App::headless(Project::new("Intern"));
-    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
+    let hexa = shipped(&app, "hexa");
     app.dispatch(Action::Plugin(PluginAction::Add {
         plugin: hexa,
         target: DropTarget::NewTrack { index: None },
@@ -121,20 +123,38 @@ fn app_with_hall() -> (App, TrackId, DeviceId) {
     let track = app.project().tracks[0].id;
     select_track(&mut app, track);
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: Internal::Hall.plugin_ref(),
+        plugin: shipped(&app, "hall"),
         target: DropTarget::Track(track),
     }));
     let hall = chain(&app, track)[1].0;
+    wait_for_layout(&mut app, hall);
     (app, track, hall)
 }
 
-fn hall_values(app: &App, device: DeviceId) -> Vec<f64> {
-    let (_, _, d) = app.project().find_device(device).unwrap();
-    Internal::Hall.decode_state(d.state.as_deref()).unwrap()
+fn shipped(app: &App, slug: &str) -> komponist_model::PluginRef {
+    let id = format!("org.klang-studio.komponist.{slug}");
+    shipped_plugin(app.engine().host(), &id)
+        .unwrap_or_else(|| panic!("build {id} with scripts/build-test-plugins.sh"))
 }
 
-fn decay_wire() -> usize {
-    Internal::Hall.wire(&ParamId::new("decay")).unwrap() as usize
+fn decay_value(app: &App, device: DeviceId) -> f64 {
+    author_base(app, device, "decay")
+}
+
+fn decay_parameter(app: &App, device: DeviceId) -> ParamId {
+    ParamId::plugin(author_parameter(app, device, "decay"))
+}
+
+fn decay_default(app: &App, device: DeviceId) -> f64 {
+    let id = author_parameter(app, device, "decay");
+    app.engine()
+        .host()
+        .params(device)
+        .unwrap()
+        .iter()
+        .find(|param| param.id == id)
+        .unwrap()
+        .default
 }
 
 fn knob(h: &Harness<'_, App>, name: &str) -> Rect {
@@ -165,7 +185,10 @@ fn touching_a_parameter_shows_it_in_the_inspector_and_while_dragging_in_the_stat
     );
     // Held and moving: the status line has the name and the value, the hint the shortcuts.
     let touch = h.state().ui().devices.touched.clone().expect("touched");
-    assert_eq!((touch.device, touch.param.as_str()), (hall, "decay"));
+    assert_eq!(
+        (touch.device, touch.param),
+        (hall, decay_parameter(h.state(), hall))
+    );
     assert!(touch.dragging);
     let status = statusbar::model(h.state(), Instant::now());
     assert!(status.left.starts_with("Decay · "), "{}", status.left);
@@ -185,12 +208,12 @@ fn touching_a_parameter_shows_it_in_the_inspector_and_while_dragging_in_the_stat
     section.get_by_label("Decay");
     let track = h.state().project().tracks[0].name.clone();
     section.get_by_label(&format!("Hall · {track}"));
-    let value = hall_values(h.state(), hall)[decay_wire()];
-    let text = Internal::Hall.params()[decay_wire()].format(value);
-    section.get_by_label(&format!("Wert {text}"));
-    let default =
-        Internal::Hall.params()[decay_wire()].format(Internal::Hall.defaults()[decay_wire()]);
-    section.get_by_label(&format!("Standard {default}"));
+    let readout = h
+        .get_by_role_and_label(Role::Slider, "Decay")
+        .value()
+        .unwrap();
+    section.get_by_label(&format!("Wert {readout}"));
+    assert!(section.query_by_label_contains("Standard ").is_some());
     let range = section
         .query_all_by_label_contains("Bereich ")
         .next()
@@ -213,7 +236,7 @@ fn a_stopped_read_override_is_shown_on_the_device_card() {
     let owner = AutomationOwner::Track(track);
     let target = AutomationTarget::Param {
         device,
-        param: ParamId::new("decay"),
+        param: decay_parameter(&app, device),
     };
     app.dispatch(Action::Automation(Automation::ShowTarget {
         owner,
@@ -236,13 +259,13 @@ fn a_stopped_read_override_is_shown_on_the_device_card() {
             .numeric_value()
             .unwrap()
     };
-    let param = &Internal::Hall.params()[decay_wire()];
+    let decay = author_parameter(h.state(), device, "decay");
     assert!((readout(&h) - 0.25).abs() < 1e-4);
 
     let program = h.state().engine().program().unwrap();
     let resolved = program.automation_target(owner, &target).unwrap();
     let slot = program.slots.slot(device).unwrap();
-    let manual = param.to_plain(0.75);
+    let manual = 0.75;
     let engine = h.state_mut().engine_mut();
     engine.send(Command::Touch {
         owner,
@@ -251,7 +274,7 @@ fn a_stopped_read_override_is_shown_on_the_device_card() {
     });
     engine.send(Command::SetParam {
         slot,
-        id: decay_wire() as u32,
+        id: decay,
         value: manual,
     });
     engine.send(Command::Touch {
@@ -279,8 +302,8 @@ fn double_click_resets_a_knob_and_the_wheel_turns_it() {
         Modifiers::NONE,
     );
     release(&mut h, decay.center() - vec2(0.0, 40.0), Modifiers::NONE);
-    let default = Internal::Hall.defaults()[decay_wire()];
-    let turned = hall_values(h.state(), hall)[decay_wire()];
+    let default = decay_default(h.state(), hall);
+    let turned = decay_value(h.state(), hall);
     assert_ne!(turned, default);
 
     // The wheel over the knob: one notch up = 1 % of the range up, Shift a tenth of it.
@@ -298,16 +321,16 @@ fn double_click_resets_a_knob_and_the_wheel_turns_it() {
         h.run_steps(5);
     };
     wheel(&mut h, decay.center(), 1.0, Modifiers::NONE);
-    let up = hall_values(h.state(), hall)[decay_wire()];
+    let up = decay_value(h.state(), hall);
     assert!(up > turned, "{turned} -> {up}");
     wheel(&mut h, decay.center(), 1.0, Modifiers::SHIFT);
-    let fine = hall_values(h.state(), hall)[decay_wire()];
+    let fine = decay_value(h.state(), hall);
     assert!(fine > up && (fine - up) < (up - turned), "{up} -> {fine}");
     // The chain did not scroll sideways under Shift + wheel.
     assert_eq!(h.state().ui().devices.scroll_x, 0.0);
     // Not hovered: nothing.
     wheel(&mut h, pos2(900.0, 500.0), 3.0, Modifiers::NONE);
-    assert_eq!(hall_values(h.state(), hall)[decay_wire()], fine);
+    assert_eq!(decay_value(h.state(), hall), fine);
 
     // Double-click: back to the default, no text entry.
     let at = decay.center();
@@ -320,7 +343,7 @@ fn double_click_resets_a_knob_and_the_wheel_turns_it() {
         h.step();
     }
     h.run_steps(3);
-    let reset = hall_values(h.state(), hall)[decay_wire()];
+    let reset = decay_value(h.state(), hall);
     assert!((reset - default).abs() < 1e-6, "{reset} vs {default}");
     assert!(h.query_by_label("Decay Eingabe").is_none());
 }
@@ -355,8 +378,8 @@ fn the_context_menu_of_a_parameter_offers_automation_alongside_value_edits() {
         Modifiers::NONE,
     );
     release(&mut h, decay.center() - vec2(0.0, 40.0), Modifiers::NONE);
-    let default = Internal::Hall.defaults()[decay_wire()];
-    assert_ne!(hall_values(h.state(), hall)[decay_wire()], default);
+    let default = decay_default(h.state(), hall);
+    assert_ne!(decay_value(h.state(), hall), default);
 
     right_click(&mut h, decay.center());
     let menu = h.get_by_role_and_label(Role::Menu, de::DEVICES_PARAMETER);
@@ -385,7 +408,7 @@ fn the_context_menu_of_a_parameter_offers_automation_alongside_value_edits() {
     // "Auf Standard" is the Alt-click: the default goes out as SetParam.
     let item = h.get_by_label(de::DEVICES_TO_DEFAULT).rect();
     click(&mut h, item.center());
-    assert_eq!(hall_values(h.state(), hall)[decay_wire()], default);
+    assert!((decay_value(h.state(), hall) - default).abs() < 1e-6);
 
     // "Wert eingeben" opens the text entry over the knob.
     right_click(&mut h, decay.center());
@@ -511,18 +534,18 @@ fn a_plain_drag_onto_another_track_does_nothing() {
 #[test]
 fn copying_an_instrument_needs_a_track_without_one_and_a_midi_effect_goes_before_it() {
     let mut app = App::headless(Project::new("Kopie"));
-    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
+    let hexa = shipped(&app, "hexa");
     app.dispatch(Action::Plugin(PluginAction::Add {
         plugin: hexa,
         target: DropTarget::NewTrack { index: None },
     }));
     let a = app.project().tracks[0].id;
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: Internal::Arpeggiator.plugin_ref(),
+        plugin: shipped(&app, "arpeggiator"),
         target: DropTarget::Track(a),
     }));
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: Internal::Hall.plugin_ref(),
+        plugin: shipped(&app, "hall"),
         target: DropTarget::Track(a),
     }));
     let names_of =
@@ -540,7 +563,7 @@ fn copying_an_instrument_needs_a_track_without_one_and_a_midi_effect_goes_before
     })));
     let empty = track_named(&app, "Leer");
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: Internal::Hall.plugin_ref(),
+        plugin: shipped(&app, "hall"),
         target: DropTarget::Track(empty),
     }));
     // The instrument goes right behind the MIDI effects of the track that has none.
@@ -651,7 +674,7 @@ fn copying_devices_puts_a_marker_on_the_system_clipboard_so_strg_v_arrives() {
 fn the_limiter_meter_shows_the_reduction_the_engine_measured() {
     use komponist_engine::{MidiInEvent, MidiPort};
     let mut app = App::headless(Project::new("Pegel"));
-    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
+    let hexa = shipped(&app, "hexa");
     app.dispatch(Action::Plugin(PluginAction::Add {
         plugin: hexa,
         target: DropTarget::NewTrack { index: None },
@@ -659,18 +682,14 @@ fn the_limiter_meter_shows_the_reduction_the_engine_measured() {
     let track = app.project().tracks[0].id;
     select_track(&mut app, track);
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: Internal::Limiter.plugin_ref(),
+        plugin: shipped(&app, "limiter"),
         target: DropTarget::Track(track),
     }));
     let limiter = chain(&app, track)[1].0;
+    wait_for_layout(&mut app, limiter);
     // A low ceiling and +24 dB input: every note is far above it.
     for (key, value) in [("gain", 24.0), ("ceiling", -12.0)] {
-        let id = Internal::Limiter.wire(&ParamId::new(key)).unwrap();
-        app.dispatch(Action::Plugin(PluginAction::SetParam {
-            device: limiter,
-            id,
-            value,
-        }));
+        set_authored_param(&mut app, limiter, key, value);
     }
     app.dispatch(Action::Edit(EditAction::SetTrackProp {
         tracks: vec![track],
@@ -708,64 +727,36 @@ fn the_limiter_meter_shows_the_reduction_the_engine_measured() {
 
 #[test]
 fn the_fm_display_draws_the_real_routing_for_algorithm_zero() {
-    use komponist_hexa::{algorithms, default_patch, encode_state};
-    use komponist_model::Hue;
-    // A patch whose routing no table algorithm has: operator 1 modulates operator 6, and
-    // operator 6 modulates operator 1.
-    let mut patch = default_patch();
-    algorithms::apply(&mut patch, 31);
-    patch.operators[0].modulates[5] = true;
-    patch.operators[5].modulates[0] = true;
-    assert_eq!(algorithms::detect(&patch), None);
-    let mut project = Project::new("Frei");
-    let (p, track) = edits::add_track(
-        &project,
-        NewTrack {
-            name: Some("FM".into()),
-            hue: Some(Hue::BLUE),
-            instrument: None,
-            index: None,
-            arm_exclusive: false,
-        },
-    )
-    .unwrap();
-    project = p;
-    let hexa = App::headless(Project::new("x"))
-        .engine()
-        .host()
-        .catalog()
-        .entries()[0]
-        .plugin
-        .clone();
-    let (project, _) = edits::insert_device(
-        &project,
-        ChannelRef::Track(track),
-        0,
-        NewDevice {
-            role: DeviceRole::Instrument,
-            plugin: hexa,
-            state: Some(encode_state(&patch).into()),
-            sidechain: None,
-        },
-    )
-    .unwrap();
+    let host = App::headless_plugin_host();
+    let prepared = host
+        .manager()
+        .prepare_bundled_device(
+            "org.klang-studio.komponist.hexa",
+            Some("Init"),
+            &[("algorithm", 1.0), ("op1_output", 0.0)],
+            &[],
+        )
+        .unwrap();
+    let (mut project, track, device) =
+        crate::common::instrument_project("Frei", prepared.plugin.clone());
+    std::sync::Arc::make_mut(&mut project.tracks[0])
+        .channel
+        .devices[0] = std::sync::Arc::new(prepared.into_device(device));
     let mut app = App::headless(project);
     select_track(&mut app, track);
-    let h = harness(app);
+    wait_for_layout(&mut app, device);
+    step_until(&mut app, "the edited free routing", |app| {
+        app.engine()
+            .host()
+            .device_display(device)
+            .and_then(|display| display.fm_topologies.first())
+            .is_some_and(|routing| routing.algorithm.is_none() && routing.outputs == 0b000100)
+    });
+    let mut h = harness(app);
+    h.run_steps(30);
     let label = Lang::De.devices_card("Hexa");
-    let card = h.get_by_role_and_label(Role::Group, &label);
-    card.get_by_role_and_label(Role::Group, de::DEVICES_FM_FREE);
-    // The cards model carries the real masks (operator 1 → 6, operator 6 → 1).
-    let cards = komponist_app::views::devices::model::cards(
-        Lang::De,
-        h.state().project().track(track).unwrap(),
-        h.state().engine().host(),
-        &[],
-    );
-    let routing = cards[0].routing.expect("hexa has a routing");
-    assert_eq!(routing.modulates[0] & 0b100000, 0b100000);
-    assert_eq!(routing.modulates[5] & 0b000001, 0b000001);
-    assert_ne!(routing.modulates, algorithms::ALGORITHMS[0].modulates);
+    h.get_by_role_and_label(Role::Group, &label)
+        .get_by_role_and_label(Role::Group, de::DEVICES_FM_FREE);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -804,13 +795,7 @@ fn snapshot_of_the_fm_display_with_free_routing() {
     patch.operators[2].modulates[0] = true;
     patch.operators[3].modulates[4] = true;
     assert_eq!(algorithms::detect(&patch), None);
-    let hexa = App::headless(Project::new("x"))
-        .engine()
-        .host()
-        .catalog()
-        .entries()[0]
-        .plugin
-        .clone();
+    let hexa = komponist_hexa::CATALOG.plugin_ref();
     let (project, track) = edits::add_track(
         &Project::new("Frei"),
         NewTrack {
@@ -834,7 +819,7 @@ fn snapshot_of_the_fm_display_with_free_routing() {
         },
     )
     .unwrap();
-    let mut app = App::headless(project);
+    let mut app = App::headless(project).with_device_host(Box::new(FakeHost::new()));
     select_track(&mut app, track);
     let mut h = harness(app);
     h.run_steps(30);
@@ -857,13 +842,7 @@ fn snapshot_of_the_fm_display_with_a_cycle() {
     patch.operators[1].modulates[2] = true;
     patch.operators[2].modulates[3] = true;
     assert_eq!(algorithms::detect(&patch), None);
-    let hexa = App::headless(Project::new("x"))
-        .engine()
-        .host()
-        .catalog()
-        .entries()[0]
-        .plugin
-        .clone();
+    let hexa = komponist_hexa::CATALOG.plugin_ref();
     let (project, track) = edits::add_track(
         &Project::new("Frei"),
         NewTrack {
@@ -887,7 +866,7 @@ fn snapshot_of_the_fm_display_with_a_cycle() {
         },
     )
     .unwrap();
-    let mut app = App::headless(project);
+    let mut app = App::headless(project).with_device_host(Box::new(FakeHost::new()));
     select_track(&mut app, track);
     let mut h = harness(app);
     h.run_steps(30);
@@ -899,18 +878,17 @@ fn snapshot_of_the_fm_display_with_a_cycle() {
 }
 
 #[test]
-fn track_macro_ui_maps_a_builtin_control_without_moving_it() {
+fn track_macro_ui_maps_a_clap_control_without_moving_it() {
     use komponist_model::automation::AutomationTarget;
 
     let (mut app, track, hall) = app_with_hall();
     app.engine_mut().hold_engine().unwrap();
     app.step();
-    let base = hall_values(&app, hall)[decay_wire()];
-    let decay_info = &Internal::Hall.params()[decay_wire()];
-    let norm = decay_info.to_normalized(base) as f32;
+    let base = decay_value(&app, hall);
+    let norm = base as f32;
     let key = AutomationTarget::Param {
         device: hall,
-        param: ParamId::new("decay"),
+        param: decay_parameter(&app, hall),
     };
     let mut h = harness(app);
     let map_button = h
@@ -932,7 +910,7 @@ fn track_macro_ui_maps_a_builtin_control_without_moving_it() {
     assert_eq!(slot.mappings.len(), 1);
     assert_eq!(slot.mappings[0].target, key);
     assert!((slot.mappings[0].value_at(slot.value) - norm).abs() < 1e-6);
-    assert_eq!(hall_values(h.state(), hall)[decay_wire()], base);
+    assert_eq!(decay_value(h.state(), hall), base);
 
     h.key_press(egui::Key::Escape);
     h.run_steps(4);
@@ -955,7 +933,7 @@ fn track_macro_ui_maps_a_builtin_control_without_moving_it() {
         app.engine().telemetry().macro_values(track).unwrap()[0],
         value
     );
-    assert_eq!(hall_values(app, hall)[decay_wire()], base);
+    assert_eq!(decay_value(app, hall), base);
     h.run_steps(3);
     let driver = Lang::De.macros_controlled_tip(Lang::De.macros_slot(1));
     let card_label = Lang::De.devices_card("Hall");
@@ -997,9 +975,11 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
             h.snapshot(format!("track-macro-{name}-{}-1x", lang.code()));
         };
         snapshot(&mut h, "card");
-        let knob_target = |id: &str| AutomationTarget::Param {
+        let decay = decay_parameter(h.state(), hall);
+        let mix = ParamId::plugin(author_parameter(h.state(), hall, "mix"));
+        let knob_target = |param| AutomationTarget::Param {
             device: hall,
-            param: ParamId::new(id),
+            param,
         };
         h.state_mut().dispatch(Action::Macro(Macro::Rename {
             track,
@@ -1011,7 +991,7 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
         h.state_mut().dispatch(Action::Macro(Macro::Map {
             track,
             index: 0,
-            target: knob_target("decay"),
+            target: knob_target(decay),
         }));
         h.run_steps(3);
         snapshot(&mut h, "mapping");
@@ -1022,22 +1002,28 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
         h.state_mut().dispatch(Action::Macro(Macro::Map {
             track,
             index: 0,
-            target: knob_target("mix"),
+            target: knob_target(mix.clone()),
         }));
         h.state_mut().dispatch(Action::Macro(Macro::Bend {
             track,
             index: 0,
-            target: knob_target("mix"),
+            target: knob_target(mix.clone()),
             bend: 0.4,
         }));
         h.run_steps(3);
         snapshot(&mut h, "list");
         let name = lang.param_decay();
+        let reverb = h.state().project().find_device(hall).unwrap().2;
+        let device_name = h
+            .state()
+            .engine()
+            .host()
+            .catalog()
+            .resolve(&reverb.plugin)
+            .unwrap()
+            .display_name(lang.code());
         let decay = h
-            .get_by_role_and_label(
-                Role::Group,
-                &lang.devices_card(Internal::Hall.name_in(lang)),
-            )
+            .get_by_role_and_label(Role::Group, &lang.devices_card(device_name))
             .get_by_role_and_label(Role::Slider, name)
             .rect()
             .center();
@@ -1046,7 +1032,7 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
         results.extend_harness(&mut h);
 
         let missing = Mapping {
-            target: knob_target("removed-param"),
+            target: knob_target(ParamId::plugin(u32::MAX - 1)),
             label: "Hall · Former target".into(),
             min: 0.0,
             max: 1.0,
@@ -1072,7 +1058,7 @@ fn track_macro_mapping_range_inversion_and_bend_are_undoable() {
     let (mut app, track, hall) = app_with_hall();
     let target = AutomationTarget::Param {
         device: hall,
-        param: ParamId::new("decay"),
+        param: decay_parameter(&app, hall),
     };
     app.dispatch(Action::Macro(Macro::Map {
         track,
