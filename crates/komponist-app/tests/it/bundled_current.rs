@@ -160,7 +160,7 @@ fn project(host: &PluginHost, sample: &Path) -> Fixture {
                 plugin: prepared.plugin,
                 sidechain: None,
                 state: prepared.state,
-                preset: None,
+                preset: prepared.preset,
             },
         )
         .unwrap();
@@ -504,8 +504,22 @@ fn current_project_round_trip_and_offline_render() {
             &device.saved_state().unwrap(),
         )
         .unwrap();
+        // Devices that start in a factory preset state it; the Scale edit then modifies it.
+        with_current_state =
+            edits::set_device_preset(&with_current_state, device.id, device.preset.clone())
+                .unwrap();
     }
     assert_eq!(saved, with_current_state);
+    assert!(
+        saved
+            .find_device(fixture.scale)
+            .unwrap()
+            .2
+            .preset
+            .as_ref()
+            .is_none_or(|preset| preset.modified),
+        "the Scale edit modifies a start preset"
+    );
 
     app.shutdown();
     let relocated = work.join("relocated");
@@ -988,7 +1002,7 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
             plugin: prepared.plugin,
             sidechain: None,
             state: prepared.state,
-            preset: None,
+            preset: prepared.preset,
         },
     )
     .unwrap();
