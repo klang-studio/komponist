@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_app::App;
-use komponist_app::device_host::{DeviceHost as _, PluginHost};
+use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::settings::Settings;
 use komponist_audio::{HostKind, StreamConfig};
@@ -111,6 +111,15 @@ pub fn native_fixture(dir: &Path, bundle: &str, id: &str) -> Option<(PluginHost,
         .plugin
         .clone();
     Some((host, plugin))
+}
+
+/// The exact reference discovered from the test build of a shipped CLAP bundle.
+pub fn shipped_plugin(host: &dyn DeviceHost, id: &str) -> Option<PluginRef> {
+    host.catalog()
+        .entries()
+        .iter()
+        .find(|entry| entry.plugin.id == id && komponist_plugins::requires_bundled(&entry.plugin))
+        .map(|entry| entry.plugin.clone())
 }
 
 /// A project with one instrument and its track and device IDs.

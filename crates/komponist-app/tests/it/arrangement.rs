@@ -3,6 +3,7 @@
 //! snapshot of the demo project next to S01, and the frame time with 200 clips / 10 000 notes.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egui::accesskit::Role;
@@ -10,13 +11,13 @@ use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange};
-use komponist_app::device_host::{BuiltinHost, DeviceHost};
+use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::ui_state::FocusArea;
 use komponist_app::{Action, App, EditAction, TransportAction, UiAction};
 use komponist_engine::Processor;
 use komponist_i18n::{Lang, de};
 use komponist_model::fixtures::demo_project;
-use komponist_model::{ClipId, Device, DeviceId, DeviceRole, Project, Tick, TrackId};
+use komponist_model::{ClipId, Device, DeviceId, DeviceRole, PluginRef, Project, Tick, TrackId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent, ProcessorSetup};
 
 const W: f32 = 1920.0;
@@ -26,9 +27,8 @@ fn snapshot_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots")
 }
 
-/// The built-in host, but every device reports `Ok` (the screens show the third-party
-/// instruments as installed).
-struct AllInstalled(BuiltinHost);
+/// The reference screens show external instruments as installed, even without those bundles.
+struct AllInstalled(PluginHost);
 
 impl DeviceHost for AllInstalled {
     fn create_processor(
@@ -76,8 +76,28 @@ fn harness(app: App) -> Harness<'static, App> {
     h
 }
 
+fn fixture_instrument(host: &dyn DeviceHost, id: &str) -> PluginRef {
+    crate::common::shipped_plugin(host, id)
+        .unwrap_or_else(|| panic!("build {id} with scripts/build-test-plugins.sh"))
+}
+
+fn hexa(app: &App) -> PluginRef {
+    fixture_instrument(app.engine().host(), "org.klang-studio.komponist.hexa")
+}
+
+fn test_song(host: &dyn DeviceHost) -> Project {
+    let mut project = demo_project();
+    let hexa = fixture_instrument(host, "org.klang-studio.komponist.hexa");
+    let sampler = fixture_instrument(host, "org.klang-studio.komponist.sampler");
+    for (track, instrument) in [(0, &sampler), (1, &hexa), (2, &hexa)] {
+        let device = &mut Arc::make_mut(&mut project.tracks[track]).channel.devices[0];
+        Arc::make_mut(device).plugin = instrument.clone();
+    }
+    project
+}
+
 fn demo() -> App {
-    App::headless(demo_project())
+    App::headless(test_song(&App::headless_plugin_host()))
 }
 
 fn project(h: &Harness<'_, App>) -> Project {
@@ -200,7 +220,7 @@ fn undo(h: &mut Harness<'_, App>) {
 
 /// The S01 state: Lead A open in the piano roll, playhead at 10.2.120, every device installed.
 fn s01() -> App {
-    let mut app = demo().with_device_host(Box::new(AllInstalled(BuiltinHost::new())));
+    let mut app = demo().with_device_host(Box::new(AllInstalled(App::headless_plugin_host())));
     let lead = app.project().tracks[2].clone();
     app.dispatch(Action::Ui(UiAction::OpenClip(lead.clips[0].id)));
     app.dispatch(Action::Transport(TransportAction::Locate(Tick(36_000))));
@@ -528,7 +548,7 @@ fn ctrl_t_adds_a_midi_track_and_delete_removes_selected_tracks() {
 fn an_instrument_dropped_on_the_empty_area_makes_an_armed_track() {
     let mut h = harness(demo());
     let below = lead_header(&h).left_bottom() + vec2(300.0, 300.0);
-    drop_plugin(komponist_app::app::hexa_ref(), below, &mut h);
+    drop_plugin(hexa(h.state()), below, &mut h);
     let p = project(&h);
     assert_eq!(p.tracks.len(), 7);
     assert!(p.tracks[6].arm);
@@ -548,7 +568,7 @@ fn an_instrument_dropped_on_a_header_replaces_the_instrument() {
     let mut h = harness(demo());
     let keys = header_rect(&h, "Spur Keys, Plugin fehlt: Dexed");
     let keys_id = track_id(&h, 4);
-    drop_plugin(komponist_app::app::hexa_ref(), on_header(keys), &mut h);
+    drop_plugin(hexa(h.state()), on_header(keys), &mut h);
     let p = project(&h);
     assert_eq!(p.tracks.len(), 6);
     let t = p.track(keys_id).unwrap();
@@ -1359,7 +1379,7 @@ mod new_track {
     fn one_track_with_hexa_is_what_a_drop_makes() {
         let mut dropped = harness(demo());
         let at = new_track_box(&dropped).center();
-        drop_plugin(komponist_app::app::hexa_ref(), at, &mut dropped);
+        drop_plugin(hexa(dropped.state()), at, &mut dropped);
         assert!(!dialog_open(&dropped), "a drop does not open the dialog");
 
         let mut h = harness(demo());
@@ -1980,7 +2000,7 @@ fn opening_an_offscreen_automation_lane_reveals_its_drop_target() {
     use komponist_model::automation::{AutomationOwner, AutomationTarget};
     use komponist_model::edits::{self, TrackProp};
 
-    let project = demo_project();
+    let project = test_song(&App::headless_plugin_host());
     let tracks: Vec<_> = project.tracks.iter().map(|track| track.id).collect();
     let &track = tracks.last().unwrap();
     let project = edits::set_track_prop(&project, &tracks, TrackProp::Height(150)).unwrap();
@@ -2003,7 +2023,7 @@ fn opening_an_offscreen_automation_lane_reveals_its_drop_target() {
         .map(|node| node.rect())
         .max_by(|a, b| a.left().total_cmp(&b.left()))
         .unwrap();
-    drop_plugin(komponist_app::app::hexa_ref(), lane.center(), &mut h);
+    drop_plugin(hexa(h.state()), lane.center(), &mut h);
     assert_eq!(h.state().project().tracks.len(), tracks.len());
     assert!(h.state().dispatched().any(|action| matches!(
         action,
