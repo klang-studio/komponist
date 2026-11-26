@@ -786,7 +786,7 @@ fn snapshot_of_a_touched_parameter_with_its_context_menu() {
 
 #[test]
 fn snapshot_of_the_fm_display_with_free_routing() {
-    use komponist_hexa::{algorithms, default_patch, encode_state};
+    use komponist_hexa::{CATALOG, algorithms, default_patch, encode_state};
     use komponist_model::Hue;
     let mut patch = default_patch();
     // All carriers, then 2 and 3 modulate 1 and 4 modulates 5: no table algorithm has that.
@@ -795,7 +795,7 @@ fn snapshot_of_the_fm_display_with_free_routing() {
     patch.operators[2].modulates[0] = true;
     patch.operators[3].modulates[4] = true;
     assert_eq!(algorithms::detect(&patch), None);
-    let hexa = komponist_hexa::CATALOG.plugin_ref();
+    let hexa = CATALOG.plugin_ref();
     let (project, track) = edits::add_track(
         &Project::new("Frei"),
         NewTrack {
@@ -832,7 +832,7 @@ fn snapshot_of_the_fm_display_with_free_routing() {
 
 #[test]
 fn snapshot_of_the_fm_display_with_a_cycle() {
-    use komponist_hexa::{algorithms, default_patch, encode_state};
+    use komponist_hexa::{CATALOG, algorithms, default_patch, encode_state};
     use komponist_model::Hue;
     let mut patch = default_patch();
     // 1 and 6 modulate each other and are both heard; 2 → 3 → 4 is a chain on the side.
@@ -842,7 +842,7 @@ fn snapshot_of_the_fm_display_with_a_cycle() {
     patch.operators[1].modulates[2] = true;
     patch.operators[2].modulates[3] = true;
     assert_eq!(algorithms::detect(&patch), None);
-    let hexa = komponist_hexa::CATALOG.plugin_ref();
+    let hexa = CATALOG.plugin_ref();
     let (project, track) = edits::add_track(
         &Project::new("Frei"),
         NewTrack {

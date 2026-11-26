@@ -627,13 +627,14 @@ fn a_knob_turn_never_replaces_an_unreadable_state() {
 
     let corrupted: &[u8] = b"{\"params\": {\"gain\": ";
     let mut app = App::headless(Project::new("Unreadable"));
+    let shipped = |app: &App, id| crate::common::shipped_plugin(app.engine().host(), id).unwrap();
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: komponist_hexa::CATALOG.plugin_ref(),
+        plugin: shipped(&app, "org.klang-studio.komponist.hexa"),
         target: DropTarget::NewTrack { index: None },
     }));
     let track = app.project().tracks[0].id;
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: Internal::Limiter.plugin_ref(),
+        plugin: shipped(&app, "org.klang-studio.komponist.limiter"),
         target: DropTarget::Track(track),
     }));
     let devices: Vec<DeviceId> = app.project().tracks[0]
@@ -643,24 +644,27 @@ fn a_knob_turn_never_replaces_an_unreadable_state() {
         .map(|d| d.id)
         .collect();
     assert_eq!(devices.len(), 2);
-    let hexa_volume = komponist_hexa::device::Field::Volume.wire();
-    let limiter_gain = Internal::Limiter
-        .wire(&komponist_model::params::ParamId::new("gain"))
-        .unwrap();
+    for &device in &devices {
+        crate::common::wait_for_layout(&mut app, device);
+    }
+    let hexa_volume = crate::common::author_parameter(&app, devices[0], "volume");
+    let limiter_gain = crate::common::author_parameter(&app, devices[1], "gain");
     let knobs = [(devices[0], hexa_volume), (devices[1], limiter_gain)];
     let state = |app: &App, device: DeviceId| {
         let (_, _, d) = app.project().find_device(device).unwrap();
         d.state.as_deref().map(<[u8]>::to_vec)
     };
-    // The same turn on a readable state is stored, so the refusal below is not vacuous.
+    // A different value in each readable instance changes the persisted CLAP snapshot.
     for (device, id) in knobs {
         let before = state(&app, device);
-        app.dispatch(Action::Plugin(PluginAction::SetParam {
-            device,
-            id,
-            value: 0.5,
-        }));
-        assert_ne!(state(&app, device), before, "{device:?}");
+        let initial = app.engine().host().param_base(device, id).unwrap();
+        let value = if initial < 0.5 { 0.75 } else { 0.25 };
+        app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
+        let captured = crate::common::project_with_snapshot(&mut app, device);
+        assert_ne!(
+            captured.find_device(device).unwrap().2.state.as_deref(),
+            before.as_deref()
+        );
     }
     let mut project = Arc::clone(app.project());
     for &device in &devices {
@@ -670,11 +674,15 @@ fn a_knob_turn_never_replaces_an_unreadable_state() {
     }
     let mut app = App::headless(Arc::unwrap_or_clone(project));
     for (device, id) in knobs {
+        crate::common::step_until(&mut app, "the CLAP restore warning", |app| {
+            app.engine().host().state_warning(device).is_some()
+        });
         app.dispatch(Action::Plugin(PluginAction::SetParam {
             device,
             id,
             value: 0.5,
         }));
+        crate::common::step_for(&mut app, Duration::from_millis(50));
         assert_eq!(
             state(&app, device).as_deref(),
             Some(corrupted),
