@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_app::App;
-use komponist_app::device_host::{DeviceHost as _, PluginHost, is_hexa};
+use komponist_app::device_host::{DeviceHost as _, PluginHost};
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::settings::Settings;
 use komponist_audio::{HostKind, StreamConfig};
@@ -169,16 +169,12 @@ pub fn clap_plugin(id: &str) -> PluginRef {
     }
 }
 
-/// The demo project "Night Drive" with kp-test-synth for every external instrument (klopfer,
-/// Surge XT, Dexed, Vital) and kp-test-fx for every effect (LSP, TAL, Dragonfly); hexa stays.
+/// The model test song, played exclusively by the test synth and effect through bridges.
 pub fn demo_with_test_plugins() -> Project {
     let mut project = demo_project();
     for track in &mut project.tracks {
         let track = Arc::make_mut(track);
         for device in &mut track.channel.devices {
-            if is_hexa(device) {
-                continue;
-            }
             let device = Arc::make_mut(device);
             device.plugin = match device.role {
                 DeviceRole::Instrument => clap_plugin(SYNTH),
@@ -198,11 +194,11 @@ pub fn devices(project: &Project) -> Vec<(TrackId, Device)> {
         .collect()
 }
 
-/// The devices of `project` that run in bridges (everything but hexa).
+/// The external fixture devices that run in bridges for tests using the ordinary scan host.
 pub fn bridged(project: &Project) -> Vec<DeviceId> {
     devices(project)
         .into_iter()
-        .filter(|(_, d)| !is_hexa(d))
+        .filter(|(_, d)| matches!(d.plugin.format, PluginFormat::Clap | PluginFormat::Vst3))
         .map(|(_, d)| d.id)
         .collect()
 }

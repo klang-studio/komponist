@@ -35,7 +35,7 @@ fn installed_plugins_in_real_frames() {
     }
     let dir = scratch("frame-installed");
     let config = config(&dir);
-    let mut app = app_with(empty_project(), PluginHost::with_reference_devices(config));
+    let mut app = app_with(empty_project(), PluginHost::new(config));
     open_scratch_project(&mut app, &dir);
     app.engine_mut()
         .host_mut()

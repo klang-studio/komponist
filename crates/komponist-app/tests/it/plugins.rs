@@ -76,7 +76,7 @@ fn the_demo_with_test_plugins_sounds_through_bridges_in_an_offline_render() {
         return;
     };
     let dir = scratch("offline");
-    let mut host = PluginHost::with_reference_devices(config(&dir));
+    let mut host = PluginHost::new(config(&dir));
     host.start_scan(&dirs);
     poll_until(&mut host, "ScanFinished", |e| {
         matches!(e, PluginManagerEvent::ScanFinished(_))
@@ -102,7 +102,7 @@ fn the_demo_with_test_plugins_sounds_through_bridges_in_an_offline_render() {
     }
     send(&mut handle, Command::SetProgram(Box::new(program.clone())));
     let bridged = bridged(&project);
-    assert_eq!(bridged.len(), 11, "13 devices, all but the two hexas");
+    assert_eq!(bridged.len(), 13, "all 13 devices use the bridge");
     for &device in &bridged {
         assert_eq!(host.status(device), DeviceStatus::Loading);
     }
@@ -126,9 +126,9 @@ fn the_demo_with_test_plugins_sounds_through_bridges_in_an_offline_render() {
         .find(|t| t.id == keys)
         .unwrap()
         .pdc_delay;
-    // Lead is the longest chain: hexa and two effects (the third is bypassed); Keys has none.
-    let hexa = project.tracks[2].channel.devices[0].id;
-    let lead = host.latency(hexa) + 2 * 64;
+    // Lead is the longest chain: an instrument and two effects (the third is bypassed).
+    let instrument = project.tracks[2].channel.devices[0].id;
+    let lead = host.latency(instrument) + 2 * 64;
     assert_eq!(keys_pdc, lead, "Keys waits for Lead");
     send(&mut handle, Command::SetProgram(Box::new(program.clone())));
 
@@ -149,8 +149,7 @@ fn the_demo_with_test_plugins_sounds_through_bridges_in_an_offline_render() {
         host.poll();
     }
     assert!(master_peak > 0.05, "master {master_peak}");
-    // Drums, Pad and Keys play only through bridged instruments (klopfer, Surge XT and Dexed in
-    // the demo); Bass is hexa through a bridged effect.
+    // Instruments and effects all play through their bridges.
     for name in ["Drums", "Bass", "Pad", "Keys"] {
         let (l, r) = program.meter(track_named(&project, name)).unwrap().take();
         eprintln!("{name}: peak {l:.3} / {r:.3}");
@@ -196,7 +195,7 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
     std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
     let mut app = app_with(
         komponist_model::fixtures::empty_project(),
-        PluginHost::with_reference_devices(config(&dir)),
+        PluginHost::new(config(&dir)),
     );
     app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
     assert_eq!(app.project_path(), Some(file.as_path()));
@@ -204,13 +203,8 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
     // An empty scan cache: every bridged device is missing until the scan finds its plugin.
     app.step();
     let bridged = bridged(app.project());
-    for (id, name, status) in statuses(&app) {
-        let expected = if bridged.contains(&id) {
-            DeviceStatus::Missing
-        } else {
-            DeviceStatus::Ok
-        };
-        assert_eq!(status, expected, "{name}");
+    for (_, name, status) in statuses(&app) {
+        assert_eq!(status, DeviceStatus::Missing, "{name}");
     }
     app.engine_mut().host_mut().start_scan(&dirs);
     let events = step_until(&mut app, "every device Ok", all_ok);
@@ -227,13 +221,9 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
     };
     assert!(bridged.iter().all(loading), "{events:?}");
     assert!(app.engine().host().needs_polling());
-    // hexa, the internal devices (WP-85) and the five fixtures.
-    assert_eq!(
-        app.engine().host().catalog().entries().len(),
-        1 + komponist_builtin::Internal::ALL.len() + 5
-    );
+    assert_eq!(app.engine().host().catalog().entries().len(), 5);
 
-    // Latencies recompile the program. Lead is the longest chain (hexa and two 64-frame
+    // Latencies recompile the program. Lead is the longest chain (the synth and two 64-frame
     // effects; the third is bypassed), Pad has two effects after a synth without latency, Keys
     // none.
     let pdc = |app: &App, name: &str| {
@@ -246,8 +236,8 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
             .unwrap()
             .pdc_delay
     };
-    let hexa = app.project().tracks[2].channel.devices[0].id;
-    let synth = app.engine().host().latency(hexa);
+    let instrument = app.project().tracks[2].channel.devices[0].id;
+    let synth = app.engine().host().latency(instrument);
     step_until(&mut app, "delay compensation", |app| {
         pdc(app, "Keys") == synth + 128
     });
@@ -465,7 +455,7 @@ fn standalone_clap_preset_round_trips_through_catalog_browser_and_bridge() {
     let installed = dir.join("installed");
     std::fs::create_dir_all(&installed).unwrap();
     std::fs::copy(&bundle, installed.join("layout-fixture.clap")).unwrap();
-    let mut host = PluginHost::with_reference_devices(config(&dir));
+    let mut host = PluginHost::new(config(&dir));
     host.start_scan(&PluginDirs {
         clap: vec![installed],
         vst3: Vec::new(),
@@ -955,10 +945,7 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
     .unwrap();
     let file = dir.join("Layout.komponist");
     std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
-    let mut app = app_with(
-        Project::new("Empty"),
-        PluginHost::with_reference_devices(config(&dir)),
-    );
+    let mut app = app_with(Project::new("Empty"), PluginHost::new(config(&dir)));
     app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
     app.engine_mut().host_mut().start_scan(&dirs);
     step_until(&mut app, "empty scan", |app| {
@@ -1330,7 +1317,7 @@ fn sdk_example_uses_native_layout_and_falls_back() {
     std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
 
     let open = |bundle: &Path, run: &str| {
-        let mut host = PluginHost::with_reference_devices(config(&dir.join(run)));
+        let mut host = PluginHost::new(config(&dir.join(run)));
         host.start_scan(&PluginDirs {
             clap: vec![bundle.parent().unwrap().to_owned()],
             vst3: Vec::new(),

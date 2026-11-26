@@ -825,7 +825,7 @@ fn a_test_plugin_added_from_the_browser_loads_and_shows_its_parameters() {
         return;
     };
     let dir = common::scratch("wp44-load");
-    let host = komponist_app::device_host::PluginHost::with_reference_devices(common::config(&dir));
+    let host = komponist_app::device_host::PluginHost::new(common::config(&dir));
     let mut app = common::app_with(demo_project(), host);
     app.engine_mut().host_mut().start_scan(&dirs);
     common::step_until(&mut app, "scan", |a| {
