@@ -91,7 +91,7 @@ def run_benchmarks(runner, environment, test):
     buffers = environment.get("KOMPONIST_PERF_BUFFERS", "64,128,256").split(",")
     workers = environment.get("KOMPONIST_PERF_WORKERS", "0,4").split(",")
     failures = []
-    # A previous case can leave allocator pages and loaded libraries resident.
+    # A previous case can leave allocator pages and loaded libraries resident, so each case runs in a fresh process.
     for workload, frames, threads in product(workloads, buffers, workers):
         workload = workload.strip()
         case = dict(
@@ -103,7 +103,7 @@ def run_benchmarks(runner, environment, test):
         try:
             run_test(runner, case, test)
         except subprocess.CalledProcessError as error:
-            label = f"{environment['KOMPONIST_PERF_BUNDLED_MODE']}/{workload}/{frames}/{threads}"
+            label = f"{workload}/{frames}/{threads}"
             print(f"Benchmark failed: {label}: {error}", file=sys.stderr)
             failures.append(label)
     return failures
@@ -123,7 +123,56 @@ def reject_unavailable_bundle(runner, payload, environment, scratch):
     run_test(runner, dict(environment, KOMPONIST_CURRENT_EQ_CASE="altered"), test)
 
 
-def run_staged(app, runner, digest, projects):
+UI_TESTS = (
+    "bundled_current::packaged_effect_cards_and_presets",
+    "bundled_synth_ui::packaged_synth_editors_and_factory_presets_follow_clap_state",
+)
+
+
+SLUGS = ("hall", "delay", "eq", "presse", "limiter", "hexa", "volt", "surf",
+         "sampler", "general-sampler", "arpeggiator", "scale")
+
+
+def median(values):
+    values = sorted(values)
+    middle = len(values) // 2
+    return values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2
+
+
+def run_startup(runner, environment, repeats):
+    """Start-up time and resident memory of the bundled devices, each case in a fresh process."""
+    test = "bundled::bundled_clap_startup_and_memory"
+    cases = [("all", "all")] + [(slug, slug) for slug in SLUGS]
+    table = {}
+    for label, selection in cases:
+        runs = []
+        for _ in range(repeats):
+            case = dict(environment, KOMPONIST_PERF_STARTUP_DEVICES=selection)
+            result = subprocess.run(
+                [str(runner), "--ignored", "--nocapture", "--exact", test],
+                env=case, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                encoding="utf-8", check=True,
+            )
+            fields = {}
+            for line in result.stderr.splitlines():
+                if line.startswith(("startup:", "device:")):
+                    fields.update(re.findall(r"(\w+)=(\S+)", line))
+            runs.append({key: float(value) for key, value in fields.items() if value != "n/a"})
+        table[label] = {key: median([run[key] for run in runs if key in run])
+                        for key in runs[0]}
+    everything = table["all"]
+    print(f"scan cold {everything['scan_cold_ms']:.0f} ms, warm {everything['scan_warm_ms']:.0f} ms "
+          f"(median of {repeats} fresh processes)")
+    print(f"all {len(SLUGS)} devices: load {everything['load_total_ms']:.1f} ms, "
+          f"resident +{everything.get('rss_delta_mib', float('nan')):.1f} MiB "
+          f"(runner before loading: {everything.get('rss_base_mib', float('nan')):.1f} MiB)")
+    print("device | load ms (alone) | resident MiB added (alone)")
+    for slug in SLUGS:
+        row = table[slug]
+        print(f"{slug} | {row['load_ms']:.1f} | {row.get('rss_delta_mib', float('nan')):.1f}")
+
+
+def run_staged(app, runner, digest, projects, repeats=5):
     # Keep the archived app untouched. Stage a separate runner with the same verified payload.
     with tempfile.TemporaryDirectory(prefix="bundled-clap-runner-", dir=runner.parent) as scratch:
         directory = Path(scratch)
@@ -138,7 +187,6 @@ def run_staged(app, runner, digest, projects):
         if hashlib.sha256((destination / "manifest.json").read_bytes()).hexdigest() != digest:
             raise SystemExit("Staged manifest differs from the digest reported by the packaged app")
 
-        modes = ("direct", "bridge")
         test_names = {
             None: ("bundled::bundled_clap_workloads",),
             "current": (
@@ -156,9 +204,11 @@ def run_staged(app, runner, digest, projects):
                 "bundled_current::packaged_effect_cards_and_presets",
                 "param_undo::packaged_limiter_drag_is_one_step_and_undo_redo_restore_the_sound",
             ),
-        }[projects]
+        }.get(projects)
         environment = os.environ.copy()
-        environment.pop("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE", None)
+        if projects == "startup":
+            environment["KOMPONIST_PERF_BUNDLED_APP"] = str(app)
+            return run_startup(staged_runner, environment, repeats)
         if projects == "current":
             environment["KOMPONIST_CURRENT_BUNDLED_APP"] = str(app)
             environment["KOMPONIST_CURRENT_BUNDLED_RESULTS"] = scratch
@@ -166,17 +216,15 @@ def run_staged(app, runner, digest, projects):
             environment["KOMPONIST_PERF_BUNDLED_APP"] = str(app)
 
         benchmark_failures = []
-        for mode in modes:
-            route = environment.copy()
-            if not projects:
-                route["KOMPONIST_PERF_BUNDLED_MODE"] = mode
-            if mode == "bridge":
-                route["KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE"] = "1"
-            if not projects:
-                benchmark_failures.extend(run_benchmarks(staged_runner, route, test_names[0]))
-            else:
-                route.setdefault("KOMPONIST_SYNTH_UI_LANG", "en" if mode == "bridge" else "de")
+        if not projects:
+            benchmark_failures.extend(run_benchmarks(staged_runner, environment, test_names[0]))
+        else:
+            for lang in ("de", "en"):
+                # The two UI checks run in both languages; everything else once.
+                route = dict(environment, KOMPONIST_SYNTH_UI_LANG=lang)
                 for test in test_names:
+                    if lang == "en" and test not in UI_TESTS:
+                        continue
                     run_test(staged_runner, route, test)
 
         if projects == "current":
@@ -190,14 +238,19 @@ def main():
     parser.add_argument("app", type=Path, help="packaged app executable from the unpacked archive")
     parser.add_argument(
         "--current-projects", dest="projects", action="store_const", const="current",
-        help="validate current-format project state and offline audio against both host paths",
+        help="validate current-format project state and offline audio with the bundled devices in-process",
     )
+    parser.add_argument(
+        "--startup-memory", dest="projects", action="store_const", const="startup",
+        help="measure catalog scan, device load time and resident memory with the bundles in-process",
+    )
+    parser.add_argument("--repeats", type=int, default=5, help="fresh processes per start-up case")
     options = parser.parse_args()
     app = options.app.resolve(strict=True)
     digest = verified_digest(app)
-    test = "it" if options.projects else "engine_perf"
-    runner = build_runner(digest, test, release=not options.projects)
-    run_staged(app, runner, digest, options.projects)
+    test = "it" if options.projects == "current" else "engine_perf"
+    runner = build_runner(digest, test, release=options.projects != "current")
+    run_staged(app, runner, digest, options.projects, options.repeats)
 
 
 if __name__ == "__main__":

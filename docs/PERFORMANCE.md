@@ -543,10 +543,16 @@ mean callback time with and without 512 bent parameter mappings, changing every 
 block. Program preparation and retirement run outside the measurement. This measures the
 block-rate fan-out. Timeline ramps may emit several values per block and are covered by #76.
 
-## Bundled CLAP comparison (#197)
+## Bundled CLAP devices (#197, #295)
 
-Build an archive with the bundled CLAP package workflow and unpack it. From the same source
-revision as the archive, run:
+The twelve shipped devices are CLAP bundles that komponist loads in-process (D11); the bridge hosts
+third-party plugins only, so there is no bridge comparison for bundles. The measurements below run
+the packaged app's verified payload through the existing release test runners.
+
+### Callback load of the bundled devices
+
+Build an archive with the bundled CLAP package workflow and unpack it (or use `scripts/run.sh
+--build-only`). From the same source revision as the archive, run:
 
 ```bash
 KOMPONIST_PERF_WORKERS=4 KOMPONIST_PERF_BUFFERS=64,128,256 KOMPONIST_PERF_SECS=60 \
@@ -556,36 +562,84 @@ KOMPONIST_PERF_WORKERS=4 KOMPONIST_PERF_BUFFERS=64,128,256 KOMPONIST_PERF_SECS=6
 Pass `komponist.exe` on Windows or `komponist.app/Contents/MacOS/komponist` on macOS. The script
 asks the packaged app to verify the private CLAP payload, then builds the existing release
 `engine_perf` runner with the authenticated manifest digest. It stages a temporary copy of the
-payload next to the runner, leaves the archive contents untouched, and uses the original
-packaged executable for the bridge subprocesses. Each route, workload, buffer size and worker
-count combination starts in a fresh process so allocator and library state from earlier cases
-does not affect its startup and memory measurements.
-Each case checks device readiness, CLAP layout, state restore warnings and bridge PIDs.
+payload next to the runner and leaves the archive contents untouched. Each workload, buffer size
+and worker count combination starts in a fresh process so allocator and library state from earlier
+cases does not affect its measurements. Each case checks device readiness, CLAP layout, state
+restore warnings and that no device runs in a bridge process.
 
-The same generated 48 kHz project runs with verified in-process CLAP and forced bridge CLAP. Sixteen parallel Hexa instruments play the same four presets and four-bar
-note sequence. The serial variant adds Delay and Hall on four tracks and EQ, Presse and
-Limiter on the master. The MIDI variant adds Arpeggiator and Scale before eight instruments.
-Both routes select verified bundles by plugin ID and load the Hexa factory presets before
-measurement. Effects and MIDI devices start at their defaults. Buffer sizes default
-to 64, 128 and 256 frames, worker counts to 0 and 4, and each measurement to 10 seconds after
-a one-second warm-up. Set `KOMPONIST_PERF_WORKLOAD` to a comma-separated subset of
-`instruments,effects,midi` to focus a sustained run.
+A generated 48 kHz project runs sixteen parallel Hexa instruments that play the same four presets
+and four-bar note sequence. The serial variant adds Delay and Hall on four tracks and EQ, Presse and
+Limiter on the master. The MIDI variant adds Arpeggiator and Scale before eight instruments. The
+bundles are selected by plugin ID and the Hexa factory presets are loaded before measurement.
+Effects and MIDI devices start at their defaults. Buffer sizes default to 64, 128 and 256 frames,
+worker counts to 0 and 4, and each measurement to 10 seconds after a one-second warm-up. Set
+`KOMPONIST_PERF_WORKLOAD` to a comma-separated subset of `instruments,effects,midi` to focus a
+sustained run.
 
-- Setup time covers the scan (CLAP routes only) and device attachment through readiness.
+- Setup time covers the scan and device attachment through readiness.
 - Callback p95 and p99 use unsmoothed per-callback loads in one-percentage-point bins.
   The last bin includes all loads of 400% and higher. The peak is the largest observed callback
   time as a percentage of the frame period. The smoothed median is sampled every 100 ms.
-- Counters cover callbacks, callbacks exceeding the period, stream xruns, late bridge blocks,
-  and worker batches and late waits during the same window.
-- After timing ends and before shutdown, the runner reports resident memory (working set on
-  Windows) for itself and the sum across distinct active bridge processes. Missing readings
-  are marked unavailable. The snapshot includes shared pages in each process that maps them,
-  so the sum can count the same pages more than once. It does not measure peak memory.
+- Counters cover callbacks, callbacks exceeding the period, stream xruns, and worker batches and
+  late waits during the same window.
+- After timing ends and before shutdown, the runner reports its resident memory (working set on
+  Windows). A missing reading is marked unavailable. It does not measure peak memory.
 
 The harness defaults to the null audio backend and uses the real DSP, scheduler and plugin
-hosts. Set `KOMPONIST_PERF_AUDIO_HOST` to `coreaudio`, `asio`, `wasapi`, `pipewire`, `jack`
+host. Set `KOMPONIST_PERF_AUDIO_HOST` to `coreaudio`, `asio`, `wasapi`, `pipewire`, `jack`
 or `alsa` to measure with the default output device on the chosen driver. The benchmark
 plays through that output. Choose periods your device actually supports. A stream error,
 driver fallback, or a negotiated sample rate or period that differs from the request
 fails the case. Report the device, driver, machine, OS, build revision and settings when
 comparing runs. Physical round-trip latency requires a separate measurement.
+
+### Start-up time and memory (#295)
+
+```bash
+python3 scripts/measure-bundled-clap.py --startup-memory [--repeats 5] /path/to/unpacked/komponist
+```
+
+Each case runs the ignored test `bundled::bundled_clap_startup_and_memory` in a fresh process
+against the packaged payload, `--repeats` times (default 5), and the script prints the medians:
+
+- **Scan:** time from starting the catalog scan to `ScanFinished`, with an empty scan cache (cold: one
+  `komponist --bridge --scan` subprocess per bundle) and with the cache of the cold run (warm).
+- **Load time:** from `create_processor` to `DeviceStatus::Ok` for each device in turn, which covers
+  the in-process `dlopen`, plugin init, activation and the first parameter and layout read.
+- **Memory:** resident set of the process before the first load and after each load. "Alone" is a
+  process that loads only that device, so it includes the library's own pages; the all-twelve row
+  is one process that loads every device. Shared pages of the system libraries are counted, so
+  the per-device figures do not add up exactly to the total. It is the resident set after
+  loading, not a peak.
+
+Measured 2026-11-26 on the machine of [§1](#1-machine-and-conditions) (AMD Ryzen 5 5600, 15 GiB,
+Arch Linux, kernel 7.2.14-arch1-1, NVMe build folder), release build from a package staged by
+`scripts/run.sh --build-only`, median of 5 fresh processes per case, other builds paused by the build lock:
+
+| | Result |
+|---|---|
+| Catalog scan, cold cache (12 bundles) | 78 ms |
+| Catalog scan, warm cache | 2 ms |
+| Load of all 12 devices in one process (`create_processor` to `Ok`, summed) | 42 ms |
+| Resident memory before loading | 11.6 MiB |
+| Resident memory added by all 12 devices | +46.6 MiB |
+
+| Device | Load (alone) | Resident added (alone) |
+|---|---|---|
+| Hall | 2.2 ms | 3.9 MiB |
+| Delay | 3.0 ms | 5.2 MiB |
+| EQ | 2.8 ms | 4.2 MiB |
+| Presse | 2.3 ms | 3.9 MiB |
+| Limiter | 1.8 ms | 3.4 MiB |
+| Hexa | 5.0 ms | 5.3 MiB |
+| Volt | 4.6 ms | 5.0 MiB |
+| Surf | 5.8 ms | 16.6 MiB |
+| Klopfer | 6.4 ms | 5.4 MiB |
+| Sampler | 5.0 ms | 4.8 MiB |
+| Arpeggiator | 2.2 ms | 3.0 MiB |
+| Scale | 2.2 ms | 3.0 MiB |
+
+Reading: loading twelve devices adds well under 0.1 s to the start and about 47 MiB (Surf, which carries its
+wavetable data, is a third of that), so there is no reason to load bundles lazily. The cold scan runs once per
+install or bundle change; the warm figure is what every later start pays. The numbers are Linux x86_64 only; macOS
+and Windows run the same measurement from their packages (`--startup-memory`) and are not recorded here yet.

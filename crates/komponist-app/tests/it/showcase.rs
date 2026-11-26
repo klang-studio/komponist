@@ -109,6 +109,15 @@ fn check_device_catalog(project: &Project, host: &dyn DeviceHost) {
     // Drums 2, Bass 3, Lead 3, Pad 2, Keys 2, Arp 4, sampler demos 2, surf 1, Reverb bus 1,
     // master 1.
     assert_eq!(count, 2 + 3 + 3 + 2 + 2 + 4 + 2 + 1 + 1 + 1);
+    // Packaging acceptance: the demo uses all twelve shipped devices.
+    let slugs: std::collections::BTreeSet<_> = all_devices(project)
+        .filter_map(|device| device.plugin.id.strip_prefix(DEVICE_PREFIX))
+        .collect();
+    assert_eq!(
+        slugs.len(),
+        12,
+        "the demo must use every bundled device: {slugs:?}"
+    );
     // The Arp's MIDI effects come first, the Limiter is on the master.
     let arp = &track_named(project, "Arp").channel.devices;
     let roles: Vec<_> = arp.iter().map(|d| d.role).collect();

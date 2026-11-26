@@ -106,11 +106,19 @@ builds and its gate passes there; plugin GUI frames are bridge-owned as on macOS
 - CI has a `windows` job (clippy, test plugins, tests; no GUI tests, no format check), not blocking while the port is in
   progress.
 
+## Bundled devices in a worktree
+
+The twelve devices are separate CLAP bundles in `bundled-clap/` next to the executable (`Contents/Resources/bundled-clap`
+in the macOS app), verified against a manifest hash that is compiled into the binary. A worktree needs no setup:
+`scripts/run.sh` builds and stages them for the app, `scripts/build-test-plugins.sh` (run by `scripts/check.sh`) stages
+them under `target/test-plugins/<os>/headless-bundles` for the tests. Release packages are built from the same stage
+(`scripts/bundled-clap.py`, `scripts/bundle-macos.sh`, `scripts/package-windows.sh`; signing: see their headers).
+
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `scripts/run.sh [args]` | Builds `komponist` (release) and starts it with the arguments (`--demo`, `--null-audio`, `--open-plugin NAME`, `--scale F`). The plugin bridge is part of the executable (`komponist --bridge`, WP-94), so `cargo run -p komponist-app` works as well. |
+| `scripts/run.sh [args]` | Builds the twelve bundled device CLAPs, stages them with their manifest, builds `komponist` (release) with the manifest hash and starts it with the arguments (`--demo`, `--null-audio`, `--open-plugin NAME`, `--scale F`); `--build-only` prints the staged executable instead of starting it. The devices are only found next to an executable built this way, so a plain `cargo run -p komponist-app` starts with an empty device catalog and a warning. The plugin bridge is part of the executable (`komponist --bridge`, WP-94), used for third-party plugins only: bundled devices run in-process (D11). |
 | `scripts/worktree.sh add\|remove <name> [branch]` | Creates an agent worktree in `../.claude/worktrees/` with its build folders on the NVMe, or removes it with them. |
 | `scripts/check.sh` | The gate before every report: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`. |
 | `../.claude/komponist/scripts/render-reference.sh` | (internal, historical) Renders the handoff `.dc.html` files with headless Chromium into `../.claude/komponist/design/reference/*.png` (needs network for the Google fonts). |

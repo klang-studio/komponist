@@ -3,7 +3,10 @@
 # to try this workflow. It builds komponist, checks that it starts headless and attaches
 # komponist-<tag>-linux-x86_64.tar.gz, komponist-<tag>-macos-arm64.zip (ad-hoc signed app bundle, #53) and
 # komponist-<tag>-windows-x86_64.zip (unsigned, untested, with ASIO) with their .sha256 files to that same release.
-# Each archive includes all twelve bundled CLAP devices and is verified before upload.
+# Each archive includes all twelve bundled CLAP devices and is verified before upload. Signing: the bundles are signed
+# while they are staged (scripts/bundled-clap.py: codesign on macOS, scripts/sign-windows.sh on Windows), so the
+# signing secrets (KOMPONIST_SIGN_IDENTITY, KOMPONIST_SIGN_CERT/_PASSWORD/_THUMBPRINT) must be passed to the
+# "Stage bundled CLAP payloads" step as well as to the packaging step, otherwise only the app is signed.
 name: Release
 
 on:

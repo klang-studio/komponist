@@ -25,6 +25,7 @@ on:
       - "crates/komponist-app/src/samples.rs"
       - "crates/komponist-app/src/export.rs"
       - "crates/komponist-app/src/export/**"
+      - "crates/komponist-app/tests/engine_perf/**"
       - "crates/komponist-app/tests/it/bundled_current.rs"
       - "crates/komponist-app/tests/it/bundled_sampler.rs"
       - "crates/komponist-app/tests/it/bundled_synth_ui.rs"
@@ -37,6 +38,7 @@ on:
       - "crates/komponist-model/src/fixtures.rs"
       - "crates/komponist-plugins/**"
       - "scripts/bundled-clap.py"
+      - "scripts/sign-windows.sh"
       - "scripts/bundled-clap-build.sh"
       - "scripts/run.sh"
       - "scripts/measure-bundled-clap.py"
@@ -88,7 +90,8 @@ jobs:
             build-essential pkg-config clang libclang-dev \
             libasound2-dev libjack-jackd2-dev libpipewire-0.3-dev libspa-0.2-dev \
             libdbus-1-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-xcb-dev libxcb1-dev \
-            libwayland-dev libfontconfig1-dev libgl1-mesa-dev
+            libwayland-dev libfontconfig1-dev libgl1-mesa-dev \
+            mesa-vulkan-drivers libvulkan1 xvfb xauth
       - name: Install Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - name: Cache cargo
@@ -146,6 +149,26 @@ jobs:
           if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
           "$python" scripts/bundled-clap.py --target "$TARGET" --inventory "$INVENTORY" \
             check-archive "$APP" --manifest-sha256 "$KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256"
+      # The demo project uses every device, so a start from the unpacked package loads all twelve bundles in-process.
+      # Killed by the timeout (124) after 20 s = still running = fine; any other exit = crash. macOS and Windows
+      # run the same demo from the unpacked package in the next step (headless test harness, no window needed).
+      - name: Start the demo from the unpacked Linux package
+        if: runner.os == 'Linux' && env.INVENTORY == 'all'
+        env:
+          WGPU_BACKEND: vulkan
+        run: |
+          export HOME="$RUNNER_TEMP/smoke-home" XDG_CONFIG_HOME="$RUNNER_TEMP/smoke-home/config"
+          mkdir -p "$HOME"
+          set +e
+          xvfb-run -a timeout 20 "$APP" --null-audio --no-plugin-scan --demo > demo.log 2>&1
+          status=$?
+          set -e
+          cat demo.log
+          echo "exit status: $status"
+          if [ "$status" -ne 124 ]; then
+            echo "::error::the demo did not keep running for 20 s (exit status $status)"
+            exit 1
+          fi
       - name: Round-trip and export current-format projects with the bundles in-process
         if: env.INVENTORY == 'all'
         run: |
