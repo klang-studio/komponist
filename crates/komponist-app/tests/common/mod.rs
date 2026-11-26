@@ -138,6 +138,80 @@ pub fn song_with_shipped_instruments(host: &dyn DeviceHost) -> Project {
     project
 }
 
+/// Wait for the device's parameter inventory and authored layout before interacting with it.
+pub fn wait_for_layout(app: &mut App, device: DeviceId) {
+    step_until(app, "the authored parameter inventory", |app| {
+        let host = app.engine().host();
+        host.status(device) == DeviceStatus::Ok
+            && host.native_layout(device).is_some()
+            && host.params(device).is_some()
+    });
+}
+
+pub fn author_parameter(app: &App, device: DeviceId, key: &str) -> u32 {
+    app.engine()
+        .host()
+        .native_layout(device)
+        .unwrap()
+        .author_ids()
+        .unwrap()[key]
+}
+
+/// Converts a fixture's physical test value through the metadata submitted by the bundle.
+pub fn author_wire_value(app: &App, device: DeviceId, id: u32, plain: f64) -> f64 {
+    let layout = app.engine().host().native_layout(device).unwrap();
+    let Some(display) = layout.parameter_display(id) else {
+        return plain;
+    };
+    let (min, max) = display.range();
+    if let Some(steps) = display.steps {
+        (((plain - min) / (max - min)) * f64::from(steps)).round()
+    } else {
+        komponist_model::params::to_normalized(display.scale.model_scale(), min, max, plain)
+    }
+}
+
+pub fn set_authored_param(app: &mut App, device: DeviceId, key: &str, plain: f64) {
+    let id = author_parameter(app, device, key);
+    let value = author_wire_value(app, device, id, plain);
+    app.dispatch(komponist_app::Action::Plugin(
+        komponist_app::PluginAction::SetParam { device, id, value },
+    ));
+    step_until(app, "the authored parameter edit", |app| {
+        app.engine()
+            .host()
+            .param_base(device, id)
+            .is_some_and(|current| (current - value).abs() < 1e-6)
+    });
+}
+
+pub fn author_base(app: &App, device: DeviceId, key: &str) -> f64 {
+    let id = author_parameter(app, device, key);
+    app.engine().host().param_base(device, id).unwrap()
+}
+
+pub fn assert_authored_plain(app: &App, device: DeviceId, key: &str, plain: f64) {
+    let id = author_parameter(app, device, key);
+    let expected = author_wire_value(app, device, id, plain);
+    let actual = author_base(app, device, key);
+    assert!(
+        (actual - expected).abs() < 1e-6,
+        "{key}: {actual} != {expected}"
+    );
+}
+
+/// Copy the live plugin's opaque CLAP snapshot into a project for a persistence check.
+pub fn project_with_snapshot(app: &mut App, device: DeviceId) -> Project {
+    let states = app
+        .engine_mut()
+        .host_mut()
+        .snapshot_selected_states(&[device], PATIENCE)
+        .expect("capture the current bundle state");
+    let [(captured, state)] = states.try_into().expect("single fixture snapshot");
+    assert_eq!(captured, device);
+    edits::set_saved_plugin_state(app.project(), device, &state).unwrap()
+}
+
 /// A project with one instrument and its track and device IDs.
 pub fn instrument_project(name: &str, plugin: PluginRef) -> (Project, TrackId, DeviceId) {
     let (project, track) = edits::add_track(
