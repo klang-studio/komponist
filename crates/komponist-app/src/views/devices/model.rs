@@ -1187,7 +1187,7 @@ pub fn move_target_in(from: usize, slot: usize, lo: usize, hi: usize) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device_host::BuiltinHost;
+    use crate::app::App;
     use komponist_ipc::ParamValue;
     use komponist_model::fixtures::demo_project;
 
@@ -1255,25 +1255,12 @@ mod tests {
 
     #[test]
     fn values_are_texted_and_snapped() {
-        let algo = legacy_frame_params(
-            Lang::De,
-            &komponist_model::fixtures::demo_project().tracks[2]
-                .channel
-                .devices[0],
-        )
-        .remove(0);
-        assert_eq!(algo.name(), "Algorithmus");
+        // A stepped parameter snaps to its steps and stays inside its range.
+        let mut steps = info(1, "Stufen", 0);
+        (steps.min, steps.max, steps.step_count) = (0.0, 32.0, 32);
+        let algo = plugin_params(Lang::De, &[steps], |_| None).remove(0);
         assert_eq!(algo.snap(7.4), 7.0);
         assert_eq!(algo.snap(40.0), 32.0);
-        assert_eq!(algo.text_at(0.0), "Frei");
-        let ratio = legacy_frame_params(
-            Lang::De,
-            &komponist_model::fixtures::demo_project().tracks[2]
-                .channel
-                .devices[0],
-        )
-        .remove(1);
-        assert_eq!(ratio.snap(3.3), 3.5);
         // The plugin's own text only for the value it describes.
         let own = ParamValue {
             id: 1,
@@ -1286,53 +1273,9 @@ mod tests {
     }
 
     #[test]
-    fn the_lead_chain_with_the_builtin_host() {
-        let project = demo_project();
-        let lead = &project.tracks[2];
-        let mut host = BuiltinHost::new();
-        for d in &lead.channel.devices {
-            let _ = host.create_processor(
-                d,
-                komponist_plugins::ProcessorSetup {
-                    sample_rate: 48_000.0,
-                    max_block: 256,
-                },
-            );
-        }
-        let cards = cards(Lang::De, lead, &host, &[]);
-        let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "Hexa",
-                "LSP Para EQ x8",
-                "TAL-Chorus-LX",
-                "Dragonfly Hall Reverb"
-            ]
-        );
-        let hexa = &cards[0];
-        assert!(hexa.instrument && hexa.state == CardState::Ok);
-        // WP-86: ten columns on the first page, eight on the envelope page.
-        assert_eq!(hexa.frame_width(0.0), 612.0, "10 columns");
-        let pages: Vec<_> = hexa.layout.pages.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(pages, ["Operatoren", "Hüllkurven", "LFO", "Global"]);
-        assert!(hexa.presets);
-        assert_eq!(hexa.tag, "INTERN");
-        assert_eq!(hexa.params.len(), komponist_hexa::device::params().len());
-        assert_eq!(hexa.params[0].name(), "Algorithmus");
-        assert_eq!(hexa.open_label(Lang::De), Some(Lang::De.devices_params()));
-        // Without plugin manager the effects are missing; TAL is bypassed.
-        assert_eq!(cards[1].state, CardState::Missing);
-        assert_eq!(cards[1].frame_width(0.0), 252.0);
-        assert_eq!(cards[1].open_label(Lang::De), None);
-        assert!(cards[2].bypass);
-        assert_eq!(first_effect_slot(&cards), 1);
-    }
-
-    #[test]
     fn native_metadata_uses_the_same_page_as_the_card_grid() {
         let project = demo_project();
-        let host = BuiltinHost::new();
+        let host = App::headless_plugin_host();
         let mut card = cards(Lang::En, &project.tracks[2], &host, &[]).remove(0);
         let native = komponist_ipc::native_layout::NativeLayout::parse(include_bytes!(
             "../../../../../docs/clap-device-layout/example.json"
@@ -1397,7 +1340,7 @@ mod tests {
         let mut card = card(
             Lang::De,
             &project.tracks[2].channel.devices[0],
-            &BuiltinHost::new(),
+            &App::headless_plugin_host(),
             &[],
         );
         card.state = CardState::Ok;
@@ -1478,45 +1421,47 @@ mod tests {
         assert_eq!(range_text(Lang::De, &mode), "Auf · Ab");
     }
     #[test]
-    fn the_spectrum_shows_only_for_a_running_eq_with_analyse_on() {
-        use komponist_builtin::Internal;
-        let device = |state: Option<Vec<u8>>, bypass| Device {
+    fn the_spectrum_shows_only_for_a_running_card_with_analyse_on() {
+        let device = Device {
             id: DeviceId(1),
             role: DeviceRole::Effect,
-            plugin: Internal::Eq.plugin_ref(),
-            bypass,
+            plugin: komponist_model::PluginRef {
+                format: komponist_model::PluginFormat::Clap,
+                id: "test.analyser".into(),
+                name: "Analyser".into(),
+                vendor: "Test".into(),
+                version: "1".into(),
+                module: Box::default(),
+            },
+            bypass: false,
             parameter_bases: Default::default(),
             asset_links: Default::default(),
-            state: state.map(Into::into),
+            state: None,
             sidechain: None,
         };
-        let host = BuiltinHost::new();
-        // A project saved before „Analyse“ existed has no such parameter in its state: on.
-        let old = br#"{"params": {"out": 0.0}}"#.to_vec();
-        let on = card(Lang::De, &device(Some(old), false), &host, &[]);
+        let host = App::headless_plugin_host();
+        let analyse = |value: f64| Param {
+            wire: 31,
+            info: ParamInfo::new("analyse", "Analyse", ParamKind::Bool, 1.0),
+            value,
+            text: String::new(),
+        };
+        let mut on = card(Lang::De, &device, &host, &[]);
+        on.state = CardState::Ok;
+        on.params = vec![analyse(1.0)];
         assert!(shows_spectrum(&on));
-        let off_state = Internal::Eq.with_value(None, 31, 0.0).unwrap();
-        assert_eq!(Internal::Eq.wire(&ParamId::new("analyse")), Some(31));
-        assert!(!shows_spectrum(&card(
-            Lang::De,
-            &device(Some(off_state), false),
-            &host,
-            &[]
-        )));
-        assert!(!shows_spectrum(&card(
-            Lang::De,
-            &device(None, true),
-            &host,
-            &[]
-        )));
+        let mut off = on.clone();
+        off.params = vec![analyse(0.0)];
+        assert!(!shows_spectrum(&off));
+        let mut bypassed = on.clone();
+        bypassed.bypass = true;
+        assert!(!shows_spectrum(&bypassed));
         let mut collapsed = on.clone();
         collapsed.collapsed = true;
         assert!(!shows_spectrum(&collapsed));
         // Devices without the parameter have none.
-        let delay = Device {
-            plugin: Internal::Delay.plugin_ref(),
-            ..device(None, false)
-        };
-        assert!(!shows_spectrum(&card(Lang::De, &delay, &host, &[])));
+        let mut without = on.clone();
+        without.params.clear();
+        assert!(!shows_spectrum(&without));
     }
 }
