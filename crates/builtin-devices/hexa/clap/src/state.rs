@@ -159,11 +159,3 @@ unsafe impl Params for HexaParams {
         self.to_audio.force_push(snapshot);
     }
 }
-
-/// Produce a CLAP state stream from an existing Hexa patch using the pinned wrapper's
-/// uncompressed format. The pure codec is shared with project compatibility.
-pub fn legacy_patch_to_clap_state(
-    legacy_state: &[u8],
-) -> Result<Vec<u8>, komponist_hexa::StateError> {
-    komponist_hexa::state::legacy_patch_to_clap_state(legacy_state, env!("CARGO_PKG_VERSION"))
-}

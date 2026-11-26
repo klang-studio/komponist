@@ -56,29 +56,20 @@ pub const DEFAULT_STEP_ROWS: [(&str, u8); 8] = [
     ("Perc", 47),
 ];
 
-/// Catalog id of the built-in hexa instrument (in process, `komponist-builtin`). The value is what project
-/// files store; it keeps the synth's former name "pisynth" so existing projects load.
-pub const BUILTIN_HEXA: &str = "pisynth";
-/// Display name of [`BUILTIN_HEXA`]. Project files written before the rename store "pisynth" as the plugin
-/// name; loading replaces it (`persist::from_json`).
+/// Catalog id of the built-in hexa instrument (in process, `komponist-builtin`), as project files store it.
+pub const BUILTIN_HEXA: &str = "hexa";
+/// Display name of [`BUILTIN_HEXA`].
 pub const HEXA_NAME: &str = "Hexa";
-/// Catalog id of the built-in volt instrument. The value is what project files store; it keeps the synth's
-/// former name "knurr" so existing projects load.
-pub const BUILTIN_VOLT: &str = "knurr";
-/// Display name of [`BUILTIN_VOLT`]. Project files written before the rename store "knurr" as the plugin
-/// name; loading replaces it (`persist::from_json`).
+/// Catalog id of the built-in volt instrument, as project files store it.
+pub const BUILTIN_VOLT: &str = "volt";
+/// Display name of [`BUILTIN_VOLT`].
 pub const VOLT_NAME: &str = "Volt";
-/// Display name of the built-in compressor (id `"presse"`, `komponist_builtin::Internal::Presse`); files before
-/// 2026-11-16 store it in lowercase and are renamed on load (`persist::from_json`).
+/// Display name of the built-in compressor (id `"presse"`, `komponist_builtin::Internal::Presse`).
 pub const PRESSE_NAME: &str = "Presse";
 /// Catalog id of the built-in drum sampler (`komponist_sampler`, in process, WP-87).
 pub const BUILTIN_SAMPLER: &str = "sampler";
 /// Display name of the built-in drum sampler, whose catalog ID stays `sampler`.
 pub const DRUM_SAMPLER_NAME: &str = "Klopfer";
-/// Catalog id klopfer had as a built-in ("klopfer · INTERN", the bundled `Klopfer.clap`) before
-/// the sampler replaced it. Only old projects hold it; the catalog resolves it to the scanned
-/// klopfer CLAP plugin.
-pub const BUILTIN_KLOPFER: &str = "klopfer";
 
 /// A whole project: the root of the document tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -759,8 +750,7 @@ pub struct PluginRef {
     /// Version string at the time the device was added (informational).
     pub version: String,
     /// File name of the plugin module at the time the device was added ("Vital.vst3",
-    /// "Surge XT.clap"); shown in the missing-plugins list (S06). Empty for built-ins and for
-    /// projects saved before this field existed; not written then, so such files stay unchanged.
+    /// "Surge XT.clap"); shown in the missing-plugins list (S06). Empty for built-ins; not written then.
     /// Bundled CLAP references use the stable `bundled-clap/` prefix and require the packaged
     /// catalog. A project cannot use this prefix to establish trust in a library.
     ///

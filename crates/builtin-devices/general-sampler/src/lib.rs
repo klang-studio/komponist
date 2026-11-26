@@ -29,8 +29,6 @@ pub static SPEC: Spec = Spec {
     params,
     layout,
     presets: no_presets,
-    preset_aliases: &[],
-    migrate_params: Some(migrate_params),
     cache: SpecCache::new(),
 };
 
@@ -350,25 +348,6 @@ fn params(t: Lang) -> Vec<ParamInfo> {
     ]
 }
 
-// Earlier states stored slice mode separately and used mode 2 for looping.
-fn migrate_params(params: &mut komponist_device_core::StateParams) {
-    if !params.contains_key("slicing") && !params.contains_key("loop_start") {
-        return;
-    }
-    if params
-        .get("slicing")
-        .and_then(Value::as_f64)
-        .is_some_and(|slicing| slicing >= 0.5)
-    {
-        params.insert("mode".into(), serde_json::json!(2.0));
-    } else if params.get("mode").and_then(Value::as_f64) == Some(2.0) {
-        params.insert("mode".into(), serde_json::json!(1.0));
-    }
-    if params.get("direction").and_then(Value::as_f64) == Some(2.0) {
-        params.insert("direction".into(), serde_json::json!(0.0));
-    }
-}
-
 /// Source tempo and sync switch stored in project state.
 pub fn sync_settings(state: Option<&[u8]>) -> (f64, bool) {
     let values = SPEC.decode_state(state).unwrap_or_else(|_| SPEC.defaults());
@@ -413,19 +392,6 @@ pub fn processor_from_state(state: Option<&[u8]>) -> (InternalProcessor, Sampler
 #[cfg(test)]
 mod state_tests {
     use super::*;
-
-    #[test]
-    fn old_slice_and_loop_states_load_as_slices_and_gate() {
-        let read = |state: &[u8]| SPEC.decode_state(Some(state)).unwrap();
-        let sliced = read(br#"{"params":{"mode":0,"slicing":1,"direction":1}}"#);
-        assert_eq!(sliced[Param::Mode as usize], 2.0);
-        assert_eq!(sliced[Param::Direction as usize], 1.0);
-        let looped = read(br#"{"params":{"mode":2,"slicing":0,"direction":2}}"#);
-        assert_eq!(looped[Param::Mode as usize], 1.0);
-        assert_eq!(looped[Param::Direction as usize], 0.0);
-        let encoded = SPEC.encode_state(&sliced);
-        assert_eq!(read(&encoded), sliced);
-    }
 
     #[test]
     fn settings_round_trip_without_losing_parameters_or_sample_links() {

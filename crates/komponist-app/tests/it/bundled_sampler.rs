@@ -1,4 +1,4 @@
-//! Packaged sampler state test, launched by `scripts/measure-bundled-clap.py --historical-projects`.
+//! Packaged sampler state tests, launched by `scripts/measure-bundled-clap.py --current-projects`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -16,13 +16,9 @@ use komponist_engine::Command;
 use komponist_general_sampler as general_sampler;
 use komponist_ipc::device_assets::AssetStatus;
 use komponist_model::edits::{self, NewTrack};
+use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{DeviceId, Project, TrackId};
-use komponist_plugins::bundled_clap::BundledClap;
-use komponist_plugins::legacy_bundled::{
-    migrate_legacy_bundled_project, plan_legacy_bundled_device,
-};
 use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent};
-use komponist_sampler::links::{self, SampleLink};
 
 use crate::acceptance_support::harness;
 use crate::common::{NULL_BUFFER, PATIENCE, app_with, config, step_for, step_until};
@@ -39,64 +35,62 @@ fn asset_status(app: &App, device: DeviceId, id: u32) -> Option<&AssetStatus> {
 }
 
 #[test]
-#[ignore = "requires a verified all-device package; run with scripts/measure-bundled-clap.py --historical-projects"]
+#[ignore = "requires a verified all-device package; run with scripts/measure-bundled-clap.py --current-projects"]
 fn both_samplers_play_assets_after_the_project_moves() {
-    let launcher = std::env::var_os("KOMPONIST_HISTORICAL_BUNDLED_APP")
-        .expect("set the unpacked app with scripts/measure-bundled-clap.py --historical-projects");
+    let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP")
+        .expect("set the unpacked app with scripts/measure-bundled-clap.py --current-projects");
     let force_bridge =
         std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
     let scratch = tempfile::tempdir().unwrap();
-    let inventory = BundledClap::discover(scratch.path()).unwrap().unwrap();
     let before_dir = scratch.path().join("before");
     std::fs::create_dir(&before_dir).unwrap();
     let asset = before_dir.join("tone.wav");
     write_sample(&asset);
-    let link = SampleLink::new(&asset, Some(&before_dir));
+    let link = AssetLink::new(&asset, Some(&before_dir));
 
+    // The current format: bundled sampler references with a host-managed link in slot 0.
+    let host = scanned_packaged_sampler_host(scratch.path(), launcher.clone().into());
     let mut source = Project::new("Moved sampler project");
-    for kind in [Internal::Sampler, Internal::GeneralSampler] {
+    for id in [
+        "org.klang-studio.komponist.sampler",
+        "org.klang-studio.komponist.general-sampler",
+    ] {
+        let prepared = host
+            .manager()
+            .prepare_bundled_device(id, None, &[], &[])
+            .unwrap();
+        let state = prepared.state.clone();
         let (next, track) = edits::add_track(
             &source,
             NewTrack {
                 name: None,
                 hue: None,
-                instrument: Some(kind.plugin_ref()),
+                instrument: Some(prepared.plugin),
                 index: None,
                 arm_exclusive: false,
             },
         )
         .unwrap();
-        let device = next.track(track).unwrap().channel.instrument().unwrap().1;
-        let state = kind.encode_state(&kind.defaults());
-        let linked = links::write(Some(&state), 0, Some(&link));
-        source = edits::set_device_state(&next, device.id, Some(linked.into())).unwrap();
+        let device = next
+            .track(track)
+            .unwrap()
+            .channel
+            .instrument()
+            .unwrap()
+            .1
+            .id;
+        let next = edits::set_device_state(&next, device, state).unwrap();
+        source = edits::set_device_asset_links(&next, device, [(0, link.clone())].into()).unwrap();
     }
-    let plans = source.tracks.iter().map(|track| {
-        let device = track.channel.instrument().unwrap().1;
-        plan_legacy_bundled_device(&inventory, device, Some(&before_dir)).unwrap()
-    });
-    let migrated = migrate_legacy_bundled_project(&source, plans)
-        .unwrap()
-        .project;
-    assert!(
-        migrated.tracks.iter().all(|track| {
-            track
-                .channel
-                .instrument()
-                .unwrap()
-                .1
-                .asset_links
-                .contains_key(&0)
-        }),
-        "both verified sampler bundles moved their file into the project link inventory"
-    );
+    drop(host);
+    let project = source;
     let filename = "samples.komponist";
-    save_project(&before_dir.join(filename), &migrated).unwrap();
+    save_project(&before_dir.join(filename), &project).unwrap();
     let moved = scratch.path().join("moved");
     std::fs::rename(&before_dir, &moved).unwrap();
     assert!(!asset.exists());
     let reopened_path = moved.join(filename);
-    assert_eq!(load_project(&reopened_path).unwrap(), migrated);
+    assert_eq!(load_project(&reopened_path).unwrap(), project);
 
     let mut config = config(scratch.path());
     config.bridge_exe = launcher.into();
@@ -120,7 +114,7 @@ fn both_samplers_play_assets_after_the_project_moves() {
         .into_iter()
         .enumerate()
     {
-        let track = &migrated.tracks[index];
+        let track = &project.tracks[index];
         let device = track.channel.instrument().unwrap().1;
         step_until(&mut app, "relocated sampler ready", |app| {
             app.engine().device_status(device.id) == DeviceStatus::Ok
@@ -131,14 +125,14 @@ fn both_samplers_play_assets_after_the_project_moves() {
         );
         assert_audible(&mut app, track.id, key);
     }
-    assert_eq!(app.project().as_ref(), &migrated);
+    assert_eq!(app.project().as_ref(), &project);
     assert!(
         !app.doc().is_dirty(),
         "runtime path refresh must not edit the project"
     );
 
     // Exercise state restore with the original stale absolute fallback too.
-    let track = &migrated.tracks[1];
+    let track = &project.tracks[1];
     let device = track.channel.instrument().unwrap().1;
     let linked = device.state.as_ref().unwrap();
     let empty = Arc::from(pinned_clap_state::encode(
@@ -249,7 +243,7 @@ fn both_samplers_play_assets_after_the_project_moves() {
     std::fs::remove_file(&replacement).unwrap();
     app.dispatch(Action::Project(ProjectAction::Save));
     assert_sample_sources(&load_project(&copy).unwrap(), &destination, &collected);
-    for (track, key) in migrated
+    for (track, key) in project
         .tracks
         .iter()
         .zip([komponist_sampler::note_of_pad(0), 60])
@@ -1404,22 +1398,8 @@ fn has_waveform_peaks(harness: &egui_kittest::Harness<'_, App>, label: &str) -> 
 fn assert_sample_sources(project: &Project, project_dir: &Path, source: &Path) {
     for track in &project.tracks {
         let device = track.channel.instrument().unwrap().1;
-        if let Some(link) = device.asset_links.get(&0) {
-            assert_eq!(link.resolve(Some(project_dir)).as_deref(), Some(source));
-            continue;
-        }
-        let state = device.state.as_deref().unwrap();
-        let wrapper: serde_json::Value = serde_json::from_slice(&state[8..]).unwrap();
-        let assets = wrapper["fields"][pinned_clap_state::SAMPLE_ASSETS_FIELD]
-            .as_str()
-            .unwrap();
-        assert_eq!(
-            links::read(Some(assets.as_bytes()))[0]
-                .1
-                .resolve(Some(project_dir))
-                .as_deref(),
-            Some(source)
-        );
+        let link = device.asset_links.get(&0).expect("a host-managed link");
+        assert_eq!(link.resolve(Some(project_dir)).as_deref(), Some(source));
     }
 }
 

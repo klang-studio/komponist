@@ -602,7 +602,6 @@ fn search(lang: Lang, input: &Input<'_>, query: &str) -> Vec<Row> {
                 .filter(move |preset| {
                     std::iter::once(preset.display_name(lang.code()))
                         .chain(std::iter::once(&*preset.name))
-                        .chain(preset.aliases.iter().map(String::as_str))
                         .any(|name| name.to_lowercase().contains(lower))
                 })
                 .map(move |preset| {

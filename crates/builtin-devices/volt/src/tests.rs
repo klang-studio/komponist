@@ -340,7 +340,7 @@ fn volt_is_an_instrument_in_the_catalog() {
     assert_eq!(catalog.name, "Volt");
     assert_eq!(catalog.role, komponist_model::DeviceRole::Instrument);
     assert!(catalog.features.contains(&"synthesizer"));
-    assert_eq!(catalog.plugin_ref().id, "knurr");
+    assert_eq!(catalog.plugin_ref().id, "volt");
 }
 
 // ------------------------------------------------------------------------------------------------

@@ -500,10 +500,10 @@ It is never undone and never saved with the project.
 
 ### 9.4 Files
 
-A project is a `*.komponist` JSON file (`format: "komponist"`, version 5) written and migrated by
+A project is a `*.komponist` JSON file (`format: "komponist"`, version 5) written by
 [`persist.rs`](../crates/komponist-model/src/persist.rs). Plugin states are base64. Audio files
-are *linked* by relative and absolute path, never embedded. Older versions are migrated on load;
-newer versions are rejected. If you change the file format, read ARCHITECTURE §5.5 first.
+are *linked* by relative and absolute path, never embedded. Below 1.0 exactly one version is valid:
+any other version is rejected, nothing is migrated (D10). If you change the file format, read ARCHITECTURE §5.5 first.
 
 ## 10. Walk-through: from a mouse drag to sound
 
@@ -832,9 +832,10 @@ Things to notice in its `process` loop:
 
 ### 13.3 Device ids are forever
 
-The catalog id and parameter ids are stored in project files and automation lanes. They must never
-change. That is why Hexa's id is still `pisynth` and Klopfer's is `sampler` (see
-`BUILTIN_HEXA` in `project.rs`). The device checklist in
+The catalog id and parameter ids are stored in project files and automation lanes. Below 1.0 a
+change breaks the projects that hold the old id, because there is no migration (D10); at 1.0 they
+become permanent. Hexa's id is `hexa` and Klopfer's is `sampler` (see `BUILTIN_HEXA` in
+`project.rs`). The device checklist in
 [builtin-devices/README.md](../crates/builtin-devices/README.md) lists everything a new device needs.
 
 ## 14. External plugins and the bridge
@@ -1133,8 +1134,9 @@ tracks still reuse their compiled program (pointer equality).
 implementation, stable ids, DE/EN names, registration in the registry, and a musically sensible
 use in the demo project (`showcase_project()`, rule 15) with a balanced mix.
 
-**… change the project file.** Add the field with `#[serde(default)]` where possible, bump the
-version in `persist.rs` only if needed, add a migration and tests for old files. Read
+**… change the project file.** Add the field (optional data with `#[serde(default)]`), bump
+`FORMAT_VERSION` in `persist.rs` when files of the other version must be rejected, and update every
+user in the same change. There is no migration and no test against old files (rule 16). Read
 ARCHITECTURE §5.5.
 
 **… build new UI.** Use the existing widgets and tokens. A new screen or a larger change needs a

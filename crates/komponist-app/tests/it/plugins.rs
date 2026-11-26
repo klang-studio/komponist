@@ -477,7 +477,6 @@ fn standalone_clap_preset_round_trips_through_catalog_browser_and_bridge() {
     let plugin = clap_plugin("org.klang-studio.komponist.layout-fixture.valid");
     let preset = &host.catalog().resolve(&plugin).unwrap().clap_presets[0];
     assert_eq!(preset.display_name("de"), "Testanhebung");
-    assert!(preset.matches_name("Older Boost"));
     let source = preset.source.clone();
     let (project, track) = add_track(
         &Project::new("CLAP presets"),
@@ -496,7 +495,7 @@ fn standalone_clap_preset_round_trips_through_catalog_browser_and_bridge() {
             catalog: host.catalog(),
             favorites: &Favorites::default(),
             segment: BrowserSegment::Effects,
-            query: "Older Boost",
+            query: "Testanhebung",
             collapsed: &BTreeSet::new(),
             project: &project,
             exports: &[],
@@ -504,8 +503,11 @@ fn standalone_clap_preset_round_trips_through_catalog_browser_and_bridge() {
     );
     let row = rows
         .iter()
-        .find(|row| row.name.contains("Testanhebung"))
-        .expect("alias finds localized preset");
+        .find(|row| {
+            matches!(&row.kind, model::RowKind::Preset { source: row_source, .. } if row_source == &source)
+        })
+        .expect("localized name finds the preset");
+    assert!(row.name.contains("Testanhebung"));
     let actions = model::activate(row, &project, Some(track));
     let mut app = app_with(project, host);
     for action in actions {

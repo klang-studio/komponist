@@ -63,7 +63,7 @@ pub(crate) fn prepare(
                     preset.plugin_id == plugin_id
                         && preset.factory
                         && preset.source.location == ClapPresetLocation::Plugin
-                        && preset.matches_name(name)
+                        && preset.name == name
                 })
                 .ok_or_else(|| format!("factory preset {name} is unavailable"))
         })

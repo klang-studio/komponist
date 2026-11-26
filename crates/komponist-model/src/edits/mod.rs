@@ -26,11 +26,11 @@ use std::sync::Arc;
 use crate::audio::{AudioInput, MonitorMode};
 use crate::ids::{ClipId, DeviceId, NoteId, SendId, TrackId};
 use crate::project::{
-    BUILTIN_KLOPFER, BUILTIN_SAMPLER, Channel, ChannelRef, Clip, ClipContent, ClipKind,
-    DEFAULT_STEP_ROWS, Device, DeviceRole, Hue, MAX_STEPS, MAX_SWING, MidiChannelSel, MidiClip,
-    MidiInputSel, Note, PluginFormat, PluginRef, Project, Sidechain, Step, StepClip, StepRow,
-    TRACK_HEIGHT_DEFAULT, TRACK_HEIGHT_MAX, TRACK_HEIGHT_MIN, Take, Track, TrackKind, TrackOutput,
-    VOLUME_DB_MAX, VOLUME_DB_MIN,
+    BUILTIN_SAMPLER, Channel, ChannelRef, Clip, ClipContent, ClipKind, DEFAULT_STEP_ROWS, Device,
+    DeviceRole, Hue, MAX_STEPS, MAX_SWING, MidiChannelSel, MidiClip, MidiInputSel, Note,
+    PluginFormat, PluginRef, Project, Sidechain, Step, StepClip, StepRow, TRACK_HEIGHT_DEFAULT,
+    TRACK_HEIGHT_MAX, TRACK_HEIGHT_MIN, Take, Track, TrackKind, TrackOutput, VOLUME_DB_MAX,
+    VOLUME_DB_MIN,
 };
 use crate::time::{MAX_DOC_TICK, Meter, StepResolution, Tempo, Tick, TickRange};
 
@@ -1656,10 +1656,9 @@ pub(crate) fn valid_meter(meter: Meter) -> bool {
     (1..=32).contains(&meter.num) && matches!(meter.den, 1 | 2 | 4 | 8 | 16)
 }
 
-/// Whether `plugin` is the built-in drum sampler (or klopfer as the built-in it once was).
+/// Whether `plugin` is the built-in drum sampler.
 fn is_drum_sampler(plugin: &PluginRef) -> bool {
-    plugin.format == PluginFormat::Builtin
-        && (plugin.id == BUILTIN_SAMPLER || plugin.id == BUILTIN_KLOPFER)
+    plugin.format == PluginFormat::Builtin && plugin.id == BUILTIN_SAMPLER
 }
 
 /// `ids` without repetitions, in first-seen order.

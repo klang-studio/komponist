@@ -8,20 +8,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost};
+use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_audio::HostKind;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project};
-use komponist_plugins::legacy_bundled::bundled_clap_id;
-use komponist_plugins::{Catalog, DeviceStatus, PluginDirs, PluginManagerEvent};
+use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent};
 
 use super::{
-    HEXA_PRESETS, PATIENCE, app_at_buffer, config, measure, project, project_with_hexa,
+    HEXA_PRESETS, PATIENCE, app_at_buffer, config, measure, project_with_hexa,
     require_audio_config, step_until, worker_counts,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
-    Legacy,
     Direct,
     Bridge,
 }
@@ -29,7 +27,6 @@ enum Mode {
 impl Mode {
     fn from_environment() -> Option<Self> {
         match std::env::var("KOMPONIST_PERF_BUNDLED_MODE").as_deref() {
-            Ok("legacy") => Some(Self::Legacy),
             Ok("direct") => Some(Self::Direct),
             Ok("bridge") => Some(Self::Bridge),
             Err(std::env::VarError::NotPresent) => None,
@@ -61,50 +58,33 @@ impl Workload {
     }
 }
 
-fn build_project(workload: Workload, package: Option<&PluginHost>) -> Project {
-    let mut workload_project = if let Some(host) = package {
-        let presets: BTreeMap<_, _> = HEXA_PRESETS
-            .into_iter()
-            .map(|name| {
-                let hexa = host
-                    .manager()
-                    .prepare_bundled_device("org.klang-studio.komponist.hexa", Some(name), &[], &[])
-                    .unwrap_or_else(|error| panic!("benchmark preset {name}: {error}"));
-                assert_eq!(hexa.role, DeviceRole::Instrument);
-                (
-                    name,
-                    (hexa.plugin, hexa.state.expect("factory preset state")),
-                )
-            })
-            .collect();
-        project_with_hexa(false, |name| presets[name].clone())
-    } else {
-        project(false)
-    };
+fn build_project(workload: Workload, host: &PluginHost) -> Project {
+    let presets: BTreeMap<_, _> = HEXA_PRESETS
+        .into_iter()
+        .map(|name| {
+            let hexa = host
+                .manager()
+                .prepare_bundled_device("org.klang-studio.komponist.hexa", Some(name), &[], &[])
+                .unwrap_or_else(|error| panic!("benchmark preset {name}: {error}"));
+            assert_eq!(hexa.role, DeviceRole::Instrument);
+            (
+                name,
+                (hexa.plugin, hexa.state.expect("factory preset state")),
+            )
+        })
+        .collect();
+    let mut workload_project = project_with_hexa(false, |name| presets[name].clone());
 
-    let legacy = package.is_none().then(Catalog::builtin);
     let mut references = BTreeMap::<_, PluginRef>::new();
     let mut install = |project: &mut Project, slug, role| {
         let plugin = references.entry(slug).or_insert_with(|| {
             let id = format!("org.klang-studio.komponist.{slug}");
-            if let Some(host) = package {
-                let prepared = host
-                    .manager()
-                    .prepare_bundled_device(&id, None, &[], &[])
-                    .unwrap_or_else(|error| panic!("benchmark device {id}: {error}"));
-                assert_eq!(prepared.role, role);
-                prepared.plugin
-            } else {
-                legacy
-                    .as_ref()
-                    .expect("legacy catalog")
-                    .entries()
-                    .iter()
-                    .find(|entry| bundled_clap_id(&entry.plugin) == Some(id.as_str()))
-                    .unwrap_or_else(|| panic!("legacy benchmark device {id}"))
-                    .plugin
-                    .clone()
-            }
+            let prepared = host
+                .manager()
+                .prepare_bundled_device(&id, None, &[], &[])
+                .unwrap_or_else(|error| panic!("benchmark device {id}: {error}"));
+            assert_eq!(prepared.role, role);
+            prepared.plugin
         });
         Arc::new(Device {
             id: DeviceId(project.alloc_id().expect("workload device ID")),
@@ -189,24 +169,22 @@ fn bundled_clap_workloads() {
         .map(PathBuf::from)
         .expect("packaged bridge launcher");
     let scratch = tempfile::tempdir().expect("benchmark cache directory");
-    let package = (mode != Mode::Legacy).then(|| {
+    let package = {
         let mut launch = config(scratch.path());
         launch.bridge_exe = launcher.clone();
         PluginHost::new(launch)
-    });
+    };
 
     let audio = audio_host();
     for workload in Workload::selected() {
-        let source = build_project(workload, package.as_ref());
+        let source = build_project(workload, &package);
         let ids: Vec<_> = project_devices(&source).map(|device| device.id).collect();
         for frames in buffer_sizes() {
             for workers in worker_counts() {
                 let start = Instant::now();
                 // Keep the cache alive through shutdown and lazy verified snapshot reads.
                 let cache = tempfile::tempdir_in(scratch.path()).expect("isolated scan cache");
-                let host: Box<dyn DeviceHost> = if mode == Mode::Legacy {
-                    Box::new(BuiltinHost::new())
-                } else {
+                let host: Box<dyn DeviceHost> = {
                     let mut config = config(cache.path());
                     config.bridge_exe = launcher.clone();
                     let mut host = PluginHost::new(config);
@@ -263,12 +241,10 @@ fn run(
             "wrong route for {id:?}"
         );
         assert!(host.state_warning(id).is_none(), "state refused for {id:?}");
-        if mode != Mode::Legacy {
-            assert!(
-                host.native_layout(id).is_some() && host.verified_bundled_kind(id).is_some(),
-                "missing verified native layout for {id:?}"
-            );
-        }
+        assert!(
+            host.native_layout(id).is_some() && host.verified_bundled_kind(id).is_some(),
+            "missing verified native layout for {id:?}"
+        );
     }
     eprintln!(
         "{label}: {} devices ready in {:.3} s (scan and attach)",

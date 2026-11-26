@@ -570,7 +570,6 @@ fn discovered_clap_preset_menu_loads_a_localized_preset_in_one_undo_step() {
         source: source.clone(),
         name: "Warm Amp".into(),
         localized_names: [("de".into(), "Warmer Verstärker".into())].into(),
-        aliases: Vec::new(),
         features: Vec::new(),
         factory: true,
     };

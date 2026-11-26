@@ -36,28 +36,25 @@ layout metadata against the real CLAP parameter inventory. The Bundled CLAP pack
 workflow tests the twelve-device archive through both host routes. For an unpacked test
 package, the app loads verified devices in-process by default. Add
 `KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE=1` to run the same verified devices in
-the bridge. The historical project check is available with
-`python3 scripts/measure-bundled-clap.py --historical-projects /path/to/unpacked/komponist`.
-The app attempts migration when opening a project with legacy devices. If a device cannot
-be verified or translated, its legacy reference is left intact and reported as unavailable.
-The test uses disposable project copies.
+the bridge. The current-format project check is available with
+`python3 scripts/measure-bundled-clap.py --current-projects /path/to/unpacked/komponist`.
 
 ## Sampler instrument state
 
 Klopfer (`komponist-bundled-sampler`, `org.klang-studio.komponist.sampler`) and Sampler
 (`komponist-bundled-general-sampler`, `org.klang-studio.komponist.general-sampler`)
-use the existing sampler DSP and the shared device file decoder. Their CLAP state stores
-the file links and slice metadata under the nice-plug persistent field `sample_assets`.
-The field contains the existing project's `samples` and `sample_edit` JSON objects. Relative
-paths stay in the state. When Komponist opens a project or restores a state for a verified
-bundled sampler, it resolves the relative links against the project directory and refreshes
-their absolute fallbacks for the running instance. In other hosts, the state callback opens
-the saved absolute fallbacks. File decoding and transfer to the DSP run on the loader thread.
-Destroying an instance signals its loader and waits briefly. If file I/O is still blocked,
-the loader's native module remains loaded until the host exits so cleanup can finish
-as soon as the filesystem responds.
+use the existing sampler DSP and the shared device file decoder. Their audio files are
+host-managed assets (see [device-assets.md](../../docs/clap-device-layout/device-assets.md)):
+komponist stores the links in the device's `asset_links`, resolves relative links against the
+project folder, binds them to the device's audio-sample slots and rebases them on Save As and
+Collect and Save. The device offers file picking, waveform, pad and slice editing through its
+native panel ([sampler-ui.md](../../docs/clap-device-layout/sampler-ui.md)), and an offline
+render waits for asset and tempo preparation.
 
-The native v1 control pages expose the pad and instrument parameters. A package suitable
-as the default for existing sample projects still needs an editor or public host integration
-for file picking, waveform and pad or slice editing, rebasing links on Save As, Collect and
-Save, and waiting for asset/tempo preparation before offline rendering.
+The CLAP state stores the parameter values and the slice metadata (`sample_edit`) under the
+nice-plug persistent field `sample_assets`. A sample link embedded in that field is used by
+hosts without the asset extension, which open the saved absolute fallbacks; komponist drops
+embedded links of pads it manages itself. File decoding and transfer to the DSP run on the
+loader thread. Destroying an instance signals its loader and waits briefly. If file I/O is
+still blocked, the loader's native module remains loaded until the host exits so cleanup can
+finish as soon as the filesystem responds.

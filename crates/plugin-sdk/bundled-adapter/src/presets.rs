@@ -7,7 +7,6 @@ use std::ptr;
 use std::sync::{Arc, OnceLock};
 
 use komponist_device_core::pinned_clap_state::{self, FACTORY_PRESET_FIELD};
-use komponist_native_clap_sdk::PRESET_ALIAS_KEY;
 use komponist_native_clap_sdk::clap_abi::{
     ext::{preset_load::*, state::*},
     factory::{plugin_factory::*, preset_discovery::*},
@@ -51,16 +50,11 @@ impl<T: DeviceDefinition> FactoryPresets for T {
         })
     }
 
-    fn aliases() -> &'static [(&'static str, &'static str)] {
-        T::SPEC.preset_aliases
-    }
-
     fn state(key: &str) -> Option<Vec<u8>> {
-        let canonical = T::SPEC.current_preset_name(key);
         let index = T::SPEC
             .presets()
             .iter()
-            .position(|preset| preset.name == canonical)?;
+            .position(|preset| preset.name == key)?;
         let values = T::SPEC.preset_values(index)?;
         let params = T::SPEC
             .params()
@@ -75,7 +69,7 @@ impl<T: DeviceDefinition> FactoryPresets for T {
             .collect();
         let fields = [(
             FACTORY_PRESET_FIELD.into(),
-            serde_json::json!(canonical).to_string().into(),
+            serde_json::json!(key).to_string().into(),
         )]
         .into_iter()
         .collect();
@@ -271,16 +265,6 @@ unsafe extern "C" fn provider_metadata<T: FactoryPresets>(
         }
         // SAFETY: The receiver and descriptor are valid for this callback.
         unsafe { compatible(receiver, &plugin) };
-        if let Some(extra) = receiver_ref.add_extra_info {
-            for &(alias, canonical) in T::aliases() {
-                if canonical == preset.name
-                    && let Ok(alias) = CString::new(alias)
-                {
-                    // SAFETY: The names remain alive through this synchronous callback.
-                    unsafe { extra(receiver, PRESET_ALIAS_KEY.as_ptr(), alias.as_ptr()) };
-                }
-            }
-        }
         if let Some(category) = preset.category
             && let Some(add_feature) = receiver_ref.add_feature
             && let Ok(category) = CString::new(category)

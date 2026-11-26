@@ -12,6 +12,7 @@ use egui::{Context, vec2};
 use komponist_i18n::Lang;
 use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack, StepProp};
 use komponist_model::{ClipId, Hue, PPQ, PluginRef, Project, Tick, TrackId};
+use komponist_plugins::{Catalog, requires_bundled};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, typography};
 use komponist_ui::widgets::button::Kind;
@@ -119,15 +120,36 @@ const TEMPLATE_BEAT: [(usize, &[usize]); 4] = [
     (3, &[0, 2, 4, 6, 8, 10, 12, 14]),
 ];
 
-/// The template project "Beat-Skizze" (see the module docs): the drums play the Sampler, bass and
-/// keys hexa.
-pub fn template(t: Lang, hexa: PluginRef) -> Project {
+/// The in-process Sampler of a reference host: the pad rows of the template and, without
+/// packaged bundles, its drum instrument.
+fn reference_sampler() -> PluginRef {
+    komponist_builtin::Internal::Sampler.plugin_ref()
+}
+
+/// The instruments of the template for `catalog`: the drum sampler and hexa, from the packaged
+/// bundles, or the in-process devices of a reference host. `None` when the catalog has neither.
+pub fn template_instruments(catalog: &Catalog) -> Option<(PluginRef, PluginRef)> {
+    let packaged = |id: &str| {
+        catalog
+            .entries()
+            .iter()
+            .find(|entry| entry.plugin.id == id && requires_bundled(&entry.plugin))
+            .map(|entry| entry.plugin.clone())
+    };
+    let reference = |plugin: PluginRef| catalog.resolve(&plugin).map(|entry| entry.plugin.clone());
+    Some((
+        packaged("org.klang-studio.komponist.sampler")
+            .or_else(|| reference(reference_sampler()))?,
+        packaged("org.klang-studio.komponist.hexa")
+            .or_else(|| reference(crate::app::hexa_ref()))?,
+    ))
+}
+
+/// The template project "Beat-Skizze" (see the module docs): the drums play `drums` (the
+/// Sampler), bass and keys `hexa`.
+pub fn template(t: Lang, drums: PluginRef, hexa: PluginRef) -> Project {
     let mut p = Project::new(t.new_project_template_name());
-    let specs = [
-        ("Drums", komponist_builtin::Internal::Sampler.plugin_ref()),
-        ("Bass", hexa.clone()),
-        ("Keys", hexa),
-    ];
+    let specs = [("Drums", drums), ("Bass", hexa.clone()), ("Keys", hexa)];
     let mut tracks: Vec<TrackId> = Vec::new();
     for ((name, instrument), hue) in specs.into_iter().zip(TEMPLATE_HUES) {
         let spec = NewTrack {
@@ -145,11 +167,8 @@ pub fn template(t: Lang, hexa: PluginRef) -> Project {
     let Some(&drums) = tracks.first() else {
         return p;
     };
-    let rows = p
-        .track(drums)
-        .and_then(|t| step_rows::instrument(t))
-        .map(|d| step_rows::rows_for_in(t, Some(&d.plugin), &[]))
-        .unwrap_or_default();
+    // The pad rows of the Sampler, whichever package plays them.
+    let rows = step_rows::rows_for_in(t, Some(&reference_sampler()), &[]);
     let bar = Tick(PPQ * i64::from(p.meter.num));
     let clip = NewClip {
         start: Tick::ZERO,
@@ -191,12 +210,10 @@ mod tests {
 
     #[test]
     fn the_template_has_a_sampler_beat_and_two_hexa_tracks() {
-        let p = template(Lang::De, crate::app::hexa_ref());
+        let (drums, hexa) = template_instruments(&Catalog::builtin()).unwrap();
+        let p = template(Lang::De, drums.clone(), hexa.clone());
         assert_eq!(p.name, "Beat-Skizze");
-        assert_eq!(
-            template(Lang::En, crate::app::hexa_ref()).name,
-            "Beat Sketch"
-        );
+        assert_eq!(template(Lang::En, drums, hexa).name, "Beat Sketch");
         let names: Vec<&str> = p.tracks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["Drums", "Bass", "Keys"]);
         let hues: Vec<u16> = p.tracks.iter().map(|t| t.hue.0).collect();
@@ -206,7 +223,7 @@ mod tests {
             .iter()
             .map(|t| t.channel.devices[0].plugin.id.as_str())
             .collect();
-        assert_eq!(instruments, ["sampler", "pisynth", "pisynth"]);
+        assert_eq!(instruments, ["sampler", "hexa", "hexa"]);
         let ClipContent::Step(steps) = &p.tracks[0].clips[0].content else {
             panic!("the beat is a step clip");
         };

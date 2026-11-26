@@ -531,63 +531,6 @@ impl PluginManager {
             .map_err(|error| format!("{plugin_id}: {error}"))
     }
 
-    /// Prepare a migrated copy of a loaded project when the verified bundled catalog is enabled.
-    ///
-    /// The source stays intact if any bundled device or parameter cannot be translated.
-    pub fn migrate_project_for_open(
-        &self,
-        source: &Project,
-        project_dir: &Path,
-    ) -> Result<Option<Project>, String> {
-        use crate::legacy_bundled::{
-            bundled_clap_id, migrate_legacy_bundled_project, migrate_packaged_sample_assets,
-            plan_legacy_bundled_device,
-        };
-
-        let Some(inventory) = &self.bundled_clap else {
-            return Ok(None);
-        };
-        let plans = source
-            .tracks
-            .iter()
-            .flat_map(|track| &track.channel.devices)
-            .chain(&source.master.devices)
-            .filter(|device| bundled_clap_id(&device.plugin).is_some())
-            .map(|device| {
-                plan_legacy_bundled_device(inventory, device, Some(project_dir)).map_err(|error| {
-                    format!("device {} ({}): {error}", device.id.0, device.plugin.id)
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let packaged = source
-            .tracks
-            .iter()
-            .flat_map(|track| &track.channel.devices)
-            .chain(&source.master.devices)
-            .filter_map(|device| migrate_packaged_sample_assets(inventory, device))
-            .collect::<Vec<_>>();
-        if plans.is_empty() && packaged.is_empty() {
-            return Ok(None);
-        }
-        let mut project = if plans.is_empty() {
-            source.clone()
-        } else {
-            migrate_legacy_bundled_project(source, plans)?.project
-        };
-        for device in packaged {
-            project = komponist_model::edits::set_device_state(&project, device.id, device.state)
-                .and_then(|project| {
-                    komponist_model::edits::set_device_asset_links(
-                        &project,
-                        device.id,
-                        device.asset_links,
-                    )
-                })
-                .map_err(|error| error.to_string())?;
-        }
-        Ok(Some(project))
-    }
-
     /// The catalog.
     pub fn catalog(&self) -> &Catalog {
         &self.catalog

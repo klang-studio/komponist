@@ -61,7 +61,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # The Warp compatibility check compiles a pinned pre-Warp model from this Git history.
+          # The device boundary check compares against the base commit of this Git history.
           fetch-depth: 0
 
       # The build list of the README (docs: libfontconfig1-dev is missing there: yeslogic-fontconfig-sys),
@@ -186,9 +186,6 @@ jobs:
           wait "$tests" || status=$?
           kill "$watchdog" 2>/dev/null || true
           exit "$status"
-
-      - name: Warp file compatibility with the historical reader
-        run: scripts/check-warp-compat.sh
 
       # Starts its own Xvfb per test binary, builds the test plugins again (cached), scratch HOME.
       - name: GUI tests

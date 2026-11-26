@@ -63,10 +63,6 @@ impl<T: AudioDefinition> Plugin for Instrument<T> {
     type SysExMessage = ();
     type BackgroundTask = ();
 
-    fn filter_state(state: &mut PluginState) {
-        T::migrate_state(state);
-    }
-
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }

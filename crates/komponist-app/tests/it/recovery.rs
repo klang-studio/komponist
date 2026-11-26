@@ -676,8 +676,13 @@ fn a_file_dropped_on_the_start_screen_waits_behind_the_prompt() {
 fn open_plugin_waits_for_the_document_the_prompt_opens() {
     let dir = scratch("open-plugin");
     let file = dir.join("Beat.komponist");
-    let project =
-        komponist_app::dialogs::new_project::template(Lang::De, komponist_app::app::hexa_ref());
+    let project = {
+        let (drums, hexa) = komponist_app::dialogs::new_project::template_instruments(
+            &komponist_plugins::Catalog::builtin(),
+        )
+        .unwrap();
+        komponist_app::dialogs::new_project::template(Lang::De, drums, hexa)
+    };
     let sampler = komponist_builtin::Internal::Sampler.plugin_ref().name;
     let device = project
         .tracks

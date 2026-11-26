@@ -12,7 +12,7 @@ use komponist_model::params::ParamId;
 use serde_json::{Map, Value};
 
 pub(crate) fn kind_for_id(id: &str) -> Option<BuiltinKind> {
-    BuiltinKind::all().find(|&kind| crate::legacy_bundled::clap_id(kind) == id)
+    BuiltinKind::all().find(|kind| crate::catalog::clap_id(kind.catalog().id) == id)
 }
 
 #[derive(Clone, Copy)]

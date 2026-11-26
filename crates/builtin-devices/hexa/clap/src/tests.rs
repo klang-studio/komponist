@@ -264,8 +264,13 @@ fn patch_from_saved_state(stream: &[u8]) -> komponist_hexa::Patch {
     serde_json::from_value(patch["patch"].clone()).unwrap()
 }
 
+/// The pinned CLAP state stream of `patch`.
+fn clap_state(patch: &komponist_hexa::Patch) -> Vec<u8> {
+    komponist_hexa::state::encode_clap_patch(*patch, env!("CARGO_PKG_VERSION"))
+}
+
 fn load_patch(instance: &Instance, patch: &komponist_hexa::Patch) {
-    let input = legacy_patch_to_clap_state(&komponist_hexa::encode_state(patch)).unwrap();
+    let input = clap_state(patch);
     let mut cursor = Cursor::new(input.as_slice());
     let stream = clap_istream {
         ctx: (&mut cursor as *mut Cursor<&[u8]>).cast(),
@@ -323,9 +328,7 @@ fn display_reports_the_fixed_or_free_routing_of_the_loaded_patch() {
 #[test]
 fn imported_factory_patch_round_trips_and_matches_built_in_audio() {
     let patch = komponist_hexa::preset_patch(1).unwrap();
-    let bytes = komponist_hexa::encode_state(&patch);
-    assert!(legacy_patch_to_clap_state(b"not a patch").is_err());
-    let input = legacy_patch_to_clap_state(&bytes).unwrap();
+    let input = clap_state(&patch);
     let mut cursor = Cursor::new(input.as_slice());
     let stream = clap_istream {
         ctx: (&mut cursor as *mut Cursor<&[u8]>).cast(),

@@ -15,11 +15,8 @@ use serde::{Deserialize, Serialize};
 use komponist_ipc::clap_presets::ClapPreset;
 use komponist_ipc::{PluginDescriptor, PluginFormat as BundleFormat, PluginKind};
 use komponist_model::PluginRef;
-use komponist_model::project::BUILTIN_KLOPFER;
 
 pub use komponist_builtin::{BuiltinKind, presets};
-
-pub use crate::builtin::KLOPFER_CLAP_ID;
 
 /// Time one bundle scan may take before its process is killed and the bundle skipped.
 pub const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -38,6 +35,12 @@ pub(crate) fn bundled_module(file_name: &str) -> Box<str> {
 pub fn requires_bundled(plugin: &PluginRef) -> bool {
     plugin.format == komponist_model::PluginFormat::Clap
         && plugin.module.starts_with(BUNDLED_MODULE_PREFIX)
+}
+
+/// The CLAP ID of the packaged bundle for the built-in with catalog id `builtin_id`: every
+/// bundle is named after the device it replaces.
+pub fn clap_id(builtin_id: &str) -> String {
+    format!("org.klang-studio.komponist.{builtin_id}")
 }
 
 /// The built-in kind requested by a packaged CLAP reference. This identifies the stored
@@ -202,10 +205,6 @@ impl Catalog {
     /// The entry for a device's plugin reference, if installed. Bundled and external CLAP
     /// references resolve separately even when they use the same plugin ID. A bundled reference
     /// also requires the exact packaged module.
-    ///
-    /// A project saved while klopfer was a built-in (`Builtin` format, id [`BUILTIN_KLOPFER`])
-    /// resolves to the scanned klopfer CLAP plugin: the device keeps its state, which is the
-    /// plugin's own.
     pub fn resolve(&self, plugin: &PluginRef) -> Option<&CatalogEntry> {
         let bundled = requires_bundled(plugin);
         let same = |e: &&CatalogEntry| {
@@ -214,17 +213,7 @@ impl Catalog {
                 && requires_bundled(&e.plugin) == bundled
                 && (!bundled || e.plugin.module == plugin.module)
         };
-        self.entries.iter().find(same).or_else(|| {
-            (plugin.format == komponist_model::PluginFormat::Builtin
-                && plugin.id == BUILTIN_KLOPFER)
-                .then(|| {
-                    self.entries.iter().find(|e| {
-                        e.plugin.format == komponist_model::PluginFormat::Clap
-                            && e.plugin.id == KLOPFER_CLAP_ID
-                    })
-                })
-                .flatten()
-        })
+        self.entries.iter().find(same)
     }
 
     /// Replaces all scanned entries with `descriptors` (built-ins stay). Descriptors of kind
@@ -624,7 +613,6 @@ mod tests {
             },
             name: name.into(),
             localized_names: Default::default(),
-            aliases: Vec::new(),
             features: Vec::new(),
             factory: true,
         }
@@ -859,40 +847,6 @@ mod tests {
         let mut expected = builtin_names();
         expected.push("Surge XT (old)");
         assert_eq!(names, expected);
-    }
-
-    #[test]
-    fn klopfer_is_an_ordinary_scanned_plugin_and_old_projects_find_it() {
-        let mut catalog = Catalog::builtin();
-        assert!(catalog.entries().iter().all(|e| e.plugin.name != "klopfer"));
-        catalog.set_scanned(&[descriptor(
-            KLOPFER_CLAP_ID,
-            "Klopfer",
-            PluginKind::Instrument,
-            &["instrument"],
-        )]);
-        let scanned = catalog.entries().last().unwrap();
-        assert!(!scanned.is_builtin());
-        assert_eq!(scanned.plugin.id, KLOPFER_CLAP_ID);
-        // A project from before the sampler names klopfer as a built-in ("INTERN"): it resolves to
-        // the scanned plugin, which loads the same state.
-        let legacy = PluginRef {
-            format: komponist_model::PluginFormat::Builtin,
-            id: BUILTIN_KLOPFER.into(),
-            name: "klopfer".into(),
-            vendor: "Klopfer".into(),
-            version: "0.1.0".into(),
-            module: Box::default(),
-        };
-        assert_eq!(catalog.resolve(&legacy), Some(scanned));
-        // Without the scanned plugin it is missing (the S06 dialog lists it).
-        assert_eq!(Catalog::builtin().resolve(&legacy), None);
-        // Other built-in ids do not fall back.
-        let other = PluginRef {
-            id: "x.other".into(),
-            ..legacy
-        };
-        assert_eq!(catalog.resolve(&other), None);
     }
 
     #[test]

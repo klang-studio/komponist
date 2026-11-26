@@ -12,29 +12,25 @@ capture and restore an opaque user preset with `clap.state-context/2` and the PR
 - [CLAP state](https://github.com/free-audio/clap/blob/main/include/clap/ext/state.h)
 - [CLAP state contexts](https://github.com/free-audio/clap/blob/main/include/clap/ext/state-context.h)
 
-## Optional aliases and localized display names
+## Optional localized display names
 
 CLAP discovery provides the `add_extra_info` callback. A provider can use the following
-optional keys to describe the current preset.
+optional key to describe the current preset.
 
 | Key | Value |
 | --- | --- |
-| `org.klang-studio.komponist.preset-alias` | An earlier exact preset name. Repeat for each alias. |
 | `org.klang-studio.komponist.preset-name.<language-tag>` | A display label for the given language tag, such as `de`. |
 
-The default display name comes from `begin_preset`. Keep the load key stable when a display
-name changes. Consumers can resolve an old name against the default name and aliases for
-the original plug-in ID, then use the resolved source to load. A provider can offer the same
+The default display name comes from `begin_preset`. A provider can offer the same
 preset to ordinary CLAP hosts that ignore this optional metadata. komponist ignores unknown
-keys, malformed entries and duplicate aliases. If a translation is unavailable, it shows
-the provider's default display name.
+keys and malformed entries. If a translation is unavailable, it shows the provider's default
+display name.
 
 Hexa, Volt, Surf, the five audio effects, Arpeggiator and Scale publish factory presets
-from their bundles. The Sampler and Klopfer bundles have no factory presets. Existing states
-carry their complete parameter values, and the host recognizes old on-disk preset names. For
-example the EQ accepts both the current `Warm Bass` load key and the earlier `Bass Wärme` key.
+from their bundles. The Sampler and Klopfer bundles have no factory presets. States carry
+their complete parameter values.
 
-The browser searches the provider's display names and aliases. The device card and floating
+The browser searches the provider's display names. The device card and floating
 plugin frame expose the same discovered presets for a running device. Applying one records the
 resulting project state as a single undo step. Adding a device from the browser prepares its
 preset state in an isolated process before the new device first activates.

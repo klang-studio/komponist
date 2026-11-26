@@ -185,7 +185,7 @@ fn write_all(state: Option<&[u8]>, links: &[(usize, SampleLink)]) -> Vec<u8> {
     out
 }
 
-/// Removes legacy links for pads whose bindings are managed by the host.
+/// Removes embedded links for pads whose bindings are managed by the host.
 pub fn without_managed_links(assets: &str, managed: impl Fn(usize) -> bool) -> Option<String> {
     let mut value: Value = serde_json::from_str(assets).ok()?;
     let object = value.as_object_mut()?;

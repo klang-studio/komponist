@@ -45,7 +45,6 @@ enum SyncNote {
     #[id = "4d"]
     #[name = "1/4."]
     QuarterDotted,
-    // The IDs differ from the retired "2t" and "2" so `migrate_state` can tell old states from new.
     #[id = "half"]
     #[name = "1/2"]
     Half,
@@ -68,21 +67,6 @@ impl DeviceDefinition for Delay {
         ClapFeature::Stereo,
         ClapFeature::Delay,
     ];
-
-    /// Before the note order matched the DSP table, the CLAP enum listed "2t" (named 1/2T) at index
-    /// 10 and "2" (named 1/2) at index 11, while the DSP played a half note at 10 and a dotted half
-    /// at 11. States saved with those IDs keep the sound they had: "2t" was a half note, "2" a
-    /// dotted half.
-    fn migrate_state(state: &mut PluginState) {
-        use nice_plug::plugin::ParamValue;
-        if let Some(ParamValue::String(id)) = state.params.get_mut("note") {
-            match id.as_str() {
-                "2t" => *id = "half".to_owned(),
-                "2" => *id = "half-dotted".to_owned(),
-                _ => {}
-            }
-        }
-    }
 
     fn choice(info: &'static ParamInfo) -> Option<Binding> {
         (info.id.as_str() == "note").then(|| Binding::choice::<SyncNote>(info))
@@ -227,52 +211,4 @@ fn the_v2_panel_keeps_the_xy_grid_and_clap_parameter_ids() {
 #[test]
 fn choice_bindings_match_the_model() {
     komponist_bundled_clap_adapter::assert_choice_bindings::<Delay>();
-}
-
-#[cfg(test)]
-mod migration_tests {
-    use std::collections::BTreeMap;
-
-    use nice_plug::plugin::ParamValue;
-
-    use super::*;
-
-    fn migrated(id: &str) -> String {
-        let mut state = PluginState {
-            version: String::new(),
-            params: BTreeMap::new(),
-            fields: BTreeMap::new(),
-        };
-        state
-            .params
-            .insert("note".to_owned(), ParamValue::String(id.to_owned()));
-        <Delay as komponist_bundled_clap_adapter::DeviceDefinition>::migrate_state(&mut state);
-        let Some(ParamValue::String(id)) = state.params.get("note") else {
-            panic!("note vanished");
-        };
-        id.clone()
-    }
-
-    /// The DSP table index an ID plays, as the saved state of the previous release did.
-    fn index_of(id: &str) -> usize {
-        <SyncNote as Enum>::ids()
-            .unwrap()
-            .iter()
-            .position(|c| *c == id)
-            .unwrap()
-    }
-
-    #[test]
-    fn retired_ids_keep_the_note_they_played() {
-        // Old "2t" selected index 10 and old "2" index 11 of the DSP table.
-        assert_eq!(komponist_delay::NOTES[index_of(&migrated("2t"))].0, "1/2");
-        assert_eq!(komponist_delay::NOTES[index_of(&migrated("2"))].0, "1/2.");
-    }
-
-    #[test]
-    fn current_and_unrelated_ids_stay() {
-        for id in ["32", "8d", "4", "1", "half", "half-dotted"] {
-            assert_eq!(migrated(id), id);
-        }
-    }
 }

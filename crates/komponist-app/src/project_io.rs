@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use komponist_i18n::Lang;
 use komponist_model::asset_collection::Collector;
 use komponist_model::edits::ProjectProp;
-use komponist_model::persist::{self, FILE_EXTENSION, PersistError};
+use komponist_model::persist::{self, FILE_EXTENSION, FORMAT_VERSION, PersistError};
 use komponist_model::{Document, Project, Repairs};
 
 use crate::actions::{Action, ProjectAction, SettingsAction, UiAction};
@@ -90,11 +90,12 @@ impl ProjectIoError {
             ProjectIoError::Format(_, PersistError::NotAProject) => {
                 t.project_reason_not_project().to_owned()
             }
-            ProjectIoError::Format(_, PersistError::TooNew { found }) => {
-                t.project_reason_too_new(found)
-            }
-            ProjectIoError::Format(_, PersistError::Migration { .. }) => {
-                t.project_reason_migration().to_owned()
+            ProjectIoError::Format(_, PersistError::UnsupportedVersion { found }) => {
+                if *found > FORMAT_VERSION {
+                    t.project_reason_too_new(*found)
+                } else {
+                    t.project_reason_unsupported_version(*found)
+                }
             }
             ProjectIoError::Format(..) | ProjectIoError::Recent(..) => {
                 t.project_reason_damaged().to_owned()
@@ -640,25 +641,16 @@ impl App {
                 self.set_status(created, StatusKind::Info);
             }
             Pending::Template => {
-                let project = new_project::template(self.lang, crate::app::hexa_ref());
-                let host = self.engine.host();
-                let has_reference_devices =
-                    host.catalog().resolve(&crate::app::hexa_ref()).is_some();
-                let project = match host.migrate_project_for_open(&project, Path::new(".")) {
-                    Ok(Some(migrated)) => migrated,
-                    Ok(None) if has_reference_devices => project,
-                    Ok(None) => {
-                        self.set_status(
-                            "Bundled CLAP devices are unavailable".to_owned(),
-                            StatusKind::Error,
-                        );
-                        return;
-                    }
-                    Err(error) => {
-                        self.set_status(error, StatusKind::Error);
-                        return;
-                    }
+                let Some((drums, hexa)) =
+                    new_project::template_instruments(self.engine.host().catalog())
+                else {
+                    self.set_status(
+                        "Bundled CLAP devices are unavailable".to_owned(),
+                        StatusKind::Error,
+                    );
+                    return;
                 };
+                let project = new_project::template(self.lang, drums, hexa);
                 self.open_document(Document::new(project), None);
                 self.check_missing_plugins();
             }
@@ -719,26 +711,8 @@ impl App {
             Ok((path, (project, repairs))) => {
                 let project_dir =
                     komponist_model::paths::absolute(path.parent().unwrap_or(Path::new("")));
-                let host = self.engine.host();
-                let migration = host.migrate_project_for_open(&project, &project_dir);
-                let has_reference_devices =
-                    host.catalog().resolve(&crate::app::hexa_ref()).is_some();
-                let mut doc = Document::new(project);
-                match migration {
-                    Ok(Some(project)) if has_reference_devices => doc
-                        .apply("undo-migrate-bundled-devices", |_| Ok(project))
-                        .expect("apply a fully planned migration"),
-                    Ok(Some(project)) => doc = Document::new(project),
-                    Ok(None) => {}
-                    Err(error) => {
-                        eprintln!(
-                            "komponist: {}: bundled CLAP migration: {error}",
-                            path.display()
-                        );
-                    }
-                }
                 crate::audio_record::reclaim_abandoned_takes(&project_dir);
-                self.open_document(doc, Some(path.clone()));
+                self.open_document(Document::new(project), Some(path.clone()));
                 if !repairs.is_empty() {
                     eprintln!("komponist: {}: repaired on open: {repairs}", path.display());
                 }

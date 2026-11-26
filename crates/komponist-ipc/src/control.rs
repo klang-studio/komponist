@@ -2007,7 +2007,6 @@ mod tests {
                     },
                     name: "Warm".into(),
                     localized_names: [("de".into(), "Wärme".into())].into(),
-                    aliases: Vec::new(),
                     features: Vec::new(),
                     factory: true,
                 }),

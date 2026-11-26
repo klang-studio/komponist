@@ -38,13 +38,6 @@ pub static SPEC: Spec = Spec {
     params,
     layout,
     presets,
-    preset_aliases: &[
-        ("Achtel Ping-Pong", "Eighth Ping-Pong"),
-        ("Punktierte Achtel", "Dotted Eighths"),
-        ("Dub-Echo", "Dub Echo"),
-        ("Weiches Band", "Soft Tape"),
-    ],
-    migrate_params: None,
     cache: komponist_device_core::SpecCache::new(),
 };
 

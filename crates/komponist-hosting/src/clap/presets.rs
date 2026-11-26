@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use clack_extensions::preset_discovery::prelude::*;
 use clack_host::prelude::{HostError, HostInfo, PluginEntry};
 use komponist_ipc::clap_presets::{
-    ALIAS_KEY, ClapPreset, ClapPresetLocation, ClapPresetSource, LOCALIZED_NAME_PREFIX,
+    ClapPreset, ClapPresetLocation, ClapPresetSource, LOCALIZED_NAME_PREFIX,
 };
 
 use crate::HostingError;
@@ -208,7 +208,6 @@ struct PendingPreset {
     source: ClapPresetSource,
     name: String,
     localized_names: BTreeMap<String, String>,
-    aliases: Vec<String>,
     features: Vec<String>,
     flags: Flags,
     plugin_ids: BTreeSet<String>,
@@ -229,7 +228,6 @@ impl Receiver<'_> {
                 source: preset.source.clone(),
                 name: preset.name.clone(),
                 localized_names: preset.localized_names.clone(),
-                aliases: preset.aliases.clone(),
                 features: preset.features.clone(),
                 factory: preset.flags.contains(Flags::IS_FACTORY_CONTENT),
             });
@@ -276,7 +274,6 @@ impl MetadataReceiverImpl for Receiver<'_> {
             },
             name,
             localized_names: BTreeMap::new(),
-            aliases: Vec::new(),
             features: Vec::new(),
             flags: self.default_flags,
             plugin_ids: BTreeSet::new(),
@@ -310,9 +307,7 @@ impl MetadataReceiverImpl for Receiver<'_> {
         let Some(current) = &mut self.current else {
             return;
         };
-        if key == ALIAS_KEY {
-            add_text(&mut current.aliases, value);
-        } else if let Ok(key) = key.to_str()
+        if let Ok(key) = key.to_str()
             && let Some(language) = key.strip_prefix(LOCALIZED_NAME_PREFIX)
             && !language.is_empty()
             && language.len() <= 32

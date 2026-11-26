@@ -16,31 +16,23 @@ impl BuiltinKind {
 /// Factory metadata for a historical in-process device.
 pub fn legacy_inventory(kind: BuiltinKind) -> Vec<ClapPreset> {
     let plugin = kind.catalog().plugin_ref();
-    let entry =
-        |index: usize, name: &str, category: Option<&str>, aliases: &[(&str, &str)]| ClapPreset {
-            plugin_id: plugin.id.clone(),
-            source: legacy_source(index),
-            name: name.to_owned(),
-            localized_names: Default::default(),
-            aliases: aliases
-                .iter()
-                .filter(|(_, current)| *current == name)
-                .map(|(old, _)| (*old).to_owned())
-                .collect(),
-            features: category.into_iter().map(str::to_owned).collect(),
-            factory: true,
-        };
+    let entry = |index: usize, name: &str, category: Option<&str>| ClapPreset {
+        plugin_id: plugin.id.clone(),
+        source: legacy_source(index),
+        name: name.to_owned(),
+        localized_names: Default::default(),
+        features: category.into_iter().map(str::to_owned).collect(),
+        factory: true,
+    };
     match kind {
         BuiltinKind::Hexa => komponist_hexa::presets()
-            .map(|preset| entry(preset.index, preset.name, Some(preset.category), &[]))
+            .map(|preset| entry(preset.index, preset.name, Some(preset.category)))
             .collect(),
         BuiltinKind::Internal(device) => device
             .presets()
             .iter()
             .enumerate()
-            .map(|(index, preset)| {
-                entry(index, preset.name, preset.category, device.preset_aliases())
-            })
+            .map(|(index, preset)| entry(index, preset.name, preset.category))
             .collect(),
     }
 }
@@ -116,7 +108,7 @@ pub fn saved_preset(
         }
         (_, Some(BuiltinKind::Internal(kind))) => {
             let name = wrapped_name(device.state.as_deref()?)?;
-            let preset = presets.iter().find(|preset| preset.matches_name(&name))?;
+            let preset = presets.iter().find(|preset| preset.name == name)?;
             (
                 preset.source.clone(),
                 wrapper_preset_changed(kind, &preset.name, param_base),

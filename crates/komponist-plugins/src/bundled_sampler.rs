@@ -8,7 +8,7 @@ use komponist_builtin::Internal;
 use komponist_model::asset_collection::Collector;
 use komponist_model::params::ParamInfo;
 use komponist_model::project::SavedPluginState;
-use komponist_model::{Device, PluginRef};
+use komponist_model::{Device, PluginFormat, PluginRef};
 use komponist_sampler::links::{self, SampleLink};
 use komponist_sampler::settings::Settings;
 use komponist_sampler::{PADS, PadField};
@@ -57,7 +57,7 @@ pub fn missing_links(state: &[u8], project_dir: Option<&Path>) -> Vec<(usize, Sa
 
 enum EmbeddedLinkState<'a> {
     Bundled(&'a [u8]),
-    Legacy(&'a [u8]),
+    InProcess(&'a [u8]),
 }
 
 impl<'a> EmbeddedLinkState<'a> {
@@ -65,13 +65,15 @@ impl<'a> EmbeddedLinkState<'a> {
         if kind(&device.plugin).is_some() {
             Some(Self::Bundled(snapshot.or(device.state.as_deref())?))
         } else {
-            kind_by_id(crate::legacy_bundled::bundled_clap_id(&device.plugin)?)?;
-            Some(Self::Legacy(device.state.as_deref()?))
+            (device.plugin.format == PluginFormat::Builtin)
+                .then(|| kind_by_id(&crate::catalog::clap_id(&device.plugin.id)))
+                .flatten()?;
+            Some(Self::InProcess(device.state.as_deref()?))
         }
     }
 }
 
-/// Collect legacy embedded files, including links an older bundle may still use.
+/// Collect the embedded files of a sampler state (bundled or in-process).
 pub fn collect_embedded_links(
     device: &Device,
     collector: &mut Collector,
@@ -84,7 +86,7 @@ pub fn collect_embedded_links(
             wrapper = decode(state);
             wrapper.as_ref().and_then(asset_field).map(str::as_bytes)
         }
-        Some(EmbeddedLinkState::Legacy(state)) => Some(state),
+        Some(EmbeddedLinkState::InProcess(state)) => Some(state),
         None => return Ok(()),
     };
     for (_, link) in links::read(state) {
@@ -106,42 +108,6 @@ fn pad_count(kind: Internal) -> usize {
         Internal::GeneralSampler => 1,
         _ => 0,
     }
-}
-
-/// Extract old project file links when a bundled sampler starts using host-managed assets.
-/// Other saved fields, including slice options and trim parameters, stay in the wrapper state.
-pub(crate) fn move_embedded_links(
-    device: &komponist_model::Device,
-) -> Option<komponist_model::Device> {
-    let kind = kind(&device.plugin)?;
-    let state = device.state.as_deref()?;
-    let moved: Vec<_> = links::read(Some(assets(state)?.as_bytes()))
-        .into_iter()
-        .filter(|(pad, _)| *pad < pad_count(kind))
-        .collect();
-    if moved.is_empty() {
-        return None;
-    }
-    let state = update_assets(state, |assets| {
-        let mut updated = assets.as_bytes().to_vec();
-        for (pad, _) in &moved {
-            updated = links::write(Some(&updated), *pad, None);
-        }
-        String::from_utf8(updated).ok()
-    })?;
-    let mut result = device.clone();
-    for (pad, link) in moved {
-        result
-            .asset_links
-            .entry(pad as u32)
-            .or_insert(komponist_model::plugin_assets::AssetLink {
-                abs: link.abs,
-                rel: link.rel,
-                display_name: (!link.name.is_empty()).then_some(link.name),
-            });
-    }
-    result.state = Some(state.into());
-    Some(result)
 }
 
 /// Merge manual parameter edits into an asset-bearing state before editing its links.
@@ -245,7 +211,7 @@ fn remove_reset_trim_bases(
     Some(())
 }
 
-/// Edit a legacy embedded file link and discard only the bases replaced by the trim reset.
+/// Edit an embedded file link and discard only the bases replaced by the trim reset.
 pub fn edit_saved_link(
     device: &Device,
     pad: usize,
@@ -324,7 +290,7 @@ pub fn edit_slice_markers(state: &[u8], times: impl IntoIterator<Item = f64>) ->
     edit_slices(state, &Settings::from_markers(times))
 }
 
-/// Rebase the device's legacy links for the destination, including deferred CLAP snapshots.
+/// Rebase the device's embedded links for the destination, including deferred CLAP snapshots.
 pub fn rebase_embedded_links(
     device: &Device,
     snapshot: Option<&[u8]>,
@@ -335,7 +301,7 @@ pub fn rebase_embedded_links(
     let rebase = |state: &[u8]| links::rebase_with(Some(state), old_dir, new_dir, &destination);
     match EmbeddedLinkState::from_device(device, snapshot)? {
         // Only the CLAP host supplies a separate saved snapshot.
-        EmbeddedLinkState::Legacy(state) => snapshot.is_none().then(|| rebase(state)).flatten(),
+        EmbeddedLinkState::InProcess(state) => snapshot.is_none().then(|| rebase(state)).flatten(),
         EmbeddedLinkState::Bundled(state) => update_assets(state, |assets| {
             String::from_utf8(rebase(assets.as_bytes())?).ok()
         }),
@@ -457,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn older_sampler_replacement_clears_only_the_reset_trim_bases() {
+    fn sampler_replacement_clears_only_the_reset_trim_bases() {
         let device = Device {
             parameter_bases: [(7, 0.25), (9, 0.75), (31, 0.4)].into(),
             ..bundled_general_sampler()

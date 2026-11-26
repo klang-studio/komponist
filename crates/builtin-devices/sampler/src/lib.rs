@@ -85,8 +85,6 @@ pub static SPEC: Spec = Spec {
     params,
     layout,
     presets: no_presets,
-    preset_aliases: &[],
-    migrate_params: None,
     cache: SpecCache::new(),
 };
 

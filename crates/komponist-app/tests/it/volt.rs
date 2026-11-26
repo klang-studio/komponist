@@ -277,23 +277,3 @@ fn knob_turns_and_routing_are_saved_in_the_project_and_load_again() {
         0.3
     );
 }
-
-#[test]
-fn an_old_file_that_calls_the_synth_knurr_shows_it_as_volt() {
-    // The fixture stores plugin id and name "knurr". The id stays, the name is shown as volt.
-    const OLD_FILE: &str = include_str!("../fixtures/knurr-project.komponist");
-    assert!(OLD_FILE.contains("\"name\": \"knurr\""));
-    let project = komponist_model::persist::from_json(OLD_FILE).expect("the old file loads");
-    let device = project.tracks[0].channel.devices.first().expect("a device");
-    assert_eq!(device.plugin.id, "knurr");
-    assert_eq!(device.plugin.name, "Volt");
-    assert_eq!(Internal::from_id(&device.plugin.id), Some(Internal::Volt));
-    // Saving writes the new name and keeps the id.
-    let saved = komponist_model::persist::to_json(&project).expect("saves");
-    let v: serde_json::Value = serde_json::from_str(&saved).unwrap();
-    let plugin = &v["project"]["tracks"][0]["channel"]["devices"][0]["plugin"];
-    assert_eq!(
-        (plugin["id"].as_str(), plugin["name"].as_str()),
-        (Some("knurr"), Some("Volt"))
-    );
-}

@@ -1,10 +1,5 @@
 //! The built-in entries of the catalog (ARCHITECTURE §8.5): hexa and the internal devices of
 //! `komponist-builtin`, all in process, shown as "INTERN".
-//!
-//! The drum sampler of WP-87 is one of the internal devices ([`Internal::Sampler`]); it replaced
-//! the bundled "klopfer · INTERN". klopfer is an ordinary CLAP plugin now, found by the scan;
-//! projects saved with the old built-in entry (`BUILTIN_KLOPFER`) resolve to the scanned plugin
-//! ([`crate::Catalog::resolve`]).
 
 use komponist_i18n::Lang;
 use komponist_ipc::PluginKind;
@@ -12,10 +7,6 @@ use komponist_ipc::native_layout::LocalizedPlugin;
 use komponist_model::DeviceRole;
 
 use crate::catalog::{BuiltinKind, CatalogEntry, EffectCategory, PluginLocation};
-
-/// CLAP id of klopfer (klopfer's `src/lib.rs`), the scanned plugin that projects with the old
-/// built-in klopfer entry resolve to.
-pub const KLOPFER_CLAP_ID: &str = "com.klopfer.drum-sampler";
 
 /// Adapts the device registry's entries to the plugin catalog.
 pub(crate) fn entries() -> Vec<CatalogEntry> {
@@ -80,7 +71,7 @@ mod tests {
 
         let catalog = crate::Catalog::builtin();
         let ids = [
-            "pisynth",
+            "hexa",
             "sampler",
             "eq",
             "delay",
@@ -88,8 +79,8 @@ mod tests {
             "limiter",
             "presse",
             "arpeggiator",
-            "tonleiter",
-            "knurr",
+            "scale",
+            "volt",
             "surf",
             "general-sampler",
         ];

@@ -18,7 +18,7 @@ use komponist_model::params::{ParamId, ParamInfo, ParamKind};
 /// The built-in device specification.
 pub static SPEC: Spec = Spec {
     catalog: CatalogSpec {
-        id: "tonleiter",
+        id: "scale",
         name: "Tonleiter",
         name_in: Lang::device_name_tonleiter,
         description_in: Some(Lang::device_description_tonleiter),
@@ -30,15 +30,6 @@ pub static SPEC: Spec = Spec {
     params,
     layout,
     presets,
-    preset_aliases: &[
-        ("C-Dur", "C Major"),
-        ("A-Moll", "A Minor"),
-        ("D-Dorisch", "D Dorian"),
-        ("A-Moll-Pentatonik", "A Minor Pentatonic"),
-        ("C-Blues", "C Blues"),
-        ("C-Dur filtern", "C Major Filtered"),
-    ],
-    migrate_params: None,
     cache: SpecCache::new(),
 };
 
