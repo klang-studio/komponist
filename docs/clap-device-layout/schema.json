@@ -158,6 +158,26 @@
     },
     {
       "if": {
+        "not": {
+          "required": ["required_capabilities"],
+          "properties": { "required_capabilities": { "contains": { "const": "cell-selections" } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "pages": { "items": { "properties": {
+            "cells": { "items": { "properties": {
+              "selector": false,
+              "follows": false,
+              "variants": false,
+              "graph": { "properties": { "variants": false } }
+            } } }
+          } } }
+        }
+      }
+    },
+    {
+      "if": {
         "required": ["required_capabilities"],
         "properties": { "required_capabilities": { "contains": { "const": "panel-selections" } } }
       },
@@ -818,6 +838,13 @@
         }
       },
       "allOf": [{ "$ref": "#/$defs/control_geometry" }],
+      "if": { "properties": { "widget": { "enum": ["segment", "dropdown"] } } },
+      "then": {
+        "properties": { "variants": { "items": { "required": ["choices"] } } }
+      },
+      "else": {
+        "properties": { "variants": { "items": { "not": { "required": ["choices"] } } } }
+      },
       "not": {
         "anyOf": [
           { "required": ["param_id"] },
