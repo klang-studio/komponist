@@ -112,6 +112,9 @@ pub enum HostNotification {
     GuiResizeRequested(GuiSize),
     /// The plugin closed or lost its GUI (CLAP `gui.closed`). Main thread.
     GuiClosed,
+    /// The plugin reported a preset load or failure through the host side of CLAP
+    /// `preset-load`; the reports wait in [`crate::HostedPlugin::take_preset_reports`]. Main thread.
+    PresetReported,
 }
 
 /// Where a format layer sends [`HostNotification`]s and log lines. Implemented by the bridge.

@@ -683,6 +683,16 @@ impl Bridge {
         if pending & bits::LATENCY_CHANGED != 0 {
             self.update_latency();
         }
+        if pending & bits::PRESET_REPORTED != 0 {
+            let reports = self
+                .plugin
+                .as_mut()
+                .map(|plugin| plugin.take_preset_reports())
+                .unwrap_or_default();
+            for report in reports {
+                self.send(BridgeMsg::PresetReported(report));
+            }
+        }
         if pending & bits::STATE_DIRTY != 0 {
             self.send(BridgeMsg::StateDirty);
         }

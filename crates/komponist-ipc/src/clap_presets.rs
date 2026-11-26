@@ -7,20 +7,7 @@ use serde::{Deserialize, Serialize};
 /// Optional namespaced metadata key prefix carried by CLAP's `add_extra_info` callback.
 pub const LOCALIZED_NAME_PREFIX: &str = "org.klang-studio.komponist.preset-name.";
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum ClapPresetLocation {
-    /// The preset is embedded in the plug-in. CLAP passes a null location string.
-    Plugin,
-    /// An absolute UTF-8 path declared by the plug-in's provider.
-    File(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ClapPresetSource {
-    pub location: ClapPresetLocation,
-    /// The opaque bytes returned by the provider, excluding the trailing NUL.
-    pub load_key: Option<Vec<u8>>,
-}
+pub use komponist_model::clap_preset::{ClapPresetLocation, ClapPresetSource, DevicePreset};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ClapPreset {
@@ -54,4 +41,31 @@ pub enum PresetLoad {
     Discovered(ClapPreset),
     /// Opaque state produced with the CLAP preset context.
     UserState(Vec<u8>),
+}
+
+/// A preset change the plug-in reported through the host side of standard `clap.preset-load`
+/// outside a load the host requested (its own browser, a program change).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PresetReport {
+    /// `clap_host_preset_load.loaded`: the plug-in loaded this preset.
+    Loaded(ClapPresetSource),
+    /// `clap_host_preset_load.on_error`: loading this preset failed.
+    Failed {
+        source: ClapPresetSource,
+        /// The plug-in's message and OS error, for the log.
+        message: String,
+    },
+}
+
+/// The index of the device's recorded preset among a running instance's discovered presets,
+/// and whether a parameter was edited since it was loaded.
+pub fn selected_preset(
+    selection: Option<&DevicePreset>,
+    presets: &[ClapPreset],
+) -> Option<(usize, bool)> {
+    let selection = selection?;
+    let index = presets
+        .iter()
+        .position(|preset| preset.source == selection.source)?;
+    Some((index, selection.modified))
 }

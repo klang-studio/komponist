@@ -107,7 +107,8 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 23 (#285) prepares persisted state for a user file edit.
 /// 24 (#285) returns the parameter IDs a device reset while preparing a file edit.
 /// 25 (#336) carries layout descriptors for the single current CLAP layout contract.
-pub const PROTOCOL_VERSION: u32 = 26;
+/// 27 (#344) forwards the plug-in's own preset loads reported through CLAP preset-load.
+pub const PROTOCOL_VERSION: u32 = 27;
 
 /// Maximum number of parameter bases that can follow an active state restore.
 pub const MAX_STATE_PARAMETER_BASES: usize = crate::shm::INPUT_EVENT_CAPACITY;
@@ -633,6 +634,8 @@ pub enum BridgeMsg {
     ClapPresetApplied(u32, Result<AppliedClapPreset, String>),
     /// Answer to user preset state capture.
     ClapPresetCaptured(u32, Result<Vec<u8>, String>),
+    /// The plug-in loaded a preset on its own, or failed to (host side of CLAP preset-load).
+    PresetReported(crate::clap_presets::PresetReport),
 }
 
 /// Project states and parameter values from one successful preset load.
@@ -2140,6 +2143,19 @@ mod tests {
                 }),
             ),
             BridgeMsg::ClapPresetApplied(10, Err("preset refused".into())),
+            BridgeMsg::PresetReported(crate::clap_presets::PresetReport::Loaded(
+                crate::clap_presets::ClapPresetSource {
+                    location: crate::clap_presets::ClapPresetLocation::File("/p.fxp".into()),
+                    load_key: Some(vec![0xff, 42]),
+                },
+            )),
+            BridgeMsg::PresetReported(crate::clap_presets::PresetReport::Failed {
+                source: crate::clap_presets::ClapPresetSource {
+                    location: crate::clap_presets::ClapPresetLocation::Plugin,
+                    load_key: None,
+                },
+                message: "missing".into(),
+            }),
             BridgeMsg::GuiSizeRequest(GuiSize {
                 width: 1,
                 height: 2,

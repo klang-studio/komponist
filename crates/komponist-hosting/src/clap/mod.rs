@@ -51,7 +51,7 @@ use clack_extensions::state_context::{PluginStateContext, StateContextType};
 use clack_extensions::timer::{PluginTimer, TimerId as ClapTimerId};
 use clack_host::events::Match;
 use clack_host::prelude::*;
-use komponist_ipc::clap_presets::{ClapPreset, ClapPresetLocation};
+use komponist_ipc::clap_presets::{ClapPreset, ClapPresetLocation, PresetReport};
 use komponist_ipc::control::param_flags;
 use komponist_ipc::native_layout::LocalizedPlugin;
 use komponist_ipc::shm::MAX_BLOCK;
@@ -763,12 +763,33 @@ impl HostedPlugin for ClapPlugin {
         let path = to_c_string(path)?;
         let key = to_c_string(preset.source.load_key.as_deref())?;
         let mut instance = self.instance.borrow_mut();
-        ext.load_from_location(
+        let earlier = instance.access_handler(|host| host.take_preset_reports());
+        let result = ext.load_from_location(
             &instance.plugin_handle(),
             presets::location_arg(path.as_deref()),
             key.as_deref(),
-        )
-        .map_err(|error| HostingError::State(error.to_string()))
+        );
+        // What the plugin reports during the call describes this load: the result covers it.
+        let during = instance.access_handler(|host| {
+            let during = host.take_preset_reports();
+            host.restore_preset_reports(earlier);
+            during
+        });
+        result.map_err(|error| {
+            let reason = during.into_iter().rev().find_map(|report| match report {
+                PresetReport::Failed { message, .. } if !message.is_empty() => Some(message),
+                _ => None,
+            });
+            HostingError::State(
+                reason.map_or_else(|| error.to_string(), |reason| format!("{error}: {reason}")),
+            )
+        })
+    }
+
+    fn take_preset_reports(&mut self) -> Vec<PresetReport> {
+        self.instance
+            .borrow()
+            .access_handler(|host| host.take_preset_reports())
     }
 
     fn save_preset_state(&mut self) -> Result<Vec<u8>, HostingError> {

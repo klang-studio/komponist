@@ -3,11 +3,13 @@
 //!
 //! - [`SharedHost`] (any thread): `request_*`, log, thread-check, gui, `params.request_flush`.
 //! - [`MainThreadHost`] (main thread): timer-support, posix-fd-support (Unix), params rescan, latency,
-//!   state, audio-ports, note-ports, note-name. It remembers the timers and fds of its plugin so
+//!   state, audio-ports, note-ports, note-name, preset-load. Preset loads and failures the plugin
+//!   reports are queued for [`crate::HostedPlugin::take_preset_reports`]. It remembers the timers and fds of its plugin so
 //!   that the format layer only dispatches its own, and unregisters leftovers when the instance is
 //!   destroyed.
 
 use std::cell::{Cell, RefCell};
+use std::ffi::CStr;
 #[cfg(unix)]
 use std::os::fd::RawFd;
 use std::rc::Rc;
@@ -28,10 +30,13 @@ use clack_extensions::params::{
 };
 #[cfg(unix)]
 use clack_extensions::posix_fd::{FdFlags, HostPosixFd, HostPosixFdImpl};
+use clack_extensions::preset_discovery::preset_data::Location;
+use clack_extensions::preset_discovery::{HostPresetLoad, HostPresetLoadImpl};
 use clack_extensions::state::{HostState, HostStateImpl};
 use clack_extensions::thread_check::{HostThreadCheck, HostThreadCheckImpl};
 use clack_extensions::timer::{HostTimer, HostTimerImpl, TimerId as ClapTimerId};
 use clack_host::prelude::*;
+use komponist_ipc::clap_presets::{ClapPresetLocation, ClapPresetSource, PresetReport};
 use komponist_ipc::{GuiSize, LogLevel};
 
 #[cfg(unix)]
@@ -82,7 +87,8 @@ impl HostHandlers for KpHost {
             .register::<HostState>()
             .register::<HostAudioPorts>()
             .register::<HostNotePorts>()
-            .register::<HostNoteName>();
+            .register::<HostNoteName>()
+            .register::<HostPresetLoad>();
     }
 }
 
@@ -186,6 +192,7 @@ pub(crate) struct MainThreadHost<'a> {
     timers: RefCell<Vec<TimerId>>,
     #[cfg(unix)]
     fds: RefCell<Vec<RawFd>>,
+    preset_reports: RefCell<Vec<PresetReport>>,
 }
 
 impl<'a> MainThreadHost<'a> {
@@ -196,7 +203,33 @@ impl<'a> MainThreadHost<'a> {
             timers: RefCell::new(Vec::new()),
             #[cfg(unix)]
             fds: RefCell::new(Vec::new()),
+            preset_reports: RefCell::new(Vec::new()),
         }
+    }
+
+    /// The preset loads and failures the plugin reported since the last call, in order.
+    pub(crate) fn take_preset_reports(&self) -> Vec<PresetReport> {
+        self.preset_reports.take()
+    }
+
+    /// Puts back reports taken before a host-requested load, ahead of any later ones.
+    pub(crate) fn restore_preset_reports(&self, earlier: Vec<PresetReport>) {
+        if !earlier.is_empty() {
+            let mut reports = self.preset_reports.borrow_mut();
+            let later = std::mem::replace(&mut *reports, earlier);
+            reports.extend(later);
+        }
+    }
+
+    fn report_preset(&self, report: PresetReport) {
+        let mut reports = self.preset_reports.borrow_mut();
+        if reports.len() >= MAX_PRESET_REPORTS {
+            // Only the latest outcome matters for the selection.
+            reports.remove(0);
+        }
+        reports.push(report);
+        drop(reports);
+        self.send(HostNotification::PresetReported);
     }
 
     /// Whether this instance registered `timer`.
@@ -384,6 +417,45 @@ impl HostNotePortsImpl for MainThreadHost<'_> {
 impl HostNoteNameImpl for MainThreadHost<'_> {
     fn changed(&self) {
         self.send(HostNotification::NoteNamesChanged);
+    }
+}
+
+/// Reports kept between two drains; a plugin that reports more drops its oldest.
+const MAX_PRESET_REPORTS: usize = 16;
+
+/// The komponist form of a CLAP preset location and load key.
+pub(crate) fn preset_source(location: Location<'_>, load_key: Option<&CStr>) -> ClapPresetSource {
+    ClapPresetSource {
+        location: match location {
+            Location::Plugin => ClapPresetLocation::Plugin,
+            Location::File { path } => {
+                ClapPresetLocation::File(path.to_string_lossy().into_owned())
+            }
+        },
+        load_key: load_key.map(|key| key.to_bytes().to_vec()),
+    }
+}
+
+impl HostPresetLoadImpl for MainThreadHost<'_> {
+    fn on_error(
+        &self,
+        location: Location,
+        load_key: Option<&CStr>,
+        os_error: i32,
+        message: Option<&CStr>,
+    ) {
+        let mut text = message.map_or_else(String::new, |m| m.to_string_lossy().into_owned());
+        if os_error != 0 {
+            text = format!("{text} (OS error {os_error})");
+        }
+        self.report_preset(PresetReport::Failed {
+            source: preset_source(location, load_key),
+            message: text,
+        });
+    }
+
+    fn loaded(&self, location: Location, load_key: Option<&CStr>) {
+        self.report_preset(PresetReport::Loaded(preset_source(location, load_key)));
     }
 }
 

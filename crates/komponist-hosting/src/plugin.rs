@@ -263,6 +263,14 @@ pub trait HostedPlugin {
     /// Restores a blob from [`HostedPlugin::save_state`] (possibly from an earlier session).
     fn load_state(&mut self, state: &[u8]) -> Result<(), HostingError>;
 
+    /// Preset loads and failures the plugin reported on its own through the host side of CLAP
+    /// `preset-load` since the last call, in order ([`crate::HostNotification::PresetReported`]).
+    /// Reports made while the host's own [`HostedPlugin::load_clap_preset`] runs belong to that
+    /// load and are not returned.
+    fn take_preset_reports(&mut self) -> Vec<komponist_ipc::clap_presets::PresetReport> {
+        Vec::new()
+    }
+
     /// Loads a preset through the provider's opaque CLAP preset source on the main thread.
     fn load_clap_preset(
         &mut self,
