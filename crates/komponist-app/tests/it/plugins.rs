@@ -1057,7 +1057,7 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
         app.engine().host().param_base(valid, 7) == Some(1.0)
     });
     app.dispatch(Action::Project(ProjectAction::Save));
-    app.dispatch(Action::Project(ProjectAction::OpenPath(file)));
+    app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
     step_until(app, "reopened native layout and state", |app| {
         let host = app.engine().host();
         host.status(valid) == DeviceStatus::Ok
@@ -1065,17 +1065,34 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
             && host.param_base(valid, 7) == Some(1.0)
     });
 
+    let saved_before = std::fs::read(&file).unwrap();
     app.dispatch(Action::Plugin(PluginAction::SetParamText {
         device: valid,
         id: 42,
         text: "Focus".into(),
         fallback: None,
     }));
-    step_until(app, "CLAP text converted and display cached", |app| {
-        let host = app.engine().host();
-        host.param_value(valid, 42)
-            .is_some_and(|value| value.value == 0.625 && value.text == "Focus")
-    });
+    app.dispatch(Action::Project(ProjectAction::Save));
+    assert_eq!(std::fs::read(&file).unwrap(), saved_before);
+    step_until(
+        app,
+        "committed CLAP text converted, displayed and saved",
+        |app| {
+            let host = app.engine().host();
+            let saved = komponist_app::project_io::load_project(&file).unwrap();
+            let state = saved
+                .find_device(valid)
+                .unwrap()
+                .2
+                .state
+                .as_deref()
+                .unwrap();
+            f64::from_ne_bytes(state[..8].try_into().unwrap()) == 0.625
+                && host
+                    .param_value(valid, 42)
+                    .is_some_and(|value| value.value == 0.625 && value.text == "Focus")
+        },
+    );
 
     let refreshed = komponist_app::views::devices::model::cards(
         Lang::De,
@@ -1088,6 +1105,22 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
     // During a gesture the next value is already shown before the plugin sends its text.
     assert_eq!(gain.text_at(100.0), "100 ms");
     assert_eq!(gain.text_at(10.0), "Aus");
+
+    app.dispatch(Action::Plugin(PluginAction::SetParamText {
+        device: valid,
+        id: 42,
+        text: "invalid parameter input".into(),
+        fallback: None,
+    }));
+    assert!(!app.close_requested(), "wait for the committed entry");
+    step_until(app, "rejected text keeps the document open", |app| {
+        app.ui()
+            .status
+            .as_ref()
+            .is_some_and(|status| status.text == app.lang().devices_parameter_text_failed())
+    });
+    assert_eq!(app.ui().screen, komponist_app::ui_state::Screen::Project);
+    assert_eq!(app.engine().host().param_base(valid, 42), Some(0.625));
 
     let state = |hidden| -> Arc<[u8]> {
         [0.5f64, 1.0, hidden]

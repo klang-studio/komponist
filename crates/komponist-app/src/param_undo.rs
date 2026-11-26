@@ -60,6 +60,9 @@ use crate::undo_label;
 /// Snapshots of a device that arrive within this time of the last one amend its undo step.
 pub const COALESCE: Duration = Duration::from_secs(1);
 
+// A lost plugin reply must not leave a project operation waiting indefinitely.
+const PARAM_TEXT_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Snapshots of a bridged device within this time after the document handed it a state are the
 /// plugin's echo and stay out of the history.
 pub const ECHO_QUIET: Duration = Duration::from_secs(2);
@@ -76,7 +79,7 @@ pub(crate) struct ParamUndo {
     /// How long snapshots of one device amend one step ([`COALESCE`]; tests shorten it).
     window: Duration,
     next_text_edit: u64,
-    text_edits: HashMap<(DeviceId, u32), (u64, Option<f64>)>,
+    text_edits: HashMap<(DeviceId, u32), PendingTextEdit>,
     /// The device of the open parameter gesture.
     gesture_device: Option<DeviceId>,
     /// Bridged devices a parameter was turned on inside the open gesture.
@@ -105,6 +108,13 @@ pub(crate) struct ParamUndo {
     baseline: HashMap<DeviceId, SavedPluginState>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PendingTextEdit {
+    request: u64,
+    fallback: Option<f64>,
+    deadline: Instant,
+}
+
 impl Default for ParamUndo {
     fn default() -> Self {
         ParamUndo {
@@ -127,6 +137,10 @@ impl Default for ParamUndo {
 }
 
 impl ParamUndo {
+    pub(crate) fn has_pending_text(&self) -> bool {
+        !self.text_edits.is_empty()
+    }
+
     pub(crate) fn cancel_text_edits(&mut self, device: DeviceId) {
         self.text_edits.retain(|(owner, _), _| *owner != device);
     }
@@ -331,13 +345,20 @@ impl App {
             .host_mut()
             .request_param_text(device, request, id, text)
         {
-            self.param_undo
-                .text_edits
-                .insert((device, id), (request, fallback));
+            self.param_undo.text_edits.insert(
+                (device, id),
+                PendingTextEdit {
+                    request,
+                    fallback,
+                    deadline: Instant::now() + PARAM_TEXT_TIMEOUT,
+                },
+            );
         } else if let Some(value) = fallback {
             self.dispatch(crate::actions::Action::Plugin(
                 crate::actions::PluginAction::SetParam { device, id, value },
             ));
+        } else {
+            self.reject_param_text();
         }
     }
 
@@ -348,15 +369,53 @@ impl App {
         request: u64,
         value: Option<f64>,
     ) {
-        if let Some(&(current, fallback)) = self.param_undo.text_edits.get(&(device, id))
-            && current == request
+        let Some(edit) = self
+            .param_undo
+            .text_edits
+            .get(&(device, id))
+            .copied()
+            .filter(|edit| edit.request == request)
+        else {
+            return;
+        };
+        self.param_undo.cancel_text_edit(device, id);
+        if let Some(value) = value.or(edit.fallback)
+            && self.doc.project().find_device(device).is_some()
+            && self.engine.host().status(device) == komponist_plugins::DeviceStatus::Ok
+            && self.engine.host().params(device).is_some_and(|params| {
+                params
+                    .iter()
+                    .any(|param| param.id == id && (param.min..=param.max).contains(&value))
+            })
         {
-            self.param_undo.cancel_text_edit(device, id);
-            if let Some(value) = value.or(fallback) {
-                self.dispatch(crate::actions::Action::Plugin(
-                    crate::actions::PluginAction::SetParam { device, id, value },
-                ));
-            }
+            self.dispatch(crate::actions::Action::Plugin(
+                crate::actions::PluginAction::SetParam { device, id, value },
+            ));
+        } else {
+            self.reject_param_text();
+        }
+    }
+
+    fn reject_param_text(&mut self) {
+        // An explicit save or close would otherwise silently lose a value the user entered.
+        self.dialogs.after_param_text = None;
+        self.set_status(
+            self.lang.devices_parameter_text_failed(),
+            crate::ui_state::StatusKind::Error,
+        );
+    }
+
+    pub(crate) fn expire_param_text(&mut self) {
+        let now = Instant::now();
+        let expired: Vec<_> = self
+            .param_undo
+            .text_edits
+            .iter()
+            .filter(|(_, edit)| edit.deadline <= now)
+            .map(|(&(device, id), edit)| (device, id, edit.request))
+            .collect();
+        for (device, id, request) in expired {
+            self.finish_param_text(device, id, request, None);
         }
     }
 

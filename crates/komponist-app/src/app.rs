@@ -649,6 +649,7 @@ impl App {
     fn poll_events(&mut self) {
         self.shell.device_events.clear();
         self.drain_events();
+        self.resume_after_param_text();
     }
 
     /// Handles the events that arrived since the last drain; the device events are added to this
@@ -1239,6 +1240,7 @@ impl App {
             || jack_routes
             || !self.preset_preparations.is_empty()
             || self.user_presets.is_busy()
+            || self.param_undo.has_pending_text()
         {
             ctx.request_repaint_after(DEVICE_POLL_INTERVAL);
         } else if self.engine.audio_input_config().is_some()
@@ -2960,6 +2962,7 @@ impl App {
         self.doc = doc;
         self.dialogs.repaired = 0;
         self.param_undo.forget();
+        self.dialogs.after_param_text = None;
         self.shell.catalog_retirements.clear();
         self.preset_preparations.clear();
         self.user_presets = Default::default();
