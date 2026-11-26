@@ -3480,6 +3480,7 @@ mod tests {
             state: None,
             parameter_bases: Default::default(),
             sidechain: None,
+            preset: None,
         };
         let egui = egui::Context::default();
         let mut cache = super::super::asset_waveform::Cache::default();
@@ -3849,6 +3850,7 @@ mod tests {
             asset_links: Default::default(),
             state: None,
             sidechain: None,
+            preset: None,
         };
         let _ = host.create_processor(
             &device,

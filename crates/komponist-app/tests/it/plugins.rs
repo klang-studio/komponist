@@ -625,6 +625,7 @@ fn scanned_device_metadata_and_availability_follow_the_bundle() {
             role: DeviceRole::Effect,
             state: None,
             sidechain: None,
+            preset: None,
         },
     )
     .unwrap();
@@ -825,6 +826,7 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
                 role: DeviceRole::Effect,
                 state: None,
                 sidechain: None,
+                preset: None,
             },
         )
         .unwrap();
@@ -1101,6 +1103,7 @@ fn standalone_clap_layout_renders_three_graphs() {
             role: DeviceRole::Effect,
             state: None,
             sidechain: None,
+            preset: None,
         },
     )
     .unwrap();
@@ -1212,6 +1215,7 @@ fn sdk_example_uses_native_layout_and_falls_back() {
             role: DeviceRole::Effect,
             state: None,
             sidechain: None,
+            preset: None,
         },
     )
     .unwrap();
@@ -1487,6 +1491,7 @@ fn third_party_clap_macros_and_automation_restore_their_bases() {
             plugin: clap_plugin(FX),
             state: None,
             sidechain: None,
+            preset: None,
         },
     )
     .unwrap();

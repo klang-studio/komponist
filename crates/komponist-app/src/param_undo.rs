@@ -37,6 +37,14 @@
 //!   in the current root only ([`App::store_root_state`]): the other undo and redo steps keep
 //!   their own states (#86). A real edit that fast is not undoable.
 //!
+//! - **Loaded preset:** the device keeps the preset it last loaded through CLAP preset-load
+//!   ([`komponist_model::Device::preset`]). A load the host requested enters the document with its
+//!   state as one step; a load the plugin reports itself is a step of its own that the plugin's
+//!   following snapshot amends. The first parameter edit after a load (card, text entry, the
+//!   plugin's GUI) marks the preset as modified at once: inside the open gesture, or as the edit's
+//!   step, which the plugin's snapshot of the edit then amends like after a gesture. Undo takes
+//!   the mark back with the edit.
+//!
 //! Still outside the history: transport settings, the baseline of a bridged device taken for the
 //! file (root only, like the echo), and sample paths rewritten for the file being saved, which
 //! every step gets from its own state (`crate::project_assets`, `Document::rewrite_untracked`).
@@ -46,11 +54,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_engine::Command;
+use komponist_ipc::clap_presets::ClapPresetSource;
 use komponist_model::automation::AutomationTarget;
 use komponist_model::edits;
 use komponist_model::macros::MAX_MAPPINGS;
 use komponist_model::project::SavedPluginState;
-use komponist_model::{Device, DeviceId, Project, TrackId};
+use komponist_model::{Device, DeviceId, DevicePreset, Project, TrackId};
 
 use crate::app::App;
 use crate::device_host::LegacyParameters;
@@ -173,6 +182,14 @@ impl ParamUndo {
         self.awaiting.remove(&device);
         self.baseline.remove(&device);
     }
+}
+
+/// Whether `device` has a loaded preset that no parameter edit has modified yet.
+fn has_unmodified_preset(project: &Project, device: DeviceId) -> bool {
+    project
+        .find_device(device)
+        .and_then(|(_, _, d)| d.preset.as_ref())
+        .is_some_and(|preset| !preset.modified)
 }
 
 impl App {
@@ -443,6 +460,7 @@ impl App {
         if bridged {
             self.remember_param_edit(device, id);
             let label = self.param_label(device, id);
+            self.mark_preset_modified(device, &label);
             self.param_undo
                 .turned
                 .insert(device, (label, Instant::now()));
@@ -516,9 +534,9 @@ impl App {
     }
 
     /// Stores `state` as a tracked change of `device` that the running processor already has (a
-    /// knob value it just got as `SetParam`, a sample link it just loaded): one undo step named
-    /// `label`, or part of the open gesture; the engine is not told. Returns whether the document
-    /// changed (an equal state is skipped).
+    /// knob value it just got as `SetParam`): one undo step named `label`, or part of the open
+    /// gesture, which also marks a loaded preset as modified; the engine is not told. Returns
+    /// whether the document changed (an equal state is skipped).
     pub(crate) fn store_param_state(
         &mut self,
         device: DeviceId,
@@ -528,11 +546,41 @@ impl App {
         if self.has_state(device, state) {
             return false;
         }
+        // A parameter edit after a preset load marks the preset in the same step (module docs).
         self.doc
             .apply(label, |p| {
-                edits::set_device_state(p, device, Some(Arc::clone(state)))
+                let p = edits::set_device_state(p, device, Some(Arc::clone(state)))?;
+                edits::mark_device_preset_modified(&p, device)
             })
             .is_ok()
+    }
+
+    /// The first parameter edit after a preset load marks the preset as modified (module docs):
+    /// inside the open gesture, or as a step named `label` that the plugin's snapshot of the edit
+    /// amends. The plugin is asked for that snapshot at once, as at the end of a gesture.
+    pub(crate) fn mark_preset_modified(&mut self, device: DeviceId, label: &str) {
+        if !has_unmodified_preset(self.project(), device) {
+            return;
+        }
+        let mark = |p: &Project| edits::mark_device_preset_modified(p, device);
+        if self.doc.in_gesture() {
+            if let Err(error) = self.doc.apply("", mark) {
+                self.record_edit_error(error);
+            }
+            return;
+        }
+        let top = self.doc.top_step();
+        match self.doc.apply(label, mark) {
+            Ok(_) => {
+                if let Some(step) = self.doc.top_step().filter(|step| Some(*step) != top) {
+                    let at = Instant::now() + SNAPSHOT_SLACK;
+                    self.param_undo.steps.insert(device, (step, at));
+                    self.param_undo.tails.remove(&device);
+                    self.engine.host_mut().request_state(device);
+                }
+            }
+            Err(error) => self.record_edit_error(error),
+        }
     }
 
     fn has_saved_state(&self, device: DeviceId, state: &SavedPluginState) -> bool {
@@ -542,17 +590,22 @@ impl App {
     }
 
     /// Records an opaque edit already applied to the live plugin as a distinct undo step.
+    /// `preset` replaces the device's loaded preset in the same step when given.
     fn record_live_state_edit(
         &mut self,
         device: DeviceId,
         previous_state: &SavedPluginState,
         state: &SavedPluginState,
         label: &str,
+        preset: Option<Option<DevicePreset>>,
     ) {
         let Some((_, _, target)) = self.project().find_device(device) else {
             return;
         };
         let no_document_state = target.state.is_none();
+        let same_preset = preset
+            .as_ref()
+            .is_none_or(|preset| *preset == target.preset);
         self.param_undo.awaiting.remove(&device);
         self.param_undo.echo.remove(&device);
         self.param_undo.turned.remove(&device);
@@ -564,11 +617,15 @@ impl App {
                 .entry(device)
                 .or_insert_with(|| previous_state.clone());
         }
-        if no_document_state && previous_state == state {
+        if no_document_state && previous_state == state && same_preset {
             return;
         }
         if let Err(error) = self.doc.apply(label, |project| {
-            edits::set_saved_plugin_state(project, device, state)
+            let project = edits::set_saved_plugin_state(project, device, state)?;
+            match &preset {
+                Some(preset) => edits::set_device_preset(&project, device, preset.clone()),
+                None => Ok(project),
+            }
         }) {
             self.record_edit_error(error);
         }
@@ -589,7 +646,7 @@ impl App {
             self.end_gesture();
         }
         if self.reconcile_previous_live_state(device, previous_state) {
-            self.record_live_state_edit(device, previous_state, state, "undo-sample-slices");
+            self.record_live_state_edit(device, previous_state, state, "undo-sample-slices", None);
             if self.has_saved_state(device, state) {
                 self.reconcile_param_edits(device, &state.bytes);
             }
@@ -623,10 +680,12 @@ impl App {
         true
     }
 
-    /// Records a preset already applied to the live plugin as a distinct undo step.
+    /// Records a preset already applied to the live plugin as a distinct undo step, together
+    /// with the source the host loaded it from (`None`: user preset state, no discovered preset).
     pub(crate) fn record_clap_preset(
         &mut self,
         device: DeviceId,
+        source: Option<&ClapPresetSource>,
         previous_state: &Arc<[u8]>,
         state: &Arc<[u8]>,
     ) {
@@ -636,7 +695,43 @@ impl App {
         let previous_state = SavedPluginState::from(Arc::clone(previous_state));
         if self.reconcile_previous_live_state(device, &previous_state) {
             let state = SavedPluginState::from(Arc::clone(state));
-            self.record_live_state_edit(device, &previous_state, &state, "undo-load-preset");
+            let preset = source.cloned().map(DevicePreset::loaded);
+            self.record_live_state_edit(
+                device,
+                &previous_state,
+                &state,
+                "undo-load-preset",
+                Some(preset),
+            );
+        }
+    }
+
+    /// The plugin loaded a preset on its own and reported it through CLAP preset-load: a step
+    /// of its own, which the plugin's following state snapshot amends ([`COALESCE`]). A report of
+    /// the preset that is already loaded and unmodified changes nothing.
+    pub(crate) fn record_reported_preset(&mut self, device: DeviceId, source: &ClapPresetSource) {
+        let Some((_, _, target)) = self.project().find_device(device) else {
+            return;
+        };
+        let preset = DevicePreset::loaded(source.clone());
+        if target.preset.as_ref() == Some(&preset) {
+            return;
+        }
+        if self.doc.in_gesture() {
+            self.end_gesture();
+        }
+        let top = self.doc.top_step();
+        match self.doc.apply("undo-load-preset", |project| {
+            edits::set_device_preset(project, device, Some(preset))
+        }) {
+            Ok(_) => {
+                if let Some(step) = self.doc.top_step().filter(|step| Some(*step) != top) {
+                    self.param_undo.steps.insert(device, (step, Instant::now()));
+                    self.param_undo.turned.remove(&device);
+                    self.param_undo.tails.remove(&device);
+                }
+            }
+            Err(error) => self.record_edit_error(error),
         }
     }
 

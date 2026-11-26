@@ -123,9 +123,7 @@ fn presets(app: &App, device: DeviceId) -> &[ClapPreset] {
 fn loaded(app: &App, device: DeviceId) -> Option<(&str, bool)> {
     let model = app.project().find_device(device).unwrap().2;
     let presets = presets(app, device);
-    app.engine()
-        .host()
-        .saved_preset(model, presets)
+    komponist_ipc::clap_presets::selected_preset(model.preset.as_ref(), presets)
         .map(|(index, edited)| (presets[index].name.as_str(), edited))
 }
 

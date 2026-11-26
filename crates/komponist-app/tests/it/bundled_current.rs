@@ -160,6 +160,7 @@ fn project(host: &PluginHost, sample: &Path) -> Fixture {
                 plugin: prepared.plugin,
                 sidechain: None,
                 state: prepared.state,
+                preset: None,
             },
         )
         .unwrap();
@@ -523,7 +524,7 @@ fn current_project_round_trip_and_offline_render() {
     let host = app.engine().host();
     let presets = host.clap_presets(delay);
     assert_eq!(
-        host.saved_preset(delay, presets)
+        komponist_ipc::clap_presets::selected_preset(delay.preset.as_ref(), presets)
             .map(|(index, edited)| (presets[index].name.as_str(), edited)),
         Some((DELAY_PRESET, false)),
     );
@@ -663,6 +664,7 @@ fn midi_chain_events(
                 plugin,
                 state: None,
                 sidechain: None,
+                preset: None,
             },
         )
         .unwrap();
@@ -865,6 +867,7 @@ fn bundled_presse_lookahead_updates_delay_compensation_during_playback() {
             plugin: shipped(&host, "presse"),
             sidechain: None,
             state: None,
+            preset: None,
         },
     )
     .unwrap();
@@ -985,6 +988,7 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
             plugin: prepared.plugin,
             sidechain: None,
             state: prepared.state,
+            preset: None,
         },
     )
     .unwrap();
@@ -1226,6 +1230,7 @@ fn packaged_effect_cards_and_presets() {
                 plugin: shipped(&host, slug),
                 sidechain: None,
                 state: None,
+                preset: None,
             },
         )
         .unwrap();

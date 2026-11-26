@@ -152,6 +152,7 @@ fn undo_and_redo_of_clap_effect_state_reach_the_running_processor() {
             plugin,
             state: None,
             sidechain: None,
+            preset: None,
         },
     )
     .unwrap();

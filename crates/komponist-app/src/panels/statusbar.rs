@@ -515,6 +515,7 @@ mod tests {
             plugin: limiter,
             state: None,
             sidechain: None,
+            preset: None,
         };
         // Each limiter contributes 96 frames at the default 48 kHz.
         let limiters = MAX_PDC_FRAMES / 96 + 1;

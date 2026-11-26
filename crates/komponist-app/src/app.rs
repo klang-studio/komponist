@@ -1057,12 +1057,16 @@ impl App {
             }
             PluginManagerEvent::ClapPresetLoaded {
                 device,
+                source,
                 previous_state,
                 state,
             } => {
                 self.invalidate_retiring_snapshot(*device);
-                self.record_clap_preset(*device, previous_state, state);
+                self.record_clap_preset(*device, source.as_ref(), previous_state, state);
                 self.frame_preset_finished(*device, true);
+            }
+            PluginManagerEvent::ClapPresetReported { device, source } => {
+                self.record_reported_preset(*device, source);
             }
             PluginManagerEvent::ClapPresetCaptured { device, result } => {
                 self.user_preset_captured(*device, result);
@@ -2808,8 +2812,10 @@ impl App {
                         target.state.as_deref(),
                         &source,
                     ) {
+                        let preset = komponist_model::DevicePreset::loaded(source);
                         self.apply("undo-load-preset", |p| {
-                            edits::set_device_state(p, device, Some(state.into()))
+                            let p = edits::set_device_state(p, device, Some(state.into()))?;
+                            edits::set_device_preset(&p, device, Some(preset))
                         });
                         self.frame_preset_finished(device, true);
                     } else {
@@ -2960,6 +2966,7 @@ impl App {
                     plugin,
                     state: None,
                     sidechain: None,
+                    preset: None,
                 };
                 self.apply_with("undo-add-midi-effect", |p| {
                     edits::insert_device(p, channel, index, spec)
@@ -2989,6 +2996,7 @@ impl App {
                     plugin,
                     state: None,
                     sidechain: None,
+                    preset: None,
                 };
                 self.apply_with("undo-add-effect", |p| {
                     edits::insert_device(p, channel, index, spec)

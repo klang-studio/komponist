@@ -117,6 +117,7 @@ fn scene_of(reference: bool) -> Scene {
             plugin,
             state: None,
             sidechain: None,
+            preset: None,
         };
         let (next, id) = edits::insert_device(p, ChannelRef::Track(pad), at, spec).unwrap();
         *p = next;
@@ -367,6 +368,7 @@ fn a_bridged_plugin_has_the_chip_only_with_a_sidechain_port() {
             plugin: entry.plugin.clone(),
             state: None,
             sidechain: None,
+            preset: None,
         };
         let (next, id) = edits::insert_device(&p, ChannelRef::Track(pad), at, spec).unwrap();
         p = next;

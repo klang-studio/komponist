@@ -3,7 +3,7 @@
 use super::*;
 
 use crate::dialogs::file::Purpose;
-use komponist_ipc::clap_presets::ClapPresetSource;
+use komponist_ipc::clap_presets::{ClapPresetSource, DevicePreset};
 use komponist_plugins::PresetPreparation;
 use serde::{Deserialize, Serialize};
 use std::io::Read as _;
@@ -71,6 +71,7 @@ fn read_user_preset(path: &Path) -> Result<UserPreset, String> {
 pub(super) struct PendingPreset {
     preparation: Preparation,
     plugin: PluginRef,
+    source: ClapPresetSource,
     role: DeviceRole,
     track: Option<TrackId>,
 }
@@ -122,6 +123,7 @@ impl App {
         self.preset_preparations.push(PendingPreset {
             preparation,
             plugin,
+            source,
             role,
             track,
         });
@@ -144,7 +146,14 @@ impl App {
             }
             match request.preparation {
                 Preparation::Ready(Ok(state)) => {
-                    self.insert_prepared_preset(request.plugin, request.role, request.track, state);
+                    let preset = DevicePreset::loaded(request.source);
+                    self.insert_prepared_preset(
+                        request.plugin,
+                        request.role,
+                        request.track,
+                        state,
+                        preset,
+                    );
                 }
                 Preparation::Ready(Err(error)) => {
                     eprintln!(
@@ -164,6 +173,7 @@ impl App {
         role: DeviceRole,
         track: Option<TrackId>,
         state: Vec<u8>,
+        preset: DevicePreset,
     ) {
         if role == DeviceRole::Instrument {
             let spec = NewTrack {
@@ -183,6 +193,7 @@ impl App {
                     .1
                     .id;
                 let project = edits::set_device_state(&project, device, Some(state.into()))?;
+                let project = edits::set_device_preset(&project, device, Some(preset))?;
                 Ok((project, track))
             }) {
                 self.select_tracks(vec![track], SelectMode::Replace);
@@ -193,6 +204,7 @@ impl App {
                 plugin,
                 state: Some(state.into()),
                 sidechain: None,
+                preset: Some(preset),
             };
             if self
                 .apply_with("undo-load-preset", |p| {

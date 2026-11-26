@@ -8,14 +8,15 @@ use super::App;
 use crate::actions::{PluginAction, SelectMode, SelectionChange};
 use crate::ui_state::{CopiedDevice, DEVICES_CLIPBOARD_MARKER, DockTab, ParamTouch, Reveal};
 
-/// A device as the spec of a copy: plugin, state and sidechain (kept where its source can still
-/// feed the copy, #7), not bypassed.
+/// A device as the spec of a copy: plugin, state, its loaded preset and sidechain (kept where its
+/// source can still feed the copy, #7), not bypassed.
 fn spec(device: &Device) -> NewDevice {
     NewDevice {
         role: device.role,
         plugin: device.plugin.clone(),
         state: device.state.clone(),
         sidechain: device.sidechain,
+        preset: device.preset.clone(),
     }
 }
 
@@ -374,6 +375,7 @@ mod tests {
                 },
                 sidechain: None,
                 state: None,
+                preset: None,
             },
         )
         .unwrap();

@@ -20,7 +20,7 @@ use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
-use komponist_ipc::clap_presets::{ClapPreset, ClapPresetLocation, ClapPresetSource};
+use komponist_ipc::clap_presets::{ClapPreset, ClapPresetLocation, ClapPresetSource, DevicePreset};
 use komponist_ipc::{
     LogLevel, ParamInfo, PluginDescriptor, PluginFormat as BundleFormat, PluginKind,
 };
@@ -636,6 +636,7 @@ fn discovered_clap_preset_menu_loads_a_localized_preset_in_one_undo_step() {
             &script,
             PluginManagerEvent::ClapPresetLoaded {
                 device: synth.id,
+                source: Some(source.clone()),
                 previous_state: Arc::clone(&previous_state),
                 state: Arc::clone(&loaded_state),
             },
@@ -643,16 +644,32 @@ fn discovered_clap_preset_menu_loads_a_localized_preset_in_one_undo_step() {
         let app = harness.state_mut();
         app.step();
         assert_eq!(state(app, synth.id), Some(Arc::clone(&loaded_state)));
+        let selection = |app: &App| {
+            app.project()
+                .find_device(synth.id)
+                .unwrap()
+                .2
+                .preset
+                .clone()
+        };
+        assert_eq!(selection(app), Some(DevicePreset::loaded(source.clone())));
+        harness.run_steps(2);
+        harness
+            .get_by_role_and_label(Role::Group, card_label.as_str())
+            .get_by_role_and_label(Role::Button, &lang.devices_preset_name(preset_label));
+        let app = harness.state_mut();
         assert!(
             script.borrow().restores.is_empty(),
             "the live instance already loaded it"
         );
         app.dispatch(Action::Edit(EditAction::Undo));
         assert_eq!(state(app, synth.id), original);
+        assert_eq!(selection(app), None);
         let expected = original.unwrap_or(previous_state);
         assert_eq!(script.borrow().restores.last(), Some(&(synth.id, expected)));
         app.dispatch(Action::Edit(EditAction::Redo));
         assert_eq!(state(app, synth.id), Some(Arc::clone(&loaded_state)));
+        assert_eq!(selection(app), Some(DevicePreset::loaded(source.clone())));
         assert_eq!(
             script.borrow().restores.last(),
             Some(&(synth.id, loaded_state))
@@ -673,6 +690,7 @@ fn preset_undo_preserves_a_preceding_live_edit_without_a_snapshot() {
         &script,
         PluginManagerEvent::ClapPresetLoaded {
             device,
+            source: None,
             previous_state: Arc::clone(&edited),
             state: Arc::clone(&preset),
         },
@@ -685,6 +703,96 @@ fn preset_undo_preserves_a_preceding_live_edit_without_a_snapshot() {
     assert_eq!(script.borrow().restores.last(), Some(&(device, edited)));
     app.dispatch(Action::Edit(EditAction::Undo));
     assert_eq!(state(&app, device).as_deref(), Some(baseline.as_slice()));
+}
+
+#[test]
+fn a_reported_preset_and_its_snapshot_are_one_step_and_an_edit_marks_it_modified() {
+    let (mut app, script) = app();
+    let surge = device(&app, "Surge XT");
+    let original = state(&app, surge);
+    let selection = |app: &App| app.project().find_device(surge).unwrap().2.preset.clone();
+    let source = ClapPresetSource {
+        location: ClapPresetLocation::File("/presets/Warm Amp.fxp".into()),
+        load_key: None,
+    };
+    let loaded = DevicePreset::loaded(source.clone());
+    let depth = undo_depth(&mut app);
+
+    // The plugin's own browser loads a preset and reports it; its snapshot joins the step.
+    let report = PluginManagerEvent::ClapPresetReported {
+        device: surge,
+        source: source.clone(),
+    };
+    push(&script, report.clone());
+    app.step();
+    assert_eq!(selection(&app), Some(loaded.clone()));
+    snapshot(&script, surge, &[4, 4]);
+    app.step();
+    assert_eq!(state(&app, surge).as_deref(), Some(&[4u8, 4][..]));
+    assert_eq!(app.undo_text().as_deref(), Some("Preset laden"));
+    // The same report again changes nothing.
+    let revision = app.doc().revision();
+    push(&script, report.clone());
+    app.step();
+    assert_eq!(app.doc().revision(), revision);
+
+    // A card edit marks the preset as modified at once; the snapshot of the edit joins its step.
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device: surge,
+        id: 3,
+        value: 0.5,
+    }));
+    assert!(selection(&app).unwrap().modified);
+    snapshot(&script, surge, &[5, 5]);
+    app.step();
+    // Further edits change the state, not the mark.
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device: surge,
+        id: 3,
+        value: 0.25,
+    }));
+    snapshot(&script, surge, &[6, 6]);
+    app.step();
+    assert!(selection(&app).unwrap().modified);
+    assert_eq!(undo_depth(&mut app), depth + 2);
+
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(
+        selection(&app),
+        Some(loaded.clone()),
+        "undo takes the mark back"
+    );
+    assert_eq!(state(&app, surge).as_deref(), Some(&[4u8, 4][..]));
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(selection(&app), None);
+    assert_eq!(state(&app, surge), original);
+    for _ in 0..2 {
+        app.dispatch(Action::Edit(EditAction::Redo));
+    }
+    assert!(selection(&app).unwrap().modified);
+    assert_eq!(state(&app, surge).as_deref(), Some(&[6u8, 6][..]));
+
+    // Loading the same preset again in the plugin starts it unmodified.
+    push(&script, report);
+    app.step();
+    assert_eq!(selection(&app), Some(loaded));
+
+    // A failed load the plugin reports reaches the status bar.
+    push(
+        &script,
+        PluginManagerEvent::ClapPresetFailed {
+            device: surge,
+            message: "no such file".into(),
+        },
+    );
+    app.step();
+    assert_eq!(
+        status_text(&app),
+        Some((
+            "Das Preset lässt sich nicht laden.".to_owned(),
+            StatusKind::Error
+        ))
+    );
 }
 
 #[test]
@@ -1361,6 +1469,15 @@ fn plugin_gui_automation(
     )
     .unwrap();
     let project = set_lane_mode(&project, owner, lane, mode).unwrap();
+    let project = komponist_model::edits::set_device_preset(
+        &project,
+        device,
+        Some(DevicePreset::loaded(ClapPresetSource {
+            location: ClapPresetLocation::Plugin,
+            load_key: Some(b"init".to_vec()),
+        })),
+    )
+    .unwrap();
     let script = Rc::new(RefCell::new(Script::default()));
     let pending = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
     let applied = Arc::new(AtomicU64::new(0.25_f64.to_bits()));
@@ -1417,6 +1534,18 @@ fn plugin_gui_read_override_remains_temporary_and_off_restores_the_old_base() {
     assert_eq!(script.borrow().gui_previews, [(device, id, 0.6)]);
     assert!(script.borrow().gui_edits.is_empty());
     assert!(app.doc().undo_label().is_none());
+    // A temporary automation value is no edit of the loaded preset.
+    let modified = |app: &App| {
+        app.project()
+            .find_device(device)
+            .unwrap()
+            .2
+            .preset
+            .as_ref()
+            .unwrap()
+            .modified
+    };
+    assert!(!modified(&app));
 
     app.dispatch(Action::Automation(Automation::Mode(
         owner,
@@ -1430,6 +1559,8 @@ fn plugin_gui_read_override_remains_temporary_and_off_restores_the_old_base() {
     pending.store(0.5_f64.to_bits(), Ordering::Relaxed);
     run(&mut app);
     assert_eq!(script.borrow().gui_edits, [(device, id, 0.5)]);
+    // An edit in the plugin's GUI modifies the loaded preset like a card edit.
+    assert!(modified(&app));
 }
 
 #[test]

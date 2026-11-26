@@ -859,6 +859,7 @@ fn snapshot_of_the_fm_display_with_free_routing() {
             plugin: hexa,
             state: Some(encode_state(&patch).into()),
             sidechain: None,
+            preset: None,
         },
     )
     .unwrap();
@@ -907,6 +908,7 @@ fn snapshot_of_the_fm_display_with_a_cycle() {
             plugin: hexa,
             state: Some(encode_state(&patch).into()),
             sidechain: None,
+            preset: None,
         },
     )
     .unwrap();

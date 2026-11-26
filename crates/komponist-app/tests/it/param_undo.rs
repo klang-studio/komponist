@@ -210,7 +210,8 @@ fn a_preset_and_a_discrete_edit_are_separate_undo_steps() {
         let device = app.project().find_device(synth).unwrap().2;
         let host = app.engine().host();
         let inventory = host.clap_presets(device);
-        let (index, _) = host.saved_preset(device, inventory)?;
+        let (index, _) =
+            komponist_ipc::clap_presets::selected_preset(device.preset.as_ref(), inventory)?;
         Some(inventory[index].name.clone())
     };
     let original_preset = preset_name(&app);
@@ -413,6 +414,7 @@ fn packaged_limiter_drag_is_one_step_and_undo_redo_restore_the_sound() {
             plugin: limiter.plugin,
             state: limiter.state,
             sidechain: None,
+            preset: None,
         },
     )
     .unwrap();

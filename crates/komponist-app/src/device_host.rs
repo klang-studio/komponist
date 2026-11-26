@@ -170,11 +170,6 @@ pub trait DeviceHost {
         None
     }
 
-    /// The selected preset in the stored state and whether it has been edited.
-    fn saved_preset(&self, device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
-        komponist_plugins::presets::saved_preset(device, None, presets, |_| None)
-    }
-
     /// Whether a scan failed to probe the bundle of a device that is still running.
     fn device_probe_failed(&self, _device: DeviceId) -> bool {
         false
@@ -1206,10 +1201,6 @@ impl DeviceHost for PluginHost {
         source: &ClapPresetSource,
     ) -> Option<komponist_plugins::PresetPreparation> {
         self.manager.prepare_clap_preset(plugin, source)
-    }
-
-    fn saved_preset(&self, device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
-        self.manager.saved_preset(device, presets)
     }
 
     fn clap_presets(&self, device: &Device) -> &[ClapPreset] {

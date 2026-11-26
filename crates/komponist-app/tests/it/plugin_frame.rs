@@ -823,12 +823,13 @@ fn two_frame_preset_steps_in_one_event_batch_advance_twice() {
         },
     );
     h.run_steps(3);
-    let loaded = |n: u8| PluginManagerEvent::ClapPresetLoaded {
+    let loaded = |n: u8, source: &ClapPresetSource| PluginManagerEvent::ClapPresetLoaded {
         device,
+        source: Some(source.clone()),
         previous_state: std::sync::Arc::from([n]),
         state: std::sync::Arc::from([n + 1]),
     };
-    push(&script, loaded(0));
+    push(&script, loaded(0, &a.source));
     h.run_steps(3);
     for _ in 0..2 {
         push(
@@ -841,8 +842,11 @@ fn two_frame_preset_steps_in_one_event_batch_advance_twice() {
     }
     h.run_steps(3);
     // Both steps land on one load of the preset two further on.
-    assert_eq!(script.borrow().preset_loads, [a.source, c.source]);
-    push(&script, loaded(1));
+    assert_eq!(
+        script.borrow().preset_loads,
+        [a.source.clone(), c.source.clone()]
+    );
+    push(&script, loaded(1, &c.source));
     h.run_steps(3);
     let script = script.borrow();
     let (_, header, _) = script.headers.last().unwrap();
@@ -900,6 +904,7 @@ fn frame_keeps_queued_and_applied_preset_identity_when_discovery_reorders_entrie
         &script,
         PluginManagerEvent::ClapPresetLoaded {
             device,
+            source: Some(a.source.clone()),
             previous_state: std::sync::Arc::from([1_u8]),
             state: std::sync::Arc::from([2_u8]),
         },

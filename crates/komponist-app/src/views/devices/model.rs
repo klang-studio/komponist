@@ -553,7 +553,8 @@ pub(crate) fn card(
         );
     }
     let preset_entries = host.clap_presets(device);
-    let selected = host.saved_preset(device, preset_entries);
+    let selected =
+        komponist_ipc::clap_presets::selected_preset(device.preset.as_ref(), preset_entries);
     Card {
         device: device.id,
         automation_owner: None,
@@ -1438,6 +1439,7 @@ mod tests {
             asset_links: Default::default(),
             state: None,
             sidechain: None,
+            preset: None,
         };
         let host = App::headless_plugin_host();
         let analyse = |value: f64| Param {

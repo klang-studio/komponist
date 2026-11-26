@@ -114,6 +114,7 @@ fn fixture(midi_effect: Option<PluginRef>) -> (Project, TrackId, DeviceId) {
                 plugin,
                 state: None,
                 sidechain: None,
+                preset: None,
             },
         )
         .unwrap()
@@ -134,6 +135,7 @@ fn fixture(midi_effect: Option<PluginRef>) -> (Project, TrackId, DeviceId) {
                 source: side,
                 tap: Tap::Pre,
             }),
+            preset: None,
         },
     )
     .unwrap();

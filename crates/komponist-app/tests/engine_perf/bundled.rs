@@ -95,6 +95,7 @@ fn build_project(workload: Workload, host: &PluginHost) -> Project {
             asset_links: Default::default(),
             state: None,
             sidechain: None,
+            preset: None,
         })
     };
     match workload {

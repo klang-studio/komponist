@@ -2267,6 +2267,7 @@ mod tests {
                 plugin: prepared.plugin,
                 state: prepared.state,
                 sidechain: None,
+                preset: None,
             };
         let eq = new_device(prepare("org.klang-studio.komponist.eq", &[], &[]));
         let limiter = new_device(prepare(LIMITER, &[], &[]));
