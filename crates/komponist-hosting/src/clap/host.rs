@@ -193,8 +193,9 @@ pub(crate) struct MainThreadHost<'a> {
     #[cfg(unix)]
     fds: RefCell<Vec<RawFd>>,
     preset_reports: RefCell<Vec<PresetReport>>,
-    /// Set while the host activates the plugin: a preset reported then is its start preset.
-    activating: Cell<bool>,
+    /// Set while the plugin is created and initialised, and while the host activates it or
+    /// restores a state: a preset reported then is the one it starts in.
+    starting: Cell<bool>,
 }
 
 impl<'a> MainThreadHost<'a> {
@@ -206,13 +207,15 @@ impl<'a> MainThreadHost<'a> {
             #[cfg(unix)]
             fds: RefCell::new(Vec::new()),
             preset_reports: RefCell::new(Vec::new()),
-            activating: Cell::new(false),
+            // Plugin creation and `init` run before the host can clear this.
+            starting: Cell::new(true),
         }
     }
 
-    /// Brackets the host's `activate` call ([`Self::loaded`] reports then are start presets).
-    pub(crate) fn set_activating(&self, activating: bool) {
-        self.activating.set(activating);
+    /// Brackets plugin creation, `activate` and state restores ([`Self::loaded`] reports then are
+    /// start presets).
+    pub(crate) fn set_starting(&self, starting: bool) {
+        self.starting.set(starting);
     }
 
     /// The preset loads and failures the plugin reported since the last call, in order.
@@ -230,13 +233,7 @@ impl<'a> MainThreadHost<'a> {
     }
 
     fn report_preset(&self, report: PresetReport) {
-        let mut reports = self.preset_reports.borrow_mut();
-        if reports.len() >= MAX_PRESET_REPORTS {
-            // Only the latest outcome matters for the selection.
-            reports.remove(0);
-        }
-        reports.push(report);
-        drop(reports);
+        push_bounded(&mut self.preset_reports.borrow_mut(), report);
         self.send(HostNotification::PresetReported);
     }
 
@@ -428,8 +425,20 @@ impl HostNoteNameImpl for MainThreadHost<'_> {
     }
 }
 
-/// Reports kept between two drains; a plugin that reports more drops its oldest.
+/// Reports kept between two drains; a plugin that reports more drops its oldest failure first,
+/// so a successful load still reaches the host behind a burst of failures.
 const MAX_PRESET_REPORTS: usize = 16;
+
+fn push_bounded(reports: &mut Vec<PresetReport>, report: PresetReport) {
+    if reports.len() >= MAX_PRESET_REPORTS {
+        let oldest = reports
+            .iter()
+            .position(|report| matches!(report, PresetReport::Failed { .. }))
+            .unwrap_or(0);
+        reports.remove(oldest);
+    }
+    reports.push(report);
+}
 
 /// The komponist form of a CLAP preset location and load key.
 pub(crate) fn preset_source(location: Location<'_>, load_key: Option<&CStr>) -> ClapPresetSource {
@@ -465,7 +474,7 @@ impl HostPresetLoadImpl for MainThreadHost<'_> {
     fn loaded(&self, location: Location, load_key: Option<&CStr>) {
         self.report_preset(PresetReport::Loaded {
             source: preset_source(location, load_key),
-            startup: self.activating.get(),
+            startup: self.starting.get(),
         });
     }
 }
@@ -481,6 +490,38 @@ mod tests {
             let events = FdEvents(bits);
             assert_eq!(fd_events(fd_flags(events)), events);
         }
+    }
+
+    #[test]
+    fn a_full_report_queue_drops_failures_before_a_successful_load() {
+        let source = |key: &str| ClapPresetSource {
+            location: ClapPresetLocation::Plugin,
+            load_key: Some(key.as_bytes().to_vec()),
+        };
+        let loaded = PresetReport::Loaded {
+            source: source("loaded"),
+            startup: false,
+        };
+        let mut reports = vec![loaded.clone()];
+        for index in 0..2 * MAX_PRESET_REPORTS {
+            push_bounded(
+                &mut reports,
+                PresetReport::Failed {
+                    source: source(&index.to_string()),
+                    message: String::new(),
+                },
+            );
+        }
+        assert_eq!(reports.len(), MAX_PRESET_REPORTS);
+        assert_eq!(reports[0], loaded);
+        // Without failures to drop, the oldest report goes.
+        let mut loads = vec![loaded.clone(); MAX_PRESET_REPORTS];
+        loads[0] = PresetReport::Loaded {
+            source: source("first"),
+            startup: false,
+        };
+        push_bounded(&mut loads, loaded.clone());
+        assert!(loads.iter().all(|report| *report == loaded));
     }
 
     #[test]

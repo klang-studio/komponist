@@ -525,19 +525,23 @@ mod start_report {
         min_frames: u32,
         max_frames: u32,
     ) -> bool {
-        let Some((activate, host, first)) = instances()
-            .iter_mut()
+        let Some((activate, host, reported)) = instances()
+            .iter()
             .find(|instance| instance.plugin == plugin as usize)
-            .map(|instance| {
-                let first = !std::mem::replace(&mut instance.reported, true);
-                (instance.activate, instance.host, first)
-            })
+            .map(|instance| (instance.activate, instance.host, instance.reported))
         else {
             return false;
         };
         // SAFETY: The host calls this on the main thread with a live instance.
         let activated = unsafe { activate(plugin, sample_rate, min_frames, max_frames) };
-        if activated && first {
+        // Only a successful first activation reports; a failed one leaves it to the next.
+        if activated && !reported {
+            if let Some(instance) = instances()
+                .iter_mut()
+                .find(|instance| instance.plugin == plugin as usize)
+            {
+                instance.reported = true;
+            }
             // SAFETY: The instance and its host are live on the main thread.
             if let Some(key) = unsafe { held_preset::<T>(plugin) } {
                 // SAFETY: As above; the host outlives its instances.

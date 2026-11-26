@@ -56,6 +56,7 @@ use komponist_hosting::{
     ActivateConfig, HostContext, HostNotify, HostedPlugin, HostingError, PluginKind, RenderMode,
     TimerId,
 };
+use komponist_ipc::clap_presets::PresetReport;
 use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError};
 use komponist_ipc::shm::MAX_BLOCK;
 use komponist_ipc::{
@@ -612,6 +613,28 @@ impl Bridge {
         }
     }
 
+    /// Every parameter's current value at once, outside the coalesced value updates.
+    fn send_loaded_values(&mut self) {
+        let Some(plugin) = self.plugin.as_ref() else {
+            return;
+        };
+        let values = plugin
+            .params()
+            .into_iter()
+            .filter_map(|info| {
+                let value = plugin.param_value(info.id)?;
+                Some(ParamValue {
+                    id: info.id,
+                    value,
+                    text: plugin.param_text(info.id, value).unwrap_or_default(),
+                })
+            })
+            .collect();
+        self.pending_values.clear();
+        self.values_due = None;
+        self.send(BridgeMsg::PresetValues(values));
+    }
+
     fn send_values_if_due(&mut self) {
         let now = Instant::now();
         if self.values_due.is_none_or(|due| due > now) {
@@ -690,7 +713,13 @@ impl Bridge {
                 .map(|plugin| plugin.take_preset_reports())
                 .unwrap_or_default();
             for report in reports {
+                let changed = matches!(report, PresetReport::Loaded { startup: false, .. });
                 self.send(BridgeMsg::PresetReported(report));
+                if changed {
+                    // The values the load set, ahead of any later state answer: the app takes
+                    // them as the new parameter bases.
+                    self.send_loaded_values();
+                }
             }
         }
         if pending & bits::STATE_DIRTY != 0 {

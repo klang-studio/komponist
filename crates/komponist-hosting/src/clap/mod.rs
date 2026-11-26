@@ -310,6 +310,9 @@ impl ClapPlugin {
             &host_info,
         )
         .map_err(|e| HostingError::Load(format!("{plugin_id}: {e}")))?;
+        // Created and initialised: later reports are changes unless the host starts the plugin
+        // again (activation, a state restore).
+        instance.access_handler(|host| host.set_starting(false));
 
         let handle = instance.plugin_handle();
         let ext = Extensions::query(&handle);
@@ -537,7 +540,7 @@ impl HostedPlugin for ClapPlugin {
                         .is_some_and(|ports| ports.count(&handle, false) != 0),
             )
         };
-        instance.access_handler(|host| host.set_activating(true));
+        instance.access_handler(|host| host.set_starting(true));
         let activated = instance.activate(
             |_, _| (),
             PluginAudioConfiguration {
@@ -546,7 +549,7 @@ impl HostedPlugin for ClapPlugin {
                 max_frames_count: config.max_frames,
             },
         );
-        instance.access_handler(|host| host.set_activating(false));
+        instance.access_handler(|host| host.set_starting(false));
         let stopped = activated.map_err(|e| HostingError::Activate(e.to_string()))?;
         let mut processor = ClapProcessor::new(
             stopped,
@@ -726,8 +729,11 @@ impl HostedPlugin for ClapPlugin {
         ))?;
         let mut instance = self.instance.borrow_mut();
         let mut reader = state;
-        ext.load(&instance.plugin_handle(), &mut reader)
-            .map_err(|e| HostingError::State(e.to_string()))
+        // A preset the plugin names while it restores a state is the one it starts in.
+        instance.access_handler(|host| host.set_starting(true));
+        let loaded = ext.load(&instance.plugin_handle(), &mut reader);
+        instance.access_handler(|host| host.set_starting(false));
+        loaded.map_err(|e| HostingError::State(e.to_string()))
     }
 
     fn load_clap_preset(&mut self, preset: &ClapPreset) -> Result<(), HostingError> {
@@ -764,7 +770,9 @@ impl HostedPlugin for ClapPlugin {
         let path = to_c_string(path)?;
         let key = to_c_string(preset.source.load_key.as_deref())?;
         let mut instance = self.instance.borrow_mut();
-        let earlier = instance.access_handler(|host| host.take_preset_reports());
+        // A load the plugin reported before this one is superseded by it; failures still count.
+        let mut earlier = instance.access_handler(|host| host.take_preset_reports());
+        earlier.retain(|report| matches!(report, PresetReport::Failed { .. }));
         let result = ext.load_from_location(
             &instance.plugin_handle(),
             presets::location_arg(path.as_deref()),

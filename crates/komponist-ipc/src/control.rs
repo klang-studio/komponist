@@ -636,6 +636,9 @@ pub enum BridgeMsg {
     ClapPresetCaptured(u32, Result<Vec<u8>, String>),
     /// The plug-in loaded a preset on its own, or failed to (host side of CLAP preset-load).
     PresetReported(crate::clap_presets::PresetReport),
+    /// Every parameter value right after a load the plug-in reported (not at startup): the new
+    /// persistent bases. Sent before any later state answer.
+    PresetValues(Vec<ParamValue>),
 }
 
 /// Project states and parameter values from one successful preset load.
@@ -2150,6 +2153,11 @@ mod tests {
                 },
                 startup: true,
             }),
+            BridgeMsg::PresetValues(vec![ParamValue {
+                id: 3,
+                value: 0.5,
+                text: "50 %".into(),
+            }]),
             BridgeMsg::PresetReported(crate::clap_presets::PresetReport::Failed {
                 source: crate::clap_presets::ClapPresetSource {
                     location: crate::clap_presets::ClapPresetLocation::Plugin,

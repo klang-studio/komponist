@@ -240,7 +240,9 @@ unsafe extern "C" fn main_thread(plugin: *const clap_plugin) {
     report(PRESET_KEY, None);
 }
 
+/// The plug-in names the preset it starts in while it initialises.
 unsafe extern "C" fn init_plugin(_: *const clap_plugin) -> bool {
+    report(PRESET_KEY, None);
     true
 }
 
@@ -348,6 +350,14 @@ fn community_clap_discovers_loads_and_round_trips_a_preset() {
         entry,
     )
     .unwrap();
+    // A report during creation and init names the preset the plug-in starts in.
+    assert_eq!(
+        plugin.take_preset_reports(),
+        [PresetReport::Loaded {
+            source: preset.source.clone(),
+            startup: true,
+        }]
+    );
     plugin.load_clap_preset(preset).unwrap();
     let saved = plugin.save_preset_state().unwrap();
     assert_eq!(saved, [42]);
@@ -368,6 +378,11 @@ fn community_clap_discovers_loads_and_round_trips_a_preset() {
     assert!(error.contains("no such preset"), "{error}");
     assert_eq!(plugin.save_state().unwrap(), [42]);
     // Reports during the host's own loads belong to those loads.
+    assert_eq!(plugin.take_preset_reports(), []);
+
+    // A load the plug-in reported before a load the host requests is superseded by it.
+    plugin.on_main_thread();
+    plugin.load_clap_preset(preset).unwrap();
     assert_eq!(plugin.take_preset_reports(), []);
 
     // A load the plug-in starts itself reaches the host through preset-load.
