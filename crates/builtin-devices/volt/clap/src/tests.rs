@@ -11,7 +11,7 @@ use clap_sys::host::clap_host;
 use clap_sys::plugin::clap_plugin;
 use clap_sys::process::{CLAP_PROCESS_ERROR, clap_process};
 use clap_sys::version::CLAP_VERSION;
-use komponist_native_clap_sdk::{NativeClapLayout, compile, compile_v2};
+use komponist_native_clap_sdk::{NativeClapLayout, compile};
 use nice_plug::wrapper::clap::Wrapper;
 
 use super::*;
@@ -55,7 +55,7 @@ impl Drop for Instance {
 }
 
 #[test]
-fn layout_uses_stable_ids_and_covers_every_synth_parameter() {
+fn layout_keeps_author_ids_for_the_live_parameter_inventory() {
     let first = Instance::new();
     let second = Instance::new();
     // SAFETY: Both instances belong to this thread and remain initialized throughout the check.
@@ -64,17 +64,11 @@ fn layout_uses_stable_ids_and_covers_every_synth_parameter() {
         let bytes = compile::<VoltPlugin>(first.0, &panel).unwrap();
         assert_eq!(bytes, compile::<VoltPlugin>(second.0, &panel).unwrap());
         let layout: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let pages = layout["pages"].as_array().unwrap();
-        assert_eq!(pages.len(), 4);
-        let ids = pages
-            .iter()
-            .flat_map(|page| {
-                page["cells"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|cell| cell["param_id"].as_u64().unwrap() as u32)
-            })
+        let ids = layout["author_ids"]
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|id| id.as_u64().unwrap() as u32)
             .collect::<BTreeSet<_>>();
         let expected = Volt::SPEC
             .params()
@@ -98,20 +92,13 @@ fn layout_uses_stable_ids_and_covers_every_synth_parameter() {
 }
 
 #[test]
-fn layout_v2_keeps_volts_signal_and_selected_controls_bound_to_clap_ids() {
+fn layout_keeps_volts_signal_and_selected_controls_bound_to_clap_ids() {
     let instance = Instance::new();
-    // SAFETY: The initialized instance belongs to this thread for both compiles.
-    let (v1, v2) = unsafe {
-        (
-            compile::<VoltPlugin>(instance.0, &VoltPlugin::panel()).unwrap(),
-            compile_v2::<VoltPlugin>(instance.0, &VoltPlugin::panel_v2().unwrap()).unwrap(),
-        )
-    };
-    let v1: serde_json::Value = serde_json::from_slice(&v1).unwrap();
-    let v2: serde_json::Value = serde_json::from_slice(&v2).unwrap();
-    assert_eq!(v2["author_ids"], v1["author_ids"]);
-    let ids = &v2["author_ids"];
-    let [sound, envelopes, matrix] = v2["pages"].as_array().unwrap().as_slice() else {
+    // SAFETY: The initialized instance belongs to this thread throughout compilation.
+    let bytes = unsafe { compile::<VoltPlugin>(instance.0, &VoltPlugin::panel()).unwrap() };
+    let native: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let ids = &native["author_ids"];
+    let [sound, envelopes, matrix] = native["pages"].as_array().unwrap().as_slice() else {
         panic!("Volt has three authored pages");
     };
     assert_eq!(sound["dividers"], serde_json::json!([2, 6]));

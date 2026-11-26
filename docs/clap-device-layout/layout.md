@@ -1,12 +1,6 @@
-# Device layout version 2
+# Device layout reference
 
-Use `org.klang-studio.komponist.device-layout/2` with the callback table and
-transfer rules in [the public header](clap-device-layout.h). The JSON root uses
-`schema_version: 2`. The host tries version 2 first and falls back to version 1
-if version 2 is absent, incompatible, or fails validation. A plugin can supply
-both. The version 1 schema and extension retain their existing behavior.
-
-Version 2 extends the [version 1 grid](README.md) to fourteen columns. Number
+The [native CLAP device layout](README.md) supports up to fourteen columns. Number
 cells may occupy one or two columns. Set a page's optional `dividers` to the
 zero-based indices of the columns followed by a visual separator. A page may also
 declare localized `headings` with a zero-based `col` and `row` and a span in
@@ -19,7 +13,7 @@ Set `hide_title` to `true` to omit the painted title while retaining the accessi
 A `mini_fader` is a parameter control one column wide that spans one to three
 full rows.
 
-It also adds [canvas cells](device-display.md) for imperative drawing. Each
+The layout also supports [canvas cells](device-display.md) for imperative drawing. Each
 canvas declares `key`, `name`, and `description` in its `canvas` object. Set
 `show_title` to draw the localized `name` inside the canvas.
 
@@ -39,8 +33,8 @@ availability and range rules as for controls.
 | `lfo` | `x1`, `y1` and the same pair for every point. Set `points` to 2–16. |
 | `gr_history` | No parameter slots |
 
-The [schema](schema-v2.json) describes the structure and the
-[example](example-v2.json) uses the layout from an independent C fixture.
+The [schema](schema.json) describes the structure and the
+[example](example.json) uses the layout from an independent C fixture.
 
 ## Cell selections and synth graphs
 
@@ -207,7 +201,7 @@ A panel can present a continuous CLAP parameter with a wire range of 0–1 in
 physical units. Add `parameter-display` to `required_capabilities` and place
 the mappings in the top-level `parameter_display` object, keyed by decimal
 CLAP parameter ID. Mapped IDs must be bound by a control or a graph in the
-panel. Hosts that do not support the capability can fall back to layout v1.
+panel.
 
 For example, parameter 42 can display delay time as 1–2000 ms with a
 375 ms default.
@@ -251,6 +245,3 @@ descriptor name when the plugin supplies no valid localized names, and to
 the descriptor description when the layout supplies no descriptions. Vendor,
 plugin ID, role and features come from the descriptor. The browser groups
 audio effects by their declared features.
-
-The same field is accepted as optional decoration in v1. Invalid decoration
-does not affect a v1 panel, and older v1 hosts ignore the field.

@@ -152,7 +152,6 @@ unsafe extern "C" fn get_layout(
         return ABSENT;
     };
     let layout = json!({
-        "schema_version": 1,
         "default_locale": "en",
         "locales": ["en", "de"],
         "pages": [{

@@ -158,11 +158,10 @@ fn show_authored_pads(app: &mut App, kit: bool) {
         let host = app.engine().host();
         host.status(device) == DeviceStatus::Ok
             && host.native_layout(device).is_some_and(|layout| {
-                layout.schema_version == 2
-                    && layout
-                        .pad_bank
-                        .as_ref()
-                        .is_some_and(|bank| bank.pads.len() == testkit::NAMES.len())
+                layout
+                    .pad_bank
+                    .as_ref()
+                    .is_some_and(|bank| bank.pads.len() == testkit::NAMES.len())
             })
             && host.asset_slots(device).is_some_and(|assets| {
                 assets.slots.len() == testkit::NAMES.len()

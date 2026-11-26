@@ -17,7 +17,7 @@ use clap_sys::version::{CLAP_VERSION, clap_version_is_compatible};
 use komponist_ipc::control::{ParamInfo, param_flags};
 use komponist_ipc::{
     device_canvas,
-    native_layout::{EXTENSION_V2, MAX_BYTES, NativeLayout},
+    native_layout::{MAX_BYTES, NativeLayout},
 };
 use libloading::Library;
 use serde_json::{Value, json};
@@ -106,14 +106,12 @@ pub fn example(bundle: &Path, plain: bool) -> Result<Value> {
     }
 
     let params = inventory(plugin)?;
-    let layout_v1 = layout(plugin, &params, plain, EXTENSION_ID, 1)?;
-    let layout_v2 = layout(plugin, &params, plain, EXTENSION_V2, 2)?;
+    let layout = layout(plugin, &params, plain)?;
     let display = display(plugin, plain)?;
     Ok(json!({
         "plugin": {"id": id, "name": name, "version": version},
         "params": params,
-        "layout": layout_v1,
-        "layout_v2": layout_v2,
+        "layout": layout,
         "display": display,
     }))
 }
@@ -199,14 +197,8 @@ fn flags(clap: u32) -> u32 {
     .fold(0, |all, flag| all | flag)
 }
 
-fn layout(
-    plugin: &clap_plugin,
-    params: &[ParamInfo],
-    plain: bool,
-    id: &CStr,
-    version: u8,
-) -> Result<Value> {
-    let ptr = extension(plugin, id)?;
+fn layout(plugin: &clap_plugin, params: &[ParamInfo], plain: bool) -> Result<Value> {
+    let ptr = extension(plugin, EXTENSION_ID)?;
     if plain {
         if !ptr.is_null() {
             return Err("standard-only example advertises the native layout extension".into());
@@ -220,7 +212,7 @@ fn layout(
         .get_layout
         .ok_or("native extension has no layout hook")?;
     let mut required = 0;
-    // SAFETY: The v1 sizing query passes no destination and a writable count.
+    // SAFETY: The sizing query passes no destination and a writable count.
     let status = unsafe { get_layout(plugin, ptr::null_mut(), 0, &mut required) };
     if status != 2 || !(1..=MAX_BYTES).contains(&required) {
         return Err(format!("invalid sizing reply: status {status}, size {required}").into());
@@ -235,9 +227,6 @@ fn layout(
     }
 
     let layout = NativeLayout::parse(&bytes).map_err(|error| error.to_string())?;
-    if layout.schema_version != version {
-        return Err("schema version does not match the layout extension ID".into());
-    }
     layout
         .validate_params(params)
         .map_err(|error| error.to_string())?;

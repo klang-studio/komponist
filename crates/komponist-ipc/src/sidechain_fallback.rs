@@ -3,7 +3,7 @@
 use std::ffi::CStr;
 
 /// ID passed to the initialized plugin's CLAP `get_extension`.
-pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.sidechain-fallback/1";
+pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.sidechain-fallback";
 /// Send the stereo main signal to the sidechain when no source is connected.
 pub const MAIN_INPUT: u32 = 1;
 /// Use the current audio ports configuration without selecting a different one.

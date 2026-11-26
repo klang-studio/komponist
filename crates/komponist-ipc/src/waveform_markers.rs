@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 use serde::de::{Error, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
-pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.waveform-markers/1";
+pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.waveform-markers";
 pub const MAX_MARKERS: usize = 127;
 pub const MAX_FADE_MS: f32 = 10_000.0;
 pub const MAX_SNAPSHOT_BYTES: usize = 4096;

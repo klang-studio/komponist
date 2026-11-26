@@ -15,7 +15,7 @@ use clap_sys::process::{CLAP_PROCESS_ERROR, clap_process};
 use clap_sys::stream::{clap_istream, clap_ostream};
 use clap_sys::version::CLAP_VERSION;
 use komponist_native_clap_sdk::display::{DisplayList, EXTENSION_ID as DISPLAY_ID, FmFrame};
-use komponist_native_clap_sdk::{NativeClapLayout, compile, compile_v2};
+use komponist_native_clap_sdk::{NativeClapLayout, compile};
 use nice_plug::wrapper::clap::Wrapper;
 
 use super::*;
@@ -59,7 +59,7 @@ impl Drop for Instance {
 }
 
 #[test]
-fn layout_uses_stable_ids_and_covers_every_synth_parameter() {
+fn layout_keeps_author_ids_for_the_live_parameter_inventory() {
     let first = Instance::new();
     let second = Instance::new();
     // SAFETY: Both instances belong to this thread and remain initialized throughout the check.
@@ -68,17 +68,11 @@ fn layout_uses_stable_ids_and_covers_every_synth_parameter() {
         let bytes = compile::<HexaPlugin>(first.0, &panel).unwrap();
         assert_eq!(bytes, compile::<HexaPlugin>(second.0, &panel).unwrap());
         let layout: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let pages = layout["pages"].as_array().unwrap();
-        assert_eq!(pages.len(), 4);
-        let ids = pages
-            .iter()
-            .flat_map(|page| {
-                page["cells"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|cell| cell["param_id"].as_u64().unwrap() as u32)
-            })
+        let ids = layout["author_ids"]
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|id| id.as_u64().unwrap() as u32)
             .collect::<BTreeSet<_>>();
         let expected = infos(Lang::En)
             .iter()
@@ -88,6 +82,13 @@ fn layout_uses_stable_ids_and_covers_every_synth_parameter() {
             .collect::<BTreeSet<_>>();
         assert_eq!(expected.len(), infos(Lang::En).len());
         assert_eq!(ids, expected);
+        for info in infos(Lang::En) {
+            assert_eq!(
+                layout["author_ids"][info.id.as_str()],
+                Wrapper::<HexaPlugin>::custom_extension_param_id(first.0, info.id.as_str())
+                    .unwrap()
+            );
+        }
     }
 }
 
@@ -95,15 +96,8 @@ fn layout_uses_stable_ids_and_covers_every_synth_parameter() {
 fn native_editor_preserves_wire_ids_and_links_the_operator_selector() {
     let instance = Instance::new();
     // SAFETY: This instance and its layout queries are confined to this thread.
-    let (v1, v2) = unsafe {
-        (
-            compile::<HexaPlugin>(instance.0, &HexaPlugin::panel()).unwrap(),
-            compile_v2::<HexaPlugin>(instance.0, &HexaPlugin::panel_v2().unwrap()).unwrap(),
-        )
-    };
-    let legacy: serde_json::Value = serde_json::from_slice(&v1).unwrap();
-    let native: serde_json::Value = serde_json::from_slice(&v2).unwrap();
-    assert_eq!(native["author_ids"], legacy["author_ids"]);
+    let bytes = unsafe { compile::<HexaPlugin>(instance.0, &HexaPlugin::panel()).unwrap() };
+    let native: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let pages = native["pages"].as_array().unwrap();
     assert_eq!(pages.len(), 3);
     assert_eq!(pages[0]["labels"]["de"], "Operatoren");

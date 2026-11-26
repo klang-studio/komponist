@@ -9,7 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 pub mod edit_state;
 
-pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.device-assets/1";
+pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.device-assets";
 pub const MAX_SLOTS: usize = 32;
 pub const MAX_LABEL_BYTES: usize = 128;
 pub const MAX_ROLE_BYTES: usize = 32;

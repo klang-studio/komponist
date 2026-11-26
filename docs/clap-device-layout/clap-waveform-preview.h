@@ -3,7 +3,7 @@
 
 #include <clap/plugin.h>
 
-#define KOMPONIST_CLAP_EXT_WAVEFORM_PREVIEW "org.klang-studio.komponist.waveform-preview/1"
+#define KOMPONIST_CLAP_EXT_WAVEFORM_PREVIEW "org.klang-studio.komponist.waveform-preview"
 
 typedef struct komponist_clap_waveform_preview {
     /* Main thread. Start at source seconds >= 0. Exactly -1 releases the preview. */

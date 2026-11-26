@@ -679,7 +679,7 @@ fn scanned_device_metadata_and_availability_follow_the_bundle() {
     });
 
     let catalog = host.catalog();
-    let id = "org.klang-studio.komponist.layout-fixture.version-two";
+    let id = "org.klang-studio.komponist.layout-fixture.graphs";
     let entry = catalog.resolve(&clap_plugin(id)).unwrap();
     assert_eq!(entry.plugin.vendor, "klang-studio");
     assert!(
@@ -905,8 +905,8 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
         "valid",
         "missing",
         "unknown-param",
-        "version-two",
-        "invalid-version-two",
+        "graphs",
+        "invalid-graphs",
     ]
     .into_iter()
     .enumerate()
@@ -926,10 +926,10 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
         project = modified;
         device_ids.push(id);
     }
-    let [valid, missing, invalid, v2, fallback] = device_ids.try_into().unwrap();
+    let [valid, missing, invalid, graphs, invalid_graphs] = device_ids.try_into().unwrap();
     let owner = AutomationOwner::Track(track);
     let target = AutomationTarget::Param {
-        device: v2,
+        device: graphs,
         param: ParamId::plugin(42),
     };
     let (project, lane) = komponist_model::edits::automation::add_lane(
@@ -972,7 +972,7 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
     std::fs::copy(&bundle, installed.join(bundle.file_name().unwrap())).unwrap();
     app.engine_mut().host_mut().start_scan(&dirs);
     step_until(&mut app, "all fixture instances ready", |app| {
-        [valid, missing, invalid, v2, fallback]
+        [valid, missing, invalid, graphs, invalid_graphs]
             .into_iter()
             .all(|id| app.engine().host().status(id) == DeviceStatus::Ok)
     });
@@ -980,8 +980,8 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
     assert!(host.native_layout(valid).is_some());
     assert!(host.native_layout(missing).is_none());
     assert!(host.native_layout(invalid).is_none());
-    assert_eq!(host.native_layout(v2).unwrap().schema_version, 2);
-    assert_eq!(host.native_layout(fallback).unwrap().schema_version, 1);
+    assert!(host.native_layout(graphs).unwrap().has_canvas());
+    assert!(host.native_layout(invalid_graphs).is_none());
     let cards = cards(Lang::De, app.project().track(track).unwrap(), host, &[]);
     assert_eq!(cards[0].layout.pages[0].name, "Übersicht");
     let valid_card_label = Lang::De.devices_card(&cards[0].name);
@@ -999,7 +999,7 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
     assert_eq!(cards[3].param(&ParamId::plugin(42)).unwrap().wire, 42);
 
     let rendered_gain = |app: &App| {
-        let display = app.engine().host().device_display(v2)?;
+        let display = app.engine().host().device_display(graphs)?;
         let frame = display.frames.iter().find(|frame| frame.key == "scope")?;
         match frame.primitives.as_slice() {
             [Primitive::Line { to, .. }] => Some(to[1]),
@@ -1013,7 +1013,7 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
     app.dispatch(Action::Project(ProjectAction::ContinueWithMissing));
     app.dispatch(Action::Transport(TransportAction::TogglePlay));
     let program = app.engine().program().expect("fixture engine program");
-    assert!(program.slots.slot(v2).is_some());
+    assert!(program.slots.slot(graphs).is_some());
     assert!(
         program.automation_reads(owner, &target),
         "fixture gain curve is unresolved"
@@ -1098,7 +1098,7 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
 }
 
 #[test]
-fn standalone_clap_layout_v2_renders_three_graphs() {
+fn standalone_clap_layout_renders_three_graphs() {
     use egui::accesskit::Role;
     use egui_kittest::{SnapshotOptions, SnapshotResults, kittest::Queryable as _};
     use komponist_app::UiAction;
@@ -1114,8 +1114,9 @@ fn standalone_clap_layout_v2_renders_three_graphs() {
     };
     let bundle = PathBuf::from(bundle);
     assert!(bundle.is_file());
-    let plugin = clap_plugin("org.klang-studio.komponist.layout-fixture.version-two");
+    let plugin = clap_plugin("org.klang-studio.komponist.layout-fixture.graphs");
     let (project, track) = add_track(
+        // Preserve the project caption painted in the reference snapshots.
         &Project::new("Layout v2"),
         NewTrack {
             name: None,
@@ -1154,12 +1155,12 @@ fn standalone_clap_layout_v2_renders_three_graphs() {
             matches!(event, PluginManagerEvent::ScanFinished(_))
         });
         let mut app = app_with(project.clone(), host).with_lang(lang);
-        step_until(&mut app, "standalone layout v2 through the bridge", |app| {
+        step_until(&mut app, "standalone layout through the bridge", |app| {
             let host = app.engine().host();
             host.status(device) == DeviceStatus::Ok && host.native_layout(device).is_some()
         });
         let host = app.engine().host();
-        assert_eq!(host.native_layout(device).unwrap().schema_version, 2);
+        assert!(host.native_layout(device).unwrap().has_canvas());
         assert!(host.bridge_pid(device).is_some());
         app.dispatch(Action::Ui(UiAction::TogglePanel(Panel::Browser)));
         app.dispatch(Action::Ui(UiAction::TogglePanel(Panel::Inspector)));
@@ -1184,7 +1185,7 @@ fn standalone_clap_layout_v2_renders_three_graphs() {
             .get_by_role_and_label(Role::Status, lang.transport_cpu())
             .rect();
         h.mask(cpu.expand(2.0));
-        h.snapshot(format!("standalone-clap-layout-v2-{}", lang.code()));
+        h.snapshot(format!("standalone-clap-layout-{}", lang.code()));
         snapshots.extend_harness(&mut h);
         h.state_mut().shutdown();
     }
@@ -1297,7 +1298,6 @@ fn sdk_example_uses_native_layout_and_falls_back() {
     let mut app = open(&native, "native");
     let host = app.engine().host();
     let layout = host.native_layout(device).expect("SDK native layout");
-    assert_eq!(layout.schema_version, 2);
     let params = host.params(device).unwrap();
     layout.validate_params(params).unwrap();
     let gain = params.iter().find(|p| p.name == "Gain").unwrap();

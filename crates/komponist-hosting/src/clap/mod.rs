@@ -335,38 +335,32 @@ impl ClapPlugin {
             gui: None,
             render_mode: RenderMode::Realtime,
         };
-        use komponist_ipc::native_layout::{EXTENSION_V1, EXTENSION_V2};
-        for (id, version) in [(EXTENSION_V2, 2), (EXTENSION_V1, 1)] {
-            let layout = {
-                let mut instance = plugin.instance.borrow_mut();
-                native_layout::read(instance.plugin_handle().as_raw(), id, version)
-            };
-            match layout.and_then(|layout| {
-                if let Some((_, descriptor)) = &layout
-                    && version == 2
-                {
-                    descriptor.validate_params(&plugin.params())?;
-                }
-                Ok(layout)
-            }) {
-                Ok(Some(layout)) => {
-                    if let Some(mut labels) = layout.1.localized_plugin() {
-                        if let Some(fallback) = plugin.descriptor.localized.take()
-                            && labels.descriptions.is_empty()
-                            && let Some(description) = fallback.description(&labels.default_locale)
-                        {
-                            labels
-                                .descriptions
-                                .insert(labels.default_locale.clone(), description.into());
-                        }
-                        plugin.descriptor.localized = Some(labels);
-                    }
-                    plugin.native_layout = Some(layout);
-                    break;
-                }
-                Ok(None) => {}
-                Err(error) => plugin.log(LogLevel::Warning, &error.to_string()),
+        let layout = {
+            let mut instance = plugin.instance.borrow_mut();
+            native_layout::read(instance.plugin_handle().as_raw())
+        };
+        match layout.and_then(|layout| {
+            if let Some((_, descriptor)) = &layout {
+                descriptor.validate_params(&plugin.params())?;
             }
+            Ok(layout)
+        }) {
+            Ok(Some(layout)) => {
+                if let Some(mut labels) = layout.1.localized_plugin() {
+                    if let Some(fallback) = plugin.descriptor.localized.take()
+                        && labels.descriptions.is_empty()
+                        && let Some(description) = fallback.description(&labels.default_locale)
+                    {
+                        labels
+                            .descriptions
+                            .insert(labels.default_locale.clone(), description.into());
+                    }
+                    plugin.descriptor.localized = Some(labels);
+                }
+                plugin.native_layout = Some(layout);
+            }
+            Ok(None) => {}
+            Err(error) => plugin.log(LogLevel::Warning, &error.to_string()),
         }
         Ok(plugin)
     }

@@ -1,11 +1,11 @@
 # Native CLAP layout interoperability
 
-The [v1 contract](../../docs/clap-device-layout/README.md) defines the extension table and the
+The [layout contract](../../docs/clap-device-layout/README.md) defines the extension table and the
 bounded document carried by it. These standalone prototypes exercise the contract through real
 CLAP plugin entry points.
 
 - [C fixture and host](c-fixture/README.md) exchange the normative document and probe transfer,
-  version and extension fallback cases through the public C header.
+  missing and invalid descriptor cases through the public C header.
 - [nice-plug prototype](nice-plug/README.md) registers the extension through a patch for the pinned
   wrapper and obtains wire IDs from its canonical CLAP parameter mapping. It checks an independent
   rebuild, reordered parameters and a deliberate hash collision.
@@ -28,17 +28,17 @@ python3 -B test-plugins/native-layout/check.py \
 ```
 
 Omit `--nice-plug-artifacts` to run the C transfer and JSON checks alone. The prototype verifier
-cross-checks IDs, flags, ranges, slot occupancy, localized labels and schema fallback. Build the same C fixture to run the live host tests.
+cross-checks IDs, flags, ranges, slot occupancy, localized labels and unsupported capabilities. Build the same C fixture to run the live host tests.
 
 ```sh
 export KOMPONIST_LAYOUT_FIXTURE="$scratch/c/layout-fixture.clap"
 cargo test -p komponist-app -p komponist-bridge --test it native_layout
-cargo test -p komponist-app --test it standalone_clap_layout_v2_renders_three_graphs
+cargo test -p komponist-app --test it standalone_clap_layout_renders_three_graphs
 ```
 
 The app test installs the fixture into an empty scan folder, verifies native and generic cards,
 drives automation and direct edits, then exercises undo, redo, save, reopen, parameter rescan, and
 bridge recovery. On Linux, the bridge test also verifies that a plugin editor which fails to
-open leaves the native layout available. The graph snapshot test renders the fixture's v2-only
+open leaves the native layout available. The graph snapshot test renders the fixture's
 equalizer, envelope, and waveform through the bridge, checks their accessible names, and compares
 German and English snapshots on Linux. Run these alongside the standard plugin fixture tests.

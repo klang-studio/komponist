@@ -158,14 +158,12 @@ impl Internal {
         self.spec().layout_in(lang)
     }
 
-    /// Shipped v1 bundles whose card used the full grid from the legacy registry.
-    pub fn clap_v1_grid_fallback(self) -> bool {
-        self.clap_v2_legacy_parameters() || matches!(self, Self::Eq | Self::Presse)
-    }
-
-    /// Bundles whose native v2 grid previously shared the legacy physical parameter model.
-    pub fn clap_v2_legacy_parameters(self) -> bool {
-        matches!(self, Self::Delay | Self::Limiter | Self::Volt | Self::Surf)
+    /// Native panels still using the device's physical parameter model for value presentation.
+    pub fn uses_device_parameter_model(self) -> bool {
+        matches!(
+            self,
+            Self::Hall | Self::Delay | Self::Limiter | Self::Volt | Self::Surf
+        )
     }
 
     /// The factory presets in menu order (empty: the device has none).

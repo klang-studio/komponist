@@ -17,8 +17,8 @@ def declaration(symbol, data):
 
 
 def main(example_path, output_path):
-    example = Path(example_path).read_bytes()
-    layout = json.loads(example)
+    controls = Path(__file__).with_name("controls.json").read_bytes()
+    layout = json.loads(controls)
 
     unknown_param = copy.deepcopy(layout)
     gain = next(
@@ -36,20 +36,18 @@ def main(example_path, output_path):
     required_capability = copy.deepcopy(layout)
     required_capability["required_capabilities"] = ["future-animation"]
 
-    version_two = json.loads(
-        (Path(example_path).parent / "example-v2.json").read_bytes()
-    )
-    invalid_version_two = copy.deepcopy(version_two)
-    invalid_version_two["pages"][0]["cells"][1]["graph"]["slots"]["attack"] = 999
+    graphs = Path(example_path).read_bytes()
+    invalid_graphs = json.loads(graphs)
+    invalid_graphs["pages"][0]["cells"][1]["graph"]["slots"]["attack"] = 999
 
     output = [
-        "/* Generated from the normative layout example during the fixture build. */\n",
-        declaration("example_layout", example),
+        "/* Generated from the layout examples during the fixture build. */\n",
+        declaration("control_layout", controls),
         declaration("unknown_param_layout", encode(unknown_param)),
         declaration("optional_field_layout", encode(optional_field)),
         declaration("required_capability_layout", encode(required_capability)),
-        declaration("version_two_layout", encode(version_two)),
-        declaration("invalid_version_two_layout", encode(invalid_version_two)),
+        declaration("graph_layout", graphs),
+        declaration("invalid_graph_layout", encode(invalid_graphs)),
     ]
     Path(output_path).write_text("\n".join(output), encoding="utf-8")
 

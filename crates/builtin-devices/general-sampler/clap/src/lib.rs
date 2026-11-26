@@ -3,11 +3,8 @@
 mod panel;
 
 use komponist_bundled_clap_adapter::{Binding, DeviceDefinition};
-use komponist_device_core::layout::{knob_large, param, toggle};
 use komponist_device_core::{Dsp, Spec};
-use komponist_i18n::Lang;
-use komponist_model::params::layout::{Cell, DeviceLayout, Half, Page, WidgetKind};
-use komponist_model::params::{ParamInfo, ParamKind};
+use komponist_model::params::ParamInfo;
 use komponist_sampler_clap::{AssetEditIntent, Sampled, SampledDefinition, SliceSettingsCodec};
 use komponist_sampler_shared::{ManagedLoader, SamplerHandle};
 use nice_plug::prelude::*;
@@ -100,55 +97,6 @@ impl DeviceDefinition for GeneralSampler {
             _ => return None,
         })
     }
-
-    fn layout(lang: Lang) -> DeviceLayout {
-        // Six two-column controls per row, leaving room for the longer categorical labels.
-        let params = Self::SPEC.params_in(lang);
-        let titles = match lang {
-            Lang::De => ["Wiedergabe", "Modulation"],
-            _ => ["Playback", "Modulation"],
-        };
-        DeviceLayout {
-            pages: params
-                .chunks(17)
-                .zip(titles)
-                .map(|(group, name)| Page {
-                    name: name.into(),
-                    cols: 12,
-                    cells: group
-                        .iter()
-                        .enumerate()
-                        .map(|(index, info)| {
-                            let col = ((index % 6) * 2) as u8;
-                            let row = (index / 6) as u8;
-                            let id = info.id.as_str();
-                            match info.kind {
-                                ParamKind::Enum(_) => Cell::half(
-                                    col,
-                                    row,
-                                    2,
-                                    Half::Top,
-                                    WidgetKind::Dropdown,
-                                    param(id),
-                                ),
-                                ParamKind::Bool => toggle(col, row, 2, Half::Top, param(id)),
-                                ParamKind::Int { .. } => Cell::half(
-                                    col,
-                                    row,
-                                    1,
-                                    Half::Top,
-                                    WidgetKind::Number,
-                                    param(id),
-                                ),
-                                ParamKind::Float { .. } => knob_large(col, row, id),
-                            }
-                        })
-                        .collect(),
-                    dividers: Vec::new(),
-                })
-                .collect(),
-        }
-    }
 }
 
 impl SampledDefinition for GeneralSampler {
@@ -176,8 +124,8 @@ impl SampledDefinition for GeneralSampler {
         })
     }
 
-    fn panel_v2() -> Option<komponist_native_clap_sdk::PanelV2> {
-        Some(panel::panel())
+    fn panel() -> komponist_native_clap_sdk::Panel {
+        panel::panel()
     }
 
     fn sampler() -> (Box<dyn Dsp>, SamplerHandle, ManagedLoader) {

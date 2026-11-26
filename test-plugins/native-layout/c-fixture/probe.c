@@ -21,7 +21,6 @@ typedef void *module_handle;
 #endif
 
 #define FIXTURE_ID "org.klang-studio.komponist.layout-fixture."
-#define INCOMPATIBLE_EXTENSION "org.klang-studio.komponist.device-layout/99"
 
 struct module {
     module_handle handle;
@@ -196,8 +195,6 @@ static bool print_probe(const clap_plugin_t *plugin) {
                info.min_value, info.max_value, info.default_value);
     }
     struct layout_response layout = read_layout(plugin, KOMPONIST_CLAP_EXT_DEVICE_LAYOUT);
-    if (layout.status == KOMPONIST_CLAP_LAYOUT_ABSENT)
-        layout = read_layout(plugin, KOMPONIST_CLAP_EXT_DEVICE_LAYOUT_V2);
     printf("],\"status\":%" PRIu32 ",\"size\":%" PRIu32 ",\"layout\":", layout.status, layout.size);
     const bool ok = layout.payload ? fwrite(layout.payload, 1, layout.size, stdout) == layout.size
                                    : fputs("null", stdout) != EOF;
@@ -270,15 +267,14 @@ static bool self_test(const struct module *module) {
         {FIXTURE_ID "valid", KOMPONIST_CLAP_LAYOUT_OK},
         {FIXTURE_ID "missing", KOMPONIST_CLAP_LAYOUT_ABSENT},
         {FIXTURE_ID "absent", KOMPONIST_CLAP_LAYOUT_ABSENT},
-        {FIXTURE_ID "incompatible", KOMPONIST_CLAP_LAYOUT_ABSENT},
         {FIXTURE_ID "invalid-length", KOMPONIST_CLAP_LAYOUT_ERROR},
         {FIXTURE_ID "wrong-copy-length", KOMPONIST_CLAP_LAYOUT_ERROR},
         {FIXTURE_ID "oversize", KOMPONIST_CLAP_LAYOUT_ERROR},
         {FIXTURE_ID "unknown-param", KOMPONIST_CLAP_LAYOUT_OK},
         {FIXTURE_ID "optional-field", KOMPONIST_CLAP_LAYOUT_OK},
         {FIXTURE_ID "required-capability", KOMPONIST_CLAP_LAYOUT_OK},
-        {FIXTURE_ID "version-two", KOMPONIST_CLAP_LAYOUT_OK},
-        {FIXTURE_ID "invalid-version-two", KOMPONIST_CLAP_LAYOUT_OK},
+        {FIXTURE_ID "graphs", KOMPONIST_CLAP_LAYOUT_OK},
+        {FIXTURE_ID "invalid-graphs", KOMPONIST_CLAP_LAYOUT_OK},
     };
     const clap_plugin_factory_t *factory = module->factory;
     if (factory->get_plugin_count(factory) != sizeof(cases) / sizeof(*cases)) {
@@ -295,14 +291,9 @@ static bool self_test(const struct module *module) {
         if (!plugin)
             return false;
 
-        const bool version_two = strcmp(desc->id, FIXTURE_ID "version-two") == 0 ||
-                                 strcmp(desc->id, FIXTURE_ID "invalid-version-two") == 0;
-        const char *extension_id = version_two ? KOMPONIST_CLAP_EXT_DEVICE_LAYOUT_V2
-                                               : KOMPONIST_CLAP_EXT_DEVICE_LAYOUT;
+        const char *extension_id = KOMPONIST_CLAP_EXT_DEVICE_LAYOUT;
         struct layout_response layout = read_layout(plugin, extension_id);
         bool ok = check_params(plugin) && layout.status == cases[index].status;
-        if (strcmp(desc->id, FIXTURE_ID "incompatible") == 0)
-            ok = ok && plugin->get_extension(plugin, INCOMPATIBLE_EXTENSION) != NULL;
         if (strcmp(desc->id, FIXTURE_ID "oversize") == 0)
             ok = ok && layout.size > KOMPONIST_CLAP_LAYOUT_MAX_BYTES;
         if (layout.status == KOMPONIST_CLAP_LAYOUT_OK)
@@ -315,7 +306,7 @@ static bool self_test(const struct module *module) {
             return false;
         }
     }
-    puts("C CLAP layout ABI passed for 12 fixture variants");
+    puts("C CLAP layout ABI passed for 11 fixture variants");
     return true;
 }
 

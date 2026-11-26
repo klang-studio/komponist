@@ -198,7 +198,7 @@ mod tests {
     fn only_known_automation_parameters_are_replaced_in_the_saved_state() {
         let layout = NativeLayout::parse(
             br#"{
-                "schema_version":1, "default_locale":"en", "locales":["en"],
+                "default_locale":"en", "locales":["en"],
                 "author_ids":{"b1_freq":42,"b1_type":7},
                 "pages":[{"key":"main","labels":{"en":"Main"},"columns":1,
                           "cells":[{"col":0,"row":0,"cols":1,"rows":1,"widget":"knob","param_id":42}]}]
@@ -235,7 +235,7 @@ mod tests {
     fn marker_history_preserves_persistent_controls_when_an_unrelated_driver_is_live() {
         let layout = NativeLayout::parse(
                 br#"{
-                    "schema_version":2, "default_locale":"en", "locales":["en"],
+                    "default_locale":"en", "locales":["en"],
                     "author_ids":{"b1_freq":42,"b1_type":7,"b2_gain":9},
                     "pages":[{"key":"main","labels":{"en":"Main"},"columns":1,
                               "cells":[{"col":0,"row":0,"cols":1,"rows":1,"widget":"graph",
@@ -324,7 +324,7 @@ mod tests {
             .map(|mac| (mac.key(), mac.id()))
             .collect();
         let layout = NativeLayout::parse(&serde_json::to_vec(&json!({
-            "schema_version":1, "default_locale":"en", "locales":["en"],
+            "default_locale":"en", "locales":["en"],
             "author_ids":author_ids,
             "pages":[{"key":"main","labels":{"en":"Main"},"columns":1,
                       "cells":[{"col":0,"row":0,"cols":1,"rows":1,"widget":"knob","param_id":0}]}]

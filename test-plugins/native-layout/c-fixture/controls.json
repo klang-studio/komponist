@@ -1,0 +1,37 @@
+{
+  "default_locale": "en",
+  "locales": ["en", "de"],
+  "pages": [
+    {
+      "key": "main",
+      "labels": { "en": "Main", "de": "Übersicht" },
+      "columns": 4,
+      "cells": [
+        {
+          "widget": "knob",
+          "col": 0,
+          "row": 0,
+          "cols": 1,
+          "rows": 1,
+          "param_id": 42,
+          "labels": { "en": "Gain", "de": "Verstärkung" }
+        },
+        {
+          "widget": "segment",
+          "col": 1,
+          "row": 0,
+          "cols": 3,
+          "rows": 1,
+          "half": "top",
+          "param_id": 7,
+          "labels": { "en": "Mode", "de": "Modus" },
+          "choices": [
+            { "value": 0, "labels": { "en": "Clean", "de": "Klar" } },
+            { "value": 1, "labels": { "en": "Warm", "de": "Warm" } },
+            { "value": 2, "labels": { "en": "Drive", "de": "Verzerrt" } }
+          ]
+        }
+      ]
+    }
+  ]
+}

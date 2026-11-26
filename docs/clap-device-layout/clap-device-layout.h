@@ -9,8 +9,7 @@ extern "C" {
 #endif
 
 /* Plugin-side extension ID, passed to clap_plugin_t.get_extension. */
-#define KOMPONIST_CLAP_EXT_DEVICE_LAYOUT "org.klang-studio.komponist.device-layout/1"
-#define KOMPONIST_CLAP_EXT_DEVICE_LAYOUT_V2 "org.klang-studio.komponist.device-layout/2"
+#define KOMPONIST_CLAP_EXT_DEVICE_LAYOUT "org.klang-studio.komponist.device-layout"
 
 /* Maximum UTF-8 JSON payload size in bytes. The payload has no NUL terminator. */
 #define KOMPONIST_CLAP_LAYOUT_MAX_BYTES UINT32_C(65536)

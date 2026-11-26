@@ -41,13 +41,13 @@ fn ready_sampler(project: Project, host: PluginHost, lang: Lang) -> (App, Device
     show_device(&mut app, track);
     step_until(
         &mut app,
-        "the external sampler asset and v2 layout are ready",
+        "the external sampler asset and layout are ready",
         |app| {
             let host = app.engine().host();
             host.status(device) == DeviceStatus::Ok
-                && host.native_layout(device).is_some_and(|layout| {
-                    layout.schema_version == 2 && layout.has_audio_asset_editor()
-                })
+                && host
+                    .native_layout(device)
+                    .is_some_and(|layout| layout.has_audio_asset_editor())
                 && host.asset_slots(device).is_some_and(|assets| {
                     assets
                         .slots

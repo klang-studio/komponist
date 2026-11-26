@@ -148,9 +148,6 @@ param-lfo-uni = Uni
 
 ## hexa: macros, globals and the operator parameters (`device.rs`, `macros.rs`).
 
-param-hexa-global-page = Global
-param-hexa-operator-page = Op { $first } / { $second }
-
 # hexa macro: fixed algorithm 1–32, 0 = free routing.
 param-hexa-algorithm = Algorithmus
 
@@ -588,9 +585,6 @@ page-volt-envelopes = Hüllkurven
 
 # volt card, page 3.
 page-volt-matrix = Matrix
-
-# volt and surf: page of both LFOs in the public CLAP layout (bundled devices in other hosts).
-page-volt-lfos = LFOs
 
 # Name above the envelope switch on volt's page 2.
 label-volt-envelope = Hüllkurve

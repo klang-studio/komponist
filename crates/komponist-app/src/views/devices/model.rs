@@ -2,7 +2,7 @@
 //! parameters its body shows, and the drop arithmetic of reordering. Pure, so the chain is
 //! tested without pixels.
 
-use komponist_builtin::{BuiltinKind, Internal};
+use komponist_builtin::BuiltinKind;
 use komponist_device_core::pinned_clap_state;
 use komponist_i18n::Lang;
 use komponist_ipc::ParamValue;
@@ -455,36 +455,18 @@ pub(crate) fn card(
         if native.has_parameter_display() {
             return None;
         }
-        let legacy = native.schema_version < 2;
         match verified? {
-            BuiltinKind::Hexa => Some((
-                legacy.then(|| komponist_hexa::device::clap_editor_layout(lang)),
-                bundled_params(device.id, host, native, hexa_editor_infos(lang))?,
-            )),
-            BuiltinKind::Internal(kind) => {
-                let layout = match kind {
-                    // The native panel owns the layout. The existing parameter model
-                    // supplies scales and localized value text for gestures and previews.
-                    _ if native.has_audio_asset_editor() => None,
-                    Internal::Hall => None,
-                    _ if legacy && kind.clap_v1_grid_fallback() => {
-                        Some(kind.layout_in(lang).clone())
-                    }
-                    _ if kind.clap_v2_legacy_parameters() => None,
-                    _ => return None,
-                };
-                Some((
-                    layout,
-                    bundled_params(device.id, host, native, kind.params_in(lang))?,
-                ))
+            BuiltinKind::Hexa => bundled_params(device.id, host, native, hexa_editor_infos(lang)),
+            BuiltinKind::Internal(kind)
+                if native.has_audio_asset_editor() || kind.uses_device_parameter_model() =>
+            {
+                bundled_params(device.id, host, native, kind.params_in(lang))
             }
+            _ => None,
         }
     });
     let bundled_editor = editor.is_some();
-    let (editor_layout, editor_params) = editor.unzip();
-    let editor_layout = editor_layout.flatten();
-    let legacy_layout = editor_layout.is_some();
-    let params = if let Some(params) = editor_params {
+    let params = if let Some(params) = editor {
         params
     } else if state == CardState::Ok {
         if is_hexa(device) {
@@ -519,9 +501,7 @@ pub(crate) fn card(
     };
     let instrument = device.role == DeviceRole::Instrument;
     let midi_effect = device.role == DeviceRole::MidiEffect;
-    let layout = if let Some(layout) = editor_layout {
-        layout
-    } else if let Some(native) = &native_layout {
+    let layout = if let Some(native) = &native_layout {
         native_card_layout(native, lang)
     } else if is_hexa(device) {
         komponist_hexa::device::layout_in(lang)
@@ -557,19 +537,10 @@ pub(crate) fn card(
         );
     }
     let hexa = is_hexa(device);
-    let bundled_hexa = legacy_layout && verified == Some(BuiltinKind::Hexa);
-    let hexa_patch = if hexa {
-        komponist_hexa::decode_state(device.state.as_deref()).ok()
-    } else if bundled_hexa {
-        device
-            .state
-            .as_deref()
-            .and_then(komponist_hexa::state::decode_clap_patch)
-    } else {
-        None
-    };
-    let hexa_patch =
-        (hexa || bundled_hexa).then(|| hexa_patch.unwrap_or_else(komponist_hexa::default_patch));
+    let hexa_patch = hexa.then(|| {
+        komponist_hexa::decode_state(device.state.as_deref())
+            .unwrap_or_else(|_| komponist_hexa::default_patch())
+    });
     let preset_entries = host.clap_presets(device);
     let selected = host.saved_preset(device, preset_entries);
     Card {
@@ -589,7 +560,7 @@ pub(crate) fn card(
         has_gui: host.has_gui(device.id),
         open: windows.iter().any(|w| w.device == device.id),
         layout,
-        native_layout: if legacy_layout { None } else { native_layout },
+        native_layout,
         display: host.device_display(device.id).cloned(),
         asset_slots: host.asset_slots(device.id).map_or_else(Vec::new, |assets| {
             assets
@@ -1363,7 +1334,7 @@ mod tests {
         let host = BuiltinHost::new();
         let mut card = cards(Lang::En, &project.tracks[2], &host, &[]).remove(0);
         let native = komponist_ipc::native_layout::NativeLayout::parse(include_bytes!(
-            "../../../../../docs/clap-device-layout/example-v2.json"
+            "../../../../../docs/clap-device-layout/example.json"
         ))
         .unwrap();
         card.layout = native_card_layout(&native, Lang::En);

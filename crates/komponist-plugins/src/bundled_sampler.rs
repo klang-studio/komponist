@@ -430,7 +430,7 @@ mod tests {
         };
         let layout = NativeLayout::parse(
             br#"{
-                "schema_version": 1, "default_locale": "en", "locales": ["en"],
+                "default_locale": "en", "locales": ["en"],
                 "author_ids": {"start": 7, "end": 9},
                 "pages": [{
                     "key": "sample", "labels": {"en": "Sample"}, "columns": 2,

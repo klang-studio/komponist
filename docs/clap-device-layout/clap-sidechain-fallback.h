@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /* Plugin-side extension ID, passed to clap_plugin_t.get_extension after init. */
-#define KOMPONIST_CLAP_EXT_SIDECHAIN_FALLBACK "org.klang-studio.komponist.sidechain-fallback/1"
+#define KOMPONIST_CLAP_EXT_SIDECHAIN_FALLBACK "org.klang-studio.komponist.sidechain-fallback"
 #define KOMPONIST_CLAP_SIDECHAIN_MAIN_INPUT UINT32_C(1)
 #define KOMPONIST_CLAP_SIDECHAIN_CURRENT_CONFIGURATION UINT32_MAX
 

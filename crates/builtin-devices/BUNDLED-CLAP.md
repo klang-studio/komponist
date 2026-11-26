@@ -21,7 +21,7 @@ host latency.
 | Arpeggiator | `komponist-bundled-arpeggiator` | `org.klang-studio.komponist.arpeggiator` |
 | Scale (Tonleiter) | `komponist-bundled-scale` | `org.klang-studio.komponist.scale` |
 
-The public v1 layout describes fixed controls. The bundled DSP accepts the device core's
+The bundles publish their panels through the public device layout extension. The bundled DSP accepts the device core's
 8–384 kHz sample-rate range. Release packages include all twelve bundles.
 
 Presse initially exposes its stereo compressor configuration. Komponist selects its

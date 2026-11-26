@@ -774,10 +774,10 @@ allowing plugin text input. Generic parameter views cover devices without a nati
 
 ### Native layouts for CLAP devices
 
-After initialization the CLAP format layer queries the [v1 extension](clap-device-layout/README.md)
-on the bridge main thread. The bridge validates the bounded document and bindings against the
-CLAP parameter inventory. Control protocol 10 carries the descriptor with the loaded metadata and
-with subsequent parameter inventories. The app validates each received descriptor before drawing
+After initialization the CLAP format layer queries the [device layout extension](clap-device-layout/README.md)
+on the plugin’s CLAP main thread. The host validates the bounded document and bindings against the
+CLAP parameter inventory. When hosted in a bridge, the control protocol carries the descriptor with
+the loaded metadata and subsequent parameter inventories. The app validates each received descriptor before drawing
 its existing device card with `ParamId::plugin` bindings. The floating parameter view uses the
 same card when available. Plugins still offer their own editor through the existing GUI action.
 A layout rejection leaves the generic parameter view available.

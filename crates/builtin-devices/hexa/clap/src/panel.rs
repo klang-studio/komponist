@@ -7,7 +7,7 @@ use komponist_hexa::{CATALOG, device};
 use komponist_i18n::Lang;
 use komponist_model::params::layout::{CellParam, ENV_OP, WidgetKind};
 use komponist_native_clap_sdk::{
-    Canvas, FmCarrier, FmDiagram, GraphLabels, Labels, PanelV2, ParamId,
+    Canvas, FmCarrier, FmDiagram, GraphLabels, Labels, Panel, ParamId,
 };
 
 use super::infos;
@@ -17,7 +17,7 @@ fn labels(en: &str, de: &str) -> Labels {
     [("en".into(), en.into()), ("de".into(), de.into())].into()
 }
 
-pub(super) fn panel() -> PanelV2 {
+pub(super) fn panel() -> Panel {
     let mut panel = panel_from_parts(device::clap_editor_layout, infos(Lang::En), infos(Lang::De));
     panel.device_labels = Some(device_labels(&CATALOG));
     panel.parameter_labels.insert(
@@ -89,8 +89,7 @@ pub(super) fn panel() -> PanelV2 {
             }
         }
     }
-    PanelV2 {
-        panel,
+    Panel {
         graph_labels,
         canvases,
         reduction_taps: Default::default(),
@@ -98,5 +97,6 @@ pub(super) fn panel() -> PanelV2 {
         pad_bank: None,
         parameter_display: Default::default(),
         full_band_choice_labels: Default::default(),
+        ..panel
     }
 }

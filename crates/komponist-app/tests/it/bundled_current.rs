@@ -1248,7 +1248,7 @@ fn packaged_effect_cards_and_presets() {
             harness.get_by_role_and_label(Role::Group, lang.ui_graph_eq());
         } else if slug == "delay" {
             let layout = app.engine().host().native_layout(device).unwrap();
-            assert_eq!(layout.schema_version, 2);
+
             let time = layout.author_ids().unwrap()["time"];
             assert_eq!(
                 layout.parameter_display(time).unwrap().range(),
@@ -1297,7 +1297,6 @@ fn check_eq_panel(
 
     let host = harness.state().engine().host();
     let layout = host.native_layout(device).unwrap();
-    assert_eq!(layout.schema_version, 2);
     let ids = layout.author_ids().unwrap();
     let freq = ids["b2_freq"];
     let kind = ids["b2_type"];
@@ -1409,7 +1408,6 @@ fn check_presse_panel(
 
     let host = harness.state().engine().host();
     let layout = host.native_layout(device).unwrap();
-    assert_eq!(layout.schema_version, 2);
     let threshold = layout.author_ids().unwrap()["threshold"];
     let detector = host
         .signal_tap(device, "detector")

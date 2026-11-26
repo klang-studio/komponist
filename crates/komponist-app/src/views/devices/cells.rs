@@ -2030,7 +2030,7 @@ mod tests {
             json!({"key":"op","labels":{"en":"Operator"},"options":options,"shared":true});
         let variants: Vec<_> = (1..=6).map(|id| json!({"param_id":id})).collect();
         let document = json!({
-            "schema_version":2,"default_locale":"en","locales":["en"],
+            "default_locale":"en","locales":["en"],
             "required_capabilities":["cell-selections","panel-selections"],
             "pages":[
                 {"key":"operators","labels":{"en":"Operators"},"columns":6,"cells":[
@@ -2104,7 +2104,7 @@ mod tests {
         use komponist_ipc::native_layout::NativeLayout;
 
         let layout = NativeLayout::parse(br#"{
-          "schema_version":2,"default_locale":"en","locales":["en"],
+          "default_locale":"en","locales":["en"],
           "required_capabilities":["cell-selections","fm-topology"],
           "pages":[{"key":"main","labels":{"en":"Main"},"columns":4,"cells":[
             {"widget":"selector","col":0,"row":0,"cols":2,"rows":1,"half":"top",
@@ -2157,7 +2157,7 @@ mod tests {
     fn native_selectors_can_use_another_selectors_label_suffix() {
         let layout = komponist_ipc::native_layout::NativeLayout::parse(
             br#"{
-              "schema_version":2,"default_locale":"en","locales":["en"],
+              "default_locale":"en","locales":["en"],
               "required_capabilities":["cell-selections"],
               "pages":[{"key":"main","labels":{"en":"Main"},"columns":2,"cells":[
                 {"widget":"selector","col":0,"row":0,"cols":1,"rows":1,"half":"top",
@@ -2219,7 +2219,7 @@ mod tests {
 
         let layout = Arc::new(
             NativeLayout::parse(include_bytes!(
-                "../../../../../docs/clap-device-layout/example-v2.json"
+                "../../../../../docs/clap-device-layout/example.json"
             ))
             .unwrap(),
         );
@@ -2304,7 +2304,7 @@ mod tests {
             ]})
         };
         let document = json!({
-            "schema_version": 2, "default_locale": "en", "locales": ["en", "de"],
+            "default_locale": "en", "locales": ["en", "de"],
             "required_capabilities": [CAP_PAD_BANK],
             "pad_bank": {"pads": [{"note": 36, "asset_slot": 7}, {"note": 43, "asset_slot": 12}]},
             "pages": [
@@ -2391,7 +2391,7 @@ mod tests {
         let layout = Arc::new(
             NativeLayout::parse(
                 br#"{
-            "schema_version":2,"default_locale":"en","locales":["en"],
+            "default_locale":"en","locales":["en"],
             "pages":[{"key":"main","labels":{"en":"Main"},"columns":2,"cells":[
                 {"widget":"meter_gr","row":0,"col":0,"rows":3,"cols":1,"reduction_tap":"first"},
                 {"widget":"meter_gr","row":0,"col":1,"rows":3,"cols":1,"reduction_tap":"second"}
@@ -2480,7 +2480,7 @@ mod tests {
     fn number_entry_uses_the_displayed_units() {
         let layout = komponist_ipc::native_layout::NativeLayout::parse(
             br#"{
-            "schema_version":1,"default_locale":"en","locales":["en"],
+            "default_locale":"en","locales":["en"],
             "pages":[{"key":"main","labels":{"en":"Main"},"columns":4,"cells":[
                 {"widget":"number","row":0,"col":0,"rows":1,"cols":1,"half":"top","param_id":1}
             ]}]
@@ -2651,7 +2651,7 @@ mod tests {
         let label =
             |get: fn(Lang) -> &'static str| json!({"de": get(Lang::De), "en": get(Lang::En)});
         let native = Arc::new(NativeLayout::parse(&serde_json::to_vec(&json!({
-            "schema_version": 2, "default_locale": "en", "locales": ["en", "de"],
+            "default_locale": "en", "locales": ["en", "de"],
             "required_capabilities": ["parameter-display"],
             "parameter_display": {
                 "42": {"min": 1, "max": 2000, "default": 375, "scale": "logarithmic", "unit": "milliseconds"},
@@ -3056,7 +3056,7 @@ mod tests {
 
         let mut layout: serde_json::Value = serde_json::from_slice(
             br#"{
-            "schema_version":2,"default_locale":"de","locales":["de","en"],
+            "default_locale":"de","locales":["de","en"],
             "pages":[{"key":"sample","labels":{"de":"Sample"},"columns":4,"cells":[
               {"widget":"graph","row":0,"col":0,"rows":2,"cols":4,"graph":{
                 "kind":"waveform","name":{"de":"Sample-Quelle","en":"Sample source"},
@@ -3100,7 +3100,7 @@ mod tests {
         use std::sync::Arc;
 
         let native = json!({
-            "schema_version": 2, "default_locale":"de", "locales":["de"],
+            "default_locale":"de", "locales":["de"],
             "required_capabilities": [CAP_SOURCE_FRACTION_TRIM],
             "pages": [{"key":"sample", "labels":{"de":"Sample"}, "columns": 14, "cells": [
                 {"widget":"graph", "row":0, "col":0, "rows":2, "cols":10, "graph":{
@@ -3439,7 +3439,7 @@ mod tests {
         use std::sync::Arc;
 
         let native = json!({
-            "schema_version": 2, "default_locale": "de", "locales": ["de", "en"],
+            "default_locale": "de", "locales": ["de", "en"],
             "required_capabilities": [CAP_SOURCE_FRACTION_TRIM, CAP_PARAMETER_DISPLAY],
             "parameter_display": {
                 "41": {"min": 0, "max": 100, "default": 25, "scale": "linear", "unit": "percent"}

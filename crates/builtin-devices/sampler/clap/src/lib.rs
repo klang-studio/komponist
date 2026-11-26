@@ -1,12 +1,11 @@
 //! The eight-pad drum sampler packaged as a native CLAP instrument.
 
 use komponist_bundled_clap_adapter::{Binding, DeviceDefinition, panel_from_parts};
-use komponist_device_core::layout::{knob, param, toggle};
 use komponist_device_core::{Dsp, Spec};
 use komponist_i18n::Lang;
-use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, Page, SEL, WidgetKind};
+use komponist_model::params::layout::{CellParam, DeviceLayout, SEL, WidgetKind};
 use komponist_model::params::{ParamContext, ParamId, ParamInfo, resolve};
-use komponist_native_clap_sdk::{GraphLabels, Pad, PadBank, PanelV2};
+use komponist_native_clap_sdk::{GraphLabels, Pad, PadBank, Panel};
 use komponist_sampler::{PADS, PadField};
 use komponist_sampler_clap::{AssetEditIntent, Sampled, SampledDefinition};
 use komponist_sampler_shared::{ManagedLoader, SamplerHandle};
@@ -41,59 +40,6 @@ impl DeviceDefinition for DrumSampler {
             .ends_with("_mode")
             .then(|| Binding::choice::<Mode>(info))
     }
-
-    fn layout(_: Lang) -> DeviceLayout {
-        DeviceLayout {
-            pages: (1..=PADS)
-                .step_by(2)
-                .map(|first| {
-                    let mut cells = Vec::new();
-                    for (pad, col) in [(first, 0), (first + 1, 5)] {
-                        let key = |suffix: &str| format!("pad{pad}_{suffix}");
-                        cells.extend([
-                            knob(col, 0, &key("start")),
-                            knob(col + 1, 0, &key("end")),
-                            Cell::half(
-                                col + 2,
-                                0,
-                                2,
-                                Half::Top,
-                                WidgetKind::Dropdown,
-                                param(&key("mode")),
-                            ),
-                            toggle(col + 2, 0, 1, Half::Bottom, param(&key("mute"))),
-                            toggle(col + 3, 0, 1, Half::Bottom, param(&key("solo"))),
-                            Cell::half(
-                                col + 4,
-                                0,
-                                1,
-                                Half::Top,
-                                WidgetKind::Number,
-                                param(&key("choke")),
-                            ),
-                            knob(col, 1, &key("tune")),
-                            knob(col + 1, 1, &key("decay")),
-                            knob(col + 2, 1, &key("drive")),
-                            knob(col + 3, 1, &key("pan")),
-                            knob(col + 4, 1, &key("level")),
-                        ]);
-                    }
-                    if first == 1 {
-                        cells.extend([
-                            knob(0, 2, "kit_tune"),
-                            toggle(1, 2, 2, Half::Top, param("follow")),
-                        ]);
-                    }
-                    Page {
-                        name: format!("Pads {first}–{}", first + 1),
-                        cols: 10,
-                        cells,
-                        dividers: Vec::new(),
-                    }
-                })
-                .collect(),
-        }
-    }
 }
 
 impl SampledDefinition for DrumSampler {
@@ -104,7 +50,7 @@ impl SampledDefinition for DrumSampler {
             .then(|| [PadField::Start, PadField::End].map(|field| field.wire(slot)))
     }
 
-    fn panel_v2() -> Option<PanelV2> {
+    fn panel() -> Panel {
         let mut panel = panel_from_parts(
             pad_layout,
             Self::SPEC.params_in(Lang::En),
@@ -144,10 +90,9 @@ impl SampledDefinition for DrumSampler {
                 )
             })
             .collect();
-        Some(PanelV2 {
+        Panel {
             parameter_display: Default::default(),
             full_band_choice_labels: Default::default(),
-            panel,
             graph_labels,
             canvases: Default::default(),
             reduction_taps: Default::default(),
@@ -162,7 +107,8 @@ impl SampledDefinition for DrumSampler {
                 activity_tap: Some("pads".into()),
                 follow_param: Some(ParamId::new("follow")),
             }),
-        })
+            ..panel
+        }
     }
 
     fn sampler() -> (Box<dyn Dsp>, SamplerHandle, ManagedLoader) {
@@ -225,9 +171,7 @@ fn all_pads_have_stable_bilingual_bindings_and_restore_sample_links() {
 #[cfg(test)]
 #[test]
 fn authored_pad_bank_preserves_every_pad_editor() {
-    use komponist_native_clap_sdk::EXTENSION_ID_V2;
-
-    let layout = layout_contract::read_layout_extension::<DrumSamplerPlugin>(EXTENSION_ID_V2);
+    let layout = layout_contract::read_layout::<DrumSamplerPlugin>();
     let pages = layout["pages"].as_array().unwrap();
     let pads = layout["pad_bank"]["pads"].as_array().unwrap();
     let author_ids = layout["author_ids"].as_object().unwrap();
