@@ -783,7 +783,8 @@ mod tests {
 
         wait_until_ready(&mut app);
         if app.engine().host().bridge_pid(device).is_some() {
-            // The held engine has no real-time deadline to meet while a bridge processes audio.
+            // Rendered like an export (with `render_held`): a realtime block has a deadline,
+            // and a late bridge block falls back to silence on a loaded machine (#347).
             app.engine_mut()
                 .host_mut()
                 .set_render_mode(RenderMode::Offline);
@@ -809,7 +810,7 @@ mod tests {
             key: 60,
             velocity: 100,
         }));
-        let (left, right) = app.engine_mut().run_held_capture(4096, &[], 0).unwrap();
+        let (left, right) = app.engine_mut().render_held(4096).unwrap();
         let energy = |samples: &[f32]| samples.iter().map(|v| v * v).sum::<f32>();
         assert!(energy(&left) > 1e-5 && energy(&right) > 1e-5);
 
@@ -820,8 +821,7 @@ mod tests {
             value: 1.0,
         }));
         wait_until_ready(&mut app);
-        let (right_panned_l, right_panned_r) =
-            app.engine_mut().run_held_capture(4096, &[], 0).unwrap();
+        let (right_panned_l, right_panned_r) = app.engine_mut().render_held(4096).unwrap();
         let left_energy = energy(&right_panned_l[2048..]);
         let right_energy = energy(&right_panned_r[2048..]);
         assert!(right_energy > 1e-5 && right_energy > 10.0 * left_energy);
