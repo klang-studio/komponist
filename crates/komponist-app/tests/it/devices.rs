@@ -958,12 +958,18 @@ mod add_menu {
     use super::*;
     use egui::Key;
     use komponist_app::views::devices::model::{Placement, place_plugin};
-    use komponist_builtin::Internal;
+    use komponist_model::PluginRef;
 
-    /// A project with one hexa track, the dock on „Geräte“; the built-in catalog.
+    fn shipped(app: &App, id: &str) -> PluginRef {
+        let id = format!("org.klang-studio.komponist.{id}");
+        common::shipped_plugin(app.engine().host(), &id)
+            .unwrap_or_else(|| panic!("build {id} with scripts/build-test-plugins.sh"))
+    }
+
+    /// A project with one Hexa track, with the Devices dock showing the shipped inventory.
     fn app_with_track() -> (App, TrackId) {
         let mut app = App::headless(Project::new("Menü"));
-        let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
+        let hexa = shipped(&app, "hexa");
         app.dispatch(Action::Plugin(PluginAction::Add {
             plugin: hexa,
             target: DropTarget::NewTrack { index: None },
@@ -1027,7 +1033,7 @@ mod add_menu {
         let field = search(&h).expect("the search field");
         assert!(field.accesskit_node().is_focused(), "focused right away");
         let listed = option_names(&h);
-        for name in ["Hexa", Internal::Eq.name(), Internal::Arpeggiator.name()] {
+        for name in ["Hexa", "EQ", "Arpeggiator"] {
             assert!(listed.iter().any(|n| n == name), "{name} in {listed:?}");
         }
     }
@@ -1051,13 +1057,10 @@ mod add_menu {
         open_by_click(&mut h);
         // „delay“ is Delay's name and a feature of Hall, as in the browser's search.
         type_text(&mut h, "delay");
-        assert_eq!(
-            option_names(&h),
-            [Internal::Delay.name(), Internal::Hall.name()]
-        );
+        assert_eq!(option_names(&h), ["Delay", "Hall"]);
         key(&mut h, Key::Enter);
         assert!(search(&h).is_none(), "the menu closes");
-        assert_eq!(names_of(h.state(), track), ["Hexa", Internal::Delay.name()]);
+        assert_eq!(names_of(h.state(), track), ["Hexa", "Delay"]);
     }
 
     #[test]
@@ -1083,19 +1086,15 @@ mod add_menu {
                 .find(|n| n.accesskit_node().is_selected() == Some(true))
                 .and_then(|n| n.accesskit_node().label().map(|l| l.to_string()))
         };
-        assert_eq!(selected(&h).as_deref(), Some(Internal::Delay.name()));
+        assert_eq!(selected(&h).as_deref(), Some("Delay"));
         key(&mut h, Key::ArrowDown);
-        assert_eq!(selected(&h).as_deref(), Some(Internal::Hall.name()));
+        assert_eq!(selected(&h).as_deref(), Some("Hall"));
         key(&mut h, Key::ArrowDown);
-        assert_eq!(
-            selected(&h).as_deref(),
-            Some(Internal::Hall.name()),
-            "stops at the end"
-        );
+        assert_eq!(selected(&h).as_deref(), Some("Hall"), "stops at the end");
         key(&mut h, Key::ArrowUp);
         key(&mut h, Key::ArrowDown);
         key(&mut h, Key::Enter);
-        assert_eq!(names_of(h.state(), track), ["Hexa", Internal::Hall.name()]);
+        assert_eq!(names_of(h.state(), track), ["Hexa", "Hall"]);
     }
 
     #[test]
@@ -1104,15 +1103,12 @@ mod add_menu {
         let mut h = harness(app);
         open_by_click(&mut h);
         let at = h
-            .get_by_role_and_label(Role::ListBoxOption, Internal::Limiter.name())
+            .get_by_role_and_label(Role::ListBoxOption, "Limiter")
             .rect()
             .center();
         click_at(&mut h, at);
         assert!(search(&h).is_none());
-        assert_eq!(
-            names_of(h.state(), track),
-            ["Hexa", Internal::Limiter.name()]
-        );
+        assert_eq!(names_of(h.state(), track), ["Hexa", "Limiter"]);
     }
 
     #[test]
@@ -1120,12 +1116,9 @@ mod add_menu {
         let (app, track) = app_with_track();
         let mut h = harness(app);
         open_by_click(&mut h);
-        type_text(&mut h, Internal::Arpeggiator.name());
+        type_text(&mut h, "Arpeggiator");
         key(&mut h, Key::Enter);
-        assert_eq!(
-            names_of(h.state(), track),
-            [Internal::Arpeggiator.name(), "Hexa"]
-        );
+        assert_eq!(names_of(h.state(), track), ["Arpeggiator", "Hexa"]);
     }
 
     #[test]
@@ -1133,26 +1126,23 @@ mod add_menu {
         let (app, track) = app_with_track();
         let mut h = harness(app);
         open_by_click(&mut h);
-        type_text(&mut h, Internal::Sampler.name());
+        type_text(&mut h, "Klopfer");
         key(&mut h, Key::Enter);
-        assert_eq!(names_of(h.state(), track), [Internal::Sampler.name()]);
+        assert_eq!(names_of(h.state(), track), ["Klopfer"]);
         // Without an instrument: an EQ is there, the instrument comes in front of it.
         let (mut app, track) = app_with_track();
         let hexa = app.project().track(track).unwrap().channel.devices[0].id;
         app.dispatch(Action::Plugin(PluginAction::Add {
-            plugin: Internal::Eq.plugin_ref(),
+            plugin: shipped(&app, "eq"),
             target: DropTarget::Track(track),
         }));
         app.dispatch(Action::Edit(EditAction::RemoveDevice(hexa)));
-        assert_eq!(names_of(&app, track), [Internal::Eq.name()]);
+        assert_eq!(names_of(&app, track), ["EQ"]);
         let mut h = harness(app);
         open_by_click(&mut h);
-        type_text(&mut h, Internal::Sampler.name());
+        type_text(&mut h, "Klopfer");
         key(&mut h, Key::Enter);
-        assert_eq!(
-            names_of(h.state(), track),
-            [Internal::Sampler.name(), Internal::Eq.name()]
-        );
+        assert_eq!(names_of(h.state(), track), ["Klopfer", "EQ"]);
     }
 
     #[test]
@@ -1238,7 +1228,7 @@ mod add_menu {
         let (app, track) = app_with_track();
         let mut h = harness(app);
         let slot_rect = slot(&h).rect();
-        let eq = Internal::Eq.plugin_ref();
+        let eq = shipped(h.state(), "eq");
         let from = pos2(100.0, 600.0);
         h.hover_at(from);
         h.step();
@@ -1252,7 +1242,7 @@ mod add_menu {
         press(&mut h, slot_rect.center(), PointerButton::Primary, false);
         h.run_steps(3);
         assert!(search(&h).is_none(), "a drop is not a click");
-        assert_eq!(names_of(h.state(), track), ["Hexa", Internal::Eq.name()]);
+        assert_eq!(names_of(h.state(), track), ["Hexa", "EQ"]);
     }
 
     #[test]
@@ -1305,7 +1295,7 @@ mod add_menu {
         type_text(&mut h, "delay");
         key(&mut h, Key::Enter);
         assert!(search(&h).is_none());
-        assert_eq!(names_of(h.state(), track), ["Hexa", Internal::Delay.name()]);
+        assert_eq!(names_of(h.state(), track), ["Hexa", "Delay"]);
         h.state_mut().dispatch(Action::Edit(EditAction::Undo));
         assert_eq!(names_of(h.state(), track), ["Hexa"]);
         // A second click on the button closes an open menu.

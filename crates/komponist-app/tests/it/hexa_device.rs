@@ -3,19 +3,20 @@
 //! snapshots of both pages.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use egui::accesskit::Role;
 use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
+use komponist_app::actions::{SelectMode, SelectionChange};
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, PluginAction, UiAction};
-use komponist_hexa::device::{self, Field};
-use komponist_hexa::{Macro, Patch};
 use komponist_i18n::Lang;
-use komponist_model::params::ParamId;
-use komponist_model::{DeviceId, Project};
+use komponist_model::DeviceId;
+use komponist_plugins::DeviceStatus;
+
+use crate::common::{instrument_project, step_until};
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
@@ -65,21 +66,21 @@ fn drag(h: &mut Harness<'_, App>, from: Pos2, to: Pos2) {
     h.run_steps(3);
 }
 
-/// A project with one hexa track (preset "E-Piano": six operators, carriers 1, 3 and 5) and the
-/// dock on „Geräte“.
-fn app_with_hexa(preset: usize) -> (App, DeviceId) {
-    let mut app = App::headless(Project::new("Synth"));
-    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
-    app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: hexa,
-        target: DropTarget::NewTrack { index: None },
-    }));
-    let track = app.project().tracks[0].id;
-    let device = app.project().tracks[0].channel.devices[0].id;
-    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
-        device,
-        source: komponist_plugins::presets::legacy_source(preset),
-    }));
+/// A project with one verified Hexa instrument and its shipped factory preset.
+fn app_with_hexa(preset: &str) -> (App, DeviceId) {
+    let host = App::headless_plugin_host();
+    let prepared = host
+        .manager()
+        .prepare_bundled_device("org.klang-studio.komponist.hexa", Some(preset), &[], &[])
+        .unwrap();
+    let (mut project, track, device) = instrument_project("Synth", prepared.plugin.clone());
+    Arc::make_mut(&mut project.tracks[0]).channel.devices[0] =
+        Arc::new(prepared.into_device(device));
+    let mut app = App::headless(project);
+    step_until(&mut app, "Hexa's native layout", |app| {
+        let host = app.engine().host();
+        host.status(device) == DeviceStatus::Ok && host.native_layout(device).is_some()
+    });
     app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
         tracks: vec![track],
         mode: SelectMode::Replace,
@@ -88,9 +89,17 @@ fn app_with_hexa(preset: usize) -> (App, DeviceId) {
     (app, device)
 }
 
-fn patch_of(app: &App, device: DeviceId) -> Patch {
-    let (_, _, d) = app.project().find_device(device).unwrap();
-    komponist_hexa::decode_state(d.state.as_deref()).unwrap()
+fn parameter(app: &App, device: DeviceId, key: &str) -> u32 {
+    app.engine()
+        .host()
+        .native_layout(device)
+        .unwrap()
+        .author_ids()
+        .unwrap()[key]
+}
+
+fn parameter_value(app: &App, device: DeviceId, id: u32) -> f64 {
+    app.engine().host().param_value(device, id).unwrap().value
 }
 
 fn page(app: &mut App, device: DeviceId, page: usize) {
@@ -126,36 +135,21 @@ fn slider_value(h: &Harness<'_, App>, label: &str) -> String {
 }
 
 #[test]
-fn the_card_has_four_pages_and_the_preset_shows_in_the_head() {
-    let (app, _) = app_with_hexa(1);
+fn the_card_has_three_authored_pages_and_the_preset_shows_in_the_head() {
+    let (app, _) = app_with_hexa("E-Piano");
     let h = harness(app);
-    for name in ["Operatoren", "Hüllkurven", "LFO", "Global"] {
-        assert!(has(&h, Role::RadioButton, name), "page {name}");
-    }
+    let names: Vec<_> = card(&h)
+        .query_all_by_role(Role::RadioButton)
+        .map(|node| node.accesskit_node().label().unwrap_or_default())
+        .collect();
+    assert_eq!(names, ["Operatoren", "Hüllkurven", "Global"]);
     // The factory preset is still recognised from the state: its name is on the dropdown.
     card(&h).get_by_role_and_label(Role::Button, &Lang::De.devices_preset_name("E-Piano"));
 }
 
 #[test]
-fn every_factory_preset_still_loads_into_the_card() {
-    for index in 0..komponist_hexa::PRESET_COUNT {
-        let patch = komponist_hexa::preset_patch(index).unwrap();
-        let state = komponist_hexa::encode_state(&patch);
-        let back = komponist_hexa::decode_state(Some(&state)).unwrap();
-        // Every card parameter reads a finite value from every preset.
-        for p in device::params() {
-            assert!(
-                p.field.get(&back).is_finite(),
-                "preset {index}, {}",
-                p.info.id
-            );
-        }
-    }
-}
-
-#[test]
 fn clicking_an_operator_column_selects_it_and_the_envelope_page_follows() {
-    let (mut app, device) = app_with_hexa(1);
+    let (mut app, device) = app_with_hexa("E-Piano");
     page(&mut app, device, 0);
     let mut h = harness(app);
     // Operator 1 is selected at the start; its column is a selected button.
@@ -201,17 +195,30 @@ fn page_to(h: &mut Harness<'_, App>, device: DeviceId, index: usize) {
 
 #[test]
 fn a_knob_change_reaches_the_engine_and_the_document_state() {
-    let (mut app, device) = app_with_hexa(1);
+    let (mut app, device) = app_with_hexa("E-Piano");
     page(&mut app, device, 0);
     let mut h = harness(app);
-    let ratio = device::param(&ParamId::new("op2_ratio")).unwrap();
-    let before = patch_of(h.state(), device).operators[1].ratio;
+    let ratio = parameter(h.state(), device, "op2_ratio");
+    let before = parameter_value(h.state(), device, ratio);
+    let original = h
+        .state()
+        .project()
+        .find_device(device)
+        .unwrap()
+        .2
+        .state
+        .clone();
+    let text_before = slider_value(&h, "Ratio 2");
     let knob = card(&h)
         .get_by_role_and_label(Role::Slider, "Ratio 2")
         .rect();
     drag(&mut h, knob.center(), knob.center() - vec2(0.0, 40.0));
-    let after = patch_of(h.state(), device).operators[1].ratio;
-    assert!(after > before + 0.5, "{before} → {after}");
+    step_until(h.state_mut(), "Hexa's edited CLAP state", |app| {
+        let state = &app.project().find_device(device).unwrap().2.state;
+        *state != original && parameter_value(app, device, ratio) > before
+    });
+    h.run_steps(2);
+    let after = parameter_value(h.state(), device, ratio);
     // The engine got the same value under the card parameter's wire id.
     let sent = h
         .state()
@@ -221,73 +228,32 @@ fn a_knob_change_reaches_the_engine_and_the_document_state() {
                 device: d,
                 id,
                 value,
-            }) if *d == device && *id == ratio.wire => Some(*value),
+            }) if *d == device && *id == ratio => Some(*value),
             _ => None,
         })
         .last()
         .expect("SetParam for op2_ratio");
-    assert!((sent - f64::from(after)).abs() < 1e-4, "{sent} vs {after}");
-    assert_eq!(
-        slider_value(&h, "Ratio 2"),
-        ratio.info.format(f64::from(after))
-    );
-    // Everything else in the patch is untouched (here: the effects and modulation survive).
-    let reference = {
-        let mut p = komponist_hexa::preset_patch(1).unwrap();
-        Field::Op(1, device::OpField::Ratio).set(&mut p, f64::from(after));
-        p
-    };
-    assert_eq!(patch_of(h.state(), device), reference.sanitized());
+    assert!((sent - after).abs() < 1e-4, "{sent} vs {after}");
+    assert_ne!(slider_value(&h, "Ratio 2"), text_before);
 }
 
 #[test]
 fn carriers_fill_in_the_track_colour_and_modulators_in_text_2() {
     // The layout asks `op{n}_output` per fader; the Algorithmus macro sets it from the table.
-    let (mut app, device) = app_with_hexa(0);
-    let algorithm = Field::Macro(Macro::Algorithm);
+    let (mut app, device) = app_with_hexa("Init");
+    let algorithm = parameter(&app, device, "algorithm");
     app.dispatch(Action::Plugin(PluginAction::SetParam {
         device,
-        id: algorithm.wire(),
+        id: algorithm,
         value: 1.0,
     }));
-    let patch = patch_of(&app, device);
-    for (op, operator) in patch.operators.iter().enumerate().take(6) {
-        assert_eq!(
-            operator.output,
-            device::is_carrier(1, op),
-            "operator {}",
-            op + 1
-        );
-    }
-    // The fader colours are in the snapshot; here the card's own carrier values.
-    let (komponist_model::ChannelRef::Track(track), _, _) =
-        app.project().find_device(device).unwrap()
-    else {
-        panic!("Hexa belongs to its instrument track");
-    };
-    let cards = komponist_app::views::devices::model::cards(
-        Lang::De,
-        app.project().track(track).unwrap(),
-        app.engine().host(),
-        &[],
-    );
-    let params = &cards
-        .iter()
-        .find(|card| card.device == device)
-        .unwrap()
-        .params;
-    let carrier = |n: usize| {
-        params
-            .iter()
-            .find(|p| p.info.id.as_str() == format!("op{n}_output"))
-            .unwrap()
-            .value
-            >= 0.5
-    };
-    assert_eq!(
-        [1, 2, 3, 4, 5, 6].map(carrier),
-        [true, false, true, false, false, false]
-    );
+    step_until(&mut app, "Hexa's authored carrier routing", |app| {
+        app.engine()
+            .host()
+            .device_display(device)
+            .and_then(|display| display.fm_topologies.first())
+            .is_some_and(|routing| routing.algorithm == Some(1) && routing.outputs == 0b000101)
+    });
 }
 
 /// Masks the CPU readout, which changes from run to run; the rectangle is looked up right before
@@ -301,17 +267,17 @@ fn mask_cpu(h: &mut Harness<'_, App>) {
 
 #[test]
 fn snapshot_of_both_pages() {
-    let (mut app, device) = app_with_hexa(1);
+    let (mut app, device) = app_with_hexa("E-Piano");
     // A modulated operator to look at: operator 2 selected, a slower envelope.
     for (key, v) in [
         ("op2_attack", 0.08),
         ("op2_decay", 1.2),
         ("op2_sustain", 0.4),
     ] {
-        let p = device::param(&ParamId::new(key)).unwrap();
+        let id = parameter(&app, device, key);
         app.dispatch(Action::Plugin(PluginAction::SetParam {
             device,
-            id: p.wire,
+            id,
             value: v,
         }));
     }

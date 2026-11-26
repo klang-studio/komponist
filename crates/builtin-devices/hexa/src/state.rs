@@ -142,7 +142,15 @@ mod tests {
         for index in 0..PRESET_COUNT {
             let patch = preset_patch(index).unwrap();
             let state = encode_state(&patch);
-            assert_eq!(decode_state(Some(&state)).unwrap(), patch, "preset {index}");
+            let restored = decode_state(Some(&state)).unwrap();
+            assert_eq!(restored, patch, "preset {index}");
+            for param in crate::device::params() {
+                assert!(
+                    param.field.get(&restored).is_finite(),
+                    "preset {index}, {}",
+                    param.info.id
+                );
+            }
         }
     }
 
