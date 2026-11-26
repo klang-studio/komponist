@@ -375,11 +375,27 @@ impl DeviceHost for Host {
 }
 
 fn app(project: Project, folder: &Path, effect: DeviceId, fixture: Fixture) -> App {
+    app_on(
+        Box::new(App::headless_plugin_host()),
+        project,
+        folder,
+        effect,
+        fixture,
+    )
+}
+
+fn app_on(
+    backend: Box<dyn DeviceHost>,
+    project: Project,
+    folder: &Path,
+    effect: DeviceId,
+    fixture: Fixture,
+) -> App {
     app_with_host(
         project,
         folder,
         Host {
-            backend: Box::new(BuiltinHost::new()),
+            backend,
             state: effect,
             fixture,
             assets: None,
@@ -419,7 +435,7 @@ fn flatten_isolates_the_complete_chain_and_undo_restores_the_live_state() {
     assert_complete_chain(
         dir.path(),
         plugin("transpose"),
-        Box::new(BuiltinHost::new()),
+        Box::new(App::headless_plugin_host()),
         0.61,
         None,
     );
@@ -655,7 +671,7 @@ fn flatten_checks_linked_audio_assets_without_an_authored_layout() {
             project.clone(),
             dir.path(),
             Host {
-                backend: Box::new(BuiltinHost::new()),
+                backend: Box::new(App::headless_plugin_host()),
                 state: effect,
                 fixture: Fixture::Ready,
                 assets: Some(Snapshot {
@@ -962,7 +978,16 @@ fn the_localized_track_menu_opens_a_cancellable_flatten_dialog() {
     for (lang, name) in [(Lang::De, "flatten-wait-de"), (Lang::En, "flatten-wait-en")] {
         let dir = tempfile::tempdir().unwrap();
         let (project, track, effect) = fixture(None);
-        let app = app(project.clone(), dir.path(), effect, Fixture::Loading).with_lang(lang);
+        // The reference screenshots list the in-binary devices in the browser (#294 regenerates
+        // them from the packaged catalogue).
+        let app = app_on(
+            Box::new(BuiltinHost::new()),
+            project.clone(),
+            dir.path(),
+            effect,
+            Fixture::Loading,
+        )
+        .with_lang(lang);
         let mut h = komponist_ui::snapshot::builder::<App>(1.0)
             .with_size(vec2(1440.0, 900.0))
             .with_options(SnapshotOptions::new().output_path("tests/snapshots"))

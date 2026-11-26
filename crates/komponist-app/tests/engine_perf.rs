@@ -1,5 +1,6 @@
 //! Engine CPU in the real callback path (WP-61): the app on the null backend at 48 kHz / 256
-//! frames plays 16 hexa tracks, then the same with a kp-test-fx bridge on 8 of them. The
+//! frames plays 16 packaged Hexa tracks with a kp-test-fx bridge on 8 of them (the instruments
+//! alone are measured by `engine_perf/bundled.rs` from a verified package). The
 //! callback load is the time inside the audio callback over the buffer period (5.33 ms), read
 //! from `StreamStats` (smoothed mean, peak of single callbacks, overruns = callbacks longer than
 //! their period). Bridge waits count as callback time: that is what decides an xrun.
@@ -23,17 +24,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::*;
-use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost};
+use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::settings::Settings;
 use komponist_app::{Action, App, TransportAction};
 use komponist_audio::{AudioState, HostKind, StreamConfig};
 use komponist_engine::TransportState;
-use komponist_hexa::{encode_state, preset_patch, presets};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewNote, NewTrack};
-use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{
-    Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, Project, Tick, TickRange,
+    Device, DeviceId, DeviceRole, Document, PluginRef, Project, Tick, TickRange,
 };
 use komponist_plugins::PluginManagerEvent;
 
@@ -64,24 +63,17 @@ fn worker_counts() -> Vec<u32> {
         .unwrap_or_else(|| vec![0, 4])
 }
 
-fn hexa() -> PluginRef {
-    PluginRef {
-        format: PluginFormat::Builtin,
-        id: BUILTIN_HEXA.into(),
-        name: "Hexa".into(),
-        vendor: "klang-studio".into(),
-        version: "0.1.0".into(),
-        module: Box::default(),
-    }
-}
-
-/// 16 hexa tracks (presets E-Piano, Strings, Supersaw, Init in turn), each with a 4-bar
-/// looped clip: a four-note chord per half bar, held, plus a 1/16 line (up to ~8 voices per
-/// track, 128 in all); loop over the 4 bars. With `bridges`, the first 8 tracks get a kp-test-fx.
-fn project(bridges: bool) -> Project {
+/// 16 Hexa tracks (presets E-Piano, Strings, Supersaw, Init in turn) of the packaged `host`, each
+/// with a 4-bar looped clip: a four-note chord per half bar, held, plus a 1/16 line (up to ~8
+/// voices per track, 128 in all); loop over the 4 bars. With `bridges`, the first 8 tracks get a
+/// kp-test-fx.
+fn project(bridges: bool, host: &PluginHost) -> Project {
     project_with_hexa(bridges, |name| {
-        let preset = presets().find(|preset| preset.name == name).unwrap().index;
-        (hexa(), encode_state(&preset_patch(preset).unwrap()).into())
+        let hexa = host
+            .manager()
+            .prepare_bundled_device("org.klang-studio.komponist.hexa", Some(name), &[], &[])
+            .unwrap_or_else(|error| panic!("Hexa preset {name}: {error}"));
+        (hexa.plugin, hexa.state.expect("factory preset state"))
     })
 }
 
@@ -270,21 +262,6 @@ fn measure(name: &str, app: &mut App, buffer: u32, devices: &[DeviceId]) {
 
 #[test]
 #[ignore = "timing: run in release with --ignored --nocapture"]
-fn engine_cpu_16_hexa_tracks() {
-    for workers in worker_counts() {
-        let mut app = app(project(false), Box::new(BuiltinHost::new()), workers);
-        measure(
-            &format!("16 hexa tracks, {workers} workers"),
-            &mut app,
-            BUFFER,
-            &[],
-        );
-        app.shutdown();
-    }
-}
-
-#[test]
-#[ignore = "timing: run in release with --ignored --nocapture"]
 fn engine_cpu_16_hexa_tracks_and_8_bridges() {
     let Some(dirs) = fixture_dirs() else {
         return;
@@ -295,8 +272,7 @@ fn engine_cpu_16_hexa_tracks_and_8_bridges() {
 }
 
 fn bridges_case(dirs: &komponist_plugins::PluginDirs, workers: u32) {
-    let dir = scratch(&format!("engine-perf-{workers}"));
-    let mut host = PluginHost::with_reference_devices(config(&dir));
+    let mut host = App::headless_plugin_host();
     host.start_scan(dirs);
     let deadline = Instant::now() + PATIENCE;
     'scan: loop {
@@ -308,7 +284,7 @@ fn bridges_case(dirs: &komponist_plugins::PluginDirs, workers: u32) {
         assert!(Instant::now() < deadline, "scan");
         std::thread::sleep(Duration::from_millis(5));
     }
-    let mut app = app(project(true), Box::new(host), workers);
+    let mut app = app(project(true, &host), Box::new(host), workers);
     step_until(&mut app, "bridges", all_ok);
     let ids = bridged(app.project());
     measure(
@@ -356,7 +332,12 @@ fn engine_cpu_16_tracks_with_track_macros() {
     const RATE: f32 = 48_000.0;
     const BLOCKS: usize = 1_000;
     let measure = |mapped: bool| {
-        let mut project = project(false);
+        let mut project = project_with_hexa(false, |_| {
+            (
+                common::clap_plugin("org.klang-studio.komponist.hexa"),
+                Arc::from(&[][..]),
+            )
+        });
         for track in &mut project.tracks {
             let track = Arc::make_mut(track);
             let device = track.channel.devices[0].id;
