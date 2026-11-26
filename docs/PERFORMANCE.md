@@ -604,8 +604,9 @@ against the packaged payload, `--repeats` times (default 5), and the script prin
 
 - **Scan:** time from starting the catalog scan to `ScanFinished`, with an empty scan cache (cold: one
   `komponist --bridge --scan` subprocess per bundle) and with the cache of the cold run (warm).
-- **Load time:** from `create_processor` to `DeviceStatus::Ok` for each device in turn, which covers
-  the in-process `dlopen`, plugin init, activation and the first parameter and layout read.
+- **Load time:** per device from the start of `prepare_bundled_device` (which loads the library and keeps it
+  loaded) through `create_processor` to `DeviceStatus::Ok`, so it covers the `dlopen`, plugin init, activation and
+  the first parameter and layout read. Prepare and create are also reported separately.
 - **Memory:** resident set of the process before the first load and after each load. "Alone" is a
   process that loads only that device, so it includes the library's own pages; the all-twelve row
   is one process that loads every device. Shared pages of the system libraries are counted, so
@@ -618,28 +619,30 @@ Arch Linux, kernel 7.2.14-arch1-1, NVMe build folder), release build from a pack
 
 | | Result |
 |---|---|
-| Catalog scan, cold cache (12 bundles) | 78 ms |
+| Catalog scan, cold cache (12 bundles) | 77 ms |
 | Catalog scan, warm cache | 2 ms |
-| Load of all 12 devices in one process (`create_processor` to `Ok`, summed) | 42 ms |
-| Resident memory before loading | 11.6 MiB |
+| Load of all 12 devices in one process (library load, instance creation to `Ok`, summed) | 148 ms |
+| Resident memory before loading | 11.5 MiB |
 | Resident memory added by all 12 devices | +46.6 MiB |
 
-| Device | Load (alone) | Resident added (alone) |
-|---|---|---|
-| Hall | 2.2 ms | 3.9 MiB |
-| Delay | 3.0 ms | 5.2 MiB |
-| EQ | 2.8 ms | 4.2 MiB |
-| Presse | 2.3 ms | 3.9 MiB |
-| Limiter | 1.8 ms | 3.4 MiB |
-| Hexa | 5.0 ms | 5.3 MiB |
-| Volt | 4.6 ms | 5.0 MiB |
-| Surf | 5.8 ms | 16.6 MiB |
-| Klopfer | 6.4 ms | 5.4 MiB |
-| Sampler | 5.0 ms | 4.8 MiB |
-| Arpeggiator | 2.2 ms | 3.0 MiB |
-| Scale | 2.2 ms | 3.0 MiB |
+| Device | Load (alone) | of which prepare (library) | of which create | Resident added (alone) |
+|---|---|---|---|---|
+| Hall | 6.4 ms | 3.9 ms | 2.5 ms | 4.0 MiB |
+| Delay | 6.5 ms | 3.7 ms | 2.9 ms | 5.4 MiB |
+| EQ | 7.8 ms | 4.7 ms | 2.9 ms | 4.2 MiB |
+| Presse | 6.5 ms | 4.2 ms | 2.6 ms | 4.1 MiB |
+| Limiter | 5.4 ms | 3.5 ms | 1.8 ms | 3.6 MiB |
+| Hexa | 13.0 ms | 7.9 ms | 5.0 ms | 5.4 MiB |
+| Volt | 12.2 ms | 7.8 ms | 4.5 ms | 5.0 MiB |
+| Surf | 55.0 ms | 49.5 ms | 5.5 ms | 16.6 MiB |
+| Klopfer | 17.8 ms | 11.2 ms | 6.4 ms | 5.4 MiB |
+| Sampler | 14.3 ms | 9.3 ms | 4.7 ms | 4.9 MiB |
+| Arpeggiator | 6.2 ms | 4.0 ms | 2.3 ms | 3.2 MiB |
+| Scale | 6.0 ms | 3.8 ms | 2.2 ms | 3.2 MiB |
 
-Reading: loading twelve devices adds well under 0.1 s to the start and about 47 MiB (Surf, which carries its
-wavetable data, is a third of that), so there is no reason to load bundles lazily. The cold scan runs once per
+(An earlier run of this table started the clock after the library was loaded and reported 42 ms for all twelve; the
+memory figures did not change.)
+
+Reading: loading twelve devices adds about 0.15 s to the start and about 47 MiB (Surf is a third of that and the slowest to load at 55 ms), which is acceptable without loading bundles lazily. The cold scan runs once per
 install or bundle change; the warm figure is what every later start pays. The numbers are Linux x86_64 only; macOS
 and Windows run the same measurement from their packages (`--startup-memory`) and are not recorded here yet.

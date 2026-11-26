@@ -166,10 +166,11 @@ def run_startup(runner, environment, repeats):
     print(f"all {len(SLUGS)} devices: load {everything['load_total_ms']:.1f} ms, "
           f"resident +{everything.get('rss_delta_mib', float('nan')):.1f} MiB "
           f"(runner before loading: {everything.get('rss_base_mib', float('nan')):.1f} MiB)")
-    print("device | load ms (alone) | resident MiB added (alone)")
+    print("device | load ms (alone, prepare + create) | prepare ms | create ms | resident MiB added (alone)")
     for slug in SLUGS:
         row = table[slug]
-        print(f"{slug} | {row['load_ms']:.1f} | {row.get('rss_delta_mib', float('nan')):.1f}")
+        print(f"{slug} | {row['load_ms']:.1f} | {row['prepare_ms']:.1f} | {row['create_ms']:.1f} | "
+              f"{row.get('rss_delta_mib', float('nan')):.1f}")
 
 
 def run_staged(app, runner, digest, projects, repeats=5):

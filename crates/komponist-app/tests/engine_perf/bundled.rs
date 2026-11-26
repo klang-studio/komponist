@@ -254,7 +254,7 @@ fn mib_value(bytes: Option<u64>) -> String {
 }
 
 /// Start-up cost of the bundled devices, all hosted in-process (D11): the catalog scan with a
-/// cold and a warm cache, then the time from `create_processor` to `DeviceStatus::Ok` and the
+/// cold and a warm cache, then the time from `prepare_bundled_device` (library load) through `create_processor` to `DeviceStatus::Ok` and the
 /// resident memory added by each device. `KOMPONIST_PERF_STARTUP_DEVICES` is a comma-separated
 /// list of device slugs (`hexa,volt`); `all` loads every bundle. The lines starting with
 /// `startup:` and `device:` are read by `scripts/measure-bundled-clap.py --startup-memory`, which
@@ -324,10 +324,15 @@ fn bundled_clap_startup_and_memory() {
     let mut load_total = Duration::ZERO;
     for (index, slug) in slugs.iter().enumerate() {
         let id = format!("org.klang-studio.komponist.{slug}");
+        // `prepare_bundled_device` loads the library (and keeps it loaded), so the per-device
+        // interval starts before it; prepare and instance creation are also reported separately.
+        let before = memory::runner_resident();
+        let started = Instant::now();
         let prepared = host
             .manager()
             .prepare_bundled_device(&id, None, &[], &[])
             .unwrap_or_else(|error| panic!("{id}: {error}"));
+        let prepare = started.elapsed();
         let device = Device {
             id: DeviceId(index as u64 + 1),
             plugin: prepared.plugin,
@@ -338,8 +343,7 @@ fn bundled_clap_startup_and_memory() {
             state: prepared.state,
             sidechain: None,
         };
-        let before = memory::runner_resident();
-        let started = Instant::now();
+        let created = Instant::now();
         let processor = host
             .create_processor(&device, setup)
             .unwrap_or_else(|| panic!("{id} produced no processor"));
@@ -360,8 +364,10 @@ fn bundled_clap_startup_and_memory() {
             .zip(before)
             .map(|(after, before)| after.saturating_sub(before));
         eprintln!(
-            "device: {slug} load_ms={:.2} rss_delta_mib={}",
+            "device: {slug} load_ms={:.2} prepare_ms={:.2} create_ms={:.2} rss_delta_mib={}",
             elapsed.as_secs_f64() * 1e3,
+            prepare.as_secs_f64() * 1e3,
+            created.elapsed().as_secs_f64() * 1e3,
             mib_value(delta)
         );
         processors.push(processor);

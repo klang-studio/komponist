@@ -13,6 +13,9 @@
 # signtool is looked up on PATH and in "C:\Program Files (x86)\Windows Kits\10\bin\<version>\x64".
 # The signing path has not been run yet (no code signing certificate at the time of writing).
 set -euo pipefail
+# Git Bash (MSYS2) rewrites arguments that look like POSIX paths, which mangles SignTool's /fd, /pa ... options.
+# Switch the conversion off for every call below; the file paths already go through `cygpath -w`.
+export MSYS2_ARG_CONV_EXCL='*'
 
 if [ -z "${KOMPONIST_SIGN_CERT:-}" ] && [ -z "${KOMPONIST_SIGN_THUMBPRINT:-}" ]; then
     exit 0
