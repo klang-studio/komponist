@@ -1915,7 +1915,7 @@ impl PluginManager {
                 };
                 direct.service(*device, &mut self.pending);
                 if let Some(state) = direct.capture() {
-                    states.push((*device, state.into()));
+                    states.push((*device, state));
                     false
                 } else {
                     direct.awaits_snapshot()
