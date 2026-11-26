@@ -654,17 +654,32 @@ fn a_failed_load_or_a_hang_does_not_read_abgestuerzt_on_the_card() {
 
 #[test]
 fn a_missing_plugin_is_a_red_placeholder_that_keeps_its_state() {
-    // The built-in host knows only hexa: Lead's effects are missing (S06).
-    let mut app = App::headless(demo_project());
+    // The shipped instruments load while the external effects remain unknown.
+    let project = common::song_with_shipped_instruments(&App::headless_plugin_host());
+    let effect = project.tracks[2].channel.devices[1].id;
+    let state = std::sync::Arc::<[u8]>::from(&b"opaque effect state"[..]);
+    let project = edits::set_device_state(&project, effect, Some(state.clone())).unwrap();
+    let h = lead_devices(App::headless(project));
+    assert_missing_effect(&h);
+    assert_eq!(
+        h.state().project().find_device(effect).unwrap().2.state,
+        Some(state)
+    );
+}
+
+fn lead_devices(mut app: App) -> Harness<'static, App> {
     let lead = app.project().tracks[2].id;
     app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
         tracks: vec![lead],
         mode: SelectMode::Replace,
     })));
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
-    let mut h = harness(app);
+    harness(app)
+}
+
+fn assert_missing_effect(h: &Harness<'_, App>) {
     let label = Lang::De.devices_card("LSP Para EQ x8");
-    let eq = card(&h, &label);
+    let eq = card(h, &label);
     eq.get_by_role_and_label(Role::Label, de::DEVICES_MISSING);
     eq.get_by_role_and_label(Role::Label, de::DEVICES_MISSING_TEXT);
     assert!(eq.query_by_role(Role::Slider).is_none());
@@ -672,6 +687,12 @@ fn a_missing_plugin_is_a_red_placeholder_that_keeps_its_state() {
         eq.query_by_role_and_label(Role::Button, de::DEVICES_OPEN)
             .is_none()
     );
+}
+
+#[test]
+fn snapshot_of_the_missing_effect_card() {
+    let mut h = lead_devices(common::reference_app(demo_project()));
+    assert_missing_effect(&h);
     h.run_steps(1);
     let mut results = SnapshotResults::new();
     mask_cpu(&mut h);
@@ -977,10 +998,18 @@ mod add_menu {
             .unwrap_or_else(|| panic!("build {id} with scripts/build-test-plugins.sh"))
     }
 
-    /// A project with one Hexa track, with the Devices dock showing the shipped inventory.
     fn app_with_track() -> (App, TrackId) {
-        let mut app = App::headless(Project::new("Menü"));
+        let app = App::headless(Project::new("Menü"));
         let hexa = shipped(&app, "hexa");
+        open_devices_track(app, hexa)
+    }
+
+    fn reference_app_with_track() -> (App, TrackId) {
+        let app = common::reference_app(Project::new("Menü"));
+        open_devices_track(app, komponist_app::app::hexa_ref())
+    }
+
+    fn open_devices_track(mut app: App, hexa: PluginRef) -> (App, TrackId) {
         app.dispatch(Action::Plugin(PluginAction::Add {
             plugin: hexa,
             target: DropTarget::NewTrack { index: None },
@@ -1269,7 +1298,7 @@ mod add_menu {
 
     #[test]
     fn snapshot_of_the_open_menu() {
-        let (app, _) = app_with_track();
+        let (app, _) = reference_app_with_track();
         let mut h = harness(app);
         open_by_click(&mut h);
         type_text(&mut h, "e");
@@ -1282,7 +1311,7 @@ mod add_menu {
 
     #[test]
     fn snapshot_of_the_hovered_slot() {
-        let (app, _) = app_with_track();
+        let (app, _) = reference_app_with_track();
         let mut h = harness(app);
         let at = slot(&h).rect().center();
         h.hover_at(at);
@@ -1331,7 +1360,7 @@ mod add_menu {
 
     #[test]
     fn snapshot_of_the_menu_at_the_header_button() {
-        let (app, _) = app_with_track();
+        let (app, _) = reference_app_with_track();
         let mut h = harness(app);
         let button = h
             .get_by_role_and_label(Role::Button, de::DEVICES_ADD)

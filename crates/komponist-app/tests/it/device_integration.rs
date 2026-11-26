@@ -112,10 +112,11 @@ fn select_track(app: &mut App, track: TrackId) {
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
 }
 
-/// One hexa track with a Hall behind it, the dock on „Geräte“.
-fn app_with_hall() -> (App, TrackId, DeviceId) {
-    let mut app = App::headless(Project::new("Intern"));
-    let hexa = shipped(&app, "hexa");
+fn add_hall_track(
+    mut app: App,
+    hexa: komponist_model::PluginRef,
+    hall: komponist_model::PluginRef,
+) -> (App, TrackId, DeviceId) {
     app.dispatch(Action::Plugin(PluginAction::Add {
         plugin: hexa,
         target: DropTarget::NewTrack { index: None },
@@ -123,12 +124,40 @@ fn app_with_hall() -> (App, TrackId, DeviceId) {
     let track = app.project().tracks[0].id;
     select_track(&mut app, track);
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: shipped(&app, "hall"),
+        plugin: hall,
         target: DropTarget::Track(track),
     }));
-    let hall = chain(&app, track)[1].0;
+    let device = chain(&app, track)[1].0;
+    (app, track, device)
+}
+
+/// A shipped Hexa and Hall on one track for the device interaction tests.
+fn app_with_hall() -> (App, TrackId, DeviceId) {
+    let app = App::headless(Project::new("Intern"));
+    let hexa = shipped(&app, "hexa");
+    let hall = shipped(&app, "hall");
+    let (mut app, track, hall) = add_hall_track(app, hexa, hall);
     wait_for_layout(&mut app, hall);
     (app, track, hall)
+}
+
+/// The original cards and catalog behind the Linux parameter and mapping references.
+fn reference_app_with_hall() -> (App, TrackId, DeviceId) {
+    let app = crate::common::reference_app(Project::new("Intern"));
+    let plugin = |id| {
+        app.engine()
+            .host()
+            .catalog()
+            .entries()
+            .iter()
+            .find(|entry| entry.plugin.id == id)
+            .unwrap()
+            .plugin
+            .clone()
+    };
+    let hexa = komponist_app::app::hexa_ref();
+    let hall = plugin("hall");
+    add_hall_track(app, hexa, hall)
 }
 
 fn shipped(app: &App, slug: &str) -> komponist_model::PluginRef {
@@ -771,7 +800,7 @@ fn mask_cpu(h: &mut Harness<'_, App>) {
 
 #[test]
 fn snapshot_of_a_touched_parameter_with_its_context_menu() {
-    let (app, _, _) = app_with_hall();
+    let (app, _, _) = reference_app_with_hall();
     let mut h = harness(app);
     h.run_steps(30);
     let decay = knob(&h, "Decay");
@@ -833,7 +862,7 @@ fn snapshot_of_the_fm_display_with_free_routing() {
         },
     )
     .unwrap();
-    let mut app = App::headless(project).with_device_host(Box::new(FakeHost::new()));
+    let mut app = crate::common::reference_app(project);
     select_track(&mut app, track);
     let mut h = harness(app);
     h.run_steps(30);
@@ -881,7 +910,7 @@ fn snapshot_of_the_fm_display_with_a_cycle() {
         },
     )
     .unwrap();
-    let mut app = App::headless(project).with_device_host(Box::new(FakeHost::new()));
+    let mut app = crate::common::reference_app(project);
     select_track(&mut app, track);
     let mut h = harness(app);
     h.run_steps(30);
@@ -981,7 +1010,7 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
 
     let mut results = SnapshotResults::new();
     for lang in Lang::ALL {
-        let (app, track, hall) = app_with_hall();
+        let (app, track, hall) = reference_app_with_hall();
         let mut h = harness(app.with_lang(lang));
         let snapshot = |h: &mut Harness<'_, App>, name: &str| {
             let cpu = h
@@ -991,11 +1020,9 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
             h.snapshot(format!("track-macro-{name}-{}-1x", lang.code()));
         };
         snapshot(&mut h, "card");
-        let decay = decay_parameter(h.state(), hall);
-        let mix = ParamId::plugin(author_parameter(h.state(), hall, "mix"));
-        let knob_target = |param| AutomationTarget::Param {
+        let knob_target = |id| AutomationTarget::Param {
             device: hall,
-            param,
+            param: ParamId::new(id),
         };
         h.state_mut().dispatch(Action::Macro(Macro::Rename {
             track,
@@ -1007,7 +1034,7 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
         h.state_mut().dispatch(Action::Macro(Macro::Map {
             track,
             index: 0,
-            target: knob_target(decay),
+            target: knob_target("decay"),
         }));
         h.run_steps(3);
         snapshot(&mut h, "mapping");
@@ -1018,12 +1045,12 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
         h.state_mut().dispatch(Action::Macro(Macro::Map {
             track,
             index: 0,
-            target: knob_target(mix.clone()),
+            target: knob_target("mix"),
         }));
         h.state_mut().dispatch(Action::Macro(Macro::Bend {
             track,
             index: 0,
-            target: knob_target(mix.clone()),
+            target: knob_target("mix"),
             bend: 0.4,
         }));
         h.run_steps(3);
@@ -1048,7 +1075,7 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
         results.extend_harness(&mut h);
 
         let missing = Mapping {
-            target: knob_target(ParamId::plugin(u32::MAX - 1)),
+            target: knob_target("removed-param"),
             label: "Hall · Former target".into(),
             min: 0.0,
             max: 1.0,
@@ -1056,7 +1083,7 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
             bend: 0.0,
         };
         let project = edits::macros::add_mapping(h.state().project(), track, 0, missing).unwrap();
-        let mut app = App::headless(project).with_lang(lang);
+        let mut app = crate::common::reference_app(project).with_lang(lang);
         select_track(&mut app, track);
         app.dispatch(Action::Macro(Macro::Select { track, index: 0 }));
         let mut missing = harness(app);
