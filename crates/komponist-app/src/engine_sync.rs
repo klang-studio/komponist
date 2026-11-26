@@ -1596,9 +1596,10 @@ impl EngineSync {
         let mut done = 0;
         while done < frames {
             let n = HELD_BLOCK.min(frames - done);
-            for frame in engine.render(n).chunks_exact(2) {
-                out.0.push(frame[0]);
-                out.1.push(frame[1]);
+            let (frames_out, _) = engine.render(n).as_chunks::<2>();
+            for &[left, right] in frames_out {
+                out.0.push(left);
+                out.1.push(right);
             }
             done += n;
         }
