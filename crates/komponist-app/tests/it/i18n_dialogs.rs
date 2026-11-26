@@ -396,8 +396,11 @@ fn a_new_project_and_the_template_are_named_in_english() {
     assert_eq!(new_project::empty_project(Lang::En).name, "Untitled");
     assert_eq!(new_project::empty_project(Lang::De).name, "Unbenannt");
     let p = {
-        let (drums, hexa) =
-            new_project::template_instruments(&komponist_plugins::Catalog::builtin()).unwrap();
+        let host = App::headless_plugin_host();
+        let (drums, hexa) = new_project::template_instruments(
+            komponist_app::device_host::DeviceHost::catalog(&host),
+        )
+        .unwrap();
         new_project::template(Lang::En, drums, hexa)
     };
     assert_eq!(p.name, "Beat Sketch");

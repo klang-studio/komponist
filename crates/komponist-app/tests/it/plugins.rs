@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use assert_no_alloc::assert_no_alloc;
 use common::*;
 use komponist_app::actions::{PluginAction, ProjectAction, TransportAction};
-use komponist_app::device_host::{DeviceHost, PluginHost, is_hexa};
+use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::ui_state::StatusKind;
 use komponist_app::{Action, App};
 use komponist_engine::compile::{self, CompileEnv};
@@ -339,96 +339,11 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
     assert!(!app.doc().is_dirty());
     let saved = persist::from_json(&std::fs::read_to_string(&file).unwrap()).unwrap();
     for (_, device) in devices(&saved) {
-        if is_hexa(&device) {
-            assert_eq!(device.state, None);
-        } else {
-            assert!(
-                device.state.is_some(),
-                "{} without state",
-                device.plugin.name
-            );
-        }
-    }
-    app.shutdown();
-}
-
-/// The demo with the plugins installed on this machine: the Sampler, Surge XT and Dexed load (the
-/// latter two sound), the others (Vital, LSP, Dragonfly, TAL) stay `Missing` with their state.
-/// Run with `cargo test -p komponist-app --test it plugins:: -- --ignored` (scans the default folders
-/// into a scratch cache; Surge XT may take seconds to load).
-#[test]
-#[ignore = "needs Surge XT and Dexed installed"]
-fn the_demo_plays_the_installed_plugins() {
-    let dir = scratch("installed");
-    let config = config(&dir);
-    let mut project = komponist_model::fixtures::demo_project();
-    // A state blob for every device that is not installed here, to see it kept.
-    let blob: Arc<[u8]> = Arc::from(&b"komponist test state \x00\x01\x02"[..]);
-    let installed = ["Hexa", "Klopfer", "Surge XT", "Dexed"];
-    for track in &mut project.tracks {
-        for device in &mut Arc::make_mut(track).channel.devices {
-            if !installed.contains(&device.plugin.name.as_str()) {
-                Arc::make_mut(device).state = Some(Arc::clone(&blob));
-            }
-        }
-    }
-    let file = dir.join("Night Drive.komponist");
-    std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
-    let mut app = app_with(
-        komponist_model::fixtures::empty_project(),
-        PluginHost::with_reference_devices(config),
-    );
-    app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
-    app.step();
-    app.engine_mut()
-        .host_mut()
-        .start_scan(&PluginDirs::defaults());
-    let settled = |app: &App| {
-        !app.engine().host().is_scanning()
-            && statuses(app)
-                .iter()
-                .all(|(_, _, s)| matches!(s, DeviceStatus::Ok | DeviceStatus::Missing))
-    };
-    step_until(&mut app, "all installed plugins loaded", settled);
-    for (_, name, status) in statuses(&app) {
-        let expected = if installed.contains(&name.as_str()) {
-            DeviceStatus::Ok
-        } else {
-            DeviceStatus::Missing
-        };
-        assert_eq!(status, expected, "{name}");
-    }
-    let missing = app.engine().host().missing_plugins(app.project());
-    assert_eq!(missing.len(), 8, "{missing:?}");
-
-    app.dispatch(Action::Transport(TransportAction::Locate(bar_5())));
-    app.dispatch(Action::Transport(TransportAction::TogglePlay));
-    // Surge XT and Dexed play; the Sampler without samples stays silent, so Drums only has to be
-    // `Ok`.
-    let pad = track_named(app.project(), "Pad");
-    let pad_level = level(&mut app, pad, Duration::from_secs(2));
-    let keys = track_named(app.project(), "Keys");
-    let (l, r) = app.engine().track_meter(keys).unwrap().take();
-    eprintln!(
-        "Pad (Surge XT): peak {pad_level:.3}, Keys (Dexed): peak {:.3}",
-        l.max(r)
-    );
-    assert!(pad_level > 0.01, "Pad (Surge XT) is silent");
-    assert!(l.max(r) > 0.01, "Keys (Dexed) is silent");
-    app.dispatch(Action::Transport(TransportAction::TogglePlay));
-
-    // The missing devices' states survive a save byte for byte.
-    app.dispatch(Action::Project(ProjectAction::Save));
-    let saved = persist::from_json(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    for (_, device) in devices(&saved) {
-        if !installed.contains(&device.plugin.name.as_str()) {
-            assert_eq!(
-                device.state.as_deref(),
-                Some(&blob[..]),
-                "{}",
-                device.plugin.name
-            );
-        }
+        assert!(
+            device.state.is_some(),
+            "{} without state",
+            device.plugin.name
+        );
     }
     app.shutdown();
 }

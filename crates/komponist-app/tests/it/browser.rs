@@ -499,68 +499,7 @@ fn a_row_dragged_onto_the_empty_area_makes_a_track() {
 }
 
 // ------------------------------------------------------------------------------------------------
-// Presets · hexa, Projekt (takes)
-
-#[test]
-fn a_preset_loads_into_the_selected_tracks_hexa() {
-    let mut app = app();
-    select_track(&mut app, 2);
-    let device = app.project().tracks[2].channel.devices[0].id;
-    let before = app.project().tracks[2].channel.devices[0].state.clone();
-    let mut h = harness(app);
-    let r = h.get_by_role_and_label(Role::ListItem, "Tasten").rect();
-    click_at(&mut h, r.center());
-    let first = komponist_hexa::presets()
-        .find(|p| p.category == "Tasten")
-        .unwrap();
-    let preset = h.get_by_role_and_label(Role::ListItem, first.name).rect();
-    double_click(&mut h, preset.center());
-    assert!(h.state().dispatched().any(|a| *a
-        == Action::Plugin(PluginAction::ApplyClapPreset {
-            device,
-            source: komponist_plugins::presets::legacy_source(first.index)
-        })));
-    let after = h.state().project().tracks[2].channel.devices[0]
-        .state
-        .clone();
-    assert_ne!(before, after);
-    // Undoable.
-    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
-    assert_eq!(
-        h.state().project().tracks[2].channel.devices[0].state,
-        before
-    );
-}
-
-#[test]
-fn a_preset_without_a_hexa_on_the_selected_track_makes_a_new_hexa_track() {
-    let mut app = app();
-    // Pad plays Surge XT: no hexa there.
-    select_track(&mut app, 3);
-    let tracks = app.project().tracks.len();
-    let mut h = harness(app);
-    let r = h.get_by_role_and_label(Role::ListItem, "Tasten").rect();
-    click_at(&mut h, r.center());
-    let first = komponist_hexa::presets()
-        .find(|p| p.category == "Tasten")
-        .unwrap();
-    let preset = h.get_by_role_and_label(Role::ListItem, first.name).rect();
-    double_click(&mut h, preset.center());
-    h.run_steps(2);
-    let p = h.state().project().clone();
-    assert_eq!(p.tracks.len(), tracks + 1);
-    let new = p.tracks.last().unwrap();
-    let device = &new.channel.devices[0];
-    assert_eq!(
-        device.state.as_deref(),
-        Some(&*komponist_hexa::encode_state(
-            &komponist_hexa::preset_patch(first.index).unwrap()
-        ))
-    );
-    // One undo step removes the track again.
-    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
-    assert_eq!(h.state().project().tracks.len(), tracks);
-}
+// Projekt (takes)
 
 #[test]
 fn takes_are_listed_and_open_their_clip() {

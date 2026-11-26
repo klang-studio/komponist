@@ -2015,26 +2015,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bundled_hexa_carriers_follow_the_graph_after_an_algorithm_edit() {
-        let mut card = card();
-        card.bundled_editor = true;
-        let patch = komponist_hexa::preset_patch(1).unwrap();
-        card.routing = Some(komponist_hexa::algorithms::routing(&patch));
-        let info = komponist_hexa::Macro::Algorithm.param_info();
-        card.params.push(Param {
-            wire: 110,
-            info,
-            value: 7.0,
-            text: String::new(),
-        });
-        // E-Piano initially has operator 5 as a carrier. Fixed algorithm 7 uses 1 and 3.
-        let cell = Cell::knob(0, 0, ParamId::new("op5_level")).carrier(ParamId::new("op5_output"));
-        assert!(!carrier(&card, &cell));
-        card.params.last_mut().unwrap().value = 0.0;
-        assert!(carrier(&card, &cell));
-    }
-
     /// A card with one cell of every kind that edits a parameter.
     fn card() -> Card {
         let id = |w: u32| ParamId::new(format!("p{w}"));
@@ -3841,29 +3821,92 @@ mod tests {
     }
     // --- The compressor card (WP-93) ----------------------------------------------------------
 
-    /// The card of `presse` with its real layout and the parameters at `set` (by id) over the
-    /// defaults, and the live data `dynamics`.
+    /// The card of the shipped `presse` as the host reports it (native layout and parameters), the
+    /// parameters at `set` (by author key, plain values) over the defaults, and the live data
+    /// `dynamics`.
     fn presse_card(set: &[(&str, f64)], dynamics: Option<crate::gain_trace::Dynamics>) -> Card {
-        let kind = komponist_builtin::Internal::Presse;
-        let mut card = graph_card();
-        card.params = kind
-            .params()
+        use crate::device_host::DeviceHost as _;
+        use std::time::{Duration, Instant};
+
+        let mut host = crate::app::App::headless_plugin_host();
+        let plugin = host
+            .catalog()
+            .entries()
             .iter()
-            .enumerate()
-            .map(|(i, info)| {
-                let value = set
-                    .iter()
-                    .find(|(k, _)| *k == info.id.as_str())
-                    .map_or(info.default, |(_, v)| *v);
-                Param {
-                    wire: i as u32,
-                    text: info.format(value),
-                    info: info.clone(),
-                    value,
-                }
+            .find(|entry| {
+                entry.plugin.id == "org.klang-studio.komponist.presse"
+                    && komponist_plugins::requires_bundled(&entry.plugin)
             })
-            .collect();
-        card.layout = kind.layout().clone();
+            .expect("build the bundles with scripts/build-test-plugins.sh")
+            .plugin
+            .clone();
+        let device = komponist_model::Device {
+            id: komponist_model::DeviceId(1),
+            role: komponist_model::DeviceRole::Effect,
+            plugin,
+            bypass: false,
+            parameter_bases: Default::default(),
+            asset_links: Default::default(),
+            state: None,
+            sidechain: None,
+        };
+        let _ = host.create_processor(
+            &device,
+            komponist_plugins::ProcessorSetup {
+                sample_rate: 48_000.0,
+                max_block: 256,
+            },
+        );
+        let wait =
+            |host: &mut crate::device_host::PluginHost,
+             what: &str,
+             mut done: Box<dyn FnMut(&crate::device_host::PluginHost) -> bool>| {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while !done(host) {
+                    host.poll();
+                    assert!(Instant::now() < deadline, "no {what}");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            };
+        wait(
+            &mut host,
+            "native layout of the Presse",
+            Box::new(|host| {
+                host.status(device.id) == komponist_plugins::DeviceStatus::Ok
+                    && host.native_layout(device.id).is_some()
+                    && host.params(device.id).is_some()
+            }),
+        );
+        let layout = host.native_layout(device.id).unwrap().clone();
+        let ids = layout.author_ids().unwrap();
+        for (key, plain) in set {
+            let id = ids[*key];
+            let value = match layout.parameter_display(id) {
+                None => *plain,
+                Some(display) => {
+                    let (min, max) = display.range();
+                    match display.steps {
+                        Some(steps) => (((plain - min) / (max - min)) * f64::from(steps)).round(),
+                        None => komponist_model::params::to_normalized(
+                            display.scale.model_scale(),
+                            min,
+                            max,
+                            *plain,
+                        ),
+                    }
+                }
+            };
+            assert!(host.set_param(device.id, id, value));
+            wait(
+                &mut host,
+                "parameter edit",
+                Box::new(move |host| {
+                    host.param_base(device.id, id)
+                        .is_some_and(|base| (base - value).abs() < 1e-6)
+                }),
+            );
+        }
+        let mut card = crate::views::devices::model::card(Lang::De, &device, &host, &[]);
         card.dynamics = dynamics;
         card
     }
@@ -3964,31 +4007,23 @@ mod tests {
     }
 
     #[test]
-    fn waves_are_icons_by_choice_index_in_every_language() {
-        use komponist_builtin::Internal;
-        use komponist_i18n::Lang;
-        for lang in Lang::ALL {
-            let info = |key: &str| {
-                Internal::Volt
-                    .params_in(lang)
-                    .iter()
-                    .find(|i| i.id.as_str() == key)
-                    .unwrap_or_else(|| panic!("volt has {key}"))
-                    .clone()
-            };
-            let param = |key: &str| Param {
-                wire: 0,
-                text: String::new(),
-                info: info(key),
-                value: 0.0,
-            };
-            for key in ["osc_a_wave", "osc_b_wave", "lfo1_shape", "lfo2_shape"] {
-                let p = param(key);
-                let waves: Vec<bool> = (0..6).map(|i| wave_of(&p, i).is_some()).collect();
-                assert_eq!(waves[..4], [true; 4], "{key} in {lang:?}");
-                assert!(!waves[4], "choice 5 is not a wave");
-            }
-            assert!(wave_of(&param("filter_type"), 0).is_none());
+    fn waves_are_icons_by_choice_index() {
+        let choices: Vec<String> = ["A", "B", "C", "D", "E", "F"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let param = |key: &str| Param {
+            wire: 0,
+            text: String::new(),
+            info: ParamInfo::new(key, key, ParamKind::Enum(choices.clone()), 0.0),
+            value: 0.0,
+        };
+        for key in ["osc_a_wave", "osc_b_wave", "lfo1_shape", "lfo2_shape"] {
+            let p = param(key);
+            let waves: Vec<bool> = (0..6).map(|i| wave_of(&p, i).is_some()).collect();
+            assert_eq!(waves[..4], [true; 4], "{key}");
+            assert!(!waves[4], "choice 5 is not a wave");
         }
+        assert!(wave_of(&param("filter_type"), 0).is_none());
     }
 }

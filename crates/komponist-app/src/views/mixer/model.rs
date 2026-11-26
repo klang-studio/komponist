@@ -386,29 +386,66 @@ mod tests {
         assert_eq!(detail(SlotState::Unresponsive), "hängt");
     }
 
-    /// A builtin host that has seen every device of `p` (unknown devices report `Ok`).
-    fn host_for(p: &komponist_model::Project) -> BuiltinHost {
-        let mut host = BuiltinHost::new();
-        for t in &p.tracks {
-            for d in &t.channel.devices {
-                let _ = host.create_processor(
-                    d,
-                    komponist_plugins::ProcessorSetup {
-                        sample_rate: 48_000.0,
-                        max_block: 256,
-                    },
-                );
-            }
+    /// The demo with the shipped Hexa on its Lead track: the one device the packaged test host knows.
+    fn demo_with_shipped_lead() -> komponist_model::Project {
+        use crate::device_host::DeviceHost as _;
+        let host = crate::app::App::headless_plugin_host();
+        let hexa = host
+            .catalog()
+            .entries()
+            .iter()
+            .find(|entry| {
+                entry.plugin.id == "org.klang-studio.komponist.hexa"
+                    && komponist_plugins::requires_bundled(&entry.plugin)
+            })
+            .expect("build the bundles with scripts/build-test-plugins.sh")
+            .plugin
+            .clone();
+        let mut project = komponist_model::fixtures::demo_project();
+        let track = std::sync::Arc::make_mut(&mut project.tracks[2]);
+        std::sync::Arc::make_mut(&mut track.channel.devices[0]).plugin = hexa;
+        project
+    }
+
+    /// The packaged test host that has seen every device of `p` and loaded the shipped ones; the
+    /// catalog does not know the demo's other plugins, so they report `Missing`.
+    fn host_for(p: &komponist_model::Project) -> crate::device_host::PluginHost {
+        use crate::device_host::DeviceHost as _;
+        let mut host = crate::app::App::headless_plugin_host();
+        let devices: Vec<_> = p
+            .tracks
+            .iter()
+            .flat_map(|t| t.channel.devices.iter())
+            .collect();
+        for d in &devices {
+            let _ = host.create_processor(
+                d,
+                komponist_plugins::ProcessorSetup {
+                    sample_rate: 48_000.0,
+                    max_block: 256,
+                },
+            );
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while devices
+            .iter()
+            .any(|d| host.status(d.id) == komponist_plugins::DeviceStatus::Loading)
+        {
+            host.poll();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the shipped Hexa loads"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
         host
     }
-    use crate::device_host::BuiltinHost;
     use komponist_model::edits::{self, ChannelProp, TrackProp};
     use komponist_model::fixtures::demo_project;
 
     #[test]
     fn the_demo_has_six_strips_and_the_master() {
-        let p = demo_project();
+        let p = demo_with_shipped_lead();
         let lead = p.tracks[2].id;
         let strips = strips(Lang::De, &p, &BTreeSet::from([lead]), &host_for(&p));
         let names: Vec<&str> = strips.iter().map(|s| s.name.as_str()).collect();
@@ -442,7 +479,7 @@ mod tests {
         let drums = p.tracks[0].id;
         let p = edits::set_track_prop(&p, &[drums], TrackProp::Channel(ChannelProp::Solo(true)))
             .unwrap();
-        let strips = strips(Lang::De, &p, &BTreeSet::new(), &BuiltinHost::new());
+        let strips = strips(Lang::De, &p, &BTreeSet::new(), &host_for(&p));
         assert!(!strips[0].dim && !strips[0].implied);
         assert!(strips[1].dim && strips[1].implied);
         // Arp is muted itself, not by the solo.

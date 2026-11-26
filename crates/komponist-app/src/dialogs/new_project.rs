@@ -210,7 +210,9 @@ mod tests {
 
     #[test]
     fn the_template_has_a_sampler_beat_and_two_hexa_tracks() {
-        let (drums, hexa) = template_instruments(&Catalog::builtin()).unwrap();
+        let host = crate::app::App::headless_plugin_host();
+        let (drums, hexa) =
+            template_instruments(crate::device_host::DeviceHost::catalog(&host)).unwrap();
         let p = template(Lang::De, drums.clone(), hexa.clone());
         assert_eq!(p.name, "Beat-Skizze");
         assert_eq!(template(Lang::En, drums, hexa).name, "Beat Sketch");
@@ -223,7 +225,11 @@ mod tests {
             .iter()
             .map(|t| t.channel.devices[0].plugin.id.as_str())
             .collect();
-        assert_eq!(instruments, ["sampler", "hexa", "hexa"]);
+        let packaged = |name: &str| format!("org.klang-studio.komponist.{name}");
+        assert_eq!(
+            instruments,
+            [packaged("sampler"), packaged("hexa"), packaged("hexa")]
+        );
         let ClipContent::Step(steps) = &p.tracks[0].clips[0].content else {
             panic!("the beat is a step clip");
         };
