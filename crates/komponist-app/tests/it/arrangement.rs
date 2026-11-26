@@ -3,6 +3,7 @@
 //! snapshot of the demo project next to S01, and the frame time with 200 clips / 10 000 notes.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egui::accesskit::Role;
@@ -16,7 +17,9 @@ use komponist_app::{Action, App, EditAction, TransportAction, UiAction};
 use komponist_engine::Processor;
 use komponist_i18n::{Lang, de};
 use komponist_model::fixtures::demo_project;
-use komponist_model::{ClipId, Device, DeviceId, DeviceRole, Project, Tick, TrackId};
+use komponist_model::{ClipId, Device, DeviceId, DeviceRole, PluginRef, Project, Tick, TrackId};
+
+use crate::common::song_with_shipped_instruments;
 use komponist_plugins::{DeviceStatus, PluginManagerEvent, ProcessorSetup};
 
 const W: f32 = 1920.0;
@@ -26,8 +29,7 @@ fn snapshot_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots")
 }
 
-/// The built-in host, but every device reports `Ok` (the screens show the third-party
-/// instruments as installed).
+/// The reference screens show external instruments as installed, even without those bundles.
 struct AllInstalled(BuiltinHost);
 
 impl DeviceHost for AllInstalled {
@@ -76,8 +78,17 @@ fn harness(app: App) -> Harness<'static, App> {
     h
 }
 
+fn hexa(app: &App) -> PluginRef {
+    crate::common::shipped_plugin(app.engine().host(), "org.klang-studio.komponist.hexa")
+        .expect("build the Hexa fixture with scripts/build-test-plugins.sh")
+}
+
+fn reference_demo() -> App {
+    crate::common::reference_app(demo_project())
+}
+
 fn demo() -> App {
-    App::headless(demo_project())
+    App::headless(song_with_shipped_instruments(&App::headless_plugin_host()))
 }
 
 fn project(h: &Harness<'_, App>) -> Project {
@@ -200,7 +211,7 @@ fn undo(h: &mut Harness<'_, App>) {
 
 /// The S01 state: Lead A open in the piano roll, playhead at 10.2.120, every device installed.
 fn s01() -> App {
-    let mut app = demo().with_device_host(Box::new(AllInstalled(BuiltinHost::new())));
+    let mut app = reference_demo().with_device_host(Box::new(AllInstalled(BuiltinHost::new())));
     let lead = app.project().tracks[2].clone();
     app.dispatch(Action::Ui(UiAction::OpenClip(lead.clips[0].id)));
     app.dispatch(Action::Transport(TransportAction::Locate(Tick(36_000))));
@@ -528,7 +539,7 @@ fn ctrl_t_adds_a_midi_track_and_delete_removes_selected_tracks() {
 fn an_instrument_dropped_on_the_empty_area_makes_an_armed_track() {
     let mut h = harness(demo());
     let below = lead_header(&h).left_bottom() + vec2(300.0, 300.0);
-    drop_plugin(komponist_app::app::hexa_ref(), below, &mut h);
+    drop_plugin(hexa(h.state()), below, &mut h);
     let p = project(&h);
     assert_eq!(p.tracks.len(), 7);
     assert!(p.tracks[6].arm);
@@ -548,7 +559,7 @@ fn an_instrument_dropped_on_a_header_replaces_the_instrument() {
     let mut h = harness(demo());
     let keys = header_rect(&h, "Spur Keys, Plugin fehlt: Dexed");
     let keys_id = track_id(&h, 4);
-    drop_plugin(komponist_app::app::hexa_ref(), on_header(keys), &mut h);
+    drop_plugin(hexa(h.state()), on_header(keys), &mut h);
     let p = project(&h);
     assert_eq!(p.tracks.len(), 6);
     let t = p.track(keys_id).unwrap();
@@ -1156,7 +1167,7 @@ fn the_grid_dropdown_changes_the_lane_grid_lines() {
 fn snapshots_of_the_arrangement_grid() {
     let mut results = SnapshotResults::new();
     for px_per_bar in [72.0, 288.0] {
-        let mut app = demo();
+        let mut app = reference_demo();
         app.ui_mut().arrangement.px_per_bar = px_per_bar;
         app.ui_mut().arrangement.grid = komponist_model::Grid::Sixteenth;
         let mut h = harness(app);
@@ -1255,7 +1266,7 @@ fn an_empty_project_shows_the_hint_and_its_primary_action() {
 #[test]
 fn snapshot_of_an_empty_project_next_to_s10() {
     let mut h = harness_at(
-        App::headless(komponist_model::fixtures::empty_project()),
+        crate::common::reference_app(komponist_model::fixtures::empty_project()),
         1.0,
     );
     h.run_steps(3);
@@ -1359,7 +1370,7 @@ mod new_track {
     fn one_track_with_hexa_is_what_a_drop_makes() {
         let mut dropped = harness(demo());
         let at = new_track_box(&dropped).center();
-        drop_plugin(komponist_app::app::hexa_ref(), at, &mut dropped);
+        drop_plugin(hexa(dropped.state()), at, &mut dropped);
         assert!(!dialog_open(&dropped), "a drop does not open the dialog");
 
         let mut h = harness(demo());
@@ -1494,14 +1505,14 @@ mod new_track {
     #[test]
     fn snapshots_of_the_box_and_the_dialog() {
         let mut results = SnapshotResults::new();
-        let mut h = harness(demo());
+        let mut h = harness(reference_demo());
         let at = new_track_box(&h).center();
         h.event(Event::PointerMoved(at));
         h.run_steps(3);
         mask_cpu(&mut h);
         h.snapshot("arrangement-new-track-hover-1x");
         results.extend_harness(&mut h);
-        let mut h = harness(demo());
+        let mut h = harness(reference_demo());
         open_by_click(&mut h);
         h.run_steps(3);
         mask_cpu(&mut h);
@@ -1709,7 +1720,6 @@ fn audio_trimming_out_and_back_restores_covered_material() {
 #[test]
 fn audio_left_trim_out_and_back_restores_covered_material() {
     use komponist_model::edits::{self, NewClip, NewClipContent};
-    use std::sync::Arc;
     let (mut p, id) = audio_project();
     let track = Arc::make_mut(&mut p.tracks[0]);
     let main = Arc::make_mut(&mut track.clips[0]);
@@ -1980,7 +1990,7 @@ fn opening_an_offscreen_automation_lane_reveals_its_drop_target() {
     use komponist_model::automation::{AutomationOwner, AutomationTarget};
     use komponist_model::edits::{self, TrackProp};
 
-    let project = demo_project();
+    let project = song_with_shipped_instruments(&App::headless_plugin_host());
     let tracks: Vec<_> = project.tracks.iter().map(|track| track.id).collect();
     let &track = tracks.last().unwrap();
     let project = edits::set_track_prop(&project, &tracks, TrackProp::Height(150)).unwrap();
@@ -2003,7 +2013,7 @@ fn opening_an_offscreen_automation_lane_reveals_its_drop_target() {
         .map(|node| node.rect())
         .max_by(|a, b| a.left().total_cmp(&b.left()))
         .unwrap();
-    drop_plugin(komponist_app::app::hexa_ref(), lane.center(), &mut h);
+    drop_plugin(hexa(h.state()), lane.center(), &mut h);
     assert_eq!(h.state().project().tracks.len(), tracks.len());
     assert!(h.state().dispatched().any(|action| matches!(
         action,
@@ -2166,7 +2176,7 @@ fn snapshot_of_arrangement_automation_in_german_and_english() {
             "automation-mode-menu-en-1x",
         ),
     ] {
-        let mut app = demo().with_lang(lang);
+        let mut app = reference_demo().with_lang(lang);
         app.ui_mut().layout.dock_open = false;
         let owner = AutomationOwner::Track(app.project().tracks[2].id);
         for (owner, target, label, mode) in [

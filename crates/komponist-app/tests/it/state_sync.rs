@@ -617,23 +617,23 @@ fn an_unreadable_device_state_is_reported_and_never_overwritten() {
     assert_eq!(host.state_warning(DeviceId(901)), None);
 }
 
-/// A knob turn through the app on a device whose state cannot be read stores nothing: the
-/// original bytes stay and no undo step is pushed (Hexa and the internal devices have separate
-/// parameter paths).
+/// A restore failure must preserve the original bytes while the user leaves the controls alone.
+/// A deliberate edit may recover the device and record freshly edited state.
 #[test]
-fn a_knob_turn_never_replaces_an_unreadable_state() {
+fn invalid_clap_state_survives_until_a_deliberate_edit() {
     use komponist_app::actions::DropTarget;
     use komponist_app::{Action, App, PluginAction};
 
     let corrupted: &[u8] = b"{\"params\": {\"gain\": ";
     let mut app = App::headless(Project::new("Unreadable"));
+    let shipped = |app: &App, id| crate::common::shipped_plugin(app.engine().host(), id).unwrap();
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: komponist_hexa::CATALOG.plugin_ref(),
+        plugin: shipped(&app, "org.klang-studio.komponist.hexa"),
         target: DropTarget::NewTrack { index: None },
     }));
     let track = app.project().tracks[0].id;
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: Internal::Limiter.plugin_ref(),
+        plugin: shipped(&app, "org.klang-studio.komponist.limiter"),
         target: DropTarget::Track(track),
     }));
     let devices: Vec<DeviceId> = app.project().tracks[0]
@@ -643,24 +643,27 @@ fn a_knob_turn_never_replaces_an_unreadable_state() {
         .map(|d| d.id)
         .collect();
     assert_eq!(devices.len(), 2);
-    let hexa_volume = komponist_hexa::device::Field::Volume.wire();
-    let limiter_gain = Internal::Limiter
-        .wire(&komponist_model::params::ParamId::new("gain"))
-        .unwrap();
+    for &device in &devices {
+        crate::common::wait_for_layout(&mut app, device);
+    }
+    let hexa_volume = crate::common::author_parameter(&app, devices[0], "volume");
+    let limiter_gain = crate::common::author_parameter(&app, devices[1], "gain");
     let knobs = [(devices[0], hexa_volume), (devices[1], limiter_gain)];
     let state = |app: &App, device: DeviceId| {
         let (_, _, d) = app.project().find_device(device).unwrap();
         d.state.as_deref().map(<[u8]>::to_vec)
     };
-    // The same turn on a readable state is stored, so the refusal below is not vacuous.
+    // The same actions do reach the controls of readable instances.
     for (device, id) in knobs {
-        let before = state(&app, device);
-        app.dispatch(Action::Plugin(PluginAction::SetParam {
-            device,
-            id,
-            value: 0.5,
-        }));
-        assert_ne!(state(&app, device), before, "{device:?}");
+        let initial = app.engine().host().param_base(device, id).unwrap();
+        let value = if initial < 0.5 { 0.75 } else { 0.25 };
+        app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
+        crate::common::step_until(&mut app, "the live edit on readable state", |app| {
+            app.engine()
+                .host()
+                .param_value(device, id)
+                .is_some_and(|param| (param.value - value).abs() < 1e-6)
+        });
     }
     let mut project = Arc::clone(app.project());
     for &device in &devices {
@@ -669,17 +672,28 @@ fn a_knob_turn_never_replaces_an_unreadable_state() {
         );
     }
     let mut app = App::headless(Arc::unwrap_or_clone(project));
-    for (device, id) in knobs {
-        app.dispatch(Action::Plugin(PluginAction::SetParam {
-            device,
-            id,
-            value: 0.5,
-        }));
+    crate::common::step_until(&mut app, "both CLAP restore warnings", |app| {
+        devices
+            .iter()
+            .all(|&device| app.engine().host().state_warning(device).is_some())
+    });
+    // Outlast the one-second persistence debounce before checking the unreadable bytes.
+    crate::common::step_for(&mut app, Duration::from_secs(2));
+    for &device in &devices {
         assert_eq!(
             state(&app, device).as_deref(),
             Some(corrupted),
             "{device:?}"
         );
-        assert_eq!(app.doc().undo_label(), None, "{device:?}");
+    }
+    assert_eq!(app.doc().undo_label(), None);
+    for (device, id) in knobs {
+        let initial = app.engine().host().param_base(device, id).unwrap();
+        let value = if initial < 0.5 { 0.75 } else { 0.25 };
+        app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
+        crate::common::step_until(&mut app, "the deliberate recovery edit", |app| {
+            app.engine().host().state_warning(device).is_none()
+                && state(app, device).is_some_and(|bytes| bytes.as_slice() != corrupted)
+        });
     }
 }

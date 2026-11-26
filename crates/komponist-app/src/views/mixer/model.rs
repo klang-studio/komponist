@@ -89,8 +89,7 @@ pub struct Insert {
     pub bypass: bool,
     /// Runtime state.
     pub state: SlotState,
-    /// An internal device (shipped with komponist, no GUI of its own): a click opens its frame in
-    /// the Geräte tab instead of a plugin window (device handoff §9).
+    /// The device has a card in the device dock and provides no separate editor window.
     pub internal: bool,
     /// Blocks that missed their deadline, while the slot shows "zu spät" (set by the view).
     pub late: Option<u64>,
@@ -219,7 +218,8 @@ fn inserts(lang: Lang, channel: &Channel, host: &dyn DeviceHost) -> Vec<Insert> 
             midi: d.role == DeviceRole::MidiEffect,
             bypass: d.bypass,
             state: SlotState::from(&host.status(d.id)),
-            internal: d.plugin.format == PluginFormat::Builtin && !host.has_gui(d.id),
+            internal: !host.has_gui(d.id)
+                && (d.plugin.format == PluginFormat::Builtin || host.native_layout(d.id).is_some()),
             late: None,
         })
         .collect()

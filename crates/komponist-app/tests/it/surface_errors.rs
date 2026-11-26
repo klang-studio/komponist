@@ -6,7 +6,6 @@ use egui::vec2;
 use egui_kittest::kittest::Queryable as _;
 use egui_kittest::{Harness, SnapshotOptions};
 use komponist_app::actions::SettingsAction;
-use komponist_app::device_host::BuiltinHost;
 use komponist_app::dialogs::settings::AudioDevices;
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::ui_state::{SettingsSection, StatusKind};
@@ -143,8 +142,12 @@ fn app_with_midi_hub(lang: Lang) -> Option<App> {
     let (mut hub, receiver) = MidiInputHub::new().ok()?;
     // Never connects to a real port (rule 14): no port name starts with this.
     hub.only_connect_to("komponist-it-no-such-port");
-    let (sync, started) =
-        EngineSync::with_receiver(&config, Some(hub), receiver, Box::new(BuiltinHost::new()));
+    let (sync, started) = EngineSync::with_receiver(
+        &config,
+        Some(hub),
+        receiver,
+        Box::new(App::headless_plugin_host()),
+    );
     started.unwrap();
     let settings = komponist_app::settings::Settings {
         audio: config,

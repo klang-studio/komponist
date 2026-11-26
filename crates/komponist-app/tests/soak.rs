@@ -41,10 +41,8 @@ use komponist_model::edits::{
     ChannelProp, NewClip, NewClipContent, NewNote, ProjectProp, TrackProp,
 };
 use komponist_model::fixtures::demo_project;
-use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{
-    ClipContent, ClipId, Device, DeviceRole, NoteId, PluginFormat, PluginRef, Project, Tempo, Tick,
-    TickRange, TrackId,
+    ClipContent, ClipId, DeviceRole, NoteId, PluginRef, Project, Tempo, Tick, TickRange, TrackId,
 };
 use std::sync::Arc;
 
@@ -64,6 +62,19 @@ const PERIOD: Duration = Duration::from_micros(5_333);
 const MAX_TRACKS: usize = 10;
 const MAX_CLIPS: usize = 40;
 const MAX_NOTES_PER_CLIP: usize = 200;
+const HEXA: &str = "org.klang-studio.komponist.hexa";
+
+/// Choose from the first eight advertised presets to keep the soak's preset variation bounded.
+fn preset_source(
+    rng: &mut Rng,
+    presets: &[komponist_ipc::clap_presets::ClapPreset],
+) -> Option<komponist_ipc::clap_presets::ClapPresetSource> {
+    let presets = &presets[..presets.len().min(8)];
+    if presets.is_empty() {
+        return None;
+    }
+    Some(presets[rng.below(presets.len())].source.clone())
+}
 
 /// xorshift64*.
 struct Rng(u64);
@@ -89,35 +100,22 @@ impl Rng {
     }
 }
 
-/// The demo with hexa only (`App::headless` hosts no bridges): external instruments become
-/// hexa, external effects go. Every device then runs, so an export never waits.
-fn soak_project() -> Project {
+/// The demo with one shipped Hexa per MIDI instrument track and without external effects.
+fn soak_project(hexa: &PluginRef) -> Project {
     let mut p = demo_project();
-    let hexa = PluginRef {
-        format: PluginFormat::Builtin,
-        id: BUILTIN_HEXA.into(),
-        name: "Hexa".into(),
-        vendor: "klang-studio".into(),
-        version: "0.1.0".into(),
-        module: Box::default(),
-    };
-    let builtin =
-        |d: &Device| d.plugin.format == PluginFormat::Builtin && d.plugin.id == BUILTIN_HEXA;
     for track in &mut p.tracks {
         let track = Arc::make_mut(track);
         track
             .channel
             .devices
-            .retain(|d| d.role == DeviceRole::Instrument || builtin(d));
-        for d in &mut track.channel.devices {
-            if !builtin(d) {
-                let d = Arc::make_mut(d);
-                d.plugin = hexa.clone();
-                d.state = None;
-            }
+            .retain(|device| device.role == DeviceRole::Instrument);
+        for device in &mut track.channel.devices {
+            let device = Arc::make_mut(device);
+            device.plugin = hexa.clone();
+            device.state = None;
         }
     }
-    Arc::make_mut(&mut p.master).devices.retain(|d| builtin(d));
+    Arc::make_mut(&mut p.master).devices.clear();
     p
 }
 
@@ -311,18 +309,17 @@ fn act(
             70.0 + rng.below(110) as f64,
         )))),
         // Tracks and devices.
-        76..=77 if tracks(app).len() < MAX_TRACKS => Action::Plugin(PluginAction::AddFromPreset {
-            plugin: app
-                .engine()
-                .host()
-                .catalog()
-                .entries()
-                .first()?
-                .plugin
-                .clone(),
-            source: komponist_plugins::presets::legacy_source(rng.below(8)),
-            track: None,
-        }),
+        76..=77 if tracks(app).len() < MAX_TRACKS => {
+            let host = app.engine().host();
+            let entry = host.catalog().preset_entries().find(|entry| {
+                entry.plugin.id == HEXA && komponist_plugins::requires_bundled(&entry.plugin)
+            })?;
+            Action::Plugin(PluginAction::AddFromPreset {
+                plugin: entry.plugin.clone(),
+                source: preset_source(rng, &entry.clap_presets)?,
+                track: None,
+            })
+        }
         78 => match track {
             Some(track) if tracks(app).len() > 3 => {
                 Action::Edit(EditAction::RemoveTracks(vec![track]))
@@ -330,15 +327,13 @@ fn act(
             _ => return None,
         },
         79..=80 => {
-            let device = track.and_then(|t| {
-                let p = app.project();
-                let t = p.tracks.iter().find(|x| x.id == t)?;
-                let d = t.channel.devices.first()?;
-                komponist_app::device_host::is_hexa(d).then_some(d.id)
-            });
+            let track = app.project().track(track?)?;
+            let (_, device) = track.channel.instrument()?;
+            let host = app.engine().host();
+            let source = preset_source(rng, host.clap_presets(device))?;
             Action::Plugin(PluginAction::ApplyClapPreset {
-                device: device?,
-                source: komponist_plugins::presets::legacy_source(rng.below(8)),
+                device: device.id,
+                source,
             })
         }
         81..=82 => {
@@ -417,7 +412,25 @@ fn random_edits_during_playback_cause_no_xrun() {
     let mut rng = Rng(seed);
 
     let (midi, receiver) = TestMidiSource::new();
-    let mut app = App::headless_with_midi(soak_project(), receiver);
+    let host = App::headless_plugin_host();
+    let Some(hexa) = common::shipped_plugin(&host, HEXA) else {
+        assert!(
+            !std::env::var_os("KOMPONIST_REQUIRE_FIXTURES").is_some_and(|value| value == "1"),
+            "required Hexa fixture is missing"
+        );
+        eprintln!("skipping: build the verified CLAP fixtures with scripts/build-test-plugins.sh");
+        return;
+    };
+    let mut app = App::headless_with_midi(soak_project(&hexa), receiver);
+    let instruments: Vec<_> = app
+        .project()
+        .tracks
+        .iter()
+        .map(|track| track.channel.instrument().expect("soak instrument").1.id)
+        .collect();
+    for device in instruments {
+        common::wait_for_layout(&mut app, device);
+    }
     if let Some(workers) = std::env::var("KOMPONIST_SOAK_WORKERS")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())

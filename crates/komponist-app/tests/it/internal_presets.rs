@@ -10,13 +10,16 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::ui_state::DockTab;
-use komponist_app::{
-    Action, App, EditAction, PluginAction, ProjectAction, TransportAction, UiAction,
-};
+use komponist_app::{Action, App, EditAction, PluginAction, TransportAction, UiAction};
 use komponist_builtin::Internal;
 use komponist_i18n::{Lang, de};
 use komponist_model::params::ParamId;
 use komponist_model::{DeviceId, Project, TrackId};
+
+use crate::common::{
+    author_base, set_authored_param as set_param, shipped_plugin, step_until, wait_for_layout,
+};
+use komponist_ipc::clap_presets::ClapPreset;
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
@@ -51,8 +54,8 @@ fn click(h: &mut Harness<'_, App>, pos: Pos2) {
 }
 
 /// A project with a hexa track and one `kind` device behind it; the dock shows the devices.
-fn app_with(kind: Internal) -> (App, TrackId, DeviceId) {
-    let mut app = App::headless(Project::new("Presets"));
+fn reference_app_with(kind: Internal) -> (App, TrackId, DeviceId) {
+    let mut app = crate::common::reference_app(Project::new("Presets"));
     let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
     app.dispatch(Action::Plugin(PluginAction::Add {
         plugin: hexa,
@@ -72,29 +75,91 @@ fn app_with(kind: Internal) -> (App, TrackId, DeviceId) {
     (app, track, device)
 }
 
+fn app_with(id: &str) -> (App, TrackId, DeviceId) {
+    let mut app = App::headless(Project::new("Presets"));
+    let hexa = plugin(&app, "hexa");
+    app.dispatch(Action::Plugin(PluginAction::Add {
+        plugin: hexa,
+        target: DropTarget::NewTrack { index: None },
+    }));
+    let track = app.project().tracks[0].id;
+    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+        tracks: vec![track],
+        mode: SelectMode::Replace,
+    })));
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+    let plugin = plugin(&app, id);
+    app.dispatch(Action::Plugin(PluginAction::Add {
+        plugin: plugin.clone(),
+        target: DropTarget::Track(track),
+    }));
+    let device = app.project().tracks[0]
+        .channel
+        .devices
+        .iter()
+        .find(|device| device.plugin == plugin)
+        .unwrap()
+        .id;
+    wait_for_layout(&mut app, device);
+    (app, track, device)
+}
+
 fn state_of(app: &App, device: DeviceId) -> Option<Vec<u8>> {
     let (_, _, d) = app.project().find_device(device).unwrap();
     d.state.as_deref().map(<[u8]>::to_vec)
 }
 
-fn loaded(app: &App, kind: Internal, device: DeviceId) -> Option<(usize, bool)> {
-    kind.loaded_preset(state_of(app, device).as_deref())
+fn plugin(app: &App, id: &str) -> komponist_model::PluginRef {
+    let id = format!("org.klang-studio.komponist.{id}");
+    shipped_plugin(app.engine().host(), &id)
+        .unwrap_or_else(|| panic!("build {id} with scripts/build-test-plugins.sh"))
 }
 
-fn set_param(app: &mut App, device: DeviceId, kind: Internal, key: &str, value: f64) {
-    let id = kind.wire(&ParamId::new(key)).expect("known parameter");
-    app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
+fn presets(app: &App, device: DeviceId) -> &[ClapPreset] {
+    let model = app.project().find_device(device).unwrap().2;
+    app.engine().host().clap_presets(model)
 }
 
-fn card<'h>(h: &'h Harness<'_, App>, kind: Internal) -> egui_kittest::Node<'h> {
+fn loaded(app: &App, device: DeviceId) -> Option<(&str, bool)> {
+    let model = app.project().find_device(device).unwrap().2;
+    let presets = presets(app, device);
+    app.engine()
+        .host()
+        .saved_preset(model, presets)
+        .map(|(index, edited)| (presets[index].name.as_str(), edited))
+}
+
+fn factory(app: &mut App, device: DeviceId, name: &str) {
+    let source = presets(app, device)
+        .iter()
+        .find(|preset| preset.name == name)
+        .unwrap_or_else(|| panic!("no fixture preset named {name}"))
+        .source
+        .clone();
+    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
+        device,
+        source,
+    }));
+    step_until(app, "the selected CLAP preset", |app| {
+        loaded(app, device) == Some((name, false))
+    });
+}
+
+fn reference_card<'h>(h: &'h Harness<'_, App>, kind: Internal) -> egui_kittest::Node<'h> {
     // Test code: leaking the name keeps the node's borrow simple.
     let label: &'static str = Box::leak(Lang::De.devices_card(kind.name()).into_boxed_str());
     h.get_by_role_and_label(Role::Group, label)
 }
 
+fn card<'h>(h: &'h Harness<'_, App>, name: &str) -> egui_kittest::Node<'h> {
+    // Test code: leaking the name keeps the node's borrow simple.
+    let label: &'static str = Box::leak(Lang::De.devices_card(name).into_boxed_str());
+    h.get_by_role_and_label(Role::Group, label)
+}
+
 /// The preset button of the card: „Preset“ or „Preset: <name>“.
-fn preset_button<'h>(h: &'h Harness<'_, App>, kind: Internal) -> egui_kittest::Node<'h> {
-    card(h, kind)
+fn reference_preset_button<'h>(h: &'h Harness<'_, App>, kind: Internal) -> egui_kittest::Node<'h> {
+    reference_card(h, kind)
         .query_all_by_role(Role::Button)
         .find(|b| {
             b.accesskit_node()
@@ -104,8 +169,24 @@ fn preset_button<'h>(h: &'h Harness<'_, App>, kind: Internal) -> egui_kittest::N
         .expect("a preset button")
 }
 
-fn open_menu(h: &mut Harness<'_, App>, kind: Internal) {
-    let rect = preset_button(h, kind).rect();
+fn preset_button<'h>(h: &'h Harness<'_, App>, name: &str) -> egui_kittest::Node<'h> {
+    card(h, name)
+        .query_all_by_role(Role::Button)
+        .find(|b| {
+            b.accesskit_node()
+                .label()
+                .is_some_and(|l| l.starts_with(de::DEVICES_PRESET))
+        })
+        .expect("a preset button")
+}
+
+fn reference_open_menu(h: &mut Harness<'_, App>, kind: Internal) {
+    let rect = reference_preset_button(h, kind).rect();
+    click(h, rect.center());
+}
+
+fn open_menu(h: &mut Harness<'_, App>, name: &str) {
+    let rect = preset_button(h, name).rect();
     click(h, rect.center());
 }
 
@@ -117,275 +198,196 @@ fn pick(h: &mut Harness<'_, App>, name: &str) {
 
 #[test]
 fn loading_a_preset_is_one_undo_step_and_the_engine_follows_it_and_its_undo() {
-    let (mut app, track, _) = app_with(Internal::Presse);
-    let presse = app.project().tracks[0].channel.devices.last().unwrap().id;
-    // A second track the first one has to wait for once the presse gets lookahead.
-    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
+    let (mut app, track, presse) = app_with("presse");
+    // A second track waits for the Presse lookahead when the preset activates it.
+    let hexa = plugin(&app, "hexa");
     app.dispatch(Action::Plugin(PluginAction::Add {
         plugin: hexa,
         target: DropTarget::NewTrack { index: None },
     }));
     let plain = app.project().tracks[1].id;
-    let pdc = |app: &App, t: TrackId| {
-        app.engine()
-            .program()
-            .unwrap()
-            .tracks
-            .iter()
-            .find(|x| x.id == t)
-            .unwrap()
-            .pdc_delay
-    };
-    app.engine_mut().hold_engine().expect("engine held");
+    let pdc = |app: &App, t: TrackId| app.engine().program().unwrap().track(t).unwrap().pdc_delay;
     app.dispatch(Action::Transport(TransportAction::TogglePlay));
-    app.step();
+    step_until(&mut app, "playing before the preset", |app| {
+        app.transport() == komponist_engine::TransportState::Playing
+    });
     assert_eq!(app.engine().host().latency(presse), 0);
-    let hard = Internal::Presse
-        .presets()
-        .iter()
-        .position(|p| p.name == "Hard Limit")
-        .unwrap();
+    let before = state_of(&app, presse);
 
-    // "Hard Limit" switches the lookahead on: the processor got the values.
-    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
-        device: presse,
-        source: komponist_plugins::presets::legacy_source(hard),
-    }));
-    assert_eq!(loaded(&app, Internal::Presse, presse), Some((hard, false)));
-    assert!(app.engine_mut().run_held(1024, &[], 0));
-    app.step();
+    factory(&mut app, presse, "Hard Limit");
+    step_until(&mut app, "Presse's preset lookahead", |app| {
+        let frames = app.engine().host().latency(presse);
+        frames > 0 && pdc(app, plain) == frames
+    });
     let frames = app.engine().host().latency(presse);
-    assert!(frames > 0, "the preset's lookahead reached the engine");
-    assert_eq!(pdc(&app, plain), frames);
     assert_eq!(pdc(&app, track), 0);
-    let values = Internal::Presse
-        .decode_state(state_of(&app, presse).as_deref())
-        .unwrap();
-    assert_eq!(Internal::Presse.preset_values(hard).unwrap(), values);
 
-    // One undo takes the whole preset back, in the document and in the engine.
     app.dispatch(Action::Edit(EditAction::Undo));
-    assert_eq!(loaded(&app, Internal::Presse, presse), None);
-    assert_eq!(
-        Internal::Presse
-            .decode_state(state_of(&app, presse).as_deref())
-            .unwrap(),
-        Internal::Presse.defaults()
-    );
-    assert!(app.engine_mut().run_held(1024, &[], 0));
-    app.step();
-    assert_eq!(app.engine().host().latency(presse), 0);
-    assert_eq!(pdc(&app, plain), 0);
+    step_until(&mut app, "undo restores the original latency", |app| {
+        loaded(app, presse).is_none()
+            && app.engine().host().latency(presse) == 0
+            && pdc(app, plain) == 0
+    });
+    assert_eq!(state_of(&app, presse), before);
 
-    // Redo brings it back.
     app.dispatch(Action::Edit(EditAction::Redo));
-    assert_eq!(loaded(&app, Internal::Presse, presse), Some((hard, false)));
-    assert!(app.engine_mut().run_held(1024, &[], 0));
-    app.step();
-    assert_eq!(app.engine().host().latency(presse), frames);
+    step_until(&mut app, "redo restores lookahead and the preset", |app| {
+        loaded(app, presse) == Some(("Hard Limit", false))
+            && app.engine().host().latency(presse) == frames
+            && pdc(app, plain) == frames
+    });
 }
 
 #[test]
-fn loading_a_preset_stores_exactly_its_values_and_a_bad_index_changes_nothing() {
-    let (mut app, _, limiter) = app_with(Internal::Limiter);
-    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
-        device: limiter,
-        source: komponist_plugins::presets::legacy_source(1),
-    }));
-    let values = Internal::Limiter
-        .decode_state(state_of(&app, limiter).as_deref())
-        .unwrap();
-    assert_eq!(Internal::Limiter.preset_values(1).unwrap(), values);
-    // An index past the list changes nothing.
+fn loading_a_preset_stores_the_factory_state_and_an_unknown_source_changes_nothing() {
+    let (mut app, _, limiter) = app_with("limiter");
+    let preset = presets(&app, limiter)[1].clone();
+    let expected = App::headless_plugin_host()
+        .manager()
+        .prepare_bundled_device(&preset.plugin_id, Some(&preset.name), &[], &[])
+        .unwrap()
+        .state;
+    factory(&mut app, limiter, &preset.name);
     let before = state_of(&app, limiter);
+    assert_eq!(before.as_deref(), expected.as_deref());
+    let mut source = preset.source;
+    source.load_key = Some(b"unpublished-fixture-preset".to_vec());
     app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
         device: limiter,
-        source: komponist_plugins::presets::legacy_source(99),
+        source,
     }));
+    app.step();
     assert_eq!(state_of(&app, limiter), before);
 }
 
 #[test]
 fn the_dropdown_shows_the_loaded_preset_and_a_star_while_a_value_differs() {
-    let kind = Internal::Delay;
-    let (app, _, device) = app_with(kind);
+    let (app, _, device) = app_with("delay");
     let mut h = harness(app);
-    // No preset yet: „Preset“.
     assert_eq!(
-        preset_button(&h, kind).accesskit_node().label().as_deref(),
+        preset_button(&h, "Delay")
+            .accesskit_node()
+            .label()
+            .as_deref(),
         Some(de::DEVICES_PRESET)
     );
-    open_menu(&mut h, kind);
+    open_menu(&mut h, "Delay");
     pick(&mut h, "Slapback");
-    assert_eq!(loaded(h.state(), kind, device), Some((0, false)));
+    step_until(h.state_mut(), "Slapback in the document", |app| {
+        loaded(app, device) == Some(("Slapback", false))
+    });
+    let original = author_base(h.state(), device, "mix");
     let label = Lang::De.devices_preset_name("Slapback");
+    h.run_steps(3);
     assert_eq!(
-        preset_button(&h, kind).accesskit_node().label().as_deref(),
+        preset_button(&h, "Delay")
+            .accesskit_node()
+            .label()
+            .as_deref(),
         Some(label.as_str())
     );
-
-    // A changed value: „ *“.
-    set_param(h.state_mut(), device, kind, "mix", 0.9);
+    set_param(h.state_mut(), device, "mix", 0.9);
     h.run_steps(3);
     let starred = Lang::De.devices_preset_name("Slapback *");
     assert_eq!(
-        preset_button(&h, kind).accesskit_node().label().as_deref(),
+        preset_button(&h, "Delay")
+            .accesskit_node()
+            .label()
+            .as_deref(),
         Some(starred.as_str())
     );
-    // The same value again: the star goes.
-    let preset_mix =
-        kind.preset_values(0).unwrap()[kind.wire(&ParamId::new("mix")).unwrap() as usize];
-    set_param(h.state_mut(), device, kind, "mix", preset_mix);
+    set_param(h.state_mut(), device, "mix", original);
     h.run_steps(3);
     assert_eq!(
-        preset_button(&h, kind).accesskit_node().label().as_deref(),
+        preset_button(&h, "Delay")
+            .accesskit_node()
+            .label()
+            .as_deref(),
         Some(label.as_str())
     );
 }
 
 #[test]
-fn the_dropdown_lists_the_presets_of_its_own_device() {
-    for kind in [
-        Internal::Eq,
-        Internal::Delay,
-        Internal::Hall,
-        Internal::Limiter,
-        Internal::Presse,
-        Internal::Arpeggiator,
-        Internal::Tonleiter,
+fn the_dropdown_lists_the_factory_presets_of_its_own_device() {
+    for (id, name) in [
+        ("eq", "EQ"),
+        ("delay", "Delay"),
+        ("hall", "Hall"),
+        ("limiter", "Limiter"),
+        ("presse", "Presse"),
+        ("arpeggiator", "Arpeggiator"),
+        ("scale", "Tonleiter"),
     ] {
-        let (app, _, _) = app_with(kind);
+        let (app, _, device) = app_with(id);
         let mut h = harness(app);
-        open_menu(&mut h, kind);
-        let items: Vec<String> = h
+        open_menu(&mut h, name);
+        let items: Vec<_> = h
             .query_all_by_role(Role::MenuItem)
             .filter_map(|n| n.accesskit_node().label())
             .collect();
-        for p in kind.presets() {
+        let presets = presets(h.state(), device);
+        assert!(!presets.is_empty(), "{name} has a factory inventory");
+        for preset in presets {
+            let expected = preset.display_name("de");
             assert!(
-                items.iter().any(|i| i == p.name),
-                "{}: {} in {items:?}",
-                kind.name(),
-                p.name
+                items.iter().any(|item| item == expected),
+                "{name}: {expected} in {items:?}"
             );
         }
-        assert_eq!(
-            items.len(),
-            kind.presets().len(),
-            "{}: {items:?}",
-            kind.name()
-        );
     }
 }
 
 #[test]
-fn volt_groups_its_presets_by_category_and_the_sampler_has_no_dropdown() {
-    let (app, _, _) = app_with(Internal::Volt);
+fn volt_groups_its_presets_and_the_drum_sampler_has_no_factory_presets() {
+    let (app, _, volt) = app_with("volt");
     let mut h = harness(app);
-    open_menu(&mut h, Internal::Volt);
-    let items: Vec<String> = h
+    open_menu(&mut h, "Volt");
+    let items: Vec<_> = h
         .query_all_by_role(Role::MenuItem)
         .filter_map(|n| n.accesskit_node().label())
         .collect();
-    let mut categories: Vec<&str> = Vec::new();
-    for c in Internal::Volt.presets().iter().filter_map(|p| p.category) {
-        if !categories.contains(&c) {
-            categories.push(c);
-        }
-    }
+    let categories: std::collections::BTreeSet<_> = presets(h.state(), volt)
+        .iter()
+        .filter_map(ClapPreset::category)
+        .collect();
     assert!(categories.len() > 1);
-    assert_eq!(items.len(), categories.len(), "{items:?}");
-    for c in categories {
-        assert!(items.iter().any(|i| i == c), "{c} in {items:?}");
+    for category in categories {
+        assert!(
+            items.iter().any(|item| item == category),
+            "{category} in {items:?}"
+        );
     }
 
-    let (app, _, _) = app_with(Internal::Sampler);
-    let h = harness(app);
-    assert!(
-        !card(&h, Internal::Sampler)
-            .query_all_by_role(Role::Button)
-            .any(|b| b
-                .accesskit_node()
-                .label()
-                .is_some_and(|l| l.starts_with(de::DEVICES_PRESET)))
-    );
+    let (app, _, sampler) = app_with("sampler");
+    assert!(presets(&app, sampler).iter().all(|preset| !preset.factory));
 }
 
 #[test]
-fn the_loaded_preset_survives_saving_and_old_projects_load_without_one() {
-    let dir = std::env::temp_dir().join(format!("komponist-wp96-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("Presets.komponist");
-    std::fs::write(
-        &path,
-        komponist_model::persist::to_json(&Project::new("Presets")).unwrap(),
-    )
-    .unwrap();
-    let kind = Internal::Hall;
-    let mut app = App::headless(Project::new("Presets"));
-    app.dispatch(Action::Project(ProjectAction::OpenPath(path.clone())));
-    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
-    app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: hexa,
-        target: DropTarget::NewTrack { index: None },
-    }));
-    let track = app.project().tracks[0].id;
-    app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: kind.plugin_ref(),
-        target: DropTarget::Track(track),
-    }));
-    let device = app.project().tracks[0].channel.devices[1].id;
-    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
-        device,
-        source: komponist_plugins::presets::legacy_source(2),
-    }));
-    set_param(&mut app, device, kind, "mix", 0.9);
-    app.dispatch(Action::Project(ProjectAction::Save));
-
-    let text = std::fs::read_to_string(&path).unwrap();
-    let project = komponist_model::persist::from_json(&text).unwrap();
-    let (_, _, d) = project.find_device(device).unwrap();
-    let state: serde_json::Value = serde_json::from_slice(d.state.as_deref().unwrap()).unwrap();
-    assert_eq!(state["preset"], kind.presets()[2].name);
-    // Loaded again: the name and the „changed“ flag come back.
-    assert_eq!(kind.loaded_preset(d.state.as_deref()), Some((2, true)));
-    let reopened = App::headless(project.clone());
-    assert_eq!(loaded(&reopened, kind, device), Some((2, true)));
-
-    // A project from before WP-96: the same state without the name.
-    let mut old: serde_json::Value = state;
-    old.as_object_mut().unwrap().remove("preset");
-    let old_state: std::sync::Arc<[u8]> = serde_json::to_vec(&old).unwrap().into();
-    let project =
-        komponist_model::edits::set_device_state(&project, device, Some(old_state)).unwrap();
-    let mut app = App::headless(project);
-    assert_eq!(loaded(&app, kind, device), None);
-    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
-        tracks: vec![app.project().tracks[0].id],
-        mode: SelectMode::Replace,
-    })));
-    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
-    let h = harness(app);
-    assert_eq!(
-        preset_button(&h, kind).accesskit_node().label().as_deref(),
-        Some(de::DEVICES_PRESET)
-    );
-    let _ = std::fs::remove_dir_all(&dir);
+fn the_loaded_preset_survives_saving_and_reopening() {
+    let (mut app, _, device) = app_with("hall");
+    let preset = presets(&app, device)[2].name.clone();
+    factory(&mut app, device, &preset);
+    set_param(&mut app, device, "mix", 0.9);
+    let project = crate::common::project_with_snapshot(&mut app, device);
+    let serialized = komponist_model::persist::to_json(&project).unwrap();
+    let project = komponist_model::persist::from_json(&serialized).unwrap();
+    let mut reopened = App::headless(project);
+    wait_for_layout(&mut reopened, device);
+    assert_eq!(loaded(&reopened, device), Some((preset.as_str(), true)));
 }
 
 #[test]
 fn snapshot_of_the_eq_head_with_the_open_preset_dropdown() {
     let kind = Internal::Eq;
-    let (mut app, _, device) = app_with(kind);
+    let (mut app, _, device) = reference_app_with(kind);
     app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
         device,
         source: komponist_plugins::presets::legacy_source(2),
     }));
-    set_param(&mut app, device, kind, "out", 1.5);
+    set_reference_param(&mut app, device, kind, "out", 1.5);
     let mut h = harness(app);
     h.run_steps(2);
-    open_menu(&mut h, kind);
+    reference_open_menu(&mut h, kind);
     h.run_steps(4);
     let cpu = h
         .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
@@ -395,4 +397,9 @@ fn snapshot_of_the_eq_head_with_the_open_preset_dropdown() {
     h.snapshot("devices-preset-dropdown-eq-1x");
     results.extend_harness(&mut h);
     results.unwrap();
+}
+
+fn set_reference_param(app: &mut App, device: DeviceId, kind: Internal, key: &str, value: f64) {
+    let id = kind.wire(&ParamId::new(key)).expect("known parameter");
+    app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
 }

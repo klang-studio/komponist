@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use komponist_app::actions::{BitDepth, EditAction, ExportRange, PluginAction, ProjectAction};
-use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost};
+use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::{Action, App};
 use komponist_builtin::{BuiltinKind, Internal};
@@ -607,7 +607,7 @@ fn current_project_round_trip_and_offline_render() {
 fn midi_chain_events(
     host: &mut dyn DeviceHost,
     plugins: [PluginRef; 2],
-    bridge: Option<bool>,
+    bridge: bool,
 ) -> Vec<(u64, EventKind)> {
     const RATE: f32 = 48_000.0;
     const BLOCK: usize = 64;
@@ -621,7 +621,7 @@ fn midi_chain_events(
         NewTrack {
             name: None,
             hue: None,
-            instrument: Some(BuiltinKind::Hexa.catalog().plugin_ref()),
+            instrument: Some(crate::common::clap_plugin(crate::common::SYNTH)),
             index: None,
             arm_exclusive: false,
         },
@@ -700,18 +700,15 @@ fn midi_chain_events(
         host.poll();
         thread::sleep(Duration::from_millis(2));
     }
-    let rate_id = if let Some(bridge) = bridge {
-        for device in [arpeggiator, scale] {
-            assert_eq!(host.bridge_pid(device.id).is_some(), bridge);
-            assert!(host.verified_bundled_kind(device.id).is_some());
-        }
-        host.native_layout(arpeggiator.id)
-            .unwrap()
-            .author_ids()
-            .unwrap()["rate"]
-    } else {
-        Internal::Arpeggiator.wire(&ParamId::new("rate")).unwrap()
-    };
+    for device in [arpeggiator, scale] {
+        assert_eq!(host.bridge_pid(device.id).is_some(), bridge);
+        assert!(host.verified_bundled_kind(device.id).is_some());
+    }
+    let rate_id = host
+        .native_layout(arpeggiator.id)
+        .unwrap()
+        .author_ids()
+        .unwrap()["rate"];
     handle
         .send(Command::InsertProcessor {
             slot: program.slots.slot(instrument_model.id).unwrap(),
@@ -752,6 +749,52 @@ fn midi_chain_events(
         .collect()
 }
 
+fn assert_midi_effect_chain(host: &mut PluginHost, bridge: bool) {
+    let plugins = [shipped(host, "arpeggiator"), shipped(host, "scale")];
+    let actual = midi_chain_events(host, plugins, bridge);
+    // Sixteenth-note rate at 120 BPM. The second loop starts at frame 4000,
+    // and stopping at frame 5120 must release the third note immediately.
+    let expected: Vec<_> = [(0, 1200), (2000, 3200), (4000, 5120)]
+        .into_iter()
+        .enumerate()
+        .flat_map(|(index, (start, end))| {
+            let note_id = index as u32;
+            [
+                (
+                    start,
+                    EventKind::NoteOn {
+                        key: 60,
+                        channel: 0,
+                        velocity: 100,
+                        note_id,
+                    },
+                ),
+                (
+                    end,
+                    EventKind::NoteOff {
+                        key: 60,
+                        channel: 0,
+                        note_id,
+                    },
+                ),
+            ]
+        })
+        .collect();
+    assert_eq!(actual, expected, "notes and identities at the instrument");
+}
+
+#[test]
+fn fixture_midi_effects_preserve_instrument_notes() {
+    let mut host = App::headless_plugin_host();
+    if host.catalog().entries().is_empty() {
+        eprintln!("skipping: build the verified CLAP fixtures with scripts/build-test-plugins.sh");
+        return;
+    }
+    let bridge =
+        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
+    assert_midi_effect_chain(&mut host, bridge);
+}
+
 #[test]
 #[ignore = "requires the authenticated release payload; run measure-bundled-clap.py --current-projects"]
 fn packaged_midi_effects_preserve_instrument_notes() {
@@ -759,19 +802,7 @@ fn packaged_midi_effects_preserve_instrument_notes() {
     let bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some();
     let cache = tempfile::tempdir().unwrap();
     let mut host = scan(&launcher, cache.path());
-    let plugins = [shipped(&host, "arpeggiator"), shipped(&host, "scale")];
-    let actual = midi_chain_events(&mut host, plugins, Some(bridge));
-    let legacy = [Internal::Arpeggiator, Internal::Tonleiter].map(Internal::plugin_ref);
-    let expected = midi_chain_events(&mut BuiltinHost::new(), legacy, None);
-    assert!(matches!(
-        expected.first(),
-        Some((0, EventKind::NoteOn { key: 60, .. }))
-    ));
-    assert!(matches!(
-        expected.last(),
-        Some((5120, EventKind::NoteOff { key: 60, .. }))
-    ));
-    assert_eq!(actual, expected, "notes and identities at the instrument");
+    assert_midi_effect_chain(&mut host, bridge);
 }
 
 #[test]

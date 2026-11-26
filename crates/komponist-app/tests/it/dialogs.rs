@@ -13,7 +13,7 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::SettingsAction;
-use komponist_app::device_host::{BuiltinHost, DeviceHost};
+use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost};
 use komponist_app::dialogs::{missing_plugins, new_project, settings, start};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::project_io::{self, RecentList};
@@ -64,7 +64,7 @@ fn harness(app: App) -> Harness<'static, App> {
 fn app_in(dir: &Path, project: Project) -> App {
     let mut settings = Settings::default();
     settings.audio.host = HostKind::Null;
-    let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
     App::new(
         Document::new(project),
         engine,
@@ -331,9 +331,9 @@ fn a_file_that_cannot_be_read_keeps_the_project() {
 // Engine reset on open
 // ------------------------------------------------------------------------------------------------
 
-/// hexa through [`BuiltinHost`], recording which devices got a processor and which left.
+/// Records which verified fixture devices got a processor and which left.
 struct Recording {
-    inner: BuiltinHost,
+    inner: PluginHost,
     log: Arc<Mutex<Vec<(&'static str, DeviceId)>>>,
 }
 
@@ -372,7 +372,7 @@ fn opening_a_project_resets_the_engine() {
     let dir = scratch("reset");
     let log = Arc::new(Mutex::new(Vec::new()));
     let host = Recording {
-        inner: BuiltinHost::new(),
+        inner: App::headless_plugin_host(),
         log: Arc::clone(&log),
     };
     let mut app =
@@ -384,7 +384,13 @@ fn opening_a_project_resets_the_engine() {
             komponist_model::edits::NewTrack {
                 name: Some(name.into()),
                 hue: None,
-                instrument: Some(komponist_app::app::hexa_ref()),
+                instrument: Some(
+                    crate::common::shipped_plugin(
+                        &App::headless_plugin_host(),
+                        "org.klang-studio.komponist.hexa",
+                    )
+                    .expect("build the Hexa fixture with scripts/build-test-plugins.sh"),
+                ),
                 index: None,
                 arm_exclusive: false,
             },
@@ -525,7 +531,13 @@ fn recording_into_a_saved_project(dir: &Path) -> (Harness<'static, App>, PathBuf
         NewTrack {
             name: Some("Keys".into()),
             hue: None,
-            instrument: Some(komponist_app::app::hexa_ref()),
+            instrument: Some(
+                crate::common::shipped_plugin(
+                    &App::headless_plugin_host(),
+                    "org.klang-studio.komponist.hexa",
+                )
+                .expect("build the Hexa fixture with scripts/build-test-plugins.sh"),
+            ),
             index: None,
             arm_exclusive: false,
         },
@@ -802,7 +814,7 @@ fn a_missing_plugin_opens_s06_and_keeps_its_state() {
 
 /// hexa only, with a scan the test finishes by hand.
 struct Scanning {
-    inner: BuiltinHost,
+    inner: PluginHost,
     scanning: Arc<Mutex<bool>>,
     finished: bool,
 }
@@ -891,7 +903,7 @@ fn s06_waits_for_the_running_scan() {
     save_and_open(&file, &project);
     let scanning = Arc::new(Mutex::new(true));
     let host = Scanning {
-        inner: BuiltinHost::new(),
+        inner: App::headless_plugin_host(),
         scanning: Arc::clone(&scanning),
         finished: false,
     };
@@ -1079,7 +1091,7 @@ fn without_a_device_play_is_off_and_s07_offers_a_retry() {
     let (engine, started) = EngineSync::new(
         &config,
         komponist_app::engine_sync::MidiSetup::None,
-        Box::new(BuiltinHost::new()),
+        Box::new(App::headless_plugin_host()),
     );
     assert!(started.is_err());
     let settings = Settings {
@@ -1262,7 +1274,7 @@ fn snapshots_of_s06_and_s10() {
     let mut results = SnapshotResults::new();
     for ppp in [1.0, 2.0] {
         let (project, missing) = s06();
-        let mut app = App::headless(project);
+        let mut app = crate::common::reference_app(project);
         app.ui_mut().dialog = Some(Dialog::MissingPlugins(missing));
         app.ui_mut().focus = FocusArea::Dialog;
         app.set_status(
@@ -1275,7 +1287,7 @@ fn snapshots_of_s06_and_s10() {
         h.snapshot(format!("dialogs-s06-{ppp}x"));
         results.extend_harness(&mut h);
     }
-    let mut app = App::headless(demo_project());
+    let mut app = crate::common::reference_app(demo_project());
     app.dispatch(Action::Project(ProjectAction::New));
     let mut h = harness_at(app, 1.0);
     h.run_steps(3);

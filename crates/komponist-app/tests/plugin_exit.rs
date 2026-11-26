@@ -21,7 +21,7 @@ fn loaded_app(name: &str) -> Option<App> {
     let dirs = fixture_dirs()?;
     let mut app = app_with(
         demo_with_test_plugins(),
-        PluginHost::with_reference_devices(config(&scratch(name))),
+        PluginHost::new(config(&scratch(name))),
     );
     app.engine_mut().host_mut().start_scan(&dirs);
     step_until(&mut app, "every device Ok", all_ok);
@@ -65,7 +65,7 @@ fn shutdown_and_drop_leave_no_bridge_process() {
     let dirs = fixture_dirs().unwrap();
     let mut app = app_with(
         demo_with_test_plugins(),
-        PluginHost::with_reference_devices(config(&scratch("exit-loading"))),
+        PluginHost::new(config(&scratch("exit-loading"))),
     );
     app.engine_mut().host_mut().start_scan(&dirs);
     let deadline = Instant::now() + PATIENCE;

@@ -416,7 +416,8 @@ fn a_strip_click_selects_the_track_in_sync_with_the_arrangement() {
 
 #[test]
 fn a_fader_drag_is_one_undo_step_and_sounds_at_once_through_the_fast_path() {
-    let mut app = App::headless(demo_project());
+    let project = crate::common::song_with_shipped_instruments(&App::headless_plugin_host());
+    let mut app = App::headless(project);
     app.dispatch(Action::Ui(UiAction::ToggleMixer));
     app.engine_mut().hold_engine().expect("engine held");
     let mut h = harness(app);
@@ -1017,7 +1018,7 @@ fn the_lean_strip_meter_click_resets_the_peak() {
 
 #[test]
 fn peak_value_and_led_reset_alt_for_all() {
-    let mut p = demo_project();
+    let mut p = crate::common::song_with_shipped_instruments(&App::headless_plugin_host());
     // Loud: every track and the master at +6 dB, so the master clips.
     let bass_id = p.tracks[1].id;
     let all: Vec<TrackId> = p.tracks.iter().map(|t| t.id).collect();

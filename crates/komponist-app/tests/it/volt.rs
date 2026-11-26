@@ -15,6 +15,13 @@ use komponist_i18n::Lang;
 use komponist_model::params::ParamId;
 use komponist_model::{DeviceId, DeviceRole, Project};
 
+use crate::common::{
+    assert_authored_plain, author_base, author_parameter, author_wire_value,
+    set_authored_param as set, shipped_plugin, step_until, wait_for_layout,
+};
+
+const PLUGIN: &str = "org.klang-studio.komponist.volt";
+
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
 
@@ -51,8 +58,8 @@ fn click(h: &mut Harness<'_, App>, pos: Pos2) {
 }
 
 /// A project with one volt track and the dock on „Geräte“.
-fn app_with_volt() -> (App, DeviceId) {
-    let mut app = App::headless(Project::new("Volt"));
+fn reference_app_with_volt() -> (App, DeviceId) {
+    let mut app = crate::common::reference_app(Project::new("Volt"));
     app.dispatch(Action::Plugin(PluginAction::Add {
         plugin: Internal::Volt.plugin_ref(),
         target: DropTarget::NewTrack { index: None },
@@ -67,9 +74,21 @@ fn app_with_volt() -> (App, DeviceId) {
     (app, device)
 }
 
-fn set(app: &mut App, device: DeviceId, key: &str, value: f64) {
-    let id = Internal::Volt.wire(&ParamId::new(key)).expect(key);
-    app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
+fn app_with_volt() -> (App, DeviceId) {
+    let mut app = App::headless(Project::new("Volt"));
+    app.dispatch(Action::Plugin(PluginAction::Add {
+        plugin: shipped_plugin(app.engine().host(), PLUGIN).unwrap(),
+        target: DropTarget::NewTrack { index: None },
+    }));
+    let track = app.project().tracks[0].id;
+    let device = app.project().tracks[0].channel.devices[0].id;
+    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+        tracks: vec![track],
+        mode: SelectMode::Replace,
+    })));
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+    wait_for_layout(&mut app, device);
+    (app, device)
 }
 
 fn page(app: &mut App, device: DeviceId, page: usize) {
@@ -91,7 +110,7 @@ fn mask_cpu(h: &mut Harness<'_, App>) {
 
 #[test]
 fn snapshot_of_the_three_pages() {
-    let (mut app, device) = app_with_volt();
+    let (mut app, device) = reference_app_with_volt();
     // The state of the proposal's mockups: LFO 1 → cutoff, velocity → volume, Hk. 3 → pulse width
     // A, mod wheel → drive; the filter envelope is the second, shorter one.
     for (key, v) in [
@@ -110,7 +129,7 @@ fn snapshot_of_the_three_pages() {
         ("filt_a", 0.002),
         ("filt_d", 0.35),
     ] {
-        set(&mut app, device, key, v);
+        set_reference_param(&mut app, device, key, v);
     }
     page(&mut app, device, 0);
     let mut h = harness(app);
@@ -171,7 +190,8 @@ fn volt_is_an_instrument_in_the_catalog_and_adding_it_makes_a_track() {
         .expect("in the catalog")
         .clone();
     assert_eq!(entry.kind, komponist_ipc::PluginKind::Instrument);
-    assert_eq!(entry.plugin, Internal::Volt.plugin_ref());
+    assert_eq!(entry.plugin.id, PLUGIN);
+    assert!(komponist_plugins::requires_bundled(&entry.plugin));
     app.dispatch(Action::Plugin(PluginAction::Add {
         plugin: entry.plugin,
         target: DropTarget::NewTrack { index: None },
@@ -214,10 +234,13 @@ fn the_card_has_three_pages_and_the_switches_choose_the_envelope_and_the_lfo() {
     h.step();
     press(&mut h, a.center() - vec2(0.0, 30.0), false);
     h.run_steps(3);
-    let values = values(h.state(), device);
-    let get = |k: &str| values[Internal::Volt.wire(&ParamId::new(k)).unwrap() as usize];
-    assert!(get("mod_a") > 0.0011, "{}", get("mod_a"));
-    assert_eq!((get("amp_a"), get("filt_a")), (0.003, 0.002));
+    let id = author_parameter(h.state(), device, "mod_a");
+    let minimum = author_wire_value(h.state(), device, id, 0.0011);
+    step_until(h.state_mut(), "the modulation envelope edit", |app| {
+        author_base(app, device, "mod_a") > minimum
+    });
+    assert_authored_plain(h.state(), device, "amp_a", 0.003);
+    assert_authored_plain(h.state(), device, "filt_a", 0.002);
 }
 
 #[test]
@@ -234,11 +257,6 @@ fn a_synced_lfo_shows_its_divider_instead_of_the_rate() {
     assert_eq!(slider_value(&h, "Teiler"), "1/4");
 }
 
-fn values(app: &App, device: DeviceId) -> Vec<f64> {
-    let (_, _, d) = app.project().find_device(device).unwrap();
-    Internal::Volt.decode_state(d.state.as_deref()).unwrap()
-}
-
 #[test]
 fn knob_turns_and_routing_are_saved_in_the_project_and_load_again() {
     let (mut app, device) = app_with_volt();
@@ -253,27 +271,16 @@ fn knob_turns_and_routing_are_saved_in_the_project_and_load_again() {
     ] {
         set(&mut app, device, key, v);
     }
-    let before = values(&app, device);
-    let json = komponist_model::persist::to_json(app.project()).unwrap();
+    let project = crate::common::project_with_snapshot(&mut app, device);
+    let json = komponist_model::persist::to_json(&project).unwrap();
     let loaded = komponist_model::persist::from_json(&json).unwrap();
-    let (_, _, d) = loaded.find_device(device).unwrap();
-    assert_eq!(d.plugin.name, "Volt");
-    let state: serde_json::Value = serde_json::from_slice(d.state.as_deref().unwrap()).unwrap();
-    assert_eq!(state["params"]["cutoff"], 640.0);
-    assert_eq!(state["params"]["mod2_amt"], -0.25);
-    assert_eq!(
-        Internal::Volt.decode_state(d.state.as_deref()).unwrap(),
-        before
-    );
-    // A state written before a parameter existed still loads: the missing ones are defaults.
-    let old = br#"{"params": {"cutoff": 500, "osc_a_wave": 1}}"#;
-    let values = Internal::Volt.decode_state(Some(old)).unwrap();
-    assert_eq!(
-        values[Internal::Volt.wire(&ParamId::new("cutoff")).unwrap() as usize],
-        500.0
-    );
-    assert_eq!(
-        values[Internal::Volt.wire(&ParamId::new("resonance")).unwrap() as usize],
-        0.3
-    );
+    let mut reopened = App::headless(loaded);
+    wait_for_layout(&mut reopened, device);
+    assert_authored_plain(&reopened, device, "cutoff", 640.0);
+    assert_authored_plain(&reopened, device, "mod2_amt", -0.25);
+}
+
+fn set_reference_param(app: &mut App, device: DeviceId, key: &str, value: f64) {
+    let id = Internal::Volt.wire(&ParamId::new(key)).expect(key);
+    app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
 }

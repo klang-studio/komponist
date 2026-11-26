@@ -42,6 +42,10 @@ fn harness(app: App) -> Harness<'static, App> {
     h
 }
 
+fn reference_demo() -> App {
+    crate::common::reference_app(demo_project())
+}
+
 fn demo() -> App {
     App::headless(demo_project())
 }
@@ -355,9 +359,8 @@ fn panel_sizes_are_saved_in_the_settings() {
     let dir = std::env::temp_dir().join(format!("komponist-shell-settings-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("settings.json");
-    let engine = komponist_app::engine_sync::EngineSync::null(Box::new(
-        komponist_app::device_host::BuiltinHost::new(),
-    ));
+    let engine =
+        komponist_app::engine_sync::EngineSync::null(Box::new(App::headless_plugin_host()));
     let app = App::new(
         komponist_model::Document::new(demo_project()),
         engine,
@@ -384,9 +387,8 @@ fn a_splitter_drag_saves_the_settings_once_at_its_end() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("settings.json");
-    let engine = komponist_app::engine_sync::EngineSync::null(Box::new(
-        komponist_app::device_host::BuiltinHost::new(),
-    ));
+    let engine =
+        komponist_app::engine_sync::EngineSync::null(Box::new(App::headless_plugin_host()));
     let app = App::new(
         komponist_model::Document::new(demo_project()),
         engine,
@@ -420,7 +422,7 @@ fn a_splitter_drag_saves_the_settings_once_at_its_end() {
 
 /// The S01 state: Lead A open in the piano roll (focused), playhead at 10.2.120, stopped.
 fn s01() -> App {
-    let mut app = demo();
+    let mut app = reference_demo();
     let lead = app.project().tracks[2].clone();
     app.dispatch(Action::Ui(UiAction::OpenClip(lead.clips[0].id)));
     app.dispatch(Action::Transport(komponist_app::TransportAction::Locate(
@@ -451,7 +453,7 @@ fn snapshots_of_the_shell() {
     }
 
     // Everything collapsed: rails and the 28 px tab strip.
-    let mut app = demo();
+    let mut app = reference_demo();
     for panel in [Panel::Browser, Panel::Inspector, Panel::Dock] {
         app.dispatch(Action::Ui(UiAction::TogglePanel(panel)));
     }
@@ -462,7 +464,7 @@ fn snapshots_of_the_shell() {
     results.extend_harness(&mut h);
 
     // S04: Tab from the arrangement, mixer maximised, Lead selected.
-    let mut app = demo();
+    let mut app = reference_demo();
     let lead = app.project().tracks[2].id;
     app.dispatch(Action::Ui(UiAction::Select(
         komponist_app::actions::SelectionChange::Tracks {
@@ -488,7 +490,7 @@ fn the_count_in_button_shows_no_digit_while_off() {
     let mut widths = Vec::new();
     for off in [false, true] {
         for ppp in [1.0, 2.0] {
-            let mut app = demo();
+            let mut app = reference_demo();
             for panel in [Panel::Browser, Panel::Inspector, Panel::Dock] {
                 app.dispatch(Action::Ui(UiAction::TogglePanel(panel)));
             }
@@ -526,13 +528,13 @@ fn the_count_in_button_has_room_for_two_digits() {
             .width()
     };
     let one = {
-        let mut h = harness_at(demo(), 1.0);
+        let mut h = harness_at(reference_demo(), 1.0);
         h.run_steps(3);
         width_of(&h)
     };
     let mut project = demo_project();
     project.count_in_bars = 12;
-    let mut app = App::headless(project);
+    let mut app = crate::common::reference_app(project);
     for panel in [Panel::Browser, Panel::Inspector, Panel::Dock] {
         app.dispatch(Action::Ui(UiAction::TogglePanel(panel)));
     }
@@ -748,7 +750,7 @@ fn the_esc_after_a_text_field_lost_focus_is_not_a_shortcut() {
 /// The demo with plugin windows open for Surge XT (Pad), Hexa (Bass) and Dexed (Keys), in that
 /// order, in `lang`.
 fn with_plugin_windows(lang: Lang) -> (App, [komponist_model::DeviceId; 3]) {
-    let mut app = demo().with_lang(lang);
+    let mut app = reference_demo().with_lang(lang);
     let device = |app: &App, track: usize| app.project().tracks[track].channel.devices[0].id;
     let devices = [device(&app, 3), device(&app, 1), device(&app, 4)];
     for d in devices {
@@ -760,7 +762,7 @@ fn with_plugin_windows(lang: Lang) -> (App, [komponist_model::DeviceId; 3]) {
 #[test]
 fn the_menu_lists_the_open_plugin_windows_under_fenster() {
     // No window open: no "Fenster" in the menu.
-    let mut h = harness(demo());
+    let mut h = harness(reference_demo());
     open_menu(&mut h);
     assert!(h.query_by_label(de::APP_MENU_WINDOW).is_none());
 

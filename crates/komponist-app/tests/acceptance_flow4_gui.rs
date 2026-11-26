@@ -38,10 +38,7 @@ fn flow_4_the_plugin_gui_opens_in_a_real_frame() {
         vst3: Vec::new(),
     };
     let dir = scratch("flow4-gui");
-    let mut app = app_with(
-        empty_project(),
-        PluginHost::with_reference_devices(config(&dir)),
-    );
+    let mut app = app_with(empty_project(), PluginHost::new(config(&dir)));
     open_scratch_project(&mut app, &dir);
     app.engine_mut().host_mut().start_scan(&dirs);
 

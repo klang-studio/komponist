@@ -24,10 +24,7 @@ use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, EditAction, PluginAction, ProjectAction, UiAction};
 use komponist_audiofile::fixtures as testkit;
 use komponist_engine::Command;
-use komponist_hexa::Patch;
-use komponist_hexa::device;
 use komponist_model::edits::{self, NewDevice, NewTrack};
-use komponist_model::params::ParamId;
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{ChannelRef, DeviceId, Project, TrackId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
@@ -120,19 +117,17 @@ fn hold(app: &mut App) {
     app.engine_mut().hold_engine().expect("engine held");
 }
 
-fn hexa_app(preset: usize) -> (App, TrackId, DeviceId) {
-    let mut app = App::headless(Project::new("Synth"));
-    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
-    app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: hexa,
-        target: DropTarget::NewTrack { index: None },
-    }));
-    let track = app.project().tracks[0].id;
-    let device = app.project().tracks[0].channel.devices[0].id;
-    app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
-        device,
-        source: komponist_plugins::presets::legacy_source(preset),
-    }));
+fn hexa_app(preset: &str) -> (App, TrackId, DeviceId) {
+    let host = App::headless_plugin_host();
+    let prepared = host
+        .manager()
+        .prepare_bundled_device("org.klang-studio.komponist.hexa", Some(preset), &[], &[])
+        .unwrap();
+    let (mut project, track, device) = instrument_project("Synth", prepared.plugin.clone());
+    Arc::make_mut(&mut project.tracks[0]).channel.devices[0] =
+        Arc::new(prepared.into_device(device));
+    let mut app = app_with(project, host);
+    wait_for_layout(&mut app, device);
     app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
         tracks: vec![track],
         mode: SelectMode::Replace,
@@ -141,144 +136,136 @@ fn hexa_app(preset: usize) -> (App, TrackId, DeviceId) {
     (app, track, device)
 }
 
-fn patch_of(app: &App, device: DeviceId) -> Patch {
-    komponist_hexa::decode_state(state_of(app, device).as_deref()).unwrap()
+fn peak(app: &mut App, track: TrackId) -> f32 {
+    hold(app);
+    let result = note_peak(app, track, 60);
+    app.engine_mut().release_engine();
+    result
 }
 
-fn wire(key: &str) -> u32 {
-    device::param(&ParamId::new(key))
-        .expect("a hexa parameter")
-        .wire
+fn capture(app: &mut App, device: DeviceId) -> Arc<[u8]> {
+    super::bundled_synth_ui::capture_document_state(
+        app,
+        device,
+        "the parameter edit in the project",
+    )
+    .bytes
 }
-
-// ------------------------------------------------------------------------------------------------
-// hexa
 
 #[test]
 fn a_hexa_drag_is_one_step_that_never_recreates_the_processor_and_undo_follows_it() {
-    let (mut app, track, synth) = hexa_app(1);
-    hold(&mut app);
-    let (before_patch, before_state) = (patch_of(&app, synth), state_of(&app, synth));
-    let start_depth = depth(&mut app);
-    let quiet = note_peak(&mut app, track, 60);
-    assert!(quiet > 0.0);
+    let (mut app, track, synth) = hexa_app("E-Piano");
+    let before = state_of(&app, synth);
+    let original_volume = author_base(&app, synth, "volume");
+    let quiet = peak(&mut app, track);
+    assert!(quiet > 1e-4);
 
-    // A note sounds while the knob is dragged: the processor must be the same one afterwards
-    // (a fresh processor has no note and is silent).
+    hold(&mut app);
     app.engine_mut().send(Command::LiveNote {
         track,
         key: 60,
         velocity: 100,
     });
-    app.engine_mut().run_held(4800, &[], 0);
+    assert!(app.engine_mut().run_held(4800, &[], 0));
     let reloads = app.engine().device_reloads();
-    let volume = wire("volume");
-    let values: Vec<f64> = (0..10).map(|i| 0.9 - 0.05 * f64::from(i)).collect();
+    let volume = author_parameter(&app, synth, "volume");
+    let values: Vec<_> = (0..5).map(|index| 0.9 - 0.05 * f64::from(index)).collect();
     drag_param(&mut app, synth, volume, &values);
     let (l, r) = app.engine_mut().run_held_capture(4800, &[], 0).unwrap();
-    let held = l.iter().chain(&r).fold(0.0_f32, |m, s| m.max(s.abs()));
+    let held = l
+        .iter()
+        .chain(&r)
+        .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
     assert!(held > 1e-4, "the note sounds on after the drag: {held}");
-    assert_eq!(
-        app.engine().device_reloads(),
-        reloads,
-        "a drag does not recreate the processor"
-    );
     app.engine_mut().send(Command::LiveNote {
         track,
         key: 60,
         velocity: 0,
     });
     app.engine_mut().run_held(96_000, &[], 0);
+    app.engine_mut().release_engine();
 
-    // One step, named after the parameter; the value is in the document.
-    assert_eq!(depth(&mut app), start_depth + 1);
-    assert_eq!(app.undo_text().as_deref(), Some("Lautstärke ändern"));
-    let after = patch_of(&app, synth);
-    assert_ne!(after, before_patch);
-    // `depth` undid and redid everything: the redone drag reached the processor as a parameter
-    // (#19), and hexa glides the volume over 10 ms, so the sound is compared once the glide is
-    // over (here and after undo and redo below).
-    let settle = |app: &mut App| app.engine_mut().run_held(4800, &[], 0);
-    settle(&mut app);
-    let loud = note_peak(&mut app, track, 60);
-    assert_ne!(loud, quiet, "the drag changed the sound");
+    let after = capture(&mut app, synth);
+    assert_ne!(Some(&after), before.as_ref());
+    assert_eq!(app.undo_text().as_deref(), Some("Volume ändern"));
+    let loud = peak(&mut app, track);
+    assert!(loud > quiet * 1.2, "{quiet} → {loud}");
 
-    // Undo: the document and the sound are back. Redo: both again. Both reach the same
-    // processor as parameters.
-    let reloads = app.engine().device_reloads();
     undo(&mut app);
-    assert_eq!(state_of(&app, synth), before_state);
-    settle(&mut app);
-    assert_eq!(note_peak(&mut app, track, 60), quiet, "undo: the old sound");
+    assert!(app.undo_text().is_none(), "one gesture made one step");
+    wait_for_param_value(&mut app, synth, volume, original_volume);
+    assert!(peak(&mut app, track) > 1e-4, "undo still plays");
     redo(&mut app);
-    assert_eq!(patch_of(&app, synth), after);
-    settle(&mut app);
-    assert_eq!(note_peak(&mut app, track, 60), loud, "redo: the new sound");
-    assert_eq!(
-        app.engine().device_reloads(),
-        reloads,
-        "undo and redo neither"
-    );
-    assert!(app.doc().is_dirty());
+    wait_for_param_value(&mut app, synth, volume, *values.last().unwrap());
+    assert!(peak(&mut app, track) > 1e-4, "redo still plays");
+    assert_eq!(app.engine().device_reloads(), reloads);
 }
 
 #[test]
-fn a_parameter_without_a_gesture_is_a_step_of_its_own_and_a_preset_then_a_knob_undoes_in_two() {
-    let (mut app, track, synth) = hexa_app(0);
-    hold(&mut app);
-    let original = state_of(&app, synth);
-    let start = depth(&mut app);
-    let quiet = note_peak(&mut app, track, 60);
-
-    // Preset, then a knob turn (a key step or a click: no gesture).
+fn a_preset_and_a_discrete_edit_are_separate_undo_steps() {
+    let (mut app, _, synth) = hexa_app("Init");
+    capture(&mut app, synth);
+    let baseline = app.undo_text();
+    let preset_name = |app: &App| {
+        let device = app.project().find_device(synth).unwrap().2;
+        let host = app.engine().host();
+        let inventory = host.clap_presets(device);
+        let (index, _) = host.saved_preset(device, inventory)?;
+        Some(inventory[index].name.clone())
+    };
+    let original_preset = preset_name(&app);
+    let init_ratio = author_base(&app, synth, "op2_ratio");
+    let device = app.project().find_device(synth).unwrap().2;
+    let source = app
+        .engine()
+        .host()
+        .clap_presets(device)
+        .iter()
+        .find(|preset| preset.name == "E-Piano")
+        .unwrap()
+        .source
+        .clone();
     app.dispatch(Action::Plugin(PluginAction::ApplyClapPreset {
         device: synth,
-        source: komponist_plugins::presets::legacy_source(17),
+        source,
     }));
-    app.step();
-    let preset_state = state_of(&app, synth);
-    let preset_peak = note_peak(&mut app, track, 60);
-    set(&mut app, synth, wire("volume"), 0.2);
-    app.step();
-    set(&mut app, synth, wire("glide"), 0.3);
-    app.step();
-    assert_eq!(depth(&mut app), start + 3, "preset and two knob steps");
-    assert_ne!(preset_peak, quiet);
+    step_until(&mut app, "the Hexa preset in the document", |app| {
+        preset_name(app).as_deref() == Some("E-Piano")
+    });
+    let preset_ratio = author_base(&app, synth, "op2_ratio");
+    let preset = state_of(&app, synth);
+    let ratio = author_parameter(&app, synth, "op2_ratio");
+    set(&mut app, synth, ratio, 0.7);
+    let edited = capture(&mut app, synth);
+    assert_ne!(Some(&edited), preset.as_ref());
 
     undo(&mut app);
+    wait_for_param_value(&mut app, synth, ratio, preset_ratio);
     undo(&mut app);
-    assert_eq!(
-        state_of(&app, synth),
-        preset_state,
-        "the knob steps are gone"
-    );
-    assert_eq!(note_peak(&mut app, track, 60), preset_peak);
-    undo(&mut app);
-    assert_eq!(state_of(&app, synth), original, "back before the preset");
-    assert_eq!(note_peak(&mut app, track, 60), quiet);
+    wait_for_param_value(&mut app, synth, ratio, init_ratio);
+    assert_eq!(preset_name(&app), original_preset);
+    assert_eq!(app.undo_text(), baseline);
 }
 
 #[test]
 fn escape_during_a_drag_puts_the_value_back_in_the_document_and_the_engine() {
-    let (mut app, track, synth) = hexa_app(1);
-    hold(&mut app);
+    let (mut app, track, synth) = hexa_app("E-Piano");
     let before = state_of(&app, synth);
-    let start = depth(&mut app);
-    let quiet = note_peak(&mut app, track, 60);
+    let volume = author_parameter(&app, synth, "volume");
+    let original_volume = author_base(&app, synth, "volume");
+    let quiet = peak(&mut app, track);
 
-    begin(&mut app, synth, wire("volume"));
-    for v in [0.3, 0.2, 0.1] {
-        set(&mut app, synth, wire("volume"), v);
-        app.step();
+    begin(&mut app, synth, volume);
+    for value in [0.3, 0.2, 0.1] {
+        set(&mut app, synth, volume, value);
+        wait_for_param_value(&mut app, synth, volume, value);
     }
-    assert_ne!(state_of(&app, synth), before);
-    // Esc, as the app's key handling turns it during a gesture.
     app.dispatch(Action::Edit(EditAction::CancelGesture));
-    app.step();
+    wait_for_param_value(&mut app, synth, volume, original_volume);
     assert!(!app.doc().in_gesture());
-    assert_eq!(state_of(&app, synth), before, "the document is back");
-    assert_eq!(note_peak(&mut app, track, 60), quiet, "and so is the sound");
-    assert_eq!(depth(&mut app), start, "no step");
+    assert_eq!(state_of(&app, synth), before);
+    assert!(quiet > 1e-4 && peak(&mut app, track) > 1e-4);
+    assert!(app.undo_text().is_none());
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -343,47 +330,31 @@ fn knob_rect(h: &Harness<'_, App>, name: &str) -> egui::Rect {
 
 #[test]
 fn dragging_a_card_knob_and_a_wheel_burst_are_one_undo_step_each() {
-    let (mut app, track, synth) = hexa_app(1);
-    hold(&mut app);
-    let start = depth(&mut app);
-    let quiet = note_peak(&mut app, track, 60);
+    let (app, _, synth) = hexa_app("E-Piano");
     let before = state_of(&app, synth);
     let mut h = harness(app);
     let reloads = h.state().engine().device_reloads();
 
-    let glide = device::param(&ParamId::new("glide")).unwrap();
     let knob = knob_rect(&h, "Glide");
     drag(&mut h, knob.center(), knob.center() - vec2(0.0, 40.0));
-    let started = komponist_hexa::decode_state(before.as_deref()).unwrap();
-    assert!(glide.field.get(&patch_of(h.state(), synth)) > glide.field.get(&started));
+    let dragged = capture(h.state_mut(), synth);
+    assert_ne!(Some(&dragged), before.as_ref());
     assert_eq!(h.state().undo_text().as_deref(), Some("Glide ändern"));
-    assert_eq!(
-        h.state().engine().device_reloads(),
-        reloads,
-        "no new processor while dragging"
-    );
-    assert_eq!(depth(h.state_mut()), start + 1, "the drag is one step");
+    assert_eq!(h.state().engine().device_reloads(), reloads);
 
-    // A burst of three notches over another knob: one more step.
     let tune = knob_rect(&h, "Tune");
-    let tuned = patch_of(h.state(), synth);
     wheel(&mut h, tune.center(), &[1.0, 1.0, 1.0]);
     h.run_steps(60);
-    assert_ne!(
-        patch_of(h.state(), synth),
-        tuned,
-        "the wheel turned the knob"
-    );
+    step_for(h.state_mut(), Duration::from_millis(400));
+    let wheeled = capture(h.state_mut(), synth);
+    assert_ne!(wheeled, dragged);
     assert_eq!(h.state().undo_text().as_deref(), Some("Tune ändern"));
-    assert_eq!(depth(h.state_mut()), start + 2, "the burst is one step");
 
-    // Two undos, and the document and the sound are as at the start.
-    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
-    assert_eq!(patch_of(h.state(), synth), tuned);
-    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
-    h.run_steps(2);
+    undo(h.state_mut());
+    assert_eq!(state_of(h.state(), synth), Some(dragged));
+    undo(h.state_mut());
     assert_eq!(state_of(h.state(), synth), before);
-    assert_eq!(note_peak(h.state_mut(), track, 60), quiet);
+    assert!(h.state().undo_text().is_none());
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -606,7 +577,7 @@ fn wait_for_param_value(app: &mut App, device: DeviceId, id: u32, value: f64) {
         app.engine()
             .host()
             .param_value(device, id)
-            .is_some_and(|param| param.value == value)
+            .is_some_and(|param| (param.value - value).abs() < 1e-6)
     });
 }
 

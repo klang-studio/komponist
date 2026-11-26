@@ -55,7 +55,7 @@ pub fn bundled_demo(
     host: &crate::device_host::PluginHost,
     kit_dir: &Path,
 ) -> Result<Project, String> {
-    let mut project = build(DeviceSource::Packaged(host))?;
+    let mut project = build(host)?;
     let mut write_audio = || -> std::io::Result<()> {
         std::fs::create_dir_all(kit_dir)?;
         let drums = komponist_audiofile::fixtures::write_kit(kit_dir)?;
@@ -77,11 +77,10 @@ pub fn bundled_demo(
     Ok(project)
 }
 
-/// Writes the synthesized audio files the showcase's audio clips link into `dir` (created).
-pub fn with_audio_files(mut project: Project, dir: &Path) -> std::io::Result<Project> {
-    std::fs::create_dir_all(dir)?;
-    audio::write_files(&mut project, dir)?;
-    Ok(project)
+/// Writes the demo's 90 BPM source recording for audio-only tests.
+#[doc(hidden)]
+pub fn write_pulse_fixture(dir: &Path) -> std::io::Result<()> {
+    audio::write_pulse_fixture(dir)
 }
 
 /// Volumes of the tracks in dB, in track order (Drums, Bass, Lead, Pad, Keys, Arp), set by
@@ -123,33 +122,21 @@ const CHORDS: [[u8; 3]; 8] = [
 /// Velocity of the Arp chords.
 const CHORD_VELOCITY: u8 = 84;
 
-#[derive(Clone, Copy)]
-enum DeviceSource<'a> {
-    Packaged(&'a crate::device_host::PluginHost),
-    LegacyFixture,
-}
-
-impl DeviceSource<'_> {
-    fn prepare(
-        self,
-        suffix: &str,
-        preset: Option<&str>,
-        edits: &[(&str, f64)],
-        targets: &[&str],
-    ) -> Result<InitialDevice, String> {
-        let id = format!("org.klang-studio.komponist.{suffix}");
-        match self {
-            Self::Packaged(host) => host
-                .manager()
-                .prepare_bundled_device(&id, preset, edits, targets),
-            Self::LegacyFixture => legacy::prepare(&id, preset, edits, targets),
-        }
-    }
+fn prepare_device(
+    host: &crate::device_host::PluginHost,
+    suffix: &str,
+    preset: Option<&str>,
+    edits: &[(&str, f64)],
+    targets: &[&str],
+) -> Result<InitialDevice, String> {
+    let id = format!("org.klang-studio.komponist.{suffix}");
+    host.manager()
+        .prepare_bundled_device(&id, preset, edits, targets)
 }
 
 /// Allocates device IDs and retains the authored automation bindings used in the song.
 struct Devices<'a> {
-    source: DeviceSource<'a>,
+    host: &'a crate::device_host::PluginHost,
     next: u64,
     targets: BTreeMap<(DeviceId, String), (ParamId, f32)>,
 }
@@ -168,7 +155,7 @@ impl Devices<'_> {
         edits: &[(&str, f64)],
         targets: &[&str],
     ) -> Result<Arc<Device>, String> {
-        let prepared = self.source.prepare(id, preset, edits, targets)?;
+        let prepared = prepare_device(self.host, id, preset, edits, targets)?;
         let id = self.take();
         self.targets.extend(
             prepared
@@ -188,16 +175,10 @@ impl Devices<'_> {
     }
 }
 
-/// The historical in-process reference for the demo and its feature fixtures.
-#[doc(hidden)]
-pub fn showcase_project() -> Project {
-    build(DeviceSource::LegacyFixture).expect("the reference showcase is valid")
-}
-
-fn build(source: DeviceSource<'_>) -> Result<Project, String> {
+fn build(host: &crate::device_host::PluginHost) -> Result<Project, String> {
     let mut project = demo_song();
     let mut d = Devices {
-        source,
+        host,
         next: project.next_id,
         targets: BTreeMap::new(),
     };
@@ -270,8 +251,8 @@ fn build(source: DeviceSource<'_>) -> Result<Project, String> {
     project.next_id = d.next;
     add_routing(&mut project, &mut d)?;
     audio::add_tracks(&mut project);
-    sampler::add_tracks(&mut project, source)?;
-    surf::add_track(&mut project, source)?;
+    sampler::add_tracks(&mut project, host)?;
+    surf::add_track(&mut project, host)?;
     add_automation(&mut project, &d);
     add_track_macros(&mut project, &d);
     Ok(project)
@@ -563,97 +544,4 @@ fn add_master_fade(project: &mut Project) {
         ]),
     )
     .expect("showcase master volume envelope");
-}
-
-mod legacy {
-    //! In-process reference state for historical project and export fixtures.
-
-    use std::collections::BTreeMap;
-
-    use komponist_builtin::Internal;
-    use komponist_hexa::{device, encode_state, preset_patch, presets};
-    use komponist_model::DeviceRole;
-    use komponist_model::params::ParamId;
-    use komponist_plugins::bundled_initial_state::InitialDevice;
-    use komponist_plugins::catalog::clap_id;
-
-    pub(super) fn prepare(
-        id: &str,
-        preset: Option<&str>,
-        edits: &[(&str, f64)],
-        targets: &[&str],
-    ) -> Result<InitialDevice, String> {
-        if id == "org.klang-studio.komponist.hexa" {
-            let name = preset.ok_or("reference Hexa needs a factory patch")?;
-            let info = presets()
-                .find(|preset| preset.name == name)
-                .ok_or_else(|| format!("no Hexa preset {name}"))?;
-            let patch = preset_patch(info.index).ok_or("missing Hexa patch")?;
-            let targets = targets
-                .iter()
-                .map(|&name| {
-                    let id = ParamId::new(name);
-                    let param =
-                        device::param(&id).ok_or_else(|| format!("no Hexa parameter {name}"))?;
-                    let value = param.info.to_normalized(param.field.get(&patch)) as f32;
-                    Ok((name.to_owned(), (id, value)))
-                })
-                .collect::<Result<_, String>>()?;
-            return Ok(InitialDevice {
-                plugin: crate::app::hexa_ref(),
-                role: DeviceRole::Instrument,
-                state: Some(encode_state(&patch).into()),
-                targets,
-            });
-        }
-        let (kind, plugin) = Internal::ALL
-            .into_iter()
-            .map(|kind| (kind, kind.plugin_ref()))
-            .find(|(_, plugin)| clap_id(&plugin.id) == id)
-            .ok_or_else(|| format!("no reference device for {id}"))?;
-        let mut result = InitialDevice {
-            plugin,
-            role: kind.role(),
-            state: None,
-            targets: BTreeMap::new(),
-        };
-        if kind == Internal::Sampler && preset.is_none() && edits.is_empty() && targets.is_empty() {
-            return Ok(result);
-        }
-        let mut state = match preset {
-            Some(name) => {
-                let index = kind
-                    .presets()
-                    .iter()
-                    .position(|p| p.name == name)
-                    .ok_or_else(|| format!("{} has no preset {name}", kind.name()))?;
-                kind.preset_state(None, index)
-                    .ok_or("missing reference preset")?
-            }
-            None => kind.encode_state(&kind.defaults()),
-        };
-        for &(name, value) in edits {
-            let wire = kind
-                .wire(&ParamId::new(name))
-                .ok_or_else(|| format!("unknown control {name}"))?;
-            let param = &kind.params()[wire as usize];
-            let plain = param.to_plain(value / f64::from(param.steps().max(1)));
-            state = kind
-                .with_value(Some(&state), wire, plain)
-                .ok_or("invalid reference state")?;
-        }
-        let values = kind
-            .decode_state(Some(&state))
-            .map_err(|error| error.to_string())?;
-        for &name in targets {
-            let id = ParamId::new(name);
-            let wire = kind
-                .wire(&id)
-                .ok_or_else(|| format!("unknown control {name}"))? as usize;
-            let value = kind.params()[wire].to_normalized(values[wire]) as f32;
-            result.targets.insert(name.to_owned(), (id, value));
-        }
-        result.state = Some(state.into());
-        Ok(result)
-    }
 }

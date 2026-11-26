@@ -19,7 +19,6 @@ use komponist_app::{Action, App, EditAction, PluginAction, SettingsAction, UiAct
 use komponist_i18n::{Lang, de};
 use komponist_model::edits::{self, NewDevice};
 use komponist_model::fixtures::demo_project;
-use komponist_model::params::ParamId;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, Project, TrackId};
 use komponist_plugins::{DeviceStatus, FailReason};
 
@@ -318,16 +317,13 @@ fn hexa_shows_its_card_and_turning_a_knob_is_saved() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("Night Drive.komponist");
-    std::fs::write(
-        &path,
-        komponist_model::persist::to_json(&demo_project()).unwrap(),
-    )
-    .unwrap();
-    let mut app = App::headless(demo_project());
+    let project = common::song_with_shipped_instruments(&App::headless_plugin_host());
+    std::fs::write(&path, komponist_model::persist::to_json(&project).unwrap()).unwrap();
+    let mut app = App::headless(project);
     app.dispatch(Action::Project(komponist_app::ProjectAction::OpenPath(
         path.clone(),
     )));
-    // The headless host has only hexa: S06 lists the demo's other plugins; go on without them.
+    // The test song also names uninstalled external effects and instruments.
     assert!(matches!(
         app.ui().dialog,
         Some(komponist_app::ui_state::Dialog::MissingPlugins(_))
@@ -342,6 +338,7 @@ fn hexa_shows_its_card_and_turning_a_knob_is_saved() {
         mode: SelectMode::Replace,
     })));
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+    common::wait_for_layout(&mut app, device);
     let mut h = harness(app);
     let label = Lang::De.devices_card("Hexa");
     let names: Vec<String> = card(&h, &label)
@@ -360,42 +357,56 @@ fn hexa_shows_its_card_and_turning_a_knob_is_saved() {
     ] {
         assert!(names.iter().any(|n| n == name), "{name} in {names:?}");
     }
-    let glide = komponist_hexa::device::param(&ParamId::new("glide")).unwrap();
+    let glide = common::author_parameter(h.state(), device, "glide");
 
     // Drag "Glide" up: the engine gets SetParam and the device state the new value.
-    let before = glide.field.get(&patch_of(h.state(), device));
+    let before = common::author_base(h.state(), device, "glide");
     let knob = card(&h, &label)
         .get_by_role_and_label(Role::Slider, "Glide")
         .rect();
     drag(&mut h, knob.center(), knob.center() - vec2(0.0, 40.0));
-    let after = glide.field.get(&patch_of(h.state(), device));
-    assert!(after > before + 0.1, "{before} → {after}");
+    common::step_until(h.state_mut(), "Hexa applies the glide edit", |app| {
+        common::author_base(app, device, "glide") > before
+    });
+    let after = common::author_base(h.state(), device, "glide");
     assert!(h.state().dispatched().any(|a| matches!(
         a,
         Action::Plugin(PluginAction::SetParam { device: d, id, .. })
-            if *d == device && *id == glide.wire
+            if *d == device && *id == glide
     )));
-    // The value text follows.
-    let text = card(&h, &label)
+    // The display formats the normalized CLAP value using the authored physical units.
+    h.run_steps(2);
+    let cards = komponist_app::views::devices::model::cards(
+        Lang::De,
+        h.state().project().track(lead).unwrap(),
+        h.state().engine().host(),
+        &[],
+    );
+    let glide_info = &cards
+        .iter()
+        .find(|card| card.device == device)
+        .unwrap()
+        .params
+        .iter()
+        .find(|param| param.wire == glide)
+        .unwrap()
+        .info;
+    let expected = glide_info.format(glide_info.to_plain(after));
+    let displayed = card(&h, &label)
         .get_by_role_and_label(Role::Slider, "Glide")
         .value()
         .unwrap();
-    assert_eq!(text, glide.info.format(after));
+    assert_eq!(displayed, expected);
 
     // Saved and loaded again: the value is in the file.
     h.state_mut()
         .dispatch(Action::Project(komponist_app::ProjectAction::Save));
     let loaded =
         komponist_model::persist::from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    let (_, _, d) = loaded.find_device(device).unwrap();
-    let patch = komponist_hexa::decode_state(d.state.as_deref()).unwrap();
-    assert!((glide.field.get(&patch) - after).abs() < 1e-6);
+    let mut reopened = App::headless(loaded);
+    common::wait_for_layout(&mut reopened, device);
+    assert!((common::author_base(&reopened, device, "glide") - after).abs() < 1e-6);
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-fn patch_of(app: &App, device: DeviceId) -> komponist_hexa::Patch {
-    let (_, _, d) = app.project().find_device(device).unwrap();
-    komponist_hexa::decode_state(d.state.as_deref()).unwrap()
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -643,17 +654,32 @@ fn a_failed_load_or_a_hang_does_not_read_abgestuerzt_on_the_card() {
 
 #[test]
 fn a_missing_plugin_is_a_red_placeholder_that_keeps_its_state() {
-    // The built-in host knows only hexa: Lead's effects are missing (S06).
-    let mut app = App::headless(demo_project());
+    // The shipped instruments load while the external effects remain unknown.
+    let project = common::song_with_shipped_instruments(&App::headless_plugin_host());
+    let effect = project.tracks[2].channel.devices[1].id;
+    let state = std::sync::Arc::<[u8]>::from(&b"opaque effect state"[..]);
+    let project = edits::set_device_state(&project, effect, Some(state.clone())).unwrap();
+    let h = lead_devices(App::headless(project));
+    assert_missing_effect(&h);
+    assert_eq!(
+        h.state().project().find_device(effect).unwrap().2.state,
+        Some(state)
+    );
+}
+
+fn lead_devices(mut app: App) -> Harness<'static, App> {
     let lead = app.project().tracks[2].id;
     app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
         tracks: vec![lead],
         mode: SelectMode::Replace,
     })));
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
-    let mut h = harness(app);
+    harness(app)
+}
+
+fn assert_missing_effect(h: &Harness<'_, App>) {
     let label = Lang::De.devices_card("LSP Para EQ x8");
-    let eq = card(&h, &label);
+    let eq = card(h, &label);
     eq.get_by_role_and_label(Role::Label, de::DEVICES_MISSING);
     eq.get_by_role_and_label(Role::Label, de::DEVICES_MISSING_TEXT);
     assert!(eq.query_by_role(Role::Slider).is_none());
@@ -661,6 +687,12 @@ fn a_missing_plugin_is_a_red_placeholder_that_keeps_its_state() {
         eq.query_by_role_and_label(Role::Button, de::DEVICES_OPEN)
             .is_none()
     );
+}
+
+#[test]
+fn snapshot_of_the_missing_effect_card() {
+    let mut h = lead_devices(common::reference_app(demo_project()));
+    assert_missing_effect(&h);
     h.run_steps(1);
     let mut results = SnapshotResults::new();
     mask_cpu(&mut h);
@@ -825,7 +857,7 @@ fn a_test_plugin_added_from_the_browser_loads_and_shows_its_parameters() {
         return;
     };
     let dir = common::scratch("wp44-load");
-    let host = komponist_app::device_host::PluginHost::with_reference_devices(common::config(&dir));
+    let host = komponist_app::device_host::PluginHost::new(common::config(&dir));
     let mut app = common::app_with(demo_project(), host);
     app.engine_mut().host_mut().start_scan(&dirs);
     common::step_until(&mut app, "scan", |a| {
@@ -958,12 +990,26 @@ mod add_menu {
     use super::*;
     use egui::Key;
     use komponist_app::views::devices::model::{Placement, place_plugin};
-    use komponist_builtin::Internal;
+    use komponist_model::PluginRef;
 
-    /// A project with one hexa track, the dock on „Geräte“; the built-in catalog.
+    fn shipped(app: &App, id: &str) -> PluginRef {
+        let id = format!("org.klang-studio.komponist.{id}");
+        common::shipped_plugin(app.engine().host(), &id)
+            .unwrap_or_else(|| panic!("build {id} with scripts/build-test-plugins.sh"))
+    }
+
     fn app_with_track() -> (App, TrackId) {
-        let mut app = App::headless(Project::new("Menü"));
-        let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
+        let app = App::headless(Project::new("Menü"));
+        let hexa = shipped(&app, "hexa");
+        open_devices_track(app, hexa)
+    }
+
+    fn reference_app_with_track() -> (App, TrackId) {
+        let app = common::reference_app(Project::new("Menü"));
+        open_devices_track(app, komponist_app::app::hexa_ref())
+    }
+
+    fn open_devices_track(mut app: App, hexa: PluginRef) -> (App, TrackId) {
         app.dispatch(Action::Plugin(PluginAction::Add {
             plugin: hexa,
             target: DropTarget::NewTrack { index: None },
@@ -1027,7 +1073,7 @@ mod add_menu {
         let field = search(&h).expect("the search field");
         assert!(field.accesskit_node().is_focused(), "focused right away");
         let listed = option_names(&h);
-        for name in ["Hexa", Internal::Eq.name(), Internal::Arpeggiator.name()] {
+        for name in ["Hexa", "EQ", "Arpeggiator"] {
             assert!(listed.iter().any(|n| n == name), "{name} in {listed:?}");
         }
     }
@@ -1049,15 +1095,15 @@ mod add_menu {
         let (app, track) = app_with_track();
         let mut h = harness(app);
         open_by_click(&mut h);
-        // „delay“ is Delay's name and a feature of Hall, as in the browser's search.
+        let original = option_names(&h);
         type_text(&mut h, "delay");
-        assert_eq!(
-            option_names(&h),
-            [Internal::Delay.name(), Internal::Hall.name()]
-        );
+        let matched = option_names(&h);
+        assert_eq!(matched.first().map(String::as_str), Some("Delay"));
+        assert!(matched.len() < original.len());
+        assert!(!matched.iter().any(|name| name == "EQ"));
         key(&mut h, Key::Enter);
         assert!(search(&h).is_none(), "the menu closes");
-        assert_eq!(names_of(h.state(), track), ["Hexa", Internal::Delay.name()]);
+        assert_eq!(names_of(h.state(), track), ["Hexa", "Delay"]);
     }
 
     #[test]
@@ -1077,25 +1123,29 @@ mod add_menu {
         let (app, track) = app_with_track();
         let mut h = harness(app);
         open_by_click(&mut h);
-        type_text(&mut h, "delay");
+        type_text(&mut h, "audio-effect");
         let selected = |h: &Harness<'_, App>| {
             h.query_all_by_role(Role::ListBoxOption)
                 .find(|n| n.accesskit_node().is_selected() == Some(true))
                 .and_then(|n| n.accesskit_node().label().map(|l| l.to_string()))
         };
-        assert_eq!(selected(&h).as_deref(), Some(Internal::Delay.name()));
+        let options = option_names(&h);
+        assert!(options.len() >= 2);
+        assert_eq!(selected(&h).as_ref(), options.first());
+        for expected in &options[1..] {
+            key(&mut h, Key::ArrowDown);
+            assert_eq!(selected(&h).as_ref(), Some(expected));
+        }
         key(&mut h, Key::ArrowDown);
-        assert_eq!(selected(&h).as_deref(), Some(Internal::Hall.name()));
-        key(&mut h, Key::ArrowDown);
-        assert_eq!(
-            selected(&h).as_deref(),
-            Some(Internal::Hall.name()),
-            "stops at the end"
-        );
+        assert_eq!(selected(&h).as_ref(), options.last(), "stops at the end");
         key(&mut h, Key::ArrowUp);
+        assert_eq!(selected(&h).as_ref(), options.get(options.len() - 2));
         key(&mut h, Key::ArrowDown);
         key(&mut h, Key::Enter);
-        assert_eq!(names_of(h.state(), track), ["Hexa", Internal::Hall.name()]);
+        assert_eq!(
+            names_of(h.state(), track),
+            ["Hexa", options.last().unwrap()]
+        );
     }
 
     #[test]
@@ -1104,15 +1154,12 @@ mod add_menu {
         let mut h = harness(app);
         open_by_click(&mut h);
         let at = h
-            .get_by_role_and_label(Role::ListBoxOption, Internal::Limiter.name())
+            .get_by_role_and_label(Role::ListBoxOption, "Limiter")
             .rect()
             .center();
         click_at(&mut h, at);
         assert!(search(&h).is_none());
-        assert_eq!(
-            names_of(h.state(), track),
-            ["Hexa", Internal::Limiter.name()]
-        );
+        assert_eq!(names_of(h.state(), track), ["Hexa", "Limiter"]);
     }
 
     #[test]
@@ -1120,12 +1167,9 @@ mod add_menu {
         let (app, track) = app_with_track();
         let mut h = harness(app);
         open_by_click(&mut h);
-        type_text(&mut h, Internal::Arpeggiator.name());
+        type_text(&mut h, "Arpeggiator");
         key(&mut h, Key::Enter);
-        assert_eq!(
-            names_of(h.state(), track),
-            [Internal::Arpeggiator.name(), "Hexa"]
-        );
+        assert_eq!(names_of(h.state(), track), ["Arpeggiator", "Hexa"]);
     }
 
     #[test]
@@ -1133,26 +1177,23 @@ mod add_menu {
         let (app, track) = app_with_track();
         let mut h = harness(app);
         open_by_click(&mut h);
-        type_text(&mut h, Internal::Sampler.name());
+        type_text(&mut h, "Klopfer");
         key(&mut h, Key::Enter);
-        assert_eq!(names_of(h.state(), track), [Internal::Sampler.name()]);
+        assert_eq!(names_of(h.state(), track), ["Klopfer"]);
         // Without an instrument: an EQ is there, the instrument comes in front of it.
         let (mut app, track) = app_with_track();
         let hexa = app.project().track(track).unwrap().channel.devices[0].id;
         app.dispatch(Action::Plugin(PluginAction::Add {
-            plugin: Internal::Eq.plugin_ref(),
+            plugin: shipped(&app, "eq"),
             target: DropTarget::Track(track),
         }));
         app.dispatch(Action::Edit(EditAction::RemoveDevice(hexa)));
-        assert_eq!(names_of(&app, track), [Internal::Eq.name()]);
+        assert_eq!(names_of(&app, track), ["EQ"]);
         let mut h = harness(app);
         open_by_click(&mut h);
-        type_text(&mut h, Internal::Sampler.name());
+        type_text(&mut h, "Klopfer");
         key(&mut h, Key::Enter);
-        assert_eq!(
-            names_of(h.state(), track),
-            [Internal::Sampler.name(), Internal::Eq.name()]
-        );
+        assert_eq!(names_of(h.state(), track), ["Klopfer", "EQ"]);
     }
 
     #[test]
@@ -1238,7 +1279,7 @@ mod add_menu {
         let (app, track) = app_with_track();
         let mut h = harness(app);
         let slot_rect = slot(&h).rect();
-        let eq = Internal::Eq.plugin_ref();
+        let eq = shipped(h.state(), "eq");
         let from = pos2(100.0, 600.0);
         h.hover_at(from);
         h.step();
@@ -1252,12 +1293,12 @@ mod add_menu {
         press(&mut h, slot_rect.center(), PointerButton::Primary, false);
         h.run_steps(3);
         assert!(search(&h).is_none(), "a drop is not a click");
-        assert_eq!(names_of(h.state(), track), ["Hexa", Internal::Eq.name()]);
+        assert_eq!(names_of(h.state(), track), ["Hexa", "EQ"]);
     }
 
     #[test]
     fn snapshot_of_the_open_menu() {
-        let (app, _) = app_with_track();
+        let (app, _) = reference_app_with_track();
         let mut h = harness(app);
         open_by_click(&mut h);
         type_text(&mut h, "e");
@@ -1270,7 +1311,7 @@ mod add_menu {
 
     #[test]
     fn snapshot_of_the_hovered_slot() {
-        let (app, _) = app_with_track();
+        let (app, _) = reference_app_with_track();
         let mut h = harness(app);
         let at = slot(&h).rect().center();
         h.hover_at(at);
@@ -1305,7 +1346,7 @@ mod add_menu {
         type_text(&mut h, "delay");
         key(&mut h, Key::Enter);
         assert!(search(&h).is_none());
-        assert_eq!(names_of(h.state(), track), ["Hexa", Internal::Delay.name()]);
+        assert_eq!(names_of(h.state(), track), ["Hexa", "Delay"]);
         h.state_mut().dispatch(Action::Edit(EditAction::Undo));
         assert_eq!(names_of(h.state(), track), ["Hexa"]);
         // A second click on the button closes an open menu.
@@ -1319,7 +1360,7 @@ mod add_menu {
 
     #[test]
     fn snapshot_of_the_menu_at_the_header_button() {
-        let (app, _) = app_with_track();
+        let (app, _) = reference_app_with_track();
         let mut h = harness(app);
         let button = h
             .get_by_role_and_label(Role::Button, de::DEVICES_ADD)

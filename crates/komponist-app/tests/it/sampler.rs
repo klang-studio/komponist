@@ -207,8 +207,29 @@ fn the_general_sampler_exports_a_tempo_synced_note_from_the_first_beat() {
     use crate::export;
     use komponist_app::actions::{BitDepth, ExportRange};
     use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points, Shape};
-    use komponist_model::params::ParamId;
+    use komponist_model::params::{Scale, to_normalized};
     use komponist_model::time::Tempo;
+
+    const PLUGIN: &str = "org.klang-studio.komponist.general-sampler";
+    let host = App::headless_plugin_host();
+    if common::shipped_plugin(&host, PLUGIN).is_none() {
+        assert_ne!(
+            std::env::var("KOMPONIST_REQUIRE_FIXTURES").as_deref(),
+            Ok("1")
+        );
+        eprintln!("skipping: build the verified CLAP fixtures with scripts/build-test-plugins.sh");
+        return;
+    }
+    let prepared = host
+        .manager()
+        .prepare_bundled_device(
+            PLUGIN,
+            None,
+            &[("sync", 1.0), ("mode", 0.0), ("source_bpm", 0.4)],
+            &["gain"],
+        )
+        .unwrap();
+    let (gain, initial_gain) = prepared.targets["gain"].clone();
 
     let dir = scratch("general-sampler-export");
     let rate = 48_000;
@@ -230,13 +251,12 @@ fn the_general_sampler_exports_a_tempo_synced_note_from_the_first_beat() {
     writer.finalize().unwrap();
     let mut project = Project::new("Sampler");
     project.tempo = Tempo::new(150.0);
-    let kind = Internal::GeneralSampler;
     let (project, track) = edits::add_track(
         &project,
         NewTrack {
             name: Some("Sampler".into()),
             hue: None,
-            instrument: Some(kind.plugin_ref()),
+            instrument: Some(prepared.plugin.clone()),
             index: None,
             arm_exclusive: false,
         },
@@ -261,16 +281,11 @@ fn the_general_sampler_exports_a_tempo_synced_note_from_the_first_beat() {
         },
     )
     .unwrap();
-    let mut state = kind.encode_state(&kind.defaults());
-    for (key, value) in [("sync", 1.0), ("mode", 0.0), ("source_bpm", 120.0)] {
-        let id = kind.wire(&ParamId::new(key)).unwrap();
-        state = kind.with_value(Some(&state), id, value).unwrap();
-    }
-    let device = Arc::make_mut(&mut Arc::make_mut(&mut project.tracks[0]).channel.devices[0]);
-    device.state = Some(links::write(Some(&state), 0, Some(&SampleLink::new(&path, None))).into());
-    let device = device.id;
-    let gain = ParamId::new("gain");
-    let gain_info = &kind.params()[kind.wire(&gain).unwrap() as usize];
+    let slot = &mut Arc::make_mut(&mut project.tracks[0]).channel.devices[0];
+    let device = slot.id;
+    let mut sampler = prepared.into_device(device);
+    sampler.asset_links.insert(0, AssetLink::new(&path, None));
+    *slot = Arc::new(sampler);
     let owner = AutomationOwner::Track(track);
     let (project, lane) = edits::automation::add_lane(
         &project,
@@ -289,14 +304,27 @@ fn the_general_sampler_exports_a_tempo_synced_note_from_the_first_beat() {
         Points::new(vec![
             Point {
                 tick: Tick::ZERO,
-                value: gain_info.to_normalized(0.0) as f32,
+                value: initial_gain,
                 shape: Shape::Hold,
             },
-            Point::linear(Tick(960), gain_info.to_normalized(-12.0) as f32),
+            Point::linear(
+                Tick(960),
+                to_normalized(Scale::Db, -70.0, 12.0, -12.0) as f32,
+            ),
         ]),
     )
     .unwrap();
     let mut app = App::headless(project);
+    step_until(&mut app, "sampler loaded its audio asset", |app| {
+        let host = app.engine().host();
+        host.status(device) == DeviceStatus::Ok
+            && host.asset_slots(device).is_some_and(|assets| {
+                assets
+                    .slots
+                    .iter()
+                    .any(|slot| slot.id == 0 && slot.status == AssetStatus::Ready)
+            })
+    });
     let settings = komponist_app::actions::ExportSettings {
         bit_depth: BitDepth::Float32,
         normalize: false,

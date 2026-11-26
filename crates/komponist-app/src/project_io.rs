@@ -1760,7 +1760,7 @@ pub(crate) mod tests {
         let mut app = App::new(
             Document::new(Project::new("Recent")),
             crate::engine_sync::EngineSync::null_with_midi(
-                Box::new(crate::device_host::BuiltinHost::new()),
+                Box::new(App::headless_plugin_host()),
                 komponist_audio::MidiReceiver::disconnected(),
             ),
             crate::settings::Settings::default(),

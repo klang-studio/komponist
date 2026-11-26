@@ -73,7 +73,7 @@ struct Scene {
 }
 
 fn scene() -> Scene {
-    let probe = App::headless(Project::new("probe"));
+    let probe = crate::common::reference_app(Project::new("probe"));
     let pisynth = probe.engine().host().catalog().entries()[0].plugin.clone();
     let mut p = Project::new("Sidechain");
     let track = |p: &mut Project, name: &str| {
@@ -132,7 +132,7 @@ fn scene() -> Scene {
 }
 
 fn app(s: &Scene) -> App {
-    let mut app = App::headless(s.project.clone());
+    let mut app = crate::common::reference_app(s.project.clone());
     app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
         tracks: vec![s.pad],
         mode: SelectMode::Replace,
@@ -286,7 +286,7 @@ fn a_bridged_plugin_has_the_chip_only_with_a_sidechain_port() {
     };
     let dir = scratch("sidechain-chip");
     // A scan fills the cache the app's host starts from.
-    let mut scan = PluginHost::with_reference_devices(config(&dir));
+    let mut scan = PluginHost::new(config(&dir));
     scan.start_scan(&dirs);
     let deadline = std::time::Instant::now() + crate::common::PATIENCE;
     while scan.is_scanning() {
@@ -306,24 +306,18 @@ fn a_bridged_plugin_has_the_chip_only_with_a_sidechain_port() {
         plugin("de.klang-studio.kp-test-sc"),
         plugin(crate::common::FX),
     );
+    let instrument = plugin(crate::common::SYNTH);
     assert!(sc.sidechain && !fx.sidechain);
     scan.shutdown();
     drop(scan);
 
     let mut p = Project::new("Sidechain");
-    let hexa = App::headless(Project::new("probe"))
-        .engine()
-        .host()
-        .catalog()
-        .entries()[0]
-        .plugin
-        .clone();
     let (next, pad) = edits::add_track(
         &p,
         NewTrack {
             name: Some("Pad".to_owned()),
             hue: None,
-            instrument: Some(hexa),
+            instrument: Some(instrument.plugin),
             index: None,
             arm_exclusive: false,
         },
@@ -343,7 +337,7 @@ fn a_bridged_plugin_has_the_chip_only_with_a_sidechain_port() {
         p = next;
         ids.push(id);
     }
-    let mut app = app_with(p, PluginHost::with_reference_devices(config(&dir)));
+    let mut app = app_with(p, PluginHost::new(config(&dir)));
     step_until(&mut app, "every device Ok", all_ok);
     assert!(app.engine().host().has_sidechain(ids[0]));
     assert!(!app.engine().host().has_sidechain(ids[1]));

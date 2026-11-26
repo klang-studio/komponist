@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_app::App;
-use komponist_app::device_host::{DeviceHost as _, PluginHost, is_hexa};
+use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::settings::Settings;
 use komponist_audio::{HostKind, StreamConfig};
@@ -28,6 +28,12 @@ use komponist_model::{
     Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, Project, TrackId,
 };
 use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerConfig, PluginManagerEvent};
+
+/// Build a screenshot scene with the catalogue used by the checked-in reference images.
+pub fn reference_app(project: Project) -> App {
+    App::headless(project)
+        .with_device_host(Box::new(komponist_app::device_host::BuiltinHost::new()))
+}
 
 /// How long loading, scans and answers may take on a loaded machine.
 pub const PATIENCE: Duration = Duration::from_secs(30);
@@ -113,6 +119,105 @@ pub fn native_fixture(dir: &Path, bundle: &str, id: &str) -> Option<(PluginHost,
     Some((host, plugin))
 }
 
+/// The exact reference discovered from the test build of a shipped CLAP bundle.
+pub fn shipped_plugin(host: &dyn DeviceHost, id: &str) -> Option<PluginRef> {
+    host.catalog()
+        .entries()
+        .iter()
+        .find(|entry| entry.plugin.id == id && komponist_plugins::requires_bundled(&entry.plugin))
+        .map(|entry| entry.plugin.clone())
+}
+
+/// The model test song played by shipped instruments on Drums, Bass and Lead.
+pub fn song_with_shipped_instruments(host: &dyn DeviceHost) -> Project {
+    let mut project = demo_project();
+    for (track, id) in [
+        (0, "org.klang-studio.komponist.sampler"),
+        (1, "org.klang-studio.komponist.hexa"),
+        (2, "org.klang-studio.komponist.hexa"),
+    ] {
+        let instrument = shipped_plugin(host, id)
+            .unwrap_or_else(|| panic!("build {id} with scripts/build-test-plugins.sh"));
+        let device = &mut Arc::make_mut(&mut project.tracks[track]).channel.devices[0];
+        Arc::make_mut(device).plugin = instrument;
+    }
+    project
+}
+
+/// Wait for the device's parameter inventory and authored layout before interacting with it.
+pub fn wait_for_layout(app: &mut App, device: DeviceId) {
+    step_until(app, "the authored parameter inventory", |app| {
+        let host = app.engine().host();
+        host.status(device) == DeviceStatus::Ok
+            && host.native_layout(device).is_some()
+            && host.params(device).is_some()
+    });
+}
+
+pub fn author_parameter(app: &App, device: DeviceId, key: &str) -> u32 {
+    app.engine()
+        .host()
+        .native_layout(device)
+        .unwrap()
+        .author_ids()
+        .unwrap()[key]
+}
+
+/// Converts a fixture's physical test value through the metadata submitted by the bundle.
+pub fn author_wire_value(app: &App, device: DeviceId, id: u32, plain: f64) -> f64 {
+    let layout = app.engine().host().native_layout(device).unwrap();
+    let Some(display) = layout.parameter_display(id) else {
+        return plain;
+    };
+    let (min, max) = display.range();
+    if let Some(steps) = display.steps {
+        (((plain - min) / (max - min)) * f64::from(steps)).round()
+    } else {
+        komponist_model::params::to_normalized(display.scale.model_scale(), min, max, plain)
+    }
+}
+
+pub fn set_authored_param(app: &mut App, device: DeviceId, key: &str, plain: f64) {
+    let id = author_parameter(app, device, key);
+    let value = author_wire_value(app, device, id, plain);
+    app.dispatch(komponist_app::Action::Plugin(
+        komponist_app::PluginAction::SetParam { device, id, value },
+    ));
+    step_until(app, "the authored parameter edit", |app| {
+        app.engine()
+            .host()
+            .param_base(device, id)
+            .is_some_and(|current| (current - value).abs() < 1e-6)
+    });
+}
+
+pub fn author_base(app: &App, device: DeviceId, key: &str) -> f64 {
+    let id = author_parameter(app, device, key);
+    app.engine().host().param_base(device, id).unwrap()
+}
+
+pub fn assert_authored_plain(app: &App, device: DeviceId, key: &str, plain: f64) {
+    let id = author_parameter(app, device, key);
+    let expected = author_wire_value(app, device, id, plain);
+    let actual = author_base(app, device, key);
+    assert!(
+        (actual - expected).abs() < 1e-6,
+        "{key}: {actual} != {expected}"
+    );
+}
+
+/// Copy the live plugin's opaque CLAP snapshot into a project for a persistence check.
+pub fn project_with_snapshot(app: &mut App, device: DeviceId) -> Project {
+    let states = app
+        .engine_mut()
+        .host_mut()
+        .snapshot_selected_states(&[device], PATIENCE)
+        .expect("capture the current bundle state");
+    let [(captured, state)] = states.try_into().expect("single fixture snapshot");
+    assert_eq!(captured, device);
+    edits::set_saved_plugin_state(app.project(), device, &state).unwrap()
+}
+
 /// A project with one instrument and its track and device IDs.
 pub fn instrument_project(name: &str, plugin: PluginRef) -> (Project, TrackId, DeviceId) {
     let (project, track) = edits::add_track(
@@ -169,16 +274,12 @@ pub fn clap_plugin(id: &str) -> PluginRef {
     }
 }
 
-/// The demo project "Night Drive" with kp-test-synth for every external instrument (klopfer,
-/// Surge XT, Dexed, Vital) and kp-test-fx for every effect (LSP, TAL, Dragonfly); hexa stays.
+/// The model test song, played exclusively by the test synth and effect through bridges.
 pub fn demo_with_test_plugins() -> Project {
     let mut project = demo_project();
     for track in &mut project.tracks {
         let track = Arc::make_mut(track);
         for device in &mut track.channel.devices {
-            if is_hexa(device) {
-                continue;
-            }
             let device = Arc::make_mut(device);
             device.plugin = match device.role {
                 DeviceRole::Instrument => clap_plugin(SYNTH),
@@ -198,11 +299,11 @@ pub fn devices(project: &Project) -> Vec<(TrackId, Device)> {
         .collect()
 }
 
-/// The devices of `project` that run in bridges (everything but hexa).
+/// The external fixture devices that run in bridges for tests using the ordinary scan host.
 pub fn bridged(project: &Project) -> Vec<DeviceId> {
     devices(project)
         .into_iter()
-        .filter(|(_, d)| !is_hexa(d))
+        .filter(|(_, d)| matches!(d.plugin.format, PluginFormat::Clap | PluginFormat::Vst3))
         .map(|(_, d)| d.id)
         .collect()
 }

@@ -135,10 +135,14 @@ dependencies that are pinned by `rev`. Bump them by hand:
 
 ## Test fixtures in a fresh worktree
 
-Run `scripts/build-test-plugins.sh` to build the CLAP and VST3 fixtures for the local platform,
-then run `scripts/check.sh`. The gate refreshes the fixtures and sets `KOMPONIST_REQUIRE_FIXTURES=1`
-so a missing bundle fails a test that needs it. These test plugins are separate from the twelve
-devices used by the installed demo. To exercise the shipped demo in its authenticated package, run
+Run `scripts/build-test-plugins.sh` to build the CLAP and VST3 fixtures for the local platform and
+stage the twelve shipped CLAP bundles with their manifest for headless tests. Then run
+`scripts/check.sh`. The gate refreshes the fixtures and sets `KOMPONIST_REQUIRE_FIXTURES=1` so
+missing bundles fail the tests that need them.
+
+To measure the demo mix offline, run
+`cargo test -p komponist-app --test it showcase::render_levels -- --ignored --nocapture`.
+The test uses the staged headless bundles. To exercise an authenticated release package, run
 `scripts/measure-bundled-clap.py --current-projects PATH_TO_PACKAGED_APP`.
 
 ## Executable

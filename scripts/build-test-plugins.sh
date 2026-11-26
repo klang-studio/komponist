@@ -35,7 +35,7 @@ for name in kp-test-synth kp-test-fx kp-test-crash kp-test-slow kp-test-sc; do
     echo "$out/vst3/$name.vst3"
 done
 
-# Keep real device fixtures separate so scans of the WP-27 inventory stay unchanged.
+# Keep isolated external fixtures and the verified headless inventory in separate directories.
 target="$(rustc -vV | sed -n 's/^host: //p')"
 fixture_stage="$(mktemp -d "$out/.builtin-clap.XXXXXX")"
 trap 'rm -rf "$fixture_stage"' EXIT
@@ -44,13 +44,13 @@ if ! command -v "$python" >/dev/null; then
     python=python
 fi
 CARGO_TARGET_DIR="$root/target" "$python" "$root/scripts/bundled-clap.py" \
-    --target "$target" --inventory native-fixtures stage "$fixture_stage/payload" >/dev/null
+    --target "$target" --inventory native-fixtures stage "$fixture_stage/native-fixtures" >/dev/null
 install_fixture() {
     local source="$1"
     local fixture="$2"
     mkdir -p "$(dirname "$fixture")"
     rm -rf "$fixture"
-    mv "$fixture_stage/payload/$source.clap" "$fixture"
+    mv "$fixture_stage/native-fixtures/$source.clap" "$fixture"
     echo "$fixture"
 }
 install_fixture komponist_sampler "$out/builtin-clap/klopfer.clap"
@@ -58,3 +58,15 @@ install_fixture komponist_general_sampler "$out/builtin-clap/general-sampler.cla
 # State sync uses Limiter without adding an entry to the sampler snapshots' browser.
 rm -rf "$out/builtin-clap/limiter.clap"
 install_fixture komponist_limiter "$out/state-sync-clap/limiter.clap"
+
+# Headless tests run the shipped devices from the same verified inventory as a packaged app.
+CARGO_TARGET_DIR="$root/target" "$python" "$root/scripts/bundled-clap.py" \
+    --target "$target" --inventory all stage "$fixture_stage/payload" >/dev/null
+headless="$out/headless-bundles"
+mkdir -p "$headless"
+"$python" -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' \
+    "$fixture_stage/payload/manifest.json" > "$fixture_stage/manifest.sha256"
+rm -rf "$headless/bundled-clap"
+mv "$fixture_stage/payload" "$headless/bundled-clap"
+mv "$fixture_stage/manifest.sha256" "$headless/manifest.sha256"
+echo "$headless/bundled-clap"

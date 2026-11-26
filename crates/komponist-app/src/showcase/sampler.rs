@@ -5,12 +5,11 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
-use komponist_general_sampler::{Settings, write_settings};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewNote, NewTrack};
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{Hue, PluginRef, Project, Tempo, Tick, TrackId};
 
-use super::{DeviceSource, log_position};
+use super::{log_position, prepare_device};
 
 const SAMPLE_FILE: &str = "Glass Pluck.wav";
 const RATE: u32 = 48_000;
@@ -112,25 +111,21 @@ impl GlassTrack {
     }
 }
 
-pub(super) fn add_tracks(project: &mut Project, source: DeviceSource<'_>) -> Result<(), String> {
+pub(super) fn add_tracks(
+    project: &mut Project,
+    host: &crate::device_host::PluginHost,
+) -> Result<(), String> {
     for glass in GLASS_TRACKS {
         let values = sampler_values(glass.melody());
-        let mut prepared = source.prepare("general-sampler", None, &values, &[])?;
+        let mut prepared = prepare_device(host, "general-sampler", None, &values, &[])?;
         if !glass.markers().is_empty() {
             let state = prepared
                 .state
                 .as_deref()
                 .ok_or("missing sampler demo state")?;
             let times = glass.markers().iter().copied();
-            let state = match source {
-                DeviceSource::Packaged(_) => {
-                    komponist_plugins::bundled_sampler::edit_slice_markers(state, times)
-                        .ok_or("could not initialize the sampler's slice map")?
-                }
-                DeviceSource::LegacyFixture => {
-                    write_settings(Some(state), &Settings::from_markers(times))
-                }
-            };
+            let state = komponist_plugins::bundled_sampler::edit_slice_markers(state, times)
+                .ok_or("could not initialize the sampler's slice map")?;
             prepared.state = Some(state.into());
         }
         let (mut next, id) = glass.add(project, prepared.plugin.clone());

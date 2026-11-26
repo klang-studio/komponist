@@ -530,7 +530,6 @@ fn preserve_unmapped_value(
 mod tests {
     use super::*;
     use crate::actions::{Action as AppAction, EditAction, TransportAction};
-    use komponist_builtin::Internal;
 
     #[test]
     fn macro_touch_records_into_its_own_lane_and_keeps_the_base() {
@@ -727,20 +726,66 @@ mod tests {
 
     #[test]
     fn mapping_mode_preserves_pan_then_the_macro_pans_a_real_synth() {
+        use crate::device_host::DeviceHost as _;
+        use komponist_ipc::control::RenderMode;
+        use komponist_plugins::DeviceStatus;
+        use std::time::{Duration, Instant};
+
+        let host = App::headless_plugin_host();
+        let instrument = host
+            .catalog()
+            .entries()
+            .iter()
+            .find(|entry| entry.plugin.id == "org.klang-studio.komponist.volt")
+            .expect("build the Volt fixture with scripts/build-test-plugins.sh")
+            .plugin
+            .clone();
         let (project, track) = edits::add_track(
             &Project::new("Macro test"),
             edits::NewTrack {
                 name: Some("Volt".into()),
-                instrument: Some(Internal::Volt.plugin_ref()),
+                instrument: Some(instrument),
                 hue: None,
                 index: None,
                 arm_exclusive: false,
             },
         )
         .unwrap();
+        let device = project
+            .track(track)
+            .unwrap()
+            .channel
+            .instrument()
+            .unwrap()
+            .1
+            .id;
         let mut app = App::headless(project);
+        let wait_until_ready = |app: &mut App| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                app.step();
+                let host = app.engine().host();
+                if host.status(device) == DeviceStatus::Ok && host.params(device).is_some() {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the Volt fixture did not activate: {:?}",
+                    host.status(device)
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+
+        wait_until_ready(&mut app);
+        if app.engine().host().bridge_pid(device).is_some() {
+            // The held engine has no real-time deadline to meet while a bridge processes audio.
+            app.engine_mut()
+                .host_mut()
+                .set_render_mode(RenderMode::Offline);
+            wait_until_ready(&mut app);
+        }
         app.engine_mut().hold_engine().unwrap();
-        app.step();
 
         app.dispatch(AppAction::Macro(Action::ToggleMapping { track }));
         app.dispatch(AppAction::Edit(EditAction::SetTrackProp {
@@ -753,7 +798,7 @@ mod tests {
         assert_eq!(mapping.target, AutomationTarget::Pan);
         assert_eq!(mapping.value_at(0.0), 0.5);
         app.dispatch(AppAction::Macro(Action::ToggleMapping { track }));
-        app.step();
+        wait_until_ready(&mut app);
 
         app.dispatch(AppAction::Transport(TransportAction::LiveNote {
             track: Some(track),
@@ -770,7 +815,7 @@ mod tests {
             index: 0,
             value: 1.0,
         }));
-        app.step();
+        wait_until_ready(&mut app);
         let (right_panned_l, right_panned_r) =
             app.engine_mut().run_held_capture(4096, &[], 0).unwrap();
         let left_energy = energy(&right_panned_l[2048..]);

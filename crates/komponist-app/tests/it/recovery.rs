@@ -16,7 +16,7 @@ use egui::accesskit::Role;
 use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::device_host::BuiltinHost;
+use komponist_app::device_host::DeviceHost;
 use komponist_app::dialogs::recovery::{self as prompt, Answer, Model, Variant};
 use komponist_app::dialogs::start;
 use komponist_app::engine_sync::EngineSync;
@@ -69,7 +69,7 @@ impl FakeClock {
 fn session(dir: &Path, project: Project, clock: &FakeClock) -> App {
     let mut settings = Settings::default();
     settings.audio.host = HostKind::Null;
-    let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
     App::new(
         Document::new(project),
         engine,
@@ -678,19 +678,18 @@ fn open_plugin_waits_for_the_document_the_prompt_opens() {
     let file = dir.join("Beat.komponist");
     let project = {
         let (drums, hexa) = komponist_app::dialogs::new_project::template_instruments(
-            &komponist_plugins::Catalog::builtin(),
+            App::headless_plugin_host().catalog(),
         )
         .unwrap();
         komponist_app::dialogs::new_project::template(Lang::De, drums, hexa)
     };
-    let sampler = komponist_builtin::Internal::Sampler.plugin_ref().name;
-    let device = project
+    let instrument = project
         .tracks
         .iter()
         .flat_map(|t| t.channel.devices.iter())
-        .find(|d| d.plugin.name == sampler)
-        .map(|d| d.id)
+        .find(|d| d.plugin.id == "org.klang-studio.komponist.sampler")
         .expect("the template plays the Sampler");
+    let (device, sampler) = (instrument.id, instrument.plugin.name.clone());
     project_io::save_project(&file, &project).unwrap();
     let opened = |app: &App| {
         app.dispatched().any(|a| {

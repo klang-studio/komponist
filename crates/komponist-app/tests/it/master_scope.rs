@@ -11,7 +11,6 @@ use egui::{Key, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::SettingsAction;
-use komponist_app::device_host::BuiltinHost;
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::keymap::Keymap;
 use komponist_app::master_scope::MasterDisplay;
@@ -44,7 +43,7 @@ fn harness(app: App) -> Harness<'static, App> {
 
 /// The demo on the null backend, saving its settings to `path`.
 fn app_saving_to(path: &std::path::Path, settings: Settings) -> App {
-    let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
     App::new(
         Document::new(demo_project()),
         engine,

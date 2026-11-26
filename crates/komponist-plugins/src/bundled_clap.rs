@@ -153,6 +153,21 @@ impl BundledClap {
         .map(Some)
     }
 
+    pub(crate) fn open_fixture(
+        root: &Path,
+        cache_dir: &Path,
+        expected_digest: &str,
+    ) -> Result<Self, BundleVerificationError> {
+        let root =
+            canonical_app_path(root).map_err(|err| BundleVerificationError::new(root, err))?;
+        Self::open(
+            root,
+            cache_dir.to_owned(),
+            expected_digest,
+            env!("KOMPONIST_BUNDLED_CLAP_TARGET"),
+        )
+    }
+
     fn open(
         root: PathBuf,
         cache_dir: PathBuf,

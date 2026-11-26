@@ -47,7 +47,7 @@ fn read(path: &std::path::Path) -> (hound::WavSpec, Vec<f32>) {
 }
 
 fn scanned_host(dir: &std::path::Path, dirs: &komponist_plugins::PluginDirs) -> PluginHost {
-    let mut host = PluginHost::with_reference_devices(config(dir));
+    let mut host = PluginHost::new(config(dir));
     komponist_app::device_host::DeviceHost::start_scan(&mut host, dirs);
     let deadline = Instant::now() + PATIENCE;
     'scan: loop {

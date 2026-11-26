@@ -400,11 +400,14 @@ impl Drop for PluginManager {
     }
 }
 
+fn force_bundled_bridge() -> bool {
+    std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1")
+}
+
 impl PluginManager {
     /// Opens the installed bundled inventory and the cached external plugin catalog.
     pub fn new(config: PluginManagerConfig) -> PluginManager {
-        let force_bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE")
-            .is_some_and(|value| value == "1");
+        let force_bridge = force_bundled_bridge();
         Self::with_catalog(config, Catalog::default(), true, force_bridge)
     }
 
@@ -424,9 +427,46 @@ impl PluginManager {
     /// Includes the legacy catalog for tests and benchmark comparisons.
     #[doc(hidden)]
     pub fn with_reference_devices(config: PluginManagerConfig) -> PluginManager {
-        let force_bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE")
-            .is_some_and(|value| value == "1");
+        let force_bridge = force_bundled_bridge();
         Self::with_catalog(config, Catalog::builtin(), true, force_bridge)
+    }
+
+    /// Open an explicit test inventory using the fixture builder's expected manifest hash.
+    #[doc(hidden)]
+    pub fn for_test_fixtures(
+        config: PluginManagerConfig,
+        root: &Path,
+        expected_digest: &str,
+    ) -> Result<Self, BundleVerificationError> {
+        let cache_dir = config.cache_file.parent().unwrap_or_else(|| Path::new("."));
+        let bundled_clap = BundledClap::open_fixture(root, cache_dir, expected_digest)?;
+        let mut manager = Self::from_inventory(
+            config,
+            Catalog::default(),
+            Some(bundled_clap.directory().to_owned()),
+            Some(bundled_clap),
+            force_bundled_bridge(),
+            Vec::new(),
+        );
+        let ready = manager.bundled_clap.as_ref().is_some_and(|bundled| {
+            bundled.bundle_entries().all(|(path, id)| {
+                manager
+                    .cache
+                    .lookup(path, crate::scan::bundle_mtime(path))
+                    .is_some_and(|entry| {
+                        entry.preset_discovery_complete
+                            && entry.descriptors.iter().any(|descriptor| {
+                                descriptor.format == komponist_ipc::PluginFormat::Clap
+                                    && descriptor.bundle == path
+                                    && descriptor.id == id
+                            })
+                    })
+            })
+        });
+        if !ready {
+            manager.start_bundled_scan();
+        }
+        Ok(manager)
     }
 
     fn with_catalog(
@@ -435,7 +475,6 @@ impl PluginManager {
         enable_bundles: bool,
         force_bundled_bridge: bool,
     ) -> PluginManager {
-        let cache = ScanCache::load(&config.cache_file);
         let mut pending = Vec::new();
         let mut report = |error: BundleVerificationError| {
             pending.push(PluginManagerEvent::Log {
@@ -458,6 +497,25 @@ impl PluginManager {
         } else {
             None
         };
+        Self::from_inventory(
+            config,
+            catalog,
+            private_clap_dir,
+            bundled_clap,
+            force_bundled_bridge,
+            pending,
+        )
+    }
+
+    fn from_inventory(
+        config: PluginManagerConfig,
+        catalog: Catalog,
+        private_clap_dir: Option<PathBuf>,
+        bundled_clap: Option<BundledClap>,
+        force_bundled_bridge: bool,
+        pending: Vec<PluginManagerEvent>,
+    ) -> PluginManager {
+        let cache = ScanCache::load(&config.cache_file);
         let mut manager = PluginManager {
             config,
             catalog,

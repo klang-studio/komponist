@@ -609,13 +609,48 @@ mod tests {
         let (expired, retry) = state.take_waiting_asset_edits(start + ASSET_EDIT_WAIT * 4);
         assert!(expired.is_empty() && retry.is_empty());
     }
-    use crate::device_host::{BuiltinHost, DeviceHost};
+    use crate::device_host::DeviceHost;
     use crate::engine_sync::EngineSync;
     use komponist_engine::Processor;
-    use komponist_model::{DeviceRole, Document, PluginRef};
+    use komponist_model::{DeviceRole, Document, PluginFormat, PluginRef, Project};
     use komponist_plugins::{Catalog, DeviceStatus, PluginManagerEvent, ProcessorSetup};
 
-    struct PreparingHost(BuiltinHost, Option<komponist_ipc::device_assets::Snapshot>);
+    struct PreparingHost {
+        catalog: Catalog,
+        assets: Option<komponist_ipc::device_assets::Snapshot>,
+    }
+
+    impl PreparingHost {
+        fn new(assets: Option<komponist_ipc::device_assets::Snapshot>) -> Self {
+            Self {
+                catalog: Catalog::default(),
+                assets,
+            }
+        }
+    }
+
+    fn asset_project() -> (Project, DeviceId) {
+        let (project, track) = edits::add_track(
+            &Project::new("Asset actions"),
+            edits::NewTrack {
+                instrument: Some(PluginRef {
+                    format: PluginFormat::Clap,
+                    id: "de.klang-studio.kp-test-assets".into(),
+                    name: "Asset fixture".into(),
+                    vendor: "Test".into(),
+                    version: "1.0".into(),
+                    module: "kp-test-assets.clap".into(),
+                }),
+                name: None,
+                hue: None,
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        let device = project.track(track).unwrap().channel.devices[0].id;
+        (project, device)
+    }
 
     impl DeviceHost for PreparingHost {
         fn create_processor(
@@ -640,19 +675,19 @@ mod tests {
             Vec::new()
         }
 
-        fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
-            self.0.role(plugin)
+        fn role(&self, _plugin: &PluginRef) -> Option<DeviceRole> {
+            Some(DeviceRole::Instrument)
         }
 
         fn catalog(&self) -> &Catalog {
-            self.0.catalog()
+            &self.catalog
         }
 
         fn asset_slots(
             &self,
             _device: DeviceId,
         ) -> Option<&komponist_ipc::device_assets::Snapshot> {
-            self.1.as_ref()
+            self.assets.as_ref()
         }
 
         fn supports_asset_edit_state(&self, _device: DeviceId) -> bool {
@@ -673,8 +708,7 @@ mod tests {
     fn a_project_link_is_repaired_with_the_picker_before_the_inventory_arrives() {
         use crate::dialogs::Overlay;
 
-        let project = komponist_model::fixtures::demo_project();
-        let device = project.tracks[0].channel.devices[0].id;
+        let (project, device) = asset_project();
         let dir = tempfile::tempdir().unwrap();
         let slot = 3;
         let missing = AssetLink::new(&dir.path().join("missing.wav"), None);
@@ -685,7 +719,7 @@ mod tests {
                 .unwrap();
         let mut app = App::new(
             Document::new(project),
-            EngineSync::null(Box::new(PreparingHost(BuiltinHost::new(), None))),
+            EngineSync::null(Box::new(PreparingHost::new(None))),
             Default::default(),
             None,
         );
@@ -721,8 +755,7 @@ mod tests {
     fn preview_requires_a_declared_audio_slot() {
         use komponist_ipc::device_assets::{AssetStatus, Slot, Snapshot};
 
-        let project = komponist_model::fixtures::demo_project();
-        let device = project.tracks[0].channel.devices[0].id;
+        let (project, device) = asset_project();
         let link = AssetLink::new(Path::new("/samples/example.wav"), None);
         let project = edits::set_device_asset_links(
             &project,
@@ -742,7 +775,7 @@ mod tests {
         };
         let mut app = App::new(
             Document::new(project),
-            EngineSync::null(Box::new(PreparingHost(BuiltinHost::new(), Some(assets)))),
+            EngineSync::null(Box::new(PreparingHost::new(Some(assets)))),
             Default::default(),
             None,
         );
@@ -764,11 +797,10 @@ mod tests {
     fn pending_asset_edits_merge_slots_and_survive_empty_redo() {
         use crate::actions::EditAction;
 
-        let project = komponist_model::fixtures::demo_project();
-        let device = project.tracks[0].channel.devices[0].id;
+        let (project, device) = asset_project();
         let mut app = App::new(
             Document::new(project),
-            EngineSync::null(Box::new(PreparingHost(BuiltinHost::new(), None))),
+            EngineSync::null(Box::new(PreparingHost::new(None))),
             Default::default(),
             None,
         );
@@ -810,14 +842,13 @@ mod tests {
 
     #[test]
     fn stale_asset_preparations_leave_links_and_history_untouched() {
-        let mut project = komponist_model::fixtures::demo_project();
+        let (mut project, device) = asset_project();
         let track = Arc::make_mut(&mut project.tracks[0]);
         let entry = Arc::make_mut(&mut track.channel.devices[0]);
         entry.state = Some(Arc::from([1, 2]));
-        let device = entry.id;
         let mut app = App::new(
             Document::new(project),
-            EngineSync::null(Box::new(PreparingHost(BuiltinHost::new(), None))),
+            EngineSync::null(Box::new(PreparingHost::new(None))),
             Default::default(),
             None,
         );

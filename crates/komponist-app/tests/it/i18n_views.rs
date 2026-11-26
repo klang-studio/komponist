@@ -511,19 +511,27 @@ fn the_routing_ui_speaks_english() {
 fn english_chain() -> App {
     use komponist_app::PluginAction;
     use komponist_app::actions::DropTarget;
-    use komponist_builtin::Internal;
-    let mut app = App::headless(demo_project()).with_lang(Lang::En);
-    let track = app.project().tracks[2].id;
+    let host = App::headless_plugin_host();
+    let hexa = crate::common::shipped_plugin(&host, "org.klang-studio.komponist.hexa").unwrap();
+    let (project, track, device) = crate::common::instrument_project("Language", hexa);
+    let mut app = App::headless(project).with_lang(Lang::En);
+    crate::common::wait_for_layout(&mut app, device);
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
     app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
         tracks: vec![track],
         mode: komponist_app::actions::SelectMode::Replace,
     })));
-    for kind in [Internal::Eq, Internal::Hall] {
+    for id in [
+        "org.klang-studio.komponist.eq",
+        "org.klang-studio.komponist.hall",
+    ] {
+        let plugin = crate::common::shipped_plugin(app.engine().host(), id).unwrap();
         app.dispatch(Action::Plugin(PluginAction::Add {
-            plugin: kind.plugin_ref(),
+            plugin,
             target: DropTarget::Track(track),
         }));
+        let device = app.project().tracks[0].channel.devices.last().unwrap().id;
+        crate::common::wait_for_layout(&mut app, device);
     }
     app
 }
@@ -531,7 +539,7 @@ fn english_chain() -> App {
 #[test]
 fn the_device_cards_show_english_names_parameters_and_value_words() {
     let h = harness_of(english_chain());
-    // Names: hexa stays, Hall is Reverb; the chip is the same BUILT-IN as in the dialogs.
+    // Names: Hexa stays, Hall is Reverb, and the format chip shows CLAP.
     for name in ["Hexa", "EQ", "Reverb"] {
         h.get_by_role_and_label(Role::Group, &Lang::En.devices_card(name));
     }
@@ -546,7 +554,7 @@ fn the_device_cards_show_english_names_parameters_and_value_words() {
         h.get_by_role_and_label(Role::Button, &chip)
             .value()
             .as_deref(),
-        Some("BUILT-IN")
+        Some("CLAP")
     );
     // Parameter names and value words: the percent suffix has no space in English.
     let reverb_label = Lang::En.devices_card("Reverb");
@@ -580,21 +588,19 @@ fn the_device_cards_show_english_names_parameters_and_value_words() {
 fn bool_value_words_are_english_in_the_device_model() {
     use komponist_app::views::devices::model::cards;
     let app = english_chain();
-    let track = &app.project().tracks[2];
+    let track = &app.project().tracks[0];
+    let device = track.channel.devices[2].id;
+    let id = crate::common::author_parameter(&app, device, "freeze");
     let all = cards(Lang::En, track, app.engine().host(), &[]);
     let reverb = all.iter().find(|c| c.name == "Reverb").expect("Reverb");
-    let freeze = reverb
-        .params
-        .iter()
-        .find(|p| p.info.id.as_str() == "freeze")
-        .expect("freeze");
+    let freeze = reverb.params.iter().find(|p| p.wire == id).expect("freeze");
     assert_eq!(freeze.text, "Off");
     let de_cards = cards(Lang::De, track, app.engine().host(), &[]);
     assert!(de_cards.iter().any(|c| c.name == "Hall"));
     let de_freeze = de_cards
         .iter()
         .find(|c| c.name == "Hall")
-        .and_then(|c| c.params.iter().find(|p| p.info.id.as_str() == "freeze"))
+        .and_then(|c| c.params.iter().find(|p| p.wire == id))
         .expect("freeze");
     assert_eq!(de_freeze.text, "Aus");
 }
