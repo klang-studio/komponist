@@ -1,5 +1,5 @@
 //! Synthesized audio in the demo (audio proposal §9): Re-Pitch, gain, fades and mono/stereo.
-//! Building the project only creates links; `samples::demo_with_kit` writes the WAV files.
+//! Building the project only creates links; `showcase::demo_with_kit` writes the WAV files.
 //!
 //! `showcase::render_levels`, macOS arm64, 2026-11-17: Shaker peak −18.4 dBFS, Sweep −18.8;
 //! full mix before the Limiter −2.1, after it −0.3 dBFS (RMS −14.6). With the Limiter's 3 dB
@@ -13,8 +13,6 @@ use komponist_model::edits::{self, AudioClipProp, NewAudioTrack, NewClip, NewCli
 use komponist_model::{
     AudioFile, ClipContent, ClipTimeMode, Hue, Project, Tempo, Tick, TrackOutput,
 };
-
-pub(crate) use super::sampler::write_sampler_file;
 
 const RATE: u32 = 48_000;
 const BAR: i64 = 3840;

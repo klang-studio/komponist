@@ -41,11 +41,6 @@ pub enum Purpose {
     Folder,
     /// Choose the export folder (S08 "Ändern").
     ExportFolder,
-    /// Choose a WAV for a legacy sampler's embedded link.
-    EmbeddedSample {
-        device: komponist_model::DeviceId,
-        pad: usize,
-    },
     /// Choose a file for a plugin's declared asset slot.
     PluginAsset {
         device: komponist_model::DeviceId,
@@ -149,7 +144,6 @@ impl FileBrowser {
             Purpose::OpenPreset(_) => t.devices_preset_load_file(),
             Purpose::Folder => t.file_folder_title(),
             Purpose::ExportFolder => t.export_folder_title(),
-            Purpose::EmbeddedSample { .. } => t.file_sample_title(),
             Purpose::PluginAsset { .. } => t.plugin_file_choose(),
             Purpose::ImportAudio => t.menu_import_audio(),
             Purpose::ReplaceAudio(_) => t.audio_file_replace(),
@@ -163,10 +157,9 @@ impl FileBrowser {
             Purpose::Save | Purpose::SavePreset(_) if self.replace.is_some() => t.file_replace(),
             Purpose::Save | Purpose::SavePreset(_) => t.file_save(),
             Purpose::Folder | Purpose::ExportFolder => t.file_choose_folder(),
-            Purpose::EmbeddedSample { .. }
-            | Purpose::PluginAsset { .. }
-            | Purpose::ReplaceAudio(_)
-            | Purpose::OpenPreset(_) => t.file_load(),
+            Purpose::PluginAsset { .. } | Purpose::ReplaceAudio(_) | Purpose::OpenPreset(_) => {
+                t.file_load()
+            }
             Purpose::ImportAudio => t.audio_import_confirm(),
         }
     }
@@ -263,7 +256,6 @@ impl FileBrowser {
         match self.purpose {
             Purpose::Open
             | Purpose::OpenPreset(_)
-            | Purpose::EmbeddedSample { .. }
             | Purpose::PluginAsset { .. }
             | Purpose::ReplaceAudio(_) => Some(Output::Chosen(entry.path)),
             Purpose::ImportAudio => Some(Output::ChosenMany(vec![entry.path])),
@@ -294,7 +286,6 @@ impl FileBrowser {
             }
             Purpose::Open
             | Purpose::OpenPreset(_)
-            | Purpose::EmbeddedSample { .. }
             | Purpose::PluginAsset { .. }
             | Purpose::ReplaceAudio(_) => {
                 let i = self.selected?;
@@ -362,7 +353,6 @@ impl FileBrowser {
             self.purpose,
             Purpose::Open
                 | Purpose::OpenPreset(_)
-                | Purpose::EmbeddedSample { .. }
                 | Purpose::PluginAsset { .. }
                 | Purpose::ImportAudio
                 | Purpose::ReplaceAudio(_)
@@ -383,12 +373,6 @@ impl FileBrowser {
 fn is_user_preset_file(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("kppreset"))
-}
-
-/// Whether `path` is a sample the sampler can load (a WAV file, by its extension).
-pub fn is_sample_file(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("wav"))
 }
 
 /// Formats supported by the shared audio decoder, matched case-insensitively.
@@ -445,7 +429,6 @@ pub fn list(dir: &Path, purpose: Purpose) -> std::io::Result<Vec<Entry>> {
         if is_dir {
             dirs.push(Entry { name, path, is_dir });
         } else if match purpose {
-            Purpose::EmbeddedSample { .. } => is_sample_file(&path),
             Purpose::OpenPreset(_) | Purpose::SavePreset(_) => is_user_preset_file(&path),
             Purpose::PluginAsset { kind, .. } => {
                 kind == komponist_ipc::device_assets::AssetKind::File || is_audio_file(&path)
@@ -636,9 +619,7 @@ fn file_list(ui: &mut Ui, t: Lang, b: &mut FileBrowser, width: f32) -> Option<Ou
                     if b.entries.is_empty() {
                         let text = match b.purpose {
                             Purpose::Folder | Purpose::ExportFolder => t.file_no_folders(),
-                            Purpose::EmbeddedSample { .. } | Purpose::ImportAudio => {
-                                t.file_no_samples()
-                            }
+                            Purpose::ImportAudio => t.file_no_samples(),
                             Purpose::PluginAsset { .. } => t.plugin_file_none(),
                             Purpose::ReplaceAudio(_) => t.audio_file_no_audio(),
                             Purpose::OpenPreset(_) | Purpose::SavePreset(_) => {

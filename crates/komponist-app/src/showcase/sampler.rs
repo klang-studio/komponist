@@ -5,12 +5,10 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
-use komponist_builtin::Internal;
 use komponist_general_sampler::{Settings, write_settings};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewNote, NewTrack};
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{Hue, PluginRef, Project, Tempo, Tick, TrackId};
-use komponist_sampler::{SampleLink, links};
 
 use super::{DeviceSource, log_position};
 
@@ -216,36 +214,6 @@ fn sampler_values(melody: bool) -> Vec<(&'static str, f64)> {
         ]
     });
     values
-}
-
-/// Writes the source of the two showcase tracks and links it without replacing their instruments.
-pub(crate) fn write_sampler_file(project: &mut Project, dir: &Path) -> io::Result<()> {
-    let uses_sample = |name: &str, device: &komponist_model::Device| {
-        matches!(name, MELODY_TRACK | SLICE_TRACK)
-            && Internal::from_plugin(&device.plugin) == Some(Internal::GeneralSampler)
-    };
-    if !project.tracks.iter().any(|track| {
-        track
-            .channel
-            .devices
-            .iter()
-            .any(|device| uses_sample(&track.name, device))
-    }) {
-        return Ok(());
-    }
-
-    let path = write_sample(dir)?;
-    let link = SampleLink::new(&path, None);
-    for track in &mut project.tracks {
-        let track = Arc::make_mut(track);
-        for device in &mut track.channel.devices {
-            if uses_sample(&track.name, device) {
-                let state = links::write(device.state.as_deref(), 0, Some(&link));
-                Arc::make_mut(device).state = Some(state.into());
-            }
-        }
-    }
-    Ok(())
 }
 
 pub(super) fn write_packaged_sample(project: &mut Project, dir: &Path) -> io::Result<()> {

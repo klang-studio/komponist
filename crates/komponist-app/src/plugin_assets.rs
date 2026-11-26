@@ -1,6 +1,6 @@
 //! File actions and previews for host-managed CLAP asset slots.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,6 +25,9 @@ pub(crate) struct State {
     /// Edits the device could not prepare yet, retried every frame until the deadline.
     waiting_asset_edits: HashMap<DeviceId, WaitingAssetEdit>,
     asset_edit_request: u64,
+    /// Parameters edited since the device's last confirmed document snapshot.
+    /// Devices that prepare their own file edits need this because those edits use saved state.
+    unsnapshotted_params: HashMap<DeviceId, BTreeSet<u32>>,
     auditions: Vec<(Instant, TrackId, u8)>,
     waveform_preview: Option<WaveformPreview>,
 }
@@ -48,6 +51,7 @@ impl State {
         self.approved_plugin_files.clear();
         self.pending_asset_edits.clear();
         self.waiting_asset_edits.clear();
+        self.unsnapshotted_params.clear();
         self.auditions.clear();
     }
 }
@@ -92,39 +96,6 @@ impl PendingAssetEdit {
 }
 
 impl App {
-    /// Old sampler actions may address an asset slot whose link has already been migrated.
-    pub(crate) fn uses_plugin_asset_slot(&self, device: DeviceId, slot: u32) -> bool {
-        self.engine.host().asset_slots(device).is_some()
-            || self
-                .project()
-                .find_device(device)
-                .is_some_and(|(_, _, device)| device.asset_links.contains_key(&slot))
-    }
-
-    pub(crate) fn pick_sample_file(&mut self, device: DeviceId, pad: usize) {
-        let Ok(slot) = u32::try_from(pad) else {
-            return;
-        };
-        if self.uses_plugin_asset_slot(device, slot) {
-            self.pick_plugin_asset(device, slot);
-        } else {
-            self.open_file_browser(Purpose::EmbeddedSample { device, pad });
-        }
-    }
-
-    pub(crate) fn set_sample_file(&mut self, device: DeviceId, pad: usize, path: Option<&Path>) {
-        let Ok(slot) = u32::try_from(pad) else {
-            return;
-        };
-        if self.uses_plugin_asset_slot(device, slot) {
-            self.set_plugin_asset(device, slot, path);
-        } else if let Some(path) = path {
-            self.load_embedded_sample(device, pad, path);
-        } else {
-            self.clear_embedded_sample(device, pad);
-        }
-    }
-
     pub(crate) fn pick_plugin_asset(&mut self, device: DeviceId, slot: u32) {
         if let Some(kind) = self.plugin_asset_kind(device, slot) {
             self.open_file_browser(Purpose::PluginAsset { device, slot, kind });
@@ -270,17 +241,16 @@ impl App {
                 links.remove(&slot);
             }
         }
-        // A bridge may still be waiting for the audio thread to deliver a knob turn.
-        // The sampler journal has its persistent value and records it before the file edit.
-        self.flush_sampler_params(device);
         let uses_prepare = self.engine.host().supports_asset_edit_state(device);
         if uses_prepare {
-            if self.has_pending_sampler_params(device) {
-                return self.wait_for_asset_edit(device, staged, deadline);
-            }
             // Keep any preceding parameter gesture separate from the file edit's history.
             if self.doc.in_gesture() {
                 self.end_gesture();
+            }
+            // The device prepares from the document's saved state: a knob turn that has no
+            // snapshot there yet would be lost, so the edit waits for it.
+            if self.has_unsnapshotted_param_edits(device) {
+                return self.wait_for_asset_edit(device, staged, deadline);
             }
         }
         let Some((_, _, target)) = self.project().find_device(device) else {
@@ -370,7 +340,7 @@ impl App {
             return;
         };
         if self.doc.in_gesture()
-            || self.has_pending_sampler_params(device)
+            || self.has_unsnapshotted_param_edits(device)
             || !edit.matches_source(current, self.project_path())
             || !self.engine.host().supports_asset_edit_state(device)
         {
@@ -414,6 +384,57 @@ impl App {
                     },
                 );
             }
+        }
+    }
+
+    /// A parameter edit of `device` went to the plugin; its snapshot is not in the document yet.
+    pub(crate) fn remember_param_edit(&mut self, device: DeviceId, id: u32) {
+        if self.engine.host().supports_asset_edit_state(device) {
+            self.dialogs
+                .plugin_assets
+                .unsnapshotted_params
+                .entry(device)
+                .or_default()
+                .insert(id);
+        }
+    }
+
+    pub(crate) fn pending_param_bases(&self, device: DeviceId) -> BTreeMap<u32, f64> {
+        let host = self.engine.host();
+        self.dialogs
+            .plugin_assets
+            .unsnapshotted_params
+            .get(&device)
+            .into_iter()
+            .flatten()
+            .filter_map(|&id| {
+                let value = host.param_base(device, id)?;
+                value.is_finite().then_some((id, value))
+            })
+            .collect()
+    }
+
+    pub(crate) fn has_unsnapshotted_param_edits(&self, device: DeviceId) -> bool {
+        self.dialogs
+            .plugin_assets
+            .unsnapshotted_params
+            .contains_key(&device)
+    }
+
+    pub(crate) fn forget_param_edits(&mut self, device: DeviceId) {
+        self.dialogs
+            .plugin_assets
+            .unsnapshotted_params
+            .remove(&device);
+    }
+
+    /// A snapshot in the document that the host certifies as the current parameter bases
+    /// settles the remembered edits.
+    pub(crate) fn reconcile_param_edits(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+        if self.has_unsnapshotted_param_edits(device)
+            && self.engine.host().is_current_param_snapshot(device, state)
+        {
+            self.forget_param_edits(device);
         }
     }
 
@@ -649,7 +670,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_sample_picker_repairs_a_migrated_slot_before_inventory_arrives() {
+    fn a_project_link_is_repaired_with_the_picker_before_the_inventory_arrives() {
         use crate::dialogs::Overlay;
 
         let project = komponist_model::fixtures::demo_project();
@@ -669,7 +690,7 @@ mod tests {
             None,
         );
 
-        app.pick_sample_file(device, slot as usize);
+        app.pick_plugin_asset(device, slot);
         let Some(Overlay::File(browser)) = app.dialogs.overlay.as_ref() else {
             panic!("expected the file picker");
         };

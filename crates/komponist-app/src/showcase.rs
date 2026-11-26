@@ -77,6 +77,13 @@ pub fn bundled_demo(
     Ok(project)
 }
 
+/// Writes the synthesized audio files the showcase's audio clips link into `dir` (created).
+pub fn with_audio_files(mut project: Project, dir: &Path) -> std::io::Result<Project> {
+    std::fs::create_dir_all(dir)?;
+    audio::write_files(&mut project, dir)?;
+    Ok(project)
+}
+
 /// Volumes of the tracks in dB, in track order (Drums, Bass, Lead, Pad, Keys, Arp), set by
 /// render analysis: the built-in instruments are louder than the old plugin chain's.
 const VOLUMES_DB: [f32; 6] = [-16.0, -6.0, 0.0, -10.0, 0.0, 0.0];

@@ -5,14 +5,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use komponist_builtin::Internal;
 use komponist_engine::export::{
     BitDepth, ExportError, ExportJob, ExportReport, TRACK_TAIL_SECONDS, TrackExport,
 };
 use komponist_ipc::device_assets::{AssetKind, AssetStatus};
 use komponist_model::{DeviceId, Project, TrackId, TrackKind, edits};
 use komponist_plugins::{DeviceSnapshots, DeviceStatus};
-use komponist_sampler::PadStatus;
 
 use super::{Phase, Run};
 use crate::actions::{Action, SelectMode, SelectionChange, UiAction};
@@ -96,17 +94,7 @@ impl Flatten {
                         if app
                             .project()
                             .find_device(id)
-                            .is_some_and(|(_, _, device)| host.render_assets_pending(device))
-                            || host.sampler_is_loading(id)
-                            || Self::sampler_pads(app, id).is_some_and(|(_, pads)| {
-                                pads.iter().any(|pad| {
-                                    pad.link.is_some()
-                                        && matches!(
-                                            pad.status,
-                                            PadStatus::Loading | PadStatus::Empty
-                                        )
-                                })
-                            }) =>
+                            .is_some_and(|(_, _, device)| host.render_assets_pending(device)) =>
                     {
                         Some((id, DeviceStatus::Loading))
                     }
@@ -120,12 +108,6 @@ impl Flatten {
     pub(super) fn unavailable_audio_asset(&self, app: &App) -> Option<(DeviceId, String)> {
         for id in self.scope.devices() {
             let host = app.engine.host();
-            if host.sampler_sync_unavailable(id) {
-                return Some((
-                    id,
-                    app.lang.flatten_sampler_sync_failed(app.device_name(id)),
-                ));
-            }
             if let Some(assets) = host.asset_slots(id) {
                 let Some((_, _, device)) = app.project().find_device(id) else {
                     continue;
@@ -153,32 +135,9 @@ impl Flatten {
                         return Some((id, message));
                     }
                 }
-                continue;
-            }
-            let Some((general, views)) = Self::sampler_pads(app, id) else {
-                continue;
-            };
-            for (pad, view) in views.into_iter().enumerate() {
-                if view.link.is_some()
-                    && matches!(view.status, PadStatus::Missing | PadStatus::Failed(_))
-                {
-                    let name = app.device_name(id);
-                    let message = if general {
-                        app.lang.flatten_sampler_failed(name, view.name)
-                    } else {
-                        app.lang.flatten_pad_failed(name, pad + 1, view.name)
-                    };
-                    return Some((id, message));
-                }
             }
         }
         None
-    }
-
-    fn sampler_pads(app: &App, id: DeviceId) -> Option<(bool, Vec<komponist_sampler::PadView>)> {
-        let (_, _, device) = app.project().find_device(id)?;
-        let general = crate::device_host::internal_kind(device) == Some(Internal::GeneralSampler);
-        Some((general, app.engine.host().sampler(id)?.views()))
     }
 
     pub(super) fn finish(self, app: &mut App, result: Result<ExportReport, ExportError>) {
@@ -303,16 +262,6 @@ impl App {
                 return;
             }
         };
-        if let Some(sample) = crate::dialogs::missing_plugins::missing_samples(
-            scope.project(),
-            self.project_dir().as_deref(),
-        )
-        .into_iter()
-        .find(|sample| scope.devices().any(|id| id == sample.device))
-        {
-            self.flatten_failed(self.lang.flatten_missing_sample(sample.file));
-            return;
-        }
         let Some(track) = self.project().track(id) else {
             return;
         };

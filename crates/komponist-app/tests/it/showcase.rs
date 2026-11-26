@@ -8,7 +8,7 @@ use std::sync::Arc;
 use komponist_app::App;
 use komponist_app::actions::{BitDepth, ExportRange};
 use komponist_app::device_host::{DeviceHost, PluginHost};
-use komponist_app::showcase::{bundled_demo, showcase_project};
+use komponist_app::showcase::bundled_demo;
 use komponist_ipc::device_assets::AssetStatus;
 use komponist_model::automation::AutomationTarget;
 use komponist_model::fixtures::demo_song;
@@ -19,7 +19,7 @@ use komponist_model::{
 use komponist_plugins::{DeviceStatus, requires_bundled};
 
 use crate::common::step_until;
-use crate::export::{app_in, export, export_settings, peak_db, read, scratch};
+use crate::export::{export, export_settings, peak_db, read, scratch};
 
 const DEVICE_PREFIX: &str = "org.klang-studio.komponist.";
 
@@ -454,8 +454,8 @@ fn check_sampler_assets(app: &mut App, project: &Project) {
 /// Levels of the demo: renders every track alone and the master with and without the Limiter,
 /// offline (no audio device). `SHOWCASE_RENDER_DIR` names the folder for the WAV files.
 /// `cargo test -p komponist-app --test it showcase::render_levels -- --ignored --nocapture`
-/// With a verified package, the staged runner and KOMPONIST_CURRENT_BUNDLED_APP exercise the
-/// shipped project and plugins; the plain Cargo invocation measures the historical reference.
+/// KOMPONIST_CURRENT_BUNDLED_APP names a verified package: the shipped project and plugins are
+/// measured.
 #[test]
 #[ignore = "slow analysis, run by hand"]
 fn render_levels() {
@@ -463,25 +463,22 @@ fn render_levels() {
         .map(PathBuf::from)
         .unwrap_or_else(|| scratch("levels"));
     std::fs::create_dir_all(&out).unwrap();
-    let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").map(PathBuf::from);
+    let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP")
+        .map(PathBuf::from)
+        .expect("set KOMPONIST_CURRENT_BUNDLED_APP to the unpacked app");
     let host = |launcher: &std::path::Path| super::bundled_current::scan(launcher, &out);
     let db = |x: f32| 20.0 * x.max(1e-9).log10();
     let measure = |project: Project, name: &str, depth: BitDepth| {
         let dir = scratch(name);
-        let mut app = if let Some(launcher) = &launcher {
-            let mut app = crate::common::app_with(project, host(launcher));
-            crate::common::step_until(&mut app, "demo plugins", |app| {
-                all_devices(app.project()).all(|device| {
-                    let host = app.engine().host();
-                    host.status(device.id) == DeviceStatus::Ok
-                        && host.verified_bundled_kind(device.id).is_some()
-                        && host.state_warning(device.id).is_none()
-                })
-            });
-            app
-        } else {
-            app_in(&dir, project).0
-        };
+        let mut app = crate::common::app_with(project, host(&launcher));
+        crate::common::step_until(&mut app, "demo plugins", |app| {
+            all_devices(app.project()).all(|device| {
+                let host = app.engine().host();
+                host.status(device.id) == DeviceStatus::Ok
+                    && host.verified_bundled_kind(device.id).is_some()
+                    && host.state_warning(device.id).is_none()
+            })
+        });
         app.step();
         let mut settings = export_settings(&dir, ExportRange::Song);
         settings.normalize = false;
@@ -509,11 +506,7 @@ fn render_levels() {
         peak_db(&wav.samples)
     };
     let kit = out.join("kit");
-    let base = if let Some(launcher) = &launcher {
-        bundled_demo(&host(launcher), &kit).unwrap()
-    } else {
-        komponist_app::samples::demo_with_kit(showcase_project(), &kit).unwrap()
-    };
+    let base = bundled_demo(&host(&launcher), &kit).unwrap();
     // Each track alone with its routing (the buses stay, they are silent without input), so the
     // level of Lead and Pad includes their Hall send. A sidechain whose source is gone is cleared.
     for keep in base.tracks.iter().filter(|t| !t.is_bus()) {

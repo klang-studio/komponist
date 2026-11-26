@@ -207,10 +207,10 @@ fn both_samplers_play_assets_after_the_project_moves() {
     let external = missing_assets(app);
     assert_eq!(missing.len() + external.len(), 2);
     for sample in missing {
-        app.dispatch(Action::Plugin(PluginAction::LoadSample {
+        app.dispatch(Action::Plugin(PluginAction::SetPluginAsset {
             device: sample.device,
-            pad: sample.pad,
-            path: replacement.clone(),
+            slot: sample.pad as u32,
+            path: Some(replacement.clone()),
         }));
     }
     for row in external {
@@ -1124,6 +1124,30 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             value: raw(db),
         }))
     };
+    let effective_gain = |app: &App| {
+        app.project()
+            .find_device(general)
+            .unwrap()
+            .2
+            .parameter_bases
+            .get(&gain)
+            .copied()
+            .unwrap_or_else(|| hosted_state(app)["params"]["gain"]["f32"].as_f64().unwrap())
+    };
+    let gain_applied = |app: &App, expected: f64| {
+        asset_status(app, general, 0) == Some(&AssetStatus::Ready)
+            && app
+                .engine()
+                .host()
+                .param_base(general, gain)
+                .is_some_and(|value| (value - expected).abs() < 1e-6)
+    };
+    let previous_gain = effective_gain(h.state());
+    let previous_slices = slice_state(h.state());
+    assert!((previous_gain - raw(-18.0)).abs() >= 1e-6);
+    step_until(h.state_mut(), "the gain before the knob turn", |app| {
+        gain_applied(app, previous_gain)
+    });
     set_gain(h.state_mut(), -18.0);
     h.state_mut()
         .dispatch(Action::Plugin(PluginAction::BeginParamGesture {
@@ -1142,20 +1166,50 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             index: 0,
             seconds: 0.02,
         },
-        changed_slices,
+        changed_slices.clone(),
     );
     assert!(gain_saved(h.state(), -18.0));
     step_until(
         h.state_mut(),
         "the cancelled turn stays cancelled after a slice edit",
-        |app| {
-            let host = app.engine().host();
-            asset_status(app, general, 0) == Some(&AssetStatus::Ready)
-                && host
-                    .param_base(general, gain)
-                    .is_some_and(|value| (value - raw(-18.0)).abs() < 1e-6)
-        },
+        |app| gain_applied(app, raw(-18.0)),
     );
+    for (action, expected_slices, expected_gain, description) in [
+        (
+            EditAction::Undo,
+            &previous_slices,
+            raw(-18.0),
+            "undoing the slice edit preserves the gain",
+        ),
+        (
+            EditAction::Undo,
+            &previous_slices,
+            previous_gain,
+            "the next undo reverts the preceding knob turn",
+        ),
+        (
+            EditAction::Redo,
+            &previous_slices,
+            raw(-18.0),
+            "redoing the knob turn does not change the slices",
+        ),
+        (
+            EditAction::Redo,
+            &changed_slices,
+            raw(-18.0),
+            "redoing the slice edit preserves the gain",
+        ),
+    ] {
+        let app = h.state_mut();
+        app.dispatch(Action::Edit(action));
+        assert_eq!(&slice_state(app), expected_slices, "{description}");
+        let saved_gain = effective_gain(app);
+        assert!(
+            (saved_gain - expected_gain).abs() < 1e-6,
+            "{description}: expected saved gain {expected_gain}, got {saved_gain}"
+        );
+        step_until(app, description, |app| gain_applied(app, expected_gain));
+    }
 
     let replacement = scratch.path().join("replacement.wav");
     write_sample(&replacement);

@@ -270,6 +270,7 @@ impl DirectDevice {
     pub(crate) fn poll_waveform_markers(&mut self) {
         if self.status == DeviceStatus::Ok
             && self.pending_restore.is_none()
+            && !self.capturing_state_with_parameter_bases()
             && self.pending_preset.is_none()
             && self.pending_marker_edit.is_none()
             && let Some(slot) = self.markers.poll()
@@ -332,6 +333,7 @@ impl DirectDevice {
         self.can_snapshot()
             && self.pending_preset.is_none()
             && self.pending_restore.is_none()
+            && !self.capturing_state_with_parameter_bases()
             && !self.assets.bindings_pending()
             && self.pending_writes.is_empty()
             && self.unconfirmed_writes.is_empty()
@@ -856,6 +858,14 @@ impl DirectDevice {
 
     pub(crate) fn snapshot_capture_pending(&self) -> bool {
         self.needs_snapshot() || self.state_warning.is_none() && self.snapshot_due.is_some()
+    }
+
+    /// The restored bases must reach the document before a marker edit can supersede capture.
+    fn capturing_state_with_parameter_bases(&self) -> bool {
+        self.last_state
+            .as_ref()
+            .is_some_and(|state| !state.parameter_bases.is_empty())
+            && self.snapshot_capture_pending()
     }
 
     pub(crate) fn is_current_param_snapshot(&self, state: &Arc<[u8]>) -> bool {

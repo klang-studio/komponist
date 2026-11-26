@@ -23,18 +23,14 @@ use komponist_app::device_host::PluginHost;
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, EditAction, PluginAction, ProjectAction, UiAction};
 use komponist_audiofile::fixtures as testkit;
-use komponist_builtin::Internal;
 use komponist_engine::Command;
 use komponist_hexa::Patch;
 use komponist_hexa::device;
 use komponist_model::edits::{self, NewDevice, NewTrack};
-use komponist_model::fixtures::demo_project;
 use komponist_model::params::ParamId;
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{ChannelRef, DeviceId, Project, TrackId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
-use komponist_sampler as sampler;
-use komponist_sampler::{PadField, SampleLink};
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
@@ -524,108 +520,6 @@ fn packaged_limiter_drag_is_one_step_and_undo_redo_restore_the_sound() {
         "redo: the new ceiling, peak {redone}"
     );
     assert_eq!(app.engine().device_reloads(), reloads);
-}
-
-// ------------------------------------------------------------------------------------------------
-// The Sampler: pad parameters and samples
-
-fn sampler_app(name: &str) -> (App, TrackId, DeviceId, PathBuf) {
-    let dir = scratch(name);
-    let project = komponist_app::samples::demo_with_kit(demo_project(), &dir).unwrap();
-    let track = project.tracks[0].id;
-    let drums = project.tracks[0].channel.devices[0].id;
-    (App::headless(project), track, drums, dir)
-}
-
-fn pad_names(app: &App, drums: DeviceId) -> Vec<String> {
-    let handle = app.engine().host().sampler(drums).expect("the sampler");
-    assert!(handle.wait_idle(PATIENCE), "samples loading");
-    handle.views().iter().map(|v| v.name.clone()).collect()
-}
-
-#[test]
-fn a_sampler_pad_param_drag_is_one_step_and_undo_restores_the_pads_level() {
-    let (mut app, track, drums, _) = sampler_app("param-undo-pad");
-    app.step();
-    pad_names(&app, drums);
-    hold(&mut app);
-    let key = sampler::note_of_pad(0);
-    let level = PadField::Level.wire(0) as u32;
-    let before = state_of(&app, drums);
-    let start = depth(&mut app);
-    let full = note_peak(&mut app, track, key);
-    assert!(full > 0.0);
-
-    drag_param(&mut app, drums, level, &[-3.0, -6.0, -12.0, -24.0]);
-    assert_eq!(depth(&mut app), start + 1);
-    let quiet = note_peak(&mut app, track, key);
-    assert!(quiet < full * 0.2, "{full} → {quiet}");
-    undo(&mut app);
-    assert_eq!(state_of(&app, drums), before);
-    assert_eq!(note_peak(&mut app, track, key), full, "undo: the old level");
-    redo(&mut app);
-    assert_eq!(
-        note_peak(&mut app, track, key),
-        quiet,
-        "redo: the new level"
-    );
-}
-
-#[test]
-fn clearing_and_relinking_a_sample_are_one_step_each_and_undo_reaches_the_sampler() {
-    let (mut app, _, drums, dir) = sampler_app("param-undo-sample");
-    app.step();
-    let names = pad_names(&app, drums);
-    assert!(names.iter().all(|n| !n.is_empty()), "{names:?}");
-    let start = depth(&mut app);
-
-    app.dispatch(Action::Plugin(PluginAction::ClearSample {
-        device: drums,
-        pad: 0,
-    }));
-    app.step();
-    assert_eq!(app.undo_text().as_deref(), Some("Sample entfernen"));
-    assert!(pad_names(&app, drums)[0].is_empty());
-
-    // A sample on a pad whose start was moved: loading it resets the start (a second change) and
-    // links the file, still one step.
-    let level = PadField::Start.wire(0) as u32;
-    set(&mut app, drums, level, 50.0);
-    app.step();
-    let other = testkit::write_kit(&dir).unwrap()[3].clone();
-    app.dispatch(Action::Plugin(PluginAction::LoadSample {
-        device: drums,
-        pad: 0,
-        path: other.clone(),
-    }));
-    app.step();
-    assert_eq!(app.undo_text().as_deref(), Some("Sample laden"));
-    assert_eq!(
-        pad_names(&app, drums)[0],
-        SampleLink::new(&other, None).name
-    );
-    assert_eq!(depth(&mut app), start + 3, "clear, start, load");
-
-    undo(&mut app);
-    assert!(
-        pad_names(&app, drums)[0].is_empty(),
-        "undo: the pad is empty"
-    );
-    let start_value = |app: &App| {
-        Internal::Sampler
-            .decode_state(state_of(app, drums).as_deref())
-            .unwrap()[level as usize]
-    };
-    assert_eq!(start_value(&app), 50.0, "and its start is back");
-    undo(&mut app);
-    undo(&mut app);
-    assert_eq!(
-        pad_names(&app, drums),
-        names,
-        "undo: the first sample is back"
-    );
-    redo(&mut app);
-    assert!(pad_names(&app, drums)[0].is_empty(), "redo: empty again");
 }
 
 // ------------------------------------------------------------------------------------------------

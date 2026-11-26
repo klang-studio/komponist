@@ -14,14 +14,13 @@ use egui::accesskit::Role;
 use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::actions::{EditAction, SelectMode, SelectionChange, TransportAction};
+use komponist_app::actions::{SelectMode, SelectionChange, TransportAction};
 use komponist_app::device_host::{DeviceHost as _, PluginHost};
 use komponist_app::ui_state::{DockTab, StepCursor};
 use komponist_app::{Action, App, PluginAction, ProjectAction, UiAction};
 use komponist_audiofile::fixtures as testkit;
 use komponist_audiofile::{FilePool, PeakState};
 use komponist_builtin::Internal;
-use komponist_general_sampler as general_sampler;
 use komponist_i18n::Lang;
 use komponist_ipc::device_assets::AssetStatus;
 use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack, StepRowSpec};
@@ -29,7 +28,7 @@ use komponist_model::plugin_assets::AssetLink;
 use komponist_model::project::DEFAULT_PROJECT_NAME;
 use komponist_model::{DeviceId, Project, Tick, TickRange, TrackId, persist};
 use komponist_plugins::DeviceStatus;
-use komponist_sampler::{PadStatus, SampleLink, links, note_of_pad};
+use komponist_sampler::{SampleLink, links, note_of_pad};
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
@@ -202,102 +201,6 @@ fn show_devices(app: &mut App) {
         mode: SelectMode::Replace,
     })));
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
-}
-
-/// Steps until the sampler's pads are all loaded (or missing/failed).
-fn settled(app: &mut App) {
-    let (_, device) = drums(app);
-    step_until(app, "the pads loaded", |a| {
-        a.engine()
-            .host()
-            .sampler(device)
-            .is_some_and(|h| h.views().iter().all(|v| v.status != PadStatus::Loading))
-    });
-}
-
-fn pad_states(app: &App) -> Vec<PadStatus> {
-    let (_, device) = drums(app);
-    app.engine()
-        .host()
-        .sampler(device)
-        .expect("a sampler")
-        .views()
-        .into_iter()
-        .map(|v| v.status)
-        .collect()
-}
-
-fn state_of(app: &App) -> Option<Arc<[u8]>> {
-    app.project().tracks[0].channel.devices[0].state.clone()
-}
-
-#[test]
-fn the_general_sampler_persists_slices_and_parameters_across_undo_and_reopen() {
-    let dir = scratch("general-sampler-roundtrip");
-    let kit = testkit::write_kit(&dir).unwrap();
-    let kind = Internal::GeneralSampler;
-    let (project, _) = edits::add_track(
-        &Project::new("Sampler"),
-        NewTrack {
-            name: Some("Sampler".into()),
-            hue: None,
-            instrument: Some(kind.plugin_ref()),
-            index: None,
-            arm_exclusive: false,
-        },
-    )
-    .unwrap();
-    let mut app = App::headless(project);
-    let (_, device) = drums(&app);
-    app.dispatch(Action::Plugin(PluginAction::LoadSample {
-        device,
-        pad: 0,
-        path: kit[0].clone(),
-    }));
-    settled(&mut app);
-    assert_eq!(pad_states(&app)[0], PadStatus::Ready);
-    assert!(app.engine().host().note_names(device).is_empty());
-
-    let root = kind
-        .wire(&komponist_model::params::ParamId::new("root"))
-        .unwrap();
-    app.dispatch(Action::Plugin(PluginAction::SetParam {
-        device,
-        id: root,
-        value: 48.0,
-    }));
-    let mut settings = general_sampler::Settings::from_markers([0.04, 0.12]);
-    settings.first.gate = true;
-    settings.slices[0].options = general_sampler::SliceOptions {
-        reverse: Some(true),
-        fade_in_ms: Some(4.0),
-        fade_out_ms: Some(8.0),
-        gate: false,
-    };
-    app.dispatch(Action::Plugin(PluginAction::SetSamplerSlices {
-        device,
-        settings: settings.clone(),
-    }));
-    let slice_settings = |app: &App| general_sampler::read_settings(state_of(app).as_deref());
-    assert_eq!(slice_settings(&app), settings);
-    app.dispatch(Action::Edit(EditAction::Undo));
-    assert_eq!(slice_settings(&app), general_sampler::Settings::default());
-    app.dispatch(Action::Edit(EditAction::Redo));
-    assert_eq!(slice_settings(&app), settings);
-
-    let path = dir.join("Sampler.komponist");
-    std::fs::write(&path, persist::to_json(app.project()).unwrap()).unwrap();
-    let mut reopened = App::headless(Project::new("Empty"));
-    reopened.dispatch(Action::Project(ProjectAction::OpenPath(path)));
-    settled(&mut reopened);
-    assert_eq!(pad_states(&reopened)[0], PadStatus::Ready);
-    assert_eq!(slice_settings(&reopened), settings);
-    let state = state_of(&reopened);
-    assert_eq!(
-        kind.decode_state(state.as_deref()).unwrap()[root as usize],
-        48.0
-    );
-    assert_eq!(links::read(state.as_deref())[0].1.abs, kit[0]);
 }
 
 #[test]
@@ -635,133 +538,6 @@ fn the_file_browser_loads_a_sample_into_the_pad() {
     assert!(h.query_by_role_and_label(Role::List, "Dateien").is_none());
 }
 
-/// Copies folder `from` into `to` (recursively).
-fn copy_dir(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).unwrap();
-    for entry in std::fs::read_dir(from).unwrap().flatten() {
-        let target = to.join(entry.file_name());
-        if entry.path().is_dir() {
-            copy_dir(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), target).unwrap();
-        }
-    }
-}
-
-#[test]
-fn a_project_round_trip_resolves_relative_first_and_absolute_as_the_fallback() {
-    let dir = scratch("sampler-roundtrip");
-    let first = dir.join("one");
-    std::fs::create_dir_all(first.join("Kit")).unwrap();
-    // Link the kit (inside the project's folder) and save.
-    let mut app = App::headless(project(&first.join("Kit"), true));
-    let file = first.join("Song.komponist");
-    app.dispatch(Action::Project(ProjectAction::SaveAs));
-    drop(app);
-    let mut app = App::headless(project(&first.join("Kit"), true));
-    // Save through the real path: the links get their relative paths for this file.
-    let json = persist::to_json(app.project()).unwrap();
-    std::fs::write(&file, json).unwrap();
-    app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
-    app.dispatch(Action::Project(ProjectAction::Save));
-    let saved = persist::from_json(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    let state = saved.tracks[0].channel.devices[0].state.clone();
-    let linked = links::read(state.as_deref());
-    assert_eq!(linked.len(), 8);
-    assert_eq!(linked[0].1.rel, Path::new("Kit/Kick.wav"));
-    assert_eq!(linked[0].1.abs, first.join("Kit/Kick.wav"));
-    drop(app);
-
-    // The whole folder moves: the absolute paths are stale, the relative ones resolve.
-    let second = dir.join("two");
-    copy_dir(&first, &second);
-    std::fs::remove_dir_all(&first).unwrap();
-    let mut app = App::headless(Project::new("leer"));
-    app.dispatch(Action::Project(ProjectAction::OpenPath(
-        second.join("Song.komponist"),
-    )));
-    show_devices(&mut app);
-    settled(&mut app);
-    assert!(pad_states(&app).iter().all(|s| *s == PadStatus::Ready));
-    // Saving rebases: the absolute paths point to the new place now.
-    app.dispatch(Action::Project(ProjectAction::Save));
-    let saved =
-        persist::from_json(&std::fs::read_to_string(second.join("Song.komponist")).unwrap())
-            .unwrap();
-    let state = saved.tracks[0].channel.devices[0].state.clone();
-    let linked = links::read(state.as_deref());
-    assert_eq!(linked[0].1.abs, second.join("Kit/Kick.wav"));
-    assert_eq!(linked[0].1.rel, Path::new("Kit/Kick.wav"));
-    drop(app);
-
-    // Only the absolute path is left (the relative one is stale): it is the fallback.
-    let third = dir.join("three");
-    std::fs::create_dir_all(&third).unwrap();
-    let mut loose = saved.clone();
-    let mut state = None;
-    for (pad, link) in &linked {
-        let moved = SampleLink {
-            rel: PathBuf::from("nowhere/x.wav"),
-            ..link.clone()
-        };
-        state = Some(links::write(state.as_deref(), *pad, Some(&moved)));
-    }
-    Arc::make_mut(&mut Arc::make_mut(&mut loose.tracks[0]).channel.devices[0]).state =
-        state.map(Arc::from);
-    let file = third.join("Loose.komponist");
-    std::fs::write(&file, persist::to_json(&loose).unwrap()).unwrap();
-    let mut app = App::headless(Project::new("leer"));
-    app.dispatch(Action::Project(ProjectAction::OpenPath(file)));
-    show_devices(&mut app);
-    settled(&mut app);
-    assert!(pad_states(&app).iter().all(|s| *s == PadStatus::Ready));
-}
-
-#[test]
-fn collect_and_save_copies_the_samples_next_to_the_project_and_rewrites_the_links() {
-    let dir = scratch("sampler-collect");
-    let library = dir.join("library");
-    std::fs::create_dir_all(&library).unwrap();
-    let mut app = App::headless(project(&library, true));
-    let home = dir.join("proj");
-    std::fs::create_dir_all(&home).unwrap();
-    let file = home.join("Hafenlicht.komponist");
-    std::fs::write(&file, persist::to_json(app.project()).unwrap()).unwrap();
-    app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
-    show_devices(&mut app);
-    settled(&mut app);
-    app.dispatch(Action::Project(ProjectAction::CollectAndSave));
-    let folder = home.join("Hafenlicht Samples");
-    let mut copied: Vec<String> = std::fs::read_dir(&folder)
-        .unwrap()
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    copied.sort();
-    let mut expected: Vec<String> = testkit::NAMES.iter().map(|n| format!("{n}.wav")).collect();
-    expected.sort();
-    assert_eq!(copied, expected);
-    // The library is untouched, the document and the file point into the samples folder.
-    assert!(library.join("Kick.wav").is_file());
-    let saved = persist::from_json(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    let linked = links::read(saved.tracks[0].channel.devices[0].state.as_deref());
-    assert_eq!(linked.len(), 8);
-    assert_eq!(linked[0].1.abs, folder.join("Kick.wav"));
-    assert_eq!(linked[0].1.rel, Path::new("Hafenlicht Samples/Kick.wav"));
-    // The project plays from its folder alone: move it, delete the library.
-    std::fs::remove_dir_all(&library).unwrap();
-    let moved = dir.join("moved");
-    copy_dir(&home, &moved);
-    std::fs::remove_dir_all(&home).unwrap();
-    let mut again = App::headless(Project::new("leer"));
-    again.dispatch(Action::Project(ProjectAction::OpenPath(
-        moved.join("Hafenlicht.komponist"),
-    )));
-    show_devices(&mut again);
-    settled(&mut again);
-    assert!(pad_states(&again).iter().all(|s| *s == PadStatus::Ready));
-}
-
 #[test]
 fn collect_and_save_also_copies_the_files_of_audio_clips() {
     let dir = scratch("audio-collect");
@@ -842,67 +618,6 @@ fn collect_and_save_also_copies_the_files_of_audio_clips() {
         !folder.join("secret.wav").exists(),
         "not audio: not collected"
     );
-}
-
-#[test]
-fn missing_samples_open_s06_with_suchen_and_a_found_one_leaves_the_list() {
-    let dir = scratch("sampler-missing");
-    let kit = dir.join("kit");
-    std::fs::create_dir_all(&kit).unwrap();
-    let home = dir.join("proj");
-    std::fs::create_dir_all(&home).unwrap();
-    let p = project(&kit, true);
-    let file = home.join("Song.komponist");
-    std::fs::write(&file, persist::to_json(&p).unwrap()).unwrap();
-    // The kit's folder moves away: Kick, Snare and every other file are missing.
-    let elsewhere = home.join("kit-new");
-    std::fs::rename(&kit, &elsewhere).unwrap();
-    let mut app = App::headless(Project::new("leer"));
-    app.dispatch(Action::Project(ProjectAction::OpenPath(file)));
-    show_devices(&mut app);
-    let mut h = harness(app);
-    h.run_steps(4);
-    h.get_by_label("8 Samples fehlen");
-    h.get_by_role_and_label(Role::ListItem, "Kick SAMPLE, Spur Drums · Pad 1, Kick.wav");
-    h.get_by_label("Ohne diese Samples fortfahren");
-    mask_cpu(&mut h);
-    let mut results = SnapshotResults::new();
-    h.snapshot("sampler-missing-s06-1x");
-    results.extend_harness(&mut h);
-    results.unwrap();
-    // "Suchen …" on the first row opens the browser; the file in the new place relinks it and
-    // every other missing file of that folder with it.
-    let search = h
-        .get_all_by_role_and_label(Role::Button, "Suchen …")
-        .next()
-        .expect("a Suchen button")
-        .rect()
-        .center();
-    click(&mut h, search);
-    h.run_steps(3);
-    // The browser opens in the project's folder; the moved kit is the only folder there. Keys:
-    // ↓ highlights a row, Enter opens it.
-    let key = |h: &mut Harness<'_, App>, key: egui::Key| {
-        h.key_press(key);
-        h.run_steps(2);
-    };
-    key(&mut h, egui::Key::ArrowDown);
-    key(&mut h, egui::Key::Enter);
-    // In the folder: Clap, Closed Hat, Kick, Open Hat …
-    for _ in 0..4 {
-        key(&mut h, egui::Key::ArrowDown);
-    }
-    key(&mut h, egui::Key::Enter);
-    h.run_steps(4);
-    let missing = h.state().project().tracks[0].channel.devices[0]
-        .state
-        .clone();
-    assert!(
-        links::missing(missing.as_deref(), None).is_empty(),
-        "every sample in that folder was found"
-    );
-    // Nothing missing: S06 closed by itself.
-    assert!(h.query_by_label("8 Samples fehlen").is_none());
 }
 
 fn step_clip_project(dir: &Path) -> (Project, komponist_model::ClipId) {

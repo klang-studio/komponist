@@ -521,29 +521,6 @@ pub enum PluginAction {
         /// Plain value.
         value: f64,
     },
-    /// Link a file from a legacy sampler action, using a managed slot if available.
-    LoadSample {
-        /// The sampler device.
-        device: DeviceId,
-        /// The pad, 0-based.
-        pad: usize,
-        /// The WAV file.
-        path: PathBuf,
-    },
-    /// Clear a slot addressed by a legacy sampler action.
-    ClearSample {
-        /// The sampler device.
-        device: DeviceId,
-        /// The pad, 0-based.
-        pad: usize,
-    },
-    /// Open the picker for a pad addressed by a legacy sampler action.
-    PickSample {
-        /// The sampler device.
-        device: DeviceId,
-        /// The pad, 0-based.
-        pad: usize,
-    },
     /// Play an authored MIDI note briefly on the device's track.
     AuditionNote { device: DeviceId, key: u8 },
     /// Start a press-and-release audition from an authored waveform.
@@ -552,13 +529,6 @@ pub enum PluginAction {
         slot: u32,
         key: u8,
         slice_time: Option<f64>,
-    },
-    /// Replace the general Sampler's slice boundaries and playback options.
-    SetSamplerSlices {
-        /// The general Sampler device.
-        device: DeviceId,
-        /// Slice boundaries in source seconds and their playback options.
-        settings: komponist_general_sampler::Settings,
     },
 }
 

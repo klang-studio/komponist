@@ -39,7 +39,7 @@
 //!
 //! Still outside the history: transport settings, the baseline of a bridged device taken for the
 //! file (root only, like the echo), and sample paths rewritten for the file being saved, which
-//! every step gets from its own state (`crate::samples`, `Document::rewrite_untracked`).
+//! every step gets from its own state (`crate::project_assets`, `Document::rewrite_untracked`).
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -157,10 +157,35 @@ impl App {
     /// `PluginAction::BeginParamGesture`: opens the gesture named after the parameter.
     pub(crate) fn begin_param_gesture(&mut self, device: DeviceId, id: u32) {
         self.end_gesture();
-        self.flush_sampler_params(device);
+        self.checkpoint_pending_param_edits(device);
         let label = self.param_label(device, id);
         self.doc.begin_gesture(label);
         self.param_undo.gesture_device = Some(device);
+    }
+
+    /// The next gesture must start from the values already sent to the plugin, even if its
+    /// state snapshot still describes earlier values. Keep the bytes opaque and checkpoint
+    /// the outstanding values as host-owned bases in the preceding undo step.
+    fn checkpoint_pending_param_edits(&mut self, device: DeviceId) {
+        let pending = self.pending_param_bases(device);
+        if pending.is_empty() {
+            return;
+        }
+        let Some(mut state) = self
+            .project()
+            .find_device(device)
+            .and_then(|(_, _, target)| target.saved_state())
+            .or_else(|| self.param_undo.baseline.get(&device).cloned())
+        else {
+            return;
+        };
+        state.parameter_bases.extend(pending);
+        self.param_undo.awaiting.remove(&device);
+        self.param_undo.echo.remove(&device);
+        self.param_undo
+            .deferred
+            .retain(|(pending, _)| *pending != device);
+        self.apply_device_snapshot(device, &state);
     }
 
     /// Associates a macro's bridged targets with the open gesture, so their verified snapshots
@@ -245,7 +270,7 @@ impl App {
         self.follow_device_states(&before);
         let now = Instant::now();
         for device in std::mem::take(&mut self.param_undo.gesture_bridged) {
-            self.forget_sampler_params(device);
+            self.forget_param_edits(device);
             let state = self
                 .project()
                 .find_device(device)
@@ -255,6 +280,9 @@ impl App {
                 && self.engine.host_mut().restore_saved_state(device, &state)
             {
                 self.param_undo.echo.insert(device, now + ECHO_QUIET);
+                if !state.parameter_bases.is_empty() {
+                    self.engine.host_mut().request_state(device);
+                }
             }
         }
         self.flush_deferred();
@@ -262,20 +290,6 @@ impl App {
 
     pub(crate) fn deferred_plugin_states(&self) -> &[(DeviceId, SavedPluginState)] {
         &self.param_undo.deferred
-    }
-
-    /// Adopt rewritten asset paths after the new project file has been written.
-    pub(crate) fn update_deferred_plugin_states(&mut self, states: Vec<(DeviceId, Arc<[u8]>)>) {
-        for (device, state) in states {
-            if let Some((_, pending)) = self
-                .param_undo
-                .deferred
-                .iter_mut()
-                .find(|(id, _)| *id == device)
-            {
-                pending.bytes = state;
-            }
-        }
     }
 
     /// Stores the snapshots that waited for a gesture, once none is open.
@@ -311,7 +325,7 @@ impl App {
             self.engine.host_mut().set_param(device, id, value)
         };
         if bridged {
-            self.remember_sampler_param(device, id);
+            self.remember_param_edit(device, id);
             let label = self.param_label(device, id);
             self.param_undo
                 .turned
@@ -407,51 +421,6 @@ impl App {
             .is_ok()
     }
 
-    /// Runs `edit` as one undo step named `label`, however many device changes it makes. Inside
-    /// an open gesture it is part of that one.
-    pub(crate) fn in_one_step(&mut self, label: &str, edit: impl FnOnce(&mut App)) {
-        if self.doc.in_gesture() {
-            edit(self);
-            return;
-        }
-        self.doc.begin_gesture(label);
-        edit(self);
-        self.end_gesture();
-    }
-
-    /// An asset edit supersedes outstanding snapshots. Commit the latest manual knob changes
-    /// as their own undo step before queuing the new state.
-    pub(crate) fn store_sampler_knob_state(&mut self, device: DeviceId, state: &SavedPluginState) {
-        self.param_undo.awaiting.remove(&device);
-        self.param_undo.echo.remove(&device);
-        self.param_undo
-            .deferred
-            .retain(|(pending, _)| *pending != device);
-        if self.doc.in_gesture() {
-            if !self.has_saved_state(device, state) {
-                let _ = self
-                    .doc
-                    .apply("", |p| edits::set_saved_plugin_state(p, device, state));
-            }
-        } else {
-            self.store_snapshot(device, state);
-        }
-    }
-
-    /// Stores an already applied edit to both the opaque state and its saved parameter bases.
-    pub(crate) fn store_saved_param_state(
-        &mut self,
-        device: DeviceId,
-        state: &SavedPluginState,
-        label: &str,
-    ) {
-        if !self.has_saved_state(device, state) {
-            let _ = self
-                .doc
-                .apply(label, |p| edits::set_saved_plugin_state(p, device, state));
-        }
-    }
-
     fn has_saved_state(&self, device: DeviceId, state: &SavedPluginState) -> bool {
         self.project()
             .find_device(device)
@@ -507,6 +476,9 @@ impl App {
         }
         if self.reconcile_previous_live_state(device, previous_state) {
             self.record_live_state_edit(device, previous_state, state, "undo-sample-slices");
+            if self.has_state(device, state) {
+                self.reconcile_param_edits(device, state);
+            }
         }
     }
 
@@ -558,7 +530,7 @@ impl App {
     pub(crate) fn store_snapshot(&mut self, device: DeviceId, state: &SavedPluginState) {
         self.apply_device_snapshot(device, state);
         if self.has_saved_state(device, state) {
-            self.reconcile_sampler_params(device, &state.bytes);
+            self.reconcile_param_edits(device, &state.bytes);
         }
     }
 
@@ -723,18 +695,18 @@ impl App {
             };
             if old.plugin != device.plugin {
                 self.param_undo.forget_device(device.id);
-                self.forget_sampler_params(device.id);
-                self.reset_sampler_hit(device.id);
+                self.forget_param_edits(device.id);
+                self.reset_pad_hit(device.id);
                 continue;
             }
             if (old.state != device.state || old.parameter_bases != device.parameter_bases)
                 && LegacyParameters::new(device).is_none()
             {
-                self.forget_sampler_params(device.id);
+                self.forget_param_edits(device.id);
                 if komponist_plugins::packaged_kind(&device.plugin).is_some() {
                     self.param_undo.awaiting.remove(&device.id);
                     if device.state.is_none() {
-                        self.reset_sampler_hit(device.id);
+                        self.reset_pad_hit(device.id);
                     }
                 }
                 if device.state.is_none()
