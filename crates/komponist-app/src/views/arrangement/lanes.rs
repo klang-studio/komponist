@@ -52,10 +52,7 @@ fn min_length(view: &ArrangementView, free: bool, project: &Project) -> Tick {
     }
 }
 
-/// What a double-click on empty space of `track` at tick `at` creates: a one-bar clip starting on
-/// the grid (prototype `newClip`): a step clip "Pattern n" on a sampler track, whose rows the sampler
-/// decides ([`crate::step_rows::rows_for_in`] with the `note_names` it reports now: its eight pads,
-/// notes 36–43, without note names; ARCHITECTURE §13.3), else an empty MIDI clip "MIDI-Clip".
+/// A one-bar grid-aligned clip for a caller without a native plugin layout.
 pub fn new_clip(
     lang: Lang,
     project: &Project,
@@ -63,6 +60,22 @@ pub fn new_clip(
     at: Tick,
     view: &ArrangementView,
     note_names: &[NoteName],
+) -> NewClip {
+    let rows = step_rows::is_sampler_track(track).then(|| {
+        let instrument = step_rows::instrument(track).map(|d| &d.plugin);
+        step_rows::rows_for_in(lang, instrument, note_names)
+    });
+    clip_for_rows(lang, project, track, at, view, rows)
+}
+
+/// A one-bar step clip for a pad bank or a MIDI clip for another instrument.
+fn clip_for_rows(
+    lang: Lang,
+    project: &Project,
+    track: &Track,
+    at: Tick,
+    view: &ArrangementView,
+    rows: Option<Vec<komponist_model::edits::StepRowSpec>>,
 ) -> NewClip {
     let meter = project.meter;
     let start = if view.snap {
@@ -72,9 +85,7 @@ pub fn new_clip(
     }
     .max(Tick::ZERO);
     let length = Grid::Bar.ticks(meter);
-    if step_rows::is_sampler_track(track) {
-        let instrument = step_rows::instrument(track).map(|d| &d.plugin);
-        let rows = step_rows::rows_for_in(lang, instrument, note_names);
+    if let Some(rows) = rows {
         NewClip {
             start,
             length,
@@ -193,16 +204,16 @@ impl Arrangement {
                         let track = &project.tracks[i];
                         let at = Tick(g.tick_at(pos.x).max(0.0) as i64);
                         let host = ctx.engine.host();
-                        let note_names =
-                            step_rows::device_note_names(step_rows::instrument(track), host);
-                        let clip = new_clip(
-                            ctx.lang,
-                            project,
-                            track,
-                            at,
-                            &ctx.ui.arrangement,
-                            &note_names,
-                        );
+                        let instrument = step_rows::instrument(track);
+                        let note_names = step_rows::device_note_names(instrument, host);
+                        let view = &ctx.ui.arrangement;
+                        let clip = match step_rows::pad_bank(instrument, host) {
+                            Some(bank) => {
+                                let rows = step_rows::pad_rows(ctx.lang, bank, &note_names);
+                                clip_for_rows(ctx.lang, project, track, at, view, Some(rows))
+                            }
+                            None => new_clip(ctx.lang, project, track, at, view, &note_names),
+                        };
                         ctx.send(Action::Edit(EditAction::AddClip {
                             track: track.id,
                             clip,

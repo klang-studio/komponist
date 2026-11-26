@@ -14,7 +14,6 @@
 //! "1 Sample fehlt" / "n Samples fehlen" and the primary action "Ohne diese Samples fortfahren".
 
 use egui::{Color32, Context, Rect, Role, Sense, Ui, pos2, vec2};
-use komponist_builtin::Internal;
 use komponist_i18n::Lang;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, PluginFormat, PluginRef, Project};
 use komponist_plugins::MissingPlugin;
@@ -176,8 +175,9 @@ pub fn missing_samples(
     for (track, devices) in chains {
         for device in devices.iter() {
             let bundled = komponist_plugins::bundled_sampler::kind(&device.plugin);
-            let Some(kind @ (Internal::Sampler | Internal::GeneralSampler)) =
-                bundled.or_else(|| crate::device_host::internal_kind(device))
+            let Some(kind) = bundled
+                .or_else(|| crate::device_host::internal_kind(device))
+                .filter(|kind| kind.has_embedded_samples())
             else {
                 continue;
             };
@@ -189,7 +189,7 @@ pub fn missing_samples(
                 komponist_sampler::links::missing(device.state.as_deref(), project_dir)
             };
             for (pad, link) in links {
-                if kind == Internal::GeneralSampler && pad != 0 {
+                if kind.has_one_embedded_sample() && pad != 0 {
                     continue;
                 }
                 let file = link
@@ -324,7 +324,7 @@ pub fn with_samples(
             let general = project.find_device(s.device).is_some_and(|(_, _, device)| {
                 komponist_plugins::bundled_sampler::kind(&device.plugin)
                     .or_else(|| crate::device_host::internal_kind(device))
-                    == Some(Internal::GeneralSampler)
+                    .is_some_and(|kind| kind.has_one_embedded_sample())
             });
             Row {
                 name: if s.name.is_empty() {

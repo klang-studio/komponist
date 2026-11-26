@@ -604,7 +604,8 @@ impl EngineSync {
                 continue;
             };
             if let Some(processor) = self.host.create_processor(device, setup) {
-                self.prepare_sampler_sync(project, device);
+                self.host
+                    .prepare_device_assets(device, project.tempo.bpm, None);
                 new_processor_metadata |= processor.latency() > 0
                     || self
                         .host
@@ -639,7 +640,8 @@ impl EngineSync {
             .is_some_and(|p| p.tempo_map.tempo != project.tempo)
         {
             for device in project.tracks.iter().flat_map(|t| &t.channel.devices) {
-                self.prepare_sampler_sync(project, device);
+                self.host
+                    .prepare_device_assets(device, project.tempo.bpm, None);
             }
         }
         let compile::CompileResult {
@@ -675,7 +677,7 @@ impl EngineSync {
         };
         let setup = self.setup();
         if let Some(processor) = self.host.create_processor(d, setup) {
-            self.prepare_sampler_sync(project, d);
+            self.host.prepare_device_assets(d, project.tempo.bpm, None);
             self.reloads += 1;
             self.send(Command::InsertProcessor { slot, processor });
             self.host.set_macro_params(&self.macro_params);
@@ -685,19 +687,6 @@ impl EngineSync {
             }
         } else if self.host.status(device) == DeviceStatus::Missing {
             self.send(Command::RemoveProcessor { slot });
-        }
-    }
-
-    pub(crate) fn prepare_sampler_sync(&self, project: &Project, device: &komponist_model::Device) {
-        use komponist_builtin::Internal;
-        let kind = Internal::GeneralSampler;
-        if Internal::from_plugin(&device.plugin) != Some(kind) {
-            return;
-        }
-        if let Some(handle) = self.host.sampler(device.id) {
-            let (source_bpm, enabled) =
-                komponist_general_sampler::sync_settings(device.state.as_deref());
-            handle.prepare_general_sync(source_bpm, project.tempo.bpm, enabled);
         }
     }
 
@@ -712,15 +701,8 @@ impl EngineSync {
     /// replaced states outside the dispatcher's own paths (undo, redo, a preset, a paste over):
     /// every device in both `before` and `after` whose state differs follows `after`.
     ///
-    /// - hexa gets the patch fields that differ as `SetParam`s of its card parameters
-    ///   (`komponist_hexa::device::param_changes`), so a sounding note goes on; a change no
-    ///   parameter reaches (filters, effects, modulation, … as between most presets), more than
-    ///   [`komponist_engine::MAX_PENDING_PARAMS`] changes or a state that does not decode give a
-    ///   fresh processor made from the patch (like "Neu laden");
-    /// - an internal device gets the parameters that differ as `SetParam`, so tails and sounding
-    ///   notes go on; the Sampler also loads or clears the pads whose sample link differs (into
-    ///   `project_dir`'s samples); a state that does not decode gives a fresh processor;
-    /// - a bridged plugin gets `SetState` over its control socket.
+    /// A reference processor can follow parameter and embedded asset edits in place. Hosted
+    /// plugins restore their opaque saved state through the generic state interface.
     ///
     /// Devices without slot (not in the sent program yet) are skipped: their processor is made
     /// from the document state when the program is sent.
@@ -787,44 +769,12 @@ impl EngineSync {
             for (id, value) in changes {
                 self.send(Command::SetParam { slot, id, value });
             }
-            if let (Some(handle), Some(kind)) = (
-                self.host.sampler(device.id),
-                crate::device_host::internal_kind(device),
-            ) {
-                use komponist_sampler::links;
-                let general = kind == komponist_builtin::Internal::GeneralSampler;
-                if general {
-                    use komponist_general_sampler::read_settings;
-                    let settings = read_settings(device.state.as_deref());
-                    if settings != read_settings(old.state.as_deref()) {
-                        handle.set_general_settings(&settings);
-                    }
-                    self.prepare_sampler_sync(project, device);
-                }
-                let device_links = |state: Option<&[u8]>| {
-                    let mut links = links::read(state);
-                    if general {
-                        links.retain(|(pad, _)| *pad == 0);
-                    }
-                    links
-                };
-                let old_links = device_links(old.state.as_deref());
-                let new_links = device_links(device.state.as_deref());
-                for (pad, link) in &new_links {
-                    if !old_links.iter().any(|(p, l)| p == pad && l == link) {
-                        handle.load_link(*pad, link.clone(), project_dir.map(Into::into));
-                    }
-                }
-                for (pad, _) in &old_links {
-                    if !new_links.iter().any(|(p, _)| p == pad) {
-                        handle.clear(*pad);
-                    }
-                }
-            }
+            self.host
+                .follow_embedded_assets(old, device, project.tempo.bpm, project_dir);
             self.reassert_device_macros(device.id);
         } else if let Some(state) = device.saved_state() {
             if !self.host.restore_saved_state(device.id, &state)
-                && komponist_plugins::packaged_kind(&device.plugin).is_some()
+                && komponist_plugins::requires_bundled(&device.plugin)
                 && self.host.status(device.id) == DeviceStatus::Loading
             {
                 // A replacement bridge is still loading the previous revision (for example
@@ -832,7 +782,7 @@ impl EngineSync {
                 self.host.release(device.id);
                 self.reload_device(project, device.id);
             }
-        } else if komponist_plugins::packaged_kind(&device.plugin).is_some() {
+        } else if komponist_plugins::requires_bundled(&device.plugin) {
             // Undo may restore the new instance's absent state. A regular reload preserves
             // the previous processor's snapshot, so start a fresh instance at its defaults.
             let slot = self.slot_of(device.id).expect("checked by the caller");

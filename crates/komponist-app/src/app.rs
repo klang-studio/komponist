@@ -2168,10 +2168,15 @@ impl App {
         }
     }
 
-    fn default_hexa(&self) -> Option<PluginRef> {
+    fn default_instrument(&self) -> Option<PluginRef> {
         let catalog = self.engine.host().catalog();
+        let default_id = komponist_plugins::catalog::clap_id(BUILTIN_HEXA);
         catalog
-            .packaged(komponist_builtin::BuiltinKind::Hexa)
+            .entries()
+            .iter()
+            .find(|entry| {
+                komponist_plugins::requires_bundled(&entry.plugin) && entry.plugin.id == default_id
+            })
             .or_else(|| catalog.resolve(&hexa_ref()))
             .map(|entry| entry.plugin.clone())
     }
@@ -2188,8 +2193,8 @@ impl App {
                 .resolve(last)
                 .filter(|entry| entry.kind == komponist_ipc::PluginKind::Instrument)
                 .map(|entry| entry.plugin.clone())
-                .or_else(|| self.default_hexa()),
-            None => self.default_hexa(),
+                .or_else(|| self.default_instrument()),
+            None => self.default_instrument(),
         };
         let mut state = crate::dialogs::new_track::State::new(instrument);
         state.choose_default_input(self.project(), &self.engine);

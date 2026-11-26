@@ -3,24 +3,22 @@
 //! **The instrument decides the rows when a step clip is created** ([`rows_for`]), and they are
 //! stored in the model then (`NewClipContent::Step { rows }`):
 //!
-//! - an instrument that reports note names, or declares a pad bank with linked samples: its
-//!   first [`ROWS`] named keys, in key order, with their names;
-//! - the Sampler: its pads 1–8 = notes 36–43, each named after its sample (the device host
-//!   reports the loaded pads' names as note names, [`komponist_sampler`]); an empty pad
-//!   gets the S03 name of its row (Kick, Snare, … Perc);
+//! - an instrument that declares a pad bank: its first [`ROWS`] pads in their declared order,
+//!   with the names of their linked samples and the S03 row names for empty pads;
+//! - an instrument that reports note names: its first [`ROWS`] named keys in key order;
 //! - every other instrument (and a track without one): the prototype's General MIDI rows
 //!   ([`DEFAULT_STEP_ROWS`]).
 //!
 //! **Labels follow the track's current instrument** ([`row_names`], [`row_label`]): a row shows the
 //! instrument's note name for its key where it has one, else its stored name; the small label
-//! right of the name is the sampler pad ("P1", as S03 shows) on a sampler track and the note name
+//! right of the name is the pad position ("P1", as S03 shows) on a pad-bank instrument and the note name
 //! ("C1") elsewhere. Changing the instrument later does not remap the rows of existing clips: a
 //! pattern keeps the notes it was written for.
 
 use std::borrow::Cow;
 
 use komponist_i18n::Lang;
-use komponist_ipc::NoteName;
+use komponist_ipc::{NoteName, native_layout::PadBank};
 use komponist_model::PluginFormat;
 use komponist_model::edits::StepRowSpec;
 use komponist_model::format::note_name;
@@ -47,10 +45,7 @@ pub(crate) fn device_note_names<'a>(
     let Some(device) = device else {
         return Cow::Borrowed(&[]);
     };
-    let Some(bank) = host
-        .native_layout(device.id)
-        .and_then(|layout| layout.pad_bank.as_ref())
-    else {
+    let Some(bank) = pad_bank(Some(device), host) else {
         return Cow::Borrowed(host.note_names(device.id));
     };
     Cow::Owned(
@@ -70,6 +65,48 @@ pub(crate) fn device_note_names<'a>(
             })
             .collect(),
     )
+}
+
+pub(crate) fn pad_bank<'a>(
+    device: Option<&Device>,
+    host: &'a dyn DeviceHost,
+) -> Option<&'a PadBank> {
+    host.native_layout(device?.id)?.pad_bank.as_ref()
+}
+
+/// The rows of a new step clip for a plugin-declared pad bank.
+pub(crate) fn pad_rows(t: Lang, bank: &PadBank, names: &[NoteName]) -> Vec<StepRowSpec> {
+    rows_for_pads(t, bank.pads.iter().map(|pad| pad.note), names)
+}
+
+/// The pad position or key name that appears next to this row's name.
+pub(crate) fn device_row_label(
+    bank: Option<&PadBank>,
+    instrument: Option<&PluginRef>,
+    note: u8,
+) -> String {
+    match bank {
+        Some(bank) => bank
+            .pads
+            .iter()
+            .position(|pad| pad.note == note)
+            .map_or_else(|| note_name(note), |pad| format!("P{}", pad + 1)),
+        None => row_label(instrument, note),
+    }
+}
+
+fn rows_for_pads(t: Lang, notes: impl Iterator<Item = u8>, names: &[NoteName]) -> Vec<StepRowSpec> {
+    default_rows(t)
+        .iter()
+        .zip(notes)
+        .map(|(&(default, _), note)| {
+            let name = names
+                .iter()
+                .find(|n| n.key == note && !n.name.trim().is_empty())
+                .map_or(default, |n| n.name.trim());
+            spec(name, note)
+        })
+        .collect()
 }
 
 /// Whether `plugin` is the built-in sampler.
@@ -105,18 +142,7 @@ pub fn rows_for_in(
 ) -> Vec<StepRowSpec> {
     let defaults = default_rows(t);
     if instrument.is_some_and(is_sampler) {
-        // All eight pads, whatever is loaded.
-        return defaults
-            .iter()
-            .zip(sampler::FIRST_NOTE..)
-            .map(|(&(default, _), note)| {
-                let name = note_names
-                    .iter()
-                    .find(|n| n.key == note && !n.name.trim().is_empty())
-                    .map_or(default, |n| n.name.trim());
-                spec(name, note)
-            })
-            .collect();
+        return rows_for_pads(t, sampler::FIRST_NOTE.., note_names);
     }
     let mut named: Vec<&NoteName> = note_names
         .iter()
@@ -218,6 +244,31 @@ mod tests {
 
     fn pairs(rows: &[StepRowSpec]) -> Vec<(&str, u8)> {
         rows.iter().map(|r| (r.name.as_str(), r.note)).collect()
+    }
+
+    #[test]
+    fn a_native_pad_bank_preserves_declared_order_and_labels() {
+        use komponist_ipc::native_layout::Pad;
+
+        let bank = PadBank {
+            pads: vec![
+                Pad {
+                    note: 61,
+                    asset_slot: 9,
+                },
+                Pad {
+                    note: 23,
+                    asset_slot: 4,
+                },
+            ],
+            activity_tap: None,
+            follow_param: None,
+        };
+        let rows = pad_rows(Lang::En, &bank, &[name(23, " Snare sample ")]);
+        assert_eq!(pairs(&rows), [("Kick", 61), ("Snare sample", 23)]);
+        assert_eq!(device_row_label(Some(&bank), None, 61), "P1");
+        assert_eq!(device_row_label(Some(&bank), None, 23), "P2");
+        assert_eq!(device_row_label(Some(&bank), None, 48), note_name(48));
     }
 
     #[test]

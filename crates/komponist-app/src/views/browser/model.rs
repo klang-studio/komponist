@@ -19,7 +19,7 @@ use komponist_i18n::Lang;
 use komponist_ipc::PluginKind;
 use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource};
 use komponist_model::{ClipContent, ClipId, PluginRef, Project, TrackId};
-use komponist_plugins::{Catalog, CatalogEntry, EffectCategory, packaged_kind};
+use komponist_plugins::{Catalog, CatalogEntry, EffectCategory, requires_bundled};
 
 use crate::actions::{Action, DropTarget, EditAction, PluginAction, UiAction};
 use crate::settings::Favorites;
@@ -155,7 +155,7 @@ impl Row {
     pub fn key(&self) -> String {
         match &self.kind {
             RowKind::Plugin { plugin, .. } => {
-                let bundled = packaged_kind(plugin).is_some();
+                let bundled = requires_bundled(plugin);
                 format!("plugin:{:?}:{bundled}:{}", plugin.format, plugin.id)
             }
             RowKind::Folder { key, .. } => format!("folder:{key}"),
@@ -460,7 +460,7 @@ fn presets(lang: Lang, input: &Input<'_>, rows: &mut Vec<Row>) {
             } else {
                 let label = category.map_or_else(
                     || entry_name(lang, entry),
-                    |group| komponist_device_core::category_text(lang, group).to_owned(),
+                    |group| komponist_i18n::preset_category_text(lang, group).to_owned(),
                 );
                 folders.push(PresetFolder {
                     key,
@@ -760,7 +760,7 @@ pub fn activate(row: &Row, project: &Project, track: Option<TrackId>) -> Vec<Act
                     track.channel.devices.iter().find(|device| {
                         device.plugin.format == plugin.format
                             && device.plugin.id == plugin.id
-                            && packaged_kind(&device.plugin) == packaged_kind(plugin)
+                            && requires_bundled(&device.plugin) == requires_bundled(plugin)
                     })
                 });
             vec![Action::Plugin(match existing {

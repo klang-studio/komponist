@@ -89,7 +89,7 @@ impl Target {
 pub(crate) fn percentage(lang: Lang, value: f32) -> String {
     ParamInfo::new("automation", String::new(), ParamKind::lin(0.0, 1.0), 0.0)
         .unit(Unit::Percent)
-        .texts(komponist_device_core::value_texts(lang))
+        .texts(crate::views::parameter_value_texts(lang))
         .format(f64::from(value))
 }
 
@@ -198,7 +198,7 @@ impl<'a> Catalog<'a> {
 
     fn hosted_info(&self, info: &komponist_ipc::ParamInfo) -> ParamInfo {
         komponist_plugins::params::param_info(info)
-            .texts(komponist_device_core::value_texts(self.lang))
+            .texts(crate::views::parameter_value_texts(self.lang))
     }
 
     fn device_targets(&self, device: &Device, name: &str) -> Vec<Target> {
@@ -315,7 +315,7 @@ impl<'a> Catalog<'a> {
         let label = macro_label(self.lang, index, slot);
         let info = ParamInfo::new("track_macro", label.clone(), ParamKind::lin(0.0, 1.0), 0.0)
             .unit(Unit::Percent)
-            .texts(komponist_device_core::value_texts(self.lang))
+            .texts(crate::views::parameter_value_texts(self.lang))
             .flags(true, false);
         Target::new(
             AutomationTarget::Macro { index },

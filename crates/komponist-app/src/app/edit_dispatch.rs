@@ -158,7 +158,7 @@ impl App {
                 self.apply("undo-change-project", |p| edits::set_project_prop(p, prop));
             }
             EditAction::SetMasterProp(prop) => self.set_master_prop(prop),
-            EditAction::NewMidiTrack => self.new_midi_track(None, self.default_hexa()),
+            EditAction::NewMidiTrack => self.new_midi_track(None, self.default_instrument()),
             EditAction::NewAudioTrack => self.open_new_audio_track_dialog(),
             EditAction::AddTrack(spec) => self.add_track(spec),
             EditAction::RemoveTracks(tracks) => self.remove_tracks(tracks),

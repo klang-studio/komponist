@@ -52,6 +52,14 @@ use crate::meters::Meters;
 use crate::record::Recording;
 use crate::ui_state::UiState;
 
+pub(super) fn parameter_value_texts(lang: Lang) -> komponist_model::params::ValueTexts {
+    komponist_model::params::ValueTexts {
+        on: lang.value_on(),
+        off: lang.value_off(),
+        percent: lang.value_percent(),
+    }
+}
+
 /// What a view gets for one frame.
 pub struct ViewCtx<'a> {
     /// The project (read-only; changes go through [`Action::Edit`]).

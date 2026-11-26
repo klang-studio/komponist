@@ -76,8 +76,7 @@ pub static SPEC: Spec = Spec {
 /// Lookahead (and latency) in milliseconds when `lookahead` is on.
 pub const LOOKAHEAD_MS: f64 = 3.0;
 
-/// Seconds of reduction history the graph shows.
-pub const HISTORY_SECONDS: f32 = 4.0;
+pub use komponist_engine::tap::DYNAMICS_HISTORY_SECONDS as HISTORY_SECONDS;
 
 /// Capacity of the telemetry tap in samples: room for two samples per pair, 4 s of pairs with the
 /// reader's half-ring limit to spare.
@@ -224,11 +223,9 @@ fn layout(_: Lang) -> DeviceLayout {
     })
 }
 
-/// Frames between two telemetry pairs at `rate`: [`CONTROL`] at 44.1 and 48 kHz, a multiple of it
-/// at higher rates, so the pairs per second stay about the same (≈ 1500).
-pub fn pair_frames(rate: f32) -> usize {
-    CONTROL * (rate / 48_000.0).round().max(1.0) as usize
-}
+pub use komponist_engine::tap::dynamics_pair_frames as pair_frames;
+
+const _: () = assert!(CONTROL == 32);
 
 /// Lookahead in frames at `rate`.
 fn lookahead_frames(rate: f32) -> usize {

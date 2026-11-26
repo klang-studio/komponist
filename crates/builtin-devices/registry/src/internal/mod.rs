@@ -41,6 +41,76 @@ pub enum Internal {
 }
 
 impl Internal {
+    /// Whether the reference processor keeps a single linked audio slot in its state.
+    pub fn has_one_embedded_sample(self) -> bool {
+        self == Self::GeneralSampler
+    }
+
+    /// Whether this reference processor describes linked audio in its state.
+    pub fn has_embedded_samples(self) -> bool {
+        matches!(self, Self::Sampler | Self::GeneralSampler)
+    }
+
+    /// Prepare transport-dependent assets for the in-process reference host.
+    pub fn prepare_assets(
+        self,
+        handle: &komponist_sampler::SamplerHandle,
+        state: Option<&[u8]>,
+        tempo: f64,
+        edited_param: Option<u32>,
+    ) {
+        if self != Self::GeneralSampler
+            || edited_param.is_some_and(|wire| {
+                !self
+                    .params()
+                    .get(wire as usize)
+                    .is_some_and(|param| matches!(param.id.as_str(), "sync" | "source_bpm"))
+            })
+        {
+            return;
+        }
+        let (source_bpm, enabled) = komponist_general_sampler::sync_settings(state);
+        handle.prepare_general_sync(source_bpm, tempo, enabled);
+    }
+
+    /// Update embedded asset links for the in-process reference host.
+    pub fn follow_assets(
+        self,
+        handle: &komponist_sampler::SamplerHandle,
+        before: Option<&[u8]>,
+        after: Option<&[u8]>,
+        tempo: f64,
+        project_dir: Option<&std::path::Path>,
+    ) {
+        let general = self == Self::GeneralSampler;
+        if general {
+            let settings = komponist_general_sampler::read_settings(after);
+            if settings != komponist_general_sampler::read_settings(before) {
+                handle.set_general_settings(&settings);
+            }
+            self.prepare_assets(handle, after, tempo, None);
+        }
+        let device_links = |state: Option<&[u8]>| {
+            let mut links = komponist_sampler::links::read(state);
+            if general {
+                links.retain(|(pad, _)| *pad == 0);
+            }
+            links
+        };
+        let old_links = device_links(before);
+        let new_links = device_links(after);
+        for (pad, link) in &new_links {
+            if !old_links.iter().any(|(p, l)| p == pad && l == link) {
+                handle.load_link(*pad, link.clone(), project_dir.map(Into::into));
+            }
+        }
+        for (pad, _) in &old_links {
+            if !new_links.iter().any(|(p, _)| p == pad) {
+                handle.clear(*pad);
+            }
+        }
+    }
+
     /// All devices, in browser order.
     pub const ALL: [Internal; 11] = [
         Internal::Sampler,

@@ -31,6 +31,14 @@ pub const DEFAULT_CAPACITY: usize = 16_384;
 /// frames, so it also stops counting while the audio is stopped).
 pub const LEASE_SECONDS: f32 = 0.5;
 
+/// Display window for level and gain-reduction pairs.
+pub const DYNAMICS_HISTORY_SECONDS: f32 = 4.0;
+
+/// Frames between successive level and gain-reduction pairs in a dynamics tap.
+pub fn dynamics_pair_frames(rate: f32) -> usize {
+    32 * (rate / 48_000.0).round().max(1.0) as usize
+}
+
 /// The tap. Shared as `Arc<SampleTap>` between the processor and the UI.
 #[derive(Debug)]
 pub struct SampleTap {

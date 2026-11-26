@@ -59,6 +59,9 @@ impl SampledDefinition for DrumSampler {
         panel.device_labels = Some(komponist_bundled_clap_adapter::device_labels(
             &Self::SPEC.catalog,
         ));
+        if cfg!(feature = "fixture-without-parameter-display") {
+            panel.parameter_display.clear();
+        }
         let graph_labels = panel
             .grid
             .pages
@@ -91,7 +94,6 @@ impl SampledDefinition for DrumSampler {
             })
             .collect();
         Panel {
-            parameter_display: Default::default(),
             full_band_choice_labels: Default::default(),
             graph_labels,
             canvases: Default::default(),
@@ -178,6 +180,12 @@ fn authored_pad_bank_preserves_every_pad_editor() {
     assert_eq!(pages.len(), PADS);
     assert_eq!(pads.len(), PADS);
     assert_eq!(author_ids.len(), DrumSampler::SPEC.params().len());
+    if cfg!(feature = "fixture-without-parameter-display") {
+        assert!(layout.get("parameter_display").is_none());
+    } else {
+        let wire = author_ids["pad1_end"].as_u64().unwrap().to_string();
+        assert_eq!(layout["parameter_display"][&wire]["unit"], "milliseconds");
+    }
     assert_eq!(layout["pad_bank"]["follow_param"], author_ids["follow"]);
     assert_eq!(layout["pad_bank"]["activity_tap"], "pads");
     for (index, (page, pad)) in pages.iter().zip(pads).enumerate() {

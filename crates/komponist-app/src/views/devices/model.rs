@@ -471,22 +471,9 @@ pub(crate) fn card(
         } else {
             None
         };
-    let sampler = native_layout
-        .as_ref()
-        .and_then(|_| host.sampler_editor_params(device.id, lang));
-    let bundled_editor = sampler.is_some();
+    let bundled_editor = false;
     let builtin = LegacyParameters::new(device);
-    let params = if let Some(sampler) = sampler {
-        sampler
-            .into_iter()
-            .map(|p| Param {
-                wire: p.wire,
-                text: p.info.format(p.value),
-                info: p.info,
-                value: p.value,
-            })
-            .collect()
-    } else if state == CardState::Ok {
+    let params = if state == CardState::Ok {
         if let Some(builtin) = &builtin {
             builtin
                 .card(lang)
@@ -814,11 +801,7 @@ pub fn all_plugin_params<'a>(
 
 /// A bridged plugin's parameter: its own names, our value words ("Off", "40%").
 fn plugin_info(lang: Lang, wire: &WireInfo) -> ParamInfo {
-    param_info(wire).texts(komponist_model::params::ValueTexts {
-        on: lang.value_on(),
-        off: lang.value_off(),
-        percent: lang.value_percent(),
-    })
+    param_info(wire).texts(crate::views::parameter_value_texts(lang))
 }
 
 /// Apply the panel's display domain while retaining the live CLAP ID and flags.

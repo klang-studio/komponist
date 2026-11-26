@@ -45,7 +45,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use komponist_builtin::Internal;
 use komponist_engine::Command;
 use komponist_model::automation::AutomationTarget;
 use komponist_model::edits;
@@ -54,7 +53,7 @@ use komponist_model::project::SavedPluginState;
 use komponist_model::{Device, DeviceId, Project, TrackId};
 
 use crate::app::App;
-use crate::device_host::{LegacyParameters, internal_kind};
+use crate::device_host::LegacyParameters;
 use crate::undo_label;
 
 /// Snapshots of a device that arrive within this time of the last one amend its undo step.
@@ -476,14 +475,12 @@ impl App {
         let command = Command::SetParam { slot, id, value };
         if changed {
             self.engine.fast_path(command, before, after);
-            if let Some((_, _, d)) = self.project().find_device(device)
-                && internal_kind(d) == Some(Internal::GeneralSampler)
-                && Internal::GeneralSampler
-                    .params()
-                    .get(id as usize)
-                    .is_some_and(|param| matches!(param.id.as_str(), "sync" | "source_bpm"))
-            {
-                self.engine.prepare_sampler_sync(self.project(), d);
+            if let Some((_, _, device)) = self.project().find_device(device) {
+                self.engine.host().prepare_device_assets(
+                    device,
+                    self.project().tempo.bpm,
+                    Some(id),
+                );
             }
         } else {
             self.engine.send(command);
@@ -821,14 +818,14 @@ impl App {
             {
                 self.param_undo.cancel_text_edits(device.id);
                 self.forget_param_edits(device.id);
-                if komponist_plugins::packaged_kind(&device.plugin).is_some() {
+                if komponist_plugins::requires_bundled(&device.plugin) {
                     self.param_undo.awaiting.remove(&device.id);
                     if device.state.is_none() {
                         self.reset_pad_hit(device.id);
                     }
                 }
                 if device.state.is_none()
-                    && komponist_plugins::packaged_kind(&device.plugin).is_none()
+                    && !komponist_plugins::requires_bundled(&device.plugin)
                     && let Some(baseline) = self.param_undo.baseline.get(&device.id).cloned()
                 {
                     self.engine
