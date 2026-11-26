@@ -157,9 +157,35 @@ impl App {
     /// `PluginAction::BeginParamGesture`: opens the gesture named after the parameter.
     pub(crate) fn begin_param_gesture(&mut self, device: DeviceId, id: u32) {
         self.end_gesture();
+        self.checkpoint_pending_param_edits(device);
         let label = self.param_label(device, id);
         self.doc.begin_gesture(label);
         self.param_undo.gesture_device = Some(device);
+    }
+
+    /// The next gesture must start from the values already sent to the plugin, even if its
+    /// state snapshot still describes earlier values. Keep the bytes opaque and checkpoint
+    /// the outstanding values as host-owned bases in the preceding undo step.
+    fn checkpoint_pending_param_edits(&mut self, device: DeviceId) {
+        let pending = self.pending_param_bases(device);
+        if pending.is_empty() {
+            return;
+        }
+        let Some(mut state) = self
+            .project()
+            .find_device(device)
+            .and_then(|(_, _, target)| target.saved_state())
+            .or_else(|| self.param_undo.baseline.get(&device).cloned())
+        else {
+            return;
+        };
+        state.parameter_bases.extend(pending);
+        self.param_undo.awaiting.remove(&device);
+        self.param_undo.echo.remove(&device);
+        self.param_undo
+            .deferred
+            .retain(|(pending, _)| *pending != device);
+        self.apply_device_snapshot(device, &state);
     }
 
     /// Associates a macro's bridged targets with the open gesture, so their verified snapshots
@@ -254,6 +280,9 @@ impl App {
                 && self.engine.host_mut().restore_saved_state(device, &state)
             {
                 self.param_undo.echo.insert(device, now + ECHO_QUIET);
+                if !state.parameter_bases.is_empty() {
+                    self.engine.host_mut().request_state(device);
+                }
             }
         }
         self.flush_deferred();
@@ -296,7 +325,7 @@ impl App {
             self.engine.host_mut().set_param(device, id, value)
         };
         if bridged {
-            self.remember_param_edit(device);
+            self.remember_param_edit(device, id);
             let label = self.param_label(device, id);
             self.param_undo
                 .turned
@@ -447,6 +476,9 @@ impl App {
         }
         if self.reconcile_previous_live_state(device, previous_state) {
             self.record_live_state_edit(device, previous_state, state, "undo-sample-slices");
+            if self.has_state(device, state) {
+                self.reconcile_param_edits(device, state);
+            }
         }
     }
 

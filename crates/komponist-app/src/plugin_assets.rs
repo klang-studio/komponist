@@ -1,6 +1,6 @@
 //! File actions and previews for host-managed CLAP asset slots.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,9 +25,9 @@ pub(crate) struct State {
     /// Edits the device could not prepare yet, retried every frame until the deadline.
     waiting_asset_edits: HashMap<DeviceId, WaitingAssetEdit>,
     asset_edit_request: u64,
-    /// Devices with parameter edits the document has no snapshot of yet. Only devices that
-    /// prepare their own file edits are tracked: those start from the document's saved state.
-    unsnapshotted_params: HashSet<DeviceId>,
+    /// Parameters edited since the device's last confirmed document snapshot.
+    /// Devices that prepare their own file edits need this because those edits use saved state.
+    unsnapshotted_params: HashMap<DeviceId, BTreeSet<u32>>,
     auditions: Vec<(Instant, TrackId, u8)>,
     waveform_preview: Option<WaveformPreview>,
 }
@@ -388,20 +388,37 @@ impl App {
     }
 
     /// A parameter edit of `device` went to the plugin; its snapshot is not in the document yet.
-    pub(crate) fn remember_param_edit(&mut self, device: DeviceId) {
+    pub(crate) fn remember_param_edit(&mut self, device: DeviceId, id: u32) {
         if self.engine.host().supports_asset_edit_state(device) {
             self.dialogs
                 .plugin_assets
                 .unsnapshotted_params
-                .insert(device);
+                .entry(device)
+                .or_default()
+                .insert(id);
         }
+    }
+
+    pub(crate) fn pending_param_bases(&self, device: DeviceId) -> BTreeMap<u32, f64> {
+        let host = self.engine.host();
+        self.dialogs
+            .plugin_assets
+            .unsnapshotted_params
+            .get(&device)
+            .into_iter()
+            .flatten()
+            .filter_map(|&id| {
+                let value = host.param_base(device, id)?;
+                value.is_finite().then_some((id, value))
+            })
+            .collect()
     }
 
     pub(crate) fn has_unsnapshotted_param_edits(&self, device: DeviceId) -> bool {
         self.dialogs
             .plugin_assets
             .unsnapshotted_params
-            .contains(&device)
+            .contains_key(&device)
     }
 
     pub(crate) fn forget_param_edits(&mut self, device: DeviceId) {
