@@ -30,8 +30,6 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     let launcher = PathBuf::from(
         std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").expect("set the unpacked app executable"),
     );
-    let force_bridge =
-        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
     let scratch = tempfile::tempdir().unwrap();
     let host = scan(&launcher, scratch.path());
     let expected_piano = host
@@ -73,7 +71,7 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
         newest_instrument(&app).state.as_ref(),
         Some(&expected_piano)
     );
-    wait_for_verified(&mut app, hexa, HEXA, force_bridge);
+    wait_for_verified(&mut app, hexa, HEXA);
     let hexa_layout = app.engine().host().native_layout(hexa).unwrap();
     assert_eq!(hexa_layout.pages.len(), 3);
     assert!(hexa_layout.has_canvas());
@@ -124,7 +122,7 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
         target: DropTarget::NewTrack { index: None },
     }));
     let volt = newest_instrument(h.state()).id;
-    wait_for_verified(h.state_mut(), volt, VOLT, force_bridge);
+    wait_for_verified(h.state_mut(), volt, VOLT);
     assert_signed_octave(h.state(), volt, "osc_b_oct");
     let layout = h.state().engine().host().native_layout(volt).unwrap();
     assert_eq!(layout.pages.len(), 3);
@@ -194,7 +192,7 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     );
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
     h.state_mut().dispatch(Action::Edit(EditAction::Redo));
-    wait_for_verified(h.state_mut(), volt, VOLT, force_bridge);
+    wait_for_verified(h.state_mut(), volt, VOLT);
     let snapshots = h
         .state_mut()
         .engine_mut()
@@ -259,7 +257,7 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
     h.get_by_role_and_label(Role::ComboBox, &lang.param_volt_target(1));
     snapshot(&mut h, "volt-matrix", lang);
 
-    let stepped_state = if !force_bridge {
+    let stepped_state = {
         let app = h.state_mut();
         let parameter = alias(app, volt, "osc_b_oct");
         app.dispatch(Action::Plugin(PluginAction::SetParam {
@@ -287,55 +285,42 @@ fn packaged_synth_editors_and_factory_presets_follow_clap_state() {
                 _ => None,
             })
             .expect("the prior plugin state contains the snapped edit");
-        Some(previous.into())
-    } else {
-        None
+        previous.into()
     };
-    check_surf(&mut h, lang, force_bridge);
+    check_surf(&mut h, lang);
     h.state_mut().shutdown();
     drop(h);
 
     // Read the opaque blobs by restoring them into a fresh authenticated processor.
-    assert_restored_params(
-        &launcher,
-        &hexa_plugin,
-        &hexa_state,
-        &[("algorithm", 7.0)],
-        force_bridge,
-    );
+    assert_restored_params(&launcher, &hexa_plugin, &hexa_state, &[("algorithm", 7.0)]);
     assert_restored_params(
         &launcher,
         &volt_plugin,
         &redo_state,
         &[("cutoff", preset_cutoff)],
-        force_bridge,
     );
     assert_restored_params(
         &launcher,
         &volt_plugin,
         &lfo_state,
         &[("lfo1_rate", one), ("lfo2_rate", two_edited)],
-        force_bridge,
     );
-    if let Some(state) = stepped_state {
-        assert_restored_params(
-            &launcher,
-            &volt_plugin,
-            &state,
-            &[("osc_b_oct", 5.0)],
-            force_bridge,
-        );
-    }
+    assert_restored_params(
+        &launcher,
+        &volt_plugin,
+        &stepped_state,
+        &[("osc_b_oct", 5.0)],
+    );
 }
 
-fn check_surf(h: &mut Harness<'_, App>, lang: Lang, force_bridge: bool) {
+fn check_surf(h: &mut Harness<'_, App>, lang: Lang) {
     let plugin = packaged(h.state().engine().host(), SURF).plugin.clone();
     h.state_mut().dispatch(Action::Plugin(PluginAction::Add {
         plugin,
         target: DropTarget::NewTrack { index: None },
     }));
     let surf = newest_instrument(h.state()).id;
-    wait_for_verified(h.state_mut(), surf, SURF, force_bridge);
+    wait_for_verified(h.state_mut(), surf, SURF);
     assert_signed_octave(h.state(), surf, "osc_a_oct");
     let layout = h.state().engine().host().native_layout(surf).unwrap();
     assert_eq!(layout.pages.len(), 3);
@@ -410,7 +395,7 @@ fn packaged<'a>(host: &'a dyn DeviceHost, id: &str) -> &'a CatalogEntry {
         .unwrap_or_else(|| panic!("missing authenticated synth {id}"))
 }
 
-fn wait_for_verified(app: &mut App, device: DeviceId, id: &str, bridge: bool) {
+fn wait_for_verified(app: &mut App, device: DeviceId, id: &str) {
     let plugin = &app.project().find_device(device).unwrap().2.plugin;
     assert_eq!(plugin.id, id);
     assert!(requires_bundled(plugin));
@@ -418,7 +403,7 @@ fn wait_for_verified(app: &mut App, device: DeviceId, id: &str, bridge: bool) {
         let host = app.engine().host();
         host.verified_bundled_kind(device).is_some() && host.native_layout(device).is_some()
     });
-    assert_eq!(app.engine().host().bridge_pid(device).is_some(), bridge);
+    assert!(app.engine().host().bridge_pid(device).is_none());
     assert!(app.engine().host().state_warning(device).is_none());
 }
 
@@ -449,7 +434,6 @@ fn assert_restored_params(
     plugin: &PluginRef,
     state: &SavedPluginState,
     params: &[(&str, f64)],
-    bridge: bool,
 ) {
     assert!(
         state.parameter_bases.is_empty(),
@@ -478,7 +462,7 @@ fn assert_restored_params(
         .id;
     let project = edits::set_saved_plugin_state(&project, device, state).unwrap();
     let mut app = app_with(project, host);
-    wait_for_verified(&mut app, device, &plugin.id, bridge);
+    wait_for_verified(&mut app, device, &plugin.id);
     for &(name, expected) in params {
         let wire = alias(&app, device, name);
         wait_for_value(&mut app, device, wire, expected, name);

@@ -146,7 +146,7 @@ jobs:
           if ! "$python" -c 'import sys' >/dev/null 2>&1; then python=python; fi
           "$python" scripts/bundled-clap.py --target "$TARGET" --inventory "$INVENTORY" \
             check-archive "$APP" --manifest-sha256 "$KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256"
-      - name: Round-trip and export current-format projects on both host paths
+      - name: Round-trip and export current-format projects with the bundles in-process
         if: env.INVENTORY == 'all'
         run: |
           python=python3
