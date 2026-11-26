@@ -663,6 +663,7 @@ impl Bridge {
     pub(crate) fn poll_waveform_markers(&mut self) {
         if self.status() == DeviceStatus::Ok
             && self.state_restores.is_empty()
+            && !self.capturing_state_with_parameter_bases()
             && self.asset_bindings_waiting.is_none()
             && !self.assets.bindings_pending()
             && self.marker_edit.is_none()
@@ -710,6 +711,7 @@ impl Bridge {
             && self.status() == DeviceStatus::Ok
             && !self.keep_stored_state
             && self.state_restores.is_empty()
+            && !self.capturing_state_with_parameter_bases()
             && self.pending_preset_capture.is_none()
             && self.asset_bindings_waiting.is_none()
             && !self.assets.bindings_pending()
@@ -1087,6 +1089,16 @@ impl Bridge {
                     .state_requests
                     .iter()
                     .any(|pending| !pending.superseded))
+    }
+
+    /// Let the pending snapshot record restored bases before accepting a marker edit.
+    /// Submitting the marker would supersede the capture and could give the same gain
+    /// change a second undo step when the marker returns its own preceding state.
+    fn capturing_state_with_parameter_bases(&self) -> bool {
+        self.last_state
+            .as_ref()
+            .is_some_and(|state| !state.parameter_bases.is_empty())
+            && self.snapshot_capture_pending()
     }
 
     pub(crate) fn schedule_retiring_snapshot(&mut self) {
@@ -1738,12 +1750,17 @@ impl Bridge {
                 }
             }
             BridgeMsg::StateDeferred { request } => {
+                let waiting_for_parameter_bases = self.capturing_state_with_parameter_bases();
                 if let Some(capture) = &mut self.pending_preset_capture
                     && capture.request == request
                 {
                     capture.deferred = true;
                 } else if self.take_state_request(request).is_some() {
-                    self.snapshot_soon();
+                    if waiting_for_parameter_bases {
+                        self.snapshot_due = Some(Instant::now() + MARKER_EDIT_RETRY_DELAY);
+                    } else {
+                        self.snapshot_soon();
+                    }
                 }
             }
             BridgeMsg::Params {
@@ -2114,6 +2131,13 @@ impl Bridge {
         }
         let mismatched_preset = std::mem::take(&mut self.superseded_preset_applied);
         if let Some(message) = error {
+            if self.state_restores.is_empty()
+                && restore.later_edits.is_empty()
+                && self.capturing_state_with_parameter_bases()
+            {
+                // There is no successfully restored state to snapshot.
+                self.snapshot_due = None;
+            }
             if mismatched_preset {
                 self.fail(
                     FailReason::LoadFailed(format!(
