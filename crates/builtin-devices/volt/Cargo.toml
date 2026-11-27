@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 komponist-device-dsp.workspace = true
 klang-dsp.workspace = true
+klang-synth.workspace = true
 komponist-device-core.workspace = true
 komponist-i18n.workspace = true
 komponist-model.workspace = true

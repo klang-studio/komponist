@@ -694,6 +694,27 @@ fn lfo_shapes_fade_and_unipolar() {
     assert!((2..=5).contains(&distinct.len()), "{}", distinct.len());
 }
 
+/// The `Shape` parameter's indices (and so every preset) keep their meaning on the
+/// `klang_synth` core; the render digests use no saw, so this pins saw up against saw down.
+#[test]
+fn lfo_shape_indices_map_to_the_klang_synth_shapes() {
+    use super::lfo::Lfo;
+    use klang_synth::Shape;
+    let expected = [
+        (0, Shape::Sine),
+        (1, Shape::Triangle),
+        (2, Shape::SawUp),
+        (3, Shape::Square),
+        (4, Shape::SampleHold),
+        (5, Shape::SmoothRandom),
+        (6, Shape::SmoothRandom),
+        (usize::MAX, Shape::SmoothRandom),
+    ];
+    for (index, shape) in expected {
+        assert_eq!(Lfo::shape(index), shape, "index {index}");
+    }
+}
+
 // ------------------------------------------------------------------------------------------------
 // Matrix and the wheels
 
