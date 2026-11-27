@@ -2,7 +2,7 @@
 //! digests (FNV-1a over the output bits) of LFO-heavy setups and presets, committed for the
 //! reference platform (Linux x86_64); elsewhere they are printed and not compared. Every block
 //! split (1, 31, 32, 33, 64, 256, irregular) must give the same bits; that is checked on every
-//! platform. surf runs volt's engine, so volt's tests hold the differential oracle of the LFO.
+//! platform. surf runs volt's engine, so it follows volt's LFO (`klang_synth::CyclicLfo`, #361).
 
 use komponist_device_core::InternalProcessor;
 use komponist_device_dsp::va_curve::{dst, src};

@@ -1,11 +1,11 @@
 //! Helpers for the LFO baseline of #358, shared by volt's and surf's tests (surf includes this
-//! file with `#[path]`): a deterministic script generator, the block splits, the render digest
-//! and its comparison with the committed reference.
+//! file with `#[path]`): the block splits, the render digest and its comparison with the
+//! committed reference.
 
 use komponist_processor::EventKind;
 
-/// A small deterministic generator for the test scripts (splitmix64), independent of the RNG the
-/// devices use.
+/// A small deterministic generator for the irregular splits (splitmix64), independent of the RNG
+/// the devices use.
 pub(crate) struct Dice(pub(crate) u64);
 
 impl Dice {
@@ -20,11 +20,6 @@ impl Dice {
     /// Uniform in `1..=max`.
     pub(crate) fn size(&mut self, max: usize) -> usize {
         1 + (self.next() % max as u64) as usize
-    }
-
-    /// Uniform in 0..1.
-    pub(crate) fn unit(&mut self) -> f32 {
-        (self.next() >> 40) as f32 / (1u64 << 24) as f32
     }
 }
 
