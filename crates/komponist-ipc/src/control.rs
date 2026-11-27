@@ -79,6 +79,8 @@ use rustix::net::{
     RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendAncillaryBuffer,
     SendAncillaryMessage, recvmsg, sendmsg,
 };
+use std::num::NonZeroU32;
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -108,7 +110,7 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 24 (#285) returns the parameter IDs a device reset while preparing a file edit.
 /// 25 (#336) carries layout descriptors for the single current CLAP layout contract.
 /// 27 (#344) forwards the plug-in's own preset loads reported through CLAP preset-load.
-pub const PROTOCOL_VERSION: u32 = 28;
+pub const PROTOCOL_VERSION: u32 = 29;
 
 /// Maximum number of parameter bases that can follow an active state restore.
 pub const MAX_STATE_PARAMETER_BASES: usize = crate::shm::INPUT_EVENT_CAPACITY;
@@ -412,6 +414,12 @@ pub enum ControlMsg {
         /// Plain value.
         value: f64,
     },
+    /// A persistent host edit, tagged so a subsequent preset report can supersede it.
+    SetParamEdit {
+        id: u32,
+        value: f64,
+        serial: NonZeroU32,
+    },
     /// Open the plugin GUI in `GuiTarget`. Answer: `GuiOpened` or `Error`.
     OpenGui(GuiTarget),
     /// The frame window resized the GUI area (answer to `GuiSizeRequest`, or user resize). For a
@@ -640,7 +648,14 @@ pub enum BridgeMsg {
     PresetReported(crate::clap_presets::PresetReport),
     /// Every parameter value right after a load the plug-in reported (not at startup): the new
     /// persistent bases. Sent before any later state answer.
-    PresetValues(Vec<ParamValue>),
+    PresetValues(ReportedPresetValues),
+}
+
+/// Current values and manual writes that had already been delivered when a preset was reported.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportedPresetValues {
+    pub values: Vec<ParamValue>,
+    pub superseded: Vec<(u32, NonZeroU32)>,
 }
 
 /// Project states and parameter values from one successful preset load.
@@ -1959,6 +1974,11 @@ mod tests {
                 text: "Focus".into(),
             },
             ControlMsg::SetParam { id: 3, value: -0.5 },
+            ControlMsg::SetParamEdit {
+                id: 4,
+                value: 0.5,
+                serial: NonZeroU32::new(7).unwrap(),
+            },
             ControlMsg::OpenGui(GuiTarget::X11Child {
                 xid: 0x0400_0007,
                 scale: 1.5,
@@ -2155,12 +2175,16 @@ mod tests {
                     load_key: Some(vec![0xff, 42]),
                 },
                 startup: true,
+                epoch: 3,
             }),
-            BridgeMsg::PresetValues(vec![ParamValue {
-                id: 3,
-                value: 0.5,
-                text: "50 %".into(),
-            }]),
+            BridgeMsg::PresetValues(ReportedPresetValues {
+                values: vec![ParamValue {
+                    id: 3,
+                    value: 0.5,
+                    text: "50 %".into(),
+                }],
+                superseded: vec![(3, NonZeroU32::new(8).unwrap())],
+            }),
             BridgeMsg::PresetReported(crate::clap_presets::PresetReport::Failed {
                 source: crate::clap_presets::ClapPresetSource {
                     location: crate::clap_presets::ClapPresetLocation::Plugin,

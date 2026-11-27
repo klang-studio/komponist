@@ -271,6 +271,11 @@ pub trait HostedPlugin {
         Vec::new()
     }
 
+    /// Advances when this instance reports a successful load on the CLAP host's main thread.
+    fn preset_load_epoch(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicU64>> {
+        None
+    }
+
     /// Loads a preset through the provider's opaque CLAP preset source on the main thread.
     fn load_clap_preset(
         &mut self,

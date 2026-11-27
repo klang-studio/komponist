@@ -33,6 +33,7 @@ use std::ffi::{CStr, CString};
 #[cfg(unix)]
 use std::os::fd::RawFd;
 use std::path::Path;
+use std::sync::{Arc, atomic::AtomicU64};
 
 use clack_extensions::audio_ports::PluginAudioPorts;
 use clack_extensions::gui::{
@@ -795,6 +796,14 @@ impl HostedPlugin for ClapPlugin {
                 reason.map_or_else(|| error.to_string(), |reason| format!("{error}: {reason}")),
             )
         })
+    }
+
+    fn preset_load_epoch(&self) -> Option<Arc<AtomicU64>> {
+        Some(
+            self.instance
+                .borrow()
+                .access_shared_handler(|host| Arc::clone(&host.preset_load_epoch)),
+        )
     }
 
     fn take_preset_reports(&mut self) -> Vec<PresetReport> {

@@ -43,7 +43,11 @@ use std::sync::{Arc, Weak, mpsc};
 use std::time::{Duration, Instant};
 
 use komponist_ipc::clap_presets::{ClapPresetSource, PresetLoad, PresetReport};
-use komponist_ipc::control::{AppliedClapPreset, PROTOCOL_VERSION, StateRestoreError, socket_pair};
+use std::num::NonZeroU32;
+
+use komponist_ipc::control::{
+    AppliedClapPreset, PROTOCOL_VERSION, ReportedPresetValues, StateRestoreError, socket_pair,
+};
 use komponist_ipc::device_assets::{MAX_BINDINGS_BYTES, OfflineRequest, Snapshot, edit_state};
 use komponist_ipc::waveform_markers::{self, EditResult, EditStatus};
 use komponist_ipc::{
@@ -202,7 +206,7 @@ struct StateRestore {
     later_edits: BTreeSet<u32>,
     /// The latest plugin-side load superseded only if the document restore changes the plugin.
     report: Option<ClapPresetSource>,
-    preset_values: Vec<ParamValue>,
+    preset_values: Option<ReportedPresetValues>,
 }
 
 #[derive(Debug)]
@@ -242,7 +246,7 @@ impl StateRestore {
             request,
             later_edits: BTreeSet::new(),
             report: None,
-            preset_values: Vec::new(),
+            preset_values: None,
         }
     }
 }
@@ -318,6 +322,7 @@ pub(crate) struct Bridge {
     automated_params: BTreeMap<u32, Option<f64>>,
     temporary_params: BTreeSet<u32>,
     pending_params: BTreeSet<u32>,
+    pending_param_serials: BTreeMap<u32, NonZeroU32>,
     /// Macro outputs expected at the processor. The native editor may show a preview meanwhile.
     macro_params: BTreeMap<u32, f64>,
     /// Last macro values that became the ordinary parameter base on unmapping.
@@ -483,6 +488,7 @@ impl Bridge {
             automated_params: BTreeMap::new(),
             temporary_params: BTreeSet::new(),
             pending_params: BTreeSet::new(),
+            pending_param_serials: BTreeMap::new(),
             macro_params: BTreeMap::new(),
             released_macro_params: BTreeSet::new(),
             macro_changed: false,
@@ -1123,12 +1129,12 @@ impl Bridge {
     }
 
     /// Sends `SetParam` and keeps the value (its text follows with the bridge's echo).
-    pub(crate) fn set_param(&mut self, id: u32, value: f64) {
+    pub(crate) fn set_param_edit(&mut self, id: u32, value: f64, serial: NonZeroU32) {
         if self.phase != Phase::Running {
             return;
         }
-        self.send(ControlMsg::SetParam { id, value });
-        self.edited_param(id, value);
+        self.send(ControlMsg::SetParamEdit { id, value, serial });
+        self.edited_param_on_render(id, value, serial);
     }
 
     /// Updates the live cache without retaining a temporary value as a document edit.
@@ -1194,6 +1200,7 @@ impl Bridge {
             {
                 // An explicit new mapping supersedes a manual write to the same target.
                 self.pending_params.remove(id);
+                self.pending_param_serials.remove(id);
                 self.released_macro_params.remove(id);
             }
         }
@@ -1314,6 +1321,7 @@ impl Bridge {
         self.invalidate_waveform_markers();
         self.last_state = Some(state.clone());
         self.pending_params.clear();
+        self.pending_param_serials.clear();
         self.released_macro_params.clear();
         self.invalidate_state_requests();
         self.assets.begin_restore();
@@ -1716,6 +1724,7 @@ impl Bridge {
                         self.temporary_params.clear();
                     }
                     self.pending_params.clear();
+                    self.pending_param_serials.clear();
                     self.released_macro_params.clear();
                 }
                 self.macro_changed = false;
@@ -1756,6 +1765,7 @@ impl Bridge {
                 let ids: BTreeSet<_> = params.iter().map(|param| param.id).collect();
                 self.temporary_params.retain(|id| ids.contains(id));
                 self.pending_params.retain(|id| ids.contains(id));
+                self.pending_param_serials.retain(|id, _| ids.contains(id));
                 self.macro_params.retain(|id, _| ids.contains(id));
                 self.released_macro_params.retain(|id| ids.contains(id));
                 self.automated_params.retain(|id, _| ids.contains(id));
@@ -1853,7 +1863,9 @@ impl Bridge {
             BridgeMsg::PresetReported(report) => {
                 if matches!(self.phase, Phase::Loading | Phase::Running) {
                     match report {
-                        PresetReport::Loaded { source, startup } => {
+                        PresetReport::Loaded {
+                            source, startup, ..
+                        } => {
                             self.accept_preset_report(source, startup, events);
                         }
                         PresetReport::Failed { message, .. } => {
@@ -2080,6 +2092,8 @@ impl Bridge {
                         .expect("pending preset")
                         .later_edits;
                     self.pending_params.retain(|id| later_edits.contains(id));
+                    self.pending_param_serials
+                        .retain(|id, _| later_edits.contains(id));
                     self.released_macro_params
                         .retain(|id| later_edits.contains(id));
                     self.user_changed();
@@ -2125,7 +2139,7 @@ impl Bridge {
             if let Some(index) = self.document_restore_index() {
                 let restore = &mut self.state_restores[index];
                 restore.report = Some(source);
-                restore.preset_values.clear();
+                restore.preset_values = None;
                 return;
             }
             self.user_changed();
@@ -2142,21 +2156,28 @@ impl Bridge {
 
     fn accept_preset_values(
         &mut self,
-        values: Vec<ParamValue>,
+        reported: ReportedPresetValues,
         events: &mut Vec<PluginManagerEvent>,
     ) {
         if let Some(index) = self.document_restore_index() {
-            self.state_restores[index].preset_values = values;
+            self.state_restores[index].preset_values = Some(reported);
             return;
+        }
+        for (id, serial) in reported.superseded {
+            if self.pending_param_serials.get(&id) == Some(&serial) {
+                self.pending_params.remove(&id);
+                self.pending_param_serials.remove(&id);
+            }
         }
         // Playback may have changed the values of controls it currently owns. A lane with
         // no current value leaves its control at the reported preset's base.
-        for value in values {
-            if !self.params.iter().any(|param| param.id == value.id) {
+        for value in reported.values {
+            if !self.params.iter().any(|param| param.id == value.id)
+                || self.pending_params.contains(&value.id)
+            {
                 continue;
             }
-            if !self.pending_params.contains(&value.id)
-                && !matches!(self.automated_params.get(&value.id), Some(Some(_)))
+            if !matches!(self.automated_params.get(&value.id), Some(Some(_)))
                 && !self.macro_params.contains_key(&value.id)
             {
                 self.base_values.insert(value.id, value.value);
@@ -2253,8 +2274,8 @@ impl Bridge {
                 }
             } else {
                 self.accept_preset_report(source, false, events);
-                if !restore.preset_values.is_empty() {
-                    self.accept_preset_values(restore.preset_values, events);
+                if let Some(values) = restore.preset_values {
+                    self.accept_preset_values(values, events);
                 }
             }
         }
@@ -2296,6 +2317,14 @@ impl Bridge {
 
     /// Updates the cached value and schedules a snapshot for a user's edit.
     pub(crate) fn edited_param(&mut self, id: u32, value: f64) {
+        self.record_param_edit(id, value, None);
+    }
+
+    pub(crate) fn edited_param_on_render(&mut self, id: u32, value: f64, serial: NonZeroU32) {
+        self.record_param_edit(id, value, Some(serial));
+    }
+
+    fn record_param_edit(&mut self, id: u32, value: f64, serial: Option<NonZeroU32>) {
         if self.phase != Phase::Running || !self.params.iter().any(|param| param.id == id) {
             return;
         }
@@ -2309,8 +2338,13 @@ impl Bridge {
         // The engine reports a persistent edit only after ownership returns to the user.
         // Keep verification pending while that edit replaces the previous override.
         let replaced_override = self.temporary_params.remove(&id);
-        if replaced_override || self.base_values.get(&id) != Some(&value) {
+        if serial.is_some() || replaced_override || self.base_values.get(&id) != Some(&value) {
             self.pending_params.insert(id);
+            if let Some(serial) = serial {
+                self.pending_param_serials.insert(id, serial);
+            } else {
+                self.pending_param_serials.remove(&id);
+            }
             self.invalidate_state_requests();
         }
         self.base_values.insert(id, value);

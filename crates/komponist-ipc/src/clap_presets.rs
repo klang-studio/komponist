@@ -52,6 +52,8 @@ pub enum PresetReport {
     Loaded {
         source: ClapPresetSource,
         startup: bool,
+        /// Per-instance ordering boundary for successful manual parameter delivery.
+        epoch: u64,
     },
     /// `clap_host_preset_load.on_error`: loading this preset failed.
     Failed {

@@ -14,6 +14,7 @@ use std::ffi::CStr;
 use std::os::fd::RawFd;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::ThreadId;
 use std::time::Duration;
 
@@ -96,6 +97,7 @@ impl HostHandlers for KpHost {
 pub(crate) struct SharedHost {
     notify: Arc<dyn HostNotify>,
     main_thread: ThreadId,
+    pub(crate) preset_load_epoch: Arc<AtomicU64>,
 }
 
 impl SharedHost {
@@ -103,6 +105,7 @@ impl SharedHost {
         SharedHost {
             notify,
             main_thread,
+            preset_load_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -472,9 +475,15 @@ impl HostPresetLoadImpl for MainThreadHost<'_> {
     }
 
     fn loaded(&self, location: Location, load_key: Option<&CStr>) {
+        let epoch = self
+            .shared
+            .preset_load_epoch
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
         self.report_preset(PresetReport::Loaded {
             source: preset_source(location, load_key),
             startup: self.starting.get(),
+            epoch,
         });
     }
 }
@@ -501,6 +510,7 @@ mod tests {
         let loaded = PresetReport::Loaded {
             source: source("loaded"),
             startup: false,
+            epoch: 1,
         };
         let mut reports = vec![loaded.clone()];
         for index in 0..2 * MAX_PRESET_REPORTS {
@@ -519,6 +529,7 @@ mod tests {
         loads[0] = PresetReport::Loaded {
             source: source("first"),
             startup: false,
+            epoch: 1,
         };
         push_bounded(&mut loads, loaded.clone());
         assert!(loads.iter().all(|report| *report == loaded));

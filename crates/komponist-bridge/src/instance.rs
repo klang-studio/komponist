@@ -57,7 +57,9 @@ use komponist_hosting::{
     TimerId,
 };
 use komponist_ipc::clap_presets::PresetReport;
-use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError};
+use std::num::NonZeroU32;
+
+use komponist_ipc::control::{PROTOCOL_VERSION, ReportedPresetValues, StateRestoreError};
 use komponist_ipc::shm::MAX_BLOCK;
 use komponist_ipc::{
     BridgeChannel, BridgeMsg, BridgeServer, BridgeState, ChannelError, ControlMsg, ErrorContext,
@@ -225,6 +227,7 @@ struct Bridge {
     last_save: Duration,
     initial_activation: bool,
     startup_state_restored: bool,
+    durable_edits: BTreeMap<u32, crate::rt::ParamEditStamp>,
     controller_due: Option<Instant>,
     controller_sent: Option<Instant>,
     shutdown: bool,
@@ -265,6 +268,7 @@ impl Bridge {
             last_save: Duration::ZERO,
             initial_activation: true,
             startup_state_restored: false,
+            durable_edits: BTreeMap::new(),
             controller_due: None,
             controller_sent: None,
             shutdown: false,
@@ -618,7 +622,7 @@ impl Bridge {
     }
 
     /// Every parameter's current value at once, outside the coalesced value updates.
-    fn send_loaded_values(&mut self) {
+    fn send_loaded_values(&mut self, epoch: u64) {
         let Some(plugin) = self.plugin.as_ref() else {
             return;
         };
@@ -634,9 +638,20 @@ impl Bridge {
                 })
             })
             .collect();
+        let mut delivery = self.durable_edits.clone();
+        if let Some(active) = &self.active {
+            delivery.extend(active.rt.durable_deliveries());
+        }
+        let superseded = delivery
+            .into_iter()
+            .filter_map(|(id, stamp)| Some((id, stamp.superseded_by(epoch)?)))
+            .collect();
         self.pending_values.clear();
         self.values_due = None;
-        self.send(BridgeMsg::PresetValues(values));
+        self.send(BridgeMsg::PresetValues(ReportedPresetValues {
+            values,
+            superseded,
+        }));
     }
 
     fn report_presets(&mut self) {
@@ -649,17 +664,19 @@ impl Bridge {
     }
 
     fn send_preset_reports(&mut self, reports: Vec<PresetReport>) {
-        let mut loaded = false;
+        let mut loaded_epoch = None;
         for mut report in reports {
-            if let PresetReport::Loaded { startup, .. } = &mut report {
+            if let PresetReport::Loaded { startup, epoch, .. } = &mut report {
                 *startup |= self.initial_activation;
-                loaded |= !*startup;
+                if !*startup {
+                    loaded_epoch = Some(*epoch);
+                }
             }
             self.send(BridgeMsg::PresetReported(report));
         }
-        if loaded {
+        if let Some(epoch) = loaded_epoch {
             // The reported values belong to the last load in the batch.
-            self.send_loaded_values();
+            self.send_loaded_values(epoch);
         }
     }
 
@@ -958,7 +975,10 @@ impl Bridge {
                 });
                 self.send(BridgeMsg::ParamTextParsed { request, id, value });
             }
-            ControlMsg::SetParam { id, value } => self.set_param(id, value),
+            ControlMsg::SetParam { id, value } => self.set_param(id, value, None),
+            ControlMsg::SetParamEdit { id, value, serial } => {
+                self.set_param(id, value, Some(serial))
+            }
             ControlMsg::OpenGui(target) => self.open_gui(target),
             ControlMsg::SetGuiSize(size) => {
                 #[cfg(bridge_frame)]
@@ -1400,6 +1420,7 @@ impl Bridge {
                 load()
             };
             if superseded {
+                self.durable_edits.clear();
                 earlier_reports.retain(|report| matches!(report, PresetReport::Failed { .. }));
                 // Old coalesced values must not follow the authoritative state report.
                 self.pending_values.clear();
@@ -1460,6 +1481,7 @@ impl Bridge {
             load().0
         };
         if result.is_ok() {
+            self.durable_edits.clear();
             // Values coalesced before the load must not overwrite the preset's reported values.
             self.pending_values.clear();
             self.values_due = None;
@@ -1616,14 +1638,14 @@ impl Bridge {
         self.send(BridgeMsg::WaveformMarkersEdited(request, result));
     }
 
-    fn set_param(&mut self, id: u32, value: f64) {
+    fn set_param(&mut self, id: u32, value: f64, serial: Option<NonZeroU32>) {
         let Some(plugin) = self.plugin.as_mut() else {
             return self.error(ErrorContext::Params, "no plugin loaded");
         };
         let mut out = Vec::new();
         match self.active.as_mut() {
             Some(active) => {
-                if !active.rt.set_param(id, value) {
+                if !active.rt.set_param_edit(id, value, serial) {
                     return self.error(
                         ErrorContext::Params,
                         format!("parameter queue full, value {value} of {id} dropped"),
@@ -1640,6 +1662,15 @@ impl Bridge {
                     &[WireEvent::new(0, WireEventKind::ParamValue { id, value })],
                     &mut out,
                 );
+                if let (Some(serial), Some(epoch)) = (serial, plugin.preset_load_epoch()) {
+                    self.durable_edits.insert(
+                        id,
+                        crate::rt::ParamEditStamp::new(
+                            serial,
+                            epoch.load(std::sync::atomic::Ordering::Acquire),
+                        ),
+                    );
+                }
             }
         }
         self.queue_flushed(&out);
@@ -1733,15 +1764,21 @@ impl Bridge {
                     self.notify.clone(),
                 ))
             });
-        let (rt, report) =
-            match RtThread::start(server, processor, rt_config, controller, param_ids) {
-                Ok(started) => started,
-                Err(failure) => {
-                    plugin.deactivate(failure.processor);
-                    self.report_rt_priority(&failure.report);
-                    return Err(failure.error);
-                }
-            };
+        let (rt, report) = match RtThread::start(
+            server,
+            processor,
+            rt_config,
+            controller,
+            param_ids,
+            plugin.preset_load_epoch(),
+        ) {
+            Ok(started) => started,
+            Err(failure) => {
+                plugin.deactivate(failure.processor);
+                self.report_rt_priority(&failure.report);
+                return Err(failure.error);
+            }
+        };
         let latency = plugin.latency();
         self.region.set_latency(latency);
         self.region.set_bridge_state(BridgeState::Active);
@@ -1807,7 +1844,8 @@ impl Bridge {
         // From now on the app's `begin_block` returns `NotActive`.
         self.region.set_bridge_state(BridgeState::Loaded);
         let controller = active.rt.controller();
-        let (processor, leftover) = active.rt.stop();
+        let stopped = active.rt.stop();
+        self.durable_edits.extend(stopped.durable);
         self.controller_due = None;
         if let Some(controller) = &controller {
             // The thread can have published a final value after the last main-loop deadline.
@@ -1816,14 +1854,21 @@ impl Bridge {
         let Some(plugin) = self.plugin.as_mut() else {
             return;
         };
-        plugin.deactivate(processor);
+        plugin.deactivate(stopped.processor);
         let mut out = Vec::new();
-        if !leftover.is_empty() {
-            let events: Vec<WireEvent> = leftover
-                .iter()
-                .map(|&(id, value)| WireEvent::new(0, WireEventKind::ParamValue { id, value }))
-                .collect();
-            plugin.flush_params(&events, &mut out);
+        if !stopped.queued.is_empty() {
+            plugin.flush_params(&stopped.queued, &mut out);
+            if let Some(epoch) = plugin.preset_load_epoch() {
+                let epoch = epoch.load(std::sync::atomic::Ordering::Acquire);
+                for event in &stopped.queued {
+                    if let Some(serial) = NonZeroU32::new(event.reserved) {
+                        self.durable_edits.insert(
+                            event.param_id,
+                            crate::rt::ParamEditStamp::new(serial, epoch),
+                        );
+                    }
+                }
+            }
         }
         self.queue_flushed(&out);
     }

@@ -356,6 +356,7 @@ fn community_clap_discovers_loads_and_round_trips_a_preset() {
         [PresetReport::Loaded {
             source: preset.source.clone(),
             startup: true,
+            epoch: 1,
         }]
     );
     plugin.load_clap_preset(preset).unwrap();
@@ -388,6 +389,10 @@ fn community_clap_discovers_loads_and_round_trips_a_preset() {
         [PresetReport::Loaded {
             source: preset.source.clone(),
             startup: false,
+            epoch: plugin
+                .preset_load_epoch()
+                .unwrap()
+                .load(std::sync::atomic::Ordering::Acquire),
         }]
     );
     assert_eq!(plugin.save_state().unwrap(), [42]);
@@ -405,6 +410,10 @@ fn community_clap_discovers_loads_and_round_trips_a_preset() {
         [PresetReport::Loaded {
             source: preset.source.clone(),
             startup: false,
+            epoch: plugin
+                .preset_load_epoch()
+                .unwrap()
+                .load(std::sync::atomic::Ordering::Acquire),
         }]
     );
     assert_eq!(plugin.take_preset_reports(), []);
