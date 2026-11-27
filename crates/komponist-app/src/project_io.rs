@@ -857,30 +857,32 @@ impl App {
         // mistaken for a persisted plugin value.
         self.drain_events();
         self.engine.refresh_snapshot_automation(self.doc.project());
+        let edit_revision = self.param_undo.live_edit_revision();
         let mut outcome = self
             .engine
             .host_mut()
             .snapshot_for_save(crate::app::SNAPSHOT_TIMEOUT);
         let before_capture_events = self.device_events().len();
         self.drain_events();
-        // A report can arrive between the host's last capture poll and this drain. We
-        // cannot prove which side of that report a returned snapshot was taken on.
-        for event in &self.device_events()[before_capture_events..] {
-            if let PluginManagerEvent::ClapPresetLoaded { device, .. }
-            | PluginManagerEvent::ClapPresetReported {
-                device,
-                startup: false,
-                ..
-            } = event
-                && outcome
-                    .captured
-                    .iter()
-                    .any(|(captured, _)| captured == device)
-                && !outcome.blocked.contains(device)
-            {
+        // Events can arrive between the host's last capture poll and this drain. Keep a
+        // newer committed edit or preset report from being overwritten by older bytes.
+        outcome
+            .blocked
+            .extend(self.param_undo.devices_edited_after(edit_revision));
+        for (device, _) in &outcome.captured {
+            let reported = self.device_events()[before_capture_events..].iter().any(|event| {
+                matches!(event,
+                    PluginManagerEvent::ClapPresetLoaded { device: loaded, .. }
+                    | PluginManagerEvent::ClapPresetReported { device: loaded, startup: false, .. }
+                    if loaded == device
+                )
+            });
+            if reported {
                 outcome.blocked.push(*device);
             }
         }
+        outcome.blocked.sort_unstable();
+        outcome.blocked.dedup();
         outcome
             .captured
             .retain(|(device, _)| !outcome.blocked.contains(device));

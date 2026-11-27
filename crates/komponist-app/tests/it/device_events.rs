@@ -59,6 +59,8 @@ struct Script {
     snapshot_calls: usize,
     presets: Vec<(DeviceId, ClapPresetSource)>,
     restores: Vec<(DeviceId, Arc<[u8]>)>,
+    restored_bases: Vec<(DeviceId, u32, f64)>,
+    scripted_bases: HashMap<(DeviceId, u32), f64>,
     shut_down: bool,
 }
 
@@ -235,6 +237,20 @@ impl DeviceHost for FakeHost {
         true
     }
 
+    fn restore_saved_state(
+        &mut self,
+        device: DeviceId,
+        state: &komponist_model::project::SavedPluginState,
+    ) -> bool {
+        self.script.borrow_mut().restored_bases.extend(
+            state
+                .parameter_bases
+                .iter()
+                .map(|(&id, &value)| (device, id, value)),
+        );
+        self.set_state(device, &state.bytes)
+    }
+
     fn start_scan(&mut self, dirs: &PluginDirs) {
         self.script.borrow_mut().scans.push(dirs.clone());
     }
@@ -245,6 +261,9 @@ impl DeviceHost for FakeHost {
     }
 
     fn param_base(&self, device: DeviceId, id: u32) -> Option<f64> {
+        if let Some(&value) = self.script.borrow().scripted_bases.get(&(device, id)) {
+            return Some(value);
+        }
         let gui = self
             .gui
             .as_ref()
@@ -1049,12 +1068,15 @@ fn a_parameter_edit_waits_behind_a_pending_preset_without_a_gesture() {
         },
     );
     app.step();
+    script.borrow_mut().scripted_bases.insert((device, 3), 0.25);
     app.dispatch(Action::Plugin(PluginAction::SetParam {
         device,
         id: 3,
         value: 0.75,
     }));
-    snapshot(&script, device, &[1]);
+    // The plugin has accepted the later edit by the time it serializes the opaque state.
+    let opaque = 0.75_f64.to_ne_bytes();
+    snapshot(&script, device, &opaque);
     app.step();
 
     let marked = app.project().find_device(device).unwrap().2;
@@ -1069,7 +1091,12 @@ fn a_parameter_edit_waits_behind_a_pending_preset_without_a_gesture() {
     app.dispatch(Action::Edit(EditAction::Undo));
     let loaded = app.project().find_device(device).unwrap().2;
     assert_eq!(loaded.preset, Some(DevicePreset::loaded(source)));
-    assert!(loaded.parameter_bases.is_empty());
+    assert_eq!(loaded.parameter_bases.get(&3), Some(&0.25));
+    assert_eq!(script.borrow().restores.last().unwrap().1.as_ref(), &opaque);
+    assert_eq!(
+        script.borrow().restored_bases.last(),
+        Some(&(device, 3, 0.25))
+    );
 }
 
 #[test]

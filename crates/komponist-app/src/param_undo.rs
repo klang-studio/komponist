@@ -110,6 +110,8 @@ pub(crate) struct ParamUndo {
     echo: HashMap<DeviceId, Instant>,
     /// Device edits that cannot yet enter another gesture's undo step.
     deferred: Vec<DeferredPluginEdit>,
+    live_edit_revision: u64,
+    live_device_edits: HashMap<DeviceId, u64>,
     /// Bridged devices whose first snapshot is asked for as a baseline (their document state is
     /// still `None`).
     awaiting: BTreeSet<DeviceId>,
@@ -290,6 +292,8 @@ impl Default for ParamUndo {
             tails: HashMap::new(),
             echo: HashMap::new(),
             deferred: Vec::new(),
+            live_edit_revision: 0,
+            live_device_edits: HashMap::new(),
             awaiting: BTreeSet::new(),
             baseline: HashMap::new(),
         }
@@ -299,6 +303,19 @@ impl Default for ParamUndo {
 impl ParamUndo {
     pub(crate) fn deferred_edits(&self) -> &[DeferredPluginEdit] {
         &self.deferred
+    }
+
+    pub(crate) fn live_edit_revision(&self) -> u64 {
+        self.live_edit_revision
+    }
+
+    pub(crate) fn devices_edited_after(
+        &self,
+        revision: u64,
+    ) -> impl Iterator<Item = DeviceId> + '_ {
+        self.live_device_edits
+            .iter()
+            .filter_map(move |(&device, &edit)| (edit > revision).then_some(device))
     }
 
     pub(crate) fn has_pending_text(&self) -> bool {
@@ -366,6 +383,7 @@ impl ParamUndo {
         self.tails.remove(&device);
         self.echo.remove(&device);
         self.deferred.retain(|edit| edit.device != device);
+        self.live_device_edits.remove(&device);
         self.awaiting.remove(&device);
         self.baseline.remove(&device);
     }
@@ -647,6 +665,7 @@ impl App {
         {
             return;
         }
+        let loaded_base = self.base_at_pending_preset(device, id);
         let bridged = if let Some(slot) = slot
             && let Some(serial) = self
                 .engine
@@ -666,7 +685,7 @@ impl App {
         if bridged {
             self.remember_param_edit(device, id);
             let label = self.param_label(device, id);
-            self.mark_preset_modified(device, &label, (id, value));
+            self.mark_preset_modified(device, &label, (id, value), loaded_base);
             self.param_undo
                 .turned
                 .insert(device, (label, Instant::now()));
@@ -761,12 +780,44 @@ impl App {
             .is_ok()
     }
 
+    /// The host's reported parameter base before a later edit reaches the instance.
+    pub(crate) fn base_at_pending_preset(&self, device: DeviceId, id: u32) -> Option<f64> {
+        if !self.param_undo.has_pending_report(device) {
+            return None;
+        }
+        self.engine
+            .host()
+            .param_base(device, id)
+            .filter(|value| value.is_finite())
+    }
+
     /// The first parameter edit after a preset load marks the preset as modified (module docs):
     /// inside the open gesture, or as a step named `label` that the plugin's snapshot of the edit
     /// amends. The plugin is asked for that snapshot at once, as at the end of a gesture.
-    pub(crate) fn mark_preset_modified(&mut self, device: DeviceId, label: &str, edit: (u32, f64)) {
+    pub(crate) fn mark_preset_modified(
+        &mut self,
+        device: DeviceId,
+        label: &str,
+        edit: (u32, f64),
+        loaded_base: Option<f64>,
+    ) {
         if !edit.1.is_finite() {
             return;
+        }
+        self.param_undo.live_edit_revision += 1;
+        self.param_undo
+            .live_device_edits
+            .insert(device, self.param_undo.live_edit_revision);
+        if let Some(value) = loaded_base
+            && let Some(pending) = self
+                .param_undo
+                .deferred
+                .iter_mut()
+                .find(|entry| entry.device == device && entry.pending())
+        {
+            // A later edit may already be audible by the time the opaque snapshot arrives.
+            // Undo of that edit restores the value the preset supplied for this parameter.
+            pending.bases.entry(edit.0).or_insert(value);
         }
         let deferred_preset = self
             .param_undo
