@@ -15,8 +15,8 @@ use komponist_i18n::{Lang, de};
 use komponist_model::{DeviceId, Project, TrackId};
 
 use crate::common::{
-    author_base, set_authored_param as set_param, shipped_plugin, step_for, step_until,
-    wait_for_layout,
+    author_base, author_parameter, author_wire_value, set_authored_param as set_param,
+    shipped_plugin, step_for, step_until, wait_for_layout,
 };
 use komponist_ipc::clap_presets::ClapPreset;
 
@@ -452,12 +452,48 @@ fn the_loaded_preset_survives_saving_and_reopening() {
 
 #[test]
 fn snapshot_of_the_eq_head_with_the_open_preset_dropdown() {
-    let (mut app, _, device) = app_with("eq");
-    let preset = presets(&app, device)[2].name.clone();
-    factory(&mut app, device, &preset);
-    set_param(&mut app, device, "out", 1.5);
+    let (defaults, track, device) = app_with("eq");
+    let preset = &presets(&defaults, device)[2].name;
+    let output = author_parameter(&defaults, device, "out");
+    let value = author_wire_value(&defaults, device, output, 1.5);
+    let host = App::headless_plugin_host();
+    let prepared = host
+        .manager()
+        .prepare_bundled_device(
+            "org.klang-studio.komponist.eq",
+            Some(preset),
+            &[("out", value)],
+            &[],
+        )
+        .unwrap();
+    let project = komponist_model::edits::set_saved_plugin_state(
+        defaults.project(),
+        device,
+        &komponist_model::project::SavedPluginState {
+            bytes: prepared.state.unwrap(),
+            parameter_bases: Default::default(),
+        },
+    )
+    .unwrap();
+    let project =
+        komponist_model::edits::set_device_preset(&project, device, prepared.preset).unwrap();
+    drop(defaults);
+    let mut app = App::headless(project);
+    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+        tracks: vec![track],
+        mode: SelectMode::Replace,
+    })));
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+    wait_for_layout(&mut app, device);
     let mut h = harness(app);
     h.run_steps(2);
+    assert_eq!(
+        card(&h, "EQ")
+            .get_by_role_and_label(Role::Slider, "Ausgang")
+            .value()
+            .as_deref(),
+        Some("+1.5 dB")
+    );
     open_menu(&mut h, "EQ");
     h.run_steps(4);
     let cpu = h

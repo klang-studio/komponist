@@ -16,7 +16,7 @@ use komponist_i18n::Lang;
 use komponist_model::DeviceId;
 use komponist_plugins::DeviceStatus;
 
-use crate::common::{instrument_project, set_authored_param, step_until};
+use crate::common::{author_wire_value, instrument_project, step_until};
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
@@ -67,10 +67,14 @@ fn drag(h: &mut Harness<'_, App>, from: Pos2, to: Pos2) {
 }
 
 fn app_with_hexa(preset: &str) -> (App, DeviceId) {
+    app_with_hexa_edits(preset, &[])
+}
+
+fn app_with_hexa_edits(preset: &str, edits: &[(&str, f64)]) -> (App, DeviceId) {
     let host = App::headless_plugin_host();
     let prepared = host
         .manager()
-        .prepare_bundled_device("org.klang-studio.komponist.hexa", Some(preset), &[], &[])
+        .prepare_bundled_device("org.klang-studio.komponist.hexa", Some(preset), edits, &[])
         .unwrap();
     let (mut project, track, device) = instrument_project("Synth", prepared.plugin.clone());
     Arc::make_mut(&mut project.tracks[0]).channel.devices[0] =
@@ -266,15 +270,19 @@ fn mask_cpu(h: &mut Harness<'_, App>) {
 
 #[test]
 fn snapshot_of_both_pages() {
-    let (mut app, device) = app_with_hexa("E-Piano");
-    // A modulated operator to look at: operator 2 selected, a slower envelope.
-    for (key, v) in [
+    // Set all three values as part of the CLAP state used to open the fixture.
+    let (defaults, device) = app_with_hexa("E-Piano");
+    let edits = [
         ("op2_attack", 0.08),
         ("op2_decay", 1.2),
         ("op2_sustain", 0.4),
-    ] {
-        set_authored_param(&mut app, device, key, v);
-    }
+    ]
+    .map(|(key, plain)| {
+        let id = parameter(&defaults, device, key);
+        (key, author_wire_value(&defaults, device, id, plain))
+    });
+    drop(defaults);
+    let (mut app, device) = app_with_hexa_edits("E-Piano", &edits);
     page(&mut app, device, 0);
     let mut h = harness(app);
     h.run_steps(2);
@@ -291,6 +299,7 @@ fn snapshot_of_both_pages() {
     results.extend_harness(&mut h);
     page_to(&mut h, device, 1);
     h.run_steps(30);
+    assert_eq!(slider_value(&h, "Attack 2"), "80 ms");
     mask_cpu(&mut h);
     h.snapshot("devices-hexa-envelopes-1x");
     results.extend_harness(&mut h);
