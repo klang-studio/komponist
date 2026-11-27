@@ -59,13 +59,9 @@ pub fn new_clip(
     track: &Track,
     at: Tick,
     view: &ArrangementView,
-    note_names: &[NoteName],
+    _note_names: &[NoteName],
 ) -> NewClip {
-    let rows = step_rows::is_sampler_track(track).then(|| {
-        let instrument = step_rows::instrument(track).map(|d| &d.plugin);
-        step_rows::rows_for_in(lang, instrument, note_names)
-    });
-    clip_for_rows(lang, project, track, at, view, rows)
+    clip_for_rows(lang, project, track, at, view, None)
 }
 
 /// A one-bar step clip for a pad bank or a MIDI clip for another instrument.

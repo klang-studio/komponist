@@ -111,15 +111,11 @@ impl App {
             );
             return;
         }
-        let preparation =
-            if let Some(state) = komponist_plugins::presets::legacy_state(&plugin, None, &source) {
-                Preparation::Ready(Ok(state))
-            } else if let Some(job) = self.engine.host().prepare_clap_preset(&plugin, &source) {
-                Preparation::Running(job)
-            } else {
-                self.set_status(self.lang.devices_preset_load_failed(), StatusKind::Error);
-                return;
-            };
+        let Some(job) = self.engine.host().prepare_clap_preset(&plugin, &source) else {
+            self.set_status(self.lang.devices_preset_load_failed(), StatusKind::Error);
+            return;
+        };
+        let preparation = Preparation::Running(job);
         self.preset_preparations.push(PendingPreset {
             preparation,
             plugin,

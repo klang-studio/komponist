@@ -1,7 +1,7 @@
 //! The compressor's static curve as plain `f64` math (WP-93): the gain computer with a soft knee
 //! and the auto-makeup reference.
 //!
-//! The device `presse` (`komponist-builtin`) runs the same formulas on `f32` per sample, and the
+//! The Presse plugin runs the same formulas on `f32` per sample, and the
 //! transfer graph in the device frame draws [`output_db`], so the curve on screen is the curve the
 //! device applies (Giannoulis, Massberg, Reiss: "Digital Dynamic Range Compressor Design", JAES
 //! 2012, the quadratic knee).

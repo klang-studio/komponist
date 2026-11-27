@@ -19,7 +19,6 @@ use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::{focus, icons, px, widgets};
 
 use super::{lanes, metrics as m};
-use crate::device_host::LegacyParameters;
 use crate::engine_sync::EngineSync;
 use crate::ui_state::ParamTouch;
 use crate::views::{ViewCtx, catalog_plugin_name, elided_galley};
@@ -202,14 +201,6 @@ impl<'a> Catalog<'a> {
     }
 
     fn device_targets(&self, device: &Device, name: &str) -> Vec<Target> {
-        if let Some(parameters) = LegacyParameters::new(device) {
-            return parameters
-                .all(self.lang)
-                .into_iter()
-                .filter(|p| p.info.automatable)
-                .map(|p| self.device_target(device, p.info, p.value, name))
-                .collect();
-        }
         let host = self.engine.host();
         host.params(device.id)
             .unwrap_or_default()
@@ -225,10 +216,6 @@ impl<'a> Catalog<'a> {
 
     /// Resolve just the visible lane's parameter. The full catalog is built when the chooser opens.
     fn device_param(&self, device: &Device, id: &ParamId) -> Option<(ParamInfo, f64)> {
-        if let Some(parameters) = LegacyParameters::new(device) {
-            let p = parameters.get(self.lang, id)?;
-            return Some((p.info, p.value));
-        }
         let wire = id.plugin_id()?;
         let host = self.engine.host();
         let param = host

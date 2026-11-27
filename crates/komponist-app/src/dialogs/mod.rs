@@ -465,10 +465,6 @@ impl crate::App {
                 }
             }
             Some(Dialog::MissingPlugins(missing)) => {
-                // The missing samples are read from the project every frame: a sample that was
-                // found leaves the list.
-                let samples =
-                    missing_plugins::missing_samples(self.project(), self.project_dir().as_deref());
                 let audio =
                     missing_plugins::missing_audio(self.project(), self.project_dir().as_deref());
                 let assets = missing_plugins::missing_assets(
@@ -477,19 +473,13 @@ impl crate::App {
                     self.project_dir().as_deref(),
                     self.engine.host().catalog(),
                 );
-                if missing.is_empty() && samples.is_empty() && audio.is_empty() && assets.is_empty()
-                {
+                if missing.is_empty() && audio.is_empty() && assets.is_empty() {
                     self.queue.push(Action::Project(
                         crate::actions::ProjectAction::ContinueWithMissing,
                     ));
                     return;
                 }
-                let model = missing_plugins::with_samples(
-                    self.lang,
-                    missing_plugins::model(self.lang, self.project(), &missing),
-                    self.project(),
-                    &samples,
-                );
+                let model = missing_plugins::model(self.lang, self.project(), &missing);
                 let mut model =
                     missing_plugins::with_audio(self.lang, model, self.project(), &audio);
                 model.assets = assets;
@@ -506,12 +496,6 @@ impl crate::App {
                         }
                         missing_plugins::Output::CheckFolders => {
                             Action::Project(crate::actions::ProjectAction::CheckPluginFolders)
-                        }
-                        missing_plugins::Output::Search(device, pad) => {
-                            Action::Plugin(crate::actions::PluginAction::PickPluginAsset {
-                                device,
-                                slot: pad as u32,
-                            })
                         }
                         missing_plugins::Output::SearchAsset(device, slot) => {
                             Action::Plugin(crate::actions::PluginAction::PickPluginAsset {

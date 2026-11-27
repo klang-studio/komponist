@@ -5,7 +5,7 @@
 //! Every table is original and generated from a formula, there are no sample files. A recipe is
 //! either a **spectrum** (the signed amplitude and phase of harmonic `k` at position `p`, for
 //! `sin(2π·k·x + phase)`) or a **shape** (the waveform itself at phase `x`). The DSP
-//! (`komponist_surf::bank`) builds band-limited levels from the recipes with an FFT; the graph draws
+//! builds band-limited levels from the recipes with an FFT; the graph draws
 //! [`preview_at`], a coarse copy computed once per table.
 //!
 //! [`TABLES`] is append-only: a project stores the index of the chosen table.

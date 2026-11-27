@@ -37,8 +37,6 @@ pub struct Row {
     pub place: String,
     /// Module file name ("Vital.vst3", "Surge XT.clap"); empty when the project does not know it.
     pub module: String,
-    /// A missing sample: the sampler device and pad (0-based) "Suchen …" relinks.
-    pub search: Option<(DeviceId, usize)>,
     /// Missing audio clip to open for file recovery.
     pub audio: Option<komponist_model::ClipId>,
     /// A host-managed file slot to relink.
@@ -52,8 +50,6 @@ pub struct Model {
     pub project: String,
     /// The missing devices in document order.
     pub rows: Vec<Row>,
-    /// The missing samples in document order (after the devices).
-    pub samples: Vec<Row>,
     /// Missing linked audio clips.
     pub audio: Vec<Row>,
     pub assets: Vec<Row>,
@@ -66,8 +62,6 @@ pub enum Output {
     Continue,
     /// "Plugin-Ordner prüfen".
     CheckFolders,
-    /// "Suchen …" on a missing sample: the file browser for this pad.
-    Search(DeviceId, usize),
     /// Open a missing audio clip in its editor.
     OpenAudio(komponist_model::ClipId),
     /// Replace a missing host-managed plugin link.
@@ -130,7 +124,6 @@ pub fn model(t: Lang, project: &Project, missing: &[MissingPlugin]) -> Model {
                 format: crate::views::catalog_plugin_tag(t, &mp.plugin),
                 place: t.missing_place(owner, role),
                 module: module_label(&mp.plugin),
-                search: None,
                 audio: None,
                 asset: None,
             }
@@ -139,69 +132,9 @@ pub fn model(t: Lang, project: &Project, missing: &[MissingPlugin]) -> Model {
     Model {
         project: project.name.clone(),
         rows,
-        samples: Vec::new(),
         audio: Vec::new(),
         assets: Vec::new(),
     }
-}
-
-/// A sample the project links that is not at its path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MissingSample {
-    /// The sampler device.
-    pub device: DeviceId,
-    /// The track it is on (`None`: master).
-    pub track: Option<komponist_model::TrackId>,
-    /// The pad, 0-based.
-    pub pad: usize,
-    /// The pad's name (the sample's).
-    pub name: String,
-    /// The file the link names, for the module line.
-    pub file: String,
-}
-
-/// The missing samples embedded in the state of the in-process reference samplers of
-/// `project`, resolved against `project_dir`, in document order. Plugins report their files as
-/// host-managed links instead ([`missing_assets`]).
-pub fn missing_samples(
-    project: &Project,
-    project_dir: Option<&std::path::Path>,
-) -> Vec<MissingSample> {
-    let chains = project
-        .tracks
-        .iter()
-        .map(|t| (Some(t.id), &t.channel.devices))
-        .chain(std::iter::once((None, &project.master.devices)));
-    let mut out = Vec::new();
-    for (track, devices) in chains {
-        for device in devices.iter() {
-            let Some(kind) = crate::device_host::internal_kind(device)
-                .filter(|kind| kind.has_embedded_samples())
-            else {
-                continue;
-            };
-            for (pad, link) in
-                komponist_sampler::links::missing(device.state.as_deref(), project_dir)
-            {
-                if kind.has_one_embedded_sample() && pad != 0 {
-                    continue;
-                }
-                let file = link
-                    .abs
-                    .file_name()
-                    .or_else(|| link.rel.file_name())
-                    .map_or_else(String::new, |f| f.to_string_lossy().into_owned());
-                out.push(MissingSample {
-                    device: device.id,
-                    track,
-                    pad,
-                    name: link.name.clone(),
-                    file,
-                });
-            }
-        }
-    }
-    out
 }
 
 /// Linked audio clips whose source cannot be resolved, in document order.
@@ -261,7 +194,6 @@ pub fn missing_assets(
                     crate::views::catalog_plugin_name(t, catalog, &device.plugin),
                 ),
                 module: String::new(),
-                search: None,
                 audio: None,
                 asset: Some((device.id, slot)),
             });
@@ -295,47 +227,9 @@ pub fn with_audio(
                     .unwrap_or(audio.file.abs.as_os_str())
                     .to_string_lossy()
                     .into_owned(),
-                search: None,
                 audio: Some(id),
                 asset: None,
             })
-        })
-        .collect();
-    model
-}
-
-/// The model with the missing samples added.
-pub fn with_samples(
-    t: Lang,
-    mut model: Model,
-    project: &Project,
-    samples: &[MissingSample],
-) -> Model {
-    model.samples = samples
-        .iter()
-        .map(|s| {
-            let owner = owner_label(t, s.track.and_then(|id| project.track(id)).map(|t| &**t));
-            let general = project.find_device(s.device).is_some_and(|(_, _, device)| {
-                crate::device_host::internal_kind(device)
-                    .is_some_and(|kind| kind.has_one_embedded_sample())
-            });
-            Row {
-                name: if s.name.is_empty() {
-                    s.file.clone()
-                } else {
-                    s.name.clone()
-                },
-                format: t.missing_sample_chip(),
-                place: if general {
-                    t.missing_place_sampler(owner)
-                } else {
-                    t.missing_place_pad(owner, s.pad + 1)
-                },
-                module: s.file.clone(),
-                search: Some((s.device, s.pad)),
-                audio: None,
-                asset: None,
-            }
         })
         .collect();
     model
@@ -358,21 +252,6 @@ pub fn title(t: Lang, n: usize) -> String {
     t.missing_title_plugins(n)
 }
 
-/// The title for `plugins` missing plugins and `samples` missing samples: "1 Sample fehlt",
-/// "2 Plugins und 3 Samples fehlen". The status bar's `project-opened-problems` uses it too.
-pub fn title_for(t: Lang, plugins: usize, samples: usize) -> String {
-    match (plugins, samples) {
-        (_, 0) => title(t, plugins),
-        (0, n) => t.missing_title_samples(n),
-        (p, s) => t.missing_title_both(t.missing_count_plugins(p), t.missing_count_samples(s)),
-    }
-}
-
-/// The explanation for samples only.
-pub fn samples_text(t: Lang, project: &str, n: usize) -> String {
-    t.missing_samples_text(n, project)
-}
-
 /// The explanation under the title.
 pub fn text(t: Lang, project: &str, n: usize) -> String {
     t.missing_text(n, project)
@@ -385,7 +264,6 @@ pub fn text(t: Lang, project: &str, n: usize) -> String {
 pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
     let t = komponist_ui::lang(ctx);
     let n = model.rows.len();
-    let samples = model.samples.len();
     let mut out = None;
     let response = modal(ctx, "missing_plugins", color32(color::SURFACE_3), |ui| {
         let width = m::WIDTH;
@@ -396,7 +274,7 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
             let title = if !model.assets.is_empty() && n == 0 {
                 t.plugin_file_missing_title().to_owned()
             } else if model.audio.is_empty() && model.assets.is_empty() {
-                title_for(t, n, samples)
+                title(t, n)
             } else if n == 0 {
                 t.missing_audio_files().to_owned()
             } else {
@@ -408,8 +286,6 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
                 t.plugin_file_missing_body(&model.project)
             } else if !model.audio.is_empty() {
                 t.missing_audio_text(&model.project)
-            } else if n == 0 {
-                samples_text(t, &model.project, samples)
             } else {
                 text(t, &model.project, n)
             };
@@ -430,13 +306,7 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = m::LIST_GAP;
-                    for row in model
-                        .rows
-                        .iter()
-                        .chain(&model.samples)
-                        .chain(&model.audio)
-                        .chain(&model.assets)
-                    {
+                    for row in model.rows.iter().chain(&model.audio).chain(&model.assets) {
                         if let Some(search) = missing_row(ui, t, inner, row) {
                             out = Some(search);
                         }
@@ -448,11 +318,10 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
             let primary = if !model.audio.is_empty() || !model.assets.is_empty() {
                 t.missing_continue_files()
             } else {
-                match (n, samples) {
-                    (0, 1) => t.missing_continue_sample(),
-                    (0, _) => t.missing_continue_samples(),
-                    (1, 0) => t.missing_continue_one(),
-                    _ => t.missing_continue_many(),
+                if n == 1 {
+                    t.missing_continue_one()
+                } else {
+                    t.missing_continue_many()
                 }
             };
             let mut buttons = Vec::new();
@@ -602,9 +471,7 @@ fn missing_row(ui: &mut Ui, t: Lang, width: f32, row: &Row) -> Option<Output> {
     };
     label_node(ui, rect, &label, Role::ListItem);
     // "Suchen …" of a missing sample, left of the chip column, centred on the first line.
-    let output = if let Some((device, pad)) = row.search {
-        Output::Search(device, pad)
-    } else if let Some((device, slot)) = row.asset {
+    let output = if let Some((device, slot)) = row.asset {
         Output::SearchAsset(device, slot)
     } else {
         Output::OpenAudio(row.audio?)

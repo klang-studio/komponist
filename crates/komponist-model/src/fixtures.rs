@@ -4,10 +4,9 @@ use std::sync::Arc;
 
 use crate::ids::{ClipId, DeviceId, NoteId, TrackId};
 use crate::project::{
-    BUILTIN_HEXA, BUILTIN_SAMPLER, Channel, Clip, ClipContent, DRUM_SAMPLER_NAME, Device,
-    DeviceRole, Hue, MAX_STEPS, MidiChannelSel, MidiClip, MidiInputSel, Note, PluginFormat,
-    PluginRef, Project, Step, StepClip, StepRow, TRACK_HEIGHT_DEFAULT, Take, Track, TrackKind,
-    TrackOutput,
+    Channel, Clip, ClipContent, DRUM_SAMPLER_CLAP_ID, DRUM_SAMPLER_NAME, Device, DeviceRole, Hue,
+    MAX_STEPS, MidiChannelSel, MidiClip, MidiInputSel, Note, PluginFormat, PluginRef, Project,
+    Step, StepClip, StepRow, TRACK_HEIGHT_DEFAULT, Take, Track, TrackKind, TrackOutput,
 };
 use crate::time::{StepResolution, Tempo, Tick, TickRange};
 
@@ -409,7 +408,12 @@ impl DemoPlugin {
             version: self.version.to_owned(),
             // The demo plugins stand in for "<name>.<format>" bundles.
             module: match self.format {
-                PluginFormat::Builtin => Box::default(),
+                PluginFormat::Clap if self.id == HEXA.id => {
+                    "bundled-clap/komponist_hexa_clap.clap".into()
+                }
+                PluginFormat::Clap if self.id == SAMPLER.id => {
+                    "bundled-clap/komponist_sampler_clap.clap".into()
+                }
                 PluginFormat::Clap => format!("{}.clap", self.name).into(),
                 PluginFormat::Vst3 => format!("{}.vst3", self.name).into(),
             },
@@ -418,18 +422,17 @@ impl DemoPlugin {
 }
 
 const HEXA: DemoPlugin = DemoPlugin {
-    format: PluginFormat::Builtin,
-    id: BUILTIN_HEXA,
+    format: PluginFormat::Clap,
+    id: "org.klang-studio.komponist.hexa",
     name: "Hexa",
     vendor: "klang-studio",
     version: "0.1.0",
 };
 
-/// The built-in sampler; its name is `komponist_sampler::NAME` (a test in komponist-app
-/// keeps the two equal).
+/// The shipped drum sampler.
 const SAMPLER: DemoPlugin = DemoPlugin {
-    format: PluginFormat::Builtin,
-    id: BUILTIN_SAMPLER,
+    format: PluginFormat::Clap,
+    id: DRUM_SAMPLER_CLAP_ID,
     name: DRUM_SAMPLER_NAME,
     vendor: "komponist",
     version: "0.1.0",
@@ -683,7 +686,7 @@ mod tests {
         let drums = &p.tracks[0].channel.devices[0].plugin;
         assert_eq!(
             (drums.format, drums.id.as_str()),
-            (PluginFormat::Builtin, BUILTIN_SAMPLER)
+            (PluginFormat::Clap, DRUM_SAMPLER_CLAP_ID)
         );
         let pad = &p.tracks[3].channel.devices[0].plugin;
         assert_eq!(pad.format, PluginFormat::Clap);

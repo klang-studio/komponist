@@ -780,7 +780,13 @@ mod tests {
 
     #[test]
     fn a_bus_has_no_instrument_and_gets_a_bus_name() {
-        let mut s = State::new(Some(crate::app::hexa_ref()));
+        let mut s = State::new(Some(
+            komponist_model::fixtures::demo_project().tracks[1]
+                .channel
+                .devices[0]
+                .plugin
+                .clone(),
+        ));
         s.kind = KIND_BUS;
         let spec = s.spec();
         assert!(spec.bus && spec.instrument.is_none());

@@ -34,7 +34,6 @@ komponist-model = { path = "crates/komponist-model" }
 komponist-engine = { path = "crates/komponist-engine" }
 komponist-audio = { path = "crates/komponist-audio" }
 komponist-arpeggiator = { path = "crates/builtin-devices/arpeggiator" }
-komponist-builtin = { path = "crates/builtin-devices/registry" }
 komponist-bundled-clap-adapter = { path = "crates/plugin-sdk/bundled-adapter" }
 komponist-delay = { path = "crates/builtin-devices/delay" }
 komponist-device-core = { path = "crates/builtin-devices/core" }

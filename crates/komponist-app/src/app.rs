@@ -48,11 +48,10 @@ use komponist_i18n::Lang;
 use komponist_ipc::LogLevel;
 use komponist_model::automation::AutomationOwner;
 use komponist_model::edits::{self, EditResult, NewDevice, NewTrack, ProjectProp, TrackProp};
-use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::project::SavedPluginState;
 use komponist_model::{
-    AudioInput, ChannelRef, ClipContent, DeviceId, DeviceRole, Document, EditError, PluginFormat,
-    PluginRef, Project, Tick, TickRange, TrackId,
+    AudioInput, ChannelRef, ClipContent, DeviceId, DeviceRole, Document, EditError, PluginRef,
+    Project, Tick, TickRange, TrackId,
 };
 use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{DeviceStatus, FailReason, PluginManagerEvent, SaveSnapshots};
@@ -1112,6 +1111,12 @@ impl App {
                 };
                 self.set_status(text, StatusKind::Error);
             }
+            PluginManagerEvent::BundledDevicesUnavailable => {
+                self.set_status(
+                    self.lang.status_bundled_devices_unavailable(),
+                    StatusKind::Error,
+                );
+            }
             PluginManagerEvent::ScanFinished(_) => {
                 let newly_missing = self.sync_catalog_devices();
                 if self.dialogs.missing_check || newly_missing {
@@ -1157,9 +1162,8 @@ impl App {
         if Arc::ptr_eq(before, &after) {
             return;
         }
-        let dir = self.project_dir();
         self.engine
-            .sync_device_states(before, &after, dir.as_deref(), &self.param_undo.baseline);
+            .sync_device_states(before, &after, &self.param_undo.baseline);
         self.expect_echo(before, &after);
         self.release_keyboard_notes_if(|id| after.track(id).is_none());
     }
@@ -2187,14 +2191,8 @@ impl App {
 
     fn default_instrument(&self) -> Option<PluginRef> {
         let catalog = self.engine.host().catalog();
-        let default_id = komponist_plugins::catalog::clap_id(BUILTIN_HEXA);
         catalog
-            .entries()
-            .iter()
-            .find(|entry| {
-                komponist_plugins::requires_bundled(&entry.plugin) && entry.plugin.id == default_id
-            })
-            .or_else(|| catalog.resolve(&hexa_ref()))
+            .packaged("org.klang-studio.komponist.hexa")
             .map(|entry| entry.plugin.clone())
     }
 
@@ -2820,24 +2818,10 @@ impl App {
             }
             PluginAction::ApplyClapPreset { device, source } => {
                 if let Some((_, _, target)) = self.project().find_device(device) {
-                    if let Some(state) = komponist_plugins::presets::legacy_state(
-                        &target.plugin,
-                        target.state.as_deref(),
-                        &source,
-                    ) {
-                        self.apply("undo-load-preset", |p| {
-                            edits::set_device_state(p, device, Some(state.into()))
-                        });
-                        self.frame_preset_finished(device, true);
-                    } else {
-                        let target = Arc::clone(target);
-                        if !self.engine.host_mut().load_clap_preset(&target, &source) {
-                            self.frame_preset_finished(device, false);
-                            self.set_status(
-                                self.lang.devices_preset_load_failed(),
-                                StatusKind::Error,
-                            );
-                        }
+                    let target = Arc::clone(target);
+                    if !self.engine.host_mut().load_clap_preset(&target, &source) {
+                        self.frame_preset_finished(device, false);
+                        self.set_status(self.lang.devices_preset_load_failed(), StatusKind::Error);
                     }
                 }
             }
@@ -3334,18 +3318,6 @@ pub(crate) fn repeatable(action: &Action) -> bool {
         Action::Ui(UiAction::Zoom { .. })
             | Action::Edit(EditAction::TransposeSelection(_) | EditAction::NudgeSelection(_))
     )
-}
-
-/// The reference of the built-in hexa (Ctrl T).
-pub fn hexa_ref() -> PluginRef {
-    PluginRef {
-        format: PluginFormat::Builtin,
-        id: BUILTIN_HEXA.to_owned(),
-        name: "Hexa".to_owned(),
-        vendor: "klang-studio".to_owned(),
-        module: Box::default(),
-        version: env!("CARGO_PKG_VERSION").to_owned(),
-    }
 }
 
 /// The keymap's key for an egui key (`=` and `+` are both [`Key::Plus`]).

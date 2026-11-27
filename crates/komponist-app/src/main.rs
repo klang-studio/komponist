@@ -187,12 +187,17 @@ fn run_app() -> eframe::Result {
     let mut host = PluginHost::new(PluginManagerConfig::defaults(&settings::cache_dir_or_temp()));
     let demo = if args.demo {
         let kit_dir = std::env::temp_dir().join("komponist-demo-kit");
-        let project = komponist_app::showcase::bundled_demo(&host, &kit_dir)
-            .map_err(|error| eframe::Error::AppCreation(std::io::Error::other(error).into()))?;
-        Some(project)
+        match komponist_app::showcase::bundled_demo(&host, &kit_dir) {
+            Ok(project) => Some(project),
+            Err(error) => {
+                eprintln!("komponist: demo could not be loaded: {error}");
+                None
+            }
+        }
     } else {
         None
     };
+    let demo_opened = demo.is_some();
     if args.no_plugin_scan {
         host.start_bundled_scan();
     } else {
@@ -254,14 +259,14 @@ fn run_app() -> eframe::Result {
             hub.remember_enabled(&name);
         }
     }
-    if !args.demo {
+    if !demo_opened {
         // The start screen; a project argument opens through it (recent list, S06 check), and
         // a file that cannot be read leaves the start screen with the reason.
         app.show_start_screen();
     }
     // Recovery copies of other sessions are asked for first; the project argument waits behind
     // them (with `--demo` the prompt shows over the demo, which a recovered copy replaces).
-    app.offer_recovery(args.project.filter(|_| !args.demo));
+    app.offer_recovery(args.project.filter(|_| !demo_opened));
     // `--open-plugin` looks in the document that opens: now, or after the recovery prompt.
     if let Some(name) = args.open_plugin.clone() {
         app.open_plugin_at_start(name);

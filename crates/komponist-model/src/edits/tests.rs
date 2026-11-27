@@ -48,12 +48,12 @@ fn plugin(name: &str) -> PluginRef {
 
 fn sampler() -> PluginRef {
     PluginRef {
-        format: PluginFormat::Builtin,
-        id: BUILTIN_SAMPLER.to_owned(),
+        format: PluginFormat::Clap,
+        id: DRUM_SAMPLER_CLAP_ID.to_owned(),
         name: "Sampler".to_owned(),
         vendor: "komponist".to_owned(),
         version: "0.1.0".to_owned(),
-        module: Box::default(),
+        module: "bundled-clap/komponist_sampler_clap.clap".into(),
     }
 }
 

@@ -106,7 +106,7 @@ use crate::app::App;
 use crate::keymap::{self, Key, KeyChord};
 use crate::settings::FrameMemory;
 use crate::ui_state::{FocusArea, PluginView, PluginWindow, StatusKind};
-use crate::views::devices::model::{all_plugin_params, legacy_frame_params};
+use crate::views::devices::model::all_plugin_params;
 
 /// How long a parked child waits for the bridge's `GuiClosed` before it is destroyed anyway.
 const PARK_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1690,8 +1690,6 @@ impl App {
         let owner = self.project().find_device(device);
         let params = if let Some(infos) = host.params(device) {
             all_plugin_params(self.lang, infos, |id| host.param_value(device, id))
-        } else if let Some((_, _, device)) = owner {
-            legacy_frame_params(self.lang, device)
         } else {
             Vec::new()
         };

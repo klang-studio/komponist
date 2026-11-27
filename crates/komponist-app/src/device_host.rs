@@ -7,13 +7,7 @@
 //! change recompiles the program, a finished scan retries the devices that were missing, crashes
 //! and warnings go to the status bar.
 //!
-//! Two implementations:
-//! - [`PluginHost`], the app's: verified bundled CLAPs in process and external CLAP and VST3
-//!   plugins through the bridge, managed by [`PluginManager`] (ARCHITECTURE §8).
-//! - [`BuiltinHost`], for tests and comparisons: hexa in process
-//!   (Hexa) and the internal devices ([`Internal`], the Sampler among them); every other device gets no processor, so the engine passes an
-//!   effect's input through and an instrument stays silent, and its status is
-//!   [`DeviceStatus::Missing`].
+//! Verified packaged CLAPs run directly and external plugins run in the bridge.
 //!
 //! # API for the views and plugin windows
 //!
@@ -24,8 +18,7 @@
 //!   [`DeviceHost::state_warning`] („Zustand konnte nicht geladen werden“),
 //!   [`DeviceHost::late_blocks`], "Neu laden" = `PluginAction::Reload`.
 //! - Generic parameter grid (WP-44): [`DeviceHost::params`], [`DeviceHost::param_value`]; knob
-//!   changes go through `PluginAction::SetParam` (bridged devices: [`DeviceHost::set_param`],
-//!   hexa: the engine's `SetParam`).
+//!   changes go through `PluginAction::SetParam`.
 //! - Browser (WP-44) and S06/S07 (WP-52): [`DeviceHost::catalog`], [`DeviceHost::role`],
 //!   [`DeviceHost::missing_plugins`], [`DeviceHost::is_scanning`], [`DeviceHost::last_scan`];
 //!   a rescan is `SettingsAction::RescanPlugins` (or `App::scan_plugins`).
@@ -37,47 +30,31 @@
 //!
 //! Thread: UI thread.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub(crate) use komponist_builtin::{
-    BuiltinFmRouting, BuiltinKind, BuiltinProcessor, Internal, LegacyParameters,
-    builtin_fm_algorithm, builtin_fm_carrier, from_legacy_clap, legacy_clap_range, to_legacy_clap,
-};
-use komponist_engine::{DeviceMeter, Processor};
+use komponist_engine::Processor;
 use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource};
 use komponist_ipc::device_assets::{
     AssetKind, AssetStatus, Bindings, OfflineRequest, OfflineStatus, Snapshot,
 };
 use komponist_ipc::frame::HeaderModel;
-use komponist_ipc::{
-    GuiSize, GuiTarget, LogLevel, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode,
-};
+use komponist_ipc::{GuiSize, GuiTarget, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode};
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::project::SavedPluginState;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project};
-use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{
-    AssetEdit, AssetEditPreparation, Catalog, DeviceSnapshots, DeviceStatus, FailReason,
-    MissingPlugin, PluginDirs, PluginError, PluginManager, PluginManagerConfig, PluginManagerEvent,
+    AssetEdit, AssetEditPreparation, Catalog, DeviceSnapshots, DeviceStatus, MissingPlugin,
+    PluginDirs, PluginError, PluginManager, PluginManagerConfig, PluginManagerEvent,
     ProcessorSetup, SaveSnapshots, ScanReport,
 };
-use komponist_sampler as sampler;
-use komponist_sampler::SamplerHandle;
 
-/// The index of the preset `device` shows among `presets` and whether it was modified since: the
-/// selection the host recorded through CLAP preset-load ([`Device::preset`]). In-binary reference
-/// devices (`PluginFormat::Builtin`, the test host until #294) have no preset-load and name their
-/// preset in their own state.
+/// The index and modified flag of the preset recorded through CLAP preset-load.
 pub fn selected_preset(device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
-    if device.plugin.format == komponist_model::PluginFormat::Builtin {
-        komponist_plugins::presets::reference_selection(device, presets)
-    } else {
-        komponist_ipc::clap_presets::selected_preset(device.preset.as_ref(), presets)
-    }
+    komponist_ipc::clap_presets::selected_preset(device.preset.as_ref(), presets)
 }
 
 /// Creates processors for devices and reports their runtime status.
@@ -121,7 +98,7 @@ pub trait DeviceHost {
         None
     }
 
-    /// The plugins the browser offers (built-ins first, then scanned plugins by name).
+    /// The plugins the browser offers, sorted by name.
     fn catalog(&self) -> &Catalog;
 
     /// Refresh the latest marker snapshot for this slot.
@@ -147,11 +124,8 @@ pub trait DeviceHost {
     }
 
     /// Presets discovered for a live CLAP instance.
-    fn clap_presets(&self, device: &Device) -> &[ClapPreset] {
-        self.catalog()
-            .resolve(&device.plugin)
-            .filter(|entry| entry.is_builtin())
-            .map_or(&[], |entry| entry.clap_presets.as_slice())
+    fn clap_presets(&self, _device: &Device) -> &[ClapPreset] {
+        &[]
     }
 
     /// Requests a discovered preset by its opaque source on the live instance.
@@ -209,20 +183,9 @@ pub trait DeviceHost {
         None
     }
 
-    /// Whether `device` has a sidechain input the "SC" chip in its head can set (WP-104). Internal
-    /// devices answer through [`Internal::has_sidechain`](komponist_builtin::Internal::has_sidechain)
-    /// without the host; a host reports it for plugins with a sidechain port (#6: the
-    /// [`PluginHost`] for bridged CLAP and VST3 plugins whose catalog entry or loaded instance
-    /// has one).
-    fn has_sidechain(&self, device: DeviceId) -> bool {
-        let _ = device;
+    /// Whether the plugin exposes a sidechain input.
+    fn has_sidechain(&self, _device: DeviceId) -> bool {
         false
-    }
-
-    /// Calls `f` with the level meter of every in-process device that has one (internal devices,
-    /// WP-89); the UI takes their values once per frame ([`DeviceMeter::take`]).
-    fn for_each_meter(&self, f: &mut dyn FnMut(DeviceId, &DeviceMeter)) {
-        let _ = f;
     }
 
     /// Whether [`DeviceHost::poll`] has work even while the UI is idle (bridges running, a scan in
@@ -231,8 +194,7 @@ pub trait DeviceHost {
         false
     }
 
-    /// The parameters of a bridged device's plugin (generic grid); `None` for in-process and
-    /// unknown devices.
+    /// The parameters of the live plugin.
     fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
         let _ = device;
         None
@@ -371,31 +333,9 @@ pub trait DeviceHost {
         None
     }
 
-    /// Prepare transport-dependent reference-host assets on setup, tempo changes, and edits.
-    fn prepare_device_assets(&self, _device: &Device, _tempo: f64, _edited_param: Option<u32>) {}
-
-    /// Follow embedded assets supported by the in-process reference host.
-    fn follow_embedded_assets(
-        &self,
-        _before: &Device,
-        _after: &Device,
-        _tempo: f64,
-        _project_dir: Option<&std::path::Path>,
-    ) {
-    }
-
-    /// The UI side of a sampler device (loading samples, what the pads show); `None` for every
-    /// other device.
-    fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {
-        let _ = device;
-        None
-    }
-
     /// Whether the file inventory or an asset is still being prepared for rendering.
     fn render_assets_pending(&self, device: &Device) -> bool {
-        self.sampler(device.id)
-            .is_some_and(|handle| !handle.is_idle())
-            || self.asset_inventory_pending(device.id)
+        self.asset_inventory_pending(device.id)
             || self.render_asset_bindings_pending(device.id)
             || self.asset_slots(device.id).is_some_and(|inventory| {
                 inventory.slots.iter().any(|slot| {
@@ -405,13 +345,6 @@ pub trait DeviceHost {
                             && device.asset_links.contains_key(&slot.id)
                 })
             })
-    }
-
-    /// Whether asset preparation failed before offline rendering could begin.
-    fn render_asset_preparation_failed(&self, device: DeviceId) -> bool {
-        self.sampler(device).is_some_and(|handle| {
-            handle.sync_status() == Some(komponist_sampler::SyncStatus::Unavailable)
-        })
     }
 
     /// Audition a position on a live audio asset, or release its active preview.
@@ -579,41 +512,6 @@ pub trait DeviceHost {
     fn shutdown(&mut self) {}
 }
 
-/// Whether `plugin` is hexa, the one built-in instrument that is not an internal device.
-pub fn is_builtin_instrument(plugin: &PluginRef) -> bool {
-    BuiltinKind::from_plugin(plugin) == Some(BuiltinKind::Hexa)
-}
-
-/// Whether `device` is hexa, the in-process built-in.
-pub fn is_hexa(device: &Device) -> bool {
-    is_builtin_instrument(&device.plugin)
-}
-
-/// The internal device `device` is (Sampler, effects, MIDI effects), if it is one.
-pub fn internal_kind(device: &Device) -> Option<Internal> {
-    Internal::from_plugin(&device.plugin)
-}
-
-/// Whether `device` runs in process: hexa or an internal device.
-pub fn is_in_process(device: &Device) -> bool {
-    BuiltinKind::from_plugin(&device.plugin).is_some()
-}
-
-/// The pads of a sampler that hold a sample as note names for the step rows: the sample's name.
-/// An empty pad reports none, so its row keeps the name the clip stored.
-pub fn pad_note_names(views: &[sampler::PadView]) -> Vec<NoteName> {
-    views
-        .iter()
-        .enumerate()
-        .filter(|(_, view)| !view.name.trim().is_empty())
-        .map(|(pad, view)| NoteName {
-            key: sampler::note_of_pad(pad),
-            channel: None,
-            name: view.name.clone(),
-        })
-        .collect()
-}
-
 /// Devices of `project` whose plugin `catalog` does not resolve, in document order (master last).
 fn missing_in(catalog: &Catalog, project: &Project) -> Vec<MissingPlugin> {
     let chains = project
@@ -638,292 +536,9 @@ fn missing_in(catalog: &Catalog, project: &Project) -> Vec<MissingPlugin> {
     missing
 }
 
-// ------------------------------------------------------------------------------------------------
-// BuiltinHost
-// ------------------------------------------------------------------------------------------------
-
-/// hexa and the internal effects in process, everything else without processor (`Missing`).
-#[derive(Debug)]
-pub struct BuiltinHost {
-    devices: HashMap<DeviceId, Known>,
-    /// The level meters of the internal devices' processors.
-    meters: HashMap<DeviceId, Arc<DeviceMeter>>,
-    events: Vec<PluginManagerEvent>,
-    /// hexa only.
-    catalog: Catalog,
-    /// The folder of the project file, for relative sample paths.
-    project_dir: Option<PathBuf>,
-    /// The sampler devices' UI sides.
-    samplers: HashMap<DeviceId, SamplerHandle>,
-    /// The pad names of the samplers as note names (step rows).
-    pad_names: HashMap<DeviceId, Vec<NoteName>>,
-    /// Samplers still loading the samples their state links: `Loading` until the loader is idle,
-    /// so an export waits for the first hits' samples.
-    warming: HashSet<DeviceId>,
-    /// Why a device's stored state could not be read (it plays the defaults; the document keeps the
-    /// bytes).
-    state_warnings: HashMap<DeviceId, String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Known {
-    status: DeviceStatus,
-    latency: u32,
-}
-
-impl Default for BuiltinHost {
-    fn default() -> BuiltinHost {
-        BuiltinHost {
-            devices: HashMap::new(),
-            meters: HashMap::new(),
-            events: Vec::new(),
-            catalog: Catalog::builtin(),
-            project_dir: None,
-            samplers: HashMap::new(),
-            pad_names: HashMap::new(),
-            warming: HashSet::new(),
-            state_warnings: HashMap::new(),
-        }
-    }
-}
-
-impl BuiltinHost {
-    /// A host that has seen no device.
-    pub fn new() -> BuiltinHost {
-        BuiltinHost::default()
-    }
-
-    fn set(&mut self, device: DeviceId, status: DeviceStatus, latency: u32) {
-        let changed = self.devices.get(&device).map(|k| &k.status) != Some(&status);
-        if changed {
-            self.events.push(PluginManagerEvent::StatusChanged {
-                device,
-                status: status.clone(),
-            });
-        }
-        self.devices.insert(device, Known { status, latency });
-    }
-}
-
-impl DeviceHost for BuiltinHost {
-    fn create_processor(
-        &mut self,
-        device: &Device,
-        setup: ProcessorSetup,
-    ) -> Option<Box<dyn Processor>> {
-        let Some(kind) = BuiltinKind::from_plugin(&device.plugin) else {
-            self.set(device.id, DeviceStatus::Missing, 0);
-            return None;
-        };
-        let BuiltinProcessor {
-            mut processor,
-            meter,
-            sampler,
-        } = kind.processor_from_state(device.state.as_deref());
-        // The processor plays the defaults for a state it cannot read. Say so, and leave the
-        // document's bytes alone (nothing here writes state; edits refuse an unreadable one).
-        if let Some(reason) = kind.state_error(device.state.as_deref()) {
-            self.events.push(PluginManagerEvent::Log {
-                device: Some(device.id),
-                level: LogLevel::Warning,
-                message: format!("{STATE_LOG_PREFIX} {reason}"),
-            });
-            self.state_warnings.insert(device.id, reason);
-        } else {
-            self.state_warnings.remove(&device.id);
-        }
-        if let Some(meter) = meter {
-            self.meters.insert(device.id, meter);
-        }
-        if let Some(handle) = sampler {
-            // The samples the state links load in the background; the pads play as they arrive.
-            for (pad, link) in sampler::links::read(device.state.as_deref()) {
-                if kind == BuiltinKind::Internal(Internal::GeneralSampler) && pad != 0 {
-                    continue;
-                }
-                handle.load_link(pad, link, self.project_dir.clone());
-            }
-            if kind == BuiltinKind::Internal(Internal::Sampler) {
-                self.pad_names
-                    .insert(device.id, pad_note_names(&handle.views()));
-            } else {
-                self.pad_names.remove(&device.id);
-            }
-            self.samplers.insert(device.id, handle);
-        }
-        match processor.activate(setup.sample_rate, setup.max_block) {
-            Ok(()) => {
-                let loading = self
-                    .samplers
-                    .get(&device.id)
-                    .is_some_and(|handle| !handle.is_idle());
-                if loading {
-                    self.warming.insert(device.id);
-                }
-                let status = if loading {
-                    DeviceStatus::Loading
-                } else {
-                    DeviceStatus::Ok
-                };
-                self.set(device.id, status, processor.latency());
-                Some(processor)
-            }
-            Err(e) => {
-                self.set(
-                    device.id,
-                    DeviceStatus::Crashed(FailReason::LoadFailed(e.to_string())),
-                    0,
-                );
-                None
-            }
-        }
-    }
-
-    fn release(&mut self, device: DeviceId) {
-        self.devices.remove(&device);
-        self.meters.remove(&device);
-        self.samplers.remove(&device);
-        self.pad_names.remove(&device);
-        self.warming.remove(&device);
-        self.state_warnings.remove(&device);
-    }
-
-    fn state_warning(&self, device: DeviceId) -> Option<&str> {
-        self.state_warnings.get(&device).map(String::as_str)
-    }
-
-    fn set_project_dir(&mut self, dir: Option<PathBuf>) {
-        self.project_dir = dir;
-    }
-
-    fn project_dir(&self) -> Option<PathBuf> {
-        self.project_dir.clone()
-    }
-
-    fn prepare_device_assets(&self, device: &Device, tempo: f64, edited_param: Option<u32>) {
-        if let (Some(handle), Some(kind)) = (self.sampler(device.id), internal_kind(device)) {
-            kind.prepare_assets(handle, device.state.as_deref(), tempo, edited_param);
-        }
-    }
-
-    fn follow_embedded_assets(
-        &self,
-        before: &Device,
-        after: &Device,
-        tempo: f64,
-        project_dir: Option<&std::path::Path>,
-    ) {
-        if let (Some(handle), Some(kind)) = (self.sampler(after.id), internal_kind(after)) {
-            kind.follow_assets(
-                handle,
-                before.state.as_deref(),
-                after.state.as_deref(),
-                tempo,
-                project_dir,
-            );
-        }
-    }
-
-    fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {
-        self.samplers.get(&device)
-    }
-
-    fn note_names(&self, device: DeviceId) -> &[NoteName] {
-        self.pad_names.get(&device).map_or(&[], Vec::as_slice)
-    }
-
-    fn for_each_meter(&self, f: &mut dyn FnMut(DeviceId, &DeviceMeter)) {
-        for (id, meter) in &self.meters {
-            f(*id, meter);
-        }
-    }
-
-    fn status(&self, device: DeviceId) -> DeviceStatus {
-        let status = self
-            .devices
-            .get(&device)
-            .map_or(DeviceStatus::Ok, |k| k.status.clone());
-        if status == DeviceStatus::Ok
-            && self
-                .samplers
-                .get(&device)
-                .is_some_and(|handle| !handle.is_idle())
-        {
-            DeviceStatus::Loading
-        } else {
-            status
-        }
-    }
-
-    fn latency(&self, device: DeviceId) -> u32 {
-        self.devices.get(&device).map_or(0, |k| k.latency)
-    }
-
-    fn poll(&mut self) -> Vec<PluginManagerEvent> {
-        // A parameter can change an internal device's latency (limiter lookahead): its processor
-        // publishes the new value in its meter (RT-safe), and the same event a bridged plugin's
-        // latency change raises makes the app recompile the delay compensation.
-        for (device, meter) in &self.meters {
-            let latency = meter.latency();
-            if let Some(known) = self.devices.get_mut(device)
-                && known.latency != latency
-            {
-                known.latency = latency;
-                self.events.push(PluginManagerEvent::LatencyChanged {
-                    device: *device,
-                    latency,
-                });
-            }
-        }
-        let ready: Vec<DeviceId> = self
-            .warming
-            .iter()
-            .copied()
-            .filter(|d| self.samplers.get(d).is_none_or(SamplerHandle::is_idle))
-            .collect();
-        for device in ready {
-            self.warming.remove(&device);
-            let latency = self.devices.get(&device).map_or(0, |k| k.latency);
-            self.set(device, DeviceStatus::Ok, latency);
-        }
-        for (device, handle) in &self.samplers {
-            if let Some(previous) = self.pad_names.get_mut(device) {
-                let names = pad_note_names(&handle.views());
-                if *previous != names {
-                    *previous = names;
-                }
-            }
-        }
-        std::mem::take(&mut self.events)
-    }
-
-    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
-        // hexa and the internal devices; everything else needs the plugin manager's catalog.
-        if is_builtin_instrument(plugin) {
-            Some(DeviceRole::Instrument)
-        } else {
-            Internal::from_plugin(plugin).map(Internal::role)
-        }
-    }
-
-    fn catalog(&self) -> &Catalog {
-        &self.catalog
-    }
-}
-
-// ------------------------------------------------------------------------------------------------
-// PluginHost
-// ------------------------------------------------------------------------------------------------
-
-/// Loads verified bundled CLAP in-process and external plugins through the bridge.
-///
-/// A device the manager cannot resolve plays without processor and stays `Missing` with its
-/// state; after a scan the app asks again ([`DeviceHost::create_processor`] for a device that
-/// still has a slot). Dropping the host kills every bridge (the manager's drop);
-/// [`DeviceHost::shutdown`] is the graceful way at app exit.
+/// The device host for packaged and external plugins.
 pub struct PluginHost {
     manager: PluginManager,
-    reference: Option<Box<dyn DeviceHost>>,
     project_dir: Option<PathBuf>,
     /// Devices handed to the manager and not released since.
     external: HashSet<DeviceId>,
@@ -935,7 +550,6 @@ impl PluginHost {
     pub fn new(config: PluginManagerConfig) -> PluginHost {
         PluginHost {
             manager: PluginManager::new(config),
-            reference: None,
             project_dir: None,
             external: HashSet::new(),
         }
@@ -950,21 +564,9 @@ impl PluginHost {
     ) -> Result<Self, komponist_plugins::bundled_clap::BundleVerificationError> {
         Ok(Self {
             manager: PluginManager::for_test_fixtures(config, bundled_dir, expected_digest)?,
-            reference: None,
             project_dir: None,
             external: HashSet::new(),
         })
-    }
-
-    /// Supplies the legacy processors to integration tests and performance comparisons.
-    #[doc(hidden)]
-    pub fn with_reference_devices(config: PluginManagerConfig) -> Self {
-        Self {
-            manager: PluginManager::with_reference_devices(config),
-            reference: Some(Box::new(BuiltinHost::new())),
-            project_dir: None,
-            external: HashSet::new(),
-        }
     }
 
     /// The plugin manager (diagnostics and tests; processors come only through
@@ -990,11 +592,6 @@ impl DeviceHost for PluginHost {
         device: &Device,
         setup: ProcessorSetup,
     ) -> Option<Box<dyn Processor>> {
-        if is_in_process(device)
-            && let Some(reference) = &mut self.reference
-        {
-            return reference.create_processor(device, setup);
-        }
         // A device seen before ("Neu laden", found by a scan) starts a fresh bridge with its last
         // known state; the manager kills an old bridge that is still alive.
         let created = if self.external.insert(device.id) {
@@ -1009,45 +606,19 @@ impl DeviceHost for PluginHost {
     fn release(&mut self, device: DeviceId) {
         if self.external.remove(&device) {
             self.manager.release(device);
-        } else if let Some(reference) = &mut self.reference {
-            reference.release(device);
         }
-    }
-
-    fn for_each_meter(&self, f: &mut dyn FnMut(DeviceId, &DeviceMeter)) {
-        if let Some(reference) = &self.reference {
-            reference.for_each_meter(f);
-        }
-        self.manager.for_each_effect_meter(f);
     }
 
     fn status(&self, device: DeviceId) -> DeviceStatus {
-        if self.is_external(device) {
-            self.manager.status(device)
-        } else {
-            self.reference
-                .as_ref()
-                .map_or(DeviceStatus::Ok, |host| host.status(device))
-        }
+        self.manager.status(device)
     }
 
     fn latency(&self, device: DeviceId) -> u32 {
-        if self.is_external(device) {
-            self.manager.latency(device)
-        } else {
-            self.reference
-                .as_ref()
-                .map_or(0, |host| host.latency(device))
-        }
+        self.manager.latency(device)
     }
 
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
-        let mut events = self
-            .reference
-            .as_mut()
-            .map_or_else(Vec::new, |host| host.poll());
-        events.extend(self.manager.poll());
-        events
+        self.manager.poll()
     }
 
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
@@ -1240,28 +811,15 @@ impl DeviceHost for PluginHost {
     }
 
     fn state_warning(&self, device: DeviceId) -> Option<&str> {
-        if self.is_external(device) {
-            self.manager.state_warning(device)
-        } else {
-            self.reference.as_ref()?.state_warning(device)
-        }
+        self.manager.state_warning(device)
     }
 
     fn note_names(&self, device: DeviceId) -> &[NoteName] {
-        if self.is_external(device) {
-            self.manager.note_names(device)
-        } else {
-            self.reference
-                .as_ref()
-                .map_or(&[], |host| host.note_names(device))
-        }
+        self.manager.note_names(device)
     }
 
     fn set_project_dir(&mut self, dir: Option<PathBuf>) {
         self.manager.set_project_dir(dir.clone());
-        if let Some(reference) = &mut self.reference {
-            reference.set_project_dir(dir.clone());
-        }
         self.project_dir = dir;
     }
 
@@ -1327,35 +885,11 @@ impl DeviceHost for PluginHost {
         self.manager.offline_preparation_status(device)
     }
 
-    fn prepare_device_assets(&self, device: &Device, tempo: f64, edited_param: Option<u32>) {
-        if let Some(reference) = &self.reference {
-            reference.prepare_device_assets(device, tempo, edited_param);
-        }
-    }
-
-    fn follow_embedded_assets(
-        &self,
-        before: &Device,
-        after: &Device,
-        tempo: f64,
-        project_dir: Option<&std::path::Path>,
-    ) {
-        if let Some(reference) = &self.reference {
-            reference.follow_embedded_assets(before, after, tempo, project_dir);
-        }
-    }
-
-    fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {
-        self.reference.as_ref()?.sampler(device)
-    }
-
     fn has_gui(&self, device: DeviceId) -> bool {
         self.manager.has_gui(device)
     }
 
     fn has_sidechain(&self, device: DeviceId) -> bool {
-        // Internal devices answer from their spec before the host is asked (`Card`); the
-        // manager knows the bridged ones (#6).
         self.is_external(device) && self.manager.has_sidechain(device)
     }
 

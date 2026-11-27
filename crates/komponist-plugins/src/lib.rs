@@ -1,11 +1,10 @@
 //! The app side of plugin hosting in komponist.
 //!
-//! The catalog (built-in hexa and internal devices plus scanned CLAP and VST3 plugins), the scan
+//! The catalog of packaged and external CLAP and VST3 plugins, the scan
 //! cache, the lifecycle of bridge processes, device status and the `ExternalProcessor` that feeds a
 //! bridge from the engine.
 //!
 //! Module map (ARCHITECTURE §8):
-//! - [`builtin`]: the built-in entries (hexa and the internal devices, among them the Sampler).
 //! - [`catalog`]: [`Catalog`], [`CatalogEntry`], [`PluginDirs`], scan cache and report.
 //! - [`manager`]: [`PluginManager`], [`DeviceStatus`], [`PluginManagerEvent`], [`MissingPlugin`].
 //! - [`params`]: bridged plugin parameters as `komponist_model::params::ParamInfo`.
@@ -17,9 +16,7 @@
 //! (bundle discovery and scan processes).
 
 mod bridge;
-pub mod builtin;
 pub mod bundled_clap;
-mod bundled_effects;
 pub mod bundled_initial_state;
 pub mod catalog;
 mod device_assets;
@@ -35,8 +32,8 @@ mod verify_bundles;
 mod waveform_markers;
 
 pub use catalog::{
-    BuiltinKind, Catalog, CatalogEntry, EffectCategory, PluginDirs, PluginLocation, ScanCache,
-    ScanReport, presets, requires_bundled,
+    Catalog, CatalogEntry, EffectCategory, PluginDirs, PluginLocation, ScanCache, ScanReport,
+    requires_bundled,
 };
 pub use device_assets::{AssetEdit, AssetEditPreparation};
 pub use external::ExternalProcessor;

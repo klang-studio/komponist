@@ -783,11 +783,6 @@ impl App {
         }
         self.dialogs.missing_check = false;
         let missing = self.engine.host().missing_plugins(self.project());
-        let samples = crate::dialogs::missing_plugins::missing_samples(
-            self.project(),
-            self.project_dir().as_deref(),
-        )
-        .len();
         let audio = crate::dialogs::missing_plugins::missing_audio(
             self.project(),
             self.project_dir().as_deref(),
@@ -798,7 +793,7 @@ impl App {
             self.project_dir().as_deref(),
             self.engine.host().catalog(),
         );
-        if missing.is_empty() && samples == 0 && audio.is_empty() && assets.is_empty() {
+        if missing.is_empty() && audio.is_empty() && assets.is_empty() {
             let text = match &repaired {
                 Some(repaired) => self.lang.project_opened_repaired(&name, repaired),
                 None => self.lang.project_opened_ready(&name),
@@ -809,7 +804,7 @@ impl App {
         let n = if missing.is_empty() && !assets.is_empty() {
             self.lang.plugin_file_missing_title().to_owned()
         } else if audio.is_empty() && assets.is_empty() {
-            crate::dialogs::missing_plugins::title_for(self.lang, missing.len(), samples)
+            crate::dialogs::missing_plugins::title(self.lang, missing.len())
         } else if missing.is_empty() {
             self.lang.missing_audio_files().to_owned()
         } else {

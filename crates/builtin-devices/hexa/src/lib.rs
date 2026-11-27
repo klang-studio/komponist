@@ -56,7 +56,7 @@
 use komponist_device_core::CatalogSpec;
 use komponist_i18n::Lang;
 use komponist_model::DeviceRole;
-use komponist_model::project::{BUILTIN_HEXA, HEXA_NAME};
+use komponist_model::project::HEXA_NAME;
 
 pub mod algorithms;
 pub mod device;
@@ -74,7 +74,7 @@ pub use state::{
 
 /// Hexa's entry in the built-in device catalog.
 pub static CATALOG: CatalogSpec = CatalogSpec {
-    id: BUILTIN_HEXA,
+    id: "hexa",
     name: HEXA_NAME,
     name_in: Lang::device_name_hexa,
     description_in: Some(Lang::device_description_hexa),
@@ -92,17 +92,13 @@ pub fn processor_from_state(state: Option<&[u8]>) -> HexaProcessor {
 
 #[cfg(test)]
 mod tests {
-    use komponist_model::PluginFormat;
-
     use super::*;
 
     #[test]
-    fn catalog_has_the_project_id_and_localized_name() {
-        let plugin = CATALOG.plugin_ref();
-        assert_eq!(plugin.format, PluginFormat::Builtin);
-        assert_eq!(plugin.id, "hexa");
-        assert_eq!(plugin.name, "Hexa");
-        assert_eq!(plugin.vendor, "klang-studio");
+    fn catalog_has_the_localized_name() {
+        assert_eq!(CATALOG.id, "hexa");
+        assert_eq!(CATALOG.name, "Hexa");
+        assert_eq!(CATALOG.vendor, "klang-studio");
         assert_eq!(CATALOG.role, DeviceRole::Instrument);
         assert_eq!(CATALOG.features, ["instrument", "synthesizer"]);
         assert!(!CATALOG.sidechain);

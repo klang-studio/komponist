@@ -1,7 +1,7 @@
 //! The declarative device layout and the auto-layout of foreign plugins (device handoff §3 and §7): pages of a grid of 3 rows and `cols`
 //! columns, cells with a position, a span, an optional half-row slot, a widget kind and the
 //! parameter it edits. Pure data and arithmetic: the app's device frame draws it, the
-//! validator checks it in debug builds ([`validate`]). Internal devices (`komponist-builtin`) define
+//! validator checks it in debug builds ([`validate`]). Plugins define
 //! theirs here too.
 //!
 //! A cell is `56 × 64`, the gap `4`, the margin `8` (`komponist_tokens::device::grid`), so column

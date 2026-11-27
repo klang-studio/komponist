@@ -2653,17 +2653,11 @@ dependencies = [
  "komponist-audio",
  "komponist-audiofile",
  "komponist-bridge",
- "komponist-builtin",
- "komponist-device-core",
  "komponist-engine",
- "komponist-general-sampler",
- "komponist-hexa",
  "komponist-i18n",
  "komponist-ipc",
  "komponist-model",
  "komponist-plugins",
- "komponist-presse",
- "komponist-sampler",
  "komponist-tokens",
  "komponist-ui",
  "libc",
@@ -2744,31 +2738,6 @@ dependencies = [
  "windows-sys 0.61.2",
  "winit",
  "x11rb 0.14.0",
-]
-
-[[package]]
-name = "komponist-builtin"
-version = "0.2.0"
-dependencies = [
- "assert_no_alloc",
- "komponist-arpeggiator",
- "komponist-delay",
- "komponist-device-core",
- "komponist-engine",
- "komponist-eq",
- "komponist-general-sampler",
- "komponist-hexa",
- "komponist-i18n",
- "komponist-ipc",
- "komponist-limiter",
- "komponist-model",
- "komponist-presse",
- "komponist-reverb",
- "komponist-sampler",
- "komponist-scale",
- "komponist-surf",
- "komponist-volt",
- "serde_json",
 ]
 
 [[package]]
@@ -3126,7 +3095,6 @@ name = "komponist-plugins"
 version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
- "komponist-builtin",
  "komponist-engine",
  "komponist-hosting",
  "komponist-i18n",

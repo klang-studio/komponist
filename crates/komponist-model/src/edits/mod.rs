@@ -26,8 +26,8 @@ use std::sync::Arc;
 use crate::audio::{AudioInput, MonitorMode};
 use crate::ids::{ClipId, DeviceId, NoteId, SendId, TrackId};
 use crate::project::{
-    BUILTIN_SAMPLER, Channel, ChannelRef, Clip, ClipContent, ClipKind, DEFAULT_STEP_ROWS, Device,
-    DeviceRole, Hue, MAX_STEPS, MAX_SWING, MidiChannelSel, MidiClip, MidiInputSel, Note,
+    Channel, ChannelRef, Clip, ClipContent, ClipKind, DEFAULT_STEP_ROWS, DRUM_SAMPLER_CLAP_ID,
+    Device, DeviceRole, Hue, MAX_STEPS, MAX_SWING, MidiChannelSel, MidiClip, MidiInputSel, Note,
     PluginFormat, PluginRef, Project, Sidechain, Step, StepClip, StepRow, TRACK_HEIGHT_DEFAULT,
     TRACK_HEIGHT_MAX, TRACK_HEIGHT_MIN, Take, Track, TrackKind, TrackOutput, VOLUME_DB_MAX,
     VOLUME_DB_MIN,
@@ -1683,9 +1683,11 @@ pub(crate) fn valid_meter(meter: Meter) -> bool {
     (1..=32).contains(&meter.num) && matches!(meter.den, 1 | 2 | 4 | 8 | 16)
 }
 
-/// Whether `plugin` is the built-in drum sampler.
+/// Whether `plugin` is the packaged drum sampler.
 fn is_drum_sampler(plugin: &PluginRef) -> bool {
-    plugin.format == PluginFormat::Builtin && plugin.id == BUILTIN_SAMPLER
+    plugin.format == PluginFormat::Clap
+        && plugin.id == DRUM_SAMPLER_CLAP_ID
+        && plugin.module.as_ref() == "bundled-clap/komponist_sampler_clap.clap"
 }
 
 /// `ids` without repetitions, in first-seen order.

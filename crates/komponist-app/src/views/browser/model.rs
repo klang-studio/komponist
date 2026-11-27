@@ -403,7 +403,7 @@ fn preset_key(entry: &CatalogEntry, category: Option<&str>) -> String {
 }
 
 fn preset_folder_keys(entry: &CatalogEntry) -> impl Iterator<Item = String> + '_ {
-    let categories = komponist_plugins::presets::categories(&entry.clap_presets);
+    let categories = komponist_ipc::clap_presets::categories(&entry.clap_presets);
     let uncategorized = entry
         .clap_presets
         .iter()
@@ -1127,7 +1127,7 @@ mod tests {
             PluginKind::Effect,
             &["reverb"],
         )]);
-        let external = c.entries().iter().find(|e| !e.is_builtin()).unwrap();
+        let external = c.entries().iter().next().unwrap();
         let mut bundled = external.clone();
         bundled.plugin.module = format!("bundled-clap/{}", external.plugin.module).into();
         let mut favorites = Favorites(Vec::new());
@@ -1165,11 +1165,7 @@ mod tests {
         let mut f = Favorites(Vec::new());
         let rows = rows_for(&c, &f, &p, BrowserSegment::All, "");
         assert_eq!(rows[0].name, "Instrumente", "no favourites, no section");
-        let hall = c
-            .entries()
-            .iter()
-            .find(|e| e.plugin.id == "hall" && !e.is_builtin())
-            .unwrap();
+        let hall = c.entries().iter().find(|e| e.plugin.id == "hall").unwrap();
         f.toggle(&hall.plugin);
         let rows = rows_for(&c, &f, &p, BrowserSegment::All, "");
         assert_eq!(names_of(&rows[..2]), ["Favoriten", "Dragonfly Hall Reverb"]);
@@ -1216,7 +1212,10 @@ mod tests {
         );
         // Lead plays hexa; Pad plays Surge XT (no hexa there).
         let plugin = p.tracks[2].channel.devices[0].plugin.clone();
-        let source = komponist_plugins::presets::legacy_source(3);
+        let source = ClapPresetSource {
+            location: komponist_ipc::clap_presets::ClapPresetLocation::Plugin,
+            load_key: Some(b"test-preset".to_vec()),
+        };
         let preset = Row::new(
             RowKind::Preset {
                 plugin: plugin.clone(),

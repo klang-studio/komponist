@@ -6,9 +6,7 @@ use std::collections::BTreeSet;
 
 use komponist_i18n::Lang;
 use komponist_model::routing as model_routing;
-use komponist_model::{
-    Channel, ChannelRef, Device, DeviceId, DeviceRole, PluginFormat, Project, TrackId,
-};
+use komponist_model::{Channel, ChannelRef, Device, DeviceId, DeviceRole, Project, TrackId};
 use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::device_host::DeviceHost;
@@ -218,8 +216,7 @@ fn inserts(lang: Lang, channel: &Channel, host: &dyn DeviceHost) -> Vec<Insert> 
             midi: d.role == DeviceRole::MidiEffect,
             bypass: d.bypass,
             state: SlotState::from(&host.status(d.id)),
-            internal: !host.has_gui(d.id)
-                && (d.plugin.format == PluginFormat::Builtin || host.native_layout(d.id).is_some()),
+            internal: !host.has_gui(d.id) && host.native_layout(d.id).is_some(),
             late: None,
         })
         .collect()

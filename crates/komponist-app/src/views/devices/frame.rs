@@ -743,7 +743,7 @@ fn preset_menu(
     response: &Response,
     presets: &[komponist_ipc::clap_presets::ClapPreset],
 ) -> Option<usize> {
-    let categories = komponist_plugins::presets::categories(presets);
+    let categories = komponist_ipc::clap_presets::categories(presets);
     let entries_for = |category| {
         presets
             .iter()

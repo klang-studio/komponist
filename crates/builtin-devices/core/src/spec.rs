@@ -3,18 +3,18 @@
 use std::sync::OnceLock;
 
 use komponist_i18n::Lang;
+use komponist_model::DeviceRole;
 use komponist_model::params::layout::DeviceLayout;
 use komponist_model::params::{ParamId, ParamInfo};
-use komponist_model::{DeviceRole, PluginFormat, PluginRef};
 
 /// The `"params"` object of a saved parameter-map device state.
 pub type StateParams = serde_json::Map<String, serde_json::Value>;
 
 /// Catalog metadata for a built-in device, independent of its processor and state format.
 pub struct CatalogSpec {
-    /// Catalog ID, saved in projects.
+    /// Short authoring identifier.
     pub id: &'static str,
-    /// The name stored in projects ([`PluginRef::name`]) and the German name.
+    /// The default catalog name.
     pub name: &'static str,
     /// Localized catalog and card name.
     pub name_in: fn(Lang) -> &'static str,
@@ -24,24 +24,10 @@ pub struct CatalogSpec {
     pub role: DeviceRole,
     /// CLAP-style features for browser categories and search.
     pub features: &'static [&'static str],
-    /// Vendor stored in the project reference.
+    /// Device vendor.
     pub vendor: &'static str,
     /// Whether the device offers a sidechain input.
     pub sidechain: bool,
-}
-
-impl CatalogSpec {
-    /// Creates the project reference for this device. The stored name is independent of UI language.
-    pub fn plugin_ref(&self) -> PluginRef {
-        PluginRef {
-            format: PluginFormat::Builtin,
-            id: self.id.into(),
-            name: self.name.into(),
-            vendor: self.vendor.into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-            module: Box::default(),
-        }
-    }
 }
 
 /// Catalog metadata, layout, presets and state for a device.

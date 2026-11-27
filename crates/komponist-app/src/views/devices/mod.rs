@@ -124,7 +124,7 @@ impl View for Devices {
                     .and_then(|layout| layout.parameter_display(param.wire));
                 let target = komponist_model::automation::AutomationTarget::Param {
                     device: c.device,
-                    param: param.project_id(c.bundled_editor),
+                    param: param.info.id.clone(),
                 };
                 let control = param
                     .info
@@ -133,15 +133,10 @@ impl View for Devices {
                     .flatten();
                 let driven = control.as_ref().and_then(|control| control.driver.as_ref());
                 if let Some(driver) = driven {
-                    param.value = param.display_at_position(
-                        display,
-                        c.bundled_editor,
-                        f64::from(driver.value),
-                    );
+                    param.value = param.display_at_position(display, f64::from(driver.value));
                     param.text = param.info.format(param.value);
                 } else if let Some(value) = ctx.automation_value(owner, &target) {
-                    param.value =
-                        param.display_at_position(display, c.bundled_editor, f64::from(value));
+                    param.value = param.display_at_position(display, f64::from(value));
                     param.text = param.info.format(param.value);
                     let ink = if ctx
                         .automation_capture
@@ -172,7 +167,6 @@ impl View for Devices {
         for c in &mut cards {
             let running = c.state == model::CardState::Ok;
             c.late = self.late.state(ctx.engine.host(), c.device, running, now);
-            c.levels = ctx.meters.device(c.device);
         }
         let ids: Vec<DeviceId> = cards.iter().map(|c| c.device).collect();
         self.late.retain(&ids);
@@ -280,21 +274,6 @@ impl View for Devices {
                 ctx.meters
                     .named_pad_activity(c.device, tap, bank.pads.len(), now)
             });
-            let spectrum = model::shows_spectrum(c);
-            c.analysis = ctx.meters.analysis(c.device, show && spectrum, now);
-            // The compressor's level point and reduction history likewise.
-            let authored_dynamics = c.native_page().is_some_and(|page| {
-                use komponist_ipc::native_layout::GraphKind;
-                page.cells.iter().any(|cell| {
-                    cell.graph.as_ref().is_some_and(|graph| {
-                        matches!(graph.kind, GraphKind::Compressor | GraphKind::GrHistory)
-                            && !graph.signal_taps.is_empty()
-                    })
-                })
-            });
-            if model::has_dynamics_graph(c) && (!show || !authored_dynamics) {
-                c.dynamics = ctx.meters.dynamics(c.device, show, now);
-            }
             c.native_meter_levels = c
                 .native_page()
                 .filter(|_| show)

@@ -571,11 +571,6 @@ impl App {
                     DeviceStatus::Ok if self.engine.host().render_assets_pending(d) => {
                         DeviceState::Loading
                     }
-                    DeviceStatus::Ok
-                        if self.engine.host().render_asset_preparation_failed(d.id) =>
-                    {
-                        DeviceState::LoadFailed
-                    }
                     DeviceStatus::Ok => continue,
                     DeviceStatus::Loading => DeviceState::Loading,
                     DeviceStatus::Missing => DeviceState::Missing,

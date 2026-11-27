@@ -56,19 +56,15 @@ pub const DEFAULT_STEP_ROWS: [(&str, u8); 8] = [
     ("Perc", 47),
 ];
 
-/// Catalog id of the built-in hexa instrument (in process, `komponist-builtin`), as project files store it.
-pub const BUILTIN_HEXA: &str = "hexa";
-/// Display name of [`BUILTIN_HEXA`].
+/// Display name of the packaged Hexa instrument.
 pub const HEXA_NAME: &str = "Hexa";
-/// Catalog id of the built-in volt instrument, as project files store it.
-pub const BUILTIN_VOLT: &str = "volt";
-/// Display name of [`BUILTIN_VOLT`].
+/// Display name of the packaged Volt instrument.
 pub const VOLT_NAME: &str = "Volt";
-/// Display name of the built-in compressor (id `"presse"`, `komponist_builtin::Internal::Presse`).
+/// Display name of the packaged compressor.
 pub const PRESSE_NAME: &str = "Presse";
-/// Catalog id of the built-in drum sampler (`komponist_sampler`, in process, WP-87).
-pub const BUILTIN_SAMPLER: &str = "sampler";
-/// Display name of the built-in drum sampler, whose catalog ID stays `sampler`.
+/// CLAP ID of the packaged drum sampler.
+pub const DRUM_SAMPLER_CLAP_ID: &str = "org.klang-studio.komponist.sampler";
+/// Display name of the packaged drum sampler.
 pub const DRUM_SAMPLER_NAME: &str = "Klopfer";
 
 /// A whole project: the root of the document tree.
@@ -744,8 +740,7 @@ pub enum DeviceRole {
 pub struct PluginRef {
     /// Plugin format.
     pub format: PluginFormat,
-    /// Format-specific id: [`BUILTIN_HEXA`] / [`BUILTIN_SAMPLER`] for built-ins, the CLAP plugin
-    /// id (`com.example.synth`), or the VST3 class id as 32 upper-case hex digits.
+    /// Format-specific id: the CLAP plugin id (`com.example.synth`), or the VST3 class id as 32 upper-case hex digits.
     pub id: String,
     /// Display name at the time the device was added ("Vital"); shown when the plugin is missing.
     pub name: String,
@@ -754,7 +749,7 @@ pub struct PluginRef {
     /// Version string at the time the device was added (informational).
     pub version: String,
     /// File name of the plugin module at the time the device was added ("Vital.vst3",
-    /// "Surge XT.clap"); shown in the missing-plugins list (S06). Empty for built-ins; not written then.
+    /// "Surge XT.clap"); shown in the missing-plugins list (S06).
     /// Bundled CLAP references use the stable `bundled-clap/` prefix and require the packaged
     /// catalog. A project cannot use this prefix to establish trust in a library.
     ///
@@ -764,12 +759,10 @@ pub struct PluginRef {
     pub module: Box<str>,
 }
 
-/// Plugin format of a [`PluginRef`]. Shown as the format tag "INTERN" / "CLAP" / "VST3".
+/// Plugin format of a [`PluginRef`]. Shown as the format tag "CLAP" / "VST3".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PluginFormat {
-    /// Shipped with komponist (hexa, the sampler and the internal effects, all in process).
-    Builtin,
     /// A CLAP plugin.
     Clap,
     /// A VST3 plugin.

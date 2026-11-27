@@ -23,7 +23,6 @@ use komponist_ui::widgets::device::KnobCellOptions;
 use komponist_ui::widgets::device::choice::{
     DropdownCell, Glyph, Segment, SegmentOption, ToggleButton, Wave,
 };
-use komponist_ui::widgets::device::fm_algorithm::{FmAlgorithm, Topology};
 use komponist_ui::widgets::device::graph::configs::{self, band};
 use komponist_ui::widgets::device::graph::{
     AreaAction, Axis, AxisKind, Bind, Graph, GraphEvent, GraphSpec, Handle, HandleLook, Look,
@@ -252,10 +251,6 @@ pub(crate) fn draw_cell(
             native_pads(cu, out, card, cell, palette, rect, bank);
             true
         }),
-        (WidgetKind::FmAlgorithm, p) => {
-            fm(cu, card, cell, p, palette, rect, &ctx);
-            true
-        }
         (WidgetKind::Graph, _) => graph(cu, out, card, palette, cell, &ctx, rect),
         (WidgetKind::Canvas, _) => super::canvas::draw(cu, card, cell, palette, rect),
         _ => false,
@@ -386,7 +381,7 @@ pub(super) fn touch(
                         replace: None,
                         target: komponist_model::automation::AutomationTarget::Param {
                             device: card.device,
-                            param: p.project_id(card.bundled_editor),
+                            param: p.info.id.clone(),
                         },
                         label: format!("{} · {}", card.name, p.name()),
                     },
@@ -408,7 +403,7 @@ pub(super) fn begin_param(card: &Card, id: u32) -> Action {
 pub(super) fn touch_action(card: &Card, p: &Param, dragging: bool) -> Action {
     Action::Ui(UiAction::TouchParam {
         device: card.device,
-        param: p.project_id(card.bundled_editor),
+        param: p.info.id.clone(),
         dragging,
     })
 }
@@ -597,7 +592,7 @@ fn number(
         _ => return false,
     };
     // The compatibility parameter model keeps compact localized values such as "15%".
-    let native = card.native_layout.is_some() && !card.bundled_editor;
+    let native = card.native_layout.is_some();
     let current = p.text_at(p.value);
     let unit = split_unit(&current, native).1.to_owned();
     let plain_text = |v: f64| {
@@ -881,29 +876,6 @@ fn carrier(card: &Card, cell: &Cell) -> bool {
     let Some(id) = &cell.carrier else {
         return true;
     };
-    // Changing Hexa's algorithm edits the patch routing as a group. The separate output
-    // CLAP bindings can still report their last individual edits.
-    if card.bundled_editor
-        && let Some(routing) = card.routing
-        && let Some(op) = id
-            .as_str()
-            .strip_prefix("op")
-            .and_then(|id| id.strip_suffix("_output"))
-            .and_then(|number| number.parse::<usize>().ok())
-            .and_then(|number| number.checked_sub(1))
-            .filter(|&op| op < routing.modulates.len())
-        && let Some(algorithm) = card
-            .params
-            .iter()
-            .find(|p| p.info.id.as_str() == "algorithm")
-    {
-        let number = algorithm.value.round() as usize;
-        return if number == 0 {
-            routing.outputs & (1 << op) != 0
-        } else {
-            crate::device_host::builtin_fm_carrier(number, op)
-        };
-    }
     card.param(id).is_none_or(|p| p.value >= 0.5)
 }
 
@@ -1005,28 +977,7 @@ fn control_alternate<'c>(card: &'c Card, p: &'c Param) -> &'c Param {
             .and_then(|alternate| card.param(&ParamId::plugin(alternate.binding.param_id)))
             .unwrap_or(p);
     }
-    if p.info.id.plugin_id().is_some() {
-        return p;
-    }
-    legacy_synced_divider(card, p)
-}
-
-fn legacy_synced_divider<'c>(card: &'c Card, p: &'c Param) -> &'c Param {
-    let Some(prefix) = p.info.id.as_str().strip_suffix("_rate") else {
-        return p;
-    };
-    let on = card
-        .param(&komponist_model::params::ParamId::new(format!(
-            "{prefix}_sync"
-        )))
-        .is_some_and(|sync| sync.value >= 0.5);
-    if !on {
-        return p;
-    }
-    card.param(&komponist_model::params::ParamId::new(format!(
-        "{prefix}_div"
-    )))
-    .unwrap_or(p)
+    p
 }
 
 /// The columns of a [`WidgetKind::ColumnSelect`] overlay: a press anywhere in a column (also on
@@ -1241,58 +1192,6 @@ fn native_pads(
             })),
             None => {}
         }
-    }
-}
-
-/// The FM algorithm display of hexa's algorithm table; the parameter is the algorithm number
-/// (1 …). Without a parameter it shows algorithm 1.
-fn fm(
-    cu: &mut Ui,
-    card: &Card,
-    cell: &Cell,
-    p: Option<&Param>,
-    palette: &TrackPalette,
-    rect: Rect,
-    ctx: &ParamContext,
-) {
-    let t = komponist_ui::lang(cu.ctx());
-    // Algorithm 0 is free routing: the display draws the routing the patch really has.
-    let value = p.map_or(1, |p| p.value.round().max(0.0) as usize);
-    let free = value == 0 && card.routing.is_some();
-    let number = value.max(1);
-    let routing = card.routing.filter(|_| free);
-    let topology = match &routing {
-        Some(r) => Topology {
-            modulates: &r.modulates,
-            outputs: Some(r.outputs),
-            feedback: r.feedback,
-        },
-        None => {
-            let (modulates, feedback) = crate::device_host::builtin_fm_algorithm(number);
-            Topology {
-                modulates,
-                outputs: None,
-                feedback: Some(feedback),
-            }
-        }
-    };
-    let selected = selected_entry(ctx, ENV_OP, topology.modulates.len() as u8) - 1;
-    let mut display = FmAlgorithm::new(number, topology, palette);
-    if free {
-        display = display.titled(t.devices_fm_free());
-    }
-    let out = cu
-        .scope_builder(egui::UiBuilder::new().max_rect(rect), |cu| {
-            display
-                .cells(cell.cols, cell.rows)
-                .selected(Some(selected))
-                .show(cu)
-        })
-        .inner;
-    if let Some(c) = out.clicked
-        && set_context(cu.ctx(), card.device, ENV_OP, c + 1)
-    {
-        cu.ctx().request_repaint();
     }
 }
 
@@ -2054,7 +1953,6 @@ mod tests {
             asset_waveforms: Default::default(),
             asset_names: Default::default(),
             pad_activity: None,
-            bundled_editor: false,
             device: DeviceId(7),
             automation_owner: None,
             automation: Default::default(),
@@ -2111,7 +2009,6 @@ mod tests {
             analysis: None,
             dynamics: None,
             graph_signals: Default::default(),
-            routing: None,
         }
     }
 
@@ -2769,7 +2666,6 @@ mod tests {
     fn an_authored_xy_panel_keeps_physical_axes_and_normalized_actions() {
         use komponist_ipc::control::ParamInfo as WireInfo;
         use komponist_ipc::native_layout::NativeLayout;
-        use komponist_model::params::ValueTexts;
         use serde_json::json;
         use std::sync::Arc;
 
@@ -2795,107 +2691,41 @@ mod tests {
         })).unwrap()).unwrap());
 
         for lang in Lang::ALL {
-            let mut legacy = card();
-            legacy.bundled_editor = true;
-            legacy.params = [
-                (
-                    42,
-                    lang.param_time(),
-                    ParamKind::scaled(1.0, 2000.0, Scale::Log),
-                    375.0,
-                    Unit::Ms,
-                ),
-                (
-                    43,
-                    lang.param_feedback(),
-                    ParamKind::lin(0.0, 0.95),
-                    0.42,
-                    Unit::Percent,
-                ),
-            ]
-            .into_iter()
-            .map(|(wire, name, kind, value, unit)| {
-                let mut p = param(wire, name, kind, value, value);
-                p.info = p.info.unit(unit).texts(ValueTexts {
-                    on: lang.value_on(),
-                    off: lang.value_off(),
-                    percent: lang.value_percent(),
-                });
-                p.text = p.info.format(value);
-                p
-            })
-            .collect();
-            legacy.layout = DeviceLayout::single(Page {
-                name: String::new(),
-                cols: 4,
-                cells: vec![
-                    Cell::graph(
-                        0,
-                        0,
-                        2,
-                        2,
-                        GraphBinding::new(GraphConfig::Xy)
-                            .bind("x", "p42")
-                            .bind("y", "p43"),
-                    ),
-                    Cell::knob(2, 0, ParamId::new("p42")),
-                    Cell::knob(3, 0, ParamId::new("p43")),
-                ],
-                dividers: Vec::new(),
-            });
-            let mut authored = legacy.clone();
-            authored.bundled_editor = false;
+            let mut authored = card();
             authored.layout = model::native_card_layout(&native, lang);
             authored.native_layout = Some(Arc::clone(&native));
-            let wires: Vec<_> = legacy
-                .params
-                .iter()
-                .map(|p| WireInfo {
-                    id: p.wire,
-                    name: "Wire label".into(),
-                    module: String::new(),
-                    min: 0.0,
-                    max: 1.0,
-                    default: f64::from(p.info.default_normalized() as f32),
-                    step_count: 0,
-                    flags: komponist_ipc::control::param_flags::AUTOMATABLE,
-                })
-                .collect();
+            let wires = [42, 43].map(|id| WireInfo {
+                id,
+                name: "Wire label".into(),
+                module: String::new(),
+                min: 0.0,
+                max: 1.0,
+                default: 0.5,
+                step_count: 0,
+                flags: komponist_ipc::control::param_flags::AUTOMATABLE,
+            });
             assert!(native.validate_params(&wires).is_ok());
             authored.params = wires
                 .iter()
                 .map(|wire| model::native_param(lang, &native, wire, None))
                 .collect();
             let time = &authored.params[0];
-            assert_eq!(time.project_id(false), ParamId::plugin(42));
-            assert!((time.value_at_normalized(false, 0.5) - 2000.0_f64.sqrt()).abs() < 1e-9);
+            assert_eq!(time.info.id, ParamId::plugin(42));
+            assert!((time.info.to_plain(0.5) - 2000.0_f64.sqrt()).abs() < 1e-9);
             assert_eq!(time.text_at(time.value), "375 ms");
             assert_eq!(
                 authored.params[1].text,
                 format!("42{}", lang.value_percent())
             );
 
-            let test = |card| localized_graph_harness(card, egui::vec2(310.0, 240.0), lang);
-            let mut old = test(legacy);
-            let mut new = test(authored);
-            let legacy_image = old.render().unwrap();
-            let native_image = new.render().unwrap();
-            assert!(
-                legacy_image == native_image,
-                "{} XY rendering differs",
-                lang.code()
-            );
+            let mut harness = localized_graph_harness(authored, egui::vec2(310.0, 240.0), lang);
             let axis = format!("{} {}", lang.ui_graph_xy(), lang.param_time());
-            for harness in [&mut old, &mut new] {
-                harness.get_by_role_and_label(Role::Group, lang.ui_graph_xy());
-                let slider = harness.get_by_role_and_label(Role::Slider, &axis);
-                assert_eq!(slider.value().as_deref(), Some("375 ms"));
-                slider.increment_accesskit();
-                harness.run();
-            }
-            let legacy_actions = set_params(&old);
-            assert!(!legacy_actions.is_empty());
-            assert_eq!(legacy_actions, set_params(&new));
+            harness.get_by_role_and_label(Role::Group, lang.ui_graph_xy());
+            let slider = harness.get_by_role_and_label(Role::Slider, &axis);
+            assert_eq!(slider.value().as_deref(), Some("375 ms"));
+            slider.increment_accesskit();
+            harness.run();
+            assert!(!set_params(&harness).is_empty());
         }
     }
 

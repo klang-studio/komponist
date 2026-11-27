@@ -53,7 +53,7 @@ use komponist_model::project::SavedPluginState;
 use komponist_model::{DeviceId, Document, Project, Tick, TrackId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent, ProcessorSetup};
 
-use crate::device_host::{DeviceHost, LegacyParameters};
+use crate::device_host::DeviceHost;
 
 /// How long [`EngineSync::shutdown`] lets the engine drain its last commands.
 const SHUTDOWN_DRAIN: Duration = Duration::from_millis(30);
@@ -294,14 +294,6 @@ impl CompileEnv for Env<'_> {
         param: &komponist_model::params::ParamId,
     ) -> Option<komponist_engine::automation::Parameter> {
         use komponist_engine::automation::{Parameter, PlainMap};
-        if let Some(parameters) = LegacyParameters::new(device) {
-            let p = parameters.get(komponist_i18n::Lang::default(), param)?;
-            return p.info.automatable.then(|| Parameter {
-                wire_id: p.wire,
-                map: PlainMap::from_kind(&p.info.kind),
-                base: p.value,
-            });
-        }
         if matches!(
             self.host.status(device.id),
             DeviceStatus::Missing | DeviceStatus::Crashed(_)
@@ -605,8 +597,6 @@ impl EngineSync {
                 continue;
             };
             if let Some(processor) = self.host.create_processor(device, setup) {
-                self.host
-                    .prepare_device_assets(device, project.tempo.bpm, None);
                 new_processor_metadata |= processor.latency() > 0
                     || self
                         .host
@@ -633,16 +623,6 @@ impl EngineSync {
                 // Unmapping makes the last controlled value the plugin's ordinary base. Any
                 // automation lane that becomes active again must compile against that base.
                 next = self.compile_project(project);
-            }
-        }
-        if self
-            .previous
-            .as_ref()
-            .is_some_and(|p| p.tempo_map.tempo != project.tempo)
-        {
-            for device in project.tracks.iter().flat_map(|t| &t.channel.devices) {
-                self.host
-                    .prepare_device_assets(device, project.tempo.bpm, None);
             }
         }
         let compile::CompileResult {
@@ -678,7 +658,6 @@ impl EngineSync {
         };
         let setup = self.setup();
         if let Some(processor) = self.host.create_processor(d, setup) {
-            self.host.prepare_device_assets(d, project.tempo.bpm, None);
             self.reloads += 1;
             self.send(Command::InsertProcessor { slot, processor });
             self.host.set_macro_params(&self.macro_params);
@@ -701,9 +680,7 @@ impl EngineSync {
     /// Brings the running devices in line with their document state after a change that
     /// replaced states outside the dispatcher's own paths (undo, redo, a preset, a paste over):
     /// every device in both `before` and `after` whose state differs follows `after`.
-    ///
-    /// A reference processor can follow parameter and embedded asset edits in place. Hosted
-    /// plugins restore their opaque saved state through the generic state interface.
+    /// Plugins restore their opaque saved state through the generic state interface.
     ///
     /// Devices without slot (not in the sent program yet) are skipped: their processor is made
     /// from the document state when the program is sent.
@@ -711,7 +688,6 @@ impl EngineSync {
         &mut self,
         before: &Project,
         after: &Project,
-        project_dir: Option<&std::path::Path>,
         startup_states: &HashMap<DeviceId, SavedPluginState>,
     ) {
         let devices = after
@@ -736,13 +712,7 @@ impl EngineSync {
                     let state_changed =
                         old.state != device.state || old.parameter_bases != device.parameter_bases;
                     if state_changed {
-                        self.follow_state(
-                            old,
-                            device,
-                            after,
-                            project_dir,
-                            startup_states.get(&device.id),
-                        );
+                        self.follow_state(device, after, startup_states.get(&device.id));
                     }
                     if state_changed || old.asset_links != device.asset_links {
                         self.host.sync_asset_links(
@@ -763,25 +733,11 @@ impl EngineSync {
 
     fn follow_state(
         &mut self,
-        old: &komponist_model::Device,
         device: &komponist_model::Device,
         project: &Project,
-        project_dir: Option<&std::path::Path>,
         startup_state: Option<&SavedPluginState>,
     ) {
-        if let Some(parameters) = LegacyParameters::new(device) {
-            let Some(changes) = parameters.changes_from(old.state.as_deref()) else {
-                self.reload_device(project, device.id);
-                return;
-            };
-            let slot = self.slot_of(device.id).expect("checked by the caller");
-            for (id, value) in changes {
-                self.send(Command::SetParam { slot, id, value });
-            }
-            self.host
-                .follow_embedded_assets(old, device, project.tempo.bpm, project_dir);
-            self.reassert_device_macros(device.id);
-        } else if let Some(state) = device.saved_state() {
+        if let Some(state) = device.saved_state() {
             if !self.host.restore_saved_state(device.id, &state)
                 && komponist_plugins::requires_bundled(&device.plugin)
                 && self.host.status(device.id) == DeviceStatus::Loading

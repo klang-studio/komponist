@@ -348,7 +348,7 @@ fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
 /// A placeholder reference for the disabled "Kein Instrument" entry (never sent).
 fn no_instrument(t: Lang) -> PluginRef {
     PluginRef {
-        format: komponist_model::PluginFormat::Builtin,
+        format: komponist_model::PluginFormat::Clap,
         id: String::new(),
         name: t.inspector_track_no_instrument().to_owned(),
         vendor: String::new(),
