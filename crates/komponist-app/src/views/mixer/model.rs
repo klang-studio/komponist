@@ -385,7 +385,7 @@ mod tests {
 
     /// The demo with the shipped Hexa on its Lead track: the one device the packaged test host knows.
     fn demo_with_shipped_lead() -> komponist_model::Project {
-        use crate::device_host::DeviceHost as _;
+        use crate::device_host::PluginCatalogHost as _;
         let host = crate::app::App::headless_plugin_host();
         let hexa = host
             .catalog()
@@ -407,7 +407,7 @@ mod tests {
     /// The packaged test host that has seen every device of `p` and loaded the shipped ones; the
     /// catalog does not know the demo's other plugins, so they report `Missing`.
     fn host_for(p: &komponist_model::Project) -> crate::device_host::PluginHost {
-        use crate::device_host::DeviceHost as _;
+        use crate::device_host::ProcessorHost as _;
         let mut host = crate::app::App::headless_plugin_host();
         let devices: Vec<_> = p
             .tracks

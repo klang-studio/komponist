@@ -17,7 +17,10 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{BitDepth, ExportRange, ExportSettings};
-use komponist_app::device_host::{DeviceHost, PluginHost};
+use komponist_app::device_host::{
+    AssetHost, DeviceHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost,
+    ParameterHost, PluginCatalogHost, PluginHost, PluginWindowHost, PresetHost, ProcessorHost,
+};
 use komponist_app::dialogs::export::{self as view};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::{self, Settings};
@@ -1025,7 +1028,7 @@ impl Processor for Failing {
     fn reset(&mut self) {}
 }
 
-impl DeviceHost for FailingHost {
+impl ProcessorHost for FailingHost {
     fn create_processor(
         &mut self,
         device: &Device,
@@ -1064,7 +1067,13 @@ impl DeviceHost for FailingHost {
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
         self.packaged.poll()
     }
+}
 
+impl ParameterHost for FailingHost {}
+
+impl DeviceStateHost for FailingHost {}
+
+impl PluginCatalogHost for FailingHost {
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
         self.packaged.role(plugin)
     }
@@ -1072,12 +1081,22 @@ impl DeviceHost for FailingHost {
     fn catalog(&self) -> &Catalog {
         self.packaged.catalog()
     }
+}
 
+impl PresetHost for FailingHost {}
+
+impl AssetHost for FailingHost {}
+
+impl OfflineRenderHost for FailingHost {
     fn set_render_mode(&mut self, mode: RenderMode) {
         *self.mode.lock().unwrap() = Some(mode);
         self.packaged.set_render_mode(mode);
     }
 }
+
+impl PluginWindowHost for FailingHost {}
+
+impl DevicePresentationHost for FailingHost {}
 
 #[test]
 fn a_device_that_drops_out_of_the_render_is_named() {

@@ -725,7 +725,7 @@ mod tests {
 
     #[test]
     fn mapping_mode_preserves_pan_then_the_macro_pans_a_real_synth() {
-        use crate::device_host::DeviceHost as _;
+        use crate::device_host::PluginCatalogHost as _;
         use komponist_ipc::control::RenderMode;
         use komponist_plugins::DeviceStatus;
         use std::time::{Duration, Instant};

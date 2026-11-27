@@ -25,7 +25,7 @@ use komponist_model::project::DEFAULT_STEP_ROWS;
 use komponist_model::{Device, StepClip, Track};
 use komponist_plugin_api::native_layout::PadBank;
 
-use crate::device_host::DeviceHost;
+use crate::device_host::DevicePresentationHost;
 
 /// Rows of a new step clip (S03: 8 pads).
 pub const ROWS: usize = 8;
@@ -38,7 +38,7 @@ pub fn instrument(track: &Track) -> Option<&Device> {
 /// A native pad bank derives note names from its project-linked audio samples.
 pub(crate) fn device_note_names<'a>(
     device: Option<&Device>,
-    host: &'a dyn DeviceHost,
+    host: &'a dyn DevicePresentationHost,
 ) -> Cow<'a, [NoteName]> {
     let Some(device) = device else {
         return Cow::Borrowed(&[]);
@@ -67,7 +67,7 @@ pub(crate) fn device_note_names<'a>(
 
 pub(crate) fn pad_bank<'a>(
     device: Option<&Device>,
-    host: &'a dyn DeviceHost,
+    host: &'a dyn DevicePresentationHost,
 ) -> Option<&'a PadBank> {
     host.native_layout(device?.id)?.pad_bank.as_ref()
 }

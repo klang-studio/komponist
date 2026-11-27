@@ -4,7 +4,10 @@ use std::sync::mpsc::{self, Sender};
 use egui::Key;
 use egui_kittest::Harness;
 use komponist_app::actions::{SelectMode, SelectionChange};
-use komponist_app::device_host::DeviceHost;
+use komponist_app::device_host::{
+    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
+    PluginCatalogHost, PluginWindowHost, PresetHost, ProcessorHost,
+};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::{Action, App, EditAction, ProjectAction, TransportAction, UiAction};
@@ -18,7 +21,7 @@ struct SineHost {
     catalog: Catalog,
     logs: Sender<EventLog>,
 }
-impl DeviceHost for SineHost {
+impl ProcessorHost for SineHost {
     fn create_processor(
         &mut self,
         _: &Device,
@@ -29,23 +32,45 @@ impl DeviceHost for SineHost {
         let _ = self.logs.send(log);
         Some(Box::new(sine))
     }
+
     fn release(&mut self, _: DeviceId) {}
+
     fn status(&self, _: DeviceId) -> DeviceStatus {
         DeviceStatus::Ok
     }
+
     fn latency(&self, _: DeviceId) -> u32 {
         0
     }
+
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
         Vec::new()
     }
+}
+
+impl ParameterHost for SineHost {}
+
+impl DeviceStateHost for SineHost {}
+
+impl PluginCatalogHost for SineHost {
     fn role(&self, _: &PluginRef) -> Option<DeviceRole> {
         Some(DeviceRole::Instrument)
     }
+
     fn catalog(&self) -> &Catalog {
         &self.catalog
     }
 }
+
+impl PresetHost for SineHost {}
+
+impl AssetHost for SineHost {}
+
+impl OfflineRenderHost for SineHost {}
+
+impl PluginWindowHost for SineHost {}
+
+impl DevicePresentationHost for SineHost {}
 
 fn rig() -> (Harness<'static, App>, [TrackId; 2], Vec<EventLog>) {
     let plugin = komponist_model::fixtures::demo_project().tracks[1]

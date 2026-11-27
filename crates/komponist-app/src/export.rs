@@ -11,8 +11,8 @@
 //!    cannot be loaded stop the export and are named in the status message.
 //! 3. **Detach**: the document is synced, the engine leaves the stream together with its handle
 //!    ([`EngineSync::detach`](crate::engine_sync::EngineSync::detach)), the bridges switch to
-//!    offline processing ([`DeviceHost::set_render_mode`](crate::device_host::DeviceHost)) and a
-//!    worker thread takes engine, program and job.
+//!    offline processing through [`OfflineRenderHost::set_render_mode`], and a worker thread
+//!    takes engine, program and job.
 //! 4. **Worker**: sets the export rate when it differs from the device's
 //!    (`Engine::set_sample_rate` re-activates every processor) and compiles the program again
 //!    against the processors in the engine (`komponist_engine::export::recompile`: delay
@@ -62,6 +62,7 @@ use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::actions::{Action, BitDepth, ExportRange, ExportSettings, ProjectAction, UiAction};
 use crate::app::App;
+use crate::device_host::OfflineRenderHost;
 use crate::dialogs::Overlay;
 use crate::dialogs::export::{
     self as view, DeviceRow, DeviceState, Output, ProgressView, SettingsView, Stage,
@@ -241,6 +242,22 @@ struct Run {
     diagnostics: Vec<komponist_engine::compile::Diagnostic>,
     /// Devices that negotiated explicit preparation before the engine was detached.
     offline_devices: Vec<DeviceId>,
+}
+
+impl Run {
+    fn set_render_mode(&self, host: &mut dyn OfflineRenderHost, mode: RenderMode) {
+        if mode == RenderMode::Realtime {
+            for &device in &self.offline_devices {
+                host.set_offline_preparation(device, None);
+            }
+        }
+        if let Some(flatten) = &self.flatten {
+            let ids: Vec<_> = flatten.scope.devices().collect();
+            host.set_selected_render_mode(&ids, mode);
+        } else {
+            host.set_render_mode(mode);
+        }
+    }
 }
 
 enum Phase {
@@ -874,9 +891,9 @@ impl App {
                 return;
             }
         };
-        self.set_export_render_mode(&run, RenderMode::Offline);
+        run.set_render_mode(self.engine.host_mut(), RenderMode::Offline);
         if let Err(error) = send_engine.send(detached) {
-            self.set_export_render_mode(&run, RenderMode::Realtime);
+            run.set_render_mode(self.engine.host_mut(), RenderMode::Realtime);
             self.engine.attach(error.0);
             fail(self, &self.lang.flatten_worker_failed());
             return;
@@ -1025,7 +1042,7 @@ impl App {
         {
             let _ = thread.join();
         }
-        self.set_export_render_mode(&run, RenderMode::Realtime);
+        run.set_render_mode(self.engine.host_mut(), RenderMode::Realtime);
         self.engine.recover(engine);
         let _ = self.engine.take_rebuild_notice();
         self.export.take_failures();
@@ -1077,7 +1094,7 @@ impl App {
                 .and_then(|flatten| flatten.unavailable(self))
                 .map_or(Ok(report), |(id, _)| Err(ExportError::DeviceFailed(id)))
         });
-        self.set_export_render_mode(&run, RenderMode::Realtime);
+        run.set_render_mode(self.engine.host_mut(), RenderMode::Realtime);
         self.engine.attach(engine);
         self.export.collect_failures(failed);
         self.drain_events();
@@ -1154,21 +1171,6 @@ impl App {
             .filter(|name| !name.trim().is_empty())
             .map_or_else(|| clip.0.to_string(), String::clone);
         (name, crate::audio_error::reason(self.lang, reason))
-    }
-
-    fn set_export_render_mode(&mut self, run: &Run, mode: RenderMode) {
-        let host = self.engine.host_mut();
-        if mode == RenderMode::Realtime {
-            for &device in &run.offline_devices {
-                host.set_offline_preparation(device, None);
-            }
-        }
-        if let Some(flatten) = &run.flatten {
-            let ids: Vec<_> = flatten.scope.devices().collect();
-            host.set_selected_render_mode(&ids, mode);
-        } else {
-            host.set_render_mode(mode);
-        }
     }
 
     /// The plugin names of the devices in `slots`, without repeats.

@@ -11,7 +11,7 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use komponist_app::actions::{Action, ProjectAction, UiAction};
-use komponist_app::device_host::DeviceHost;
+use komponist_app::device_host::PluginCatalogHost;
 use komponist_app::dialogs::file::{FileBrowser, Purpose};
 use komponist_app::dialogs::format::{self, LocalTime};
 use komponist_app::dialogs::{export, missing_plugins, new_project, settings, start};
@@ -387,7 +387,7 @@ fn a_new_project_and_the_template_are_named_in_english() {
     let p = {
         let host = App::headless_plugin_host();
         let (drums, hexa) = new_project::template_instruments(
-            komponist_app::device_host::DeviceHost::catalog(&host),
+            komponist_app::device_host::PluginCatalogHost::catalog(&host),
         )
         .unwrap();
         new_project::template(Lang::En, drums, hexa)

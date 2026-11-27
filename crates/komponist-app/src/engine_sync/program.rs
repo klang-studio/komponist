@@ -11,20 +11,20 @@ use komponist_model::{DeviceId, Document, Project, Tick, TrackId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
 use komponist_processor::processor::ParameterEditKind;
 
-use crate::device_host::DeviceHost;
+use crate::device_host::{DeviceHost, ParameterHost, ProcessorHost};
 use crate::recording::automation_capture::AutomationCapture;
 
 use super::io::EngineIo;
 
 /// The compiler's view of the app: MIDI ports from the hub, latencies from the device host.
-struct Env<'a> {
+struct Env<'a, H: ?Sized> {
     midi: Option<&'a MidiInputHub>,
-    host: &'a dyn DeviceHost,
+    host: &'a H,
     /// The stream's sample rate: audio clips are compiled to frames of it.
     rate: f64,
 }
 
-impl CompileEnv for Env<'_> {
+impl<H: ProcessorHost + ParameterHost + ?Sized> CompileEnv for Env<'_, H> {
     fn midi_port(&self, device_name: &str) -> Option<MidiPort> {
         self.midi?.port_id(device_name).map(|id| MidiPort(id.0))
     }
@@ -672,6 +672,48 @@ mod tests {
     use crate::app::App;
     use crate::engine_sync::{EngineSync, tests::wait_until};
     use komponist_model::edits;
+
+    #[test]
+    fn compilation_only_needs_processor_and_parameter_capabilities() {
+        struct CompileHost;
+
+        impl ProcessorHost for CompileHost {
+            fn create_processor(
+                &mut self,
+                _: &komponist_model::Device,
+                _: komponist_plugins::ProcessorSetup,
+            ) -> Option<Box<dyn komponist_processor::Processor>> {
+                None
+            }
+
+            fn release(&mut self, _: DeviceId) {}
+
+            fn status(&self, _: DeviceId) -> DeviceStatus {
+                DeviceStatus::Ok
+            }
+
+            fn latency(&self, _: DeviceId) -> u32 {
+                128
+            }
+
+            fn poll(&mut self) -> Vec<PluginManagerEvent> {
+                Vec::new()
+            }
+        }
+
+        impl ParameterHost for CompileHost {}
+
+        let env = Env {
+            midi: None,
+            host: &CompileHost,
+            rate: 48_000.0,
+        };
+        let project = Project::new("Headless");
+        let compiled = compile::build_with_diagnostics(&project, None, &env);
+
+        assert!(compiled.diagnostics.is_empty());
+        assert_eq!(env.device_latency(DeviceId(1)), 128);
+    }
 
     #[test]
     fn the_compiler_uses_the_authored_clap_parameter_ids() {

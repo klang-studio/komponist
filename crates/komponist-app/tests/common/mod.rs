@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_app::App;
-use komponist_app::device_host::{DeviceHost, PluginHost};
+use komponist_app::device_host::{PluginCatalogHost, PluginHost, ProcessorHost};
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::settings::Settings;
 use komponist_audio::{HostKind, StreamConfig};
@@ -125,7 +125,7 @@ pub fn fixture_catalog(
 }
 
 /// The exact reference discovered from the test build of a shipped CLAP bundle.
-pub fn shipped_plugin(host: &dyn DeviceHost, id: &str) -> Option<PluginRef> {
+pub fn shipped_plugin(host: &dyn PluginCatalogHost, id: &str) -> Option<PluginRef> {
     host.catalog()
         .entries()
         .iter()
@@ -134,14 +134,14 @@ pub fn shipped_plugin(host: &dyn DeviceHost, id: &str) -> Option<PluginRef> {
 }
 
 /// The shipped bundle with CLAP ID `org.klang-studio.komponist.<name>` from `host`'s catalogue.
-pub fn shipped(host: &dyn DeviceHost, name: &str) -> PluginRef {
+pub fn shipped(host: &dyn PluginCatalogHost, name: &str) -> PluginRef {
     let id = format!("org.klang-studio.komponist.{name}");
     shipped_plugin(host, &id)
         .unwrap_or_else(|| panic!("build {id} with scripts/build-test-plugins.sh"))
 }
 
 /// The model test song played by shipped instruments on Drums, Bass and Lead.
-pub fn song_with_shipped_instruments(host: &dyn DeviceHost) -> Project {
+pub fn song_with_shipped_instruments(host: &dyn PluginCatalogHost) -> Project {
     let mut project = demo_project();
     for (track, id) in [
         (0, "org.klang-studio.komponist.sampler"),

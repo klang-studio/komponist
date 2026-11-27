@@ -7,7 +7,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use komponist_app::App;
-use komponist_app::device_host::{DeviceHost, PluginHost};
+use komponist_app::device_host::{
+    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
+    PluginCatalogHost, PluginHost, PluginWindowHost, PresetHost, ProcessorHost,
+};
 use komponist_ipc::{PluginDescriptor, PluginFormat as BundleFormat, PluginKind};
 use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef};
 use komponist_plugin_api::params::param_flags;
@@ -204,7 +207,7 @@ impl FakeHost {
     }
 }
 
-impl DeviceHost for FakeHost {
+impl ProcessorHost for FakeHost {
     fn create_processor(
         &mut self,
         device: &Device,
@@ -244,22 +247,15 @@ impl DeviceHost for FakeHost {
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
         self.bundled
             .as_mut()
-            .map_or_else(Vec::new, DeviceHost::poll)
+            .map_or_else(Vec::new, ProcessorHost::poll)
     }
 
-    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
-        match self.catalog.resolve(plugin)?.kind {
-            PluginKind::Instrument => Some(DeviceRole::Instrument),
-            PluginKind::Effect => Some(DeviceRole::Effect),
-            PluginKind::MidiEffect => Some(DeviceRole::MidiEffect),
-            PluginKind::Other => None,
-        }
+    fn late_blocks(&self, device: DeviceId) -> u64 {
+        self.late.lock().unwrap().get(&device).copied().unwrap_or(0)
     }
+}
 
-    fn catalog(&self) -> &Catalog {
-        &self.catalog
-    }
-
+impl ParameterHost for FakeHost {
     fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
         self.params
             .get(&device)
@@ -273,6 +269,58 @@ impl DeviceHost for FakeHost {
             .or_else(|| self.bundled.as_ref()?.param_value(device, id))
     }
 
+    fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+        if !self.params.contains_key(&device) {
+            return self
+                .bundled
+                .as_mut()
+                .is_some_and(|host| host.set_param(device, id, value));
+        }
+        self.set.lock().unwrap().push((device, id, value));
+        true
+    }
+}
+
+impl DeviceStateHost for FakeHost {
+    fn state_warning(&self, device: DeviceId) -> Option<&str> {
+        self.warnings.get(&device).map(String::as_str)
+    }
+}
+
+impl PluginCatalogHost for FakeHost {
+    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
+        match self.catalog.resolve(plugin)?.kind {
+            PluginKind::Instrument => Some(DeviceRole::Instrument),
+            PluginKind::Effect => Some(DeviceRole::Effect),
+            PluginKind::MidiEffect => Some(DeviceRole::MidiEffect),
+            PluginKind::Other => None,
+        }
+    }
+
+    fn catalog(&self) -> &Catalog {
+        &self.catalog
+    }
+}
+
+impl PresetHost for FakeHost {
+    fn clap_presets(&self, device: &Device) -> &[komponist_plugin_api::clap_presets::ClapPreset] {
+        self.bundled
+            .as_ref()
+            .map_or(&[], |host| host.clap_presets(device))
+    }
+}
+
+impl AssetHost for FakeHost {}
+
+impl OfflineRenderHost for FakeHost {}
+
+impl PluginWindowHost for FakeHost {
+    fn has_gui(&self, device: DeviceId) -> bool {
+        self.gui.contains(&device)
+    }
+}
+
+impl DevicePresentationHost for FakeHost {
     fn native_layout(
         &self,
         device: DeviceId,
@@ -285,34 +333,5 @@ impl DeviceHost for FakeHost {
         device: DeviceId,
     ) -> Option<&Arc<komponist_plugin_api::device_canvas::DisplayList>> {
         self.bundled.as_ref()?.device_display(device)
-    }
-
-    fn clap_presets(&self, device: &Device) -> &[komponist_plugin_api::clap_presets::ClapPreset] {
-        self.bundled
-            .as_ref()
-            .map_or(&[], |host| host.clap_presets(device))
-    }
-
-    fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
-        if !self.params.contains_key(&device) {
-            return self
-                .bundled
-                .as_mut()
-                .is_some_and(|host| host.set_param(device, id, value));
-        }
-        self.set.lock().unwrap().push((device, id, value));
-        true
-    }
-
-    fn state_warning(&self, device: DeviceId) -> Option<&str> {
-        self.warnings.get(&device).map(String::as_str)
-    }
-
-    fn has_gui(&self, device: DeviceId) -> bool {
-        self.gui.contains(&device)
-    }
-
-    fn late_blocks(&self, device: DeviceId) -> u64 {
-        self.late.lock().unwrap().get(&device).copied().unwrap_or(0)
     }
 }

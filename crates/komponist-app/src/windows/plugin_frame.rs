@@ -13,11 +13,11 @@
 //!    ([`x11::X11::find_by_title`], 36–70 ms in the spike) and then takes its real title
 //!    ("Surge XT · Pad · komponist"). Its keys are grabbed ([`keys`]).
 //! 2. Once the device runs (`DeviceStatus::Ok`) and the view is "Plugin", the frame creates the
-//!    child below the header (background `surface.0`) and calls `DeviceHost::open_gui` with it
+//!    child below the header (background `surface.0`) and calls `PluginWindowHost::open_gui` with it
 //!    and the frame's `pixels_per_point` as scale.
 //! 3. `GuiOpened`, `GuiSizeRequest`: the frame follows the plugin ([`sizing`]); a fixed-size
 //!    plugin gets a frame the user cannot resize. A user resize of a resizable plugin reaches it
-//!    through `DeviceHost::set_gui_size`.
+//!    through `PluginWindowHost::set_gui_size`.
 //! 4. The bridge dies or stalls (`Crashed`), or "Neu laden" restarts it (`Loading`): the child is
 //!    destroyed and the body shows the device card's state ("Abgestürzt", "Neu laden"); when the
 //!    device runs again, a new child opens the GUI again.
@@ -32,7 +32,7 @@
 //!
 //! An app cannot embed another process's `NSView` (macOS), and a parent/child window pair across
 //! processes would tie the app's input to the plugin's (Windows), so there the plugin view of a
-//! frame is a window of the bridge: `DeviceHost::open_gui` with `GuiTarget::OwnFrame` (the header model, the
+//! frame is a window of the bridge: `PluginWindowHost::open_gui` with `GuiTarget::OwnFrame` (the header model, the
 //! language, where the frame was). The bridge draws the same header (`komponist_ui::plugin_frame`)
 //! and reports what happens in it; the app keeps every decision, as on Linux:
 //!
@@ -103,7 +103,7 @@ use self::sizing::{Chrome, Effect, Px, Sizing};
 use self::x11::X11;
 use crate::actions::{Action, EditAction, PluginAction, UiAction};
 use crate::app::App;
-use crate::device_host::DeviceHost;
+use crate::device_host::PluginWindowHost;
 use crate::keymap::{self, Key, KeyChord};
 use crate::settings::FrameMemory;
 use crate::ui_state::{FocusArea, PluginView, PluginWindow, StatusKind};
@@ -304,7 +304,7 @@ impl PluginFrames {
     /// The app became active (macOS: `NSApplicationDidBecomeActiveNotification`): every frame the
     /// bridges show comes to the front, back to front so their order stays, without taking the
     /// activation from the app (module docs).
-    fn raise_bridge_frames(&self, host: &mut dyn DeviceHost) {
+    fn raise_bridge_frames(&self, host: &mut dyn PluginWindowHost) {
         if !self.bridge_frames {
             return;
         }
@@ -332,7 +332,7 @@ impl PluginFrames {
     fn apply_focus(
         &mut self,
         windows: &[PluginWindow],
-        host: &mut dyn DeviceHost,
+        host: &mut dyn PluginWindowHost,
         ctx: &Context,
         native: bool,
         now: Instant,
@@ -416,7 +416,7 @@ impl PluginFrames {
         }
     }
 
-    fn retire(&mut self, host: &mut dyn DeviceHost, frame: Frame) {
+    fn retire(&mut self, host: &mut dyn PluginWindowHost, frame: Frame) {
         let device = frame.device;
         let open = matches!(frame.gui, Gui::Opening | Gui::Open);
         if open {
@@ -635,7 +635,7 @@ impl App {
     }
 
     /// App exit: moves every plugin area out of its frame, so the frame windows can go while the
-    /// bridges close their GUIs (`DeviceHost::shutdown` follows).
+    /// bridges close their GUIs (`ProcessorHost::shutdown` follows).
     pub(crate) fn shutdown_plugin_frames(&mut self) {
         self.frames.shutdown();
     }
@@ -1997,12 +1997,31 @@ fn frame_ui(ui: &mut egui::Ui, class: ViewportClass, shared: &Mutex<Shared>, ini
 mod controller_tests {
     use super::*;
 
+    #[derive(Default)]
+    struct WindowHost {
+        activated: Option<DeviceId>,
+    }
+
+    impl PluginWindowHost for WindowHost {
+        fn activate_frame(&mut self, device: DeviceId) {
+            self.activated = Some(device);
+        }
+    }
+
+    #[test]
+    fn activation_needs_only_the_window_capability() {
+        let device = DeviceId(1);
+        let mut host = WindowHost::default();
+        activation::bring_to_front(&mut host, device);
+        assert_eq!(host.activated, Some(device));
+    }
+
     #[test]
     fn focus_waits_for_the_frame_and_is_dropped_when_the_window_closes() {
         let device = DeviceId(1);
         let window = PluginWindow::new(device, PluginView::Gui, None);
         let mut frames = PluginFrames::default();
-        let mut host = App::headless_plugin_host();
+        let mut host = WindowHost::default();
         let ctx = Context::default();
         let now = Instant::now();
 

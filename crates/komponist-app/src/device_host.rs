@@ -14,18 +14,18 @@
 //! Read through `app.engine().host()`, change through `app.engine_mut().host_mut()` or, where an
 //! action exists, through [`App::dispatch`](crate::App::dispatch):
 //!
-//! - Device cards, insert slots, track headers (WP-44): [`DeviceHost::status`],
-//!   [`DeviceHost::state_warning`] („Zustand konnte nicht geladen werden“),
-//!   [`DeviceHost::late_blocks`], "Neu laden" = `PluginAction::Reload`.
-//! - Generic parameter grid (WP-44): [`DeviceHost::params`], [`DeviceHost::param_value`]; knob
+//! - Device cards, insert slots, track headers (WP-44): [`ProcessorHost::status`],
+//!   [`DeviceStateHost::state_warning`] („Zustand konnte nicht geladen werden“),
+//!   [`ProcessorHost::late_blocks`], "Neu laden" = `PluginAction::Reload`.
+//! - Generic parameter grid (WP-44): [`ParameterHost::params`], [`ParameterHost::param_value`]; knob
 //!   changes go through `PluginAction::SetParam`.
-//! - Browser (WP-44) and S06/S07 (WP-52): [`DeviceHost::catalog`], [`DeviceHost::role`],
-//!   [`DeviceHost::missing_plugins`], [`DeviceHost::is_scanning`], [`DeviceHost::last_scan`];
+//! - Browser (WP-44) and S06/S07 (WP-52): [`PluginCatalogHost::catalog`], [`PluginCatalogHost::role`],
+//!   [`PluginCatalogHost::missing_plugins`], [`PluginCatalogHost::is_scanning`], [`PluginCatalogHost::last_scan`];
 //!   a rescan is `SettingsAction::RescanPlugins` (or `App::scan_plugins`).
-//! - Step rows (WP-54): [`DeviceHost::note_names`].
-//! - Plugin windows (WP-50): [`DeviceHost::has_gui`], [`DeviceHost::open_gui`] with the frame's
-//!   X11 child, [`DeviceHost::set_gui_size`] after a resize, `PluginAction::CloseWindow` (which
-//!   calls [`DeviceHost::close_gui`]). The answers (`GuiOpened`, `GuiSizeRequest`, `GuiClosed`)
+//! - Step rows (WP-54): [`DevicePresentationHost::note_names`].
+//! - Plugin windows (WP-50): [`PluginWindowHost::has_gui`], [`PluginWindowHost::open_gui`] with the frame's
+//!   X11 child, [`PluginWindowHost::set_gui_size`] after a resize, `PluginAction::CloseWindow` (which
+//!   calls [`PluginWindowHost::close_gui`]). The answers (`GuiOpened`, `GuiSizeRequest`, `GuiClosed`)
 //!   are in `App::device_events` for the frame in which they arrived.
 //!
 //! Thread: UI thread.
@@ -58,14 +58,11 @@ pub fn selected_preset(device: &Device, presets: &[ClapPreset]) -> Option<(usize
     komponist_plugin_api::clap_presets::selected_preset(device.preset.as_ref(), presets)
 }
 
-/// Creates processors for devices and reports their runtime status.
-///
-/// The methods after [`DeviceHost::role`] have defaults for a host without plugin manager (no
-/// parameters, no GUI, no scan).
-pub trait DeviceHost {
+/// Creates and retires running processors and provides their runtime metadata and events.
+pub trait ProcessorHost {
     /// Creates the processor for `device`, already activated for `setup`, for
     /// `Command::InsertProcessor`. `None`: the device plays without a processor (passthrough for
-    /// an effect, silence for an instrument); its [`DeviceHost::status`] says why.
+    /// an effect, silence for an instrument); its [`ProcessorHost::status`] says why.
     ///
     /// Called again for a device that still has a slot ("Neu laden", a missing plugin that a scan
     /// found): the new processor replaces the old one in the same slot.
@@ -89,144 +86,51 @@ pub trait DeviceHost {
     /// snapshots, latency changes, …). Never blocks.
     fn poll(&mut self) -> Vec<PluginManagerEvent>;
 
-    /// Instrument or effect, for a plugin from the browser; `None` if unknown (not in the
-    /// catalog).
-    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole>;
-
     /// Test probe: the CLAP ID of a running instance from the manifest-verified package.
     #[doc(hidden)]
     fn verified_bundle(&self, _device: DeviceId) -> Option<&str> {
         None
     }
 
-    /// The plugins the browser offers, sorted by name.
-    fn catalog(&self) -> &Catalog;
-
-    /// Refresh the latest marker snapshot for this slot.
-    fn request_waveform_markers(&mut self, _device: DeviceId, _slot: u32) {}
-
-    /// Latest marker snapshot from the live device, when available.
-    fn waveform_markers(
-        &self,
-        _device: DeviceId,
-        _slot: u32,
-    ) -> Option<&komponist_plugin_api::waveform_markers::Snapshot> {
-        None
-    }
-
-    /// Queue an edit against a specific live marker snapshot.
-    fn edit_waveform_markers(
-        &mut self,
-        _device: DeviceId,
-        _slot: u32,
-        _request: komponist_plugin_api::waveform_markers::Request,
-    ) -> Result<(), komponist_plugin_api::waveform_markers::EditStatus> {
-        Err(komponist_plugin_api::waveform_markers::EditStatus::Unavailable)
-    }
-
-    /// Presets discovered for a live CLAP instance.
-    fn clap_presets(&self, _device: &Device) -> &[ClapPreset] {
-        &[]
-    }
-
-    /// Requests a discovered preset by its opaque source on the live instance.
-    fn load_clap_preset(&mut self, _device: &Device, _source: &ClapPresetSource) -> bool {
-        false
-    }
-
-    /// Whether this running device has CLAP user preset operations.
-    fn supports_user_presets(&self, _device: DeviceId) -> bool {
-        false
-    }
-
-    /// Requests the current preset state, completed by a device event.
-    fn capture_clap_preset(&mut self, _device: DeviceId) -> bool {
-        false
-    }
-
-    /// Applies the stored preset format to a running device.
-    fn load_user_preset(&mut self, _device: DeviceId, _state: Vec<u8>) -> bool {
-        false
-    }
-
-    /// Prepares the initial project state of a device to be inserted from the browser.
-    fn prepare_clap_preset(
-        &self,
-        _plugin: &PluginRef,
-        _source: &ClapPresetSource,
-    ) -> Option<komponist_plugins::PresetPreparation> {
-        None
-    }
-
-    /// Whether a scan failed to probe the bundle of a device that is still running.
-    fn device_probe_failed(&self, _device: DeviceId) -> bool {
-        false
-    }
-
-    /// Devices of `project` whose plugin is not in the catalog (S06 dialog on open).
-    fn missing_plugins(&self, project: &Project) -> Vec<MissingPlugin> {
-        missing_in(self.catalog(), project)
-    }
-
-    /// Starts a background scan of `dirs`; ends with [`PluginManagerEvent::ScanFinished`]. A
-    /// running scan is restarted.
-    fn start_scan(&mut self, dirs: &PluginDirs) {
-        let _ = dirs;
-    }
-
-    /// Whether a scan runs (S07 "Neu scannen" shows progress).
-    fn is_scanning(&self) -> bool {
-        false
-    }
-
-    /// Whether the first scan is still cataloging an installed packaged plugin.
-    fn awaiting_packaged_plugin(&self, _clap_id: &str) -> bool {
-        false
-    }
-
-    /// The last finished scan (S07: found, per folder, skipped).
-    fn last_scan(&self) -> Option<&ScanReport> {
-        None
-    }
-
-    /// Whether the plugin exposes a sidechain input.
-    fn has_sidechain(&self, _device: DeviceId) -> bool {
-        false
-    }
-
-    /// Whether [`DeviceHost::poll`] has work even while the UI is idle (bridges running, a scan in
+    /// Whether [`ProcessorHost::poll`] has work even while the UI is idle (bridges running, a scan in
     /// progress): the app then repaints at a low rate so status changes arrive.
     fn needs_polling(&self) -> bool {
         false
     }
 
+    /// Blocks that missed their deadline since the device's bridge started (a "late" indicator).
+    fn late_blocks(&self, device: DeviceId) -> u64 {
+        let _ = device;
+        0
+    }
+
+    /// Tells the host the folder of the project file (`None`: not saved yet): relative sample
+    /// paths resolve against it. Called before the devices of a project get their processors.
+    fn set_project_dir(&mut self, dir: Option<PathBuf>) {
+        let _ = dir;
+    }
+
+    /// The folder last given to [`ProcessorHost::set_project_dir`]: audio clips resolve their relative
+    /// links against it (#11).
+    fn project_dir(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// Shuts every bridge down (app exit). Blocking, at most a couple of seconds.
+    fn shutdown(&mut self) {}
+
+    /// Whether the plugin exposes a sidechain input.
+    fn has_sidechain(&self, _device: DeviceId) -> bool {
+        false
+    }
+}
+
+/// Reads and edits live parameters and tracks values driven by automation and macros.
+/// Hosts without parameter support return no metadata and can decline edits.
+pub trait ParameterHost {
     /// The parameters of the live plugin.
     fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
         let _ = device;
-        None
-    }
-
-    /// Native device presentation validated against the device's current parameter inventory.
-    fn native_layout(
-        &self,
-        _device: DeviceId,
-    ) -> Option<&Arc<komponist_plugin_api::native_layout::NativeLayout>> {
-        None
-    }
-
-    fn device_display(
-        &self,
-        _device: DeviceId,
-    ) -> Option<&Arc<komponist_plugin_api::device_canvas::DisplayList>> {
-        None
-    }
-
-    /// Named telemetry published by the live plugin.
-    fn signal_tap(
-        &self,
-        _device: DeviceId,
-        _key: &str,
-    ) -> Option<&komponist_plugins::signal_taps::SignalTap> {
         None
     }
 
@@ -278,6 +182,16 @@ pub trait DeviceHost {
     /// Publish the runtime parameter IDs whose live values can come from automation.
     fn set_automated_params(&mut self, _values: &[(DeviceId, u32, Option<f64>)]) {}
 
+    /// Sets a parameter of a bridged device; `false` if this host does not handle `device` (the
+    /// caller then sends the engine's `SetParam` to the device's slot, as for hexa).
+    fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+        let _ = (device, id, value);
+        false
+    }
+}
+
+/// Restores device state and captures snapshots for undo, save and offline rendering.
+pub trait DeviceStateHost {
     /// Whether a snapshot was caused by a track macro and contained no independent edit.
     fn is_macro_snapshot(&self, _device: DeviceId, _state: &Arc<[u8]>) -> bool {
         false
@@ -285,13 +199,6 @@ pub trait DeviceHost {
 
     /// Whether the host captured this state and has no later edits awaiting capture.
     fn is_current_param_snapshot(&self, _device: DeviceId, _state: &Arc<[u8]>) -> bool {
-        false
-    }
-
-    /// Sets a parameter of a bridged device; `false` if this host does not handle `device` (the
-    /// caller then sends the engine's `SetParam` to the device's slot, as for hexa).
-    fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
-        let _ = (device, id, value);
         false
     }
 
@@ -315,28 +222,159 @@ pub trait DeviceHost {
         None
     }
 
-    /// Blocks that missed their deadline since the device's bridge started (a "late" indicator).
-    fn late_blocks(&self, device: DeviceId) -> u64 {
+    /// Asks for a state snapshot; it arrives as [`PluginManagerEvent::StateSnapshot`].
+    fn request_state(&mut self, device: DeviceId) {
         let _ = device;
-        0
     }
 
-    /// Note names of an instrument (step sequencer rows); empty if none.
-    fn note_names(&self, device: DeviceId) -> &[NoteName] {
-        let _ = device;
+    /// Blocking, for saving: the current state of every bridged device, waiting at most
+    /// `timeout` in total. Devices that do not answer in time keep their last snapshot.
+    fn snapshot_states(&mut self, timeout: Duration) -> DeviceSnapshots {
+        let _ = timeout;
+        Vec::new()
+    }
+
+    /// Whether a plugin holds a persistent edit that still needs a safe snapshot.
+    fn has_pending_state_edits(&self) -> bool {
+        false
+    }
+
+    /// Snapshots external devices and rejects a save that would omit a persistent plugin edit.
+    fn snapshot_for_save(&mut self, timeout: Duration) -> SaveSnapshots {
+        SaveSnapshots {
+            captured: self.snapshot_states(timeout),
+            ..Default::default()
+        }
+    }
+
+    /// Collects states of selected running devices and reports those still pending at the deadline.
+    fn snapshot_available_states(
+        &mut self,
+        _devices: &[DeviceId],
+        _timeout: Duration,
+    ) -> SaveSnapshots {
+        SaveSnapshots::default()
+    }
+
+    /// Ensures the deferred retirement can capture state in a later poll.
+    fn schedule_retiring_snapshot(&mut self, _device: DeviceId) {}
+
+    /// Whether the live instance still owes a capture or state commit before retirement.
+    fn retiring_snapshot_pending(&self, _device: DeviceId) -> bool {
+        false
+    }
+
+    /// Snapshots bridged devices on a MIDI track before replacing its chain. Hosts with running
+    /// bridges must return an error if any selected bridge lacks a usable snapshot.
+    fn snapshot_selected_states(
+        &mut self,
+        _devices: &[DeviceId],
+        _timeout: Duration,
+    ) -> Result<DeviceSnapshots, DeviceId> {
+        Ok(Vec::new())
+    }
+}
+
+/// Catalog lookup, plugin roles and scan progress.
+pub trait PluginCatalogHost {
+    /// Instrument or effect, for a plugin from the browser; `None` if unknown (not in the
+    /// catalog).
+    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole>;
+
+    /// The plugins the browser offers, sorted by name.
+    fn catalog(&self) -> &Catalog;
+
+    /// Whether a scan failed to probe the bundle of a device that is still running.
+    fn device_probe_failed(&self, _device: DeviceId) -> bool {
+        false
+    }
+
+    /// Devices of `project` whose plugin is not in the catalog (S06 dialog on open).
+    fn missing_plugins(&self, project: &Project) -> Vec<MissingPlugin> {
+        missing_in(self.catalog(), project)
+    }
+
+    /// Starts a background scan of `dirs`; ends with [`PluginManagerEvent::ScanFinished`]. A
+    /// running scan is restarted.
+    fn start_scan(&mut self, dirs: &PluginDirs) {
+        let _ = dirs;
+    }
+
+    /// Whether a scan runs (S07 "Neu scannen" shows progress).
+    fn is_scanning(&self) -> bool {
+        false
+    }
+
+    /// Whether the first scan is still cataloging an installed packaged plugin.
+    fn awaiting_packaged_plugin(&self, _clap_id: &str) -> bool {
+        false
+    }
+
+    /// The last finished scan (S07: found, per folder, skipped).
+    fn last_scan(&self) -> Option<&ScanReport> {
+        None
+    }
+}
+
+/// Discovery, preparation and loading of factory and user presets.
+pub trait PresetHost {
+    /// Presets discovered for a live CLAP instance.
+    fn clap_presets(&self, _device: &Device) -> &[ClapPreset] {
         &[]
     }
 
-    /// Tells the host the folder of the project file (`None`: not saved yet): relative sample
-    /// paths resolve against it. Called before the devices of a project get their processors.
-    fn set_project_dir(&mut self, dir: Option<PathBuf>) {
-        let _ = dir;
+    /// Requests a discovered preset by its opaque source on the live instance.
+    fn load_clap_preset(&mut self, _device: &Device, _source: &ClapPresetSource) -> bool {
+        false
     }
 
-    /// The folder last given to [`DeviceHost::set_project_dir`]: audio clips resolve their relative
-    /// links against it (#11).
-    fn project_dir(&self) -> Option<PathBuf> {
+    /// Whether this running device has CLAP user preset operations.
+    fn supports_user_presets(&self, _device: DeviceId) -> bool {
+        false
+    }
+
+    /// Requests the current preset state, completed by a device event.
+    fn capture_clap_preset(&mut self, _device: DeviceId) -> bool {
+        false
+    }
+
+    /// Applies the stored preset format to a running device.
+    fn load_user_preset(&mut self, _device: DeviceId, _state: Vec<u8>) -> bool {
+        false
+    }
+
+    /// Prepares the initial project state of a device to be inserted from the browser.
+    fn prepare_clap_preset(
+        &self,
+        _plugin: &PluginRef,
+        _source: &ClapPresetSource,
+    ) -> Option<komponist_plugins::PresetPreparation> {
         None
+    }
+}
+
+/// Linked assets, waveform previews and edits, and readiness of render asset bindings.
+pub trait AssetHost {
+    /// Refresh the latest marker snapshot for this slot.
+    fn request_waveform_markers(&mut self, _device: DeviceId, _slot: u32) {}
+
+    /// Latest marker snapshot from the live device, when available.
+    fn waveform_markers(
+        &self,
+        _device: DeviceId,
+        _slot: u32,
+    ) -> Option<&komponist_plugin_api::waveform_markers::Snapshot> {
+        None
+    }
+
+    /// Queue an edit against a specific live marker snapshot.
+    fn edit_waveform_markers(
+        &mut self,
+        _device: DeviceId,
+        _slot: u32,
+        _request: komponist_plugin_api::waveform_markers::Request,
+    ) -> Result<(), komponist_plugin_api::waveform_markers::EditStatus> {
+        Err(komponist_plugin_api::waveform_markers::EditStatus::Unavailable)
     }
 
     /// Whether the file inventory or an asset is still being prepared for rendering.
@@ -396,7 +434,10 @@ pub trait DeviceHost {
     fn render_asset_bindings_pending(&self, _device: DeviceId) -> bool {
         false
     }
+}
 
+/// Realtime and offline render modes and per-device offline preparation.
+pub trait OfflineRenderHost {
     fn supports_offline_preparation(&self, _device: DeviceId) -> bool {
         false
     }
@@ -407,6 +448,18 @@ pub trait DeviceHost {
         None
     }
 
+    /// Switches every bridge to realtime or offline processing (around an export).
+    fn set_render_mode(&mut self, mode: RenderMode) {
+        let _ = mode;
+    }
+
+    /// Switches only the devices needed for an isolated offline render. Hosts with bridges
+    /// implement the scoped switch independently of the full-project switch.
+    fn set_selected_render_mode(&mut self, _devices: &[DeviceId], _mode: RenderMode) {}
+}
+
+/// Plugin GUI lifecycle and bridge-owned window control.
+pub trait PluginWindowHost {
     /// Whether the device's plugin has its own GUI.
     fn has_gui(&self, device: DeviceId) -> bool {
         let _ = device;
@@ -426,7 +479,7 @@ pub trait DeviceHost {
     }
 
     /// Brings the bridge's own frame to the front (macOS; the app yielded its activation to
-    /// [`DeviceHost::bridge_pid`] first).
+    /// [`PluginWindowHost::bridge_pid`] first).
     fn activate_frame(&mut self, device: DeviceId) {
         let _ = device;
     }
@@ -452,70 +505,66 @@ pub trait DeviceHost {
     fn close_gui(&mut self, device: DeviceId) {
         let _ = device;
     }
+}
 
-    /// Asks for a state snapshot; it arrives as [`PluginManagerEvent::StateSnapshot`].
-    fn request_state(&mut self, device: DeviceId) {
+/// Live device-card presentation, telemetry and instrument note labels.
+pub trait DevicePresentationHost {
+    /// Native device presentation validated against the device's current parameter inventory.
+    fn native_layout(
+        &self,
+        _device: DeviceId,
+    ) -> Option<&Arc<komponist_plugin_api::native_layout::NativeLayout>> {
+        None
+    }
+
+    fn device_display(
+        &self,
+        _device: DeviceId,
+    ) -> Option<&Arc<komponist_plugin_api::device_canvas::DisplayList>> {
+        None
+    }
+
+    /// Named telemetry published by the live plugin.
+    fn signal_tap(
+        &self,
+        _device: DeviceId,
+        _key: &str,
+    ) -> Option<&komponist_plugins::signal_taps::SignalTap> {
+        None
+    }
+
+    /// Note names of an instrument (step sequencer rows); empty if none.
+    fn note_names(&self, device: DeviceId) -> &[NoteName] {
         let _ = device;
+        &[]
     }
+}
 
-    /// Blocking, for saving: the current state of every bridged device, waiting at most
-    /// `timeout` in total. Devices that do not answer in time keep their last snapshot.
-    fn snapshot_states(&mut self, timeout: Duration) -> DeviceSnapshots {
-        let _ = timeout;
-        Vec::new()
-    }
+/// The capabilities of a host installed in the app.
+pub trait DeviceHost:
+    ProcessorHost
+    + ParameterHost
+    + DeviceStateHost
+    + PluginCatalogHost
+    + PresetHost
+    + AssetHost
+    + OfflineRenderHost
+    + PluginWindowHost
+    + DevicePresentationHost
+{
+}
 
-    /// Whether a plugin holds a persistent edit that still needs a safe snapshot.
-    fn has_pending_state_edits(&self) -> bool {
-        false
-    }
-
-    /// Snapshots external devices and rejects a save that would omit a persistent plugin edit.
-    fn snapshot_for_save(&mut self, timeout: Duration) -> SaveSnapshots {
-        SaveSnapshots {
-            captured: self.snapshot_states(timeout),
-            ..Default::default()
-        }
-    }
-
-    /// Collects states of selected running devices and reports those still pending at the deadline.
-    fn snapshot_available_states(
-        &mut self,
-        _devices: &[DeviceId],
-        _timeout: Duration,
-    ) -> SaveSnapshots {
-        SaveSnapshots::default()
-    }
-
-    /// Ensures the deferred retirement can capture state in a later poll.
-    fn schedule_retiring_snapshot(&mut self, _device: DeviceId) {}
-
-    /// Whether the live instance still owes a capture or state commit before retirement.
-    fn retiring_snapshot_pending(&self, _device: DeviceId) -> bool {
-        false
-    }
-
-    /// Snapshots bridged devices on a MIDI track before replacing its chain. Hosts with running
-    /// bridges must return an error if any selected bridge lacks a usable snapshot.
-    fn snapshot_selected_states(
-        &mut self,
-        _devices: &[DeviceId],
-        _timeout: Duration,
-    ) -> Result<DeviceSnapshots, DeviceId> {
-        Ok(Vec::new())
-    }
-
-    /// Switches every bridge to realtime or offline processing (around an export).
-    fn set_render_mode(&mut self, mode: RenderMode) {
-        let _ = mode;
-    }
-
-    /// Switches only the devices needed for an isolated offline render. Hosts with bridges
-    /// implement the scoped switch independently of the full-project switch.
-    fn set_selected_render_mode(&mut self, _devices: &[DeviceId], _mode: RenderMode) {}
-
-    /// Shuts every bridge down (app exit). Blocking, at most a couple of seconds.
-    fn shutdown(&mut self) {}
+impl<T> DeviceHost for T where
+    T: ProcessorHost
+        + ParameterHost
+        + DeviceStateHost
+        + PluginCatalogHost
+        + PresetHost
+        + AssetHost
+        + OfflineRenderHost
+        + PluginWindowHost
+        + DevicePresentationHost
+{
 }
 
 /// Devices of `project` whose plugin `catalog` does not resolve, in document order (master last).
@@ -581,7 +630,7 @@ impl PluginHost {
     }
 
     /// The plugin manager (diagnostics and tests; processors come only through
-    /// [`DeviceHost::create_processor`]).
+    /// [`ProcessorHost::create_processor`]).
     pub fn manager(&self) -> &PluginManager {
         &self.manager
     }
@@ -597,7 +646,7 @@ impl PluginHost {
     }
 }
 
-impl DeviceHost for PluginHost {
+impl ProcessorHost for PluginHost {
     fn create_processor(
         &mut self,
         device: &Device,
@@ -632,45 +681,8 @@ impl DeviceHost for PluginHost {
         self.manager.poll()
     }
 
-    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
-        match self.manager.catalog().resolve(plugin)?.kind {
-            PluginKind::Instrument => Some(DeviceRole::Instrument),
-            PluginKind::Effect => Some(DeviceRole::Effect),
-            PluginKind::MidiEffect => Some(DeviceRole::MidiEffect),
-            PluginKind::Other => None,
-        }
-    }
-
     fn verified_bundle(&self, device: DeviceId) -> Option<&str> {
         self.manager.verified_bundle(device)
-    }
-
-    fn catalog(&self) -> &Catalog {
-        self.manager.catalog()
-    }
-
-    fn device_probe_failed(&self, device: DeviceId) -> bool {
-        self.manager.device_probe_failed(device)
-    }
-
-    fn missing_plugins(&self, project: &Project) -> Vec<MissingPlugin> {
-        self.manager.missing_plugins(project)
-    }
-
-    fn start_scan(&mut self, dirs: &PluginDirs) {
-        self.manager.start_scan(dirs);
-    }
-
-    fn is_scanning(&self) -> bool {
-        self.manager.is_scanning()
-    }
-
-    fn awaiting_packaged_plugin(&self, clap_id: &str) -> bool {
-        self.manager.awaiting_packaged_plugin(clap_id)
-    }
-
-    fn last_scan(&self) -> Option<&ScanReport> {
-        self.manager.last_scan()
     }
 
     fn needs_polling(&self) -> bool {
@@ -679,30 +691,31 @@ impl DeviceHost for PluginHost {
             || self.manager.has_retiring_direct()
     }
 
+    fn late_blocks(&self, device: DeviceId) -> u64 {
+        self.manager.late_blocks(device)
+    }
+
+    fn set_project_dir(&mut self, dir: Option<PathBuf>) {
+        self.manager.set_project_dir(dir.clone());
+        self.project_dir = dir;
+    }
+
+    fn project_dir(&self) -> Option<PathBuf> {
+        self.project_dir.clone()
+    }
+
+    fn shutdown(&mut self) {
+        self.manager.shutdown();
+    }
+
+    fn has_sidechain(&self, device: DeviceId) -> bool {
+        self.is_external(device) && self.manager.has_sidechain(device)
+    }
+}
+
+impl ParameterHost for PluginHost {
     fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
         self.manager.params(device)
-    }
-
-    fn native_layout(
-        &self,
-        device: DeviceId,
-    ) -> Option<&Arc<komponist_plugin_api::native_layout::NativeLayout>> {
-        self.manager.native_layout(device)
-    }
-
-    fn device_display(
-        &self,
-        device: DeviceId,
-    ) -> Option<&Arc<komponist_plugin_api::device_canvas::DisplayList>> {
-        self.manager.device_display(device)
-    }
-
-    fn signal_tap(
-        &self,
-        device: DeviceId,
-        key: &str,
-    ) -> Option<&komponist_plugins::signal_taps::SignalTap> {
-        self.manager.signal_tap(device, key)
     }
 
     fn request_param_text(
@@ -748,20 +761,22 @@ impl DeviceHost for PluginHost {
         self.manager.set_automated_params(values);
     }
 
-    fn is_macro_snapshot(&self, device: DeviceId, state: &Arc<[u8]>) -> bool {
-        self.manager.is_macro_snapshot(device, state)
-    }
-
-    fn is_current_param_snapshot(&self, device: DeviceId, state: &Arc<[u8]>) -> bool {
-        self.manager.is_current_param_snapshot(device, state)
-    }
-
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
         if !self.is_external(device) {
             return false;
         }
         self.manager.set_param(device, id, value);
         true
+    }
+}
+
+impl DeviceStateHost for PluginHost {
+    fn is_macro_snapshot(&self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        self.manager.is_macro_snapshot(device, state)
+    }
+
+    fn is_current_param_snapshot(&self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        self.manager.is_current_param_snapshot(device, state)
     }
 
     fn restore_saved_state(&mut self, device: DeviceId, state: &SavedPluginState) -> bool {
@@ -772,27 +787,91 @@ impl DeviceHost for PluginHost {
         self.is_external(device) && self.manager.set_state(device, state)
     }
 
-    fn request_waveform_markers(&mut self, device: DeviceId, slot: u32) {
-        self.manager.request_waveform_markers(device, slot);
+    fn state_warning(&self, device: DeviceId) -> Option<&str> {
+        self.manager.state_warning(device)
     }
 
-    fn waveform_markers(
-        &self,
-        device: DeviceId,
-        slot: u32,
-    ) -> Option<&komponist_plugin_api::waveform_markers::Snapshot> {
-        self.manager.waveform_markers(device, slot)
+    fn request_state(&mut self, device: DeviceId) {
+        self.manager.request_state(device);
     }
 
-    fn edit_waveform_markers(
+    fn snapshot_states(&mut self, timeout: Duration) -> DeviceSnapshots {
+        self.manager.snapshot_states(timeout)
+    }
+
+    fn has_pending_state_edits(&self) -> bool {
+        self.manager.has_pending_state_edits()
+    }
+
+    fn snapshot_for_save(&mut self, timeout: Duration) -> SaveSnapshots {
+        self.manager.snapshot_for_save(timeout)
+    }
+
+    fn snapshot_available_states(
         &mut self,
-        device: DeviceId,
-        slot: u32,
-        request: komponist_plugin_api::waveform_markers::Request,
-    ) -> Result<(), komponist_plugin_api::waveform_markers::EditStatus> {
-        self.manager.edit_waveform_markers(device, slot, request)
+        devices: &[DeviceId],
+        timeout: Duration,
+    ) -> SaveSnapshots {
+        self.manager.snapshot_available_states(devices, timeout)
     }
 
+    fn schedule_retiring_snapshot(&mut self, device: DeviceId) {
+        self.manager.schedule_retiring_snapshot(device);
+    }
+
+    fn retiring_snapshot_pending(&self, device: DeviceId) -> bool {
+        self.manager.retiring_snapshot_pending(device)
+    }
+
+    fn snapshot_selected_states(
+        &mut self,
+        devices: &[DeviceId],
+        timeout: Duration,
+    ) -> Result<DeviceSnapshots, DeviceId> {
+        self.manager.snapshot_selected_states(devices, timeout)
+    }
+}
+
+impl PluginCatalogHost for PluginHost {
+    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
+        match self.manager.catalog().resolve(plugin)?.kind {
+            PluginKind::Instrument => Some(DeviceRole::Instrument),
+            PluginKind::Effect => Some(DeviceRole::Effect),
+            PluginKind::MidiEffect => Some(DeviceRole::MidiEffect),
+            PluginKind::Other => None,
+        }
+    }
+
+    fn catalog(&self) -> &Catalog {
+        self.manager.catalog()
+    }
+
+    fn device_probe_failed(&self, device: DeviceId) -> bool {
+        self.manager.device_probe_failed(device)
+    }
+
+    fn missing_plugins(&self, project: &Project) -> Vec<MissingPlugin> {
+        self.manager.missing_plugins(project)
+    }
+
+    fn start_scan(&mut self, dirs: &PluginDirs) {
+        self.manager.start_scan(dirs);
+    }
+
+    fn is_scanning(&self) -> bool {
+        self.manager.is_scanning()
+    }
+
+    fn awaiting_packaged_plugin(&self, clap_id: &str) -> bool {
+        self.manager.awaiting_packaged_plugin(clap_id)
+    }
+
+    fn last_scan(&self) -> Option<&ScanReport> {
+        self.manager.last_scan()
+    }
+}
+
+impl PresetHost for PluginHost {
     fn supports_user_presets(&self, device: DeviceId) -> bool {
         self.manager.supports_user_presets(device)
     }
@@ -820,26 +899,28 @@ impl DeviceHost for PluginHost {
     fn load_clap_preset(&mut self, device: &Device, source: &ClapPresetSource) -> bool {
         self.manager.load_clap_preset(device, source)
     }
+}
 
-    fn late_blocks(&self, device: DeviceId) -> u64 {
-        self.manager.late_blocks(device)
+impl AssetHost for PluginHost {
+    fn request_waveform_markers(&mut self, device: DeviceId, slot: u32) {
+        self.manager.request_waveform_markers(device, slot);
     }
 
-    fn state_warning(&self, device: DeviceId) -> Option<&str> {
-        self.manager.state_warning(device)
+    fn waveform_markers(
+        &self,
+        device: DeviceId,
+        slot: u32,
+    ) -> Option<&komponist_plugin_api::waveform_markers::Snapshot> {
+        self.manager.waveform_markers(device, slot)
     }
 
-    fn note_names(&self, device: DeviceId) -> &[NoteName] {
-        self.manager.note_names(device)
-    }
-
-    fn set_project_dir(&mut self, dir: Option<PathBuf>) {
-        self.manager.set_project_dir(dir.clone());
-        self.project_dir = dir;
-    }
-
-    fn project_dir(&self) -> Option<PathBuf> {
-        self.project_dir.clone()
+    fn edit_waveform_markers(
+        &mut self,
+        device: DeviceId,
+        slot: u32,
+        request: komponist_plugin_api::waveform_markers::Request,
+    ) -> Result<(), komponist_plugin_api::waveform_markers::EditStatus> {
+        self.manager.edit_waveform_markers(device, slot, request)
     }
 
     fn preview_waveform(&self, device: DeviceId, slot: u32, time: Option<f64>) {
@@ -887,7 +968,9 @@ impl DeviceHost for PluginHost {
     fn render_asset_bindings_pending(&self, device: DeviceId) -> bool {
         self.manager.render_asset_bindings_pending(device)
     }
+}
 
+impl OfflineRenderHost for PluginHost {
     fn supports_offline_preparation(&self, device: DeviceId) -> bool {
         self.manager.supports_offline_preparation(device)
     }
@@ -900,12 +983,18 @@ impl DeviceHost for PluginHost {
         self.manager.offline_preparation_status(device)
     }
 
-    fn has_gui(&self, device: DeviceId) -> bool {
-        self.manager.has_gui(device)
+    fn set_render_mode(&mut self, mode: RenderMode) {
+        self.manager.set_render_mode(mode);
     }
 
-    fn has_sidechain(&self, device: DeviceId) -> bool {
-        self.is_external(device) && self.manager.has_sidechain(device)
+    fn set_selected_render_mode(&mut self, devices: &[DeviceId], mode: RenderMode) {
+        self.manager.set_selected_render_mode(devices, mode);
+    }
+}
+
+impl PluginWindowHost for PluginHost {
+    fn has_gui(&self, device: DeviceId) -> bool {
+        self.manager.has_gui(device)
     }
 
     fn open_gui(&mut self, device: DeviceId, target: GuiTarget) -> Result<(), PluginError> {
@@ -935,57 +1024,33 @@ impl DeviceHost for PluginHost {
     fn close_gui(&mut self, device: DeviceId) {
         self.manager.close_gui(device);
     }
+}
 
-    fn request_state(&mut self, device: DeviceId) {
-        self.manager.request_state(device);
+impl DevicePresentationHost for PluginHost {
+    fn native_layout(
+        &self,
+        device: DeviceId,
+    ) -> Option<&Arc<komponist_plugin_api::native_layout::NativeLayout>> {
+        self.manager.native_layout(device)
     }
 
-    fn snapshot_states(&mut self, timeout: Duration) -> DeviceSnapshots {
-        self.manager.snapshot_states(timeout)
+    fn device_display(
+        &self,
+        device: DeviceId,
+    ) -> Option<&Arc<komponist_plugin_api::device_canvas::DisplayList>> {
+        self.manager.device_display(device)
     }
 
-    fn has_pending_state_edits(&self) -> bool {
-        self.manager.has_pending_state_edits()
+    fn signal_tap(
+        &self,
+        device: DeviceId,
+        key: &str,
+    ) -> Option<&komponist_plugins::signal_taps::SignalTap> {
+        self.manager.signal_tap(device, key)
     }
 
-    fn snapshot_for_save(&mut self, timeout: Duration) -> SaveSnapshots {
-        self.manager.snapshot_for_save(timeout)
-    }
-
-    fn snapshot_available_states(
-        &mut self,
-        devices: &[DeviceId],
-        timeout: Duration,
-    ) -> SaveSnapshots {
-        self.manager.snapshot_available_states(devices, timeout)
-    }
-
-    fn schedule_retiring_snapshot(&mut self, device: DeviceId) {
-        self.manager.schedule_retiring_snapshot(device);
-    }
-
-    fn retiring_snapshot_pending(&self, device: DeviceId) -> bool {
-        self.manager.retiring_snapshot_pending(device)
-    }
-
-    fn snapshot_selected_states(
-        &mut self,
-        devices: &[DeviceId],
-        timeout: Duration,
-    ) -> Result<DeviceSnapshots, DeviceId> {
-        self.manager.snapshot_selected_states(devices, timeout)
-    }
-
-    fn set_render_mode(&mut self, mode: RenderMode) {
-        self.manager.set_render_mode(mode);
-    }
-
-    fn set_selected_render_mode(&mut self, devices: &[DeviceId], mode: RenderMode) {
-        self.manager.set_selected_render_mode(devices, mode);
-    }
-
-    fn shutdown(&mut self) {
-        self.manager.shutdown();
+    fn note_names(&self, device: DeviceId) -> &[NoteName] {
+        self.manager.note_names(device)
     }
 }
 

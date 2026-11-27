@@ -18,7 +18,7 @@
 //!   step of its own. Esc cancels the gesture and the device goes back to the value it had
 //!   ([`App::cancel_gesture`]). A sample load is one step as well, however many values it resets.
 //! - **Bridged plugins:** the card's `SetParam` goes over the control socket
-//!   ([`crate::device_host::DeviceHost::set_param`]); the document learns the new state from the
+//!   ([`crate::device_host::ParameterHost::set_param`]); the document learns the new state from the
 //!   plugin's *snapshot*, which arrives debounced after the turn (or at once, when the gesture
 //!   ends: [`App::end_gesture`] asks for it). The same snapshots carry the edits made in the
 //!   plugin's own GUI. They are tracked ([`App::store_snapshot`]) and **coalesced**: snapshots of

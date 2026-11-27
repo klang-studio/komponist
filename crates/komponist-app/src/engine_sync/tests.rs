@@ -1,12 +1,13 @@
 use super::*;
 use crate::app::App;
+use crate::device_host::PluginCatalogHost;
 use komponist_engine::MAX_SLOTS;
 use komponist_engine::workers::auto_workers;
 use komponist_model::edits::{self, ChannelProp, TrackProp};
 use komponist_model::fixtures::demo_project;
 use std::time::{Duration, Instant};
 
-fn test_song(host: &dyn DeviceHost) -> Project {
+fn test_song(host: &dyn PluginCatalogHost) -> Project {
     let mut project = demo_project();
     for (index, plugin) in [
         (0, "org.klang-studio.komponist.sampler"),

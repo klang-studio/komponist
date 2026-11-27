@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use komponist_app::device_host::DeviceHost;
+use komponist_app::device_host::{DeviceHost, PluginCatalogHost};
 use komponist_app::engine_sync::{EngineSync, MidiSetup, SyncEvent};
 use komponist_audio::{HostKind, StreamConfig};
 use komponist_audiofile::fixtures as testkit;
