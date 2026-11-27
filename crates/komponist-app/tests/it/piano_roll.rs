@@ -66,7 +66,7 @@ const TEST_DOCK: f32 = 500.0;
 
 /// The demo with Lead A (bars 9–10) open in the piano roll, the dock [`TEST_DOCK`] high.
 fn reference_lead_a() -> (App, ClipId) {
-    let mut app = crate::common::reference_app(demo_project());
+    let mut app = App::headless(demo_project());
     app.ui_mut().layout.dock_height = TEST_DOCK;
     let clip = app.project().tracks[2].clips[0].id;
     app.dispatch(Action::Ui(UiAction::OpenClip(clip)));
@@ -813,7 +813,7 @@ fn notes_past_the_clip_end_lengthen_it() {
 
 /// S10 "Leerer Clip — Piano Roll zeigt Raster und Klaviatur, Stift ist vorausgewählt."
 fn reference_empty_clip_app() -> (App, ClipId) {
-    let mut app = crate::common::reference_app(demo_project());
+    let mut app = App::headless(demo_project());
     let track = app.project().tracks[2].id;
     app.dispatch(Action::Edit(EditAction::AddClip {
         track,

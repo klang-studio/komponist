@@ -12,7 +12,6 @@ use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange};
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, EditAction, UiAction};
-use komponist_builtin::Internal;
 use komponist_i18n::{Lang, de};
 use komponist_model::edits::{self, NewBus, NewDevice, NewTrack};
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, Project, Sidechain, Tap, TrackId};
@@ -70,36 +69,19 @@ struct Scene {
     presse: DeviceId,
     eq: DeviceId,
     project: Project,
-    /// Built from the in-binary devices of the reference screenshots.
-    reference: bool,
 }
 
-/// The scene on the shipped bundles.
+/// The routing scene with verified shipped devices.
 fn scene() -> Scene {
-    scene_of(false)
-}
-
-/// The scene on the in-binary devices, for the one test that compares reference screenshots
-/// (the full-window images list the in-binary devices in the browser; #294 regenerates them).
-fn reference_scene() -> Scene {
-    scene_of(true)
-}
-
-fn scene_of(reference: bool) -> Scene {
     let host = App::headless_plugin_host();
     let shipped = |name: &str| crate::common::shipped(&host, name);
-    let pisynth = if reference {
-        let probe = crate::common::reference_app(Project::new("probe"));
-        probe.engine().host().catalog().entries()[0].plugin.clone()
-    } else {
-        shipped("hexa")
-    };
+    let hexa = shipped("hexa");
     let mut p = Project::new("Sidechain");
     let track = |p: &mut Project, name: &str| {
         let spec = NewTrack {
             name: Some(name.to_owned()),
             hue: None,
-            instrument: Some(pisynth.clone()),
+            instrument: Some(hexa.clone()),
             index: None,
             arm_exclusive: false,
         };
@@ -123,22 +105,8 @@ fn scene_of(reference: bool) -> Scene {
         *p = next;
         id
     };
-    let presse = device(
-        &mut p,
-        if reference {
-            Internal::Presse.plugin_ref()
-        } else {
-            shipped("presse")
-        },
-    );
-    let eq = device(
-        &mut p,
-        if reference {
-            Internal::Eq.plugin_ref()
-        } else {
-            shipped("eq")
-        },
-    );
+    let presse = device(&mut p, shipped("presse"));
+    let eq = device(&mut p, shipped("eq"));
     let (next, _) = edits::add_bus(
         &p,
         NewBus {
@@ -162,16 +130,11 @@ fn scene_of(reference: bool) -> Scene {
         presse,
         eq,
         project: next,
-        reference,
     }
 }
 
 fn app(s: &Scene) -> App {
-    let mut app = if s.reference {
-        crate::common::reference_app(s.project.clone())
-    } else {
-        App::headless(s.project.clone())
-    };
+    let mut app = App::headless(s.project.clone());
     app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
         tracks: vec![s.pad],
         mode: SelectMode::Replace,
@@ -432,7 +395,7 @@ fn the_context_menu_of_the_chip_removes_the_source() {
 
 #[test]
 fn snapshots_of_the_head_with_the_chip_off_on_and_the_popover_open() {
-    let s = reference_scene();
+    let s = scene();
     let mut results = SnapshotResults::new();
     let mask = |h: &mut Harness<'_, App>| {
         let cpu = h

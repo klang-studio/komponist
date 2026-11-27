@@ -34,7 +34,7 @@ fn null_sync(host: Box<dyn DeviceHost>) -> EngineSync {
 /// Sends the document to the engine and moves the engine to the document after `before`.
 fn follow(sync: &mut EngineSync, doc: &Document, before: &Project) {
     sync.sync(doc);
-    sync.sync_device_states(before, doc.project(), None, &Default::default());
+    sync.sync_device_states(before, doc.project(), &Default::default());
 }
 
 fn undo(sync: &mut EngineSync, doc: &mut Document) {

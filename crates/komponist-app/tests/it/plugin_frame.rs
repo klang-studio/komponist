@@ -19,7 +19,7 @@ use komponist_app::device_host::DeviceHost;
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::PluginView;
-use komponist_app::views::devices::model::legacy_frame_params;
+use komponist_app::views::devices::model::{Param, all_plugin_params};
 use komponist_app::windows::plugin_frame::body::{self, BodyEvent, BodyModel, ParamGrid};
 use komponist_app::windows::plugin_frame::header::{self, HeaderEvent, HeaderModel, Mark};
 use komponist_app::windows::plugin_frame::metrics;
@@ -68,12 +68,13 @@ fn surge_header() -> HeaderModel {
 }
 
 fn hexa_header() -> HeaderModel {
+    let host = App::headless_plugin_host();
+    let hexa = crate::common::shipped(&host, "hexa");
+    let entry = host.catalog().resolve(&hexa).unwrap();
     HeaderModel {
         name: "Hexa".into(),
-        sub: "Lead · INTERN".into(),
-        presets: komponist_hexa::presets()
-            .map(|p| p.name.to_owned())
-            .collect(),
+        sub: "Lead · CLAP".into(),
+        presets: entry.clap_presets.iter().map(|p| p.name.clone()).collect(),
         preset: Some(3),
         preset_changed: true,
         view: PluginView::Params,
@@ -82,16 +83,31 @@ fn hexa_header() -> HeaderModel {
     }
 }
 
-/// hexa's macros as the frame shows them (WP-44's model, read from the device state).
-fn macro_params() -> Vec<komponist_app::views::devices::model::Param> {
-    let project = demo_project();
-    let hexa = project
-        .tracks
-        .iter()
-        .flat_map(|t| t.channel.devices.iter())
-        .find(|d| d.plugin.name == "Hexa")
-        .unwrap();
-    legacy_frame_params(Lang::De, hexa)
+/// A compact grid using the main controls advertised by the Hexa fixture.
+fn macro_params() -> Vec<Param> {
+    let host = App::headless_plugin_host();
+    let plugin = crate::common::shipped(&host, "hexa");
+    let (project, _, device) = crate::common::instrument_project("Hexa", plugin);
+    let mut app = crate::common::app_with(project, host);
+    crate::common::wait_for_layout(&mut app, device);
+    let host = app.engine().host();
+    let params = all_plugin_params(Lang::De, host.params(device).unwrap(), |id| {
+        host.param_value(device, id)
+    });
+    let ids = host.native_layout(device).unwrap().author_ids().unwrap();
+    [
+        "algorithm",
+        "feedback",
+        "volume",
+        "glide",
+        "voices",
+        "mono",
+        "spread",
+        "tune",
+    ]
+    .iter()
+    .map(|key| params.iter().find(|p| p.wire == ids[*key]).unwrap().clone())
+    .collect()
 }
 
 fn macro_grid() -> ParamGrid {
@@ -310,13 +326,15 @@ fn a_plugin_without_gui_cannot_switch_to_the_plugin_view() {
 
 #[test]
 fn knobs_report_plain_values_on_the_step_grid() {
+    let params = macro_params();
+    let (algorithm, label) = (params[0].wire, params[0].name().to_owned());
     let mut h = frame_harness(
-        frame(hexa_header(), BodyModel::Params(macro_grid())),
+        frame(hexa_header(), BodyModel::Params(ParamGrid::new(params))),
         [900.0, 300.0],
         1.0,
     );
     h.run();
-    let knob = h.get_by_role_and_label(Role::Slider, "Algorithmus");
+    let knob = h.get_by_role_and_label(Role::Slider, &label);
     let at = knob.rect().center();
     h.drag_at(at);
     h.run();
@@ -326,11 +344,6 @@ fn knobs_report_plain_values_on_the_step_grid() {
     h.run();
     let events = &h.state().body_events;
     assert!(!events.is_empty(), "the drag set the parameter");
-    let algorithm = macro_params()
-        .iter()
-        .find(|p| p.name() == "Algorithmus")
-        .unwrap()
-        .wire;
     let mut sets = 0;
     for e in events {
         match *e {
@@ -449,7 +462,7 @@ impl DeviceHost for FakeHost {
         let mut s = self.script.borrow_mut();
         s.created.push(device.id);
         let status = if self.catalog.resolve(&device.plugin).is_some() {
-            if device.plugin.format != komponist_model::PluginFormat::Builtin {
+            if !komponist_plugins::requires_bundled(&device.plugin) {
                 s.known.push(device.id);
             }
             DeviceStatus::Ok
@@ -486,7 +499,7 @@ impl DeviceHost for FakeHost {
         } else {
             self.catalog
                 .resolve(&device.plugin)
-                .filter(|entry| entry.is_builtin())
+                .filter(|entry| komponist_plugins::requires_bundled(&entry.plugin))
                 .map_or(&[], |entry| entry.clap_presets.as_slice())
         }
     }
@@ -566,19 +579,22 @@ fn scripted_app(layout: Option<&[u8]>) -> (App, Rc<RefCell<Script>>, DeviceId) {
         .flat_map(|t| t.channel.devices.iter())
         .find(|d| d.plugin.name == "Surge XT")
         .unwrap();
-    let mut catalog = Catalog::default();
-    catalog.set_scanned(&[PluginDescriptor {
-        localized: None,
-        format: BundleFormat::Clap,
-        id: surge.plugin.id.clone(),
-        name: surge.plugin.name.clone(),
-        vendor: surge.plugin.vendor.clone(),
-        version: surge.plugin.version.clone(),
-        kind: PluginKind::Instrument,
-        features: Vec::new(),
-        bundle: "/usr/lib/clap/Surge XT.clap".into(),
-        sidechain: false,
-    }]);
+    let host = App::headless_plugin_host();
+    let catalog = crate::common::fixture_catalog(
+        host.catalog(),
+        &[PluginDescriptor {
+            localized: None,
+            format: BundleFormat::Clap,
+            id: surge.plugin.id.clone(),
+            name: surge.plugin.name.clone(),
+            vendor: surge.plugin.vendor.clone(),
+            version: surge.plugin.version.clone(),
+            kind: PluginKind::Instrument,
+            features: Vec::new(),
+            bundle: "/usr/lib/clap/Surge XT.clap".into(),
+            sidechain: false,
+        }],
+    );
     let script = Rc::new(RefCell::new(Script::default()));
     let params = vec![
         ParamInfo {

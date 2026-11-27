@@ -1465,10 +1465,7 @@ fn sdk_example_uses_native_layout_and_falls_back() {
             .catalog()
             .resolve(&plugin)
             .expect("scanned SDK example");
-        let komponist_plugins::catalog::PluginLocation::Bundle { path, .. } = &descriptor.location
-        else {
-            panic!("the SDK example must be a scanned CLAP bundle");
-        };
+        let komponist_plugins::catalog::PluginLocation::Bundle { path, .. } = &descriptor.location;
         assert_eq!(
             std::fs::canonicalize(path).unwrap(),
             std::fs::canonicalize(bundle).unwrap(),

@@ -11,12 +11,13 @@ use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::{Action, App, ProjectAction};
 use komponist_engine::Command;
-use komponist_general_sampler as general_sampler;
 use komponist_ipc::device_assets::AssetStatus;
+use komponist_ipc::waveform_markers::SliceOptions;
 use komponist_model::edits::{self, NewTrack};
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{DeviceId, Project, TrackId};
 use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent};
+use serde_json::{Value, json};
 
 use crate::acceptance_support::harness;
 use crate::common::{NULL_BUFFER, PATIENCE, app_with, config, step_for, step_until};
@@ -219,8 +220,6 @@ fn both_samplers_play_assets_after_the_project_moves() {
     // Both bundled samplers still advertise missing assets and accept a relink.
     let replacement = scratch.path().join("found.wav");
     std::fs::rename(&source, &replacement).unwrap();
-    let missing =
-        komponist_app::dialogs::missing_plugins::missing_samples(app.project(), Some(&destination));
     let missing_assets = |app: &App| {
         komponist_app::dialogs::missing_plugins::missing_assets(
             komponist_i18n::Lang::De,
@@ -229,16 +228,9 @@ fn both_samplers_play_assets_after_the_project_moves() {
             app.engine().host().catalog(),
         )
     };
-    let external = missing_assets(app);
-    assert_eq!(missing.len() + external.len(), 2);
-    for sample in missing {
-        app.dispatch(Action::Plugin(PluginAction::SetPluginAsset {
-            device: sample.device,
-            slot: sample.pad as u32,
-            path: Some(replacement.clone()),
-        }));
-    }
-    for row in external {
+    let rows = missing_assets(app);
+    assert_eq!(rows.len(), 2);
+    for row in rows {
         let (device, slot) = row.asset.unwrap();
         app.dispatch(Action::Plugin(PluginAction::SetPluginAsset {
             device,
@@ -247,9 +239,7 @@ fn both_samplers_play_assets_after_the_project_moves() {
         }));
     }
     step_until(app, "both repaired sample links", |app| {
-        komponist_app::dialogs::missing_plugins::missing_samples(app.project(), Some(&destination))
-            .is_empty()
-            && missing_assets(app).is_empty()
+        missing_assets(app).is_empty()
     });
     assert_audible(app, track.id, 60);
 
@@ -399,7 +389,6 @@ fn bundled_sampler_restores_saved_parameter_bases() {
 #[ignore = "requires a verified all-device package; run with scripts/measure-bundled-clap.py --current-projects"]
 fn general_sampler_file_edits_preserve_slice_history() {
     use komponist_app::actions::EditAction;
-    use komponist_ipc::waveform_markers::SliceOptions;
     use komponist_model::plugin_assets::AssetLink;
 
     let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").expect("packaged launcher");
@@ -420,12 +409,12 @@ fn general_sampler_file_edits_preserve_slice_history() {
         ("hidden", original, replacement, false, true),
     ];
 
-    let mut slices = general_sampler::Settings::from_markers([0.04, 0.10]);
+    let mut slices = SliceFixture::from_markers([0.04, 0.10]);
     slices.first.reverse = Some(true);
     slices.first.fade_out_ms = Some(3.0);
     slices.slices[0].options.gate = true;
     slices.slices[1].options.fade_in_ms = Some(7.0);
-    let empty_slices = general_sampler::Settings::default();
+    let empty_slices = SliceFixture::default();
 
     for (case, before_path, after_path, slice_mode, reset) in cases {
         let mode = if slice_mode { 2.0 } else { 0.0 };
@@ -472,7 +461,7 @@ fn general_sampler_file_edits_preserve_slice_history() {
         let wait_for = |app: &mut App,
                         phase,
                         path: Option<&Path>,
-                        settings: &general_sampler::Settings,
+                        settings: &SliceFixture,
                         previous_revision: Option<u64>| {
             let status = match path {
                 Some(path) if path.is_file() => AssetStatus::Ready,
@@ -483,12 +472,6 @@ fn general_sampler_file_edits_preserve_slice_history() {
             let options: Option<Vec<_>> = slice_mode.then(|| {
                 std::iter::once(settings.first)
                     .chain(settings.slices.iter().map(|slice| slice.options))
-                    .map(|options| SliceOptions {
-                        gate: options.gate,
-                        reverse: options.reverse,
-                        fade_in_ms: options.fade_in_ms,
-                        fade_out_ms: options.fade_out_ms,
-                    })
                     .collect()
             });
             step_until(
@@ -628,29 +611,89 @@ fn sample_document(state: &[u8]) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The General Sampler state with its slice map replaced.
-fn with_slice_settings(state: &[u8], settings: &general_sampler::Settings) -> Option<Vec<u8>> {
+#[derive(Debug, Default, PartialEq)]
+struct SliceFixture {
+    first: SliceOptions,
+    slices: Vec<SliceBoundary>,
+}
+
+#[derive(Debug, PartialEq)]
+struct SliceBoundary {
+    time: f64,
+    options: SliceOptions,
+}
+
+impl SliceFixture {
+    fn from_markers(markers: impl IntoIterator<Item = f64>) -> Self {
+        Self {
+            first: SliceOptions::default(),
+            slices: markers
+                .into_iter()
+                .map(|time| SliceBoundary {
+                    time,
+                    options: SliceOptions::default(),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Seed slice overrides into state exported by the actual bundle. The live editing
+/// extension cannot set overrides while a file is unbound, missing, or outside slice mode.
+fn with_slice_settings(state: &[u8], settings: &SliceFixture) -> Option<Vec<u8>> {
     let mut document = decode_state(state)?;
     let fields = document.get_mut("fields")?.as_object_mut()?;
-    let assets = fields
-        .get(SAMPLE_ASSETS_FIELD)
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("{}");
-    let updated = general_sampler::write_settings(Some(assets.as_bytes()), settings);
-    fields.insert(
-        SAMPLE_ASSETS_FIELD.into(),
-        String::from_utf8(updated).ok()?.into(),
-    );
+    let mut assets: Value = serde_json::from_str(
+        fields
+            .get(SAMPLE_ASSETS_FIELD)
+            .and_then(Value::as_str)
+            .unwrap_or("{}"),
+    )
+    .ok()?;
+    let slices: Vec<_> = settings
+        .slices
+        .iter()
+        .map(|slice| {
+            let mut entry = json!(slice.options);
+            entry["time"] = json!(slice.time);
+            entry
+        })
+        .collect();
+    assets["sample_edit"] = json!({ "first_slice": settings.first, "slices": slices });
+    fields.insert(SAMPLE_ASSETS_FIELD.into(), assets.to_string().into());
     let payload = serde_json::to_vec(&document).ok()?;
     let mut state = (payload.len() as u64).to_le_bytes().to_vec();
     state.extend_from_slice(&payload);
     Some(state)
 }
 
-fn sampler_slice_settings(app: &App, sampler: DeviceId) -> general_sampler::Settings {
+fn sampler_slice_settings(app: &App, sampler: DeviceId) -> SliceFixture {
     let device = app.project().find_device(sampler).unwrap().2;
-    let assets = device.state.as_deref().and_then(sample_document);
-    general_sampler::read_settings(assets.as_deref().map(str::as_bytes))
+    let assets: Value = device
+        .state
+        .as_deref()
+        .and_then(sample_document)
+        .map(|document| serde_json::from_str(&document).unwrap())
+        .unwrap_or_default();
+    let settings = &assets["sample_edit"];
+    let options = |entry: &Value| SliceOptions {
+        gate: entry["gate"].as_bool().unwrap_or_default(),
+        reverse: entry["reverse"].as_bool(),
+        fade_in_ms: entry["fade_in_ms"].as_f64().map(|ms| ms as f32),
+        fade_out_ms: entry["fade_out_ms"].as_f64().map(|ms| ms as f32),
+    };
+    SliceFixture {
+        first: options(&settings["first_slice"]),
+        slices: settings["slices"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|entry| SliceBoundary {
+                time: entry.as_f64().or_else(|| entry["time"].as_f64()).unwrap(),
+                options: options(entry),
+            })
+            .collect(),
+    }
 }
 
 #[test]
@@ -775,7 +818,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             .and_then(decode_state)
             .is_some_and(|state| state["params"]["mode"]["string"] == "slices")
     });
-    let settings = komponist_general_sampler::Settings::from_markers([0.04, 0.10]);
+    let settings = SliceFixture::from_markers([0.04, 0.10]);
     let slice_state = |app: &App| sampler_slice_settings(app, general);
     let edit_marker = |app: &mut App, prior: &[f64], operation, expected| {
         let deadline = Instant::now() + PATIENCE;
@@ -819,7 +862,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             |app| slice_state(app) == expected,
         );
     };
-    let first = komponist_general_sampler::Settings::from_markers([0.04]);
+    let first = SliceFixture::from_markers([0.04]);
     edit_marker(
         &mut app,
         &[],
@@ -1166,7 +1209,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     h.state_mut()
         .dispatch(Action::Edit(EditAction::CancelGesture));
     // The marker edit must use the previous gain even if the cancel is still reaching audio.
-    let changed_slices = komponist_general_sampler::Settings::from_markers([0.02, 0.10]);
+    let changed_slices = SliceFixture::from_markers([0.02, 0.10]);
     edit_marker(
         h.state_mut(),
         &[0.04, 0.10],

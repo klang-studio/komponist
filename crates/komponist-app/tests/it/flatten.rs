@@ -8,7 +8,7 @@ use egui::accesskit::Role;
 use egui::{Event as UiEvent, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::device_host::{BuiltinHost, DeviceHost};
+use komponist_app::device_host::DeviceHost;
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::ui_state::{FocusArea, StatusKind};
 use komponist_app::{Action, App, EditAction, ProjectAction};
@@ -978,7 +978,7 @@ fn the_localized_track_menu_opens_a_cancellable_flatten_dialog() {
         // The reference screenshots list the in-binary devices in the browser (#294 regenerates
         // them from the packaged catalogue).
         let app = app_on(
-            Box::new(BuiltinHost::new()),
+            Box::new(App::headless_plugin_host()),
             project.clone(),
             dir.path(),
             effect,

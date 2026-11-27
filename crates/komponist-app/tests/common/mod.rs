@@ -29,16 +29,6 @@ use komponist_model::{
 };
 use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerConfig, PluginManagerEvent};
 
-/// A screenshot scene with the catalogue of the checked-in reference images: the in-binary
-/// `BuiltinHost` lists the built-in devices as "INTERN" rows in the browser, which every full-window
-/// reference PNG shows. Until #294 removes the in-binary host and regenerates those images on the
-/// Linux reference renderer, only snapshot tests that cannot keep their pixels on the packaged
-/// catalogue use this seam (a packaged catalogue lists "CLAP" rows and a different tag).
-pub fn reference_app(project: Project) -> App {
-    App::headless(project)
-        .with_device_host(Box::new(komponist_app::device_host::BuiltinHost::new()))
-}
-
 /// How long loading, scans and answers may take on a loaded machine.
 pub const PATIENCE: Duration = Duration::from_secs(30);
 
@@ -121,6 +111,17 @@ pub fn native_fixture(dir: &Path, bundle: &str, id: &str) -> Option<(PluginHost,
         .plugin
         .clone();
     Some((host, plugin))
+}
+
+/// Add scripted scan results to the verified inventory used by the UI fixtures.
+pub fn fixture_catalog(
+    bundled: &komponist_plugins::Catalog,
+    descriptors: &[komponist_ipc::PluginDescriptor],
+) -> komponist_plugins::Catalog {
+    let mut external = komponist_plugins::Catalog::default();
+    external.set_scanned(descriptors);
+    let entries = bundled.entries().iter().chain(external.entries()).cloned();
+    komponist_plugins::Catalog::from_entries(entries.collect())
 }
 
 /// The exact reference discovered from the test build of a shipped CLAP bundle.

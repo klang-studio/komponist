@@ -51,13 +51,13 @@ pub fn track(id: u64, name: &str, clips: Vec<Clip>) -> Track {
     }
 }
 
-/// A device with a builtin plugin reference named `name`.
+/// A device with a fixture plugin reference named `name`.
 pub fn device(id: u64, role: DeviceRole, name: &str) -> Arc<Device> {
     Arc::new(Device {
         id: DeviceId(id),
         role,
         plugin: PluginRef {
-            format: PluginFormat::Builtin,
+            format: PluginFormat::Clap,
             id: name.to_lowercase(),
             name: name.to_owned(),
             vendor: "Test".to_owned(),

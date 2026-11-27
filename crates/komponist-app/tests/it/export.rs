@@ -17,7 +17,7 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{BitDepth, ExportRange, ExportSettings};
-use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost};
+use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::dialogs::export::{self as view};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::{self, Settings};
@@ -1360,7 +1360,7 @@ fn snapshot_next_to_s08_in_english() {
         export: Some(s08_settings()),
         ..Settings::default()
     };
-    let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
     let mut app = App::new(Document::new(demo_project()), engine, settings, None)
         .with_lang(komponist_i18n::Lang::En);
     app.dispatch(Action::Project(ProjectAction::OpenExportDialog));
@@ -1382,7 +1382,7 @@ fn snapshots_next_to_s08() {
             export: Some(s08_settings()),
             ..Settings::default()
         };
-        let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+        let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
         let mut app = App::new(Document::new(demo_project()), engine, settings, None);
         app.dispatch(Action::Project(ProjectAction::OpenExportDialog));
         let mut h = harness_at(app, ppp);
@@ -1413,7 +1413,7 @@ fn snapshots_next_to_s08() {
                 app.show(ui);
                 let _ = view::show(ui.ctx(), &model);
             },
-            crate::common::reference_app(demo_project()),
+            App::headless(demo_project()),
         );
     h.run_steps(4);
     mask_cpu(&mut h);
@@ -1422,7 +1422,7 @@ fn snapshots_next_to_s08() {
     // The wait for devices: the demo on the builtin host misses its plugins (it never starts,
     // and the folder is a scratch one anyway).
     let dir = scratch("snapshot");
-    let mut app = crate::common::reference_app(demo_project());
+    let mut app = App::headless(demo_project());
     let settings = export_settings(&dir, ExportRange::Song);
     app.dispatch(Action::Project(ProjectAction::StartExport(settings)));
     let mut h = harness(app);
