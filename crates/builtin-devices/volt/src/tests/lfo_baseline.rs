@@ -105,7 +105,14 @@ fn lockstep(case: Case, steps: usize, script: u64) {
             // A slowly wandering modulation in -1..1, as from an envelope or another LFO.
             wander = (wander + 0.05 * (2.0 * dice.unit() - 1.0)).clamp(-1.0, 1.0);
             let hz = rate * (wander * case.rate_mod).exp2();
-            Lfo::increment(hz.clamp(0.001, 200.0), sr)
+            let hz = hz.clamp(0.001, 200.0);
+            let inc = Lfo::increment(hz, sr);
+            assert_eq!(
+                inc,
+                lfo_reference::Lfo::increment(hz, sr),
+                "{case:?}, step {step}: increment of {hz} Hz at {sr} Hz"
+            );
+            inc
         };
         let fade = if case.keyed { fade_step } else { 1.0 };
         let a = prod.step(shape, inc, fade, case.uni);
@@ -280,8 +287,8 @@ fn free_lfos() -> Vec<(&'static str, f64)> {
     all
 }
 
-/// The remaining shapes: a keyed unipolar square with a fade on the volume, a free unipolar
-/// triangle and a keyed saw on the pulse width of B and the mix.
+/// The remaining shapes: a keyed unipolar square with a fade on the volume and a free unipolar
+/// triangle on the pulse width of B and the mix.
 fn uni_shapes() -> Vec<(&'static str, f64)> {
     let mut all = vec![
         ("lfo1_shape", 3.0),
