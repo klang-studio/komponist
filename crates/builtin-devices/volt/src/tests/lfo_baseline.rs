@@ -8,8 +8,8 @@
 //!   compared. volt steps its LFOs once per control interval, so every block split must give the
 //!   same bits; that is checked on every platform.
 
-use komponist_engine::EventKind;
-use komponist_model::params::va_curve::{dst, src};
+use komponist_device_dsp::va_curve::{dst, src};
+use komponist_processor::EventKind;
 
 use super::baseline_support::{Dice, check_digests, split_independent_digest};
 use super::{bend, cc, off, on, pressure, processor, render, slot, wire};

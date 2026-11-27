@@ -5,8 +5,8 @@
 //! platform. surf runs volt's engine, so volt's tests hold the differential oracle of the LFO.
 
 use komponist_device_core::InternalProcessor;
-use komponist_engine::{EventKind, Processor};
-use komponist_model::params::va_curve::{dst, src};
+use komponist_device_dsp::va_curve::{dst, src};
+use komponist_processor::{EventKind, Processor};
 
 use super::baseline_support::{check_digests, split_independent_digest};
 use super::{BLOCK, RATE, cc, off, on, render, wire};

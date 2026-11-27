@@ -2,7 +2,7 @@
 //! file with `#[path]`): a deterministic script generator, the block splits, the render digest
 //! and its comparison with the committed reference.
 
-use komponist_engine::EventKind;
+use komponist_processor::EventKind;
 
 /// A small deterministic generator for the test scripts (splitmix64), independent of the RNG the
 /// devices use.
