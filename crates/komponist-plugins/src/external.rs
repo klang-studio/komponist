@@ -312,9 +312,14 @@ impl ExternalProcessor {
         }
         if ctx.offline {
             flags |= BLOCK_FLAG_OFFLINE;
-        } else if let Some(taps) = self.shared.signal_taps.get() {
-            flags |= komponist_ipc::shm::signal_tap_flags(taps.begin(frames));
         }
+        let tap_mask = self
+            .shared
+            .signal_taps
+            .get()
+            .filter(|_| !ctx.offline)
+            .map_or(0, |taps| taps.begin(frames));
+        flags |= komponist_ipc::shm::signal_tap_flags(tap_mask);
         let deadline = match ctx.deadline {
             _ if ctx.offline => entered + OFFLINE_DEADLINE,
             Some(deadline) => deadline,
@@ -344,7 +349,11 @@ impl ExternalProcessor {
         };
         self.reset = false;
         self.wire.clear();
-        outcome(Outcome::Sent { seq, deadline })
+        outcome(Outcome::Sent {
+            seq,
+            deadline,
+            tap_mask,
+        })
     }
 
     /// RT. The second half of a call: wait for the bridge's output, or write the fallback.
@@ -362,7 +371,11 @@ impl ExternalProcessor {
                 }
                 (status, true, 0)
             }
-            Outcome::Sent { seq, deadline } => {
+            Outcome::Sent {
+                seq,
+                deadline,
+                tap_mask,
+            } => {
                 let result = match io.as_mut() {
                     Some(io) => {
                         let [left, right] = &mut io.output;
@@ -380,7 +393,7 @@ impl ExternalProcessor {
                             && let (Some(taps), Some(payload)) =
                                 (self.shared.signal_taps.get(), self.client.signal_taps(seq))
                         {
-                            taps.record(payload);
+                            taps.record(payload, tap_mask, io.as_deref());
                         }
                         (
                             ProcessStatus::Continue,
@@ -417,7 +430,11 @@ struct Started {
 #[derive(Debug, Clone, Copy)]
 enum Outcome {
     /// The block went to the bridge: wait for `seq` until `deadline`.
-    Sent { seq: u32, deadline: Instant },
+    Sent {
+        seq: u32,
+        deadline: Instant,
+        tap_mask: u32,
+    },
     /// No block went out: write the fallback and return the status.
     Fallback(ProcessStatus),
 }

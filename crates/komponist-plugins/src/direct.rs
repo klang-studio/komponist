@@ -461,7 +461,7 @@ impl DirectProcessor {
         {
             payload.clear();
             self.audio.read_signal_taps(tap_mask, payload);
-            taps.record(payload);
+            taps.record(payload, tap_mask, Some(io));
         }
         self.delivered = true;
         ProcessStatus::Continue

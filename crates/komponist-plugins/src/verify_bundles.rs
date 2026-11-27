@@ -416,6 +416,11 @@ fn check_named_tap(
             tap.descriptor().key()
         ));
     }
+    if tap.descriptor().kind == REDUCTION
+        && tap.take_audio_peaks().into_iter().any(|peak| peak <= 0.0)
+    {
+        return Err("the reduction meter did not receive its main-bus peaks".into());
+    }
     Ok(())
 }
 

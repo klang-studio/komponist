@@ -14,7 +14,7 @@ use komponist_engine::{DeviceMeter, SampleTap};
 use komponist_ipc::signal_taps::PadActivity;
 use komponist_model::{DeviceId, TrackId};
 use komponist_plugins::signal_taps::SignalTap;
-use komponist_ui::widgets::meter::MeterState;
+use komponist_ui::widgets::meter::{MeterState, fraction};
 
 use crate::engine_sync::EngineSync;
 use crate::gain_trace::{self, Dynamics};
@@ -48,6 +48,7 @@ struct PlayheadReading {
 
 #[derive(Debug)]
 struct ReductionReading {
+    io: MeterState,
     cursor: u64,
     reduction_db: Option<f32>,
     visible_at: f64,
@@ -245,22 +246,28 @@ impl Meters {
         }
         let key = (device, source.descriptor().key()?.to_owned());
         let samples = source.samples();
-        let reading = self
-            .named_reductions
-            .entry(key)
-            .or_insert(ReductionReading {
+        let reading = self.named_reductions.entry(key).or_insert_with(|| {
+            source.take_audio_peaks();
+            ReductionReading {
+                io: MeterState::new(),
                 cursor: samples.written(),
                 reduction_db: None,
                 visible_at: now,
-            });
+            }
+        });
         source.want();
+        reading.io.tick(source.take_audio_peaks(), now);
         let mut latest = [0.0];
         let sample = samples
             .read_latest(&mut latest)
             .map(|cursor| (cursor, latest[0]));
-        let reduction = reading.update(sample, now)?;
+        let reduction = reading.update(sample, now).unwrap_or(0.0);
         Some(DeviceLevels {
-            bars: [0.0, (reduction / GR_RANGE_DB).clamp(0.0, 1.0), 0.0],
+            bars: [
+                fraction(reading.io.level_db(0)),
+                (reduction / GR_RANGE_DB).clamp(0.0, 1.0),
+                fraction(reading.io.level_db(1)),
+            ],
             reduction_db: reduction,
         })
     }
@@ -436,7 +443,7 @@ impl Meters {
             || self
                 .named_reductions
                 .values()
-                .any(|r| r.reduction_db.is_some_and(|db| db > 0.0))
+                .any(|r| r.io.is_active() || r.reduction_db.is_some_and(|db| db > 0.0))
             || self
                 .named_spectra
                 .values()
@@ -501,6 +508,7 @@ mod tests {
     #[test]
     fn named_reduction_ignores_retained_data_and_decays_at_the_meter_rate() {
         let mut reading = ReductionReading {
+            io: MeterState::new(),
             cursor: 8,
             reduction_db: None,
             visible_at: 0.0,
