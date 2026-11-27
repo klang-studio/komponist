@@ -655,9 +655,11 @@ impl App {
         self.drain_events();
         let tick = self.engine.playhead();
         let project = self.project().clone();
-        self.automation_capture.end_writes(&project, tick, |write| {
-            write.owner == owner && lane.is_none_or(|id| write.lane == id) && write.mode != mode
-        });
+        self.recording
+            .automation
+            .end_writes(&project, tick, |write| {
+                write.owner == owner && lane.is_none_or(|id| write.lane == id) && write.mode != mode
+            });
     }
 
     pub(crate) fn capture_native_automation(
@@ -677,10 +679,10 @@ impl App {
                 .program()
                 .is_some_and(|program| program.automation_model_target(owner, target).is_some())
             {
-                self.automation_capture.learned.insert((device, id));
+                self.recording.automation.learned.insert((device, id));
             }
         } else {
-            self.automation_capture.learned.remove(&(device, id));
+            self.recording.automation.learned.remove(&(device, id));
             self.capture_automation(&EngineEvent::AutomationTouch {
                 owner,
                 target,
@@ -706,17 +708,16 @@ impl App {
             } => (owner, target, tick),
             EngineEvent::AutomationBoundary { tick, kind } => {
                 let project = self.project().clone();
-                self.automation_capture.end_segments(&project, tick);
+                self.recording.automation.end_segments(&project, tick);
                 if kind != AutomationBoundary::LoopWrap {
-                    self.automation_capture.learned.clear();
+                    self.recording.automation.learned.clear();
                 }
                 if kind == AutomationBoundary::Stop
-                    && std::mem::take(&mut self.automation_stop_pending)
+                    && std::mem::take(&mut self.recording.automation_stop_pending)
                 {
                     self.finish_take();
                 } else if matches!(kind, AutomationBoundary::Stop | AutomationBoundary::Locate)
-                    && self.recording.is_none()
-                    && !self.audio_recording.is_active()
+                    && !self.recording.capturing_notes_or_audio()
                 {
                     self.commit_automation_capture();
                 }
@@ -737,8 +738,8 @@ impl App {
         {
             let key = (*device, id);
             if matches!(event, EngineEvent::AutomationTouch { begin: false, .. }) {
-                self.automation_capture.learned.remove(&key);
-            } else if self.automation_capture.learned.contains(&key) {
+                self.recording.automation.learned.remove(&key);
+            } else if self.recording.automation.learned.contains(&key) {
                 // Ignore samples and automatic loop restarts for this intercepted write.
                 return;
             }
@@ -748,15 +749,18 @@ impl App {
             EngineEvent::AutomationTouch { begin: true, .. } => {
                 let stepped = self.automation_stepped(target);
                 let base = self.automation_base(owner, &model);
-                self.automation_capture
+                self.recording
+                    .automation
                     .open(&project, owner, model, stepped, base);
             }
             EngineEvent::AutomationTouch { begin: false, .. } => {
-                self.automation_capture
+                self.recording
+                    .automation
                     .release(&project, owner, &model, tick);
             }
             EngineEvent::AutomationValue { value, .. } => {
-                self.automation_capture
+                self.recording
+                    .automation
                     .value(&project, owner, &model, tick, value);
             }
             _ => {}
@@ -788,16 +792,17 @@ impl App {
     /// (an engine rebuilt after a panic sends no boundary for the old transport, #210).
     pub(crate) fn end_automation_writes_at(&mut self, tick: Tick) {
         let project = self.project().clone();
-        self.automation_capture.end_segments(&project, tick);
-        self.automation_capture.learned.clear();
-        self.automation_stop_pending = false;
+        self.recording.automation.end_segments(&project, tick);
+        self.recording.automation.learned.clear();
+        self.recording.automation_stop_pending = false;
     }
 
     pub(crate) fn take_automation_capture(&mut self) -> AutomationCapture {
         let project = self.project().clone();
-        self.automation_capture
+        self.recording
+            .automation
             .end_segments(&project, self.engine.playhead());
-        std::mem::take(&mut self.automation_capture)
+        std::mem::take(&mut self.recording.automation)
     }
 
     pub(crate) fn commit_automation_capture(&mut self) {
@@ -811,9 +816,9 @@ impl App {
     }
 
     pub(crate) fn clear_automation_capture(&mut self) {
-        self.automation_capture = AutomationCapture::default();
-        self.automation_controls.clear();
-        self.automation_stop_pending = false;
+        self.recording.automation = AutomationCapture::default();
+        self.recording.controls.clear();
+        self.recording.automation_stop_pending = false;
         self.engine.discard_pending_macro_overrides();
     }
 
@@ -871,14 +876,14 @@ impl App {
             self.engine.host_mut().preview_param(device, id, value);
         }
         let gesture = self.doc.in_gesture();
-        if !self.automation_controls.contains(&(owner, target)) {
+        if !self.recording.controls.contains(&(owner, target)) {
             self.engine.send(Command::Touch {
                 owner,
                 target,
                 begin: true,
             });
             if gesture {
-                self.automation_controls.push((owner, target));
+                self.recording.controls.push((owner, target));
             }
         }
         let command = match command {
@@ -906,7 +911,7 @@ impl App {
     }
 
     pub(crate) fn release_automation_controls(&mut self) {
-        for (owner, target) in self.automation_controls.drain(..) {
+        for (owner, target) in self.recording.controls.drain(..) {
             self.engine.send(Command::Touch {
                 owner,
                 target,
@@ -1054,7 +1059,7 @@ mod tests {
                 0.5,
             ))));
             run(&mut app, 1024);
-            assert!(app.automation_capture.is_writing(owner, lane));
+            assert!(app.recording.automation.is_writing(owner, lane));
 
             let end = app.engine.playhead();
             let action = if bulk {
@@ -1063,7 +1068,7 @@ mod tests {
                 Automation::Mode(owner, lane, AutomationMode::Off)
             };
             app.dispatch(Action::Automation(action));
-            assert!(!app.automation_capture.is_writing(owner, lane));
+            assert!(!app.recording.automation.is_writing(owner, lane));
             app.step();
             run(&mut app, 2048);
             assert!(app.engine.playhead() > end + Tick(1));
@@ -1240,7 +1245,7 @@ mod tests {
         app.dispatch(Action::Edit(EditAction::EndGesture));
         assert!(app.engine.run_held(1024, &[], 0));
         app.step();
-        assert!(app.automation_capture.is_writing(owner, id));
+        assert!(app.recording.automation.is_writing(owner, id));
         assert_eq!(app.project().master.volume_db, master_gain);
         assert!(app.doc.undo_label().is_none());
         app.dispatch(Action::Transport(TransportAction::Stop));
@@ -1295,8 +1300,8 @@ mod tests {
         app.dispatch(Action::Edit(EditAction::EndGesture));
         assert!(app.engine.run_held(1024, &[], 0));
         app.step();
-        assert!(app.automation_capture.is_writing(owner, id));
-        assert!(app.recording.is_none() && !app.audio_recording.is_active());
+        assert!(app.recording.automation.is_writing(owner, id));
+        assert!(app.recording.midi.is_none() && !app.recording.audio.is_active());
         let at = app.engine.playhead();
         assert!(at > Tick::ZERO);
         let slot = app
@@ -1318,7 +1323,7 @@ mod tests {
         app.engine.release_engine();
         app.drain_events();
 
-        assert!(!app.automation_capture.active(), "the pass ended");
+        assert!(!app.recording.automation.active(), "the pass ended");
         assert_eq!(app.doc.undo_label(), Some("undo-automation-record"));
         let lane = app.project().master_automation.lane(&target).unwrap();
         let written = 1.0 - komponist_model::params::db_to_p(-16.0);
@@ -1371,8 +1376,8 @@ mod tests {
             automation::value_at(&lane.points, Tick(20))
         };
 
-        app.audio_recording.defer_automation(pass(0.25));
-        app.automation_capture = pass(0.75);
+        app.recording.audio.defer_automation(pass(0.25));
+        app.recording.automation = pass(0.75);
         app.sync_project();
         assert_eq!(compiled_value(&app), Some(0.75));
         let sent = app.engine.programs_sent();
@@ -1381,7 +1386,7 @@ mod tests {
 
         // Replacing one segment with another must publish even at the same document revision.
         let before = app.doc.revision();
-        app.automation_capture = pass(0.6);
+        app.recording.automation = pass(0.6);
         app.sync_project();
         assert_eq!(app.doc.revision(), before);
         assert_eq!(compiled_value(&app), Some(0.6));
@@ -1393,7 +1398,7 @@ mod tests {
                 project_edits::set_project_prop(p, ProjectProp::Metronome(!p.metronome))
             })
             .unwrap();
-        app.automation_capture = pass(0.65);
+        app.recording.automation = pass(0.65);
         app.sync_project();
         assert_ne!(app.engine.program().unwrap().metronome, project.metronome);
         assert_eq!(compiled_value(&app), Some(0.65));
@@ -1412,7 +1417,7 @@ mod tests {
             .fast_path(Command::SetMasterGain(0.5), before, app.doc.revision());
         app.sync_project();
         assert_eq!(app.engine.programs_sent(), sent + 2);
-        app.automation_capture = AutomationCapture::default();
+        app.recording.automation = AutomationCapture::default();
         app.sync_project();
         assert_eq!(compiled_value(&app), Some(0.25));
         assert_eq!(app.engine.programs_sent(), sent + 3);
@@ -1500,32 +1505,32 @@ mod tests {
             advance(app, 1024);
             app.dispatch(Action::Edit(EditAction::EndGesture));
             advance(app, 1024);
-            assert!(app.automation_capture.is_writing(owner, lane));
+            assert!(app.recording.automation.is_writing(owner, lane));
         };
         write(&mut app, -0.6);
-        assert!(app.automation_capture.has_points());
+        assert!(app.recording.automation.has_points());
         // Locate has reached the engine but the app has not drained its boundary yet.
         transport(&mut app, TransportAction::Locate(start + Tick(100)));
         assert!(app.engine.run_held(64, &[], 0));
         transport(&mut app, TransportAction::DiscardTake);
         advance(&mut app, 64);
-        assert!(!app.automation_capture.active());
+        assert!(!app.recording.automation.active());
         assert_eq!(app.project().as_ref(), &project);
         assert!(app.doc.undo_label().is_none());
 
         // A published preview can also be owned by the audio writer while it drains.
         write(&mut app, -0.6);
         let playhead = app.engine.playhead();
-        app.automation_capture.end_segments(&project, playhead);
+        app.recording.automation.end_segments(&project, playhead);
         app.sync_project();
         let deferred = app.take_automation_capture();
-        app.audio_recording.defer_automation(deferred);
+        app.recording.audio.defer_automation(deferred);
         let published_program = app.engine.programs_sent();
         app.sync_project();
         assert_eq!(app.engine.programs_sent(), published_program);
         transport(&mut app, TransportAction::DiscardTake);
         assert!(app.engine.programs_sent() > published_program);
-        assert!(app.audio_recording.pending_automation().is_none());
+        assert!(app.recording.audio.pending_automation().is_none());
         advance(&mut app, 64);
         assert_eq!(app.project().as_ref(), &project);
         assert!(app.doc.undo_label().is_none());

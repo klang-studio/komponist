@@ -956,7 +956,8 @@ Useful flags: `--demo`, `--null-audio`, `--lang de|en`, `--scale F`, `--open-plu
 | `shell.rs`, `layout.rs` | the main window layout |
 | `engine_sync.rs`, `device_host.rs` | document → engine; creating processors for verified bundles and bridged plugins |
 | `project_io.rs`, `settings.rs`, `dirs.rs` | files, settings, platform folders |
-| `record.rs`, `audio_record*.rs`, `automation_capture.rs` | MIDI, audio and automation recording |
+| `record.rs`, `recording/` | MIDI capture and coordination of MIDI, audio and automation takes |
+| `audio_settings.rs` | driver and device inventory for audio settings |
 | `export*.rs` | WAV export coordination |
 | `showcase.rs` | the "Night Drive" demo project (`showcase_project()`) |
 | `bin/komponist-play.rs` | headless demo player |

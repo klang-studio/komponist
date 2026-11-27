@@ -746,7 +746,7 @@ impl App {
             Ok((path, (project, repairs))) => {
                 let project_dir =
                     komponist_model::paths::absolute(path.parent().unwrap_or(Path::new("")));
-                crate::audio_record::reclaim_abandoned_takes(&project_dir);
+                crate::recording::audio_record::reclaim_abandoned_takes(&project_dir);
                 self.open_document(Document::new(project), Some(path.clone()));
                 if !repairs.is_empty() {
                     eprintln!("komponist: {}: repaired on open: {repairs}", path.display());
@@ -1199,10 +1199,7 @@ impl App {
             // A running take records on.
             Answer::Cancel => {}
             Answer::Discard => {
-                if self.recording.is_some()
-                    || self.audio_recording.is_active()
-                    || self.automation_capture.active()
-                {
+                if self.recording.active() {
                     self.discard_take();
                 }
                 self.proceed(next);

@@ -10,7 +10,7 @@ impl App {
     /// The clip open in the editor and whether it is a MIDI clip; `None` while recording (the
     /// editor shows the take being recorded, not the open clip).
     pub(super) fn open_clip_notes(&self) -> Option<(ClipId, bool)> {
-        if self.recording.is_some() || self.audio_recording.is_active() {
+        if self.recording.capturing_notes_or_audio() {
             return None;
         }
         let id = self.ui.editor.clip?;

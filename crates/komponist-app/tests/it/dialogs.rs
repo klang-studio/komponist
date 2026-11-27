@@ -1998,7 +1998,7 @@ impl SlowDevices {
     }
 }
 
-impl settings::AudioDevices for SlowDevices {
+impl komponist_app::audio_settings::AudioDevices for SlowDevices {
     fn hosts(&self) -> Vec<HostKind> {
         self.record();
         vec![HostKind::Null]

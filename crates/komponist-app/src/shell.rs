@@ -151,18 +151,16 @@ impl App {
             &mut self.queue,
         );
         ctx.project_dir = project_dir.as_deref();
-        ctx.audio_devices = Some(std::sync::Arc::clone(&self.audio_devices));
+        ctx.audio_devices = Some(self.audio_settings.provider());
         ctx.focused = focused;
         ctx.lang = self.lang;
         ctx.requests = self.shell.requests;
-        ctx.recording = self.recording.as_ref();
-        ctx.automation_capture = self
-            .automation_capture
-            .active()
-            .then_some(&self.automation_capture);
-        ctx.audio_recording = self.audio_recording.running();
+        ctx.recording = self.recording.midi();
+        let automation = self.recording.automation();
+        ctx.automation_capture = automation.active().then_some(automation);
+        ctx.audio_recording = self.recording.audio();
         ctx.provisional_recordings = provisional_recordings.as_deref();
-        ctx.exports = &self.export.done;
+        ctx.exports = self.export.done();
         let midi = self.engine.telemetry().held_input_keys();
         ctx.held_notes = self
             .shell
@@ -332,8 +330,8 @@ impl App {
         crate::views::audio_editor::live::recording_area(
             self.doc.project(),
             &self.ui,
-            self.recording.as_ref(),
-            self.audio_recording.running(),
+            self.recording.midi(),
+            self.recording.audio(),
         )
     }
 

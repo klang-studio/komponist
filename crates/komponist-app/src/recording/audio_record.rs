@@ -26,8 +26,10 @@ use crate::record;
 use crate::settings::CaptureFormat;
 use crate::ui_state::StatusKind;
 
+use super::automation_capture::AutomationCapture;
+
 /// How long Save (and opening the export) waits for a stopped take to drain and be copied.
-pub(crate) const TAKE_FINISH_TIMEOUT: Duration = Duration::from_secs(2);
+pub(super) const TAKE_FINISH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The live view of an audio session, read by the arrangement, dock and inspector.
 #[derive(Default)]
@@ -262,12 +264,12 @@ fn recording_preview(
 
 /// Session-owned files survive undo. Only an explicit discard deletes an active session.
 #[derive(Default)]
-pub(crate) struct State {
+pub(super) struct State {
     capture: Option<Capture>,
     provisional: BTreeSet<PathBuf>,
     root_override: Option<PathBuf>,
     pending_midi: Option<record::Commit>,
-    pending_automation: Option<crate::automation_capture::AutomationCapture>,
+    pending_automation: Option<AutomationCapture>,
     pending_removals: BTreeSet<PathBuf>,
     /// The ends of staging workers whose take was dropped; shutdown waits for their clean-up.
     cleanup: Vec<mpsc::Receiver<()>>,
@@ -278,24 +280,24 @@ pub(crate) struct State {
 }
 
 impl State {
-    pub(crate) fn running(&self) -> Option<&AudioRecording> {
+    pub(super) fn running(&self) -> Option<&AudioRecording> {
         self.capture.as_ref().map(|capture| &capture.view)
     }
-    pub(crate) fn is_active(&self) -> bool {
+    pub(super) fn is_active(&self) -> bool {
         self.capture.is_some()
     }
-    pub(crate) fn has_material(&self) -> bool {
+    pub(super) fn has_material(&self) -> bool {
         self.capture.as_ref().is_some_and(|capture| {
             capture.material || capture.stopping || capture.staging.is_some()
         }) || self.pending_midi.is_some()
             || self.pending_automation.is_some()
     }
-    pub(crate) fn defer_midi(&mut self, commit: Option<record::Commit>) {
+    pub(super) fn defer_midi(&mut self, commit: Option<record::Commit>) {
         if commit.is_some() {
             self.pending_midi = commit;
         }
     }
-    pub(crate) fn defer_automation(&mut self, pass: crate::automation_capture::AutomationCapture) {
+    pub(super) fn defer_automation(&mut self, pass: AutomationCapture) {
         if pass.has_points() {
             if let Some(previous) = &mut self.pending_automation {
                 previous.merge(pass);
@@ -305,13 +307,11 @@ impl State {
         }
     }
 
-    pub(crate) fn pending_automation(
-        &self,
-    ) -> Option<&crate::automation_capture::AutomationCapture> {
+    pub(super) fn pending_automation(&self) -> Option<&AutomationCapture> {
         self.pending_automation.as_ref()
     }
 
-    pub(crate) fn references_automation_lane(
+    pub(super) fn references_automation_lane(
         &self,
         owner: komponist_model::automation::AutomationOwner,
         lane: komponist_model::automation::LaneId,
@@ -320,7 +320,7 @@ impl State {
             .as_ref()
             .is_some_and(|pass| pass.references_lane(owner, lane))
     }
-    pub(crate) fn folder(&self) -> Option<&Path> {
+    pub(super) fn folder(&self) -> Option<&Path> {
         self.capture
             .as_ref()
             .filter(|capture| capture.provisional)
@@ -332,12 +332,12 @@ impl State {
                     .and_then(|path| path.parent())
             })
     }
-    pub(crate) fn stop(&mut self) {
+    pub(super) fn stop(&mut self) {
         if let Some(capture) = &mut self.capture {
             capture.stopping = true;
         }
     }
-    pub(crate) fn reset(&mut self) {
+    pub(super) fn reset(&mut self) {
         self.cancel();
         self.provisional.clear();
         self.pending_removals.clear();
@@ -345,7 +345,7 @@ impl State {
     /// Drops the running take. A take whose copies are still being made is dropped as well, like
     /// one still draining its tail: its copies are deleted (by the worker, or here if they are
     /// already made), the finished WAVs stay.
-    pub(crate) fn cancel(&mut self) {
+    pub(super) fn cancel(&mut self) {
         if let Some(mut capture) = self.capture.take() {
             if let Some(staging) = capture.staging.take() {
                 self.cleanup
@@ -365,7 +365,7 @@ impl State {
 impl State {
     /// Quitting: drops the running take and waits, at most `timeout`, until the staging workers
     /// of dropped takes have deleted their copies, so none stay behind in the project folder.
-    pub(crate) fn shutdown(&mut self, timeout: Duration) {
+    pub(super) fn shutdown(&mut self, timeout: Duration) {
         self.cancel();
         let deadline = Instant::now() + timeout;
         for ended in self.cleanup.drain(..) {
@@ -384,18 +384,18 @@ impl App {
     /// Overrides the provisional recording root for embedding/tests. No directory is created
     /// until recording starts. Headless construction always uses scratch space.
     pub fn with_recording_directory(mut self, directory: impl Into<PathBuf>) -> Self {
-        self.audio_recording.root_override = Some(directory.into());
+        self.recording.audio.root_override = Some(directory.into());
         self
     }
     /// Folder shown by the persistent provisional-recordings chip, while any owned file still
     /// lives outside the saved project's Takes folder.
     /// Current audio capture, including a count-in or a draining stop tail.
     pub fn audio_recording(&self) -> Option<&AudioRecording> {
-        self.audio_recording.running()
+        self.recording.audio.running()
     }
 
     pub fn provisional_recordings_folder(&self) -> Option<&Path> {
-        self.audio_recording.folder()
+        self.recording.audio.folder()
     }
 
     /// A destination for generated audio, with the same first-save migration as a take.
@@ -406,7 +406,8 @@ impl App {
             return Ok((target, false));
         }
         let root = self
-            .audio_recording
+            .recording
+            .audio
             .root_override
             .clone()
             .or_else(files::provisional_root)
@@ -417,11 +418,11 @@ impl App {
 
     /// Owns an unsaved render until the project is saved, including across undo and redo.
     pub(crate) fn track_provisional_audio(&mut self, path: PathBuf) {
-        self.audio_recording.provisional.insert(path);
+        self.recording.audio.provisional.insert(path);
     }
 
     pub(crate) fn prepare_audio_take(&mut self, from: Tick) -> bool {
-        if self.audio_recording.capture.is_some() {
+        if self.recording.audio.capture.is_some() {
             self.set_status(self.lang.audio_record_finalizing(), StatusKind::Info);
             return false;
         }
@@ -443,7 +444,8 @@ impl App {
             directory.join("Takes")
         } else {
             let root = self
-                .audio_recording
+                .recording
+                .audio
                 .root_override
                 .clone()
                 .or_else(files::provisional_root);
@@ -488,7 +490,7 @@ impl App {
             tracks,
         }) {
             Ok((recorder, session)) => {
-                self.audio_recording.capture = Some(Capture {
+                self.recording.audio.capture = Some(Capture {
                     session,
                     directory,
                     provisional,
@@ -524,7 +526,8 @@ impl App {
     /// may wait for the writer's progress lock; without, it never blocks.
     fn advance_audio_take(&mut self, deadline: Option<Instant>) {
         if self
-            .audio_recording
+            .recording
+            .audio
             .capture
             .as_ref()
             .is_some_and(|capture| capture.staging.is_some())
@@ -535,7 +538,7 @@ impl App {
         if deadline.is_none() {
             self.refresh_take_view();
         }
-        let Some(capture) = &mut self.audio_recording.capture else {
+        let Some(capture) = &mut self.recording.audio.capture else {
             return;
         };
         let polled = match deadline {
@@ -554,7 +557,7 @@ impl App {
     fn refresh_take_view(&mut self) {
         let project = self.project().clone();
         let head = self.engine.playhead();
-        let Some(capture) = &mut self.audio_recording.capture else {
+        let Some(capture) = &mut self.recording.audio.capture else {
             return;
         };
         capture.view.head = head;
@@ -563,7 +566,7 @@ impl App {
         capture.view.clips.clear();
         capture.view.progress.clear();
         capture.view.completed.clear();
-        let provisional = &mut self.audio_recording.provisional;
+        let provisional = &mut self.recording.audio.provisional;
         let label = |base: u32, index: usize, lap: u32| {
             let take = self.lang.record_take(
                 base.saturating_add(index as u32)
@@ -607,7 +610,8 @@ impl App {
         result: Result<recording::RecordingResult, recording::RecordingError>,
     ) {
         let mut capture = self
-            .audio_recording
+            .recording
+            .audio
             .capture
             .take()
             .expect("polled capture exists");
@@ -619,7 +623,8 @@ impl App {
                     .owned
                     .extend(result.takes.iter().map(|take| take.path.clone()));
                 if capture.provisional {
-                    self.audio_recording
+                    self.recording
+                        .audio
                         .provisional
                         .extend(result.takes.iter().map(|take| take.path.clone()));
                 }
@@ -628,7 +633,7 @@ impl App {
                     let paths: Vec<_> = result
                         .takes
                         .iter()
-                        .filter(|take| self.audio_recording.provisional.contains(&take.path))
+                        .filter(|take| self.recording.audio.provisional.contains(&take.path))
                         .map(|take| take.path.clone())
                         .collect();
                     if !paths.is_empty() {
@@ -637,7 +642,7 @@ impl App {
                             paths,
                             directory.join("Takes"),
                             #[cfg(test)]
-                            self.audio_recording.stage_gate.take(),
+                            self.recording.audio.stage_gate.take(),
                         );
                         capture.staging = Some(Staging {
                             result,
@@ -645,22 +650,22 @@ impl App {
                             done,
                             alive,
                         });
-                        self.audio_recording.capture = Some(capture);
+                        self.recording.audio.capture = Some(capture);
                         return;
                     }
                 }
                 self.commit_audio_take(capture, result, None);
             }
             Err(recording::RecordingError::Cancelled) => {
-                self.audio_recording.pending_midi = None;
-                self.audio_recording.pending_automation = None;
+                self.recording.audio.pending_midi = None;
+                self.recording.audio.pending_automation = None;
                 self.sync_project();
                 drop(capture); // joins/IO only on this non-RT thread
             }
             Err(error) => {
                 // The writer may have finished a lap no frame saw (the blocking path draws no
                 // live view): keep every file it published, without drawing waveforms.
-                let provisional = &mut self.audio_recording.provisional;
+                let provisional = &mut self.recording.audio.provisional;
                 for snapshot in capture.session.visible_progress() {
                     for progress in snapshot.completed.iter().flatten() {
                         capture.remember_progress(progress, provisional);
@@ -670,20 +675,21 @@ impl App {
                 // Freeze an in-progress MIDI overlay too: writer failure can happen before
                 // Stop has created pending_midi. Both paths preserve captured notes once.
                 if capture.provisional {
-                    self.audio_recording
+                    self.recording
+                        .audio
                         .provisional
                         .extend(capture.owned.iter().filter(|path| path.is_file()).cloned());
                 }
                 let mut commits = Vec::new();
-                if let Some(midi) = self.audio_recording.pending_midi.take() {
+                if let Some(midi) = self.recording.audio.pending_midi.take() {
                     commits.push(midi);
                 }
-                if let Some(midi) = self.recording.take().and_then(|recording| {
+                if let Some(midi) = self.recording.midi.take().and_then(|recording| {
                     recording.commit(self.doc.project(), self.engine.playhead())
                 }) {
                     commits.push(midi);
                 }
-                let automation = self.audio_recording.pending_automation.take();
+                let automation = self.recording.audio.pending_automation.take();
                 if !commits.is_empty() || automation.is_some() {
                     let label = commits
                         .first()
@@ -714,7 +720,8 @@ impl App {
     /// [`App::advance_audio_take`]).
     fn poll_take_staging(&mut self, deadline: Option<Instant>) {
         let Some(staging) = self
-            .audio_recording
+            .recording
+            .audio
             .capture
             .as_ref()
             .and_then(|capture| capture.staging.as_ref())
@@ -738,7 +745,8 @@ impl App {
             Err(true) => Err(std::io::Error::other("recording copy worker stopped")),
         };
         let mut capture = self
-            .audio_recording
+            .recording
+            .audio
             .capture
             .take()
             .expect("staging capture exists");
@@ -761,14 +769,15 @@ impl App {
                 Ok(mapping) => {
                     for take in &mut result.takes {
                         if let Some(path) = mapping.get(&take.path) {
-                            self.audio_recording.provisional.remove(&take.path);
-                            self.audio_recording.provisional.insert(path.clone());
+                            self.recording.audio.provisional.remove(&take.path);
+                            self.recording.audio.provisional.insert(path.clone());
                             take.path = path.clone();
                         }
                     }
                     // Keep source files until the result is in the document; old project
                     // checkpoints and undo states may still link to those files.
-                    self.audio_recording
+                    self.recording
+                        .audio
                         .pending_removals
                         .extend(mapping.keys().cloned());
                     if !mapping.is_empty() {
@@ -798,9 +807,9 @@ impl App {
                         .takes
                         .iter()
                         .map(|take| take.path.clone())
-                        .filter(|path| self.audio_recording.provisional.contains(path))
+                        .filter(|path| self.recording.audio.provisional.contains(path))
                         .collect();
-                    self.audio_recording.failed_stage = Some(FailedStage {
+                    self.recording.audio.failed_stage = Some(FailedStage {
                         target: takes,
                         sources,
                         notice: notice.clone(),
@@ -809,8 +818,8 @@ impl App {
                 }
             }
         }
-        let midi = self.audio_recording.pending_midi.take();
-        let automation = self.audio_recording.pending_automation.take();
+        let midi = self.recording.audio.pending_midi.take();
+        let automation = self.recording.audio.pending_automation.take();
         let label = midi
             .as_ref()
             .map(|commit| commit.label().to_owned())
@@ -868,7 +877,8 @@ impl App {
     /// [`TAKE_FINISH_TIMEOUT`] in all.
     pub(crate) fn await_audio_take(&mut self) -> bool {
         if !self
-            .audio_recording
+            .recording
+            .audio
             .capture
             .as_ref()
             .is_some_and(|capture| capture.stopping || capture.staging.is_some())
@@ -876,10 +886,10 @@ impl App {
             return true;
         }
         let deadline = Instant::now() + TAKE_FINISH_TIMEOUT;
-        while self.audio_recording.capture.is_some() && Instant::now() < deadline {
+        while self.recording.audio.capture.is_some() && Instant::now() < deadline {
             self.advance_audio_take(Some(deadline));
         }
-        if self.audio_recording.capture.is_some() {
+        if self.recording.audio.capture.is_some() {
             self.set_status(self.lang.audio_record_finalizing(), StatusKind::Info);
             false
         } else {
@@ -899,7 +909,8 @@ impl App {
         // Sources whose background copy into this folder just failed keep their original links in
         // this Save; the next Save tries again.
         let failed = self
-            .audio_recording
+            .recording
+            .audio
             .failed_stage
             .take()
             .filter(|failed| failed.target == target);
@@ -913,7 +924,7 @@ impl App {
             checkpoints: Vec::new(),
             notice: None,
         };
-        if let Some(capture) = &self.audio_recording.capture {
+        if let Some(capture) = &self.recording.audio.capture {
             let takes = capture.session.checkpoint().map_err(|error| {
                 self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
             })?;
@@ -932,7 +943,8 @@ impl App {
             }
         }
         let paths: Vec<_> = self
-            .audio_recording
+            .recording
+            .audio
             .provisional
             .iter()
             .filter(|path| !staged.live.contains(*path))
@@ -964,10 +976,10 @@ impl App {
         let mapping = std::mem::take(&mut staged.mapping);
         let mut notice = staged.notice.take();
         for source in mapping.into_keys() {
-            self.audio_recording.provisional.remove(&source);
-            self.audio_recording.pending_removals.insert(source);
+            self.recording.audio.provisional.remove(&source);
+            self.recording.audio.pending_removals.insert(source);
         }
-        if let Some(capture) = &mut self.audio_recording.capture
+        if let Some(capture) = &mut self.recording.audio.capture
             && capture.provisional
             && !staged.keep_live_paths.get()
             && !capture.directory.starts_with(&staged.target)
@@ -975,7 +987,7 @@ impl App {
             match capture.session.relocate(&staged.target) {
                 Ok(after) => {
                     for path in &staged.live {
-                        self.audio_recording.provisional.remove(path);
+                        self.recording.audio.provisional.remove(path);
                         capture.owned.remove(path);
                     }
                     // The worker can finish more laps while the project is being written.
@@ -989,10 +1001,11 @@ impl App {
                 }
             }
         }
-        self.audio_recording
+        self.recording
+            .audio
             .provisional
             .retain(|path| !path.starts_with(&staged.target));
-        if let Some(capture) = &mut self.audio_recording.capture
+        if let Some(capture) = &mut self.recording.audio.capture
             && capture.directory.starts_with(&staged.target)
         {
             capture.provisional = false;
@@ -1000,12 +1013,12 @@ impl App {
         if let Some((notice, kind)) = notice {
             self.set_status(notice, kind);
         }
-        let paths = std::mem::take(&mut self.audio_recording.pending_removals);
+        let paths = std::mem::take(&mut self.recording.audio.pending_removals);
         for path in paths {
             if let Err(error) = std::fs::remove_file(&path)
                 && error.kind() != std::io::ErrorKind::NotFound
             {
-                self.audio_recording.pending_removals.insert(path);
+                self.recording.audio.pending_removals.insert(path);
                 self.set_status(self.lang.audio_record_move_failed(error), StatusKind::Error);
             }
         }
@@ -1358,7 +1371,7 @@ mod tests {
 
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(period, &[], 0));
-        wait(&mut app, |app| !app.audio_recording.is_active());
+        wait(&mut app, |app| !app.recording.audio.is_active());
         let clips = &app.project().track(track).unwrap().clips;
         assert_eq!(clips.len(), 2);
         let ClipContent::Audio(cycle) = &clips[1].content else {
@@ -1407,7 +1420,7 @@ mod tests {
 
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
-        wait(&mut app, |app| !app.audio_recording.is_active());
+        wait(&mut app, |app| !app.recording.audio.is_active());
         app.dispatch(Action::Settings(crate::actions::SettingsAction::SetAudio(
             config.clone(),
         )));
@@ -1564,13 +1577,13 @@ mod tests {
         let (_root, mut app, track) = rig();
         begin(&mut app, track);
         assert!(
-            app.recording.is_none(),
+            app.recording.midi.is_none(),
             "audio must not create a MIDI overlay"
         );
         assert!(app.provisional_recordings_folder().is_some());
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
-        wait(&mut app, |app| !app.audio_recording.is_active());
+        wait(&mut app, |app| !app.recording.audio.is_active());
         let clip = app.project().track(track).unwrap().clips[0].clone();
         let ClipContent::Audio(audio) = &clip.content else {
             panic!("audio clip");
@@ -1599,7 +1612,7 @@ mod tests {
         assert!(app.engine_mut().run_held(256, &[], 0));
         // The engine has ended capture, but the UI has not polled its final writer result yet.
         app.open_export_dialog();
-        assert!(!app.audio_recording.is_active());
+        assert!(!app.recording.audio.is_active());
         assert_eq!(app.project().track(audio).unwrap().clips.len(), 1);
         assert!(matches!(
             app.ui.dialog,
@@ -1619,7 +1632,8 @@ mod tests {
         };
         let snapshot = audio.file.abs.clone();
         let live = app
-            .audio_recording
+            .recording
+            .audio
             .capture
             .as_ref()
             .unwrap()
@@ -1650,7 +1664,8 @@ mod tests {
         let (root, mut app, track) = rig();
         begin(&mut app, track);
         let live_path = |app: &App| {
-            app.audio_recording
+            app.recording
+                .audio
                 .capture
                 .as_ref()
                 .unwrap()
@@ -1754,7 +1769,7 @@ mod tests {
         // Once closed, the source can be copied and all history entries can adopt the new name.
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
-        wait(&mut app, |app| !app.audio_recording.is_active());
+        wait(&mut app, |app| !app.recording.audio.is_active());
         assert!(app.save_to(&project_file));
         assert!(!source.exists());
         let sample = check_sample(&app).resolve(Some(&root)).unwrap();
@@ -1769,7 +1784,7 @@ mod tests {
         begin(&mut app, track);
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
-        wait(&mut app, |app| !app.audio_recording.is_active());
+        wait(&mut app, |app| !app.recording.audio.is_active());
 
         let chosen_dir = root.join("selected");
         let actual_dir = root.join("actual");
@@ -1801,7 +1816,7 @@ mod tests {
         begin(&mut app, track);
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
-        wait(&mut app, |app| !app.audio_recording.is_active());
+        wait(&mut app, |app| !app.recording.audio.is_active());
         let original = match &app.project().track(track).unwrap().clips[0].content {
             ClipContent::Audio(audio) => audio.file.abs.clone(),
             _ => unreachable!(),
@@ -1826,7 +1841,7 @@ mod tests {
         begin(&mut app, track);
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
-        wait(&mut app, |app| !app.audio_recording.is_active());
+        wait(&mut app, |app| !app.recording.audio.is_active());
         let original = match &app.project().track(track).unwrap().clips[0].content {
             ClipContent::Audio(audio) => audio.file.abs.clone(),
             _ => unreachable!(),
@@ -1848,7 +1863,7 @@ mod tests {
         begin(&mut app, track);
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
-        wait(&mut app, |app| !app.audio_recording.is_active());
+        wait(&mut app, |app| !app.recording.audio.is_active());
         let original = match &app.project().track(track).unwrap().clips[0].content {
             ClipContent::Audio(audio) => audio.file.abs.clone(),
             _ => unreachable!(),
@@ -1935,8 +1950,8 @@ mod tests {
         begin_mixed(&mut app);
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
-        wait(&mut app, |app| !app.audio_recording.is_active());
-        assert!(app.recording.is_none());
+        wait(&mut app, |app| !app.recording.audio.is_active());
+        assert!(app.recording.midi.is_none());
         assert_eq!(app.project().track(midi).unwrap().clips.len(), 1);
         assert_eq!(app.project().track(audio).unwrap().clips.len(), 1);
         app.dispatch(Action::Edit(EditAction::Undo));
@@ -1982,12 +1997,13 @@ mod tests {
         assert_eq!(app.transport(), TransportState::Playing);
         // The transport stopped recording, but the interruption is still queued for the app.
         assert!(
-            app.audio_recording
+            app.recording
+                .audio
                 .capture
                 .as_ref()
                 .is_some_and(|capture| !capture.stopping)
         );
-        assert!(app.recording.is_none());
+        assert!(app.recording.midi.is_none());
 
         let path = root.join("Interrupted.komponist");
         // Every short lap can create a WAV. On a slow disk the writer may need more than
@@ -2047,7 +2063,7 @@ mod tests {
             0
         );
         begin_mixed(&mut app);
-        assert!(app.recording.is_some());
+        assert!(app.recording.midi.is_some());
         let instrument = app.project().track(midi).unwrap().channel.devices[0].id;
         let slot = app
             .engine
@@ -2066,8 +2082,8 @@ mod tests {
         }));
         assert!(caught.is_err(), "the processor ran");
         app.engine.release_engine();
-        wait(&mut app, |app| !app.audio_recording.is_active());
-        assert!(app.recording.is_none());
+        wait(&mut app, |app| !app.recording.audio.is_active());
+        assert!(app.recording.midi.is_none());
         let midi_clip = &app.project().track(midi).unwrap().clips[0];
         let ClipContent::Midi(content) = &midi_clip.content else {
             panic!("a MIDI clip")
@@ -2093,8 +2109,8 @@ mod tests {
         begin_mixed(&mut app);
         app.engine_mut().send(Command::AbortAudioRecording);
         assert!(app.engine_mut().run_held(256, &[], 0));
-        wait(&mut app, |app| !app.audio_recording.is_active());
-        assert!(app.recording.is_none());
+        wait(&mut app, |app| !app.recording.audio.is_active());
+        assert!(app.recording.midi.is_none());
         assert_eq!(app.project().track(midi).unwrap().clips.len(), 1);
         assert!(app.project().track(audio).unwrap().clips.is_empty());
         app.dispatch(Action::Edit(EditAction::Undo));
@@ -2114,7 +2130,7 @@ mod tests {
             .unwrap();
         app.step();
         assert!(app.engine_mut().run_held(256, &[], 0));
-        wait(&mut app, |app| !app.audio_recording.is_active());
+        wait(&mut app, |app| !app.recording.audio.is_active());
         assert!(app.project().track(midi).is_none());
         assert_eq!(app.project().track(audio).unwrap().clips.len(), 1);
         app.dispatch(Action::Edit(EditAction::Undo));
@@ -2134,7 +2150,7 @@ mod tests {
         app.project_path = Some(project_file.clone());
         let (release, go) = mpsc::channel();
         let (finished, _) = mpsc::channel();
-        app.audio_recording.stage_gate = Some(StageGate {
+        app.recording.audio.stage_gate = Some(StageGate {
             go,
             finished,
             ready: None,
@@ -2142,13 +2158,15 @@ mod tests {
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
         wait(&mut app, |app| {
-            app.audio_recording
+            app.recording
+                .audio
                 .capture
                 .as_ref()
                 .is_some_and(|capture| capture.staging.is_some())
         });
         let source = app
-            .audio_recording
+            .recording
+            .audio
             .provisional
             .iter()
             .next()
@@ -2159,8 +2177,8 @@ mod tests {
         for _ in 0..5 {
             app.step();
         }
-        assert!(app.audio_recording.is_active());
-        assert!(app.audio_recording.has_material());
+        assert!(app.recording.audio.is_active());
+        assert!(app.recording.audio.has_material());
         assert!(app.project().track(track).unwrap().clips.is_empty());
         assert!(visible(&root.join("Takes")).is_empty());
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -2179,7 +2197,7 @@ mod tests {
         });
         assert!(app.save_to(&project_file));
         releaser.join().unwrap();
-        assert!(!app.audio_recording.is_active());
+        assert!(!app.recording.audio.is_active());
         let clip = &app.project().track(track).unwrap().clips[0];
         let ClipContent::Audio(audio) = &clip.content else {
             panic!("audio clip");
@@ -2228,7 +2246,7 @@ mod tests {
         app.project_path = Some(root.join("Song.komponist"));
         let (release, go) = mpsc::channel::<()>();
         let (finished, done) = mpsc::channel();
-        app.audio_recording.stage_gate = Some(StageGate {
+        app.recording.audio.stage_gate = Some(StageGate {
             go,
             finished,
             ready: None,
@@ -2236,13 +2254,14 @@ mod tests {
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
         wait(&mut app, |app| {
-            app.audio_recording
+            app.recording
+                .audio
                 .capture
                 .as_ref()
                 .is_some_and(|capture| capture.staging.is_some())
         });
         app.dispatch(Action::Transport(TransportAction::DiscardTake));
-        assert!(!app.audio_recording.is_active());
+        assert!(!app.recording.audio.is_active());
         // Let the worker copy into a result nobody takes.
         drop(release);
         done.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -2258,7 +2277,7 @@ mod tests {
         let (release, go) = mpsc::channel::<()>();
         let (finished, done) = mpsc::channel();
         let (ready, waiting) = mpsc::channel();
-        app.audio_recording.stage_gate = Some(StageGate {
+        app.recording.audio.stage_gate = Some(StageGate {
             go,
             finished,
             ready: Some(ready),
@@ -2266,7 +2285,8 @@ mod tests {
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
         wait(app, |app| {
-            app.audio_recording
+            app.recording
+                .audio
                 .capture
                 .as_ref()
                 .is_some_and(|capture| capture.staging.is_some())
@@ -2286,7 +2306,7 @@ mod tests {
         // The worker has ended; its private copy waits in the channel for the next frame.
         assert_eq!(hidden(&root.join("Takes")).len(), 1);
         app.dispatch(Action::Transport(TransportAction::DiscardTake));
-        assert!(!app.audio_recording.is_active());
+        assert!(!app.recording.audio.is_active());
         assert_eq!(std::fs::read_dir(root.join("Takes")).unwrap().count(), 0);
     }
 
@@ -2301,7 +2321,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
             release.send(()).unwrap();
         });
-        app.audio_recording.shutdown(Duration::from_secs(5));
+        app.recording.audio.shutdown(Duration::from_secs(5));
         releaser.join().unwrap();
         assert_eq!(std::fs::read_dir(root.join("Takes")).unwrap().count(), 0);
     }
@@ -2321,15 +2341,15 @@ mod tests {
         FAIL_DIRECTORY_SYNC.with(|flag| flag.set(true));
         app.step();
         FAIL_DIRECTORY_SYNC.with(|flag| flag.set(false));
-        assert!(!app.audio_recording.is_active());
+        assert!(!app.recording.audio.is_active());
         let ClipContent::Audio(audio) = &app.project().track(track).unwrap().clips[0].content
         else {
             panic!("audio clip");
         };
         assert!(audio.file.abs.starts_with(root.join("Provisional")));
         assert!(audio.file.abs.is_file());
-        assert!(app.audio_recording.provisional.contains(&audio.file.abs));
-        assert!(app.audio_recording.pending_removals.is_empty());
+        assert!(app.recording.audio.provisional.contains(&audio.file.abs));
+        assert!(app.recording.audio.pending_removals.is_empty());
         assert!(
             visible(&root.join("Takes")).is_empty(),
             "no unflushed copy stays"
@@ -2347,14 +2367,14 @@ mod tests {
         app.project_path = Some(root.join("Song.komponist"));
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
-        wait(&mut app, |app| !app.audio_recording.is_active());
+        wait(&mut app, |app| !app.recording.audio.is_active());
         let ClipContent::Audio(audio) = &app.project().track(track).unwrap().clips[0].content
         else {
             panic!("audio clip");
         };
         assert!(audio.file.abs.starts_with(root.join("Provisional")));
         assert!(audio.file.abs.is_file());
-        assert!(app.audio_recording.provisional.contains(&audio.file.abs));
+        assert!(app.recording.audio.provisional.contains(&audio.file.abs));
         let status = app.ui.status.as_ref().unwrap();
         assert_eq!(status.kind, StatusKind::Error, "{}", status.text);
         assert_ne!(status.text, app.lang.audio_record_complete(1));
@@ -2370,7 +2390,7 @@ mod tests {
         let takes = root.join("Takes");
         app.dispatch(Action::Transport(TransportAction::DiscardTake));
         let started = Instant::now();
-        app.audio_recording.shutdown(Duration::from_millis(20));
+        app.recording.audio.shutdown(Duration::from_millis(20));
         assert!(started.elapsed() < Duration::from_secs(1));
         // The app "ended" here: the worker still holds its private copy.
         assert_eq!(hidden(&takes).len(), 1);
@@ -2400,7 +2420,7 @@ mod tests {
         app.project_path = Some(root.join("Song.komponist"));
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
-        wait(&mut app, |app| !app.audio_recording.is_active());
+        wait(&mut app, |app| !app.recording.audio.is_active());
         std::fs::remove_file(&takes).unwrap();
         let link = |app: &App| {
             let saved = crate::project_io::load_project(&root.join("Song.komponist")).unwrap();
@@ -2450,7 +2470,7 @@ mod tests {
         // has drained what the engine queued.
         let deadline = Instant::now() + Duration::from_secs(5);
         let position = |app: &App| {
-            let progress = app.audio_recording.capture.as_ref().unwrap();
+            let progress = app.recording.audio.capture.as_ref().unwrap();
             let current = progress.session.visible_progress().remove(0).current;
             (current.lap, current.frames)
         };
@@ -2466,7 +2486,7 @@ mod tests {
         app.engine_mut().send(Command::AbortAudioRecording);
         assert!(app.engine_mut().run_held(256, &[], 0));
         let finished: Vec<PathBuf> = {
-            let capture = app.audio_recording.capture.as_ref().unwrap();
+            let capture = app.recording.audio.capture.as_ref().unwrap();
             capture
                 .session
                 .visible_progress()
@@ -2479,10 +2499,10 @@ mod tests {
         };
         assert!(!finished.is_empty(), "a lap no frame saw");
         app.advance_audio_take(Some(Instant::now() + Duration::from_secs(5)));
-        assert!(!app.audio_recording.is_active());
+        assert!(!app.recording.audio.is_active());
         for path in &finished {
             assert!(path.is_file());
-            assert!(app.audio_recording.provisional.contains(path), "{path:?}");
+            assert!(app.recording.audio.provisional.contains(path), "{path:?}");
         }
     }
 
@@ -2516,7 +2536,7 @@ mod tests {
         app.project_path = Some(root.join("Song.komponist"));
         let (release, go) = mpsc::channel::<()>();
         let (finished, _done) = mpsc::channel();
-        app.audio_recording.stage_gate = Some(StageGate {
+        app.recording.audio.stage_gate = Some(StageGate {
             go,
             finished,
             ready: None,
@@ -2527,7 +2547,8 @@ mod tests {
         assert!(app.engine_mut().run_held(256, &[], 0));
         app.advance_audio_take(Some(Instant::now() + Duration::from_secs(5)));
         let paths: Vec<PathBuf> = app
-            .audio_recording
+            .recording
+            .audio
             .capture
             .as_ref()
             .and_then(|capture| capture.staging.as_ref())
@@ -2540,7 +2561,7 @@ mod tests {
         assert!(paths.len() >= 4, "{paths:?}");
         app.dispatch(Action::Transport(TransportAction::DiscardTake));
         for path in &paths {
-            assert!(!app.audio_recording.provisional.contains(path), "{path:?}");
+            assert!(!app.recording.audio.provisional.contains(path), "{path:?}");
         }
         drop(release);
     }

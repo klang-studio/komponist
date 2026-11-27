@@ -1037,7 +1037,8 @@ proptest! {
         };
         prop_assert_eq!(&**doc.project(), &expected);
         prop_assert!(copies.windows(2).all(|w| w[0] == w[1]));
-        prop_assert!(doc.undo());
+        // A drag can end back at its starting position, so it may leave no undo step.
+        prop_assert_eq!(doc.undo(), expected != start);
         prop_assert_eq!(&**doc.project(), &start);
         prop_assert!(!doc.undo());
     }

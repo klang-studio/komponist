@@ -53,8 +53,8 @@ use komponist_plugins::{DeviceStatus, PluginManagerEvent, ProcessorSetup};
 use komponist_processor::MAX_EVENTS_PER_BLOCK;
 use komponist_processor::processor::ParameterEditKind;
 
-use crate::automation_capture::AutomationCapture;
 use crate::device_host::DeviceHost;
+use crate::recording::automation_capture::AutomationCapture;
 
 /// How long [`EngineSync::shutdown`] lets the engine drain its last commands.
 const SHUTDOWN_DRAIN: Duration = Duration::from_millis(30);

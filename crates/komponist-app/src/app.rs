@@ -42,11 +42,9 @@ use std::time::{Duration, Instant};
 
 use egui::{Context, Event, FocusDirection, Ui};
 use komponist_audio::{AudioError, AudioState, InputConfig};
-use komponist_engine::automation::EngineTarget;
 use komponist_engine::{Command, EngineEvent, TransportState};
 use komponist_i18n::Lang;
 use komponist_ipc::LogLevel;
-use komponist_model::automation::AutomationOwner;
 use komponist_model::edits::{self, EditResult, NewDevice, NewTrack, ProjectProp, TrackProp};
 use komponist_model::project::SavedPluginState;
 use komponist_model::{
@@ -60,17 +58,18 @@ use crate::actions::{
     Action, DropTarget, EditAction, GridTarget, PluginAction, ProjectAction, SelectMode,
     SelectionChange, SettingsAction, TransportAction, UiAction,
 };
+use crate::audio_settings::{AudioDevices, AudioSettings, FixedDevices};
 use crate::device_host::{DeviceHost, PluginHost};
 use crate::dialogs::DialogState;
 use crate::dialogs::new_track::default_names;
 use crate::dialogs::settings::midi_label;
-use crate::dialogs::settings::{AudioDevices, FixedDevices, SystemDevices};
 use crate::engine_sync::{EngineSync, MidiChange};
 use crate::keymap::{self, Key, KeyChord, Keymap};
 use crate::meters::Meters;
 use crate::metrics;
 use crate::project_io::{self, RecentList};
 use crate::record::Recording;
+use crate::recording::RecordingController;
 use crate::settings::{PanelSettings, Settings};
 use crate::ui_state::{
     Dialog, DockTab, FocusArea, InspectorRename, Panel, PluginView, PluginWindow, Screen,
@@ -133,17 +132,13 @@ pub struct App {
     /// Where the recent list is saved (`None`: never).
     pub(crate) recent_path: Option<PathBuf>,
     /// Drivers and devices for S07.
-    pub(crate) audio_devices: Arc<dyn AudioDevices>,
-    /// The take being recorded (`record`), from the end of the count-in to Stop or Esc.
-    pub(crate) recording: Option<Recording>,
-    pub(crate) audio_recording: crate::audio_record::State,
-    pub(crate) automation_capture: crate::automation_capture::AutomationCapture,
-    pub(crate) automation_controls: Vec<(AutomationOwner, EngineTarget)>,
-    pub(crate) automation_stop_pending: bool,
+    pub(crate) audio_settings: AudioSettings,
+    /// Count-in and the MIDI, audio and automation parts of the take.
+    pub(crate) recording: RecordingController,
     /// The plugin frame windows (WP-50).
     pub(crate) frames: PluginFrames,
     /// The WAV export in progress and this session's exports (WP-53b, [`crate::export`]).
-    pub(crate) export: crate::export::Exports,
+    pub(crate) export: crate::export::ExportController,
     /// The language of the UI (`docs/I18N.md`). [`App::new`] starts in German, the test language;
     /// `main()` sets the resolved language with [`App::with_lang`].
     pub(crate) lang: Lang,
@@ -191,13 +186,6 @@ pub(crate) struct ShellState {
     catalog_retirements: BTreeMap<DeviceId, Option<SavedPluginState>>,
     /// A text editor had focus at the start of the last frame.
     text_edit_focused: bool,
-    /// Where the last recording started (or starts after its count-in).
-    record_from: Option<Tick>,
-    /// A `Command::Record` was sent and its `CountInDone` has not arrived: only then does the
-    /// event start a take. Cleared by everything that ends the recording attempt (cancel, discard,
-    /// project open), so a count-in that ends in the audio block running while that happens
-    /// cannot start a take in the wrong place.
-    take_expected: bool,
     /// Set by the MIDI hub's waker (a MIDI thread) when a message arrived; `None` until the
     /// waker is installed in the first frame.
     midi_seen: Option<Arc<AtomicBool>>,
@@ -252,12 +240,8 @@ impl App {
             dialogs: DialogState::default(),
             recent,
             recent_path,
-            audio_devices: Arc::new(SystemDevices),
-            recording: None,
-            audio_recording: Default::default(),
-            automation_capture: Default::default(),
-            automation_controls: Vec::new(),
-            automation_stop_pending: false,
+            audio_settings: AudioSettings::default(),
+            recording: RecordingController::default(),
             frames: PluginFrames::default(),
             export: Default::default(),
             lang: Lang::default(),
@@ -386,16 +370,16 @@ impl App {
             std::process::id(),
             NEXT_RECORDING_ROOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         )));
-        app.audio_devices = Arc::new(FixedDevices {
+        app.audio_settings.set_provider(Arc::new(FixedDevices {
             hosts: vec![komponist_audio::HostKind::Null],
             devices: Vec::new(),
-        });
+        }));
         app
     }
 
     /// Replaces where S07 gets drivers and devices from (tests).
     pub fn with_audio_devices(mut self, devices: Box<dyn AudioDevices>) -> App {
-        self.audio_devices = Arc::from(devices);
+        self.audio_settings.set_provider(Arc::from(devices));
         self
     }
 
@@ -492,7 +476,7 @@ impl App {
 
     /// The take being recorded, from the end of the count-in until Stop or Esc.
     pub fn recording(&self) -> Option<&Recording> {
-        self.recording.as_ref()
+        self.recording.midi()
     }
 
     /// Transport state from the engine (`Stopped` during an export).
@@ -559,12 +543,12 @@ impl App {
     /// running never ends, so no take waits for it. Returns whether a take ended (the caller
     /// reports the rebuild).
     fn end_take_after_rebuild(&mut self, at: Tick) -> bool {
-        self.shell.take_expected = false;
+        self.recording.take_expected();
         // The new engine's playhead is not `at` yet: end the writes here, before anything takes
         // the pass at the playhead.
         self.end_automation_writes_at(at);
-        if self.recording.is_none() && !self.audio_recording.is_active() {
-            if self.automation_capture.active() {
+        if !self.recording.capturing_notes_or_audio() {
+            if self.recording.automation().active() {
                 self.commit_automation_capture();
             }
             return false;
@@ -572,7 +556,7 @@ impl App {
         // The crash may have lost the running lap's last events.
         let lap = self
             .recording
-            .as_ref()
+            .midi()
             .map_or(0, |recording| recording.laps().saturating_sub(1) as u32);
         self.engine_event(&EngineEvent::RecordingInterrupted {
             at,
@@ -639,11 +623,8 @@ impl App {
 
     /// Publish the revision of the document and any automation that is still being captured.
     pub(crate) fn sync_project(&mut self) {
-        let draft = crate::engine_sync::DraftOverlay::new(
-            self.audio_recording.pending_automation(),
-            &self.automation_capture,
-        );
-        self.engine.sync_with_draft(&self.doc, draft);
+        self.engine
+            .sync_with_draft(&self.doc, self.recording.draft());
     }
 
     /// One frame without a window (tests, headless tools): engine and device host events, queued
@@ -814,9 +795,7 @@ impl App {
         self.poll_preset_preparations();
         self.poll_user_presets();
         self.retry_waiting_asset_edits();
-        if let Some(rec) = &mut self.recording {
-            rec.update(playhead);
-        }
+        self.recording.update_midi(playhead);
         self.update_audio_take();
         if recompile {
             // Delay compensation follows the new latencies; the slots stay as they are.
@@ -839,7 +818,7 @@ impl App {
     fn engine_event(&mut self, event: &EngineEvent) {
         match *event {
             EngineEvent::CountInDone { at } => {
-                if std::mem::take(&mut self.shell.take_expected) {
+                if self.recording.take_expected() {
                     self.begin_take(at);
                 }
             }
@@ -848,39 +827,20 @@ impl App {
                 first_incomplete_lap,
                 triggering_track,
             } => {
-                if self.recording.is_none()
-                    && triggering_track.is_some()
-                    && let Some(audio) = self.audio_recording.running()
-                {
-                    // An audio recording can gain its first MIDI input after capture starts.
-                    let project = self.doc.project();
-                    let start = if first_incomplete_lap == 0 {
-                        audio.start
-                    } else {
-                        project.loop_range.start
-                    };
-                    self.recording = Some(Recording::new(project, start, self.lang));
-                }
-                if let Some(recording) = &mut self.recording {
-                    recording.interrupt(
-                        at,
-                        first_incomplete_lap,
-                        triggering_track,
-                        self.doc.project(),
-                    );
-                }
-                if self.recording.is_some() || self.audio_recording.is_active() {
+                if self.recording.interrupt(
+                    at,
+                    first_incomplete_lap,
+                    triggering_track,
+                    self.doc.project(),
+                    self.lang,
+                ) {
                     self.finish_take_at(at);
                     self.set_status(self.lang.record_interrupted(), StatusKind::Error);
                 }
             }
             // A device that dropped out of an export's render (its status says the rest).
             EngineEvent::ProcessorFailed { slot } => self.export.processor_failed(slot),
-            _ => {
-                if let Some(rec) = &mut self.recording {
-                    rec.handle(event, self.doc.project());
-                }
-            }
+            _ => self.recording.handle_midi(event, self.doc.project()),
         }
     }
 
@@ -888,11 +848,10 @@ impl App {
     /// `startRec`).
     fn begin_take(&mut self, at: Tick) {
         // A take still open belongs to an earlier capture; it is kept.
-        if self.recording.is_some() {
+        if self.recording.midi().is_some() {
             self.finish_take();
         }
-        let midi = Recording::new(self.doc.project(), at, self.lang);
-        self.recording = midi.first().is_some().then_some(midi);
+        self.recording.start_midi(self.doc.project(), at, self.lang);
         self.set_dock_tab(DockTab::Editor);
         if self.ui.dialog.is_none() {
             self.ui.focus = self.live_editor_area().unwrap_or(FocusArea::PianoRoll);
@@ -903,8 +862,8 @@ impl App {
     /// goes on. Nothing happens without a take.
     pub(crate) fn stop_take(&mut self) {
         self.drain_events();
-        let capturing_notes_or_audio = self.recording.is_some() || self.audio_recording.is_active();
-        let capturing_automation = self.automation_capture.active();
+        let capturing_notes_or_audio = self.recording.capturing_notes_or_audio();
+        let capturing_automation = self.recording.automation().active();
         if capturing_notes_or_audio || capturing_automation {
             self.engine.send(Command::FinishAutomationWrite);
             self.finish_take();
@@ -916,10 +875,8 @@ impl App {
 
     /// Whether capture has unsaved material that should trigger a prompt when leaving (#85).
     pub(crate) fn has_unsaved_take(&self) -> bool {
-        self.recording.as_ref().is_some_and(Recording::has_material)
-            || self.audio_recording.has_material()
-            || self.automation_capture.has_points()
-            || (self.audio_recording.is_active() && self.transport() == TransportState::Recording)
+        self.recording
+            .has_material(self.transport() == TransportState::Recording)
     }
 
     /// The project as a save writes it while capturing (#85): the document with the running take
@@ -928,13 +885,13 @@ impl App {
         &mut self,
         project: &Project,
         playhead: Tick,
-        recordings: &mut crate::audio_record::StagedRecordings,
+        recordings: &mut crate::recording::audio_record::StagedRecordings,
     ) -> Result<Option<Project>, ()> {
         let mut project = project.clone();
         let mut changed = false;
         if let Some(rec) = self
             .recording
-            .as_ref()
+            .midi()
             .filter(|recording| recording.has_material())
             && let Some(commit) = rec.commit(&project, playhead)
         {
@@ -950,7 +907,8 @@ impl App {
             }
         }
         if let Some(next) = self
-            .automation_capture
+            .recording
+            .automation()
             .project_at(&project, playhead)
             .map_err(|error| {
                 self.record_edit_error(error);
@@ -977,15 +935,10 @@ impl App {
     }
 
     fn finish_take_at(&mut self, at: Tick) {
-        let commit = self
-            .recording
-            .take()
-            .and_then(|recording| recording.commit(self.doc.project(), at));
+        let commit = self.recording.finish_midi(self.doc.project(), at);
         let automation = self.take_automation_capture();
-        if self.audio_recording.is_active() {
-            self.audio_recording.defer_midi(commit);
-            self.audio_recording.defer_automation(automation);
-            self.audio_recording.stop();
+        if self.recording.audio_active() {
+            self.recording.finish_with_audio(commit, automation);
             return;
         }
         let Some(commit) = commit else {
@@ -1017,9 +970,7 @@ impl App {
     /// Esc while recording (or "Nicht speichern" before leaving the project): the running take is
     /// gone, playback goes on.
     pub(crate) fn discard_take(&mut self) {
-        self.shell.take_expected = false;
-        self.recording = None;
-        self.audio_recording.cancel();
+        self.recording.cancel_take();
         self.clear_automation_capture();
         self.sync_project();
         // The engine cancels against the committed curves so it can restore an undriven base.
@@ -1430,8 +1381,7 @@ impl App {
         self.shutdown_export();
         self.persist_panel_layout(true);
         self.shutdown_plugin_frames();
-        self.audio_recording
-            .shutdown(crate::audio_record::TAKE_FINISH_TIMEOUT);
+        self.recording.shutdown();
         self.engine.shutdown();
         self.engine.host_mut().shutdown();
     }
@@ -1575,9 +1525,7 @@ impl App {
                 Action::Ui(UiAction::CloseDialog)
             }
             Action::Ui(UiAction::ClearSelection)
-                if self.recording.is_some()
-                    || self.audio_recording.is_active()
-                    || self.automation_capture.active()
+                if self.recording.active()
                     || matches!(
                         self.transport(),
                         TransportState::Recording | TransportState::CountIn
@@ -1715,9 +1663,7 @@ impl App {
                 let old = lanes(self.project(), owner);
                 let exists = old.is_some_and(|a| a.lane(&target).is_some());
                 let reuse = replace.filter(|id| {
-                    if self.automation_capture.references_lane(owner, *id)
-                        || self.audio_recording.references_automation_lane(owner, *id)
-                    {
+                    if self.recording.references_lane(owner, *id) {
                         return false;
                     }
                     old.is_some_and(|a| {
@@ -1818,9 +1764,7 @@ impl App {
 
     fn stop_playback(&mut self) {
         self.drain_events();
-        if self.automation_capture.active() {
-            self.automation_stop_pending = true;
-        } else {
+        if !self.recording.wait_for_automation_stop() {
             self.finish_take();
         }
         self.engine.send(Command::Stop);
@@ -1961,8 +1905,7 @@ impl App {
                 if !self.prepare_audio_take(from) {
                     return;
                 }
-                self.shell.record_from = Some(from);
-                self.shell.take_expected = true;
+                self.recording.expect_take(from);
                 self.engine.send(Command::Record { from });
             }
         }
@@ -1973,12 +1916,10 @@ impl App {
     /// `pos = recAt`).
     fn cancel_count_in(&mut self) {
         // Ignore a count-in completion or capture interruption that arrived since the last poll.
-        self.shell.take_expected = false;
-        self.recording = None;
-        self.audio_recording.cancel();
+        let from = self.recording.cancel_take();
         self.drain_events();
         self.engine.send(Command::Stop);
-        if let Some(from) = self.shell.record_from {
+        if let Some(from) = from {
             self.engine.send(Command::Locate(from));
         }
     }
@@ -3107,11 +3048,9 @@ impl App {
         self.close_all_plugin_frames();
         // A take of the old project does not go into the new one, nor does a count-in that ends
         // while the project opens.
-        self.recording = None;
-        self.audio_recording.reset();
+        self.recording.reset_take();
         self.clear_automation_capture();
         self.engine.send(Command::CancelAutomationWrite);
-        self.shell.take_expected = false;
         self.engine.send(Command::Stop);
         self.engine.send(Command::Locate(Tick::ZERO));
         self.engine.reset();
@@ -3209,9 +3148,9 @@ impl App {
         let changes_driver = matches!(&action, SettingsAction::SetAudio(config)
             if config.host != self.settings.audio.host);
         if changes_driver
-            && (self.shell.take_expected
+            && (self.recording.expecting_take()
                 || self.audio_recording().is_some()
-                || self.recording.is_some())
+                || self.recording.midi().is_some())
         {
             self.set_status(
                 self.lang.settings_audio_driver_change_recording(),
@@ -3288,8 +3227,7 @@ impl App {
                     let _ = self.engine.set_audio(&config);
                 }
                 // The device list may have changed too.
-                self.dialogs.settings.refresh_devices();
-                self.dialogs.settings.invalidate_jack_ports();
+                self.audio_settings.refresh();
             }
             SettingsAction::SetMidiInput { name, enabled } => {
                 if let Some(hub) = self.engine.midi_mut()
@@ -3920,9 +3858,9 @@ mod tests {
     fn count_in_ending_during_project_open_starts_no_take() {
         let mut app = recording_app();
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
-        assert!(app.shell.take_expected);
+        assert!(app.recording.expecting_take());
         app.open_document(Document::new(empty_project()), None);
-        assert!(!app.shell.take_expected);
+        assert!(!app.recording.expecting_take());
         app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO });
         assert!(app.recording().is_none());
     }
@@ -3943,7 +3881,7 @@ mod tests {
         let mut next = old.clone();
         next.host = komponist_audio::HostKind::Jack;
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
-        assert!(app.shell.take_expected);
+        assert!(app.recording.expecting_take());
         assert!(app.audio_recording().is_none() && app.recording().is_none());
         app.dispatch(Action::Settings(SettingsAction::SetAudio(next)));
         assert_eq!(app.settings.audio, old);
@@ -3952,7 +3890,7 @@ mod tests {
             app.lang.settings_audio_driver_change_recording()
         );
         app.cancel_count_in();
-        assert!(!app.shell.take_expected);
+        assert!(!app.recording.expecting_take());
     }
 
     /// #210 review: a MIDI change and a compile diagnostic in the same drain as an engine rebuild
@@ -4030,10 +3968,10 @@ mod tests {
         );
 
         // A new request consumes only its own count-in and starts a clean take.
-        app.shell.take_expected = true;
+        app.recording.expect_take(Tick(40));
         app.engine_event(&EngineEvent::CountInDone { at: Tick(40) });
         assert!(app.recording().is_some());
-        assert!(!app.shell.take_expected);
+        assert!(!app.recording.expecting_take());
         assert!(!app.has_unsaved_take());
     }
 
@@ -4069,6 +4007,6 @@ mod tests {
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO });
         assert!(app.recording().is_some());
-        assert!(!app.shell.take_expected);
+        assert!(!app.recording.expecting_take());
     }
 }

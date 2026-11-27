@@ -67,7 +67,7 @@ pub struct ViewCtx<'a> {
     /// Base folder for the project's linked audio files (absent for an unsaved project).
     pub project_dir: Option<&'a std::path::Path>,
     /// Shared, injectable device inventory provider. Input choosers enumerate on a worker.
-    pub audio_devices: Option<Arc<dyn crate::dialogs::settings::AudioDevices>>,
+    pub audio_devices: Option<Arc<dyn crate::audio_settings::AudioDevices>>,
     /// The view state; a view may change its own scroll and zoom fields directly.
     pub ui: &'a mut UiState,
     /// Engine telemetry (playhead, transport state), device status, track meters.
@@ -83,9 +83,10 @@ pub struct ViewCtx<'a> {
     /// The take being recorded (WP-51): the arrangement and the piano roll draw it.
     pub recording: Option<&'a Recording>,
     /// Automation points and lane states of the current write pass.
-    pub(crate) automation_capture: Option<&'a crate::automation_capture::AutomationCapture>,
+    pub(crate) automation_capture:
+        Option<&'a crate::recording::automation_capture::AutomationCapture>,
     /// Live audio capture overlay, separate from the MIDI recording overlay.
-    pub audio_recording: Option<&'a crate::audio_record::AudioRecording>,
+    pub audio_recording: Option<&'a crate::recording::audio_record::AudioRecording>,
     /// Folder behind the provisional-recordings notice, if any.
     pub provisional_recordings: Option<&'a std::path::Path>,
     /// This session's WAV exports of the project, oldest first (WP-53b): the browser lists them

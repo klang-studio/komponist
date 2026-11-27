@@ -11,7 +11,6 @@ use komponist_engine::export::{
 use komponist_model::{DeviceId, Project, TrackId, TrackKind, edits};
 use komponist_plugins::{DeviceSnapshots, DeviceStatus};
 
-use super::{Phase, Run};
 use crate::actions::{Action, SelectMode, SelectionChange, UiAction};
 use crate::app::{App, SNAPSHOT_TIMEOUT};
 use crate::ui_state::{Dialog, StatusKind};
@@ -260,13 +259,9 @@ impl App {
             dither: false,
         };
         self.open_dialog(Dialog::Flatten);
-        self.export.run = Some(Run {
-            seconds: job.frames() as f64 / f64::from(rate),
+        self.export.begin(
             job,
-            phase: Phase::Devices,
-            diagnostics: Vec::new(),
-            offline_devices: Vec::new(),
-            flatten: Some(Flatten {
+            Some(Flatten {
                 id,
                 name,
                 scope,
@@ -275,7 +270,7 @@ impl App {
                 original: None,
                 asset,
             }),
-        });
+        );
         self.poll_export();
     }
 
