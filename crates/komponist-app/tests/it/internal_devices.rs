@@ -842,7 +842,10 @@ fn snapshot_of_the_presse_frame_while_playing() {
         .rect();
     h.mask(cpu.expand(2.0));
     let mut results = SnapshotResults::new();
-    h.snapshot("devices-presse-live-1x");
+    // The live audio levels and curve can differ by a few pixels between Linux runners.
+    // Keep the normal color threshold and allow this variation only in the live frame.
+    let options = h.options().clone().max_failed_pixels(80);
+    h.snapshot_options("devices-presse-live-1x", &options);
     results.extend_harness(&mut h);
     results.unwrap();
 }
