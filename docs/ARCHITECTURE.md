@@ -15,9 +15,10 @@ with the guided tour in [ARCHITECTURE-GUIDE.md](ARCHITECTURE-GUIDE.md).
   and timestamped input, and returns events and telemetry.
 - The engine is independent of the UI, audio backend and plugin formats. The audio backend can
   rebuild a stream or hand the engine to an offline render without rebuilding the document.
-- Every external plugin instance runs in a separate bridge process. A failed plugin produces
+- Every third-party plugin instance runs in a separate bridge process. A failed plugin produces
   silence for an instrument or passthrough for an effect while the rest of the project runs.
-- Built-in instruments and effects run in process through the same engine processor interface.
+- The twelve shipped instruments and effects load at runtime from verified CLAP bundles and
+  run in process through the engine processor interface.
 - Audio decoding, source analysis, sample-rate conversion, pitch-preserving stretch and recording
   file writes run outside the realtime callback.
 - UI appearance comes from generated design tokens and shared widgets. The running app and its
@@ -50,7 +51,8 @@ versioned JSON, with external plugin states stored as base64.
 
 The host implements its own format-independent `HostedPlugin` interface over **clack-host 0.2**
 for CLAP and **vst3 0.3** for VST3. `komponist-hosting` implements the formats; `komponist-bridge`
-runs them. The main app manages instances through IPC rather than calling plugin format APIs.
+runs them. The app hosts verified shipped CLAP bundles in process. Third-party instances use the same format
+layer in the bridge and communicate with the app through IPC.
 The **nice-plug** fixtures in `test-plugins/` export both formats from the same test sources.
 
 ### 2.5 Core decisions
@@ -60,9 +62,9 @@ The **nice-plug** fixtures in `test-plugins/` export both formats from the same 
 | D1 | egui/eframe with wgpu; X11 on Linux |
 | D2 | cpal and midir, with native JACK routing/capture on Linux |
 | D3 | Own hosting layer on clack-host and vst3 |
-| D4 | One bridge process per external plugin instance |
+| D4 | One bridge process per third-party plugin instance |
 | D5 | Klopfer and the Sampler share `sampler-core` and sample loading. The separate Klopfer CLAP plugin is scanned normally. |
-| D6 | Internal Hexa backed by `hexa-core` with `alloc` and `serde` |
+| D6 | Hexa ships as a separate CLAP bundle backed by `hexa-core`. Every shipped device loads from its own bundle at runtime. |
 | D7 | Versioned `*.komponist` JSON project file (exactly one valid version, no migration, D10) and linked audio assets |
 | D8 | Immutable document snapshots with `Arc` structural sharing for undo/redo |
 | D9 | Signed 64-bit musical ticks at 960 PPQ; position display at 240 ticks per beat |
@@ -125,11 +127,10 @@ Their READMEs record provenance.
 | [`sampler-core`](../crates/builtin-devices/sampler-shared/core/README.md) | Shared Klopfer and Sampler engine |
 | [`komponist-device-core`](../crates/builtin-devices/core/src/lib.rs) | Unstable device API: catalog and parameter metadata, layouts, state, presets, processor adapters and shared DSP |
 | [Device crates](../crates/builtin-devices/README.md) | One directory per instrument, audio effect and MIDI effect, with a standalone CLAP package alongside its DSP |
-| [`komponist-builtin`](../crates/builtin-devices/registry/README.md) | Built-in device list, catalog and processor factory |
 | [`komponist-ipc`](../crates/komponist-ipc/README.md) | Shared-memory layout, signalling, control protocol, process watching, frame vocabulary |
 | [`komponist-hosting`](../crates/komponist-hosting/README.md) | CLAP/VST3 loading, processing, state, parameters, GUI and host services |
 | [`komponist-bridge`](../crates/komponist-bridge/README.md) | Bridge library and utility executable; instance and scan modes |
-| [`komponist-plugins`](../crates/komponist-plugins/README.md) | App-side catalog, scan cache, bridge lifecycle, `ExternalProcessor` |
+| [`komponist-plugins`](../crates/komponist-plugins/README.md) | App-side catalog, scan cache, direct and bridge lifecycle, processor adapters |
 | [`komponist-tokens`](../crates/komponist-tokens/README.md) | Generated design tokens, colour conversion and embedded font assets |
 | [`komponist-i18n`](../crates/komponist-i18n/README.md) | Generated typed DE/EN text catalog from Fluent sources |
 | [`komponist-ui`](../crates/komponist-ui/README.md) | Shared egui theme, widgets, canvases, plugin-frame header, gallery |
@@ -139,11 +140,12 @@ Their READMEs record provenance.
 The engine knows neither egui nor IPC nor CLAP/VST3. `komponist-audio` defines an `AudioProcess`
 callback interface without depending on the engine; the app supplies the adapter.
 `komponist-device-core` uses the model, i18n catalog and engine processor interfaces.
-Individual device crates build on that API. The `komponist-builtin` registry depends on the
-devices and supplies catalog metadata and processor factories to the app and plugin catalog.
-App code that works with a specific device also depends directly on that device's crate.
-`komponist-audiofile` and `komponist-stretch` have no UI or model dependencies. The bridge is the
-runtime boundary for loading external plugin code, even though it ships in the app executable.
+Individual device crates build on that API and are dependencies of their respective CLAP
+bundles. The app, UI, plugin manager, engine and model have no dependency on the device crates.
+The plugin manager obtains each device's metadata and processor through the host interfaces at
+runtime. The workspace boundary check enforces the dependency rule.
+`komponist-audiofile` and `komponist-stretch` have no UI or model dependencies. The bridge, part
+of the app executable, isolates third-party plugin instances.
 
 The separate [test workspace](../test-plugins/README.md) contains the plugin fixtures
 [`kp-test-synth`](../test-plugins/kp-test-synth/README.md),
@@ -224,12 +226,11 @@ Pure formatting functions provide musical positions, elapsed time, dB, pan and n
 
 ### 5.5 Persistence
 
-A `*.komponist` file is JSON with `format: "komponist"`, **version 5** and a `project` object.
+A `*.komponist` file is JSON with `format: "komponist"`, **version 6** and a `project` object.
 Plugin states are base64 and survive a missing plugin unchanged. Loading validates data and
 routing, repairs defined dangling-reference cases and rejects cycles or invalid track content.
-Version 4 added optional track, clip and master automation, version 5 an optional eight-slot macro
-array on each track. There is no migration: below 1.0 exactly one version is valid (D10), and a file
-with any other `version` (older or newer) is rejected with a clear message.
+Device references use CLAP or VST3 identities. Below 1.0 only the current version is supported
+(D10). Files with a different version are rejected with a clear message.
 
 Audio assets remain linked by relative and absolute paths. Save As rebases resolving links;
 Collect and Save copies audio and Sampler sources into the project's sample folder, deduplicating
@@ -558,8 +559,7 @@ Track macros and lanes resolve the same plugin parameter IDs. CLAP plugins decla
 plain limits, default and step count through `clap.params`. Parameters marked automatable are
 available to both controls unless they are hidden, read-only or bypass controls. Named units come
 from the plugin's value text. These controls send absolute parameter values through the processor
-slot, so they require no CLAP modulation flag or custom extension. Legacy built-in parameter
-keys and ranges are resolved by the built-in registry.
+slot, so they require no CLAP modulation flag or custom extension.
 
 A third-party CLAP state snapshot keeps the plugin's opaque bytes and can also store plain values
 by ID in the optional `parameter_bases` device field. The bridge gives the plugin its bytes first,
@@ -645,14 +645,14 @@ most 128 inputs per session and reports further ones as refused.
 
 The distributed app is **one executable**. `komponist --bridge --instance` enters bridge mode
 before UI/settings/audio initialization; scans use `komponist --bridge --scan <bundle>`.
-The utility `komponist-bridge` binary remains for tests/tools. Every external instance has its
+The utility `komponist-bridge` binary remains for tests and tools. Every third-party instance has its
 own process and RT thread; the plugin manager controls its lifecycle and saved state.
 
-Shared memory (layout version 3) contains request/completion sequence words, transport/status,
-latency, bounded event rings, stereo input/output and stereo sidechain input. Each request marks
-whether sidechain audio is present; absent sidechains receive silence. The postcard control
-protocol (version 14) uses length-prefixed frames for load/activation/state/parameters, GUI and
-header actions, render mode, heartbeat and shutdown.
+Shared memory contains request/completion sequence words, transport/status, latency, bounded
+event rings, stereo input/output and stereo sidechain input. Each request marks whether sidechain
+audio is present. Absent sidechains receive silence. The current postcard control protocol uses
+length-prefixed frames for load, activation, state, parameters, GUI and header actions, render
+mode, heartbeat and shutdown.
 
 The plugin manager loads an instance, restores saved state if present, then activates it.
 `SetState` carries a request ID. `StateApplied` returns that ID with the restored parameter
@@ -789,8 +789,10 @@ A layout rejection leaves the generic parameter view available.
 Bundled devices are installed as authenticated CLAP bundles. The scanner supplies their
 identity, vendor, role and features from the CLAP descriptor and reads localized device
 names and descriptions from the native layout. The browser, device pickers and live device
-labels use the scan catalog. Projects refer to devices by stable plugin ID. When a bundle
-is missing, the saved device stays in the project and the missing-plugin dialog shows it.
+labels use the scan catalog. Projects refer to devices by stable CLAP ID. When shipped bundles
+are missing, the app starts with an empty shipped-device catalog and a status-bar warning.
+Projects that use a missing bundle keep the saved device and show it in the missing-plugin
+dialog.
 
 The bundled devices use the normal document, processor and device-card interfaces:
 
@@ -810,11 +812,10 @@ The bundled devices use the normal document, processor and device-card interface
   Limiter. EQ spectrum and other device visualizations use leased taps, analyzed outside RT.
 - **MIDI effects:** Arpeggiator and Scale (`Tonleiter` internally), run before the instrument.
 
-Device specifications author parameters, layouts, defaults and catalog text inside each
-device. The bundled adapters publish this metadata through CLAP. The in-process built-in
-references that remain serve tests and headless runs until #294 removes them.
-Built-in processing uses `klang-dsp` primitives where shared; sample-derived buffers use the
-process-wide audio file pool.
+Device specifications define parameters, layouts, defaults and catalog text inside each device.
+The adapters publish this metadata through CLAP. Headless tests that exercise shipped devices
+use the same bundle path with a test manifest. Device processing uses `klang-dsp` primitives
+where shared. Sample-derived buffers use the process-wide audio file pool.
 
 ### 8.6 Runtime device state
 

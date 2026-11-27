@@ -11,6 +11,7 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use komponist_app::actions::{Action, ProjectAction, UiAction};
+use komponist_app::device_host::DeviceHost;
 use komponist_app::dialogs::file::{FileBrowser, Purpose};
 use komponist_app::dialogs::format::{self, LocalTime};
 use komponist_app::dialogs::{export, missing_plugins, new_project, settings, start};
@@ -144,19 +145,7 @@ fn counts_use_the_english_plural() {
     assert_eq!(missing_plugins::title(Lang::En, 2), "2 Plugins Missing");
     // The status bar's "opened with problems" text takes its title from the catalog, too.
     assert_eq!(
-        missing_plugins::title_for(Lang::En, 0, 1),
-        "1 Sample Missing"
-    );
-    assert_eq!(
-        missing_plugins::title_for(Lang::En, 2, 3),
-        "2 Plugins and 3 Samples Missing"
-    );
-    assert_eq!(
-        missing_plugins::title_for(Lang::De, 2, 3),
-        "2 Plugins und 3 Samples fehlen"
-    );
-    assert_eq!(
-        Lang::En.project_opened_problems("Night", missing_plugins::title_for(Lang::En, 1, 0)),
+        Lang::En.project_opened_problems("Night", missing_plugins::title(Lang::En, 1)),
         "Night opened · 1 Plugin Missing"
     );
     assert_eq!(Lang::En.project_repaired(1), "1 item repaired on open");
@@ -469,31 +458,37 @@ fn en_title(n: usize) -> String {
 }
 
 #[test]
-fn missing_samples_have_english_places_and_a_search_button() {
-    use komponist_app::dialogs::missing_plugins::{MissingSample, with_samples};
-    let project = demo_project();
-    let track = project.tracks.iter().find(|t| t.name == "Drums").unwrap();
-    let samples = [MissingSample {
-        device: track.channel.devices[0].id,
-        track: Some(track.id),
-        pad: 2,
-        name: "Kick".into(),
-        file: "kick.wav".into(),
-    }];
-    let model = with_samples(
-        Lang::En,
-        missing_plugins::model(Lang::En, &project, &[]),
-        &project,
-        &samples,
-    );
-    assert_eq!(model.samples[0].place, "Track Drums · Pad 3");
-    assert_eq!(model.samples[0].format, "SAMPLE");
+fn missing_plugin_files_have_english_places_and_a_search_button() {
+    use komponist_model::plugin_assets::AssetLink;
+    use std::sync::Arc;
+
+    let mut project = demo_project();
+    let track = project
+        .tracks
+        .iter_mut()
+        .find(|t| t.name == "Drums")
+        .unwrap();
+    let device = Arc::make_mut(&mut Arc::make_mut(track).channel.devices[0]);
+    let scratch = tempfile::tempdir().unwrap();
+    let missing = scratch.path().join("kick.wav");
+    device.asset_links.insert(2, AssetLink::new(&missing, None));
+    let device_id = device.id;
+    let host = App::headless_plugin_host();
+    let mut model = missing_plugins::model(Lang::En, &project, &[]);
+    model.assets = missing_plugins::missing_assets(Lang::En, &project, None, host.catalog());
+    let [row] = model.assets.as_slice() else {
+        panic!("one missing linked file expected")
+    };
+    assert_eq!(row.place, "Track Drums · Klopfer");
+    assert_eq!(row.name, "kick.wav");
+    assert_eq!(row.format, "FILE");
+    assert_eq!(row.asset, Some((device_id, 2)));
     let h = view_harness(Lang::En, (), move |ui, _| {
         let _ = missing_plugins::show(ui.ctx(), &model, true);
     });
-    h.get_by_label("1 Sample Missing");
+    h.get_by_label("Linked Files Missing");
     h.get_by_role_and_label(Role::Button, en::MISSING_SEARCH);
-    h.get_by_role_and_label(Role::Button, en::MISSING_CONTINUE_SAMPLE);
+    h.get_by_role_and_label(Role::Button, en::MISSING_CONTINUE_FILES);
 }
 
 // ------------------------------------------------------------------------------------------------

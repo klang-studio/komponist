@@ -12,8 +12,7 @@
 //! stores them with `edits::set_device_state` as tracked, coalesced undo steps (`komponist-app`'s
 //! `param_undo`).
 //!
-//! Built-in in-process devices (hexa) are not managed here; the app creates their processors.
-//! Their status is always `Ok`.
+//! The manager loads the manifest-verified CLAP bundles into the app process.
 //!
 //! Start order per bridge: memfd, `Load`, `SetState` (if there is a state), `Activate`, so the
 //! plugin starts processing with its state. Messages to a bridge go through a writer thread of its
@@ -47,7 +46,6 @@ use rustix::event::{PollFd, PollFlags, Timespec};
 
 use crate::bridge::{Bridge, Collected, SpawnSetup, StatePurpose, Timing, kill_and_reap};
 use crate::bundled_clap::{BundleVerificationError, BundledClap, VerifiedClap};
-use crate::bundled_effects;
 use crate::catalog::{
     Catalog, PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT, ScanCache, ScanReport,
     requires_bundled,
@@ -272,6 +270,8 @@ pub enum PluginManagerEvent {
     },
     /// A background scan finished; the catalog is updated.
     ScanFinished(ScanReport),
+    /// The installed bundle inventory is missing or incomplete.
+    BundledDevicesUnavailable,
     /// A log line from a bridge or plugin.
     Log {
         /// The device, if the line came from a bridge.
@@ -305,7 +305,6 @@ pub enum PluginError {
     /// small (clippy `result_large_err`).
     NotInstalled(Box<PluginRef>),
     /// The plugin is built in and runs in process; the app creates its processor.
-    InProcess(Box<PluginRef>),
     /// No bridge for this device.
     UnknownDevice(DeviceId),
     /// The bridge process could not be started.
@@ -320,7 +319,6 @@ impl core::fmt::Display for PluginError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             PluginError::NotInstalled(p) => write!(f, "plugin {} ({}) not installed", p.name, p.id),
-            PluginError::InProcess(p) => write!(f, "plugin {} runs in process", p.id),
             PluginError::UnknownDevice(d) => write!(f, "no bridge for device {}", d.0),
             PluginError::Spawn(m) => write!(f, "bridge start failed: {m}"),
             PluginError::Ipc(m) => write!(f, "bridge communication failed: {m}"),
@@ -393,11 +391,10 @@ pub struct PluginManager {
     bridges: BTreeMap<DeviceId, Bridge>,
     next_param_edit: NonZeroU32,
     private_clap_dir: Option<PathBuf>,
-    bundled_clap: Option<BundledClap>,
+    bundled_clap: Option<Arc<BundledClap>>,
     project_dir: Option<PathBuf>,
     /// CLAP IDs of running instances that were loaded from the manifest-verified package.
     verified_bundles: BTreeMap<DeviceId, String>,
-    effect_meters: BTreeMap<DeviceId, Arc<bundled_effects::Meter>>,
     direct: BTreeMap<DeviceId, DirectDevice>,
     retiring_direct: Vec<DirectDevice>,
     /// Status of devices without a bridge: `Missing`, or `Crashed` when the bridge could not start.
@@ -420,34 +417,21 @@ impl Drop for PluginManager {
 impl PluginManager {
     /// Opens the installed bundled inventory and the cached external plugin catalog.
     pub fn new(config: PluginManagerConfig) -> PluginManager {
-        Self::with_catalog(config, Catalog::default(), true)
+        Self::with_catalog(config, true)
     }
 
-    pub(crate) fn new_with_bundled_clap(
-        config: PluginManagerConfig,
-        enable_bundles: bool,
-    ) -> PluginManager {
-        Self::with_catalog(config, Catalog::default(), enable_bundles)
-    }
-
-    /// Includes the legacy catalog for tests and benchmark comparisons.
+    /// An isolated test manager using its scan cache without the installed bundle inventory.
     #[doc(hidden)]
-    pub fn with_reference_devices(config: PluginManagerConfig) -> PluginManager {
-        Self::with_catalog(config, Catalog::builtin(), true)
+    pub fn without_bundled_clap(config: PluginManagerConfig) -> Self {
+        Self::with_catalog(config, false)
     }
 
-    /// Open an explicit test inventory using the fixture builder's expected manifest hash.
+    /// Scan an authenticated inventory shared by the headless fixtures.
     #[doc(hidden)]
-    pub fn for_test_fixtures(
-        config: PluginManagerConfig,
-        root: &Path,
-        expected_digest: &str,
-    ) -> Result<Self, BundleVerificationError> {
-        let cache_dir = config.cache_file.parent().unwrap_or_else(|| Path::new("."));
-        let bundled_clap = BundledClap::open_fixture(root, cache_dir, expected_digest)?;
+    pub fn for_test_inventory(config: PluginManagerConfig, bundled_clap: Arc<BundledClap>) -> Self {
         let mut manager = Self::from_inventory(
             config,
-            Catalog::default(),
+            true,
             Some(bundled_clap.directory().to_owned()),
             Some(bundled_clap),
             Vec::new(),
@@ -470,14 +454,10 @@ impl PluginManager {
         if !ready {
             manager.start_bundled_scan();
         }
-        Ok(manager)
+        manager
     }
 
-    fn with_catalog(
-        config: PluginManagerConfig,
-        catalog: Catalog,
-        enable_bundles: bool,
-    ) -> PluginManager {
+    fn with_catalog(config: PluginManagerConfig, enable_bundles: bool) -> PluginManager {
         let mut pending = Vec::new();
         let mut report = |error: BundleVerificationError| {
             pending.push(PluginManagerEvent::Log {
@@ -500,20 +480,35 @@ impl PluginManager {
         } else {
             None
         };
-        Self::from_inventory(config, catalog, private_clap_dir, bundled_clap, pending)
+        Self::from_inventory(
+            config,
+            enable_bundles,
+            private_clap_dir,
+            bundled_clap.map(Arc::new),
+            pending,
+        )
     }
 
     fn from_inventory(
         config: PluginManagerConfig,
-        catalog: Catalog,
+        bundles_expected: bool,
         private_clap_dir: Option<PathBuf>,
-        bundled_clap: Option<BundledClap>,
-        pending: Vec<PluginManagerEvent>,
+        bundled_clap: Option<Arc<BundledClap>>,
+        mut pending: Vec<PluginManagerEvent>,
     ) -> PluginManager {
+        if bundles_expected
+            && bundled_clap.as_ref().is_none_or(|inventory| {
+                inventory
+                    .bundle_entries()
+                    .any(|(path, _)| !inventory.has_required_files(path))
+            })
+        {
+            pending.push(PluginManagerEvent::BundledDevicesUnavailable);
+        }
         let cache = ScanCache::load(&config.cache_file);
         let mut manager = PluginManager {
             config,
-            catalog,
+            catalog: Catalog::default(),
             cache,
             scan: None,
             last_scan: None,
@@ -523,7 +518,6 @@ impl PluginManager {
             bundled_clap,
             project_dir: None,
             verified_bundles: BTreeMap::new(),
-            effect_meters: BTreeMap::new(),
             direct: BTreeMap::new(),
             retiring_direct: Vec::new(),
             statuses: BTreeMap::new(),
@@ -538,13 +532,19 @@ impl PluginManager {
 
     fn refresh_catalog(&mut self) {
         let mut descriptors = self.cache.descriptors();
+        let available_bundles: BTreeSet<_> = self
+            .bundled_clap
+            .iter()
+            .flat_map(|inventory| {
+                inventory
+                    .bundle_entries()
+                    .filter(|(path, _)| inventory.has_required_files(path))
+            })
+            .collect();
         let shipped = |descriptor: &komponist_ipc::PluginDescriptor| {
             descriptor.format == komponist_ipc::PluginFormat::Clap
-                && self.bundled_clap.as_ref().is_some_and(|bundled| {
-                    bundled
-                        .bundle_entries()
-                        .any(|(path, id)| path == descriptor.bundle && id == descriptor.id)
-                })
+                && available_bundles
+                    .contains(&(descriptor.bundle.as_path(), descriptor.id.as_str()))
         };
         descriptors.retain(|descriptor| {
             descriptor.bundle.exists()
@@ -658,6 +658,18 @@ impl PluginManager {
         self.scan.is_some()
     }
 
+    /// Whether the first scan is still cataloging an installed packaged plugin.
+    pub fn awaiting_packaged_plugin(&self, id: &str) -> bool {
+        self.last_scan.is_none()
+            && self.is_scanning()
+            && self.catalog.packaged(id).is_none()
+            && self.bundled_clap.as_ref().is_some_and(|inventory| {
+                inventory
+                    .bundle_entries()
+                    .any(|(path, listed_id)| listed_id == id && inventory.has_required_files(path))
+            })
+    }
+
     /// The last finished scan.
     pub fn last_scan(&self) -> Option<&ScanReport> {
         self.last_scan.as_ref()
@@ -715,7 +727,7 @@ impl PluginManager {
     /// Starts a bridge for `device` and returns its processor (already activated for `setup`) for
     /// `Command::InsertProcessor`. Loading continues in the background with the device's stored
     /// state; status `Loading` until the bridge is active. Errors: `NotInstalled` (status `Missing`),
-    /// `InProcess` for hexa, `Spawn` / `Ipc`.
+    /// `Spawn` / `Ipc` if the device could not start.
     pub fn create_processor(
         &mut self,
         device: &Device,
@@ -761,18 +773,13 @@ impl PluginManager {
             self.set_status(device.id, DeviceStatus::Missing);
             return Err(PluginError::NotInstalled(Box::new(device.plugin.clone())));
         };
-        let (format, bundle, plugin_id) = match &entry.location {
-            PluginLocation::InProcess(_) => {
-                return Err(PluginError::InProcess(Box::new(device.plugin.clone())));
-            }
-            PluginLocation::Bundle {
-                format,
-                path,
-                plugin_id,
-            } => (*format, path.clone(), plugin_id.clone()),
-        };
+        let PluginLocation::Bundle {
+            format,
+            path,
+            plugin_id,
+        } = &entry.location;
+        let (format, bundle, plugin_id) = (*format, path.clone(), plugin_id.clone());
         let sidechain = entry.sidechain;
-        let features = entry.features.clone();
         if !(setup.sample_rate.is_finite() && setup.sample_rate > 0.0)
             || !(1..=MAX_BLOCK).contains(&setup.max_block)
         {
@@ -796,7 +803,6 @@ impl PluginManager {
                 }
             };
             let verified_id = proof.plugin_id().to_owned();
-            let effect_meter = bundled_effects::Meter::new(&features, setup.sample_rate);
             return match DirectDevice::start(
                 proof,
                 device.role,
@@ -804,11 +810,7 @@ impl PluginManager {
                 state,
                 self.timing.snapshot_debounce,
             ) {
-                Ok((mut instance, mut processor, baseline)) => {
-                    if let Some(meter) = effect_meter {
-                        processor.set_effect_meter(Arc::clone(&meter));
-                        self.effect_meters.insert(device.id, meter);
-                    }
+                Ok((mut instance, processor, baseline)) => {
                     self.statuses.remove(&device.id);
                     instance.report_warning(device.id, &mut self.pending);
                     DirectDevice::report_metadata(device.id, &mut self.pending);
@@ -941,7 +943,6 @@ impl PluginManager {
             });
         }
         self.verified_bundles.remove(&device);
-        self.effect_meters.remove(&device);
         if let Some(mut direct) = self.direct.remove(&device) {
             let _ = direct.invalidate_waveform_markers();
             self.retiring_direct.push(direct);
@@ -963,18 +964,6 @@ impl PluginManager {
         self.statuses.remove(&device);
     }
 
-    /// Provides the signal feeds of live verified bundled effect instances.
-    pub fn for_each_effect_meter(
-        &self,
-        f: &mut dyn FnMut(DeviceId, &komponist_engine::DeviceMeter),
-    ) {
-        for (&device, meter) in &self.effect_meters {
-            if self.status(device) == DeviceStatus::Ok {
-                f(device, &meter.view);
-            }
-        }
-    }
-
     /// The CLAP ID of an active instance loaded from the manifest-verified package. Project
     /// references and ordinary scanned plug-ins cannot set this identity.
     pub fn verified_bundle(&self, device: DeviceId) -> Option<&str> {
@@ -982,7 +971,7 @@ impl PluginManager {
         (self.status(device) == DeviceStatus::Ok).then_some(id.as_str())
     }
 
-    /// Status of a device; `Ok` for devices this manager does not manage (in-process built-ins).
+    /// Status of a device; defaults to `Ok` before it has a managed instance.
     pub fn status(&self, device: DeviceId) -> DeviceStatus {
         if let Some(direct) = self.direct.get(&device) {
             return direct.status.clone();
@@ -1026,19 +1015,30 @@ impl PluginManager {
             collected.clear();
         }
         self.retiring.retain(|b| !b.is_finished());
-        if let Some(outcome) = self.scan.as_mut().and_then(ScanJob::try_finish) {
-            self.scan = None;
-            self.cache = outcome.cache;
-            self.refresh_catalog();
-            if let Some(error) = outcome.cache_error {
+        match self.scan.as_mut().map(ScanJob::try_finish) {
+            Some(Ok(outcome)) => {
+                self.scan = None;
+                self.cache = outcome.cache;
+                self.refresh_catalog();
+                if let Some(error) = outcome.cache_error {
+                    events.push(PluginManagerEvent::Log {
+                        device: None,
+                        level: LogLevel::Warning,
+                        message: format!("plugin scan cache not written: {error}"),
+                    });
+                }
+                self.last_scan = Some(outcome.report.clone());
+                events.push(PluginManagerEvent::ScanFinished(outcome.report));
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                self.scan = None;
                 events.push(PluginManagerEvent::Log {
                     device: None,
                     level: LogLevel::Warning,
-                    message: format!("plugin scan cache not written: {error}"),
+                    message: "plugin scan ended without a result".into(),
                 });
             }
-            self.last_scan = Some(outcome.report.clone());
-            events.push(PluginManagerEvent::ScanFinished(outcome.report));
+            _ => {}
         }
         events
     }
@@ -1575,21 +1575,19 @@ impl PluginManager {
         let Some(entry) = self.catalog.resolve(&device.plugin) else {
             return &[];
         };
-        match &entry.location {
-            PluginLocation::InProcess(_) => &entry.clap_presets,
-            PluginLocation::Bundle { path, .. }
-                if self
-                    .bridges
-                    .get(&device.id)
-                    .is_some_and(|bridge| bridge.has_clap_presets_from(path))
-                    || self
-                        .direct
-                        .get(&device.id)
-                        .is_some_and(|direct| direct.has_clap_presets_from(path)) =>
-            {
-                &entry.clap_presets
-            }
-            _ => &[],
+        let PluginLocation::Bundle { path, .. } = &entry.location;
+        if self
+            .bridges
+            .get(&device.id)
+            .is_some_and(|bridge| bridge.has_clap_presets_from(path))
+            || self
+                .direct
+                .get(&device.id)
+                .is_some_and(|direct| direct.has_clap_presets_from(path))
+        {
+            &entry.clap_presets
+        } else {
+            &[]
         }
     }
 
@@ -2127,7 +2125,6 @@ impl PluginManager {
     pub fn shutdown(&mut self) {
         self.scan = None;
         self.verified_bundles.clear();
-        self.effect_meters.clear();
         // App shutdown stops the audio stream before shutting down the plugin host.
         self.retiring_direct
             .extend(std::mem::take(&mut self.direct).into_values());
@@ -2182,7 +2179,7 @@ mod tests {
             cache_file: temp.path().join("plugins.json"),
             ..PluginManagerConfig::defaults(temp.path())
         };
-        let mut manager = PluginManager::new_with_bundled_clap(config, false);
+        let mut manager = PluginManager::without_bundled_clap(config);
         let removed = DeviceId(1);
         let other = DeviceId(2);
         for device in [removed, other] {
@@ -2207,7 +2204,7 @@ mod tests {
             cache_file: temp.path().join("plugins.json"),
             ..PluginManagerConfig::defaults(temp.path())
         };
-        let mut manager = PluginManager::new_with_bundled_clap(config, false);
+        let mut manager = PluginManager::without_bundled_clap(config);
         let device = DeviceId(1);
         let events = [
             PluginManagerEvent::WaveformMarkersEdited {
@@ -2257,7 +2254,7 @@ mod tests {
             cache_file: temp.path().join("plugins.json"),
             ..PluginManagerConfig::defaults(temp.path())
         };
-        let mut manager = PluginManager::new_with_bundled_clap(config, false);
+        let mut manager = PluginManager::without_bundled_clap(config);
         let device = Device {
             id: DeviceId(1),
             role: DeviceRole::Effect,
@@ -2372,7 +2369,7 @@ mod tests {
                 .catalog()
                 .entries()
                 .iter()
-                .find(|e| !e.is_builtin())
+                .next()
                 .expect("the scanned plugin")
                 .plugin
                 .clone(),

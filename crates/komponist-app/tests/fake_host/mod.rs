@@ -1,14 +1,13 @@
-//! A device host for the browser and device-chain tests: hexa in process (through
-//! `BuiltinHost`), every other device with a status, parameters, values, a GUI flag and a state
-//! warning the test chooses, and a catalog with the plugins of S01/S05. Statuses can change while
-//! the app runs ([`FakeHost::statuses`]); parameter changes are recorded ([`FakeHost::set`]).
+//! A scripted host for the S01/S05 browser and device-chain scenes. Verified CLAP bundles
+//! run through the packaged host; external fixture entries use test-supplied state and metadata.
 
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use komponist_app::device_host::{BuiltinHost, DeviceHost, is_hexa};
+use komponist_app::App;
+use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_engine::Processor;
 use komponist_ipc::control::param_flags;
 use komponist_ipc::{
@@ -28,7 +27,7 @@ pub type LateBlocks = Arc<Mutex<HashMap<DeviceId, u64>>>;
 
 #[derive(Default)]
 pub struct FakeHost {
-    builtin: BuiltinHost,
+    bundled: Option<PluginHost>,
     catalog: Catalog,
     pub statuses: Statuses,
     params: HashMap<DeviceId, Vec<ParamInfo>>,
@@ -55,64 +54,69 @@ pub fn descriptor(id: &str, name: &str, kind: PluginKind, features: &[&str]) -> 
     }
 }
 
-/// hexa, the sampler and the plugins of S01/S05.
+/// The shipped device inventory and scripted external plugins of S01/S05.
 pub fn screens_catalog() -> Catalog {
-    let mut c = Catalog::builtin();
-    c.set_scanned(&[
-        descriptor(
-            "surge",
-            "Surge XT",
-            PluginKind::Instrument,
-            &["synthesizer"],
-        ),
-        descriptor("vital", "Vital", PluginKind::Instrument, &["synthesizer"]),
-        descriptor("dexed", "Dexed", PluginKind::Instrument, &["synthesizer"]),
-        descriptor("obxd", "OB-Xd", PluginKind::Instrument, &["synthesizer"]),
-        descriptor("eq", "LSP Para EQ x8", PluginKind::Effect, &["equalizer"]),
-        descriptor(
-            "comp",
-            "LSP Compressor",
-            PluginKind::Effect,
-            &["compressor"],
-        ),
-        descriptor(
-            "hall",
-            "Dragonfly Hall Reverb",
-            PluginKind::Effect,
-            &["reverb"],
-        ),
-        descriptor(
-            "plate",
-            "Dragonfly Plate Reverb",
-            PluginKind::Effect,
-            &["reverb"],
-        ),
-        descriptor("room", "LSP Room Builder", PluginKind::Effect, &["reverb"]),
-        descriptor(
-            "early",
-            "Dragonfly Early Reflections",
-            PluginKind::Effect,
-            &["reverb"],
-        ),
-        descriptor("delay", "LSP Delay", PluginKind::Effect, &["delay"]),
-        descriptor("chorus", "TAL-Chorus-LX", PluginKind::Effect, &["chorus"]),
-        descriptor(
-            "airw",
-            "Airwindows Consolidated",
-            PluginKind::Effect,
-            &["distortion"],
-        ),
-    ]);
-    c
+    let host = App::headless_plugin_host();
+    catalog_with_screens(host.catalog())
 }
 
-/// The reference of catalog entry `id` in `catalog` (not an internal effect: their ids `eq`,
-/// `delay` and `hall` are the same words as the demo plugins').
+fn catalog_with_screens(bundled: &Catalog) -> Catalog {
+    crate::common::fixture_catalog(
+        bundled,
+        &[
+            descriptor(
+                "surge",
+                "Surge XT",
+                PluginKind::Instrument,
+                &["synthesizer"],
+            ),
+            descriptor("vital", "Vital", PluginKind::Instrument, &["synthesizer"]),
+            descriptor("dexed", "Dexed", PluginKind::Instrument, &["synthesizer"]),
+            descriptor("obxd", "OB-Xd", PluginKind::Instrument, &["synthesizer"]),
+            descriptor("eq", "LSP Para EQ x8", PluginKind::Effect, &["equalizer"]),
+            descriptor(
+                "comp",
+                "LSP Compressor",
+                PluginKind::Effect,
+                &["compressor"],
+            ),
+            descriptor(
+                "hall",
+                "Dragonfly Hall Reverb",
+                PluginKind::Effect,
+                &["reverb"],
+            ),
+            descriptor(
+                "plate",
+                "Dragonfly Plate Reverb",
+                PluginKind::Effect,
+                &["reverb"],
+            ),
+            descriptor("room", "LSP Room Builder", PluginKind::Effect, &["reverb"]),
+            descriptor(
+                "early",
+                "Dragonfly Early Reflections",
+                PluginKind::Effect,
+                &["reverb"],
+            ),
+            descriptor("delay", "LSP Delay", PluginKind::Effect, &["delay"]),
+            descriptor("chorus", "TAL-Chorus-LX", PluginKind::Effect, &["chorus"]),
+            descriptor(
+                "airw",
+                "Airwindows Consolidated",
+                PluginKind::Effect,
+                &["distortion"],
+            ),
+        ],
+    )
+}
+
+/// The reference of the scripted catalog entry `id`.
 pub fn plugin(catalog: &Catalog, id: &str) -> PluginRef {
     catalog
         .entries()
         .iter()
-        .find(|e| e.plugin.id == id && !e.is_builtin())
+        .find(|e| e.plugin.id == id)
         .unwrap_or_else(|| panic!("{id} in the catalog"))
         .plugin
         .clone()
@@ -147,8 +151,10 @@ pub fn param(id: u32, name: &str, default: f64) -> ParamInfo {
 impl FakeHost {
     /// A host with [`screens_catalog`].
     pub fn new() -> FakeHost {
+        let bundled = App::headless_plugin_host();
         FakeHost {
-            catalog: screens_catalog(),
+            catalog: catalog_with_screens(bundled.catalog()),
+            bundled: Some(bundled),
             ..FakeHost::default()
         }
     }
@@ -205,8 +211,8 @@ impl DeviceHost for FakeHost {
         device: &Device,
         setup: ProcessorSetup,
     ) -> Option<Box<dyn Processor>> {
-        if is_hexa(device) {
-            return self.builtin.create_processor(device, setup);
+        if komponist_plugins::requires_bundled(&device.plugin) {
+            return self.bundled.as_mut()?.create_processor(device, setup);
         }
         self.statuses
             .lock()
@@ -217,22 +223,29 @@ impl DeviceHost for FakeHost {
     }
 
     fn release(&mut self, device: DeviceId) {
-        self.builtin.release(device);
+        if let Some(host) = &mut self.bundled {
+            host.release(device);
+        }
     }
 
     fn status(&self, device: DeviceId) -> DeviceStatus {
         match self.statuses.lock().unwrap().get(&device) {
             Some(s) => s.clone(),
-            None => self.builtin.status(device),
+            None => self
+                .bundled
+                .as_ref()
+                .map_or(DeviceStatus::Ok, |host| host.status(device)),
         }
     }
 
-    fn latency(&self, _device: DeviceId) -> u32 {
-        0
+    fn latency(&self, device: DeviceId) -> u32 {
+        self.bundled.as_ref().map_or(0, |host| host.latency(device))
     }
 
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
-        self.builtin.poll()
+        self.bundled
+            .as_mut()
+            .map_or_else(Vec::new, DeviceHost::poll)
     }
 
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
@@ -249,16 +262,44 @@ impl DeviceHost for FakeHost {
     }
 
     fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
-        self.params.get(&device).map(Vec::as_slice)
+        self.params
+            .get(&device)
+            .map(Vec::as_slice)
+            .or_else(|| self.bundled.as_ref()?.params(device))
     }
 
     fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {
-        self.values.get(&(device, id))
+        self.values
+            .get(&(device, id))
+            .or_else(|| self.bundled.as_ref()?.param_value(device, id))
+    }
+
+    fn native_layout(
+        &self,
+        device: DeviceId,
+    ) -> Option<&Arc<komponist_ipc::native_layout::NativeLayout>> {
+        self.bundled.as_ref()?.native_layout(device)
+    }
+
+    fn device_display(
+        &self,
+        device: DeviceId,
+    ) -> Option<&Arc<komponist_ipc::device_canvas::DisplayList>> {
+        self.bundled.as_ref()?.device_display(device)
+    }
+
+    fn clap_presets(&self, device: &Device) -> &[komponist_ipc::clap_presets::ClapPreset] {
+        self.bundled
+            .as_ref()
+            .map_or(&[], |host| host.clap_presets(device))
     }
 
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
         if !self.params.contains_key(&device) {
-            return false;
+            return self
+                .bundled
+                .as_mut()
+                .is_some_and(|host| host.set_param(device, id, value));
         }
         self.set.lock().unwrap().push((device, id, value));
         true

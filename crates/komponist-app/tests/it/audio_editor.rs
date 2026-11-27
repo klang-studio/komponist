@@ -63,7 +63,7 @@ fn project(path: &Path, channels: u16) -> (Project, ClipId) {
 }
 fn reference_app(path: &Path, channels: u16, lang: Lang) -> (App, ClipId) {
     let (p, id) = project(path, channels);
-    let mut app = crate::common::reference_app(p).with_lang(lang);
+    let mut app = App::headless(p).with_lang(lang);
     app.dispatch(Action::Ui(UiAction::OpenClip(id)));
     (app, id)
 }
@@ -520,7 +520,7 @@ fn audio_editor_snapshots() {
             }));
             let base = Project::clone(app.project());
             for ppp in [1.0, 2.0] {
-                let mut app = crate::common::reference_app(base.clone()).with_lang(lang);
+                let mut app = App::headless(base.clone()).with_lang(lang);
                 app.dispatch(Action::Ui(UiAction::OpenClip(id)));
                 let mut h = komponist_ui::snapshot::builder(ppp)
                     .with_size(vec2(1920.0, 1080.0))

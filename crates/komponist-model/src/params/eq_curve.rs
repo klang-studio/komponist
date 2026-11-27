@@ -1,7 +1,7 @@
 //! The EQ's band filters as plain `f64` math (WP-90): the RBJ biquad coefficients of one band and
 //! the magnitude response of a band.
 //!
-//! The EQ device (`komponist-builtin`) runs these coefficients (rounded to `f32`) and the graph in
+//! The EQ plugin runs these coefficients (rounded to `f32`) and the graph in
 //! the device frame samples [`band_response_db`] for its curve, so the curve is the filter's real
 //! response, not an approximation. Band types are the indices of `graph::eq`'s `band` constants.
 

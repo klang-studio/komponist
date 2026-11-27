@@ -301,13 +301,13 @@ loads. komponist supports two plugin standards:
 - **VST3**, Steinberg's standard, hosted through the `vst3` crate.
 
 Plugin code is foreign code. It can crash, leak, hang or be slow. Many DAWs load plugins into their
-own process, so a crashing plugin takes the whole session down. komponist runs **every external
+own process, so a crashing plugin takes the whole session down. komponist runs **every third-party
 plugin instance in its own process** (the *bridge*), communicating through shared memory. A
 crashed plugin only silences its own device; you can reload it. The price is the extra cost of
 moving audio between processes every block, which section 14 explains.
 
-komponist's own instruments and effects (Hexa, Volt, Klopfer, Sampler, EQ, Delay, Reverb, Presse,
-Limiter, Arpeggiator, Scale) run **in process** and need no bridge.
+komponist's twelve shipped instruments and effects each have a CLAP bundle. The app verifies the
+bundle inventory and loads each instance **in process** when the project needs it.
 
 ---
 
@@ -362,16 +362,14 @@ The workspace is split by responsibility, and dependencies point downwards only:
           komponist-ui    komponist-plugins     komponist-audio    komponist-bridge
           (widgets,       (catalog, scan,       (cpal/JACK/        (plugin process:
            canvases)       bridge lifecycle,     MIDI devices,      instance + scan)
-             |             ExternalProcessor)    EngineSlot)            |
-             |              /      |       \         |            komponist-hosting
-             |   komponist-builtin |   komponist-ipc |            (CLAP + VST3 host)
-             |   (device registry) |   (shm, control |                  |
-             |        |            |    protocol)    |            komponist-ipc
-             |   device crates     |                 |
-             |   (hexa, volt, eq …)|                 |
-             |        |            |                 |
-             |   komponist-device-core               |
-             |        |                              |
+             |             processor adapters)   EngineSlot)            |
+             |                 |                    |            komponist-hosting
+             |        komponist-hosting             |            (CLAP + VST3 host)
+             |        (bundled CLAP host)            |                  |
+             |                 |                    |            komponist-ipc
+             |             komponist-ipc             |
+             |             (shm, protocol)           |
+             |                                       |
              |   komponist-engine  ──────────────────┼── komponist-rt (RT priority, waits)
              |   (compile, Program, Engine,          |
              |    Processor trait, mixing)           |
@@ -390,8 +388,9 @@ Rules that follow from this picture:
   `Box<dyn Processor>`.
 - **`komponist-audio` does not know the engine.** It drives anything that implements its
   `AudioProcess` trait; the app supplies the adapter (`EngineProcess`).
-- **`komponist-hosting` (plugin formats) is only used by the bridge**, never by the app process
-  directly. The app talks to plugins only through `komponist-plugins` and IPC.
+- **`komponist-hosting` implements the plugin formats.** In the app process, `komponist-plugins`
+  uses it to host verified shipped CLAP bundles. The bridge uses it for third-party CLAP and VST3
+  instances and for scanning. The app interacts with both paths through `komponist-plugins`.
 
 ### 8.2 Sizes and where to start
 
@@ -500,7 +499,7 @@ It is never undone and never saved with the project.
 
 ### 9.4 Files
 
-A project is a `*.komponist` JSON file (`format: "komponist"`, version 5) written by
+A project is a `*.komponist` JSON file (`format: "komponist"`, version 6) written by
 [`persist.rs`](../crates/komponist-model/src/persist.rs). Plugin states are base64. Audio files
 are *linked* by relative and absolute path, never embedded. Below 1.0 exactly one version is valid:
 any other version is rejected, nothing is migrated (D10). If you change the file format, read ARCHITECTURE §5.5 first.
@@ -799,8 +798,9 @@ the same device as a standalone CLAP plugin. Shared pieces:
   the `Dsp` trait is the simple interface a device implements; `InternalProcessor` adapts a `Dsp`
   to the engine's `Processor` (splitting blocks at parameter events, feeding meters); `dsp.rs` has
   shared helpers (smoothing, one-pole filters, ring buffers, `flush`).
-- [`registry/`](../crates/builtin-devices/registry/) (`komponist-builtin`): the list of built-ins
-  (`BuiltinKind`), their catalog entries and the processor factory the app uses.
+- The bundle manifest lists the shipped CLAP libraries. The catalog reads their descriptors and
+  localized metadata through CLAP. Device crates belong to the bundles' build, outside the app's
+  dependency tree.
 - `hexa/core` and `sampler-shared/core`: large, separately developed DSP engines (FM synthesis and
   sample playback), vendored into this repository.
 
@@ -834,8 +834,8 @@ Things to notice in its `process` loop:
 
 The catalog id and parameter ids are stored in project files and automation lanes. Below 1.0 a
 change breaks the projects that hold the old id, because there is no migration (D10); at 1.0 they
-become permanent. Hexa's id is `hexa` and Klopfer's is `sampler` (see `BUILTIN_HEXA` in
-`project.rs`). The device checklist in
+become permanent. Hexa uses `org.klang-studio.komponist.hexa` and Klopfer uses
+`org.klang-studio.komponist.sampler`. The device checklist in
 [builtin-devices/README.md](../crates/builtin-devices/README.md) lists everything a new device needs.
 
 ## 14. External plugins and the bridge
@@ -847,7 +847,7 @@ become permanent. Hexa's id is `hexa` and Klopfer's is `sampler` (see `BUILTIN_H
 | `komponist-plugins` | app | catalog and scan cache, `PluginManager` (lifecycle, status, state), `Bridge` (one child process), `ExternalProcessor` (the engine-side `Processor`) |
 | `komponist-ipc` | both | shared-memory layout, ring buffers, wait/wake primitives, control protocol, process watching |
 | `komponist-bridge` | bridge | instance mode (load a plugin, serve audio) and scan mode |
-| `komponist-hosting` | bridge | the actual CLAP (clack-host) and VST3 implementation behind `HostedPlugin` / `HostedProcessor` |
+| `komponist-hosting` | app and bridge | CLAP (clack-host) for verified shipped bundles in the app, and CLAP/VST3 hosting and scans in the bridge |
 
 The bridge is the same executable: `main()` in
 [`komponist-app/src/main.rs`](../crates/komponist-app/src/main.rs) checks for `--bridge` before
@@ -958,7 +958,7 @@ Useful flags: `--demo`, `--null-audio`, `--lang de|en`, `--scale F`, `--open-plu
 | `views/` (~39k lines) | arrangement, piano roll, step sequencer, audio editor, mixer, devices, inspector, browser, automation, routing |
 | `dialogs/`, `windows/`, `panels/` | settings, export, file dialogs; plugin frame windows; transport bar, status bar, dock tabs |
 | `shell.rs`, `layout.rs` | the main window layout |
-| `engine_sync.rs`, `device_host.rs` | document → engine; creating processors (built-in or bridged) |
+| `engine_sync.rs`, `device_host.rs` | document → engine; creating processors for verified bundles and bridged plugins |
 | `project_io.rs`, `settings.rs`, `dirs.rs` | files, settings, platform folders |
 | `record.rs`, `audio_record*.rs`, `automation_capture.rs` | MIDI, audio and automation recording |
 | `export*.rs` | WAV export coordination |
@@ -1131,8 +1131,8 @@ tracks still reuse their compiled program (pointer equality).
 
 **… add a built-in instrument or effect.** Follow the checklist in
 [builtin-devices/README.md](../crates/builtin-devices/README.md): a crate with `Spec`, `Dsp`
-implementation, stable ids, DE/EN names, registration in the registry, and a musically sensible
-use in the demo project (`showcase_project()`, rule 15) with a balanced mix.
+implementation, stable CLAP and parameter IDs, DE/EN names, packaging, and a musically sensible
+use in the demo project (`bundled_demo()`, rule 15) with a balanced mix.
 
 **… change the project file.** Add the field (optional data with `#[serde(default)]`), bump
 `FORMAT_VERSION` in `persist.rs` when files of the other version must be rejected, and update every

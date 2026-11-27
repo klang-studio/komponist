@@ -61,10 +61,9 @@ use komponist_model::automation::AutomationTarget;
 use komponist_model::edits;
 use komponist_model::macros::MAX_MAPPINGS;
 use komponist_model::project::SavedPluginState;
-use komponist_model::{Device, DeviceId, DevicePreset, Project, TrackId};
+use komponist_model::{DeviceId, DevicePreset, Project, TrackId};
 
 use crate::app::App;
-use crate::device_host::LegacyParameters;
 use crate::undo_label;
 
 /// Snapshots of a device that arrive within this time of the last one amend its undo step.
@@ -694,39 +693,8 @@ impl App {
             }
             return;
         }
-        // hexa and the internal devices: the value goes into the state and to the processor.
-        let before = self.doc.revision();
-        let state = self
-            .project()
-            .find_device(device)
-            .and_then(|(_, _, d)| device_param_state(d, id, value));
-        let changed = match state {
-            Some(state) => {
-                let label = if self.doc.in_gesture() {
-                    String::new()
-                } else {
-                    self.param_label(device, id)
-                };
-                self.store_param_state(device, &state, &label)
-            }
-            None => false,
-        };
-        let after = self.doc.revision();
-        let Some(slot) = self.engine.program().and_then(|p| p.slots.slot(device)) else {
-            return;
-        };
-        let command = Command::SetParam { slot, id, value };
-        if changed {
-            self.engine.fast_path(command, before, after);
-            if let Some((_, _, device)) = self.project().find_device(device) {
-                self.engine.host().prepare_device_assets(
-                    device,
-                    self.project().tempo.bpm,
-                    Some(id),
-                );
-            }
-        } else {
-            self.engine.send(command);
+        if let Some(slot) = slot {
+            self.engine.send(Command::SetParam { slot, id, value });
         }
     }
 
@@ -739,45 +707,12 @@ impl App {
     }
 
     fn param_name(&self, device: DeviceId, id: u32) -> Option<String> {
-        let (_, _, d) = self.project().find_device(device)?;
-        if let Some(parameters) = LegacyParameters::new(d) {
-            return parameters.card_param_name(self.lang, id).map(str::to_owned);
-        }
         self.engine
             .host()
             .params(device)?
             .iter()
             .find(|p| p.id == id)
             .map(|p| p.name.clone())
-    }
-
-    /// Whether `device` is gone or already has exactly `state`.
-    fn has_state(&self, device: DeviceId, state: &[u8]) -> bool {
-        self.project()
-            .find_device(device)
-            .is_none_or(|(_, _, d)| d.state.as_deref() == Some(state))
-    }
-
-    /// Stores `state` as a tracked change of `device` that the running processor already has (a
-    /// knob value it just got as `SetParam`): one undo step named `label`, or part of the open
-    /// gesture, which also marks a loaded preset as modified; the engine is not told. Returns
-    /// whether the document changed (an equal state is skipped).
-    pub(crate) fn store_param_state(
-        &mut self,
-        device: DeviceId,
-        state: &Arc<[u8]>,
-        label: &str,
-    ) -> bool {
-        if self.has_state(device, state) {
-            return false;
-        }
-        // A parameter edit after a preset load marks the preset in the same step (module docs).
-        self.doc
-            .apply(label, |p| {
-                let p = edits::set_device_state(p, device, Some(Arc::clone(state)))?;
-                edits::mark_device_preset_modified(&p, device)
-            })
-            .is_ok()
     }
 
     /// The host's reported parameter base before a later edit reaches the instance.
@@ -1269,7 +1204,7 @@ impl App {
         let bridged = self
             .project()
             .find_device(device)
-            .is_some_and(|(_, _, d)| d.state.is_none() && LegacyParameters::new(d).is_none());
+            .is_some_and(|(_, _, d)| d.state.is_none());
         if bridged
             && !self.param_undo.baseline.contains_key(&device)
             && self.param_undo.awaiting.insert(device)
@@ -1298,9 +1233,7 @@ impl App {
                 self.reset_pad_hit(device.id);
                 continue;
             }
-            if (old.state != device.state || old.parameter_bases != device.parameter_bases)
-                && LegacyParameters::new(device).is_none()
-            {
+            if old.state != device.state || old.parameter_bases != device.parameter_bases {
                 // The plugin gets the document's state: a load it reported before no longer holds.
                 self.param_undo.discard_pending_report(device.id);
                 self.param_undo.steps.remove(&device.id);
@@ -1324,12 +1257,4 @@ impl App {
             }
         }
     }
-}
-
-/// The document state after setting a built-in parameter, including all eight Hexa device macros.
-/// Apply to the device from the latest edited root when updating several parameters together.
-pub(crate) fn device_param_state(device: &Device, wire: u32, value: f64) -> Option<Arc<[u8]>> {
-    LegacyParameters::new(device)?
-        .with_value(wire, value)
-        .map(Into::into)
 }

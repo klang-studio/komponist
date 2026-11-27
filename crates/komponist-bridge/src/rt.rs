@@ -36,10 +36,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use komponist_hosting::{EventOut, HostedProcessor, HostingError, ProcessBlock, ProcessStatus};
-use komponist_ipc::shm::{
-    BLOCK_FLAG_EFFECT_DETECTOR, BLOCK_FLAG_EFFECT_METER, BLOCK_FLAG_RESET, INPUT_EVENT_CAPACITY,
-    OUTPUT_EVENT_CAPACITY,
-};
+use komponist_ipc::shm::{BLOCK_FLAG_RESET, INPUT_EVENT_CAPACITY, OUTPUT_EVENT_CAPACITY};
 use komponist_ipc::{
     BlockRequest, BlockResult, BlockStatus, BridgeServer, WireEvent, WireEventKind,
 };
@@ -1054,10 +1051,6 @@ fn serve(
         processor.reset();
     }
 
-    let capture_meter = request.flags & BLOCK_FLAG_EFFECT_METER != 0;
-    if capture_meter {
-        processor.begin_effect_meter(request.flags & BLOCK_FLAG_EFFECT_DETECTOR != 0);
-    }
     let taps = request.signal_taps();
     if taps != 0 {
         processor.begin_signal_taps(taps);
@@ -1081,9 +1074,6 @@ fn serve(
             block.events_out.dropped(),
         )
     };
-    let meter = capture_meter
-        .then(|| processor.end_effect_meter())
-        .flatten();
     for event in &scratch.events_out[..produced] {
         if !server.push_output_event(WireEvent {
             reserved: request.seq,
@@ -1140,7 +1130,7 @@ fn serve(
             processor.read_signal_taps(taps, out);
             true
         });
-    server.finish_with_telemetry(result(status, dropped), meter, wrote_signal_taps);
+    server.finish_with_signal_taps(result(status, dropped), wrote_signal_taps);
 }
 
 #[cfg(test)]

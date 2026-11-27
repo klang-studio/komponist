@@ -7,7 +7,8 @@
 //!    selection) in frames at the export rate, the tail, the target `<folder>/<name>.wav`.
 //! 2. **Devices** (PLAN WP-45: a device still loading renders silence): while a device of the
 //!    project is not `Ok`, the dialog lists it ("lädt …", "fehlt", "abgestürzt") and the export
-//!    waits; it goes on by itself when all run, or at once with "Ohne sie exportieren".
+//!    waits; it goes on by itself when all run, or at once with "Ohne sie exportieren". Linked sample files that
+//!    cannot be loaded stop the export and are named in the status message.
 //! 3. **Detach**: the document is synced, the engine leaves the stream together with its handle
 //!    ([`EngineSync::detach`](crate::engine_sync::EngineSync::detach)), the bridges switch to
 //!    offline processing ([`DeviceHost::set_render_mode`](crate::device_host::DeviceHost)) and a
@@ -54,7 +55,7 @@ use komponist_engine::export::{
 };
 use komponist_engine::{Command, Program, SlotId, TransportState};
 use komponist_ipc::RenderMode;
-use komponist_ipc::device_assets::{OfflineRequest, OfflineStatus};
+use komponist_ipc::device_assets::{AssetKind, AssetStatus, OfflineRequest, OfflineStatus};
 use komponist_model::format::fmt_bar_pos;
 use komponist_model::{ClipId, DeviceId, Project, Tick, TickRange};
 use komponist_plugins::{DeviceStatus, FailReason};
@@ -553,6 +554,49 @@ impl App {
         self.poll_export();
     }
 
+    /// A linked sample that cannot be played, with the device and sample named for the user.
+    fn unavailable_render_audio_asset(&self, id: DeviceId) -> Option<String> {
+        let host = self.engine.host();
+        let (_, _, device) = self.project().find_device(id)?;
+        let assets = host.asset_slots(id)?;
+        let (slot, link) = assets
+            .slots
+            .iter()
+            .filter(|slot| {
+                slot.kind == AssetKind::AudioSample
+                    && matches!(slot.status, AssetStatus::Missing | AssetStatus::Failed(_))
+            })
+            .find_map(|slot| device.asset_links.get(&slot.id).map(|link| (slot, link)))?;
+        let file = link
+            .name()
+            .map_or_else(|| slot.label.clone(), std::borrow::Cow::into_owned);
+        let name = self.device_name(id);
+        let pad = host
+            .native_layout(id)
+            .and_then(|layout| layout.pad_bank.as_ref())
+            .and_then(|bank| bank.pads.iter().position(|pad| pad.asset_slot == slot.id));
+        Some(if let Some(pad) = pad {
+            self.lang.flatten_pad_failed(name, pad + 1, file)
+        } else {
+            self.lang.flatten_sampler_failed(name, file)
+        })
+    }
+
+    /// The first unavailable linked sample on an active export device, in document order.
+    fn unavailable_export_asset(&self) -> Option<(DeviceId, String)> {
+        let project = self.project();
+        project
+            .tracks
+            .iter()
+            .flat_map(|track| &track.channel.devices)
+            .chain(&project.master.devices)
+            .filter(|device| !device.bypass)
+            .find_map(|device| {
+                self.unavailable_render_audio_asset(device.id)
+                    .map(|problem| (device.id, problem))
+            })
+    }
+
     /// Active devices that are not ready to render, in document order (master last).
     pub(crate) fn devices_not_ready(&self) -> Vec<DeviceRow> {
         let p = self.project();
@@ -570,11 +614,6 @@ impl App {
                 let state = match self.engine.device_status(d.id) {
                     DeviceStatus::Ok if self.engine.host().render_assets_pending(d) => {
                         DeviceState::Loading
-                    }
-                    DeviceStatus::Ok
-                        if self.engine.host().render_asset_preparation_failed(d.id) =>
-                    {
-                        DeviceState::LoadFailed
                     }
                     DeviceStatus::Ok => continue,
                     DeviceStatus::Loading => DeviceState::Loading,
@@ -711,6 +750,10 @@ impl App {
                 app.set_status(app.lang.export_failed(reason), StatusKind::Error);
             }
         };
+        if !flattening && let Some((_, problem)) = self.unavailable_export_asset() {
+            fail(self, &problem);
+            return;
+        }
         let job = run.job.clone();
         if let Some(folder) = job.path.parent()
             && let Err(e) = std::fs::create_dir_all(folder)
@@ -850,6 +893,8 @@ impl App {
                     .unavailable_audio_asset(self)
                     .map_or(Ok(()), |(id, _)| Err(ExportError::DeviceFailed(id))),
             }
+        } else if let Some((id, _)) = self.unavailable_export_asset() {
+            Err(ExportError::DeviceFailed(id))
         } else {
             let loading = self
                 .devices_not_ready()
@@ -1053,6 +1098,12 @@ impl App {
             Err(ExportError::Stretch { clip, reason }) => {
                 let (name, why) = self.warp_error(clip, reason);
                 self.set_status(self.lang.export_warp_failed(name, why), StatusKind::Error);
+            }
+            Err(error @ ExportError::DeviceFailed(id)) => {
+                let reason = self
+                    .unavailable_render_audio_asset(id)
+                    .unwrap_or_else(|| error.to_string());
+                self.set_status(self.lang.export_failed(reason), StatusKind::Error);
             }
             Err(e) => self.set_status(self.lang.export_failed(e), StatusKind::Error),
         }

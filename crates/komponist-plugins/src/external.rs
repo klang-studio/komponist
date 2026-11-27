@@ -32,9 +32,8 @@ use komponist_engine::{
     TransportInfo,
 };
 use komponist_ipc::shm::{
-    BLOCK_FLAG_EFFECT_DETECTOR, BLOCK_FLAG_EFFECT_METER, BLOCK_FLAG_OFFLINE, BLOCK_FLAG_RESET,
-    INPUT_EVENT_CAPACITY, MAX_BLOCK, OUTPUT_EVENT_CAPACITY, TRANSPORT_LOOPING, TRANSPORT_PLAYING,
-    TRANSPORT_RECORDING,
+    BLOCK_FLAG_OFFLINE, BLOCK_FLAG_RESET, INPUT_EVENT_CAPACITY, MAX_BLOCK, OUTPUT_EVENT_CAPACITY,
+    TRANSPORT_LOOPING, TRANSPORT_PLAYING, TRANSPORT_RECORDING,
 };
 use komponist_ipc::{
     BlockError, BlockSpec, BlockStatus, BridgeClient, BridgeMonitor, WireEvent, WireEventKind,
@@ -42,7 +41,6 @@ use komponist_ipc::{
 };
 use komponist_model::{DeviceRole, PPQ};
 
-use crate::bundled_effects;
 use crate::manager::ProcessorSetup;
 
 /// Share of the callback period by which bridges must be done (ARCHITECTURE §8.1); the engine's
@@ -118,7 +116,6 @@ pub struct ExternalProcessor {
     /// Offline fallback blocks, including unsuccessful replies from a plugin that is still alive.
     offline_failures: u64,
     midi: Option<MidiStage>,
-    effect_meter: Option<Arc<bundled_effects::Meter>>,
 }
 
 #[derive(Debug)]
@@ -163,7 +160,6 @@ impl ExternalProcessor {
             begun: None,
             offline_failures: 0,
             midi: (role == DeviceRole::MidiEffect).then(MidiStage::new),
-            effect_meter: None,
         }
     }
 
@@ -316,19 +312,14 @@ impl ExternalProcessor {
         }
         if ctx.offline {
             flags |= BLOCK_FLAG_OFFLINE;
-        } else if let Some(taps) = self.shared.signal_taps.get() {
-            flags |= komponist_ipc::shm::signal_tap_flags(taps.begin(frames));
         }
-        if let Some(meter) = self
-            .effect_meter
-            .as_ref()
-            .filter(|meter| meter.requests_reduction())
-        {
-            flags |= BLOCK_FLAG_EFFECT_METER;
-            if meter.requests_detector(frames) {
-                flags |= BLOCK_FLAG_EFFECT_DETECTOR;
-            }
-        }
+        let tap_mask = self
+            .shared
+            .signal_taps
+            .get()
+            .filter(|_| !ctx.offline)
+            .map_or(0, |taps| taps.begin(frames));
+        flags |= komponist_ipc::shm::signal_tap_flags(tap_mask);
         let deadline = match ctx.deadline {
             _ if ctx.offline => entered + OFFLINE_DEADLINE,
             Some(deadline) => deadline,
@@ -358,7 +349,11 @@ impl ExternalProcessor {
         };
         self.reset = false;
         self.wire.clear();
-        outcome(Outcome::Sent { seq, deadline })
+        outcome(Outcome::Sent {
+            seq,
+            deadline,
+            tap_mask,
+        })
     }
 
     /// RT. The second half of a call: wait for the bridge's output, or write the fallback.
@@ -376,7 +371,11 @@ impl ExternalProcessor {
                 }
                 (status, true, 0)
             }
-            Outcome::Sent { seq, deadline } => {
+            Outcome::Sent {
+                seq,
+                deadline,
+                tap_mask,
+            } => {
                 let result = match io.as_mut() {
                     Some(io) => {
                         let [left, right] = &mut io.output;
@@ -391,15 +390,10 @@ impl ExternalProcessor {
                     Ok(result) => {
                         self.completed = Some(seq);
                         if result.status == BlockStatus::Ok as u32
-                            && let (Some(meter), Some(io)) = (&self.effect_meter, io.as_deref())
-                        {
-                            meter.record(io, self.client.effect_meter(seq));
-                        }
-                        if result.status == BlockStatus::Ok as u32
                             && let (Some(taps), Some(payload)) =
                                 (self.shared.signal_taps.get(), self.client.signal_taps(seq))
                         {
-                            taps.record(payload);
+                            taps.record(payload, tap_mask, io.as_deref());
                         }
                         (
                             ProcessStatus::Continue,
@@ -436,7 +430,11 @@ struct Started {
 #[derive(Debug, Clone, Copy)]
 enum Outcome {
     /// The block went to the bridge: wait for `seq` until `deadline`.
-    Sent { seq: u32, deadline: Instant },
+    Sent {
+        seq: u32,
+        deadline: Instant,
+        tap_mask: u32,
+    },
     /// No block went out: write the fallback and return the status.
     Fallback(ProcessStatus),
 }
@@ -463,9 +461,6 @@ impl Processor for ExternalProcessor {
         self.setup = setup;
         if let Some(taps) = self.shared.signal_taps.get() {
             taps.set_rate(sample_rate);
-        }
-        if let Some(meter) = &self.effect_meter {
-            meter.set_rate(sample_rate);
         }
         self.shared.reactivating.store(true, Ordering::Release);
         *self

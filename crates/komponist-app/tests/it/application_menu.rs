@@ -310,7 +310,7 @@ fn about_and_fallback_menu_snapshots_in_both_languages() {
             h.snapshot(format!("application-about{variant}{suffix}-{ppp}x"));
             results.extend_harness(&mut h);
         }
-        let app = crate::common::reference_app(Project::new("Menu")).with_lang(lang);
+        let app = App::headless(Project::new("Menu")).with_lang(lang);
         let mut h = harness(app, 1.0);
         h.get_by_role_and_label(Role::Button, lang.transport_menu())
             .click();

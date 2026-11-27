@@ -76,7 +76,7 @@ fn klopfer_as_a_scanned_plugin() {
         eprintln!("skipped: Klopfer.clap not found in ~/.clap");
         return;
     };
-    assert!(!entry.is_builtin());
+    assert!(!komponist_plugins::requires_bundled(&entry.plugin));
     let plugin = entry.plugin.clone();
     // Pad 1 = note 36; the default kit may be empty, so only loading is required.
     load_and_play(manager, plugin, 36);

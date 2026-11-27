@@ -3,9 +3,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use komponist_engine::SampleTap;
+use komponist_engine::{SampleTap, StereoIo};
 use komponist_ipc::signal_taps::{
-    BlockTaps, Descriptor, MAX_PAD_ACTIVITY_FRAME, PAD_ACTIVITY, PadActivity, valid_inventory,
+    BlockTaps, Descriptor, MAX_PAD_ACTIVITY_FRAME, PAD_ACTIVITY, PadActivity, REDUCTION,
+    valid_inventory,
 };
 
 /// A named plugin signal displayed by a native layout.
@@ -14,6 +15,8 @@ pub struct SignalTap {
     descriptor: Descriptor,
     samples: Arc<SampleTap>,
     audio_rate: AtomicU32,
+    // For a reduction meter, the main-bus input and output peaks from the same render path.
+    audio_peaks: [AtomicU32; 2],
 }
 
 impl SignalTap {
@@ -31,6 +34,13 @@ impl SignalTap {
     pub fn want(&self) {
         self.samples
             .want_at_audio_rate(f32::from_bits(self.audio_rate.load(Ordering::Relaxed)));
+    }
+
+    /// Take and reset this reduction meter's main-bus input and output peaks.
+    pub fn take_audio_peaks(&self) -> [f32; 2] {
+        self.audio_peaks
+            .each_ref()
+            .map(|peak| f32::from_bits(peak.swap(0, Ordering::Relaxed)))
     }
 
     /// Renew interest and read the most recent complete pad-activity frame.
@@ -65,6 +75,7 @@ impl SignalTaps {
                     descriptor,
                     samples: Arc::new(SampleTap::new(descriptor.capacity as usize)),
                     audio_rate: AtomicU32::new(0),
+                    audio_peaks: Default::default(),
                 })
                 .collect(),
         );
@@ -89,8 +100,25 @@ impl SignalTaps {
         })
     }
 
-    pub(crate) fn record(&self, payload: &BlockTaps) {
+    pub(crate) fn record(&self, payload: &BlockTaps, mask: u32, io: Option<&StereoIo<'_>>) {
+        let mut peaks = None;
         for (index, tap) in self.0.iter().enumerate() {
+            if mask & (1 << index) == 0 {
+                continue;
+            }
+            if tap.descriptor.kind == REDUCTION
+                && let Some(io) = io
+            {
+                let levels = peaks.get_or_insert_with(|| {
+                    [
+                        stereo_peak(io.input),
+                        stereo_peak([io.output[0], io.output[1]]),
+                    ]
+                });
+                for (peak, level) in tap.audio_peaks.iter().zip(levels) {
+                    peak.fetch_max(level.to_bits(), Ordering::Relaxed);
+                }
+            }
             let samples = payload.samples(index);
             if !samples.is_empty()
                 && (tap.descriptor.kind != PAD_ACTIVITY || samples.len() == MAX_PAD_ACTIVITY_FRAME)
@@ -99,6 +127,15 @@ impl SignalTaps {
             }
         }
     }
+}
+
+fn stereo_peak(channels: [&[f32]; 2]) -> f32 {
+    channels
+        .into_iter()
+        .flatten()
+        .map(|sample| sample.abs())
+        .filter(|sample| sample.is_finite())
+        .fold(0.0, f32::max)
 }
 
 #[cfg(test)]
@@ -140,7 +177,7 @@ mod tests {
                 out[..2].copy_from_slice(&[-3.0, -4.0]);
                 2
             });
-            taps.record(&block);
+            taps.record(&block, 0b10, None);
             assert_eq!(taps.begin(24_000), 0b10);
             assert_eq!(taps.begin(64), 0);
         });
@@ -149,5 +186,34 @@ mod tests {
         let mut out = [0.0; 2];
         assert_eq!(detector.samples().read_latest(&mut out), Some(2));
         assert_eq!(out, [-3.0, -4.0]);
+    }
+    #[test]
+    fn a_leased_reduction_tap_also_reports_the_main_bus_peaks() {
+        let taps = SignalTaps::new(
+            &[
+                Descriptor::new("reduction", REDUCTION, 32, 256),
+                Descriptor::new("other-reduction", REDUCTION, 32, 256),
+            ],
+            48_000.0,
+        )
+        .unwrap();
+        let reduction = taps.get("reduction").unwrap();
+        let other = taps.get("other-reduction").unwrap();
+        let mut left = [0.25, f32::NAN];
+        let mut right = [0.5, f32::INFINITY];
+        let io = StereoIo {
+            input: [&[-0.75, 0.125], &[1.0, 0.25]],
+            output: [&mut left, &mut right],
+        };
+        let block = BlockTaps::EMPTY;
+        assert_no_alloc(|| {
+            taps.record(&block, taps.begin(2), Some(&io));
+            assert_eq!(reduction.take_audio_peaks(), [0.0, 0.0]);
+            reduction.want();
+            taps.record(&block, taps.begin(2), Some(&io));
+            assert_eq!(reduction.take_audio_peaks(), [1.0, 0.5]);
+            assert_eq!(reduction.take_audio_peaks(), [0.0, 0.0]);
+            assert_eq!(other.take_audio_peaks(), [0.0, 0.0]);
+        });
     }
 }

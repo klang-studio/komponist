@@ -364,7 +364,7 @@ fn track_export_restores_the_other_live_tracks_after_success_and_cancel() {
         &project,
         NewTrack {
             instrument: Some(PluginRef {
-                format: PluginFormat::Builtin,
+                format: PluginFormat::Clap,
                 id: "test-sine".into(),
                 name: "Sine".into(),
                 vendor: String::new(),

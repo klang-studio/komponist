@@ -15,7 +15,6 @@ use komponist_engine::{
     Command as EngineCommand, Event, EventKind, LiveInput, NOTE_ID_NONE, ProcessContext,
     ProcessStatus, Processor, ProcessorError, StereoIo, TransportInfo,
 };
-use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{DeviceId, DeviceRole, Meter, PluginFormat, PluginRef, Tick, TickRange};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
 
@@ -384,8 +383,8 @@ fn bridges_in_series_share_the_callback_deadline() {
     // Two tracks, each a kp-test-slow (sleeps 50 ms on key 126) followed by a probe; the probes are
     // in-process devices whose processors the test inserts itself.
     let probe_ref = PluginRef {
-        format: PluginFormat::Builtin,
-        id: BUILTIN_HEXA.into(),
+        format: PluginFormat::Clap,
+        id: "fixture.probe".into(),
         name: "probe".into(),
         vendor: String::new(),
         version: String::new(),

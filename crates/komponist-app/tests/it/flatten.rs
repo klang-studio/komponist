@@ -8,7 +8,7 @@ use egui::accesskit::Role;
 use egui::{Event as UiEvent, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::device_host::{BuiltinHost, DeviceHost};
+use komponist_app::device_host::DeviceHost;
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::ui_state::{FocusArea, StatusKind};
 use komponist_app::{Action, App, EditAction, ProjectAction};
@@ -717,6 +717,47 @@ fn flatten_checks_linked_audio_assets_without_an_authored_layout() {
 }
 
 #[test]
+fn wav_export_checks_failed_links_without_offline_preparation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (project, _, effect) = fixture(None);
+    let slot = 42;
+    let link = AssetLink::new(&dir.path().join("corrupt.wav"), None);
+    let project = edits::set_device_asset_links(&project, effect, [(slot, link)].into()).unwrap();
+    let mut app = app_with_host(
+        project,
+        dir.path(),
+        Host {
+            backend: Box::new(App::headless_plugin_host()),
+            state: effect,
+            fixture: Fixture::Ready,
+            assets: Some(Snapshot {
+                slots: vec![Slot {
+                    id: slot,
+                    role: "sample".into(),
+                    label: "Source".into(),
+                    kind: AssetKind::AudioSample,
+                    status: AssetStatus::Failed("Unsupported audio".into()),
+                }],
+            }),
+            bindings_pending: false,
+            global_mode_changes: Arc::default(),
+        },
+    );
+    let settings =
+        super::export::export_settings(dir.path(), komponist_app::actions::ExportRange::Song);
+    let output = settings.folder.join(&settings.file_name);
+    super::export::export(&mut app, settings);
+
+    let lang = app.lang();
+    assert_eq!(
+        app.ui().status.as_ref().unwrap().text,
+        lang.export_failed(lang.flatten_sampler_failed("tail", "corrupt"))
+    );
+    assert!(!app.engine().is_detached());
+    assert!(!output.exists());
+}
+
+#[test]
 fn an_unreadable_clap_pad_blocks_flattening() {
     let dir = tempfile::tempdir().unwrap();
     let Some((host, plugin)) = native_fixture(
@@ -978,7 +1019,7 @@ fn the_localized_track_menu_opens_a_cancellable_flatten_dialog() {
         // The reference screenshots list the in-binary devices in the browser (#294 regenerates
         // them from the packaged catalogue).
         let app = app_on(
-            Box::new(BuiltinHost::new()),
+            Box::new(App::headless_plugin_host()),
             project.clone(),
             dir.path(),
             effect,

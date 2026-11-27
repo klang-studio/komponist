@@ -28,7 +28,6 @@ use komponist_ipc::shm::{
 };
 use komponist_ipc::{WireEventKind, WireTransport};
 
-use super::effect_meter::EffectMeter;
 use super::events::{self, InEvent, InputEventList, NO_NOTE_ID, WireSink};
 use super::host::{AudioThreadScope, KpHost};
 use super::signal_taps::SignalTaps;
@@ -275,7 +274,6 @@ pub(crate) struct ClapProcessor {
     /// Held notes: bit `c` of `held[key]` = channel `c`.
     held: [u16; 128],
     max_frames: u32,
-    effect_meter: Option<EffectMeter>,
     signal_taps: Option<SignalTaps>,
 }
 
@@ -288,7 +286,6 @@ impl ClapProcessor {
         notes: NoteTarget,
         note_output: bool,
         max_frames: u32,
-        effect_meter: Option<EffectMeter>,
     ) -> ClapProcessor {
         ClapProcessor {
             audio: audio.into(),
@@ -299,7 +296,6 @@ impl ClapProcessor {
             events: InputEventList::with_capacity(INPUT_EVENT_CAPACITY + ALL_NOTES_OFF_ROOM),
             held: [0; 128],
             max_frames,
-            effect_meter,
             signal_taps: None,
         }
     }
@@ -534,19 +530,6 @@ impl HostedProcessor for ClapProcessor {
             }
             Err(_) => ProcessStatus::Error,
         }
-    }
-
-    fn begin_effect_meter(&mut self, detector: bool) {
-        if let Some(meter) = self.effect_meter {
-            let _audio = AudioThreadScope::enter();
-            meter.begin(self.audio.plugin_handle().as_raw(), detector);
-        }
-    }
-
-    fn end_effect_meter(&mut self) -> Option<komponist_ipc::effect_meter::BlockMeter> {
-        let meter = self.effect_meter?;
-        let _audio = AudioThreadScope::enter();
-        meter.end(self.audio.plugin_handle().as_raw())
     }
 
     fn begin_signal_taps(&mut self, mask: u32) {

@@ -15,7 +15,7 @@ use komponist_tokens::device;
 
 use super::layout::{self, DeviceLayout};
 use super::metrics;
-use crate::device_host::{BuiltinFmRouting, DeviceHost, LegacyParameters, internal_kind};
+use crate::device_host::DeviceHost;
 use crate::gain_trace::Dynamics;
 use crate::meters::DeviceLevels;
 use crate::spectrum::Analysis;
@@ -109,35 +109,16 @@ pub struct Param {
 }
 
 impl Param {
-    /// The project address when this card presents bundled CLAP controls with author IDs.
-    pub(super) fn project_id(&self, bundled_editor: bool) -> ParamId {
-        if bundled_editor {
-            ParamId::plugin(self.wire)
-        } else {
-            self.info.id.clone()
-        }
-    }
-
-    /// The display value at an automation or macro position in the project's parameter domain.
-    pub(super) fn value_at_normalized(&self, bundled_editor: bool, position: f64) -> f64 {
-        if bundled_editor {
-            let (min, max) = crate::device_host::legacy_clap_range(&self.info);
-            return crate::device_host::from_legacy_clap(&self.info, min + position * (max - min));
-        }
-        self.info.to_plain(position)
-    }
-
     pub(super) fn display_at_position(
         &self,
         display: Option<&ParameterDisplay>,
-        bundled_editor: bool,
         position: f64,
     ) -> f64 {
         if let Some(display) = display {
             let raw = position * f64::from(display.steps.unwrap_or(1));
             display_value(display, &self.info, raw)
         } else {
-            self.value_at_normalized(bundled_editor, position)
+            self.info.to_plain(position)
         }
     }
 
@@ -178,7 +159,7 @@ pub struct Card {
     pub(crate) macro_mappings: usize,
     /// Plugin name.
     pub name: String,
-    /// "INTERN" / "CLAP" / "VST3".
+    /// The CLAP or VST3 format tag.
     pub tag: &'static str,
     /// The track's instrument (head `surface.3`, not draggable).
     pub instrument: bool,
@@ -203,8 +184,6 @@ pub struct Card {
     pub(super) asset_waveforms: std::collections::BTreeMap<u32, super::asset_waveform::Waveform>,
     pub(super) asset_names: std::collections::BTreeMap<u32, String>,
     pub(super) pad_activity: Option<komponist_ipc::signal_taps::PadActivity>,
-    /// Whether a verified bundle uses the app's parameter model with author-ID bindings.
-    pub(super) bundled_editor: bool,
     /// The declarative layout of the body, with an automatic layout for generic plugins.
     pub layout: DeviceLayout,
     /// The page shown (set by the view from the view state).
@@ -228,8 +207,6 @@ pub struct Card {
     pub width: f32,
     /// Blocks that missed their deadline, while the head shows "zu spät" (set by the view).
     pub late: Option<u64>,
-    /// hexa's routing as the patch has it: the FM display draws it for algorithm 0 („Frei“).
-    pub routing: Option<BuiltinFmRouting>,
     /// The levels of the device's gain-reduction meter (set by the view from `Meters`); `None`
     /// for a device without a level feed.
     pub levels: Option<DeviceLevels>,
@@ -271,15 +248,10 @@ impl Card {
 
     /// The parameter `id` of the body's cells.
     pub fn param(&self, id: &ParamId) -> Option<&Param> {
-        self.params
-            .iter()
-            .find(|p| p.info.id == *id || (self.bundled_editor && id.plugin_id() == Some(p.wire)))
+        self.params.iter().find(|p| p.info.id == *id)
     }
 
     pub(super) fn wire_value(&self, param: &Param, plain: f64) -> f64 {
-        if self.bundled_editor {
-            return crate::device_host::to_legacy_clap(&param.info, plain);
-        }
         if let Some(display) = self.parameter_display(param) {
             if let Some(steps) = display.steps {
                 f64::from(step_index(&param.info, steps, plain))
@@ -301,7 +273,7 @@ impl Card {
     }
 
     pub(super) fn value_at_normalized(&self, param: &Param, position: f64) -> f64 {
-        param.display_at_position(self.parameter_display(param), self.bundled_editor, position)
+        param.display_at_position(self.parameter_display(param), position)
     }
 
     pub(super) fn native_page(&self) -> Option<&komponist_ipc::native_layout::Page> {
@@ -471,47 +443,31 @@ pub(crate) fn card(
         } else {
             None
         };
-    let bundled_editor = false;
-    let builtin = LegacyParameters::new(device);
     let params = if state == CardState::Ok {
-        if let Some(builtin) = &builtin {
-            builtin
-                .card(lang)
-                .into_iter()
-                .map(|p| Param {
-                    wire: p.wire,
-                    text: p.info.format(p.value),
-                    info: p.info,
-                    value: p.value,
-                })
-                .collect()
-        } else {
-            host.params(device.id)
-                .map(|infos| {
-                    let value = |id| host.param_value(device.id, id);
-                    if let Some(native) = &native_layout {
-                        let ids: std::collections::BTreeSet<_> =
+        host.params(device.id)
+            .map(|infos| {
+                let value = |id| host.param_value(device.id, id);
+                if let Some(native) = &native_layout {
+                    let ids: std::collections::BTreeSet<_> = native
+                        .pages
+                        .iter()
+                        .flat_map(|page| page.cells.iter().flat_map(|cell| cell.parameter_ids()))
+                        .chain(
                             native
-                                .pages
-                                .iter()
-                                .flat_map(|page| {
-                                    page.cells.iter().flat_map(|cell| cell.parameter_ids())
-                                })
-                                .chain(native.parameter_alternates().flat_map(|alternate| {
-                                    [alternate.when, alternate.binding.param_id]
-                                }))
-                                .collect();
-                        infos
-                            .iter()
-                            .filter(|info| ids.contains(&info.id))
-                            .map(|info| native_param(lang, native, info, value(info.id)))
-                            .collect()
-                    } else {
-                        plugin_params(lang, infos, value)
-                    }
-                })
-                .unwrap_or_default()
-        }
+                                .parameter_alternates()
+                                .flat_map(|alternate| [alternate.when, alternate.binding.param_id]),
+                        )
+                        .collect();
+                    infos
+                        .iter()
+                        .filter(|info| ids.contains(&info.id))
+                        .map(|info| native_param(lang, native, info, value(info.id)))
+                        .collect()
+                } else {
+                    plugin_params(lang, infos, value)
+                }
+            })
+            .unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -520,23 +476,14 @@ pub(crate) fn card(
     let layout = if let Some(native) = &native_layout {
         native_card_layout(native, lang)
     } else {
-        builtin.as_ref().map_or_else(
-            || {
-                DeviceLayout::knob_grid(
-                    params.iter().map(|p| p.info.id.clone()),
-                    metrics::COLUMNS as u8,
-                )
-            },
-            |builtin| builtin.card_layout(lang),
+        DeviceLayout::knob_grid(
+            params.iter().map(|p| p.info.id.clone()),
+            metrics::COLUMNS as u8,
         )
     };
     #[cfg(debug_assertions)]
     if state == CardState::Ok {
-        let known = |id: &ParamId| {
-            params
-                .iter()
-                .any(|p| p.info.id == *id || (bundled_editor && id.plugin_id() == Some(p.wire)))
-        };
+        let known = |id: &ParamId| params.iter().any(|p| p.info.id == *id);
         let mut context = super::cells::default_context();
         context.fill_missing(&super::cells::choice_defaults(&layout));
         let mut errors = layout::validate(&layout, &context, &known);
@@ -587,7 +534,6 @@ pub(crate) fn card(
             .filter_map(|(&id, link)| Some((id, link.name()?.into_owned())))
             .collect(),
         pad_activity: None,
-        bundled_editor,
         page: 0,
         collapsed: false,
         presets: !preset_entries.is_empty(),
@@ -597,8 +543,7 @@ pub(crate) fn card(
             .and_then(|(index, _)| preset_entries.get(index))
             .map(|preset| preset.display_name(lang.code()).to_owned()),
         preset_changed: selected.is_some_and(|(_, changed)| changed),
-        has_sidechain: internal_kind(device)
-            .map_or_else(|| host.has_sidechain(device.id), |k| k.has_sidechain()),
+        has_sidechain: host.has_sidechain(device.id),
         sidechain: device.sidechain,
         width: layout::device_width(metrics::COLUMNS as u8),
         late: None,
@@ -607,24 +552,8 @@ pub(crate) fn card(
         analysis: None,
         dynamics: None,
         graph_signals: Default::default(),
-        routing: builtin.and_then(|builtin| builtin.fm_routing()),
         state,
     }
-}
-
-/// The standalone frame parameters read from a legacy device's saved state.
-pub fn legacy_frame_params(lang: Lang, device: &Device) -> Vec<Param> {
-    LegacyParameters::new(device)
-        .map(|parameters| parameters.frame_params(lang))
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(param, text)| Param {
-            wire: param.wire,
-            info: param.info,
-            value: param.value,
-            text,
-        })
-        .collect()
 }
 
 pub(super) fn native_card_layout(
@@ -805,7 +734,7 @@ fn plugin_info(lang: Lang, wire: &WireInfo) -> ParamInfo {
 }
 
 /// Apply the panel's display domain while retaining the live CLAP ID and flags.
-pub(super) fn native_param(
+pub(crate) fn native_param(
     lang: Lang,
     layout: &NativeLayout,
     wire: &WireInfo,

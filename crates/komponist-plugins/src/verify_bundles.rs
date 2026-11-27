@@ -13,7 +13,6 @@ use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind, RenderMode};
 use komponist_model::{Device, DeviceId, DeviceRole};
 
 use crate::bundled_clap::{BundledClap, VerifiedClap, snapshot_cache};
-use crate::bundled_effects::Meter;
 use crate::catalog::{PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT};
 use crate::direct::DirectClap;
 use crate::direct_session::DirectSession;
@@ -67,7 +66,7 @@ pub fn verify_bundled_clap(cache_dir: &Path) -> Result<(), String> {
                 }
                 PluginKind::Other => return Err("unsupported bundled plugin role".to_owned()),
             };
-            smoke_direct(verified, &descriptor, role)
+            smoke_direct(verified, role)
         };
         result().map_err(|error| format!("{id}: {error}"))?;
         println!("verified {id} (in-process)");
@@ -93,7 +92,7 @@ fn smoke_live_manager(
     external: &Path,
     id: &str,
 ) -> Result<(), String> {
-    let mut manager = PluginManager::new_with_bundled_clap(config, true);
+    let mut manager = PluginManager::new(config);
     manager.start_scan(&PluginDirs {
         clap: vec![
             external
@@ -306,12 +305,7 @@ fn expected_signal_taps(plugin_id: &str) -> &'static [&'static str] {
     }
 }
 
-fn smoke_direct(
-    bundle: VerifiedClap,
-    descriptor: &PluginDescriptor,
-    role: DeviceRole,
-) -> Result<(), String> {
-    let meter = Meter::new(&descriptor.features, SETUP.sample_rate);
+fn smoke_direct(bundle: VerifiedClap, role: DeviceRole) -> Result<(), String> {
     let hall = bundle.plugin_id() == HALL_ID;
     let presse = bundle.plugin_id() == PRESSE_ID;
     let expected_taps = expected_signal_taps(bundle.plugin_id());
@@ -323,15 +317,8 @@ fn smoke_direct(
     }
     let (mut session, mut audio) =
         DirectSession::start(host, SETUP, role).map_err(|error| error.to_string())?;
-    if let Some(meter) = &meter {
-        audio.set_effect_meter(meter.clone());
-    }
     let result = (|| {
         drive_direct(&mut audio, role, hall, presse)?;
-        if let Some(meter) = &meter {
-            thread::scope(|scope| scope.spawn(|| check_effect_meter(&mut audio, meter)).join())
-                .map_err(|_| "direct meter audio worker panicked".to_owned())??;
-        }
         for &name in expected_taps {
             let tap = session
                 .signal_tap(name)
@@ -385,7 +372,7 @@ fn check_named_tap(
     processor: &mut dyn Processor,
     tap: &crate::signal_taps::SignalTap,
 ) -> Result<(), String> {
-    use komponist_ipc::signal_taps::SPECTRUM_SOURCE;
+    use komponist_ipc::signal_taps::{REDUCTION, SPECTRUM_SOURCE};
     let input = [2.0; FRAMES];
     let mut left = [0.0; FRAMES];
     let mut right = [0.0; FRAMES];
@@ -418,64 +405,21 @@ fn check_named_tap(
     let mut latest = [0.0; 4];
     if tap.samples().read_latest(&mut latest).is_none()
         || latest.iter().any(|sample| !sample.is_finite())
-        || tap.descriptor().kind == SPECTRUM_SOURCE && latest.iter().all(|s| s.abs() <= 1e-4)
+        || match tap.descriptor().kind {
+            SPECTRUM_SOURCE => latest.iter().all(|sample| sample.abs() <= 1e-4),
+            REDUCTION => latest.iter().all(|&reduction| reduction <= 0.0),
+            _ => false,
+        }
     {
         return Err(format!(
             "no usable signal from tap {:?}",
             tap.descriptor().key()
         ));
     }
-    Ok(())
-}
-
-fn check_effect_meter(processor: &mut dyn Processor, meter: &Meter) -> Result<(), String> {
-    let tap = meter.view.tap();
-    if let Some(tap) = tap {
-        tap.want();
-    }
-    let input = [2.0; FRAMES];
-    let mut left = [0.0; FRAMES];
-    let mut right = [0.0; FRAMES];
-    let context = smoke_context();
-    let baseline_failures = processor.offline_failures();
-    for _ in 0..16 {
-        let status = processor.process(
-            &context,
-            &[],
-            &mut StereoIo {
-                input: [&input, &input],
-                output: [&mut left, &mut right],
-            },
-        );
-        if status == ProcessStatus::Failed {
-            return Err("effect processor failed while feeding its meter".to_owned());
-        }
-    }
-    if processor.offline_failures() != baseline_failures {
-        return Err("effect processor used offline fallback while feeding its meter".to_owned());
-    }
-    if meter.requests_reduction() {
-        let (input, reduction, output) = meter.view.take();
-        if input != 2.0 || reduction <= 0.0 || output <= 0.0 {
-            return Err(format!(
-                "effect did not report input, gain reduction and output: {input}, {reduction}, {output}",
-            ));
-        }
-    }
-    if let Some(tap) = tap {
-        let mut samples = [0.0; 16];
-        if tap.read_latest(&mut samples).is_none() {
-            return Err("effect did not expose recent signal for its graph".to_owned());
-        }
-        let has_signal = if meter.requests_reduction() {
-            // Presse reports pairs of detector level in dBFS and reduction in dB.
-            samples.as_chunks::<2>().0.iter().any(|pair| pair[1] > 0.0)
-        } else {
-            samples.iter().any(|sample| sample.abs() > 1e-4)
-        };
-        if !has_signal {
-            return Err("effect graph signal was silent during a non-silent block".to_owned());
-        }
+    if tap.descriptor().kind == REDUCTION
+        && tap.take_audio_peaks().into_iter().any(|peak| peak <= 0.0)
+    {
+        return Err("the reduction meter did not receive its main-bus peaks".into());
     }
     Ok(())
 }

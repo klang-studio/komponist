@@ -1,5 +1,4 @@
 //! The plugin catalog: scanned CLAP and VST3 bundles (ARCHITECTURE §8.3, §8.5).
-//! Reference hosts can also include the legacy in-process entries.
 //!
 //! Scanning runs `komponist-bridge --scan <bundle>` per bundle as separate processes, in parallel,
 //! with [`SCAN_TIMEOUT`] each, and caches results by path and modification time in
@@ -15,8 +14,6 @@ use serde::{Deserialize, Serialize};
 use komponist_ipc::clap_presets::ClapPreset;
 use komponist_ipc::{PluginDescriptor, PluginFormat as BundleFormat, PluginKind};
 use komponist_model::PluginRef;
-
-pub use komponist_builtin::{BuiltinKind, presets};
 
 /// Time one bundle scan may take before its process is killed and the bundle skipped.
 pub const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -37,18 +34,10 @@ pub fn requires_bundled(plugin: &PluginRef) -> bool {
         && plugin.module.starts_with(BUNDLED_MODULE_PREFIX)
 }
 
-/// The CLAP ID of the packaged bundle for the built-in with catalog id `builtin_id`: every
-/// bundle is named after the device it replaces.
-pub fn clap_id(builtin_id: &str) -> String {
-    format!("org.klang-studio.komponist.{builtin_id}")
-}
-
 /// Where a catalog entry's code comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PluginLocation {
-    /// Built into the app; the app creates the processor itself (not the plugin manager).
-    InProcess(BuiltinKind),
-    /// A bundle hosted in a bridge process.
+    /// A CLAP or VST3 bundle.
     Bundle {
         /// Bundle format.
         format: BundleFormat,
@@ -112,8 +101,7 @@ impl EffectCategory {
 /// One plugin the browser can offer.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CatalogEntry {
-    /// The reference a device stores when this entry is added (format `Builtin` for hexa and
-    /// the internal devices, shown as "INTERN").
+    /// The reference a device stores when this entry is added.
     pub plugin: PluginRef,
     /// Device labels advertised by a native layout.
     pub localized: Option<komponist_ipc::native_layout::LocalizedPlugin>,
@@ -127,8 +115,7 @@ pub struct CatalogEntry {
     pub features: Vec<String>,
     /// Where the code is.
     pub location: PluginLocation,
-    /// The plugin has a sidechain input (#6): the device head shows the „SC“ chip. Scanned plugins
-    /// from their audio ports ([`PluginDescriptor::sidechain`]), internal devices from their spec.
+    /// The plugin has a sidechain input ([`PluginDescriptor::sidechain`]).
     pub sidechain: bool,
 }
 
@@ -145,11 +132,6 @@ impl CatalogEntry {
     pub fn description(&self, language: &str) -> Option<&str> {
         self.localized.as_ref()?.description(language)
     }
-
-    /// Whether this is a legacy built-in ("INTERN").
-    pub fn is_builtin(&self) -> bool {
-        self.plugin.format == komponist_model::PluginFormat::Builtin
-    }
 }
 
 /// All plugins known to the app. UI thread.
@@ -159,11 +141,10 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// Only the built-ins ([`crate::builtin`]): hexa and the internal devices.
-    pub fn builtin() -> Catalog {
-        Catalog {
-            entries: crate::builtin::entries(),
-        }
+    /// Constructs a catalog snapshot from already classified entries.
+    #[doc(hidden)]
+    pub fn from_entries(entries: Vec<CatalogEntry>) -> Self {
+        Self { entries }
     }
 
     /// The packaged entry with this CLAP ID, if the verified package includes it.
@@ -173,25 +154,16 @@ impl Catalog {
             .find(|entry| requires_bundled(&entry.plugin) && entry.plugin.id == clap_id)
     }
 
-    /// All entries: built-ins first, then scanned plugins sorted by name (case-insensitive).
+    /// All scanned plugins, sorted by name (case-insensitive).
     pub fn entries(&self) -> &[CatalogEntry] {
         &self.entries
     }
 
-    /// Providers with presets. Prefer a packaged device over its legacy in-process inventory.
+    /// Providers with discovered presets.
     pub fn preset_entries(&self) -> impl Iterator<Item = &CatalogEntry> {
-        self.entries.iter().filter(|entry| {
-            if entry.clap_presets.is_empty() {
-                return false;
-            }
-            match entry.location {
-                PluginLocation::InProcess(kind) => {
-                    kind.browsable_legacy_presets()
-                        && self.packaged(&clap_id(kind.catalog().id)).is_none()
-                }
-                PluginLocation::Bundle { .. } => true,
-            }
-        })
+        self.entries
+            .iter()
+            .filter(|entry| !entry.clap_presets.is_empty())
     }
 
     /// The entry for a device's plugin reference, if installed. Bundled and external CLAP
@@ -208,7 +180,7 @@ impl Catalog {
         self.entries.iter().find(same)
     }
 
-    /// Replaces all scanned entries with `descriptors` (built-ins stay). Descriptors of kind
+    /// Replaces the scanned entries with `descriptors`. Descriptors of kind
     /// `Other` are left out.
     ///
     /// The same plugin in several bundles (one per folder) is listed once, from the first
@@ -223,7 +195,6 @@ impl Catalog {
         shipped: impl Fn(&PluginDescriptor) -> bool,
         presets_for: impl Fn(&PluginDescriptor) -> Vec<ClapPreset>,
     ) {
-        self.entries.retain(CatalogEntry::is_builtin);
         let mut seen = HashSet::new();
         let mut scanned: Vec<CatalogEntry> = descriptors
             .iter()
@@ -235,7 +206,7 @@ impl Catalog {
             })
             .collect();
         scanned.sort_by_cached_key(|e| e.plugin.name.to_lowercase());
-        self.entries.extend(scanned);
+        self.entries = scanned;
     }
 
     /// Entries whose name, vendor or features contain `query` (case-insensitive; empty query = all),
@@ -470,8 +441,7 @@ impl Default for ScanCache {
 
 impl ScanCache {
     /// Reads the cache; a missing or unreadable file, or one of another
-    /// [`SCAN_CACHE_VERSION`], gives an empty cache, so the next scan scans every bundle again
-    /// (the catalog starts with the built-ins only until then).
+    /// [`SCAN_CACHE_VERSION`], gives an empty cache so the next scan reads every bundle again.
     pub fn load(path: &Path) -> ScanCache {
         std::fs::read(path)
             .ok()
@@ -570,15 +540,7 @@ pub struct ScanReport {
 
 #[cfg(test)]
 mod tests {
-    /// `hexa`, then the internal devices, by name.
-    fn builtin_names() -> Vec<&'static str> {
-        let mut names = vec!["Hexa"];
-        names.extend(komponist_builtin::Internal::ALL.iter().map(|k| k.name()));
-        names
-    }
-
     use super::*;
-    use komponist_model::project::BUILTIN_HEXA;
 
     fn descriptor(id: &str, name: &str, kind: PluginKind, features: &[&str]) -> PluginDescriptor {
         PluginDescriptor {
@@ -645,57 +607,8 @@ mod tests {
     }
 
     #[test]
-    fn builtins_come_first() {
-        let catalog = Catalog::builtin();
-        let names: Vec<&str> = catalog
-            .entries()
-            .iter()
-            .map(|e| e.plugin.name.as_str())
-            .collect();
-        assert_eq!(names, builtin_names());
-        let hexa = &catalog.entries()[0];
-        assert!(hexa.is_builtin());
-        assert_eq!(hexa.plugin.id, BUILTIN_HEXA);
-        assert_eq!(hexa.plugin.name, "Hexa");
-        assert_eq!(hexa.kind, PluginKind::Instrument);
-        assert_eq!(hexa.location, PluginLocation::InProcess(BuiltinKind::Hexa));
-
-        // The Sampler is an in-process instrument without a browser category.
-        let sampler = &catalog.entries()[1];
-        assert!(sampler.is_builtin());
-        assert_eq!(sampler.kind, PluginKind::Instrument);
-        assert_eq!(sampler.category, None);
-        assert_eq!(
-            sampler.plugin.name,
-            komponist_model::project::DRUM_SAMPLER_NAME
-        );
-        assert_eq!(catalog.resolve(&sampler.plugin), Some(sampler));
-
-        // The internal effects: in process, effects with a browser category, resolvable.
-        let eq = &catalog.entries()[2];
-        assert!(eq.is_builtin());
-        assert_eq!(eq.kind, PluginKind::Effect);
-        assert_eq!(eq.category, Some(EffectCategory::EqFilter));
-        assert_eq!(
-            eq.location,
-            PluginLocation::InProcess(BuiltinKind::Internal(komponist_builtin::Internal::Eq))
-        );
-        let categories: Vec<_> = catalog.entries()[2..6].iter().map(|e| e.category).collect();
-        assert_eq!(
-            categories,
-            [
-                Some(EffectCategory::EqFilter),
-                Some(EffectCategory::ReverbDelay),
-                Some(EffectCategory::ReverbDelay),
-                Some(EffectCategory::Dynamics)
-            ]
-        );
-        assert_eq!(catalog.resolve(&eq.plugin), Some(eq));
-    }
-
-    #[test]
     fn scanned_entries_carry_the_module_file_name() {
-        let mut catalog = Catalog::builtin();
+        let mut catalog = Catalog::default();
         let mut vst3 = descriptor("0123ABCD", "Vital", PluginKind::Instrument, &[]);
         vst3.format = BundleFormat::Vst3;
         vst3.bundle = "/home/u/.vst3/Vital.vst3".into();
@@ -712,7 +625,6 @@ mod tests {
         };
         assert_eq!(module("Surge XT").as_deref(), Some("Surge XT.clap"));
         assert_eq!(module("Vital").as_deref(), Some("Vital.vst3"));
-        assert_eq!(module("Hexa").as_deref(), Some(""));
     }
 
     #[test]
@@ -723,10 +635,10 @@ mod tests {
             PluginKind::Instrument,
             &[],
         );
-        external.bundle = "/external/komponist_volt.clap".into();
+        external.bundle = "/external/volt.clap".into();
         let mut bundled = external.clone();
-        bundled.bundle = "/app/bundled-clap/komponist_volt.clap".into();
-        let mut catalog = Catalog::builtin();
+        bundled.bundle = "/app/bundled-clap/volt.clap".into();
+        let mut catalog = Catalog::default();
         catalog.set_scanned(std::slice::from_ref(&external));
         let external_ref = scanned_entry(&external, false, Vec::new()).plugin;
         let bundled_ref = scanned_entry(&bundled, true, Vec::new()).plugin;
@@ -754,7 +666,7 @@ mod tests {
     #[test]
     fn macos_bundles_are_named_by_their_bundle_folder() {
         // The module is the bundle folder (`.clap` / `.vst3`), not the binary in `Contents/MacOS`.
-        let mut catalog = Catalog::builtin();
+        let mut catalog = Catalog::default();
         let mut clap = descriptor("org.surge", "Surge XT", PluginKind::Instrument, &[]);
         clap.bundle = "/Library/Audio/Plug-Ins/CLAP/Surge XT.clap".into();
         let mut vst3 = descriptor("0123ABCD", "Vital", PluginKind::Instrument, &[]);
@@ -764,7 +676,6 @@ mod tests {
         let modules: Vec<&str> = catalog
             .entries()
             .iter()
-            .filter(|e| !e.is_builtin())
             .map(|e| &*e.plugin.module)
             .collect();
         assert_eq!(modules, ["Surge XT.clap", "Vital.vst3"]);
@@ -772,7 +683,7 @@ mod tests {
 
     #[test]
     fn scanned_entries_are_sorted_filtered_and_resolved() {
-        let mut catalog = Catalog::builtin();
+        let mut catalog = Catalog::default();
         let mut vst3 = descriptor("0123ABCD", "dexed", PluginKind::Instrument, &["instrument"]);
         vst3.format = BundleFormat::Vst3;
         let descriptors = [
@@ -799,18 +710,15 @@ mod tests {
             .iter()
             .map(|e| e.plugin.name.as_str())
             .collect();
-        let mut expected = builtin_names();
-        let first = expected.len();
-        expected.extend(["Big Hall", "dexed", "Surge XT"]);
-        assert_eq!(names, expected);
-        let hall = &catalog.entries()[first];
+        assert_eq!(names, ["Big Hall", "dexed", "Surge XT"]);
+        let hall = &catalog.entries()[0];
         assert_eq!(hall.category, Some(EffectCategory::ReverbDelay));
         assert_eq!(hall.plugin.format, komponist_model::PluginFormat::Clap);
         assert_eq!(
-            catalog.entries()[first + 1].plugin.format,
+            catalog.entries()[1].plugin.format,
             komponist_model::PluginFormat::Vst3
         );
-        assert_eq!(catalog.entries()[first + 2].category, None);
+        assert_eq!(catalog.entries()[2].category, None);
 
         let surge = PluginRef {
             format: komponist_model::PluginFormat::Clap,
@@ -828,7 +736,7 @@ mod tests {
         assert_eq!(catalog.resolve(&as_vst3), None);
 
         // A rescan replaces the scanned entries.
-        let mut catalog = Catalog::builtin();
+        let mut catalog = Catalog::default();
         catalog.set_scanned(&descriptors);
         catalog.set_scanned(&descriptors[4..]);
         let names: Vec<&str> = catalog
@@ -836,14 +744,12 @@ mod tests {
             .iter()
             .map(|e| e.plugin.name.as_str())
             .collect();
-        let mut expected = builtin_names();
-        expected.push("Surge XT (old)");
-        assert_eq!(names, expected);
+        assert_eq!(names, ["Surge XT (old)"]);
     }
 
     #[test]
     fn search_matches_name_vendor_and_features() {
-        let mut catalog = Catalog::builtin();
+        let mut catalog = Catalog::default();
         catalog.set_scanned(&[
             descriptor(
                 "x.reverb",
@@ -865,15 +771,10 @@ mod tests {
                 .map(|e| e.plugin.name.clone())
                 .collect()
         };
-        let mut all = builtin_names();
-        all.extend(["Big Hall", "Squash"]);
-        assert_eq!(names(""), all);
-        assert_eq!(names("HALL"), ["Hall", "Big Hall"]);
+        assert_eq!(names(""), ["Big Hall", "Squash"]);
+        assert_eq!(names("HALL"), ["Big Hall"]);
         assert_eq!(names("vendor"), ["Big Hall", "Squash"]);
-        // The built-in compressor matches by its feature (WP-93).
-        assert_eq!(names("compress"), ["Presse", "Squash"]);
-        assert_eq!(names("synth"), ["Hexa", "Volt", "Surf"]);
-        assert_eq!(names("wavetable"), ["Surf"]);
+        assert_eq!(names("compress"), ["Squash"]);
         assert!(names("nothing like this").is_empty());
     }
 

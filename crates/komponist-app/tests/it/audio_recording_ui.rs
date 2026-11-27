@@ -261,7 +261,7 @@ fn input_chooser_monitoring_bus_record_and_capture_settings_in_both_languages() 
             },
         )
         .unwrap();
-        let mut app = crate::common::reference_app(p)
+        let mut app = App::headless(p)
             .with_lang(lang)
             .with_settings_plugin_rows(Vec::new())
             .with_audio_devices(Box::new(CaptureDevices(vec![
@@ -702,7 +702,7 @@ fn take_rows_expose_selection_duration_and_delete_in_both_languages() {
     .unwrap();
     let mut results = SnapshotResults::new();
     for lang in [Lang::De, Lang::En] {
-        let mut app = crate::common::reference_app(p.clone()).with_lang(lang);
+        let mut app = App::headless(p.clone()).with_lang(lang);
         app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Clips {
             clips: vec![clip],
             mode: SelectMode::Replace,
@@ -903,7 +903,7 @@ fn live_audio_inspector_and_input_status_render_in_both_languages() {
         .unwrap();
         p.count_in_bars = 0;
         let p = edits::set_track_prop(&p, &[track], TrackProp::Arm(true)).unwrap();
-        let mut app = crate::common::reference_app(p)
+        let mut app = App::headless(p)
             .with_lang(lang)
             .with_recording_directory(crate::export::scratch("recording-ui-live"));
         app.engine_mut().hold_engine().unwrap();
@@ -999,7 +999,7 @@ fn input_gain_is_accessible_and_accepts_keyboard_entry_in_both_languages() {
             first: 0,
             stereo: false,
         }));
-        let mut app = crate::common::reference_app(p).with_lang(lang);
+        let mut app = App::headless(p).with_lang(lang);
         app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
             tracks: vec![track],
             mode: SelectMode::Replace,

@@ -136,6 +136,7 @@ status-device-unnamed = Gerät { $id }
 
 # Source of a plugin log line without a device.
 status-plugin-scan = Plugin-Scan
+status-bundled-devices-unavailable = Mitgelieferte Geräte fehlen.
 
 # A plugin could not restore its saved state.
 status-state-load-failed = { $name }: Zustand konnte nicht geladen werden

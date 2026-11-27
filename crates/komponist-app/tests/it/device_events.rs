@@ -305,7 +305,7 @@ impl DeviceHost for FakeHost {
 
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
         // hexa goes through the engine.
-        if self.is_builtin(device) {
+        if self.is_demo_instrument(device) {
             return false;
         }
         self.script.borrow_mut().params.push((device, id, value));
@@ -313,7 +313,7 @@ impl DeviceHost for FakeHost {
     }
 
     fn has_gui(&self, device: DeviceId) -> bool {
-        !self.is_builtin(device) && self.status(device) == DeviceStatus::Ok
+        !self.is_demo_instrument(device) && self.status(device) == DeviceStatus::Ok
     }
 
     fn open_gui(
@@ -369,7 +369,7 @@ impl DeviceHost for FakeHost {
 
 impl FakeHost {
     /// Whether `device` is the demo's hexa (ids of the demo: Bass 9, Lead 94).
-    fn is_builtin(&self, device: DeviceId) -> bool {
+    fn is_demo_instrument(&self, device: DeviceId) -> bool {
         demo_project()
             .tracks
             .iter()

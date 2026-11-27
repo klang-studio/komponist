@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use egui::{CornerRadius, CursorIcon, Id, Painter, Pos2, Rangef, Rect, Sense, Ui, pos2};
 use komponist_i18n::Lang;
-use komponist_ipc::NoteName;
 use komponist_model::edits::{NewClip, NewClipContent};
 use komponist_model::format::fmt_length;
 use komponist_model::{Clip, ClipContent, ClipId, Grid, Project, TICKS_PER_STEP, Tick, Track};
@@ -50,22 +49,6 @@ fn min_length(view: &ArrangementView, free: bool, project: &Project) -> Tick {
     } else {
         Tick(TICKS_PER_STEP)
     }
-}
-
-/// A one-bar grid-aligned clip for a caller without a native plugin layout.
-pub fn new_clip(
-    lang: Lang,
-    project: &Project,
-    track: &Track,
-    at: Tick,
-    view: &ArrangementView,
-    note_names: &[NoteName],
-) -> NewClip {
-    let rows = step_rows::is_sampler_track(track).then(|| {
-        let instrument = step_rows::instrument(track).map(|d| &d.plugin);
-        step_rows::rows_for_in(lang, instrument, note_names)
-    });
-    clip_for_rows(lang, project, track, at, view, rows)
 }
 
 /// A one-bar step clip for a pad bank or a MIDI clip for another instrument.
@@ -205,15 +188,12 @@ impl Arrangement {
                         let at = Tick(g.tick_at(pos.x).max(0.0) as i64);
                         let host = ctx.engine.host();
                         let instrument = step_rows::instrument(track);
-                        let note_names = step_rows::device_note_names(instrument, host);
-                        let view = &ctx.ui.arrangement;
-                        let clip = match step_rows::pad_bank(instrument, host) {
-                            Some(bank) => {
-                                let rows = step_rows::pad_rows(ctx.lang, bank, &note_names);
-                                clip_for_rows(ctx.lang, project, track, at, view, Some(rows))
-                            }
-                            None => new_clip(ctx.lang, project, track, at, view, &note_names),
-                        };
+                        let rows = step_rows::pad_bank(instrument, host).map(|bank| {
+                            let names = step_rows::device_note_names(instrument, host);
+                            step_rows::pad_rows(ctx.lang, bank, &names)
+                        });
+                        let clip =
+                            clip_for_rows(ctx.lang, project, track, at, &ctx.ui.arrangement, rows);
                         ctx.send(Action::Edit(EditAction::AddClip {
                             track: track.id,
                             clip,
@@ -1457,61 +1437,55 @@ mod tests {
     }
 
     #[test]
-    fn new_clips_follow_the_instrument() {
+    fn new_step_clips_keep_the_plugin_pad_order_and_use_the_project_grid() {
+        use komponist_ipc::native_layout::{Pad, PadBank};
+
         let p = demo_project();
         let v = ArrangementView::default();
-        // Drums has the Sampler: a step clip with the eight pads from note 36.
-        let c = new_clip(Lang::De, &p, &p.tracks[0], Tick(5 * 3840 + 100), &v, &[]);
-        assert_eq!(c.start, Tick(5 * 3840));
-        assert_eq!(c.length, Tick(3840));
+        let bank = PadBank {
+            pads: vec![
+                Pad {
+                    note: 42,
+                    asset_slot: 1,
+                },
+                Pad {
+                    note: 36,
+                    asset_slot: 0,
+                },
+            ],
+            activity_tap: None,
+            follow_param: None,
+        };
+        let names = [komponist_ipc::NoteName {
+            key: 36,
+            channel: None,
+            name: "Clap".into(),
+        }];
+        let rows = step_rows::pad_rows(Lang::En, &bank, &names);
+        let c = clip_for_rows(
+            Lang::En,
+            &p,
+            &p.tracks[0],
+            Tick(5 * 3840 + 100),
+            &v,
+            Some(rows),
+        );
+        assert_eq!((c.start, c.length), (Tick(5 * 3840), Tick(3840)));
         assert_eq!(c.name, "Pattern 5");
         let NewClipContent::Step { rows } = &c.content else {
             panic!("step clip expected");
         };
-        assert_eq!(rows.len(), 8);
-        assert_eq!((rows[0].name.as_str(), rows[0].note), ("Kick", 36));
-        assert_eq!((rows[7].name.as_str(), rows[7].note), ("Perc", 43));
-        // The names of the pads that hold a sample (the device host reports them as note names)
-        // replace the defaults; the other pads keep theirs.
-        let names: Vec<komponist_ipc::NoteName> = [(36, "Bassdrum"), (38, "Clap")]
-            .into_iter()
-            .map(|(key, name)| komponist_ipc::NoteName {
-                key,
-                channel: None,
-                name: name.into(),
-            })
-            .collect();
-        let c = new_clip(Lang::De, &p, &p.tracks[0], Tick(0), &v, &names);
-        let NewClipContent::Step { rows } = &c.content else {
-            panic!("step clip expected");
-        };
-        let rows: Vec<(&str, u8)> = rows.iter().map(|r| (r.name.as_str(), r.note)).collect();
-        assert_eq!(rows.len(), 8);
-        assert_eq!(
-            rows[..4],
-            [
-                ("Bassdrum", 36),
-                ("Snare", 37),
-                ("Clap", 38),
-                ("Hat zu", 39)
-            ]
-        );
-        // Lead has hexa: an empty MIDI clip.
-        let c = new_clip(Lang::De, &p, &p.tracks[2], Tick(3840 * 2 + 10), &v, &[]);
-        assert_eq!((c.start, c.name.as_str()), (Tick(2 * 3840), "MIDI-Clip"));
-        assert!(matches!(c.content, NewClipContent::Midi { ref notes, .. } if notes.is_empty()));
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[0].note, rows[0].name.as_str()), (42, "Kick"));
+        assert_eq!((rows[1].note, rows[1].name.as_str()), (36, "Clap"));
     }
 
     #[test]
-    fn new_step_clips_name_their_rows_in_the_language() {
+    fn an_instrument_without_pad_rows_gets_an_empty_midi_clip() {
         let p = demo_project();
         let v = ArrangementView::default();
-        let c = new_clip(Lang::En, &p, &p.tracks[0], Tick(0), &v, &[]);
-        assert_eq!(c.name, "Pattern 5", "after four clips");
-        let NewClipContent::Step { rows } = &c.content else {
-            panic!("step clip expected");
-        };
-        assert_eq!((rows[3].name.as_str(), rows[3].note), ("Closed Hat", 39));
-        assert_eq!((rows[4].name.as_str(), rows[4].note), ("Open Hat", 40));
+        let c = clip_for_rows(Lang::De, &p, &p.tracks[2], Tick(3840 * 2 + 10), &v, None);
+        assert_eq!((c.start, c.name.as_str()), (Tick(2 * 3840), "MIDI-Clip"));
+        assert!(matches!(c.content, NewClipContent::Midi { ref notes, .. } if notes.is_empty()));
     }
 }

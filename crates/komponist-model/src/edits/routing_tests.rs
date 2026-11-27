@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use super::tests::check_invariants;
 use super::*;
+use crate::PluginFormat;
 use crate::document::Document;
 use crate::project::{SEND_LEVEL_DEFAULT_DB, Sidechain, Tap, TrackSend};
 use crate::routing::{self, Gate};

@@ -14,7 +14,6 @@ use komponist_engine::testing::{TestSidechain, TestSidechainMode, TestSine};
 use komponist_engine::{
     Command as EngineCommand, ProcessContext, ProcessStatus, StereoIo, TransportInfo,
 };
-use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{
     DeviceId, DeviceRole, Meter, PluginFormat, PluginRef, Sidechain, Tick, TickRange, TrackId,
 };
@@ -25,8 +24,8 @@ pub const SC: &str = "de.klang-studio.kp-test-sc";
 /// The reference of an in-process device whose processor the test inserts itself.
 fn in_process() -> PluginRef {
     PluginRef {
-        format: PluginFormat::Builtin,
-        id: BUILTIN_HEXA.into(),
+        format: PluginFormat::Clap,
+        id: "fixture.probe".into(),
         name: "probe".into(),
         vendor: String::new(),
         version: String::new(),

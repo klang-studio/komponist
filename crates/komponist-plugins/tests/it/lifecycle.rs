@@ -1707,15 +1707,15 @@ fn release_shutdown_and_drop_end_the_bridges() {
     for d in &devices {
         manager.create_processor(d, SETUP).unwrap();
     }
-    // A legacy device without a verified bundle and an unknown instance.
+    // A packaged device without its verified bundle and an unknown instance.
     let hexa = Device {
         plugin: PluginRef {
-            format: PluginFormat::Builtin,
-            id: komponist_model::project::BUILTIN_HEXA.into(),
+            format: PluginFormat::Clap,
+            id: "org.klang-studio.komponist.hexa".into(),
             name: "Hexa".into(),
             vendor: "klang-studio".into(),
             version: "0.1.0".into(),
-            module: Box::default(),
+            module: "bundled-clap/missing-instrument.clap".into(),
         },
         ..device(9, DeviceRole::Instrument, clap_plugin(SYNTH), None)
     };

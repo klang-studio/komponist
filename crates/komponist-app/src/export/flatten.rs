@@ -8,7 +8,6 @@ use std::time::Instant;
 use komponist_engine::export::{
     BitDepth, ExportError, ExportJob, ExportReport, TRACK_TAIL_SECONDS, TrackExport,
 };
-use komponist_ipc::device_assets::{AssetKind, AssetStatus};
 use komponist_model::{DeviceId, Project, TrackId, TrackKind, edits};
 use komponist_plugins::{DeviceSnapshots, DeviceStatus};
 
@@ -106,38 +105,10 @@ impl Flatten {
     }
 
     pub(super) fn unavailable_audio_asset(&self, app: &App) -> Option<(DeviceId, String)> {
-        for id in self.scope.devices() {
-            let host = app.engine.host();
-            if let Some(assets) = host.asset_slots(id) {
-                let Some((_, _, device)) = app.project().find_device(id) else {
-                    continue;
-                };
-                for slot in &assets.slots {
-                    if slot.kind == AssetKind::AudioSample
-                        && matches!(slot.status, AssetStatus::Missing | AssetStatus::Failed(_))
-                        && let Some(link) = device.asset_links.get(&slot.id)
-                    {
-                        let file = link
-                            .name()
-                            .map_or_else(|| slot.label.clone(), std::borrow::Cow::into_owned);
-                        let name = app.device_name(id);
-                        let pad = host
-                            .native_layout(id)
-                            .and_then(|layout| layout.pad_bank.as_ref())
-                            .and_then(|bank| {
-                                bank.pads.iter().position(|pad| pad.asset_slot == slot.id)
-                            });
-                        let message = if let Some(pad) = pad {
-                            app.lang.flatten_pad_failed(name, pad + 1, file)
-                        } else {
-                            app.lang.flatten_sampler_failed(name, file)
-                        };
-                        return Some((id, message));
-                    }
-                }
-            }
-        }
-        None
+        self.scope.devices().find_map(|id| {
+            app.unavailable_render_audio_asset(id)
+                .map(|problem| (id, problem))
+        })
     }
 
     pub(super) fn finish(self, app: &mut App, result: Result<ExportReport, ExportError>) {

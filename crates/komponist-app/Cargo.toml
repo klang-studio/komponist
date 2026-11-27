@@ -19,12 +19,6 @@ komponist-model.workspace = true
 komponist-audiofile.workspace = true
 komponist-engine.workspace = true
 komponist-audio.workspace = true
-komponist-builtin.workspace = true
-komponist-device-core.workspace = true
-komponist-general-sampler.workspace = true
-komponist-hexa.workspace = true
-komponist-presse.workspace = true
-komponist-sampler.workspace = true
 komponist-plugins.workspace = true
 # `komponist --bridge`: the plugin bridge runs inside this executable, in its own process (WP-94).
 komponist-bridge.workspace = true

@@ -75,3 +75,14 @@ pub fn selected_preset(
         .position(|preset| preset.source == selection.source)?;
     Some((index, selection.modified))
 }
+
+/// Categories in provider order. A preset without a category stays in the main list.
+pub fn categories(presets: &[ClapPreset]) -> Vec<&str> {
+    let mut categories = Vec::new();
+    for category in presets.iter().filter_map(ClapPreset::category) {
+        if !categories.contains(&category) {
+            categories.push(category);
+        }
+    }
+    categories
+}

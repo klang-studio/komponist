@@ -17,7 +17,7 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{BitDepth, ExportRange, ExportSettings};
-use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost};
+use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::dialogs::export::{self as view};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::{self, Settings};
@@ -172,6 +172,55 @@ pub(crate) fn step_until(app: &mut App, what: &str, mut done: impl FnMut(&App) -
 pub(crate) fn export(app: &mut App, settings: ExportSettings) {
     app.dispatch(Action::Project(ProjectAction::StartExport(settings)));
     step_until(app, "end of the export", |a| !a.is_exporting());
+}
+
+#[test]
+fn an_unreadable_clap_pad_blocks_wav_export() {
+    use komponist_ipc::device_assets::AssetStatus;
+    use komponist_model::plugin_assets::AssetLink;
+
+    let dir = scratch("unreadable-clap-pad");
+    let Some((host, plugin)) =
+        crate::common::native_fixture(&dir, "klopfer.clap", "org.klang-studio.komponist.sampler")
+    else {
+        return;
+    };
+    let name = plugin.name.clone();
+    let (project, track, drums) = crate::common::instrument_project("Sampler", plugin);
+    let path = dir.join("corrupt.wav");
+    std::fs::write(&path, b"unreadable sample").unwrap();
+    let project =
+        edits::set_device_asset_links(&project, drums, [(0, AssetLink::new(&path, None))].into())
+            .unwrap();
+    let project = super::flatten::clip(&project, track, Tick(0), 36, Tick(BAR));
+    let (mut app, _) = app_with(&dir, project, Box::new(host));
+    step_until(&mut app, "failed CLAP sample", |app| {
+        app.engine()
+            .host()
+            .asset_slots(drums)
+            .is_some_and(|inventory| {
+                inventory
+                    .slots
+                    .iter()
+                    .any(|slot| slot.id == 0 && matches!(slot.status, AssetStatus::Failed(_)))
+            })
+    });
+
+    let settings = export_settings(&dir, ExportRange::Song);
+    let output = settings.folder.join(&settings.file_name);
+    export(&mut app, settings);
+    assert!(
+        !output.exists(),
+        "the failed sample must prevent publishing a WAV"
+    );
+    assert!(!app.engine().is_detached());
+    let lang = app.lang();
+    let status = app.ui().status.as_ref().unwrap();
+    assert_eq!(status.kind, StatusKind::Error);
+    assert_eq!(
+        status.text,
+        lang.export_failed(lang.flatten_pad_failed(name, 1, "corrupt"))
+    );
 }
 
 /// A WAV file as f32 samples.
@@ -879,7 +928,8 @@ fn missing_devices_are_listed_and_the_export_goes_on_without_them_or_not_at_all(
 /// The packaged host; a device with plugin id "kaputt" gets a processor that
 /// fails as soon as it renders offline (a bridge that dies during the export).
 struct FailingHost {
-    builtin: PluginHost,
+    packaged: PluginHost,
+    scripted: DeviceId,
     /// The latest global render mode (for the panic test).
     mode: Arc<Mutex<Option<RenderMode>>>,
 }
@@ -991,15 +1041,19 @@ impl DeviceHost for FailingHost {
                 panic: TestPanic,
             }));
         }
-        self.builtin.create_processor(device, setup)
+        self.packaged.create_processor(device, setup)
     }
 
     fn release(&mut self, device: DeviceId) {
-        self.builtin.release(device);
+        self.packaged.release(device);
     }
 
     fn status(&self, device: DeviceId) -> DeviceStatus {
-        self.builtin.status(device)
+        if device == self.scripted {
+            DeviceStatus::Ok
+        } else {
+            self.packaged.status(device)
+        }
     }
 
     fn latency(&self, _device: DeviceId) -> u32 {
@@ -1007,20 +1061,20 @@ impl DeviceHost for FailingHost {
     }
 
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
-        self.builtin.poll()
+        self.packaged.poll()
     }
 
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
-        self.builtin.role(plugin)
+        self.packaged.role(plugin)
     }
 
     fn catalog(&self) -> &Catalog {
-        self.builtin.catalog()
+        self.packaged.catalog()
     }
 
     fn set_render_mode(&mut self, mode: RenderMode) {
         *self.mode.lock().unwrap() = Some(mode);
-        self.builtin.set_render_mode(mode);
+        self.packaged.set_render_mode(mode);
     }
 }
 
@@ -1037,9 +1091,10 @@ fn a_device_that_drops_out_of_the_render_is_named() {
         version: "1.0".into(),
         module: Box::default(),
     };
-    let (project, _) = with_effect(project, kaputt);
+    let (project, scripted) = with_effect(project, kaputt);
     let host = FailingHost {
-        builtin: App::headless_plugin_host(),
+        packaged: App::headless_plugin_host(),
+        scripted,
         mode: Arc::default(),
     };
     let (mut app, _) = app_with(&dir, project, Box::new(host));
@@ -1085,10 +1140,11 @@ fn a_panic_on_the_export_worker_leaves_a_playing_session() {
             version: "1.0".into(),
             module: Box::default(),
         };
-        let (project, _) = with_effect(project, panik);
+        let (project, scripted) = with_effect(project, panik);
         let mode = Arc::new(Mutex::new(None));
         let host = FailingHost {
-            builtin: App::headless_plugin_host(),
+            packaged: App::headless_plugin_host(),
+            scripted,
             mode: Arc::clone(&mode),
         };
         let (app, _) = app_with(&dir, project, Box::new(host));
@@ -1360,7 +1416,7 @@ fn snapshot_next_to_s08_in_english() {
         export: Some(s08_settings()),
         ..Settings::default()
     };
-    let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
     let mut app = App::new(Document::new(demo_project()), engine, settings, None)
         .with_lang(komponist_i18n::Lang::En);
     app.dispatch(Action::Project(ProjectAction::OpenExportDialog));
@@ -1382,7 +1438,7 @@ fn snapshots_next_to_s08() {
             export: Some(s08_settings()),
             ..Settings::default()
         };
-        let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+        let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
         let mut app = App::new(Document::new(demo_project()), engine, settings, None);
         app.dispatch(Action::Project(ProjectAction::OpenExportDialog));
         let mut h = harness_at(app, ppp);
@@ -1413,18 +1469,19 @@ fn snapshots_next_to_s08() {
                 app.show(ui);
                 let _ = view::show(ui.ctx(), &model);
             },
-            crate::common::reference_app(demo_project()),
+            App::headless(demo_project()),
         );
     h.run_steps(4);
     mask_cpu(&mut h);
     h.snapshot("export-progress-1x");
     results.extend_harness(&mut h);
-    // The wait for devices: the demo on the builtin host misses its plugins (it never starts,
-    // and the folder is a scratch one anyway).
+    // The demo references external devices that the packaged fixture catalog cannot resolve.
     let dir = scratch("snapshot");
-    let mut app = crate::common::reference_app(demo_project());
+    let mut app = App::headless(demo_project());
     let settings = export_settings(&dir, ExportRange::Song);
     app.dispatch(Action::Project(ProjectAction::StartExport(settings)));
+    assert!(matches!(&app.ui().dialog, Some(Dialog::Export(dialog))
+        if dialog.stage == komponist_app::ui_state::ExportStage::Devices));
     let mut h = harness(app);
     h.run_steps(3);
     mask_cpu(&mut h);

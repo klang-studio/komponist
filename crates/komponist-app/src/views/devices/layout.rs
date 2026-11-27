@@ -1,5 +1,5 @@
 //! The declarative device layout lives in `komponist_model::params::layout` (internal devices in
-//! `komponist-builtin` define theirs there); this module re-exports it and adds the egui geometry.
+//! the device bundles define theirs there); this module re-exports it and adds the egui geometry.
 
 use egui::{Rect, pos2, vec2};
 

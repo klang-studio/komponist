@@ -41,7 +41,7 @@ pub const EDGE_FADE_MS: f64 = 3.0;
 
 /// A linked audio file: where it is, and what it is (length, rate, channels).
 ///
-/// The link is the Sampler's (`komponist_sampler::links`): the file is looked up through
+/// The link identifies a sample: the file is looked up through
 /// the path relative to the folder of the project file first, then through the absolute path, so a
 /// project folder that moved as a whole keeps working. While the project has no file yet,
 /// [`AudioFile::rel`] is empty; a recording of such a project lives in a user folder (its `abs`) and

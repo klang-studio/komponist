@@ -89,7 +89,7 @@ fn pattern(app: &App, clip: ClipId) -> StepClip {
 
 /// `project` with "Beat B" open in the step sequencer.
 fn reference_opened_in(project: Project) -> App {
-    let mut app = crate::common::reference_app(project);
+    let mut app = App::headless(project);
     let (_, clip) = beat_b(&app);
     app.dispatch(ui(UiAction::OpenClip(clip)));
     app

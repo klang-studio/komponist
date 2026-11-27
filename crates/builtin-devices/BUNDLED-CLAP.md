@@ -21,8 +21,10 @@ host latency.
 | Arpeggiator | `komponist-bundled-arpeggiator` | `org.klang-studio.komponist.arpeggiator` |
 | Scale (Tonleiter) | `komponist-bundled-scale` | `org.klang-studio.komponist.scale` |
 
-The bundles publish their panels through the public device layout extension. The bundled DSP accepts the device core's
-8–384 kHz sample-rate range. Release packages include all twelve bundles.
+The bundles publish their panels through the public device layout extension. The bundled DSP
+accepts the device core's 8–384 kHz sample-rate range. Release packages include all twelve bundles,
+including Hexa. The app reads the CLAP inventory at runtime and creates each device instance
+through its bundle.
 
 Presse initially exposes its stereo compressor configuration. Komponist selects its
 standard CLAP sidechain configuration using the public
@@ -34,8 +36,8 @@ From the repository root, run
 `cargo test --locked --workspace -p 'komponist-bundled-*'` to validate the
 layout metadata against the real CLAP parameter inventory. The Bundled CLAP package
 workflow tests the twelve-device archive in-process (D11: bundled devices are hosted
-in-process; the bridge only scans them and hosts third-party plugins). For an unpacked test
-package, the app loads the verified devices in-process. The current-format project check is available with
+in-process; the bridge scans them and hosts third-party plugins). The current-format project
+check for an unpacked package is available with
 `python3 scripts/measure-bundled-clap.py --current-projects /path/to/unpacked/komponist`.
 
 ## Sampler instrument state

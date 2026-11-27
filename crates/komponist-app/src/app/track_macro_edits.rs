@@ -10,7 +10,6 @@ use komponist_model::{DeviceId, Project, TrackId};
 
 use super::App;
 use crate::actions::SelectMode;
-use crate::device_host::LegacyParameters;
 use crate::ui_state::StatusKind;
 use crate::views::automation::{Catalog, automation_control_value};
 use crate::views::track_macros::{Action, effective_value, reference};
@@ -519,20 +518,7 @@ fn preserve_unmapped_value(
         AutomationTarget::Send { send } => {
             edits::set_send(&project, *send, SendProp::LevelDb(value as f32))
         }
-        AutomationTarget::Param { device, param } => {
-            let state = project.find_device(*device).and_then(|(_, _, d)| {
-                let parameters = LegacyParameters::new(d)?;
-                parameters
-                    .with_value(parameters.wire(param)?, value)
-                    .map(Into::into)
-            });
-            if let Some(state) = state {
-                edits::set_device_state(&project, *device, Some(state))
-            } else {
-                Ok(project)
-            }
-        }
-        AutomationTarget::Macro { .. } => Ok(project),
+        AutomationTarget::Param { .. } | AutomationTarget::Macro { .. } => Ok(project),
     }
 }
 

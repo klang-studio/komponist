@@ -153,11 +153,13 @@ scripts/run.sh --demo
 
 The script uses Python 3 to stage the twelve CLAP bundles, builds the app with their manifest hash, and launches
 them together; this is also the development override: an executable built without the staged payload (a plain
-`cargo build`) finds no devices and starts with an empty device catalog and a warning.
+`cargo build`) starts with an empty shipped-device catalog and a status-bar warning. An affected
+project opens the missing-plugin dialog and retains the saved state of each missing device.
 
 The twelve devices (Hall, Delay, EQ, Presse, Limiter, Hexa, Volt, Surf, Klopfer, Sampler, Arpeggiator, Scale) are
-separate CLAP bundles that komponist loads in-process at start-up and verifies against that manifest. Release packages
-carry them next to the executable:
+separate CLAP bundles. komponist verifies the inventory against the manifest and loads device
+instances in process when a project needs them. Release packages carry the bundles alongside
+the executable.
 
 | Platform | Executable | Bundles |
 |---|---|---|

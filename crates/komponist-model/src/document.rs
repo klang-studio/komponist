@@ -647,8 +647,8 @@ mod tests {
         let mut doc = Document::new(project);
         let root = Arc::clone(doc.project());
         let plugin = crate::PluginRef {
-            format: crate::PluginFormat::Builtin,
-            id: crate::project::BUILTIN_HEXA.into(),
+            format: crate::PluginFormat::Clap,
+            id: "org.klang-studio.komponist.hexa".into(),
             name: crate::project::HEXA_NAME.into(),
             vendor: String::new(),
             version: String::new(),

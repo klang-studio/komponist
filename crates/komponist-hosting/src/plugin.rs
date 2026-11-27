@@ -373,14 +373,6 @@ pub trait HostedProcessor: Send {
     /// Processes one block.
     fn process(&mut self, block: &mut ProcessBlock<'_>) -> ProcessStatus;
 
-    /// Begin collection of gain reduction for the next process call.
-    fn begin_effect_meter(&mut self, _detector: bool) {}
-
-    /// Return readings after a process call for which effect meters were requested.
-    fn end_effect_meter(&mut self) -> Option<komponist_ipc::effect_meter::BlockMeter> {
-        None
-    }
-
     /// Request the selected named streams for the next render block.
     fn begin_signal_taps(&mut self, _mask: u32) {}
 

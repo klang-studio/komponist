@@ -286,8 +286,8 @@ const NO_DEVICE: DeviceId = DeviceId(u64::MAX);
 
 fn plugin(n: u8) -> PluginRef {
     let (format, id, name) = match n % 4 {
-        0 => (PluginFormat::Builtin, "Hexa", "Hexa"),
-        1 => (PluginFormat::Builtin, "klopfer", "klopfer"),
+        0 => (PluginFormat::Clap, "Hexa", "Hexa"),
+        1 => (PluginFormat::Clap, "klopfer", "klopfer"),
         2 => (PluginFormat::Clap, "test.synth", "Synth"),
         _ => (
             PluginFormat::Vst3,

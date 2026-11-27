@@ -13,7 +13,7 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::SettingsAction;
-use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost};
+use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::dialogs::{missing_plugins, new_project, settings, start};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::project_io::{self, RecentList};
@@ -1275,7 +1275,7 @@ fn snapshots_of_s06_and_s10() {
     let mut results = SnapshotResults::new();
     for ppp in [1.0, 2.0] {
         let (project, missing) = s06();
-        let mut app = crate::common::reference_app(project);
+        let mut app = App::headless(project);
         app.ui_mut().dialog = Some(Dialog::MissingPlugins(missing));
         app.ui_mut().focus = FocusArea::Dialog;
         app.set_status(
@@ -1288,7 +1288,7 @@ fn snapshots_of_s06_and_s10() {
         h.snapshot(format!("dialogs-s06-{ppp}x"));
         results.extend_harness(&mut h);
     }
-    let mut app = crate::common::reference_app(demo_project());
+    let mut app = App::headless(demo_project());
     app.dispatch(Action::Project(ProjectAction::New));
     let mut h = harness_at(app, 1.0);
     h.run_steps(3);
@@ -1407,7 +1407,7 @@ fn snapshot_of_s07() {
         let (engine, _) = EngineSync::new(
             &config,
             komponist_app::engine_sync::MidiSetup::None,
-            Box::new(BuiltinHost::new()),
+            Box::new(App::headless_plugin_host()),
         );
         let app = App::new(
             Document::new(demo_project()),
@@ -1445,7 +1445,7 @@ fn snapshot_of_s07_in_english() {
     let (engine, _) = EngineSync::new(
         &config,
         komponist_app::engine_sync::MidiSetup::None,
-        Box::new(BuiltinHost::new()),
+        Box::new(App::headless_plugin_host()),
     );
     let app = App::new(
         Document::new(demo_project()),
@@ -1660,7 +1660,7 @@ fn snapshots_of_the_appearance_section() {
         (Lang::De, "dialogs-s07-display-1x"),
         (Lang::En, "dialogs-s07-display-en-1x"),
     ] {
-        let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+        let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
         let app = App::new(
             Document::new(demo_project()),
             engine,

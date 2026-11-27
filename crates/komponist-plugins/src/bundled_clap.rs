@@ -4,12 +4,11 @@
 //! in-process loading. The loader opens a private, verified copy, so replacing a file in the
 //! installed distribution cannot change the bytes handed to the library loader.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, Metadata};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -86,14 +85,14 @@ pub struct BundledClap {
     root: PathBuf,
     cache_dir: PathBuf,
     bundles: BTreeMap<PathBuf, Bundle>,
-    copies: RefCell<BTreeMap<PathBuf, VerifiedClap>>,
+    copies: Mutex<BTreeMap<PathBuf, VerifiedClap>>,
 }
 
 /// An in-process load target with bytes authenticated by the app's release manifest.
 ///
 /// Keep this proof alive until the instance no longer needs its bundle files.
 #[derive(Debug, Clone)]
-pub struct VerifiedClap(Rc<VerifiedFiles>);
+pub struct VerifiedClap(Arc<VerifiedFiles>);
 
 #[derive(Debug)]
 struct VerifiedFiles {
@@ -153,7 +152,9 @@ impl BundledClap {
         .map(Some)
     }
 
-    pub(crate) fn open_fixture(
+    /// Authenticate the inventory produced by the fixture builder.
+    #[doc(hidden)]
+    pub fn open_fixture(
         root: &Path,
         cache_dir: &Path,
         expected_digest: &str,
@@ -256,7 +257,7 @@ impl BundledClap {
             root,
             cache_dir,
             bundles,
-            copies: RefCell::new(BTreeMap::new()),
+            copies: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -270,6 +271,17 @@ impl BundledClap {
         self.bundles
             .iter()
             .map(|(path, bundle)| (path.as_path(), bundle.id.as_str()))
+    }
+
+    /// Check for missing manifest members without treating this as authentication.
+    pub(crate) fn has_required_files(&self, path: &Path) -> bool {
+        self.bundles.get(path).is_some_and(|bundle| {
+            bundle.files.keys().all(|relative| {
+                // Leave existing symlinks, altered bytes and unreadable files to the verifier.
+                !matches!(self.root.join(relative).symlink_metadata(), Err(err)
+                    if err.kind() == io::ErrorKind::NotFound)
+            })
+        })
     }
 
     /// Verify the exact installed path and identity before routing a load in-process.
@@ -346,11 +358,18 @@ impl BundledClap {
             ));
         }
 
-        if let Some(copy) = self.copies.borrow().get(path) {
+        // Managers sharing this authenticated inventory must load the same private file.
+        // The loader keeps images mapped for plugin thread-local destructors, so staging
+        // a separate copy for every manager would also register separate TLS images.
+        let mut copies = self.copies.lock().map_err(|_| {
+            BundleVerificationError::new(path, "private bundle snapshot cache is unavailable")
+        })?;
+        if let Some(copy) = copies.get(path).cloned() {
+            drop(copies);
             for (relative, hash) in &bundle.files {
                 verify_file(&self.root.join(relative), hash, None)?;
             }
-            return Ok(Some(copy.clone()));
+            return Ok(Some(copy));
         }
 
         let cache_dir = snapshot_cache(&self.cache_dir)?;
@@ -371,7 +390,7 @@ impl BundledClap {
                 Some(&snapshot.path().join(relative)),
             )?;
         }
-        let copy = VerifiedClap(Rc::new(VerifiedFiles {
+        let copy = VerifiedClap(Arc::new(VerifiedFiles {
             snapshot: snapshot
                 .path()
                 .join(path.file_name().expect("known bundle file name")),
@@ -379,9 +398,7 @@ impl BundledClap {
             original: path.to_owned(),
             id: bundle.id.clone(),
         }));
-        self.copies
-            .borrow_mut()
-            .insert(path.to_owned(), copy.clone());
+        copies.insert(path.to_owned(), copy.clone());
         Ok(Some(copy))
     }
 }
@@ -721,6 +738,98 @@ mod tests {
         assert!(inventory.verify(&installed, ID).is_err());
         drop(inventory);
         assert_eq!(fs::read(verified.bundle_path()).unwrap(), PAYLOAD);
+    }
+
+    #[test]
+    fn startup_excludes_a_cached_bundle_when_a_required_member_is_missing() {
+        use crate::catalog::{CLAP_DESCRIPTOR_REVISION, CachedBundle, ScanCache};
+        use crate::manager::{PluginManager, PluginManagerConfig, PluginManagerEvent};
+        use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind};
+
+        const LIBRARY: &str = "fixture.clap/Contents/MacOS/fixture";
+        const INFO: &str = "fixture.clap/Contents/Info.plist";
+        let fixture = Fixture::new();
+        fixture.write(INFO, b"plist bytes");
+        let bundle = fixture.root.join(FILE);
+        assert!(bundle.is_dir());
+        let inventory = Arc::new(
+            fixture
+                .open(&manifest(&[(INFO, b"plist bytes"), (LIBRARY, PAYLOAD)]))
+                .unwrap(),
+        );
+        let config = PluginManagerConfig::defaults(&fixture.base.path().join("cache"));
+        let open = || {
+            ScanCache {
+                bundles: vec![CachedBundle {
+                    path: bundle.clone(),
+                    mtime_secs: crate::scan::bundle_mtime(&bundle),
+                    descriptors: vec![PluginDescriptor {
+                        format: PluginFormat::Clap,
+                        id: ID.into(),
+                        name: "Fixture".into(),
+                        localized: None,
+                        vendor: String::new(),
+                        version: String::new(),
+                        kind: PluginKind::Effect,
+                        features: Vec::new(),
+                        bundle: bundle.clone(),
+                        sidechain: false,
+                    }],
+                    descriptor_revision: CLAP_DESCRIPTOR_REVISION,
+                    clap_presets: Vec::new(),
+                    preset_discovery_complete: true,
+                    error: None,
+                }],
+                ..ScanCache::default()
+            }
+            .save(&config.cache_file)
+            .unwrap();
+            PluginManager::for_test_inventory(config.clone(), Arc::clone(&inventory))
+        };
+
+        let mut missing = open();
+        assert!(missing.catalog().packaged(ID).is_none());
+        assert!(
+            missing
+                .poll()
+                .iter()
+                .any(|event| matches!(event, PluginManagerEvent::BundledDevicesUnavailable))
+        );
+
+        fixture.write(LIBRARY, b"modified library");
+        let mut altered = open();
+        assert!(altered.catalog().packaged(ID).is_some());
+        assert!(
+            !altered
+                .poll()
+                .iter()
+                .any(|event| matches!(event, PluginManagerEvent::BundledDevicesUnavailable))
+        );
+        let error = inventory.verify(&bundle, ID).unwrap_err();
+        assert!(error.to_string().contains("bundle file hash mismatch"));
+    }
+
+    #[test]
+    fn owners_of_the_same_inventory_share_a_snapshot_but_recheck_installed_bytes() {
+        let fixture = Fixture::new();
+        fixture.write(FILE, PAYLOAD);
+        let inventory = Arc::new(fixture.open(&manifest(&[(FILE, PAYLOAD)])).unwrap());
+        let installed = fixture.root.join(FILE);
+        let other = Arc::clone(&inventory);
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| inventory.verify(&installed, ID).unwrap().unwrap());
+            let second = scope.spawn(|| other.verify(&installed, ID).unwrap().unwrap());
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        let staged = first.bundle_path().to_owned();
+        assert_eq!(staged, second.bundle_path());
+
+        fixture.write(FILE, b"modified after verification");
+        assert!(other.verify(&installed, ID).is_err());
+        drop((first, inventory, other));
+        assert_eq!(fs::read(&staged).unwrap(), PAYLOAD);
+        drop(second);
+        assert!(!staged.exists());
     }
 
     #[cfg(unix)]

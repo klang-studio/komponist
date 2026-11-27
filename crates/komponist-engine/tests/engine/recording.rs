@@ -458,7 +458,7 @@ fn bus_latency_is_compensated_once_and_its_delayed_tail_is_drained() {
             id: device,
             role: DeviceRole::Effect,
             plugin: PluginRef {
-                format: PluginFormat::Builtin,
+                format: PluginFormat::Clap,
                 id: "test".into(),
                 name: "Delay32".into(),
                 vendor: String::new(),
@@ -531,7 +531,7 @@ fn double_stop_and_locate_preserve_hardware_and_bus_latency_tails() {
             id: device,
             role: DeviceRole::Effect,
             plugin: PluginRef {
-                format: PluginFormat::Builtin,
+                format: PluginFormat::Clap,
                 id: "test".into(),
                 name: "Delay400".into(),
                 vendor: String::new(),

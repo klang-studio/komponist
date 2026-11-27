@@ -48,11 +48,10 @@ use komponist_i18n::Lang;
 use komponist_ipc::LogLevel;
 use komponist_model::automation::AutomationOwner;
 use komponist_model::edits::{self, EditResult, NewDevice, NewTrack, ProjectProp, TrackProp};
-use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::project::SavedPluginState;
 use komponist_model::{
-    AudioInput, ChannelRef, ClipContent, DeviceId, DeviceRole, Document, EditError, PluginFormat,
-    PluginRef, Project, Tick, TickRange, TrackId,
+    AudioInput, ChannelRef, ClipContent, DeviceId, DeviceRole, Document, EditError, PluginRef,
+    Project, Tick, TickRange, TrackId,
 };
 use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{DeviceStatus, FailReason, PluginManagerEvent, SaveSnapshots};
@@ -285,18 +284,20 @@ impl App {
         use std::sync::OnceLock;
         use std::time::{Duration, Instant};
 
+        use komponist_plugins::bundled_clap::BundledClap;
+
         struct Fixtures {
             config: komponist_plugins::PluginManagerConfig,
-            inventory: Option<(PathBuf, String)>,
+            inventory: Option<Arc<BundledClap>>,
             _cache_dir: tempfile::TempDir,
         }
 
         fn open(fixtures: &Fixtures) -> PluginHost {
-            let Some((root, digest)) = &fixtures.inventory else {
-                return PluginHost::new(fixtures.config.clone());
+            let Some(inventory) = &fixtures.inventory else {
+                return PluginHost::without_bundled_clap(fixtures.config.clone());
             };
-            let mut host = PluginHost::for_test_fixtures(fixtures.config.clone(), root, digest)
-                .expect("open the test fixture inventory");
+            let mut host =
+                PluginHost::for_test_inventory(fixtures.config.clone(), Arc::clone(inventory));
             let deadline = Instant::now() + Duration::from_secs(30);
             while host.manager().is_scanning() {
                 host.poll();
@@ -341,7 +342,13 @@ impl App {
             let inventory = candidate.and_then(|bridge| {
                 let digest = std::fs::read_to_string(root.join("manifest.sha256")).ok()?;
                 config.bridge_exe = bridge;
-                Some((root.join("bundled-clap"), digest.trim().to_owned()))
+                let inventory = BundledClap::open_fixture(
+                    &root.join("bundled-clap"),
+                    cache_dir.path(),
+                    digest.trim(),
+                )
+                .expect("open the test fixture inventory");
+                Some(Arc::new(inventory))
             });
             assert!(
                 inventory.is_some() || !fixtures_required(),
@@ -395,6 +402,7 @@ impl App {
     /// Shows the start screen (S09) instead of the open document (no project argument).
     pub fn show_start_screen(&mut self) {
         self.ui.screen = Screen::Start;
+        self.dialogs.new_track_after_scan.clear();
         self.ui.focus = FocusArea::default();
         self.ui.start.reset_selection();
     }
@@ -808,6 +816,7 @@ impl App {
             self.engine.send_project(self.doc.project());
         }
         self.flush_deferred();
+        self.finish_startup_track_actions();
         if rebuilt.is_some() {
             if kept_take {
                 self.set_status(self.lang.status_engine_rebuilt_take(), StatusKind::Error);
@@ -1112,6 +1121,12 @@ impl App {
                 };
                 self.set_status(text, StatusKind::Error);
             }
+            PluginManagerEvent::BundledDevicesUnavailable => {
+                self.set_status(
+                    self.lang.status_bundled_devices_unavailable(),
+                    StatusKind::Error,
+                );
+            }
             PluginManagerEvent::ScanFinished(_) => {
                 let newly_missing = self.sync_catalog_devices();
                 if self.dialogs.missing_check || newly_missing {
@@ -1157,9 +1172,8 @@ impl App {
         if Arc::ptr_eq(before, &after) {
             return;
         }
-        let dir = self.project_dir();
         self.engine
-            .sync_device_states(before, &after, dir.as_deref(), &self.param_undo.baseline);
+            .sync_device_states(before, &after, &self.param_undo.baseline);
         self.expect_echo(before, &after);
         self.release_keyboard_notes_if(|id| after.track(id).is_none());
     }
@@ -2104,6 +2118,11 @@ impl App {
     /// Ctrl T and instrument drops: a new MIDI track with `instrument`, armed exclusively,
     /// selected (S10).
     fn new_midi_track(&mut self, index: Option<usize>, instrument: Option<PluginRef>) {
+        let names = crate::dialogs::new_track::midi_names(
+            self.lang,
+            self.engine.host().catalog(),
+            instrument.as_ref(),
+        );
         let spec = NewTrack {
             name: None,
             hue: None,
@@ -2111,7 +2130,6 @@ impl App {
             index,
             arm_exclusive: true,
         };
-        let names = default_names(self.lang);
         if let Some(id) = self.apply_with("undo-new-midi-track", |p| {
             edits::add_track_in(p, spec, &names)
         }) {
@@ -2135,7 +2153,11 @@ impl App {
         } else {
             "undo-new-midi-track"
         };
-        let names = default_names(self.lang);
+        let names = crate::dialogs::new_track::midi_names(
+            self.lang,
+            self.engine.host().catalog(),
+            spec.instrument.as_ref(),
+        );
         let made = self.apply_with(label, |p| {
             let mut p = p.clone();
             let mut ids = Vec::with_capacity(tracks.len());
@@ -2185,16 +2207,45 @@ impl App {
         }
     }
 
+    const DEFAULT_INSTRUMENT_ID: &str = "org.klang-studio.komponist.hexa";
+
+    fn defer_startup_track_action(&mut self, action: Action) -> bool {
+        if !self
+            .engine
+            .host()
+            .awaiting_packaged_plugin(Self::DEFAULT_INSTRUMENT_ID)
+        {
+            return false;
+        }
+        self.dialogs.new_track_after_scan.push_back(action);
+        self.set_status(self.lang.status_plugin_scan(), StatusKind::Info);
+        true
+    }
+
+    fn finish_startup_track_actions(&mut self) {
+        while !self.dialogs.new_track_after_scan.is_empty()
+            && self.ui.dialog.is_none()
+            && self.dialogs.overlay.is_none()
+            && !self
+                .engine
+                .host()
+                .awaiting_packaged_plugin(Self::DEFAULT_INSTRUMENT_ID)
+        {
+            let action = self.dialogs.new_track_after_scan.pop_front().unwrap();
+            self.dispatch(action);
+        }
+    }
+
+    fn add_default_midi_track(&mut self) {
+        if !self.defer_startup_track_action(Action::Edit(EditAction::NewMidiTrack)) {
+            self.new_midi_track(None, self.default_instrument());
+        }
+    }
+
     fn default_instrument(&self) -> Option<PluginRef> {
         let catalog = self.engine.host().catalog();
-        let default_id = komponist_plugins::catalog::clap_id(BUILTIN_HEXA);
         catalog
-            .entries()
-            .iter()
-            .find(|entry| {
-                komponist_plugins::requires_bundled(&entry.plugin) && entry.plugin.id == default_id
-            })
-            .or_else(|| catalog.resolve(&hexa_ref()))
+            .packaged(Self::DEFAULT_INSTRUMENT_ID)
             .map(|entry| entry.plugin.clone())
     }
 
@@ -2213,6 +2264,12 @@ impl App {
                 .or_else(|| self.default_instrument()),
             None => self.default_instrument(),
         };
+        if instrument.is_none()
+            && !matches!(self.dialogs.last_instrument, Some(None))
+            && self.defer_startup_track_action(Action::Ui(UiAction::OpenNewTrackDialog))
+        {
+            return;
+        }
         let mut state = crate::dialogs::new_track::State::new(instrument);
         state.choose_default_input(self.project(), &self.engine);
         self.open_overlay(crate::dialogs::Overlay::NewTrack(state));
@@ -2820,24 +2877,10 @@ impl App {
             }
             PluginAction::ApplyClapPreset { device, source } => {
                 if let Some((_, _, target)) = self.project().find_device(device) {
-                    if let Some(state) = komponist_plugins::presets::legacy_state(
-                        &target.plugin,
-                        target.state.as_deref(),
-                        &source,
-                    ) {
-                        self.apply("undo-load-preset", |p| {
-                            edits::set_device_state(p, device, Some(state.into()))
-                        });
-                        self.frame_preset_finished(device, true);
-                    } else {
-                        let target = Arc::clone(target);
-                        if !self.engine.host_mut().load_clap_preset(&target, &source) {
-                            self.frame_preset_finished(device, false);
-                            self.set_status(
-                                self.lang.devices_preset_load_failed(),
-                                StatusKind::Error,
-                            );
-                        }
+                    let target = Arc::clone(target);
+                    if !self.engine.host_mut().load_clap_preset(&target, &source) {
+                        self.frame_preset_finished(device, false);
+                        self.set_status(self.lang.devices_preset_load_failed(), StatusKind::Error);
                     }
                 }
             }
@@ -3067,6 +3110,7 @@ impl App {
         self.dialogs.repaired = 0;
         self.param_undo.forget();
         self.dialogs.after_param_text = None;
+        self.dialogs.new_track_after_scan.clear();
         self.shell.catalog_retirements.clear();
         self.preset_preparations.clear();
         self.user_presets = Default::default();
@@ -3336,18 +3380,6 @@ pub(crate) fn repeatable(action: &Action) -> bool {
     )
 }
 
-/// The reference of the built-in hexa (Ctrl T).
-pub fn hexa_ref() -> PluginRef {
-    PluginRef {
-        format: PluginFormat::Builtin,
-        id: BUILTIN_HEXA.to_owned(),
-        name: "Hexa".to_owned(),
-        vendor: "klang-studio".to_owned(),
-        module: Box::default(),
-        version: env!("CARGO_PKG_VERSION").to_owned(),
-    }
-}
-
 /// The keymap's key for an egui key (`=` and `+` are both [`Key::Plus`]).
 pub fn key_from_egui(key: egui::Key) -> Option<Key> {
     use egui::Key as E;
@@ -3505,6 +3537,108 @@ mod tests {
     use super::*;
     use komponist_model::fixtures::empty_project;
 
+    struct StartupCatalogHost {
+        catalog: komponist_plugins::Catalog,
+        published: komponist_plugins::Catalog,
+        scanning: Arc<AtomicBool>,
+    }
+
+    impl DeviceHost for StartupCatalogHost {
+        fn create_processor(
+            &mut self,
+            _: &komponist_model::Device,
+            _: komponist_plugins::ProcessorSetup,
+        ) -> Option<Box<dyn komponist_engine::Processor>> {
+            None
+        }
+
+        fn release(&mut self, _: DeviceId) {}
+
+        fn status(&self, _: DeviceId) -> DeviceStatus {
+            DeviceStatus::Ok
+        }
+
+        fn latency(&self, _: DeviceId) -> u32 {
+            0
+        }
+
+        fn poll(&mut self) -> Vec<PluginManagerEvent> {
+            if !self.scanning.load(Ordering::Relaxed) && self.catalog.entries().is_empty() {
+                self.catalog = std::mem::take(&mut self.published);
+            }
+            Vec::new()
+        }
+
+        fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
+            self.catalog.resolve(plugin).map(|_| DeviceRole::Instrument)
+        }
+
+        fn catalog(&self) -> &komponist_plugins::Catalog {
+            &self.catalog
+        }
+
+        fn awaiting_packaged_plugin(&self, id: &str) -> bool {
+            self.scanning.load(Ordering::Relaxed) && id == App::DEFAULT_INSTRUMENT_ID
+        }
+    }
+
+    fn cold_catalog_app(published: komponist_plugins::Catalog) -> (App, Arc<AtomicBool>) {
+        let scanning = Arc::new(AtomicBool::new(true));
+        let host = StartupCatalogHost {
+            catalog: Default::default(),
+            published,
+            scanning: Arc::clone(&scanning),
+        };
+        (
+            App::headless(Project::new("Cold scan")).with_device_host(Box::new(host)),
+            scanning,
+        )
+    }
+
+    #[test]
+    fn new_midi_track_and_new_track_dialog_wait_for_the_installed_default() {
+        let fixture = App::headless_plugin_host();
+        let Some(hexa) = fixture.catalog().packaged(App::DEFAULT_INSTRUMENT_ID) else {
+            return;
+        };
+        let (mut app, scanning) =
+            cold_catalog_app(komponist_plugins::Catalog::from_entries(vec![hexa.clone()]));
+        app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+        app.dispatch(Action::Ui(UiAction::OpenNewTrackDialog));
+        assert!(app.project().tracks.is_empty());
+        assert!(app.dialogs.overlay.is_none());
+
+        scanning.store(false, Ordering::Relaxed);
+        app.step();
+        let instrument = app.project().tracks[0].channel.instrument().unwrap().1;
+        assert_eq!(instrument.plugin, hexa.plugin);
+        assert!(matches!(
+            &app.dialogs.overlay,
+            Some(crate::dialogs::Overlay::NewTrack(state))
+                if state.instrument.as_ref() == Some(&hexa.plugin)
+        ));
+    }
+
+    #[test]
+    fn new_track_keeps_an_explicit_empty_choice_and_recovers_from_a_failed_scan() {
+        let (mut app, scanning) = cold_catalog_app(Default::default());
+        app.dialogs.last_instrument = Some(None);
+        app.dispatch(Action::Ui(UiAction::OpenNewTrackDialog));
+        assert!(matches!(
+            &app.dialogs.overlay,
+            Some(crate::dialogs::Overlay::NewTrack(state)) if state.instrument.is_none()
+        ));
+        app.close_overlay();
+
+        app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+        assert!(app.project().tracks.is_empty());
+        scanning.store(false, Ordering::Relaxed);
+        app.step();
+        assert_eq!(app.project().tracks.len(), 1);
+        assert!(app.project().tracks[0].channel.instrument().is_none());
+        assert!(app.dialogs.new_track_after_scan.is_empty());
+    }
+
     #[test]
     fn catalog_restoration_refreshes_the_missing_dialog_waiting_behind_flatten() {
         let mut app = App::headless(Project::new("Restored device"));
@@ -3629,6 +3763,42 @@ mod tests {
         assert_eq!(worker_notice(true, false, true, true, true), None);
         assert_eq!(worker_notice(true, true, false, true, false), None);
         assert_eq!(worker_notice(false, false, false, true, true), None);
+    }
+
+    #[test]
+    fn missing_shipped_devices_are_visible_on_the_start_screen() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable as _;
+
+        let size = egui::vec2(800.0, 480.0);
+        for lang in Lang::ALL {
+            let mut app = App::headless(Project::new("Test")).with_lang(lang);
+            app.show_start_screen();
+            app.recent.projects = (0..12)
+                .map(|index| PathBuf::from(format!("Project {index}.komponist")))
+                .collect();
+            let mut h = Harness::builder()
+                .with_size(size)
+                .with_context_setup(komponist_ui::install)
+                .build_ui_state(|ui, app| app.show(ui), app);
+            let warning = lang.status_bundled_devices_unavailable();
+            assert!(h.query_by_label(warning).is_none());
+
+            h.state_mut()
+                .handle_device_event(&PluginManagerEvent::BundledDevicesUnavailable);
+            h.run_steps(2);
+            let rect = h.get_by_role_and_label(egui::Role::Label, warning).rect();
+            assert!(
+                rect.height() > 0.0 && rect.bottom() <= size.y,
+                "{lang:?}: {rect:?}"
+            );
+            let first_recent = h.get_by_label_contains("Project 0").rect();
+            assert!(rect.bottom() < first_recent.top());
+            assert_eq!(
+                h.state().ui.status.as_ref().map(|s| s.kind),
+                Some(StatusKind::Error)
+            );
+        }
     }
 
     #[test]

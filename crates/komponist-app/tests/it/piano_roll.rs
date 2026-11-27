@@ -66,7 +66,7 @@ const TEST_DOCK: f32 = 500.0;
 
 /// The demo with Lead A (bars 9–10) open in the piano roll, the dock [`TEST_DOCK`] high.
 fn reference_lead_a() -> (App, ClipId) {
-    let mut app = crate::common::reference_app(demo_project());
+    let mut app = App::headless(demo_project());
     app.ui_mut().layout.dock_height = TEST_DOCK;
     let clip = app.project().tracks[2].clips[0].id;
     app.dispatch(Action::Ui(UiAction::OpenClip(clip)));
@@ -680,7 +680,7 @@ fn dragging_clip_section_edges_resizes_without_editing_the_clip() {
     app.dispatch(Action::Ui(UiAction::OpenClip(clip)));
     // A splitter drag must stay separate from note and envelope editing even in pencil mode.
     app.ui_mut().piano_roll.tool = Tool::Pencil;
-    let original = app.project().clone();
+    let original = app.project().find_clip(clip).unwrap().1.clone();
     let mut h = harness(app);
 
     let group = |h: &Harness<'_, App>, label: &str| {
@@ -713,7 +713,7 @@ fn dragging_clip_section_edges_resizes_without_editing_the_clip() {
     assert_eq!(group(&h, velocity).height(), 104.0);
     assert_eq!(notes_height(&h), notes_before - 40.0);
     assert_eq!(group(&h, &volume_lane).height(), 128.0);
-    assert_eq!(h.state().project(), &original);
+    assert_eq!(h.state().project().find_clip(clip).unwrap().1, &original);
 
     resize(&mut h, pan, 120.0);
     assert_eq!(group(&h, &pan_lane).height(), 48.0);
@@ -730,7 +730,8 @@ fn dragging_clip_section_edges_resizes_without_editing_the_clip() {
     h.key_press(egui::Key::ArrowDown);
     h.run();
     assert_eq!(group(&h, &pan_lane).height(), 48.0);
-    assert_eq!(h.state().project(), &original);
+    assert_eq!(h.state().project().find_clip(clip).unwrap().1, &original);
+    assert!(h.state().doc().undo_label().is_none());
 }
 
 #[test]
@@ -813,7 +814,7 @@ fn notes_past_the_clip_end_lengthen_it() {
 
 /// S10 "Leerer Clip — Piano Roll zeigt Raster und Klaviatur, Stift ist vorausgewählt."
 fn reference_empty_clip_app() -> (App, ClipId) {
-    let mut app = crate::common::reference_app(demo_project());
+    let mut app = App::headless(demo_project());
     let track = app.project().tracks[2].id;
     app.dispatch(Action::Edit(EditAction::AddClip {
         track,

@@ -90,7 +90,7 @@ pub struct Model {
     pub recent: Vec<RecentRow>,
     /// Audio, MIDI, Plugins.
     pub system: Vec<SystemRow>,
-    /// A message under the list (an error when opening failed).
+    /// An error message above the recent projects.
     pub message: Option<String>,
 }
 
@@ -542,6 +542,17 @@ fn right_column(
         view.reset_selection();
     }
     col.add_space(m::RIGHT_GAP);
+    if let Some(message) = &model.message {
+        let g = styled(
+            &col,
+            message,
+            &typography::SMALL,
+            color32(color::STATE_ERROR),
+            Some(width),
+        );
+        super::paint_text(&mut col, g, message);
+        col.add_space(m::SYSTEM_GAP);
+    }
 
     let shown = filtered(&model.recent, &view.filter);
     if shown.is_empty() {
@@ -579,17 +590,6 @@ fn right_column(
         Some(width),
     );
     super::paint_text(&mut col, g, t.start_hint());
-    if let Some(message) = &model.message {
-        col.add_space(m::SYSTEM_GAP);
-        let g = styled(
-            &col,
-            message,
-            &typography::SMALL,
-            color32(color::STATE_ERROR),
-            Some(width),
-        );
-        super::paint_text(&mut col, g, message);
-    }
 }
 
 /// What opening `row` means: its file, or, with a waiting copy, the prompt for that copy first.

@@ -14,7 +14,6 @@ use komponist_model::params::ParamId;
 use komponist_model::{ClipId, DeviceId, Project, Tick};
 
 use crate::app::App;
-use crate::device_host::LegacyParameters;
 
 /// Prevents a single long uninterrupted gesture from retaining unbounded raw data.
 const MAX_RAW_POINTS: usize = 100_000;
@@ -762,14 +761,6 @@ impl App {
         else {
             return false;
         };
-        let Some((_, _, model)) = self.project().find_device(device) else {
-            return false;
-        };
-        if let Some(parameters) = LegacyParameters::new(model) {
-            return parameters
-                .info(self.lang, wire_id)
-                .is_some_and(|p| p.is_stepped());
-        }
         self.engine
             .host()
             .params(device)
@@ -844,11 +835,8 @@ impl App {
         device: DeviceId,
         id: u32,
     ) -> Option<(AutomationOwner, AutomationTarget)> {
-        let (owner, _, d) = self.project().find_device(device)?;
-        let param = match LegacyParameters::new(d) {
-            Some(parameters) => parameters.id(id)?,
-            None => ParamId::plugin(id),
-        };
+        let (owner, _, _) = self.project().find_device(device)?;
+        let param = ParamId::plugin(id);
         Some((owner.into(), AutomationTarget::Param { device, param }))
     }
 
@@ -1369,11 +1357,11 @@ mod tests {
 
         let mut project = fixtures::demo_project();
         project.loop_on = false;
-        let track = project
-            .tracks
-            .iter()
-            .find(|track| track.name == "Lead")
-            .unwrap();
+        // This test exercises channel pan and clip automation; use the demo's clip without
+        // opening unrelated plugins or applying their independent startup preset notifications.
+        project.tracks.retain(|track| track.name == "Lead");
+        let track = std::sync::Arc::make_mut(&mut project.tracks[0]);
+        track.channel.devices.clear();
         let (track, clip, start) = (track.id, track.clips[0].id, track.clips[0].start);
         let owner = AutomationOwner::Track(track);
         let target = AutomationTarget::Pan;

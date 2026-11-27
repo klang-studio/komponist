@@ -1,7 +1,7 @@
 //! Audio files for komponist (#10): decoding, sample-rate conversion, waveform peaks and the one
 //! file pool that the Sampler and the audio clips share.
 //!
-//! A leaf crate (no studio crate, no egui, no engine): `komponist-builtin` (the Sampler's loader)
+//! A leaf crate (no studio crate, no egui, no engine): the bundled Sampler's loader
 //! uses it today, the engine's disk streaming (#11) and the arrangement's waveforms (#12) build
 //! on it. Nothing here runs inside the audio thread: decoding, resampling and peak computation
 //! allocate and do file IO, so they run on loader or UI-adjacent worker threads and hand finished

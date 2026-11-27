@@ -15,10 +15,10 @@ use komponist_app::panels::statusbar;
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, EditAction, PluginAction, UiAction};
 use komponist_i18n::{Lang, de};
-use komponist_model::edits::{NewDevice, NewTrack};
+use komponist_model::edits::NewTrack;
 use komponist_model::fixtures::demo_project;
 use komponist_model::params::ParamId;
-use komponist_model::{ChannelRef, DeviceId, DeviceRole, Project, TrackId, edits};
+use komponist_model::{ChannelRef, DeviceId, Project, TrackId, edits};
 use komponist_tokens::device;
 
 use crate::common::{
@@ -139,25 +139,6 @@ fn app_with_hall() -> (App, TrackId, DeviceId) {
     let (mut app, track, hall) = add_hall_track(app, hexa, hall);
     wait_for_layout(&mut app, hall);
     (app, track, hall)
-}
-
-/// The original cards and catalog behind the Linux parameter and mapping references.
-fn reference_app_with_hall() -> (App, TrackId, DeviceId) {
-    let app = crate::common::reference_app(Project::new("Intern"));
-    let plugin = |id| {
-        app.engine()
-            .host()
-            .catalog()
-            .entries()
-            .iter()
-            .find(|entry| entry.plugin.id == id)
-            .unwrap()
-            .plugin
-            .clone()
-    };
-    let hexa = komponist_app::app::hexa_ref();
-    let hall = plugin("hall");
-    add_hall_track(app, hexa, hall)
 }
 
 fn shipped(app: &App, slug: &str) -> komponist_model::PluginRef {
@@ -800,7 +781,7 @@ fn mask_cpu(h: &mut Harness<'_, App>) {
 
 #[test]
 fn snapshot_of_a_touched_parameter_with_its_context_menu() {
-    let (app, _, _) = reference_app_with_hall();
+    let (app, _, _) = app_with_hall();
     let mut h = harness(app);
     h.run_steps(30);
     let decay = knob(&h, "Decay");
@@ -813,115 +794,78 @@ fn snapshot_of_a_touched_parameter_with_its_context_menu() {
     results.unwrap();
 }
 
-// The two original diagrams use the reference layout's FM cell. Its topology comes from
-// the document patch via Card::routing. The native CLAP display is tested above.
-fn assert_reference_fm(h: &Harness<'_, App>, track: TrackId, expected: [u8; 6]) {
-    let app = h.state();
-    let cards = komponist_app::views::devices::model::cards(
-        Lang::De,
-        app.project().track(track).unwrap(),
-        app.engine().host(),
-        &[],
-    );
-    assert_eq!(cards[0].routing.unwrap().modulates, expected);
-    h.get_by_role_and_label(Role::Group, de::DEVICES_FM_FREE);
+/// The exact topology is part of the real bundle state. A free wire graph is not editable as a
+/// CLAP parameter, so seed it in the initial state exported by the bundle.
+fn snapshot_free_routing(name: &str, expected: [u8; 6]) {
+    use komponist_model::Hue;
+
+    let host = App::headless_plugin_host();
+    let prepared = host
+        .manager()
+        .prepare_bundled_device("org.klang-studio.komponist.hexa", Some("Init"), &[], &[])
+        .unwrap();
+    let (mut project, track, device) =
+        crate::common::instrument_project("Frei", prepared.plugin.clone());
+    let mut saved = prepared.into_device(device);
+
+    let state = saved.state.as_deref().unwrap();
+    let (length, payload) = state.split_first_chunk::<8>().unwrap();
+    assert_eq!(u64::from_le_bytes(*length), payload.len() as u64);
+    let mut document: serde_json::Value = serde_json::from_slice(payload).unwrap();
+    let field = &mut document["fields"]["hexa-patch-v1"];
+    let mut patch: serde_json::Value = serde_json::from_str(field.as_str().unwrap()).unwrap();
+    for (operator, edges) in patch["patch"]["operators"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .zip(expected)
+    {
+        let routes: [bool; 6] = std::array::from_fn(|target| edges & (1 << target) != 0);
+        operator["output"] = true.into();
+        operator["modulates"] = serde_json::json!(routes);
+    }
+    *field = serde_json::to_string(&patch).unwrap().into();
+    let payload = serde_json::to_vec(&document).unwrap();
+    let mut state = (payload.len() as u64).to_le_bytes().to_vec();
+    state.extend_from_slice(&payload);
+    saved.state = Some(state.into());
+
+    let channel = std::sync::Arc::make_mut(&mut project.tracks[0]);
+    channel.name = "FM".into();
+    channel.hue = Hue::BLUE;
+    channel.channel.devices[0] = std::sync::Arc::new(saved);
+
+    let mut app = App::headless(project);
+    select_track(&mut app, track);
+    wait_for_layout(&mut app, device);
+    step_until(&mut app, "the restored free FM graph", |app| {
+        app.engine()
+            .host()
+            .device_display(device)
+            .and_then(|display| display.fm_topologies.first())
+            .is_some_and(|routing| {
+                routing.algorithm.is_none()
+                    && routing.outputs == 0b111111
+                    && routing.modulates.as_slice() == expected.as_slice()
+            })
+    });
+
+    let mut h = harness(app);
+    h.run_steps(30);
+    h.get_by_role_and_label(Role::Group, &Lang::De.devices_card("Hexa"))
+        .get_by_role_and_label(Role::Group, de::DEVICES_FM_FREE);
+    mask_cpu(&mut h);
+    h.try_snapshot(name).unwrap();
 }
 
 #[test]
 fn snapshot_of_the_fm_display_with_free_routing() {
-    use komponist_hexa::{CATALOG, algorithms, default_patch, encode_state};
-    use komponist_model::Hue;
-    let mut patch = default_patch();
-    // All carriers, then 2 and 3 modulate 1 and 4 modulates 5: no table algorithm has that.
-    algorithms::apply(&mut patch, 31);
-    patch.operators[1].modulates[0] = true;
-    patch.operators[2].modulates[0] = true;
-    patch.operators[3].modulates[4] = true;
-    assert_eq!(algorithms::detect(&patch), None);
-    let hexa = CATALOG.plugin_ref();
-    let (project, track) = edits::add_track(
-        &Project::new("Frei"),
-        NewTrack {
-            name: Some("FM".into()),
-            hue: Some(Hue::BLUE),
-            instrument: None,
-            index: None,
-            arm_exclusive: false,
-        },
-    )
-    .unwrap();
-    let (project, _) = edits::insert_device(
-        &project,
-        ChannelRef::Track(track),
-        0,
-        NewDevice {
-            role: DeviceRole::Instrument,
-            plugin: hexa,
-            state: Some(encode_state(&patch).into()),
-            sidechain: None,
-            preset: None,
-        },
-    )
-    .unwrap();
-    let mut app = crate::common::reference_app(project);
-    select_track(&mut app, track);
-    let mut h = harness(app);
-    h.run_steps(30);
-    assert_reference_fm(&h, track, [0, 1, 1, 16, 0, 0]);
-    mask_cpu(&mut h);
-    let mut results = SnapshotResults::new();
-    h.snapshot("devices-fm-free-1x");
-    results.extend_harness(&mut h);
-    results.unwrap();
+    snapshot_free_routing("devices-fm-free-1x", [0, 1, 1, 16, 0, 0]);
 }
 
 #[test]
 fn snapshot_of_the_fm_display_with_a_cycle() {
-    use komponist_hexa::{CATALOG, algorithms, default_patch, encode_state};
-    use komponist_model::Hue;
-    let mut patch = default_patch();
-    // 1 and 6 modulate each other and are both heard; 2 → 3 → 4 is a chain on the side.
-    algorithms::apply(&mut patch, 31);
-    patch.operators[0].modulates[5] = true;
-    patch.operators[5].modulates[0] = true;
-    patch.operators[1].modulates[2] = true;
-    patch.operators[2].modulates[3] = true;
-    assert_eq!(algorithms::detect(&patch), None);
-    let hexa = CATALOG.plugin_ref();
-    let (project, track) = edits::add_track(
-        &Project::new("Frei"),
-        NewTrack {
-            name: Some("FM".into()),
-            hue: Some(Hue::BLUE),
-            instrument: None,
-            index: None,
-            arm_exclusive: false,
-        },
-    )
-    .unwrap();
-    let (project, _) = edits::insert_device(
-        &project,
-        ChannelRef::Track(track),
-        0,
-        NewDevice {
-            role: DeviceRole::Instrument,
-            plugin: hexa,
-            state: Some(encode_state(&patch).into()),
-            sidechain: None,
-            preset: None,
-        },
-    )
-    .unwrap();
-    let mut app = crate::common::reference_app(project);
-    select_track(&mut app, track);
-    let mut h = harness(app);
-    h.run_steps(30);
-    assert_reference_fm(&h, track, [32, 4, 8, 0, 0, 1]);
-    mask_cpu(&mut h);
-    let mut results = SnapshotResults::new();
-    h.snapshot("devices-fm-cycle-1x");
-    results.extend_harness(&mut h);
-    results.unwrap();
+    snapshot_free_routing("devices-fm-cycle-1x", [32, 4, 8, 0, 0, 1]);
 }
 
 #[test]
@@ -1012,7 +956,7 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
 
     let mut results = SnapshotResults::new();
     for lang in Lang::ALL {
-        let (app, track, hall) = reference_app_with_hall();
+        let (app, track, hall) = app_with_hall();
         let mut h = harness(app.with_lang(lang));
         let snapshot = |h: &mut Harness<'_, App>, name: &str| {
             let cpu = h
@@ -1022,9 +966,19 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
             h.snapshot(format!("track-macro-{name}-{}-1x", lang.code()));
         };
         snapshot(&mut h, "card");
-        let knob_target = |id| AutomationTarget::Param {
+        let target = |id| AutomationTarget::Param {
             device: hall,
-            param: ParamId::new(id),
+            param: ParamId::plugin(id),
+        };
+        let decay_target = target(author_parameter(h.state(), hall, "decay"));
+        let mix_target = target(author_parameter(h.state(), hall, "mix"));
+        let assert_mapping_count = |app: &App, expected| {
+            assert_eq!(
+                app.project().track(track).unwrap().macros.0[0]
+                    .mappings
+                    .len(),
+                expected
+            );
         };
         h.state_mut().dispatch(Action::Macro(Macro::Rename {
             track,
@@ -1036,9 +990,10 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
         h.state_mut().dispatch(Action::Macro(Macro::Map {
             track,
             index: 0,
-            target: knob_target("decay"),
+            target: decay_target,
         }));
         h.run_steps(3);
+        assert_mapping_count(h.state(), 1);
         snapshot(&mut h, "mapping");
         h.state_mut()
             .dispatch(Action::Macro(Macro::ToggleMapping { track }));
@@ -1047,15 +1002,16 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
         h.state_mut().dispatch(Action::Macro(Macro::Map {
             track,
             index: 0,
-            target: knob_target("mix"),
+            target: mix_target.clone(),
         }));
         h.state_mut().dispatch(Action::Macro(Macro::Bend {
             track,
             index: 0,
-            target: knob_target("mix"),
+            target: mix_target,
             bend: 0.4,
         }));
         h.run_steps(3);
+        assert_mapping_count(h.state(), 2);
         snapshot(&mut h, "list");
         let name = lang.param_decay();
         let reverb = h.state().project().find_device(hall).unwrap().2;
@@ -1077,7 +1033,7 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
         results.extend_harness(&mut h);
 
         let missing = Mapping {
-            target: knob_target("removed-param"),
+            target: target(u32::MAX),
             label: "Hall · Former target".into(),
             min: 0.0,
             max: 1.0,
@@ -1085,10 +1041,11 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
             bend: 0.0,
         };
         let project = edits::macros::add_mapping(h.state().project(), track, 0, missing).unwrap();
-        let mut app = crate::common::reference_app(project).with_lang(lang);
+        let mut app = App::headless(project).with_lang(lang);
         select_track(&mut app, track);
         app.dispatch(Action::Macro(Macro::Select { track, index: 0 }));
         let mut missing = harness(app);
+        assert_mapping_count(missing.state(), 3);
         snapshot(&mut missing, "missing");
         results.extend_harness(&mut missing);
     }

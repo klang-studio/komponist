@@ -242,7 +242,7 @@ fn demo_and_new_tracks_use_verified_clap_only() {
         host.catalog()
             .entries()
             .iter()
-            .all(|entry| !entry.is_builtin())
+            .all(|entry| entry.plugin.format == komponist_model::PluginFormat::Clap)
     );
     let expected = devices(&project);
     assert!(!expected.is_empty());
@@ -1112,6 +1112,44 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
         "reopened macro automation did not lower the rendered shelf gain: {before_gain_step} vs {after_gain_step}"
     );
     app.shutdown();
+}
+
+#[test]
+fn missing_bundle_opens_as_a_placeholder_without_changing_the_project() {
+    use komponist_app::ui_state::Dialog;
+
+    let scratch = tempfile::tempdir().unwrap();
+    let fixture = App::headless_plugin_host();
+    let prepared = fixture
+        .manager()
+        .prepare_bundled_device(&format!("{DEVICE_PREFIX}hexa"), Some("Init"), &[], &[])
+        .unwrap();
+    let plugin = prepared.plugin.clone();
+    let (mut project, _, device) =
+        crate::common::instrument_project("Missing Hexa", plugin.clone());
+    std::sync::Arc::make_mut(&mut project.tracks[0])
+        .channel
+        .devices[0] = std::sync::Arc::new(prepared.into_device(device));
+    let path = scratch.path().join("Missing Hexa.komponist");
+    save_project(&path, &project).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+
+    let host = PluginHost::new(config(scratch.path()));
+    assert!(host.catalog().resolve(&plugin).is_none());
+    let mut app = app_with(Project::new("Empty"), host);
+    open(&mut app, &path);
+    step_until(&mut app, "missing packaged processor", |app| {
+        app.engine().device_status(device) == DeviceStatus::Missing
+    });
+    assert!(matches!(
+        &app.ui().dialog,
+        Some(Dialog::MissingPlugins(missing))
+            if missing.len() == 1 && missing[0].device == device && missing[0].plugin == plugin
+    ));
+    assert!(app.engine().host().verified_bundle(device).is_none());
+    assert!(app.engine().host().bridge_pid(device).is_none());
+    assert_eq!(app.project().as_ref(), &project);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }
 
 #[test]

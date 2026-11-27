@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use komponist_audio::StreamConfig;
 use komponist_i18n::Lang;
-use komponist_model::project::{BUILTIN_HEXA, BUILTIN_SAMPLER};
+use komponist_model::project::DRUM_SAMPLER_CLAP_ID;
 use komponist_model::{PluginFormat, PluginRef};
 use komponist_plugins::PluginDirs;
 use komponist_tokens::size;
@@ -218,7 +218,7 @@ impl Favorite {
     }
 }
 
-/// The favourites in the order they were starred. A fresh install starts with the two built-in
+/// The favourites in the order they were starred. A fresh install starts with two bundled
 /// instruments, hexa and the sampler (S01 "Favoriten", the prototype's `favs`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -226,12 +226,15 @@ pub struct Favorites(pub Vec<Favorite>);
 
 impl Default for Favorites {
     fn default() -> Favorites {
-        let builtin = |id: &str| Favorite {
-            format: PluginFormat::Builtin,
+        let packaged = |id: &str| Favorite {
+            format: PluginFormat::Clap,
             id: id.to_owned(),
-            bundled: false,
+            bundled: true,
         };
-        Favorites(vec![builtin(BUILTIN_HEXA), builtin(BUILTIN_SAMPLER)])
+        Favorites(vec![
+            packaged("org.klang-studio.komponist.hexa"),
+            packaged(DRUM_SAMPLER_CLAP_ID),
+        ])
     }
 }
 
@@ -769,18 +772,21 @@ mod tests {
     }
 
     #[test]
-    fn favourites_start_with_the_builtins_and_toggle() {
+    fn favourites_start_with_the_shipped_instruments_and_toggle() {
         let s = Settings::default();
         let ids: Vec<&str> = s.favorites.0.iter().map(|f| f.id.as_str()).collect();
-        assert_eq!(ids, [BUILTIN_HEXA, BUILTIN_SAMPLER]);
+        assert_eq!(
+            ids,
+            ["org.klang-studio.komponist.hexa", DRUM_SAMPLER_CLAP_ID]
+        );
         let mut f = s.favorites.clone();
         let hexa = PluginRef {
-            format: PluginFormat::Builtin,
-            id: BUILTIN_HEXA.into(),
+            format: PluginFormat::Clap,
+            id: "org.klang-studio.komponist.hexa".into(),
             name: "Hexa".into(),
             vendor: String::new(),
             version: "9".into(),
-            module: Box::default(),
+            module: "bundled-clap/hexa.clap".into(),
         };
         assert!(f.contains(&hexa));
         f.toggle(&hexa);

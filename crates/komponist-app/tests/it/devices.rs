@@ -692,7 +692,7 @@ fn assert_missing_effect(h: &Harness<'_, App>) {
 
 #[test]
 fn snapshot_of_the_missing_effect_card() {
-    let mut h = lead_devices(common::reference_app(demo_project()));
+    let mut h = lead_devices(App::headless(demo_project()));
     assert_missing_effect(&h);
     h.run_steps(1);
     let mut results = SnapshotResults::new();
@@ -1005,11 +1005,6 @@ mod add_menu {
         open_devices_track(app, hexa)
     }
 
-    fn reference_app_with_track() -> (App, TrackId) {
-        let app = common::reference_app(Project::new("Menü"));
-        open_devices_track(app, komponist_app::app::hexa_ref())
-    }
-
     fn open_devices_track(mut app: App, hexa: PluginRef) -> (App, TrackId) {
         app.dispatch(Action::Plugin(PluginAction::Add {
             plugin: hexa,
@@ -1299,7 +1294,7 @@ mod add_menu {
 
     #[test]
     fn snapshot_of_the_open_menu() {
-        let (app, _) = reference_app_with_track();
+        let (app, _) = app_with_track();
         let mut h = harness(app);
         open_by_click(&mut h);
         type_text(&mut h, "e");
@@ -1312,7 +1307,7 @@ mod add_menu {
 
     #[test]
     fn snapshot_of_the_hovered_slot() {
-        let (app, _) = reference_app_with_track();
+        let (app, _) = app_with_track();
         let mut h = harness(app);
         let at = slot(&h).rect().center();
         h.hover_at(at);
@@ -1361,7 +1356,7 @@ mod add_menu {
 
     #[test]
     fn snapshot_of_the_menu_at_the_header_button() {
-        let (app, _) = reference_app_with_track();
+        let (app, _) = app_with_track();
         let mut h = harness(app);
         let button = h
             .get_by_role_and_label(Role::Button, de::DEVICES_ADD)

@@ -115,12 +115,12 @@ impl ScanJob {
     }
 
     /// The outcome once the scan finished (non-blocking).
-    pub(crate) fn try_finish(&mut self) -> Option<ScanOutcome> {
-        let outcome = self.result.try_recv().ok()?;
+    pub(crate) fn try_finish(&mut self) -> Result<ScanOutcome, mpsc::TryRecvError> {
+        let outcome = self.result.try_recv()?;
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
-        Some(outcome)
+        Ok(outcome)
     }
 }
 

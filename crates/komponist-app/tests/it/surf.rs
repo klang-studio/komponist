@@ -10,9 +10,7 @@ use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, PluginAction, UiAction};
-use komponist_builtin::Internal;
 use komponist_i18n::Lang;
-use komponist_model::params::ParamId;
 use komponist_model::{DeviceId, DeviceRole, Project};
 
 use crate::common::{
@@ -57,23 +55,6 @@ fn click(h: &mut Harness<'_, App>, pos: Pos2) {
     h.run_steps(3);
 }
 
-/// A project with one surf track in `lang` and the dock on „Geräte“.
-fn reference_app_with_surf(lang: Lang) -> (App, DeviceId) {
-    let mut app = crate::common::reference_app(Project::new("Surf")).with_lang(lang);
-    app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: Internal::Surf.plugin_ref(),
-        target: DropTarget::NewTrack { index: None },
-    }));
-    let track = app.project().tracks[0].id;
-    let device = app.project().tracks[0].channel.devices[0].id;
-    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
-        tracks: vec![track],
-        mode: SelectMode::Replace,
-    })));
-    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
-    (app, device)
-}
-
 fn app_with_surf(lang: Lang) -> (App, DeviceId) {
     let mut app = App::headless(Project::new("Surf")).with_lang(lang);
     app.dispatch(Action::Plugin(PluginAction::Add {
@@ -106,38 +87,7 @@ fn mask_cpu(h: &mut Harness<'_, App>, lang: Lang) {
     h.mask(cpu.expand(2.0));
 }
 
-/// The „Vowel Pad“ of the demo: vowels on A, choir on B, LFO 1 → Position A, LFO 2 → Position B.
-fn reference_vowel_pad(app: &mut App, device: DeviceId) {
-    for (key, v) in [
-        ("osc_a_table", 6.0),
-        ("osc_a_pos", 0.42),
-        ("osc_b_table", 7.0),
-        ("osc_b_pos", 0.4),
-        ("osc_b_fine", 6.0),
-        ("osc_mix", 0.45),
-        ("sub_level", 0.0),
-        ("cutoff", 2400.0),
-        ("resonance", 0.22),
-        ("env_amount", 0.35),
-        ("mod1_src", 1.0),
-        ("mod1_dst", 3.0),
-        ("mod1_amt", 0.15),
-        ("mod2_src", 2.0),
-        ("mod2_dst", 4.0),
-        ("mod2_amt", 0.3),
-        ("mod3_src", 4.0),
-        ("mod3_dst", 6.0),
-        ("mod3_amt", 0.2),
-        ("mod4_src", 6.0),
-        ("mod4_dst", 3.0),
-        ("mod4_amt", 0.25),
-        ("unison", 3.0),
-        ("volume", -8.0),
-    ] {
-        set_reference_param(app, device, key, v);
-    }
-}
-
+/// The demo’s vowel and choir patch with LFOs on both oscillator positions.
 fn vowel_pad(app: &mut App, device: DeviceId) {
     for (key, v) in [
         ("osc_a_table", 6.0),
@@ -181,8 +131,8 @@ fn shot(h: &mut Harness<'_, App>, lang: Lang, name: &str, results: &mut Snapshot
 fn snapshot_of_the_pages_in_both_languages() {
     let mut results = SnapshotResults::new();
     for (lang, suffix) in [(Lang::De, ""), (Lang::En, "-en")] {
-        let (mut app, device) = reference_app_with_surf(lang);
-        reference_vowel_pad(&mut app, device);
+        let (mut app, device) = app_with_surf(lang);
+        vowel_pad(&mut app, device);
         let mut h = harness(app);
         shot(
             &mut h,
@@ -343,9 +293,4 @@ fn tables_positions_and_tuning_are_saved_in_the_project_and_load_again() {
     assert_authored_plain(&reopened, device, "osc_a_table", 6.0);
     assert_authored_plain(&reopened, device, "osc_a_pos", 0.42);
     assert_authored_plain(&reopened, device, "osc_a_oct", -1.0);
-}
-
-fn set_reference_param(app: &mut App, device: DeviceId, key: &str, value: f64) {
-    let id = Internal::Surf.wire(&ParamId::new(key)).expect(key);
-    app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
 }

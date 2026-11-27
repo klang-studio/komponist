@@ -84,7 +84,7 @@ impl<'p> Open<'p> {
         let labels = pattern
             .rows
             .iter()
-            .map(|r| step_rows::device_row_label(bank, instrument.map(|d| &d.plugin), r.note))
+            .map(|r| step_rows::device_row_label(bank, r.note))
             .collect();
         let cursor = ctx
             .ui
