@@ -53,6 +53,7 @@ use komponist_plugins::{DeviceStatus, PluginManagerEvent, ProcessorSetup};
 use komponist_processor::MAX_EVENTS_PER_BLOCK;
 use komponist_processor::processor::ParameterEditKind;
 
+use crate::automation_capture::AutomationCapture;
 use crate::device_host::DeviceHost;
 
 /// How long [`EngineSync::shutdown`] lets the engine drain its last commands.
@@ -358,6 +359,49 @@ pub(crate) enum MacroValueEdit {
     AutomationOverride(f32),
 }
 
+/// Completed automation heard during playback while it is still outside the document history.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct DraftOverlay<'a> {
+    automation: [Option<&'a AutomationCapture>; 2],
+}
+
+impl<'a> DraftOverlay<'a> {
+    pub(crate) fn new(
+        pending: Option<&'a AutomationCapture>,
+        active: &'a AutomationCapture,
+    ) -> Self {
+        // The audio writer owns an earlier pass. Apply it before any newer, live segments.
+        // Compact empty passes so transferring a pass to the writer keeps the same revision.
+        let mut passes = [pending, Some(active)]
+            .into_iter()
+            .flatten()
+            .filter(|pass| pass.completed_revision() != 0);
+        Self {
+            automation: [passes.next(), passes.next()],
+        }
+    }
+
+    fn revision(self) -> [u64; 2] {
+        self.automation
+            .map(|pass| pass.map_or(0, AutomationCapture::completed_revision))
+    }
+
+    fn compose(self, project: &Project) -> Option<Project> {
+        let [first, second] = self.automation;
+        let draft = first?.apply(project).ok()?;
+        match second {
+            Some(pass) => pass.apply(&draft).ok(),
+            None => Some(draft),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProjectRevision {
+    document: u64,
+    draft: [u64; 2],
+}
+
 /// Engine, audio stream and program sync. UI thread.
 pub struct EngineSync {
     audio: AudioSystem<EngineProcess>,
@@ -377,9 +421,9 @@ pub struct EngineSync {
     /// A sync left out something the one before did not; the app takes it once
     /// ([`EngineSync::take_diagnostics_notice`]).
     diagnostics_notice: bool,
-    /// Document revision `previous` was compiled from.
-    synced: Option<u64>,
-    /// How many programs [`EngineSync::send_project`] compiled and sent (tests: a gesture must not
+    /// Document and draft revisions used for the last sync.
+    synced: Option<ProjectRevision>,
+    /// How many programs the sync compiled and sent (tests: a gesture must not
     /// recompile per frame).
     programs_sent: u64,
     /// The latest revision whose changes reached the engine through fast-path commands only
@@ -536,18 +580,39 @@ impl EngineSync {
         sync
     }
 
-    /// Compiles and sends `doc`'s project if it changed since the last sync. During a gesture
-    /// whose changes went out as fast-path commands, waits for the gesture's end.
+    /// Sync the committed document without a playback draft, for export and headless callers.
     pub fn sync(&mut self, doc: &Document) {
-        let revision = doc.revision();
-        if self.synced == Some(revision) {
+        self.sync_with_draft(doc, DraftOverlay::default());
+    }
+
+    /// Sync the document with any completed in-progress automation. A gesture can skip compiling
+    /// a revision sent as fast-path commands as long as the overlay is unchanged.
+    pub(crate) fn sync_with_draft(&mut self, doc: &Document, draft: DraftOverlay<'_>) {
+        let draft = if self.is_detached() {
+            DraftOverlay::default()
+        } else {
+            draft
+        };
+        let revision = ProjectRevision {
+            document: doc.revision(),
+            draft: draft.revision(),
+        };
+        if self.synced == Some(revision)
+            || (doc.in_gesture()
+                && self.fast == Some(revision.document)
+                && self.synced.is_some_and(|last| last.draft == revision.draft))
+        {
             return;
         }
-        if doc.in_gesture() && self.fast == Some(revision) {
-            return;
-        }
-        self.send_project(doc.project());
+        let project = draft.compose(doc.project());
+        self.send_project(project.as_ref().unwrap_or(doc.project()));
         self.synced = Some(revision);
+        self.fast = None;
+    }
+
+    /// Force the next sync to compile again after a change outside the document.
+    pub(crate) fn invalidate_project(&mut self) {
+        self.synced = None;
         self.fast = None;
     }
 
@@ -557,7 +622,7 @@ impl EngineSync {
     }
 
     /// Compiles `project` against the program last sent and sends it (steps of the module docs).
-    pub fn send_project(&mut self, project: &Project) {
+    fn send_project(&mut self, project: &Project) {
         self.sync_macro_params();
         let next = self.compile_project(project);
         let changes = compile::slot_changes(self.previous.as_ref(), &next.program);
@@ -871,7 +936,7 @@ impl EngineSync {
     /// command now; if the engine was up to date before, the recompile is deferred to the end of
     /// the gesture.
     pub fn fast_path(&mut self, command: Command, before: u64, after: u64) {
-        if self.synced == Some(before) || self.fast == Some(before) {
+        if self.synced.is_some_and(|last| last.document == before) || self.fast == Some(before) {
             self.fast = Some(after);
         }
         self.send(command);
@@ -991,8 +1056,7 @@ impl EngineSync {
             self.rebuild_engine(Some(*poisoned));
         }
         if self.sample_rate() != before {
-            self.synced = None;
-            self.fast = None;
+            self.invalidate_project();
         }
         if self.midi.is_some() && Instant::now() >= self.next_midi_scan {
             self.scan_midi();
@@ -1041,8 +1105,7 @@ impl EngineSync {
         let changed = after != before;
         self.midi_changes.extend(midi_changes(&before, &after));
         if changed {
-            self.synced = None;
-            self.fast = None;
+            self.invalidate_project();
         }
         changed
     }
@@ -1078,8 +1141,7 @@ impl EngineSync {
         let started = self.audio.start(config);
         if self.sample_rate() != before {
             // Audio clips are compiled to frames of the rate: the program is compiled again.
-            self.synced = None;
-            self.fast = None;
+            self.invalidate_project();
         }
         started
     }
@@ -1334,8 +1396,7 @@ impl EngineSync {
             }
         }
         self.host = host;
-        self.synced = None;
-        self.fast = None;
+        self.invalidate_project();
         self.macro_params.clear();
     }
 
@@ -1358,8 +1419,7 @@ impl EngineSync {
                 self.host.release(device);
             }
         }
-        self.synced = None;
-        self.fast = None;
+        self.invalidate_project();
         // A rebuilt engine's old position and events belong to the old project.
         self.locate_after_rebuild = None;
         self.stranded.clear();
@@ -1446,8 +1506,7 @@ impl EngineSync {
         }
         self.pending.clear();
         self.previous = None;
-        self.synced = None;
-        self.fast = None;
+        self.invalidate_project();
         self.macro_params.clear();
         self.pending_macro_edits.clear();
         self.rebuild_notice = Some(playhead);
@@ -1615,8 +1674,7 @@ impl EngineSync {
         } = engine;
         self.handle = Some(handle);
         self.frozen = None;
-        self.synced = None;
-        self.fast = None;
+        self.invalidate_project();
         if let Some(setting) = self.workers_after_export.take() {
             process.apply_worker_setting(setting);
             if held {

@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use komponist_engine::automation::{AutomationBoundary, EngineTarget};
 use komponist_engine::{Command, EngineEvent, TransportState};
@@ -174,8 +175,15 @@ pub struct AutomationCapture {
     /// Engine writes started by a native edit that was consumed for macro learning.
     learned: BTreeSet<(DeviceId, u32)>,
     finished: HashMap<Destination, CompletedCurve>,
-    completed: usize,
-    published: Option<(usize, u64)>,
+    /// Revision of the completed segments. Zero means there is no playback draft.
+    completed_revision: u64,
+}
+
+// Captures are replaced and moved between the live pass and the audio writer. Revisions must
+// distinguish different passes even if they completed the same number of segments.
+fn next_draft_revision() -> u64 {
+    static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
+    NEXT_REVISION.fetch_add(1, Ordering::Relaxed)
 }
 
 impl AutomationCapture {
@@ -283,8 +291,8 @@ impl AutomationCapture {
         self.is_writing(owner, lane) || self.finished.contains_key(&Destination::Lane(owner, lane))
     }
 
-    pub(crate) fn was_published(&self) -> bool {
-        self.published.is_some()
+    pub(crate) fn completed_revision(&self) -> u64 {
+        self.completed_revision
     }
 
     pub(crate) fn merge(&mut self, other: Self) {
@@ -295,8 +303,9 @@ impl AutomationCapture {
                 current.push(segment);
             }
         }
-        self.completed += other.completed;
-        self.published = other.published.or(self.published);
+        if other.completed_revision != 0 {
+            self.completed_revision = next_draft_revision();
+        }
     }
 
     pub(crate) fn current_clip_value(
@@ -378,7 +387,7 @@ impl AutomationCapture {
             {
                 let (destination, points) = done;
                 self.finished.entry(destination).or_default().push(points);
-                self.completed += 1;
+                self.completed_revision = next_draft_revision();
             }
             let mut next = segment_at(project, write, next_tick);
             if next_tick < tick {
@@ -432,7 +441,7 @@ impl AutomationCapture {
                     finish_segment(project, segment, &write, end, Finish::Boundary)
                 {
                     self.finished.entry(destination).or_default().push(points);
-                    self.completed += 1;
+                    self.completed_revision = next_draft_revision();
                 }
                 segment = segment_at(project, &write, end);
                 segment.append(end, last.value, write.stepped);
@@ -447,7 +456,7 @@ impl AutomationCapture {
                 {
                     let (destination, points) = done;
                     self.finished.entry(destination).or_default().push(points);
-                    self.completed += 1;
+                    self.completed_revision = next_draft_revision();
                 }
                 if end == return_limit {
                     break;
@@ -507,7 +516,7 @@ impl AutomationCapture {
             {
                 let (destination, points) = done;
                 self.finished.entry(destination).or_default().push(points);
-                self.completed += 1;
+                self.completed_revision = next_draft_revision();
             }
         }
     }
@@ -791,22 +800,6 @@ impl App {
         std::mem::take(&mut self.automation_capture)
     }
 
-    /// Gives playback the completed portions of a pass so later laps play the new curve.
-    pub(crate) fn sync_automation_preview(&mut self) {
-        let completed = self.automation_capture.completed;
-        let last_program = self.engine.programs_sent();
-        if completed == 0
-            || self.automation_capture.published == Some((completed, last_program))
-            || self.engine.is_detached()
-        {
-            return;
-        }
-        if let Ok(draft) = self.automation_capture.apply(self.project()) {
-            self.engine.send_project(&draft);
-            self.automation_capture.published = Some((completed, self.engine.programs_sent()));
-        }
-    }
-
     pub(crate) fn commit_automation_capture(&mut self) {
         let pass = self.take_automation_capture();
         if pass.has_points() {
@@ -817,17 +810,11 @@ impl App {
         }
     }
 
-    pub(crate) fn discard_automation_capture(&mut self) {
-        if self.automation_capture.was_published()
-            || self.audio_recording.pending_automation_published()
-        {
-            self.engine.send_project(self.doc.project());
-        }
+    pub(crate) fn clear_automation_capture(&mut self) {
         self.automation_capture = AutomationCapture::default();
         self.automation_controls.clear();
         self.automation_stop_pending = false;
         self.engine.discard_pending_macro_overrides();
-        self.engine.send(Command::CancelAutomationWrite);
     }
 
     pub(crate) fn device_automation_target(
@@ -1351,6 +1338,110 @@ mod tests {
     }
 
     #[test]
+    fn playback_rebases_active_and_deferred_drafts_in_one_sync() {
+        use komponist_model::edits::{self as project_edits, ChannelProp, ProjectProp};
+
+        let owner = AutomationOwner::Master;
+        let target = AutomationTarget::Pan;
+        let (project, lane) = edits::add_lane(
+            &Project::new("Capture"),
+            owner,
+            target.clone(),
+            "Pan".into(),
+        )
+        .unwrap();
+        let project = edits::set_lane_mode(&project, owner, lane, AutomationMode::Latch).unwrap();
+        let pass = |value| {
+            let mut capture = AutomationCapture::default();
+            capture.open(&project, owner, target.clone(), false, 0.5);
+            capture.value(&project, owner, &target, Tick(10), value);
+            capture.end_segments(&project, Tick(30));
+            capture
+        };
+        let mut app = App::headless(project.clone());
+        app.sync_project();
+        let compiled_value = |app: &App| {
+            let program = app.engine.program().unwrap();
+            let lane = program
+                .master
+                .automation
+                .iter()
+                .find(|lane| lane.model == target)
+                .unwrap();
+            automation::value_at(&lane.points, Tick(20))
+        };
+
+        app.audio_recording.defer_automation(pass(0.25));
+        app.automation_capture = pass(0.75);
+        app.sync_project();
+        assert_eq!(compiled_value(&app), Some(0.75));
+        let sent = app.engine.programs_sent();
+        app.sync_project();
+        assert_eq!(app.engine.programs_sent(), sent);
+
+        // Replacing one segment with another must publish even at the same document revision.
+        let before = app.doc.revision();
+        app.automation_capture = pass(0.6);
+        app.sync_project();
+        assert_eq!(app.doc.revision(), before);
+        assert_eq!(compiled_value(&app), Some(0.6));
+        assert_eq!(app.engine.programs_sent(), sent + 1);
+
+        // Changing the document and the draft together compiles one project.
+        app.doc
+            .apply("Metronome", |p| {
+                project_edits::set_project_prop(p, ProjectProp::Metronome(!p.metronome))
+            })
+            .unwrap();
+        app.automation_capture = pass(0.65);
+        app.sync_project();
+        assert_ne!(app.engine.program().unwrap().metronome, project.metronome);
+        assert_eq!(compiled_value(&app), Some(0.65));
+        assert_eq!(app.engine.programs_sent(), sent + 2);
+
+        // During a fast-path gesture, unchanged drafts can wait. Changes in the draft
+        // still compile, even when the command covered the whole document edit.
+        app.doc.begin_gesture("Master gain");
+        let before = app.doc.revision();
+        app.doc
+            .apply("Master gain", |p| {
+                project_edits::set_master_prop(p, ChannelProp::VolumeDb(-6.0))
+            })
+            .unwrap();
+        app.engine
+            .fast_path(Command::SetMasterGain(0.5), before, app.doc.revision());
+        app.sync_project();
+        assert_eq!(app.engine.programs_sent(), sent + 2);
+        app.automation_capture = AutomationCapture::default();
+        app.sync_project();
+        assert_eq!(compiled_value(&app), Some(0.25));
+        assert_eq!(app.engine.programs_sent(), sent + 3);
+        app.doc.end_gesture();
+
+        app.engine.invalidate_project();
+        app.sync_project();
+        assert_eq!(compiled_value(&app), Some(0.25));
+        assert_eq!(app.engine.programs_sent(), sent + 4);
+
+        // Cancelling the writer drops the last draft without changing the document or undo.
+        let before = app.doc.revision();
+        app.discard_take();
+        assert_eq!(app.doc.revision(), before);
+        assert_eq!(compiled_value(&app), None);
+        assert_eq!(app.engine.programs_sent(), sent + 5);
+        assert!(
+            app.project()
+                .master_automation
+                .lane(&target)
+                .unwrap()
+                .points
+                .is_empty()
+        );
+        assert_eq!(app.doc.undo_label(), Some("Master gain"));
+        app.shutdown();
+    }
+
+    #[test]
     fn looped_clip_write_can_be_discarded_and_then_undone_in_one_step() {
         use crate::actions::{Action, EditAction, TransportAction};
         use komponist_model::edits::{ChannelProp, TrackProp};
@@ -1426,15 +1517,15 @@ mod tests {
         write(&mut app, -0.6);
         let playhead = app.engine.playhead();
         app.automation_capture.end_segments(&project, playhead);
-        app.sync_automation_preview();
+        app.sync_project();
         let deferred = app.take_automation_capture();
-        assert!(deferred.was_published());
         app.audio_recording.defer_automation(deferred);
-        assert!(app.audio_recording.pending_automation_published());
         let published_program = app.engine.programs_sent();
+        app.sync_project();
+        assert_eq!(app.engine.programs_sent(), published_program);
         transport(&mut app, TransportAction::DiscardTake);
         assert!(app.engine.programs_sent() > published_program);
-        assert!(!app.audio_recording.pending_automation_published());
+        assert!(app.audio_recording.pending_automation().is_none());
         advance(&mut app, 64);
         assert_eq!(app.project().as_ref(), &project);
         assert!(app.doc.undo_label().is_none());

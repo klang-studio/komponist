@@ -415,7 +415,7 @@ impl App {
         let before = self.doc.revision();
         match self.map_track_macro(track, index, target.clone(), previous) {
             Some(true) if self.doc.revision() != before => {
-                self.engine.send_project(self.doc.project());
+                self.sync_project();
             }
             Some(false) => {
                 // The target can be eligible even when its destination macro has no free slots.
@@ -486,7 +486,7 @@ impl App {
                 })
                 .collect();
             if !external.is_empty() {
-                self.engine.send_project(self.doc.project());
+                self.sync_project();
                 for (device, id, value) in external {
                     if let Some(slot) = self.engine.program().and_then(|p| p.slots.slot(device)) {
                         // A native gesture may still be holding a different value.

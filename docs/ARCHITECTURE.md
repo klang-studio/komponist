@@ -929,6 +929,11 @@ changes use continuous values. Source recovery/relink and tempo analysis share f
 `App` coordinates `Document`, `UiState`, `EngineSync`, device hosting, settings and windows.
 Views emit actions; central dispatch validates and applies edits, transport changes and UI/plugin
 operations. `EngineSync` compiles document changes and sends fast commands for ongoing gestures.
+Playback sync tracks both the document revision and the revisions of completed automation
+segments. It applies those segments as a draft over the current document, including passes
+waiting for the audio writer. The draft enters the document and its undo history when the
+take commits.
+Discarding the take removes its draft and restores playback from the document.
 The layout combines transport, browser, arrangement, inspector, resizable dock and status bar.
 Keyboard chords map to actions by focus context and platform; macOS uses its platform modifiers.
 Headless construction with `NullBackend` supports app acceptance tests.

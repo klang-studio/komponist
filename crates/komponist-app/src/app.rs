@@ -637,14 +637,22 @@ impl App {
         self.engine.host_mut().start_scan(&dirs);
     }
 
+    /// Publish the revision of the document and any automation that is still being captured.
+    pub(crate) fn sync_project(&mut self) {
+        let draft = crate::engine_sync::DraftOverlay::new(
+            self.audio_recording.pending_automation(),
+            &self.automation_capture,
+        );
+        self.engine.sync_with_draft(&self.doc, draft);
+    }
+
     /// One frame without a window (tests, headless tools): engine and device host events, queued
     /// actions, sync. Meters are not advanced.
     pub fn step(&mut self) {
         self.poll_events();
         self.poll_export();
         self.flush_queue();
-        self.engine.sync(&self.doc);
-        self.sync_automation_preview();
+        self.sync_project();
     }
 
     // --------------------------------------------------------------------------------------------
@@ -694,8 +702,7 @@ impl App {
         self.sync_pads(&ctx);
         self.release_auditions(&ctx);
         self.update_plugin_frames(&ctx);
-        self.engine.sync(&self.doc);
-        self.sync_automation_preview();
+        self.sync_project();
         self.update_recovery(&ctx);
         self.persist_panels();
         self.update_title(&ctx);
@@ -813,7 +820,8 @@ impl App {
         self.update_audio_take();
         if recompile {
             // Delay compensation follows the new latencies; the slots stay as they are.
-            self.engine.send_project(self.doc.project());
+            self.engine.invalidate_project();
+            self.sync_project();
         }
         self.flush_deferred();
         self.finish_startup_track_actions();
@@ -1011,8 +1019,11 @@ impl App {
     pub(crate) fn discard_take(&mut self) {
         self.shell.take_expected = false;
         self.recording = None;
-        self.discard_automation_capture();
         self.audio_recording.cancel();
+        self.clear_automation_capture();
+        self.sync_project();
+        // The engine cancels against the committed curves so it can restore an undriven base.
+        self.engine.send(Command::CancelAutomationWrite);
         self.drain_events_with_automation(false);
         self.engine.send(Command::StopRecording);
     }
@@ -1830,7 +1841,7 @@ impl App {
                     // frame (a loop range, an edit) reach the engine before Play, not at the end
                     // of the frame. Otherwise playback can start with the old loop and pass the
                     // new loop end before the program arrives, and then it never wraps.
-                    self.engine.sync(&self.doc);
+                    self.sync_project();
                     self.engine.send(Command::Play);
                 }
             }
@@ -1934,7 +1945,7 @@ impl App {
                         edits::set_exclusive(p, track, edits::ExclusiveFlag::Arm)
                     });
                     // The engine must know the armed track before it starts capturing.
-                    self.engine.sync(&self.doc);
+                    self.sync_project();
                 }
                 let meter = self.project().meter;
                 let bar = meter.ticks_per_bar();
@@ -1946,7 +1957,7 @@ impl App {
                 };
                 // Timing/input edits dispatched in this frame must precede Record too,
                 // even when the track was already armed (not only automatic arming).
-                self.engine.sync(&self.doc);
+                self.sync_project();
                 if !self.prepare_audio_take(from) {
                     return;
                 }
@@ -3098,7 +3109,8 @@ impl App {
         // while the project opens.
         self.recording = None;
         self.audio_recording.reset();
-        self.discard_automation_capture();
+        self.clear_automation_capture();
+        self.engine.send(Command::CancelAutomationWrite);
         self.shell.take_expected = false;
         self.engine.send(Command::Stop);
         self.engine.send(Command::Locate(Tick::ZERO));
