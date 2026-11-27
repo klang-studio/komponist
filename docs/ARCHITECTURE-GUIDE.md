@@ -388,8 +388,9 @@ Rules that follow from this picture:
   `Box<dyn Processor>`.
 - **`komponist-audio` does not know the engine.** It drives anything that implements its
   `AudioProcess` trait; the app supplies the adapter (`EngineProcess`).
-- **`komponist-hosting` (plugin formats) is only used by the bridge**, never by the app process
-  directly. The app talks to plugins only through `komponist-plugins` and IPC.
+- **`komponist-hosting` implements the plugin formats.** In the app process, `komponist-plugins`
+  uses it to host verified shipped CLAP bundles. The bridge uses it for third-party CLAP and VST3
+  instances and for scanning. The app interacts with both paths through `komponist-plugins`.
 
 ### 8.2 Sizes and where to start
 
@@ -846,7 +847,7 @@ become permanent. Hexa uses `org.klang-studio.komponist.hexa` and Klopfer uses
 | `komponist-plugins` | app | catalog and scan cache, `PluginManager` (lifecycle, status, state), `Bridge` (one child process), `ExternalProcessor` (the engine-side `Processor`) |
 | `komponist-ipc` | both | shared-memory layout, ring buffers, wait/wake primitives, control protocol, process watching |
 | `komponist-bridge` | bridge | instance mode (load a plugin, serve audio) and scan mode |
-| `komponist-hosting` | bridge | the actual CLAP (clack-host) and VST3 implementation behind `HostedPlugin` / `HostedProcessor` |
+| `komponist-hosting` | app and bridge | CLAP (clack-host) for verified shipped bundles in the app, and CLAP/VST3 hosting and scans in the bridge |
 
 The bridge is the same executable: `main()` in
 [`komponist-app/src/main.rs`](../crates/komponist-app/src/main.rs) checks for `--bridge` before
