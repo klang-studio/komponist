@@ -966,9 +966,19 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
             h.snapshot(format!("track-macro-{name}-{}-1x", lang.code()));
         };
         snapshot(&mut h, "card");
-        let knob_target = |id| AutomationTarget::Param {
+        let target = |id| AutomationTarget::Param {
             device: hall,
-            param: ParamId::new(id),
+            param: ParamId::plugin(id),
+        };
+        let decay_target = target(author_parameter(h.state(), hall, "decay"));
+        let mix_target = target(author_parameter(h.state(), hall, "mix"));
+        let assert_mapping_count = |app: &App, expected| {
+            assert_eq!(
+                app.project().track(track).unwrap().macros.0[0]
+                    .mappings
+                    .len(),
+                expected
+            );
         };
         h.state_mut().dispatch(Action::Macro(Macro::Rename {
             track,
@@ -980,9 +990,10 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
         h.state_mut().dispatch(Action::Macro(Macro::Map {
             track,
             index: 0,
-            target: knob_target("decay"),
+            target: decay_target,
         }));
         h.run_steps(3);
+        assert_mapping_count(h.state(), 1);
         snapshot(&mut h, "mapping");
         h.state_mut()
             .dispatch(Action::Macro(Macro::ToggleMapping { track }));
@@ -991,15 +1002,16 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
         h.state_mut().dispatch(Action::Macro(Macro::Map {
             track,
             index: 0,
-            target: knob_target("mix"),
+            target: mix_target.clone(),
         }));
         h.state_mut().dispatch(Action::Macro(Macro::Bend {
             track,
             index: 0,
-            target: knob_target("mix"),
+            target: mix_target,
             bend: 0.4,
         }));
         h.run_steps(3);
+        assert_mapping_count(h.state(), 2);
         snapshot(&mut h, "list");
         let name = lang.param_decay();
         let reverb = h.state().project().find_device(hall).unwrap().2;
@@ -1021,7 +1033,7 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
         results.extend_harness(&mut h);
 
         let missing = Mapping {
-            target: knob_target("removed-param"),
+            target: target(u32::MAX),
             label: "Hall · Former target".into(),
             min: 0.0,
             max: 1.0,
@@ -1033,6 +1045,7 @@ fn track_macro_snapshots_cover_card_mapping_list_and_missing_targets() {
         select_track(&mut app, track);
         app.dispatch(Action::Macro(Macro::Select { track, index: 0 }));
         let mut missing = harness(app);
+        assert_mapping_count(missing.state(), 3);
         snapshot(&mut missing, "missing");
         results.extend_harness(&mut missing);
     }
