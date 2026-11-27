@@ -110,6 +110,7 @@ fn with_effect(project: Project, plugin: PluginRef) -> (Project, DeviceId) {
         plugin,
         state: None,
         sidechain: None,
+        preset: None,
     };
     edits::insert_device(&project, ChannelRef::Track(track), len, spec).unwrap()
 }

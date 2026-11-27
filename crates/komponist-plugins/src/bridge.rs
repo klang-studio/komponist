@@ -42,8 +42,12 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak, mpsc};
 use std::time::{Duration, Instant};
 
-use komponist_ipc::clap_presets::PresetLoad;
-use komponist_ipc::control::{AppliedClapPreset, PROTOCOL_VERSION, StateRestoreError, socket_pair};
+use komponist_ipc::clap_presets::{ClapPresetSource, PresetLoad, PresetReport};
+use std::num::NonZeroU32;
+
+use komponist_ipc::control::{
+    AppliedClapPreset, PROTOCOL_VERSION, ReportedPresetValues, StateRestoreError, socket_pair,
+};
 use komponist_ipc::device_assets::{MAX_BINDINGS_BYTES, OfflineRequest, Snapshot, edit_state};
 use komponist_ipc::waveform_markers::{self, EditResult, EditStatus};
 use komponist_ipc::{
@@ -200,6 +204,9 @@ struct StateRestore {
     request: u32,
     /// Newer user edits already applied optimistically to the manager's cache.
     later_edits: BTreeSet<u32>,
+    /// The latest plugin-side load superseded only if the document restore changes the plugin.
+    report: Option<ClapPresetSource>,
+    preset_values: Option<ReportedPresetValues>,
 }
 
 #[derive(Debug)]
@@ -238,6 +245,8 @@ impl StateRestore {
         Self {
             request,
             later_edits: BTreeSet::new(),
+            report: None,
+            preset_values: None,
         }
     }
 }
@@ -285,7 +294,8 @@ pub(crate) struct Bridge {
     /// `GetState` requests without answer, in send order.
     state_requests: VecDeque<StateRequest>,
     state_restores: VecDeque<StateRestore>,
-    pending_clap_preset: Option<u32>,
+    /// The request of a preset load and the discovered source it loads (`None`: user state).
+    pending_clap_preset: Option<(u32, Option<ClapPresetSource>)>,
     pending_preset_capture: Option<PresetCapture>,
     /// A preset changed audio while a newer document restore was queued.
     superseded_preset_applied: bool,
@@ -312,6 +322,7 @@ pub(crate) struct Bridge {
     automated_params: BTreeMap<u32, Option<f64>>,
     temporary_params: BTreeSet<u32>,
     pending_params: BTreeSet<u32>,
+    pending_param_serials: BTreeMap<u32, NonZeroU32>,
     /// Macro outputs expected at the processor. The native editor may show a preview meanwhile.
     macro_params: BTreeMap<u32, f64>,
     /// Last macro values that became the ordinary parameter base on unmapping.
@@ -477,6 +488,7 @@ impl Bridge {
             automated_params: BTreeMap::new(),
             temporary_params: BTreeSet::new(),
             pending_params: BTreeSet::new(),
+            pending_param_serials: BTreeMap::new(),
             macro_params: BTreeMap::new(),
             released_macro_params: BTreeSet::new(),
             macro_changed: false,
@@ -1117,12 +1129,12 @@ impl Bridge {
     }
 
     /// Sends `SetParam` and keeps the value (its text follows with the bridge's echo).
-    pub(crate) fn set_param(&mut self, id: u32, value: f64) {
+    pub(crate) fn set_param_edit(&mut self, id: u32, value: f64, serial: NonZeroU32) {
         if self.phase != Phase::Running {
             return;
         }
-        self.send(ControlMsg::SetParam { id, value });
-        self.edited_param(id, value);
+        self.send(ControlMsg::SetParamEdit { id, value, serial });
+        self.edited_param_on_render(id, value, serial);
     }
 
     /// Updates the live cache without retaining a temporary value as a document edit.
@@ -1188,6 +1200,7 @@ impl Bridge {
             {
                 // An explicit new mapping supersedes a manual write to the same target.
                 self.pending_params.remove(id);
+                self.pending_param_serials.remove(id);
                 self.released_macro_params.remove(id);
             }
         }
@@ -1254,7 +1267,11 @@ impl Bridge {
         self.assets.begin_restore();
         self.asset_offline_waiting = None;
         let request = self.seq();
-        self.pending_clap_preset = Some(request);
+        let source = match &preset {
+            PresetLoad::Discovered(preset) => Some(preset.source.clone()),
+            PresetLoad::UserState(_) => None,
+        };
+        self.pending_clap_preset = Some((request, source));
         self.state_restores.push_back(StateRestore::new(request));
         self.long_call_since.get_or_insert_with(Instant::now);
         self.send(ControlMsg::LoadClapPreset(request, preset));
@@ -1304,6 +1321,7 @@ impl Bridge {
         self.invalidate_waveform_markers();
         self.last_state = Some(state.clone());
         self.pending_params.clear();
+        self.pending_param_serials.clear();
         self.released_macro_params.clear();
         self.invalidate_state_requests();
         self.assets.begin_restore();
@@ -1632,6 +1650,16 @@ impl Bridge {
                 }
                 self.update_latency(info.latency, events);
             }
+            BridgeMsg::StartupState(state) => {
+                if matches!(self.phase, Phase::Hello | Phase::Loading)
+                    && self.document_restore_index().is_none()
+                {
+                    events.push(PluginManagerEvent::StartupState {
+                        device,
+                        state: Arc::<[u8]>::from(state).into(),
+                    });
+                }
+            }
             BridgeMsg::Activated { latency } => {
                 self.update_latency(latency, events);
                 if matches!(self.phase, Phase::Hello | Phase::Loading) {
@@ -1696,6 +1724,7 @@ impl Bridge {
                         self.temporary_params.clear();
                     }
                     self.pending_params.clear();
+                    self.pending_param_serials.clear();
                     self.released_macro_params.clear();
                 }
                 self.macro_changed = false;
@@ -1736,6 +1765,7 @@ impl Bridge {
                 let ids: BTreeSet<_> = params.iter().map(|param| param.id).collect();
                 self.temporary_params.retain(|id| ids.contains(id));
                 self.pending_params.retain(|id| ids.contains(id));
+                self.pending_param_serials.retain(|id, _| ids.contains(id));
                 self.macro_params.retain(|id, _| ids.contains(id));
                 self.released_macro_params.retain(|id| ids.contains(id));
                 self.automated_params.retain(|id, _| ids.contains(id));
@@ -1766,6 +1796,7 @@ impl Bridge {
                 }
                 events.push(PluginManagerEvent::ParamValuesChanged { device });
             }
+            BridgeMsg::PresetValues(values) => self.accept_preset_values(values, events),
             BridgeMsg::PluginParamEdits(edits) => {
                 if self.snapshots_preserve_bases() && self.phase == Phase::Running {
                     for (id, value) in edits {
@@ -1829,6 +1860,20 @@ impl Bridge {
             }
             BridgeMsg::LatencyChanged(latency) => self.update_latency(latency, events),
             BridgeMsg::RestartRequested => {}
+            BridgeMsg::PresetReported(report) => {
+                if matches!(self.phase, Phase::Loading | Phase::Running) {
+                    match report {
+                        PresetReport::Loaded {
+                            source, startup, ..
+                        } => {
+                            self.accept_preset_report(source, startup, events);
+                        }
+                        PresetReport::Failed { message, .. } => {
+                            events.push(PluginManagerEvent::ClapPresetFailed { device, message });
+                        }
+                    }
+                }
+            }
             BridgeMsg::StateDirty => {
                 // While loading, "dirty" comes from the plugin itself, not from the user.
                 if self.phase == Phase::Running {
@@ -2024,10 +2069,12 @@ impl Bridge {
         result: Result<AppliedClapPreset, String>,
         events: &mut Vec<PluginManagerEvent>,
     ) {
-        if self.pending_clap_preset != Some(request) {
+        let Some((_, source)) = self
+            .pending_clap_preset
+            .take_if(|(pending, _)| *pending == request)
+        else {
             return;
-        }
-        self.pending_clap_preset = None;
+        };
         self.clear_completed_long_call();
         let device = self.device;
         match result {
@@ -2045,6 +2092,8 @@ impl Bridge {
                         .expect("pending preset")
                         .later_edits;
                     self.pending_params.retain(|id| later_edits.contains(id));
+                    self.pending_param_serials
+                        .retain(|id, _| later_edits.contains(id));
                     self.released_macro_params
                         .retain(|id| later_edits.contains(id));
                     self.user_changed();
@@ -2052,6 +2101,7 @@ impl Bridge {
                     self.last_state = Some(state.clone().into());
                     events.push(PluginManagerEvent::ClapPresetLoaded {
                         device,
+                        source,
                         previous_state: applied.previous_state.into(),
                         state,
                     });
@@ -2067,6 +2117,88 @@ impl Bridge {
                 }
                 events.push(PluginManagerEvent::ClapPresetFailed { device, message });
             }
+        }
+    }
+
+    fn document_restore_index(&self) -> Option<usize> {
+        self.state_restores.iter().position(|restore| {
+            self.pending_clap_preset
+                .as_ref()
+                .map(|(request, _)| *request)
+                != Some(restore.request)
+        })
+    }
+
+    fn accept_preset_report(
+        &mut self,
+        source: ClapPresetSource,
+        startup: bool,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        if !startup {
+            if let Some(index) = self.document_restore_index() {
+                let restore = &mut self.state_restores[index];
+                restore.report = Some(source);
+                restore.preset_values = None;
+                return;
+            }
+            self.user_changed();
+            self.plugin_state_dirty = true;
+            self.invalidate_state_requests();
+            self.snapshot_soon();
+        }
+        events.push(PluginManagerEvent::ClapPresetReported {
+            device: self.device,
+            source,
+            startup,
+        });
+    }
+
+    fn accept_preset_values(
+        &mut self,
+        reported: ReportedPresetValues,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        if let Some(index) = self.document_restore_index() {
+            self.state_restores[index].preset_values = Some(reported);
+            return;
+        }
+        for (id, serial) in reported.superseded {
+            self.clear_pending_param_edit(id, serial);
+        }
+        let settled: BTreeMap<_, _> = reported.settled.into_iter().collect();
+        // Playback may have changed the values of controls it currently owns. A lane with
+        // no current value leaves its control at the reported preset's base.
+        for value in reported.values {
+            let id = value.id;
+            if !self.params.iter().any(|param| param.id == id) {
+                continue;
+            }
+            let driven = matches!(self.automated_params.get(&id), Some(Some(_)))
+                || self.macro_params.contains_key(&id);
+            if !driven && let Some(&serial) = settled.get(&id) {
+                self.clear_pending_param_edit(id, serial);
+            }
+            if self.pending_params.contains(&id) {
+                continue;
+            }
+            if !driven {
+                self.base_values.insert(id, value.value);
+            }
+            self.values.insert(id, value);
+        }
+        events.push(PluginManagerEvent::ParamsChanged {
+            device: self.device,
+        });
+        events.push(PluginManagerEvent::ParamValuesChanged {
+            device: self.device,
+        });
+    }
+
+    fn clear_pending_param_edit(&mut self, id: u32, serial: NonZeroU32) {
+        if self.pending_param_serials.get(&id) == Some(&serial) {
+            self.pending_params.remove(&id);
+            self.pending_param_serials.remove(&id);
         }
     }
 
@@ -2093,7 +2225,8 @@ impl Bridge {
             Ok(values) => (values, None),
             Err(error) => (error.changed_values, Some(error.message)),
         };
-        if error.is_none() || !values.is_empty() {
+        let changed = error.is_none() || !values.is_empty();
+        if changed {
             for value in values {
                 if !restore.later_edits.contains(&value.id) {
                     self.base_values.insert(value.id, value.value);
@@ -2142,6 +2275,20 @@ impl Bridge {
                 });
             }
         }
+        if !changed && let Some(source) = restore.report {
+            if let Some(index) = self.document_restore_index() {
+                let next = &mut self.state_restores[index];
+                if next.report.is_none() {
+                    next.report = Some(source);
+                    next.preset_values = restore.preset_values;
+                }
+            } else {
+                self.accept_preset_report(source, false, events);
+                if let Some(values) = restore.preset_values {
+                    self.accept_preset_values(values, events);
+                }
+            }
+        }
     }
 
     fn gui_answered(&mut self) {
@@ -2180,6 +2327,14 @@ impl Bridge {
 
     /// Updates the cached value and schedules a snapshot for a user's edit.
     pub(crate) fn edited_param(&mut self, id: u32, value: f64) {
+        self.record_param_edit(id, value, None);
+    }
+
+    pub(crate) fn edited_param_on_render(&mut self, id: u32, value: f64, serial: NonZeroU32) {
+        self.record_param_edit(id, value, Some(serial));
+    }
+
+    fn record_param_edit(&mut self, id: u32, value: f64, serial: Option<NonZeroU32>) {
         if self.phase != Phase::Running || !self.params.iter().any(|param| param.id == id) {
             return;
         }
@@ -2193,8 +2348,13 @@ impl Bridge {
         // The engine reports a persistent edit only after ownership returns to the user.
         // Keep verification pending while that edit replaces the previous override.
         let replaced_override = self.temporary_params.remove(&id);
-        if replaced_override || self.base_values.get(&id) != Some(&value) {
+        if serial.is_some() || replaced_override || self.base_values.get(&id) != Some(&value) {
             self.pending_params.insert(id);
+            if let Some(serial) = serial {
+                self.pending_param_serials.insert(id, serial);
+            } else {
+                self.pending_param_serials.remove(&id);
+            }
             self.invalidate_state_requests();
         }
         self.base_values.insert(id, value);

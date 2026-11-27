@@ -192,8 +192,9 @@ allocated from `Project::next_id`; overflow rejects an edit or file instead of w
 - **Channels** hold ordered devices, fader, pan, mute and solo. A MIDI chain is
   MIDI effects → at most one instrument → audio effects. Audio tracks, buses and the master hold
   audio effects only. Edits enforce these roles and ordering.
-- **Devices** store plugin identity, persistent state, bypass and optional sidechain source.
-  Loading/crash/missing status belongs to runtime management, outside the saved document.
+- **Devices** store plugin identity, persistent state, bypass, optional sidechain source and the
+  preset they last loaded (§8.6). Loading/crash/missing status belongs to runtime management,
+  outside the saved document.
 - **Automation** uses arrangement lanes on tracks and the master, plus envelopes in MIDI and step
   clips. Each lane has a stable ID, a target and its own playback/recording mode (§6.12).
 
@@ -732,7 +733,8 @@ macOS integrates with CFRunLoop/AppKit, and Windows pumps messages with a wake r
 while a frame or modal loop is active.
 
 CLAP supports audio/note ports, parameters, state, latency, GUI, timers, Unix fd support,
-thread checking, logging, render mode and note names. VST3 implements component/controller
+thread checking, logging, render mode, note names, preset discovery and preset-load (both sides:
+the host loads a discovered source, the plugin reports its own loads and failures). VST3 implements component/controller
 lifecycle, events/parameters, host callbacks, component/controller state, GUI resize/scale and
 Linux `IRunLoop`. VST3 state stores both component and controller in a `KPV3` envelope.
 
@@ -820,6 +822,26 @@ The plugin manager keeps runtime state keyed by `DeviceId`: ready, loading, fail
 missing, with document bypass reflected in presentation. Loading also covers rate/render-mode
 reactivation and a 250 ms warm-up, so ready means audio processing is available. Missing devices
 retain identity/state for recovery; failed instances offer reload. These statuses are not project data.
+
+**Selected preset.** The preset a device shows is the one it last loaded through standard CLAP
+`preset-load`, the same for every plugin, bundled or not: no state is interpreted. The host
+records the location and load key of each load it requests (device card, plugin frame, browser,
+demo) and of each load the plugin reports itself through the host side of the extension
+(`clap_host_preset_load.loaded`, e.g. its own browser or a program change); `on_error` reaches the
+status bar. In process the reports are drained after each main-thread poll; over the bridge they
+travel as `BridgeMsg::PresetReported`, followed by the loaded values (`BridgeMsg::PresetValues`),
+which become the parameter bases; in process the inventory is read again. A load the plugin
+reported before one the host requests is superseded by it. The selection is stored with the device
+in the project (`Device::preset`) and enters the undo history: a requested load with its state as
+one step, a reported load with the plugin's next snapshot as one step (undo before that snapshot
+hands the plugin the document's state and drops the report). A preset reported while the plugin is
+created, initialised, activated or restores a state is its start preset (the bundled adapter
+reports the factory preset an instance holds at its first activation, e.g. Hexa's "Init"): a device
+that records no preset takes it outside the history without making the document dirty, in every
+step where it holds the same state (`Document::restate`), and a recorded one keeps its selection
+and mark. The first parameter edit after a load (card, text entry or the plugin's own GUI) marks the
+preset as modified, also in the history (after an unrelated gesture, like the edit's state);
+loading again clears the mark. The label is the discovered preset with the recorded source.
 
 ### 8.7 macOS application bundle
 

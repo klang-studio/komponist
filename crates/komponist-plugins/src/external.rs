@@ -21,6 +21,7 @@
 //! [`OFFLINE_DEADLINE`] instead, so a render never drops a block for timing reasons.
 
 use std::collections::VecDeque;
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -196,11 +197,17 @@ impl ExternalProcessor {
             }
             Some(WireEventKind::ParamValue { id, .. }) => {
                 let event = WireEvent { offset: 0, ..event };
-                let same = self.pending.iter().position(|e| {
-                    matches!(e.decode(), Some(WireEventKind::ParamValue { id: other, .. }) if other == id)
+                let for_parameter = |queued: &WireEvent| matches!(queued.decode(), Some(WireEventKind::ParamValue { id: other, .. }) if other == id);
+                let same = self.pending.iter().position(|queued| {
+                    for_parameter(queued) && (queued.reserved != 0) == (event.reserved != 0)
                 });
                 match same {
-                    Some(i) => self.pending[i] = event,
+                    Some(index) => {
+                        self.pending[index] = event;
+                        if self.pending[index + 1..].iter().any(for_parameter) {
+                            self.pending[index..].rotate_left(1);
+                        }
+                    }
                     None if self.pending.len() < PENDING_CAPACITY => self.pending.push(event),
                     None => {}
                 }
@@ -282,7 +289,10 @@ impl ExternalProcessor {
                 // The engine has accepted these events for the slot. Keep the latest value
                 // per parameter so a held automation point reaches the first active block.
                 for event in events {
-                    if matches!(event.kind, EventKind::Param { .. }) {
+                    if matches!(
+                        event.kind,
+                        EventKind::Param { .. } | EventKind::ParamEdit { .. }
+                    ) {
                         self.stash(to_wire(event));
                     }
                 }
@@ -544,6 +554,13 @@ impl EventProcessor for ExternalProcessor {
         self.stash(WireEvent::new(0, WireEventKind::ParamValue { id, value }));
     }
 
+    fn set_param_edit(&mut self, id: u32, value: f64, serial: NonZeroU32) {
+        self.stash(WireEvent {
+            reserved: serial.get(),
+            ..WireEvent::new(0, WireEventKind::ParamValue { id, value })
+        });
+    }
+
     fn process_events(&mut self, ctx: &ProcessContext, input: &[Event], out: &mut EventSink<'_>) {
         static SILENCE: [f32; MAX_BLOCK] = [0.0; MAX_BLOCK];
         let frames = ctx.frames as usize;
@@ -688,6 +705,12 @@ pub(crate) fn to_wire(event: &Event) -> WireEvent {
         },
         EventKind::Midi(bytes) => WireEventKind::Midi(bytes),
         EventKind::Param { id, value } => WireEventKind::ParamValue { id, value },
+        EventKind::ParamEdit { id, value, serial } => {
+            return WireEvent {
+                reserved: serial.get(),
+                ..WireEvent::new(event.offset, WireEventKind::ParamValue { id, value })
+            };
+        }
         EventKind::AllNotesOff => WireEventKind::AllNotesOff,
     };
     WireEvent::new(event.offset, kind)

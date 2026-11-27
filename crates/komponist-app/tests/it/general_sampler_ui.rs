@@ -82,6 +82,7 @@ fn authored_harness(
             plugin: clap_plugin(FX),
             state: None,
             sidechain: None,
+            preset: None,
         },
     )
     .unwrap();

@@ -68,6 +68,7 @@ fn s05_project() -> (Project, Chain) {
         plugin: plugin(&catalog, id),
         state: None,
         sidechain: None,
+        preset: None,
     };
     let (p, tal) = edits::insert_device(&p, ChannelRef::Track(pad), 2, fx("chorus")).unwrap();
     let p = edits::set_device_bypass(&p, tal, true).unwrap();

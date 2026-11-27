@@ -57,6 +57,7 @@ fn s04_project() -> Project {
         plugin: plugin(&catalog, "comp"),
         state: None,
         sidechain: None,
+        preset: None,
     };
     let (p, _) = edits::insert_device(&p, ChannelRef::Master, 0, limiter).unwrap();
     p

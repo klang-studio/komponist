@@ -396,6 +396,9 @@ pub struct NewDevice {
     /// copy's chain without a cycle ([`crate::routing::sidechain_sources`]); otherwise the copy
     /// starts without one (no error).
     pub sidechain: Option<Sidechain>,
+    /// The preset the state was loaded from (a browser preset, or the source's selection for a
+    /// copy); `None` for plugin defaults.
+    pub preset: Option<crate::DevicePreset>,
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -586,6 +589,7 @@ pub fn add_track_in(
             asset_links: Default::default(),
             state: None,
             sidechain: None,
+            preset: None,
         }));
     }
     if spec.arm_exclusive {
@@ -1429,6 +1433,7 @@ pub fn insert_device(
             asset_links: Default::default(),
             state: spec.state,
             sidechain: None,
+            preset: spec.preset,
         }),
     );
     // The copy's source must still exist and must not lie downstream of the new holder (#7).
@@ -1468,6 +1473,7 @@ pub fn replace_instrument(
         asset_links: Default::default(),
         state: None,
         sidechain: None,
+        preset: None,
     });
     let track_value = track_mut(&mut p, track_index);
     let channel = &mut track_value.channel;
@@ -1568,6 +1574,27 @@ pub fn set_saved_plugin_state(
     edit_device(project, device, |d| {
         d.state = Some(state.bytes.clone());
         d.parameter_bases.clone_from(&state.parameter_bases);
+    })
+}
+
+/// Records the preset a device loaded (or clears it) without modifying its state: the host
+/// stores the source of a load it requested in the same step as the loaded state, and a load the
+/// plugin reports through CLAP preset-load as a step of its own.
+pub fn set_device_preset(
+    project: &Project,
+    device: DeviceId,
+    preset: Option<crate::DevicePreset>,
+) -> EditResult {
+    edit_device(project, device, |d| d.preset = preset)
+}
+
+/// Marks the loaded preset as modified after a parameter edit; a device without a preset
+/// selection or one already marked stays as it is.
+pub fn mark_device_preset_modified(project: &Project, device: DeviceId) -> EditResult {
+    edit_device(project, device, |d| {
+        if let Some(preset) = &mut d.preset {
+            preset.modified = true;
+        }
     })
 }
 

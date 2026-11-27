@@ -34,7 +34,7 @@ fn null_sync(host: Box<dyn DeviceHost>) -> EngineSync {
 /// Sends the document to the engine and moves the engine to the document after `before`.
 fn follow(sync: &mut EngineSync, doc: &Document, before: &Project) {
     sync.sync(doc);
-    sync.sync_device_states(before, doc.project(), None);
+    sync.sync_device_states(before, doc.project(), None, &Default::default());
 }
 
 fn undo(sync: &mut EngineSync, doc: &mut Document) {
@@ -153,6 +153,7 @@ fn undo_and_redo_of_clap_effect_state_reach_the_running_processor() {
             plugin,
             state: None,
             sidechain: None,
+            preset: None,
         },
     )
     .unwrap();

@@ -79,6 +79,8 @@ use rustix::net::{
     RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendAncillaryBuffer,
     SendAncillaryMessage, recvmsg, sendmsg,
 };
+use std::num::NonZeroU32;
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -107,7 +109,9 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 23 (#285) prepares persisted state for a user file edit.
 /// 24 (#285) returns the parameter IDs a device reset while preparing a file edit.
 /// 25 (#336) carries layout descriptors for the single current CLAP layout contract.
-pub const PROTOCOL_VERSION: u32 = 26;
+/// 27 (#344) forwards the plug-in's own preset loads reported through CLAP preset-load.
+/// 30 (#344) distinguishes overlapping writes settled by the final preset values.
+pub const PROTOCOL_VERSION: u32 = 30;
 
 /// Maximum number of parameter bases that can follow an active state restore.
 pub const MAX_STATE_PARAMETER_BASES: usize = crate::shm::INPUT_EVENT_CAPACITY;
@@ -411,6 +415,12 @@ pub enum ControlMsg {
         /// Plain value.
         value: f64,
     },
+    /// A persistent host edit, tagged so a subsequent preset report can supersede it.
+    SetParamEdit {
+        id: u32,
+        value: f64,
+        serial: NonZeroU32,
+    },
     /// Open the plugin GUI in `GuiTarget`. Answer: `GuiOpened` or `Error`.
     OpenGui(GuiTarget),
     /// The frame window resized the GUI area (answer to `GuiSizeRequest`, or user resize). For a
@@ -498,6 +508,8 @@ pub enum BridgeMsg {
         /// Latency in frames after activation.
         latency: u32,
     },
+    /// A fresh CLAP instance's state before it begins normal processing and callbacks.
+    StartupState(Vec<u8>),
     /// Answer to `GetState`.
     State {
         /// The request number from `GetState`.
@@ -633,6 +645,21 @@ pub enum BridgeMsg {
     ClapPresetApplied(u32, Result<AppliedClapPreset, String>),
     /// Answer to user preset state capture.
     ClapPresetCaptured(u32, Result<Vec<u8>, String>),
+    /// The plug-in loaded a preset on its own, or failed to (host side of CLAP preset-load).
+    PresetReported(crate::clap_presets::PresetReport),
+    /// Every parameter value right after a load the plug-in reported (not at startup): the new
+    /// persistent bases. Sent before any later state answer.
+    PresetValues(ReportedPresetValues),
+}
+
+/// Settled values and durable manual writes delivered before or during a preset report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportedPresetValues {
+    pub values: Vec<ParamValue>,
+    /// The preset displaced these earlier deliveries.
+    pub superseded: Vec<(u32, NonZeroU32)>,
+    /// For these overlapping deliveries, use the settled value while playback leaves it alone.
+    pub settled: Vec<(u32, NonZeroU32)>,
 }
 
 /// Project states and parameter values from one successful preset load.
@@ -1951,6 +1978,11 @@ mod tests {
                 text: "Focus".into(),
             },
             ControlMsg::SetParam { id: 3, value: -0.5 },
+            ControlMsg::SetParamEdit {
+                id: 4,
+                value: 0.5,
+                serial: NonZeroU32::new(7).unwrap(),
+            },
             ControlMsg::OpenGui(GuiTarget::X11Child {
                 xid: 0x0400_0007,
                 scale: 1.5,
@@ -2088,6 +2120,7 @@ mod tests {
                 native_layout: Some(b"{}".to_vec()),
             })),
             BridgeMsg::Activated { latency: 64 },
+            BridgeMsg::StartupState(vec![1, 2, 3]),
             BridgeMsg::State {
                 request: 7,
                 state: vec![9; 100],
@@ -2140,6 +2173,30 @@ mod tests {
                 }),
             ),
             BridgeMsg::ClapPresetApplied(10, Err("preset refused".into())),
+            BridgeMsg::PresetReported(crate::clap_presets::PresetReport::Loaded {
+                source: crate::clap_presets::ClapPresetSource {
+                    location: crate::clap_presets::ClapPresetLocation::File("/p.fxp".into()),
+                    load_key: Some(vec![0xff, 42]),
+                },
+                startup: true,
+                epoch: 3,
+            }),
+            BridgeMsg::PresetValues(ReportedPresetValues {
+                values: vec![ParamValue {
+                    id: 3,
+                    value: 0.5,
+                    text: "50 %".into(),
+                }],
+                superseded: vec![(3, NonZeroU32::new(8).unwrap())],
+                settled: vec![(7, NonZeroU32::new(9).unwrap())],
+            }),
+            BridgeMsg::PresetReported(crate::clap_presets::PresetReport::Failed {
+                source: crate::clap_presets::ClapPresetSource {
+                    location: crate::clap_presets::ClapPresetLocation::Plugin,
+                    load_key: None,
+                },
+                message: "missing".into(),
+            }),
             BridgeMsg::GuiSizeRequest(GuiSize {
                 width: 1,
                 height: 2,

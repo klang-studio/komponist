@@ -682,6 +682,10 @@ pub struct Device {
     /// Not written when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidechain: Option<Sidechain>,
+    /// The preset the device last loaded through standard CLAP preset-load and whether a
+    /// parameter was edited since; `None` when no preset was loaded. Not written when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<crate::DevicePreset>,
 }
 
 impl Device {

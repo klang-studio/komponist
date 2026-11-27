@@ -69,6 +69,7 @@ pub fn device(id: u64, role: DeviceRole, name: &str) -> Arc<Device> {
         asset_links: Default::default(),
         state: None,
         sidechain: None,
+        preset: None,
     })
 }
 

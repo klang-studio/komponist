@@ -364,6 +364,12 @@ impl App {
                     && !self.automation_capture.plugin_parameter_writing(device, id)
                     && self.engine.plugin_mapping_parameter(device, id)
             });
+            let loaded_base = match edit.kind {
+                ParameterEditKind::Value { id, .. } if !temporary && candidate.is_none() => {
+                    self.base_at_pending_preset(device, id)
+                }
+                _ => None,
+            };
             let previous = self.engine.update_plugin_parameter(
                 device,
                 edit.kind,
@@ -372,6 +378,10 @@ impl App {
             );
             if let Some(id) = candidate {
                 self.map_native_plugin_input(device, id, previous);
+            } else if !temporary && let ParameterEditKind::Value { id, value } = edit.kind {
+                // An edit in the plugin's own GUI modifies the loaded preset like a card edit.
+                let label = crate::undo_label::plugin_state(&self.device_name(device));
+                self.mark_preset_modified(device, &label, (id, value), loaded_base);
             }
             if capture
                 && let Some((owner, start)) = write_start

@@ -202,10 +202,18 @@ static bool print_probe(const clap_plugin_t *plugin) {
     return ok && puts("}") != EOF;
 }
 
+/* Every variant has Gain and Mode; the program variant adds its Program parameter. */
 static bool check_params(const clap_plugin_t *plugin) {
     const clap_plugin_params_t *params = plugin->get_extension(plugin, CLAP_EXT_PARAMS);
-    if (!params || params->count(plugin) != 2)
+    const bool program = strcmp(plugin->desc->id, FIXTURE_ID "program") == 0;
+    if (!params || params->count(plugin) != (program ? 3u : 2u))
         return false;
+    if (program) {
+        clap_param_info_t info;
+        if (!params->get_info(plugin, 2, &info) || info.id != 9 ||
+            strcmp(info.name, "Program") != 0)
+            return false;
+    }
     clap_param_info_t gain;
     clap_param_info_t mode;
     if (!params->get_info(plugin, 0, &gain) || !params->get_info(plugin, 1, &mode) ||
@@ -276,6 +284,7 @@ static bool self_test(const struct module *module) {
         {FIXTURE_ID "required-capability", KOMPONIST_CLAP_LAYOUT_OK},
         {FIXTURE_ID "graphs", KOMPONIST_CLAP_LAYOUT_OK},
         {FIXTURE_ID "invalid-graphs", KOMPONIST_CLAP_LAYOUT_OK},
+        {FIXTURE_ID "program", KOMPONIST_CLAP_LAYOUT_OK},
     };
     const clap_plugin_factory_t *factory = module->factory;
     if (factory->get_plugin_count(factory) != sizeof(cases) / sizeof(*cases)) {

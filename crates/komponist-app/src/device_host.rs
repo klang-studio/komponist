@@ -38,6 +38,7 @@
 //! Thread: UI thread.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -66,6 +67,18 @@ use komponist_plugins::{
 };
 use komponist_sampler as sampler;
 use komponist_sampler::SamplerHandle;
+
+/// The index of the preset `device` shows among `presets` and whether it was modified since: the
+/// selection the host recorded through CLAP preset-load ([`Device::preset`]). In-binary reference
+/// devices (`PluginFormat::Builtin`, the test host until #294) have no preset-load and name their
+/// preset in their own state.
+pub fn selected_preset(device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
+    if device.plugin.format == komponist_model::PluginFormat::Builtin {
+        komponist_plugins::presets::reference_selection(device, presets)
+    } else {
+        komponist_ipc::clap_presets::selected_preset(device.preset.as_ref(), presets)
+    }
+}
 
 /// Creates processors for devices and reports their runtime status.
 ///
@@ -168,11 +181,6 @@ pub trait DeviceHost {
         _source: &ClapPresetSource,
     ) -> Option<komponist_plugins::PresetPreparation> {
         None
-    }
-
-    /// The selected preset in the stored state and whether it has been edited.
-    fn saved_preset(&self, device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
-        komponist_plugins::presets::saved_preset(device, None, presets, |_| None)
     }
 
     /// Whether a scan failed to probe the bundle of a device that is still running.
@@ -282,9 +290,15 @@ pub trait DeviceHost {
         false
     }
 
-    /// Records an app edit on the render path if the host can deliver it in order.
-    fn edit_param_through_render(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
-        self.edited_param(device, id, value)
+    /// Records a durable render-path edit and returns its delivery identity.
+    fn edit_param_through_render(
+        &mut self,
+        device: DeviceId,
+        id: u32,
+        value: f64,
+    ) -> Option<NonZeroU32> {
+        let _ = (device, id, value);
+        None
     }
 
     /// Updates the visible value of a plugin parameter during an automation override.
@@ -1127,7 +1141,12 @@ impl DeviceHost for PluginHost {
         self.manager.edited_param(device, id, value)
     }
 
-    fn edit_param_through_render(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+    fn edit_param_through_render(
+        &mut self,
+        device: DeviceId,
+        id: u32,
+        value: f64,
+    ) -> Option<NonZeroU32> {
         self.manager.edit_param_through_render(device, id, value)
     }
 
@@ -1206,10 +1225,6 @@ impl DeviceHost for PluginHost {
         source: &ClapPresetSource,
     ) -> Option<komponist_plugins::PresetPreparation> {
         self.manager.prepare_clap_preset(plugin, source)
-    }
-
-    fn saved_preset(&self, device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
-        self.manager.saved_preset(device, presets)
     }
 
     fn clap_presets(&self, device: &Device) -> &[ClapPreset] {

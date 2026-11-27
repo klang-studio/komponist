@@ -1,6 +1,8 @@
 //! Transfers a direct CLAP audio half at a block boundary. The app's main thread owns
 //! activation and destruction; the engine never waits for it or destroys audio buffers.
 
+use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -17,7 +19,9 @@ use komponist_model::DeviceRole;
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::bundled_effects;
-use crate::direct::{ControlEvents, DirectClap, DirectProcessor, METADATA_REFRESH, write_fallback};
+use crate::direct::{
+    ControlEvents, DeliveredEdit, DirectClap, DirectProcessor, METADATA_REFRESH, write_fallback,
+};
 use crate::manager::ProcessorSetup;
 
 struct Requested {
@@ -75,15 +79,11 @@ struct PendingControls {
 }
 
 impl PendingControls {
-    fn new(role: DeviceRole) -> Self {
+    fn new() -> Self {
         Self {
             epoch: 0,
             persistent: Vec::with_capacity(INPUT_EVENT_CAPACITY),
-            stage: Vec::with_capacity(if role == DeviceRole::MidiEffect {
-                INPUT_EVENT_CAPACITY
-            } else {
-                0
-            }),
+            stage: Vec::with_capacity(INPUT_EVENT_CAPACITY),
         }
     }
 
@@ -116,6 +116,30 @@ impl PendingControls {
         }
     }
 
+    /// Drops a retried edit when a newer edit for the same parameter is ready.
+    fn supersede_render_edits(&mut self, events: &[Event]) {
+        self.stage.retain(|queued| {
+            !events.iter().any(|event| {
+                matches!(event.kind, EventKind::ParamEdit { id, .. } if id == queued.param_id)
+            }) && !self.persistent.iter().any(|control| {
+                let distance = control.reserved.wrapping_sub(queued.reserved);
+                control.param_id == queued.param_id
+                    && control.reserved != 0
+                    && (1..(1 << 31)).contains(&distance)
+            })
+        });
+    }
+
+    /// The engine has handed off these edits. Keep their identities until a block runs.
+    fn retry_render_edits(&mut self, epoch: u64, events: &[Event]) {
+        self.observe_epoch(epoch);
+        for event in events {
+            if let EventKind::ParamEdit { id, value, serial } = event.kind {
+                self.stage_param(epoch, id, value, Some(serial));
+            }
+        }
+    }
+
     fn midi_batch_sizes(&self, input_len: usize) -> (usize, usize) {
         let room = INPUT_EVENT_CAPACITY.saturating_sub(input_len);
         // Keep frame-zero automation after host edits even when the two queues drain in
@@ -125,15 +149,24 @@ impl PendingControls {
         (persistent, stage)
     }
 
-    fn stage_param(&mut self, epoch: u64, id: u32, value: f64) {
+    fn stage_param(&mut self, epoch: u64, id: u32, value: f64, serial: Option<NonZeroU32>) {
         self.observe_epoch(epoch);
-        let wire = WireEvent::new(0, WireEventKind::ParamValue { id, value });
+        let wire = WireEvent {
+            reserved: serial.map_or(0, NonZeroU32::get),
+            ..WireEvent::new(0, WireEventKind::ParamValue { id, value })
+        };
         // Changes waiting for a replacement accumulate by parameter, like the engine's slot
         // queue. Keep the newest value when automation writes the same ID on several blocks.
-        if let Some(previous) = self.stage.iter_mut().find(|previous| {
-            matches!(previous.decode(), Some(WireEventKind::ParamValue { id: previous, .. }) if previous == id)
+        if let Some(index) = self.stage.iter().position(|previous| {
+            previous.param_id == id && (previous.reserved != 0) == serial.is_some()
         }) {
-            *previous = wire;
+            self.stage[index] = wire;
+            if self.stage[index + 1..]
+                .iter()
+                .any(|queued| queued.param_id == id)
+            {
+                self.stage[index..].rotate_left(1);
+            }
         } else if self.stage.len() < self.stage.capacity() {
             self.stage.push(wire);
         }
@@ -181,7 +214,7 @@ impl DirectSession {
             incoming,
             retire,
             commands,
-            controls: PendingControls::new(role),
+            controls: PendingControls::new(),
             requested,
             role,
             offline_failures: 0,
@@ -198,6 +231,13 @@ impl DirectSession {
         self.host.try_control(f)
     }
 
+    pub(crate) fn try_read_preset_values<T>(
+        &mut self,
+        read: impl FnOnce(&mut dyn HostedPlugin, &BTreeMap<u32, Option<DeliveredEdit>>) -> T,
+    ) -> Option<T> {
+        self.host.try_read_preset_values(read)
+    }
+
     pub(crate) fn is_from_bundle(&self, path: &std::path::Path) -> bool {
         self.host.is_from_bundle(path)
     }
@@ -211,18 +251,6 @@ impl DirectSession {
         read: impl FnOnce(&mut dyn HostedPlugin, u32) -> T,
     ) -> Option<T> {
         self.host.try_refresh(METADATA_REFRESH, read)
-    }
-
-    pub(crate) fn restore<R, T>(
-        &mut self,
-        load: impl FnOnce(&mut dyn HostedPlugin) -> Result<R, HostingError>,
-        inventory: impl FnOnce(&mut dyn HostedPlugin) -> T,
-    ) -> Option<(Result<R, HostingError>, T)> {
-        self.replace_state(|plugin| {
-            let result = load(plugin);
-            let replaced = result.is_ok();
-            ((result, inventory(plugin)), replaced)
-        })
     }
 
     pub(crate) fn replace_state<T>(
@@ -241,11 +269,18 @@ impl DirectSession {
         Some(result)
     }
 
-    pub(crate) fn set_param(&mut self, id: u32, value: f64) -> bool {
+    pub(crate) fn take_preset_reports(&mut self) -> Vec<komponist_ipc::clap_presets::PresetReport> {
+        self.host.take_preset_reports()
+    }
+
+    pub(crate) fn set_param(&mut self, id: u32, value: f64, serial: Option<NonZeroU32>) -> bool {
         self.control
             .push(Control {
                 epoch: self.requested.control_epoch.load(Ordering::Acquire),
-                wire: WireEvent::new(0, WireEventKind::ParamValue { id, value }),
+                wire: WireEvent {
+                    reserved: serial.map_or(0, NonZeroU32::get),
+                    ..WireEvent::new(0, WireEventKind::ParamValue { id, value })
+                },
             })
             .is_ok()
     }
@@ -429,6 +464,7 @@ impl DirectEngine {
     ) -> ProcessStatus {
         if self.current().is_some() {
             self.collect_controls();
+            self.controls.supersede_render_edits(events);
             let audio = &mut self
                 .active
                 .as_mut()
@@ -441,23 +477,40 @@ impl DirectEngine {
             } else {
                 &[]
             };
+            let retries_fit =
+                self.controls.stage.len() + controls.len() + events.len() <= INPUT_EVENT_CAPACITY;
+            let retries = if retries_fit {
+                self.controls.stage.as_slice()
+            } else {
+                &[]
+            };
             let status = audio.process_block(
                 ctx,
                 events,
                 ControlEvents {
                     persistent: controls,
-                    stage: &[],
+                    stage: retries,
                     epoch: Some((&self.requested.control_epoch, self.controls.epoch)),
                 },
                 io,
                 sidechain,
                 self.effect_meter.as_deref(),
             );
-            if audio.delivered() && controls_fit {
-                self.controls.persistent.clear();
+            if audio.delivered() {
+                if controls_fit {
+                    self.controls.persistent.clear();
+                }
+                if retries_fit {
+                    self.controls.stage.clear();
+                }
+            } else if status == ProcessStatus::Continue {
+                self.controls
+                    .retry_render_edits(self.controls.epoch, events);
             }
             return status;
         }
+        self.controls
+            .retry_render_edits(self.requested.control_epoch.load(Ordering::Acquire), events);
         if ctx.offline {
             self.offline_failures += 1;
         }
@@ -554,6 +607,16 @@ impl EventProcessor for DirectEngine {
             self.requested.control_epoch.load(Ordering::Acquire),
             id,
             value,
+            None,
+        );
+    }
+
+    fn set_param_edit(&mut self, id: u32, value: f64, serial: NonZeroU32) {
+        self.controls.stage_param(
+            self.requested.control_epoch.load(Ordering::Acquire),
+            id,
+            value,
+            Some(serial),
         );
     }
 
@@ -604,13 +667,76 @@ mod tests {
     use super::*;
 
     #[test]
+    fn midi_stage_writes_keep_durable_edits_and_automation_separate() {
+        let mut controls = PendingControls::new();
+        controls.stage_param(1, 5, 0.4, NonZeroU32::new(1));
+        controls.stage_param(1, 5, 0.1, None);
+        assert_eq!(
+            controls
+                .stage
+                .iter()
+                .map(|event| event.reserved)
+                .collect::<Vec<_>>(),
+            [1, 0]
+        );
+
+        controls.stage_param(1, 5, 0.4, NonZeroU32::new(2));
+        assert_eq!(
+            controls
+                .stage
+                .iter()
+                .map(|event| event.reserved)
+                .collect::<Vec<_>>(),
+            [0, 2]
+        );
+    }
+
+    #[test]
+    fn retried_render_edits_are_coalesced_with_new_edits_but_not_automation() {
+        let mut controls = PendingControls::new();
+        let edit = |serial, value| Event {
+            offset: 0,
+            kind: EventKind::ParamEdit {
+                id: 5,
+                value,
+                serial: NonZeroU32::new(serial).unwrap(),
+            },
+        };
+        let automation = Event {
+            offset: 0,
+            kind: EventKind::Param { id: 5, value: 0.1 },
+        };
+
+        controls.retry_render_edits(1, &[edit(1, 0.4), automation]);
+        controls.supersede_render_edits(&[automation]);
+        assert_eq!(controls.stage.len(), 1);
+        assert_eq!(controls.stage[0].reserved, 1);
+
+        controls.supersede_render_edits(&[edit(2, 0.4)]);
+        assert!(controls.stage.is_empty());
+        controls.retry_render_edits(1, &[edit(2, 0.4)]);
+        assert_eq!(controls.stage[0].reserved, 2);
+
+        controls.persistent.push(WireEvent {
+            reserved: 3,
+            ..WireEvent::new(0, WireEventKind::ParamValue { id: 5, value: 0.7 })
+        });
+        controls.supersede_render_edits(&[]);
+        assert!(controls.stage.is_empty());
+
+        controls.retry_render_edits(1, &[edit(4, 0.4)]);
+        controls.retry_render_edits(2, &[]);
+        assert!(controls.stage.is_empty());
+    }
+
+    #[test]
     fn collection_preserves_a_control_published_after_the_epoch_sample() {
         let (mut sender, mut commands) = RingBuffer::new(4);
-        let mut pending = PendingControls::new(DeviceRole::MidiEffect);
+        let mut pending = PendingControls::new();
         let wire = |value| WireEvent::new(0, WireEventKind::ParamValue { id: 7, value });
         let discarded = wire(0.25);
         let retained = wire(0.75);
-        pending.stage_param(0, 8, 0.5);
+        pending.stage_param(0, 8, 0.5, None);
         assert!(
             sender
                 .push(Control {
@@ -638,7 +764,7 @@ mod tests {
     #[test]
     fn stage_parameter_values_survive_until_a_processor_can_receive_them() {
         let (mut sender, mut commands) = RingBuffer::new(4);
-        let mut pending = PendingControls::new(DeviceRole::MidiEffect);
+        let mut pending = PendingControls::new();
         assert!(
             sender
                 .push(Control {
@@ -656,8 +782,8 @@ mod tests {
 
         // No active processor across these calls. The last synchronous stage value is kept
         // independently of the queued host control so it can take precedence at the same frame.
-        pending.stage_param(0, 5, 0.25);
-        pending.stage_param(0, 5, 0.75);
+        pending.stage_param(0, 5, 0.25, None);
+        pending.stage_param(0, 5, 0.75, None);
         pending.collect(0, &mut commands);
         assert_eq!(pending.stage.len(), 1);
         assert_eq!(

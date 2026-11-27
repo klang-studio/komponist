@@ -26,6 +26,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -121,6 +122,11 @@ pub enum PluginManagerEvent {
         /// New status.
         status: DeviceStatus,
     },
+    /// A fresh instance's state before it begins processing or reporting preset loads.
+    StartupState {
+        device: DeviceId,
+        state: SavedPluginState,
+    },
     /// A fresh state blob; store it in the document (untracked).
     StateSnapshot {
         /// The device.
@@ -140,11 +146,22 @@ pub enum PluginManagerEvent {
         request: u64,
         result: Result<Option<SavedPluginState>, edit_state::Rejected>,
     },
-    /// A preset has been applied and captured in project state format.
+    /// A preset the host requested has been applied and captured in project state format.
     ClapPresetLoaded {
         device: DeviceId,
+        /// The discovered preset that was loaded; `None` for user preset state.
+        source: Option<ClapPresetSource>,
         previous_state: Arc<[u8]>,
         state: Arc<[u8]>,
+    },
+    /// The plugin loaded a preset on its own and reported it through CLAP preset-load. Its
+    /// new state follows as a [`PluginManagerEvent::StateSnapshot`].
+    ClapPresetReported {
+        device: DeviceId,
+        source: ClapPresetSource,
+        /// Reported while the host activated the instance: the preset it starts in, not a
+        /// change.
+        startup: bool,
     },
     /// Opaque user preset data from the active CLAP instance.
     ClapPresetCaptured {
@@ -374,6 +391,7 @@ pub struct PluginManager {
     last_scan: Option<ScanReport>,
     /// One bridge per external device.
     bridges: BTreeMap<DeviceId, Bridge>,
+    next_param_edit: NonZeroU32,
     private_clap_dir: Option<PathBuf>,
     bundled_clap: Option<BundledClap>,
     project_dir: Option<PathBuf>,
@@ -500,6 +518,7 @@ impl PluginManager {
             scan: None,
             last_scan: None,
             bridges: BTreeMap::new(),
+            next_param_edit: NonZeroU32::MIN,
             private_clap_dir,
             bundled_clap,
             project_dir: None,
@@ -785,7 +804,7 @@ impl PluginManager {
                 state,
                 self.timing.snapshot_debounce,
             ) {
-                Ok((mut instance, mut processor)) => {
+                Ok((mut instance, mut processor, baseline)) => {
                     if let Some(meter) = effect_meter {
                         processor.set_effect_meter(Arc::clone(&meter));
                         self.effect_meters.insert(device.id, meter);
@@ -793,6 +812,12 @@ impl PluginManager {
                     self.statuses.remove(&device.id);
                     instance.report_warning(device.id, &mut self.pending);
                     DirectDevice::report_metadata(device.id, &mut self.pending);
+                    if let Some(state) = baseline {
+                        self.pending.push(PluginManagerEvent::StartupState {
+                            device: device.id,
+                            state,
+                        });
+                    }
                     self.pending.push(PluginManagerEvent::StatusChanged {
                         device: device.id,
                         status: DeviceStatus::Ok,
@@ -868,8 +893,10 @@ impl PluginManager {
         self.pending.retain(|event| {
             !matches!(event,
                 PluginManagerEvent::StateSnapshot { device: old, .. }
+                    | PluginManagerEvent::StartupState { device: old, .. }
                     | PluginManagerEvent::WaveformMarkersEdited { device: old, .. }
                 | PluginManagerEvent::ClapPresetLoaded { device: old, .. }
+                | PluginManagerEvent::ClapPresetReported { device: old, .. }
                 | PluginManagerEvent::ClapPresetFailed { device: old, .. }
                 | PluginManagerEvent::ClapPresetCaptured { device: old, .. }
                 | PluginManagerEvent::AssetEditPrepared { device: old, .. }
@@ -1342,18 +1369,31 @@ impl PluginManager {
     /// Sets a parameter from the generic view or a device-card knob (sent over the control socket;
     /// the bridge delivers it to the plugin's audio side too).
     pub fn set_param(&mut self, device: DeviceId, id: u32, value: f64) {
+        let serial = self.next_param_edit();
         if let Some(direct) = self.direct.get_mut(&device) {
-            direct.set_param(id, value);
+            direct.set_param_edit(id, value, serial);
             self.pending
                 .push(PluginManagerEvent::ParamValuesChanged { device });
         } else if let Some(bridge) = self.bridges.get_mut(&device) {
-            bridge.set_param(id, value);
+            bridge.set_param_edit(id, value, serial);
         }
+    }
+
+    fn next_param_edit(&mut self) -> NonZeroU32 {
+        let serial = self.next_param_edit;
+        self.next_param_edit =
+            NonZeroU32::new(serial.get().wrapping_add(1)).unwrap_or(NonZeroU32::MIN);
+        serial
     }
 
     /// Records a persistent app edit on the render path unless it must share the bridge's
     /// ordered control path with marker operations or a pending state restore.
-    pub fn edit_param_through_render(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+    pub fn edit_param_through_render(
+        &mut self,
+        device: DeviceId,
+        id: u32,
+        value: f64,
+    ) -> Option<NonZeroU32> {
         if self
             .bridges
             .get(&device)
@@ -1363,9 +1403,24 @@ impl PluginManager {
                 .get(&device)
                 .is_some_and(DirectDevice::requires_control_param_edit)
         {
-            return false;
+            return None;
         }
-        self.edited_param(device, id, value)
+
+        let serial = self.next_param_edit();
+        if let Some(direct) = self.direct.get_mut(&device) {
+            if !direct.edited_param_on_render(id, value, serial) {
+                return None;
+            }
+        } else {
+            let bridge = self
+                .bridges
+                .get_mut(&device)
+                .filter(|bridge| bridge.running())?;
+            bridge.edited_param_on_render(id, value, serial);
+        }
+        self.pending
+            .push(PluginManagerEvent::ParamValuesChanged { device });
+        Some(serial)
     }
 
     /// Records an edit already sent to the processor, either from the app or a plugin GUI.
@@ -1496,7 +1551,9 @@ impl PluginManager {
             return false;
         }
         self.pending.retain(|event| {
-            !matches!(event, PluginManagerEvent::ClapPresetLoaded { device: loaded, .. } if *loaded == device)
+            !matches!(event, PluginManagerEvent::ClapPresetLoaded { device: loaded, .. }
+                | PluginManagerEvent::ClapPresetReported { device: loaded, .. }
+                | PluginManagerEvent::StateSnapshot { device: loaded, .. } if *loaded == device)
         });
         for event in &mut self.pending {
             if let PluginManagerEvent::WaveformMarkersEdited {
@@ -1511,15 +1568,6 @@ impl PluginManager {
             }
         }
         true
-    }
-
-    /// The factory preset represented by the current saved state, if known.
-    pub fn saved_preset(&self, device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
-        let layout = self.native_layout(device.id);
-        crate::presets::saved_preset(device, self.verified_bundle(device.id), presets, |id| {
-            let wire = layout?.author_ids()?.get(id)?;
-            self.param_base(device.id, *wire)
-        })
     }
 
     /// Presets discovered for the exact bundle of a running CLAP instance.
@@ -1684,7 +1732,12 @@ impl PluginManager {
                 result: WaveformMarkerEditResult::Applied { .. },
                 ..
             }
-            | PluginManagerEvent::ClapPresetLoaded { device, .. } => Some(*device),
+            | PluginManagerEvent::ClapPresetLoaded { device, .. }
+            | PluginManagerEvent::ClapPresetReported {
+                device,
+                startup: false,
+                ..
+            } => Some(*device),
             _ => None,
         })
     }
@@ -1764,6 +1817,13 @@ impl PluginManager {
                 |device| required.contains(&device),
             ));
         }
+        // A capture can service a plugin-side preset load or another state commit. Those
+        // events still await the app, so this capture cannot safely replace the document state.
+        state_change_pending.extend(
+            self.pending_live_state_commits()
+                .filter(|&device| include(device)),
+        );
+        captured.retain(|(device, _)| !state_change_pending.contains(device));
         captured.sort_by_key(|(device, _)| *device);
         required.append(&mut state_change_pending);
         SaveSnapshots {
@@ -2160,8 +2220,19 @@ mod tests {
             },
             PluginManagerEvent::ClapPresetLoaded {
                 device,
+                source: None,
                 previous_state: Arc::from([2]),
                 state: Arc::from([3]),
+            },
+            // A load the plugin reported: the state captured before it must not be saved
+            // with its source.
+            PluginManagerEvent::ClapPresetReported {
+                device,
+                source: komponist_ipc::clap_presets::ClapPresetSource {
+                    location: komponist_ipc::clap_presets::ClapPresetLocation::Plugin,
+                    load_key: Some(b"B".to_vec()),
+                },
+                startup: false,
             },
         ];
         for event in events {
@@ -2203,6 +2274,7 @@ mod tests {
             asset_links: Default::default(),
             state: Some(Arc::from([2])),
             sidechain: None,
+            preset: None,
         };
         let other = DeviceId(2);
         let other_snapshot = PluginManagerEvent::StateSnapshot {
@@ -2309,6 +2381,7 @@ mod tests {
             asset_links: Default::default(),
             state: None,
             sidechain: None,
+            preset: None,
         };
         let setup = ProcessorSetup {
             sample_rate: 48_000.0,

@@ -1,7 +1,6 @@
 //! Preset compatibility for historical projects with built-in device references.
 
-use crate::{BuiltinKind, Internal};
-use komponist_device_core::pinned_clap_state::{self, FACTORY_PRESET_FIELD};
+use crate::BuiltinKind;
 use komponist_ipc::clap_presets::{ClapPreset, ClapPresetLocation, ClapPresetSource};
 use komponist_model::{Device, PluginRef};
 
@@ -77,77 +76,29 @@ pub fn legacy_state(
     }
 }
 
-/// The preset represented in a previously saved device state and whether it was edited.
-/// `bundled_id` is the CLAP ID of a running instance from the verified package.
-pub fn saved_preset(
-    device: &Device,
-    bundled_id: Option<&str>,
-    presets: &[ClapPreset],
-    param_base: impl Fn(&str) -> Option<f64>,
-) -> Option<(usize, bool)> {
-    let legacy = BuiltinKind::from_plugin(&device.plugin);
-    let bundled_kind = bundled_id.and_then(|id| {
-        BuiltinKind::all()
-            .find(|kind| format!("org.klang-studio.komponist.{}", kind.catalog().id) == id)
-    });
-    let (source, changed) = match (legacy, bundled_kind) {
-        (Some(BuiltinKind::Hexa), _) | (_, Some(BuiltinKind::Hexa)) => {
-            let patch = if legacy.is_some() {
-                komponist_hexa::decode_state(device.state.as_deref()).ok()
-            } else {
-                device
-                    .state
-                    .as_deref()
-                    .and_then(komponist_hexa::state::decode_clap_patch)
-            }
-            .unwrap_or_else(komponist_hexa::default_patch);
+/// The preset an in-binary reference device's own state names, and whether it was edited. These
+/// devices (`PluginFormat::Builtin`, the test host until #294) have no CLAP preset-load; every
+/// CLAP device, bundled or not, uses the selection the host recorded instead.
+pub fn reference_selection(device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
+    let (source, changed) = match BuiltinKind::from_plugin(&device.plugin)? {
+        BuiltinKind::Hexa => {
+            let patch = komponist_hexa::decode_state(device.state.as_deref())
+                .unwrap_or_else(|_| komponist_hexa::default_patch());
             let encoded = komponist_hexa::encode_state(&patch);
             (
                 legacy_source(hexa_states().iter().position(|state| *state == encoded)?),
                 false,
             )
         }
-        (Some(BuiltinKind::Internal(kind)), _) => {
+        BuiltinKind::Internal(kind) => {
             let (index, changed) = kind.loaded_preset(device.state.as_deref())?;
             (legacy_source(index), changed)
         }
-        (_, Some(BuiltinKind::Internal(kind))) => {
-            let name = wrapped_name(device.state.as_deref()?)?;
-            let preset = presets.iter().find(|preset| preset.name == name)?;
-            (
-                preset.source.clone(),
-                wrapper_preset_changed(kind, &preset.name, param_base),
-            )
-        }
-        _ => return None,
     };
     Some((
         presets.iter().position(|preset| preset.source == source)?,
         changed,
     ))
-}
-
-fn wrapped_name(state: &[u8]) -> Option<String> {
-    let state = pinned_clap_state::decode(state)?;
-    let name = state.get("fields")?.get(FACTORY_PRESET_FIELD)?.as_str()?;
-    serde_json::from_str(name).ok()
-}
-
-fn wrapper_preset_changed(
-    kind: Internal,
-    name: &str,
-    param_base: impl Fn(&str) -> Option<f64>,
-) -> bool {
-    let Some(index) = kind.presets().iter().position(|preset| preset.name == name) else {
-        return false;
-    };
-    let Some(values) = kind.preset_values(index) else {
-        return false;
-    };
-    kind.params().iter().zip(values).any(|(param, value)| {
-        param_base(param.id.as_str())
-            .is_some_and(|base| (base - pinned_clap_state::to_clap(param, value)).abs() > 1e-6)
-    })
 }
 
 fn hexa_states() -> &'static [Vec<u8>] {

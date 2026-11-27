@@ -128,7 +128,9 @@ jobs:
           test-plugins/native-layout/c-fixture/build.sh target/clap-preset-headers/include \
             docs/clap-device-layout docs/clap-device-layout/example.json "$fixture"
           KOMPONIST_LAYOUT_FIXTURE="$fixture/layout-fixture.clap" \
-            cargo test --locked -p komponist-app --test it standalone_clap_preset_round_trips
+            cargo test --locked -p komponist-app --test it standalone_clap_preset_
+          KOMPONIST_LAYOUT_FIXTURE="$fixture/layout-fixture.clap" \
+            cargo test --locked -p komponist-bridge --test it an_unsolicited_preset_supersedes
 
       - name: Verify standalone CLAP parameter presentation
         env:

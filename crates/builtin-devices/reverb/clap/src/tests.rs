@@ -8,44 +8,6 @@ use super::layout_contract::{Instance, assert_localized_bindings, read_layout};
 use super::*;
 
 #[test]
-fn legacy_factory_selection_survives_adapter_state_callbacks() {
-    use std::collections::BTreeMap;
-
-    use komponist_device_core::pinned_clap_state::FACTORY_PRESET_FIELD;
-
-    let params = HallPlugin::default().params();
-    let preset = || {
-        params
-            .serialize_fields()
-            .remove(FACTORY_PRESET_FIELD)
-            .map(|name| serde_json::from_str::<String>(&name).unwrap())
-    };
-    assert_eq!(preset(), None);
-    params.deserialize_fields(&BTreeMap::from([(
-        FACTORY_PRESET_FIELD.into(),
-        serde_json::to_string(Hall::SPEC.presets()[0].name).unwrap(),
-    )]));
-    assert_eq!(preset().as_deref(), Some("Small Room"));
-
-    let restored = HallPlugin::default().params();
-    restored.deserialize_fields(&params.serialize_fields());
-    assert_eq!(restored.serialize_fields(), params.serialize_fields());
-
-    for invalid in ["\"A missing preset\"", "false"] {
-        params.deserialize_fields(&BTreeMap::from([(
-            FACTORY_PRESET_FIELD.into(),
-            invalid.to_owned(),
-        )]));
-        assert_eq!(preset(), None);
-        params.deserialize_fields(&restored.serialize_fields());
-        assert_eq!(preset().as_deref(), Some("Small Room"));
-    }
-
-    params.deserialize_fields(&BTreeMap::new());
-    assert_eq!(preset(), None);
-}
-
-#[test]
 fn advertised_layout_contains_every_binding_and_stable_room_ids() {
     assert_localized_bindings::<HallPlugin>(Hall::SPEC.params().len());
     let layout = read_layout::<HallPlugin>();

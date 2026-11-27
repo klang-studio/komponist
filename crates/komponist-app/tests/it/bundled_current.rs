@@ -160,6 +160,7 @@ fn project(host: &PluginHost, sample: &Path) -> Fixture {
                 plugin: prepared.plugin,
                 sidechain: None,
                 state: prepared.state,
+                preset: prepared.preset,
             },
         )
         .unwrap();
@@ -464,8 +465,22 @@ fn current_project_round_trip_and_offline_render() {
             &device.saved_state().unwrap(),
         )
         .unwrap();
+        // Devices that start in a factory preset state it; the Scale edit then modifies it.
+        with_current_state =
+            edits::set_device_preset(&with_current_state, device.id, device.preset.clone())
+                .unwrap();
     }
     assert_eq!(saved, with_current_state);
+    assert!(
+        saved
+            .find_device(fixture.scale)
+            .unwrap()
+            .2
+            .preset
+            .as_ref()
+            .is_none_or(|preset| preset.modified),
+        "the Scale edit modifies a start preset"
+    );
 
     app.shutdown();
     let relocated = work.join("relocated");
@@ -484,7 +499,7 @@ fn current_project_round_trip_and_offline_render() {
     let host = app.engine().host();
     let presets = host.clap_presets(delay);
     assert_eq!(
-        host.saved_preset(delay, presets)
+        komponist_app::device_host::selected_preset(delay, presets)
             .map(|(index, edited)| (presets[index].name.as_str(), edited)),
         Some((DELAY_PRESET, false)),
     );
@@ -614,6 +629,7 @@ fn midi_chain_events(host: &mut dyn DeviceHost, plugins: [PluginRef; 2]) -> Vec<
                 plugin,
                 state: None,
                 sidechain: None,
+                preset: None,
             },
         )
         .unwrap();
@@ -813,6 +829,7 @@ fn bundled_presse_lookahead_updates_delay_compensation_during_playback() {
             plugin: shipped(&host, "presse"),
             sidechain: None,
             state: None,
+            preset: None,
         },
     )
     .unwrap();
@@ -931,6 +948,7 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
             plugin: prepared.plugin,
             sidechain: None,
             state: prepared.state,
+            preset: prepared.preset,
         },
     )
     .unwrap();
@@ -1174,6 +1192,7 @@ fn packaged_effect_cards_and_presets() {
                 plugin: shipped(&host, slug),
                 sidechain: None,
                 state: None,
+                preset: None,
             },
         )
         .unwrap();

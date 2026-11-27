@@ -34,10 +34,12 @@ enum variant {
     REQUIRED_CAPABILITY,
     GRAPHS,
     INVALID_GRAPHS,
+    PROGRAM,
     VARIANT_COUNT
 };
 
-enum parameter_index { GAIN, MODE, PARAM_COUNT };
+/* PROGRAM is only exposed by the program variant. */
+enum parameter_index { GAIN, MODE, PROGRAM_PARAM, PARAM_COUNT };
 
 static const char *const features[] = {CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
                                        CLAP_PLUGIN_FEATURE_STEREO, NULL};
@@ -64,6 +66,7 @@ static const clap_plugin_descriptor_t descriptors[VARIANT_COUNT] = {
     [REQUIRED_CAPABILITY] = DESCRIPTOR("required-capability"),
     [GRAPHS] = DESCRIPTOR("graphs"),
     [INVALID_GRAPHS] = DESCRIPTOR("invalid-graphs"),
+    [PROGRAM] = DESCRIPTOR("program"),
 };
 
 static const clap_param_info_t parameter_info[PARAM_COUNT] = {
@@ -79,9 +82,20 @@ static const clap_param_info_t parameter_info[PARAM_COUNT] = {
               .min_value = 0,
               .max_value = 2,
               .default_value = 0},
+    [PROGRAM_PARAM] = {.id = 9,
+                       .flags = CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM,
+                       .name = "Program",
+                       .min_value = 0,
+                       .max_value = 3,
+                       .default_value = 0},
 };
 
 static const char *const mode_labels[] = {"Clean", "Warm", "Drive"};
+
+/* The program variant loads these presets itself when its Program parameter changes and reports
+ * them through the host side of CLAP preset-load. The last key has no preset: it reports an error. */
+static const char *const program_labels[] = {"None", "Boost", "Calm", "Missing"};
+static const char *const program_keys[] = {NULL, "fixture-boost", "fixture-calm", "fixture-missing"};
 
 struct instance {
     clap_plugin_t plugin;
@@ -89,6 +103,9 @@ struct instance {
     _Atomic double values[PARAM_COUNT];
     _Atomic float rendered_gain;
     bool hide_mode;
+    bool activated;
+    atomic_int pending_program;
+    atomic_bool report_loaded_gain;
     const clap_host_t *host;
 };
 
@@ -96,22 +113,20 @@ static struct instance *instance(const clap_plugin_t *plugin) {
     return plugin->plugin_data;
 }
 
-static int parameter_index(clap_id id) {
-    for (int i = 0; i < PARAM_COUNT; ++i) {
+static uint32_t CLAP_ABI param_count(const clap_plugin_t *plugin) {
+    return instance(plugin)->variant == PROGRAM ? PARAM_COUNT : PROGRAM_PARAM;
+}
+
+static int parameter_index(const clap_plugin_t *plugin, clap_id id) {
+    for (uint32_t i = 0; i < param_count(plugin); ++i) {
         if (parameter_info[i].id == id)
-            return i;
+            return (int)i;
     }
     return -1;
 }
 
-static uint32_t CLAP_ABI param_count(const clap_plugin_t *plugin) {
-    (void)plugin;
-    return PARAM_COUNT;
-}
-
 static bool CLAP_ABI param_info(const clap_plugin_t *plugin, uint32_t index, clap_param_info_t *out) {
-    (void)plugin;
-    if (index >= PARAM_COUNT || !out)
+    if (index >= param_count(plugin) || !out)
         return false;
     *out = parameter_info[index];
     if (index == MODE && instance(plugin)->hide_mode)
@@ -120,7 +135,7 @@ static bool CLAP_ABI param_info(const clap_plugin_t *plugin, uint32_t index, cla
 }
 
 static bool CLAP_ABI param_value(const clap_plugin_t *plugin, clap_id id, double *out) {
-    const int index = parameter_index(id);
+    const int index = parameter_index(plugin, id);
     if (index < 0 || !out)
         return false;
     *out = instance(plugin)->values[index];
@@ -129,13 +144,15 @@ static bool CLAP_ABI param_value(const clap_plugin_t *plugin, clap_id id, double
 
 static bool CLAP_ABI param_to_text(const clap_plugin_t *plugin, clap_id id, double value,
                                    char *out, uint32_t capacity) {
-    const int index = parameter_index(id);
+    const int index = parameter_index(plugin, id);
     if (index < 0 || !out || capacity == 0 || !isfinite(value) ||
         value < parameter_info[index].min_value || value > parameter_info[index].max_value)
         return false;
     const char *label = NULL;
     if (index == MODE)
         label = mode_labels[(int)value];
+    else if (index == PROGRAM_PARAM)
+        label = program_labels[(int)value];
     else if (instance(plugin)->variant == PRESENTATION && value == 0.625)
         label = "Focus";
     const int size = label ? snprintf(out, capacity, "%s", label)
@@ -145,12 +162,15 @@ static bool CLAP_ABI param_to_text(const clap_plugin_t *plugin, clap_id id, doub
 
 static bool CLAP_ABI text_to_param(const clap_plugin_t *plugin, clap_id id, const char *text,
                                    double *out) {
-    const int index = parameter_index(id);
+    const int index = parameter_index(plugin, id);
     if (index < 0 || !text || !out)
         return false;
-    if (index == MODE) {
-        for (size_t i = 0; i < sizeof(mode_labels) / sizeof(*mode_labels); ++i) {
-            if (strcmp(text, mode_labels[i]) == 0) {
+    if (index == MODE || index == PROGRAM_PARAM) {
+        const char *const *labels = index == MODE ? mode_labels : program_labels;
+        const size_t count = index == MODE ? sizeof(mode_labels) / sizeof(*mode_labels)
+                                           : sizeof(program_labels) / sizeof(*program_labels);
+        for (size_t i = 0; i < count; ++i) {
+            if (strcmp(text, labels[i]) == 0) {
                 *out = (double)i;
                 return true;
             }
@@ -181,11 +201,22 @@ static void CLAP_ABI flush_params(const clap_plugin_t *plugin, const clap_input_
             header->type != CLAP_EVENT_PARAM_VALUE || header->size < sizeof(clap_event_param_value_t))
             continue;
         const clap_event_param_value_t *change = (const clap_event_param_value_t *)header;
-        const int index = parameter_index(change->param_id);
-        if (index >= 0 && isfinite(change->value) &&
-            change->value >= parameter_info[index].min_value &&
-            change->value <= parameter_info[index].max_value)
-            instance(plugin)->values[index] = index == MODE ? (int)change->value : change->value;
+        const int index = parameter_index(plugin, change->param_id);
+        if (index < 0 || !isfinite(change->value) ||
+            change->value < parameter_info[index].min_value ||
+            change->value > parameter_info[index].max_value)
+            continue;
+        struct instance *self = instance(plugin);
+        if (index == PROGRAM_PARAM) {
+            /* Any thread: the preset is loaded on the main thread. */
+            self->values[index] = (int)change->value;
+            if ((int)change->value != 0) {
+                atomic_store(&self->pending_program, (int)change->value);
+                self->host->request_callback(self->host);
+            }
+            continue;
+        }
+        self->values[index] = index == MODE ? (int)change->value : change->value;
     }
 }
 
@@ -298,10 +329,21 @@ static void CLAP_ABI plugin_destroy(const clap_plugin_t *plugin) {
     free(instance(plugin));
 }
 
+static void report_loaded(struct instance *self, const char *key);
+
+/* The program variant starts in `Program Init` (the default values) and says so when it is first
+ * activated, unless a restored state holds other values. */
 static bool CLAP_ABI plugin_activate(const clap_plugin_t *plugin, double rate,
                                     uint32_t min_frames, uint32_t max_frames) {
-    (void)plugin;
-    return isfinite(rate) && rate > 0 && min_frames > 0 && min_frames <= max_frames;
+    if (!isfinite(rate) || rate <= 0 || min_frames == 0 || min_frames > max_frames)
+        return false;
+    struct instance *self = instance(plugin);
+    if (self->variant == PROGRAM && !self->activated &&
+        self->values[GAIN] == parameter_info[GAIN].default_value &&
+        self->values[MODE] == parameter_info[MODE].default_value)
+        report_loaded(self, "fixture-init");
+    self->activated = true;
+    return true;
 }
 
 static void CLAP_ABI no_op(const clap_plugin_t *plugin) {
@@ -310,8 +352,21 @@ static void CLAP_ABI no_op(const clap_plugin_t *plugin) {
 
 static clap_process_status CLAP_ABI process(const clap_plugin_t *plugin, const clap_process_t *p) {
     flush_params(plugin, p->in_events, p->out_events);
-    const float gain = (float)instance(plugin)->values[GAIN];
-    atomic_store(&instance(plugin)->rendered_gain, gain);
+    struct instance *self = instance(plugin);
+    // Report the unsolicited preset's value from the following render block as well.
+    if (p->out_events && atomic_exchange(&self->report_loaded_gain, false)) {
+        const clap_event_param_value_t event = {
+            .header = {.size = sizeof(clap_event_param_value_t),
+                       .space_id = CLAP_CORE_EVENT_SPACE_ID,
+                       .type = CLAP_EVENT_PARAM_VALUE},
+            .param_id = parameter_info[GAIN].id,
+            .note_id = -1, .port_index = -1, .channel = -1, .key = -1,
+            .value = self->values[GAIN],
+        };
+        p->out_events->try_push(p->out_events, &event.header);
+    }
+    const float gain = (float)self->values[GAIN];
+    atomic_store(&self->rendered_gain, gain);
     if (p->audio_inputs_count != 1 || p->audio_outputs_count != 1 ||
         p->audio_inputs[0].channel_count != 2 || p->audio_outputs[0].channel_count != 2 ||
         !p->audio_inputs[0].data32 || !p->audio_outputs[0].data32)
@@ -341,7 +396,9 @@ static bool CLAP_ABI save(const clap_plugin_t *plugin, const clap_ostream_t *str
 }
 
 static bool CLAP_ABI restore(const clap_plugin_t *plugin, const clap_istream_t *stream) {
-    double values[PARAM_COUNT + 1];
+    /* Gain, mode and the inventory flag: the program is not part of the state. */
+    enum { HIDE = PROGRAM_PARAM };
+    double values[HIDE + 1];
     uint8_t *bytes = (uint8_t *)values;
     for (size_t offset = 0; offset < sizeof(values);) {
         const int64_t count = stream->read(stream, bytes + offset, sizeof(values) - offset);
@@ -351,12 +408,12 @@ static bool CLAP_ABI restore(const clap_plugin_t *plugin, const clap_istream_t *
     }
     if (!isfinite(values[GAIN]) || values[GAIN] < 0 || values[GAIN] > 1 ||
         !isfinite(values[MODE]) || values[MODE] < 0 || values[MODE] > 2 ||
-        (values[PARAM_COUNT] != 0 && values[PARAM_COUNT] != 1))
+        (values[HIDE] != 0 && values[HIDE] != 1))
         return false;
     struct instance *self = instance(plugin);
     self->values[GAIN] = values[GAIN];
     self->values[MODE] = (int)values[MODE];
-    const bool hide = values[PARAM_COUNT] != 0;
+    const bool hide = values[HIDE] != 0;
     if (self->hide_mode != hide) {
         self->hide_mode = hide;
         const clap_host_params_t *host_params =
@@ -386,18 +443,60 @@ static bool CLAP_ABI load_context(const clap_plugin_t *plugin, const clap_istrea
 static const clap_plugin_state_context_t state_context = {.save = save_context,
                                                          .load = load_context};
 
-static bool CLAP_ABI load_factory_preset(const clap_plugin_t *plugin, uint32_t kind,
-                                       const char *location, const char *key) {
-    if (kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || location || !key ||
-        strcmp(key, "fixture-boost") != 0)
+/* Applies an embedded preset; false for an unknown key. */
+static bool apply_preset(struct instance *self, const char *key) {
+    if (strcmp(key, "fixture-boost") == 0) {
+        self->values[GAIN] = 0.75;
+        self->values[MODE] = 2.0;
+    } else if (self->variant == PROGRAM && strcmp(key, "fixture-calm") == 0) {
+        self->values[GAIN] = 0.25;
+        self->values[MODE] = 1.0;
+    } else if (self->variant == PROGRAM && strcmp(key, "fixture-init") == 0) {
+        self->values[GAIN] = parameter_info[GAIN].default_value;
+        self->values[MODE] = parameter_info[MODE].default_value;
+    } else {
         return false;
-    struct instance *self = instance(plugin);
-    self->values[GAIN] = 0.75;
-    self->values[MODE] = 2.0;
+    }
     const clap_host_params_t *params = self->host->get_extension(self->host, CLAP_EXT_PARAMS);
     if (params)
         params->rescan(self->host, CLAP_PARAM_RESCAN_VALUES);
     return true;
+}
+
+static bool CLAP_ABI load_factory_preset(const clap_plugin_t *plugin, uint32_t kind,
+                                       const char *location, const char *key) {
+    if (kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || location || !key)
+        return false;
+    return apply_preset(instance(plugin), key);
+}
+
+static void report_loaded(struct instance *self, const char *key) {
+    const clap_host_preset_load_t *host_presets =
+        self->host->get_extension(self->host, CLAP_EXT_PRESET_LOAD);
+    if (host_presets && host_presets->loaded)
+        host_presets->loaded(self->host, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, NULL, key);
+}
+
+/* A Program change loads the preset the plug-in way: on the main thread, reported to the host. */
+static void CLAP_ABI plugin_on_main_thread(const clap_plugin_t *plugin) {
+    struct instance *self = instance(plugin);
+    const int program = atomic_exchange(&self->pending_program, 0);
+    if (program <= 0 || program >= (int)(sizeof(program_keys) / sizeof(*program_keys)))
+        return;
+    const char *key = program_keys[program];
+    const clap_host_preset_load_t *host_presets =
+        self->host->get_extension(self->host, CLAP_EXT_PRESET_LOAD);
+    if (!apply_preset(self, key)) {
+        if (host_presets && host_presets->on_error)
+            host_presets->on_error(self->host, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, NULL, key, 0,
+                                   "unknown fixture preset");
+        return;
+    }
+    report_loaded(self, key);
+    atomic_store(&self->report_loaded_gain, true);
+    const clap_host_state_t *host_state = self->host->get_extension(self->host, CLAP_EXT_STATE);
+    if (host_state)
+        host_state->mark_dirty(self->host);
 }
 
 static const clap_plugin_preset_load_t preset_load = {.from_location = load_factory_preset};
@@ -426,9 +525,10 @@ static const void *CLAP_ABI get_extension(const clap_plugin_t *plugin, const cha
         return &audio_ports;
     if (strcmp(id, CLAP_EXT_STATE) == 0)
         return &state_extension;
-    if (instance(plugin)->variant == VALID && strcmp(id, CLAP_EXT_STATE_CONTEXT) == 0)
+    const bool presets = instance(plugin)->variant == VALID || instance(plugin)->variant == PROGRAM;
+    if (presets && strcmp(id, CLAP_EXT_STATE_CONTEXT) == 0)
         return &state_context;
-    if (instance(plugin)->variant == VALID &&
+    if (presets &&
         (strcmp(id, CLAP_EXT_PRESET_LOAD) == 0 || strcmp(id, CLAP_EXT_PRESET_LOAD_COMPAT) == 0))
         return &preset_load;
     if (instance(plugin)->variant == OPTIONAL_FIELD && strcmp(id, CLAP_EXT_GUI) == 0)
@@ -468,6 +568,8 @@ static const clap_plugin_t *CLAP_ABI create_plugin(const clap_plugin_factory_t *
         for (int j = 0; j < PARAM_COUNT; ++j)
             atomic_init(&state->values[j], parameter_info[j].default_value);
         atomic_init(&state->rendered_gain, (float)parameter_info[GAIN].default_value);
+        atomic_init(&state->pending_program, 0);
+        atomic_init(&state->report_loaded_gain, false);
         state->plugin = (clap_plugin_t){.desc = &descriptors[i],
                                        .plugin_data = state,
                                        .init = plugin_init,
@@ -479,7 +581,7 @@ static const clap_plugin_t *CLAP_ABI create_plugin(const clap_plugin_factory_t *
                                        .reset = no_op,
                                        .process = process,
                                        .get_extension = get_extension,
-                                       .on_main_thread = no_op};
+                                       .on_main_thread = plugin_on_main_thread};
         return &state->plugin;
     }
     return NULL;
@@ -514,9 +616,24 @@ static bool CLAP_ABI preset_provider_metadata(const clap_preset_discovery_provid
     if (kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || location ||
         !receiver->begin_preset(receiver, "Fixture Boost", "fixture-boost"))
         return false;
-    const clap_universal_plugin_id_t id = {.abi = "clap", .id = FIXTURE_ID "valid"};
-    receiver->add_plugin_id(receiver, &id);
+    const clap_universal_plugin_id_t valid = {.abi = "clap", .id = FIXTURE_ID "valid"};
+    const clap_universal_plugin_id_t program = {.abi = "clap", .id = FIXTURE_ID "program"};
+    receiver->add_plugin_id(receiver, &valid);
     receiver->add_extra_info(receiver, "org.klang-studio.komponist.preset-name.de", "Testanhebung");
+    /* The program variant's presets; the first shares the embedded Boost data. */
+    if (!receiver->begin_preset(receiver, "Program Boost", "fixture-boost"))
+        return false;
+    receiver->add_plugin_id(receiver, &program);
+    receiver->add_extra_info(receiver, "org.klang-studio.komponist.preset-name.de",
+                             "Programmanhebung");
+    if (!receiver->begin_preset(receiver, "Fixture Calm", "fixture-calm"))
+        return false;
+    receiver->add_plugin_id(receiver, &program);
+    receiver->add_extra_info(receiver, "org.klang-studio.komponist.preset-name.de", "Testruhe");
+    if (!receiver->begin_preset(receiver, "Program Init", "fixture-init"))
+        return false;
+    receiver->add_plugin_id(receiver, &program);
+    receiver->add_extra_info(receiver, "org.klang-studio.komponist.preset-name.de", "Programmstart");
     return true;
 }
 

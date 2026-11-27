@@ -1264,6 +1264,7 @@ fn midi_effect_chases_only_when_its_instrument_can_consume_stage_output() {
         plugin: project.tracks[0].channel.devices[0].plugin.clone(),
         state: None,
         sidechain: None,
+        preset: None,
     };
     let (project, effect) =
         edits::insert_device(&project, ChannelRef::Track(track), 0, effect).unwrap();

@@ -28,12 +28,38 @@ display name.
 
 Hexa, Volt, Surf, the five audio effects, Arpeggiator and Scale publish factory presets
 from their bundles. The Sampler and Klopfer bundles have no factory presets. States carry
-their complete parameter values.
+their complete parameter values and no preset identity.
 
 The browser searches the provider's display names. The device card and floating
 plugin frame expose the same discovered presets for a running device. Applying one records the
-resulting project state as a single undo step. Adding a device from the browser prepares its
-preset state in an isolated process before the new device first activates.
+resulting project state and the preset's source as a single undo step. Adding a device from the
+browser prepares its preset state in an isolated process before the new device first activates.
+
+## Selected preset
+
+komponist shows the preset a device last loaded through `clap.preset-load`. Nothing is read
+from the plug-in's state, so every plug-in gets the label the same way:
+
+- A load the host requests (card, plugin frame, browser) records its location and load key.
+- A plug-in that loads a preset on its own, from its own browser or a program change, reports it
+  on the main thread with the host side of the extension:
+  `clap_host_preset_load.loaded(host, location_kind, location, load_key)` with the same location
+  and load key its discovery provider declares. A failed load reports
+  `clap_host_preset_load.on_error`; komponist shows a load error. Reports during a load the host
+  requested belong to that load and are not recorded twice. Call `clap_host_state.mark_dirty`
+  as well, so the host stores the new state with the selection.
+- A plug-in that starts in a factory preset (a fresh instance in its `Init` patch, or a restored
+  state equal to a preset) may say so with `loaded` while it is created and initialised, while
+  the host activates it, or while it restores a state. komponist takes
+  such a start preset as the selection of a device that records none, without an undo step and
+  without marking the project as changed (the plug-in states it again on every load). It
+  never replaces a recorded selection or its modified mark. The bundled devices report their
+  start preset this way when they are first activated.
+- The project stores the selection with the device. A parameter edit after the load, on the
+  device card or in the plug-in's GUI, marks the preset as modified; loading a preset again clears
+  the mark. Undo restores both.
+- The label is the display name of the discovered preset with that source. A reported source
+  that discovery does not list shows no label.
 
 The device card's menu can save the current settings as a `.kppreset` file or load a file into
 a running instance of the same CLAP ID. Files hold opaque preset-context state. The project

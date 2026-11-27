@@ -376,6 +376,7 @@ fn an_audio_track_takes_audio_effects_only() {
         },
         state: None,
         sidechain: None,
+        preset: None,
     };
     for role in [DeviceRole::Instrument, DeviceRole::MidiEffect] {
         assert!(insert_device(&p, ChannelRef::Track(a), 0, plugin(role)).is_err());

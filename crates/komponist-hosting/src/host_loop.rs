@@ -82,6 +82,8 @@ pub mod notification_bits {
     pub const GUI_RESIZE_REQUESTED: u32 = 1 << 9;
     /// [`super::HostNotification::GuiClosed`].
     pub const GUI_CLOSED: u32 = 1 << 10;
+    /// [`super::HostNotification::PresetReported`].
+    pub const PRESET_REPORTED: u32 = 1 << 11;
 }
 
 use notification_bits as bits;
@@ -100,6 +102,7 @@ pub fn notification_bit(notification: &HostNotification) -> u32 {
         HostNotification::NoteNamesChanged => bits::NOTE_NAMES_CHANGED,
         HostNotification::GuiResizeRequested(_) => bits::GUI_RESIZE_REQUESTED,
         HostNotification::GuiClosed => bits::GUI_CLOSED,
+        HostNotification::PresetReported => bits::PRESET_REPORTED,
     }
 }
 

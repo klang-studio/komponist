@@ -1019,6 +1019,9 @@ impl App {
             } => {
                 self.finish_param_text(*device, *id, *request, *value);
             }
+            PluginManagerEvent::StartupState { device, state } => {
+                self.record_device_baseline(*device, state);
+            }
             PluginManagerEvent::StateSnapshot { device, state } => {
                 if let Some(captured) = self.shell.catalog_retirements.get_mut(device) {
                     *captured = Some(state.clone());
@@ -1057,12 +1060,26 @@ impl App {
             }
             PluginManagerEvent::ClapPresetLoaded {
                 device,
+                source,
                 previous_state,
                 state,
             } => {
                 self.invalidate_retiring_snapshot(*device);
-                self.record_clap_preset(*device, previous_state, state);
+                self.record_clap_preset(*device, source.as_ref(), previous_state, state);
                 self.frame_preset_finished(*device, true);
+            }
+            PluginManagerEvent::ClapPresetReported {
+                device,
+                source,
+                startup: true,
+            } => self.record_start_preset(*device, source),
+            PluginManagerEvent::ClapPresetReported {
+                device,
+                source,
+                startup: false,
+            } => {
+                self.invalidate_retiring_snapshot(*device);
+                self.record_reported_preset(*device, source);
             }
             PluginManagerEvent::ClapPresetCaptured { device, result } => {
                 self.user_preset_captured(*device, result);
@@ -1142,7 +1159,7 @@ impl App {
         }
         let dir = self.project_dir();
         self.engine
-            .sync_device_states(before, &after, dir.as_deref());
+            .sync_device_states(before, &after, dir.as_deref(), &self.param_undo.baseline);
         self.expect_echo(before, &after);
         self.release_keyboard_notes_if(|id| after.track(id).is_none());
     }
@@ -2960,6 +2977,7 @@ impl App {
                     plugin,
                     state: None,
                     sidechain: None,
+                    preset: None,
                 };
                 self.apply_with("undo-add-midi-effect", |p| {
                     edits::insert_device(p, channel, index, spec)
@@ -2989,6 +3007,7 @@ impl App {
                     plugin,
                     state: None,
                     sidechain: None,
+                    preset: None,
                 };
                 self.apply_with("undo-add-effect", |p| {
                     edits::insert_device(p, channel, index, spec)

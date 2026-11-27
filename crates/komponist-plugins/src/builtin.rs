@@ -120,6 +120,7 @@ mod tests {
                     plugin: entry.plugin.clone(),
                     state: None,
                     sidechain: None,
+                    preset: None,
                 },
             )
             .unwrap();

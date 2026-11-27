@@ -43,6 +43,7 @@ fn effect(name: &str) -> NewDevice {
         plugin: plugin(name),
         state: None,
         sidechain: None,
+        preset: None,
     }
 }
 

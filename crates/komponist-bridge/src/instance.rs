@@ -56,7 +56,10 @@ use komponist_hosting::{
     ActivateConfig, HostContext, HostNotify, HostedPlugin, HostingError, PluginKind, RenderMode,
     TimerId,
 };
-use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError};
+use komponist_ipc::clap_presets::PresetReport;
+use std::num::NonZeroU32;
+
+use komponist_ipc::control::{PROTOCOL_VERSION, ReportedPresetValues, StateRestoreError};
 use komponist_ipc::shm::MAX_BLOCK;
 use komponist_ipc::{
     BridgeChannel, BridgeMsg, BridgeServer, BridgeState, ChannelError, ControlMsg, ErrorContext,
@@ -214,6 +217,7 @@ struct Bridge {
     pending_values: BTreeMap<u32, f64>,
     values_due: Option<Instant>,
     values_sent: Option<Instant>,
+    pending_preset_values: Option<(u64, Instant)>,
     params_due: Option<Instant>,
     /// The next state capture must wait for the audio block that applies restored bases.
     verify_restored_bases: bool,
@@ -222,6 +226,9 @@ struct Bridge {
     unstable_snapshots: u8,
     /// How long the last checked snapshot's `save_state` took.
     last_save: Duration,
+    initial_activation: bool,
+    startup_state_restored: bool,
+    durable_edits: BTreeMap<u32, crate::rt::ParamEditStamp>,
     controller_due: Option<Instant>,
     controller_sent: Option<Instant>,
     shutdown: bool,
@@ -256,10 +263,14 @@ impl Bridge {
             pending_values: BTreeMap::new(),
             values_due: None,
             values_sent: None,
+            pending_preset_values: None,
             params_due: None,
             verify_restored_bases: false,
             unstable_snapshots: 0,
             last_save: Duration::ZERO,
+            initial_activation: true,
+            startup_state_restored: false,
+            durable_edits: BTreeMap::new(),
             controller_due: None,
             controller_sent: None,
             shutdown: false,
@@ -471,6 +482,7 @@ impl Bridge {
             }
         }
         self.handle_notifications();
+        self.send_loaded_values_if_due();
         if control {
             self.read_control();
         }
@@ -544,7 +556,9 @@ impl Bridge {
     // --------------------------------------------------------------------------------------------
 
     fn value_deadline(&self) -> Option<Instant> {
-        self.values_due
+        self.pending_preset_values
+            .map(|(_, due)| due)
+            .or(self.values_due)
             .into_iter()
             .chain(self.params_due)
             .chain(self.controller_due)
@@ -612,9 +626,94 @@ impl Bridge {
         }
     }
 
+    /// Reads the final values and delivery stamps at the same block boundary.
+    fn send_loaded_values_if_due(&mut self) {
+        let Some((epoch, due)) = self.pending_preset_values else {
+            return;
+        };
+        if due > Instant::now() {
+            return;
+        }
+        self.pending_preset_values = None;
+        let Some(plugin) = self.plugin.as_ref() else {
+            return;
+        };
+        let params = plugin.params();
+        let read_values = || {
+            params
+                .iter()
+                .filter_map(|info| plugin.param_value(info.id).map(|value| (info.id, value)))
+                .collect::<Vec<_>>()
+        };
+        let mut delivery = self.durable_edits.clone();
+        let values = if let Some(active) = &mut self.active {
+            let Ok(values) = active.rt.snapshot(|delivered| {
+                delivery.extend(delivered.durable_deliveries());
+                read_values()
+            }) else {
+                self.pending_preset_values = Some((epoch, Instant::now() + VALUES_INTERVAL));
+                return;
+            };
+            values
+        } else {
+            read_values()
+        };
+        let mut superseded = Vec::new();
+        let mut settled = Vec::new();
+        for (id, stamp) in delivery {
+            if let Some(serial) = stamp.superseded_by(epoch) {
+                superseded.push((id, serial));
+            } else if let Some(serial) = stamp.settled_at(epoch) {
+                settled.push((id, serial));
+            }
+        }
+        let values = values
+            .into_iter()
+            .map(|(id, value)| ParamValue {
+                id,
+                value,
+                text: plugin.param_text(id, value).unwrap_or_default(),
+            })
+            .collect();
+        self.pending_values.clear();
+        self.values_due = None;
+        self.send(BridgeMsg::PresetValues(ReportedPresetValues {
+            values,
+            superseded,
+            settled,
+        }));
+    }
+
+    fn report_presets(&mut self) {
+        let reports = self
+            .plugin
+            .as_mut()
+            .map(|plugin| plugin.take_preset_reports())
+            .unwrap_or_default();
+        self.send_preset_reports(reports);
+    }
+
+    fn send_preset_reports(&mut self, reports: Vec<PresetReport>) {
+        let mut loaded_epoch = None;
+        for mut report in reports {
+            if let PresetReport::Loaded { startup, epoch, .. } = &mut report {
+                *startup |= self.initial_activation;
+                if !*startup {
+                    loaded_epoch = Some(*epoch);
+                }
+            }
+            self.send(BridgeMsg::PresetReported(report));
+        }
+        if let Some(epoch) = loaded_epoch {
+            // The reported values belong to the last load in the batch.
+            self.pending_preset_values = Some((epoch, Instant::now()));
+            self.send_loaded_values_if_due();
+        }
+    }
+
     fn send_values_if_due(&mut self) {
         let now = Instant::now();
-        if self.values_due.is_none_or(|due| due > now) {
+        if self.pending_preset_values.is_some() || self.values_due.is_none_or(|due| due > now) {
             return;
         }
         self.values_due = None;
@@ -682,6 +781,9 @@ impl Bridge {
         }
         if pending & bits::LATENCY_CHANGED != 0 {
             self.update_latency();
+        }
+        if pending & bits::PRESET_REPORTED != 0 {
+            self.report_presets();
         }
         if pending & bits::STATE_DIRTY != 0 {
             self.send(BridgeMsg::StateDirty);
@@ -817,6 +919,13 @@ impl Bridge {
                 });
             }
             ControlMsg::Deactivate => self.deactivate(),
+            ControlMsg::GetState { request }
+            | ControlMsg::GetStateChecked { request, .. }
+            | ControlMsg::CaptureClapPreset(request)
+                if self.pending_preset_values.is_some() =>
+            {
+                self.send(BridgeMsg::StateDeferred { request });
+            }
             ControlMsg::GetState { request } => {
                 if self.verify_restored_bases {
                     // StateApplied only acknowledges the overlay was queued. A checked capture
@@ -904,7 +1013,10 @@ impl Bridge {
                 });
                 self.send(BridgeMsg::ParamTextParsed { request, id, value });
             }
-            ControlMsg::SetParam { id, value } => self.set_param(id, value),
+            ControlMsg::SetParam { id, value } => self.set_param(id, value, None),
+            ControlMsg::SetParamEdit { id, value, serial } => {
+                self.set_param(id, value, Some(serial))
+            }
             ControlMsg::OpenGui(target) => self.open_gui(target),
             ControlMsg::SetGuiSize(size) => {
                 #[cfg(bridge_frame)]
@@ -1240,10 +1352,14 @@ impl Bridge {
     }
 
     fn set_state(&mut self, request: u32, state: &[u8], bases: BTreeMap<u32, f64>) {
+        if self.initial_activation {
+            self.startup_state_restored = true;
+        }
         let untouched = |message| StateRestoreError {
             message,
             changed_values: Vec::new(),
         };
+        let mut earlier_reports = Vec::new();
         let result = (|| {
             let plugin = self
                 .plugin
@@ -1259,6 +1375,9 @@ impl Bridge {
             let active_restore = self.active.is_some();
             let mut apply_on_audio = BTreeMap::new();
             let mut load = || {
+                if active_restore {
+                    earlier_reports = plugin.take_preset_reports();
+                }
                 let before: BTreeMap<_, _> = plugin
                     .params()
                     .into_iter()
@@ -1339,6 +1458,9 @@ impl Bridge {
                 load()
             };
             if superseded {
+                self.durable_edits.clear();
+                self.pending_preset_values = None;
+                earlier_reports.retain(|report| matches!(report, PresetReport::Failed { .. }));
                 // Old coalesced values must not follow the authoritative state report.
                 self.pending_values.clear();
                 self.values_due = None;
@@ -1346,6 +1468,7 @@ impl Bridge {
             result
         })();
         self.send(BridgeMsg::StateApplied { request, result });
+        self.send_preset_reports(earlier_reports);
     }
 
     fn load_clap_preset(&mut self, request: u32, preset: &komponist_ipc::clap_presets::PresetLoad) {
@@ -1397,6 +1520,8 @@ impl Bridge {
             load().0
         };
         if result.is_ok() {
+            self.durable_edits.clear();
+            self.pending_preset_values = None;
             // Values coalesced before the load must not overwrite the preset's reported values.
             self.pending_values.clear();
             self.values_due = None;
@@ -1553,14 +1678,14 @@ impl Bridge {
         self.send(BridgeMsg::WaveformMarkersEdited(request, result));
     }
 
-    fn set_param(&mut self, id: u32, value: f64) {
+    fn set_param(&mut self, id: u32, value: f64, serial: Option<NonZeroU32>) {
         let Some(plugin) = self.plugin.as_mut() else {
             return self.error(ErrorContext::Params, "no plugin loaded");
         };
         let mut out = Vec::new();
         match self.active.as_mut() {
             Some(active) => {
-                if !active.rt.set_param(id, value) {
+                if !active.rt.set_param_edit(id, value, serial) {
                     return self.error(
                         ErrorContext::Params,
                         format!("parameter queue full, value {value} of {id} dropped"),
@@ -1577,11 +1702,25 @@ impl Bridge {
                     &[WireEvent::new(0, WireEventKind::ParamValue { id, value })],
                     &mut out,
                 );
+                if let (Some(serial), Some(epoch)) = (serial, plugin.preset_load_epoch()) {
+                    self.durable_edits.insert(
+                        id,
+                        crate::rt::ParamEditStamp::new(
+                            serial,
+                            epoch.load(std::sync::atomic::Ordering::Acquire),
+                        ),
+                    );
+                }
             }
         }
         self.queue_flushed(&out);
         // Echo with the plugin's text, so the generic view can show "−12.0 dB".
         self.queue_value(id, value);
+        if self.active.is_none() {
+            // A flush can report a preset on this thread. Publish its final values before
+            // another control request in the same batch captures state.
+            self.report_presets();
+        }
     }
 
     fn set_render_mode(&mut self, mode: RenderMode) {
@@ -1606,7 +1745,13 @@ impl Bridge {
     /// Activates and answers `Activated` or `Error`.
     fn activate_and_report(&mut self, config: ActivateConfig) {
         match self.activate(config) {
-            Ok(latency) => self.send(BridgeMsg::Activated { latency }),
+            Ok(latency) => {
+                if self.initial_activation {
+                    self.report_presets();
+                    self.initial_activation = false;
+                }
+                self.send(BridgeMsg::Activated { latency });
+            }
             Err(e) => self.error(ErrorContext::Activate, e.to_string()),
         }
     }
@@ -1631,6 +1776,16 @@ impl Bridge {
             plugin.deactivate(processor);
             processor = plugin.activate(config)?;
         }
+        // Capture the startup state on the control thread before handing the processor
+        // to the realtime worker, which may schedule main-thread preset loads.
+        let baseline = if self.initial_activation
+            && !self.startup_state_restored
+            && plugin.descriptor().format == komponist_ipc::PluginFormat::Clap
+        {
+            plugin.save_state().ok()
+        } else {
+            None
+        };
         let fallback = match plugin.descriptor().kind {
             PluginKind::Instrument => Fallback::Silence,
             PluginKind::Effect | PluginKind::MidiEffect | PluginKind::Other => {
@@ -1654,20 +1809,29 @@ impl Bridge {
                     self.notify.clone(),
                 ))
             });
-        let (rt, report) =
-            match RtThread::start(server, processor, rt_config, controller, param_ids) {
-                Ok(started) => started,
-                Err(failure) => {
-                    plugin.deactivate(failure.processor);
-                    self.report_rt_priority(&failure.report);
-                    return Err(failure.error);
-                }
-            };
+        let (rt, report) = match RtThread::start(
+            server,
+            processor,
+            rt_config,
+            controller,
+            param_ids,
+            plugin.preset_load_epoch(),
+        ) {
+            Ok(started) => started,
+            Err(failure) => {
+                plugin.deactivate(failure.processor);
+                self.report_rt_priority(&failure.report);
+                return Err(failure.error);
+            }
+        };
         let latency = plugin.latency();
         self.region.set_latency(latency);
         self.region.set_bridge_state(BridgeState::Active);
         self.controller_due = None;
         self.active = Some(Active { rt, config });
+        if let Some(state) = baseline {
+            self.send(BridgeMsg::StartupState(state));
+        }
         self.report_rt_priority(&report);
         // Right before `Activated` (sent by the caller), on every activation.
         let rt_status = BridgeMsg::RtPriority {
@@ -1725,7 +1889,8 @@ impl Bridge {
         // From now on the app's `begin_block` returns `NotActive`.
         self.region.set_bridge_state(BridgeState::Loaded);
         let controller = active.rt.controller();
-        let (processor, leftover) = active.rt.stop();
+        let stopped = active.rt.stop();
+        self.durable_edits.extend(stopped.durable);
         self.controller_due = None;
         if let Some(controller) = &controller {
             // The thread can have published a final value after the last main-loop deadline.
@@ -1734,14 +1899,21 @@ impl Bridge {
         let Some(plugin) = self.plugin.as_mut() else {
             return;
         };
-        plugin.deactivate(processor);
+        plugin.deactivate(stopped.processor);
         let mut out = Vec::new();
-        if !leftover.is_empty() {
-            let events: Vec<WireEvent> = leftover
-                .iter()
-                .map(|&(id, value)| WireEvent::new(0, WireEventKind::ParamValue { id, value }))
-                .collect();
-            plugin.flush_params(&events, &mut out);
+        if !stopped.queued.is_empty() {
+            plugin.flush_params(&stopped.queued, &mut out);
+            if let Some(epoch) = plugin.preset_load_epoch() {
+                let epoch = epoch.load(std::sync::atomic::Ordering::Acquire);
+                for event in &stopped.queued {
+                    if let Some(serial) = NonZeroU32::new(event.reserved) {
+                        self.durable_edits.insert(
+                            event.param_id,
+                            crate::rt::ParamEditStamp::new(serial, epoch),
+                        );
+                    }
+                }
+            }
         }
         self.queue_flushed(&out);
     }

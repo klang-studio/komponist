@@ -9,6 +9,7 @@
 //!   UI frame. CPU load and xruns are measured by `komponist-audio` (`StreamStats`), not here.
 
 use core::fmt;
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -71,6 +72,17 @@ pub enum Command {
         id: u32,
         /// Plain value.
         value: f64,
+    },
+    /// A durable edit with an identity the plugin host can match to its delivery.
+    SetParamEdit {
+        /// Target slot.
+        slot: SlotId,
+        /// Parameter id.
+        id: u32,
+        /// Plain value.
+        value: f64,
+        /// The edit's identity within the current plugin instance.
+        serial: NonZeroU32,
     },
     /// Fast path during a macro gesture, effective at frame zero of the next block.
     SetMacro {
@@ -195,6 +207,18 @@ impl fmt::Debug for Command {
                 .field("slot", slot)
                 .field("id", id)
                 .field("value", value)
+                .finish(),
+            Command::SetParamEdit {
+                slot,
+                id,
+                value,
+                serial,
+            } => f
+                .debug_struct("SetParamEdit")
+                .field("slot", slot)
+                .field("id", id)
+                .field("value", value)
+                .field("serial", serial)
                 .finish(),
             Command::SetMacro {
                 track,

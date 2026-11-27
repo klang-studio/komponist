@@ -372,6 +372,7 @@ mod tests {
             plugin: project.tracks[0].channel.devices[0].plugin.clone(),
             state: Some(Arc::from(&b"{}"[..])),
             sidechain: None,
+            preset: None,
         };
         let (with, id) =
             edits::insert_device(&project, crate::ChannelRef::Track(track), 0, spec).unwrap();
@@ -383,6 +384,44 @@ mod tests {
         assert_eq!(channel.midi_effect_count(), 1);
         assert_eq!(channel.devices[0].id, id);
         assert_eq!(channel.instrument().unwrap().0, 1);
+    }
+
+    #[test]
+    fn the_loaded_preset_of_a_device_round_trips_and_is_optional() {
+        use crate::{ClapPresetLocation, ClapPresetSource, DevicePreset};
+        let project = demo_project();
+        let plain = to_json(&project).unwrap();
+        assert!(!plain.contains(r#""preset""#), "no selection, no field");
+        let device = project.tracks[0].channel.devices[0].id;
+        let selected = edits::set_device_preset(
+            &project,
+            device,
+            Some(DevicePreset::loaded(ClapPresetSource {
+                location: ClapPresetLocation::Plugin,
+                load_key: Some(b"Warm Pad".to_vec()),
+            })),
+        )
+        .unwrap();
+        let modified = edits::mark_device_preset_modified(&selected, device).unwrap();
+        let text = to_json(&modified).unwrap();
+        assert!(
+            text.contains(r#""preset": {"#) && text.contains(r#""modified": true"#),
+            "{text}"
+        );
+        let back = from_json(&text).unwrap();
+        assert_eq!(back, modified);
+        let preset = back.find_device(device).unwrap().2.preset.clone().unwrap();
+        assert!(preset.modified);
+        assert_eq!(preset.source.load_key.as_deref(), Some(&b"Warm Pad"[..]));
+        // Marking twice, or a device without a selection, changes nothing.
+        assert_eq!(
+            edits::mark_device_preset_modified(&modified, device).unwrap(),
+            modified
+        );
+        assert_eq!(
+            edits::mark_device_preset_modified(&project, device).unwrap(),
+            project
+        );
     }
 
     #[test]
@@ -559,6 +598,7 @@ mod tests {
             plugin: p.track(t[0]).unwrap().channel.devices[0].plugin.clone(),
             state: None,
             sidechain: None,
+            preset: None,
         };
         let (p, limiter) = edits::insert_device(&p, crate::ChannelRef::Master, 0, spec).unwrap();
         let sc = Sidechain {

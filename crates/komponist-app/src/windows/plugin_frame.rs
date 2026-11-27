@@ -232,9 +232,7 @@ struct Frame {
     initial: Vec2,
     /// The parameter grid needs rebuilding.
     params_dirty: bool,
-    /// The state the preset match belongs to (`None`: not seen yet).
-    state_seen: Option<Option<Arc<[u8]>>>,
-    /// The preset matching the state, or the last successfully applied selection.
+    /// The preset the device last loaded, as the header shows it.
     preset: Option<ClapPresetSource>,
     preset_changed: bool,
     requested_preset: Option<ClapPresetSource>,
@@ -730,7 +728,6 @@ impl App {
                 had_gui: false,
                 initial,
                 params_dirty: true,
-                state_seen: None,
                 preset: None,
                 preset_changed: false,
                 requested_preset: None,
@@ -875,18 +872,11 @@ impl App {
     }
 
     pub(crate) fn frame_preset_finished(&mut self, device: DeviceId, applied: bool) {
-        let state = self
-            .project()
-            .find_device(device)
-            .map(|(_, _, target)| target.state.clone());
         if let Some(frame) = self.frames.frame_mut(device)
-            && let Some(preset) = frame.requested_preset.take()
+            && frame.requested_preset.take().is_some()
             && applied
         {
-            frame.preset = Some(preset);
-            frame.preset_changed = false;
             frame.params_dirty = true;
-            frame.state_seen = state;
         }
     }
 
@@ -1592,36 +1582,23 @@ impl App {
         }
     }
 
-    /// Which advertised preset the device state contains.
+    /// The preset the device shows and whether it was modified since
+    /// ([`crate::device_host::selected_preset`]).
     fn update_preset_state(&mut self, i: usize) {
         let device = self.frames.frames[i].device;
         let Some((_, _, d)) = self.project().find_device(device) else {
             return;
         };
-        let state = d.state.clone();
-        let host = self.engine.host();
-        let entries = host.clap_presets(d);
-        let selected = host.saved_preset(d, entries);
+        let entries = self.engine.host().clap_presets(d);
+        let selected = crate::device_host::selected_preset(d, entries);
+        let preset = selected.map(|(index, _)| entries[index].source.clone());
+        let changed = selected.is_some_and(|(_, modified)| modified);
         let f = &mut self.frames.frames[i];
-        let same = match &f.state_seen {
-            Some(Some(seen)) => state.as_ref().is_some_and(|state| Arc::ptr_eq(seen, state)),
-            Some(None) => state.is_none(),
-            None => false,
-        };
-        let preset = selected
-            .and_then(|(index, _)| entries.get(index))
-            .map(|entry| &entry.source)
-            .or(f.preset.as_ref());
-        let changed = selected.map_or(
-            preset.is_some() && (!same || f.preset_changed),
-            |(_, changed)| changed,
-        );
-        if same && f.preset.as_ref() == preset && f.preset_changed == changed {
+        if f.preset == preset && f.preset_changed == changed {
             return;
         }
-        f.state_seen = Some(state);
         f.params_dirty = true;
-        f.preset = preset.cloned();
+        f.preset = preset;
         f.preset_changed = changed;
     }
 

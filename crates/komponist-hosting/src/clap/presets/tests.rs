@@ -3,6 +3,7 @@
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::ext::{preset_load::*, state::*, state_context::*};
@@ -14,6 +15,7 @@ use clap_sys::universal_plugin_id::clap_universal_plugin_id;
 use clap_sys::version::CLAP_VERSION;
 
 use crate::HostedPlugin;
+use komponist_ipc::clap_presets::PresetReport;
 
 use super::*;
 
@@ -58,6 +60,36 @@ static ENTRY: clap_plugin_entry = clap_plugin_entry {
     deinit: Some(deinit_entry),
     get_factory: Some(factory),
 };
+
+/// The host of the instance, for the host side of preset-load.
+static HOST: AtomicPtr<clap_host> = AtomicPtr::new(ptr::null_mut());
+
+/// Calls the host side of preset-load like a plug-in that reports its loads.
+fn report(key: &CStr, error: Option<&CStr>) {
+    let host = HOST.load(Ordering::Acquire);
+    // SAFETY: the instance's host stays alive while the instance calls it on the main thread.
+    unsafe {
+        let ext = ((*host).get_extension.unwrap())(host, CLAP_EXT_PRESET_LOAD.as_ptr())
+            .cast::<clap_host_preset_load>();
+        assert!(!ext.is_null(), "the host offers preset-load");
+        match error {
+            None => ((*ext).loaded.unwrap())(
+                host,
+                CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
+                ptr::null(),
+                key.as_ptr(),
+            ),
+            Some(message) => ((*ext).on_error.unwrap())(
+                host,
+                CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
+                ptr::null(),
+                key.as_ptr(),
+                0,
+                message.as_ptr(),
+            ),
+        }
+    }
+}
 
 static PRESETS: clap_plugin_preset_load = clap_plugin_preset_load {
     from_location: Some(load),
@@ -181,9 +213,10 @@ unsafe extern "C" fn plugin_descriptor(
 
 unsafe extern "C" fn create_plugin(
     _: *const clap_plugin_factory,
-    _: *const clap_host,
+    host: *const clap_host,
     _: *const c_char,
 ) -> *const clap_plugin {
+    HOST.store(host.cast_mut(), Ordering::Release);
     Box::into_raw(Box::new(clap_plugin {
         desc: &DESCRIPTOR,
         plugin_data: Box::into_raw(Box::new(Cell::new(0u8))).cast(),
@@ -196,11 +229,20 @@ unsafe extern "C" fn create_plugin(
         reset: None,
         process: None,
         get_extension: Some(extension),
-        on_main_thread: None,
+        on_main_thread: Some(main_thread),
     }))
 }
 
+/// The plug-in's own browser loads the preset and reports it.
+unsafe extern "C" fn main_thread(plugin: *const clap_plugin) {
+    // SAFETY: the plugin data is the instance's own allocation.
+    unsafe { (*(*plugin).plugin_data.cast::<Cell<u8>>()).set(42) };
+    report(PRESET_KEY, None);
+}
+
+/// The plug-in names the preset it starts in while it initialises.
 unsafe extern "C" fn init_plugin(_: *const clap_plugin) -> bool {
+    report(PRESET_KEY, None);
     true
 }
 
@@ -233,10 +275,13 @@ unsafe extern "C" fn load(
     }
     // SAFETY: the plugin and the non-null key are provided by the live host instance.
     unsafe {
-        if CStr::from_ptr(key) != PRESET_KEY {
+        let key = CStr::from_ptr(key);
+        if key != PRESET_KEY {
+            report(key, Some(c"no such preset"));
             return false;
         }
         (*(*plugin).plugin_data.cast::<Cell<u8>>()).set(42);
+        report(key, None);
     }
     true
 }
@@ -305,6 +350,15 @@ fn community_clap_discovers_loads_and_round_trips_a_preset() {
         entry,
     )
     .unwrap();
+    // A report during creation and init names the preset the plug-in starts in.
+    assert_eq!(
+        plugin.take_preset_reports(),
+        [PresetReport::Loaded {
+            source: preset.source.clone(),
+            startup: true,
+            epoch: 1,
+        }]
+    );
     plugin.load_clap_preset(preset).unwrap();
     let saved = plugin.save_preset_state().unwrap();
     assert_eq!(saved, [42]);
@@ -318,7 +372,51 @@ fn community_clap_discovers_loads_and_round_trips_a_preset() {
     assert!(plugin.load_clap_preset(&wrong_preset).is_err());
     wrong_preset.plugin_id.clone_from(&preset.plugin_id);
     wrong_preset.source.load_key = Some(b"unknown".to_vec());
+    let error = plugin
+        .load_clap_preset(&wrong_preset)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no such preset"), "{error}");
+    assert_eq!(plugin.save_state().unwrap(), [42]);
+    // Reports during the host's own loads belong to those loads.
+    assert_eq!(plugin.take_preset_reports(), []);
+
+    // A failed request leaves the earlier successful report and its loaded state in place.
+    plugin.on_main_thread();
     assert!(plugin.load_clap_preset(&wrong_preset).is_err());
+    assert_eq!(
+        plugin.take_preset_reports(),
+        [PresetReport::Loaded {
+            source: preset.source.clone(),
+            startup: false,
+            epoch: plugin
+                .preset_load_epoch()
+                .unwrap()
+                .load(std::sync::atomic::Ordering::Acquire),
+        }]
+    );
+    assert_eq!(plugin.save_state().unwrap(), [42]);
+
+    // A load the plug-in reported before a successful host load is superseded by it.
+    plugin.on_main_thread();
+    plugin.load_clap_preset(preset).unwrap();
+    assert_eq!(plugin.take_preset_reports(), []);
+
+    // A load the plug-in starts itself reaches the host through preset-load.
+    plugin.load_state(&[0]).unwrap();
+    plugin.on_main_thread();
+    assert_eq!(
+        plugin.take_preset_reports(),
+        [PresetReport::Loaded {
+            source: preset.source.clone(),
+            startup: false,
+            epoch: plugin
+                .preset_load_epoch()
+                .unwrap()
+                .load(std::sync::atomic::Ordering::Acquire),
+        }]
+    );
+    assert_eq!(plugin.take_preset_reports(), []);
     assert_eq!(plugin.save_state().unwrap(), [42]);
 
     // Older plug-ins only expose the ordinary state extension.

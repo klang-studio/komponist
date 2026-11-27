@@ -9,6 +9,7 @@
 
 use crate::common;
 
+use std::num::NonZeroU32;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt;
 use std::time::{Duration, Instant};
@@ -17,7 +18,7 @@ use common::*;
 use komponist_ipc::shm::{BLOCK_FLAG_RESET, MAX_BLOCK};
 use komponist_ipc::{
     BlockError, BlockStatus, BridgeMsg, BridgeState, ControlMsg, ErrorContext, LogLevel,
-    PluginFormat, PluginKind, ProcessExit, RenderMode,
+    PluginFormat, PluginKind, ProcessExit, RenderMode, WireEvent,
 };
 
 #[cfg(x11_embed)]
@@ -48,6 +49,122 @@ fn failed_editor_does_not_invalidate_the_native_layout() {
     assert_eq!(layout, loaded.native_layout);
 }
 
+#[test]
+fn an_unsolicited_preset_supersedes_delivered_edits_on_both_paths() {
+    let Some(bundle) = std::env::var_os("KOMPONIST_LAYOUT_FIXTURE") else {
+        eprintln!("set KOMPONIST_LAYOUT_FIXTURE to the standalone C CLAP fixture");
+        return;
+    };
+    let mut bridge = Bridge::spawn();
+    let loaded = bridge.load(
+        std::path::Path::new(&bundle),
+        "org.klang-studio.komponist.layout-fixture.program",
+    );
+    let gain = Bridge::param_id(&loaded, "Gain");
+    let mode = Bridge::param_id(&loaded, "Mode");
+    let program = Bridge::param_id(&loaded, "Program");
+    bridge.activate();
+    let control_edit = NonZeroU32::new(10).unwrap();
+    let render_edit = NonZeroU32::new(11).unwrap();
+    bridge.send(ControlMsg::SetParamEdit {
+        id: gain,
+        value: 0.61,
+        serial: control_edit,
+    });
+    // Wait for the control message to enter the audio queue before driving the next block.
+    bridge.send(ControlMsg::ListParams);
+    bridge.expect("parameter inventory", |message| {
+        matches!(message, BridgeMsg::Params { .. }).then_some(())
+    });
+    let render = |id, value, serial: NonZeroU32| WireEvent {
+        reserved: serial.get(),
+        ..param(0, id, value)
+    };
+    assert_eq!(
+        bridge.block(&[render(mode, 0.0, render_edit)]).status,
+        BlockStatus::Ok as u32
+    );
+
+    let program_edit = NonZeroU32::new(13).unwrap();
+    assert_eq!(
+        bridge.block(&[render(program, 2.0, program_edit)]).status,
+        BlockStatus::Ok as u32
+    );
+    let values = bridge.expect("reported preset values", |message| match message {
+        BridgeMsg::PresetValues(values) => Some(values.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        values.values.iter().find(|p| p.id == gain).unwrap().value,
+        0.25
+    );
+    assert!(values.superseded.contains(&(gain, control_edit)));
+    assert!(values.superseded.contains(&(mode, render_edit)));
+    // The main-thread callback can run just before or after the worker records this edit.
+    // Both paths return the Program value present once the block has completed.
+    assert!(
+        values
+            .superseded
+            .iter()
+            .chain(&values.settled)
+            .any(|stamp| *stamp == (program, program_edit))
+    );
+    assert_eq!(
+        values
+            .values
+            .iter()
+            .find(|p| p.id == program)
+            .unwrap()
+            .value,
+        2.0
+    );
+
+    // The next block emits the new Gain as a plugin output, invalidating confirmation of
+    // the displaced 0.61. The host now checks the preset's base instead.
+    assert_eq!(bridge.block(&[]).status, BlockStatus::Ok as u32);
+    bridge.send(ControlMsg::GetStateChecked {
+        request: 81,
+        expected: vec![(gain, 0.25, false)],
+        budget_ms: 1_000,
+    });
+    bridge.expect("checked preset snapshot", |message| match message {
+        BridgeMsg::State {
+            request: 81,
+            verified,
+            ..
+        } => {
+            assert_eq!(verified, &[(gain, 0.25)]);
+            Some(())
+        }
+        _ => None,
+    });
+
+    let repeat = NonZeroU32::new(12).unwrap();
+    assert_eq!(
+        bridge.block(&[render(gain, 0.61, repeat)]).status,
+        BlockStatus::Ok as u32
+    );
+    bridge.send(ControlMsg::GetStateChecked {
+        request: 82,
+        expected: vec![(gain, 0.61, true)],
+        budget_ms: 1_000,
+    });
+    bridge.expect(
+        "checked snapshot after a later edit of the same value",
+        |message| match message {
+            BridgeMsg::State {
+                request: 82,
+                verified,
+                ..
+            } => {
+                assert_eq!(verified, &[(gain, 0.61)]);
+                Some(())
+            }
+            _ => None,
+        },
+    );
+}
+
 /// Waits until the bridge publishes `state` (it changes asynchronously to control messages).
 fn wait_state(bridge: &Bridge, state: BridgeState) {
     let deadline = Instant::now() + ANSWER_TIMEOUT;
@@ -58,6 +175,28 @@ fn wait_state(bridge: &Bridge, state: BridgeState) {
         );
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+#[test]
+fn clap_startup_state_is_sent_before_activation_completes() {
+    let Some(bundle) = fixture("kp-test-synth") else {
+        return;
+    };
+    let mut bridge = Bridge::spawn();
+    bridge.load(&bundle, SYNTH);
+    bridge.send(ControlMsg::Activate {
+        sample_rate: SAMPLE_RATE,
+        max_block: 256,
+    });
+    let state = bridge.expect("CLAP startup state", |msg| match msg {
+        BridgeMsg::StartupState(state) => Some(Some(state.clone())),
+        BridgeMsg::Activated { .. } => Some(None),
+        _ => None,
+    });
+    assert!(state.is_some_and(|state| !state.is_empty()));
+    bridge.expect("Activated", |msg| {
+        matches!(msg, BridgeMsg::Activated { .. }).then_some(())
+    });
 }
 
 #[test]

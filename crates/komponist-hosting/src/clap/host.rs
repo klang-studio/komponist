@@ -3,15 +3,18 @@
 //!
 //! - [`SharedHost`] (any thread): `request_*`, log, thread-check, gui, `params.request_flush`.
 //! - [`MainThreadHost`] (main thread): timer-support, posix-fd-support (Unix), params rescan, latency,
-//!   state, audio-ports, note-ports, note-name. It remembers the timers and fds of its plugin so
+//!   state, audio-ports, note-ports, note-name, preset-load. Preset loads and failures the plugin
+//!   reports are queued for [`crate::HostedPlugin::take_preset_reports`]. It remembers the timers and fds of its plugin so
 //!   that the format layer only dispatches its own, and unregisters leftovers when the instance is
 //!   destroyed.
 
 use std::cell::{Cell, RefCell};
+use std::ffi::CStr;
 #[cfg(unix)]
 use std::os::fd::RawFd;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::ThreadId;
 use std::time::Duration;
 
@@ -28,10 +31,13 @@ use clack_extensions::params::{
 };
 #[cfg(unix)]
 use clack_extensions::posix_fd::{FdFlags, HostPosixFd, HostPosixFdImpl};
+use clack_extensions::preset_discovery::preset_data::Location;
+use clack_extensions::preset_discovery::{HostPresetLoad, HostPresetLoadImpl};
 use clack_extensions::state::{HostState, HostStateImpl};
 use clack_extensions::thread_check::{HostThreadCheck, HostThreadCheckImpl};
 use clack_extensions::timer::{HostTimer, HostTimerImpl, TimerId as ClapTimerId};
 use clack_host::prelude::*;
+use komponist_ipc::clap_presets::{ClapPresetLocation, ClapPresetSource, PresetReport};
 use komponist_ipc::{GuiSize, LogLevel};
 
 #[cfg(unix)]
@@ -82,7 +88,8 @@ impl HostHandlers for KpHost {
             .register::<HostState>()
             .register::<HostAudioPorts>()
             .register::<HostNotePorts>()
-            .register::<HostNoteName>();
+            .register::<HostNoteName>()
+            .register::<HostPresetLoad>();
     }
 }
 
@@ -90,6 +97,7 @@ impl HostHandlers for KpHost {
 pub(crate) struct SharedHost {
     notify: Arc<dyn HostNotify>,
     main_thread: ThreadId,
+    pub(crate) preset_load_epoch: Arc<AtomicU64>,
 }
 
 impl SharedHost {
@@ -97,6 +105,7 @@ impl SharedHost {
         SharedHost {
             notify,
             main_thread,
+            preset_load_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -186,6 +195,10 @@ pub(crate) struct MainThreadHost<'a> {
     timers: RefCell<Vec<TimerId>>,
     #[cfg(unix)]
     fds: RefCell<Vec<RawFd>>,
+    preset_reports: RefCell<Vec<PresetReport>>,
+    /// Set while the plugin is created and initialised, and while the host activates it or
+    /// restores a state: a preset reported then is the one it starts in.
+    starting: Cell<bool>,
 }
 
 impl<'a> MainThreadHost<'a> {
@@ -196,7 +209,35 @@ impl<'a> MainThreadHost<'a> {
             timers: RefCell::new(Vec::new()),
             #[cfg(unix)]
             fds: RefCell::new(Vec::new()),
+            preset_reports: RefCell::new(Vec::new()),
+            // Plugin creation and `init` run before the host can clear this.
+            starting: Cell::new(true),
         }
+    }
+
+    /// Brackets plugin creation, `activate` and state restores ([`Self::loaded`] reports then are
+    /// start presets).
+    pub(crate) fn set_starting(&self, starting: bool) {
+        self.starting.set(starting);
+    }
+
+    /// The preset loads and failures the plugin reported since the last call, in order.
+    pub(crate) fn take_preset_reports(&self) -> Vec<PresetReport> {
+        self.preset_reports.take()
+    }
+
+    /// Puts back reports taken before a host-requested load, ahead of any later ones.
+    pub(crate) fn restore_preset_reports(&self, earlier: Vec<PresetReport>) {
+        if !earlier.is_empty() {
+            let mut reports = self.preset_reports.borrow_mut();
+            let later = std::mem::replace(&mut *reports, earlier);
+            reports.extend(later);
+        }
+    }
+
+    fn report_preset(&self, report: PresetReport) {
+        push_bounded(&mut self.preset_reports.borrow_mut(), report);
+        self.send(HostNotification::PresetReported);
     }
 
     /// Whether this instance registered `timer`.
@@ -387,6 +428,66 @@ impl HostNoteNameImpl for MainThreadHost<'_> {
     }
 }
 
+/// Reports kept between two drains; a plugin that reports more drops its oldest failure first,
+/// so a successful load still reaches the host behind a burst of failures.
+const MAX_PRESET_REPORTS: usize = 16;
+
+fn push_bounded(reports: &mut Vec<PresetReport>, report: PresetReport) {
+    if reports.len() >= MAX_PRESET_REPORTS {
+        let oldest = reports
+            .iter()
+            .position(|report| matches!(report, PresetReport::Failed { .. }))
+            .unwrap_or(0);
+        reports.remove(oldest);
+    }
+    reports.push(report);
+}
+
+/// The komponist form of a CLAP preset location and load key.
+pub(crate) fn preset_source(location: Location<'_>, load_key: Option<&CStr>) -> ClapPresetSource {
+    ClapPresetSource {
+        location: match location {
+            Location::Plugin => ClapPresetLocation::Plugin,
+            Location::File { path } => {
+                ClapPresetLocation::File(path.to_string_lossy().into_owned())
+            }
+        },
+        load_key: load_key.map(|key| key.to_bytes().to_vec()),
+    }
+}
+
+impl HostPresetLoadImpl for MainThreadHost<'_> {
+    fn on_error(
+        &self,
+        location: Location,
+        load_key: Option<&CStr>,
+        os_error: i32,
+        message: Option<&CStr>,
+    ) {
+        let mut text = message.map_or_else(String::new, |m| m.to_string_lossy().into_owned());
+        if os_error != 0 {
+            text = format!("{text} (OS error {os_error})");
+        }
+        self.report_preset(PresetReport::Failed {
+            source: preset_source(location, load_key),
+            message: text,
+        });
+    }
+
+    fn loaded(&self, location: Location, load_key: Option<&CStr>) {
+        let epoch = self
+            .shared
+            .preset_load_epoch
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        self.report_preset(PresetReport::Loaded {
+            source: preset_source(location, load_key),
+            startup: self.starting.get(),
+            epoch,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,6 +499,40 @@ mod tests {
             let events = FdEvents(bits);
             assert_eq!(fd_events(fd_flags(events)), events);
         }
+    }
+
+    #[test]
+    fn a_full_report_queue_drops_failures_before_a_successful_load() {
+        let source = |key: &str| ClapPresetSource {
+            location: ClapPresetLocation::Plugin,
+            load_key: Some(key.as_bytes().to_vec()),
+        };
+        let loaded = PresetReport::Loaded {
+            source: source("loaded"),
+            startup: false,
+            epoch: 1,
+        };
+        let mut reports = vec![loaded.clone()];
+        for index in 0..2 * MAX_PRESET_REPORTS {
+            push_bounded(
+                &mut reports,
+                PresetReport::Failed {
+                    source: source(&index.to_string()),
+                    message: String::new(),
+                },
+            );
+        }
+        assert_eq!(reports.len(), MAX_PRESET_REPORTS);
+        assert_eq!(reports[0], loaded);
+        // Without failures to drop, the oldest report goes.
+        let mut loads = vec![loaded.clone(); MAX_PRESET_REPORTS];
+        loads[0] = PresetReport::Loaded {
+            source: source("first"),
+            startup: false,
+            epoch: 1,
+        };
+        push_bounded(&mut loads, loaded.clone());
+        assert!(loads.iter().all(|report| *report == loaded));
     }
 
     #[test]

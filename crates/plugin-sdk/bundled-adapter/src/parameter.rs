@@ -1,8 +1,6 @@
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use komponist_device_core::pinned_clap_state::FACTORY_PRESET_FIELD;
-use komponist_device_core::{Preset, Spec};
+use komponist_device_core::Spec;
 use komponist_i18n::Lang;
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
 use nice_plug::prelude::*;
@@ -311,8 +309,6 @@ struct BoundParameter {
 /// Stable author bindings and model-to-CLAP scaling for a set of device parameters.
 pub struct Parameters {
     bindings: Vec<BoundParameter>,
-    factory_presets: &'static [Preset],
-    selected_preset: Mutex<Option<&'static str>>,
 }
 
 impl Parameters {
@@ -320,9 +316,7 @@ impl Parameters {
         spec: &'static Spec,
         choice: impl FnMut(&'static ParamInfo) -> Option<Binding>,
     ) -> Self {
-        let mut params = Self::from_infos(spec.params_in(Lang::En), choice);
-        params.factory_presets = spec.presets();
-        params
+        Self::from_infos(spec.params_in(Lang::En), choice)
     }
 
     /// Bind independently described device parameters in the supplied wire order.
@@ -343,8 +337,6 @@ impl Parameters {
                     }
                 })
                 .collect(),
-            factory_presets: &[],
-            selected_preset: Mutex::new(None),
         }
     }
 
@@ -405,38 +397,6 @@ unsafe impl Params for Parameters {
                 )
             })
             .collect()
-    }
-
-    fn serialize_fields(&self) -> BTreeMap<String, String> {
-        let preset = self
-            .selected_preset
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        preset
-            .iter()
-            .map(|name| {
-                (
-                    FACTORY_PRESET_FIELD.to_owned(),
-                    serde_json::to_string(name).expect("preset names encode as JSON strings"),
-                )
-            })
-            .collect()
-    }
-
-    fn deserialize_fields(&self, fields: &BTreeMap<String, String>) {
-        let selected = fields
-            .get(FACTORY_PRESET_FIELD)
-            .and_then(|raw| serde_json::from_str::<String>(raw).ok())
-            .and_then(|name| {
-                self.factory_presets
-                    .iter()
-                    .find(|preset| preset.name == name)
-            })
-            .map(|preset| preset.name);
-        *self
-            .selected_preset
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = selected;
     }
 }
 

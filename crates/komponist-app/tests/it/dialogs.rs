@@ -1207,6 +1207,7 @@ fn s06() -> (Project, Vec<MissingPlugin>) {
             plugin: plugin(format, id, name),
             state: None,
             sidechain: None,
+            preset: None,
         };
         let (next, device) = insert_device(&p, ChannelRef::Track(pad), len, spec).unwrap();
         p = next;

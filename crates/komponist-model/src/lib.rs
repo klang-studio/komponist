@@ -11,6 +11,7 @@
 //! - [`asset_collection`]: the filesystem placement used by Collect and Save.
 //! - [`ids`]: stable ids from one per-project counter.
 //! - [`time`]: [`Tick`], [`Tempo`], [`Meter`], [`TickRange`], [`TempoMap`], grids.
+//! - [`clap_preset`]: CLAP preset sources and the preset a device last loaded.
 //! - [`project`]: the document tree ([`Project`], [`Track`], [`Clip`], [`Device`], …).
 //! - [`document`]: [`Document`] with undo, redo and gestures.
 //! - [`edits`]: every change as a pure function.
@@ -30,6 +31,7 @@
 pub mod asset_collection;
 pub mod audio;
 pub mod automation;
+pub mod clap_preset;
 pub mod document;
 pub mod edits;
 pub mod fixtures;
@@ -55,6 +57,7 @@ pub use audio::{
     AudioClip, AudioFile, AudioInput, AudioIo, AudioTake, CLIP_GAIN_DB_MAX, CLIP_GAIN_DB_MIN,
     ClipTimeMode, EDGE_FADE_MS, HardwareInput, MonitorMode,
 };
+pub use clap_preset::{ClapPresetLocation, ClapPresetSource, DevicePreset};
 pub use document::{Document, Gesture, UNDO_LIMIT, UndoStep};
 pub use edits::EditError;
 pub use ids::{ClipId, DeviceId, LaneId, NoteId, SendId, TrackId};

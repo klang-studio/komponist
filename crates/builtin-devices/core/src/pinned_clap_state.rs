@@ -7,8 +7,6 @@ use serde_json::{Map, Value, json};
 pub const SAMPLE_ASSETS_FIELD: &str = "sample_assets";
 /// Maximum size accepted by the sampler CLAP state readers.
 pub const MAX_SAMPLE_ASSET_BYTES: usize = 256 * 1024;
-/// The canonical factory preset name retained across edits and CLAP state saves.
-pub const FACTORY_PRESET_FIELD: &str = "factory_preset";
 
 /// The CLAP plain value of a built-in parameter, using the adapter's published range.
 pub fn to_clap(info: &ParamInfo, plain: f64) -> f64 {

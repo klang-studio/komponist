@@ -209,7 +209,7 @@ impl TestSine {
                     v.active = false;
                 }
             }
-            EventKind::Midi(_) | EventKind::Param { .. } => {}
+            EventKind::Midi(_) | EventKind::Param { .. } | EventKind::ParamEdit { .. } => {}
         }
     }
 }
@@ -322,6 +322,11 @@ impl Processor for TestGain {
                 if let EventKind::Param {
                     id: TEST_GAIN_PARAM,
                     value,
+                }
+                | EventKind::ParamEdit {
+                    id: TEST_GAIN_PARAM,
+                    value,
+                    ..
                 } = event.kind
                 {
                     self.gain = value as f32;

@@ -24,11 +24,12 @@ The probe reports CLAP parameter IDs, flags, names, and ranges alongside the lay
 status as JSON. Successful transfers preserve the raw UTF-8 JSON bytes. The probe emits `null`
 for absent or inconsistent transfers. It leaves schema and parameter-link validation to the caller.
 
-The factory publishes eleven variants under the prefix `org.klang-studio.komponist.layout-fixture.`.
+The factory publishes thirteen variants under the prefix `org.klang-studio.komponist.layout-fixture.`.
 
 | Suffix | Response |
 | --- | --- |
-| `valid` | The control panel example |
+| `valid` | The control panel example; loads the embedded preset `Fixture Boost` |
+| `presentation` | A layout with parameter presentation; Gain 0.625 reads `Focus` |
 | `missing` | No layout extension |
 | `absent` | The extension reports `ABSENT` |
 | `invalid-length` | Zero byte count in the length query |
@@ -39,3 +40,4 @@ The factory publishes eleven variants under the prefix `org.klang-studio.komponi
 | `required-capability` | Unknown required capability |
 | `graphs` | Declarative graph panel and an authored canvas |
 | `invalid-graphs` | A graph refers to unknown parameter ID 999 |
+| `program` | Like `valid`, plus a `Program` parameter (ID 9). Setting it loads `Program Boost` (1) or `Fixture Calm` (2) on the main thread and reports the load through the host side of CLAP preset-load; 3 reports a failed load (`on_error`). It starts in `Program Init` (the default values) and reports that preset when first activated, unless a restored state holds other values |

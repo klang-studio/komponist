@@ -139,6 +139,7 @@ fn project_with_hexa(
             asset_links: Default::default(),
             state: None,
             sidechain: None,
+            preset: None,
         });
         let t = Arc::make_mut(&mut p.tracks[i]);
         Arc::make_mut(&mut t.channel.devices[0]).state = Some(state);

@@ -28,6 +28,7 @@
 
 use std::cell::UnsafeCell;
 use std::collections::{BTreeMap, HashMap};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -269,7 +270,7 @@ pub(crate) struct PauseTimeout;
 pub struct RtThread {
     handle: JoinHandle<Box<dyn HostedProcessor>>,
     stop: Arc<AtomicBool>,
-    params: Producer<(u32, f64)>,
+    params: Producer<WireEvent>,
     parameters: Arc<ParameterTable>,
     parameter_updates: Producer<Arc<ParameterTable>>,
     retired_parameters: Consumer<Arc<ParameterTable>>,
@@ -343,7 +344,39 @@ pub(crate) fn same_param_value(actual: f64, expected: f64) -> bool {
 }
 
 #[derive(Debug, Default)]
-struct DeliverySlot(UnsafeCell<ParamDelivery>);
+struct DeliverySlot(UnsafeCell<ParamDelivery>, AtomicU64);
+
+/// A successful durable write's serial and preset epoch, read as one atomic value.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ParamEditStamp(u64);
+
+impl ParamEditStamp {
+    pub(crate) fn new(serial: NonZeroU32, epoch: u64) -> Self {
+        Self((u64::from(epoch as u32) << 32) | u64::from(serial.get()))
+    }
+
+    pub(crate) fn superseded_by(self, epoch: u64) -> Option<NonZeroU32> {
+        let delta = (epoch as u32).wrapping_sub((self.0 >> 32) as u32);
+        if delta == 0 || delta >= (1 << 31) {
+            return None;
+        }
+        NonZeroU32::new(self.0 as u32)
+    }
+
+    pub(crate) fn settled_at(self, epoch: u64) -> Option<NonZeroU32> {
+        if (self.0 >> 32) as u32 == epoch as u32 {
+            NonZeroU32::new(self.0 as u32)
+        } else {
+            None
+        }
+    }
+}
+
+pub(crate) struct StoppedRt {
+    pub processor: Box<dyn HostedProcessor>,
+    pub queued: Vec<WireEvent>,
+    pub durable: BTreeMap<u32, ParamEditStamp>,
+}
 
 // SAFETY: Slot contents are accessed only under the activity guard of their owning RT
 // thread, including during snapshot and restore. Rescans only clone or drop their Arcs.
@@ -359,6 +392,13 @@ struct ParameterTable {
 pub(crate) struct DeliveredParams<'a>(&'a BTreeMap<u32, Arc<DeliverySlot>>);
 
 impl DeliveredParams<'_> {
+    pub(crate) fn durable_deliveries(&self) -> impl Iterator<Item = (u32, ParamEditStamp)> + '_ {
+        self.0.iter().filter_map(|(&id, slot)| {
+            let stamp = slot.1.load(Ordering::Acquire);
+            (stamp != 0).then_some((id, ParamEditStamp(stamp)))
+        })
+    }
+
     pub fn confirms_input(&self, id: u32, expected: f64, actual: f64) -> bool {
         self.0.get(&id).is_some_and(|slot| {
             // SAFETY: The view cannot outlive the exclusive activity guard.
@@ -381,7 +421,8 @@ impl DeliveredParams<'_> {
 struct RtParamSync {
     // The low bits are the activity flags. The upper bits count successful state restores.
     activity: AtomicU64,
-    params: UnsafeCell<Consumer<(u32, f64)>>,
+    params: UnsafeCell<Consumer<WireEvent>>,
+    preset_epoch: Option<Arc<AtomicU64>>,
     parameters: UnsafeCell<Arc<ParameterTable>>,
     restore_fence: UnsafeCell<RestoreFence>,
     parameter_updates: UnsafeCell<Consumer<Arc<ParameterTable>>>,
@@ -415,7 +456,7 @@ struct Activity<'a> {
 }
 
 impl Activity<'_> {
-    fn params(&mut self) -> &mut Consumer<(u32, f64)> {
+    fn params(&mut self) -> &mut Consumer<WireEvent> {
         // SAFETY: Successful acquisition excludes every other consumer accessor, and this
         // borrow cannot outlive the guard.
         unsafe { &mut *self.sync.params.get() }
@@ -567,12 +608,14 @@ struct Scratch {
     events_out: Vec<WireEvent>,
     reset_after_restore: bool,
     retry_params: Vec<DeferredParam>,
-    retry_indices: HashMap<u32, usize>,
+    retry_indices: HashMap<(u32, bool), usize>,
+    retry_order: u64,
 }
 
 struct DeferredParam {
     id: u32,
     generation: u64,
+    order: u64,
     event: WireEvent,
 }
 
@@ -586,6 +629,7 @@ impl RtThread {
         config: RtConfig,
         controller: Option<Arc<ControllerValues>>,
         param_ids: Vec<u32>,
+        preset_epoch: Option<Arc<AtomicU64>>,
     ) -> Result<(RtThread, StartReport), StartFailure> {
         let (params_tx, params_rx) = RingBuffer::new(PARAM_QUEUE_CAPACITY);
         let stop = Arc::new(AtomicBool::new(false));
@@ -605,6 +649,7 @@ impl RtThread {
         let sync = Arc::new(RtParamSync {
             activity: AtomicU64::new(0),
             params: UnsafeCell::new(params_rx),
+            preset_epoch,
             parameters: UnsafeCell::new(parameters.clone()),
             restore_fence: UnsafeCell::new(RestoreFence::default()),
             parameter_updates: UnsafeCell::new(updates_rx),
@@ -660,7 +705,13 @@ impl RtThread {
 
     /// Queues a parameter value for the next block (offset 0). `false` if the queue is full.
     pub fn set_param(&mut self, id: u32, value: f64) -> bool {
-        self.params.push((id, value)).is_ok()
+        self.set_param_edit(id, value, None)
+    }
+
+    pub fn set_param_edit(&mut self, id: u32, value: f64, serial: Option<NonZeroU32>) -> bool {
+        let mut event = WireEvent::new(0, WireEventKind::ParamValue { id, value });
+        event.reserved = serial.map_or(0, NonZeroU32::get);
+        self.params.push(event).is_ok()
     }
 
     pub fn has_queued_params(&self) -> bool {
@@ -745,6 +796,7 @@ impl RtThread {
             for slot in pause.parameters().delivered.values() {
                 // SAFETY: The pause excludes audio access while clearing the delivery evidence.
                 unsafe { *slot.0.get() = ParamDelivery::default() };
+                slot.1.store(0, Ordering::Release);
             }
             if let Some(controller) = &pause.parameters().controller {
                 controller.invalidate(None);
@@ -756,12 +808,25 @@ impl RtThread {
 
     /// Stops the thread (within about [`STOP_POLL`]) and returns the stopped processor and the
     /// parameter values queued after the last block.
-    pub fn stop(self) -> (Box<dyn HostedProcessor>, Vec<(u32, f64)>) {
+    pub fn stop(self) -> StoppedRt {
         self.stop.store(true, Ordering::Release);
+        let durable = Arc::clone(&self.parameters);
         let processor = join(self.handle);
         let mut guard = self.sync.try_process().expect("stopped RT thread");
-        let leftover = std::iter::from_fn(|| guard.params().pop().ok()).collect();
-        (processor, leftover)
+        let queued = std::iter::from_fn(|| guard.params().pop().ok()).collect();
+        let durable = durable
+            .delivered
+            .iter()
+            .filter_map(|(&id, slot)| {
+                let stamp = slot.1.load(Ordering::Acquire);
+                (stamp != 0).then_some((id, ParamEditStamp(stamp)))
+            })
+            .collect();
+        StoppedRt {
+            processor,
+            queued,
+            durable,
+        }
     }
 }
 
@@ -804,6 +869,7 @@ fn rt_main(
         reset_after_restore: false,
         retry_params: Vec::with_capacity(INPUT_EVENT_CAPACITY),
         retry_indices: HashMap::with_capacity(INPUT_EVENT_CAPACITY),
+        retry_order: 0,
     };
     if ok {
         // Before the report: once it arrives the main thread publishes `Active`, and every request
@@ -907,15 +973,20 @@ fn serve(
                     scratch.reset_after_restore = true;
                 }
                 if let Some(WireEventKind::ParamValue { id, .. }) = event.decode() {
+                    scratch.retry_order += 1;
                     let retry = DeferredParam {
                         id,
                         generation,
+                        order: scratch.retry_order,
                         event: WireEvent { offset: 0, ..event },
                     };
-                    if let Some(&index) = scratch.retry_indices.get(&id) {
+                    let key = (id, event.reserved != 0);
+                    if let Some(&index) = scratch.retry_indices.get(&key) {
                         scratch.retry_params[index] = retry;
                     } else if scratch.retry_params.len() < INPUT_EVENT_CAPACITY {
-                        scratch.retry_indices.insert(id, scratch.retry_params.len());
+                        scratch
+                            .retry_indices
+                            .insert(key, scratch.retry_params.len());
                         scratch.retry_params.push(retry);
                     }
                 }
@@ -941,16 +1012,21 @@ fn serve(
     // Values from `SetParam` first: offset 0 keeps the list sorted.
     let mut count = 0;
     while count < PARAM_QUEUE_CAPACITY {
-        let Ok((id, value)) = processing.params().pop() else {
+        let Ok(event) = processing.params().pop() else {
             break;
         };
-        scratch.events_in[count] = WireEvent::new(0, WireEventKind::ParamValue { id, value });
+        scratch.events_in[count] = event;
         count += 1;
     }
     let queued = count;
     // Check the IDs known to a successful restore, even when a rescan has installed a new table.
     let restore_generation = sync.activity.load(Ordering::Relaxed) & !ACTIVITY_BITS;
     let fence = processing.restore_fence();
+    // A replacement keeps its storage slot while the worker is paused. Replay by
+    // arrival so a newer write still follows an earlier one of the other kind.
+    scratch
+        .retry_params
+        .sort_unstable_by_key(|retry| retry.order);
     for retry in &scratch.retry_params {
         if fence
             .superseded
@@ -964,6 +1040,7 @@ fn serve(
     fence.replayed_generation = restore_generation;
     scratch.retry_params.clear();
     scratch.retry_indices.clear();
+    scratch.retry_order = 0;
     while let Some(event) = server.pop_event() {
         scratch.events_in[count] = event;
         count += 1;
@@ -1023,9 +1100,21 @@ fn serve(
         }
     };
     if status == BlockStatus::Ok {
+        // An overlapping block enters the new epoch. Its edits can be reconciled
+        // with the parameter values read under the next control-thread pause.
+        let epoch = sync
+            .preset_epoch
+            .as_ref()
+            .map(|epoch| epoch.load(Ordering::Acquire));
         for event in &scratch.events_in[..count] {
             if let Some(WireEventKind::ParamValue { id, value }) = event.decode() {
                 processing.update_delivery(id, |last| last.record_input(request.seq, value));
+                if let (Some(epoch), Some(serial)) = (epoch, NonZeroU32::new(event.reserved))
+                    && let Some(slot) = processing.parameters().delivered.get(&id)
+                {
+                    slot.1
+                        .store(ParamEditStamp::new(serial, epoch).0, Ordering::Release);
+                }
             }
         }
         for event in &scratch.events_out[..produced] {
@@ -1057,6 +1146,27 @@ fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preset_supersession_is_bound_to_the_delivered_serial_and_epoch() {
+        let first = NonZeroU32::new(1).unwrap();
+        let repeated = NonZeroU32::new(2).unwrap();
+        let before = ParamEditStamp::new(first, 4);
+        assert_eq!(before.superseded_by(5), Some(first));
+
+        // A block that completed after the report (even if it began earlier) belongs to
+        // the report's epoch. A repeated value with a new serial remains a separate edit.
+        let straddled = ParamEditStamp::new(repeated, 5);
+        assert_eq!(straddled.superseded_by(5), None);
+        assert_eq!(straddled.settled_at(5), Some(repeated));
+        assert_eq!(straddled.settled_at(4), None);
+        assert_eq!(straddled.superseded_by(6), Some(repeated));
+        assert_eq!(straddled.superseded_by(4), None);
+        assert_eq!(
+            ParamEditStamp::new(first, u64::from(u32::MAX)).superseded_by(1_u64 << 32),
+            Some(first)
+        );
+    }
 
     #[test]
     fn a_later_plugin_report_supersedes_input_evidence() {
@@ -1195,6 +1305,7 @@ mod tests {
             },
             Some(controller),
             vec![1],
+            Some(Arc::new(AtomicU64::new(0))),
         )
         .unwrap_or_else(|failure| panic!("could not start probe: {}", failure.error));
         region.set_bridge_state(BridgeState::Active);
@@ -1281,6 +1392,44 @@ mod tests {
         assert_eq!(status, inactive);
         assert_eq!(block(&mut client, &[]), ok);
         assert_eq!(rt.snapshot(|p| p.changes(1)).unwrap(), 0);
+
+        // Coalescing a paused block retains the tagged edit alongside the playback value.
+        let tagged = WireEvent {
+            reserved: 9,
+            ..param(0.75)
+        };
+        let status = rt
+            .snapshot(|_| block(&mut client, &[tagged, param(0.25)]))
+            .unwrap();
+        assert_eq!(status, inactive);
+        assert_eq!(block(&mut client, &[]), ok);
+        let (_, stamp) = rt
+            .snapshot(|p| p.durable_deliveries().next())
+            .unwrap()
+            .expect("tagged edit delivered");
+        assert_eq!(stamp.superseded_by(1), NonZeroU32::new(9));
+        assert!(rt.snapshot(|p| p.confirms_input(1, 0.25, 0.25)).unwrap());
+
+        // Replacing a tagged write later in the pause puts it after the prior playback value.
+        let replacement = WireEvent {
+            reserved: 10,
+            ..param(0.7)
+        };
+        rt.snapshot(|_| {
+            assert_eq!(block(&mut client, &[tagged, param(0.25)]), inactive);
+            assert_eq!(block(&mut client, &[replacement]), inactive);
+        })
+        .unwrap();
+        assert_eq!(block(&mut client, &[]), ok);
+        rt.snapshot(|p| {
+            let (_, stamp) = p
+                .durable_deliveries()
+                .next()
+                .expect("replacement delivered");
+            assert_eq!(stamp.settled_at(0), NonZeroU32::new(10));
+            assert!(p.confirms_input(1, 0.7, 0.7));
+        })
+        .unwrap();
         let _ = rt.stop();
     }
 
@@ -1350,6 +1499,7 @@ mod tests {
             },
             Some(controller),
             vec![1],
+            None,
         )
         .unwrap_or_else(|failure| panic!("could not start probe: {}", failure.error));
         region.set_bridge_state(BridgeState::Active);
@@ -1530,6 +1680,7 @@ mod tests {
             config,
             None,
             vec![0],
+            None,
         )
         .unwrap_or_else(|failure| panic!("could not start probe: {}", failure.error));
         region.set_bridge_state(BridgeState::Active);
