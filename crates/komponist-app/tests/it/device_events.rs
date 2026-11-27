@@ -836,6 +836,7 @@ fn a_reported_preset_and_its_snapshot_are_one_step_and_an_edit_marks_it_modified
 
     // Undo before the state of a reported load arrives hands the plugin the document's state:
     // the load no longer holds, and its late snapshot (the echo) brings no selection.
+    app.set_snapshot_window(komponist_app::param_undo::COALESCE);
     app.dispatch(Action::Plugin(PluginAction::SetParam {
         device: surge,
         id: 3,
