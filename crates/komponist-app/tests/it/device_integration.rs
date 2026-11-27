@@ -795,19 +795,14 @@ fn snapshot_of_a_touched_parameter_with_its_context_menu() {
 }
 
 /// The exact topology is part of the real bundle state. A free wire graph is not editable as a
-/// CLAP parameter, so seed it from the bundle's own prepared algorithm and change only its edges.
+/// CLAP parameter, so seed it in the initial state exported by the bundle.
 fn snapshot_free_routing(name: &str, expected: [u8; 6]) {
     use komponist_model::Hue;
 
     let host = App::headless_plugin_host();
     let prepared = host
         .manager()
-        .prepare_bundled_device(
-            "org.klang-studio.komponist.hexa",
-            Some("Init"),
-            &[("algorithm", 32.0)],
-            &[],
-        )
+        .prepare_bundled_device("org.klang-studio.komponist.hexa", Some("Init"), &[], &[])
         .unwrap();
     let (mut project, track, device) =
         crate::common::instrument_project("Frei", prepared.plugin.clone());
@@ -825,9 +820,9 @@ fn snapshot_free_routing(name: &str, expected: [u8; 6]) {
         .iter_mut()
         .zip(expected)
     {
-        operator["modulates"] = serde_json::json!(std::array::from_fn::<_, 6, _>(|target| (edges
-            & (1 << target))
-            != 0));
+        let routes: [bool; 6] = std::array::from_fn(|target| edges & (1 << target) != 0);
+        operator["output"] = true.into();
+        operator["modulates"] = serde_json::json!(routes);
     }
     *field = serde_json::to_string(&patch).unwrap().into();
     let payload = serde_json::to_vec(&document).unwrap();
@@ -849,7 +844,9 @@ fn snapshot_free_routing(name: &str, expected: [u8; 6]) {
             .device_display(device)
             .and_then(|display| display.fm_topologies.first())
             .is_some_and(|routing| {
-                routing.algorithm.is_none() && routing.modulates.as_slice() == expected.as_slice()
+                routing.algorithm.is_none()
+                    && routing.outputs == 0b111111
+                    && routing.modulates.as_slice() == expected.as_slice()
             })
     });
 
@@ -858,7 +855,7 @@ fn snapshot_free_routing(name: &str, expected: [u8; 6]) {
     h.get_by_role_and_label(Role::Group, &Lang::De.devices_card("Hexa"))
         .get_by_role_and_label(Role::Group, de::DEVICES_FM_FREE);
     mask_cpu(&mut h);
-    h.snapshot(name);
+    h.try_snapshot(name).unwrap();
 }
 
 #[test]
