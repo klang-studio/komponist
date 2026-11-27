@@ -43,6 +43,7 @@ use crate::app::App;
 use crate::dialogs::file::{FileBrowser, Purpose};
 use crate::dialogs::new_project::{self, Answer};
 use crate::dialogs::{Overlay, Pending};
+use crate::param_undo::replay_deferred_plugins;
 use crate::platform::Platform;
 use crate::ui_state::{Dialog, FocusArea, Screen, SettingsSection, StatusKind};
 
@@ -625,7 +626,7 @@ impl App {
             || self.has_unsaved_take()
             || self.param_undo.has_pending_text()
             || self.engine.host().has_pending_state_edits()
-            || self.deferred_plugin_states().len() != 0
+            || !self.deferred_plugin_edits().is_empty()
     }
 
     /// `next` replaces the open project: asks first if it has unsaved changes.
@@ -932,10 +933,11 @@ impl App {
                 Ok(project) => project,
                 Err(()) => return false,
             };
-        let deferred = self
-            .deferred_plugin_states()
-            .filter(|(device, _)| !snapshots.iter().any(|(captured, _)| captured == device));
-        for (device, state) in deferred.chain(&snapshots) {
+        let deferred = self.deferred_plugin_edits();
+        for (device, state) in &snapshots {
+            if deferred.iter().any(|edit| edit.device() == *device) {
+                continue;
+            }
             let project = for_file.as_ref().unwrap_or_else(|| document.project());
             let Some((_, _, model)) = project.find_device(*device) else {
                 continue;
@@ -946,6 +948,12 @@ impl App {
             {
                 for_file = Some(updated);
             }
+        }
+        if let Some(updated) = replay_deferred_plugins(
+            for_file.as_ref().unwrap_or_else(|| document.project()),
+            deferred,
+        ) {
+            for_file = Some(updated);
         }
         // A new file renames the project after it; the rename happens only if writing works.
         let rename = name_from_path(&path).filter(|name| {
@@ -1025,8 +1033,11 @@ impl App {
             let Some((_, _, model)) = self.project().find_device(device) else {
                 continue;
             };
-            let has_state =
-                model.state.is_some() || self.deferred_plugin_states().any(|(id, _)| *id == device);
+            let has_state = model.state.is_some()
+                || self
+                    .deferred_plugin_edits()
+                    .iter()
+                    .any(|edit| edit.device() == device && edit.has_state());
             let names = if has_state {
                 &mut retained
             } else {

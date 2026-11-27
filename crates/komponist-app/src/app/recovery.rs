@@ -104,12 +104,12 @@ impl App {
             self.recovery.set_waker(move || ctx.request_repaint());
         }
         let dirty = self.ui.screen == Screen::Project
-            && (self.doc.is_dirty() || self.deferred_plugin_states().len() != 0);
-        let deferred: Vec<_> = self.deferred_plugin_states().cloned().collect();
+            && (self.doc.is_dirty() || !self.deferred_plugin_edits().is_empty());
+        let deferred = self.param_undo.deferred_edits();
         let (failure, due) = self.recovery.update(DocumentState {
             dirty,
             project: self.doc.project(),
-            deferred: &deferred,
+            deferred,
             path: self.project_path.as_deref(),
         });
         if let Some(error) = failure {

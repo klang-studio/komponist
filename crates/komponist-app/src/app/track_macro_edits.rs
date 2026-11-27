@@ -375,7 +375,7 @@ impl App {
             } else if !temporary && let ParameterEditKind::Value { id, value } = edit.kind {
                 // An edit in the plugin's own GUI modifies the loaded preset like a card edit.
                 let label = crate::undo_label::plugin_state(&self.device_name(device));
-                self.mark_preset_modified(device, &label, Some((id, value)));
+                self.mark_preset_modified(device, &label, (id, value));
             }
             if capture
                 && let Some((owner, start)) = write_start

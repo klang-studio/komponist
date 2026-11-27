@@ -52,9 +52,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use komponist_model::persist;
-use komponist_model::project::SavedPluginState;
-use komponist_model::{DeviceId, Project, Repairs};
+use komponist_model::{Project, Repairs};
 
+use crate::param_undo::{DeferredPluginEdit, replay_deferred_plugins};
 use crate::project_io::{ProjectIoError, write_atomic};
 
 /// Version of [`RecoveryMeta`]; a meta with a higher version is treated as unreadable.
@@ -891,7 +891,7 @@ impl Schedule {
 // ------------------------------------------------------------------------------------------------
 
 /// Deferred plugin states: newer than the document's, put into the copy (as a save does).
-pub type Deferred = Vec<(DeviceId, SavedPluginState)>;
+pub type Deferred = Vec<DeferredPluginEdit>;
 
 /// What the UI thread publishes of the open document: for the writer and for the panic hook.
 #[derive(Clone)]
@@ -1304,7 +1304,7 @@ pub struct DocumentState<'a> {
     /// Its current project.
     pub project: &'a Arc<Project>,
     /// Plugin states that are newer than the document's (deferred bundled states).
-    pub deferred: &'a [(DeviceId, SavedPluginState)],
+    pub deferred: &'a [DeferredPluginEdit],
     /// Its project file.
     pub path: Option<&'a Path>,
 }
@@ -1512,11 +1512,10 @@ impl Recovery {
         let changed = self.seen.as_ref().is_none_or(|(project, deferred)| {
             !Arc::ptr_eq(project, doc.project)
                 || deferred.len() != doc.deferred.len()
-                || deferred.iter().zip(doc.deferred).any(|((a, sa), (b, sb))| {
-                    a != b
-                        || !Arc::ptr_eq(&sa.bytes, &sb.bytes)
-                        || sa.parameter_bases != sb.parameter_bases
-                })
+                || deferred
+                    .iter()
+                    .zip(doc.deferred)
+                    .any(|(previous, current)| !previous.same_update(current))
         });
         let published = Published {
             generation: self.generation,
@@ -1633,24 +1632,8 @@ impl Recovery {
 }
 
 /// `project` with the deferred plugin states put into their devices (as a save does).
-fn with_deferred(
-    project: &Arc<Project>,
-    deferred: &[(DeviceId, SavedPluginState)],
-) -> Arc<Project> {
-    let mut out: Option<Project> = None;
-    for (device, state) in deferred {
-        let base = out.as_ref().unwrap_or(project);
-        if base
-            .find_device(*device)
-            .is_some_and(|(_, _, d)| d.has_saved_state(state))
-        {
-            continue;
-        }
-        if let Ok(next) = komponist_model::edits::set_saved_plugin_state(base, *device, state) {
-            out = Some(next);
-        }
-    }
-    out.map_or_else(|| Arc::clone(project), Arc::new)
+fn with_deferred(project: &Arc<Project>, deferred: &[DeferredPluginEdit]) -> Arc<Project> {
+    replay_deferred_plugins(project, deferred).map_or_else(|| Arc::clone(project), Arc::new)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -2009,7 +1992,10 @@ mod tests {
         let project = komponist_model::fixtures::demo_project();
         let device = project.tracks[0].channel.devices[0].id;
         let project = Arc::new(project);
-        let first: Deferred = vec![(device, Arc::<[u8]>::from(&b"one"[..]).into())];
+        let first: Deferred = vec![DeferredPluginEdit::snapshot(
+            device,
+            Arc::<[u8]>::from(&b"one"[..]).into(),
+        )];
         fn state<'a>(project: &'a Arc<Project>, deferred: &'a Deferred) -> DocumentState<'a> {
             DocumentState {
                 dirty: true,
@@ -2028,7 +2014,10 @@ mod tests {
         };
         assert_eq!(stored(&paths).as_deref(), Some(&b"one"[..]));
         // Same device, same count, a new state (a gesture goes on): a change.
-        let second: Deferred = vec![(device, Arc::<[u8]>::from(&b"two"[..]).into())];
+        let second: Deferred = vec![DeferredPluginEdit::snapshot(
+            device,
+            Arc::<[u8]>::from(&b"two"[..]).into(),
+        )];
         let (_, due) = frame(&mut r, state(&project, &second));
         assert_eq!(due, Some(QUIET));
         advance(&now, QUIET);
@@ -2296,7 +2285,10 @@ mod tests {
         let project = komponist_model::fixtures::demo_project();
         let device = project.tracks[0].channel.devices[0].id;
         let project = Arc::new(project);
-        let deferred: Deferred = vec![(device, Arc::<[u8]>::from(&b"late"[..]).into())];
+        let deferred: Deferred = vec![DeferredPluginEdit::snapshot(
+            device,
+            Arc::<[u8]>::from(&b"late"[..]).into(),
+        )];
         frame(
             &mut r,
             DocumentState {
@@ -2679,13 +2671,48 @@ mod tests {
     }
 
     #[test]
+    fn recovery_copy_keeps_a_deferred_preset_and_its_state_together() {
+        use komponist_model::{ClapPresetLocation, ClapPresetSource, DevicePreset};
+
+        let project = Arc::new(komponist_model::fixtures::demo_project());
+        let device = project
+            .tracks
+            .iter()
+            .flat_map(|track| &track.channel.devices)
+            .find(|device| device.plugin.name == "Surge XT")
+            .unwrap()
+            .id;
+        let source = ClapPresetSource {
+            location: ClapPresetLocation::Plugin,
+            load_key: Some(b"Warm".to_vec()),
+        };
+        let mut report = DeferredPluginEdit::reported(device, source.clone());
+        // The label waits while the bytes are unknown.
+        assert!(Arc::ptr_eq(
+            &with_deferred(&project, &[report.clone()]),
+            &project
+        ));
+        report.set_snapshot(&Arc::<[u8]>::from(&b"loaded"[..]).into());
+        let recovered = with_deferred(&project, &[report]);
+        let recovered = recovered.find_device(device).unwrap().2;
+        assert_eq!(recovered.preset, Some(DevicePreset::loaded(source)));
+        assert_eq!(recovered.state.as_deref(), Some(&b"loaded"[..]));
+    }
+
+    #[test]
     fn deferred_plugin_states_go_into_the_copy() {
         let project = komponist_model::fixtures::demo_project();
         let device = project.tracks[0].channel.devices[0].id;
         let project =
             Arc::new(komponist_model::edits::set_device_state(&project, device, None).unwrap());
         let state: Arc<[u8]> = Arc::from(&b"state"[..]);
-        let out = with_deferred(&project, &[(device, Arc::clone(&state).into())]);
+        let out = with_deferred(
+            &project,
+            &[DeferredPluginEdit::snapshot(
+                device,
+                Arc::clone(&state).into(),
+            )],
+        );
         assert_eq!(
             out.find_device(device).unwrap().2.state.as_deref(),
             Some(&b"state"[..])

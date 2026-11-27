@@ -967,6 +967,97 @@ fn a_later_preset_report_waits_for_its_own_deferred_snapshot() {
 }
 
 #[test]
+fn deferred_edits_mark_the_loaded_preset_and_keep_the_last_edit_across_redo() {
+    let (mut app, script) = app();
+    let device = device(&app, "Surge XT");
+    let source = ClapPresetSource {
+        location: ClapPresetLocation::Plugin,
+        load_key: Some(b"Warm".to_vec()),
+    };
+    let preset = DevicePreset::loaded(source.clone());
+    app.dispatch(Action::Edit(EditAction::BeginGesture {
+        label: "Unrelated".into(),
+    }));
+    push(
+        &script,
+        PluginManagerEvent::ClapPresetReported {
+            device,
+            source,
+            startup: false,
+        },
+    );
+    snapshot(&script, device, &[1]);
+    snapshot(&script, device, &[2]);
+    app.step();
+
+    for value in [0.25, 0.75] {
+        app.dispatch(Action::Plugin(PluginAction::SetParam {
+            device,
+            id: 3,
+            value,
+        }));
+    }
+    app.dispatch(Action::Edit(EditAction::EndGesture));
+    let edited = app.project().find_device(device).unwrap().2;
+    assert_eq!(edited.preset.as_ref().unwrap().source, preset.source);
+    assert!(edited.preset.as_ref().unwrap().modified);
+    assert_eq!(edited.state.as_deref(), Some(&[2][..]));
+    assert_eq!(edited.parameter_bases.get(&3), Some(&0.75));
+
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(
+        app.project().find_device(device).unwrap().2.preset.as_ref(),
+        Some(&preset)
+    );
+    app.dispatch(Action::Edit(EditAction::Redo));
+    let edited = app.project().find_device(device).unwrap().2;
+    assert!(edited.preset.as_ref().unwrap().modified);
+    assert_eq!(edited.parameter_bases.get(&3), Some(&0.75));
+}
+
+#[test]
+fn saving_a_fresh_snapshot_keeps_the_deferred_preset_source() {
+    let (mut app, script) = app();
+    let scratch = tempfile::tempdir().unwrap();
+    let file = scratch.path().join("Deferred.komponist");
+    std::fs::write(&file, persist::to_json(app.project()).unwrap()).unwrap();
+    app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
+    let device = device(&app, "Surge XT");
+    let source = ClapPresetSource {
+        location: ClapPresetLocation::Plugin,
+        load_key: Some(b"Warm".to_vec()),
+    };
+    app.dispatch(Action::Edit(EditAction::BeginGesture {
+        label: "Unrelated".into(),
+    }));
+    push(
+        &script,
+        PluginManagerEvent::ClapPresetReported {
+            device,
+            source: source.clone(),
+            startup: false,
+        },
+    );
+    snapshot(&script, device, &[1]);
+    app.step();
+    assert!(
+        app.project()
+            .find_device(device)
+            .unwrap()
+            .2
+            .preset
+            .is_none()
+    );
+
+    script.borrow_mut().snapshot = vec![(device, Arc::<[u8]>::from([2]).into())];
+    app.dispatch(Action::Project(ProjectAction::Save));
+    let saved = persist::from_json(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let saved = saved.find_device(device).unwrap().2;
+    assert_eq!(saved.preset, Some(DevicePreset::loaded(source)));
+    assert_eq!(saved.state.as_deref(), Some(&[2][..]));
+}
+
+#[test]
 fn undoing_the_first_report_restores_the_startup_state() {
     let (mut app, script) = app();
     let device = device(&app, "Surge XT");
