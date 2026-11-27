@@ -27,6 +27,10 @@ pub mod envelope;
 pub mod eq;
 pub mod filter;
 pub mod lfo;
+#[cfg(test)]
+mod lfo_baseline;
+#[cfg(test)]
+mod lfo_reference;
 pub mod midi;
 pub mod mod_envelope;
 pub mod modulation;
