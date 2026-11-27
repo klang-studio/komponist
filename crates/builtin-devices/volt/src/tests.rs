@@ -17,6 +17,9 @@ use super::params::{COUNT, KEYS, id, params};
 use super::*;
 use komponist_device_core::InternalProcessor;
 
+mod baseline_support;
+mod lfo_baseline;
+
 // Keep these device tests sensitive to realtime allocation after moving to their own binary.
 #[cfg(debug_assertions)]
 #[global_allocator]

@@ -63,6 +63,8 @@ pub mod engine;
 pub mod env;
 pub mod filter;
 pub mod lfo;
+#[cfg(test)]
+mod lfo_reference;
 pub mod osc;
 pub mod params;
 pub mod presets;
