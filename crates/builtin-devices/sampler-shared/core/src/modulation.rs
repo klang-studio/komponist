@@ -1,6 +1,12 @@
 //! Modulation: LFO, sources, the per-pad matrix and how matrix targets are scaled.
+//!
+//! Phase, wrap detection and shapes of the LFO come from [`klang_synth::CyclicLfo`]; sampler-core
+//! keeps the timing (one step per sample, the value read before the step, the rounded
+//! [`phase::increment`]), the voice RNG it shares with the noise source and the order of its
+//! draws, and the free-running `f32` phase per pad (in [`crate::engine`]).
 
-use klang_dsp::{phase, wave};
+use klang_dsp::phase;
+use klang_synth::{CyclicLfo, Shape};
 
 pub const NUM_SLOTS: usize = 8;
 
@@ -25,40 +31,47 @@ pub enum LfoShape {
     SampleHold,
 }
 
+impl LfoShape {
+    /// The [`klang_synth`] shape that evaluates this one.
+    #[inline]
+    const fn shape(self) -> Shape {
+        match self {
+            LfoShape::Sine => Shape::Sine,
+            LfoShape::Triangle => Shape::Triangle,
+            LfoShape::SawUp => Shape::SawUp,
+            LfoShape::SawDown => Shape::SawDown,
+            LfoShape::Square => Shape::Square,
+            LfoShape::SampleHold => Shape::SampleHold,
+        }
+    }
+}
+
 /// A bipolar LFO on a `u32` phase (one period = 2^32, see [`klang_dsp::phase`]).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Lfo {
-    phase: u32,
-    held: f32,
+    lfo: CyclicLfo,
 }
 
 impl Lfo {
+    /// Moves to `phase` (in periods) and draws a new sample-and-hold value from `rng`.
     pub fn reset(&mut self, phase: f32, rng: &mut Rng) {
-        self.phase = phase::from_unit(phase);
-        self.held = rng.bipolar();
+        self.lfo.set_phase(phase::from_unit(phase));
+        self.lfo.set_held(rng.bipolar());
     }
 
     /// The value at the current phase without advancing.
     #[inline]
     pub fn value(&self, shape: LfoShape) -> f32 {
-        match shape {
-            LfoShape::Sine => wave::sine(self.phase),
-            LfoShape::Triangle => wave::triangle(self.phase),
-            LfoShape::SawUp => wave::saw_up(self.phase),
-            LfoShape::SawDown => wave::saw_down(self.phase),
-            LfoShape::Square => wave::square(self.phase),
-            LfoShape::SampleHold => self.held,
-        }
+        self.lfo.value(shape.shape())
     }
 
-    /// Returns the current value and advances by one sample.
+    /// Returns the current value and advances by one sample; a new cycle draws the next
+    /// sample-and-hold value from `rng`.
     #[inline]
     pub fn next(&mut self, shape: LfoShape, freq_hz: f32, sample_rate: f32, rng: &mut Rng) -> f32 {
         let out = self.value(shape);
-        let old = self.phase;
-        self.phase = old.wrapping_add(phase::increment(freq_hz, sample_rate));
-        if self.phase < old {
-            self.held = rng.bipolar();
+        if self.lfo.advance(phase::increment(freq_hz, sample_rate)) {
+            self.lfo.set_held(rng.bipolar());
         }
         out
     }

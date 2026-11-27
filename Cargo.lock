@@ -5065,6 +5065,7 @@ name = "sampler-core"
 version = "0.2.0"
 dependencies = [
  "klang-dsp",
+ "klang-synth",
 ]
 
 [[package]]
