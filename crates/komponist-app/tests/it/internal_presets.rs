@@ -335,9 +335,9 @@ fn a_fresh_direct_device_reports_its_baseline_before_the_start_preset() {
     }));
     let device = app.project().tracks[0].channel.instrument().unwrap().1.id;
     assert!(state_of(&app, device).is_none());
-    app.step();
-
-    let events = app.device_events();
+    let events = step_until(&mut app, "the direct device's start preset", |app| {
+        loaded(app, device) == Some(("Init", false))
+    });
     let baseline = events.iter().position(|event| {
         matches!(event, PluginManagerEvent::StartupState { device: id, state }
             if *id == device && !state.bytes.is_empty())
@@ -346,7 +346,7 @@ fn a_fresh_direct_device_reports_its_baseline_before_the_start_preset() {
         matches!(event, PluginManagerEvent::ClapPresetReported { device: id, startup: true, .. }
             if *id == device)
     });
-    assert!(baseline.unwrap() < preset.unwrap());
+    assert!(baseline.expect("startup state event") < preset.expect("startup preset event"));
     assert!(state_of(&app, device).is_none());
 }
 
