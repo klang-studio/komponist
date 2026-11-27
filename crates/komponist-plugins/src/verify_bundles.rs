@@ -92,7 +92,7 @@ fn smoke_live_manager(
     external: &Path,
     id: &str,
 ) -> Result<(), String> {
-    let mut manager = PluginManager::new_with_bundled_clap(config, true);
+    let mut manager = PluginManager::new(config);
     manager.start_scan(&PluginDirs {
         clap: vec![
             external
@@ -372,7 +372,7 @@ fn check_named_tap(
     processor: &mut dyn Processor,
     tap: &crate::signal_taps::SignalTap,
 ) -> Result<(), String> {
-    use komponist_ipc::signal_taps::SPECTRUM_SOURCE;
+    use komponist_ipc::signal_taps::{REDUCTION, SPECTRUM_SOURCE};
     let input = [2.0; FRAMES];
     let mut left = [0.0; FRAMES];
     let mut right = [0.0; FRAMES];
@@ -405,7 +405,11 @@ fn check_named_tap(
     let mut latest = [0.0; 4];
     if tap.samples().read_latest(&mut latest).is_none()
         || latest.iter().any(|sample| !sample.is_finite())
-        || tap.descriptor().kind == SPECTRUM_SOURCE && latest.iter().all(|s| s.abs() <= 1e-4)
+        || match tap.descriptor().kind {
+            SPECTRUM_SOURCE => latest.iter().all(|sample| sample.abs() <= 1e-4),
+            REDUCTION => latest.iter().all(|&reduction| reduction <= 0.0),
+            _ => false,
+        }
     {
         return Err(format!(
             "no usable signal from tap {:?}",

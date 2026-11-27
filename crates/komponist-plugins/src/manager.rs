@@ -417,20 +417,13 @@ impl Drop for PluginManager {
 impl PluginManager {
     /// Opens the installed bundled inventory and the cached external plugin catalog.
     pub fn new(config: PluginManagerConfig) -> PluginManager {
-        Self::new_with_bundled_clap(config, true)
+        Self::with_catalog(config, true)
     }
 
     /// An isolated test manager using its scan cache without the installed bundle inventory.
     #[doc(hidden)]
     pub fn without_bundled_clap(config: PluginManagerConfig) -> Self {
         Self::with_catalog(config, false)
-    }
-
-    pub(crate) fn new_with_bundled_clap(
-        config: PluginManagerConfig,
-        enable_bundles: bool,
-    ) -> PluginManager {
-        Self::with_catalog(config, enable_bundles)
     }
 
     /// Open an explicit test inventory using the fixture builder's expected manifest hash.
@@ -2161,7 +2154,7 @@ mod tests {
             cache_file: temp.path().join("plugins.json"),
             ..PluginManagerConfig::defaults(temp.path())
         };
-        let mut manager = PluginManager::new_with_bundled_clap(config, false);
+        let mut manager = PluginManager::without_bundled_clap(config);
         let removed = DeviceId(1);
         let other = DeviceId(2);
         for device in [removed, other] {
@@ -2186,7 +2179,7 @@ mod tests {
             cache_file: temp.path().join("plugins.json"),
             ..PluginManagerConfig::defaults(temp.path())
         };
-        let mut manager = PluginManager::new_with_bundled_clap(config, false);
+        let mut manager = PluginManager::without_bundled_clap(config);
         let device = DeviceId(1);
         let events = [
             PluginManagerEvent::WaveformMarkersEdited {
@@ -2236,7 +2229,7 @@ mod tests {
             cache_file: temp.path().join("plugins.json"),
             ..PluginManagerConfig::defaults(temp.path())
         };
-        let mut manager = PluginManager::new_with_bundled_clap(config, false);
+        let mut manager = PluginManager::without_bundled_clap(config);
         let device = Device {
             id: DeviceId(1),
             role: DeviceRole::Effect,
