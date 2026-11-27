@@ -592,8 +592,9 @@ frame. You hear the moved notes while you drag.
 ### 10.5 Step 4 – the command crosses to the audio thread
 
 `EngineHandle` ([`api.rs`](../crates/komponist-engine/src/api.rs)) holds the producer end of the
-`rtrb` command queue. If the queue is full or the engine is detached for export, `EngineIo`
-queues commands in order and flushes them when space or the handle is available. Nothing blocks.
+`rtrb` command queue. `EngineIo` keeps waiting commands in order. It retries a full queue on the
+next poll and flushes commands queued during export when the original handle returns. If it
+replaces the engine after a failure, it discards the old engine's pending commands. Nothing blocks.
 
 At the start of every callback, the engine drains up to `MAX_COMMANDS_PER_BLOCK = 64` commands
 (`Core::drain_commands` in [`engine.rs`](../crates/komponist-engine/src/engine.rs)).

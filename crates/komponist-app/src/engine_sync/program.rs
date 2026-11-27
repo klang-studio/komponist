@@ -165,6 +165,11 @@ impl ProgramSync {
         self.locate_after_rebuild = Some(playhead);
     }
 
+    #[cfg(test)]
+    pub(super) fn rebuild_position(&self) -> Option<Tick> {
+        self.locate_after_rebuild
+    }
+
     pub(super) fn note_transport_command(&mut self, command: &Command) {
         // A newer position wins over the rebuild position. The first new program supplies
         // the tempo map needed to locate there.

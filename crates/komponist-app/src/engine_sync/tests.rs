@@ -97,6 +97,7 @@ fn a_poisoned_engine_is_rebuilt_from_the_document() {
     // The old engine's queued garbage stays behind; nothing else was queued here.
     assert!(events.iter().all(|e| !matches!(e, EngineEvent::Retired(_))));
     assert!(sync.program().is_none(), "the old program is forgotten");
+    assert_eq!(sync.program.rebuild_position(), Some(at));
     assert_eq!(
         sync.worker_status().unwrap().threads,
         0,
@@ -105,6 +106,7 @@ fn a_poisoned_engine_is_rebuilt_from_the_document() {
     sync.sync(&doc);
     assert_eq!(sync.programs_sent(), sent + 1);
     assert!(sync.program().unwrap().slots.slot(lead).is_some());
+    assert_eq!(sync.program.rebuild_position(), None);
     // Stopped where the old engine was.
     assert!(wait_until(|| {
         sync.poll();
@@ -188,9 +190,13 @@ fn a_newer_locate_beats_the_rebuild_position() {
     let detached = sync.detach().unwrap();
     drop(detached);
     sync.recover(None);
+    let rebuild_position = sync.program.rebuild_position().expect("saved by recovery");
     sync.send(Command::Stop);
+    assert_eq!(sync.program.rebuild_position(), Some(rebuild_position));
     sync.send(Command::Locate(Tick(100)));
+    assert_eq!(sync.program.rebuild_position(), Some(Tick(100)));
     sync.sync(&doc);
+    assert_eq!(sync.program.rebuild_position(), None);
     assert!(wait_until(|| {
         sync.poll();
         // The position is rounded to a frame.
@@ -277,20 +283,23 @@ fn diagnostics_follow_the_sent_program_and_notice_only_new_ones() {
 #[test]
 fn attach_flushes_program_and_transport_commands_in_order() {
     let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
-    let doc = Document::new(Project::new("Queued program"));
+    let mut project = Project::new("Queued program");
+    project.count_in_bars = 0;
+    let doc = Document::new(project);
     sync.hold_engine().unwrap();
     let detached = sync.detach().unwrap();
     sync.sync(&doc);
-    sync.send(Command::Locate(Tick(1920)));
-    sync.send(Command::Play);
+    let from = Tick(3840);
+    // Without the queued program, Record would start a bar earlier using the default count-in.
+    sync.send(Command::Record { from });
     sync.send(Command::Stop);
-    assert_eq!(sync.pending_commands(), 4);
+    assert_eq!(sync.pending_commands(), 3);
     assert_eq!(sync.playhead(), Tick::ZERO);
 
     sync.attach(detached);
     assert_eq!(sync.pending_commands(), 0);
     assert!(sync.run_held(256, &[], 0));
-    assert!((Tick(1919)..=Tick(1920)).contains(&sync.playhead()));
+    assert_eq!(sync.playhead(), from);
     assert_eq!(sync.transport(), TransportState::Stopped);
 
     // The attached engine's rate may differ from the one used while detached.
