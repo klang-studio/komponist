@@ -153,6 +153,19 @@ pub(crate) fn check_digests(device: &str, actual: &[(String, u64)], expected: &[
         );
         return;
     }
+    // Every name once on both sides, so each committed entry is checked exactly once.
+    let unique = |names: Vec<&str>| {
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            names.len(),
+            "duplicate digest names: {names:?}"
+        );
+    };
+    unique(actual.iter().map(|(name, _)| name.as_str()).collect());
+    unique(expected.iter().map(|(name, _)| *name).collect());
     let differ: Vec<&str> = actual
         .iter()
         .filter(|(name, digest)| !expected.iter().any(|(n, d)| n == name && d == digest))

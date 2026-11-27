@@ -124,6 +124,19 @@ fn check_digests(actual: &[(String, u64)], expected: &[(&str, u64)]) {
         );
         return;
     }
+    // Every name once on both sides, so each committed entry is checked exactly once.
+    let unique = |names: Vec<&str>| {
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            names.len(),
+            "duplicate digest names: {names:?}"
+        );
+    };
+    unique(actual.iter().map(|(name, _)| name.as_str()).collect());
+    unique(expected.iter().map(|(name, _)| *name).collect());
     let differ: Vec<&str> = actual
         .iter()
         .filter(|(name, digest)| !expected.iter().any(|(n, d)| n == name && d == digest))
@@ -631,7 +644,9 @@ fn hexa_renders_match_the_committed_digests() {
     let mut actual = Vec::new();
     let mut add = |name: String, digest: u64| actual.push((name, digest));
     let mut added = PERFORMANCE.to_vec();
-    added.insert(2, (7000, Play::Patch(lfo_heavy)));
+    added.push((7000, Play::Patch(lfo_heavy)));
+    // `render_digest` plays the events in list order: keep them sorted by position.
+    added.sort_by_key(|(at, _)| *at);
     for split in SPLITS {
         let s = split.name();
         add(
@@ -660,7 +675,7 @@ fn hexa_renders_match_the_committed_digests() {
 /// The committed digests (Linux x86_64), from `e97f261c`, before #352.
 const HEXA_DIGESTS: &[(&str, u64)] = &[
     ("lfo-heavy/split-1", 0xb553e893d707ba09),
-    ("lfo-added/split-1", 0xda9195d22e6e38e3),
+    ("lfo-added/split-1", 0x019aa0ee64114cac),
     ("lfo-heavy-2-engines/split-1", 0xcb67e10b9158844a),
     ("Random Filter/split-1", 0x6ccb86fe40f42d7b),
     ("Star Field/split-1", 0x4e436ea91730df46),
@@ -669,7 +684,7 @@ const HEXA_DIGESTS: &[(&str, u64)] = &[
     ("Neuro Bass/split-1", 0x264554711c5836dd),
     ("Gameboy Lead/split-1", 0xd751b31474d0d95f),
     ("lfo-heavy/split-31", 0xfde261eb67687af5),
-    ("lfo-added/split-31", 0x25b8c585315461ca),
+    ("lfo-added/split-31", 0x2a23b808cf781397),
     ("lfo-heavy-2-engines/split-31", 0x0d33e7e4fa636a92),
     ("Random Filter/split-31", 0x8e192df0cedf3667),
     ("Star Field/split-31", 0x7394f1f536f58408),
@@ -678,7 +693,7 @@ const HEXA_DIGESTS: &[(&str, u64)] = &[
     ("Neuro Bass/split-31", 0x8f1444284c71e1d3),
     ("Gameboy Lead/split-31", 0x290be377b29f14a8),
     ("lfo-heavy/split-32", 0xc27c56bb99d331f2),
-    ("lfo-added/split-32", 0x3fa2a93add45641e),
+    ("lfo-added/split-32", 0xad5924390ef07312),
     ("lfo-heavy-2-engines/split-32", 0xfc4e492c310e4f56),
     ("Random Filter/split-32", 0x1595e537ce0ed795),
     ("Star Field/split-32", 0x86d08dce0fc99acc),
@@ -687,7 +702,7 @@ const HEXA_DIGESTS: &[(&str, u64)] = &[
     ("Neuro Bass/split-32", 0x993cef8fab46a616),
     ("Gameboy Lead/split-32", 0x7c8d439f15f0a30c),
     ("lfo-heavy/split-33", 0x89486cf1b470b7a7),
-    ("lfo-added/split-33", 0x0d0e8459f51545d1),
+    ("lfo-added/split-33", 0x6a5965da9794d255),
     ("lfo-heavy-2-engines/split-33", 0xcc91620a849223e2),
     ("Random Filter/split-33", 0x8e1c962c8c56428a),
     ("Star Field/split-33", 0x51e38420c01b48bf),
@@ -696,7 +711,7 @@ const HEXA_DIGESTS: &[(&str, u64)] = &[
     ("Neuro Bass/split-33", 0xb5b91204317a222b),
     ("Gameboy Lead/split-33", 0x359c15da00198a2e),
     ("lfo-heavy/split-64", 0xd3726f9f54da96a0),
-    ("lfo-added/split-64", 0xfe8e95630a34eed5),
+    ("lfo-added/split-64", 0x011a180ead75b6a9),
     ("lfo-heavy-2-engines/split-64", 0x8f8444a1ec6dae75),
     ("Random Filter/split-64", 0x7c3239272a89c3f8),
     ("Star Field/split-64", 0x6a34a45c16393778),
@@ -705,7 +720,7 @@ const HEXA_DIGESTS: &[(&str, u64)] = &[
     ("Neuro Bass/split-64", 0x9b6213df18cd8172),
     ("Gameboy Lead/split-64", 0x2848e1e6df9765d1),
     ("lfo-heavy/split-256", 0x3dfaef5decfbda25),
-    ("lfo-added/split-256", 0xfc2fffe55b40f994),
+    ("lfo-added/split-256", 0x666eafbd14e61c34),
     ("lfo-heavy-2-engines/split-256", 0x365dfad429e84fe2),
     ("Random Filter/split-256", 0xf4e02b2c724520c2),
     ("Star Field/split-256", 0x5b523fe23cf39034),
@@ -714,7 +729,7 @@ const HEXA_DIGESTS: &[(&str, u64)] = &[
     ("Neuro Bass/split-256", 0x5c3f1f1d5e9709f7),
     ("Gameboy Lead/split-256", 0x931686f9122bb1ad),
     ("lfo-heavy/irregular-358-300", 0xc5aa6f2db28fa52b),
-    ("lfo-added/irregular-358-300", 0x1ad59ce17d42b6c7),
+    ("lfo-added/irregular-358-300", 0x9bd0ead60bb7c2fc),
     ("lfo-heavy-2-engines/irregular-358-300", 0x61db69e549ece9eb),
     ("Random Filter/irregular-358-300", 0x006d6be35f80df53),
     ("Star Field/irregular-358-300", 0xf8f079fb80d110db),
