@@ -964,6 +964,9 @@ Shared DSP primitives include unit conversion, smoothing/filtering, oscillators,
 operations, pan/balance and meter math. These blocks are independent of product UI and parameter
 mapping. Fader taper/formatting belong to model/UI code; export dither/quantization and runtime
 PDC delay storage belong to the engine. Realtime thread setup belongs to audio/RT helpers.
+`klang-synth`, from the same repository and `rev`, holds opt-in synth blocks built on `klang-dsp`
+(first a cyclic LFO core); only device and plugin crates may link it, while app, UI, plugin hosting,
+engine, model and the processor/plugin-API/device-DSP contracts must not (`scripts/check-device-boundary.py`).
 
 ## 11. Verification
 
