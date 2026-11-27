@@ -2259,6 +2259,7 @@ version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "klang-dsp",
+ "klang-synth",
  "libm",
  "serde",
 ]

@@ -16,6 +16,7 @@ name = "hexa_core"
 [dependencies]
 libm.workspace = true
 klang-dsp.workspace = true
+klang-synth.workspace = true
 serde = { version = "1.0.229", default-features = false, features = ["derive"], optional = true }
 
 [features]
