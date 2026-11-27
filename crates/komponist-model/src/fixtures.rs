@@ -406,19 +406,18 @@ impl DemoPlugin {
             name: self.name.to_owned(),
             vendor: self.vendor.to_owned(),
             version: self.version.to_owned(),
-            module: match self.format {
-                PluginFormat::Clap => self
-                    .id
-                    .strip_prefix("org.klang-studio.komponist.")
-                    .map_or_else(
-                        || format!("{}.clap", self.name),
-                        |slug| format!("bundled-clap/komponist_{slug}_clap.clap"),
-                    )
-                    .into(),
-                PluginFormat::Vst3 => format!("{}.vst3", self.name).into(),
+            module: match (self.format, self.id) {
+                (PluginFormat::Clap, DRUM_SAMPLER_CLAP_ID) => packaged_module("sampler"),
+                (PluginFormat::Clap, id) if id == HEXA.id => packaged_module("hexa_clap"),
+                (PluginFormat::Clap, _) => format!("{}.clap", self.name).into(),
+                (PluginFormat::Vst3, _) => format!("{}.vst3", self.name).into(),
             },
         }
     }
+}
+
+fn packaged_module(bundle_stem: &str) -> Box<str> {
+    format!("bundled-clap/komponist_{bundle_stem}.clap").into()
 }
 
 const HEXA: DemoPlugin = DemoPlugin {

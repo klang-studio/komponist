@@ -1018,6 +1018,17 @@ mod tests {
         };
         assert_eq!(host.catalog().entries().len(), 12);
         assert_eq!(host.role(&hexa), Some(DeviceRole::Instrument));
+        let demo = komponist_model::fixtures::demo_project();
+        for track in &demo.tracks[..3] {
+            let (_, instrument) = track.channel.instrument().unwrap();
+            assert_eq!(
+                host.role(&instrument.plugin),
+                Some(DeviceRole::Instrument),
+                "{} ({}) must resolve in the staged package",
+                instrument.plugin.id,
+                instrument.plugin.module
+            );
+        }
         let mut unavailable = hexa.clone();
         unavailable.id = "de.klang-studio.test.unavailable".into();
         unavailable.module = "not-installed.clap".into();
