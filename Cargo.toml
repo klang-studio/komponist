@@ -177,6 +177,9 @@ opt-level = 2
 [profile.dev.package.klang-dsp]
 opt-level = 2
 
+[profile.dev.package.klang-synth]
+opt-level = 2
+
 # Rust-side chunk validation and mapping accompany optimized C++ even in dev/test.
 [profile.dev.package.komponist-stretch]
 opt-level = 2

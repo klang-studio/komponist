@@ -5,9 +5,14 @@
 //! A patch has a list of up to [`MAX_LFOS`] LFOs ([`LfoBank`]); parameters
 //! use them as modulation sources (see [`crate::modulation`]). LFOs that no
 //! parameter uses are not computed.
+//!
+//! Phase, wrap detection and shapes come from [`klang_synth::CyclicLfo`];
+//! Hexa keeps the timing (its truncating `increment()`, one step per block),
+//! the one random generator shared by all LFOs and the order of its draws,
+//! delay, fade-in and amount.
 
 use klang_dsp::rng::Rng;
-use klang_dsp::wave;
+use klang_synth::{CyclicLfo, Shape};
 
 use crate::modulation::{LfoModulation, ModTarget, Offsets};
 use crate::{MAX_VOICES, clamp_or};
@@ -49,6 +54,20 @@ pub enum LfoWaveform {
     Square,
     /// A new random value at the start of every period.
     SampleHold,
+}
+
+impl LfoWaveform {
+    /// The [`klang_synth`] shape that evaluates this waveform.
+    pub(crate) const fn shape(self) -> Shape {
+        match self {
+            Self::Sine => Shape::Sine,
+            Self::Triangle => Shape::Triangle,
+            Self::SawUp => Shape::SawUp,
+            Self::SawDown => Shape::SawDown,
+            Self::Square => Shape::Square,
+            Self::SampleHold => Shape::SampleHold,
+        }
+    }
 }
 
 /// Patch parameters of one LFO.
@@ -118,9 +137,8 @@ const SEED: u32 = 0x2545_f491;
 pub(crate) struct Lfos {
     /// Free-running phase per LFO, joined by voices without key sync.
     global: [u32; MAX_LFOS],
-    phase: [[u32; MAX_VOICES]; MAX_LFOS],
-    /// Current sample-and-hold value per LFO and voice.
-    held: [[f32; MAX_VOICES]; MAX_LFOS],
+    /// Phase and sample-and-hold value per LFO and voice.
+    lfo: [[CyclicLfo; MAX_VOICES]; MAX_LFOS],
     /// Output at the start of the next block per LFO and voice.
     value: [[f32; MAX_VOICES]; MAX_LFOS],
     /// The level (amount × fade) behind `value`, for displays.
@@ -135,8 +153,7 @@ impl Lfos {
     pub(crate) fn new() -> Self {
         Self {
             global: [0; MAX_LFOS],
-            phase: [[0; MAX_VOICES]; MAX_LFOS],
-            held: [[0.0; MAX_VOICES]; MAX_LFOS],
+            lfo: [[CyclicLfo::new(); MAX_VOICES]; MAX_LFOS],
             value: [[0.0; MAX_VOICES]; MAX_LFOS],
             level: [[0.0; MAX_VOICES]; MAX_LFOS],
             age: [0.0; MAX_VOICES],
@@ -163,18 +180,19 @@ impl Lfos {
     /// the voice sounds (then its fade-in counts from the note-on).
     pub(crate) fn start(&mut self, l: usize, voice: usize, p: &LfoParams) {
         let offset = crate::phase::from_unit(p.phase);
-        self.phase[l][voice] = if p.key_sync {
+        let lfo = &mut self.lfo[l][voice];
+        lfo.set_phase(if p.key_sync {
             offset
         } else {
             self.global[l].wrapping_add(offset)
-        };
-        self.held[l][voice] = self.random();
+        });
+        lfo.set_held(self.rng.bipolar());
         self.set_output(l, voice, p, p.amount, p.fade_in);
     }
 
     /// Phase, level and output of LFO `l` of `voice`, see [`LfoPositions`].
     pub(crate) fn position(&self, l: usize, voice: usize) -> [f32; 3] {
-        let phase = crate::phase::to_unit(self.phase[l][voice]);
+        let phase = crate::phase::to_unit(self.lfo[l][voice].phase());
         [phase, self.level[l][voice], self.value[l][voice]]
     }
 
@@ -208,7 +226,6 @@ impl Lfos {
                 continue;
             }
             start[l] = self.value[l][voice];
-            let old = self.phase[l][voice];
             let bit = 1 << l;
             let octaves = if modulated.rates & bit != 0 {
                 o0.get(ModTarget::LfoRate(l))
@@ -220,10 +237,9 @@ impl Lfos {
             } else {
                 p.rate
             };
-            let new = old.wrapping_add(increment(rate, block_seconds));
-            self.phase[l][voice] = new;
-            if new < old {
-                self.held[l][voice] = self.random();
+            let lfo = &mut self.lfo[l][voice];
+            if lfo.advance(increment(rate, block_seconds)) {
+                lfo.set_held(self.rng.bipolar());
             }
             let amount = if modulated.amounts & bit != 0 {
                 (p.amount + o1.get(ModTarget::LfoAmount(l))).clamp(0.0, 1.0)
@@ -256,30 +272,13 @@ impl Lfos {
         };
         let level = fade * amount;
         self.level[l][voice] = level;
-        self.value[l][voice] = shape(p.waveform, self.phase[l][voice], self.held[l][voice]) * level;
-    }
-
-    /// Uniform in -1..1.
-    fn random(&mut self) -> f32 {
-        self.rng.bipolar()
+        self.value[l][voice] = self.lfo[l][voice].value(p.waveform.shape()) * level;
     }
 }
 
 /// Phase increment for `rate` Hz over `seconds`, one period = 2^32.
 fn increment(rate: f32, seconds: f32) -> u32 {
     (rate as f64 * seconds as f64 * crate::phase::PHASE_PERIOD) as u64 as u32
-}
-
-/// Value of `waveform` at `phase`; `held` is the sample-and-hold value.
-fn shape(waveform: LfoWaveform, phase: u32, held: f32) -> f32 {
-    match waveform {
-        LfoWaveform::Sine => wave::sine(phase),
-        LfoWaveform::Triangle => wave::triangle(phase),
-        LfoWaveform::SawUp => wave::saw_up(phase),
-        LfoWaveform::SawDown => wave::saw_down(phase),
-        LfoWaveform::Square => wave::square(phase),
-        LfoWaveform::SampleHold => held,
-    }
 }
 
 #[cfg(test)]
@@ -295,11 +294,15 @@ mod tests {
     };
 
     fn at(waveform: LfoWaveform, t: f64) -> f32 {
-        shape(
-            waveform,
-            (t * crate::phase::PHASE_PERIOD) as u64 as u32,
-            0.3,
-        )
+        let mut lfo = CyclicLfo::new();
+        lfo.set_phase((t * crate::phase::PHASE_PERIOD) as u64 as u32);
+        lfo.set_held(0.3);
+        lfo.value(waveform.shape())
+    }
+
+    /// Phase of LFO `l` of `voice`.
+    fn phase(lfos: &Lfos, l: usize, voice: usize) -> u32 {
+        lfos.lfo[l][voice].phase()
     }
 
     #[test]
@@ -352,8 +355,8 @@ mod tests {
             lfos.advance_global(&params, BLOCK);
         }
         lfos.note_on(3, &params);
-        assert_eq!(lfos.phase[0][3], 0);
-        assert_eq!(lfos.phase[1][3], lfos.global[1]);
+        assert_eq!(phase(&lfos, 0, 3), 0);
+        assert_eq!(phase(&lfos, 1, 3), lfos.global[1]);
         assert_ne!(lfos.global[1], 0);
     }
 
@@ -397,8 +400,8 @@ mod tests {
         lfos.note_on(0, &params);
         let (_, end) = lfos.advance_voice(0, &params, 0b10, ALL, NO_ENV, BLOCK);
         assert_eq!(end[0], 0.0);
-        assert_eq!(lfos.phase[0][0], 0);
-        assert_ne!(lfos.phase[1][0], 0);
+        assert_eq!(phase(&lfos, 0, 0), 0);
+        assert_ne!(phase(&lfos, 1, 0), 0);
     }
 
     /// Offsets with `target` moved by `value`.
@@ -439,7 +442,7 @@ mod tests {
         lfos.note_on(2, &params);
         lfos.advance_voice(1, &params, 1, ALL, NO_ENV, BLOCK);
         lfos.advance_voice(2, &params, 1, ALL, (&octave, &octave), BLOCK);
-        assert!(lfos.phase[0][2].abs_diff(2 * lfos.phase[0][1]) <= 2);
+        assert!(phase(&lfos, 0, 2).abs_diff(2 * phase(&lfos, 0, 1)) <= 2);
     }
 
     #[test]
