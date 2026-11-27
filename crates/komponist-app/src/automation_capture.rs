@@ -1357,11 +1357,11 @@ mod tests {
 
         let mut project = fixtures::demo_project();
         project.loop_on = false;
-        let track = project
-            .tracks
-            .iter()
-            .find(|track| track.name == "Lead")
-            .unwrap();
+        // This test exercises channel pan and clip automation; use the demo's clip without
+        // opening unrelated plugins or applying their independent startup preset notifications.
+        project.tracks.retain(|track| track.name == "Lead");
+        let track = std::sync::Arc::make_mut(&mut project.tracks[0]);
+        track.channel.devices.clear();
         let (track, clip, start) = (track.id, track.clips[0].id, track.clips[0].start);
         let owner = AutomationOwner::Track(track);
         let target = AutomationTarget::Pan;
