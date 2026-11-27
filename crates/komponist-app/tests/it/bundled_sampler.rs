@@ -1445,9 +1445,14 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     let prior: Vec<_> = before.slices.iter().map(|slice| slice.time).collect();
     let seconds = 0.08;
     let mut after = before.clone();
-    after.slices.push(Default::default());
-    after.slices[prior.len()].time = seconds;
-    after.normalize();
+    let index = after.slices.partition_point(|slice| slice.time < seconds);
+    after.slices.insert(
+        index,
+        SliceBoundary {
+            time: seconds,
+            options: SliceOptions::default(),
+        },
+    );
     edit_marker(
         h.state_mut(),
         &prior,
