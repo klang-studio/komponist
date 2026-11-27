@@ -879,7 +879,8 @@ fn missing_devices_are_listed_and_the_export_goes_on_without_them_or_not_at_all(
 /// The packaged host; a device with plugin id "kaputt" gets a processor that
 /// fails as soon as it renders offline (a bridge that dies during the export).
 struct FailingHost {
-    builtin: PluginHost,
+    packaged: PluginHost,
+    scripted: DeviceId,
     /// The latest global render mode (for the panic test).
     mode: Arc<Mutex<Option<RenderMode>>>,
 }
@@ -991,15 +992,19 @@ impl DeviceHost for FailingHost {
                 panic: TestPanic,
             }));
         }
-        self.builtin.create_processor(device, setup)
+        self.packaged.create_processor(device, setup)
     }
 
     fn release(&mut self, device: DeviceId) {
-        self.builtin.release(device);
+        self.packaged.release(device);
     }
 
     fn status(&self, device: DeviceId) -> DeviceStatus {
-        self.builtin.status(device)
+        if device == self.scripted {
+            DeviceStatus::Ok
+        } else {
+            self.packaged.status(device)
+        }
     }
 
     fn latency(&self, _device: DeviceId) -> u32 {
@@ -1007,20 +1012,20 @@ impl DeviceHost for FailingHost {
     }
 
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
-        self.builtin.poll()
+        self.packaged.poll()
     }
 
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
-        self.builtin.role(plugin)
+        self.packaged.role(plugin)
     }
 
     fn catalog(&self) -> &Catalog {
-        self.builtin.catalog()
+        self.packaged.catalog()
     }
 
     fn set_render_mode(&mut self, mode: RenderMode) {
         *self.mode.lock().unwrap() = Some(mode);
-        self.builtin.set_render_mode(mode);
+        self.packaged.set_render_mode(mode);
     }
 }
 
@@ -1037,9 +1042,10 @@ fn a_device_that_drops_out_of_the_render_is_named() {
         version: "1.0".into(),
         module: Box::default(),
     };
-    let (project, _) = with_effect(project, kaputt);
+    let (project, scripted) = with_effect(project, kaputt);
     let host = FailingHost {
-        builtin: App::headless_plugin_host(),
+        packaged: App::headless_plugin_host(),
+        scripted,
         mode: Arc::default(),
     };
     let (mut app, _) = app_with(&dir, project, Box::new(host));
@@ -1085,10 +1091,11 @@ fn a_panic_on_the_export_worker_leaves_a_playing_session() {
             version: "1.0".into(),
             module: Box::default(),
         };
-        let (project, _) = with_effect(project, panik);
+        let (project, scripted) = with_effect(project, panik);
         let mode = Arc::new(Mutex::new(None));
         let host = FailingHost {
-            builtin: App::headless_plugin_host(),
+            packaged: App::headless_plugin_host(),
+            scripted,
             mode: Arc::clone(&mode),
         };
         let (app, _) = app_with(&dir, project, Box::new(host));
@@ -1419,12 +1426,13 @@ fn snapshots_next_to_s08() {
     mask_cpu(&mut h);
     h.snapshot("export-progress-1x");
     results.extend_harness(&mut h);
-    // The wait for devices: the demo on the builtin host misses its plugins (it never starts,
-    // and the folder is a scratch one anyway).
+    // The demo references external devices that the packaged fixture catalog cannot resolve.
     let dir = scratch("snapshot");
     let mut app = App::headless(demo_project());
     let settings = export_settings(&dir, ExportRange::Song);
     app.dispatch(Action::Project(ProjectAction::StartExport(settings)));
+    assert!(matches!(&app.ui().dialog, Some(Dialog::Export(dialog))
+        if dialog.stage == komponist_app::ui_state::ExportStage::Devices));
     let mut h = harness(app);
     h.run_steps(3);
     mask_cpu(&mut h);

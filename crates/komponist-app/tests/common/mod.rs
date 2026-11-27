@@ -353,7 +353,7 @@ pub fn devices(project: &Project) -> Vec<(TrackId, Device)> {
 pub fn bridged(project: &Project) -> Vec<DeviceId> {
     devices(project)
         .into_iter()
-        .filter(|(_, d)| matches!(d.plugin.format, PluginFormat::Clap | PluginFormat::Vst3))
+        .filter(|(_, device)| !komponist_plugins::requires_bundled(&device.plugin))
         .map(|(_, d)| d.id)
         .collect()
 }
