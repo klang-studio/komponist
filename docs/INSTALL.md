@@ -119,8 +119,8 @@ cargo --config 'patch."https://github.com/klang-studio/klang-dsp".klang-dsp.path
 # or for every clone below one folder: put this into <parent folder>/.cargo/config.toml
 # (cargo reads config files of all parent directories; clones elsewhere are not affected)
 [patch."https://github.com/klang-studio/klang-dsp"]
-klang-dsp = { path = "../klang-dsp" }   # relative to the folder that contains the .cargo directory
-klang-synth = { path = "../klang-dsp/klang-synth" }
+klang-dsp = { path = "klang-dsp" }   # relative to the folder that contains the .cargo directory
+klang-synth = { path = "klang-dsp/klang-synth" }
 ```
 
 While the patch is active cargo rewrites the klang-dsp entries in `Cargo.lock`; do not commit that change
