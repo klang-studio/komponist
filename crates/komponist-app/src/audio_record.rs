@@ -305,10 +305,10 @@ impl State {
         }
     }
 
-    pub(crate) fn pending_automation_published(&self) -> bool {
-        self.pending_automation
-            .as_ref()
-            .is_some_and(|pass| pass.was_published())
+    pub(crate) fn pending_automation(
+        &self,
+    ) -> Option<&crate::automation_capture::AutomationCapture> {
+        self.pending_automation.as_ref()
     }
 
     pub(crate) fn references_automation_lane(
@@ -653,10 +653,8 @@ impl App {
             }
             Err(recording::RecordingError::Cancelled) => {
                 self.audio_recording.pending_midi = None;
-                if self.audio_recording.pending_automation_published() {
-                    self.engine.send_project(self.doc.project());
-                }
                 self.audio_recording.pending_automation = None;
+                self.sync_project();
                 drop(capture); // joins/IO only on this non-RT thread
             }
             Err(error) => {
