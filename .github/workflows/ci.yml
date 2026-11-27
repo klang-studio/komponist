@@ -3,11 +3,10 @@
 # (epic #41: macOS 14.4+, Apple Silicon only) and on Windows x86_64 (port in progress, not blocking).
 # Local equivalent: scripts/check.sh + scripts/check-gui.sh.
 #
-# Snapshot tests (egui_kittest, wgpu) render with lavapipe, the software Vulkan driver of Mesa, on the runner,
-# while the committed PNGs come from the owner's GPU. Anti-aliasing can differ in single pixels, so this
-# workflow writes a kittest.toml with a tolerance (SNAPSHOT_* below) before the tests. Local runs keep kittest's strict
-# defaults. If the first CI run fails on snapshots, look at the "snapshot-diffs" artifact first. On macOS the
-# committed kittest.toml ([mac], [windows]) renders every snapshot without comparing it (other pixels).
+# Snapshot tests (egui_kittest, wgpu) render with lavapipe, the software Vulkan driver of Mesa, on the runner.
+# The committed kittest.toml sets the Linux tolerance (anti-aliasing differs in single pixels between lavapipe and
+# local GPU drivers, #373) and renders every snapshot without comparing it on macOS and Windows (other pixels). If
+# CI fails on snapshots, look at the "snapshot-diffs" artifact first.
 name: CI
 
 # Documentation and README media changes need no build, except the two docs files that code and tests read:
@@ -45,10 +44,6 @@ env:
   KOMPONIST_REQUIRE_FIXTURES: "1"
   # Software Vulkan (lavapipe, from mesa-vulkan-drivers); there is no GPU on the runner.
   WGPU_BACKEND: vulkan
-  # kittest tolerance on CI only (per-pixel YIQ distance, number of pixels allowed over it).
-  # Starting values, to be tuned after the first run (see the header comment).
-  SNAPSHOT_THRESHOLD: "1.0"
-  SNAPSHOT_MAX_FAILED_PIXELS: "20"
 
 jobs:
   # One job per platform, named "<OS> <arch>: <checks>" (like the release jobs), so further platforms slot in.
@@ -155,14 +150,6 @@ jobs:
           KOMPONIST_SDK_EXAMPLE="$native/native_clap_example.clap" \
             KOMPONIST_SDK_EXAMPLE_PLAIN="$plain/native_clap_example.clap" \
             cargo test --locked -p komponist-app --test it sdk_example_uses_native_layout_and_falls_back
-
-      - name: Allow small rendering differences in snapshots
-        run: |
-          cat > kittest.toml <<TOML
-          threshold = ${SNAPSHOT_THRESHOLD}
-          max_failed_pixels = ${SNAPSHOT_MAX_FAILED_PIXELS}
-          TOML
-          cat kittest.toml
 
       - name: Verify standalone CLAP layout graph snapshots
         env:

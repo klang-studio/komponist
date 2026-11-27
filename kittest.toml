@@ -3,6 +3,14 @@
 # Linux (lavapipe) is the reference for snapshots. macOS renders with Metal and Windows with the GPU's driver
 # (wgpu DX12/Vulkan), whose pixels differ, so both render every snapshot without comparing: the failed-pixel
 # budget is unbounded there (owner decision 5 of epic #41 for macOS; the same rule for Windows).
+#
+# Linux compares with a small tolerance (per-pixel YIQ distance, number of pixels allowed over it), the same on CI
+# (lavapipe) and locally, where a GPU driver such as RADV may render: the two rasterise anti-aliased edges slightly
+# differently (#373).
+[linux]
+threshold = 1.0
+max_failed_pixels = 20
+
 [mac]
 max_failed_pixels = 9223372036854775807
 
