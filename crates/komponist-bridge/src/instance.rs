@@ -223,6 +223,8 @@ struct Bridge {
     unstable_snapshots: u8,
     /// How long the last checked snapshot's `save_state` took.
     last_save: Duration,
+    initial_activation: bool,
+    startup_state_restored: bool,
     controller_due: Option<Instant>,
     controller_sent: Option<Instant>,
     shutdown: bool,
@@ -261,6 +263,8 @@ impl Bridge {
             verify_restored_bases: false,
             unstable_snapshots: 0,
             last_save: Duration::ZERO,
+            initial_activation: true,
+            startup_state_restored: false,
             controller_due: None,
             controller_sent: None,
             shutdown: false,
@@ -635,6 +639,26 @@ impl Bridge {
         self.send(BridgeMsg::PresetValues(values));
     }
 
+    fn report_presets(&mut self) {
+        let reports = self
+            .plugin
+            .as_mut()
+            .map(|plugin| plugin.take_preset_reports())
+            .unwrap_or_default();
+        for mut report in reports {
+            if let PresetReport::Loaded { startup, .. } = &mut report {
+                *startup |= self.initial_activation;
+            }
+            let changed = matches!(report, PresetReport::Loaded { startup: false, .. });
+            self.send(BridgeMsg::PresetReported(report));
+            if changed {
+                // The values the load set, ahead of any later state answer: the app takes
+                // them as the new parameter bases.
+                self.send_loaded_values();
+            }
+        }
+    }
+
     fn send_values_if_due(&mut self) {
         let now = Instant::now();
         if self.values_due.is_none_or(|due| due > now) {
@@ -707,20 +731,7 @@ impl Bridge {
             self.update_latency();
         }
         if pending & bits::PRESET_REPORTED != 0 {
-            let reports = self
-                .plugin
-                .as_mut()
-                .map(|plugin| plugin.take_preset_reports())
-                .unwrap_or_default();
-            for report in reports {
-                let changed = matches!(report, PresetReport::Loaded { startup: false, .. });
-                self.send(BridgeMsg::PresetReported(report));
-                if changed {
-                    // The values the load set, ahead of any later state answer: the app takes
-                    // them as the new parameter bases.
-                    self.send_loaded_values();
-                }
-            }
+            self.report_presets();
         }
         if pending & bits::STATE_DIRTY != 0 {
             self.send(BridgeMsg::StateDirty);
@@ -1279,6 +1290,9 @@ impl Bridge {
     }
 
     fn set_state(&mut self, request: u32, state: &[u8], bases: BTreeMap<u32, f64>) {
+        if self.initial_activation {
+            self.startup_state_restored = true;
+        }
         let untouched = |message| StateRestoreError {
             message,
             changed_values: Vec::new(),
@@ -1649,7 +1663,13 @@ impl Bridge {
     /// Activates and answers `Activated` or `Error`.
     fn activate_and_report(&mut self, config: ActivateConfig) {
         match self.activate(config) {
-            Ok(latency) => self.send(BridgeMsg::Activated { latency }),
+            Ok(latency) => {
+                if self.initial_activation {
+                    self.report_presets();
+                    self.initial_activation = false;
+                }
+                self.send(BridgeMsg::Activated { latency });
+            }
             Err(e) => self.error(ErrorContext::Activate, e.to_string()),
         }
     }
@@ -1674,6 +1694,16 @@ impl Bridge {
             plugin.deactivate(processor);
             processor = plugin.activate(config)?;
         }
+        // Capture the startup state on the control thread before handing the processor
+        // to the realtime worker, which may schedule main-thread preset loads.
+        let baseline = if self.initial_activation
+            && !self.startup_state_restored
+            && plugin.descriptor().format == komponist_ipc::PluginFormat::Clap
+        {
+            plugin.save_state().ok()
+        } else {
+            None
+        };
         let fallback = match plugin.descriptor().kind {
             PluginKind::Instrument => Fallback::Silence,
             PluginKind::Effect | PluginKind::MidiEffect | PluginKind::Other => {
@@ -1711,6 +1741,9 @@ impl Bridge {
         self.region.set_bridge_state(BridgeState::Active);
         self.controller_due = None;
         self.active = Some(Active { rt, config });
+        if let Some(state) = baseline {
+            self.send(BridgeMsg::StartupState(state));
+        }
         self.report_rt_priority(&report);
         // Right before `Activated` (sent by the caller), on every activation.
         let rt_status = BridgeMsg::RtPriority {

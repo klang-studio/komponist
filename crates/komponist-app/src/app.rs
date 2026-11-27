@@ -1019,6 +1019,9 @@ impl App {
             } => {
                 self.finish_param_text(*device, *id, *request, *value);
             }
+            PluginManagerEvent::StartupState { device, state } => {
+                self.record_device_baseline(*device, state);
+            }
             PluginManagerEvent::StateSnapshot { device, state } => {
                 if let Some(captured) = self.shell.catalog_retirements.get_mut(device) {
                     *captured = Some(state.clone());
@@ -1156,7 +1159,7 @@ impl App {
         }
         let dir = self.project_dir();
         self.engine
-            .sync_device_states(before, &after, dir.as_deref());
+            .sync_device_states(before, &after, dir.as_deref(), &self.param_undo.baseline);
         self.expect_echo(before, &after);
         self.release_keyboard_notes_if(|id| after.track(id).is_none());
     }

@@ -883,6 +883,45 @@ fn a_reported_preset_and_its_snapshot_are_one_step_and_an_edit_marks_it_modified
 }
 
 #[test]
+fn undoing_the_first_report_restores_the_startup_state() {
+    let (mut app, script) = app();
+    let device = device(&app, "Surge XT");
+    assert!(state(&app, device).is_none());
+
+    let initial: Arc<[u8]> = Arc::from([1_u8]);
+    push(
+        &script,
+        PluginManagerEvent::StartupState {
+            device,
+            state: Arc::clone(&initial).into(),
+        },
+    );
+    push(
+        &script,
+        PluginManagerEvent::ClapPresetReported {
+            device,
+            source: ClapPresetSource {
+                location: ClapPresetLocation::Plugin,
+                load_key: Some(b"Selected".to_vec()),
+            },
+            startup: false,
+        },
+    );
+    // The report can arrive before any readiness notification or requested state snapshot.
+    snapshot(&script, device, &[2]);
+    app.step();
+
+    let model = app.project().find_device(device).unwrap().2;
+    assert!(model.preset.is_some());
+    assert_eq!(model.state.as_deref(), Some(&[2_u8][..]));
+    app.dispatch(Action::Edit(EditAction::Undo));
+    let model = app.project().find_device(device).unwrap().2;
+    assert!(model.preset.is_none());
+    assert!(model.state.is_none());
+    assert_eq!(script.borrow().restores.last(), Some(&(device, initial)));
+}
+
+#[test]
 fn a_host_preset_load_supersedes_a_report_awaiting_its_state() {
     let (mut app, script) = app();
     let device = device(&app, "Surge XT");

@@ -61,6 +61,28 @@ fn wait_state(bridge: &Bridge, state: BridgeState) {
 }
 
 #[test]
+fn clap_startup_state_is_sent_before_activation_completes() {
+    let Some(bundle) = fixture("kp-test-synth") else {
+        return;
+    };
+    let mut bridge = Bridge::spawn();
+    bridge.load(&bundle, SYNTH);
+    bridge.send(ControlMsg::Activate {
+        sample_rate: SAMPLE_RATE,
+        max_block: 256,
+    });
+    let state = bridge.expect("CLAP startup state", |msg| match msg {
+        BridgeMsg::StartupState(state) => Some(Some(state.clone())),
+        BridgeMsg::Activated { .. } => Some(None),
+        _ => None,
+    });
+    assert!(state.is_some_and(|state| !state.is_empty()));
+    bridge.expect("Activated", |msg| {
+        matches!(msg, BridgeMsg::Activated { .. }).then_some(())
+    });
+}
+
+#[test]
 fn protocol_errors_keep_the_bridge_alive() {
     let mut bridge = Bridge::spawn();
     assert_eq!(bridge.region().bridge_state(), BridgeState::Starting);

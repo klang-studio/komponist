@@ -115,7 +115,7 @@ pub(crate) struct ParamUndo {
     awaiting: BTreeSet<DeviceId>,
     /// What a bridged device held before its state entered the document: undoing back to "no
     /// state" hands the plugin this.
-    baseline: HashMap<DeviceId, SavedPluginState>,
+    pub(crate) baseline: HashMap<DeviceId, SavedPluginState>,
     /// Loads a plugin reported whose state has not arrived yet: the next snapshot of the device
     /// enters the document with the preset as one step.
     reported: HashMap<DeviceId, ClapPresetSource>,
@@ -954,6 +954,21 @@ impl App {
         let _ = self
             .doc
             .apply_untracked_to_root(|p| edits::set_saved_plugin_state(p, device, state));
+    }
+
+    /// Records pre-processing state outside the document for undoing the first live edit.
+    pub(crate) fn record_device_baseline(&mut self, device: DeviceId, state: &SavedPluginState) {
+        if self
+            .project()
+            .find_device(device)
+            .is_some_and(|(_, _, device)| device.state.is_none())
+        {
+            self.param_undo.awaiting.remove(&device);
+            self.param_undo
+                .baseline
+                .entry(device)
+                .or_insert_with(|| state.clone());
+        }
     }
 
     /// A bridged device came up (`DeviceStatus::Ok`) without a state in the document: asks the

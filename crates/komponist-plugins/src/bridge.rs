@@ -1637,6 +1637,16 @@ impl Bridge {
                 }
                 self.update_latency(info.latency, events);
             }
+            BridgeMsg::StartupState(state) => {
+                if matches!(self.phase, Phase::Hello | Phase::Loading)
+                    && !self.has_pending_document_restore()
+                {
+                    events.push(PluginManagerEvent::StartupState {
+                        device,
+                        state: Arc::<[u8]>::from(state).into(),
+                    });
+                }
+            }
             BridgeMsg::Activated { latency } => {
                 self.update_latency(latency, events);
                 if matches!(self.phase, Phase::Hello | Phase::Loading) {

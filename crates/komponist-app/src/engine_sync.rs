@@ -49,6 +49,7 @@ use komponist_engine::{
     MAX_EVENTS_PER_BLOCK, MAX_SLOTS, MidiInEvent, MidiPort, Program, SlotId, Telemetry, TrackMeter,
     TransportState,
 };
+use komponist_model::project::SavedPluginState;
 use komponist_model::{DeviceId, Document, Project, Tick, TrackId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent, ProcessorSetup};
 
@@ -711,6 +712,7 @@ impl EngineSync {
         before: &Project,
         after: &Project,
         project_dir: Option<&std::path::Path>,
+        startup_states: &HashMap<DeviceId, SavedPluginState>,
     ) {
         let devices = after
             .tracks
@@ -734,7 +736,13 @@ impl EngineSync {
                     let state_changed =
                         old.state != device.state || old.parameter_bases != device.parameter_bases;
                     if state_changed {
-                        self.follow_state(old, device, after, project_dir);
+                        self.follow_state(
+                            old,
+                            device,
+                            after,
+                            project_dir,
+                            startup_states.get(&device.id),
+                        );
                     }
                     if state_changed || old.asset_links != device.asset_links {
                         self.host.sync_asset_links(
@@ -759,6 +767,7 @@ impl EngineSync {
         device: &komponist_model::Device,
         project: &Project,
         project_dir: Option<&std::path::Path>,
+        startup_state: Option<&SavedPluginState>,
     ) {
         if let Some(parameters) = LegacyParameters::new(device) {
             let Some(changes) = parameters.changes_from(old.state.as_deref()) else {
@@ -783,6 +792,9 @@ impl EngineSync {
                 self.reload_device(project, device.id);
             }
         } else if komponist_plugins::requires_bundled(&device.plugin) {
+            if startup_state.is_some_and(|state| self.host.restore_saved_state(device.id, state)) {
+                return;
+            }
             // Undo may restore the new instance's absent state. A regular reload preserves
             // the previous processor's snapshot, so start a fresh instance at its defaults.
             let slot = self.slot_of(device.id).expect("checked by the caller");

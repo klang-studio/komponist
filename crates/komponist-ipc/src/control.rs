@@ -108,7 +108,7 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 24 (#285) returns the parameter IDs a device reset while preparing a file edit.
 /// 25 (#336) carries layout descriptors for the single current CLAP layout contract.
 /// 27 (#344) forwards the plug-in's own preset loads reported through CLAP preset-load.
-pub const PROTOCOL_VERSION: u32 = 27;
+pub const PROTOCOL_VERSION: u32 = 28;
 
 /// Maximum number of parameter bases that can follow an active state restore.
 pub const MAX_STATE_PARAMETER_BASES: usize = crate::shm::INPUT_EVENT_CAPACITY;
@@ -499,6 +499,8 @@ pub enum BridgeMsg {
         /// Latency in frames after activation.
         latency: u32,
     },
+    /// A fresh CLAP instance's state before it begins normal processing and callbacks.
+    StartupState(Vec<u8>),
     /// Answer to `GetState`.
     State {
         /// The request number from `GetState`.
@@ -2094,6 +2096,7 @@ mod tests {
                 native_layout: Some(b"{}".to_vec()),
             })),
             BridgeMsg::Activated { latency: 64 },
+            BridgeMsg::StartupState(vec![1, 2, 3]),
             BridgeMsg::State {
                 request: 7,
                 state: vec![9; 100],

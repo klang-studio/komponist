@@ -184,7 +184,7 @@ impl DirectDevice {
         setup: ProcessorSetup,
         state: Option<SavedPluginState>,
         debounce: Duration,
-    ) -> Result<(Self, DirectEngine), HostingError> {
+    ) -> Result<(Self, DirectEngine, Option<SavedPluginState>), HostingError> {
         let mut host = DirectClap::load(proof)?;
         let (warning, inventory, sidechain) = host
             .try_control(|plugin| {
@@ -200,7 +200,17 @@ impl DirectDevice {
                 )
             })
             .ok_or(HostingError::WrongState("inactive CLAP instance is busy"))?;
-        let (session, engine) = DirectSession::start(host, setup, role)?;
+        let (mut session, engine) = DirectSession::start(host, setup, role)?;
+        // The engine does not own the processor yet, so this precedes processing and the
+        // first poll's main-thread callbacks.
+        let baseline = if state.is_none() {
+            session
+                .try_control(|plugin| plugin.save_state().ok())
+                .flatten()
+                .map(|state| Arc::<[u8]>::from(state).into())
+        } else {
+            None
+        };
         let mut device = Self {
             latency: session.latency(),
             session,
@@ -236,7 +246,7 @@ impl DirectDevice {
             debounce,
         };
         device.accept_inventory(inventory, true);
-        Ok((device, engine))
+        Ok((device, engine, baseline))
     }
 
     fn accept_inventory(&mut self, inventory: Inventory, restored: bool) {

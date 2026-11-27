@@ -324,6 +324,33 @@ fn the_dropdown_shows_the_loaded_preset_and_a_star_after_an_edit_until_undo() {
 }
 
 #[test]
+fn a_fresh_direct_device_reports_its_baseline_before_the_start_preset() {
+    use komponist_plugins::PluginManagerEvent;
+
+    let mut app = App::headless(Project::new("Preset baseline"));
+    let plugin = plugin(&app, "hexa");
+    app.dispatch(Action::Plugin(PluginAction::Add {
+        plugin,
+        target: DropTarget::NewTrack { index: None },
+    }));
+    let device = app.project().tracks[0].channel.instrument().unwrap().1.id;
+    assert!(state_of(&app, device).is_none());
+    app.step();
+
+    let events = app.device_events();
+    let baseline = events.iter().position(|event| {
+        matches!(event, PluginManagerEvent::StartupState { device: id, state }
+            if *id == device && !state.bytes.is_empty())
+    });
+    let preset = events.iter().position(|event| {
+        matches!(event, PluginManagerEvent::ClapPresetReported { device: id, startup: true, .. }
+            if *id == device)
+    });
+    assert!(baseline.unwrap() < preset.unwrap());
+    assert!(state_of(&app, device).is_none());
+}
+
+#[test]
 fn a_fresh_device_shows_the_preset_it_starts_in_without_an_undo_step() {
     let (mut app, track, _) = app_with("delay");
     let hexa = app

@@ -121,6 +121,11 @@ pub enum PluginManagerEvent {
         /// New status.
         status: DeviceStatus,
     },
+    /// A fresh instance's state before it begins processing or reporting preset loads.
+    StartupState {
+        device: DeviceId,
+        state: SavedPluginState,
+    },
     /// A fresh state blob; store it in the document (untracked).
     StateSnapshot {
         /// The device.
@@ -796,7 +801,7 @@ impl PluginManager {
                 state,
                 self.timing.snapshot_debounce,
             ) {
-                Ok((mut instance, mut processor)) => {
+                Ok((mut instance, mut processor, baseline)) => {
                     if let Some(meter) = effect_meter {
                         processor.set_effect_meter(Arc::clone(&meter));
                         self.effect_meters.insert(device.id, meter);
@@ -804,6 +809,12 @@ impl PluginManager {
                     self.statuses.remove(&device.id);
                     instance.report_warning(device.id, &mut self.pending);
                     DirectDevice::report_metadata(device.id, &mut self.pending);
+                    if let Some(state) = baseline {
+                        self.pending.push(PluginManagerEvent::StartupState {
+                            device: device.id,
+                            state,
+                        });
+                    }
                     self.pending.push(PluginManagerEvent::StatusChanged {
                         device: device.id,
                         status: DeviceStatus::Ok,
@@ -879,6 +890,7 @@ impl PluginManager {
         self.pending.retain(|event| {
             !matches!(event,
                 PluginManagerEvent::StateSnapshot { device: old, .. }
+                    | PluginManagerEvent::StartupState { device: old, .. }
                     | PluginManagerEvent::WaveformMarkersEdited { device: old, .. }
                 | PluginManagerEvent::ClapPresetLoaded { device: old, .. }
                 | PluginManagerEvent::ClapPresetReported { device: old, .. }
