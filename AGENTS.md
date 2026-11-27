@@ -58,13 +58,16 @@ perf suites that `docs/PERFORMANCE.md` names (`soak`, `engine_perf`, `arrangemen
 the child processes of the test process (`plugin_exit`). Run one module:
 `cargo test -p komponist-app --test it piano_roll::`.
 
-**klang-dsp is a git dependency** (`Cargo.toml`, pinned `rev`). To change klang-dsp and komponist together, patch
-it to `../klang-dsp` without touching tracked files: either
-`cargo --config 'patch."https://github.com/klang-studio/klang-dsp".klang-dsp.path="../klang-dsp"' <cmd>`, or an
-untracked `.cargo/config.toml` in a *parent* folder of the clones (cargo merges the config files of all parent
-directories, so other clones are unaffected) with `[patch."https://github.com/klang-studio/klang-dsp"]` and
-`klang-dsp = { path = "../klang-dsp" }` (see `docs/INSTALL.md`). Never commit the resulting `Cargo.lock` change;
-after pushing klang-dsp, bump `rev`.
+**klang-dsp is a git dependency** (`Cargo.toml`, pinned `rev`); its repository also holds `klang-synth` (folder
+`klang-synth/`), pinned to the same `rev`. To change klang-dsp and komponist together, patch both to the local
+checkout without touching tracked files: either pass
+`--config 'patch."https://github.com/klang-studio/klang-dsp".klang-dsp.path="../klang-dsp"'` and
+`--config 'patch."https://github.com/klang-studio/klang-dsp".klang-synth.path="../klang-dsp/klang-synth"'` to
+cargo (paths relative to the current directory), or put an untracked `.cargo/config.toml` in a *parent* folder of
+the clones (cargo merges the config files of all parent directories, so other clones are unaffected) with
+`[patch."https://github.com/klang-studio/klang-dsp"]`, `klang-dsp = { path = "klang-dsp" }` and
+`klang-synth = { path = "klang-dsp/klang-synth" }` (paths relative to that parent folder, see `docs/INSTALL.md`).
+Never commit the resulting `Cargo.lock` change; after pushing klang-dsp, bump both `rev`s.
 
 ## macOS (epic #41)
 
