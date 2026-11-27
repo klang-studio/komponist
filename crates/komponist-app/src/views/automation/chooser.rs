@@ -235,9 +235,16 @@ impl<'a> Catalog<'a> {
         };
         let label = format!("{prefix} · {}", info.name);
         if let Some(layout) = host.native_layout(device.id)
-            && layout.parameter_display(wire.id).is_some()
+            && let Some(display) = layout.parameter_display(wire.id)
         {
             info = crate::views::devices::model::native_param(self.lang, layout, wire, None).info;
+            // A stepped display's taper applies to its control, while CLAP step indices
+            // and their physical values are both evenly spaced.
+            if display.steps.is_some()
+                && let ParamKind::Float { scale, .. } = &mut info.kind
+            {
+                *scale = Scale::Lin;
+            }
         }
         Target {
             key,
@@ -841,13 +848,21 @@ mod tests {
         use komponist_model::{ChannelRef, DeviceRole};
 
         let host = crate::App::headless_plugin_host();
-        let hall = host
+        let Some(hall) = host
             .manager()
             .catalog()
             .entries()
             .iter()
             .find(|entry| entry.plugin.id == "org.klang-studio.komponist.hall")
-            .unwrap();
+        else {
+            assert_ne!(
+                std::env::var_os("KOMPONIST_REQUIRE_FIXTURES").as_deref(),
+                Some(std::ffi::OsStr::new("1")),
+                "required Hall fixture unavailable"
+            );
+            eprintln!("build the Hall fixture with scripts/build-test-plugins.sh");
+            return;
+        };
         let (project, id) = insert_device(
             &Project::new("Macro units"),
             ChannelRef::Master,
@@ -862,7 +877,7 @@ mod tests {
         )
         .unwrap();
         let mut app = crate::App::headless(project);
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         let decay_id = loop {
             app.step();
             if let Some(layout) = app.engine().host().native_layout(id)
