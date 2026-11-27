@@ -1,6 +1,6 @@
 # komponist – Software Architecture
 
-Status: **implemented architecture**, checked against the repository on 2026-11-19.
+Status: **implemented architecture**. Plugin hosting and workspace boundaries checked on 2026-11-27.
 
 komponist is an audio and MIDI DAW for Linux, macOS and Windows. This document describes the
 current implementation and the decisions embodied in it. Dependency versions are defined in
@@ -15,10 +15,10 @@ with the guided tour in [ARCHITECTURE-GUIDE.md](ARCHITECTURE-GUIDE.md).
   and timestamped input, and returns events and telemetry.
 - The engine is independent of the UI, audio backend and plugin formats. The audio backend can
   rebuild a stream or hand the engine to an offline render without rebuilding the document.
-- Every third-party plugin instance runs in a separate bridge process. A failed plugin produces
-  silence for an instrument or passthrough for an effect while the rest of the project runs.
-- The twelve shipped instruments and effects load at runtime from verified CLAP bundles and
-  run in process through the engine processor interface.
+- Each third-party plugin instance runs in its own bridge process. After a bridge failure,
+  instruments produce silence and effects pass audio through while the rest of the project runs.
+- The twelve shipped devices load in the app process through the engine processor interface.
+  The [verified CLAP path](#verified-in-process-clap) authenticates the packaged bundles before loading.
 - Audio decoding, source analysis, sample-rate conversion, pitch-preserving stretch and recording
   file writes run outside the realtime callback.
 - UI appearance comes from generated design tokens and shared widgets. The running app and its
@@ -43,16 +43,16 @@ without audio or MIDI hardware.
 ### 2.3 Communication and persistence
 
 **rtrb** SPSC queues connect the UI, input and realtime processing paths. Atomics carry telemetry.
-Plugin audio and events use shared memory with OS-specific signalling; **postcard** encodes
+Bridged plugin audio and events use shared memory with OS-specific signalling. **postcard** encodes
 control messages. **serde/serde_json** encode projects, settings and caches. Project files are
 versioned JSON, with external plugin states stored as base64.
 
 ### 2.4 Plugin format layer
 
 The host implements its own format-independent `HostedPlugin` interface over **clack-host 0.2**
-for CLAP and **vst3 0.3** for VST3. `komponist-hosting` implements the formats; `komponist-bridge`
-runs them. The app hosts verified shipped CLAP bundles in process. Third-party instances use the same format
-layer in the bridge and communicate with the app through IPC.
+for CLAP and **vst3 0.3** for VST3. `komponist-hosting` implements both formats. The app uses
+its CLAP implementation directly for verified shipped devices. `komponist-bridge` uses the same
+hosting layer for third-party CLAP and VST3 instances and communicates with the app through IPC.
 The **nice-plug** fixtures in `test-plugins/` export both formats from the same test sources.
 
 ### 2.5 Core decisions
@@ -78,13 +78,13 @@ komponist (main process)
   UI thread: Document, UiState, actions, EngineSync, PluginManager, windows
       │ commands / compiled Program          ▲ events / retired objects
       ▼                                      │
-  Audio callback: Engine ── worker pool: independent routing jobs
+  Audio callback: Engine ── worker pool: independent routing jobs, including verified CLAPs
       │                ▲
       │                ├── timestamped MIDI and captured audio
       │                └── audio read-ahead rings
       │ shared memory + deadline signalling
       ▼
-komponist --bridge --instance (one process per external plugin)
+komponist --bridge --instance (one process per third-party instance)
   Main thread: control messages, plugin main-thread work, timers, GUI
   RT thread: input/events → plugin processing → output/events
 
@@ -110,7 +110,8 @@ bridge and worker protocols described below.
 ## 4. Workspace and crates
 
 The Cargo workspace uses Rust edition 2024 and resolver 3. The [Plugin SDK](../crates/plugin-sdk/README.md)
-and `test-plugins/` have their own workspaces.
+and `test-plugins/` have their own workspaces. The root workspace builds the shipped CLAP packages
+using the SDK's author crate and bundled adapter as path dependencies.
 A clone builds without sibling repositories: **klang-dsp** is a git dependency pinned to a commit;
 **hexa-core** and **sampler-core** are vendored engines developed independently in this repository.
 Their READMEs record provenance.
@@ -126,6 +127,10 @@ Their READMEs record provenance.
 | [`hexa-core`](../crates/builtin-devices/hexa/core/README.md) | Hexa six-operator FM engine |
 | [`sampler-core`](../crates/builtin-devices/sampler-shared/core/README.md) | Shared Klopfer and Sampler engine |
 | [`komponist-device-core`](../crates/builtin-devices/core/src/lib.rs) | Unstable device API: catalog and parameter metadata, layouts, state, presets, processor adapters and shared DSP |
+| [`komponist-sampler-shared`](../crates/builtin-devices/sampler-shared/Cargo.toml) | Shared sample loading and instrument support for Klopfer and Sampler |
+| [`komponist-sampler-clap`](../crates/builtin-devices/sampler-shared/clap/Cargo.toml) | Shared CLAP asset and sampler UI adapters |
+| [`komponist-native-clap-sdk`](../crates/plugin-sdk/author/) | Author-facing Rust SDK for CLAP devices and native layouts |
+| [`komponist-bundled-clap-adapter`](../crates/plugin-sdk/bundled-adapter/) | Wraps device-core processors and specifications as CLAP plugins |
 | [Device crates](../crates/builtin-devices/README.md) | One directory per instrument, audio effect and MIDI effect, with a standalone CLAP package alongside its DSP |
 | [`komponist-ipc`](../crates/komponist-ipc/README.md) | Shared-memory layout, signalling, control protocol, process watching, frame vocabulary |
 | [`komponist-hosting`](../crates/komponist-hosting/README.md) | CLAP/VST3 loading, processing, state, parameters, GUI and host services |
@@ -136,7 +141,8 @@ Their READMEs record provenance.
 | [`komponist-ui`](../crates/komponist-ui/README.md) | Shared egui theme, widgets, canvases, plugin-frame header, gallery |
 | [`komponist-app`](../crates/komponist-app/README.md) | Application shell, actions/keymap, views/dialogs, document/engine synchronization, project IO |
 
-`komponist-model` depends on no other komponist crate and receives localized names as arguments.
+`komponist-model` uses `komponist-tokens` for parameter layout geometry and receives localized
+names as arguments.
 The engine knows neither egui nor IPC nor CLAP/VST3. `komponist-audio` defines an `AudioProcess`
 callback interface without depending on the engine; the app supplies the adapter.
 `komponist-device-core` uses the model, i18n catalog and engine processor interfaces.
@@ -652,7 +658,9 @@ Shared memory contains request/completion sequence words, transport/status, late
 event rings, stereo input/output and stereo sidechain input. Each request marks whether sidechain
 audio is present. Absent sidechains receive silence. The current postcard control protocol uses
 length-prefixed frames for load, activation, state, parameters, GUI and header actions, render
-mode, heartbeat and shutdown.
+mode, heartbeat and shutdown. The version markers are
+[`SHM_VERSION`](../crates/komponist-ipc/src/shm.rs) for the shared mapping and
+[`PROTOCOL_VERSION`](../crates/komponist-ipc/src/control.rs) for control messages.
 
 The plugin manager loads an instance, restores saved state if present, then activates it.
 `SetState` carries a request ID. `StateApplied` returns that ID with the restored parameter
@@ -817,6 +825,30 @@ The adapters publish this metadata through CLAP. Headless tests that exercise sh
 use the same bundle path with a test manifest. Device processing uses `klang-dsp` primitives
 where shared. Sample-derived buffers use the process-wide audio file pool.
 
+#### Verified in-process CLAP
+
+The app's package build embeds the SHA-256 digest of its executable-relative `bundled-clap`
+manifest. The host authenticates the manifest and checks its target. The scan catalog describes
+each plugin. To authorize an in-process instance, the plugin manager additionally verifies the
+exact installed bundle path, CLAP ID and file inventory against the manifest. It checks the file
+hashes and loads the library and resources from a private, verified copy in the app's cache.
+Builds without the embedded digest have no shipped inventory. Headless tests can supply a fixture
+inventory and digest through the test API. See [bundle verification](../crates/komponist-plugins/src/bundled_clap.rs)
+and [packaging](INSTALL.md).
+
+Third-party CLAP and VST3 instances use the bridge, including a user-installed copy with the
+same CLAP ID as a shipped device. Shipped references resolve only to their packaged module.
+If that module is missing from the catalog, the device is marked missing and keeps its saved state. If verification or direct loading fails
+for a resolved bundle, the manager reports a load failure without retrying the instance through
+the bridge. Scan and preset preparation can still run in helper processes.
+
+The app's main thread owns the CLAP control half, including main-thread callbacks, state and
+activation. Bounded in-process queues hand the audio half to the engine and return it at a block
+boundary for main-thread teardown. The engine calls the audio or MIDI processor on its processing
+path. If a main-thread state operation owns the instance, realtime processing skips the call
+and supplies silence for an instrument or passes effect audio through. The audio path never
+waits for that operation. A native crash or hang in a shipped device can affect the app process.
+
 ### 8.6 Runtime device state
 
 The plugin manager keeps runtime state keyed by `DeviceId`: ready, loading, failed/crashed or
@@ -948,8 +980,8 @@ editors require platform window/input tooling because their contents are outside
   adapted as described in §8.2.
 - Track kinds are distinct. Buses have no sends, and audio clips on one track do not overlap.
 - Engine queues, processor/event counts and delay lines have explicit fixed capacities (§6.1).
-- Automation covers parameter lanes and clip envelopes (§6.12). MIDI learn, MIDI CC lanes and
-  track macros are separate work.
+- Automation covers parameter lanes and clip envelopes. Track macros can target plugin
+  parameters (§6.12). MIDI learn and MIDI CC lanes are separate work.
 - Warp is affine from original/project tempo. Fresh seeks re-prime DSP history; optional Warp data
   is part of the project format (§5.5, §6.11).
 - Automated backend coverage does not establish compatibility with every hardware driver or
