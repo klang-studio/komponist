@@ -65,11 +65,8 @@ use crate::signal::{self, WaitOutcome};
 /// `b"KPSM"` as little-endian `u32`, the first header field.
 pub const SHM_MAGIC: u32 = u32::from_le_bytes(*b"KPSM");
 
-/// Layout version; both sides must agree. 2 (#6): [`ShmLayout::audio_sidechain`] and
-/// [`BLOCK_FLAG_SIDECHAIN`]. 3 (#45): [`BlockRequest::deadline_ticks`].
-/// 4 (#191): optional bounded effect-meter data from the same completed block.
-/// 5 (#289): optional named signal streams from the same completed block.
-pub const SHM_VERSION: u32 = 5;
+/// Layout version; both sides must agree.
+pub const SHM_VERSION: u32 = 6;
 
 /// Frames of audio per block the mapping holds. Must equal `komponist_engine::MAX_BLOCK`
 /// (`komponist-plugins` asserts it in a test).
@@ -93,12 +90,6 @@ pub const BLOCK_FLAG_OFFLINE: u32 = 2;
 /// (set by [`BridgeClient::begin_block`] when it is given one; #6). Without it the source is
 /// disconnected.
 pub const BLOCK_FLAG_SIDECHAIN: u32 = 4;
-/// The client requests gain reduction from the plugin's effect-meter extension.
-pub const BLOCK_FLAG_EFFECT_METER: u32 = 8;
-/// In addition to gain reduction, request detector history for this process call.
-pub const BLOCK_FLAG_EFFECT_DETECTOR: u32 = 16;
-/// `BlockResult.reserved` uses this bit when the bridge wrote effect-meter data.
-const RESULT_EFFECT_METER: u32 = 1;
 const RESULT_SIGNAL_TAPS: u32 = 2;
 const TAP_SHIFT: u32 = 8;
 const TAP_MASK: u32 = (1 << crate::signal_taps::MAX_TAPS) - 1;
@@ -171,8 +162,6 @@ pub struct ShmHeader {
     pub request: UnsafeCell<BlockRequest>,
     /// Result of the latest finished request; written by the bridge before bumping `done_seq`.
     pub result: UnsafeCell<BlockResult>,
-    /// Optional meter readings, written with the matching `result` before the bridge signals.
-    pub meter: UnsafeCell<crate::effect_meter::BlockMeter>,
 }
 
 /// What the app asks for one block.
@@ -1319,23 +1308,6 @@ impl BridgeClient {
         Ok(result)
     }
 
-    /// Optional meter readings for this client's completed, unretired request.
-    pub fn effect_meter(&self, seq: u32) -> Option<crate::effect_meter::BlockMeter> {
-        let header = &self.region.layout().header;
-        if self.frames == 0 || seq != self.seq || header.done_seq.load(Ordering::Acquire) != seq {
-            return None;
-        }
-        // SAFETY: The matching request is done. Only this client can publish the next request,
-        // and the bridge writes these fields only while processing a new request.
-        let result = unsafe { header.result.get().read() };
-        if result.seq != seq || result.reserved & RESULT_EFFECT_METER == 0 {
-            return None;
-        }
-        // SAFETY: In the matching request the bridge initialized the meter before completing it.
-        let meter = unsafe { header.meter.get().read() };
-        meter.validated().then_some(meter)
-    }
-
     /// Named streams of the matching completed block, before the next request.
     pub fn signal_taps(&self, seq: u32) -> Option<&crate::signal_taps::BlockTaps> {
         let layout = self.region.layout();
@@ -1501,16 +1473,7 @@ impl BridgeServer {
     /// Input events of the request that were not popped are discarded, so the next request starts
     /// on its own events. Without an open request this does nothing.
     pub fn finish(&mut self, result: BlockResult) {
-        self.finish_with_meter(result, None);
-    }
-
-    /// Completes the current request with its optional effect-meter readings.
-    pub fn finish_with_meter(
-        &mut self,
-        result: BlockResult,
-        meter: Option<crate::effect_meter::BlockMeter>,
-    ) {
-        self.finish_with_telemetry(result, meter, false);
+        self.finish_with_signal_taps(result, false);
     }
 
     /// Write streams directly into the reusable mapping for an open request.
@@ -1524,26 +1487,16 @@ impl BridgeServer {
         Some(payload)
     }
 
-    /// Complete a request, publishing only the telemetry supplied for this block.
-    pub fn finish_with_telemetry(
-        &mut self,
-        mut result: BlockResult,
-        meter: Option<crate::effect_meter::BlockMeter>,
-        wrote_signal_taps: bool,
-    ) {
+    /// Complete a request, publishing the named signal taps supplied for this block.
+    pub fn finish_with_signal_taps(&mut self, mut result: BlockResult, wrote_signal_taps: bool) {
         if !self.busy {
             return;
         }
         while self.pop_event().is_some() {}
         let header = &self.region.layout().header;
-        result.reserved &= !(RESULT_EFFECT_METER | RESULT_SIGNAL_TAPS);
+        result.reserved &= !RESULT_SIGNAL_TAPS;
         if wrote_signal_taps {
             result.reserved |= RESULT_SIGNAL_TAPS;
-        }
-        if let Some(meter) = meter {
-            result.reserved |= RESULT_EFFECT_METER;
-            // SAFETY: The client can read this meter only after the completion below.
-            unsafe { header.meter.get().write(meter) };
         }
         // SAFETY: the app reads `result` only after `done_seq == seq`, published below with
         // release ordering.
@@ -1976,35 +1929,6 @@ mod tests {
     }
 
     #[test]
-    fn meter_data_belongs_only_to_its_completed_block() {
-        use crate::effect_meter::BlockMeter;
-
-        let (mut client, mut server, _) = active();
-        let samples = [0.0; 8];
-        let input = [&samples[..]; 2];
-        let spec = BlockSpec {
-            flags: BLOCK_FLAG_EFFECT_METER,
-            ..spec(8)
-        };
-        let seq = client.begin_block(&spec, input, None, &[]).unwrap();
-        assert_eq!(server.wait_request(Some(Instant::now())).unwrap().seq, seq);
-        assert_eq!(client.effect_meter(seq), None);
-        let meter = BlockMeter {
-            reduction_db: 7.0,
-            ..BlockMeter::EMPTY
-        };
-        assert_no_alloc(|| server.finish_with_meter(BlockResult::default(), Some(meter)));
-        assert_eq!(assert_no_alloc(|| client.effect_meter(seq)), Some(meter));
-
-        let next = client.begin_block(&spec, input, None, &[]).unwrap();
-        assert_eq!(server.wait_request(Some(Instant::now())).unwrap().seq, next);
-        assert_eq!(client.effect_meter(seq), None);
-        assert_eq!(client.effect_meter(next), None);
-        server.finish(BlockResult::default());
-        assert_eq!(client.effect_meter(next), None);
-    }
-
-    #[test]
     fn signal_taps_are_only_visible_in_the_matching_completion() {
         let (mut client, mut server, _) = active();
         let samples = [0.0; 8];
@@ -2022,7 +1946,7 @@ mod tests {
                 out[..2].copy_from_slice(&[-2.0, -3.0]);
                 2
             });
-            server.finish_with_telemetry(BlockResult::default(), None, true);
+            server.finish_with_signal_taps(BlockResult::default(), true);
             let taps = client.signal_taps(seq).unwrap();
             assert_eq!(taps.samples(2), [-2.0, -3.0]);
             assert!(taps.samples(0).is_empty());
