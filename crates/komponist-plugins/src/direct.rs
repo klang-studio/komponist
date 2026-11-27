@@ -38,10 +38,14 @@ pub(crate) struct DeliveredEdit {
 }
 
 impl DeliveredEdit {
+    pub(crate) fn confirms(self, edit: NonZeroU32) -> bool {
+        self.serial == edit
+    }
+
     /// Older deliveries were superseded. A delivery in the reporting epoch can be
     /// settled to the plugin's final value, unless playback currently owns the control.
     pub(crate) fn settles_at(self, edit: NonZeroU32, preset_epoch: u64, driven: bool) -> bool {
-        self.serial == edit
+        self.confirms(edit)
             && (self.load_epoch < preset_epoch || self.load_epoch == preset_epoch && !driven)
     }
 }

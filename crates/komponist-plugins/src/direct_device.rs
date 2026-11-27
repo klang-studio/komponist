@@ -263,6 +263,11 @@ impl DirectDevice {
             };
             next_base.insert(id, plain);
         }
+        self.pending_writes
+            .retain(|id, _| next_base.contains_key(id));
+        self.unconfirmed_writes
+            .retain(|id| next_base.contains_key(id));
+        self.edit_serials.retain(|id, _| next_base.contains_key(id));
         self.base = next_base;
         self.values = inventory.values;
         self.params = inventory.params;
@@ -600,30 +605,12 @@ impl DirectDevice {
         if let Some(state) = self.pending_restore.as_ref()
             && let Some((result, inventory)) = self.session.replace_state(|plugin| {
                 earlier_reports = plugin.take_preset_reports();
-                let loaded = earlier_reports
-                    .iter()
-                    .any(|report| matches!(report, PresetReport::Loaded { .. }));
-                let before = loaded.then(|| {
-                    plugin
-                        .params()
-                        .into_iter()
-                        .filter_map(|info| Some((info.id, plugin.param_value(info.id)?)))
-                        .collect::<BTreeMap<_, _>>()
-                });
+                // The document restore is newer than these reports. A failed plugin load can
+                // have changed opaque state and still leaves the document state authoritative.
+                earlier_reports.retain(|report| matches!(report, PresetReport::Failed { .. }));
                 let result = load_saved_state(plugin, state, true);
                 let inventory = Inventory::read(plugin);
-                let replaced = result.is_ok();
-                let changed = before.is_some_and(|before| {
-                    before.len() != inventory.values.len()
-                        || inventory
-                            .values
-                            .iter()
-                            .any(|(id, value)| before.get(id) != Some(&value.value))
-                });
-                if replaced || changed {
-                    earlier_reports.retain(|report| matches!(report, PresetReport::Failed { .. }));
-                }
-                ((result, inventory), replaced)
+                ((result, inventory), true)
             })
         {
             self.last_state = self.pending_restore.take();
@@ -1168,9 +1155,21 @@ impl DirectDevice {
         let automated = &self.automated_params;
         let unconfirmed = &self.unconfirmed_writes;
         let released = &self.released_automation;
+        let edit_serials = &self.edit_serials;
         let (state, corrections) = self
             .session
-            .try_control(|plugin| {
+            .try_read_preset_values(|plugin, delivered| {
+                // Matching live values alone do not prove delivery: a same-value edit may
+                // still be queued for retry after this capture releases the guard.
+                if edit_serials.iter().any(|(id, &serial)| {
+                    !delivered
+                        .get(id)
+                        .copied()
+                        .flatten()
+                        .is_some_and(|last| last.confirms(serial))
+                }) {
+                    return None;
+                }
                 let mut corrections = BTreeMap::new();
                 for (&id, &base) in base {
                     let expected = automated
