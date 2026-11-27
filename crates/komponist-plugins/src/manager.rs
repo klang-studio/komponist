@@ -431,7 +431,7 @@ impl PluginManager {
     pub fn for_test_inventory(config: PluginManagerConfig, bundled_clap: Arc<BundledClap>) -> Self {
         let mut manager = Self::from_inventory(
             config,
-            Catalog::default(),
+            true,
             Some(bundled_clap.directory().to_owned()),
             Some(bundled_clap),
             Vec::new(),
@@ -480,16 +480,9 @@ impl PluginManager {
         } else {
             None
         };
-        if enable_bundles
-            && bundled_clap
-                .as_ref()
-                .is_none_or(|bundles| bundles.bundle_entries().any(|(path, _)| !path.exists()))
-        {
-            pending.push(PluginManagerEvent::BundledDevicesUnavailable);
-        }
         Self::from_inventory(
             config,
-            Catalog::default(),
+            enable_bundles,
             private_clap_dir,
             bundled_clap.map(Arc::new),
             pending,
@@ -498,15 +491,24 @@ impl PluginManager {
 
     fn from_inventory(
         config: PluginManagerConfig,
-        catalog: Catalog,
+        bundles_expected: bool,
         private_clap_dir: Option<PathBuf>,
         bundled_clap: Option<Arc<BundledClap>>,
-        pending: Vec<PluginManagerEvent>,
+        mut pending: Vec<PluginManagerEvent>,
     ) -> PluginManager {
+        if bundles_expected
+            && bundled_clap.as_ref().is_none_or(|inventory| {
+                inventory
+                    .bundle_entries()
+                    .any(|(path, _)| !inventory.has_required_files(path))
+            })
+        {
+            pending.push(PluginManagerEvent::BundledDevicesUnavailable);
+        }
         let cache = ScanCache::load(&config.cache_file);
         let mut manager = PluginManager {
             config,
-            catalog,
+            catalog: Catalog::default(),
             cache,
             scan: None,
             last_scan: None,
@@ -530,13 +532,19 @@ impl PluginManager {
 
     fn refresh_catalog(&mut self) {
         let mut descriptors = self.cache.descriptors();
+        let available_bundles: BTreeSet<_> = self
+            .bundled_clap
+            .iter()
+            .flat_map(|inventory| {
+                inventory
+                    .bundle_entries()
+                    .filter(|(path, _)| inventory.has_required_files(path))
+            })
+            .collect();
         let shipped = |descriptor: &komponist_ipc::PluginDescriptor| {
             descriptor.format == komponist_ipc::PluginFormat::Clap
-                && self.bundled_clap.as_ref().is_some_and(|bundled| {
-                    bundled
-                        .bundle_entries()
-                        .any(|(path, id)| path == descriptor.bundle && id == descriptor.id)
-                })
+                && available_bundles
+                    .contains(&(descriptor.bundle.as_path(), descriptor.id.as_str()))
         };
         descriptors.retain(|descriptor| {
             descriptor.bundle.exists()

@@ -273,6 +273,17 @@ impl BundledClap {
             .map(|(path, bundle)| (path.as_path(), bundle.id.as_str()))
     }
 
+    /// Check for missing manifest members without treating this as authentication.
+    pub(crate) fn has_required_files(&self, path: &Path) -> bool {
+        self.bundles.get(path).is_some_and(|bundle| {
+            bundle.files.keys().all(|relative| {
+                // Leave existing symlinks, altered bytes and unreadable files to the verifier.
+                !matches!(self.root.join(relative).symlink_metadata(), Err(err)
+                    if err.kind() == io::ErrorKind::NotFound)
+            })
+        })
+    }
+
     /// Verify the exact installed path and identity before routing a load in-process.
     ///
     /// External paths return `None` even when their CLAP ID is the same. An invalid candidate
@@ -729,7 +740,75 @@ mod tests {
         assert_eq!(fs::read(verified.bundle_path()).unwrap(), PAYLOAD);
     }
 
-    #[cfg(unix)]
+    #[test]
+    fn startup_excludes_a_cached_bundle_when_a_required_member_is_missing() {
+        use crate::catalog::{CLAP_DESCRIPTOR_REVISION, CachedBundle, ScanCache};
+        use crate::manager::{PluginManager, PluginManagerConfig, PluginManagerEvent};
+        use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind};
+
+        const LIBRARY: &str = "fixture.clap/Contents/MacOS/fixture";
+        const INFO: &str = "fixture.clap/Contents/Info.plist";
+        let fixture = Fixture::new();
+        fixture.write(INFO, b"plist bytes");
+        let bundle = fixture.root.join(FILE);
+        assert!(bundle.is_dir());
+        let inventory = Arc::new(
+            fixture
+                .open(&manifest(&[(INFO, b"plist bytes"), (LIBRARY, PAYLOAD)]))
+                .unwrap(),
+        );
+        let config = PluginManagerConfig::defaults(&fixture.base.path().join("cache"));
+        let open = || {
+            ScanCache {
+                bundles: vec![CachedBundle {
+                    path: bundle.clone(),
+                    mtime_secs: crate::scan::bundle_mtime(&bundle),
+                    descriptors: vec![PluginDescriptor {
+                        format: PluginFormat::Clap,
+                        id: ID.into(),
+                        name: "Fixture".into(),
+                        localized: None,
+                        vendor: String::new(),
+                        version: String::new(),
+                        kind: PluginKind::Effect,
+                        features: Vec::new(),
+                        bundle: bundle.clone(),
+                        sidechain: false,
+                    }],
+                    descriptor_revision: CLAP_DESCRIPTOR_REVISION,
+                    clap_presets: Vec::new(),
+                    preset_discovery_complete: true,
+                    error: None,
+                }],
+                ..ScanCache::default()
+            }
+            .save(&config.cache_file)
+            .unwrap();
+            PluginManager::for_test_inventory(config.clone(), Arc::clone(&inventory))
+        };
+
+        let mut missing = open();
+        assert!(missing.catalog().packaged(ID).is_none());
+        assert!(
+            missing
+                .poll()
+                .iter()
+                .any(|event| matches!(event, PluginManagerEvent::BundledDevicesUnavailable))
+        );
+
+        fixture.write(LIBRARY, b"modified library");
+        let mut altered = open();
+        assert!(altered.catalog().packaged(ID).is_some());
+        assert!(
+            !altered
+                .poll()
+                .iter()
+                .any(|event| matches!(event, PluginManagerEvent::BundledDevicesUnavailable))
+        );
+        let error = inventory.verify(&bundle, ID).unwrap_err();
+        assert!(error.to_string().contains("bundle file hash mismatch"));
+    }
+
     #[test]
     fn owners_of_the_same_inventory_share_a_snapshot_but_recheck_installed_bytes() {
         let fixture = Fixture::new();
@@ -753,6 +832,7 @@ mod tests {
         assert!(!staged.exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn refuses_snapshot_cache_below_an_unprotected_shared_directory() {
         use std::os::unix::fs::PermissionsExt;
