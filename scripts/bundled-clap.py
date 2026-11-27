@@ -224,6 +224,15 @@ def stage(target, root, devices):
             )
         else:
             shutil.copyfile(artifact, bundle)
+            if target == "x86_64-pc-windows-msvc" and (
+                os.environ.get("KOMPONIST_SIGN_CERT") or os.environ.get("KOMPONIST_SIGN_THUMBPRINT")
+            ):
+                # Each bundle is its own code object (Authenticode). Sign before the manifest hashes it.
+                subprocess.run(
+                    ["bash", str(REPO / "scripts" / "sign-windows.sh"), str(bundle)],
+                    check=True,
+                    stdout=sys.stderr,
+                )
     # Hash the final nested bundles, after any code signing, before building the app.
     (root / MANIFEST).write_bytes(manifest_bytes(target, root, devices))
     print(sha256(root / MANIFEST))
@@ -373,23 +382,22 @@ def check_archive(target, app, expected_sha256, devices):
 
     # Keep stdout attached to a pipe on Windows so a GUI-subsystem binary
     # finishes before the parent checks its exit code.
-    for route, mode in (("in-process", []), ("bridge", ["--bridge"])):
-        smoke = subprocess.run(
-            [app, "--verify-bundled-clap", *mode],
-            check=True,
-            stdout=subprocess.PIPE,
-            timeout=60,
-        )
-        stdout = smoke.stdout.decode("utf-8")
-        print(stdout, end="")
-        reports = [line for line in stdout.splitlines() if line.startswith("verified ")]
-        expected = [f"verified {device.plugin_id} ({route})" for device in devices]
-        hall_id = INVENTORIES["hall"][0].plugin_id
-        if any(device.plugin_id == hall_id for device in devices):
-            lifecycle = "direct lifecycle" if route == "in-process" else "forced bridge"
-            expected.append(f"verified {hall_id} (normal {lifecycle})")
-        if sorted(reports) != sorted(expected):
-            raise ValueError(f"unexpected {route} verification reports: {reports}")
+    # Bundled devices are hosted in-process (D11); the bridge only scans them above.
+    smoke = subprocess.run(
+        [app, "--verify-bundled-clap"],
+        check=True,
+        stdout=subprocess.PIPE,
+        timeout=60,
+    )
+    stdout = smoke.stdout.decode("utf-8")
+    print(stdout, end="")
+    reports = [line for line in stdout.splitlines() if line.startswith("verified ")]
+    expected = [f"verified {device.plugin_id} (in-process)" for device in devices]
+    hall_id = INVENTORIES["hall"][0].plugin_id
+    if any(device.plugin_id == hall_id for device in devices):
+        expected.append(f"verified {hall_id} (normal direct lifecycle)")
+    if sorted(reports) != sorted(expected):
+        raise ValueError(f"unexpected verification reports: {reports}")
 
     check_rejects_modified_package(target, app, devices[0])
 

@@ -290,7 +290,6 @@ pub(crate) struct Bridge {
     /// A preset changed audio while a newer document restore was queued.
     superseded_preset_applied: bool,
     // The most recent matched reply, including partial restore failures reported as UI updates.
-    restore_reply: Option<(u32, Result<(), String>)>,
     snapshot_due: Option<Instant>,
     /// The latest state: the last snapshot, or the state the bridge was started with.
     pub last_state: Option<SavedPluginState>,
@@ -457,7 +456,6 @@ impl Bridge {
             pending_clap_preset: None,
             pending_preset_capture: None,
             superseded_preset_applied: false,
-            restore_reply: None,
             snapshot_due: None,
             last_state: s.state,
             params: Vec::new(),
@@ -1327,13 +1325,6 @@ impl Bridge {
                 .is_some_and(crate::waveform_markers::has_marker_graph)
     }
 
-    pub(crate) fn restore_result(&self, request: u32) -> Option<Result<(), String>> {
-        self.restore_reply
-            .as_ref()
-            .filter(|(sequence, _)| *sequence == request)
-            .map(|(_, result)| result.clone())
-    }
-
     /// Sends `OpenGui`; the watchdog waits while it is outstanding.
     pub(crate) fn open_gui(&mut self, target: GuiTarget) -> Result<(), PluginError> {
         if !self.has_gui {
@@ -2102,7 +2093,6 @@ impl Bridge {
             Ok(values) => (values, None),
             Err(error) => (error.changed_values, Some(error.message)),
         };
-        self.restore_reply = Some((request, error.clone().map_or(Ok(()), Err)));
         if error.is_none() || !values.is_empty() {
             for value in values {
                 if !restore.later_edits.contains(&value.id) {

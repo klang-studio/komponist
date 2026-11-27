@@ -125,15 +125,11 @@ fn main() -> ExitCode {
         return komponist_bridge::run(argv);
     }
     if argv.next_if(|arg| arg == "--verify-bundled-clap").is_some() {
-        let force_bridge = argv.next_if(|arg| arg == BRIDGE_FLAG).is_some();
         if argv.next().is_some() {
-            eprintln!("usage: komponist --verify-bundled-clap [--bridge]");
+            eprintln!("usage: komponist --verify-bundled-clap");
             return ExitCode::from(2);
         }
-        return match komponist_plugins::verify_bundled_clap(
-            &settings::cache_dir_or_temp(),
-            force_bridge,
-        ) {
+        return match komponist_plugins::verify_bundled_clap(&settings::cache_dir_or_temp()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("bundled CLAP verification: {error}");

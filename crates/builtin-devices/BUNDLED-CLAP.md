@@ -33,10 +33,9 @@ the detector independently, including when the source is silent.
 From the repository root, run
 `cargo test --locked --workspace -p 'komponist-bundled-*'` to validate the
 layout metadata against the real CLAP parameter inventory. The Bundled CLAP package
-workflow tests the twelve-device archive through both host routes. For an unpacked test
-package, the app loads verified devices in-process by default. Add
-`KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE=1` to run the same verified devices in
-the bridge. The current-format project check is available with
+workflow tests the twelve-device archive in-process (D11: bundled devices are hosted
+in-process; the bridge only scans them and hosts third-party plugins). For an unpacked test
+package, the app loads the verified devices in-process. The current-format project check is available with
 `python3 scripts/measure-bundled-clap.py --current-projects /path/to/unpacked/komponist`.
 
 ## Sampler instrument state

@@ -152,9 +152,22 @@ scripts/run.sh --demo
 ```
 
 The script uses Python 3 to stage the twelve CLAP bundles, builds the app with their manifest hash, and launches
-them together. For a permanent installation from a release archive, keep the executable and its
-`bundled-clap/` directory together. On Linux, a symlink to that executable can put it on your PATH.
-The plugin bridge runs through the same executable (`komponist --bridge`).
+them together; this is also the development override: an executable built without the staged payload (a plain
+`cargo build`) finds no devices and starts with an empty device catalog and a warning.
+
+The twelve devices (Hall, Delay, EQ, Presse, Limiter, Hexa, Volt, Surf, Klopfer, Sampler, Arpeggiator, Scale) are
+separate CLAP bundles that komponist loads in-process at start-up and verifies against that manifest. Release packages
+carry them next to the executable:
+
+| Platform | Executable | Bundles |
+|---|---|---|
+| Linux | `komponist` | `bundled-clap/*.clap` (shared libraries) |
+| macOS | `komponist.app/Contents/MacOS/komponist` | `komponist.app/Contents/Resources/bundled-clap/*.clap` (bundle directories, each ad-hoc signed) |
+| Windows | `komponist.exe` | `bundled-clap\*.clap` (DLLs; Authenticode-signed when a certificate is configured) |
+
+For a permanent installation from a release archive, keep the executable and its `bundled-clap/` directory together.
+On Linux, a symlink to that executable can put it on your PATH. The plugin bridge runs through the same executable
+(`komponist --bridge`) and hosts third-party plugins only.
 
 ## Icon, desktop entry, mime type, metainfo
 
