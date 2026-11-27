@@ -926,9 +926,13 @@ changes use continuous values. Source recovery/relink and tempo analysis share f
 
 ### 9.3 Application shell (`komponist-app`)
 
-`App` coordinates `Document`, `UiState`, `EngineSync`, device hosting, settings and windows.
-Views emit actions; central dispatch validates and applies edits, transport changes and UI/plugin
-operations. `EngineSync` compiles document changes and sends fast commands for ongoing gestures.
+`App` coordinates the document, UI state, `EngineSync`, and the session controllers.
+The recording controller owns the count-in, MIDI and audio takes, and automation capture.
+The export controller owns the render lifecycle and export history. Plugin frame state owns
+window focus and bridge activation. The audio settings controller runs driver and device
+enumeration and supplies the inventory to the settings dialog.
+Views emit actions. Central dispatch validates and applies edits, transport changes and
+UI/plugin operations. `EngineSync` compiles document changes and sends fast commands for ongoing gestures.
 Playback sync tracks both the document revision and the revisions of completed automation
 segments. It applies those segments as a draft over the current document, including passes
 waiting for the audio writer. The draft enters the document and its undo history when the

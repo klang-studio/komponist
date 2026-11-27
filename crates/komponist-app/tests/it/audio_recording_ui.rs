@@ -189,7 +189,8 @@ use egui::vec2;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange, SettingsAction, UiAction};
-use komponist_app::dialogs::settings::{self, AudioDevices};
+use komponist_app::audio_settings::AudioDevices;
+use komponist_app::dialogs::settings;
 use komponist_i18n::Lang;
 
 struct CaptureDevices(Vec<komponist_audio::InputDeviceInfo>);

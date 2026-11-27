@@ -23,14 +23,10 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
 
 use egui::{Align, Color32, Context, Rect, Role, Sense, Ui, UiBuilder, pos2, vec2};
-use komponist_audio::{
-    AudioError, AudioSystem, DeviceInfo, HostKind, JackDirection, JackPort, StreamConfig,
-};
+use komponist_audio::{DeviceInfo, HostKind, JackDirection, JackPort, StreamConfig};
 use komponist_i18n::Lang;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, radius, size, typography};
@@ -45,7 +41,6 @@ use super::format;
 use super::metrics::{dialog as dm, settings as m};
 use super::{ActionButton, divider, dot, galley, header, label_node, modal, section_label, styled};
 use crate::actions::{Action, SettingsAction, UiAction};
-use crate::engine_sync::EngineProcess;
 use crate::settings::Language;
 use crate::ui_state::SettingsSection;
 
@@ -109,131 +104,12 @@ pub fn drivers_here() -> Vec<(HostKind, &'static str)> {
 
 /// How long the MIDI activity dot stays lit after a message.
 const ACTIVITY_HOLD: Duration = Duration::from_millis(150);
-/// The available JACK ports can change without switching drivers or reopening the dialog.
-const JACK_REFRESH: Duration = Duration::from_secs(1);
 
 // ------------------------------------------------------------------------------------------------
 // Device enumeration
 // ------------------------------------------------------------------------------------------------
 
-/// Where the dialog gets drivers and devices from: the system ([`SystemDevices`]) or a fixed
-/// list (tests, `App::headless`).
-pub trait AudioDevices: Send + Sync {
-    /// Available drivers (`AudioSystem::available_hosts`).
-    fn hosts(&self) -> Vec<HostKind>;
-    /// Output devices of `host`; empty if it cannot be enumerated.
-    fn devices(&self, host: HostKind) -> Vec<DeviceInfo>;
-    /// [`AudioDevices::devices`], telling why a list is empty when the driver failed. The dialog
-    /// shows the reason; providers that cannot fail keep the default.
-    fn try_devices(&self, host: HostKind) -> Result<Vec<DeviceInfo>, AudioError> {
-        Ok(self.devices(host))
-    }
-    /// Capture devices; providers used by headless tests expose none unless explicitly set.
-    fn input_devices(&self, _host: HostKind) -> Vec<komponist_audio::InputDeviceInfo> {
-        Vec::new()
-    }
-    /// [`AudioDevices::input_devices`] with the driver's error.
-    fn try_input_devices(
-        &self,
-        host: HostKind,
-    ) -> Result<Vec<komponist_audio::InputDeviceInfo>, AudioError> {
-        Ok(self.input_devices(host))
-    }
-    /// JACK graph metadata; the fixed/headless provider never contacts a real JACK server.
-    fn jack_ports(&self) -> Result<Vec<JackPort>, AudioError> {
-        Ok(Vec::new())
-    }
-    /// Whether enumeration may take long enough to stall a frame, so the dialog runs it on a
-    /// worker thread and shows the previous list meanwhile (WP-61 measured 7–10 ms for the
-    /// drivers, whose JACK probe opens a client, and 170–200 ms for ALSA's devices).
-    fn is_slow(&self) -> bool {
-        false
-    }
-}
-
-/// The system's drivers and devices (cpal).
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SystemDevices;
-
-impl AudioDevices for SystemDevices {
-    fn hosts(&self) -> Vec<HostKind> {
-        AudioSystem::<EngineProcess>::available_hosts()
-    }
-
-    fn devices(&self, host: HostKind) -> Vec<DeviceInfo> {
-        self.try_devices(host).unwrap_or_default()
-    }
-
-    fn try_devices(&self, host: HostKind) -> Result<Vec<DeviceInfo>, AudioError> {
-        AudioSystem::<EngineProcess>::devices(host)
-    }
-
-    fn input_devices(&self, host: HostKind) -> Vec<komponist_audio::InputDeviceInfo> {
-        self.try_input_devices(host).unwrap_or_default()
-    }
-
-    fn try_input_devices(
-        &self,
-        host: HostKind,
-    ) -> Result<Vec<komponist_audio::InputDeviceInfo>, AudioError> {
-        AudioSystem::<EngineProcess>::input_devices(host)
-    }
-
-    fn jack_ports(&self) -> Result<Vec<JackPort>, AudioError> {
-        komponist_audio::jack_ports()
-    }
-
-    fn is_slow(&self) -> bool {
-        true
-    }
-}
-
-/// Runs `f` with `devices` on a worker thread if enumeration is slow, else at once; the result
-/// comes through the receiver.
-fn enumerate<T: Send + 'static>(
-    devices: &Arc<dyn AudioDevices>,
-    f: impl FnOnce(&dyn AudioDevices) -> T + Send + 'static,
-) -> Receiver<T> {
-    let (tx, rx) = mpsc::channel();
-    if devices.is_slow() {
-        let devices = Arc::clone(devices);
-        let spawned = std::thread::Builder::new()
-            .name("komponist-audio-devices".into())
-            .spawn(move || {
-                let _ = tx.send(f(&*devices));
-            });
-        if spawned.is_err() {
-            // No thread: the dialog keeps the list it has.
-            return rx;
-        }
-    } else {
-        let _ = tx.send(f(&**devices));
-    }
-    rx
-}
-
-/// A fixed list of drivers and devices.
-#[derive(Debug, Default, Clone)]
-pub struct FixedDevices {
-    /// Available drivers.
-    pub hosts: Vec<HostKind>,
-    /// Devices of all drivers.
-    pub devices: Vec<DeviceInfo>,
-}
-
-impl AudioDevices for FixedDevices {
-    fn hosts(&self) -> Vec<HostKind> {
-        self.hosts.clone()
-    }
-
-    fn devices(&self, host: HostKind) -> Vec<DeviceInfo> {
-        self.devices
-            .iter()
-            .filter(|d| d.host == host)
-            .cloned()
-            .collect()
-    }
-}
+use crate::audio_settings::JACK_REFRESH;
 
 /// One entry of the "Ausgabegerät" dropdown.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -632,35 +508,11 @@ pub fn folder_formats(path: &Path) -> (bool, bool) {
     (clap, vst3)
 }
 
-/// An enumeration running on a worker thread.
-type Pending<T> = Receiver<Result<Vec<T>, AudioError>>;
-
-/// The dialog's caches between frames (app-private).
+/// Settings dialog state between frames.
 #[derive(Debug, Default)]
 pub(crate) struct Cache {
     /// The dialog was open in the last frame.
     pub(crate) open: bool,
-    /// Available drivers.
-    pub(crate) hosts: Vec<HostKind>,
-    /// Devices of [`Cache::devices_host`].
-    pub(crate) devices: Vec<DeviceInfo>,
-    /// The driver the device list belongs to.
-    pub(crate) devices_host: Option<HostKind>,
-    /// A driver enumeration running on a worker thread.
-    pending_hosts: Option<Receiver<Vec<HostKind>>>,
-    /// A device enumeration running on a worker thread, and its driver.
-    pending_devices: Option<(HostKind, Pending<DeviceInfo>)>,
-    pending_inputs: Option<(HostKind, Pending<komponist_audio::InputDeviceInfo>)>,
-    /// The last output device enumeration failed with this reason.
-    devices_error: Option<String>,
-    /// The last capture device enumeration failed with this reason.
-    inputs_error: Option<String>,
-    input_host: Option<HostKind>,
-    inputs: Vec<komponist_audio::InputDeviceInfo>,
-    jack_ports: Option<Vec<JackPort>>,
-    pending_jack_ports: Option<Receiver<Result<Vec<JackPort>, AudioError>>>,
-    jack_scan_failed: bool,
-    next_jack_refresh: Option<Instant>,
     /// When each MIDI port (by name) last had activity.
     pub(crate) lit: HashMap<String, Instant>,
     /// Scroll the page to this section in the next frame.
@@ -670,76 +522,6 @@ pub(crate) struct Cache {
 }
 
 impl Cache {
-    /// Lists the output and capture devices again at the next frame ("Erneut suchen").
-    pub(crate) fn refresh_devices(&mut self) {
-        self.devices_host = None;
-        self.input_host = None;
-    }
-
-    pub(crate) fn invalidate_jack_ports(&mut self) {
-        self.next_jack_refresh = None;
-    }
-
-    /// Whether an enumeration is still running (the dialog repaints until it arrives).
-    pub(crate) fn enumerating(&self) -> bool {
-        self.pending_hosts.is_some()
-            || self.pending_devices.is_some()
-            || self.pending_inputs.is_some()
-            || self.pending_jack_ports.is_some()
-    }
-
-    /// Takes finished enumerations.
-    fn collect(&mut self) {
-        if let Some(rx) = &self.pending_jack_ports {
-            match rx.try_recv() {
-                Ok(Ok(ports)) => {
-                    self.jack_ports = Some(ports);
-                    self.jack_scan_failed = false;
-                    self.pending_jack_ports = None;
-                }
-                Err(TryRecvError::Empty) => {}
-                Ok(Err(_)) | Err(TryRecvError::Disconnected) => {
-                    self.jack_scan_failed = true;
-                    self.pending_jack_ports = None;
-                }
-            }
-        }
-        if let Some((host, rx)) = &self.pending_inputs {
-            match rx.try_recv() {
-                Ok(inputs) => {
-                    self.inputs_error = inputs.as_ref().err().map(ToString::to_string);
-                    self.inputs = inputs.unwrap_or_default();
-                    self.input_host = Some(*host);
-                    self.pending_inputs = None;
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => self.pending_inputs = None,
-            }
-        }
-        if let Some(rx) = &self.pending_hosts {
-            match rx.try_recv() {
-                Ok(hosts) => {
-                    self.hosts = hosts;
-                    self.pending_hosts = None;
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => self.pending_hosts = None,
-            }
-        }
-        if let Some((host, rx)) = &self.pending_devices {
-            match rx.try_recv() {
-                Ok(devices) => {
-                    self.devices_error = devices.as_ref().err().map(ToString::to_string);
-                    self.devices = devices.unwrap_or_default();
-                    self.devices_host = Some(*host);
-                    self.pending_devices = None;
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => self.pending_devices = None,
-            }
-        }
-    }
-
     /// Marks the MIDI port `name` active (`now`) or reports whether it still glows.
     pub(crate) fn activity(&mut self, name: &str, active: bool, now: Instant) -> bool {
         if active {
@@ -762,50 +544,21 @@ impl crate::App {
     /// The S07 model from the settings, the engine, the MIDI inputs and the device host. Opening
     /// the dialog reads the drivers and refreshes the MIDI inputs; the device list is read again
     /// when the driver changes or "Erneut suchen" is pressed. System enumeration runs on a worker
-    /// thread ([`AudioDevices::is_slow`]); until it arrives the dialog shows the lists it has.
+    /// thread ([`crate::audio_settings::AudioDevices::is_slow`]); until it arrives the dialog shows the lists it has.
     pub(crate) fn settings_model(&mut self, section: SettingsSection) -> Model {
         let config = self.settings.audio.clone();
         let opening = !self.dialogs.settings.open;
         if opening {
-            self.dialogs.settings.pending_hosts =
-                Some(enumerate(&self.audio_devices, |d| d.hosts()));
-            self.dialogs.settings.devices_host = None;
-            self.dialogs.settings.input_host = None;
-            self.dialogs.settings.next_jack_refresh = None;
             self.dialogs.settings.scroll_to.get_or_insert(section);
             self.engine.scan_midi();
         }
         self.dialogs.settings.open = true;
+        let audio = self
+            .audio_settings
+            .scan(config.host, opening, Instant::now());
         let cache = &mut self.dialogs.settings;
-        let requested = cache.pending_devices.as_ref().map(|(host, _)| *host);
-        if cache.devices_host != Some(config.host) && requested != Some(config.host) {
-            let host = config.host;
-            let rx = enumerate(&self.audio_devices, move |d| d.try_devices(host));
-            cache.pending_devices = Some((host, rx));
-        }
-        if cache.input_host != Some(config.host)
-            && cache.pending_inputs.as_ref().map(|(host, _)| *host) != Some(config.host)
-        {
-            let host = config.host;
-            cache.pending_inputs = Some((
-                host,
-                enumerate(&self.audio_devices, move |provider| {
-                    provider.try_input_devices(host)
-                }),
-            ));
-        }
-        if config.host == HostKind::Jack
-            && cache.pending_jack_ports.is_none()
-            && cache
-                .next_jack_refresh
-                .is_none_or(|next| Instant::now() >= next)
-        {
-            cache.pending_jack_ports = Some(enumerate(&self.audio_devices, |d| d.jack_ports()));
-            cache.next_jack_refresh = Some(Instant::now() + JACK_REFRESH);
-        }
-        cache.collect();
         let t = self.lang;
-        let (devices, device) = device_entries(t, config.host, &cache.devices, &config);
+        let (devices, device) = device_entries(t, config.host, &audio.devices, &config);
         let running = match self.engine.audio_state() {
             komponist_audio::AudioState::Running { config, .. } => Some(config.clone()),
             _ => None,
@@ -814,12 +567,12 @@ impl crate::App {
             .as_ref()
             .filter(|r| config.host == HostKind::Jack && r.host == HostKind::Jack)
             .map_or_else(
-                || rates(config.host, &cache.devices, &devices[device], &config),
+                || rates(config.host, &audio.devices, &devices[device], &config),
                 |r| vec![r.sample_rate],
             );
         let buffer = buffer_limit(
             config.host,
-            &cache.devices,
+            &audio.devices,
             &devices[device],
             running.as_ref(),
         );
@@ -865,20 +618,20 @@ impl crate::App {
         });
         let host = self.engine.host();
         let (input_devices, input_device) =
-            input_entries(t, &cache.inputs, self.settings.audio_input.as_ref());
+            input_entries(t, &audio.inputs, self.settings.audio_input.as_ref());
         Model {
             input_devices,
             input_device,
-            jack_ports: cache.jack_ports.clone(),
-            jack_scan_failed: cache.jack_scan_failed,
-            devices_error: cache
+            jack_ports: audio.jack_ports.clone(),
+            jack_scan_failed: audio.jack_scan_failed,
+            devices_error: audio
                 .devices_error
                 .clone()
-                .or_else(|| cache.inputs_error.clone()),
+                .or_else(|| audio.inputs_error.clone()),
             jack_playback_connections: self.engine.jack_playback_connections(),
             capture_format: self.settings.capture_format,
             section,
-            hosts: cache.hosts.clone(),
+            hosts: audio.hosts.clone(),
             config: config.clone(),
             devices,
             device,
@@ -1873,32 +1626,6 @@ fn keyboard(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Outpu
 mod tests {
     use super::*;
 
-    #[test]
-    fn failed_jack_refresh_keeps_the_last_inventory() {
-        let port = JackPort {
-            name: "Interface:left".into(),
-            alias: None,
-            direction: JackDirection::Capture,
-        };
-        let mut cache = Cache::default();
-        let mut complete = |result| {
-            let (sender, receiver) = mpsc::channel();
-            sender.send(result).unwrap();
-            cache.pending_jack_ports = Some(receiver);
-            cache.collect();
-            (cache.jack_ports.clone(), cache.jack_scan_failed)
-        };
-
-        assert_eq!(
-            complete(Ok(vec![port.clone()])),
-            (Some(vec![port.clone()]), false)
-        );
-        assert_eq!(
-            complete(Err(AudioError::Backend("scan unavailable".into()))),
-            (Some(vec![port]), true),
-        );
-        assert_eq!(complete(Ok(Vec::new())), (Some(Vec::new()), false));
-    }
     use komponist_audio::DeviceId;
 
     fn device(host: HostKind, name: &str, id: &str, default: bool) -> DeviceInfo {

@@ -305,7 +305,7 @@ impl App {
         });
         let owner = AutomationOwner::Track(track_id);
         let current = from_macro
-            .or_else(|| self.automation_capture.current_value(owner, &target))
+            .or_else(|| self.recording.automation().current_value(owner, &target))
             .or_else(|| automation_control_value(self.project(), &self.engine, owner, &target))
             .or_else(|| previous.map(|plain| descriptor.info.to_normalized(plain) as f32))
             .unwrap_or(descriptor.base);
@@ -360,7 +360,10 @@ impl App {
             };
             let candidate = id.filter(|&id| {
                 mapping
-                    && !self.automation_capture.plugin_parameter_writing(device, id)
+                    && !self
+                        .recording
+                        .automation()
+                        .plugin_parameter_writing(device, id)
                     && self.engine.plugin_mapping_parameter(device, id)
             });
             let loaded_base = match edit.kind {
@@ -578,7 +581,7 @@ mod tests {
             value: 0.85,
         }));
         run(&mut app);
-        assert!(app.automation_capture.is_writing(owner, lane));
+        assert!(app.recording.automation().is_writing(owner, lane));
         assert_eq!(
             app.engine().telemetry().macro_values(track).unwrap()[0],
             0.85

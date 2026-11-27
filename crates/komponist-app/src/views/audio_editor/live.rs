@@ -1,7 +1,7 @@
 //! Live recording views use bounded telemetry, never the unfinished WAV or its file cache.
 use super::{AudioEditor, metrics as m};
-use crate::audio_record::AudioRecording;
 use crate::record::Recording;
+use crate::recording::audio_record::AudioRecording;
 use crate::ui_state::{FocusArea, UiState};
 use crate::views::ViewCtx;
 use egui::{Id, Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};

@@ -84,11 +84,11 @@ pub type FolderOpener = Box<dyn FnMut(&Path) -> io::Result<()>>;
 
 /// The app's export state (not view state: the dialog's settings and progress are in
 /// [`crate::ui_state::ExportDialog`]).
-pub(crate) struct Exports {
+pub(crate) struct ExportController {
     /// The export in progress, from "Exportieren" until the engine is back.
     run: Option<Run>,
     /// This session's exports of the open project, oldest first (Projekt › Exporte).
-    pub(crate) done: Vec<PathBuf>,
+    done: Vec<PathBuf>,
     /// How "Im Ordner zeigen" opens a folder.
     opener: FolderOpener,
     /// Engine events are being drained after an export: failed slots go into `failed`.
@@ -98,9 +98,9 @@ pub(crate) struct Exports {
     next_offline_id: u32,
 }
 
-impl Default for Exports {
-    fn default() -> Exports {
-        Exports {
+impl Default for ExportController {
+    fn default() -> Self {
+        Self {
             run: None,
             done: Vec::new(),
             opener: Box::new(open_folder),
@@ -111,7 +111,7 @@ impl Default for Exports {
     }
 }
 
-impl Exports {
+impl ExportController {
     /// Whether an export runs (devices, render).
     pub(crate) fn is_active(&self) -> bool {
         self.run.is_some()
@@ -132,6 +132,78 @@ impl Exports {
     /// Forgets the exports of the project that was open.
     pub(crate) fn forget(&mut self) {
         self.done.clear();
+    }
+
+    pub(crate) fn done(&self) -> &[PathBuf] {
+        &self.done
+    }
+
+    fn remember(&mut self, path: PathBuf) {
+        self.done.retain(|exported| *exported != path);
+        self.done.push(path);
+    }
+
+    fn begin(&mut self, job: ExportJob, flatten: Option<Flatten>) {
+        self.run = Some(Run {
+            seconds: job.frames() as f64 / f64::from(job.sample_rate),
+            job,
+            phase: Phase::Devices,
+            flatten,
+            diagnostics: Vec::new(),
+            offline_devices: Vec::new(),
+        });
+    }
+
+    /// Cancels the worker or takes a run that has yet to detach the engine.
+    fn cancel(&mut self) -> Option<Run> {
+        let run = self.run.as_mut()?;
+        match &mut run.phase {
+            Phase::Devices => self.run.take(),
+            Phase::Running(worker) => {
+                worker.cancel.store(true, Ordering::Relaxed);
+                if let Some(go) = worker.go.take() {
+                    let _ = go.send(Err(ExportError::Cancelled));
+                }
+                None
+            }
+        }
+    }
+
+    /// Consumes worker preparation locally; the app handles completion and engine recovery.
+    fn next_worker_message(&mut self) -> Option<Result<WorkerCompletion, TryRecvError>> {
+        let Some(Run {
+            phase: Phase::Running(worker),
+            ..
+        }) = &mut self.run
+        else {
+            return None;
+        };
+        loop {
+            match worker.messages.try_recv() {
+                Ok(Message::Prepared) => worker.prepared = Some(Instant::now()),
+                Ok(Message::Completed(completion)) => return Some(Ok(completion)),
+                Err(error) => return Some(Err(error)),
+            }
+        }
+    }
+
+    fn offline_request(&mut self, sample_rate: u32, tempo: f64) -> OfflineRequest {
+        self.next_offline_id = self.next_offline_id.wrapping_add(1).max(1);
+        OfflineRequest {
+            id: self.next_offline_id,
+            sample_rate: f64::from(sample_rate),
+            tempo,
+        }
+    }
+
+    fn collect_failures(&mut self, failed: Vec<SlotId>) {
+        self.failed = failed;
+        self.collecting = true;
+    }
+
+    fn take_failures(&mut self) -> Vec<SlotId> {
+        self.collecting = false;
+        std::mem::take(&mut self.failed)
     }
 }
 
@@ -198,6 +270,10 @@ struct Worker {
 enum Message {
     /// The engine runs at the export rate; the worker waits for the bridges (module docs, step 4).
     Prepared,
+    Completed(WorkerCompletion),
+}
+
+enum WorkerCompletion {
     /// The worker panicked (export code, an in-process device, the engine's `render`); the engine
     /// comes back only to be replaced ([`EngineSync::recover`]), its state is unknown.
     ///
@@ -336,7 +412,7 @@ fn work(
 }
 
 /// The worker thread's body: [`work`] under `catch_unwind`, so the engine always goes back to
-/// the UI thread. After a panic it comes as [`Message::Crashed`]: whatever unwound (a device
+/// the UI thread. After a panic it comes as [`WorkerCompletion::Crashed`]: whatever unwound (a device
 /// inside `render` poisons the engine, #210; export code leaves the rate and the program
 /// half-changed) its state cannot be trusted, and the UI thread rebuilds it.
 fn run_worker(
@@ -363,8 +439,8 @@ fn run_worker(
             },
         )
     }));
-    let message = match outcome {
-        Ok((result, failed)) => Message::Done {
+    let completion = match outcome {
+        Ok((result, failed)) => WorkerCompletion::Done {
             engine,
             result,
             failed,
@@ -372,10 +448,10 @@ fn run_worker(
         Err(payload) => {
             // The payload may own device state; the UI thread must not wait for it.
             std::mem::forget(payload);
-            Message::Crashed { engine, finished }
+            WorkerCompletion::Crashed { engine, finished }
         }
     };
-    let _ = to_ui.send(message);
+    let _ = to_ui.send(Message::Completed(completion));
 }
 
 /// The engine's bit depth for the app's.
@@ -400,7 +476,7 @@ fn folder_label(folder: &Path) -> String {
 impl App {
     /// This session's exports of the open project, oldest first (Projekt › Exporte).
     pub fn exported(&self) -> &[PathBuf] {
-        &self.export.done
+        self.export.done()
     }
 
     /// Whether an export runs (waiting for devices or rendering).
@@ -531,7 +607,6 @@ impl App {
             normalize: settings.normalize.then_some(NORMALIZE_TARGET_DB),
             dither: settings.dither && settings.bit_depth != BitDepth::Float32,
         };
-        let seconds = job.frames() as f64 / f64::from(rate);
         if !matches!(self.ui.dialog, Some(Dialog::Export(_))) {
             self.open_dialog(Dialog::Export(ExportDialog {
                 settings: settings.clone(),
@@ -543,14 +618,7 @@ impl App {
             dialog.settings = settings.clone();
             dialog.stage = ExportStage::Devices;
         }
-        self.export.run = Some(Run {
-            job,
-            seconds,
-            phase: Phase::Devices,
-            flatten: None,
-            diagnostics: Vec::new(),
-            offline_devices: Vec::new(),
-        });
+        self.export.begin(job, None);
         self.poll_export();
     }
 
@@ -634,26 +702,14 @@ impl App {
 
     /// Esc, "Abbrechen", × during an export: see the module docs.
     pub(crate) fn cancel_export(&mut self) {
-        let Some(run) = &mut self.export.run else {
+        let Some(run) = self.export.cancel() else {
             return;
         };
-        match &mut run.phase {
-            Phase::Devices => {
-                let flattening = run.flatten.is_some();
-                self.export.run = None;
-                self.close_export_dialog();
-                if flattening {
-                    self.flatten_error(ExportError::Cancelled);
-                } else {
-                    self.set_status(self.lang.export_cancelled(), StatusKind::Info);
-                }
-            }
-            Phase::Running(worker) => {
-                worker.cancel.store(true, Ordering::Relaxed);
-                if let Some(go) = worker.go.take() {
-                    let _ = go.send(Err(ExportError::Cancelled));
-                }
-            }
+        self.close_export_dialog();
+        if run.flatten.is_some() {
+            self.flatten_error(ExportError::Cancelled);
+        } else {
+            self.set_status(self.lang.export_cancelled(), StatusKind::Info);
         }
     }
 
@@ -685,41 +741,25 @@ impl App {
             }
             return;
         }
-        loop {
-            let Some(Run {
-                phase: Phase::Running(worker),
-                ..
-            }) = &mut self.export.run
-            else {
-                return;
-            };
-            match worker.messages.try_recv() {
-                Ok(Message::Prepared) => worker.prepared = Some(Instant::now()),
-                Ok(Message::Done {
-                    engine,
-                    result,
-                    failed,
-                }) => {
-                    self.finish_export(engine, result, failed);
-                    return;
-                }
-                Ok(Message::Crashed { engine, finished }) => {
-                    self.finish_crashed(Some(engine), finished);
-                    return;
-                }
-                Err(TryRecvError::Empty) => {
-                    self.release_when_ready();
-                    break;
-                }
-                // The worker is gone without a word (it normally reports even a panic): the
-                // engine went with it.
-                Err(TryRecvError::Disconnected) => {
-                    self.finish_crashed(None, None);
-                    return;
-                }
+        match self.export.next_worker_message() {
+            Some(Ok(WorkerCompletion::Done {
+                engine,
+                result,
+                failed,
+            })) => {
+                self.finish_export(engine, result, failed);
             }
+            Some(Ok(WorkerCompletion::Crashed { engine, finished })) => {
+                self.finish_crashed(Some(engine), finished);
+            }
+            Some(Err(TryRecvError::Empty)) => {
+                self.release_when_ready();
+                self.update_progress();
+            }
+            // The worker is gone without a word and the engine went with it.
+            Some(Err(TryRecvError::Disconnected)) => self.finish_crashed(None, None),
+            None => {}
         }
-        self.update_progress();
     }
 
     /// "Ohne sie exportieren": go on with the devices that are not ready.
@@ -791,12 +831,9 @@ impl App {
             })
             .map(|device| device.id)
             .collect();
-        self.export.next_offline_id = self.export.next_offline_id.wrapping_add(1).max(1);
-        let offline_request = OfflineRequest {
-            id: self.export.next_offline_id,
-            sample_rate: f64::from(job.sample_rate),
-            tempo: self.project().tempo.bpm,
-        };
+        let offline_request = self
+            .export
+            .offline_request(job.sample_rate, self.doc.project().tempo.bpm);
         let project = Arc::clone(self.doc.project());
         let track = run
             .flatten
@@ -991,7 +1028,7 @@ impl App {
         self.set_export_render_mode(&run, RenderMode::Realtime);
         self.engine.recover(engine);
         let _ = self.engine.take_rebuild_notice();
-        self.export.failed.clear();
+        self.export.take_failures();
         self.dialogs.after_flatten = None;
         self.close_export_dialog();
         let reason = self.lang.export_worker_crashed();
@@ -1003,8 +1040,7 @@ impl App {
             let file = path
                 .file_name()
                 .map_or_else(String::new, |f| f.to_string_lossy().into_owned());
-            self.export.done.retain(|p| *p != path);
-            self.export.done.push(path);
+            self.export.remember(path);
             self.set_status(
                 self.lang.export_finished_worker_crashed(file),
                 StatusKind::Error,
@@ -1043,11 +1079,9 @@ impl App {
         });
         self.set_export_render_mode(&run, RenderMode::Realtime);
         self.engine.attach(engine);
-        self.export.failed = failed;
-        self.export.collecting = true;
+        self.export.collect_failures(failed);
         self.drain_events();
-        self.export.collecting = false;
-        let failed = std::mem::take(&mut self.export.failed);
+        let failed = self.export.take_failures();
         let dropped = self.dropped_devices(failed);
         self.close_export_dialog();
         if let Some(flatten) = run.flatten.take() {
@@ -1081,8 +1115,7 @@ impl App {
                         Box::new(Action::Project(ProjectAction::ShowInFolder(folder))),
                     )),
                 });
-                self.export.done.retain(|p| *p != path);
-                self.export.done.push(path);
+                self.export.remember(path);
             }
             Err(ExportError::Cancelled) => {
                 self.set_status(self.lang.export_cancelled(), StatusKind::Info)

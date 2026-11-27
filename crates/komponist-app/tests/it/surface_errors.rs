@@ -6,7 +6,7 @@ use egui::vec2;
 use egui_kittest::kittest::Queryable as _;
 use egui_kittest::{Harness, SnapshotOptions};
 use komponist_app::actions::SettingsAction;
-use komponist_app::dialogs::settings::AudioDevices;
+use komponist_app::audio_settings::AudioDevices;
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::ui_state::{SettingsSection, StatusKind};
 use komponist_app::{Action, App, EditAction, UiAction};
@@ -250,7 +250,7 @@ fn a_device_list_that_cannot_be_read_is_named_in_the_settings_notice() {
 #[test]
 fn a_readable_device_list_shows_no_unavailable_notice() {
     let app = App::headless(demo_project()).with_audio_devices(Box::new(
-        komponist_app::dialogs::settings::FixedDevices::default(),
+        komponist_app::audio_settings::FixedDevices::default(),
     ));
     let h = settings_harness(app);
     assert!(

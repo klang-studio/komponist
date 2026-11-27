@@ -462,7 +462,7 @@ impl crate::App {
                 if model.midi.as_ref().is_some_and(|m| !m.is_empty()) {
                     ctx.request_repaint_after(MIDI_REPAINT);
                 }
-                if self.dialogs.settings.enumerating() {
+                if self.audio_settings.enumerating() {
                     ctx.request_repaint_after(ENUMERATION_REPAINT);
                 }
             }

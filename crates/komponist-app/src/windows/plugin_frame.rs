@@ -103,6 +103,7 @@ use self::sizing::{Chrome, Effect, Px, Sizing};
 use self::x11::X11;
 use crate::actions::{Action, EditAction, PluginAction, UiAction};
 use crate::app::App;
+use crate::device_host::DeviceHost;
 use crate::keymap::{self, Key, KeyChord};
 use crate::settings::FrameMemory;
 use crate::ui_state::{FocusArea, PluginView, PluginWindow, StatusKind};
@@ -138,7 +139,7 @@ pub struct FrameInfo {
     pub keep_on_top: bool,
 }
 
-/// The open frames and the X11 connection they share.
+/// Owns the app and bridge frame lifecycle, focus requests and the shared X11 connection.
 #[derive(Debug, Default)]
 pub struct PluginFrames {
     frames: Vec<Frame>,
@@ -289,6 +290,187 @@ impl PluginFrames {
             _ => None,
         }
     }
+
+    /// Whether the bridge shows `device`'s frame right now (its `OpenGui{OwnFrame}` is out or
+    /// answered), so the app shows no viewport for it.
+    fn in_bridge(&self, device: DeviceId) -> bool {
+        self.bridge_frames
+            && self
+                .frames
+                .iter()
+                .any(|f| f.device == device && f.gui != Gui::Idle)
+    }
+
+    /// The app became active (macOS: `NSApplicationDidBecomeActiveNotification`): every frame the
+    /// bridges show comes to the front, back to front so their order stays, without taking the
+    /// activation from the app (module docs).
+    fn raise_bridge_frames(&self, host: &mut dyn DeviceHost) {
+        if !self.bridge_frames {
+            return;
+        }
+        let order = activation::front_to_back();
+        let mut open: Vec<(usize, DeviceId)> = self
+            .frames
+            .iter()
+            .filter(|f| f.gui == Gui::Open)
+            .map(|f| {
+                let at = f
+                    .remote_window
+                    .and_then(|n| order.iter().position(|o| *o == n))
+                    .unwrap_or(usize::MAX);
+                (at, f.device)
+            })
+            .collect();
+        // Back first: each raise lands on top of the ones before.
+        open.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+        for (_, device) in open {
+            host.raise_frame(device);
+        }
+    }
+
+    /// Carries out a pending [`App::focus_plugin_window`] (module docs).
+    fn apply_focus(
+        &mut self,
+        windows: &[PluginWindow],
+        host: &mut dyn DeviceHost,
+        ctx: &Context,
+        native: bool,
+        now: Instant,
+    ) {
+        let Some(mut request) = self.focus.take() else {
+            return;
+        };
+        let Some(frame) = self.frames.iter().find(|f| f.device == request.device) else {
+            // Not drawn yet: try again in the next pass.
+            if windows.iter().any(|w| w.device == request.device) {
+                self.focus = Some(request);
+            }
+            return;
+        };
+        if self.bridge_frames && frame.gui != Gui::Idle {
+            if frame.gui == Gui::Opening {
+                // `GuiOpened` brings it to the front.
+                return;
+            }
+            if native && !activation::is_active() {
+                match request.claimed {
+                    None => {
+                        activation::activate();
+                        request.claimed = Some(now);
+                        self.focus = Some(request);
+                        ctx.request_repaint_after(CLAIM_TIMEOUT);
+                        return;
+                    }
+                    Some(at) if now.duration_since(at) < CLAIM_TIMEOUT => {
+                        self.focus = Some(request);
+                        ctx.request_repaint_after(CLAIM_TIMEOUT - now.duration_since(at));
+                        return;
+                    }
+                    Some(_) => {}
+                }
+            }
+            activation::bring_to_front(host, request.device);
+        } else if native {
+            ctx.send_viewport_cmd_to(frame.viewport, ViewportCommand::Focus);
+        }
+    }
+
+    /// The frame of `device`'s plugin window, if one is open.
+    fn info(&self, device: DeviceId) -> Option<FrameInfo> {
+        let f = self.frames.iter().find(|f| f.device == device)?;
+        let seen = lock(&f.shared).seen;
+        Some(FrameInfo {
+            window: f.xid,
+            child: f.child,
+            gui_open: f.gui == Gui::Open,
+            plugin_size: f.sizing.plugin().map(|p| (p.w, p.h)),
+            resizable: f.sizing.resizable(),
+            header_px: (metrics::HEADER * seen.ppp).round() as u32,
+            min_width_px: (seen.header_width * seen.ppp).ceil() as u32,
+            keep_on_top: f.keep_on_top,
+        })
+    }
+
+    fn request_focus(&mut self, windows: &[PluginWindow], device: DeviceId) {
+        if windows.iter().any(|window| window.device == device) {
+            self.focus = Some(FocusRequest {
+                device,
+                claimed: None,
+            });
+        }
+    }
+
+    fn remove(&mut self, device: DeviceId) -> Option<Frame> {
+        let index = self
+            .frames
+            .iter()
+            .position(|frame| frame.device == device)?;
+        Some(self.frames.remove(index))
+    }
+
+    fn retirement_position(&self, frame: &Frame) -> Option<(i32, i32)> {
+        if self.bridge_frames && frame.gui != Gui::Idle {
+            frame.remote_rect.map(rect_pos)
+        } else {
+            lock(&frame.shared).seen.outer
+        }
+    }
+
+    fn retire(&mut self, host: &mut dyn DeviceHost, frame: Frame) {
+        let device = frame.device;
+        let open = matches!(frame.gui, Gui::Opening | Gui::Open);
+        if open {
+            // A state snapshot follows.
+            host.close_gui(device);
+        }
+        if let Some(x11) = self.x11() {
+            if let Some(xid) = frame.xid {
+                x11.release_keys(xid);
+            }
+            if let Some(child) = frame.child {
+                if open {
+                    x11.park(child);
+                    self.parked.push(Parked {
+                        device: Some(device),
+                        child,
+                        since: Instant::now(),
+                    });
+                } else {
+                    x11.destroy(child);
+                }
+            }
+        }
+    }
+
+    fn unlink_parked(&mut self) {
+        for parked in &mut self.parked {
+            parked.device = None;
+        }
+    }
+
+    fn shutdown(&mut self) {
+        let frames = std::mem::take(&mut self.frames);
+        if let Some(x11) = self.x11() {
+            for frame in &frames {
+                if let Some(child) = frame.child {
+                    x11.park(child);
+                }
+            }
+        }
+    }
+
+    /// Destroys parked children whose `GuiClosed` never came.
+    fn expire_parked(&mut self, now: Instant) {
+        let (old, keep): (Vec<Parked>, Vec<Parked>) = std::mem::take(&mut self.parked)
+            .into_iter()
+            .partition(|p| now.duration_since(p.since) >= PARK_TIMEOUT);
+        self.parked = keep;
+        if let Some(x11) = self.x11() {
+            for p in old {
+                x11.destroy(p.child);
+            }
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -308,43 +490,14 @@ impl App {
         self.frames.force_bridge_frames = on;
     }
 
-    /// Whether the bridge shows `device`'s frame right now (its `OpenGui{OwnFrame}` is out or
-    /// answered), so the app shows no viewport for it.
+    /// Whether the bridge shows this device's frame instead of an app viewport.
     pub fn plugin_frame_in_bridge(&self, device: DeviceId) -> bool {
-        self.frames.bridge_frames
-            && self
-                .frames
-                .frames
-                .iter()
-                .any(|f| f.device == device && f.gui != Gui::Idle)
+        self.frames.in_bridge(device)
     }
 
-    /// The app became active (macOS: `NSApplicationDidBecomeActiveNotification`): every frame the
-    /// bridges show comes to the front, back to front so their order stays, without taking the
-    /// activation from the app (module docs).
+    /// Brings the bridge-owned plugin windows forward in their current stacking order.
     pub fn raise_bridge_frames(&mut self) {
-        if !self.frames.bridge_frames {
-            return;
-        }
-        let order = activation::front_to_back();
-        let mut open: Vec<(usize, DeviceId)> = self
-            .frames
-            .frames
-            .iter()
-            .filter(|f| f.gui == Gui::Open)
-            .map(|f| {
-                let at = f
-                    .remote_window
-                    .and_then(|n| order.iter().position(|o| *o == n))
-                    .unwrap_or(usize::MAX);
-                (at, f.device)
-            })
-            .collect();
-        // Back first: each raise lands on top of the ones before.
-        open.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
-        for (_, device) in open {
-            self.engine.host_mut().raise_frame(device);
-        }
+        self.frames.raise_bridge_frames(self.engine.host_mut());
     }
 
     /// `OpenWindow` for a window that is open already: it comes to the front.
@@ -358,78 +511,12 @@ impl App {
     /// active, as from the Dock menu, it activates itself first and waits for that); an app-owned
     /// frame gets `ViewportCommand::Focus`. A window that is not open is ignored.
     pub(crate) fn focus_plugin_window(&mut self, device: DeviceId) {
-        if self.ui.plugin_windows.iter().any(|w| w.device == device) {
-            self.frames.focus = Some(FocusRequest {
-                device,
-                claimed: None,
-            });
-        }
-    }
-
-    /// Carries out a pending [`Self::focus_plugin_window`] (module docs).
-    fn apply_focus(&mut self, ctx: &Context, native: bool, now: Instant) {
-        let Some(mut request) = self.frames.focus.take() else {
-            return;
-        };
-        let Some(frame) = self
-            .frames
-            .frames
-            .iter()
-            .find(|f| f.device == request.device)
-        else {
-            // Not drawn yet: try again in the next pass.
-            if self
-                .ui
-                .plugin_windows
-                .iter()
-                .any(|w| w.device == request.device)
-            {
-                self.frames.focus = Some(request);
-            }
-            return;
-        };
-        if self.frames.bridge_frames && frame.gui != Gui::Idle {
-            if frame.gui == Gui::Opening {
-                // `GuiOpened` brings it to the front.
-                return;
-            }
-            if native && !activation::is_active() {
-                match request.claimed {
-                    None => {
-                        activation::activate();
-                        request.claimed = Some(now);
-                        self.frames.focus = Some(request);
-                        ctx.request_repaint_after(CLAIM_TIMEOUT);
-                        return;
-                    }
-                    Some(at) if now.duration_since(at) < CLAIM_TIMEOUT => {
-                        self.frames.focus = Some(request);
-                        ctx.request_repaint_after(CLAIM_TIMEOUT - now.duration_since(at));
-                        return;
-                    }
-                    Some(_) => {}
-                }
-            }
-            activation::bring_to_front(self.engine.host_mut(), request.device);
-        } else if native {
-            ctx.send_viewport_cmd_to(frame.viewport, ViewportCommand::Focus);
-        }
+        self.frames.request_focus(&self.ui.plugin_windows, device);
     }
 
     /// The frame of `device`'s plugin window, if one is open.
     pub fn plugin_frame(&self, device: DeviceId) -> Option<FrameInfo> {
-        let f = self.frames.frames.iter().find(|f| f.device == device)?;
-        let seen = lock(&f.shared).seen;
-        Some(FrameInfo {
-            window: f.xid,
-            child: f.child,
-            gui_open: f.gui == Gui::Open,
-            plugin_size: f.sizing.plugin().map(|p| (p.w, p.h)),
-            resizable: f.sizing.resizable(),
-            header_px: (metrics::HEADER * seen.ppp).round() as u32,
-            min_width_px: (seen.header_width * seen.ppp).ceil() as u32,
-            keep_on_top: f.keep_on_top,
-        })
+        self.frames.info(device)
     }
 
     /// Opens the plugin window of the first device (tracks in order, then the master) whose
@@ -514,51 +601,23 @@ impl App {
             return;
         };
         let window = self.ui.plugin_windows.remove(index);
-        let Some(at) = self.frames.frames.iter().position(|f| f.device == device) else {
+        let Some(frame) = self.frames.remove(device) else {
             // No frame drawn yet (headless): close what may be open.
             if window.view == PluginView::Gui {
                 self.engine.host_mut().close_gui(device);
             }
             return;
         };
-        let frame = self.frames.frames.remove(at);
         self.retire_frame(frame);
     }
 
     /// Closes the GUI of a frame that goes away and parks or destroys its child.
     fn retire_frame(&mut self, frame: Frame) {
         let device = frame.device;
-        let remote = self.frames.bridge_frames && frame.gui != Gui::Idle;
-        let pos = if remote {
-            frame.remote_rect.map(rect_pos)
-        } else {
-            lock(&frame.shared).seen.outer
-        };
-        if let Some(pos) = pos {
+        if let Some(pos) = self.frames.retirement_position(&frame) {
             self.remember_frame(device, |m| m.pos = Some(pos));
         }
-        let open = matches!(frame.gui, Gui::Opening | Gui::Open);
-        if open {
-            // A state snapshot follows.
-            self.engine.host_mut().close_gui(device);
-        }
-        if let Some(x11) = self.frames.x11() {
-            if let Some(xid) = frame.xid {
-                x11.release_keys(xid);
-            }
-            if let Some(child) = frame.child {
-                if open {
-                    x11.park(child);
-                    self.frames.parked.push(Parked {
-                        device: Some(device),
-                        child,
-                        since: Instant::now(),
-                    });
-                } else {
-                    x11.destroy(child);
-                }
-            }
-        }
+        self.frames.retire(self.engine.host_mut(), frame);
     }
 
     /// Another project opens (`App::open_document`, before `EngineSync::reset` releases the
@@ -572,22 +631,13 @@ impl App {
         for frame in std::mem::take(&mut self.frames.frames) {
             self.retire_frame(frame);
         }
-        for parked in &mut self.frames.parked {
-            parked.device = None;
-        }
+        self.frames.unlink_parked();
     }
 
     /// App exit: moves every plugin area out of its frame, so the frame windows can go while the
     /// bridges close their GUIs (`DeviceHost::shutdown` follows).
     pub(crate) fn shutdown_plugin_frames(&mut self) {
-        let frames = std::mem::take(&mut self.frames.frames);
-        if let Some(x11) = self.frames.x11() {
-            for frame in &frames {
-                if let Some(child) = frame.child {
-                    x11.park(child);
-                }
-            }
-        }
+        self.frames.shutdown();
     }
 
     /// Once per root pass, after the queue was dispatched (module docs).
@@ -653,7 +703,13 @@ impl App {
         self.flush_frame_presets();
         let now = Instant::now();
         // After the raise on activation, so the picked frame ends up in front.
-        self.apply_focus(ctx, native, now);
+        self.frames.apply_focus(
+            &self.ui.plugin_windows,
+            self.engine.host_mut(),
+            ctx,
+            native,
+            now,
+        );
         let mut busy = false;
         for i in 0..self.frames.frames.len() {
             if remote {
@@ -663,7 +719,7 @@ impl App {
             }
             self.update_models(i, ctx, native);
         }
-        self.expire_parked(now);
+        self.frames.expire_parked(now);
         if native || self.frames.embedded {
             for frame in &self.frames.frames {
                 // The bridge shows this one (macOS, Windows).
@@ -1472,19 +1528,6 @@ impl App {
         }
     }
 
-    /// Destroys parked children whose `GuiClosed` never came.
-    fn expire_parked(&mut self, now: Instant) {
-        let (old, keep): (Vec<Parked>, Vec<Parked>) = std::mem::take(&mut self.frames.parked)
-            .into_iter()
-            .partition(|p| now.duration_since(p.since) >= PARK_TIMEOUT);
-        self.frames.parked = keep;
-        if let Some(x11) = self.frames.x11() {
-            for p in old {
-                x11.destroy(p.child);
-            }
-        }
-    }
-
     /// Writes header and body of frame `i` for its callback; wakes the frame when they changed.
     fn update_models(&mut self, i: usize, ctx: &Context, native: bool) {
         let device = self.frames.frames[i].device;
@@ -1947,5 +1990,30 @@ fn frame_ui(ui: &mut egui::Ui, class: ViewportClass, shared: &Mutex<Shared>, ini
     drop(s);
     if wake_root {
         ctx.request_repaint_of(ViewportId::ROOT);
+    }
+}
+
+#[cfg(test)]
+mod controller_tests {
+    use super::*;
+
+    #[test]
+    fn focus_waits_for_the_frame_and_is_dropped_when_the_window_closes() {
+        let device = DeviceId(1);
+        let window = PluginWindow::new(device, PluginView::Gui, None);
+        let mut frames = PluginFrames::default();
+        let mut host = App::headless_plugin_host();
+        let ctx = Context::default();
+        let now = Instant::now();
+
+        frames.request_focus(&[], device);
+        assert!(frames.focus.is_none());
+
+        frames.request_focus(&[window], device);
+        frames.apply_focus(&[window], &mut host, &ctx, false, now);
+        assert_eq!(frames.focus.map(|request| request.device), Some(device));
+
+        frames.apply_focus(&[], &mut host, &ctx, false, now);
+        assert!(frames.focus.is_none());
     }
 }
