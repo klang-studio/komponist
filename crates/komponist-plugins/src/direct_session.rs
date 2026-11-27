@@ -116,11 +116,16 @@ impl PendingControls {
         }
     }
 
-    /// Replaces retried edits with newer render-path edits for the same parameter.
+    /// Drops a retried edit when a newer edit for the same parameter is ready.
     fn supersede_render_edits(&mut self, events: &[Event]) {
         self.stage.retain(|queued| {
             !events.iter().any(|event| {
                 matches!(event.kind, EventKind::ParamEdit { id, .. } if id == queued.param_id)
+            }) && !self.persistent.iter().any(|control| {
+                let distance = control.reserved.wrapping_sub(queued.reserved);
+                control.param_id == queued.param_id
+                    && control.reserved != 0
+                    && (1..(1 << 31)).contains(&distance)
             })
         });
     }
@@ -681,6 +686,14 @@ mod tests {
         controls.retry_render_edits(1, &[edit(2, 0.4)]);
         assert_eq!(controls.stage[0].reserved, 2);
 
+        controls.persistent.push(WireEvent {
+            reserved: 3,
+            ..WireEvent::new(0, WireEventKind::ParamValue { id: 5, value: 0.7 })
+        });
+        controls.supersede_render_edits(&[]);
+        assert!(controls.stage.is_empty());
+
+        controls.retry_render_edits(1, &[edit(4, 0.4)]);
         controls.retry_render_edits(2, &[]);
         assert!(controls.stage.is_empty());
     }
