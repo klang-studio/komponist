@@ -70,6 +70,7 @@
 //!   of the track's events, with note ids and note-offs guaranteed by the stage's guard
 //!   (ARCHITECTURE §6.4.2); recording still captures the input.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
 
@@ -1966,28 +1967,15 @@ impl Core {
             Command::CancelAutomationWrite => self.cancel_automation_write(),
             Command::FinishAutomationWrite => self.finish_automation_write(),
             Command::SetParam { slot, id, value } => {
-                if let Some((owner, device)) = self.slot_device(slot) {
-                    let target = EngineTarget::Slot {
-                        slot,
-                        device,
-                        wire_id: id,
-                    };
-                    if let AutomationOwner::Track(track) = owner
-                        && self
-                            .program
-                            .as_ref()
-                            .and_then(|p| p.track(track))
-                            .is_some_and(|p| p.macros.mapping(target).is_some())
-                    {
-                        return;
-                    }
-                    self.manual_automation(owner, target, value);
-                }
-                if let Some(entry) = self.slots.get_mut(slot.0 as usize)
-                    && !entry.params.set(id, value)
-                {
-                    self.dropped += 1;
-                }
+                self.set_slot_parameter(slot, id, value, None);
+            }
+            Command::SetParamEdit {
+                slot,
+                id,
+                value,
+                serial,
+            } => {
+                self.set_slot_parameter(slot, id, value, Some(serial));
             }
             Command::SetMacro {
                 track,
@@ -2081,6 +2069,37 @@ impl Core {
                 }
             }
             Command::AllNotesOff => self.silence(false),
+        }
+    }
+
+    fn set_slot_parameter(
+        &mut self,
+        slot: SlotId,
+        id: u32,
+        value: f64,
+        serial: Option<NonZeroU32>,
+    ) {
+        if let Some((owner, device)) = self.slot_device(slot) {
+            let target = EngineTarget::Slot {
+                slot,
+                device,
+                wire_id: id,
+            };
+            if let AutomationOwner::Track(track) = owner
+                && self
+                    .program
+                    .as_ref()
+                    .and_then(|p| p.track(track))
+                    .is_some_and(|p| p.macros.mapping(target).is_some())
+            {
+                return;
+            }
+            self.manual_automation(owner, target, value);
+        }
+        if let Some(entry) = self.slots.get_mut(slot.0 as usize)
+            && !entry.params.set(id, value, serial)
+        {
+            self.dropped += 1;
         }
     }
 

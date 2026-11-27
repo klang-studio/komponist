@@ -874,7 +874,9 @@ mod tests {
                 EventKind::NoteOff { key, .. } => (*s, "off", key),
                 EventKind::AllNotesOff => (*s, "all", 0),
                 EventKind::Midi(m) => (*s, "midi", m[1]),
-                EventKind::Param { id, .. } => (*s, "param", id as u8),
+                EventKind::Param { id, .. } | EventKind::ParamEdit { id, .. } => {
+                    (*s, "param", id as u8)
+                }
             })
             .collect()
     }

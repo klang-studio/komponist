@@ -6,6 +6,8 @@
 //! processor failed, or which is bypassed is skipped: an instrument then leaves silence, an effect
 //! passes its input through.
 
+use std::num::NonZeroU32;
+
 use komponist_model::DeviceRole;
 
 use crate::MAX_PENDING_PARAMS;
@@ -17,7 +19,7 @@ use crate::sequencer::EventList;
 /// replaces the queued one.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ParamQueue {
-    items: [(u32, f64); MAX_PENDING_PARAMS],
+    items: [(u32, f64, Option<NonZeroU32>); MAX_PENDING_PARAMS],
     len: usize,
 }
 
@@ -28,24 +30,24 @@ impl ParamQueue {
     }
 
     /// Queues `id = value`; `false` when the queue is full.
-    pub(crate) fn set(&mut self, id: u32, value: f64) -> bool {
-        if let Some(item) = self.items[..self.len].iter_mut().find(|(i, _)| *i == id) {
-            item.1 = value;
+    pub(crate) fn set(&mut self, id: u32, value: f64, serial: Option<NonZeroU32>) -> bool {
+        if let Some(item) = self.items[..self.len].iter_mut().find(|(i, _, _)| *i == id) {
+            *item = (id, value, serial);
             return true;
         }
         if self.len == MAX_PENDING_PARAMS {
             return false;
         }
-        self.items[self.len] = (id, value);
+        self.items[self.len] = (id, value, serial);
         self.len += 1;
         true
     }
 
     /// Hands every queued change to `f` in queue order and forgets it (MIDI effect stages take
     /// their parameters this way, before their next call).
-    pub(crate) fn drain_with(&mut self, mut f: impl FnMut(u32, f64)) {
-        for &(id, value) in &self.items[..self.len] {
-            f(id, value);
+    pub(crate) fn drain_with(&mut self, mut f: impl FnMut(u32, f64, Option<NonZeroU32>)) {
+        for &(id, value, serial) in &self.items[..self.len] {
+            f(id, value, serial);
         }
         self.len = 0;
     }
@@ -61,10 +63,13 @@ impl ParamQueue {
         if self.len == 0 || out.room() < self.len + keep {
             return;
         }
-        for &(id, value) in &self.items[..self.len] {
-            out.push(0, EventKind::Param { id, value });
-        }
-        self.len = 0;
+        self.drain_with(|id, value, serial| {
+            let kind = match serial {
+                Some(serial) => EventKind::ParamEdit { id, value, serial },
+                None => EventKind::Param { id, value },
+            };
+            out.push(0, kind);
+        });
     }
 }
 
@@ -347,15 +352,40 @@ mod tests {
     }
 
     #[test]
+    fn repeated_parameter_values_keep_the_latest_edit_identity() {
+        let mut params = ParamQueue::default();
+        assert!(params.set(1, 0.5, NonZeroU32::new(1)));
+        assert!(params.set(1, 0.5, NonZeroU32::new(2)));
+        assert!(params.set(2, 0.5, None));
+
+        let mut out = EventList::new(2);
+        params.drain_into(&mut out, 0);
+        assert_eq!(
+            out.finish()
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            [
+                EventKind::ParamEdit {
+                    id: 1,
+                    value: 0.5,
+                    serial: NonZeroU32::new(2).unwrap(),
+                },
+                EventKind::Param { id: 2, value: 0.5 },
+            ],
+        );
+    }
+
+    #[test]
     fn params_coalesce_per_id_and_wait_for_room() {
         let mut q = ParamQueue::default();
-        assert!(q.set(1, 0.5));
-        assert!(q.set(2, 1.0));
-        assert!(q.set(1, 0.25));
+        assert!(q.set(1, 0.5, None));
+        assert!(q.set(2, 1.0, None));
+        assert!(q.set(1, 0.25, None));
         for id in 3..=MAX_PENDING_PARAMS as u32 {
-            assert!(q.set(id, 0.0));
+            assert!(q.set(id, 0.0, None));
         }
-        assert!(!q.set(99, 0.0));
+        assert!(!q.set(99, 0.0, None));
         let mut out = EventList::new(MAX_PENDING_PARAMS + 1);
         // Two places must stay free: not enough room, the changes wait.
         q.drain_into(&mut out, 2);
@@ -364,6 +394,6 @@ mod tests {
         let events = out.finish();
         assert_eq!(events.len(), MAX_PENDING_PARAMS);
         assert_eq!(events[0].kind, EventKind::Param { id: 1, value: 0.25 });
-        assert!(q.set(99, 0.0));
+        assert!(q.set(99, 0.0, None));
     }
 }

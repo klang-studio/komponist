@@ -124,7 +124,7 @@ impl HexaProcessor {
 
     /// Applies one event at the current frame.
     fn apply(&mut self, kind: EventKind) {
-        if let EventKind::Param { id, value } = kind {
+        if let EventKind::Param { id, value } | EventKind::ParamEdit { id, value, .. } = kind {
             if let Some(field) = Field::from_wire(id) {
                 if !self.dirty {
                     self.edit = *self.synth.patch();
@@ -145,7 +145,7 @@ impl HexaProcessor {
                 controller: CC_ALL_NOTES_OFF,
                 value: 0,
             }),
-            EventKind::Param { .. } => {}
+            EventKind::Param { .. } | EventKind::ParamEdit { .. } => {}
         }
     }
 }

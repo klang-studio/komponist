@@ -404,7 +404,7 @@ fn from_engine_event(timing: u32, event: EventKind) -> Option<NoteEvent<()>> {
             velocity: 0.0,
         }),
         EventKind::Midi(bytes) => NoteEvent::from_midi(timing, &bytes).ok(),
-        EventKind::AllNotesOff | EventKind::Param { .. } => None,
+        EventKind::AllNotesOff | EventKind::Param { .. } | EventKind::ParamEdit { .. } => None,
     }
 }
 

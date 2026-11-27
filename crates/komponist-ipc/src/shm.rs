@@ -309,7 +309,8 @@ pub struct WireEvent {
     pub value: f64,
     /// Small payload, see the table.
     pub data: [u8; 4],
-    /// Originating block sequence for bridge output events. Zero for inputs.
+    /// Originating block sequence for bridge output events. For parameter input, the
+    /// durable edit serial, or zero for automation and other untracked input.
     pub reserved: u32,
 }
 

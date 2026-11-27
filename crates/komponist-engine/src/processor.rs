@@ -8,6 +8,7 @@
 //! `Command::InsertProcessor`, processed on the audio thread, sent back through the garbage queue
 //! and dropped on the UI thread. A processor is never dropped on the audio thread.
 
+use std::num::NonZeroU32;
 use std::time::Instant;
 
 use komponist_model::{Meter, TickRange};
@@ -169,6 +170,11 @@ pub trait EventProcessor {
     /// Parameter `id` (the device's wire id) now has plain value `value`. Applied before the next
     /// [`EventProcessor::process_events`], in send order.
     fn set_param(&mut self, id: u32, value: f64);
+
+    /// Sets a durable parameter edit, keeping its identity in processors that track delivery.
+    fn set_param_edit(&mut self, id: u32, value: f64, _serial: NonZeroU32) {
+        self.set_param(id, value);
+    }
 
     /// Rewrites one call's events. `input` is sorted (see above) with offsets `< ctx.frames`;
     /// `ctx.transport` is the state at frame 0 (tempo, meter, position in ticks, playing, loop), and
@@ -347,6 +353,15 @@ pub enum EventKind {
         id: u32,
         /// New value, plain (not normalised).
         value: f64,
+    },
+    /// A durable parameter edit whose delivery is tracked by the plugin host.
+    ParamEdit {
+        /// Parameter id.
+        id: u32,
+        /// New plain value.
+        value: f64,
+        /// The edit's identity within the current plugin instance.
+        serial: NonZeroU32,
     },
     /// Release all sounding notes now (stop, locate while playing, program swap cleanup; not on a
     /// loop wrap).

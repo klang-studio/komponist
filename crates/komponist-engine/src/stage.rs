@@ -226,7 +226,7 @@ impl StageState {
                 0
             }
             // Parameters reach the instrument from the engine's queue, not from a stage.
-            EventKind::Param { .. } => 0,
+            EventKind::Param { .. } | EventKind::ParamEdit { .. } => 0,
         }
     }
 }
@@ -333,7 +333,10 @@ pub(crate) fn run<'a, T: SlotTable + ?Sized>(
             if stage_all_off {
                 stage.reset();
             }
-            params.drain_with(|id, value| stage.set_param(id, value));
+            params.drain_with(|id, value, serial| match serial {
+                Some(serial) => stage.set_param_edit(id, value, serial),
+                None => stage.set_param(id, value),
+            });
             let (src, dst): (&[Event], &mut EventList) = match last {
                 None => (input, &mut *a),
                 Some(false) => (a.sorted(), &mut *b),

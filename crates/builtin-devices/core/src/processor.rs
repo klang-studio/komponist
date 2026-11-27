@@ -295,7 +295,7 @@ impl InternalProcessor {
                 done = at;
             }
             match event.kind {
-                EventKind::Param { id, value } => {
+                EventKind::Param { id, value } | EventKind::ParamEdit { id, value, .. } => {
                     if let Some(info) = self.params.get(id as usize) {
                         self.dsp.set_param(id as usize, info.snap(value));
                         // A parameter can change the latency (limiter lookahead); the UI thread
