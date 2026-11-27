@@ -531,8 +531,10 @@ const PERFORMANCE: &[(usize, Play)] = &[
 const FRAMES: usize = 48_000;
 
 /// Renders `patch` through `Synth<N>` with `split`, the calls also cut at the events (as a host
-/// processor does), and hashes the output and the LFO positions after every call.
+/// processor does), and hashes the output and the LFO positions after every call. Notes, MIDI
+/// and renders run inside `assert_no_alloc`, as on the audio thread.
 fn render_digest<const N: usize>(patch: Patch, plays: &[(usize, Play)], split: Split) -> u64 {
+    use assert_no_alloc::assert_no_alloc;
     let mut synth = Synth::<N>::boxed(SR, patch);
     let mut digest = Digest::new();
     let mut sizes = split.sizes();
@@ -541,16 +543,16 @@ fn render_digest<const N: usize>(patch: Patch, plays: &[(usize, Play)], split: S
     while pos < FRAMES {
         while next < plays.len() && plays[next].0 <= pos {
             match plays[next].1 {
-                Play::On(key, velocity) => synth.note_on(key, velocity),
-                Play::Off(key) => synth.note_off(key),
-                Play::Midi(bytes) => synth.midi(&bytes),
+                Play::On(key, velocity) => assert_no_alloc(|| synth.note_on(key, velocity)),
+                Play::Off(key) => assert_no_alloc(|| synth.note_off(key)),
+                Play::Midi(bytes) => assert_no_alloc(|| synth.midi(&bytes)),
                 Play::Patch(build) => synth.set_patch(build()),
             }
             next += 1;
         }
         let until = plays.get(next).map_or(FRAMES, |p| p.0.min(FRAMES));
         let n = sizes().min(until - pos);
-        synth.render(&mut l[..n], &mut r[..n]);
+        assert_no_alloc(|| synth.render(&mut l[..n], &mut r[..n]));
         digest.samples(&l[..n]);
         digest.samples(&r[..n]);
         peak = l[..n]
