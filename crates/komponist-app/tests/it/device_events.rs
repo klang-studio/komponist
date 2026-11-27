@@ -265,6 +265,17 @@ impl DeviceHost for FakeHost {
         true
     }
 
+    fn edit_param_through_render(
+        &mut self,
+        device: DeviceId,
+        id: u32,
+        value: f64,
+    ) -> Option<std::num::NonZeroU32> {
+        // This scripted host records edits without sending them to a running plugin.
+        self.edited_param(device, id, value)
+            .then_some(std::num::NonZeroU32::MIN)
+    }
+
     fn preview_param(&mut self, device: DeviceId, id: u32, value: f64) {
         self.script
             .borrow_mut()

@@ -651,12 +651,17 @@ impl App {
             return;
         }
         let bridged = if let Some(slot) = slot
-            && self
+            && let Some(serial) = self
                 .engine
                 .host_mut()
                 .edit_param_through_render(device, id, value)
         {
-            self.engine.send(Command::SetParam { slot, id, value });
+            self.engine.send(Command::SetParamEdit {
+                slot,
+                id,
+                value,
+                serial,
+            });
             true
         } else {
             self.engine.host_mut().set_param(device, id, value)

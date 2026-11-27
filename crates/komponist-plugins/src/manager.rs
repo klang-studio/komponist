@@ -26,6 +26,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -390,6 +391,7 @@ pub struct PluginManager {
     last_scan: Option<ScanReport>,
     /// One bridge per external device.
     bridges: BTreeMap<DeviceId, Bridge>,
+    next_param_edit: NonZeroU32,
     private_clap_dir: Option<PathBuf>,
     bundled_clap: Option<BundledClap>,
     project_dir: Option<PathBuf>,
@@ -516,6 +518,7 @@ impl PluginManager {
             scan: None,
             last_scan: None,
             bridges: BTreeMap::new(),
+            next_param_edit: NonZeroU32::MIN,
             private_clap_dir,
             bundled_clap,
             project_dir: None,
@@ -1366,18 +1369,31 @@ impl PluginManager {
     /// Sets a parameter from the generic view or a device-card knob (sent over the control socket;
     /// the bridge delivers it to the plugin's audio side too).
     pub fn set_param(&mut self, device: DeviceId, id: u32, value: f64) {
+        let serial = self.next_param_edit();
         if let Some(direct) = self.direct.get_mut(&device) {
-            direct.set_param(id, value);
+            direct.set_param_edit(id, value, serial);
             self.pending
                 .push(PluginManagerEvent::ParamValuesChanged { device });
         } else if let Some(bridge) = self.bridges.get_mut(&device) {
-            bridge.set_param(id, value);
+            bridge.set_param_edit(id, value, serial);
         }
+    }
+
+    fn next_param_edit(&mut self) -> NonZeroU32 {
+        let serial = self.next_param_edit;
+        self.next_param_edit =
+            NonZeroU32::new(serial.get().wrapping_add(1)).unwrap_or(NonZeroU32::MIN);
+        serial
     }
 
     /// Records a persistent app edit on the render path unless it must share the bridge's
     /// ordered control path with marker operations or a pending state restore.
-    pub fn edit_param_through_render(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+    pub fn edit_param_through_render(
+        &mut self,
+        device: DeviceId,
+        id: u32,
+        value: f64,
+    ) -> Option<NonZeroU32> {
         if self
             .bridges
             .get(&device)
@@ -1387,9 +1403,24 @@ impl PluginManager {
                 .get(&device)
                 .is_some_and(DirectDevice::requires_control_param_edit)
         {
-            return false;
+            return None;
         }
-        self.edited_param(device, id, value)
+
+        let serial = self.next_param_edit();
+        if let Some(direct) = self.direct.get_mut(&device) {
+            if !direct.edited_param_on_render(id, value, serial) {
+                return None;
+            }
+        } else {
+            let bridge = self
+                .bridges
+                .get_mut(&device)
+                .filter(|bridge| bridge.running())?;
+            bridge.edited_param_on_render(id, value, serial);
+        }
+        self.pending
+            .push(PluginManagerEvent::ParamValuesChanged { device });
+        Some(serial)
     }
 
     /// Records an edit already sent to the processor, either from the app or a plugin GUI.

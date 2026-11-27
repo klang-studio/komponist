@@ -1,6 +1,8 @@
 //! Native CLAP audio dispatch for already verified bundles.
 
-use std::collections::VecDeque;
+use std::cell::UnsafeCell;
+use std::collections::{BTreeMap, VecDeque};
+use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -28,12 +30,35 @@ pub(crate) const METADATA_REFRESH: u32 =
     notification_bits::PARAMS_CHANGED | notification_bits::NOTE_NAMES_CHANGED;
 const CONTROL_REFRESH: u32 = METADATA_REFRESH | notification_bits::LATENCY_CHANGED;
 
+/// The last successful delivery of a durable edit, indexed by CLAP parameter ID.
+#[derive(Clone, Copy)]
+pub(crate) struct DeliveredEdit {
+    serial: NonZeroU32,
+    load_epoch: u64,
+}
+
+impl DeliveredEdit {
+    pub(crate) fn superseded_by(self, edit: NonZeroU32, preset_epoch: u64) -> bool {
+        self.serial == edit && self.load_epoch < preset_epoch
+    }
+}
+
+type DeliveredEdits = BTreeMap<u32, Option<DeliveredEdit>>;
+
+#[derive(Default)]
+struct EditDelivery(UnsafeCell<DeliveredEdits>);
+
+// SAFETY: Both sides access this table under the instance's ProcessingGuard,
+// or before the engine receives its first processor.
+unsafe impl Sync for EditDelivery {}
+
 /// The main-thread half of a CLAP instance. Keeping the token alive also keeps the verified
 /// bundle available to the plugin while its library and resources are in use.
 pub(crate) struct DirectClap {
     plugin: Box<dyn HostedPlugin>,
     callbacks: Rc<PollLoop>,
     processing: Arc<AtomicBool>,
+    edit_delivery: Arc<EditDelivery>,
     refresh: PendingRefresh,
     signal_taps: Option<Arc<crate::signal_taps::SignalTaps>>,
     bundle: VerifiedClap,
@@ -54,6 +79,7 @@ impl DirectClap {
             plugin,
             callbacks,
             processing: Arc::new(AtomicBool::new(false)),
+            edit_delivery: Arc::default(),
             refresh: PendingRefresh::default(),
             signal_taps,
             bundle,
@@ -78,12 +104,28 @@ impl DirectClap {
         Some(control(&mut *self.plugin))
     }
 
+    pub(crate) fn try_read_preset_values<T>(
+        &mut self,
+        read: impl FnOnce(&mut dyn HostedPlugin, &DeliveredEdits) -> T,
+    ) -> Option<T> {
+        let _guard = ProcessingGuard::try_enter(&self.processing)?;
+        // SAFETY: The guard excludes processing and all updates of the delivery table.
+        Some(read(&mut *self.plugin, unsafe {
+            &*self.edit_delivery.0.get()
+        }))
+    }
+
     pub(crate) fn try_refresh<T>(
         &mut self,
         mask: u32,
         read: impl FnOnce(&mut dyn HostedPlugin, u32) -> T,
     ) -> Option<T> {
         self.refresh.try_read(&self.processing, mask, |pending| {
+            if pending & notification_bits::PARAMS_CHANGED != 0 {
+                // SAFETY: try_read holds the processing guard.
+                let delivered = unsafe { &mut *self.edit_delivery.0.get() };
+                Self::refresh_delivery_slots(&*self.plugin, delivered);
+            }
             read(&mut *self.plugin, pending)
         })
     }
@@ -166,9 +208,13 @@ impl DirectClap {
                 Box::new(komponist_ipc::signal_taps::BlockTaps::EMPTY),
             )
         });
+        // SAFETY: On activation no audio half is being called by the engine.
+        Self::refresh_delivery_slots(&*self.plugin, unsafe { &mut *self.edit_delivery.0.get() });
         Ok(DirectProcessor {
             audio,
             processing: self.processing.clone(),
+            edit_delivery: self.edit_delivery.clone(),
+            preset_load_epoch: self.plugin.preset_load_epoch(),
             setup,
             role,
             latency,
@@ -187,6 +233,16 @@ impl DirectClap {
             signal_taps,
             midi: (role == DeviceRole::MidiEffect).then(|| MidiStage::new(setup.max_block)),
         })
+    }
+
+    fn refresh_delivery_slots(plugin: &dyn HostedPlugin, delivered: &mut DeliveredEdits) {
+        let mut old = std::mem::take(delivered);
+        delivered.extend(
+            plugin
+                .params()
+                .into_iter()
+                .map(|param| (param.id, old.remove(&param.id).flatten())),
+        );
     }
 
     pub(crate) fn deactivate(&mut self, processor: DirectProcessor) {
@@ -247,6 +303,8 @@ impl Drop for ProcessingGuard<'_> {
 pub(crate) struct DirectProcessor {
     audio: Box<dyn HostedProcessor>,
     processing: Arc<AtomicBool>,
+    edit_delivery: Arc<EditDelivery>,
+    preset_load_epoch: Option<Arc<AtomicU64>>,
     setup: ProcessorSetup,
     role: DeviceRole,
     latency: u32,
@@ -390,6 +448,20 @@ impl DirectProcessor {
             self.output_len = 0;
             write_fallback(self.role, io);
             return ProcessStatus::Failed;
+        }
+        if let Some(epoch) = &self.preset_load_epoch {
+            // A block overlapping the notification belongs to the new epoch.
+            let load_epoch = epoch.load(Ordering::Acquire);
+            // SAFETY: The processing guard covers this whole block.
+            let delivered = unsafe { &mut *self.edit_delivery.0.get() };
+            for event in &self.input_events {
+                if let Some(serial) = NonZeroU32::new(event.reserved)
+                    && let Some(WireEventKind::ParamValue { id, .. }) = event.decode()
+                    && let Some(slot) = delivered.get_mut(&id)
+                {
+                    *slot = Some(DeliveredEdit { serial, load_epoch });
+                }
+            }
         }
         if let Some(meter) = meter {
             meter.record(io, readings);
@@ -584,6 +656,20 @@ impl DirectProcessor {
 mod tests {
     use super::*;
     use notification_bits::{LATENCY_CHANGED, NOTE_NAMES_CHANGED, PARAMS_CHANGED};
+
+    #[test]
+    fn a_preset_supersedes_only_the_matching_edit_delivered_before_it() {
+        let early = NonZeroU32::new(1).unwrap();
+        let repeat = NonZeroU32::new(2).unwrap();
+        let delivered = DeliveredEdit {
+            serial: early,
+            load_epoch: 4,
+        };
+
+        assert!(delivered.superseded_by(early, 5));
+        assert!(!delivered.superseded_by(repeat, 5));
+        assert!(!delivered.superseded_by(early, 4));
+    }
 
     #[test]
     fn processing_permission_never_blocks_the_other_caller() {

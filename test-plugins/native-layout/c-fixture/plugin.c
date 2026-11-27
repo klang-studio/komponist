@@ -105,6 +105,7 @@ struct instance {
     bool hide_mode;
     bool activated;
     atomic_int pending_program;
+    atomic_bool report_loaded_gain;
     const clap_host_t *host;
 };
 
@@ -351,8 +352,21 @@ static void CLAP_ABI no_op(const clap_plugin_t *plugin) {
 
 static clap_process_status CLAP_ABI process(const clap_plugin_t *plugin, const clap_process_t *p) {
     flush_params(plugin, p->in_events, p->out_events);
-    const float gain = (float)instance(plugin)->values[GAIN];
-    atomic_store(&instance(plugin)->rendered_gain, gain);
+    struct instance *self = instance(plugin);
+    // Report the unsolicited preset's value from the following render block as well.
+    if (p->out_events && atomic_exchange(&self->report_loaded_gain, false)) {
+        const clap_event_param_value_t event = {
+            .header = {.size = sizeof(clap_event_param_value_t),
+                       .space_id = CLAP_CORE_EVENT_SPACE_ID,
+                       .type = CLAP_EVENT_PARAM_VALUE},
+            .param_id = parameter_info[GAIN].id,
+            .note_id = -1, .port_index = -1, .channel = -1, .key = -1,
+            .value = self->values[GAIN],
+        };
+        p->out_events->try_push(p->out_events, &event.header);
+    }
+    const float gain = (float)self->values[GAIN];
+    atomic_store(&self->rendered_gain, gain);
     if (p->audio_inputs_count != 1 || p->audio_outputs_count != 1 ||
         p->audio_inputs[0].channel_count != 2 || p->audio_outputs[0].channel_count != 2 ||
         !p->audio_inputs[0].data32 || !p->audio_outputs[0].data32)
@@ -479,6 +493,7 @@ static void CLAP_ABI plugin_on_main_thread(const clap_plugin_t *plugin) {
         return;
     }
     report_loaded(self, key);
+    atomic_store(&self->report_loaded_gain, true);
     const clap_host_state_t *host_state = self->host->get_extension(self->host, CLAP_EXT_STATE);
     if (host_state)
         host_state->mark_dirty(self->host);
@@ -554,6 +569,7 @@ static const clap_plugin_t *CLAP_ABI create_plugin(const clap_plugin_factory_t *
             atomic_init(&state->values[j], parameter_info[j].default_value);
         atomic_init(&state->rendered_gain, (float)parameter_info[GAIN].default_value);
         atomic_init(&state->pending_program, 0);
+        atomic_init(&state->report_loaded_gain, false);
         state->plugin = (clap_plugin_t){.desc = &descriptors[i],
                                        .plugin_data = state,
                                        .init = plugin_init,

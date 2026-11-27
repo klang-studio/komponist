@@ -95,7 +95,11 @@ fn restore_updates_parameter_bases_without_overwriting_a_later_edit() {
     let invalid_state = Arc::from(&b"not a state of kp-test-synth"[..]);
     assert!(rig.manager.set_state(device_id, &invalid_state));
     // The engine cannot safely deliver this edit before both earlier control requests.
-    assert!(!rig.manager.edit_param_through_render(device_id, gain, 0.5));
+    assert!(
+        rig.manager
+            .edit_param_through_render(device_id, gain, 0.5)
+            .is_none()
+    );
     rig.manager.set_param(device_id, gain, 0.5);
     run_until(&mut rig, "the later edit safely captured", |rig| {
         rig.events[from..].contains(&PluginManagerEvent::StateApplied { device: device_id })

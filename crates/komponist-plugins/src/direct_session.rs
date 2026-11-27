@@ -1,6 +1,8 @@
 //! Transfers a direct CLAP audio half at a block boundary. The app's main thread owns
 //! activation and destruction; the engine never waits for it or destroys audio buffers.
 
+use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -17,7 +19,9 @@ use komponist_model::DeviceRole;
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::bundled_effects;
-use crate::direct::{ControlEvents, DirectClap, DirectProcessor, METADATA_REFRESH, write_fallback};
+use crate::direct::{
+    ControlEvents, DeliveredEdit, DirectClap, DirectProcessor, METADATA_REFRESH, write_fallback,
+};
 use crate::manager::ProcessorSetup;
 
 struct Requested {
@@ -125,9 +129,12 @@ impl PendingControls {
         (persistent, stage)
     }
 
-    fn stage_param(&mut self, epoch: u64, id: u32, value: f64) {
+    fn stage_param(&mut self, epoch: u64, id: u32, value: f64, serial: Option<NonZeroU32>) {
         self.observe_epoch(epoch);
-        let wire = WireEvent::new(0, WireEventKind::ParamValue { id, value });
+        let wire = WireEvent {
+            reserved: serial.map_or(0, NonZeroU32::get),
+            ..WireEvent::new(0, WireEventKind::ParamValue { id, value })
+        };
         // Changes waiting for a replacement accumulate by parameter, like the engine's slot
         // queue. Keep the newest value when automation writes the same ID on several blocks.
         if let Some(previous) = self.stage.iter_mut().find(|previous| {
@@ -198,6 +205,13 @@ impl DirectSession {
         self.host.try_control(f)
     }
 
+    pub(crate) fn try_read_preset_values<T>(
+        &mut self,
+        read: impl FnOnce(&mut dyn HostedPlugin, &BTreeMap<u32, Option<DeliveredEdit>>) -> T,
+    ) -> Option<T> {
+        self.host.try_read_preset_values(read)
+    }
+
     pub(crate) fn is_from_bundle(&self, path: &std::path::Path) -> bool {
         self.host.is_from_bundle(path)
     }
@@ -233,11 +247,14 @@ impl DirectSession {
         self.host.take_preset_reports()
     }
 
-    pub(crate) fn set_param(&mut self, id: u32, value: f64) -> bool {
+    pub(crate) fn set_param(&mut self, id: u32, value: f64, serial: Option<NonZeroU32>) -> bool {
         self.control
             .push(Control {
                 epoch: self.requested.control_epoch.load(Ordering::Acquire),
-                wire: WireEvent::new(0, WireEventKind::ParamValue { id, value }),
+                wire: WireEvent {
+                    reserved: serial.map_or(0, NonZeroU32::get),
+                    ..WireEvent::new(0, WireEventKind::ParamValue { id, value })
+                },
             })
             .is_ok()
     }
@@ -546,6 +563,16 @@ impl EventProcessor for DirectEngine {
             self.requested.control_epoch.load(Ordering::Acquire),
             id,
             value,
+            None,
+        );
+    }
+
+    fn set_param_edit(&mut self, id: u32, value: f64, serial: NonZeroU32) {
+        self.controls.stage_param(
+            self.requested.control_epoch.load(Ordering::Acquire),
+            id,
+            value,
+            Some(serial),
         );
     }
 
@@ -602,7 +629,7 @@ mod tests {
         let wire = |value| WireEvent::new(0, WireEventKind::ParamValue { id: 7, value });
         let discarded = wire(0.25);
         let retained = wire(0.75);
-        pending.stage_param(0, 8, 0.5);
+        pending.stage_param(0, 8, 0.5, None);
         assert!(
             sender
                 .push(Control {
@@ -648,8 +675,8 @@ mod tests {
 
         // No active processor across these calls. The last synchronous stage value is kept
         // independently of the queued host control so it can take precedence at the same frame.
-        pending.stage_param(0, 5, 0.25);
-        pending.stage_param(0, 5, 0.75);
+        pending.stage_param(0, 5, 0.25, None);
+        pending.stage_param(0, 5, 0.75, None);
         pending.collect(0, &mut commands);
         assert_eq!(pending.stage.len(), 1);
         assert_eq!(

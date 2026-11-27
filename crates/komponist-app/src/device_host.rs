@@ -38,6 +38,7 @@
 //! Thread: UI thread.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -289,9 +290,15 @@ pub trait DeviceHost {
         false
     }
 
-    /// Records an app edit on the render path if the host can deliver it in order.
-    fn edit_param_through_render(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
-        self.edited_param(device, id, value)
+    /// Records a durable render-path edit and returns its delivery identity.
+    fn edit_param_through_render(
+        &mut self,
+        device: DeviceId,
+        id: u32,
+        value: f64,
+    ) -> Option<NonZeroU32> {
+        let _ = (device, id, value);
+        None
     }
 
     /// Updates the visible value of a plugin parameter during an automation override.
@@ -1134,7 +1141,12 @@ impl DeviceHost for PluginHost {
         self.manager.edited_param(device, id, value)
     }
 
-    fn edit_param_through_render(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+    fn edit_param_through_render(
+        &mut self,
+        device: DeviceId,
+        id: u32,
+        value: f64,
+    ) -> Option<NonZeroU32> {
         self.manager.edit_param_through_render(device, id, value)
     }
 

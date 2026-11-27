@@ -657,6 +657,19 @@ fn standalone_clap_preset_selection_follows_loads_reports_and_saving() {
     });
     assert_eq!(app.undo_text().as_deref(), Some("Preset laden"));
 
+    // A report that displaced an older Gain write can be saved without waiting on that write.
+    app.dispatch(Action::Project(ProjectAction::Save));
+    let saved = persist::from_json(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let saved = saved.find_device(device).unwrap().2;
+    assert_eq!(
+        saved.preset.as_ref().map(|preset| &preset.source),
+        Some(&calm)
+    );
+    assert_eq!(
+        saved.state.as_deref().and_then(|state| state.get(..8)),
+        Some(&0.25_f64.to_ne_bytes()[..])
+    );
+
     // A failed load the plugin reports reaches the status bar; the selection stays.
     app.dispatch(Action::Plugin(PluginAction::SetParam {
         device,

@@ -1,6 +1,7 @@
 //! Control-plane state for an opted-in direct CLAP device.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU32;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -53,11 +54,13 @@ pub(crate) struct DirectDevice {
     pending_writes: BTreeMap<u32, f64>,
     /// Persistent edits that still need to reach the plugin before a snapshot can replace state.
     unconfirmed_writes: BTreeSet<u32>,
+    /// The latest durable host edit still awaiting a snapshot, keyed by parameter.
+    edit_serials: BTreeMap<u32, NonZeroU32>,
     pending_restore: Option<SavedPluginState>,
     pending_marker_edit: Option<PendingMarkerEdit>,
     pending_preset: Option<(PresetLoad, Instant)>,
     /// Edits made after the request must reach the replacement control epoch.
-    after_preset_writes: BTreeMap<u32, f64>,
+    after_preset_writes: BTreeMap<u32, (f64, NonZeroU32)>,
     capture_preset: bool,
     pub(crate) display: Option<Arc<komponist_ipc::device_canvas::DisplayList>>,
     display_at: Instant,
@@ -69,7 +72,7 @@ pub(crate) struct DirectDevice {
     macro_snapshot: Option<Weak<[u8]>>,
     user_edit: bool,
     /// A load the plugin reported whose values have not become the bases yet.
-    reported_load: bool,
+    reported_load: Option<u64>,
     debounce: Duration,
 }
 
@@ -229,6 +232,7 @@ impl DirectDevice {
             status: DeviceStatus::Ok,
             pending_writes: BTreeMap::new(),
             unconfirmed_writes: BTreeSet::new(),
+            edit_serials: BTreeMap::new(),
             pending_restore: None,
             pending_marker_edit: None,
             pending_preset: None,
@@ -242,7 +246,7 @@ impl DirectDevice {
             snapshot_due: None,
             macro_snapshot: None,
             user_edit: false,
-            reported_load: false,
+            reported_load: None,
             debounce,
         };
         device.accept_inventory(inventory, true);
@@ -677,8 +681,11 @@ impl DirectDevice {
             });
         }
         if self.pending_restore.is_none() {
-            self.pending_writes
-                .retain(|&param, value| !self.session.set_param(param, *value));
+            self.pending_writes.retain(|&param, value| {
+                !self
+                    .session
+                    .set_param(param, *value, self.edit_serials.get(&param).copied())
+            });
         }
         let metadata = self.session.refresh_metadata(|plugin, pending| {
             if pending & notification_bits::PARAMS_CHANGED != 0 {
@@ -713,11 +720,29 @@ impl DirectDevice {
     /// Takes the values a load the plugin reported as the new bases, keeping edits sent after it;
     /// retried on the next poll while an engine worker holds the instance.
     fn refresh_reported_load(&mut self, device: DeviceId, events: &mut Vec<PluginManagerEvent>) {
-        if !self.reported_load || self.pending_restore.is_some() || self.pending_preset.is_some() {
+        let Some(load_epoch) = self.reported_load else {
+            return;
+        };
+        if self.pending_restore.is_some() || self.pending_preset.is_some() {
             return;
         }
-        if let Some(inventory) = self.session.try_control(Inventory::read) {
-            self.reported_load = false;
+        let values = self.session.try_read_preset_values(|plugin, delivered| {
+            let superseded: Vec<_> = self
+                .edit_serials
+                .iter()
+                .filter_map(|(&id, &serial)| {
+                    let delivery = delivered.get(&id)?.as_ref()?;
+                    delivery.superseded_by(serial, load_epoch).then_some(id)
+                })
+                .collect();
+            (Inventory::read(plugin), superseded)
+        });
+        if let Some((inventory, superseded)) = values {
+            self.reported_load = None;
+            for id in superseded {
+                self.edit_serials.remove(&id);
+                self.unconfirmed_writes.remove(&id);
+            }
             let previous = std::mem::take(&mut self.base);
             self.accept_inventory(inventory, true);
             for (&id, value) in &mut self.base {
@@ -743,13 +768,17 @@ impl DirectDevice {
             .chain(self.session.take_preset_reports())
         {
             match report {
-                PresetReport::Loaded { source, startup } => {
+                PresetReport::Loaded {
+                    source,
+                    startup,
+                    epoch,
+                } => {
                     if !startup {
                         // The plugin replaced its state: a stored state that failed to load no
                         // longer matters, the loaded values are the new bases, and the snapshot
                         // follows.
                         self.state_warning = None;
-                        self.reported_load = true;
+                        self.reported_load = Some(epoch);
                         self.refresh_reported_load(device, events);
                         self.user_edit = true;
                         self.snapshot_due = Some(Instant::now() + self.debounce);
@@ -887,10 +916,11 @@ impl DirectDevice {
                 self.last_state = Some(state.clone().into());
                 self.state_warning = None;
                 self.unconfirmed_writes.clear();
+                self.edit_serials.clear();
                 self.released_automation.clear();
                 self.snapshot_due = None;
                 self.user_edit = false;
-                self.reported_load = false;
+                self.reported_load = None;
                 self.accept_inventory(inventory, true);
                 Self::report_metadata(device, events);
                 events.push(PluginManagerEvent::ClapPresetLoaded {
@@ -909,8 +939,8 @@ impl DirectDevice {
         }
         let later_writes = std::mem::take(&mut self.after_preset_writes);
         if !matches!(self.status, DeviceStatus::Crashed(_)) {
-            for (id, value) in later_writes {
-                self.set_param(id, value);
+            for (id, (value, serial)) in later_writes {
+                self.set_param_edit(id, value, serial);
             }
         }
     }
@@ -948,13 +978,31 @@ impl DirectDevice {
         let Some(value) = self.param_edit_value(id, value) else {
             return false;
         };
-        self.record_param_edit(id, value);
+        self.record_param_edit(id, value, None);
         true
     }
 
-    fn record_param_edit(&mut self, id: u32, value: f64) {
+    pub(crate) fn edited_param_on_render(
+        &mut self,
+        id: u32,
+        value: f64,
+        serial: NonZeroU32,
+    ) -> bool {
+        let Some(value) = self.param_edit_value(id, value) else {
+            return false;
+        };
+        self.record_param_edit(id, value, Some(serial));
+        true
+    }
+
+    fn record_param_edit(&mut self, id: u32, value: f64, serial: Option<NonZeroU32>) {
         self.preview_param(id, value);
         if !self.macro_params.contains_key(&id) {
+            if let Some(serial) = serial {
+                self.edit_serials.insert(id, serial);
+            } else if self.base.get(&id) != Some(&value) {
+                self.edit_serials.remove(&id);
+            }
             if self.pending_restore.is_some() {
                 self.pending_writes.insert(id, value);
             }
@@ -984,15 +1032,15 @@ impl DirectDevice {
         }
     }
 
-    pub(crate) fn set_param(&mut self, id: u32, requested: f64) {
+    pub(crate) fn set_param_edit(&mut self, id: u32, requested: f64, serial: NonZeroU32) {
         let Some(value) = self.param_edit_value(id, requested) else {
             return;
         };
         if self.pending_preset.is_some() {
             self.preview_param(id, value);
-            self.after_preset_writes.insert(id, requested);
+            self.after_preset_writes.insert(id, (requested, serial));
         } else {
-            self.record_param_edit(id, value);
+            self.record_param_edit(id, value, Some(serial));
             self.pending_writes.insert(id, value);
         }
     }
@@ -1018,6 +1066,8 @@ impl DirectDevice {
         // A newly mapped parameter takes its persistent value from the macro.
         self.unconfirmed_writes
             .retain(|id| !self.macro_params.contains_key(id));
+        self.edit_serials
+            .retain(|id, _| self.unconfirmed_writes.contains(id));
         for (id, value) in previous {
             if !self.macro_params.contains_key(&id) && self.base.contains_key(&id) {
                 self.base.insert(id, value);
@@ -1039,9 +1089,10 @@ impl DirectDevice {
         self.pending_preset = None;
         self.after_preset_writes.clear();
         self.pending_restore = Some(state);
-        self.reported_load = false;
+        self.reported_load = None;
         self.pending_writes.clear();
         self.unconfirmed_writes.clear();
+        self.edit_serials.clear();
         self.released_automation.clear();
         self.snapshot_due = None;
         self.user_edit = false;
@@ -1099,7 +1150,7 @@ impl DirectDevice {
 
     pub(crate) fn capture(&mut self) -> Option<SavedPluginState> {
         if !self.can_snapshot()
-            || self.reported_load
+            || self.reported_load.is_some()
             || self.pending_restore.is_some()
             || self.pending_marker_edit.is_some()
             || self.pending_preset.is_some()
@@ -1153,6 +1204,7 @@ impl DirectDevice {
             parameter_bases: corrections,
         };
         self.unconfirmed_writes.clear();
+        self.edit_serials.clear();
         self.macro_snapshot = (!self.user_edit && !self.macro_params.is_empty())
             .then(|| Arc::downgrade(&captured.bytes));
         self.user_edit = false;
