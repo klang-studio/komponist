@@ -38,8 +38,11 @@ pub(crate) struct DeliveredEdit {
 }
 
 impl DeliveredEdit {
-    pub(crate) fn superseded_by(self, edit: NonZeroU32, preset_epoch: u64) -> bool {
-        self.serial == edit && self.load_epoch < preset_epoch
+    /// Older deliveries were superseded. A delivery in the reporting epoch can be
+    /// settled to the plugin's final value, unless playback currently owns the control.
+    pub(crate) fn settles_at(self, edit: NonZeroU32, preset_epoch: u64, driven: bool) -> bool {
+        self.serial == edit
+            && (self.load_epoch < preset_epoch || self.load_epoch == preset_epoch && !driven)
     }
 }
 
@@ -658,7 +661,7 @@ mod tests {
     use notification_bits::{LATENCY_CHANGED, NOTE_NAMES_CHANGED, PARAMS_CHANGED};
 
     #[test]
-    fn a_preset_supersedes_only_the_matching_edit_delivered_before_it() {
+    fn a_preset_settles_matching_older_edits_and_unowned_overlaps() {
         let early = NonZeroU32::new(1).unwrap();
         let repeat = NonZeroU32::new(2).unwrap();
         let delivered = DeliveredEdit {
@@ -666,9 +669,11 @@ mod tests {
             load_epoch: 4,
         };
 
-        assert!(delivered.superseded_by(early, 5));
-        assert!(!delivered.superseded_by(repeat, 5));
-        assert!(!delivered.superseded_by(early, 4));
+        assert!(delivered.settles_at(early, 5, true));
+        assert!(!delivered.settles_at(repeat, 5, false));
+        assert!(delivered.settles_at(early, 4, false));
+        assert!(!delivered.settles_at(early, 4, true));
+        assert!(!delivered.settles_at(early, 3, false));
     }
 
     #[test]

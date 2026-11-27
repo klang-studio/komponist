@@ -727,19 +727,24 @@ impl DirectDevice {
             return;
         }
         let values = self.session.try_read_preset_values(|plugin, delivered| {
-            let superseded: Vec<_> = self
+            let inventory = Inventory::read(plugin);
+            let settled: Vec<_> = self
                 .edit_serials
                 .iter()
                 .filter_map(|(&id, &serial)| {
                     let delivery = delivered.get(&id)?.as_ref()?;
-                    delivery.superseded_by(serial, load_epoch).then_some(id)
+                    let driven = matches!(self.automated_params.get(&id), Some(Some(_)))
+                        || self.macro_params.contains_key(&id);
+                    let settled = inventory.values.contains_key(&id)
+                        && delivery.settles_at(serial, load_epoch, driven);
+                    settled.then_some(id)
                 })
                 .collect();
-            (Inventory::read(plugin), superseded)
+            (inventory, settled)
         });
-        if let Some((inventory, superseded)) = values {
+        if let Some((inventory, settled)) = values {
             self.reported_load = None;
-            for id in superseded {
+            for id in settled {
                 self.edit_serials.remove(&id);
                 self.unconfirmed_writes.remove(&id);
             }
