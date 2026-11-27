@@ -116,9 +116,6 @@ pub(crate) struct ParamUndo {
     /// What a bridged device held before its state entered the document: undoing back to "no
     /// state" hands the plugin this.
     pub(crate) baseline: HashMap<DeviceId, SavedPluginState>,
-    /// Loads a plugin reported whose state has not arrived yet: the next snapshot of the device
-    /// enters the document with the preset as one step.
-    reported: HashMap<DeviceId, ClapPresetSource>,
 }
 
 /// A deferred live-device transaction. A reported load starts a new transaction and receives
@@ -172,13 +169,10 @@ impl DeferredPluginEdit {
         self.preset.is_some() && self.state.is_none()
     }
 
-    pub(crate) fn has_state(&self) -> bool {
-        self.state.is_some() || self.baseline.is_some()
-    }
-
     pub(crate) fn set_snapshot(&mut self, state: &SavedPluginState) {
         self.state = Some(state.clone());
-        self.bases.clear();
+        self.bases
+            .retain(|id, value| state.parameter_bases.get(id) != Some(&*value));
         self.baseline = None;
     }
 
@@ -298,7 +292,6 @@ impl Default for ParamUndo {
             deferred: Vec::new(),
             awaiting: BTreeSet::new(),
             baseline: HashMap::new(),
-            reported: HashMap::new(),
         }
     }
 }
@@ -343,8 +336,13 @@ impl ParamUndo {
         self.deferred.last_mut().expect("appended")
     }
 
+    fn has_pending_report(&self, device: DeviceId) -> bool {
+        self.deferred
+            .iter()
+            .any(|edit| edit.device == device && edit.pending())
+    }
+
     fn discard_pending_report(&mut self, device: DeviceId) {
-        self.reported.remove(&device);
         let mut superseded = false;
         self.deferred.retain(|edit| {
             if edit.device != device {
@@ -370,7 +368,6 @@ impl ParamUndo {
         self.deferred.retain(|edit| edit.device != device);
         self.awaiting.remove(&device);
         self.baseline.remove(&device);
-        self.reported.remove(&device);
     }
 }
 
@@ -402,7 +399,7 @@ impl App {
     /// the outstanding values as host-owned bases in the preceding undo step.
     fn checkpoint_pending_param_edits(&mut self, device: DeviceId) {
         let pending = self.pending_param_bases(device);
-        if pending.is_empty() || self.param_undo.reported.contains_key(&device) {
+        if pending.is_empty() || self.param_undo.has_pending_report(device) {
             return;
         }
         let Some(mut state) = self
@@ -984,12 +981,9 @@ impl App {
             return;
         }
         self.param_undo.discard_pending_report(device);
-        if self.doc.in_gesture() {
-            self.param_undo
-                .deferred
-                .push(DeferredPluginEdit::reported(device, source.clone()));
-        }
-        self.param_undo.reported.insert(device, source.clone());
+        self.param_undo
+            .deferred
+            .push(DeferredPluginEdit::reported(device, source.clone()));
         self.engine.host_mut().request_state(device);
     }
 
@@ -1023,28 +1017,32 @@ impl App {
     /// document as a tracked change, coalesced (module docs). A state equal to the stored one is
     /// skipped.
     pub(crate) fn store_snapshot(&mut self, device: DeviceId, state: &SavedPluginState) {
-        if let Some(source) = self.param_undo.reported.remove(&device) {
-            if let Some(edit) = self
-                .param_undo
-                .deferred
-                .iter_mut()
-                .find(|entry| entry.device == device && entry.pending())
-            {
-                edit.set_snapshot(state);
-                self.flush_deferred();
-            } else {
-                let mut edit = DeferredPluginEdit::reported(device, source);
-                edit.set_snapshot(state);
-                if self.doc.in_gesture() {
-                    self.param_undo.deferred.push(edit);
-                } else {
-                    self.record_reported_load(&edit);
-                }
-            }
+        if let Some(edit) = self
+            .param_undo
+            .deferred
+            .iter_mut()
+            .find(|entry| entry.device == device && entry.pending())
+        {
+            edit.set_snapshot(state);
+            self.flush_deferred();
         } else {
             self.apply_unreported_snapshot(device, state);
             self.reconcile_stored_snapshot(device, state);
         }
+    }
+
+    fn defer_plugin_snapshot(&mut self, device: DeviceId, state: &SavedPluginState) {
+        // A delayed snapshot can carry bytes from before a newer parameter turn. Keep
+        // the known bases until the host verifies a capture includes the current edits.
+        let current = self
+            .engine
+            .host()
+            .is_current_param_snapshot(device, &state.bytes);
+        let edit = self.param_undo.defer_edit(device);
+        if current {
+            edit.bases.clear();
+        }
+        edit.set_snapshot(state);
     }
 
     fn reconcile_stored_snapshot(&mut self, device: DeviceId, state: &SavedPluginState) {
@@ -1094,7 +1092,7 @@ impl App {
         let in_gesture = self.doc.in_gesture();
         if in_gesture && self.param_undo.gesture_device != Some(device) {
             // Not this gesture's change: after it.
-            self.param_undo.defer_edit(device).set_snapshot(state);
+            self.defer_plugin_snapshot(device, state);
             return;
         }
         let set = |p: &Project| edits::set_saved_plugin_state(p, device, state);
@@ -1157,7 +1155,7 @@ impl App {
     /// document too (untracked: it is no edit), so the file has it.
     pub(crate) fn store_snapshot_for_save(&mut self, device: DeviceId, state: &SavedPluginState) {
         if self.doc.in_gesture()
-            && !self.param_undo.reported.contains_key(&device)
+            && !self.param_undo.has_pending_report(device)
             && self
                 .param_undo
                 .deferred
@@ -1166,10 +1164,10 @@ impl App {
         {
             // The fresh capture supersedes the previous ordinary state, while the preceding
             // reported load and its source remain in the same queue.
-            self.param_undo.defer_edit(device).set_snapshot(state);
+            self.defer_plugin_snapshot(device, state);
             return;
         }
-        let untouched = !self.param_undo.reported.contains_key(&device)
+        let untouched = !self.param_undo.has_pending_report(device)
             && self
                 .param_undo
                 .baseline

@@ -37,6 +37,7 @@ use komponist_model::asset_collection::Collector;
 use komponist_model::edits::ProjectProp;
 use komponist_model::persist::{self, FILE_EXTENSION, FORMAT_VERSION, PersistError};
 use komponist_model::{Document, Project, Repairs};
+use komponist_plugins::PluginManagerEvent;
 
 use crate::actions::{Action, ProjectAction, SettingsAction, UiAction};
 use crate::app::App;
@@ -856,10 +857,33 @@ impl App {
         // mistaken for a persisted plugin value.
         self.drain_events();
         self.engine.refresh_snapshot_automation(self.doc.project());
-        let outcome = self
+        let mut outcome = self
             .engine
             .host_mut()
             .snapshot_for_save(crate::app::SNAPSHOT_TIMEOUT);
+        let before_capture_events = self.device_events().len();
+        self.drain_events();
+        // A report can arrive between the host's last capture poll and this drain. We
+        // cannot prove which side of that report a returned snapshot was taken on.
+        for event in &self.device_events()[before_capture_events..] {
+            if let PluginManagerEvent::ClapPresetLoaded { device, .. }
+            | PluginManagerEvent::ClapPresetReported {
+                device,
+                startup: false,
+                ..
+            } = event
+                && outcome
+                    .captured
+                    .iter()
+                    .any(|(captured, _)| captured == device)
+                && !outcome.blocked.contains(device)
+            {
+                outcome.blocked.push(*device);
+            }
+        }
+        outcome
+            .captured
+            .retain(|(device, _)| !outcome.blocked.contains(device));
         let snapshots = outcome.captured;
         if !outcome.blocked.is_empty() {
             // Keep successful snapshots as ordinary device updates when no file will be written.
@@ -960,6 +984,15 @@ impl App {
             self.project_path.as_deref() != Some(path.as_path()) && *name != self.project().name
         });
         let file_ahead = for_file.is_some();
+        let projected = for_file.as_ref().unwrap_or_else(|| document.project());
+        let unavailable = outcome
+            .unavailable
+            .into_iter()
+            .filter_map(|id| {
+                let (_, _, device) = projected.find_device(id)?;
+                Some((id, device.state.is_some()))
+            })
+            .collect::<Vec<_>>();
         let written = match (for_file, &rename) {
             (Some(mut project), rename) => {
                 if let Some(name) = rename {
@@ -1015,7 +1048,7 @@ impl App {
                 );
                 self.remember(path);
                 self.recordings_saved(recordings);
-                self.report_missing_save_snapshots(&outcome.unavailable);
+                self.report_missing_save_snapshots(&unavailable);
                 if let Some(error) = not_durable {
                     self.report_save_not_durable(&error);
                 }
@@ -1026,18 +1059,10 @@ impl App {
     }
 
     /// Reports whether a save retained the document's stored plug-in state or had no state.
-    fn report_missing_save_snapshots(&mut self, devices: &[komponist_model::DeviceId]) {
+    fn report_missing_save_snapshots(&mut self, devices: &[(komponist_model::DeviceId, bool)]) {
         let mut retained = Vec::new();
         let mut missing = Vec::new();
-        for &device in devices {
-            let Some((_, _, model)) = self.project().find_device(device) else {
-                continue;
-            };
-            let has_state = model.state.is_some()
-                || self
-                    .deferred_plugin_edits()
-                    .iter()
-                    .any(|edit| edit.device() == device && edit.has_state());
+        for &(device, has_state) in devices {
             let names = if has_state {
                 &mut retained
             } else {

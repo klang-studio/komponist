@@ -45,6 +45,7 @@ struct Script {
     snapshot: DeviceSnapshots,
     snapshot_unavailable: Vec<DeviceId>,
     snapshot_blocked: Vec<DeviceId>,
+    events_during_capture: Vec<PluginManagerEvent>,
     retiring_snapshots: SaveSnapshots,
     retiring_snapshot_pending: Option<DeviceId>,
     // Observed:
@@ -316,7 +317,9 @@ impl DeviceHost for FakeHost {
 
     fn snapshot_for_save(&mut self, timeout: Duration) -> SaveSnapshots {
         let captured = self.snapshot_states(timeout);
-        let script = self.script.borrow();
+        let mut script = self.script.borrow_mut();
+        let events = std::mem::take(&mut script.events_during_capture);
+        script.events.extend(events);
         SaveSnapshots {
             captured,
             unavailable: script.snapshot_unavailable.clone(),
@@ -1008,11 +1011,14 @@ fn deferred_edits_mark_the_loaded_preset_and_keep_the_last_edit_across_redo() {
             value,
         }));
     }
+    // A capture that predates the last turn arrives late. It has no explicit base for 3.
+    snapshot(&script, device, &[3]);
+    app.step();
     app.dispatch(Action::Edit(EditAction::EndGesture));
     let edited = app.project().find_device(device).unwrap().2;
     assert_eq!(edited.preset.as_ref().unwrap().source, preset.source);
     assert!(edited.preset.as_ref().unwrap().modified);
-    assert_eq!(edited.state.as_deref(), Some(&[2][..]));
+    assert_eq!(edited.state.as_deref(), Some(&[3][..]));
     assert_eq!(edited.parameter_bases.get(&3), Some(&0.75));
 
     app.dispatch(Action::Edit(EditAction::Undo));
@@ -1024,6 +1030,46 @@ fn deferred_edits_mark_the_loaded_preset_and_keep_the_last_edit_across_redo() {
     let edited = app.project().find_device(device).unwrap().2;
     assert!(edited.preset.as_ref().unwrap().modified);
     assert_eq!(edited.parameter_bases.get(&3), Some(&0.75));
+}
+
+#[test]
+fn a_parameter_edit_waits_behind_a_pending_preset_without_a_gesture() {
+    let (mut app, script) = app();
+    let device = device(&app, "Surge XT");
+    let source = ClapPresetSource {
+        location: ClapPresetLocation::Plugin,
+        load_key: Some(b"Warm".to_vec()),
+    };
+    push(
+        &script,
+        PluginManagerEvent::ClapPresetReported {
+            device,
+            source: source.clone(),
+            startup: false,
+        },
+    );
+    app.step();
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device,
+        id: 3,
+        value: 0.75,
+    }));
+    snapshot(&script, device, &[1]);
+    app.step();
+
+    let marked = app.project().find_device(device).unwrap().2;
+    assert_eq!(
+        marked.preset,
+        Some(DevicePreset {
+            source: source.clone(),
+            modified: true
+        })
+    );
+    assert_eq!(marked.parameter_bases.get(&3), Some(&0.75));
+    app.dispatch(Action::Edit(EditAction::Undo));
+    let loaded = app.project().find_device(device).unwrap().2;
+    assert_eq!(loaded.preset, Some(DevicePreset::loaded(source)));
+    assert!(loaded.parameter_bases.is_empty());
 }
 
 #[test]
@@ -1104,6 +1150,78 @@ fn saving_a_fresh_snapshot_keeps_the_deferred_preset_source() {
     let saved = saved.find_device(device).unwrap().2;
     assert_eq!(saved.preset, Some(DevicePreset::loaded(source)));
     assert_eq!(saved.state.as_deref(), Some(&[2][..]));
+}
+
+#[test]
+fn save_withholds_a_capture_that_races_a_preset_report() {
+    let (mut app, script) = app();
+    let scratch = tempfile::tempdir().unwrap();
+    let file = scratch.path().join("Before load.komponist");
+    let original = persist::to_json(app.project()).unwrap();
+    std::fs::write(&file, &original).unwrap();
+    app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
+    let device = device(&app, "Surge XT");
+    {
+        let mut script = script.borrow_mut();
+        script.snapshot = vec![(device, Arc::<[u8]>::from([1]).into())];
+        script
+            .events_during_capture
+            .push(PluginManagerEvent::ClapPresetReported {
+                device,
+                source: ClapPresetSource {
+                    location: ClapPresetLocation::Plugin,
+                    load_key: Some(b"Newly loaded".to_vec()),
+                },
+                startup: false,
+            });
+    }
+    app.dispatch(Action::Project(ProjectAction::Save));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
+    assert_eq!(status_text(&app).unwrap().1, StatusKind::Error);
+    assert!(state(&app, device).is_none());
+}
+
+#[test]
+fn save_reports_missing_state_when_a_pending_preset_withholds_the_deferred_state() {
+    let (mut app, script) = app();
+    let scratch = tempfile::tempdir().unwrap();
+    let file = scratch.path().join("Missing state.komponist");
+    std::fs::write(&file, persist::to_json(app.project()).unwrap()).unwrap();
+    app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
+    let device = device(&app, "Surge XT");
+    push(
+        &script,
+        PluginManagerEvent::StartupState {
+            device,
+            state: Arc::<[u8]>::from([1]).into(),
+        },
+    );
+    push(
+        &script,
+        PluginManagerEvent::ClapPresetReported {
+            device,
+            source: ClapPresetSource {
+                location: ClapPresetLocation::Plugin,
+                load_key: Some(b"Warm".to_vec()),
+            },
+            startup: false,
+        },
+    );
+    app.step();
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device,
+        id: 3,
+        value: 0.75,
+    }));
+
+    script.borrow_mut().snapshot_unavailable.push(device);
+    app.dispatch(Action::Project(ProjectAction::Save));
+    let saved = persist::from_json(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert!(saved.find_device(device).unwrap().2.state.is_none());
+    let missing = app
+        .lang()
+        .project_save_plugin_missing_state("Surge XT".to_owned());
+    assert!(status_text(&app).unwrap().0.contains(missing.as_str()));
 }
 
 #[test]
