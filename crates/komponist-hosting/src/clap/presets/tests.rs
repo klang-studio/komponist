@@ -380,7 +380,19 @@ fn community_clap_discovers_loads_and_round_trips_a_preset() {
     // Reports during the host's own loads belong to those loads.
     assert_eq!(plugin.take_preset_reports(), []);
 
-    // A load the plug-in reported before a load the host requests is superseded by it.
+    // A failed request leaves the earlier successful report and its loaded state in place.
+    plugin.on_main_thread();
+    assert!(plugin.load_clap_preset(&wrong_preset).is_err());
+    assert_eq!(
+        plugin.take_preset_reports(),
+        [PresetReport::Loaded {
+            source: preset.source.clone(),
+            startup: false,
+        }]
+    );
+    assert_eq!(plugin.save_state().unwrap(), [42]);
+
+    // A load the plug-in reported before a successful host load is superseded by it.
     plugin.on_main_thread();
     plugin.load_clap_preset(preset).unwrap();
     assert_eq!(plugin.take_preset_reports(), []);

@@ -770,14 +770,16 @@ impl HostedPlugin for ClapPlugin {
         let path = to_c_string(path)?;
         let key = to_c_string(preset.source.load_key.as_deref())?;
         let mut instance = self.instance.borrow_mut();
-        // A load the plugin reported before this one is superseded by it; failures still count.
         let mut earlier = instance.access_handler(|host| host.take_preset_reports());
-        earlier.retain(|report| matches!(report, PresetReport::Failed { .. }));
         let result = ext.load_from_location(
             &instance.plugin_handle(),
             presets::location_arg(path.as_deref()),
             key.as_deref(),
         );
+        if result.is_ok() {
+            // Only a successful load supersedes a preset the plugin reported earlier.
+            earlier.retain(|report| matches!(report, PresetReport::Failed { .. }));
+        }
         // What the plugin reports during the call describes this load: the result covers it.
         let during = instance.access_handler(|host| {
             let during = host.take_preset_reports();

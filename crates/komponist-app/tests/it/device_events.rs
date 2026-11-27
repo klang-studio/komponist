@@ -882,6 +882,129 @@ fn a_reported_preset_and_its_snapshot_are_one_step_and_an_edit_marks_it_modified
 }
 
 #[test]
+fn a_host_preset_load_supersedes_a_report_awaiting_its_state() {
+    let (mut app, script) = app();
+    let device = device(&app, "Surge XT");
+    let source = |key: &[u8]| ClapPresetSource {
+        location: ClapPresetLocation::Plugin,
+        load_key: Some(key.to_vec()),
+    };
+    push(
+        &script,
+        PluginManagerEvent::ClapPresetReported {
+            device,
+            source: source(b"Plugin"),
+            startup: false,
+        },
+    );
+    app.step();
+
+    let host_source = source(b"Host");
+    push(
+        &script,
+        PluginManagerEvent::ClapPresetLoaded {
+            device,
+            source: Some(host_source.clone()),
+            previous_state: Arc::from([4_u8]),
+            state: Arc::from([5_u8]),
+        },
+    );
+    app.step();
+    snapshot(&script, device, &[5]);
+    app.step();
+    let device = app.project().find_device(device).unwrap().2;
+    assert_eq!(device.preset, Some(DevicePreset::loaded(host_source)));
+    assert_eq!(device.state.as_deref(), Some(&[5_u8][..]));
+}
+
+#[test]
+fn a_reported_preset_ends_the_undo_echo_window() {
+    let (mut app, script) = app();
+    let device = device(&app, "Surge XT");
+    app.set_snapshot_window(Duration::ZERO);
+    snapshot(&script, device, &[1]);
+    app.step();
+    snapshot(&script, device, &[2]);
+    app.step();
+    app.dispatch(Action::Edit(EditAction::Undo));
+
+    push(
+        &script,
+        PluginManagerEvent::ClapPresetReported {
+            device,
+            source: ClapPresetSource {
+                location: ClapPresetLocation::Plugin,
+                load_key: Some(b"Warm".to_vec()),
+            },
+            startup: false,
+        },
+    );
+    snapshot(&script, device, &[3]);
+    app.step();
+    snapshot(&script, device, &[4]);
+    app.step();
+    assert_eq!(state(&app, device).as_deref(), Some(&[4_u8][..]));
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(state(&app, device).as_deref(), Some(&[3_u8][..]));
+}
+
+#[test]
+fn deferred_preset_marks_and_snapshots_undo_together_for_each_device() {
+    let (mut app, script) = app();
+    let synth = device(&app, "Surge XT");
+    let eq = device(&app, "LSP Para EQ x8");
+    let source = ClapPresetSource {
+        location: ClapPresetLocation::Plugin,
+        load_key: Some(b"Init".to_vec()),
+    };
+    for device in [synth, eq] {
+        push(
+            &script,
+            PluginManagerEvent::ClapPresetReported {
+                device,
+                source: source.clone(),
+                startup: false,
+            },
+        );
+        snapshot(&script, device, &[1]);
+    }
+    app.step();
+    app.dispatch(Action::Edit(EditAction::BeginGesture {
+        label: "Unrelated".into(),
+    }));
+    for device in [synth, eq] {
+        app.dispatch(Action::Plugin(PluginAction::SetParam {
+            device,
+            id: 3,
+            value: 0.5,
+        }));
+        snapshot(&script, device, &[2]);
+    }
+    app.step();
+    app.dispatch(Action::Edit(EditAction::EndGesture));
+
+    let modified = |app: &App, device| {
+        app.project()
+            .find_device(device)
+            .unwrap()
+            .2
+            .preset
+            .as_ref()
+            .unwrap()
+            .modified
+    };
+    for device in [synth, eq] {
+        assert!(modified(&app, device));
+        assert_eq!(state(&app, device).as_deref(), Some(&[2_u8][..]));
+    }
+    for device in [eq, synth] {
+        app.dispatch(Action::Edit(EditAction::Undo));
+        assert!(!modified(&app, device));
+        assert_eq!(state(&app, device).as_deref(), Some(&[1_u8][..]));
+    }
+}
+
+#[test]
 fn state_snapshots_are_undo_steps_that_follow_each_other_into_one() {
     let (mut app, script) = app();
     let surge = device(&app, "Surge XT");

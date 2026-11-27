@@ -342,6 +342,7 @@ fn bundled_clap_startup_and_memory() {
             parameter_bases: Default::default(),
             asset_links: Default::default(),
             state: prepared.state,
+            preset: prepared.preset,
             sidechain: None,
         };
         let created = Instant::now();

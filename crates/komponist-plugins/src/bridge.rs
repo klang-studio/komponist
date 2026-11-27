@@ -1771,7 +1771,7 @@ impl Bridge {
                 }
                 events.push(PluginManagerEvent::ParamValuesChanged { device });
             }
-            BridgeMsg::PresetValues(values) => {
+            BridgeMsg::PresetValues(values) if !self.has_pending_document_restore() => {
                 // A load the plugin reported replaced its values: they are the persistent bases
                 // now. Edits sent after it and playback-owned parameters keep theirs.
                 for value in values {
@@ -1789,6 +1789,7 @@ impl Bridge {
                 events.push(PluginManagerEvent::ParamsChanged { device });
                 events.push(PluginManagerEvent::ParamValuesChanged { device });
             }
+            BridgeMsg::PresetValues(_) => {}
             BridgeMsg::PluginParamEdits(edits) => {
                 if self.snapshots_preserve_bases() && self.phase == Phase::Running {
                     for (id, value) in edits {
@@ -1855,6 +1856,8 @@ impl Bridge {
             BridgeMsg::PresetReported(report) => {
                 if matches!(self.phase, Phase::Loading | Phase::Running) {
                     match report {
+                        PresetReport::Loaded { startup: false, .. }
+                            if self.has_pending_document_restore() => {}
                         PresetReport::Loaded { source, startup } => {
                             if !startup {
                                 // The plugin changed its own state: the snapshot follows.
@@ -2117,6 +2120,16 @@ impl Bridge {
                 events.push(PluginManagerEvent::ClapPresetFailed { device, message });
             }
         }
+    }
+
+    /// A report ahead of a document restore's reply cannot describe the restored state.
+    fn has_pending_document_restore(&self) -> bool {
+        self.state_restores.iter().any(|restore| {
+            self.pending_clap_preset
+                .as_ref()
+                .map(|(request, _)| *request)
+                != Some(restore.request)
+        })
     }
 
     fn finish_restore(

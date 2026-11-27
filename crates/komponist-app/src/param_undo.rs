@@ -353,11 +353,16 @@ impl App {
         if self.doc.in_gesture() {
             return;
         }
-        for (device, label) in std::mem::take(&mut self.param_undo.deferred_marks) {
-            self.mark_preset_modified(device, &label);
-        }
+        let mut marks = std::mem::take(&mut self.param_undo.deferred_marks);
         for (device, state) in std::mem::take(&mut self.param_undo.deferred) {
+            if let Some(index) = marks.iter().position(|(marked, _)| *marked == device) {
+                let (_, label) = marks.remove(index);
+                self.mark_preset_modified(device, &label);
+            }
             self.store_snapshot(device, &state);
+        }
+        for (device, label) in marks {
+            self.mark_preset_modified(device, &label);
         }
     }
 
@@ -711,6 +716,11 @@ impl App {
         previous_state: &Arc<[u8]>,
         state: &Arc<[u8]>,
     ) {
+        if self.param_undo.reported.remove(&device).is_some() {
+            self.param_undo
+                .deferred
+                .retain(|(pending, _)| *pending != device);
+        }
         if self.doc.in_gesture() {
             self.end_gesture();
         }
@@ -777,6 +787,7 @@ impl App {
         state: &SavedPluginState,
     ) {
         self.param_undo.awaiting.remove(&device);
+        self.param_undo.echo.remove(&device);
         let preset = DevicePreset::loaded(source);
         let top = self.doc.top_step();
         match self.doc.apply("undo-load-preset", |project| {

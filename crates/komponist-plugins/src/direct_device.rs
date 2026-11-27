@@ -584,7 +584,11 @@ impl DirectDevice {
         }
         if let Some(state) = self.pending_restore.as_ref()
             && let Some((result, inventory)) = self.session.restore(
-                |plugin| load_saved_state(plugin, state, true),
+                |plugin| {
+                    // The document restore supersedes reports queued for the outgoing state.
+                    plugin.take_preset_reports();
+                    load_saved_state(plugin, state, true)
+                },
                 Inventory::read,
             )
         {
@@ -664,8 +668,10 @@ impl DirectDevice {
             }
             None => {}
         }
-        self.refresh_reported_load(id, events);
-        self.report_presets(id, events);
+        if self.pending_restore.is_none() {
+            self.refresh_reported_load(id, events);
+            self.report_presets(id, events);
+        }
         if observed.has(notification_bits::STATE_DIRTY) {
             self.user_edit = true;
             self.snapshot_due = Some(Instant::now() + self.debounce);
@@ -837,6 +843,7 @@ impl DirectDevice {
                 self.released_automation.clear();
                 self.snapshot_due = None;
                 self.user_edit = false;
+                self.reported_load = false;
                 self.accept_inventory(inventory, true);
                 Self::report_metadata(device, events);
                 events.push(PluginManagerEvent::ClapPresetLoaded {
@@ -985,6 +992,7 @@ impl DirectDevice {
         self.pending_preset = None;
         self.after_preset_writes.clear();
         self.pending_restore = Some(state);
+        self.reported_load = false;
         self.pending_writes.clear();
         self.unconfirmed_writes.clear();
         self.released_automation.clear();
@@ -1044,6 +1052,7 @@ impl DirectDevice {
 
     pub(crate) fn capture(&mut self) -> Option<SavedPluginState> {
         if !self.can_snapshot()
+            || self.reported_load
             || self.pending_restore.is_some()
             || self.pending_marker_edit.is_some()
             || self.pending_preset.is_some()

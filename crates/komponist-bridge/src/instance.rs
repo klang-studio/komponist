@@ -1298,6 +1298,10 @@ impl Bridge {
             let active_restore = self.active.is_some();
             let mut apply_on_audio = BTreeMap::new();
             let mut load = || {
+                if active_restore {
+                    // The reports preceding this restore describe the outgoing state.
+                    plugin.take_preset_reports();
+                }
                 let before: BTreeMap<_, _> = plugin
                     .params()
                     .into_iter()
