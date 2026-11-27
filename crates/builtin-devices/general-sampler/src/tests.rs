@@ -11,6 +11,11 @@ use komponist_sampler_shared::{SampleLink, SamplerHandle, SyncStatus, testkit};
 
 use super::{SPEC, Settings, dsp_with_handle, read_settings, sync_settings, write_settings};
 
+#[allow(dead_code)]
+#[path = "../../sampler-shared/core/src/baseline_support.rs"]
+mod baseline_support;
+mod lfo_baseline;
+
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 

@@ -5,11 +5,17 @@
 //! Nothing in here depends on the plugin framework, so everything can be unit tested in isolation.
 //! None of the `process`/`render` style functions allocate.
 
+#[cfg(test)]
+mod baseline_support;
 pub mod biquad;
 pub mod engine;
 pub mod envelope;
 pub mod interp;
 pub mod layers;
+#[cfg(test)]
+mod lfo_baseline;
+#[cfg(test)]
+mod lfo_reference;
 pub mod lofi;
 pub mod modulation;
 pub mod pad;
