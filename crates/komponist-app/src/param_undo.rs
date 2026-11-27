@@ -978,7 +978,7 @@ impl App {
                 .param_undo
                 .deferred
                 .iter()
-                .any(|entry| entry.device == device && entry.preset.is_some())
+                .any(|entry| entry.device == device)
         {
             self.param_undo.discard_pending_report(device);
             return;

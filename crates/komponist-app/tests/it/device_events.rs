@@ -1027,6 +1027,44 @@ fn deferred_edits_mark_the_loaded_preset_and_keep_the_last_edit_across_redo() {
 }
 
 #[test]
+fn reloading_the_same_preset_supersedes_a_deferred_parameter_edit() {
+    let (mut app, script) = app();
+    let device = device(&app, "Surge XT");
+    let source = ClapPresetSource {
+        location: ClapPresetLocation::Plugin,
+        load_key: Some(b"Warm".to_vec()),
+    };
+    let report = PluginManagerEvent::ClapPresetReported {
+        device,
+        source,
+        startup: false,
+    };
+    push(&script, report.clone());
+    snapshot(&script, device, &[1]);
+    app.step();
+    app.dispatch(Action::Edit(EditAction::BeginGesture {
+        label: "Unrelated".into(),
+    }));
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device,
+        id: 3,
+        value: 0.75,
+    }));
+    push(&script, report);
+    snapshot(&script, device, &[1]);
+    app.step();
+    app.dispatch(Action::Edit(EditAction::EndGesture));
+
+    let current = app.project().find_device(device).unwrap().2;
+    assert!(!current.preset.as_ref().unwrap().modified);
+    assert!(current.parameter_bases.is_empty());
+    app.dispatch(Action::Edit(EditAction::Undo));
+    let edited = app.project().find_device(device).unwrap().2;
+    assert!(edited.preset.as_ref().unwrap().modified);
+    assert_eq!(edited.parameter_bases.get(&3), Some(&0.75));
+}
+
+#[test]
 fn saving_a_fresh_snapshot_keeps_the_deferred_preset_source() {
     let (mut app, script) = app();
     let scratch = tempfile::tempdir().unwrap();
