@@ -11,7 +11,7 @@
 use komponist_engine::EventKind;
 use komponist_model::params::va_curve::{dst, src};
 
-use super::baseline_support::{Dice, SPLITS, Split, check_digests, digest};
+use super::baseline_support::{Dice, check_digests, split_independent_digest};
 use super::{bend, cc, off, on, pressure, processor, render, slot, wire};
 use crate::lfo::Lfo;
 use crate::lfo_reference;
@@ -190,7 +190,7 @@ fn volt_lfos_match_the_reference_bit_for_bit() {
 
 /// One second: a note, a second one off the 32-sample grid, a third, a retrigger of the first
 /// (the same key again), the wheels, releases and a late note.
-pub(crate) fn performance() -> Vec<(u32, EventKind)> {
+fn performance() -> Vec<(u32, EventKind)> {
     vec![
         (0, on(60, 100)),
         (1000, on(64, 80)),
@@ -207,34 +207,20 @@ pub(crate) fn performance() -> Vec<(u32, EventKind)> {
     ]
 }
 
-pub(crate) const FRAMES: usize = 48_000;
+const FRAMES: usize = 48_000;
 
 /// Renders `changes` with every split; asserts they give the same bits and returns the digest.
 fn render_digest(changes: &[(&str, f64)]) -> u64 {
-    let events = performance();
-    let mut first: Option<(u64, Split)> = None;
-    for split in SPLITS {
+    split_independent_digest(FRAMES, &performance(), |calls| {
         let mut p = processor(changes);
         let mut out = [Vec::new(), Vec::new()];
-        for (n, here) in split.calls(FRAMES, &events) {
+        for (n, here) in calls {
             let part = render(&mut p, n, &here, 120.0);
             out[0].extend_from_slice(&part[0]);
             out[1].extend_from_slice(&part[1]);
         }
-        assert!(super::peak(&out[0]) > 0.01, "silent with {}", split.name());
-        let d = digest([&out[0][..], &out[1][..]]);
-        match first {
-            None => first = Some((d, split)),
-            Some((d0, s0)) => assert_eq!(
-                d,
-                d0,
-                "{} and {} differ: volt's output must not depend on the block split",
-                split.name(),
-                s0.name()
-            ),
-        }
-    }
-    first.unwrap().0
+        out
+    })
 }
 
 /// The values of preset `name`, as changes by model id.
@@ -252,7 +238,7 @@ fn preset(name: &str) -> Vec<(&'static str, f64)> {
 
 /// Sample-and-hold into the cutoff, smooth random into the pitch, the LFOs' rates modulated by
 /// the third envelope and by LFO 1, fades, unipolar output, unison.
-pub(crate) fn lfo_matrix() -> Vec<(&'static str, f64)> {
+fn lfo_matrix() -> Vec<(&'static str, f64)> {
     let mut all = vec![
         ("lfo1_shape", 4.0),
         ("lfo1_rate", 6.0),
@@ -276,7 +262,7 @@ pub(crate) fn lfo_matrix() -> Vec<(&'static str, f64)> {
 
 /// Both LFOs free-running (shared by all voices): a fast unipolar sine on the pulse width and
 /// a tempo-synced smooth random on the cutoff; the mod wheel's vibrato; mono with retrigger.
-pub(crate) fn free_lfos() -> Vec<(&'static str, f64)> {
+fn free_lfos() -> Vec<(&'static str, f64)> {
     let mut all = vec![
         ("lfo1_key", 0.0),
         ("lfo1_shape", 0.0),
@@ -296,7 +282,7 @@ pub(crate) fn free_lfos() -> Vec<(&'static str, f64)> {
 
 /// The remaining shapes: a keyed unipolar square with a fade on the volume, a free unipolar
 /// triangle and a keyed saw on the pulse width of B and the mix.
-pub(crate) fn uni_shapes() -> Vec<(&'static str, f64)> {
+fn uni_shapes() -> Vec<(&'static str, f64)> {
     let mut all = vec![
         ("lfo1_shape", 3.0),
         ("lfo1_rate", 4.0),

@@ -106,6 +106,38 @@ pub(crate) fn digest<'a>(channels: impl IntoIterator<Item = &'a [f32]>) -> u64 {
     hash
 }
 
+/// Renders `frames` with `events` in every split of [`SPLITS`] (`render` plays the calls on a
+/// fresh instance and returns left and right), asserts that all splits give the same bits (volt's
+/// engine steps its control rate across calls) and returns their digest.
+pub(crate) fn split_independent_digest(
+    frames: usize,
+    events: &[(u32, EventKind)],
+    mut render: impl FnMut(Vec<(usize, Vec<(u32, EventKind)>)>) -> [Vec<f32>; 2],
+) -> u64 {
+    let mut first: Option<(u64, Split)> = None;
+    for split in SPLITS {
+        let [l, r] = render(split.calls(frames, events));
+        assert_eq!(l.len(), frames);
+        assert!(
+            l.iter().any(|s| s.abs() > 0.01),
+            "silent with {}",
+            split.name()
+        );
+        let d = digest([&l[..], &r[..]]);
+        match first {
+            None => first = Some((d, split)),
+            Some((d0, s0)) => assert_eq!(
+                d,
+                d0,
+                "{} and {} differ: the output must not depend on the block split",
+                split.name(),
+                s0.name()
+            ),
+        }
+    }
+    first.expect("splits").0
+}
+
 /// Compares `actual` with the committed `expected` digests on the reference platform (Linux
 /// x86_64); elsewhere prints them. On a mismatch the message holds the table to commit if the
 /// change is intended.
