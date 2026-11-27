@@ -199,7 +199,7 @@ pub struct Card {
     pub preset: Option<usize>,
     pub(super) preset_name: Option<String>,
     /// The device has a sidechain input: the head shows the "SC" chip (WP-104). Internal devices
-    /// say so in their spec, plugins through [`DeviceHost::has_sidechain`].
+    /// say so in their spec, plugins through [`ProcessorHost::has_sidechain`].
     pub has_sidechain: bool,
     /// The sidechain source and tap the device has now, if any.
     pub sidechain: Option<komponist_model::Sidechain>,

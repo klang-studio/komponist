@@ -14,7 +14,8 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::SettingsAction;
 use komponist_app::device_host::{
-    DeviceHost, DeviceStateHost, ParameterHost, PluginHost, ProcessorHost,
+    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
+    PluginCatalogHost, PluginHost, PluginWindowHost, PresetHost, ProcessorHost,
 };
 use komponist_app::dialogs::{missing_plugins, new_project, settings, start};
 use komponist_app::engine_sync::EngineSync;
@@ -371,7 +372,7 @@ impl ParameterHost for Recording {}
 
 impl DeviceStateHost for Recording {}
 
-impl DeviceHost for Recording {
+impl PluginCatalogHost for Recording {
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
         self.inner.role(plugin)
     }
@@ -380,6 +381,16 @@ impl DeviceHost for Recording {
         self.inner.catalog()
     }
 }
+
+impl PresetHost for Recording {}
+
+impl AssetHost for Recording {}
+
+impl OfflineRenderHost for Recording {}
+
+impl PluginWindowHost for Recording {}
+
+impl DevicePresentationHost for Recording {}
 
 #[test]
 fn opening_a_project_resets_the_engine() {
@@ -875,7 +886,7 @@ impl ParameterHost for Scanning {}
 
 impl DeviceStateHost for Scanning {}
 
-impl DeviceHost for Scanning {
+impl PluginCatalogHost for Scanning {
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
         self.inner.role(plugin)
     }
@@ -888,6 +899,16 @@ impl DeviceHost for Scanning {
         *self.scanning.lock().unwrap()
     }
 }
+
+impl PresetHost for Scanning {}
+
+impl AssetHost for Scanning {}
+
+impl OfflineRenderHost for Scanning {}
+
+impl PluginWindowHost for Scanning {}
+
+impl DevicePresentationHost for Scanning {}
 
 /// A file the loader had to repair opens and says how many places it changed (#209).
 #[test]

@@ -208,7 +208,7 @@ mod tests {
     fn the_template_has_a_sampler_beat_and_two_hexa_tracks() {
         let host = crate::app::App::headless_plugin_host();
         let (drums, hexa) =
-            template_instruments(crate::device_host::DeviceHost::catalog(&host)).unwrap();
+            template_instruments(crate::device_host::PluginCatalogHost::catalog(&host)).unwrap();
         let p = template(Lang::De, drums.clone(), hexa.clone());
         assert_eq!(p.name, "Beat-Skizze");
         assert_eq!(template(Lang::En, drums, hexa).name, "Beat Sketch");

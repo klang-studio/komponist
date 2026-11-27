@@ -8,7 +8,10 @@ use egui::accesskit::Role;
 use egui::{Event as UiEvent, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::device_host::{DeviceHost, DeviceStateHost, ParameterHost, ProcessorHost};
+use komponist_app::device_host::{
+    AssetHost, DeviceHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost,
+    ParameterHost, PluginCatalogHost, PluginWindowHost, PresetHost, ProcessorHost,
+};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::ui_state::{FocusArea, StatusKind};
 use komponist_app::{Action, App, EditAction, ProjectAction};
@@ -365,15 +368,7 @@ impl DeviceStateHost for Host {
     }
 }
 
-impl DeviceHost for Host {
-    fn asset_slots(&self, device: DeviceId) -> Option<&Snapshot> {
-        self.assets.as_ref().filter(|_| device == self.state)
-    }
-
-    fn render_asset_bindings_pending(&self, device: DeviceId) -> bool {
-        self.bindings_pending && device == self.state
-    }
-
+impl PluginCatalogHost for Host {
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
         self.backend.role(plugin)
     }
@@ -381,7 +376,21 @@ impl DeviceHost for Host {
     fn catalog(&self) -> &Catalog {
         self.backend.catalog()
     }
+}
 
+impl PresetHost for Host {}
+
+impl AssetHost for Host {
+    fn asset_slots(&self, device: DeviceId) -> Option<&Snapshot> {
+        self.assets.as_ref().filter(|_| device == self.state)
+    }
+
+    fn render_asset_bindings_pending(&self, device: DeviceId) -> bool {
+        self.bindings_pending && device == self.state
+    }
+}
+
+impl OfflineRenderHost for Host {
     fn set_render_mode(&mut self, _: RenderMode) {
         self.global_mode_changes.fetch_add(1, Ordering::Relaxed);
     }
@@ -389,11 +398,15 @@ impl DeviceHost for Host {
     fn set_selected_render_mode(&mut self, ids: &[DeviceId], mode: RenderMode) {
         self.backend.set_selected_render_mode(ids, mode);
     }
+}
 
+impl PluginWindowHost for Host {
     fn bridge_pid(&self, device: DeviceId) -> Option<u32> {
         self.backend.bridge_pid(device)
     }
 }
+
+impl DevicePresentationHost for Host {}
 
 fn app(project: Project, folder: &Path, effect: DeviceId, fixture: Fixture) -> App {
     app_on(

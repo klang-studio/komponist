@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use komponist_app::App;
 use komponist_app::device_host::{
-    DeviceHost, DeviceStateHost, ParameterHost, PluginHost, ProcessorHost,
+    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
+    PluginCatalogHost, PluginHost, PluginWindowHost, PresetHost, ProcessorHost,
 };
 use komponist_ipc::{PluginDescriptor, PluginFormat as BundleFormat, PluginKind};
 use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef};
@@ -286,7 +287,7 @@ impl DeviceStateHost for FakeHost {
     }
 }
 
-impl DeviceHost for FakeHost {
+impl PluginCatalogHost for FakeHost {
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
         match self.catalog.resolve(plugin)?.kind {
             PluginKind::Instrument => Some(DeviceRole::Instrument),
@@ -299,7 +300,27 @@ impl DeviceHost for FakeHost {
     fn catalog(&self) -> &Catalog {
         &self.catalog
     }
+}
 
+impl PresetHost for FakeHost {
+    fn clap_presets(&self, device: &Device) -> &[komponist_plugin_api::clap_presets::ClapPreset] {
+        self.bundled
+            .as_ref()
+            .map_or(&[], |host| host.clap_presets(device))
+    }
+}
+
+impl AssetHost for FakeHost {}
+
+impl OfflineRenderHost for FakeHost {}
+
+impl PluginWindowHost for FakeHost {
+    fn has_gui(&self, device: DeviceId) -> bool {
+        self.gui.contains(&device)
+    }
+}
+
+impl DevicePresentationHost for FakeHost {
     fn native_layout(
         &self,
         device: DeviceId,
@@ -312,15 +333,5 @@ impl DeviceHost for FakeHost {
         device: DeviceId,
     ) -> Option<&Arc<komponist_plugin_api::device_canvas::DisplayList>> {
         self.bundled.as_ref()?.device_display(device)
-    }
-
-    fn clap_presets(&self, device: &Device) -> &[komponist_plugin_api::clap_presets::ClapPreset] {
-        self.bundled
-            .as_ref()
-            .map_or(&[], |host| host.clap_presets(device))
-    }
-
-    fn has_gui(&self, device: DeviceId) -> bool {
-        self.gui.contains(&device)
     }
 }

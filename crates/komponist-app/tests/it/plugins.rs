@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use assert_no_alloc::assert_no_alloc;
 use common::*;
 use komponist_app::actions::{PluginAction, ProjectAction, TransportAction};
-use komponist_app::device_host::{DeviceHost, PluginHost, ProcessorHost};
+use komponist_app::device_host::{DeviceHost, PluginCatalogHost, PluginHost, ProcessorHost};
 use komponist_app::ui_state::StatusKind;
 use komponist_app::{Action, App};
 use komponist_engine::compile::{self, CompileEnv};

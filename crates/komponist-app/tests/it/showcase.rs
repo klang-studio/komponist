@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use komponist_app::App;
 use komponist_app::actions::{BitDepth, ExportRange};
-use komponist_app::device_host::{DeviceHost, PluginHost};
+use komponist_app::device_host::{DeviceHost, PluginCatalogHost, PluginHost};
 use komponist_app::showcase::bundled_demo;
 use komponist_model::automation::AutomationTarget;
 use komponist_model::fixtures::demo_song;

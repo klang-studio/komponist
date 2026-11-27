@@ -385,7 +385,7 @@ mod tests {
 
     /// The demo with the shipped Hexa on its Lead track: the one device the packaged test host knows.
     fn demo_with_shipped_lead() -> komponist_model::Project {
-        use crate::device_host::DeviceHost as _;
+        use crate::device_host::PluginCatalogHost as _;
         let host = crate::app::App::headless_plugin_host();
         let hexa = host
             .catalog()

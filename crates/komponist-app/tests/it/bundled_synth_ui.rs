@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::Queryable as _};
 use komponist_app::actions::{DropTarget, EditAction};
-use komponist_app::device_host::DeviceHost;
+use komponist_app::device_host::PluginCatalogHost;
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, PluginAction, UiAction};
 use komponist_i18n::Lang;
@@ -387,7 +387,7 @@ fn newest_instrument(app: &App) -> &Device {
         .1
 }
 
-fn packaged<'a>(host: &'a dyn DeviceHost, id: &str) -> &'a CatalogEntry {
+fn packaged<'a>(host: &'a dyn PluginCatalogHost, id: &str) -> &'a CatalogEntry {
     host.catalog()
         .entries()
         .iter()

@@ -87,7 +87,7 @@ pub enum Effect {
     },
     /// Resize the X11 child (the plugin area) to this size.
     Child(Px),
-    /// Tell the plugin its new size (`DeviceHost::set_gui_size`).
+    /// Tell the plugin its new size (`PluginWindowHost::set_gui_size`).
     Tell(GuiSize),
 }
 

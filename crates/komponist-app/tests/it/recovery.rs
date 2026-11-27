@@ -16,7 +16,7 @@ use egui::accesskit::Role;
 use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::device_host::DeviceHost;
+use komponist_app::device_host::PluginCatalogHost;
 use komponist_app::dialogs::recovery::{self as prompt, Answer, Model, Variant};
 use komponist_app::dialogs::start;
 use komponist_app::engine_sync::EngineSync;

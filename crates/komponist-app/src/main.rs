@@ -30,7 +30,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use komponist_app::device_host::{DeviceHost, PluginHost};
+use komponist_app::device_host::{PluginCatalogHost, PluginHost};
 use komponist_app::dialogs::new_project;
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::panels::transport::WORDMARK;

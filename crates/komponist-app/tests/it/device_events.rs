@@ -11,7 +11,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use komponist_app::actions::{EditAction, PluginAction, ProjectAction, SettingsAction};
-use komponist_app::device_host::{DeviceHost, DeviceStateHost, ParameterHost, ProcessorHost};
+use komponist_app::device_host::{
+    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
+    PluginCatalogHost, PluginWindowHost, PresetHost, ProcessorHost,
+};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::{PluginView, StatusKind};
@@ -321,7 +324,7 @@ impl DeviceStateHost for FakeHost {
     }
 }
 
-impl DeviceHost for FakeHost {
+impl PluginCatalogHost for FakeHost {
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
         self.catalog.resolve(plugin).map(|e| match e.kind {
             PluginKind::Effect => DeviceRole::Effect,
@@ -333,6 +336,12 @@ impl DeviceHost for FakeHost {
         &self.catalog
     }
 
+    fn start_scan(&mut self, dirs: &PluginDirs) {
+        self.script.borrow_mut().scans.push(dirs.clone());
+    }
+}
+
+impl PresetHost for FakeHost {
     fn clap_presets(&self, device: &Device) -> &[ClapPreset] {
         if self
             .clap_presets
@@ -352,11 +361,13 @@ impl DeviceHost for FakeHost {
             .push((device.id, source.clone()));
         true
     }
+}
 
-    fn start_scan(&mut self, dirs: &PluginDirs) {
-        self.script.borrow_mut().scans.push(dirs.clone());
-    }
+impl AssetHost for FakeHost {}
 
+impl OfflineRenderHost for FakeHost {}
+
+impl PluginWindowHost for FakeHost {
     fn has_gui(&self, device: DeviceId) -> bool {
         !self.is_demo_instrument(device) && self.status(device) == DeviceStatus::Ok
     }
@@ -373,6 +384,8 @@ impl DeviceHost for FakeHost {
         self.script.borrow_mut().closed_guis.push(device);
     }
 }
+
+impl DevicePresentationHost for FakeHost {}
 
 impl FakeHost {
     /// Whether `device` is the demo's hexa (ids of the demo: Bass 9, Lead 94).

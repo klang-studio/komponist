@@ -15,7 +15,7 @@
 //! The running light: while the transport plays the open clip, the column of the current step
 //! brightens (`surface.4`) and set steps in it glow (`TrackPalette::play`) with a `text.1`
 //! contour. Row names come from the instrument's note names when it reports them
-//! (`DeviceHost::note_names`), else from the model; the small label right of the name is the
+//! (`DevicePresentationHost::note_names`), else from the model; the small label right of the name is the
 //! sampler pad ("P1", S03) on a sampler track, else the note name ([`crate::step_rows`]).
 //!
 //! The view never changes the document: steps, rows and pattern properties change through

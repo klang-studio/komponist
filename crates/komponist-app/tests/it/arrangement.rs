@@ -12,7 +12,8 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange};
 use komponist_app::device_host::{
-    DeviceHost, DeviceStateHost, ParameterHost, PluginHost, ProcessorHost,
+    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
+    PluginCatalogHost, PluginHost, PluginWindowHost, PresetHost, ProcessorHost,
 };
 use komponist_app::ui_state::FocusArea;
 use komponist_app::{Action, App, EditAction, TransportAction, UiAction};
@@ -64,7 +65,7 @@ impl ParameterHost for AllInstalled {}
 
 impl DeviceStateHost for AllInstalled {}
 
-impl DeviceHost for AllInstalled {
+impl PluginCatalogHost for AllInstalled {
     fn role(&self, plugin: &komponist_model::PluginRef) -> Option<DeviceRole> {
         self.0.role(plugin)
     }
@@ -77,6 +78,16 @@ impl DeviceHost for AllInstalled {
         Vec::new()
     }
 }
+
+impl PresetHost for AllInstalled {}
+
+impl AssetHost for AllInstalled {}
+
+impl OfflineRenderHost for AllInstalled {}
+
+impl PluginWindowHost for AllInstalled {}
+
+impl DevicePresentationHost for AllInstalled {}
 
 fn harness_at(app: App, ppp: f32) -> Harness<'static, App> {
     komponist_ui::snapshot::builder::<App>(ppp)

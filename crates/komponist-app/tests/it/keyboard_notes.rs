@@ -4,7 +4,10 @@ use std::sync::mpsc::{self, Sender};
 use egui::Key;
 use egui_kittest::Harness;
 use komponist_app::actions::{SelectMode, SelectionChange};
-use komponist_app::device_host::{DeviceHost, DeviceStateHost, ParameterHost, ProcessorHost};
+use komponist_app::device_host::{
+    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
+    PluginCatalogHost, PluginWindowHost, PresetHost, ProcessorHost,
+};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::{Action, App, EditAction, ProjectAction, TransportAction, UiAction};
@@ -49,7 +52,7 @@ impl ParameterHost for SineHost {}
 
 impl DeviceStateHost for SineHost {}
 
-impl DeviceHost for SineHost {
+impl PluginCatalogHost for SineHost {
     fn role(&self, _: &PluginRef) -> Option<DeviceRole> {
         Some(DeviceRole::Instrument)
     }
@@ -58,6 +61,16 @@ impl DeviceHost for SineHost {
         &self.catalog
     }
 }
+
+impl PresetHost for SineHost {}
+
+impl AssetHost for SineHost {}
+
+impl OfflineRenderHost for SineHost {}
+
+impl PluginWindowHost for SineHost {}
+
+impl DevicePresentationHost for SineHost {}
 
 fn rig() -> (Harness<'static, App>, [TrackId; 2], Vec<EventLog>) {
     let plugin = komponist_model::fixtures::demo_project().tracks[1]

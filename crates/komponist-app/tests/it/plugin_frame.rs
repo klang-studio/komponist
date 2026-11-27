@@ -15,7 +15,10 @@ use egui::{Rect, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{EditAction, PluginAction, ProjectAction};
-use komponist_app::device_host::{DeviceHost, DeviceStateHost, ParameterHost, ProcessorHost};
+use komponist_app::device_host::{
+    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
+    PluginCatalogHost, PluginWindowHost, PresetHost, ProcessorHost,
+};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::PluginView;
@@ -520,7 +523,17 @@ impl ParameterHost for FakeHost {
 
 impl DeviceStateHost for FakeHost {}
 
-impl DeviceHost for FakeHost {
+impl PluginCatalogHost for FakeHost {
+    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
+        self.catalog.resolve(plugin).map(|_| DeviceRole::Instrument)
+    }
+
+    fn catalog(&self) -> &Catalog {
+        &self.catalog
+    }
+}
+
+impl PresetHost for FakeHost {
     fn clap_presets(&self, device: &Device) -> &[ClapPreset] {
         if self.known(device.id) {
             &self.presets
@@ -539,23 +552,13 @@ impl DeviceHost for FakeHost {
         self.script.borrow_mut().preset_loads.push(source.clone());
         true
     }
+}
 
-    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
-        self.catalog.resolve(plugin).map(|_| DeviceRole::Instrument)
-    }
+impl AssetHost for FakeHost {}
 
-    fn catalog(&self) -> &Catalog {
-        &self.catalog
-    }
+impl OfflineRenderHost for FakeHost {}
 
-    fn native_layout(
-        &self,
-        device: DeviceId,
-    ) -> Option<&std::sync::Arc<komponist_plugin_api::native_layout::NativeLayout>> {
-        self.known(device).then_some(())?;
-        self.native_layout.as_ref()
-    }
-
+impl PluginWindowHost for FakeHost {
     fn has_gui(&self, device: DeviceId) -> bool {
         self.status(device) == DeviceStatus::Ok && self.known(device)
     }
@@ -588,6 +591,16 @@ impl DeviceHost for FakeHost {
 
     fn close_gui(&mut self, device: DeviceId) {
         self.script.borrow_mut().closed.push(device);
+    }
+}
+
+impl DevicePresentationHost for FakeHost {
+    fn native_layout(
+        &self,
+        device: DeviceId,
+    ) -> Option<&std::sync::Arc<komponist_plugin_api::native_layout::NativeLayout>> {
+        self.known(device).then_some(())?;
+        self.native_layout.as_ref()
     }
 }
 

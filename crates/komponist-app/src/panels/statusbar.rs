@@ -466,7 +466,7 @@ mod tests {
     #[test]
     fn compensation_warning_shows_in_both_languages_and_clears_after_a_recompile() {
         use crate::actions::{Action, EditAction};
-        use crate::device_host::DeviceHost as _;
+        use crate::device_host::PluginCatalogHost as _;
         use egui_kittest::kittest::Queryable as _;
         use komponist_engine::MAX_PDC_FRAMES;
         use komponist_model::edits::{self, NewDevice, NewTrack};

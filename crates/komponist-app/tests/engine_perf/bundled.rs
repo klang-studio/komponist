@@ -8,7 +8,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use komponist_app::device_host::{DeviceHost, PluginHost, ProcessorHost};
+use komponist_app::device_host::{
+    DeviceHost, PluginCatalogHost, PluginHost, PluginWindowHost, ProcessorHost,
+};
 use komponist_audio::HostKind;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project};
 use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent, ProcessorSetup};
