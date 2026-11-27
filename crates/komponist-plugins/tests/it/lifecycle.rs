@@ -1268,13 +1268,13 @@ fn fake_bridge_entry() {
                     deferred_snapshot = true;
                 }
             }
-            Ok(ControlMsg::SetParam { id: 8, .. }) if mode == FakeBridge::RemovesParameter => {
+            Ok(ControlMsg::SetParamEdit { id: 8, .. }) if mode == FakeBridge::RemovesParameter => {
                 send(BridgeMsg::Params {
                     params: vec![param(7)],
                     native_layout: None,
                 });
             }
-            Ok(ControlMsg::SetParam { .. }) if ready_for_edit => {
+            Ok(ControlMsg::SetParamEdit { .. }) if ready_for_edit => {
                 if let Some(request) = pending_restore.take() {
                     send(BridgeMsg::StateApplied {
                         request,
