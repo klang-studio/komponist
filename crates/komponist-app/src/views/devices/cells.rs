@@ -3656,7 +3656,7 @@ mod tests {
     /// parameters at `set` (by author key, plain values) over the defaults, and the live data
     /// `dynamics`.
     fn presse_card(set: &[(&str, f64)], dynamics: Option<crate::gain_trace::Dynamics>) -> Card {
-        use crate::device_host::DeviceHost as _;
+        use crate::device_host::{DeviceHost as _, ParameterHost as _, ProcessorHost as _};
         use std::time::{Duration, Instant};
 
         let mut host = crate::app::App::headless_plugin_host();

@@ -611,7 +611,7 @@ mod tests {
         let (expired, retry) = state.take_waiting_asset_edits(start + ASSET_EDIT_WAIT * 4);
         assert!(expired.is_empty() && retry.is_empty());
     }
-    use crate::device_host::DeviceHost;
+    use crate::device_host::{DeviceHost, DeviceStateHost, ParameterHost, ProcessorHost};
     use crate::engine_sync::EngineSync;
     use komponist_model::{DeviceRole, Document, PluginFormat, PluginRef, Project};
     use komponist_plugins::{Catalog, DeviceStatus, PluginManagerEvent, ProcessorSetup};
@@ -654,7 +654,7 @@ mod tests {
         (project, device)
     }
 
-    impl DeviceHost for PreparingHost {
+    impl ProcessorHost for PreparingHost {
         fn create_processor(
             &mut self,
             _device: &Device,
@@ -676,7 +676,13 @@ mod tests {
         fn poll(&mut self) -> Vec<PluginManagerEvent> {
             Vec::new()
         }
+    }
 
+    impl ParameterHost for PreparingHost {}
+
+    impl DeviceStateHost for PreparingHost {}
+
+    impl DeviceHost for PreparingHost {
         fn role(&self, _plugin: &PluginRef) -> Option<DeviceRole> {
             Some(DeviceRole::Instrument)
         }

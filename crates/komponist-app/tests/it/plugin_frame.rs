@@ -15,7 +15,7 @@ use egui::{Rect, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{EditAction, PluginAction, ProjectAction};
-use komponist_app::device_host::DeviceHost;
+use komponist_app::device_host::{DeviceHost, DeviceStateHost, ParameterHost, ProcessorHost};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::PluginView;
@@ -453,7 +453,7 @@ impl FakeHost {
     }
 }
 
-impl DeviceHost for FakeHost {
+impl ProcessorHost for FakeHost {
     fn create_processor(
         &mut self,
         device: &Device,
@@ -472,9 +472,11 @@ impl DeviceHost for FakeHost {
         s.statuses.insert(device.id, status);
         None
     }
+
     fn release(&mut self, device: DeviceId) {
         self.script.borrow_mut().statuses.remove(&device);
     }
+
     fn status(&self, device: DeviceId) -> DeviceStatus {
         self.script
             .borrow()
@@ -483,9 +485,11 @@ impl DeviceHost for FakeHost {
             .cloned()
             .unwrap_or(DeviceStatus::Ok)
     }
+
     fn latency(&self, _: DeviceId) -> u32 {
         0
     }
+
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
         let mut script = self.script.borrow_mut();
         if let Some(presets) = script.new_presets.take() {
@@ -493,6 +497,30 @@ impl DeviceHost for FakeHost {
         }
         std::mem::take(&mut script.events)
     }
+}
+
+impl ParameterHost for FakeHost {
+    fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
+        self.known(device).then_some(self.params.as_slice())
+    }
+
+    fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {
+        self.known(device).then(|| self.values.get(&id)).flatten()
+    }
+
+    fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+        // hexa goes through the engine (and into the document), as with the real host.
+        if !self.known(device) {
+            return false;
+        }
+        self.script.borrow_mut().set.push((device, id, value));
+        true
+    }
+}
+
+impl DeviceStateHost for FakeHost {}
+
+impl DeviceHost for FakeHost {
     fn clap_presets(&self, device: &Device) -> &[ClapPreset] {
         if self.known(device.id) {
             &self.presets
@@ -503,6 +531,7 @@ impl DeviceHost for FakeHost {
                 .map_or(&[], |entry| entry.clap_presets.as_slice())
         }
     }
+
     fn load_clap_preset(&mut self, device: &Device, source: &ClapPresetSource) -> bool {
         if !self.known(device.id) || !self.presets.iter().any(|entry| &entry.source == source) {
             return false;
@@ -510,15 +539,15 @@ impl DeviceHost for FakeHost {
         self.script.borrow_mut().preset_loads.push(source.clone());
         true
     }
+
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
         self.catalog.resolve(plugin).map(|_| DeviceRole::Instrument)
     }
+
     fn catalog(&self) -> &Catalog {
         &self.catalog
     }
-    fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
-        self.known(device).then_some(self.params.as_slice())
-    }
+
     fn native_layout(
         &self,
         device: DeviceId,
@@ -526,41 +555,37 @@ impl DeviceHost for FakeHost {
         self.known(device).then_some(())?;
         self.native_layout.as_ref()
     }
-    fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {
-        self.known(device).then(|| self.values.get(&id)).flatten()
-    }
-    fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
-        // hexa goes through the engine (and into the document), as with the real host.
-        if !self.known(device) {
-            return false;
-        }
-        self.script.borrow_mut().set.push((device, id, value));
-        true
-    }
+
     fn has_gui(&self, device: DeviceId) -> bool {
         self.status(device) == DeviceStatus::Ok && self.known(device)
     }
+
     fn open_gui(&mut self, device: DeviceId, target: GuiTarget) -> Result<(), PluginError> {
         let mut s = self.script.borrow_mut();
         s.opened.push(device);
         s.targets.push(target);
         Ok(())
     }
+
     fn set_frame_header(&mut self, device: DeviceId, header: HeaderModel, lang: &str) {
         self.script
             .borrow_mut()
             .headers
             .push((device, header, lang.to_owned()));
     }
+
     fn activate_frame(&mut self, device: DeviceId) {
         self.script.borrow_mut().activated.push(device);
     }
+
     fn raise_frame(&mut self, device: DeviceId) {
         self.script.borrow_mut().raised.push(device);
     }
+
     fn set_gui_size(&mut self, device: DeviceId, size: GuiSize) {
         self.script.borrow_mut().sizes.push((device, size));
     }
+
     fn close_gui(&mut self, device: DeviceId) {
         self.script.borrow_mut().closed.push(device);
     }

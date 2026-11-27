@@ -11,7 +11,9 @@ use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange};
-use komponist_app::device_host::{DeviceHost, PluginHost};
+use komponist_app::device_host::{
+    DeviceHost, DeviceStateHost, ParameterHost, PluginHost, ProcessorHost,
+};
 use komponist_app::ui_state::FocusArea;
 use komponist_app::{Action, App, EditAction, TransportAction, UiAction};
 use komponist_i18n::{Lang, de};
@@ -32,7 +34,7 @@ fn snapshot_dir() -> PathBuf {
 /// The reference screens show external instruments as installed, even without those bundles.
 struct AllInstalled(PluginHost);
 
-impl DeviceHost for AllInstalled {
+impl ProcessorHost for AllInstalled {
     fn create_processor(
         &mut self,
         device: &Device,
@@ -40,24 +42,37 @@ impl DeviceHost for AllInstalled {
     ) -> Option<Box<dyn Processor>> {
         self.0.create_processor(device, setup)
     }
+
     fn release(&mut self, device: DeviceId) {
         self.0.release(device);
     }
+
     fn status(&self, _device: DeviceId) -> DeviceStatus {
         DeviceStatus::Ok
     }
+
     fn latency(&self, device: DeviceId) -> u32 {
         self.0.latency(device)
     }
+
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
         self.0.poll()
     }
+}
+
+impl ParameterHost for AllInstalled {}
+
+impl DeviceStateHost for AllInstalled {}
+
+impl DeviceHost for AllInstalled {
     fn role(&self, plugin: &komponist_model::PluginRef) -> Option<DeviceRole> {
         self.0.role(plugin)
     }
+
     fn catalog(&self) -> &komponist_plugins::Catalog {
         self.0.catalog()
     }
+
     fn missing_plugins(&self, _project: &Project) -> Vec<komponist_plugins::MissingPlugin> {
         Vec::new()
     }

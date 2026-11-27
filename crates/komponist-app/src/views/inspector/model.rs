@@ -354,7 +354,7 @@ mod tests {
     /// The packaged test host that has seen every device of `p` and loaded the shipped ones; the
     /// catalog does not know the demo's other plugins, so they report `Missing`.
     fn host_for(p: &komponist_model::Project) -> crate::device_host::PluginHost {
-        use crate::device_host::DeviceHost as _;
+        use crate::device_host::ProcessorHost as _;
         let mut host = crate::app::App::headless_plugin_host();
         let devices: Vec<_> = p
             .tracks

@@ -635,7 +635,7 @@ impl App {
     }
 
     /// App exit: moves every plugin area out of its frame, so the frame windows can go while the
-    /// bridges close their GUIs (`DeviceHost::shutdown` follows).
+    /// bridges close their GUIs (`ProcessorHost::shutdown` follows).
     pub(crate) fn shutdown_plugin_frames(&mut self) {
         self.frames.shutdown();
     }

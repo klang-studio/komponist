@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_app::App;
-use komponist_app::device_host::{DeviceHost, PluginHost};
+use komponist_app::device_host::{DeviceHost, PluginHost, ProcessorHost};
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::settings::Settings;
 use komponist_audio::{HostKind, StreamConfig};

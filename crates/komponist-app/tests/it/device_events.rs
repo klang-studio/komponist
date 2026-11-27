@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use komponist_app::actions::{EditAction, PluginAction, ProjectAction, SettingsAction};
-use komponist_app::device_host::DeviceHost;
+use komponist_app::device_host::{DeviceHost, DeviceStateHost, ParameterHost, ProcessorHost};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::{PluginView, StatusKind};
@@ -140,7 +140,7 @@ struct FakeHost {
     clap_presets: Vec<ClapPreset>,
 }
 
-impl DeviceHost for FakeHost {
+impl ProcessorHost for FakeHost {
     fn create_processor(
         &mut self,
         device: &Device,
@@ -199,63 +199,12 @@ impl DeviceHost for FakeHost {
         events
     }
 
-    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
-        self.catalog.resolve(plugin).map(|e| match e.kind {
-            PluginKind::Effect => DeviceRole::Effect,
-            _ => DeviceRole::Instrument,
-        })
+    fn shutdown(&mut self) {
+        self.script.borrow_mut().shut_down = true;
     }
+}
 
-    fn catalog(&self) -> &Catalog {
-        &self.catalog
-    }
-
-    fn clap_presets(&self, device: &Device) -> &[ClapPreset] {
-        if self
-            .clap_presets
-            .first()
-            .is_some_and(|preset| preset.plugin_id == device.plugin.id)
-        {
-            &self.clap_presets
-        } else {
-            &[]
-        }
-    }
-
-    fn load_clap_preset(&mut self, device: &Device, source: &ClapPresetSource) -> bool {
-        self.script
-            .borrow_mut()
-            .presets
-            .push((device.id, source.clone()));
-        true
-    }
-
-    fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
-        self.script
-            .borrow_mut()
-            .restores
-            .push((device, Arc::clone(state)));
-        true
-    }
-
-    fn restore_saved_state(
-        &mut self,
-        device: DeviceId,
-        state: &komponist_model::project::SavedPluginState,
-    ) -> bool {
-        self.script.borrow_mut().restored_bases.extend(
-            state
-                .parameter_bases
-                .iter()
-                .map(|(&id, &value)| (device, id, value)),
-        );
-        self.set_state(device, &state.bytes)
-    }
-
-    fn start_scan(&mut self, dirs: &PluginDirs) {
-        self.script.borrow_mut().scans.push(dirs.clone());
-    }
-
+impl ParameterHost for FakeHost {
     fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
         let gui = self.gui.as_ref().filter(|gui| gui.device == device)?;
         Some(std::slice::from_ref(&gui.info))
@@ -312,21 +261,29 @@ impl DeviceHost for FakeHost {
         self.script.borrow_mut().params.push((device, id, value));
         true
     }
+}
 
-    fn has_gui(&self, device: DeviceId) -> bool {
-        !self.is_demo_instrument(device) && self.status(device) == DeviceStatus::Ok
+impl DeviceStateHost for FakeHost {
+    fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        self.script
+            .borrow_mut()
+            .restores
+            .push((device, Arc::clone(state)));
+        true
     }
 
-    fn open_gui(
+    fn restore_saved_state(
         &mut self,
         device: DeviceId,
-        _target: komponist_ipc::GuiTarget,
-    ) -> Result<(), PluginError> {
-        Err(PluginError::UnknownDevice(device))
-    }
-
-    fn close_gui(&mut self, device: DeviceId) {
-        self.script.borrow_mut().closed_guis.push(device);
+        state: &komponist_model::project::SavedPluginState,
+    ) -> bool {
+        self.script.borrow_mut().restored_bases.extend(
+            state
+                .parameter_bases
+                .iter()
+                .map(|(&id, &value)| (device, id, value)),
+        );
+        self.set_state(device, &state.bytes)
     }
 
     fn snapshot_states(&mut self, _timeout: Duration) -> DeviceSnapshots {
@@ -362,9 +319,58 @@ impl DeviceHost for FakeHost {
     fn retiring_snapshot_pending(&self, device: DeviceId) -> bool {
         self.script.borrow().retiring_snapshot_pending == Some(device)
     }
+}
 
-    fn shutdown(&mut self) {
-        self.script.borrow_mut().shut_down = true;
+impl DeviceHost for FakeHost {
+    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
+        self.catalog.resolve(plugin).map(|e| match e.kind {
+            PluginKind::Effect => DeviceRole::Effect,
+            _ => DeviceRole::Instrument,
+        })
+    }
+
+    fn catalog(&self) -> &Catalog {
+        &self.catalog
+    }
+
+    fn clap_presets(&self, device: &Device) -> &[ClapPreset] {
+        if self
+            .clap_presets
+            .first()
+            .is_some_and(|preset| preset.plugin_id == device.plugin.id)
+        {
+            &self.clap_presets
+        } else {
+            &[]
+        }
+    }
+
+    fn load_clap_preset(&mut self, device: &Device, source: &ClapPresetSource) -> bool {
+        self.script
+            .borrow_mut()
+            .presets
+            .push((device.id, source.clone()));
+        true
+    }
+
+    fn start_scan(&mut self, dirs: &PluginDirs) {
+        self.script.borrow_mut().scans.push(dirs.clone());
+    }
+
+    fn has_gui(&self, device: DeviceId) -> bool {
+        !self.is_demo_instrument(device) && self.status(device) == DeviceStatus::Ok
+    }
+
+    fn open_gui(
+        &mut self,
+        device: DeviceId,
+        _target: komponist_ipc::GuiTarget,
+    ) -> Result<(), PluginError> {
+        Err(PluginError::UnknownDevice(device))
+    }
+
+    fn close_gui(&mut self, device: DeviceId) {
+        self.script.borrow_mut().closed_guis.push(device);
     }
 }
 

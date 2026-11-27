@@ -13,7 +13,9 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::SettingsAction;
-use komponist_app::device_host::{DeviceHost, PluginHost};
+use komponist_app::device_host::{
+    DeviceHost, DeviceStateHost, ParameterHost, PluginHost, ProcessorHost,
+};
 use komponist_app::dialogs::{missing_plugins, new_project, settings, start};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::project_io::{self, RecentList};
@@ -337,7 +339,7 @@ struct Recording {
     log: Arc<Mutex<Vec<(&'static str, DeviceId)>>>,
 }
 
-impl DeviceHost for Recording {
+impl ProcessorHost for Recording {
     fn create_processor(
         &mut self,
         device: &Device,
@@ -346,22 +348,34 @@ impl DeviceHost for Recording {
         self.log.lock().unwrap().push(("create", device.id));
         self.inner.create_processor(device, setup)
     }
+
     fn release(&mut self, device: DeviceId) {
         self.log.lock().unwrap().push(("release", device));
         self.inner.release(device);
     }
+
     fn status(&self, device: DeviceId) -> DeviceStatus {
         self.inner.status(device)
     }
+
     fn latency(&self, device: DeviceId) -> u32 {
         self.inner.latency(device)
     }
+
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
         self.inner.poll()
     }
+}
+
+impl ParameterHost for Recording {}
+
+impl DeviceStateHost for Recording {}
+
+impl DeviceHost for Recording {
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
         self.inner.role(plugin)
     }
+
     fn catalog(&self) -> &Catalog {
         self.inner.catalog()
     }
@@ -819,7 +833,7 @@ struct Scanning {
     finished: bool,
 }
 
-impl DeviceHost for Scanning {
+impl ProcessorHost for Scanning {
     fn create_processor(
         &mut self,
         device: &Device,
@@ -827,15 +841,19 @@ impl DeviceHost for Scanning {
     ) -> Option<Box<dyn Processor>> {
         self.inner.create_processor(device, setup)
     }
+
     fn release(&mut self, device: DeviceId) {
         self.inner.release(device);
     }
+
     fn status(&self, device: DeviceId) -> DeviceStatus {
         self.inner.status(device)
     }
+
     fn latency(&self, device: DeviceId) -> u32 {
         self.inner.latency(device)
     }
+
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
         let mut events = self.inner.poll();
         if !*self.scanning.lock().unwrap() && !self.finished {
@@ -851,12 +869,21 @@ impl DeviceHost for Scanning {
         }
         events
     }
+}
+
+impl ParameterHost for Scanning {}
+
+impl DeviceStateHost for Scanning {}
+
+impl DeviceHost for Scanning {
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
         self.inner.role(plugin)
     }
+
     fn catalog(&self) -> &Catalog {
         self.inner.catalog()
     }
+
     fn is_scanning(&self) -> bool {
         *self.scanning.lock().unwrap()
     }

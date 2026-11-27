@@ -4,7 +4,7 @@ use std::sync::mpsc::{self, Sender};
 use egui::Key;
 use egui_kittest::Harness;
 use komponist_app::actions::{SelectMode, SelectionChange};
-use komponist_app::device_host::DeviceHost;
+use komponist_app::device_host::{DeviceHost, DeviceStateHost, ParameterHost, ProcessorHost};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::{Action, App, EditAction, ProjectAction, TransportAction, UiAction};
@@ -18,7 +18,7 @@ struct SineHost {
     catalog: Catalog,
     logs: Sender<EventLog>,
 }
-impl DeviceHost for SineHost {
+impl ProcessorHost for SineHost {
     fn create_processor(
         &mut self,
         _: &Device,
@@ -29,19 +29,31 @@ impl DeviceHost for SineHost {
         let _ = self.logs.send(log);
         Some(Box::new(sine))
     }
+
     fn release(&mut self, _: DeviceId) {}
+
     fn status(&self, _: DeviceId) -> DeviceStatus {
         DeviceStatus::Ok
     }
+
     fn latency(&self, _: DeviceId) -> u32 {
         0
     }
+
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
         Vec::new()
     }
+}
+
+impl ParameterHost for SineHost {}
+
+impl DeviceStateHost for SineHost {}
+
+impl DeviceHost for SineHost {
     fn role(&self, _: &PluginRef) -> Option<DeviceRole> {
         Some(DeviceRole::Instrument)
     }
+
     fn catalog(&self) -> &Catalog {
         &self.catalog
     }

@@ -51,7 +51,7 @@ fn scanned_host(dir: &std::path::Path, dirs: &komponist_plugins::PluginDirs) -> 
     komponist_app::device_host::DeviceHost::start_scan(&mut host, dirs);
     let deadline = Instant::now() + PATIENCE;
     'scan: loop {
-        for event in komponist_app::device_host::DeviceHost::poll(&mut host) {
+        for event in komponist_app::device_host::ProcessorHost::poll(&mut host) {
             if matches!(event, PluginManagerEvent::ScanFinished(_)) {
                 break 'scan;
             }

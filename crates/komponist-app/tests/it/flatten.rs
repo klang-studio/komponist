@@ -8,7 +8,7 @@ use egui::accesskit::Role;
 use egui::{Event as UiEvent, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::device_host::DeviceHost;
+use komponist_app::device_host::{DeviceHost, DeviceStateHost, ParameterHost, ProcessorHost};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::ui_state::{FocusArea, StatusKind};
 use komponist_app::{Action, App, EditAction, ProjectAction};
@@ -292,7 +292,7 @@ struct Host {
     global_mode_changes: Arc<AtomicUsize>,
 }
 
-impl DeviceHost for Host {
+impl ProcessorHost for Host {
     fn create_processor(
         &mut self,
         device: &Device,
@@ -317,9 +317,11 @@ impl DeviceHost for Host {
             _ => self.backend.create_processor(device, setup),
         }
     }
+
     fn release(&mut self, device: DeviceId) {
         self.backend.release(device);
     }
+
     fn status(&self, device: DeviceId) -> DeviceStatus {
         if self.fixture == Fixture::Loading && self.state == device {
             DeviceStatus::Loading
@@ -327,24 +329,23 @@ impl DeviceHost for Host {
             self.backend.status(device)
         }
     }
+
     fn latency(&self, device: DeviceId) -> u32 {
         self.backend.latency(device)
     }
-    fn asset_slots(&self, device: DeviceId) -> Option<&Snapshot> {
-        self.assets.as_ref().filter(|_| device == self.state)
-    }
-    fn render_asset_bindings_pending(&self, device: DeviceId) -> bool {
-        self.bindings_pending && device == self.state
-    }
+
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
         self.backend.poll()
     }
-    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
-        self.backend.role(plugin)
+
+    fn shutdown(&mut self) {
+        self.backend.shutdown();
     }
-    fn catalog(&self) -> &Catalog {
-        self.backend.catalog()
-    }
+}
+
+impl ParameterHost for Host {}
+
+impl DeviceStateHost for Host {
     fn snapshot_selected_states(
         &mut self,
         ids: &[DeviceId],
@@ -362,17 +363,35 @@ impl DeviceHost for Host {
         }
         Ok(snapshots)
     }
+}
+
+impl DeviceHost for Host {
+    fn asset_slots(&self, device: DeviceId) -> Option<&Snapshot> {
+        self.assets.as_ref().filter(|_| device == self.state)
+    }
+
+    fn render_asset_bindings_pending(&self, device: DeviceId) -> bool {
+        self.bindings_pending && device == self.state
+    }
+
+    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
+        self.backend.role(plugin)
+    }
+
+    fn catalog(&self) -> &Catalog {
+        self.backend.catalog()
+    }
+
     fn set_render_mode(&mut self, _: RenderMode) {
         self.global_mode_changes.fetch_add(1, Ordering::Relaxed);
     }
+
     fn set_selected_render_mode(&mut self, ids: &[DeviceId], mode: RenderMode) {
         self.backend.set_selected_render_mode(ids, mode);
     }
+
     fn bridge_pid(&self, device: DeviceId) -> Option<u32> {
         self.backend.bridge_pid(device)
-    }
-    fn shutdown(&mut self) {
-        self.backend.shutdown();
     }
 }
 

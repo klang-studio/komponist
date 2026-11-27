@@ -1,6 +1,6 @@
 //! The "zu spät" indicator shared by the inspector's device rows, the mixer's insert slots and the
 //! device cards: a device whose blocks missed their deadline within the last [`HOLD_S`] seconds
-//! (not in the design). `DeviceHost::late_blocks` counts since the bridge started, so the
+//! (not in the design). `ProcessorHost::late_blocks` counts since the bridge started, so the
 //! indicator compares counts frame by frame.
 
 use std::collections::HashMap;
@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use komponist_i18n::Lang;
 use komponist_model::DeviceId;
 
-use crate::device_host::DeviceHost;
+use crate::device_host::ProcessorHost;
 
 /// The indicator's text: a device whose blocks recently missed their deadline (not in the design).
 pub fn label(lang: Lang) -> &'static str {
@@ -33,7 +33,7 @@ impl LateTracker {
     /// The late-block count of `device` when it grew within [`HOLD_S`] and `running`.
     pub fn state(
         &mut self,
-        host: &dyn DeviceHost,
+        host: &dyn ProcessorHost,
         device: DeviceId,
         running: bool,
         now: f64,

@@ -303,6 +303,10 @@ owns the last program sent, processor slot changes and the device host. `EngineI
 audio stream, MIDI ports, and the command and event queues. The program publisher uses the
 I/O queue for processor insertions, program installation and processor removals, in that order.
 
+The compiler reads runtime metadata through `ProcessorHost` and live parameter metadata through
+`ParameterHost`. `DeviceStateHost` owns snapshot capture and restore. The app's composite
+`DeviceHost` combines those capabilities with the remaining plugin services.
+
 Compilation never fails: what the engine cannot play is left out of the program. The app compiles
 with `compile::build_with_diagnostics`, which also returns one `Diagnostic` per left-out track or
 device (position, id and reason: track, MIDI-effect or slot limit, duplicate id, a device in the

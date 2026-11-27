@@ -59,7 +59,7 @@ use crate::actions::{
     SelectionChange, SettingsAction, TransportAction, UiAction,
 };
 use crate::audio_settings::{AudioDevices, AudioSettings, FixedDevices};
-use crate::device_host::{DeviceHost, PluginHost};
+use crate::device_host::{DeviceHost, PluginHost, ProcessorHost};
 use crate::dialogs::DialogState;
 use crate::dialogs::new_track::default_names;
 use crate::dialogs::settings::midi_label;
@@ -3485,6 +3485,7 @@ fn worker_notice(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::device_host::{DeviceStateHost, ParameterHost};
     use komponist_model::fixtures::empty_project;
 
     struct StartupCatalogHost {
@@ -3493,7 +3494,7 @@ mod tests {
         scanning: Arc<AtomicBool>,
     }
 
-    impl DeviceHost for StartupCatalogHost {
+    impl ProcessorHost for StartupCatalogHost {
         fn create_processor(
             &mut self,
             _: &komponist_model::Device,
@@ -3518,7 +3519,13 @@ mod tests {
             }
             Vec::new()
         }
+    }
 
+    impl ParameterHost for StartupCatalogHost {}
+
+    impl DeviceStateHost for StartupCatalogHost {}
+
+    impl DeviceHost for StartupCatalogHost {
         fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
             self.catalog.resolve(plugin).map(|_| DeviceRole::Instrument)
         }

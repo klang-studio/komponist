@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 use komponist_app::actions::PluginAction;
-use komponist_app::device_host::{DeviceHost, PluginHost};
+use komponist_app::device_host::{DeviceHost, PluginHost, ProcessorHost};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::{Action, App, ProjectAction};
 use komponist_engine::Command;

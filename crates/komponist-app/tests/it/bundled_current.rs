@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use komponist_app::actions::{BitDepth, EditAction, ExportRange, PluginAction, ProjectAction};
-use komponist_app::device_host::{DeviceHost, PluginHost};
+use komponist_app::device_host::{DeviceHost, PluginHost, ProcessorHost};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::{Action, App};
 use komponist_engine::compile::{self, NoEnv};

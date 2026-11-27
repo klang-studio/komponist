@@ -14,10 +14,10 @@
 //! Read through `app.engine().host()`, change through `app.engine_mut().host_mut()` or, where an
 //! action exists, through [`App::dispatch`](crate::App::dispatch):
 //!
-//! - Device cards, insert slots, track headers (WP-44): [`DeviceHost::status`],
-//!   [`DeviceHost::state_warning`] („Zustand konnte nicht geladen werden“),
-//!   [`DeviceHost::late_blocks`], "Neu laden" = `PluginAction::Reload`.
-//! - Generic parameter grid (WP-44): [`DeviceHost::params`], [`DeviceHost::param_value`]; knob
+//! - Device cards, insert slots, track headers (WP-44): [`ProcessorHost::status`],
+//!   [`DeviceStateHost::state_warning`] („Zustand konnte nicht geladen werden“),
+//!   [`ProcessorHost::late_blocks`], "Neu laden" = `PluginAction::Reload`.
+//! - Generic parameter grid (WP-44): [`ParameterHost::params`], [`ParameterHost::param_value`]; knob
 //!   changes go through `PluginAction::SetParam`.
 //! - Browser (WP-44) and S06/S07 (WP-52): [`DeviceHost::catalog`], [`DeviceHost::role`],
 //!   [`DeviceHost::missing_plugins`], [`DeviceHost::is_scanning`], [`DeviceHost::last_scan`];
@@ -58,14 +58,11 @@ pub fn selected_preset(device: &Device, presets: &[ClapPreset]) -> Option<(usize
     komponist_plugin_api::clap_presets::selected_preset(device.preset.as_ref(), presets)
 }
 
-/// Creates processors for devices and reports their runtime status.
-///
-/// The methods after [`DeviceHost::role`] have defaults for a host without plugin manager (no
-/// parameters, no GUI, no scan).
-pub trait DeviceHost {
+/// Creates and retires running processors and provides their runtime metadata and events.
+pub trait ProcessorHost {
     /// Creates the processor for `device`, already activated for `setup`, for
     /// `Command::InsertProcessor`. `None`: the device plays without a processor (passthrough for
-    /// an effect, silence for an instrument); its [`DeviceHost::status`] says why.
+    /// an effect, silence for an instrument); its [`ProcessorHost::status`] says why.
     ///
     /// Called again for a device that still has a slot ("Neu laden", a missing plugin that a scan
     /// found): the new processor replaces the old one in the same slot.
@@ -89,15 +86,196 @@ pub trait DeviceHost {
     /// snapshots, latency changes, …). Never blocks.
     fn poll(&mut self) -> Vec<PluginManagerEvent>;
 
-    /// Instrument or effect, for a plugin from the browser; `None` if unknown (not in the
-    /// catalog).
-    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole>;
-
     /// Test probe: the CLAP ID of a running instance from the manifest-verified package.
     #[doc(hidden)]
     fn verified_bundle(&self, _device: DeviceId) -> Option<&str> {
         None
     }
+
+    /// Whether [`ProcessorHost::poll`] has work even while the UI is idle (bridges running, a scan in
+    /// progress): the app then repaints at a low rate so status changes arrive.
+    fn needs_polling(&self) -> bool {
+        false
+    }
+
+    /// Blocks that missed their deadline since the device's bridge started (a "late" indicator).
+    fn late_blocks(&self, device: DeviceId) -> u64 {
+        let _ = device;
+        0
+    }
+
+    /// Tells the host the folder of the project file (`None`: not saved yet): relative sample
+    /// paths resolve against it. Called before the devices of a project get their processors.
+    fn set_project_dir(&mut self, dir: Option<PathBuf>) {
+        let _ = dir;
+    }
+
+    /// The folder last given to [`ProcessorHost::set_project_dir`]: audio clips resolve their relative
+    /// links against it (#11).
+    fn project_dir(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// Shuts every bridge down (app exit). Blocking, at most a couple of seconds.
+    fn shutdown(&mut self) {}
+}
+
+/// Reads and edits live parameters and tracks values driven by automation and macros.
+/// Hosts without parameter support return no metadata and can decline edits.
+pub trait ParameterHost {
+    /// The parameters of the live plugin.
+    fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
+        let _ = device;
+        None
+    }
+
+    /// Queue a text conversion. `true` accepts the request for asynchronous completion through
+    /// `ParamTextParsed`; `false` means the caller can apply its numeric fallback immediately.
+    fn request_param_text(
+        &mut self,
+        _device: DeviceId,
+        _request: u64,
+        _id: u32,
+        _text: String,
+    ) -> bool {
+        false
+    }
+
+    /// The last known value and cached text. The view formats live values without cached text.
+    fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {
+        let _ = (device, id);
+        None
+    }
+
+    /// Base value of a bridged parameter, independent of live automation.
+    fn param_base(&self, device: DeviceId, id: u32) -> Option<f64> {
+        self.param_value(device, id).map(|v| v.value)
+    }
+
+    /// Tracks an edit that reached an active bridge through the engine slot.
+    fn edited_param(&mut self, _device: DeviceId, _id: u32, _value: f64) -> bool {
+        false
+    }
+
+    /// Records a durable render-path edit and returns its delivery identity.
+    fn edit_param_through_render(
+        &mut self,
+        device: DeviceId,
+        id: u32,
+        value: f64,
+    ) -> Option<NonZeroU32> {
+        let _ = (device, id, value);
+        None
+    }
+
+    /// Updates the visible value of a plugin parameter during an automation override.
+    fn preview_param(&mut self, _device: DeviceId, _id: u32, _value: f64) {}
+
+    /// Update the bridge's verified snapshot expectations for current track-macro outputs.
+    fn set_macro_params(&mut self, _values: &[(DeviceId, u32, f64)]) {}
+
+    /// Publish the runtime parameter IDs whose live values can come from automation.
+    fn set_automated_params(&mut self, _values: &[(DeviceId, u32, Option<f64>)]) {}
+
+    /// Sets a parameter of a bridged device; `false` if this host does not handle `device` (the
+    /// caller then sends the engine's `SetParam` to the device's slot, as for hexa).
+    fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+        let _ = (device, id, value);
+        false
+    }
+}
+
+/// Restores device state and captures snapshots for undo, save and offline rendering.
+pub trait DeviceStateHost {
+    /// Whether a snapshot was caused by a track macro and contained no independent edit.
+    fn is_macro_snapshot(&self, _device: DeviceId, _state: &Arc<[u8]>) -> bool {
+        false
+    }
+
+    /// Whether the host captured this state and has no later edits awaiting capture.
+    fn is_current_param_snapshot(&self, _device: DeviceId, _state: &Arc<[u8]>) -> bool {
+        false
+    }
+
+    /// Restores a plugin snapshot and its host-owned parameter bases.
+    fn restore_saved_state(&mut self, device: DeviceId, state: &SavedPluginState) -> bool {
+        self.set_state(device, &state.bytes)
+    }
+
+    /// Restores `state` in the running plugin of a bridged device (undo or redo changed the state
+    /// in the document); `false` if this host does not handle `device` or its bridge is not
+    /// running.
+    fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        let _ = (device, state);
+        false
+    }
+
+    /// Why the device's stored state could not be loaded, while that matters (device card
+    /// warning „Zustand konnte nicht geladen werden“).
+    fn state_warning(&self, device: DeviceId) -> Option<&str> {
+        let _ = device;
+        None
+    }
+
+    /// Asks for a state snapshot; it arrives as [`PluginManagerEvent::StateSnapshot`].
+    fn request_state(&mut self, device: DeviceId) {
+        let _ = device;
+    }
+
+    /// Blocking, for saving: the current state of every bridged device, waiting at most
+    /// `timeout` in total. Devices that do not answer in time keep their last snapshot.
+    fn snapshot_states(&mut self, timeout: Duration) -> DeviceSnapshots {
+        let _ = timeout;
+        Vec::new()
+    }
+
+    /// Whether a plugin holds a persistent edit that still needs a safe snapshot.
+    fn has_pending_state_edits(&self) -> bool {
+        false
+    }
+
+    /// Snapshots external devices and rejects a save that would omit a persistent plugin edit.
+    fn snapshot_for_save(&mut self, timeout: Duration) -> SaveSnapshots {
+        SaveSnapshots {
+            captured: self.snapshot_states(timeout),
+            ..Default::default()
+        }
+    }
+
+    /// Collects states of selected running devices and reports those still pending at the deadline.
+    fn snapshot_available_states(
+        &mut self,
+        _devices: &[DeviceId],
+        _timeout: Duration,
+    ) -> SaveSnapshots {
+        SaveSnapshots::default()
+    }
+
+    /// Ensures the deferred retirement can capture state in a later poll.
+    fn schedule_retiring_snapshot(&mut self, _device: DeviceId) {}
+
+    /// Whether the live instance still owes a capture or state commit before retirement.
+    fn retiring_snapshot_pending(&self, _device: DeviceId) -> bool {
+        false
+    }
+
+    /// Snapshots bridged devices on a MIDI track before replacing its chain. Hosts with running
+    /// bridges must return an error if any selected bridge lacks a usable snapshot.
+    fn snapshot_selected_states(
+        &mut self,
+        _devices: &[DeviceId],
+        _timeout: Duration,
+    ) -> Result<DeviceSnapshots, DeviceId> {
+        Ok(Vec::new())
+    }
+}
+
+/// The complete host used by the app. The additional services include the catalog,
+/// plugin presentation, presets, assets, offline rendering and plugin windows.
+pub trait DeviceHost: ProcessorHost + ParameterHost + DeviceStateHost {
+    /// Instrument or effect, for a plugin from the browser; `None` if unknown (not in the
+    /// catalog).
+    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole>;
 
     /// The plugins the browser offers, sorted by name.
     fn catalog(&self) -> &Catalog;
@@ -194,18 +372,6 @@ pub trait DeviceHost {
         false
     }
 
-    /// Whether [`DeviceHost::poll`] has work even while the UI is idle (bridges running, a scan in
-    /// progress): the app then repaints at a low rate so status changes arrive.
-    fn needs_polling(&self) -> bool {
-        false
-    }
-
-    /// The parameters of the live plugin.
-    fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
-        let _ = device;
-        None
-    }
-
     /// Native device presentation validated against the device's current parameter inventory.
     fn native_layout(
         &self,
@@ -230,113 +396,10 @@ pub trait DeviceHost {
         None
     }
 
-    /// Queue a text conversion. `true` accepts the request for asynchronous completion through
-    /// `ParamTextParsed`; `false` means the caller can apply its numeric fallback immediately.
-    fn request_param_text(
-        &mut self,
-        _device: DeviceId,
-        _request: u64,
-        _id: u32,
-        _text: String,
-    ) -> bool {
-        false
-    }
-
-    /// The last known value and cached text. The view formats live values without cached text.
-    fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {
-        let _ = (device, id);
-        None
-    }
-
-    /// Base value of a bridged parameter, independent of live automation.
-    fn param_base(&self, device: DeviceId, id: u32) -> Option<f64> {
-        self.param_value(device, id).map(|v| v.value)
-    }
-
-    /// Tracks an edit that reached an active bridge through the engine slot.
-    fn edited_param(&mut self, _device: DeviceId, _id: u32, _value: f64) -> bool {
-        false
-    }
-
-    /// Records a durable render-path edit and returns its delivery identity.
-    fn edit_param_through_render(
-        &mut self,
-        device: DeviceId,
-        id: u32,
-        value: f64,
-    ) -> Option<NonZeroU32> {
-        let _ = (device, id, value);
-        None
-    }
-
-    /// Updates the visible value of a plugin parameter during an automation override.
-    fn preview_param(&mut self, _device: DeviceId, _id: u32, _value: f64) {}
-
-    /// Update the bridge's verified snapshot expectations for current track-macro outputs.
-    fn set_macro_params(&mut self, _values: &[(DeviceId, u32, f64)]) {}
-
-    /// Publish the runtime parameter IDs whose live values can come from automation.
-    fn set_automated_params(&mut self, _values: &[(DeviceId, u32, Option<f64>)]) {}
-
-    /// Whether a snapshot was caused by a track macro and contained no independent edit.
-    fn is_macro_snapshot(&self, _device: DeviceId, _state: &Arc<[u8]>) -> bool {
-        false
-    }
-
-    /// Whether the host captured this state and has no later edits awaiting capture.
-    fn is_current_param_snapshot(&self, _device: DeviceId, _state: &Arc<[u8]>) -> bool {
-        false
-    }
-
-    /// Sets a parameter of a bridged device; `false` if this host does not handle `device` (the
-    /// caller then sends the engine's `SetParam` to the device's slot, as for hexa).
-    fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
-        let _ = (device, id, value);
-        false
-    }
-
-    /// Restores a plugin snapshot and its host-owned parameter bases.
-    fn restore_saved_state(&mut self, device: DeviceId, state: &SavedPluginState) -> bool {
-        self.set_state(device, &state.bytes)
-    }
-
-    /// Restores `state` in the running plugin of a bridged device (undo or redo changed the state
-    /// in the document); `false` if this host does not handle `device` or its bridge is not
-    /// running.
-    fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
-        let _ = (device, state);
-        false
-    }
-
-    /// Why the device's stored state could not be loaded, while that matters (device card
-    /// warning „Zustand konnte nicht geladen werden“).
-    fn state_warning(&self, device: DeviceId) -> Option<&str> {
-        let _ = device;
-        None
-    }
-
-    /// Blocks that missed their deadline since the device's bridge started (a "late" indicator).
-    fn late_blocks(&self, device: DeviceId) -> u64 {
-        let _ = device;
-        0
-    }
-
     /// Note names of an instrument (step sequencer rows); empty if none.
     fn note_names(&self, device: DeviceId) -> &[NoteName] {
         let _ = device;
         &[]
-    }
-
-    /// Tells the host the folder of the project file (`None`: not saved yet): relative sample
-    /// paths resolve against it. Called before the devices of a project get their processors.
-    fn set_project_dir(&mut self, dir: Option<PathBuf>) {
-        let _ = dir;
-    }
-
-    /// The folder last given to [`DeviceHost::set_project_dir`]: audio clips resolve their relative
-    /// links against it (#11).
-    fn project_dir(&self) -> Option<PathBuf> {
-        None
     }
 
     /// Whether the file inventory or an asset is still being prepared for rendering.
@@ -453,58 +516,6 @@ pub trait DeviceHost {
         let _ = device;
     }
 
-    /// Asks for a state snapshot; it arrives as [`PluginManagerEvent::StateSnapshot`].
-    fn request_state(&mut self, device: DeviceId) {
-        let _ = device;
-    }
-
-    /// Blocking, for saving: the current state of every bridged device, waiting at most
-    /// `timeout` in total. Devices that do not answer in time keep their last snapshot.
-    fn snapshot_states(&mut self, timeout: Duration) -> DeviceSnapshots {
-        let _ = timeout;
-        Vec::new()
-    }
-
-    /// Whether a plugin holds a persistent edit that still needs a safe snapshot.
-    fn has_pending_state_edits(&self) -> bool {
-        false
-    }
-
-    /// Snapshots external devices and rejects a save that would omit a persistent plugin edit.
-    fn snapshot_for_save(&mut self, timeout: Duration) -> SaveSnapshots {
-        SaveSnapshots {
-            captured: self.snapshot_states(timeout),
-            ..Default::default()
-        }
-    }
-
-    /// Collects states of selected running devices and reports those still pending at the deadline.
-    fn snapshot_available_states(
-        &mut self,
-        _devices: &[DeviceId],
-        _timeout: Duration,
-    ) -> SaveSnapshots {
-        SaveSnapshots::default()
-    }
-
-    /// Ensures the deferred retirement can capture state in a later poll.
-    fn schedule_retiring_snapshot(&mut self, _device: DeviceId) {}
-
-    /// Whether the live instance still owes a capture or state commit before retirement.
-    fn retiring_snapshot_pending(&self, _device: DeviceId) -> bool {
-        false
-    }
-
-    /// Snapshots bridged devices on a MIDI track before replacing its chain. Hosts with running
-    /// bridges must return an error if any selected bridge lacks a usable snapshot.
-    fn snapshot_selected_states(
-        &mut self,
-        _devices: &[DeviceId],
-        _timeout: Duration,
-    ) -> Result<DeviceSnapshots, DeviceId> {
-        Ok(Vec::new())
-    }
-
     /// Switches every bridge to realtime or offline processing (around an export).
     fn set_render_mode(&mut self, mode: RenderMode) {
         let _ = mode;
@@ -513,9 +524,6 @@ pub trait DeviceHost {
     /// Switches only the devices needed for an isolated offline render. Hosts with bridges
     /// implement the scoped switch independently of the full-project switch.
     fn set_selected_render_mode(&mut self, _devices: &[DeviceId], _mode: RenderMode) {}
-
-    /// Shuts every bridge down (app exit). Blocking, at most a couple of seconds.
-    fn shutdown(&mut self) {}
 }
 
 /// Devices of `project` whose plugin `catalog` does not resolve, in document order (master last).
@@ -581,7 +589,7 @@ impl PluginHost {
     }
 
     /// The plugin manager (diagnostics and tests; processors come only through
-    /// [`DeviceHost::create_processor`]).
+    /// [`ProcessorHost::create_processor`]).
     pub fn manager(&self) -> &PluginManager {
         &self.manager
     }
@@ -597,7 +605,7 @@ impl PluginHost {
     }
 }
 
-impl DeviceHost for PluginHost {
+impl ProcessorHost for PluginHost {
     fn create_processor(
         &mut self,
         device: &Device,
@@ -632,45 +640,8 @@ impl DeviceHost for PluginHost {
         self.manager.poll()
     }
 
-    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
-        match self.manager.catalog().resolve(plugin)?.kind {
-            PluginKind::Instrument => Some(DeviceRole::Instrument),
-            PluginKind::Effect => Some(DeviceRole::Effect),
-            PluginKind::MidiEffect => Some(DeviceRole::MidiEffect),
-            PluginKind::Other => None,
-        }
-    }
-
     fn verified_bundle(&self, device: DeviceId) -> Option<&str> {
         self.manager.verified_bundle(device)
-    }
-
-    fn catalog(&self) -> &Catalog {
-        self.manager.catalog()
-    }
-
-    fn device_probe_failed(&self, device: DeviceId) -> bool {
-        self.manager.device_probe_failed(device)
-    }
-
-    fn missing_plugins(&self, project: &Project) -> Vec<MissingPlugin> {
-        self.manager.missing_plugins(project)
-    }
-
-    fn start_scan(&mut self, dirs: &PluginDirs) {
-        self.manager.start_scan(dirs);
-    }
-
-    fn is_scanning(&self) -> bool {
-        self.manager.is_scanning()
-    }
-
-    fn awaiting_packaged_plugin(&self, clap_id: &str) -> bool {
-        self.manager.awaiting_packaged_plugin(clap_id)
-    }
-
-    fn last_scan(&self) -> Option<&ScanReport> {
-        self.manager.last_scan()
     }
 
     fn needs_polling(&self) -> bool {
@@ -679,30 +650,27 @@ impl DeviceHost for PluginHost {
             || self.manager.has_retiring_direct()
     }
 
+    fn late_blocks(&self, device: DeviceId) -> u64 {
+        self.manager.late_blocks(device)
+    }
+
+    fn set_project_dir(&mut self, dir: Option<PathBuf>) {
+        self.manager.set_project_dir(dir.clone());
+        self.project_dir = dir;
+    }
+
+    fn project_dir(&self) -> Option<PathBuf> {
+        self.project_dir.clone()
+    }
+
+    fn shutdown(&mut self) {
+        self.manager.shutdown();
+    }
+}
+
+impl ParameterHost for PluginHost {
     fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
         self.manager.params(device)
-    }
-
-    fn native_layout(
-        &self,
-        device: DeviceId,
-    ) -> Option<&Arc<komponist_plugin_api::native_layout::NativeLayout>> {
-        self.manager.native_layout(device)
-    }
-
-    fn device_display(
-        &self,
-        device: DeviceId,
-    ) -> Option<&Arc<komponist_plugin_api::device_canvas::DisplayList>> {
-        self.manager.device_display(device)
-    }
-
-    fn signal_tap(
-        &self,
-        device: DeviceId,
-        key: &str,
-    ) -> Option<&komponist_plugins::signal_taps::SignalTap> {
-        self.manager.signal_tap(device, key)
     }
 
     fn request_param_text(
@@ -748,6 +716,16 @@ impl DeviceHost for PluginHost {
         self.manager.set_automated_params(values);
     }
 
+    fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+        if !self.is_external(device) {
+            return false;
+        }
+        self.manager.set_param(device, id, value);
+        true
+    }
+}
+
+impl DeviceStateHost for PluginHost {
     fn is_macro_snapshot(&self, device: DeviceId, state: &Arc<[u8]>) -> bool {
         self.manager.is_macro_snapshot(device, state)
     }
@@ -756,20 +734,117 @@ impl DeviceHost for PluginHost {
         self.manager.is_current_param_snapshot(device, state)
     }
 
-    fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
-        if !self.is_external(device) {
-            return false;
-        }
-        self.manager.set_param(device, id, value);
-        true
-    }
-
     fn restore_saved_state(&mut self, device: DeviceId, state: &SavedPluginState) -> bool {
         self.is_external(device) && self.manager.restore_saved_state(device, state)
     }
 
     fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
         self.is_external(device) && self.manager.set_state(device, state)
+    }
+
+    fn state_warning(&self, device: DeviceId) -> Option<&str> {
+        self.manager.state_warning(device)
+    }
+
+    fn request_state(&mut self, device: DeviceId) {
+        self.manager.request_state(device);
+    }
+
+    fn snapshot_states(&mut self, timeout: Duration) -> DeviceSnapshots {
+        self.manager.snapshot_states(timeout)
+    }
+
+    fn has_pending_state_edits(&self) -> bool {
+        self.manager.has_pending_state_edits()
+    }
+
+    fn snapshot_for_save(&mut self, timeout: Duration) -> SaveSnapshots {
+        self.manager.snapshot_for_save(timeout)
+    }
+
+    fn snapshot_available_states(
+        &mut self,
+        devices: &[DeviceId],
+        timeout: Duration,
+    ) -> SaveSnapshots {
+        self.manager.snapshot_available_states(devices, timeout)
+    }
+
+    fn schedule_retiring_snapshot(&mut self, device: DeviceId) {
+        self.manager.schedule_retiring_snapshot(device);
+    }
+
+    fn retiring_snapshot_pending(&self, device: DeviceId) -> bool {
+        self.manager.retiring_snapshot_pending(device)
+    }
+
+    fn snapshot_selected_states(
+        &mut self,
+        devices: &[DeviceId],
+        timeout: Duration,
+    ) -> Result<DeviceSnapshots, DeviceId> {
+        self.manager.snapshot_selected_states(devices, timeout)
+    }
+}
+
+impl DeviceHost for PluginHost {
+    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
+        match self.manager.catalog().resolve(plugin)?.kind {
+            PluginKind::Instrument => Some(DeviceRole::Instrument),
+            PluginKind::Effect => Some(DeviceRole::Effect),
+            PluginKind::MidiEffect => Some(DeviceRole::MidiEffect),
+            PluginKind::Other => None,
+        }
+    }
+
+    fn catalog(&self) -> &Catalog {
+        self.manager.catalog()
+    }
+
+    fn device_probe_failed(&self, device: DeviceId) -> bool {
+        self.manager.device_probe_failed(device)
+    }
+
+    fn missing_plugins(&self, project: &Project) -> Vec<MissingPlugin> {
+        self.manager.missing_plugins(project)
+    }
+
+    fn start_scan(&mut self, dirs: &PluginDirs) {
+        self.manager.start_scan(dirs);
+    }
+
+    fn is_scanning(&self) -> bool {
+        self.manager.is_scanning()
+    }
+
+    fn awaiting_packaged_plugin(&self, clap_id: &str) -> bool {
+        self.manager.awaiting_packaged_plugin(clap_id)
+    }
+
+    fn last_scan(&self) -> Option<&ScanReport> {
+        self.manager.last_scan()
+    }
+
+    fn native_layout(
+        &self,
+        device: DeviceId,
+    ) -> Option<&Arc<komponist_plugin_api::native_layout::NativeLayout>> {
+        self.manager.native_layout(device)
+    }
+
+    fn device_display(
+        &self,
+        device: DeviceId,
+    ) -> Option<&Arc<komponist_plugin_api::device_canvas::DisplayList>> {
+        self.manager.device_display(device)
+    }
+
+    fn signal_tap(
+        &self,
+        device: DeviceId,
+        key: &str,
+    ) -> Option<&komponist_plugins::signal_taps::SignalTap> {
+        self.manager.signal_tap(device, key)
     }
 
     fn request_waveform_markers(&mut self, device: DeviceId, slot: u32) {
@@ -821,25 +896,8 @@ impl DeviceHost for PluginHost {
         self.manager.load_clap_preset(device, source)
     }
 
-    fn late_blocks(&self, device: DeviceId) -> u64 {
-        self.manager.late_blocks(device)
-    }
-
-    fn state_warning(&self, device: DeviceId) -> Option<&str> {
-        self.manager.state_warning(device)
-    }
-
     fn note_names(&self, device: DeviceId) -> &[NoteName] {
         self.manager.note_names(device)
-    }
-
-    fn set_project_dir(&mut self, dir: Option<PathBuf>) {
-        self.manager.set_project_dir(dir.clone());
-        self.project_dir = dir;
-    }
-
-    fn project_dir(&self) -> Option<PathBuf> {
-        self.project_dir.clone()
     }
 
     fn preview_waveform(&self, device: DeviceId, slot: u32, time: Option<f64>) {
@@ -936,56 +994,12 @@ impl DeviceHost for PluginHost {
         self.manager.close_gui(device);
     }
 
-    fn request_state(&mut self, device: DeviceId) {
-        self.manager.request_state(device);
-    }
-
-    fn snapshot_states(&mut self, timeout: Duration) -> DeviceSnapshots {
-        self.manager.snapshot_states(timeout)
-    }
-
-    fn has_pending_state_edits(&self) -> bool {
-        self.manager.has_pending_state_edits()
-    }
-
-    fn snapshot_for_save(&mut self, timeout: Duration) -> SaveSnapshots {
-        self.manager.snapshot_for_save(timeout)
-    }
-
-    fn snapshot_available_states(
-        &mut self,
-        devices: &[DeviceId],
-        timeout: Duration,
-    ) -> SaveSnapshots {
-        self.manager.snapshot_available_states(devices, timeout)
-    }
-
-    fn schedule_retiring_snapshot(&mut self, device: DeviceId) {
-        self.manager.schedule_retiring_snapshot(device);
-    }
-
-    fn retiring_snapshot_pending(&self, device: DeviceId) -> bool {
-        self.manager.retiring_snapshot_pending(device)
-    }
-
-    fn snapshot_selected_states(
-        &mut self,
-        devices: &[DeviceId],
-        timeout: Duration,
-    ) -> Result<DeviceSnapshots, DeviceId> {
-        self.manager.snapshot_selected_states(devices, timeout)
-    }
-
     fn set_render_mode(&mut self, mode: RenderMode) {
         self.manager.set_render_mode(mode);
     }
 
     fn set_selected_render_mode(&mut self, devices: &[DeviceId], mode: RenderMode) {
         self.manager.set_selected_render_mode(devices, mode);
-    }
-
-    fn shutdown(&mut self) {
-        self.manager.shutdown();
     }
 }
 
