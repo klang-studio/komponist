@@ -734,7 +734,7 @@ fn plugin_info(lang: Lang, wire: &WireInfo) -> ParamInfo {
 }
 
 /// Apply the panel's display domain while retaining the live CLAP ID and flags.
-pub(super) fn native_param(
+pub(crate) fn native_param(
     lang: Lang,
     layout: &NativeLayout,
     wire: &WireInfo,

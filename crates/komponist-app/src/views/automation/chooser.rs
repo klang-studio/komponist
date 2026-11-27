@@ -195,45 +195,56 @@ impl<'a> Catalog<'a> {
         )
     }
 
-    fn hosted_info(&self, info: &komponist_ipc::ParamInfo) -> ParamInfo {
-        komponist_plugins::params::param_info(info)
-            .texts(crate::views::parameter_value_texts(self.lang))
-    }
-
     fn device_targets(&self, device: &Device, name: &str) -> Vec<Target> {
-        let host = self.engine.host();
-        host.params(device.id)
+        self.engine
+            .host()
+            .params(device.id)
             .unwrap_or_default()
             .iter()
             .filter(|p| komponist_plugins::params::is_automatable(p))
-            .map(|p| {
-                let info = self.hosted_info(p);
-                let value = host.param_base(device.id, p.id).unwrap_or(p.default);
-                self.device_target(device, info, value, name)
-            })
+            .map(|p| self.device_target(device, p, name))
             .collect()
     }
 
     /// Resolve just the visible lane's parameter. The full catalog is built when the chooser opens.
-    fn device_param(&self, device: &Device, id: &ParamId) -> Option<(ParamInfo, f64)> {
+    fn device_param(&self, device: &Device, id: &ParamId) -> Option<&komponist_ipc::ParamInfo> {
         let wire = id.plugin_id()?;
-        let host = self.engine.host();
-        let param = host
+        self.engine
+            .host()
             .params(device.id)?
             .iter()
-            .find(|param| param.id == wire && komponist_plugins::params::is_listed(param))?;
-        let info = self.hosted_info(param);
-        let value = host.param_base(device.id, wire).unwrap_or(param.default);
-        Some((info, value))
+            .find(|param| param.id == wire && komponist_plugins::params::is_listed(param))
     }
 
-    fn device_target(&self, device: &Device, info: ParamInfo, value: f64, prefix: &str) -> Target {
+    fn device_target(
+        &self,
+        device: &Device,
+        wire: &komponist_ipc::ParamInfo,
+        prefix: &str,
+    ) -> Target {
+        let host = self.engine.host();
+        let mut info = komponist_plugins::params::param_info(wire)
+            .texts(crate::views::parameter_value_texts(self.lang));
+        let value = host.param_base(device.id, wire.id).unwrap_or(wire.default);
+        // Lane values are normalized in the wire domain. An authored layout only changes
+        // how they are presented and parsed in the user interface.
+        let base = info.to_normalized(value) as f32;
         let key = AutomationTarget::Param {
             device: device.id,
             param: info.id.clone(),
         };
         let label = format!("{prefix} · {}", info.name);
-        Target::new(key, label, info, value)
+        if let Some(layout) = host.native_layout(device.id)
+            && layout.parameter_display(wire.id).is_some()
+        {
+            info = crate::views::devices::model::native_param(self.lang, layout, wire, None).info;
+        }
+        Target {
+            key,
+            label,
+            info,
+            base,
+        }
     }
 
     pub fn resolve(&self, target: &AutomationTarget) -> Result<Target, Option<String>> {
@@ -262,9 +273,9 @@ impl<'a> Catalog<'a> {
                     DeviceStatus::Loading => return Err(None),
                     DeviceStatus::Ok => {}
                 }
-                if let Some((info, value)) = self.device_param(device, param) {
-                    if info.automatable {
-                        return Ok(self.device_target(device, info, value, &name));
+                if let Some(wire) = self.device_param(device, param) {
+                    if komponist_plugins::params::is_automatable(wire) {
+                        return Ok(self.device_target(device, wire, &name));
                     }
                     return Err(Some(lang.automation_not_automatable().to_owned()));
                 }
@@ -821,6 +832,87 @@ fn chooser_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hosted_targets_keep_wire_bases_and_use_authored_display_units() {
+        use std::time::{Duration, Instant};
+
+        use komponist_model::edits::{NewDevice, insert_device};
+        use komponist_model::{ChannelRef, DeviceRole};
+
+        let host = crate::App::headless_plugin_host();
+        let hall = host
+            .manager()
+            .catalog()
+            .entries()
+            .iter()
+            .find(|entry| entry.plugin.id == "org.klang-studio.komponist.hall")
+            .unwrap();
+        let (project, id) = insert_device(
+            &Project::new("Macro units"),
+            ChannelRef::Master,
+            0,
+            NewDevice {
+                plugin: hall.plugin.clone(),
+                role: DeviceRole::Effect,
+                state: None,
+                sidechain: None,
+                preset: None,
+            },
+        )
+        .unwrap();
+        let mut app = crate::App::headless(project);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let decay_id = loop {
+            app.step();
+            if let Some(layout) = app.engine().host().native_layout(id)
+                && app.engine().host().params(id).is_some()
+            {
+                break layout.author_ids().unwrap()["decay"];
+            }
+            assert!(Instant::now() < deadline, "waiting for the Hall fixture");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let device = app.project().find_device(id).unwrap().2;
+        let key = AutomationTarget::Param {
+            device: id,
+            param: ParamId::plugin(decay_id),
+        };
+        let catalog = Catalog::for_project(
+            app.project(),
+            app.engine(),
+            Lang::En,
+            AutomationOwner::Master,
+        )
+        .unwrap();
+        let target = catalog.resolve(&key).unwrap();
+        let wire = catalog
+            .device_param(device, &ParamId::plugin(decay_id))
+            .unwrap();
+        let raw = app
+            .engine()
+            .host()
+            .param_base(id, decay_id)
+            .unwrap_or(wire.default);
+        assert_eq!(
+            target.base,
+            ((raw - wire.min) / (wire.max - wire.min)) as f32
+        );
+        assert_eq!(target.label, "Reverb · Decay");
+        assert_eq!(target.format(target.base), "2.40 s");
+        assert_eq!(target.format(1.0), "20.0 s");
+        assert!((target.parse("2.40 s").unwrap() - target.base).abs() < 1e-6);
+        assert!((target.parse("2400 ms").unwrap() - target.base).abs() < 1e-6);
+
+        let generic = komponist_ipc::ParamInfo {
+            id: u32::MAX,
+            ..wire.clone()
+        };
+        let target = catalog.device_target(device, &generic, "Generic");
+        assert_eq!(target.info.unit, Unit::Percent);
+        assert_eq!(target.format(0.6), "60%");
+        assert_eq!(target.parse("60%"), Some(0.6));
+    }
 
     #[test]
     fn highlight_follows_target_when_rows_change() {
