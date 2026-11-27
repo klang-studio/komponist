@@ -34,7 +34,12 @@ fn saved_state(app: &App, device: DeviceId) -> Option<SavedPluginState> {
 }
 
 /// Commit one parameter gesture through the dispatcher and wait for the app to store its state.
-fn edit_parameters(app: &mut App, device: DeviceId, first: (u32, f64), rest: &[(u32, f64)]) {
+fn edit_parameters(
+    app: &mut App,
+    device: DeviceId,
+    first: (u32, f64),
+    rest: &[(u32, f64)],
+) -> SavedPluginState {
     let previous_step = app.doc().top_step();
     let (id, _) = first;
     app.dispatch(Action::Plugin(PluginAction::BeginParamGesture {
@@ -45,19 +50,33 @@ fn edit_parameters(app: &mut App, device: DeviceId, first: (u32, f64), rest: &[(
         app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
     }
     app.dispatch(Action::Edit(EditAction::EndGesture));
-    step_until(app, "the app to commit the parameter gesture", |app| {
-        app.doc()
-            .top_step()
-            .is_some_and(|step| Some(step) != previous_step)
-            && std::iter::once(first)
-                .chain(rest.iter().copied())
-                .all(|(id, value)| {
-                    app.engine()
-                        .host()
-                        .param_base(device, id)
-                        .is_some_and(|actual| (actual - value).abs() < 1e-6)
+    step_until(
+        app,
+        "the app to store the released gesture's snapshot",
+        |app| {
+            let Some(stored) = saved_state(app, device) else {
+                return false;
+            };
+            let host = app.engine().host();
+            // The host's live bases and a new undo step can precede the snapshot response.
+            // Wait for a handled snapshot that includes all pending edits and is stored in the project.
+            app.doc()
+                .top_step()
+                .is_some_and(|step| Some(step) != previous_step)
+                && app.device_events().iter().any(|event| {
+                    matches!(event, PluginManagerEvent::StateSnapshot { device: id, state }
+                    if *id == device && *state == stored
+                        && host.is_current_param_snapshot(device, &state.bytes))
                 })
-    });
+                && std::iter::once(first)
+                    .chain(rest.iter().copied())
+                    .all(|(id, value)| {
+                        host.param_base(device, id)
+                            .is_some_and(|actual| (actual - value).abs() < 1e-6)
+                    })
+        },
+    );
+    saved_state(app, device).expect("the app stored the current snapshot")
 }
 
 /// Render a live note and drain its release before probing again.
@@ -169,10 +188,8 @@ fn undo_and_redo_of_clap_effect_state_reach_the_running_processor() {
     let gain = author_parameter(&app, limiter, "gain");
     let ceiling = author_parameter(&app, limiter, "ceiling");
     // The normalized gain maximum is +24 dB. Ceiling endpoints are -12 dB and 0 dB.
-    edit_parameters(&mut app, limiter, (gain, 1.0), &[(ceiling, 1.0)]);
-    let loud = saved_state(&app, limiter).unwrap();
-    edit_parameters(&mut app, limiter, (ceiling, 0.0), &[]);
-    let quiet = saved_state(&app, limiter).unwrap();
+    let loud = edit_parameters(&mut app, limiter, (gain, 1.0), &[(ceiling, 1.0)]);
+    let quiet = edit_parameters(&mut app, limiter, (ceiling, 0.0), &[]);
     assert_ne!(loud, quiet);
     hold_offline(&mut app, &[synth, limiter]);
 
@@ -353,10 +370,8 @@ fn undo_and_redo_of_a_bridged_plugins_state_reach_the_plugin() {
         .expect("a gain parameter")
         .id;
 
-    edit_parameters(&mut app, synth, (gain, 0.9), &[]);
-    let loud = saved_state(&app, synth).unwrap();
-    edit_parameters(&mut app, synth, (gain, 0.3), &[]);
-    let quiet = saved_state(&app, synth).unwrap();
+    let loud = edit_parameters(&mut app, synth, (gain, 0.9), &[]);
+    let quiet = edit_parameters(&mut app, synth, (gain, 0.3), &[]);
     assert_ne!(loud, quiet);
 
     undo(&mut app);
