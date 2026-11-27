@@ -387,7 +387,6 @@ pub struct PluginManager {
     bridges: BTreeMap<DeviceId, Bridge>,
     private_clap_dir: Option<PathBuf>,
     bundled_clap: Option<BundledClap>,
-    force_bundled_bridge: bool,
     project_dir: Option<PathBuf>,
     /// CLAP IDs of running instances that were loaded from the manifest-verified package.
     verified_bundles: BTreeMap<DeviceId, String>,
@@ -411,35 +410,23 @@ impl Drop for PluginManager {
     }
 }
 
-fn force_bundled_bridge() -> bool {
-    std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1")
-}
-
 impl PluginManager {
     /// Opens the installed bundled inventory and the cached external plugin catalog.
     pub fn new(config: PluginManagerConfig) -> PluginManager {
-        let force_bridge = force_bundled_bridge();
-        Self::with_catalog(config, Catalog::default(), true, force_bridge)
+        Self::with_catalog(config, Catalog::default(), true)
     }
 
     pub(crate) fn new_with_bundled_clap(
         config: PluginManagerConfig,
         enable_bundles: bool,
-        force_bundled_bridge: bool,
     ) -> PluginManager {
-        Self::with_catalog(
-            config,
-            Catalog::default(),
-            enable_bundles,
-            force_bundled_bridge,
-        )
+        Self::with_catalog(config, Catalog::default(), enable_bundles)
     }
 
     /// Includes the legacy catalog for tests and benchmark comparisons.
     #[doc(hidden)]
     pub fn with_reference_devices(config: PluginManagerConfig) -> PluginManager {
-        let force_bridge = force_bundled_bridge();
-        Self::with_catalog(config, Catalog::builtin(), true, force_bridge)
+        Self::with_catalog(config, Catalog::builtin(), true)
     }
 
     /// Open an explicit test inventory using the fixture builder's expected manifest hash.
@@ -456,7 +443,6 @@ impl PluginManager {
             Catalog::default(),
             Some(bundled_clap.directory().to_owned()),
             Some(bundled_clap),
-            force_bundled_bridge(),
             Vec::new(),
         );
         let ready = manager.bundled_clap.as_ref().is_some_and(|bundled| {
@@ -484,7 +470,6 @@ impl PluginManager {
         config: PluginManagerConfig,
         catalog: Catalog,
         enable_bundles: bool,
-        force_bundled_bridge: bool,
     ) -> PluginManager {
         let mut pending = Vec::new();
         let mut report = |error: BundleVerificationError| {
@@ -508,14 +493,7 @@ impl PluginManager {
         } else {
             None
         };
-        Self::from_inventory(
-            config,
-            catalog,
-            private_clap_dir,
-            bundled_clap,
-            force_bundled_bridge,
-            pending,
-        )
+        Self::from_inventory(config, catalog, private_clap_dir, bundled_clap, pending)
     }
 
     fn from_inventory(
@@ -523,7 +501,6 @@ impl PluginManager {
         catalog: Catalog,
         private_clap_dir: Option<PathBuf>,
         bundled_clap: Option<BundledClap>,
-        force_bundled_bridge: bool,
         pending: Vec<PluginManagerEvent>,
     ) -> PluginManager {
         let cache = ScanCache::load(&config.cache_file);
@@ -536,7 +513,6 @@ impl PluginManager {
             bridges: BTreeMap::new(),
             private_clap_dir,
             bundled_clap,
-            force_bundled_bridge,
             project_dir: None,
             verified_bundles: BTreeMap::new(),
             effect_meters: BTreeMap::new(),
@@ -799,9 +775,6 @@ impl PluginManager {
         // A project device has one instance. A local instance keeps its control half alive until
         // the engine returns the audio half; external bridge retirement remains asynchronous.
         self.retire(device.id, false);
-        let mut verified_id = None;
-        let mut effect_meter = None;
-        let mut verified_bundle = None;
         if self.requires_bundle_verification(&device.plugin, &bundle) {
             let verified = self.verify_catalog_bundle(&bundle, &plugin_id);
             let proof = match verified {
@@ -814,47 +787,42 @@ impl PluginManager {
                     return Err(error);
                 }
             };
-            verified_id = Some(proof.plugin_id().to_owned());
-            effect_meter = bundled_effects::Meter::new(&features, setup.sample_rate);
-            if !self.force_bundled_bridge {
-                return match DirectDevice::start(
-                    proof,
-                    device.role,
-                    setup,
-                    state,
-                    self.timing.snapshot_debounce,
-                ) {
-                    Ok((mut instance, mut processor)) => {
-                        if let Some(meter) = effect_meter {
-                            processor.set_effect_meter(Arc::clone(&meter));
-                            self.effect_meters.insert(device.id, meter);
-                        }
-                        self.statuses.remove(&device.id);
-                        instance.report_warning(device.id, &mut self.pending);
-                        DirectDevice::report_metadata(device.id, &mut self.pending);
-                        self.pending.push(PluginManagerEvent::StatusChanged {
-                            device: device.id,
-                            status: DeviceStatus::Ok,
-                        });
-                        instance.set_render_mode(device.id, self.render_mode, &mut self.pending);
-                        self.direct.insert(device.id, instance);
-                        self.sync_asset_links(device.id, &BTreeMap::new(), &device.asset_links);
-                        if let Some(id) = verified_id {
-                            self.verified_bundles.insert(device.id, id);
-                        }
-                        Ok(Box::new(processor))
+            let verified_id = proof.plugin_id().to_owned();
+            let effect_meter = bundled_effects::Meter::new(&features, setup.sample_rate);
+            return match DirectDevice::start(
+                proof,
+                device.role,
+                setup,
+                state,
+                self.timing.snapshot_debounce,
+            ) {
+                Ok((mut instance, mut processor)) => {
+                    if let Some(meter) = effect_meter {
+                        processor.set_effect_meter(Arc::clone(&meter));
+                        self.effect_meters.insert(device.id, meter);
                     }
-                    Err(error) => {
-                        let error = PluginError::Ipc(error.to_string());
-                        self.set_status(
-                            device.id,
-                            DeviceStatus::Crashed(FailReason::LoadFailed(error.to_string())),
-                        );
-                        Err(error)
-                    }
-                };
-            }
-            verified_bundle = Some(proof);
+                    self.statuses.remove(&device.id);
+                    instance.report_warning(device.id, &mut self.pending);
+                    DirectDevice::report_metadata(device.id, &mut self.pending);
+                    self.pending.push(PluginManagerEvent::StatusChanged {
+                        device: device.id,
+                        status: DeviceStatus::Ok,
+                    });
+                    instance.set_render_mode(device.id, self.render_mode, &mut self.pending);
+                    self.direct.insert(device.id, instance);
+                    self.sync_asset_links(device.id, &BTreeMap::new(), &device.asset_links);
+                    self.verified_bundles.insert(device.id, verified_id);
+                    Ok(Box::new(processor))
+                }
+                Err(error) => {
+                    let error = PluginError::Ipc(error.to_string());
+                    self.set_status(
+                        device.id,
+                        DeviceStatus::Crashed(FailReason::LoadFailed(error.to_string())),
+                    );
+                    Err(error)
+                }
+            };
         }
         let started = Bridge::spawn(SpawnSetup {
             exe: &self.config.bridge_exe,
@@ -862,9 +830,7 @@ impl PluginManager {
             device: device.id,
             role: device.role,
             format,
-            bundle: verified_bundle
-                .as_ref()
-                .map_or(bundle.as_path(), VerifiedClap::bundle_path),
+            bundle: bundle.as_path(),
             catalog_bundle: &bundle,
             plugin_id: &plugin_id,
             state,
@@ -873,11 +839,7 @@ impl PluginManager {
             sidechain,
         });
         match started {
-            Ok(mut started) => {
-                if let Some(meter) = effect_meter {
-                    started.processor.set_effect_meter(Arc::clone(&meter));
-                    self.effect_meters.insert(device.id, meter);
-                }
+            Ok(started) => {
                 if self.render_mode != RenderMode::Realtime {
                     started
                         .bridge
@@ -886,9 +848,6 @@ impl PluginManager {
                 self.statuses.remove(&device.id);
                 self.bridges.insert(device.id, started.bridge);
                 self.sync_asset_links(device.id, &BTreeMap::new(), &device.asset_links);
-                if let Some(id) = verified_id {
-                    self.verified_bundles.insert(device.id, id);
-                }
                 self.pending.push(PluginManagerEvent::StatusChanged {
                     device: device.id,
                     status: DeviceStatus::Loading,
@@ -2172,7 +2131,7 @@ mod tests {
             cache_file: temp.path().join("plugins.json"),
             ..PluginManagerConfig::defaults(temp.path())
         };
-        let mut manager = PluginManager::new_with_bundled_clap(config, false, false);
+        let mut manager = PluginManager::new_with_bundled_clap(config, false);
         let removed = DeviceId(1);
         let other = DeviceId(2);
         for device in [removed, other] {
@@ -2197,7 +2156,7 @@ mod tests {
             cache_file: temp.path().join("plugins.json"),
             ..PluginManagerConfig::defaults(temp.path())
         };
-        let mut manager = PluginManager::new_with_bundled_clap(config, false, false);
+        let mut manager = PluginManager::new_with_bundled_clap(config, false);
         let device = DeviceId(1);
         let events = [
             PluginManagerEvent::WaveformMarkersEdited {
@@ -2247,7 +2206,7 @@ mod tests {
             cache_file: temp.path().join("plugins.json"),
             ..PluginManagerConfig::defaults(temp.path())
         };
-        let mut manager = PluginManager::new_with_bundled_clap(config, false, false);
+        let mut manager = PluginManager::new_with_bundled_clap(config, false);
         let device = Device {
             id: DeviceId(1),
             role: DeviceRole::Effect,

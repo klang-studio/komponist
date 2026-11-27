@@ -16,14 +16,9 @@
 # and the manifest are linked in by crates/komponist-app/build.rs), LICENSE and a short README.txt.
 #
 # The executable is unsigned by default; Windows SmartScreen then warns on the first start (docs/INSTALL.md).
-# Authenticode signing is optional and off unless one of these is set (signtool from the Windows SDK, on PATH or
-# in "C:\Program Files (x86)\Windows Kits\10\bin\<version>\x64"):
-#
-#   KOMPONIST_SIGN_CERT        path of a .pfx file, with KOMPONIST_SIGN_PASSWORD (its password), or
-#   KOMPONIST_SIGN_THUMBPRINT  SHA-1 thumbprint of a certificate in the user or machine store (signtool /sha1)
-#   KOMPONIST_SIGN_TIMESTAMP_URL  RFC 3161 timestamp server (default http://timestamp.digicert.com)
-#
-# The signing path has not been run yet (no code signing certificate at the time of writing).
+# Authenticode signing is optional and off unless KOMPONIST_SIGN_CERT or KOMPONIST_SIGN_THUMBPRINT is set (see
+# scripts/sign-windows.sh). It covers komponist.exe here and each bundled CLAP device, which scripts/bundled-clap.py
+# signs while staging, before the manifest hashes the final files.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -105,25 +100,11 @@ Steinberg Media Technologies GmbH."
 [ "$asio" = 1 ] || audio="This build has no ASIO; audio goes through WASAPI."
 signed="unsigned"
 if [ -n "${KOMPONIST_SIGN_CERT:-}" ] || [ -n "${KOMPONIST_SIGN_THUMBPRINT:-}" ]; then
-    signtool="$(command -v signtool.exe || true)"
-    if [ -z "$signtool" ]; then
-        # Newest SDK version first; `sort -V` is in Git Bash's coreutils.
-        signtool="$(ls -d "/c/Program Files (x86)/Windows Kits/10/bin/"*/x64/signtool.exe 2>/dev/null | sort -V | tail -n 1 || true)"
-    fi
-    [ -n "$signtool" ] || { echo "package-windows.sh: signtool.exe not found (Windows SDK)" >&2; exit 1; }
-    sign=(sign /fd SHA256 /tr "${KOMPONIST_SIGN_TIMESTAMP_URL:-http://timestamp.digicert.com}" /td SHA256)
-    if [ -n "${KOMPONIST_SIGN_CERT:-}" ]; then
-        sign+=(/f "$(cygpath -w "$KOMPONIST_SIGN_CERT")")
-        [ -z "${KOMPONIST_SIGN_PASSWORD:-}" ] || sign+=(/p "$KOMPONIST_SIGN_PASSWORD")
-    else
-        sign+=(/sha1 "$KOMPONIST_SIGN_THUMBPRINT")
-    fi
     # Sign a copy, so target/ keeps the build output as built; the copy is what goes into the zip.
     signed_exe="$out/.signing/komponist.exe"
     mkdir -p "$(dirname "$signed_exe")"
     cp "$exe" "$signed_exe"
-    "$signtool" "${sign[@]}" "$(cygpath -w "$signed_exe")"
-    "$signtool" verify /pa "$(cygpath -w "$signed_exe")"
+    scripts/sign-windows.sh "$signed_exe"
     exe="$signed_exe"
     signed="Authenticode signed"
 fi

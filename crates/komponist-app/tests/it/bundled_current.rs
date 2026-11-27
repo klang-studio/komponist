@@ -203,7 +203,7 @@ fn open(app: &mut App, path: &Path) {
     assert_eq!(app.project_path(), Some(path));
 }
 
-fn assert_ready(app: &mut App, expected: &[(TrackId, komponist_model::Device)], bridge: bool) {
+fn assert_ready(app: &mut App, expected: &[(TrackId, komponist_model::Device)]) {
     step_until(app, "authenticated packaged CLAP instances", |app| {
         expected.iter().all(|(_, device)| {
             let host = app.engine().host();
@@ -212,10 +212,9 @@ fn assert_ready(app: &mut App, expected: &[(TrackId, komponist_model::Device)], 
     });
     for (_, device) in expected {
         let host = app.engine().host();
-        assert_eq!(
-            host.bridge_pid(device.id).is_some(),
-            bridge,
-            "{}",
+        assert!(
+            host.bridge_pid(device.id).is_none(),
+            "{} is hosted in-process",
             device.plugin.id
         );
         assert!(
@@ -245,7 +244,6 @@ fn demo_and_new_tracks_use_verified_clap_only() {
             .iter()
             .all(|entry| !entry.is_builtin())
     );
-    let bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some();
     let expected = devices(&project);
     assert!(!expected.is_empty());
     assert!(
@@ -254,11 +252,11 @@ fn demo_and_new_tracks_use_verified_clap_only() {
             .all(|(_, device)| device.plugin.format == PluginFormat::Clap)
     );
     let mut app = app_with(project.clone(), host);
-    assert_ready(&mut app, &expected, bridge);
+    assert_ready(&mut app, &expected);
 
     let repeat =
         komponist_app::showcase::bundled_demo(&cold_host, &work.path().join("repeat-kit")).unwrap();
-    super::showcase::assert_packaged_showcase(&mut app, &project, &cold_host, &repeat, bridge);
+    super::showcase::assert_packaged_showcase(&mut app, &project, &cold_host, &repeat);
 
     let count = app.project().tracks.len();
     app.dispatch(Action::Edit(EditAction::NewMidiTrack));
@@ -267,7 +265,7 @@ fn demo_and_new_tracks_use_verified_clap_only() {
     let (_, instrument) = track.channel.instrument().unwrap();
     assert_eq!(instrument.plugin.id, format!("{DEVICE_PREFIX}hexa"));
     let added = [(track.id, instrument.as_ref().clone())];
-    assert_ready(&mut app, &added, bridge);
+    assert_ready(&mut app, &added);
     app.shutdown();
 }
 
@@ -341,48 +339,11 @@ fn export_packaged(app: &mut App, settings: komponist_app::actions::ExportSettin
     }
 }
 
-fn assert_export_parity(direct: &Path, bridged: &Path, compare_waveform: bool) {
-    let direct = read(direct);
-    let bridged = read(bridged);
-    assert_eq!(direct.frames, bridged.frames);
-    assert_eq!(direct.spec, bridged.spec);
-    for window in direct
-        .samples
-        .chunks(4_800)
-        .zip(bridged.samples.chunks(4_800))
-    {
-        let (direct, bridged) = window;
-        let rms = |samples: &[f32]| {
-            (samples.iter().map(|value| value * value).sum::<f32>() / samples.len() as f32).sqrt()
-        };
-        let floor = 0.002;
-        let left = rms(direct);
-        let right = rms(bridged);
-        let difference = if compare_waveform {
-            (direct
-                .iter()
-                .zip(bridged)
-                .map(|(a, b)| (a - b).powi(2))
-                .sum::<f32>()
-                / direct.len() as f32)
-                .sqrt()
-        } else {
-            (left - right).abs()
-        };
-        assert!(
-            difference <= floor + left.max(right) * 0.07,
-            "difference {difference}, direct RMS {left}, bridge RMS {right}"
-        );
-    }
-}
-
 #[test]
 #[ignore = "requires the authenticated release payload; run measure-bundled-clap.py --current-projects"]
 fn current_project_round_trip_and_offline_render() {
     let (launcher, results) = package_env();
-    let bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some();
-    let mode = if bridge { "bridge" } else { "direct" };
-    let work = results.join(mode);
+    let work = results.join("direct");
     std::fs::create_dir(&work).unwrap();
     let project_folder = work.join("authored");
     std::fs::create_dir(&project_folder).unwrap();
@@ -399,7 +360,7 @@ fn current_project_round_trip_and_offline_render() {
     save_project(&path, &authored).unwrap();
     let mut app = app_with(Project::new("Empty"), host);
     open(&mut app, &path);
-    assert_ready(&mut app, &expected, bridge);
+    assert_ready(&mut app, &expected);
     let host = app.engine().host();
     assert_eq!(
         host.verified_bundle(fixture.eq),
@@ -469,7 +430,7 @@ fn current_project_round_trip_and_offline_render() {
     authored = edits::macros::set_macro_value(&authored, fixture.hexa, 0, 0.38).unwrap();
     save_project(&path, &authored).unwrap();
     open(&mut app, &path);
-    assert_ready(&mut app, &expected, bridge);
+    assert_ready(&mut app, &expected);
 
     app.dispatch(Action::Plugin(PluginAction::SetParam {
         device: fixture.scale,
@@ -528,7 +489,7 @@ fn current_project_round_trip_and_offline_render() {
     let mut app = app_with(Project::new("Empty"), scan(&launcher, cache.path()));
     open(&mut app, &relocated.join("bundled.komponist"));
     assert_eq!(app.project().as_ref(), &saved);
-    assert_ready(&mut app, &expected, bridge);
+    assert_ready(&mut app, &expected);
     assert_eq!(
         app.engine().host().param_base(fixture.scale, scale_mode),
         Some(3.0)
@@ -590,9 +551,6 @@ fn current_project_round_trip_and_offline_render() {
     let wav = read(&output);
     assert!(wav.samples.iter().all(|sample| sample.is_finite()));
     assert!(wav.samples.iter().any(|sample| sample.abs() > 0.01));
-    if bridge {
-        assert_export_parity(&results.join("direct/out/bundled.wav"), &output, false);
-    }
     // The General Sampler renders deterministically and changes tempo immediately before
     // export. The effect is bypassed so a delay tail cannot satisfy the stretch check.
     app.dispatch(Action::Edit(EditAction::SetExclusive {
@@ -617,18 +575,11 @@ fn current_project_round_trip_and_offline_render() {
     // The note starts at 375 ms and the original recording lasts 250 ms.
     let stretched_tail = &wav.samples[2 * 34_080..2 * 37_920];
     assert!(stretched_tail.iter().any(|value| value.abs() > 0.01));
-    if bridge {
-        assert_export_parity(&results.join("direct/out/sampler.wav"), &output, true);
-    }
     app.shutdown();
 }
 
 /// Drive the production pre-instrument MIDI chain and log what reaches the instrument.
-fn midi_chain_events(
-    host: &mut dyn DeviceHost,
-    plugins: [PluginRef; 2],
-    bridge: bool,
-) -> Vec<(u64, EventKind)> {
+fn midi_chain_events(host: &mut dyn DeviceHost, plugins: [PluginRef; 2]) -> Vec<(u64, EventKind)> {
     const RATE: f32 = 48_000.0;
     const BLOCK: usize = 64;
 
@@ -722,7 +673,7 @@ fn midi_chain_events(
         thread::sleep(Duration::from_millis(2));
     }
     for device in [arpeggiator, scale] {
-        assert_eq!(host.bridge_pid(device.id).is_some(), bridge);
+        assert!(host.bridge_pid(device.id).is_none());
         assert!(host.verified_bundle(device.id).is_some());
     }
     let rate_id = host
@@ -770,9 +721,9 @@ fn midi_chain_events(
         .collect()
 }
 
-fn assert_midi_effect_chain(host: &mut PluginHost, bridge: bool) {
+fn assert_midi_effect_chain(host: &mut PluginHost) {
     let plugins = [shipped(host, "arpeggiator"), shipped(host, "scale")];
-    let actual = midi_chain_events(host, plugins, bridge);
+    let actual = midi_chain_events(host, plugins);
     // Sixteenth-note rate at 120 BPM. The second loop starts at frame 4000,
     // and stopping at frame 5120 must release the third note immediately.
     let expected: Vec<_> = [(0, 1200), (2000, 3200), (4000, 5120)]
@@ -811,19 +762,16 @@ fn fixture_midi_effects_preserve_instrument_notes() {
         eprintln!("skipping: build the verified CLAP fixtures with scripts/build-test-plugins.sh");
         return;
     }
-    let bridge =
-        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
-    assert_midi_effect_chain(&mut host, bridge);
+    assert_midi_effect_chain(&mut host);
 }
 
 #[test]
 #[ignore = "requires the authenticated release payload; run measure-bundled-clap.py --current-projects"]
 fn packaged_midi_effects_preserve_instrument_notes() {
     let (launcher, _) = package_env();
-    let bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some();
     let cache = tempfile::tempdir().unwrap();
     let mut host = scan(&launcher, cache.path());
-    assert_midi_effect_chain(&mut host, bridge);
+    assert_midi_effect_chain(&mut host);
 }
 
 #[test]
@@ -887,8 +835,7 @@ fn bundled_presse_lookahead_updates_delay_compensation_during_playback() {
     .unwrap();
     let expected = devices(&project);
     let mut app = app_with(project, host);
-    let bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some();
-    assert_ready(&mut app, &expected, bridge);
+    assert_ready(&mut app, &expected);
     step_until(&mut app, "Presse running", |app| {
         app.engine().device_status(presse) == DeviceStatus::Ok
     });
@@ -912,7 +859,7 @@ fn bundled_presse_lookahead_updates_delay_compensation_during_playback() {
     app.dispatch(Action::Transport(
         komponist_app::TransportAction::TogglePlay,
     ));
-    eprintln!("Waiting for audio on the Presse track (bridge={bridge})");
+    eprintln!("Waiting for audio on the Presse track ");
     step_until(&mut app, "Presse track audible during playback", |app| {
         let (left, right) = app.engine().track_meter(with_presse).unwrap().take();
         app.transport() == TransportState::Playing && left.max(right) > 1e-4
@@ -926,7 +873,7 @@ fn bundled_presse_lookahead_updates_delay_compensation_during_playback() {
             id: lookahead,
             value,
         }));
-        eprintln!("Waiting for Presse lookahead={value} and its track delay (bridge={bridge})");
+        eprintln!("Waiting for Presse lookahead={value} and its track delay");
         step_until(
             &mut app,
             "Presse reactivated with matching track delay",
@@ -952,7 +899,6 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
     const MACRO_BASE: f32 = 0.75;
     const MACRO_AUTOMATION: f32 = 0.58;
     let (launcher, _) = package_env();
-    let bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some();
     let work = tempfile::tempdir().unwrap();
     let host = scan(&launcher, work.path());
     let (project, track) = edits::add_audio_track(
@@ -1011,7 +957,7 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
     let expected = devices(&project);
     let mut app = app_with(Project::new("Empty"), host);
     open(&mut app, &path);
-    assert_ready(&mut app, &expected, bridge);
+    assert_ready(&mut app, &expected);
     let ids = app
         .engine()
         .host()
@@ -1082,7 +1028,7 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
     .unwrap();
     save_project(&path, &project).unwrap();
     open(&mut app, &path);
-    assert_ready(&mut app, &expected, bridge);
+    assert_ready(&mut app, &expected);
     assert_eq!(app.engine().host().param_base(eq, shape), Some(2.0));
     app.engine_mut().send(Command::Play);
     step_until(&mut app, "active EQ automation", |app| {
@@ -1117,7 +1063,7 @@ fn saves_manual_eq_edit_during_automation_and_renders_the_reopened_curve() {
     let mut app = app_with(Project::new("Empty"), scan(&launcher, work.path()));
     open(&mut app, &path);
     assert_eq!(app.project().as_ref(), &saved);
-    assert_ready(&mut app, &expected, bridge);
+    assert_ready(&mut app, &expected);
     let host = app.engine().host();
     assert_eq!(host.param_base(eq, shape), Some(HIGH_SHELF));
     let reopened_base = host.param_base(eq, frequency).unwrap();
@@ -1219,8 +1165,10 @@ fn packaged_effect_cards_and_presets() {
     let (launcher, _) = package_env();
     let work = tempfile::tempdir().unwrap();
     let host = scan(&launcher, work.path());
-    let bridge = std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some();
-    let lang = if bridge { Lang::En } else { Lang::De };
+    let lang = match std::env::var("KOMPONIST_SYNTH_UI_LANG").as_deref() {
+        Ok("en") => Lang::En,
+        _ => Lang::De,
+    };
     let mut project = Project::new("Bundled CLAP effect cards");
     let mut cards = Vec::new();
     for slug in ["eq", "presse", "limiter", "delay"] {
@@ -1253,7 +1201,7 @@ fn packaged_effect_cards_and_presets() {
     }
     let expected = devices(&project);
     let mut app = app_with(project, host).with_lang(lang);
-    assert_ready(&mut app, &expected, bridge);
+    assert_ready(&mut app, &expected);
     let mut harness = crate::acceptance_support::harness(app);
     for (slug, track, device) in cards {
         let app = harness.state_mut();

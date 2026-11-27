@@ -1,4 +1,4 @@
-//! Release smoke test using the same formats and bridge processes as the application.
+//! Release smoke test: loads every bundled device in-process (D11) and checks that an external copy with a bundled ID is bridged without trust.
 
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
@@ -9,10 +9,9 @@ use komponist_engine::processor::EventBuffer;
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, StereoIo, TransportInfo,
 };
-use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind, ProcessExit, RenderMode};
+use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind, RenderMode};
 use komponist_model::{Device, DeviceId, DeviceRole};
 
-use crate::bridge::{Bridge, SpawnSetup, StatePurpose, Timing};
 use crate::bundled_clap::{BundledClap, VerifiedClap, snapshot_cache};
 use crate::bundled_effects::Meter;
 use crate::catalog::{PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT};
@@ -36,7 +35,7 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 /// the unpacked artifacts so the scan and instance open the same authenticated bytes.
 ///
 /// `cache_dir` is the app's cache folder (the scan cache and the private snapshots live below it).
-pub fn verify_bundled_clap(cache_dir: &Path, force_bridge: bool) -> Result<(), String> {
+pub fn verify_bundled_clap(cache_dir: &Path) -> Result<(), String> {
     let mut config = PluginManagerConfig::defaults(cache_dir);
     let cache_root = snapshot_cache(cache_dir).map_err(|error| error.to_string())?;
     let scratch = tempfile::Builder::new()
@@ -68,15 +67,10 @@ pub fn verify_bundled_clap(cache_dir: &Path, force_bridge: bool) -> Result<(), S
                 }
                 PluginKind::Other => return Err("unsupported bundled plugin role".to_owned()),
             };
-            if force_bridge {
-                smoke_bridge(&config, &descriptor, &verified, role)
-            } else {
-                smoke_direct(verified, &descriptor, role)
-            }
+            smoke_direct(verified, &descriptor, role)
         };
         result().map_err(|error| format!("{id}: {error}"))?;
-        let route = if force_bridge { "bridge" } else { "in-process" };
-        println!("verified {id} ({route})");
+        println!("verified {id} (in-process)");
     }
     if let Some((path, id)) = bundled.bundle_entries().find(|(_, id)| *id == HALL_ID) {
         // The same loadable bytes and CLAP ID outside the app inventory are an external plugin.
@@ -84,19 +78,8 @@ pub fn verify_bundled_clap(cache_dir: &Path, force_bridge: bool) -> Result<(), S
             .verify(path, id)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Hall is absent from its own manifest".to_owned())?;
-        smoke_live_manager(
-            config,
-            path,
-            &bundle_key(copy.bundle_path())?,
-            id,
-            force_bridge,
-        )?;
-        let route = if force_bridge {
-            "forced bridge"
-        } else {
-            "direct lifecycle"
-        };
-        println!("verified {id} (normal {route})");
+        smoke_live_manager(config, path, &bundle_key(copy.bundle_path())?, id)?;
+        println!("verified {id} (normal direct lifecycle)");
     }
     if let Some(digest) = option_env!("KOMPONIST_BUNDLED_CLAP_MANIFEST_SHA256") {
         println!("manifest sha256 {digest}");
@@ -109,9 +92,8 @@ fn smoke_live_manager(
     path: &Path,
     external: &Path,
     id: &str,
-    force_bridge: bool,
 ) -> Result<(), String> {
-    let mut manager = PluginManager::new_with_bundled_clap(config, true, force_bridge);
+    let mut manager = PluginManager::new_with_bundled_clap(config, true);
     manager.start_scan(&PluginDirs {
         clap: vec![
             external
@@ -166,9 +148,6 @@ fn smoke_live_manager(
     let mut audio = manager
         .create_processor(&device, SETUP)
         .map_err(|error| error.to_string())?;
-    if force_bridge {
-        return wait_for_manager_bridge(&mut manager, device_id, "normal Hall forced bridge");
-    }
     if manager.bridge_pid(device_id).is_some()
         || manager.status(device_id) != DeviceStatus::Ok
         || manager.native_layout(device_id).is_none()
@@ -400,152 +379,6 @@ fn drive_direct(
             .join()
             .map_err(|_| "direct audio worker panicked".to_owned())?
     })
-}
-
-fn smoke_bridge(
-    config: &PluginManagerConfig,
-    descriptor: &PluginDescriptor,
-    bundle: &VerifiedClap,
-    role: DeviceRole,
-) -> Result<(), String> {
-    let id = DeviceId(1);
-    let started = Bridge::spawn(SpawnSetup {
-        exe: &config.bridge_exe,
-        args: &config.bridge_args,
-        device: id,
-        role,
-        format: PluginFormat::Clap,
-        bundle: bundle.bundle_path(),
-        catalog_bundle: bundle.original_path(),
-        plugin_id: &descriptor.id,
-        state: None,
-        setup: SETUP,
-        timing: Timing::default(),
-        sidechain: descriptor.sidechain,
-    })
-    .map_err(|error| error.to_string())?;
-    let mut bridge = started.bridge;
-    let mut audio = started.processor;
-    let meter = Meter::new(&descriptor.features, SETUP.sample_rate);
-    if let Some(meter) = &meter {
-        audio.set_effect_meter(meter.clone());
-    }
-    let result = (|| {
-        let expected_taps = expected_signal_taps(bundle.plugin_id());
-        if !expected_taps.is_empty() {
-            // The first request precedes inventory delivery. The second updates existing taps.
-            reactivate_named_taps(&mut bridge, &mut audio, 44_100.0, expected_taps)?;
-            reactivate_named_taps(&mut bridge, &mut audio, SETUP.sample_rate, expected_taps)?;
-        }
-        wait_for_bridge(&mut bridge, |bridge, _, _| {
-            Ok((bridge.status() == DeviceStatus::Ok).then_some(()))
-        })?;
-        if bridge.native_layout.is_none() || bridge.params.is_empty() {
-            return Err("bridge did not report native layout and parameters".to_owned());
-        }
-        process_audio(&mut audio, role, descriptor.id == HALL_ID)?;
-        if descriptor.id == PRESSE_ID {
-            check_presse_sidechain(&mut audio)?;
-        }
-        if let Some(meter) = &meter {
-            check_effect_meter(&mut audio, meter)?;
-        }
-        for &name in expected_taps {
-            let tap = bridge
-                .signal_tap(name)
-                .ok_or_else(|| format!("bridge did not report signal tap {name}"))?;
-            check_named_tap(&mut audio, tap)?;
-        }
-        let request = bridge
-            .request_state(StatePurpose::Collect, None)
-            .ok_or_else(|| "bridge refused the state snapshot".to_owned())?;
-        let state = wait_for_bridge(&mut bridge, |_, _, states| {
-            Ok(states
-                .iter()
-                .find(|(seq, _)| *seq == request)
-                .map(|(_, state)| state.clone()))
-        })?;
-        if state.bytes.is_empty() {
-            return Err("bridge saved an empty plugin state".to_owned());
-        }
-        let restore = bridge
-            .request_restore(&state)
-            .ok_or_else(|| "bridge refused the state restore".to_owned())?;
-        wait_for_bridge(&mut bridge, |bridge, _, _| {
-            bridge.restore_result(restore).transpose()
-        })
-    })();
-    drop(audio);
-    let grace = Duration::from_secs(1);
-    bridge.stop(grace);
-    let shutdown = bridge.wait_exit_status(grace);
-    if !matches!(shutdown, Ok(Some(_))) {
-        bridge.kill();
-        let _ = bridge.wait_exit(grace);
-    }
-    result?;
-    match shutdown {
-        Ok(Some(ProcessExit {
-            code: Some(0),
-            signal: None,
-        })) => Ok(()),
-        Ok(Some(exit)) => Err(format!(
-            "bridge exited abnormally during shutdown: {exit:?}"
-        )),
-        Ok(None) => Err("bridge timed out during shutdown".to_owned()),
-        Err(error) => Err(format!("could not wait for bridge shutdown: {error}")),
-    }
-}
-
-fn reactivate_named_taps(
-    bridge: &mut Bridge,
-    audio: &mut dyn Processor,
-    rate: f32,
-    expected_taps: &[&str],
-) -> Result<(), String> {
-    audio
-        .activate(rate, SETUP.max_block)
-        .map_err(|error| error.to_string())?;
-    wait_for_bridge(bridge, |bridge, _, _| {
-        Ok((bridge.status() == DeviceStatus::Ok).then_some(()))
-    })?;
-    for &name in expected_taps {
-        let tap = bridge
-            .signal_tap(name)
-            .ok_or_else(|| format!("bridge did not report signal tap {name} after reactivation"))?;
-        if tap.samples().rate() != tap.descriptor().sample_rate(rate) {
-            return Err(format!("bridge signal tap {name} kept its old sample rate"));
-        }
-    }
-    Ok(())
-}
-
-fn wait_for_bridge<T>(
-    bridge: &mut Bridge,
-    mut until: impl FnMut(
-        &Bridge,
-        &[PluginManagerEvent],
-        &[crate::bridge::Collected],
-    ) -> Result<Option<T>, String>,
-) -> Result<T, String> {
-    let deadline = Instant::now() + TIMEOUT;
-    let mut events = Vec::new();
-    let mut states = Vec::new();
-    loop {
-        bridge.poll(&mut events, &mut states);
-        if let DeviceStatus::Crashed(error) = bridge.status() {
-            return Err(format!("bridge failed: {error:?}"));
-        }
-        if let Some(value) = until(bridge, &events, &states)? {
-            return Ok(value);
-        }
-        if Instant::now() >= deadline {
-            return Err("timed out waiting for bridge".to_owned());
-        }
-        events.clear();
-        states.clear();
-        thread::sleep(Duration::from_millis(2));
-    }
 }
 
 fn check_named_tap(

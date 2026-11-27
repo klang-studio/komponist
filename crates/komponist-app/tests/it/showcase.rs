@@ -28,13 +28,12 @@ pub(super) fn assert_packaged_showcase(
     project: &Project,
     factory: &PluginHost,
     repeat: &Project,
-    bridged: bool,
 ) {
     step_until(app, "all shipped demo devices ready", |app| {
         all_devices(project).all(|device| app.engine().host().verified_bundle(device.id).is_some())
     });
     let host = app.engine().host();
-    check_device_catalog(project, host, bridged);
+    check_device_catalog(project, host);
     check_factory_presets(project, host, factory);
     check_song(project);
     check_routing(project);
@@ -92,19 +91,28 @@ fn notes_of(project: &Project, track: usize) -> Vec<Vec<(i64, i64, u8, u8)>> {
         .collect()
 }
 
-fn check_device_catalog(project: &Project, host: &dyn DeviceHost, bridged: bool) {
+fn check_device_catalog(project: &Project, host: &dyn DeviceHost) {
     let mut count = 0;
     for device in all_devices(project) {
         count += 1;
         assert!(requires_bundled(&device.plugin), "{:?}", device.plugin);
         assert!(host.catalog().resolve(&device.plugin).is_some());
-        assert_eq!(host.bridge_pid(device.id).is_some(), bridged);
+        assert!(host.bridge_pid(device.id).is_none());
         assert!(host.state_warning(device.id).is_none());
         assert!(device.state.is_some() || device_id_is(device, "sampler"));
     }
     // Drums 2, Bass 3, Lead 3, Pad 2, Keys 2, Arp 4, sampler demos 2, surf 1, Reverb bus 1,
     // master 1.
     assert_eq!(count, 2 + 3 + 3 + 2 + 2 + 4 + 2 + 1 + 1 + 1);
+    // Packaging acceptance: the demo uses all twelve shipped devices.
+    let slugs: std::collections::BTreeSet<_> = all_devices(project)
+        .filter_map(|device| device.plugin.id.strip_prefix(DEVICE_PREFIX))
+        .collect();
+    assert_eq!(
+        slugs.len(),
+        12,
+        "the demo must use every bundled device: {slugs:?}"
+    );
     // The Arp's MIDI effects come first, the Limiter is on the master.
     let arp = &track_named(project, "Arp").channel.devices;
     let roles: Vec<_> = arp.iter().map(|d| d.role).collect();
@@ -465,10 +473,7 @@ fn headless_loads_a_shipped_device_from_the_verified_fixture_inventory() {
     let host = app.engine().host();
     assert!(host.verified_bundle(device).is_some());
     assert!(host.native_layout(device).is_some());
-    assert_eq!(
-        host.bridge_pid(device).is_some(),
-        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1")
-    );
+    assert!(host.bridge_pid(device).is_none());
 }
 
 /// Levels of the demo: renders every track alone and the master with and without the Limiter,

@@ -11,29 +11,12 @@ use std::time::{Duration, Instant};
 use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_audio::HostKind;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project};
-use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent};
+use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent, ProcessorSetup};
 
 use super::{
     HEXA_PRESETS, PATIENCE, app_at_buffer, config, measure, project_with_hexa,
     require_audio_config, step_until, worker_counts,
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Mode {
-    Direct,
-    Bridge,
-}
-
-impl Mode {
-    fn from_environment() -> Option<Self> {
-        match std::env::var("KOMPONIST_PERF_BUNDLED_MODE").as_deref() {
-            Ok("direct") => Some(Self::Direct),
-            Ok("bridge") => Some(Self::Bridge),
-            Err(std::env::VarError::NotPresent) => None,
-            _ => panic!("launch via scripts/measure-bundled-clap.py"),
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug)]
 enum Workload {
@@ -162,13 +145,10 @@ fn buffer_sizes() -> Vec<u32> {
 #[test]
 #[ignore = "timing: launch from the verified CLAP package with scripts/measure-bundled-clap.py"]
 fn bundled_clap_workloads() {
-    let Some(mode) = Mode::from_environment() else {
+    let Some(launcher) = std::env::var_os("KOMPONIST_PERF_BUNDLED_APP").map(PathBuf::from) else {
         eprintln!("Bundled CLAP workloads require scripts/measure-bundled-clap.py");
         return;
     };
-    let launcher = std::env::var_os("KOMPONIST_PERF_BUNDLED_APP")
-        .map(PathBuf::from)
-        .expect("packaged bridge launcher");
     let scratch = tempfile::tempdir().expect("benchmark cache directory");
     let package = {
         let mut launch = config(scratch.path());
@@ -208,10 +188,7 @@ fn bundled_clap_workloads() {
                     Box::new(host)
                 };
                 run(
-                    &format!(
-                        "{mode:?} {workload:?} / {audio:?} / {frames} frames / {workers} workers"
-                    ),
-                    mode,
+                    &format!("{workload:?} / {audio:?} / {frames} frames / {workers} workers"),
                     app_at_buffer(source.clone(), host, workers, audio, frames),
                     frames,
                     &ids,
@@ -222,24 +199,16 @@ fn bundled_clap_workloads() {
     }
 }
 
-fn run(
-    label: &str,
-    mode: Mode,
-    mut app: komponist_app::App,
-    buffer: u32,
-    ids: &[DeviceId],
-    started: Instant,
-) {
+fn run(label: &str, mut app: komponist_app::App, buffer: u32, ids: &[DeviceId], started: Instant) {
     step_until(&mut app, "all benchmark devices active", |app| {
         ids.iter()
             .all(|&id| app.engine().device_status(id) == DeviceStatus::Ok)
     });
     for &id in ids {
         let host = app.engine().host();
-        assert_eq!(
-            host.bridge_pid(id).is_some(),
-            mode == Mode::Bridge,
-            "wrong route for {id:?}"
+        assert!(
+            host.bridge_pid(id).is_none(),
+            "bundled device {id:?} must run in-process"
         );
         assert!(host.state_warning(id).is_none(), "state refused for {id:?}");
         assert!(
@@ -255,7 +224,170 @@ fn run(
     let config = app.settings().audio.clone();
     measure(label, &mut app, buffer, ids);
     require_audio_config(app.engine(), config.host, config.sample_rate, buffer);
-    let host = app.engine().host();
-    memory::report(label, ids.iter().filter_map(|&id| host.bridge_pid(id)));
+    memory::report(label);
     app.shutdown();
+}
+
+fn scan_inventory(host: &mut PluginHost) {
+    host.start_scan(&PluginDirs {
+        clap: Vec::new(),
+        vst3: Vec::new(),
+    });
+    let deadline = Instant::now() + PATIENCE;
+    while !host
+        .poll()
+        .iter()
+        .any(|event| matches!(event, PluginManagerEvent::ScanFinished(_)))
+    {
+        assert!(
+            Instant::now() < deadline,
+            "timed out scanning the bundled inventory"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn mib_value(bytes: Option<u64>) -> String {
+    bytes.map_or_else(
+        || "n/a".to_owned(),
+        |bytes| format!("{:.1}", bytes as f64 / 1_048_576.0),
+    )
+}
+
+/// Start-up cost of the bundled devices, all hosted in-process (D11): the catalog scan with a
+/// cold and a warm cache, then the time from `prepare_bundled_device` (library load) through `create_processor` to `DeviceStatus::Ok` and the
+/// resident memory added by each device. `KOMPONIST_PERF_STARTUP_DEVICES` is a comma-separated
+/// list of device slugs (`hexa,volt`); `all` loads every bundle. The lines starting with
+/// `startup:` and `device:` are read by `scripts/measure-bundled-clap.py --startup-memory`, which
+/// runs every case in a fresh process.
+#[test]
+#[ignore = "timing: launch from the verified CLAP package with scripts/measure-bundled-clap.py --startup-memory"]
+fn bundled_clap_startup_and_memory() {
+    let Some(launcher) = std::env::var_os("KOMPONIST_PERF_BUNDLED_APP").map(PathBuf::from) else {
+        eprintln!("Bundled CLAP start-up requires scripts/measure-bundled-clap.py");
+        return;
+    };
+    let selection =
+        std::env::var("KOMPONIST_PERF_STARTUP_DEVICES").unwrap_or_else(|_| "all".into());
+    let scratch = tempfile::tempdir().expect("benchmark cache directory");
+    let cache = scratch.path().join("cache");
+    std::fs::create_dir(&cache).unwrap();
+    let new_host = || {
+        let mut launch = config(&cache);
+        launch.bridge_exe = launcher.clone();
+        PluginHost::new(launch)
+    };
+
+    // Warm-up of the scan cache: a second host on the same cache folder reads it back.
+    let started = Instant::now();
+    let mut host = new_host();
+    scan_inventory(&mut host);
+    let scan_cold = started.elapsed();
+    drop(host);
+    let started = Instant::now();
+    let mut host = new_host();
+    scan_inventory(&mut host);
+    let scan_warm = started.elapsed();
+
+    const SLUGS: [&str; 12] = [
+        "hall",
+        "delay",
+        "eq",
+        "presse",
+        "limiter",
+        "hexa",
+        "volt",
+        "surf",
+        "sampler",
+        "general-sampler",
+        "arpeggiator",
+        "scale",
+    ];
+    let slugs: Vec<&str> = if selection == "all" {
+        SLUGS.to_vec()
+    } else {
+        selection
+            .split(',')
+            .map(|slug| {
+                *SLUGS
+                    .iter()
+                    .find(|known| **known == slug.trim())
+                    .unwrap_or_else(|| panic!("unknown device {slug}"))
+            })
+            .collect()
+    };
+    let setup = ProcessorSetup {
+        sample_rate: 48_000.0,
+        max_block: 256,
+    };
+    let baseline = memory::runner_resident();
+    let mut processors = Vec::new();
+    let mut load_total = Duration::ZERO;
+    for (index, slug) in slugs.iter().enumerate() {
+        let id = format!("org.klang-studio.komponist.{slug}");
+        // `prepare_bundled_device` loads the library (and keeps it loaded), so the per-device
+        // interval starts before it; prepare and instance creation are also reported separately.
+        let before = memory::runner_resident();
+        let started = Instant::now();
+        let prepared = host
+            .manager()
+            .prepare_bundled_device(&id, None, &[], &[])
+            .unwrap_or_else(|error| panic!("{id}: {error}"));
+        let prepare = started.elapsed();
+        let device = Device {
+            id: DeviceId(index as u64 + 1),
+            plugin: prepared.plugin,
+            role: prepared.role,
+            bypass: false,
+            parameter_bases: Default::default(),
+            asset_links: Default::default(),
+            state: prepared.state,
+            sidechain: None,
+        };
+        let created = Instant::now();
+        let processor = host
+            .create_processor(&device, setup)
+            .unwrap_or_else(|| panic!("{id} produced no processor"));
+        let deadline = Instant::now() + PATIENCE;
+        while host.status(device.id) != DeviceStatus::Ok {
+            assert!(Instant::now() < deadline, "{id} did not become ready");
+            host.poll();
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        let elapsed = started.elapsed();
+        let create = created.elapsed();
+        assert!(
+            host.bridge_pid(device.id).is_none(),
+            "{id} must run in-process"
+        );
+        load_total += elapsed;
+        let after = memory::runner_resident();
+        let delta = after
+            .zip(before)
+            .map(|(after, before)| after.saturating_sub(before));
+        eprintln!(
+            "device: {slug} load_ms={:.2} prepare_ms={:.2} create_ms={:.2} rss_delta_mib={}",
+            elapsed.as_secs_f64() * 1e3,
+            prepare.as_secs_f64() * 1e3,
+            create.as_secs_f64() * 1e3,
+            mib_value(delta)
+        );
+        processors.push(processor);
+    }
+    let after = memory::runner_resident();
+    let delta = after
+        .zip(baseline)
+        .map(|(after, before)| after.saturating_sub(before));
+    eprintln!(
+        "startup: devices={} scan_cold_ms={:.1} scan_warm_ms={:.1} load_total_ms={:.2} \
+         rss_base_mib={} rss_delta_mib={}",
+        slugs.len(),
+        scan_cold.as_secs_f64() * 1e3,
+        scan_warm.as_secs_f64() * 1e3,
+        load_total.as_secs_f64() * 1e3,
+        mib_value(baseline),
+        mib_value(delta),
+    );
+    drop(processors);
+    host.poll();
 }

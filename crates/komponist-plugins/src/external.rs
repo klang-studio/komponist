@@ -166,10 +166,6 @@ impl ExternalProcessor {
         }
     }
 
-    pub(crate) fn set_effect_meter(&mut self, meter: Arc<bundled_effects::Meter>) {
-        self.effect_meter = Some(meter);
-    }
-
     /// RT. Writes the fallback for this call.
     fn fallback(&self, io: &mut StereoIo<'_>) {
         match self.role {

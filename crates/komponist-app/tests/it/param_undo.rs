@@ -366,8 +366,6 @@ fn packaged_limiter_drag_is_one_step_and_undo_redo_restore_the_sound() {
     let launcher = PathBuf::from(
         std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").expect("packaged launcher"),
     );
-    let bridge =
-        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
     let work = tempfile::tempdir().unwrap();
     let host = super::bundled_current::scan(&launcher, work.path());
     let hexa = host
@@ -427,7 +425,7 @@ fn packaged_limiter_drag_is_one_step_and_undo_redo_restore_the_sound() {
         })
     });
     for id in [synth, limiter] {
-        assert_eq!(app.engine().host().bridge_pid(id).is_some(), bridge);
+        assert!(app.engine().host().bridge_pid(id).is_none());
     }
 
     let ceiling = app

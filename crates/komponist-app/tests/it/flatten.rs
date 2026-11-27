@@ -439,7 +439,7 @@ fn flatten_isolates_the_complete_chain_and_undo_restores_the_live_state() {
         plugin("transpose"),
         Box::new(App::headless_plugin_host()),
         0.61,
-        None,
+        false,
     );
 }
 
@@ -447,13 +447,11 @@ fn flatten_isolates_the_complete_chain_and_undo_restores_the_live_state() {
 #[ignore = "requires a verified all-device package; run with scripts/measure-bundled-clap.py --current-projects"]
 fn flatten_processes_verified_clap_scale_and_restores_its_state() {
     let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").expect("package executable");
-    let bridge =
-        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
     let dir = tempfile::tempdir().unwrap();
     let host = crate::bundled_current::scan(Path::new(&launcher), dir.path());
     let scale = crate::bundled_current::shipped(&host, "scale");
     assert!(komponist_plugins::requires_bundled(&scale));
-    assert_complete_chain(dir.path(), scale, Box::new(host), 0.62, Some(bridge));
+    assert_complete_chain(dir.path(), scale, Box::new(host), 0.62, true);
 }
 
 fn assert_complete_chain(
@@ -461,7 +459,7 @@ fn assert_complete_chain(
     midi_effect: PluginRef,
     backend: Box<dyn DeviceHost>,
     second_note: f32,
-    packaged_bridge: Option<bool>,
+    packaged: bool,
 ) {
     let (project, track, effect) = fixture(Some(midi_effect));
     let midi_effect = project.track(track).unwrap().channel.devices[0].id;
@@ -481,11 +479,8 @@ fn assert_complete_chain(
     step_until(&mut app, "the MIDI stage ready", |app| {
         app.engine().device_status(midi_effect) == DeviceStatus::Ok
     });
-    if let Some(bridge) = packaged_bridge {
-        assert_eq!(
-            app.engine().host().bridge_pid(midi_effect).is_some(),
-            bridge
-        );
+    if packaged {
+        assert!(app.engine().host().bridge_pid(midi_effect).is_none());
     }
     flatten(&mut app, track);
     assert_eq!(
@@ -538,7 +533,7 @@ fn assert_complete_chain(
     assert_eq!(restored.kind, TrackKind::Midi);
     assert_eq!(restored.clips, old.clips);
     assert_eq!(restored.channel.devices.len(), old.channel.devices.len());
-    if packaged_bridge.is_some() {
+    if packaged {
         assert!(
             app.project()
                 .find_device(midi_effect)

@@ -76,8 +76,6 @@ fn asset_status(app: &App, device: DeviceId, id: u32) -> Option<&AssetStatus> {
 fn both_samplers_play_assets_after_the_project_moves() {
     let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP")
         .expect("set the unpacked app with scripts/measure-bundled-clap.py --current-projects");
-    let force_bridge =
-        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
     let scratch = tempfile::tempdir().unwrap();
     let before_dir = scratch.path().join("before");
     std::fs::create_dir(&before_dir).unwrap();
@@ -153,10 +151,7 @@ fn both_samplers_play_assets_after_the_project_moves() {
         step_until(&mut app, "relocated sampler ready", |app| {
             app.engine().device_status(device.id) == DeviceStatus::Ok
         });
-        assert_eq!(
-            app.engine().host().bridge_pid(device.id).is_some(),
-            force_bridge
-        );
+        assert!(app.engine().host().bridge_pid(device.id).is_none());
         assert_audible(&mut app, track.id, key);
     }
     assert_eq!(app.project().as_ref(), &project);
@@ -304,8 +299,6 @@ fn scanned_packaged_sampler_host(scratch: &Path, launcher: std::path::PathBuf) -
 #[ignore = "requires verified sampler bundles; run with scripts/measure-bundled-clap.py --current-projects"]
 fn bundled_sampler_restores_saved_parameter_bases() {
     let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").expect("packaged launcher");
-    let force_bridge =
-        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
     let scratch = tempfile::tempdir().unwrap();
     let host = scanned_packaged_sampler_host(scratch.path(), launcher.clone().into());
     let instrument = host
@@ -339,10 +332,7 @@ fn bundled_sampler_restores_saved_parameter_bases() {
         step_until(app, "sampler ready", |app| {
             app.engine().host().status(device) == DeviceStatus::Ok
         });
-        assert_eq!(
-            app.engine().host().bridge_pid(device).is_some(),
-            force_bridge
-        );
+        assert!(app.engine().host().bridge_pid(device).is_none());
     };
     let snapshot = |app: &mut App| {
         let result = app.engine_mut().host_mut().snapshot_for_save(PATIENCE);
@@ -378,8 +368,7 @@ fn bundled_sampler_restores_saved_parameter_bases() {
             .host_mut()
             .restore_saved_state(device, &state)
     );
-    // Both paths load the bytes, then send the bases as CLAP parameter values: the child
-    // acknowledges the asynchronous restore, the in-process host queues them for the audio thread.
+    // The in-process host loads the bytes, then queues the bases as CLAP parameter values for the audio thread.
     step_until(&mut app, "restore applied", |app| {
         app.engine()
             .host()
@@ -414,8 +403,6 @@ fn general_sampler_file_edits_preserve_slice_history() {
     use komponist_model::plugin_assets::AssetLink;
 
     let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").expect("packaged launcher");
-    let force_bridge =
-        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
     let scratch = tempfile::tempdir().unwrap();
     let original = scratch.path().join("original.wav");
     let replacement = scratch.path().join("replacement.wav");
@@ -546,7 +533,7 @@ fn general_sampler_file_edits_preserve_slice_history() {
             host.supports_asset_edit_state(sampler),
             "{case}: expected authored file edits"
         );
-        assert_eq!(host.bridge_pid(sampler).is_some(), force_bridge, "{case}");
+        assert!(host.bridge_pid(sampler).is_none(), "{case}");
         let ids = host.native_layout(sampler).unwrap().author_ids().unwrap();
         let start = ids["start"];
         let mode_id = ids["mode"];
@@ -680,8 +667,6 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points};
 
     let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").expect("packaged launcher");
-    let force_bridge =
-        std::env::var_os("KOMPONIST_BUNDLED_CLAP_FORCE_BRIDGE").is_some_and(|value| value == "1");
     let scratch = tempfile::tempdir().unwrap();
     let sample = scratch.path().join("tone.wav");
     write_wav_with_region(&sample, |frame| {
@@ -729,10 +714,7 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             assert!(layout.has_audio_asset_editor());
             asset_status(app, *device, pad as u32) == Some(&AssetStatus::Empty)
         });
-        assert_eq!(
-            app.engine().host().bridge_pid(*device).is_some(),
-            force_bridge
-        );
+        assert!(app.engine().host().bridge_pid(*device).is_none());
         // Turn a knob and replace the sample before the host has captured the knob turn.
         let edited = if *kind == Sampler::General {
             let wire = app
@@ -911,10 +893,9 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
             }
             let path = std::path::PathBuf::from(folder);
             std::fs::create_dir_all(&path).unwrap();
-            let route = if force_bridge { "bridge" } else { "direct" };
             h.render()
                 .unwrap()
-                .save(path.join(format!("{device}-{route}-{lang}.png")))
+                .save(path.join(format!("{device}-{lang}.png")))
                 .unwrap();
         }
     };

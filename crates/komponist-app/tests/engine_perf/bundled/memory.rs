@@ -1,29 +1,21 @@
 //! Resident memory snapshots for the benchmark, outside the recorded callback window.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-pub(super) fn report(label: &str, bridge_pids: impl Iterator<Item = u32>) {
-    let runner = std::process::id();
-    let bridges: BTreeSet<_> = bridge_pids.collect();
-    let pids: Vec<_> = std::iter::once(runner)
-        .chain(bridges.iter().copied())
-        .collect();
-    let resident = resident_bytes(&pids);
-    let bridge_count = bridges
-        .iter()
-        .filter(|pid| resident.contains_key(pid))
-        .count();
-    let bridge_total = bridges.iter().filter_map(|pid| resident.get(pid)).sum();
-    let runner_memory = mib(resident.get(&runner).copied());
-    let bridge_memory = mib((bridge_count == bridges.len()).then_some(bridge_total));
+pub(super) fn report(label: &str) {
     eprintln!(
-        "{label}: resident memory after timing: runner {runner_memory}, \
-         bridges {bridge_memory} ({bridge_count}/{} bridge PIDs sampled)",
-        bridges.len(),
+        "{label}: resident memory after timing: {}",
+        mib(runner_resident())
     );
 }
 
-fn mib(bytes: Option<u64>) -> String {
+/// Resident set of this process (working set on Windows), or `None` where it cannot be read.
+pub(super) fn runner_resident() -> Option<u64> {
+    let runner = std::process::id();
+    resident_bytes(&[runner]).get(&runner).copied()
+}
+
+pub(super) fn mib(bytes: Option<u64>) -> String {
     bytes.map_or_else(
         || "unavailable".to_owned(),
         |bytes| format!("{:.1} MiB", bytes as f64 / 1_048_576.0),
