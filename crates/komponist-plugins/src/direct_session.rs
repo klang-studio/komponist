@@ -79,15 +79,11 @@ struct PendingControls {
 }
 
 impl PendingControls {
-    fn new(role: DeviceRole) -> Self {
+    fn new() -> Self {
         Self {
             epoch: 0,
             persistent: Vec::with_capacity(INPUT_EVENT_CAPACITY),
-            stage: Vec::with_capacity(if role == DeviceRole::MidiEffect {
-                INPUT_EVENT_CAPACITY
-            } else {
-                0
-            }),
+            stage: Vec::with_capacity(INPUT_EVENT_CAPACITY),
         }
     }
 
@@ -116,6 +112,25 @@ impl PendingControls {
             let command = commands.pop().expect("peeked control is still queued");
             if command.epoch == self.epoch {
                 self.persistent.push(command.wire);
+            }
+        }
+    }
+
+    /// Replaces retried edits with newer render-path edits for the same parameter.
+    fn supersede_render_edits(&mut self, events: &[Event]) {
+        self.stage.retain(|queued| {
+            !events.iter().any(|event| {
+                matches!(event.kind, EventKind::ParamEdit { id, .. } if id == queued.param_id)
+            })
+        });
+    }
+
+    /// The engine has handed off these edits. Keep their identities until a block runs.
+    fn retry_render_edits(&mut self, epoch: u64, events: &[Event]) {
+        self.observe_epoch(epoch);
+        for event in events {
+            if let EventKind::ParamEdit { id, value, serial } = event.kind {
+                self.stage_param(epoch, id, value, Some(serial));
             }
         }
     }
@@ -188,7 +203,7 @@ impl DirectSession {
             incoming,
             retire,
             commands,
-            controls: PendingControls::new(role),
+            controls: PendingControls::new(),
             requested,
             role,
             offline_failures: 0,
@@ -438,6 +453,7 @@ impl DirectEngine {
     ) -> ProcessStatus {
         if self.current().is_some() {
             self.collect_controls();
+            self.controls.supersede_render_edits(events);
             let audio = &mut self
                 .active
                 .as_mut()
@@ -450,23 +466,40 @@ impl DirectEngine {
             } else {
                 &[]
             };
+            let retries_fit =
+                self.controls.stage.len() + controls.len() + events.len() <= INPUT_EVENT_CAPACITY;
+            let retries = if retries_fit {
+                self.controls.stage.as_slice()
+            } else {
+                &[]
+            };
             let status = audio.process_block(
                 ctx,
                 events,
                 ControlEvents {
                     persistent: controls,
-                    stage: &[],
+                    stage: retries,
                     epoch: Some((&self.requested.control_epoch, self.controls.epoch)),
                 },
                 io,
                 sidechain,
                 self.effect_meter.as_deref(),
             );
-            if audio.delivered() && controls_fit {
-                self.controls.persistent.clear();
+            if audio.delivered() {
+                if controls_fit {
+                    self.controls.persistent.clear();
+                }
+                if retries_fit {
+                    self.controls.stage.clear();
+                }
+            } else if status == ProcessStatus::Continue {
+                self.controls
+                    .retry_render_edits(self.controls.epoch, events);
             }
             return status;
         }
+        self.controls
+            .retry_render_edits(self.requested.control_epoch.load(Ordering::Acquire), events);
         if ctx.offline {
             self.offline_failures += 1;
         }
@@ -623,9 +656,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retried_render_edits_are_coalesced_with_new_edits_but_not_automation() {
+        let mut controls = PendingControls::new();
+        let edit = |serial, value| Event {
+            offset: 0,
+            kind: EventKind::ParamEdit {
+                id: 5,
+                value,
+                serial: NonZeroU32::new(serial).unwrap(),
+            },
+        };
+        let automation = Event {
+            offset: 0,
+            kind: EventKind::Param { id: 5, value: 0.1 },
+        };
+
+        controls.retry_render_edits(1, &[edit(1, 0.4), automation]);
+        controls.supersede_render_edits(&[automation]);
+        assert_eq!(controls.stage.len(), 1);
+        assert_eq!(controls.stage[0].reserved, 1);
+
+        controls.supersede_render_edits(&[edit(2, 0.4)]);
+        assert!(controls.stage.is_empty());
+        controls.retry_render_edits(1, &[edit(2, 0.4)]);
+        assert_eq!(controls.stage[0].reserved, 2);
+
+        controls.retry_render_edits(2, &[]);
+        assert!(controls.stage.is_empty());
+    }
+
+    #[test]
     fn collection_preserves_a_control_published_after_the_epoch_sample() {
         let (mut sender, mut commands) = RingBuffer::new(4);
-        let mut pending = PendingControls::new(DeviceRole::MidiEffect);
+        let mut pending = PendingControls::new();
         let wire = |value| WireEvent::new(0, WireEventKind::ParamValue { id: 7, value });
         let discarded = wire(0.25);
         let retained = wire(0.75);
@@ -657,7 +720,7 @@ mod tests {
     #[test]
     fn stage_parameter_values_survive_until_a_processor_can_receive_them() {
         let (mut sender, mut commands) = RingBuffer::new(4);
-        let mut pending = PendingControls::new(DeviceRole::MidiEffect);
+        let mut pending = PendingControls::new();
         assert!(
             sender
                 .push(Control {
