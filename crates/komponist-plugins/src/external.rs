@@ -197,11 +197,17 @@ impl ExternalProcessor {
             }
             Some(WireEventKind::ParamValue { id, .. }) => {
                 let event = WireEvent { offset: 0, ..event };
-                let same = self.pending.iter().position(|e| {
-                    matches!(e.decode(), Some(WireEventKind::ParamValue { id: other, .. }) if other == id)
+                let for_parameter = |queued: &WireEvent| matches!(queued.decode(), Some(WireEventKind::ParamValue { id: other, .. }) if other == id);
+                let same = self.pending.iter().position(|queued| {
+                    for_parameter(queued) && (queued.reserved != 0) == (event.reserved != 0)
                 });
                 match same {
-                    Some(i) => self.pending[i] = event,
+                    Some(index) => {
+                        self.pending[index] = event;
+                        if self.pending[index + 1..].iter().any(for_parameter) {
+                            self.pending[index..].rotate_left(1);
+                        }
+                    }
                     None if self.pending.len() < PENDING_CAPACITY => self.pending.push(event),
                     None => {}
                 }

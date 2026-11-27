@@ -157,10 +157,16 @@ impl PendingControls {
         };
         // Changes waiting for a replacement accumulate by parameter, like the engine's slot
         // queue. Keep the newest value when automation writes the same ID on several blocks.
-        if let Some(previous) = self.stage.iter_mut().find(|previous| {
-            matches!(previous.decode(), Some(WireEventKind::ParamValue { id: previous, .. }) if previous == id)
+        if let Some(index) = self.stage.iter().position(|previous| {
+            previous.param_id == id && (previous.reserved != 0) == serial.is_some()
         }) {
-            *previous = wire;
+            self.stage[index] = wire;
+            if self.stage[index + 1..]
+                .iter()
+                .any(|queued| queued.param_id == id)
+            {
+                self.stage[index..].rotate_left(1);
+            }
         } else if self.stage.len() < self.stage.capacity() {
             self.stage.push(wire);
         }
@@ -659,6 +665,31 @@ impl EventProcessor for DirectEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn midi_stage_writes_keep_durable_edits_and_automation_separate() {
+        let mut controls = PendingControls::new();
+        controls.stage_param(1, 5, 0.4, NonZeroU32::new(1));
+        controls.stage_param(1, 5, 0.1, None);
+        assert_eq!(
+            controls
+                .stage
+                .iter()
+                .map(|event| event.reserved)
+                .collect::<Vec<_>>(),
+            [1, 0]
+        );
+
+        controls.stage_param(1, 5, 0.4, NonZeroU32::new(2));
+        assert_eq!(
+            controls
+                .stage
+                .iter()
+                .map(|event| event.reserved)
+                .collect::<Vec<_>>(),
+            [0, 2]
+        );
+    }
 
     #[test]
     fn retried_render_edits_are_coalesced_with_new_edits_but_not_automation() {

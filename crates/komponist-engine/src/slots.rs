@@ -31,8 +31,20 @@ impl ParamQueue {
 
     /// Queues `id = value`; `false` when the queue is full.
     pub(crate) fn set(&mut self, id: u32, value: f64, serial: Option<NonZeroU32>) -> bool {
-        if let Some(item) = self.items[..self.len].iter_mut().find(|(i, _, _)| *i == id) {
-            *item = (id, value, serial);
+        let active = &mut self.items[..self.len];
+        if let Some(index) = active
+            .iter()
+            .position(|&(queued, _, stamp)| queued == id && stamp.is_some() == serial.is_some())
+        {
+            active[index] = (id, value, serial);
+            // A playback value and a durable edit are distinct writes. Keep their relative
+            // order when a new write replaces one of them.
+            if active[index + 1..]
+                .iter()
+                .any(|&(queued, _, _)| queued == id)
+            {
+                active[index..].rotate_left(1);
+            }
             return true;
         }
         if self.len == MAX_PENDING_PARAMS {
@@ -355,8 +367,8 @@ mod tests {
     fn repeated_parameter_values_keep_the_latest_edit_identity() {
         let mut params = ParamQueue::default();
         assert!(params.set(1, 0.5, NonZeroU32::new(1)));
+        assert!(params.set(1, 0.2, None));
         assert!(params.set(1, 0.5, NonZeroU32::new(2)));
-        assert!(params.set(2, 0.5, None));
 
         let mut out = EventList::new(2);
         params.drain_into(&mut out, 0);
@@ -366,12 +378,12 @@ mod tests {
                 .map(|event| event.kind)
                 .collect::<Vec<_>>(),
             [
+                EventKind::Param { id: 1, value: 0.2 },
                 EventKind::ParamEdit {
                     id: 1,
                     value: 0.5,
                     serial: NonZeroU32::new(2).unwrap(),
                 },
-                EventKind::Param { id: 2, value: 0.5 },
             ],
         );
     }
