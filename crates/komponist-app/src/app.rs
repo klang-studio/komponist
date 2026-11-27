@@ -3620,14 +3620,38 @@ mod tests {
     }
 
     #[test]
-    fn missing_shipped_devices_use_the_localized_startup_status() {
-        for lang in [Lang::De, Lang::En] {
+    fn missing_shipped_devices_are_visible_on_the_start_screen() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable as _;
+
+        let size = egui::vec2(800.0, 480.0);
+        for lang in Lang::ALL {
             let mut app = App::headless(Project::new("Test")).with_lang(lang);
             app.show_start_screen();
-            app.handle_device_event(&PluginManagerEvent::BundledDevicesUnavailable);
-            let status = app.ui.status.as_ref().unwrap();
-            assert_eq!(status.kind, StatusKind::Error);
-            assert_eq!(status.text, lang.status_bundled_devices_unavailable());
+            app.recent.projects = (0..12)
+                .map(|index| PathBuf::from(format!("Project {index}.komponist")))
+                .collect();
+            let mut h = Harness::builder()
+                .with_size(size)
+                .with_context_setup(komponist_ui::install)
+                .build_ui_state(|ui, app| app.show(ui), app);
+            let warning = lang.status_bundled_devices_unavailable();
+            assert!(h.query_by_label(warning).is_none());
+
+            h.state_mut()
+                .handle_device_event(&PluginManagerEvent::BundledDevicesUnavailable);
+            h.run_steps(2);
+            let rect = h.get_by_role_and_label(egui::Role::Label, warning).rect();
+            assert!(
+                rect.height() > 0.0 && rect.bottom() <= size.y,
+                "{lang:?}: {rect:?}"
+            );
+            let first_recent = h.get_by_label_contains("Project 0").rect();
+            assert!(rect.bottom() < first_recent.top());
+            assert_eq!(
+                h.state().ui.status.as_ref().map(|s| s.kind),
+                Some(StatusKind::Error)
+            );
         }
     }
 
