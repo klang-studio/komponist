@@ -301,13 +301,13 @@ loads. komponist supports two plugin standards:
 - **VST3**, Steinberg's standard, hosted through the `vst3` crate.
 
 Plugin code is foreign code. It can crash, leak, hang or be slow. Many DAWs load plugins into their
-own process, so a crashing plugin takes the whole session down. komponist runs **every external
+own process, so a crashing plugin takes the whole session down. komponist runs **every third-party
 plugin instance in its own process** (the *bridge*), communicating through shared memory. A
 crashed plugin only silences its own device; you can reload it. The price is the extra cost of
 moving audio between processes every block, which section 14 explains.
 
-komponist's own instruments and effects (Hexa, Volt, Klopfer, Sampler, EQ, Delay, Reverb, Presse,
-Limiter, Arpeggiator, Scale) run **in process** and need no bridge.
+komponist's twelve shipped instruments and effects each have a CLAP bundle. The app verifies the
+bundle inventory and loads each instance **in process** when the project needs it.
 
 ---
 
@@ -362,16 +362,14 @@ The workspace is split by responsibility, and dependencies point downwards only:
           komponist-ui    komponist-plugins     komponist-audio    komponist-bridge
           (widgets,       (catalog, scan,       (cpal/JACK/        (plugin process:
            canvases)       bridge lifecycle,     MIDI devices,      instance + scan)
-             |             ExternalProcessor)    EngineSlot)            |
-             |              /      |       \         |            komponist-hosting
-             |   komponist-builtin |   komponist-ipc |            (CLAP + VST3 host)
-             |   (device registry) |   (shm, control |                  |
-             |        |            |    protocol)    |            komponist-ipc
-             |   device crates     |                 |
-             |   (hexa, volt, eq …)|                 |
-             |        |            |                 |
-             |   komponist-device-core               |
-             |        |                              |
+             |             processor adapters)   EngineSlot)            |
+             |                 |                    |            komponist-hosting
+             |        komponist-hosting             |            (CLAP + VST3 host)
+             |        (bundled CLAP host)            |                  |
+             |                 |                    |            komponist-ipc
+             |             komponist-ipc             |
+             |             (shm, protocol)           |
+             |                                       |
              |   komponist-engine  ──────────────────┼── komponist-rt (RT priority, waits)
              |   (compile, Program, Engine,          |
              |    Processor trait, mixing)           |
@@ -799,8 +797,9 @@ the same device as a standalone CLAP plugin. Shared pieces:
   the `Dsp` trait is the simple interface a device implements; `InternalProcessor` adapts a `Dsp`
   to the engine's `Processor` (splitting blocks at parameter events, feeding meters); `dsp.rs` has
   shared helpers (smoothing, one-pole filters, ring buffers, `flush`).
-- [`registry/`](../crates/builtin-devices/registry/) (`komponist-builtin`): the list of built-ins
-  (`BuiltinKind`), their catalog entries and the processor factory the app uses.
+- The bundle manifest lists the shipped CLAP libraries. The catalog reads their descriptors and
+  localized metadata through CLAP. Device crates belong to the bundles' build, outside the app's
+  dependency tree.
 - `hexa/core` and `sampler-shared/core`: large, separately developed DSP engines (FM synthesis and
   sample playback), vendored into this repository.
 
@@ -834,8 +833,8 @@ Things to notice in its `process` loop:
 
 The catalog id and parameter ids are stored in project files and automation lanes. Below 1.0 a
 change breaks the projects that hold the old id, because there is no migration (D10); at 1.0 they
-become permanent. Hexa's id is `hexa` and Klopfer's is `sampler` (see `BUILTIN_HEXA` in
-`project.rs`). The device checklist in
+become permanent. Hexa uses `org.klang-studio.komponist.hexa` and Klopfer uses
+`org.klang-studio.komponist.sampler`. The device checklist in
 [builtin-devices/README.md](../crates/builtin-devices/README.md) lists everything a new device needs.
 
 ## 14. External plugins and the bridge
@@ -958,7 +957,7 @@ Useful flags: `--demo`, `--null-audio`, `--lang de|en`, `--scale F`, `--open-plu
 | `views/` (~39k lines) | arrangement, piano roll, step sequencer, audio editor, mixer, devices, inspector, browser, automation, routing |
 | `dialogs/`, `windows/`, `panels/` | settings, export, file dialogs; plugin frame windows; transport bar, status bar, dock tabs |
 | `shell.rs`, `layout.rs` | the main window layout |
-| `engine_sync.rs`, `device_host.rs` | document → engine; creating processors (built-in or bridged) |
+| `engine_sync.rs`, `device_host.rs` | document → engine; creating processors for verified bundles and bridged plugins |
 | `project_io.rs`, `settings.rs`, `dirs.rs` | files, settings, platform folders |
 | `record.rs`, `audio_record*.rs`, `automation_capture.rs` | MIDI, audio and automation recording |
 | `export*.rs` | WAV export coordination |
@@ -1131,8 +1130,8 @@ tracks still reuse their compiled program (pointer equality).
 
 **… add a built-in instrument or effect.** Follow the checklist in
 [builtin-devices/README.md](../crates/builtin-devices/README.md): a crate with `Spec`, `Dsp`
-implementation, stable ids, DE/EN names, registration in the registry, and a musically sensible
-use in the demo project (`showcase_project()`, rule 15) with a balanced mix.
+implementation, stable CLAP and parameter IDs, DE/EN names, packaging, and a musically sensible
+use in the demo project (`bundled_demo()`, rule 15) with a balanced mix.
 
 **… change the project file.** Add the field (optional data with `#[serde(default)]`), bump
 `FORMAT_VERSION` in `persist.rs` when files of the other version must be rejected, and update every
