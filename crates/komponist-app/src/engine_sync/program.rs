@@ -747,7 +747,7 @@ mod tests {
         let mut sync = EngineSync::null(Box::new(host));
         sync.sync(&doc);
         assert!(wait_until(|| {
-            sync.poll();
+            sync.poll_device_events();
             sync.host().params(device).is_some()
         }));
         let model = doc.project().find_device(device).unwrap().2;

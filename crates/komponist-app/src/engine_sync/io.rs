@@ -24,7 +24,7 @@ use komponist_processor::MAX_EVENTS_PER_BLOCK;
 /// How long [`super::EngineSync::shutdown`] lets the engine drain its last commands.
 const SHUTDOWN_DRAIN: Duration = Duration::from_millis(30);
 
-/// How often [`super::EngineSync::poll`] looks for MIDI devices that appeared or vanished (hot-plug).
+/// How often I/O checks for MIDI devices that appeared or vanished (hot-plug).
 pub const MIDI_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 
 /// How long [`super::EngineSync::hold_engine`] waits for the stream to hand the engine over.

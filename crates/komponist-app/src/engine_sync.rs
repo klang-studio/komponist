@@ -36,15 +36,6 @@ pub use io::{
 use program::ProgramSync;
 pub(crate) use program::{DraftOverlay, MacroValueEdit};
 
-/// What [`EngineSync::poll`] reports to the app (everything but garbage).
-#[derive(Debug)]
-pub enum SyncEvent {
-    /// An engine event (recorded notes, loop wraps, count-in end, failed processors).
-    Engine(EngineEvent),
-    /// A device host event (status, state snapshot, latency, …).
-    Device(PluginManagerEvent),
-}
-
 /// The app's control-thread entry point for the engine.
 pub struct EngineSync {
     io: EngineIo,
@@ -208,35 +199,10 @@ impl EngineSync {
     }
 
     /// Queues `command`; if the engine's queue is full (or an export has the engine) it is
-    /// retried at the next [`EngineSync::poll`], keeping the order.
+    /// retried when the app next drains engine events, keeping the order.
     pub fn send(&mut self, command: Command) {
         self.program.note_transport_command(&command);
         self.io.send(command);
-    }
-
-    /// Call every UI frame: polls the audio system, retries queued commands, drains the engine's
-    /// events (dropping garbage here) and the device host's events.
-    pub fn poll(&mut self) -> Vec<SyncEvent> {
-        let mut events: Vec<_> = self
-            .poll_engine_events()
-            .into_iter()
-            .map(|event| {
-                if let EngineEvent::PluginParams {
-                    slot,
-                    device,
-                    ref events,
-                } = event
-                    && self.plugin_parameter_slot_matches(slot, device)
-                {
-                    for (change, temporary) in events.iter() {
-                        self.update_plugin_parameter(device, change.kind, temporary, false);
-                    }
-                }
-                SyncEvent::Engine(event)
-            })
-            .collect();
-        events.extend(self.poll_device_events().into_iter().map(SyncEvent::Device));
-        events
     }
 
     pub(crate) fn plugin_parameter_slot_matches(&self, slot: SlotId, device: DeviceId) -> bool {
@@ -511,7 +477,7 @@ impl EngineSync {
     /// A running recording stops (`StopRecording`; the app drops its take), and the engine's
     /// queued events (recorded notes, loop wraps, a count-in's end) are dropped: they belong to
     /// the old project. The host's events that are still queued and name a device are dropped
-    /// too; the others (a finished scan, scan warnings) reach the next [`EngineSync::poll`].
+    /// too; the others (a finished scan, scan warnings) reach the next device event drain.
     pub fn reset(&mut self) {
         self.io.discard_project_events();
         self.program.reset_project(&mut self.io);
@@ -582,7 +548,7 @@ impl EngineSync {
     /// Export (ARCHITECTURE §6.7): takes the engine out of the stream (which goes on outputting
     /// silence) together with its handle, for a worker thread. Queued commands are sent first,
     /// so the engine gets them before the export's own. Until [`EngineSync::attach`], commands
-    /// wait in the pending queue and [`EngineSync::poll`] reports device host events only. A held
+    /// wait in the pending queue and the app can only receive device host events. A held
     /// engine ([`EngineSync::hold_engine`]) is taken from the hold and goes back there.
     pub fn detach(&mut self) -> Result<DetachedEngine, AudioError> {
         self.io.detach()

@@ -950,7 +950,9 @@ take commits.
 Discarding the take removes its draft and restores playback from the document.
 The layout combines transport, browser, arrangement, inspector, resizable dock and status bar.
 Keyboard chords map to actions by focus context and platform; macOS uses its platform modifiers.
-Headless construction with `NullBackend` supports app acceptance tests.
+Headless construction with `NullBackend` supports app acceptance tests. `App::step` drains
+engine and device events through the same handlers as a GUI frame, then polls export, dispatches
+queued actions and syncs playback. Tests can inspect the handled device events for that frame.
 
 `application_menu` defines shared semantic commands, localized labels, enabled states and chords.
 AppKit projects them into native application/Window menus and the Dock; Linux and Windows use
