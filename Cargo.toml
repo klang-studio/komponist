@@ -69,7 +69,10 @@ sampler-core = { path = "crates/builtin-devices/sampler-shared/core" }
 nice-plug = { git = "https://github.com/klang-studio/nice-plug", rev = "4a376c7f60775da0455ba0c72c1a7b7d2d56dbdc", default-features = false }
 
 # Public DSP library, pinned to one commit. To work on both locally, see docs/INSTALL.md.
-klang-dsp = { git = "https://github.com/klang-studio/klang-dsp", rev = "e1737fbf04ba42a3501d14521c5d5125c9f09c2f" }
+# klang-synth (opt-in synth blocks, plugins only) lives in the same repository and must share the
+# `rev`, otherwise cargo builds two incompatible klang-dsp packages.
+klang-dsp = { git = "https://github.com/klang-studio/klang-dsp", rev = "f9556bda97fb0ef1ce5b53d05001256bf844e9f7" }
+klang-synth = { git = "https://github.com/klang-studio/klang-dsp", rev = "f9556bda97fb0ef1ce5b53d05001256bf844e9f7" }
 libm = "0.2"
 
 # UI (egui/eframe 0.37 family; versions must move together).

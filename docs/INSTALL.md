@@ -99,26 +99,31 @@ Xcode Clang on macOS, MSVC on Windows), and the usual system libraries for egui/
 ALSA/PipeWire/JACK. The worker-only stretch wrapper builds its vendored Signalsmith sources locally;
 it downloads no C++ dependencies and needs no FFT library. Other dependencies are fetched by cargo: komponist depends on the public DSP library
 [klang-dsp](https://github.com/klang-studio/klang-dsp) as a git dependency pinned to one commit (`Cargo.toml`,
-`[workspace.dependencies]`), so a plain clone builds without any sibling checkout.
+`[workspace.dependencies]`), so a plain clone builds without any sibling checkout. The same repository holds
+`klang-synth`, opt-in synth blocks for plugins; both entries share one `rev`.
 
 **macOS** (14.4 or newer, Apple Silicon only): install the Xcode command line tools (`xcode-select --install`) and
 Rust through [rustup](https://rustup.rs); no further system libraries are needed. The scripts in `scripts/` run with
 the stock `/bin/bash` 3.2; `scripts/check-gui.sh` is Linux only.
 
-Working on komponist and klang-dsp together: check out klang-dsp next to komponist and patch the git dependency to
-the local path. Do **not** edit the tracked `Cargo.toml` or `.cargo/config.toml` for this. Pick one:
+Working on komponist and klang-dsp together: check out klang-dsp next to komponist and patch both git dependencies
+(`klang-dsp` and `klang-synth`, which lives in its `klang-synth/` folder) to the local path. Do **not** edit the
+tracked `Cargo.toml` or `.cargo/config.toml` for this. Pick one:
 
 ```bash
 # once per command (nothing to remember afterwards, affects nothing else):
-cargo --config 'patch."https://github.com/klang-studio/klang-dsp".klang-dsp.path="../klang-dsp"' check --workspace
+cargo --config 'patch."https://github.com/klang-studio/klang-dsp".klang-dsp.path="../klang-dsp"' \
+      --config 'patch."https://github.com/klang-studio/klang-dsp".klang-synth.path="../klang-dsp/klang-synth"' \
+      check --workspace
 
 # or for every clone below one folder: put this into <parent folder>/.cargo/config.toml
 # (cargo reads config files of all parent directories; clones elsewhere are not affected)
 [patch."https://github.com/klang-studio/klang-dsp"]
-klang-dsp = { path = "../klang-dsp" }   # relative to the folder that contains the .cargo directory
+klang-dsp = { path = "klang-dsp" }   # relative to the folder that contains the .cargo directory
+klang-synth = { path = "klang-dsp/klang-synth" }
 ```
 
-While the patch is active cargo rewrites the klang-dsp entry in `Cargo.lock`; do not commit that change
+While the patch is active cargo rewrites the klang-dsp entries in `Cargo.lock`; do not commit that change
 (`git checkout Cargo.lock`). When a klang-dsp change is pushed, bump `rev` in the root `Cargo.toml` and commit it
 together with the komponist change that needs it.
 
@@ -127,8 +132,9 @@ together with the komponist change that needs it.
 Dependabot (`.github/dependabot.yml`) updates crates.io dependencies and GitHub Actions, but it does **not** move git
 dependencies that are pinned by `rev`. Bump them by hand:
 
-- **klang-dsp** (`Cargo.toml`, `[workspace.dependencies]`): push the klang-dsp change, then set `rev` to the new commit
-  hash and run `cargo update -p klang-dsp` so `Cargo.lock` follows. Commit both with the komponist change that needs it.
+- **klang-dsp** (`Cargo.toml`, `[workspace.dependencies]`): push the klang-dsp change, then set the new commit hash as
+  `rev` of both `klang-dsp` and `klang-synth` and run `cargo update -p klang-dsp` so `Cargo.lock` follows. Commit both
+  with the komponist change that needs it.
 - **test-plugins** (`test-plugins/Cargo.toml`): the `baseview`, `egui-baseview` and `nice-plug*` forks of klang-studio
   are pinned by `rev` as well. Set the new hash on every line of the same repository (all `nice-plug*` entries share
   one `rev`), run `cargo update` inside `test-plugins/` and check with `scripts/build-test-plugins.sh`.

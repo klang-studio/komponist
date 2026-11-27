@@ -2633,7 +2633,7 @@ dependencies = [
 [[package]]
 name = "klang-dsp"
 version = "0.1.0"
-source = "git+https://github.com/klang-studio/klang-dsp?rev=e1737fbf04ba42a3501d14521c5d5125c9f09c2f#e1737fbf04ba42a3501d14521c5d5125c9f09c2f"
+source = "git+https://github.com/klang-studio/klang-dsp?rev=f9556bda97fb0ef1ce5b53d05001256bf844e9f7#f9556bda97fb0ef1ce5b53d05001256bf844e9f7"
 dependencies = [
  "libm",
 ]
