@@ -6,7 +6,8 @@
 #
 # Like the CI jobs (Linux, macOS), it builds the test plugins (incrementally, on every run) and runs the
 # test-plugins workspace tests and the Warp compatibility check (needs the full Git history). Differences from
-# CI: no `--locked`, no kittest tolerance file, no hang watchdog; the GUI tests are scripts/check-gui.sh.
+# CI: no `--locked`, no hang watchdog; the GUI tests are scripts/check-gui.sh. Snapshots compare with the tolerance of
+# the committed kittest.toml, as on CI.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
