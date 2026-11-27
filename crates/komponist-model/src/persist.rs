@@ -1,6 +1,6 @@
 //! Project files `*.komponist` (ARCHITECTURE §5.5, decision D7).
 //!
-//! One JSON file: `{ "format": "komponist", "version": 5, "project": { … } }`. Plugin states are
+//! One JSON file: `{ "format": "komponist", "version": 6, "project": { … } }`. Plugin states are
 //! base64 strings. A missing plugin keeps its state byte-identical through load and save (S06).
 //! Below 1.0 there is exactly one valid version (owner decision D10, `AGENTS.md` rule 16): a file
 //! with any other `version` is rejected ([`PersistError::UnsupportedVersion`]), there is no migration.
@@ -24,7 +24,7 @@ use crate::validate::{Repairs, collect_deserialize_repairs, repair_loaded};
 pub const FORMAT_TAG: &str = "komponist";
 
 /// Version written and read by this build; files with any other version are rejected.
-pub const FORMAT_VERSION: u32 = 5;
+pub const FORMAT_VERSION: u32 = 6;
 
 /// File name extension, without the dot.
 pub const FILE_EXTENSION: &str = "komponist";
@@ -742,9 +742,9 @@ mod tests {
     #[test]
     fn errors_display() {
         assert_eq!(
-            PersistError::UnsupportedVersion { found: 6 }.to_string(),
+            PersistError::UnsupportedVersion { found: 99 }.to_string(),
             format!(
-                "project file version 6 is not supported (this build reads version {FORMAT_VERSION})"
+                "project file version 99 is not supported (this build reads version {FORMAT_VERSION})"
             )
         );
     }
