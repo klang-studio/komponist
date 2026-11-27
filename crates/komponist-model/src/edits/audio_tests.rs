@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use super::tests::check_invariants;
 use super::*;
+use crate::PluginFormat;
 use crate::audio::{AudioFile, AudioIo, CLIP_GAIN_DB_MAX, ClipTimeMode, HardwareInput};
 use crate::document::Document;
 use crate::routing;
