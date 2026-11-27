@@ -786,7 +786,7 @@ mod tests {
             name: "Hexa".into(),
             vendor: String::new(),
             version: "9".into(),
-            module: "bundled-clap/komponist_hexa_clap.clap".into(),
+            module: "bundled-clap/hexa.clap".into(),
         };
         assert!(f.contains(&hexa));
         f.toggle(&hexa);

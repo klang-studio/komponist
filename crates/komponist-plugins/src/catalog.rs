@@ -635,9 +635,9 @@ mod tests {
             PluginKind::Instrument,
             &[],
         );
-        external.bundle = "/external/komponist_volt_clap.clap".into();
+        external.bundle = "/external/volt.clap".into();
         let mut bundled = external.clone();
-        bundled.bundle = "/app/bundled-clap/komponist_volt_clap.clap".into();
+        bundled.bundle = "/app/bundled-clap/volt.clap".into();
         let mut catalog = Catalog::default();
         catalog.set_scanned(std::slice::from_ref(&external));
         let external_ref = scanned_entry(&external, false, Vec::new()).plugin;

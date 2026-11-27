@@ -406,15 +406,15 @@ impl DemoPlugin {
             name: self.name.to_owned(),
             vendor: self.vendor.to_owned(),
             version: self.version.to_owned(),
-            // The demo plugins stand in for "<name>.<format>" bundles.
             module: match self.format {
-                PluginFormat::Clap if self.id == HEXA.id => {
-                    "bundled-clap/komponist_hexa_clap.clap".into()
-                }
-                PluginFormat::Clap if self.id == SAMPLER.id => {
-                    "bundled-clap/komponist_sampler_clap.clap".into()
-                }
-                PluginFormat::Clap => format!("{}.clap", self.name).into(),
+                PluginFormat::Clap => self
+                    .id
+                    .strip_prefix("org.klang-studio.komponist.")
+                    .map_or_else(
+                        || format!("{}.clap", self.name),
+                        |slug| format!("bundled-clap/komponist_{slug}_clap.clap"),
+                    )
+                    .into(),
                 PluginFormat::Vst3 => format!("{}.vst3", self.name).into(),
             },
         }

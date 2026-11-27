@@ -159,7 +159,7 @@ pub struct Card {
     pub(crate) macro_mappings: usize,
     /// Plugin name.
     pub name: String,
-    /// "INTERN" / "CLAP" / "VST3".
+    /// The CLAP or VST3 format tag.
     pub tag: &'static str,
     /// The track's instrument (head `surface.3`, not draggable).
     pub instrument: bool,

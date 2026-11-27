@@ -1960,7 +1960,7 @@ mod tests {
             macro_mapping: false,
             macro_mappings: 0,
             name: "Test".into(),
-            tag: "INTERN",
+            tag: "CLAP",
             instrument: false,
             midi_effect: false,
             bypass: false,
