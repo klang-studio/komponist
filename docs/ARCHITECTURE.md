@@ -298,8 +298,10 @@ particular device run with the device or its bundle. The metronome belongs to th
 
 `compile::build` converts a project into a `Program`: sorted sequencer data, processor slots,
 audio plans, routing, gates and latency information. Compilation runs outside the callback,
-reuses unchanged shared data and performs no audio-file IO. `EngineSync` installs programs and
-maintains slots as the document changes.
+reuses unchanged shared data and performs no audio-file IO. Within `EngineSync`, `ProgramSync`
+owns the last program sent, processor slot changes and the device host. `EngineIo` owns the
+audio stream, MIDI ports, and the command and event queues. The program publisher uses the
+I/O queue for processor insertions, program installation and processor removals, in that order.
 
 Compilation never fails: what the engine cannot play is left out of the program. The app compiles
 with `compile::build_with_diagnostics`, which also returns one `Diagnostic` per left-out track or
@@ -932,8 +934,10 @@ The export controller owns the render lifecycle and export history. Plugin frame
 window focus and bridge activation. The audio settings controller runs driver and device
 enumeration and supplies the inventory to the settings dialog.
 Views emit actions. Central dispatch validates and applies edits, transport changes and
-UI/plugin operations. `EngineSync` compiles document changes and sends fast commands for ongoing gestures.
-Playback sync tracks both the document revision and the revisions of completed automation
+UI/plugin operations. `EngineSync` invalidates program compilation when the I/O layer reports a
+sample-rate or MIDI port change. On engine replacement it also forgets the last program, so the
+next sync reinstalls processors and restores the playhead using the new tempo map.
+Playback sync sends fast commands for ongoing gestures and tracks both the document revision and the revisions of completed automation
 segments. It applies those segments as a draft over the current document, including passes
 waiting for the audio writer. The draft enters the document and its undo history when the
 take commits.

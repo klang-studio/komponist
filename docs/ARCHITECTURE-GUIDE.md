@@ -564,9 +564,10 @@ now has a new `current` root and an incremented `revision`.
 ### 10.4 Step 3 – `EngineSync` compiles a `Program`
 
 `EngineSync` ([`engine_sync.rs`](../crates/komponist-app/src/engine_sync.rs)) is the UI thread's
-side of the engine. It owns the audio system (which owns the engine inside the stream callback),
-the command and event queues, the last program it sent and the `DeviceHost` that creates
-processors.
+side of the engine. It coordinates `EngineIo` (`engine_sync/io.rs`), which owns the stream,
+MIDI ports, engine queues and export handoff, and `ProgramSync` (`engine_sync/program.rs`),
+which owns playback revisions, the last program sent and the `DeviceHost` that creates
+processors. Stream rate and MIDI port changes invalidate the compiled program.
 
 `EngineSync::sync(&doc)` returns early when the revision has not changed. Otherwise:
 
@@ -591,8 +592,8 @@ frame. You hear the moved notes while you drag.
 ### 10.5 Step 4 – the command crosses to the audio thread
 
 `EngineHandle` ([`api.rs`](../crates/komponist-engine/src/api.rs)) holds the producer end of the
-`rtrb` command queue. If the queue is ever full, `EngineSync` parks commands in a `pending` list
-and retries on the next frame. Nothing blocks.
+`rtrb` command queue. If the queue is full or the engine is detached for export, `EngineIo`
+queues commands in order and flushes them when space or the handle is available. Nothing blocks.
 
 At the start of every callback, the engine drains up to `MAX_COMMANDS_PER_BLOCK = 64` commands
 (`Core::drain_commands` in [`engine.rs`](../crates/komponist-engine/src/engine.rs)).
@@ -763,7 +764,7 @@ pub trait AudioProcess: Send + 'static {
 }
 ```
 
-The app's implementation is `EngineProcess` in `engine_sync.rs`: it converts live MIDI to engine
+The app's implementation is `EngineProcess` in `engine_sync/io.rs`. It converts live MIDI to engine
 input, calls `Engine::process_with_audio`, and writes the engine's planar stereo into the device's
 interleaved buffer.
 
@@ -954,7 +955,8 @@ Useful flags: `--demo`, `--null-audio`, `--lang de|en`, `--scale F`, `--open-plu
 | `views/` (~39k lines) | arrangement, piano roll, step sequencer, audio editor, mixer, devices, inspector, browser, automation, routing |
 | `dialogs/`, `windows/`, `panels/` | settings, export, file dialogs; plugin frame windows; transport bar, status bar, dock tabs |
 | `shell.rs`, `layout.rs` | the main window layout |
-| `engine_sync.rs`, `device_host.rs` | document → engine; creating processors for verified bundles and bridged plugins |
+| `engine_sync.rs`, `engine_sync/` | program compilation and audio/MIDI I/O coordination |
+| `device_host.rs` | creating processors for verified bundles and bridged plugins |
 | `project_io.rs`, `settings.rs`, `dirs.rs` | files, settings, platform folders |
 | `record.rs`, `recording/` | MIDI capture and coordination of MIDI, audio and automation takes |
 | `audio_settings.rs` | driver and device inventory for audio settings |
