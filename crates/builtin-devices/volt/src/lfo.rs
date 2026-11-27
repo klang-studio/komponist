@@ -1,9 +1,11 @@
-//! The LFOs: six shapes on a `u32` phase (`klang_dsp::wave`), stepped once per control interval,
-//! with a fade-in and an optional unipolar output.
+//! The LFOs: [`klang_synth::CyclicLfo`] (phase, wrap and the six shapes on a `u32` phase) stepped
+//! once per control interval. Volt keeps what the core leaves to the caller: the increment per
+//! control interval, one random generator per LFO and its draw order (two values on a (re)start,
+//! one per wrap), the fade-in and the unipolar output.
 
-use klang_dsp::phase::{increment, to_unit};
+use klang_dsp::phase::increment;
 use klang_dsp::rng::Rng;
-use klang_dsp::wave;
+use klang_synth::{CyclicLfo, Shape};
 
 use komponist_device_core::dsp::CONTROL;
 
@@ -11,11 +13,9 @@ use komponist_device_core::dsp::CONTROL;
 /// key).
 #[derive(Clone, Copy, Debug)]
 pub struct Lfo {
-    phase: u32,
+    /// Phase and the random values of this cycle and of the next.
+    core: CyclicLfo,
     rng: Rng,
-    /// The random value of this cycle and of the next.
-    held: f32,
-    next: f32,
     fade: f32,
 }
 
@@ -23,10 +23,12 @@ impl Lfo {
     /// A free-running LFO with its random numbers from `seed`.
     pub fn new(seed: u32) -> Lfo {
         let mut rng = Rng::new(seed);
+        let mut core = CyclicLfo::new();
+        let held = rng.bipolar();
+        let next = rng.bipolar();
+        core.set_random(held, next);
         Lfo {
-            phase: 0,
-            held: rng.bipolar(),
-            next: rng.bipolar(),
+            core,
             rng,
             fade: 1.0,
         }
@@ -34,10 +36,11 @@ impl Lfo {
 
     /// Starts a cycle and the fade-in again (a key went down).
     pub fn restart(&mut self) {
-        self.phase = 0;
+        self.core.set_phase(0);
         self.fade = 0.0;
-        self.held = self.rng.bipolar();
-        self.next = self.rng.bipolar();
+        let held = self.rng.bipolar();
+        let next = self.rng.bipolar();
+        self.core.set_random(held, next);
     }
 
     /// The phase increment per control interval of `rate_hz` at `sample_rate`.
@@ -45,29 +48,29 @@ impl Lfo {
         increment(rate_hz, sample_rate / CONTROL as f32)
     }
 
-    /// One control interval: advances by `inc`, fades in by `fade_step`, returns the value (−1 …
-    /// +1, or 0 … 1 for `uni`).
+    /// The shape of the `Shape` parameter's index: sine, triangle, saw up, square, sample and
+    /// hold, and smooth random for every other index.
+    #[inline]
+    pub fn shape(index: usize) -> Shape {
+        match index {
+            0 => Shape::Sine,
+            1 => Shape::Triangle,
+            2 => Shape::SawUp,
+            3 => Shape::Square,
+            4 => Shape::SampleHold,
+            _ => Shape::SmoothRandom,
+        }
+    }
+
+    /// One control interval: advances by `inc`, fades in by `fade_step`, returns the value of
+    /// shape index `shape` (−1 … +1, or 0 … 1 for `uni`).
     #[inline]
     pub fn step(&mut self, shape: usize, inc: u32, fade_step: f32, uni: bool) -> f32 {
-        let (phase, wrapped) = self.phase.overflowing_add(inc);
-        self.phase = phase;
-        if wrapped {
-            self.held = self.next;
-            self.next = self.rng.bipolar();
+        if self.core.advance(inc) {
+            self.core.push_random(self.rng.bipolar());
         }
         self.fade = (self.fade + fade_step).min(1.0);
-        let v = match shape {
-            0 => wave::sine(phase),
-            1 => wave::triangle(phase),
-            2 => wave::saw_up(phase),
-            3 => wave::square(phase),
-            4 => self.held,
-            _ => {
-                let t = to_unit(phase);
-                let s = t * t * (3.0 - 2.0 * t);
-                self.held + (self.next - self.held) * s
-            }
-        };
+        let v = self.core.value(Self::shape(shape));
         if uni {
             (0.5 + 0.5 * v) * self.fade
         } else {

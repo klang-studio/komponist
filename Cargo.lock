@@ -2639,6 +2639,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "klang-synth"
+version = "0.1.0"
+source = "git+https://github.com/klang-studio/klang-dsp?rev=f9556bda97fb0ef1ce5b53d05001256bf844e9f7#f9556bda97fb0ef1ce5b53d05001256bf844e9f7"
+dependencies = [
+ "klang-dsp",
+]
+
+[[package]]
 name = "komponist-app"
 version = "0.2.0"
 dependencies = [
@@ -3284,6 +3292,7 @@ version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "klang-dsp",
+ "klang-synth",
  "komponist-device-core",
  "komponist-device-dsp",
  "komponist-engine",
