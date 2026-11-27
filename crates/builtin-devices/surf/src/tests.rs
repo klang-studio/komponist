@@ -21,6 +21,11 @@ use super::params::{COUNT, OSC_A_FINE, OSC_A_OCT, params, table};
 use super::*;
 use komponist_device_core::InternalProcessor;
 
+#[allow(dead_code)]
+#[path = "../../volt/src/tests/baseline_support.rs"]
+mod baseline_support;
+mod lfo_baseline;
+
 #[cfg(debug_assertions)]
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
