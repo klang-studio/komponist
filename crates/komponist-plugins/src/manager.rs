@@ -1817,6 +1817,13 @@ impl PluginManager {
                 |device| required.contains(&device),
             ));
         }
+        // A capture can service a plugin-side preset load or another state commit. Those
+        // events still await the app, so this capture cannot safely replace the document state.
+        state_change_pending.extend(
+            self.pending_live_state_commits()
+                .filter(|&device| include(device)),
+        );
+        captured.retain(|(device, _)| !state_change_pending.contains(device));
         captured.sort_by_key(|(device, _)| *device);
         required.append(&mut state_change_pending);
         SaveSnapshots {

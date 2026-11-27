@@ -277,15 +277,17 @@ impl InternalProcessor {
         let instrument = self.dsp.is_instrument();
         for event in events {
             // Parameters for every device; notes only reach an instrument.
-            if !matches!(event.kind, EventKind::Param { .. })
-                && !(instrument
-                    && matches!(
-                        event.kind,
-                        EventKind::NoteOn { .. }
-                            | EventKind::NoteOff { .. }
-                            | EventKind::AllNotesOff
-                            | EventKind::Midi(_)
-                    ))
+            if !matches!(
+                event.kind,
+                EventKind::Param { .. } | EventKind::ParamEdit { .. }
+            ) && !(instrument
+                && matches!(
+                    event.kind,
+                    EventKind::NoteOn { .. }
+                        | EventKind::NoteOff { .. }
+                        | EventKind::AllNotesOff
+                        | EventKind::Midi(_)
+                ))
             {
                 continue;
             }
