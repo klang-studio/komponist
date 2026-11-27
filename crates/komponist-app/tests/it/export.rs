@@ -174,6 +174,55 @@ pub(crate) fn export(app: &mut App, settings: ExportSettings) {
     step_until(app, "end of the export", |a| !a.is_exporting());
 }
 
+#[test]
+fn an_unreadable_clap_pad_blocks_wav_export() {
+    use komponist_ipc::device_assets::AssetStatus;
+    use komponist_model::plugin_assets::AssetLink;
+
+    let dir = scratch("unreadable-clap-pad");
+    let Some((host, plugin)) =
+        crate::common::native_fixture(&dir, "klopfer.clap", "org.klang-studio.komponist.sampler")
+    else {
+        return;
+    };
+    let name = plugin.name.clone();
+    let (project, track, drums) = crate::common::instrument_project("Sampler", plugin);
+    let path = dir.join("corrupt.wav");
+    std::fs::write(&path, b"unreadable sample").unwrap();
+    let project =
+        edits::set_device_asset_links(&project, drums, [(0, AssetLink::new(&path, None))].into())
+            .unwrap();
+    let project = super::flatten::clip(&project, track, Tick(0), 36, Tick(BAR));
+    let (mut app, _) = app_with(&dir, project, Box::new(host));
+    step_until(&mut app, "failed CLAP sample", |app| {
+        app.engine()
+            .host()
+            .asset_slots(drums)
+            .is_some_and(|inventory| {
+                inventory
+                    .slots
+                    .iter()
+                    .any(|slot| slot.id == 0 && matches!(slot.status, AssetStatus::Failed(_)))
+            })
+    });
+
+    let settings = export_settings(&dir, ExportRange::Song);
+    let output = settings.folder.join(&settings.file_name);
+    export(&mut app, settings);
+    assert!(
+        !output.exists(),
+        "the failed sample must prevent publishing a WAV"
+    );
+    assert!(!app.engine().is_detached());
+    let lang = app.lang();
+    let status = app.ui().status.as_ref().unwrap();
+    assert_eq!(status.kind, StatusKind::Error);
+    assert_eq!(
+        status.text,
+        lang.export_failed(lang.flatten_pad_failed(name, 1, "corrupt"))
+    );
+}
+
 /// A WAV file as f32 samples.
 pub(crate) struct Wav {
     pub(crate) spec: hound::WavSpec,
