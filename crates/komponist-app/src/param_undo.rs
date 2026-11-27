@@ -109,7 +109,7 @@ pub(crate) struct ParamUndo {
     /// Until when snapshots of a device are the echo of a state the document handed it.
     echo: HashMap<DeviceId, Instant>,
     /// Snapshots that arrived during a gesture that is not theirs, in arrival order.
-    deferred: Vec<(DeviceId, SavedPluginState)>,
+    deferred: Vec<DeferredSnapshot>,
     /// Bridged devices whose first snapshot is asked for as a baseline (their document state is
     /// still `None`).
     awaiting: BTreeSet<DeviceId>,
@@ -121,7 +121,13 @@ pub(crate) struct ParamUndo {
     reported: HashMap<DeviceId, ClapPresetSource>,
     /// Preset marks of plugin edits made during an unrelated gesture, in order: applied at its
     /// end, before the deferred snapshots.
-    deferred_marks: Vec<(DeviceId, String)>,
+    deferred_marks: Vec<(DeviceId, String, (u32, f64))>,
+}
+
+#[derive(Debug)]
+struct DeferredSnapshot {
+    snapshot: (DeviceId, SavedPluginState),
+    preset: Option<ClapPresetSource>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -188,11 +194,11 @@ impl ParamUndo {
         self.steps.remove(&device);
         self.tails.remove(&device);
         self.echo.remove(&device);
-        self.deferred.retain(|(id, _)| *id != device);
+        self.deferred.retain(|entry| entry.snapshot.0 != device);
         self.awaiting.remove(&device);
         self.baseline.remove(&device);
         self.reported.remove(&device);
-        self.deferred_marks.retain(|(id, _)| *id != device);
+        self.deferred_marks.retain(|(id, _, _)| *id != device);
     }
 }
 
@@ -240,8 +246,8 @@ impl App {
         self.param_undo.echo.remove(&device);
         self.param_undo
             .deferred
-            .retain(|(pending, _)| *pending != device);
-        self.apply_device_snapshot(device, &state);
+            .retain(|entry| entry.snapshot.0 != device);
+        self.apply_unreported_snapshot(device, &state);
     }
 
     /// Associates a macro's bridged targets with the open gesture, so their verified snapshots
@@ -344,8 +350,10 @@ impl App {
         self.flush_deferred();
     }
 
-    pub(crate) fn deferred_plugin_states(&self) -> &[(DeviceId, SavedPluginState)] {
-        &self.param_undo.deferred
+    pub(crate) fn deferred_plugin_states(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &(DeviceId, SavedPluginState)> {
+        self.param_undo.deferred.iter().map(|entry| &entry.snapshot)
     }
 
     /// Stores the snapshots that waited for a gesture, once none is open.
@@ -354,15 +362,19 @@ impl App {
             return;
         }
         let mut marks = std::mem::take(&mut self.param_undo.deferred_marks);
-        for (device, state) in std::mem::take(&mut self.param_undo.deferred) {
-            if let Some(index) = marks.iter().position(|(marked, _)| *marked == device) {
-                let (_, label) = marks.remove(index);
-                self.mark_preset_modified(device, &label);
+        for DeferredSnapshot {
+            snapshot: (device, state),
+            preset,
+        } in std::mem::take(&mut self.param_undo.deferred)
+        {
+            if let Some(index) = marks.iter().position(|(marked, _, _)| *marked == device) {
+                let (_, label, _) = marks.remove(index);
+                self.mark_preset_modified(device, &label, None);
             }
-            self.store_snapshot(device, &state);
+            self.store_snapshot_with_report(device, &state, preset);
         }
-        for (device, label) in marks {
-            self.mark_preset_modified(device, &label);
+        for (device, label, edit) in marks {
+            self.mark_preset_modified(device, &label, Some(edit));
         }
     }
 
@@ -480,7 +492,7 @@ impl App {
         if bridged {
             self.remember_param_edit(device, id);
             let label = self.param_label(device, id);
-            self.mark_preset_modified(device, &label);
+            self.mark_preset_modified(device, &label, Some((id, value)));
             self.param_undo
                 .turned
                 .insert(device, (label, Instant::now()));
@@ -578,21 +590,45 @@ impl App {
     /// The first parameter edit after a preset load marks the preset as modified (module docs):
     /// inside the open gesture, or as a step named `label` that the plugin's snapshot of the edit
     /// amends. The plugin is asked for that snapshot at once, as at the end of a gesture.
-    pub(crate) fn mark_preset_modified(&mut self, device: DeviceId, label: &str) {
+    pub(crate) fn mark_preset_modified(
+        &mut self,
+        device: DeviceId,
+        label: &str,
+        edit: Option<(u32, f64)>,
+    ) {
         if !has_unmodified_preset(self.project(), device) {
             return;
         }
-        let mark = |p: &Project| edits::mark_device_preset_modified(p, device);
+        // Keep the newly edited base with the mark while the plugin's snapshot is in flight.
+        let checkpoint = edit
+            .filter(|(_, value)| value.is_finite())
+            .and_then(|(id, value)| {
+                let mut state = self
+                    .project()
+                    .find_device(device)
+                    .and_then(|(_, _, target)| target.saved_state())
+                    .or_else(|| self.param_undo.baseline.get(&device).cloned())?;
+                state.parameter_bases.insert(id, value);
+                Some(state)
+            });
+        let mark = |p: &Project| {
+            let project = edits::mark_device_preset_modified(p, device)?;
+            if let Some(state) = &checkpoint {
+                edits::set_saved_plugin_state(&project, device, state)
+            } else {
+                Ok(project)
+            }
+        };
         if self.doc.in_gesture() {
             if self.param_undo.gesture_device == Some(device) {
                 if let Err(error) = self.doc.apply("", mark) {
                     self.record_edit_error(error);
                 }
-            } else {
-                // Not this gesture's change: like the edit's snapshot, after it.
+            } else if let Some(edit) = edit {
+                // The mark waits beside the edit's snapshot.
                 self.param_undo
                     .deferred_marks
-                    .push((device, label.to_owned()));
+                    .push((device, label.to_owned(), edit));
             }
             return;
         }
@@ -716,11 +752,7 @@ impl App {
         previous_state: &Arc<[u8]>,
         state: &Arc<[u8]>,
     ) {
-        if self.param_undo.reported.remove(&device).is_some() {
-            self.param_undo
-                .deferred
-                .retain(|(pending, _)| *pending != device);
-        }
+        self.param_undo.reported.remove(&device);
         if self.doc.in_gesture() {
             self.end_gesture();
         }
@@ -769,7 +801,13 @@ impl App {
         let Some((_, _, target)) = self.project().find_device(device) else {
             return;
         };
-        if target.preset.as_ref() == Some(&DevicePreset::loaded(source.clone())) {
+        if target.preset.as_ref() == Some(&DevicePreset::loaded(source.clone()))
+            && !self
+                .param_undo
+                .deferred
+                .iter()
+                .any(|entry| entry.snapshot.0 == device && entry.preset.is_some())
+        {
             self.param_undo.reported.remove(&device);
             return;
         }
@@ -810,23 +848,50 @@ impl App {
     /// document as a tracked change, coalesced (module docs). A state equal to the stored one is
     /// skipped.
     pub(crate) fn store_snapshot(&mut self, device: DeviceId, state: &SavedPluginState) {
-        self.apply_device_snapshot(device, state);
+        let preset = self.param_undo.reported.remove(&device);
+        self.store_snapshot_with_report(device, state, preset);
+    }
+
+    fn store_snapshot_with_report(
+        &mut self,
+        device: DeviceId,
+        state: &SavedPluginState,
+        preset: Option<ClapPresetSource>,
+    ) {
+        if let Some(preset) = preset {
+            if self.doc.in_gesture() {
+                self.defer_snapshot(device, state, Some(preset));
+            } else {
+                self.record_reported_load(device, preset, state);
+            }
+        } else {
+            self.apply_unreported_snapshot(device, state);
+        }
         if self.has_saved_state(device, state) {
             self.reconcile_param_edits(device, &state.bytes);
         }
     }
 
-    fn apply_device_snapshot(&mut self, device: DeviceId, state: &SavedPluginState) {
-        if self.param_undo.reported.contains_key(&device) {
-            if self.doc.in_gesture() {
-                // Not this gesture's change: after it.
-                self.param_undo.deferred.retain(|(d, _)| *d != device);
-                self.param_undo.deferred.push((device, state.clone()));
-            } else if let Some(source) = self.param_undo.reported.remove(&device) {
-                self.record_reported_load(device, source, state);
-            }
-            return;
+    fn defer_snapshot(
+        &mut self,
+        device: DeviceId,
+        state: &SavedPluginState,
+        preset: Option<ClapPresetSource>,
+    ) {
+        let queue = &mut self.param_undo.deferred;
+        if preset.is_none()
+            && let Some(index) = queue.iter().rposition(|entry| entry.snapshot.0 == device)
+            && queue[index].preset.is_none()
+        {
+            queue.remove(index);
         }
+        queue.push(DeferredSnapshot {
+            snapshot: (device, state.clone()),
+            preset,
+        });
+    }
+
+    fn apply_unreported_snapshot(&mut self, device: DeviceId, state: &SavedPluginState) {
         if self.has_saved_state(device, state) {
             return;
         }
@@ -861,8 +926,7 @@ impl App {
         let in_gesture = self.doc.in_gesture();
         if in_gesture && self.param_undo.gesture_device != Some(device) {
             // Not this gesture's change: after it.
-            self.param_undo.deferred.retain(|(d, _)| *d != device);
-            self.param_undo.deferred.push((device, state.clone()));
+            self.defer_snapshot(device, state, None);
             return;
         }
         let set = |p: &Project| edits::set_saved_plugin_state(p, device, state);
@@ -926,7 +990,7 @@ impl App {
     pub(crate) fn store_snapshot_for_save(&mut self, device: DeviceId, state: &SavedPluginState) {
         self.param_undo
             .deferred
-            .retain(|(pending, _)| *pending != device);
+            .retain(|entry| entry.snapshot.0 != device);
         let untouched = self
             .param_undo
             .baseline
@@ -1011,6 +1075,7 @@ impl App {
             {
                 // The plugin gets the document's state: a load it reported before no longer holds.
                 self.param_undo.reported.remove(&device.id);
+                self.param_undo.steps.remove(&device.id);
                 self.param_undo.cancel_text_edits(device.id);
                 self.forget_param_edits(device.id);
                 if komponist_plugins::requires_bundled(&device.plugin) {

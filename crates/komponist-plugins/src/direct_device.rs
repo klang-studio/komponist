@@ -592,15 +592,35 @@ impl DirectDevice {
                 latency,
             });
         }
+        let mut earlier_reports = Vec::new();
         if let Some(state) = self.pending_restore.as_ref()
-            && let Some((result, inventory)) = self.session.restore(
-                |plugin| {
-                    // The document restore supersedes reports queued for the outgoing state.
-                    plugin.take_preset_reports();
-                    load_saved_state(plugin, state, true)
-                },
-                Inventory::read,
-            )
+            && let Some((result, inventory)) = self.session.replace_state(|plugin| {
+                earlier_reports = plugin.take_preset_reports();
+                let loaded = earlier_reports
+                    .iter()
+                    .any(|report| matches!(report, PresetReport::Loaded { .. }));
+                let before = loaded.then(|| {
+                    plugin
+                        .params()
+                        .into_iter()
+                        .filter_map(|info| Some((info.id, plugin.param_value(info.id)?)))
+                        .collect::<BTreeMap<_, _>>()
+                });
+                let result = load_saved_state(plugin, state, true);
+                let inventory = Inventory::read(plugin);
+                let replaced = result.is_ok();
+                let changed = before.is_some_and(|before| {
+                    before.len() != inventory.values.len()
+                        || inventory
+                            .values
+                            .iter()
+                            .any(|(id, value)| before.get(id) != Some(&value.value))
+                });
+                if replaced || changed {
+                    earlier_reports.retain(|report| matches!(report, PresetReport::Failed { .. }));
+                }
+                ((result, inventory), replaced)
+            })
         {
             self.last_state = self.pending_restore.take();
             self.assets.finish_restore();
@@ -680,7 +700,7 @@ impl DirectDevice {
         }
         if self.pending_restore.is_none() {
             self.refresh_reported_load(id, events);
-            self.report_presets(id, events);
+            self.report_presets(id, events, earlier_reports);
         }
         if observed.has(notification_bits::STATE_DIRTY) {
             self.user_edit = true;
@@ -698,13 +718,30 @@ impl DirectDevice {
         }
         if let Some(inventory) = self.session.try_control(Inventory::read) {
             self.reported_load = false;
+            let previous = std::mem::take(&mut self.base);
             self.accept_inventory(inventory, true);
+            for (&id, value) in &mut self.base {
+                let driven = matches!(self.automated_params.get(&id), Some(Some(_)))
+                    || self.macro_params.contains_key(&id)
+                    || self.unconfirmed_writes.contains(&id);
+                if driven && let Some(base) = previous.get(&id) {
+                    *value = *base;
+                }
+            }
             Self::report_metadata(device, events);
         }
     }
 
-    fn report_presets(&mut self, device: DeviceId, events: &mut Vec<PluginManagerEvent>) {
-        for report in self.session.take_preset_reports() {
+    fn report_presets(
+        &mut self,
+        device: DeviceId,
+        events: &mut Vec<PluginManagerEvent>,
+        earlier: Vec<PresetReport>,
+    ) {
+        for report in earlier
+            .into_iter()
+            .chain(self.session.take_preset_reports())
+        {
             match report {
                 PresetReport::Loaded { source, startup } => {
                     if !startup {

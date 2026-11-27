@@ -645,17 +645,21 @@ impl Bridge {
             .as_mut()
             .map(|plugin| plugin.take_preset_reports())
             .unwrap_or_default();
+        self.send_preset_reports(reports);
+    }
+
+    fn send_preset_reports(&mut self, reports: Vec<PresetReport>) {
+        let mut loaded = false;
         for mut report in reports {
             if let PresetReport::Loaded { startup, .. } = &mut report {
                 *startup |= self.initial_activation;
+                loaded |= !*startup;
             }
-            let changed = matches!(report, PresetReport::Loaded { startup: false, .. });
             self.send(BridgeMsg::PresetReported(report));
-            if changed {
-                // The values the load set, ahead of any later state answer: the app takes
-                // them as the new parameter bases.
-                self.send_loaded_values();
-            }
+        }
+        if loaded {
+            // The reported values belong to the last load in the batch.
+            self.send_loaded_values();
         }
     }
 
@@ -1297,6 +1301,7 @@ impl Bridge {
             message,
             changed_values: Vec::new(),
         };
+        let mut earlier_reports = Vec::new();
         let result = (|| {
             let plugin = self
                 .plugin
@@ -1313,8 +1318,7 @@ impl Bridge {
             let mut apply_on_audio = BTreeMap::new();
             let mut load = || {
                 if active_restore {
-                    // The reports preceding this restore describe the outgoing state.
-                    plugin.take_preset_reports();
+                    earlier_reports = plugin.take_preset_reports();
                 }
                 let before: BTreeMap<_, _> = plugin
                     .params()
@@ -1396,6 +1400,7 @@ impl Bridge {
                 load()
             };
             if superseded {
+                earlier_reports.retain(|report| matches!(report, PresetReport::Failed { .. }));
                 // Old coalesced values must not follow the authoritative state report.
                 self.pending_values.clear();
                 self.values_due = None;
@@ -1403,6 +1408,7 @@ impl Bridge {
             result
         })();
         self.send(BridgeMsg::StateApplied { request, result });
+        self.send_preset_reports(earlier_reports);
     }
 
     fn load_clap_preset(&mut self, request: u32, preset: &komponist_ipc::clap_presets::PresetLoad) {

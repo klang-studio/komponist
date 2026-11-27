@@ -857,8 +857,13 @@ fn a_reported_preset_and_its_snapshot_are_one_step_and_an_edit_marks_it_modified
         },
     );
     app.step();
+    script.borrow_mut().restores.clear();
     app.dispatch(Action::Edit(EditAction::Undo));
     assert_eq!(selection(&app), Some(loaded.clone()));
+    assert_eq!(
+        script.borrow().restores.as_slice(),
+        [(surge, Arc::<[u8]>::from([7, 7]))]
+    );
     snapshot(&script, surge, &[7, 7]);
     app.step();
     assert_eq!(selection(&app), Some(loaded));
@@ -880,6 +885,85 @@ fn a_reported_preset_and_its_snapshot_are_one_step_and_an_edit_marks_it_modified
             StatusKind::Error
         ))
     );
+}
+
+#[test]
+fn a_marked_preset_edit_is_undoable_before_its_snapshot() {
+    let (mut app, script) = app();
+    let device = device(&app, "Surge XT");
+    push(
+        &script,
+        PluginManagerEvent::ClapPresetReported {
+            device,
+            source: ClapPresetSource {
+                location: ClapPresetLocation::Plugin,
+                load_key: Some(b"Warm".to_vec()),
+            },
+            startup: false,
+        },
+    );
+    snapshot(&script, device, &[1]);
+    app.step();
+
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device,
+        id: 3,
+        value: 0.75,
+    }));
+    let edited = app.project().find_device(device).unwrap().2;
+    assert!(edited.preset.as_ref().unwrap().modified);
+    assert_eq!(edited.parameter_bases.get(&3), Some(&0.75));
+    script.borrow_mut().restores.clear();
+
+    app.dispatch(Action::Edit(EditAction::Undo));
+    let restored = app.project().find_device(device).unwrap().2;
+    assert!(!restored.preset.as_ref().unwrap().modified);
+    assert!(restored.parameter_bases.is_empty());
+    assert_eq!(
+        script.borrow().restores.as_slice(),
+        [(device, Arc::<[u8]>::from([1]))]
+    );
+    app.dispatch(Action::Edit(EditAction::Redo));
+    let edited = app.project().find_device(device).unwrap().2;
+    assert!(edited.preset.as_ref().unwrap().modified);
+    assert_eq!(edited.parameter_bases.get(&3), Some(&0.75));
+}
+
+#[test]
+fn a_later_preset_report_waits_for_its_own_deferred_snapshot() {
+    let (mut app, script) = app();
+    let device = device(&app, "Surge XT");
+    let source = |key: &[u8]| ClapPresetSource {
+        location: ClapPresetLocation::Plugin,
+        load_key: Some(key.to_vec()),
+    };
+    let report = |source| PluginManagerEvent::ClapPresetReported {
+        device,
+        source,
+        startup: false,
+    };
+    let first = DevicePreset::loaded(source(b"A"));
+    let second = DevicePreset::loaded(source(b"B"));
+    push(&script, report(first.source.clone()));
+    snapshot(&script, device, &[1]);
+    app.step();
+
+    app.dispatch(Action::Edit(EditAction::BeginGesture {
+        label: "Unrelated".into(),
+    }));
+    snapshot(&script, device, &[2]);
+    push(&script, report(second.source.clone()));
+    app.step();
+    app.dispatch(Action::Edit(EditAction::EndGesture));
+    let restored = app.project().find_device(device).unwrap().2;
+    assert_eq!(restored.preset.as_ref(), Some(&first));
+    assert_eq!(restored.state.as_deref(), Some(&[2][..]));
+
+    snapshot(&script, device, &[3]);
+    app.step();
+    let loaded = app.project().find_device(device).unwrap().2;
+    assert_eq!(loaded.preset.as_ref(), Some(&second));
+    assert_eq!(loaded.state.as_deref(), Some(&[3][..]));
 }
 
 #[test]

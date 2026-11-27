@@ -625,7 +625,7 @@ impl App {
             || self.has_unsaved_take()
             || self.param_undo.has_pending_text()
             || self.engine.host().has_pending_state_edits()
-            || !self.deferred_plugin_states().is_empty()
+            || self.deferred_plugin_states().len() != 0
     }
 
     /// `next` replaces the open project: asks first if it has unsaved changes.
@@ -934,7 +934,6 @@ impl App {
             };
         let deferred = self
             .deferred_plugin_states()
-            .iter()
             .filter(|(device, _)| !snapshots.iter().any(|(captured, _)| captured == device));
         for (device, state) in deferred.chain(&snapshots) {
             let project = for_file.as_ref().unwrap_or_else(|| document.project());
@@ -1026,11 +1025,8 @@ impl App {
             let Some((_, _, model)) = self.project().find_device(device) else {
                 continue;
             };
-            let has_state = model.state.is_some()
-                || self
-                    .deferred_plugin_states()
-                    .iter()
-                    .any(|(id, _)| *id == device);
+            let has_state =
+                model.state.is_some() || self.deferred_plugin_states().any(|(id, _)| *id == device);
             let names = if has_state {
                 &mut retained
             } else {

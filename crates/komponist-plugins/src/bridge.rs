@@ -200,6 +200,9 @@ struct StateRestore {
     request: u32,
     /// Newer user edits already applied optimistically to the manager's cache.
     later_edits: BTreeSet<u32>,
+    /// The latest plugin-side load superseded only if the document restore changes the plugin.
+    report: Option<ClapPresetSource>,
+    preset_values: Vec<ParamValue>,
 }
 
 #[derive(Debug)]
@@ -238,6 +241,8 @@ impl StateRestore {
         Self {
             request,
             later_edits: BTreeSet::new(),
+            report: None,
+            preset_values: Vec::new(),
         }
     }
 }
@@ -1639,7 +1644,7 @@ impl Bridge {
             }
             BridgeMsg::StartupState(state) => {
                 if matches!(self.phase, Phase::Hello | Phase::Loading)
-                    && !self.has_pending_document_restore()
+                    && self.document_restore_index().is_none()
                 {
                     events.push(PluginManagerEvent::StartupState {
                         device,
@@ -1781,25 +1786,7 @@ impl Bridge {
                 }
                 events.push(PluginManagerEvent::ParamValuesChanged { device });
             }
-            BridgeMsg::PresetValues(values) if !self.has_pending_document_restore() => {
-                // A load the plugin reported replaced its values: they are the persistent bases
-                // now. Edits sent after it and playback-owned parameters keep theirs.
-                for value in values {
-                    if !self.params.iter().any(|param| param.id == value.id) {
-                        continue;
-                    }
-                    if !self.pending_params.contains(&value.id)
-                        && !self.automated_params.contains_key(&value.id)
-                        && !self.macro_params.contains_key(&value.id)
-                    {
-                        self.base_values.insert(value.id, value.value);
-                    }
-                    self.values.insert(value.id, value);
-                }
-                events.push(PluginManagerEvent::ParamsChanged { device });
-                events.push(PluginManagerEvent::ParamValuesChanged { device });
-            }
-            BridgeMsg::PresetValues(_) => {}
+            BridgeMsg::PresetValues(values) => self.accept_preset_values(values, events),
             BridgeMsg::PluginParamEdits(edits) => {
                 if self.snapshots_preserve_bases() && self.phase == Phase::Running {
                     for (id, value) in edits {
@@ -1866,21 +1853,8 @@ impl Bridge {
             BridgeMsg::PresetReported(report) => {
                 if matches!(self.phase, Phase::Loading | Phase::Running) {
                     match report {
-                        PresetReport::Loaded { startup: false, .. }
-                            if self.has_pending_document_restore() => {}
                         PresetReport::Loaded { source, startup } => {
-                            if !startup {
-                                // The plugin changed its own state: the snapshot follows.
-                                self.user_changed();
-                                self.plugin_state_dirty = true;
-                                self.invalidate_state_requests();
-                                self.snapshot_soon();
-                            }
-                            events.push(PluginManagerEvent::ClapPresetReported {
-                                device,
-                                source,
-                                startup,
-                            });
+                            self.accept_preset_report(source, startup, events);
                         }
                         PresetReport::Failed { message, .. } => {
                             events.push(PluginManagerEvent::ClapPresetFailed { device, message });
@@ -2132,14 +2106,69 @@ impl Bridge {
         }
     }
 
-    /// A report ahead of a document restore's reply cannot describe the restored state.
-    fn has_pending_document_restore(&self) -> bool {
-        self.state_restores.iter().any(|restore| {
+    fn document_restore_index(&self) -> Option<usize> {
+        self.state_restores.iter().position(|restore| {
             self.pending_clap_preset
                 .as_ref()
                 .map(|(request, _)| *request)
                 != Some(restore.request)
         })
+    }
+
+    fn accept_preset_report(
+        &mut self,
+        source: ClapPresetSource,
+        startup: bool,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        if !startup {
+            if let Some(index) = self.document_restore_index() {
+                let restore = &mut self.state_restores[index];
+                restore.report = Some(source);
+                restore.preset_values.clear();
+                return;
+            }
+            self.user_changed();
+            self.plugin_state_dirty = true;
+            self.invalidate_state_requests();
+            self.snapshot_soon();
+        }
+        events.push(PluginManagerEvent::ClapPresetReported {
+            device: self.device,
+            source,
+            startup,
+        });
+    }
+
+    fn accept_preset_values(
+        &mut self,
+        values: Vec<ParamValue>,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        if let Some(index) = self.document_restore_index() {
+            self.state_restores[index].preset_values = values;
+            return;
+        }
+        // Playback may have changed the values of controls it currently owns. A lane with
+        // no current value leaves its control at the reported preset's base.
+        for value in values {
+            if !self.params.iter().any(|param| param.id == value.id) {
+                continue;
+            }
+            if !self.pending_params.contains(&value.id)
+                && !matches!(self.automated_params.get(&value.id), Some(Some(_)))
+                && !self.macro_params.contains_key(&value.id)
+            {
+                self.base_values.insert(value.id, value.value);
+            }
+            self.values.insert(value.id, value);
+        }
+        events.push(PluginManagerEvent::ParamsChanged {
+            device: self.device,
+        });
+        events.push(PluginManagerEvent::ParamValuesChanged {
+            device: self.device,
+        });
     }
 
     fn finish_restore(
@@ -2165,7 +2194,8 @@ impl Bridge {
             Ok(values) => (values, None),
             Err(error) => (error.changed_values, Some(error.message)),
         };
-        if error.is_none() || !values.is_empty() {
+        let changed = error.is_none() || !values.is_empty();
+        if changed {
             for value in values {
                 if !restore.later_edits.contains(&value.id) {
                     self.base_values.insert(value.id, value.value);
@@ -2212,6 +2242,20 @@ impl Bridge {
                     level: LogLevel::Error,
                     message,
                 });
+            }
+        }
+        if !changed && let Some(source) = restore.report {
+            if let Some(index) = self.document_restore_index() {
+                let next = &mut self.state_restores[index];
+                if next.report.is_none() {
+                    next.report = Some(source);
+                    next.preset_values = restore.preset_values;
+                }
+            } else {
+                self.accept_preset_report(source, false, events);
+                if !restore.preset_values.is_empty() {
+                    self.accept_preset_values(restore.preset_values, events);
+                }
             }
         }
     }

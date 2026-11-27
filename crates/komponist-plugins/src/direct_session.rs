@@ -213,18 +213,6 @@ impl DirectSession {
         self.host.try_refresh(METADATA_REFRESH, read)
     }
 
-    pub(crate) fn restore<R, T>(
-        &mut self,
-        load: impl FnOnce(&mut dyn HostedPlugin) -> Result<R, HostingError>,
-        inventory: impl FnOnce(&mut dyn HostedPlugin) -> T,
-    ) -> Option<(Result<R, HostingError>, T)> {
-        self.replace_state(|plugin| {
-            let result = load(plugin);
-            let replaced = result.is_ok();
-            ((result, inventory(plugin)), replaced)
-        })
-    }
-
     pub(crate) fn replace_state<T>(
         &mut self,
         apply: impl FnOnce(&mut dyn HostedPlugin) -> (T, bool),

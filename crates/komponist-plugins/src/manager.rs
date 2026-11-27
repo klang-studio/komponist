@@ -1521,7 +1521,8 @@ impl PluginManager {
         }
         self.pending.retain(|event| {
             !matches!(event, PluginManagerEvent::ClapPresetLoaded { device: loaded, .. }
-                | PluginManagerEvent::ClapPresetReported { device: loaded, .. } if *loaded == device)
+                | PluginManagerEvent::ClapPresetReported { device: loaded, .. }
+                | PluginManagerEvent::StateSnapshot { device: loaded, .. } if *loaded == device)
         });
         for event in &mut self.pending {
             if let PluginManagerEvent::WaveformMarkersEdited {
