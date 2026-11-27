@@ -9,14 +9,15 @@ use komponist_engine::program::{
     ChainSlot, InputFilter, MasterProgram, SeqNote, SlotMap, TrackProgram,
 };
 use komponist_engine::{
-    Command, Engine, EngineConfig, EngineEvent, EngineHandle, Garbage, LiveInput, Processor,
-    Program, SlotId, TrackMeter,
+    Command, Engine, EngineConfig, EngineEvent, EngineHandle, Garbage, LiveInput, Program, SlotId,
+    TrackMeter,
 };
 use komponist_hexa::{HexaProcessor, device, preset_patch};
 use komponist_model::{
     Channel, DeviceId, DeviceRole, Hue, Meter, MidiChannelSel, MidiInputSel, Tempo, TempoMap, Tick,
     TickRange, Track, TrackId, TrackKind,
 };
+use komponist_processor::Processor;
 
 use komponist_model::params::ParamId;
 

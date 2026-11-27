@@ -11,8 +11,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
-use komponist_engine::{
-    Event, LiveInput, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+use komponist_engine::LiveInput;
+use komponist_processor::{
+    Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
 
 use crate::common::*;

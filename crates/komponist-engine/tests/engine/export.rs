@@ -12,10 +12,12 @@ use komponist_engine::export::{
 };
 use komponist_engine::testing::{Logged, TestSine};
 use komponist_engine::{
-    Command, Engine, EngineConfig, EngineEvent, Event, ProcessContext, ProcessStatus, Processor,
-    ProcessorError, Program, SlotId, StereoIo, TransportState,
+    Command, Engine, EngineConfig, EngineEvent, Program, SlotId, TransportState,
 };
 use komponist_model::{Tick, TickRange};
+use komponist_processor::{
+    Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+};
 
 use crate::common::*;
 

@@ -259,7 +259,7 @@ pub(crate) struct RepeatScratch {
 impl RepeatScratch {
     pub(crate) fn new() -> Self {
         Self {
-            heap: BinaryHeap::with_capacity(crate::MAX_EVENTS_PER_BLOCK),
+            heap: BinaryHeap::with_capacity(komponist_processor::MAX_EVENTS_PER_BLOCK),
             #[cfg(test)]
             examined: 0,
         }

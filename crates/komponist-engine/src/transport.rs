@@ -14,8 +14,8 @@
 use komponist_model::{Meter, Tempo, TempoMap, Tick, TickRange};
 
 use crate::api::TransportState;
-use crate::processor::TransportInfo;
 use crate::program::Program;
+use komponist_processor::processor::TransportInfo;
 
 /// Song settings the transport needs, copied from the program (defaults without one).
 #[derive(Debug, Clone, Copy, PartialEq)]

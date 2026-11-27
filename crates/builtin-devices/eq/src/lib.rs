@@ -11,12 +11,12 @@
 
 use std::sync::Arc;
 
-use komponist_engine::{SampleTap, tap};
 use komponist_i18n::Lang;
 use komponist_model::params::layout::{
     Cell, DeviceLayout, GraphBinding, GraphConfig, Half, WidgetKind,
 };
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
+use komponist_processor::{SampleTap, tap};
 
 use komponist_model::params::eq_curve::{self, Coefs};
 

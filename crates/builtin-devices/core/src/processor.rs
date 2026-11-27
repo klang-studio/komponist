@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use komponist_engine::{
+use komponist_model::params::ParamInfo;
+use komponist_processor::{
     DeviceMeter, Event, EventKind, EventProcessor, NOTE_ID_NONE, ProcessContext, ProcessStatus,
     Processor, ProcessorError, SampleTap, StereoIo,
 };
-use komponist_model::params::ParamInfo;
 
 use crate::note::{DeviceNote, dispatch_note};
 use crate::{Spec, midi};
@@ -60,7 +60,7 @@ pub trait Dsp: Send {
     fn set_tempo(&mut self, _bpm: f64) {}
 
     /// Non-RT. The tap of the device's output samples for a live display (WP-92), if it has one.
-    /// The DSP copies into it only while the UI looks ([`komponist_engine::SampleTap::begin`]).
+    /// The DSP copies into it only while the UI looks ([`komponist_processor::SampleTap::begin`]).
     fn tap(&self) -> Option<Arc<SampleTap>> {
         None
     }

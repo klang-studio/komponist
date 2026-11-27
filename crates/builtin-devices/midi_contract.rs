@@ -16,9 +16,9 @@ use clap_sys::fixedpoint::CLAP_BEATTIME_FACTOR;
 use clap_sys::process::{CLAP_PROCESS_ERROR, clap_process};
 use clap_sys::stream::{clap_istream, clap_ostream};
 use komponist_device_core::Spec;
-use komponist_engine::processor::EventBuffer;
-use komponist_engine::{Event, EventKind, NOTE_ID_NONE, ProcessContext, TransportInfo};
 use komponist_model::{Meter, PPQ, Tick, TickRange};
+use komponist_processor::processor::EventBuffer;
+use komponist_processor::{Event, EventKind, NOTE_ID_NONE, ProcessContext, TransportInfo};
 use nice_plug::prelude::ClapPlugin;
 use nice_plug::wrapper::clap::Wrapper;
 
@@ -96,7 +96,7 @@ unsafe extern "C" fn receive(
 
 pub(crate) fn assert_stage_parity<P: ClapPlugin>(
     spec: &'static Spec,
-    stage: impl FnOnce() -> Box<dyn komponist_engine::EventProcessor + Send>,
+    stage: impl FnOnce() -> Box<dyn komponist_processor::EventProcessor + Send>,
 ) {
     let instance = Instance::new::<P>();
     let plugin = instance.0;

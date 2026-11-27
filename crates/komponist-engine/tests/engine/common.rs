@@ -10,13 +10,14 @@ use komponist_engine::program::{
 };
 use komponist_engine::testing::{EventLog, Logged};
 use komponist_engine::{
-    Command, Engine, EngineConfig, EngineEvent, EngineHandle, EventKind, LiveInput, MidiInEvent,
-    Processor, Program, SlotId, TrackMeter,
+    Command, Engine, EngineConfig, EngineEvent, EngineHandle, LiveInput, MidiInEvent, Program,
+    SlotId, TrackMeter,
 };
 use komponist_model::{
     Channel, DeviceId, DeviceRole, Hue, Meter, MidiChannelSel, MidiInputSel, Tempo, TempoMap, Tick,
     TickRange, Track, TrackId, TrackKind,
 };
+use komponist_processor::{EventKind, Processor};
 
 /// Default sample rate of the tests.
 pub const RATE: f32 = 48_000.0;

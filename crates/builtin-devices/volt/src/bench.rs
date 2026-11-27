@@ -6,7 +6,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use super::tests::{RATE, on, processor, render, wire};
-use komponist_engine::EventKind;
+use komponist_processor::EventKind;
 
 /// Microseconds per call of `block` frames, averaged over about 2 s of `keys` held with the
 /// parameters changed as given.

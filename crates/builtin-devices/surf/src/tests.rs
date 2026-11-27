@@ -4,15 +4,15 @@
 //! tests cover the shared voice (filter, envelopes, LFOs, unison, glide, stealing).
 
 use assert_no_alloc::assert_no_alloc;
-use komponist_engine::{
-    Event, EventKind, NOTE_ID_NONE, ProcessContext, Processor, StereoIo, TransportInfo,
-};
 use komponist_i18n::Lang;
 use komponist_model::params::layout::{BAND, ENV_VIEW, LFO_VIEW, OSC_VIEW, SEL, validate};
 use komponist_model::params::va_curve::{dst, src};
 use komponist_model::params::wavetable::{self, FRAMES, Recipe, TABLES};
 use komponist_model::params::{ParamContext, ParamId};
 use komponist_model::{Meter, Tick, TickRange};
+use komponist_processor::{
+    Event, EventKind, NOTE_ID_NONE, ProcessContext, Processor, StereoIo, TransportInfo,
+};
 use komponist_volt::Oscillators;
 
 use super::bank::{self, LEVELS, Mip, harmonics, level_bits};

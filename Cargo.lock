@@ -2658,6 +2658,7 @@ dependencies = [
  "komponist-ipc",
  "komponist-model",
  "komponist-plugins",
+ "komponist-processor",
  "komponist-tokens",
  "komponist-ui",
  "libc",
@@ -2681,9 +2682,9 @@ version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "komponist-device-core",
- "komponist-engine",
  "komponist-i18n",
  "komponist-model",
+ "komponist-processor",
 ]
 
 [[package]]
@@ -2748,9 +2749,9 @@ dependencies = [
  "komponist-arpeggiator",
  "komponist-bundled-clap-adapter",
  "komponist-device-core",
- "komponist-engine",
  "komponist-model",
  "komponist-native-clap-sdk",
+ "komponist-processor",
  "nice-plug",
  "serde_json",
 ]
@@ -2760,10 +2761,10 @@ name = "komponist-bundled-clap-adapter"
 version = "0.1.0"
 dependencies = [
  "komponist-device-core",
- "komponist-engine",
  "komponist-i18n",
  "komponist-model",
  "komponist-native-clap-sdk",
+ "komponist-processor",
  "nice-plug",
  "serde_json",
 ]
@@ -2839,11 +2840,11 @@ dependencies = [
  "clap-sys",
  "crossbeam-queue",
  "komponist-bundled-clap-adapter",
- "komponist-engine",
  "komponist-hexa",
  "komponist-i18n",
  "komponist-model",
  "komponist-native-clap-sdk",
+ "komponist-processor",
  "nice-plug",
  "serde",
  "serde_json",
@@ -2904,10 +2905,10 @@ dependencies = [
  "clap-sys",
  "komponist-bundled-clap-adapter",
  "komponist-device-core",
- "komponist-engine",
  "komponist-i18n",
  "komponist-model",
  "komponist-native-clap-sdk",
+ "komponist-processor",
  "komponist-scale",
  "nice-plug",
  "serde_json",
@@ -2957,9 +2958,9 @@ dependencies = [
 name = "komponist-device-core"
 version = "0.2.0"
 dependencies = [
- "komponist-engine",
  "komponist-i18n",
  "komponist-model",
+ "komponist-processor",
  "serde_json",
 ]
 
@@ -2972,6 +2973,7 @@ dependencies = [
  "klang-dsp",
  "komponist-audiofile",
  "komponist-model",
+ "komponist-processor",
  "komponist-rt",
  "komponist-stretch",
  "rtrb",
@@ -2986,9 +2988,9 @@ version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "komponist-device-core",
- "komponist-engine",
  "komponist-i18n",
  "komponist-model",
+ "komponist-processor",
 ]
 
 [[package]]
@@ -2997,9 +2999,9 @@ version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "komponist-device-core",
- "komponist-engine",
  "komponist-i18n",
  "komponist-model",
+ "komponist-processor",
  "komponist-sampler-shared",
  "rtrb",
  "sampler-core",
@@ -3016,6 +3018,7 @@ dependencies = [
  "komponist-engine",
  "komponist-i18n",
  "komponist-model",
+ "komponist-processor",
  "serde_json",
 ]
 
@@ -3099,6 +3102,7 @@ dependencies = [
  "komponist-hosting",
  "komponist-ipc",
  "komponist-model",
+ "komponist-processor",
  "komponist-rt",
  "rtrb",
  "rustix 1.1.6",
@@ -3115,8 +3119,16 @@ name = "komponist-presse"
 version = "0.2.0"
 dependencies = [
  "komponist-device-core",
- "komponist-engine",
  "komponist-i18n",
+ "komponist-model",
+ "komponist-processor",
+]
+
+[[package]]
+name = "komponist-processor"
+version = "0.2.0"
+dependencies = [
+ "assert_no_alloc",
  "komponist-model",
 ]
 
@@ -3146,9 +3158,9 @@ dependencies = [
  "hound",
  "komponist-audiofile",
  "komponist-device-core",
- "komponist-engine",
  "komponist-i18n",
  "komponist-model",
+ "komponist-processor",
  "komponist-sampler-shared",
  "rtrb",
  "sampler-core",
@@ -3189,9 +3201,9 @@ version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "komponist-device-core",
- "komponist-engine",
  "komponist-i18n",
  "komponist-model",
+ "komponist-processor",
 ]
 
 [[package]]
@@ -3207,9 +3219,9 @@ version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "komponist-device-core",
- "komponist-engine",
  "komponist-i18n",
  "komponist-model",
+ "komponist-processor",
  "komponist-volt",
  "realfft",
 ]
@@ -3253,6 +3265,7 @@ dependencies = [
  "komponist-engine",
  "komponist-i18n",
  "komponist-model",
+ "komponist-processor",
 ]
 
 [[package]]

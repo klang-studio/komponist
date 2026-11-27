@@ -10,7 +10,9 @@
 
 use std::time::Duration;
 
-use komponist_engine::{Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo};
+use komponist_processor::{
+    Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+};
 
 use crate::common::RATE;
 use crate::measure::{BLOCK, run, worker_counts};

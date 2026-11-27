@@ -3593,7 +3593,7 @@ mod tests {
     /// A spectrum like music: a sawtooth at 220 Hz at -14 dB over a quiet noise floor, analyzed the
     /// way the app does (tap, window, FFT, ballistics) at `rate`.
     fn test_spectrum(rate: f32) -> std::sync::Arc<[f32]> {
-        let tap = komponist_engine::SampleTap::new(16_384);
+        let tap = komponist_processor::SampleTap::new(16_384);
         tap.set_rate(rate);
         let mut analyzer = crate::spectrum::SpectrumAnalyzer::new();
         analyzer.update(0.0, &tap);

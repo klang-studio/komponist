@@ -18,10 +18,9 @@ use std::sync::Arc;
 use klang_dsp::rng::Rng;
 use komponist_engine::program::{MidiPort, PROBABILITY_FOLLOW, SeqNote, TrackProgram};
 use komponist_engine::testing::{EventLog, Logged, TestGain, TestSine};
-use komponist_engine::{
-    Command, EngineConfig, EventKind, MAX_PDC_FRAMES, MidiInEvent, Program, SlotId,
-};
+use komponist_engine::{Command, EngineConfig, MAX_PDC_FRAMES, MidiInEvent, Program, SlotId};
 use komponist_model::{Tick, TickRange, TrackId};
+use komponist_processor::EventKind;
 
 use crate::common::*;
 

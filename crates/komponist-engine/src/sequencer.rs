@@ -22,101 +22,11 @@ use klang_dsp::rng::Rng;
 use komponist_model::{TempoMap, Tick, TrackId};
 
 use crate::note_schedule::{NoteView, RepeatScratch};
-use crate::processor::{Event, EventKind, NOTE_ID_NONE};
 use crate::program::{PROBABILITY_FOLLOW, SeqNote, SlotId};
+use komponist_processor::processor::{EventBuffer, EventKind, NOTE_ID_NONE};
 
 /// Notes one track holds at once (sequencer and live); further note-ons are dropped and counted.
 pub(crate) const MAX_ACTIVE_NOTES: usize = 256;
-
-/// Events for one processor call, sorted by offset when finished.
-///
-/// Sorting keeps the push order within an offset, except that note-ons go after everything else
-/// at their offset (note-offs before note-ons, `Processor::process`). No allocation: both buffers
-/// are preallocated and `sort_unstable` works in place (the monotonic push counter makes the keys
-/// unique, so the order is stable).
-#[derive(Debug)]
-pub(crate) struct EventList {
-    keyed: Vec<(u64, Event)>,
-    sorted: Vec<Event>,
-    capacity: usize,
-    note_off_first: bool,
-    /// Sequence number of the next push; reset by `clear`, never reused after `remove_note_on`.
-    /// A block pushes far fewer than 2^31 events, so the 31 bits of the key cannot wrap.
-    next_seq: u32,
-}
-
-impl EventList {
-    /// Non-RT. A list for at most `capacity` events.
-    pub(crate) fn new(capacity: usize) -> EventList {
-        Self::with_note_off_first(capacity, true)
-    }
-
-    pub(crate) fn with_note_off_first(capacity: usize, note_off_first: bool) -> EventList {
-        EventList {
-            keyed: Vec::with_capacity(capacity),
-            sorted: Vec::with_capacity(capacity),
-            capacity,
-            note_off_first,
-            next_seq: 0,
-        }
-    }
-
-    /// RT. Empties the list.
-    pub(crate) fn clear(&mut self) {
-        self.keyed.clear();
-        self.sorted.clear();
-        self.next_seq = 0;
-    }
-
-    /// Free places.
-    pub(crate) fn room(&self) -> usize {
-        self.capacity - self.keyed.len()
-    }
-
-    /// RT. Adds an event; `false` when the list is full.
-    pub(crate) fn push(&mut self, offset: u32, kind: EventKind) -> bool {
-        if self.room() == 0 {
-            return false;
-        }
-        let rank = u64::from(self.note_off_first && matches!(kind, EventKind::NoteOn { .. }));
-        let seq = u64::from(self.next_seq & 0x7fff_ffff);
-        self.next_seq = self.next_seq.wrapping_add(1);
-        let key = u64::from(offset) << 32 | rank << 31 | seq;
-        self.keyed.push((key, Event { offset, kind }));
-        true
-    }
-
-    /// Offset of the pending note-on with `note_id`, if it is in the list.
-    pub(crate) fn note_on_offset(&self, note_id: u32) -> Option<u32> {
-        self.keyed.iter().find_map(|(_, e)| match e.kind {
-            EventKind::NoteOn { note_id: id, .. } if id == note_id => Some(e.offset),
-            _ => None,
-        })
-    }
-
-    /// RT. Takes the note-on with `note_id` out of the list again.
-    pub(crate) fn remove_note_on(&mut self, note_id: u32) {
-        let found = self.keyed.iter().position(
-            |(_, e)| matches!(e.kind, EventKind::NoteOn { note_id: id, .. } if id == note_id),
-        );
-        if let Some(index) = found {
-            self.keyed.remove(index);
-        }
-    }
-
-    /// The events as last sorted by [`EventList::finish`].
-    pub(crate) fn sorted(&self) -> &[Event] {
-        &self.sorted
-    }
-
-    /// RT. The events sorted for the processor call.
-    pub(crate) fn finish(&mut self) -> &[Event] {
-        self.keyed.sort_unstable_by_key(|(key, _)| *key);
-        self.sorted.clear();
-        self.sorted.extend(self.keyed.iter().map(|(_, e)| *e));
-        &self.sorted
-    }
-}
 
 /// Engine-wide CLAP note ids, never [`NOTE_ID_NONE`].
 #[derive(Debug, Clone, Copy, Default)]
@@ -360,7 +270,7 @@ impl TrackSeq {
     }
 
     /// RT. Step 1: note-offs at offset 0 for flushed notes (only to the slot that has them).
-    pub(crate) fn flushed_offs(&mut self, instrument: Option<SlotId>, out: &mut EventList) {
+    pub(crate) fn flushed_offs(&mut self, instrument: Option<SlotId>, out: &mut EventBuffer) {
         let mut k = 0;
         while k < self.active.len() {
             let n = self.active[k];
@@ -388,7 +298,7 @@ impl TrackSeq {
         instrument: Option<SlotId>,
         ids: &mut NoteIds,
         repeat_scratch: &mut RepeatScratch,
-        out: &mut EventList,
+        out: &mut EventBuffer,
         capture: &mut impl FnMut(Captured),
     ) -> u32 {
         let (start, end) = (win.start, win.end());
@@ -487,7 +397,7 @@ impl TrackSeq {
         floor: Tick,
         instrument: Option<SlotId>,
         ids: &mut NoteIds,
-        out: &mut EventList,
+        out: &mut EventBuffer,
     ) -> u32 {
         // A note ending at or before this tick cannot sound at `win.start` (tick → sample is
         // monotonic and `floor` maps back to a sample ≤ `win.start`).
@@ -529,7 +439,7 @@ impl TrackSeq {
         slot: SlotId,
         win: &Window<'_>,
         ids: &mut NoteIds,
-        out: &mut EventList,
+        out: &mut EventBuffer,
     ) -> bool {
         let at = win.start + i64::from(on.offset);
         if let Some(k) = self.find(on.channel, on.key) {
@@ -578,7 +488,7 @@ impl TrackSeq {
         win: &Window<'_>,
         instrument: Option<SlotId>,
         ids: &mut NoteIds,
-        out: &mut EventList,
+        out: &mut EventBuffer,
         capture: &mut impl FnMut(Captured),
     ) -> u32 {
         let [status, data1, data2] = m.data;
@@ -691,7 +601,7 @@ mod tests {
         seq: TrackSeq,
         ids: NoteIds,
         repeat_scratch: RepeatScratch,
-        out: EventList,
+        out: EventBuffer,
         map: TempoMap,
         pos: i64,
         captured: Vec<(i64, Captured)>,
@@ -703,7 +613,7 @@ mod tests {
                 seq: TrackSeq::new(),
                 ids: NoteIds::default(),
                 repeat_scratch: RepeatScratch::new(),
-                out: EventList::new(crate::MAX_EVENTS_PER_BLOCK),
+                out: EventBuffer::new(komponist_processor::MAX_EVENTS_PER_BLOCK),
                 map: map(),
                 pos: 0,
                 captured: Vec::with_capacity(64),
@@ -758,7 +668,7 @@ mod tests {
                     out,
                     &mut |c| captured.push((pos, c)),
                 );
-                out.finish()
+                out.events()
             });
             let events = events
                 .iter()
@@ -881,72 +791,12 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn event_list_sorts_stably_with_note_offs_first() {
-        let mut list = EventList::new(8);
-        let on = |key| EventKind::NoteOn {
-            key,
-            velocity: 1,
-            channel: 0,
-            note_id: 0,
-        };
-        let off = |key| EventKind::NoteOff {
-            key,
-            channel: 0,
-            note_id: 0,
-        };
-        list.push(5, on(1));
-        list.push(5, off(2));
-        list.push(0, EventKind::Midi([0xb0, 1, 2]));
-        list.push(5, off(3));
-        list.push(5, on(4));
-        list.push(0, EventKind::AllNotesOff);
-        let got: Vec<_> = list.finish().iter().map(|e| (e.offset, e.kind)).collect();
-        assert_eq!(
-            got,
-            [
-                (0, EventKind::Midi([0xb0, 1, 2])),
-                (0, EventKind::AllNotesOff),
-                (5, off(2)),
-                (5, off(3)),
-                (5, on(1)),
-                (5, on(4)),
-            ]
-        );
-        assert_eq!(list.room(), 2);
-        assert!(list.push(1, off(1)) && list.push(1, off(1)));
-        assert!(!list.push(1, off(1)));
-    }
-
-    /// After `remove_note_on` the list shrinks; a new event must still sort after everything
-    /// pushed before it (the old `keyed.len()` key reused a number and broke the send order).
-    #[test]
-    fn retriggered_note_keeps_send_order_after_remove() {
-        let mut list = EventList::new(8);
-        let on = |note_id| EventKind::NoteOn {
-            key: 60,
-            velocity: 1,
-            channel: 0,
-            note_id,
-        };
-        let cc = |v| EventKind::Midi([0xb0, 64, v]);
-        list.push(7, cc(1));
-        list.push(7, on(10)); // retriggered below
-        list.push(7, cc(2));
-        list.remove_note_on(10);
-        list.push(7, cc(3));
-        list.push(7, on(11));
-        list.push(7, cc(4));
-        let got: Vec<_> = list.finish().iter().map(|e| e.kind).collect();
-        assert_eq!(got, [cc(1), cc(2), cc(3), cc(4), on(11)]);
-    }
-
     /// Random pushes and removals: events at equal offsets come out in send order, note-ons last.
     #[test]
     fn event_list_is_fifo_at_equal_offsets_under_random_use() {
         let mut rng = Rng::new(0x226);
         for round in 0..200 {
-            let mut list = EventList::new(64);
+            let mut list = EventBuffer::new(64);
             let mut model: Vec<(u32, bool, u32, EventKind)> = Vec::new(); // offset, is_on, tag, kind
             for tag in 0..120u32 {
                 if rng.below(4) == 0 {
@@ -977,7 +827,7 @@ mod tests {
             }
             model.sort_by_key(|m| (m.0, m.1)); // stable: keeps send order inside a group
             let want: Vec<_> = model.iter().map(|m| (m.0, m.3)).collect();
-            let got: Vec<_> = list.finish().iter().map(|e| (e.offset, e.kind)).collect();
+            let got: Vec<_> = list.events().iter().map(|e| (e.offset, e.kind)).collect();
             assert_eq!(got, want, "round {round}");
         }
     }

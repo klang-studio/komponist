@@ -8,13 +8,13 @@ use std::sync::{Arc, Mutex};
 
 use komponist_app::App;
 use komponist_app::device_host::{DeviceHost, PluginHost};
-use komponist_engine::Processor;
 use komponist_ipc::control::param_flags;
 use komponist_ipc::{
     ParamInfo, ParamValue, PluginDescriptor, PluginFormat as BundleFormat, PluginKind,
 };
 use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef};
 use komponist_plugins::{Catalog, DeviceStatus, PluginManagerEvent, ProcessorSetup};
+use komponist_processor::Processor;
 
 /// Statuses the test can change while the app runs.
 pub type Statuses = Arc<Mutex<HashMap<DeviceId, DeviceStatus>>>;

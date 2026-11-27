@@ -1,7 +1,7 @@
 //! Sample-accurate events: notes, note-offs, All Notes Off, reset, macros.
 
-use komponist_engine::{EventKind, Processor, ProcessorError};
 use komponist_hexa::{HexaProcessor, Macro, Patch, default_patch, preset_patch};
+use komponist_processor::{EventKind, Processor, ProcessorError};
 
 use crate::common::*;
 

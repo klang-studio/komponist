@@ -1,5 +1,5 @@
 //! The live spectrum behind the EQ graph (WP-92): the UI side of a device's
-//! [`SampleTap`](komponist_engine::SampleTap).
+//! [`SampleTap`](komponist_processor::SampleTap).
 //!
 //! Once per [`INTERVAL`] a [`SpectrumAnalyzer`] reads the latest window of the tap (4096 samples
 //! at 44.1 and 48 kHz, 8192 at 96 kHz, so the resolution in Hz stays about the same), applies a
@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use komponist_engine::SampleTap;
+use komponist_processor::SampleTap;
 use realfft::num_complex::Complex;
 use realfft::{RealFftPlanner, RealToComplex};
 

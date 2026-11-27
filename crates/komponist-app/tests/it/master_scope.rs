@@ -20,10 +20,11 @@ use komponist_app::panels::transport::{self, TransportModel};
 use komponist_app::settings::Settings;
 use komponist_app::{Action, App};
 use komponist_audio::AudioState;
-use komponist_engine::{SampleTap, TransportState, tap};
+use komponist_engine::TransportState;
 use komponist_i18n::{Lang, de, en};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{Document, Project};
+use komponist_processor::{SampleTap, tap};
 use komponist_tokens::{size, space};
 
 fn snapshot_dir() -> PathBuf {

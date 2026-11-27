@@ -17,7 +17,7 @@ publish = false
 clap-sys = "=0.5.0"
 serde_json = "=1.0.154"
 komponist-device-core = { path = "../builtin-devices/core" }
-komponist-engine = { path = "../komponist-engine" }
+komponist-processor = { path = "../komponist-processor" }
 komponist-i18n = { path = "../komponist-i18n" }
 komponist-ipc = { path = "../komponist-ipc" }
 komponist-model = { path = "../komponist-model" }

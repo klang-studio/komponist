@@ -3,14 +3,14 @@
 //! determinism. Rendering goes through the real [`InternalProcessor`].
 
 use assert_no_alloc::assert_no_alloc;
-use komponist_engine::{
-    Event, EventKind, NOTE_ID_NONE, ProcessContext, Processor, StereoIo, TransportInfo,
-};
 use komponist_i18n::Lang;
 use komponist_model::params::layout::{BAND, ENV_VIEW, LFO_VIEW, SEL, validate};
 use komponist_model::params::va_curve::{self, dst, src};
 use komponist_model::params::{ParamContext, ParamId};
 use komponist_model::{Meter, Tick, TickRange};
+use komponist_processor::{
+    Event, EventKind, NOTE_ID_NONE, ProcessContext, Processor, StereoIo, TransportInfo,
+};
 
 use super::filter::{Coefs, Filter};
 use super::params::{COUNT, KEYS, id, params};

@@ -14,10 +14,10 @@ use komponist_app::actions::{SelectMode, SelectionChange};
 use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::ui_state::FocusArea;
 use komponist_app::{Action, App, EditAction, TransportAction, UiAction};
-use komponist_engine::Processor;
 use komponist_i18n::{Lang, de};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{ClipId, Device, DeviceId, DeviceRole, PluginRef, Project, Tick, TrackId};
+use komponist_processor::Processor;
 
 use crate::common::song_with_shipped_instruments;
 use komponist_plugins::{DeviceStatus, PluginManagerEvent, ProcessorSetup};

@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use komponist_engine::program::TrackProgram;
 use komponist_engine::testing::{Logged, TEST_GAIN_PARAM, TEST_SINE_LEVEL, TestGain, TestSine};
-use komponist_engine::{
-    Command, EngineConfig, EngineEvent, EngineHandle, Event, ProcessContext, ProcessStatus,
-    Processor, ProcessorError, SlotId, StereoIo,
-};
+use komponist_engine::{Command, EngineConfig, EngineEvent, EngineHandle, SlotId};
 use komponist_model::{Tick, TrackId};
+use komponist_processor::{
+    Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+};
 
 use crate::common::*;
 

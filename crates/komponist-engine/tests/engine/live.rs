@@ -2,8 +2,9 @@
 
 use komponist_engine::program::{InputFilter, MidiPort};
 use komponist_engine::testing::{Logged, TestSine};
-use komponist_engine::{Command, EngineEvent, EventKind, MidiInEvent};
+use komponist_engine::{Command, EngineEvent, MidiInEvent};
 use komponist_model::{Tick, TickRange, TrackId};
+use komponist_processor::EventKind;
 
 use crate::common::*;
 

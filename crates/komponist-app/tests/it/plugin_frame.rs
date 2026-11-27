@@ -24,7 +24,6 @@ use komponist_app::windows::plugin_frame::body::{self, BodyEvent, BodyModel, Par
 use komponist_app::windows::plugin_frame::header::{self, HeaderEvent, HeaderModel, Mark};
 use komponist_app::windows::plugin_frame::metrics;
 use komponist_app::{Action, App};
-use komponist_engine::Processor;
 use komponist_i18n::{Lang, de};
 use komponist_ipc::clap_presets::{ClapPreset, ClapPresetLocation, ClapPresetSource};
 use komponist_ipc::frame::{FrameChord, FrameKeyEvent, FrameRect, KeyMods};
@@ -37,6 +36,7 @@ use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginRef};
 use komponist_plugins::{
     Catalog, DeviceStatus, FailReason, PluginError, PluginManagerEvent, ProcessorSetup,
 };
+use komponist_processor::Processor;
 
 /// The title the device card gives a crashed device (`views::devices::model::failure_texts`, #2).
 const CRASHED_TITLE: &str = "Abgestürzt";

@@ -3548,7 +3548,7 @@ mod tests {
             &mut self,
             _: &komponist_model::Device,
             _: komponist_plugins::ProcessorSetup,
-        ) -> Option<Box<dyn komponist_engine::Processor>> {
+        ) -> Option<Box<dyn komponist_processor::Processor>> {
             None
         }
 

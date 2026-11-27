@@ -7,8 +7,8 @@ use komponist_model::macros::{MACRO_COUNT, MAX_MAPPINGS, Mapping};
 use komponist_model::params::ParamId;
 
 use crate::automation::{EngineTarget, Parameter, PlainMap, normalized_to_gain};
-use crate::processor::ParameterEditKind;
 use crate::program::SlotId;
+use komponist_processor::processor::ParameterEditKind;
 
 const CAPACITY: usize = MACRO_COUNT * MAX_MAPPINGS;
 const REASSERT_SECONDS: f64 = 0.25;

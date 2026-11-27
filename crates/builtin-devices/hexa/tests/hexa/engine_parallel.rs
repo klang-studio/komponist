@@ -1,8 +1,8 @@
 //! Hexa renders bit-identically with and without engine workers.
 
-use komponist_engine::Processor;
 use komponist_hexa::{HexaProcessor, preset_patch, presets};
 use komponist_model::{Tick, TickRange};
+use komponist_processor::Processor;
 
 use crate::engine_common::{BAR, RATE, program, track};
 use crate::material::material;

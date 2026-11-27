@@ -3,11 +3,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use komponist_engine::{SampleTap, StereoIo};
 use komponist_ipc::signal_taps::{
     BlockTaps, Descriptor, MAX_PAD_ACTIVITY_FRAME, PAD_ACTIVITY, PadActivity, REDUCTION,
     valid_inventory,
 };
+use komponist_processor::{SampleTap, StereoIo};
 
 /// A named plugin signal displayed by a native layout.
 #[derive(Debug)]

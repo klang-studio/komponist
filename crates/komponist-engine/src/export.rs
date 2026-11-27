@@ -40,7 +40,7 @@
 //!   runs at the new rate and its warm-up passed (`komponist_plugins::WARM_UP`), so this one
 //!   status wait covers both; no state round trip as a barrier is needed. Show which devices are
 //!   missing or crashed instead of exporting without them. Bridges use their offline deadline
-//!   (2 s per block) because render calls carry no [`crate::ProcessContext::deadline`].
+//!   (2 s per block) because render calls carry no [`komponist_processor::ProcessContext::deadline`].
 //! - A range that starts inside a long note renders it from the first frame: `Play` chases the
 //!   notes sounding at the range start (see [`crate::engine`]).
 //! - Compile the project again with [`recompile`] once the devices run at the export rate (the

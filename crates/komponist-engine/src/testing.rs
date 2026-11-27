@@ -19,7 +19,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::processor::{
+use komponist_processor::processor::{
     Event, EventKind, EventProcessor, EventSink, NOTE_ID_NONE, ProcessContext, ProcessStatus,
     Processor, ProcessorError, StereoIo, TransportInfo,
 };

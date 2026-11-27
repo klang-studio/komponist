@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use assert_no_alloc::assert_no_alloc;
 use komponist_device_core::InternalProcessor;
-use komponist_engine::{Event, EventKind, ProcessContext, Processor, StereoIo, TransportInfo};
 use komponist_model::params::ParamId;
 use komponist_model::{Meter, Tick, TickRange};
+use komponist_processor::{Event, EventKind, ProcessContext, Processor, StereoIo, TransportInfo};
 
 use komponist_sampler_shared::{SampleLink, SamplerHandle, SyncStatus, testkit};
 

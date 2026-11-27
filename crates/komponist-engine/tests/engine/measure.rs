@@ -2,8 +2,9 @@
 
 use std::time::{Duration, Instant};
 
-use komponist_engine::{Command, Processor};
+use komponist_engine::Command;
 use komponist_model::{Tick, TickRange};
+use komponist_processor::Processor;
 
 use super::engine_common::{BAR, RATE, Rig, program, track};
 use crate::material::material;

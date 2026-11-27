@@ -30,7 +30,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use komponist_engine::Processor;
 use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource, PresetLoad};
 use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot, edit_state};
 use komponist_ipc::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderModel};
@@ -41,6 +40,7 @@ use komponist_ipc::{
 };
 use komponist_model::project::SavedPluginState;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project, TrackId};
+use komponist_processor::Processor;
 #[cfg(unix)]
 use rustix::event::{PollFd, PollFlags, Timespec};
 

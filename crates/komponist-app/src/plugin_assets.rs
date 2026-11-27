@@ -611,9 +611,9 @@ mod tests {
     }
     use crate::device_host::DeviceHost;
     use crate::engine_sync::EngineSync;
-    use komponist_engine::Processor;
     use komponist_model::{DeviceRole, Document, PluginFormat, PluginRef, Project};
     use komponist_plugins::{Catalog, DeviceStatus, PluginManagerEvent, ProcessorSetup};
+    use komponist_processor::Processor;
 
     struct PreparingHost {
         catalog: Catalog,

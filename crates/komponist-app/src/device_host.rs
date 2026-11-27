@@ -36,7 +36,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use komponist_engine::Processor;
 use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource};
 use komponist_ipc::device_assets::{
     AssetKind, AssetStatus, Bindings, OfflineRequest, OfflineStatus, Snapshot,
@@ -51,6 +50,7 @@ use komponist_plugins::{
     PluginDirs, PluginError, PluginManager, PluginManagerConfig, PluginManagerEvent,
     ProcessorSetup, SaveSnapshots, ScanReport,
 };
+use komponist_processor::Processor;
 
 /// The index and modified flag of the preset recorded through CLAP preset-load.
 pub fn selected_preset(device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {

@@ -4,7 +4,7 @@ use hexa_core::midi::CC_ALL_NOTES_OFF;
 use hexa_core::oversampling::DELAY;
 use hexa_core::{MidiMessage, Patch, Synth};
 use komponist_device_core::{INITIAL_RATE, SAMPLE_RATES};
-use komponist_engine::{
+use komponist_processor::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
 

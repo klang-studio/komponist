@@ -13,9 +13,6 @@ use komponist_app::project_io::{load_project, save_project};
 use komponist_app::ui_state::{FocusArea, StatusKind};
 use komponist_app::{Action, App, EditAction, ProjectAction};
 use komponist_engine::testing::{TestMidiFx, TestPanic};
-use komponist_engine::{
-    Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
-};
 use komponist_i18n::Lang;
 use komponist_ipc::RenderMode;
 use komponist_ipc::device_assets::{AssetKind, AssetStatus, Slot, Snapshot};
@@ -27,6 +24,9 @@ use komponist_model::{
 };
 use komponist_plugins::{
     Catalog, DeviceSnapshots, DeviceStatus, PluginManagerEvent, ProcessorSetup,
+};
+use komponist_processor::{
+    Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
 
 use crate::common::{

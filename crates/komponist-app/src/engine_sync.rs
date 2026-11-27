@@ -40,18 +40,18 @@ use komponist_audio::{
     StreamStats,
 };
 use komponist_engine::compile::{self, CompileEnv};
-use komponist_engine::processor::ParameterEditKind;
 use komponist_engine::workers::{
     WorkerRt, WorkerStats, WorkerStatus, auto_workers, cap_to_workgroup,
 };
 use komponist_engine::{
-    Command, Engine, EngineConfig, EngineEvent, EngineHandle, LiveInput, MAX_BLOCK,
-    MAX_EVENTS_PER_BLOCK, MAX_SLOTS, MidiInEvent, MidiPort, Program, SlotId, Telemetry, TrackMeter,
-    TransportState,
+    Command, Engine, EngineConfig, EngineEvent, EngineHandle, LiveInput, MAX_BLOCK, MAX_SLOTS,
+    MidiInEvent, MidiPort, Program, SlotId, Telemetry, TrackMeter, TransportState,
 };
 use komponist_model::project::SavedPluginState;
 use komponist_model::{DeviceId, Document, Project, Tick, TrackId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent, ProcessorSetup};
+use komponist_processor::MAX_EVENTS_PER_BLOCK;
+use komponist_processor::processor::ParameterEditKind;
 
 use crate::device_host::DeviceHost;
 

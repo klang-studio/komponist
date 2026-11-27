@@ -32,7 +32,7 @@ fn rig_with(workers: usize, tracks: u32, monitored: u32, tweak: &[(&str, f64)]) 
             values[wire as usize] = *value;
         }
         let mut p = InternalProcessor::from_dsp(&SPEC, &values, dsp());
-        komponist_engine::Processor::activate(&mut p, RATE, 256).unwrap();
+        komponist_processor::Processor::activate(&mut p, RATE, 256).unwrap();
         rig.insert(i, p);
     }
     let mut p = program(127.0, list);

@@ -16,10 +16,6 @@ use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::{PluginView, StatusKind};
 use komponist_app::{Action, App};
-use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
-use komponist_engine::{
-    Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
-};
 use komponist_ipc::clap_presets::{ClapPreset, ClapPresetLocation, ClapPresetSource, DevicePreset};
 use komponist_ipc::{
     LogLevel, ParamInfo, PluginDescriptor, PluginFormat as BundleFormat, PluginKind,
@@ -31,6 +27,10 @@ use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{
     Catalog, DeviceSnapshots, DeviceStatus, FailReason, PluginDirs, PluginError,
     PluginManagerEvent, ProcessorSetup, SaveSnapshots, ScanReport,
+};
+use komponist_processor::processor::{ParameterEdit, ParameterEditKind};
+use komponist_processor::{
+    Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
 
 /// What the test scripts and observes.

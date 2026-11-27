@@ -18,3 +18,4 @@ komponist-model.workspace = true
 [dev-dependencies]
 assert_no_alloc.workspace = true
 komponist-engine.workspace = true
+komponist-processor.workspace = true

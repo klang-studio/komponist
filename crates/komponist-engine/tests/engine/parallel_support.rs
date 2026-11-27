@@ -1,7 +1,8 @@
 //! Shared worker determinism checks for test processors and device integrations.
 
-use komponist_engine::{Command, MidiInEvent, MidiPort, Processor, Program, SlotId};
+use komponist_engine::{Command, MidiInEvent, MidiPort, Program, SlotId};
 use komponist_model::{Tick, TrackId};
+use komponist_processor::Processor;
 
 use super::engine_common::{BAR, RATE, Rig};
 

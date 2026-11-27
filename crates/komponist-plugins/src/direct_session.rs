@@ -6,16 +6,16 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use komponist_engine::processor::{EventProcessor, EventSink, ParameterEdit};
-use komponist_engine::{
-    Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
-};
 use komponist_hosting::host_loop::notification_bits;
 use komponist_hosting::{HostedPlugin, HostingError};
 use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot, edit_state};
 use komponist_ipc::shm::{INPUT_EVENT_CAPACITY, MAX_BLOCK};
 use komponist_ipc::{RenderMode, WireEvent, WireEventKind};
 use komponist_model::DeviceRole;
+use komponist_processor::processor::{EventProcessor, EventSink, ParameterEdit};
+use komponist_processor::{
+    Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::direct::{

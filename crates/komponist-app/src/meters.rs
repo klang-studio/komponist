@@ -10,10 +10,10 @@ use std::collections::HashMap;
 
 use std::sync::{Arc, Weak};
 
-use komponist_engine::{DeviceMeter, SampleTap};
 use komponist_ipc::signal_taps::PadActivity;
 use komponist_model::{DeviceId, TrackId};
 use komponist_plugins::signal_taps::SignalTap;
+use komponist_processor::{DeviceMeter, SampleTap};
 use komponist_ui::widgets::meter::{MeterState, fraction};
 
 use crate::engine_sync::EngineSync;

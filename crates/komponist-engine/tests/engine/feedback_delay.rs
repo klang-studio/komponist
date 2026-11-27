@@ -1,4 +1,6 @@
-use komponist_engine::{Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo};
+use komponist_processor::{
+    Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+};
 
 /// An effect that writes only its delayed signal. Its buffer is allocated off the audio thread.
 pub struct FeedbackDelay {

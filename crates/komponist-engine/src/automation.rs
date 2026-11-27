@@ -11,9 +11,10 @@ use komponist_model::params::{ParamKind, Scale, db_to_p, p_to_db, to_normalized,
 use komponist_model::{DeviceId, SendId, Tick};
 
 use crate::macros::{self, CompiledMapping, MacroProgram};
-use crate::processor::{Event, EventKind, ParameterEditKind};
 use crate::program::{ChainSlot, SlotId};
-use crate::sequencer::{EventList, Window};
+use crate::sequencer::Window;
+use komponist_processor::EventBuffer;
+use komponist_processor::processor::{Event, EventKind, ParameterEditKind};
 
 /// A target resolved against the installed program. This identity crosses the RT queues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -450,7 +451,7 @@ pub(crate) fn normalized_to_gain(value: f32) -> f32 {
     10.0_f32.powf(db / 20.0)
 }
 
-pub(crate) const MAX_TARGETS: usize = crate::MAX_EVENTS_PER_BLOCK;
+pub(crate) const MAX_TARGETS: usize = komponist_processor::MAX_EVENTS_PER_BLOCK;
 const TOUCH_RETURN_SECONDS: f32 = 0.25;
 const IMPLICIT_TOUCH_SECONDS: f32 = 0.5;
 const VALUE_EPSILON: f32 = 1e-5;
@@ -835,7 +836,7 @@ impl State {
             macros: macros::State::new(),
             cursors: Vec::with_capacity(MAX_TARGETS),
             reuse: Vec::with_capacity(MAX_TARGETS),
-            params: Vec::with_capacity(crate::MAX_EVENTS_PER_BLOCK),
+            params: Vec::with_capacity(komponist_processor::MAX_EVENTS_PER_BLOCK),
             restores: Vec::with_capacity(MAX_TARGETS),
         }
     }
@@ -1335,7 +1336,7 @@ impl State {
         })
     }
 
-    pub(crate) fn add_events(&mut self, slot: SlotId, out: &mut EventList) -> u32 {
+    pub(crate) fn add_events(&mut self, slot: SlotId, out: &mut EventBuffer) -> u32 {
         let events = &self.params[self.slot_range(slot)];
         let available = out.room();
         let skip = events.len().saturating_sub(available);
@@ -1673,20 +1674,20 @@ mod tests {
             frames: 64,
             playing: false,
         };
-        let mut full = EventList::new(0);
-        let mut ready = EventList::new(1);
+        let mut full = EventBuffer::new(0);
+        let mut ready = EventBuffer::new(1);
         assert_no_alloc::assert_no_alloc(|| {
             state.prepare(&lanes, window, 0, |_| true);
             assert_eq!(state.add_events(SlotId(0), &mut full), 1);
             state.prepare(&lanes, window, 64, |_| true);
             assert_eq!(state.add_events(SlotId(0), &mut ready), 0);
             assert!(
-                matches!(ready.finish(), [Event { offset: 0, kind: EventKind::Param {id: 0, value} }] if *value == f64::from(0.8_f32))
+                matches!(ready.events(), [Event { offset: 0, kind: EventKind::Param {id: 0, value} }] if *value == f64::from(0.8_f32))
             );
             ready.clear();
             state.prepare(&lanes, window, 128, |_| true);
             state.add_events(SlotId(0), &mut ready);
-            assert!(ready.finish().is_empty());
+            assert!(ready.events().is_empty());
         });
     }
 
@@ -1736,7 +1737,7 @@ mod tests {
                 Vec::new(),
             )];
             state.install(&[], &lanes, &[], &TrackAutomation::default());
-            let mut ready = EventList::new(1);
+            let mut ready = EventBuffer::new(1);
             assert_no_alloc::assert_no_alloc(|| {
                 let cursor = &mut state.cursors[0];
                 assert!(cursor.begin(mode, true, None));
@@ -1748,7 +1749,7 @@ mod tests {
                 let filler = state.params[0];
                 assert_eq!(state.add_events(SlotId(0), &mut ready), 0);
                 assert!(matches!(
-                    ready.finish(),
+                    ready.events(),
                     [Event {
                         offset: 0,
                         kind: EventKind::Param { id: 0, value: 0.25 }
@@ -1786,7 +1787,7 @@ mod tests {
                 );
                 assert_eq!(state.add_events(SlotId(0), &mut ready), 0);
                 assert!(matches!(
-                    ready.finish(),
+                    ready.events(),
                     [Event {
                         offset: 0,
                         kind: EventKind::Param { id: 0, value: 0.75 }
@@ -1806,7 +1807,7 @@ mod tests {
                     |_| true,
                 );
                 assert_eq!(state.add_events(SlotId(0), &mut ready), 0);
-                assert!(ready.finish().is_empty());
+                assert!(ready.events().is_empty());
             });
         }
     }

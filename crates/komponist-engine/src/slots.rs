@@ -11,9 +11,11 @@ use std::num::NonZeroU32;
 use komponist_model::DeviceRole;
 
 use crate::MAX_PENDING_PARAMS;
-use crate::processor::{Event, EventKind, ProcessContext, ProcessStatus, Processor, StereoIo};
 use crate::program::ChainSlot;
-use crate::sequencer::EventList;
+use komponist_processor::EventBuffer;
+use komponist_processor::processor::{
+    Event, EventKind, ProcessContext, ProcessStatus, Processor, StereoIo,
+};
 
 /// Parameter changes waiting for the slot's next processor call. A newer value for the same id
 /// replaces the queued one.
@@ -71,7 +73,7 @@ impl ParamQueue {
 
     /// Moves the queued changes into `out` at offset 0 if `out` keeps at least `keep` free places
     /// afterwards; otherwise they wait for the next call.
-    pub(crate) fn drain_into(&mut self, out: &mut EventList, keep: usize) {
+    pub(crate) fn drain_into(&mut self, out: &mut EventBuffer, keep: usize) {
         if self.len == 0 || out.room() < self.len + keep {
             return;
         }
@@ -229,7 +231,7 @@ impl Bufs {
 /// What a chain needs from the routing graph (WP-102), asked by [`run_chain`] while it runs.
 pub(crate) trait ChainHook {
     /// Add automated parameter changes addressed to this processor only.
-    fn automation(&mut self, slot: crate::SlotId, out: &mut EventList);
+    fn automation(&mut self, slot: crate::SlotId, out: &mut EventBuffer);
 
     /// Called once per call with the chain's signal in front of the first audio effect (or behind
     /// the last device when there is none): a MIDI track's head delay (§6.8.5).
@@ -248,14 +250,14 @@ pub(crate) trait ChainHook {
 /// `instrument_events` and silence as input. Its `AllNotesOff` and parameters are already in
 /// `instrument_events`. Every other device is an effect and gets its own pending `AllNotesOff` and
 /// parameters as events. A device for which `hook` has a sidechain input gets it
-/// ([`Processor::process_sidechain`](crate::Processor::process_sidechain)).
+/// ([`Processor::process_sidechain`](komponist_processor::Processor::process_sidechain)).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_chain<T: SlotTable + ?Sized, H: ChainHook + ?Sized>(
     chain: &[ChainSlot],
     slots: &mut T,
     ctx: &ProcessContext,
     instrument_events: &[Event],
-    fx_events: &mut EventList,
+    fx_events: &mut EventBuffer,
     bufs: &mut Bufs,
     n: usize,
     track: bool,
@@ -298,7 +300,7 @@ pub(crate) fn run_chain<T: SlotTable + ?Sized, H: ChainHook + ?Sized>(
             }
             slot.params.drain_into(fx_events, 0);
             hook.automation(device.slot, fx_events);
-            fx_events.finish()
+            fx_events.events()
         };
         let sidechain = hook.sidechain(index);
         let Bufs { a, b, silence, .. } = &mut *bufs;
@@ -370,10 +372,10 @@ mod tests {
         assert!(params.set(1, 0.2, None));
         assert!(params.set(1, 0.5, NonZeroU32::new(2)));
 
-        let mut out = EventList::new(2);
+        let mut out = EventBuffer::new(2);
         params.drain_into(&mut out, 0);
         assert_eq!(
-            out.finish()
+            out.events()
                 .iter()
                 .map(|event| event.kind)
                 .collect::<Vec<_>>(),
@@ -398,12 +400,12 @@ mod tests {
             assert!(q.set(id, 0.0, None));
         }
         assert!(!q.set(99, 0.0, None));
-        let mut out = EventList::new(MAX_PENDING_PARAMS + 1);
+        let mut out = EventBuffer::new(MAX_PENDING_PARAMS + 1);
         // Two places must stay free: not enough room, the changes wait.
         q.drain_into(&mut out, 2);
         assert_eq!(out.room(), MAX_PENDING_PARAMS + 1);
         q.drain_into(&mut out, 1);
-        let events = out.finish();
+        let events = out.events();
         assert_eq!(events.len(), MAX_PENDING_PARAMS);
         assert_eq!(events[0].kind, EventKind::Param { id: 1, value: 0.25 });
         assert!(q.set(99, 0.0, None));

@@ -87,10 +87,9 @@ use crate::graph::EdgeState;
 use crate::metronome::Metronome;
 use crate::mixer::{DelayLine, Fader, audible, targets};
 use crate::note_schedule::RepeatScratch;
-use crate::processor::{DEADLINE_SHARE, Event, EventKind, ProcessContext, ProcessorError};
 use crate::program::{ChainSlot, MidiPort, Program, SlotId, TrackProgram};
 use crate::route::{Delay, GateTable, MAX_LINES, MAX_SENDS, NodeRoute, Routing, SidechainRoute};
-use crate::sequencer::{Captured, EventList, LiveMsg, NoteIds, TrackSeq, Window, track_seed};
+use crate::sequencer::{Captured, LiveMsg, NoteIds, TrackSeq, Window, track_seed};
 use crate::slots::{Bufs, ChainHook, SharedSlots, Slot, chains_exclusive, run_chain};
 use crate::stage::{self, StageLists, StageSig, StageState};
 use crate::sys;
@@ -99,8 +98,11 @@ use crate::workers::{
     MAX_WORKERS, Pool, Publisher, WorkerRt, WorkerStats, WorkerStatus, run_serial,
 };
 use crate::{
-    COMMAND_CAPACITY, EVENT_CAPACITY, MAX_BLOCK, MAX_COMMANDS_PER_BLOCK, MAX_EVENTS_PER_BLOCK,
-    MAX_SLOTS, MAX_TRACKS,
+    COMMAND_CAPACITY, EVENT_CAPACITY, MAX_BLOCK, MAX_COMMANDS_PER_BLOCK, MAX_SLOTS, MAX_TRACKS,
+};
+use komponist_processor::MAX_EVENTS_PER_BLOCK;
+use komponist_processor::processor::{
+    DEADLINE_SHARE, Event, EventBuffer, EventKind, ProcessContext, ProcessorError,
 };
 
 /// Shortest segment whose tracks go to the worker pool: below it (tiny segments at a loop end, an
@@ -393,8 +395,8 @@ impl Engine {
             metronome: Metronome::default(),
             cut: None,
             bufs: Bufs::new(),
-            events: EventList::new(MAX_EVENTS_PER_BLOCK),
-            fx_events: EventList::new(MAX_EVENTS_PER_BLOCK),
+            events: EventBuffer::new(MAX_EVENTS_PER_BLOCK),
+            fx_events: EventBuffer::new(MAX_EVENTS_PER_BLOCK),
             live: Vec::with_capacity(MAX_EVENTS_PER_BLOCK),
             live_notes: Vec::with_capacity(MAX_COMMANDS_PER_BLOCK),
             repeat_scratch: RepeatScratch::new(),
@@ -947,9 +949,9 @@ struct Core {
     cut: Option<Cut>,
     bufs: Bufs,
     /// Events of the current instrument call.
-    events: EventList,
+    events: EventBuffer,
     /// Events of the current effect call.
-    fx_events: EventList,
+    fx_events: EventBuffer,
     /// Live messages of the current track and segment.
     live: Vec<LiveMsg>,
     /// `LiveNote` commands for the next block: track, key, velocity.
@@ -993,7 +995,7 @@ struct Core {
 /// Scratch buffers of one thread that runs track chains.
 struct Lane {
     bufs: Bufs,
-    fx_events: EventList,
+    fx_events: EventBuffer,
     stage: StageLists,
     /// The sidechain input of the device being processed.
     side: [Box<[f32]>; 2],
@@ -1004,7 +1006,7 @@ impl Lane {
     fn new() -> Lane {
         Lane {
             bufs: Bufs::new(),
-            fx_events: EventList::new(MAX_EVENTS_PER_BLOCK),
+            fx_events: EventBuffer::new(MAX_EVENTS_PER_BLOCK),
             stage: StageLists::new(MAX_EVENTS_PER_BLOCK),
             side: stereo(),
         }
@@ -1115,7 +1117,7 @@ struct Hook<'h> {
 }
 
 impl ChainHook for Hook<'_> {
-    fn automation(&mut self, slot: SlotId, out: &mut EventList) {
+    fn automation(&mut self, slot: SlotId, out: &mut EventBuffer) {
         self.dropped += self.automation.add_events(slot, out);
     }
     fn head(&mut self, l: &mut [f32], r: &mut [f32]) {
@@ -2786,7 +2788,7 @@ impl Core {
                     if bypass_stage && let Some(slot) = instrument {
                         *dropped += state.automation.add_events(slot, events);
                     }
-                    state.events.extend_from_slice(events.finish());
+                    state.events.extend_from_slice(events.events());
                     let sidechained = routed
                         && routing
                             .sidechains(routing.node(index).sidechains)

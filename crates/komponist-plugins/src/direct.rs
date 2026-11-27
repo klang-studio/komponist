@@ -8,10 +8,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use komponist_engine::processor::{EventSink, ParameterEdit, ParameterEditKind};
-use komponist_engine::{
-    Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
-};
 use komponist_hosting::host_loop::{Observed, PollLoop, notification_bits};
 use komponist_hosting::{
     ActivateConfig, EventOut, HostedPlugin, HostedProcessor, HostingError, ProcessBlock,
@@ -20,6 +16,10 @@ use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snap
 use komponist_ipc::shm::{INPUT_EVENT_CAPACITY, MAX_BLOCK, OUTPUT_EVENT_CAPACITY};
 use komponist_ipc::{PluginFormat, WireEvent, WireEventKind};
 use komponist_model::DeviceRole;
+use komponist_processor::processor::{EventSink, ParameterEdit, ParameterEditKind};
+use komponist_processor::{
+    Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+};
 
 use crate::bundled_clap::VerifiedClap;
 use crate::external::{midi_event_kind, to_wire, wire_transport};

@@ -13,15 +13,15 @@ use std::sync::atomic::Ordering;
 use klang_dsp::units::db_to_gain;
 use komponist_engine::compile::{self, CompileEnv};
 use komponist_engine::testing::{TestGain, TestSidechain, TestSidechainMode, TestSine};
-use komponist_engine::{
-    Command, Event, MAX_PDC_FRAMES, MidiPort, ProcessContext, ProcessStatus, Processor,
-    ProcessorError, Program, StereoIo,
-};
+use komponist_engine::{Command, MAX_PDC_FRAMES, MidiPort, Program};
 use komponist_model::edits::{self, ChannelProp, NewBus, NewDevice, NewTrack, SendProp, TrackProp};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{
     ChannelRef, DeviceId, DeviceRole, PluginFormat, PluginRef, Project, SendId, Sidechain, Tap,
     Tick, TrackId, TrackOutput,
+};
+use komponist_processor::{
+    Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
 
 use crate::common::*;

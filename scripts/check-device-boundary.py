@@ -10,7 +10,14 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROTECTED = {"komponist-app", "komponist-ui", "komponist-plugins", "komponist-engine", "komponist-model"}
+PROTECTED = {
+    "komponist-app",
+    "komponist-ui",
+    "komponist-plugins",
+    "komponist-engine",
+    "komponist-model",
+    "komponist-processor",
+}
 DEVICE_DIR = ROOT / "crates" / "builtin-devices"
 BASELINE = "scripts/device-boundary-baseline.tsv"
 

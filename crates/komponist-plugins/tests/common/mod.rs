@@ -372,7 +372,7 @@ impl Rig {
                 && self.program.slots.slot(device) == Some(slot)
             {
                 for (event, temporary) in events.iter() {
-                    use komponist_engine::processor::ParameterEditKind;
+                    use komponist_processor::processor::ParameterEditKind;
                     if let ParameterEditKind::Value { id, value } = event.kind {
                         if temporary {
                             self.manager.preview_param(device, id, value);

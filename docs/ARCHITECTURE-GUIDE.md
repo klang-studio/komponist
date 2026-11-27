@@ -152,7 +152,7 @@ core).
 Some work happens outside the audio thread but must still finish within the block: the engine's
 worker threads and the plugin bridge processes. The engine computes a **deadline** for each
 callback: `callback start + 0.6 × block duration` (`DEADLINE_SHARE` in
-[`processor.rs`](../crates/komponist-engine/src/processor.rs)). The two kinds of helpers handle
+[`processor.rs`](../crates/komponist-processor/src/processor.rs)). The two kinds of helpers handle
 lateness differently:
 
 - **A late bridge** is not waited for. Its block is replaced (an instrument is silent, an effect
@@ -398,7 +398,7 @@ Rules that follow from this picture:
 |---|---:|---|
 | [`komponist-app`](../crates/komponist-app/README.md) | ~122k (41k tests) | `main.rs`, `app.rs`, `actions.rs`, `engine_sync.rs` |
 | [`builtin-devices/*`](../crates/builtin-devices/README.md) | ~47k (Hexa alone 23k) | `core/src/processor.rs`, `delay/src/lib.rs` |
-| [`komponist-engine`](../crates/komponist-engine/README.md) | ~35k | `api.rs`, `processor.rs`, `compile.rs`, `program.rs`, `engine.rs` |
+| [`komponist-engine`](../crates/komponist-engine/README.md) | ~35k | `api.rs`, `compile.rs`, `program.rs`, `engine.rs` |
 | [`komponist-ui`](../crates/komponist-ui/README.md) | ~31k | `lib.rs`, `widgets/`, `timeline/mod.rs` |
 | [`komponist-model`](../crates/komponist-model/README.md) | ~22k | `project.rs`, `time.rs`, `document.rs`, `edits/mod.rs` |
 | [`komponist-plugins`](../crates/komponist-plugins/README.md) | ~15k | `manager.rs`, `external.rs`, `bridge.rs` |
@@ -649,7 +649,7 @@ value.
 ### 11.1 The `Processor` trait
 
 Every device, built-in or external, is a `Processor`
-([`processor.rs`](../crates/komponist-engine/src/processor.rs)). Simplified:
+([`processor.rs`](../crates/komponist-processor/src/processor.rs)). Simplified:
 
 ```rust
 pub trait Processor: Send {

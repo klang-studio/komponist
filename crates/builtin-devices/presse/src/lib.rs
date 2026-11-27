@@ -40,7 +40,6 @@
 
 use std::sync::Arc;
 
-use komponist_engine::SampleTap;
 use komponist_i18n::Lang;
 use komponist_model::params::comp_curve::{self, RATIO_MAX};
 use komponist_model::params::eq_curve::{self, Coefs};
@@ -48,6 +47,7 @@ use komponist_model::params::layout::{
     Cell, CellParam, DeviceLayout, GraphBinding, GraphConfig, Half, Page, WidgetKind,
 };
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
+use komponist_processor::SampleTap;
 
 use komponist_device_core::dsp::{
     CONTROL, DB_PER_OCTAVE, Df1, Glide, Ring, fast_exp2, fast_log2, finite, flush, smooth_coeff,
@@ -76,7 +76,7 @@ pub static SPEC: Spec = Spec {
 /// Lookahead (and latency) in milliseconds when `lookahead` is on.
 pub const LOOKAHEAD_MS: f64 = 3.0;
 
-pub use komponist_engine::tap::DYNAMICS_HISTORY_SECONDS as HISTORY_SECONDS;
+pub use komponist_processor::tap::DYNAMICS_HISTORY_SECONDS as HISTORY_SECONDS;
 
 /// Capacity of the telemetry tap in samples: room for two samples per pair, 4 s of pairs with the
 /// reader's half-ring limit to spare.
@@ -223,7 +223,7 @@ fn layout(_: Lang) -> DeviceLayout {
     })
 }
 
-pub use komponist_engine::tap::dynamics_pair_frames as pair_frames;
+pub use komponist_processor::tap::dynamics_pair_frames as pair_frames;
 
 const _: () = assert!(CONTROL == 32);
 
