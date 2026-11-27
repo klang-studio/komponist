@@ -563,18 +563,15 @@ impl PluginHost {
         }
     }
 
-    /// Open and begin scanning an explicit, manifest-verified fixture inventory.
-    #[doc(hidden)]
-    pub fn for_test_fixtures(
+    pub(crate) fn for_test_inventory(
         config: PluginManagerConfig,
-        bundled_dir: &std::path::Path,
-        expected_digest: &str,
-    ) -> Result<Self, komponist_plugins::bundled_clap::BundleVerificationError> {
-        Ok(Self {
-            manager: PluginManager::for_test_fixtures(config, bundled_dir, expected_digest)?,
+        inventory: Arc<komponist_plugins::bundled_clap::BundledClap>,
+    ) -> Self {
+        Self {
+            manager: PluginManager::for_test_inventory(config, inventory),
             project_dir: None,
             external: HashSet::new(),
-        })
+        }
     }
 
     /// The plugin manager (diagnostics and tests; processors come only through

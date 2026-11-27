@@ -284,18 +284,20 @@ impl App {
         use std::sync::OnceLock;
         use std::time::{Duration, Instant};
 
+        use komponist_plugins::bundled_clap::BundledClap;
+
         struct Fixtures {
             config: komponist_plugins::PluginManagerConfig,
-            inventory: Option<(PathBuf, String)>,
+            inventory: Option<Arc<BundledClap>>,
             _cache_dir: tempfile::TempDir,
         }
 
         fn open(fixtures: &Fixtures) -> PluginHost {
-            let Some((root, digest)) = &fixtures.inventory else {
+            let Some(inventory) = &fixtures.inventory else {
                 return PluginHost::without_bundled_clap(fixtures.config.clone());
             };
-            let mut host = PluginHost::for_test_fixtures(fixtures.config.clone(), root, digest)
-                .expect("open the test fixture inventory");
+            let mut host =
+                PluginHost::for_test_inventory(fixtures.config.clone(), Arc::clone(inventory));
             let deadline = Instant::now() + Duration::from_secs(30);
             while host.manager().is_scanning() {
                 host.poll();
@@ -340,7 +342,13 @@ impl App {
             let inventory = candidate.and_then(|bridge| {
                 let digest = std::fs::read_to_string(root.join("manifest.sha256")).ok()?;
                 config.bridge_exe = bridge;
-                Some((root.join("bundled-clap"), digest.trim().to_owned()))
+                let inventory = BundledClap::open_fixture(
+                    &root.join("bundled-clap"),
+                    cache_dir.path(),
+                    digest.trim(),
+                )
+                .expect("open the test fixture inventory");
+                Some(Arc::new(inventory))
             });
             assert!(
                 inventory.is_some() || !fixtures_required(),

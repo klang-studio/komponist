@@ -391,7 +391,7 @@ pub struct PluginManager {
     bridges: BTreeMap<DeviceId, Bridge>,
     next_param_edit: NonZeroU32,
     private_clap_dir: Option<PathBuf>,
-    bundled_clap: Option<BundledClap>,
+    bundled_clap: Option<Arc<BundledClap>>,
     project_dir: Option<PathBuf>,
     /// CLAP IDs of running instances that were loaded from the manifest-verified package.
     verified_bundles: BTreeMap<DeviceId, String>,
@@ -426,15 +426,9 @@ impl PluginManager {
         Self::with_catalog(config, false)
     }
 
-    /// Open an explicit test inventory using the fixture builder's expected manifest hash.
+    /// Scan an authenticated inventory shared by the headless fixtures.
     #[doc(hidden)]
-    pub fn for_test_fixtures(
-        config: PluginManagerConfig,
-        root: &Path,
-        expected_digest: &str,
-    ) -> Result<Self, BundleVerificationError> {
-        let cache_dir = config.cache_file.parent().unwrap_or_else(|| Path::new("."));
-        let bundled_clap = BundledClap::open_fixture(root, cache_dir, expected_digest)?;
+    pub fn for_test_inventory(config: PluginManagerConfig, bundled_clap: Arc<BundledClap>) -> Self {
         let mut manager = Self::from_inventory(
             config,
             Catalog::default(),
@@ -460,7 +454,7 @@ impl PluginManager {
         if !ready {
             manager.start_bundled_scan();
         }
-        Ok(manager)
+        manager
     }
 
     fn with_catalog(config: PluginManagerConfig, enable_bundles: bool) -> PluginManager {
@@ -497,7 +491,7 @@ impl PluginManager {
             config,
             Catalog::default(),
             private_clap_dir,
-            bundled_clap,
+            bundled_clap.map(Arc::new),
             pending,
         )
     }
@@ -506,7 +500,7 @@ impl PluginManager {
         config: PluginManagerConfig,
         catalog: Catalog,
         private_clap_dir: Option<PathBuf>,
-        bundled_clap: Option<BundledClap>,
+        bundled_clap: Option<Arc<BundledClap>>,
         pending: Vec<PluginManagerEvent>,
     ) -> PluginManager {
         let cache = ScanCache::load(&config.cache_file);

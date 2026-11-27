@@ -4,12 +4,11 @@
 //! in-process loading. The loader opens a private, verified copy, so replacing a file in the
 //! installed distribution cannot change the bytes handed to the library loader.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, Metadata};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -86,14 +85,14 @@ pub struct BundledClap {
     root: PathBuf,
     cache_dir: PathBuf,
     bundles: BTreeMap<PathBuf, Bundle>,
-    copies: RefCell<BTreeMap<PathBuf, VerifiedClap>>,
+    copies: Mutex<BTreeMap<PathBuf, VerifiedClap>>,
 }
 
 /// An in-process load target with bytes authenticated by the app's release manifest.
 ///
 /// Keep this proof alive until the instance no longer needs its bundle files.
 #[derive(Debug, Clone)]
-pub struct VerifiedClap(Rc<VerifiedFiles>);
+pub struct VerifiedClap(Arc<VerifiedFiles>);
 
 #[derive(Debug)]
 struct VerifiedFiles {
@@ -153,7 +152,9 @@ impl BundledClap {
         .map(Some)
     }
 
-    pub(crate) fn open_fixture(
+    /// Authenticate the inventory produced by the fixture builder.
+    #[doc(hidden)]
+    pub fn open_fixture(
         root: &Path,
         cache_dir: &Path,
         expected_digest: &str,
@@ -256,7 +257,7 @@ impl BundledClap {
             root,
             cache_dir,
             bundles,
-            copies: RefCell::new(BTreeMap::new()),
+            copies: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -346,11 +347,18 @@ impl BundledClap {
             ));
         }
 
-        if let Some(copy) = self.copies.borrow().get(path) {
+        // Managers sharing this authenticated inventory must load the same private file.
+        // The loader keeps images mapped for plugin thread-local destructors, so staging
+        // a separate copy for every manager would also register separate TLS images.
+        let mut copies = self.copies.lock().map_err(|_| {
+            BundleVerificationError::new(path, "private bundle snapshot cache is unavailable")
+        })?;
+        if let Some(copy) = copies.get(path).cloned() {
+            drop(copies);
             for (relative, hash) in &bundle.files {
                 verify_file(&self.root.join(relative), hash, None)?;
             }
-            return Ok(Some(copy.clone()));
+            return Ok(Some(copy));
         }
 
         let cache_dir = snapshot_cache(&self.cache_dir)?;
@@ -371,7 +379,7 @@ impl BundledClap {
                 Some(&snapshot.path().join(relative)),
             )?;
         }
-        let copy = VerifiedClap(Rc::new(VerifiedFiles {
+        let copy = VerifiedClap(Arc::new(VerifiedFiles {
             snapshot: snapshot
                 .path()
                 .join(path.file_name().expect("known bundle file name")),
@@ -379,9 +387,7 @@ impl BundledClap {
             original: path.to_owned(),
             id: bundle.id.clone(),
         }));
-        self.copies
-            .borrow_mut()
-            .insert(path.to_owned(), copy.clone());
+        copies.insert(path.to_owned(), copy.clone());
         Ok(Some(copy))
     }
 }
@@ -724,6 +730,29 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn owners_of_the_same_inventory_share_a_snapshot_but_recheck_installed_bytes() {
+        let fixture = Fixture::new();
+        fixture.write(FILE, PAYLOAD);
+        let inventory = Arc::new(fixture.open(&manifest(&[(FILE, PAYLOAD)])).unwrap());
+        let installed = fixture.root.join(FILE);
+        let other = Arc::clone(&inventory);
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| inventory.verify(&installed, ID).unwrap().unwrap());
+            let second = scope.spawn(|| other.verify(&installed, ID).unwrap().unwrap());
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        let staged = first.bundle_path().to_owned();
+        assert_eq!(staged, second.bundle_path());
+
+        fixture.write(FILE, b"modified after verification");
+        assert!(other.verify(&installed, ID).is_err());
+        drop((first, inventory, other));
+        assert_eq!(fs::read(&staged).unwrap(), PAYLOAD);
+        drop(second);
+        assert!(!staged.exists());
+    }
+
     #[test]
     fn refuses_snapshot_cache_below_an_unprotected_shared_directory() {
         use std::os::unix::fs::PermissionsExt;
