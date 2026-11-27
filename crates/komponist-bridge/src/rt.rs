@@ -593,7 +593,7 @@ struct Scratch {
     events_out: Vec<WireEvent>,
     reset_after_restore: bool,
     retry_params: Vec<DeferredParam>,
-    retry_indices: HashMap<u32, usize>,
+    retry_indices: HashMap<(u32, bool), usize>,
 }
 
 struct DeferredParam {
@@ -967,10 +967,13 @@ fn serve(
                         generation,
                         event: WireEvent { offset: 0, ..event },
                     };
-                    if let Some(&index) = scratch.retry_indices.get(&id) {
+                    let key = (id, event.reserved != 0);
+                    if let Some(&index) = scratch.retry_indices.get(&key) {
                         scratch.retry_params[index] = retry;
                     } else if scratch.retry_params.len() < INPUT_EVENT_CAPACITY {
-                        scratch.retry_indices.insert(id, scratch.retry_params.len());
+                        scratch
+                            .retry_indices
+                            .insert(key, scratch.retry_params.len());
                         scratch.retry_params.push(retry);
                     }
                 }
@@ -1281,7 +1284,7 @@ mod tests {
             },
             Some(controller),
             vec![1],
-            None,
+            Some(Arc::new(AtomicU64::new(0))),
         )
         .unwrap_or_else(|failure| panic!("could not start probe: {}", failure.error));
         region.set_bridge_state(BridgeState::Active);
@@ -1368,6 +1371,23 @@ mod tests {
         assert_eq!(status, inactive);
         assert_eq!(block(&mut client, &[]), ok);
         assert_eq!(rt.snapshot(|p| p.changes(1)).unwrap(), 0);
+
+        // Coalescing a paused block retains the tagged edit alongside the playback value.
+        let tagged = WireEvent {
+            reserved: 9,
+            ..param(0.75)
+        };
+        let status = rt
+            .snapshot(|_| block(&mut client, &[tagged, param(0.25)]))
+            .unwrap();
+        assert_eq!(status, inactive);
+        assert_eq!(block(&mut client, &[]), ok);
+        let (_, stamp) = rt
+            .durable_deliveries()
+            .next()
+            .expect("tagged edit delivered");
+        assert_eq!(stamp.superseded_by(1), NonZeroU32::new(9));
+        assert!(rt.snapshot(|p| p.confirms_input(1, 0.25, 0.25)).unwrap());
         let _ = rt.stop();
     }
 
