@@ -25,6 +25,7 @@ komponist-plugins.workspace = true
 komponist-bridge.workspace = true
 # Parameter, note-name, GUI-size and log types of the plugin manager's API (`device_host`).
 komponist-ipc.workspace = true
+komponist-plugin-api.workspace = true
 komponist-ui.workspace = true
 # `Lang` and the generated texts (`panels::dock` is the pilot; `docs/I18N.md`).
 komponist-i18n.workspace = true

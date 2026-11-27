@@ -27,10 +27,10 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use komponist_ipc::clap_presets::ClapPreset;
 use komponist_ipc::{
     PluginDescriptor, PluginFormat, PluginKind, ProcessExit, ProcessGroup, ProcessWatcher,
 };
+use komponist_plugin_api::clap_presets::ClapPreset;
 #[cfg(unix)]
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 

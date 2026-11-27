@@ -8,11 +8,11 @@
 //! The header only reports what the user did ([`HeaderEvent`]); the frame turns that into
 //! actions. It needs no app state, so tests render it directly. The same code draws the header of
 //! the app's frame viewport (Linux) and of the bridge's own frame window (macOS, #52); the model
-//! and the events are plain data in `komponist_ipc::frame`, so they cross the process boundary.
+//! and the events are plain data in `komponist_plugin_api::frame`, so they cross the process boundary.
 
 use egui::{Align, Layout, Rect, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
 use komponist_i18n::Lang;
-pub use komponist_ipc::frame::{HeaderEvent, HeaderModel, Mark, PluginView, names};
+pub use komponist_plugin_api::frame::{HeaderEvent, HeaderModel, Mark, PluginView, names};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, radius, size, space, typography};
 

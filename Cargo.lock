@@ -2657,6 +2657,7 @@ dependencies = [
  "komponist-i18n",
  "komponist-ipc",
  "komponist-model",
+ "komponist-plugin-api",
  "komponist-plugins",
  "komponist-processor",
  "komponist-tokens",
@@ -2725,6 +2726,7 @@ dependencies = [
  "komponist-hosting",
  "komponist-i18n",
  "komponist-ipc",
+ "komponist-plugin-api",
  "komponist-rt",
  "komponist-tokens",
  "komponist-ui",
@@ -2809,9 +2811,9 @@ dependencies = [
  "komponist-device-core",
  "komponist-general-sampler",
  "komponist-i18n",
- "komponist-ipc",
  "komponist-model",
  "komponist-native-clap-sdk",
+ "komponist-plugin-api",
  "komponist-sampler-clap",
  "komponist-sampler-shared",
  "nice-plug",
@@ -3031,6 +3033,7 @@ dependencies = [
  "clack-host",
  "clap-sys",
  "komponist-ipc",
+ "komponist-plugin-api",
  "libc",
  "rtrb",
  "rustix 1.1.6",
@@ -3052,12 +3055,11 @@ name = "komponist-ipc"
 version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
- "komponist-model",
+ "komponist-plugin-api",
  "komponist-rt",
  "postcard",
  "rustix 1.1.6",
  "serde",
- "serde_json",
  "windows-sys 0.61.2",
 ]
 
@@ -3087,9 +3089,19 @@ version = "0.1.0"
 dependencies = [
  "clap-sys",
  "komponist-device-core",
- "komponist-ipc",
  "komponist-model",
+ "komponist-plugin-api",
  "nice-plug",
+ "serde_json",
+]
+
+[[package]]
+name = "komponist-plugin-api"
+version = "0.2.0"
+dependencies = [
+ "komponist-model",
+ "postcard",
+ "serde",
  "serde_json",
 ]
 
@@ -3102,6 +3114,7 @@ dependencies = [
  "komponist-hosting",
  "komponist-ipc",
  "komponist-model",
+ "komponist-plugin-api",
  "komponist-processor",
  "komponist-rt",
  "rtrb",
@@ -3173,8 +3186,8 @@ dependencies = [
  "clap-sys",
  "komponist-bundled-clap-adapter",
  "komponist-device-core",
- "komponist-ipc",
  "komponist-native-clap-sdk",
+ "komponist-plugin-api",
  "komponist-sampler-shared",
  "nice-plug",
  "serde_json",
@@ -3247,8 +3260,8 @@ dependencies = [
  "klang-dsp",
  "komponist-audiofile",
  "komponist-i18n",
- "komponist-ipc",
  "komponist-model",
+ "komponist-plugin-api",
  "komponist-tokens",
  "komponist-ui",
  "windows-sys 0.61.2",

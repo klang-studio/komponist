@@ -1,6 +1,6 @@
 use egui::{Align2, Painter, Pos2, Rect, Role, Sense, Shape, Stroke, StrokeKind, Ui, WidgetInfo};
-use komponist_ipc::device_canvas::{Alignment, FmFrame, Point, Primitive, REFRESH, Tone};
-use komponist_ipc::native_layout::{Canvas, FmDiagram};
+use komponist_plugin_api::device_canvas::{Alignment, FmFrame, Point, Primitive, REFRESH, Tone};
+use komponist_plugin_api::native_layout::{Canvas, FmDiagram};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{TrackPalette, color, radius, typography, widget};
 use komponist_ui::widgets::device::fm_algorithm::{FmAlgorithm, Topology};

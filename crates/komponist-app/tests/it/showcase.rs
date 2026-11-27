@@ -9,13 +9,13 @@ use komponist_app::App;
 use komponist_app::actions::{BitDepth, ExportRange};
 use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::showcase::bundled_demo;
-use komponist_ipc::device_assets::AssetStatus;
 use komponist_model::automation::AutomationTarget;
 use komponist_model::fixtures::demo_song;
 use komponist_model::params::ParamId;
 use komponist_model::{
     ClipContent, Device, DeviceId, DeviceRole, Project, Tap, Track, TrackOutput,
 };
+use komponist_plugin_api::device_assets::AssetStatus;
 use komponist_plugins::{DeviceStatus, requires_bundled};
 
 use crate::common::step_until;

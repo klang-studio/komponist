@@ -218,16 +218,16 @@ fn a_bridge_inside_an_app_bundle_has_no_dock_icon() {
     // The frame, off screen: the bridge inherits `KOMPONIST_FRAME_OFFSCREEN=1` (never on screen).
     if std::env::var_os("KOMPONIST_FRAME_OFFSCREEN").is_some_and(|v| v == "1") {
         let frame = komponist_ipc::GuiTarget::OwnFrame {
-            header: komponist_ipc::frame::HeaderModel {
+            header: komponist_plugin_api::frame::HeaderModel {
                 name: "Surge XT".into(),
                 sub: "Pad · CLAP".into(),
-                mark: komponist_ipc::frame::Mark::Active,
+                mark: komponist_plugin_api::frame::Mark::Active,
                 bypassed: false,
                 presets: Vec::new(),
                 preset: None,
                 preset_changed: false,
                 can_save: false,
-                view: komponist_ipc::frame::PluginView::Gui,
+                view: komponist_plugin_api::frame::PluginView::Gui,
                 has_gui: true,
                 keep_on_top: false,
                 close_shortcut: "Esc".into(),

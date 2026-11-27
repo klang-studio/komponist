@@ -13,11 +13,11 @@ use komponist_audio::{HostKind, StreamConfig};
 use komponist_audiofile::fixtures as testkit;
 use komponist_engine::Command;
 use komponist_ipc::control::RenderMode;
-use komponist_ipc::device_assets::AssetStatus;
 use komponist_model::edits::{self, NewDevice};
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::project::SavedPluginState;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, Document, Project, TrackId};
+use komponist_plugin_api::device_assets::AssetStatus;
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
 
 fn null_sync(host: Box<dyn DeviceHost>) -> EngineSync {

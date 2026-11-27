@@ -72,11 +72,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use komponist_ipc::control::param_flags;
 use komponist_ipc::shm::MAX_BLOCK;
 use komponist_ipc::{
-    GuiSize, LogLevel, NoteName, ParamInfo, PluginDescriptor, RenderMode, WireEvent, WireEventKind,
+    GuiSize, LogLevel, NoteName, PluginDescriptor, RenderMode, WireEvent, WireEventKind,
 };
+use komponist_plugin_api::params::ParamInfo;
+use komponist_plugin_api::params::param_flags;
 use vst3::Steinberg::Vst::BusDirections_::{kInput, kOutput};
 use vst3::Steinberg::Vst::BusInfo_::BusFlags_::kDefaultActive;
 use vst3::Steinberg::Vst::BusTypes_::{kAux, kMain};

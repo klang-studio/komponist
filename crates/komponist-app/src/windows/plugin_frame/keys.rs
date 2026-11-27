@@ -56,8 +56,8 @@ use x11rb::protocol::xproto::{
 #[cfg(x11_embed)]
 use x11rb::rust_connection::RustConnection;
 
-pub use komponist_ipc::frame::keys::{KeyKind, PolicyKey, PolicyMods, TYPING_GRACE, Typing};
-use komponist_ipc::frame::{FrameChord, keys as policy};
+pub use komponist_plugin_api::frame::keys::{KeyKind, PolicyKey, PolicyMods, TYPING_GRACE, Typing};
+use komponist_plugin_api::frame::{FrameChord, keys as policy};
 
 #[cfg(test)]
 use crate::keymap::Key;
@@ -167,7 +167,7 @@ pub fn policy_key(sym: u32) -> PolicyKey {
     }
 }
 
-/// Classifies `sym` with `mods` (`komponist_ipc::frame::keys::kind`).
+/// Classifies `sym` with `mods` (`komponist_plugin_api::frame::keys::kind`).
 pub fn kind(sym: u32, mods: Mods) -> KeyKind {
     policy::kind(policy_key(sym), mods.into())
 }
@@ -181,7 +181,7 @@ pub enum Verdict {
     Pass,
 }
 
-/// The policy (module docs, `komponist_ipc::frame::keys::decide`) for a key `sym` with `mods`
+/// The policy (module docs, `komponist_plugin_api::frame::keys::decide`) for a key `sym` with `mods`
 /// while the plugin has the focus.
 pub fn decide(sym: u32, mods: Mods, typing: bool) -> Verdict {
     match policy::decide(policy_key(sym), mods.into(), typing).and_then(|c| chord_from_frame(&c)) {

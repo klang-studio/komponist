@@ -42,21 +42,23 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak, mpsc};
 use std::time::{Duration, Instant};
 
-use komponist_ipc::clap_presets::{ClapPresetSource, PresetLoad, PresetReport};
+use komponist_plugin_api::clap_presets::{ClapPresetSource, PresetLoad, PresetReport};
 use std::num::NonZeroU32;
 
 use komponist_ipc::control::{
     AppliedClapPreset, PROTOCOL_VERSION, ReportedPresetValues, StateRestoreError, socket_pair,
 };
-use komponist_ipc::device_assets::{MAX_BINDINGS_BYTES, OfflineRequest, Snapshot, edit_state};
-use komponist_ipc::waveform_markers::{self, EditResult, EditStatus};
 use komponist_ipc::{
     AppChannel, BridgeClient, BridgeMsg, ChannelError, ControlMsg, ErrorContext, GuiTarget,
-    LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessExit, ProcessWatcher,
-    RenderMode, ShmRegion,
+    LogLevel, NoteName, PluginFormat, ProcessExit, ProcessWatcher, RenderMode, ShmRegion,
 };
 use komponist_model::project::SavedPluginState;
 use komponist_model::{DeviceId, DeviceRole};
+use komponist_plugin_api::device_assets::{
+    MAX_BINDINGS_BYTES, OfflineRequest, Snapshot, edit_state,
+};
+use komponist_plugin_api::params::{ParamInfo, ParamValue};
+use komponist_plugin_api::waveform_markers::{self, EditResult, EditStatus};
 
 use crate::external::{ExternalProcessor, RUN_ACTIVE, RUN_DEAD, RUN_LOADING, Shared};
 use crate::manager::{
@@ -312,10 +314,10 @@ pub(crate) struct Bridge {
     pub(crate) markers: MarkerCache,
     marker_read: Option<(u32, u32)>,
     marker_edit: Option<MarkerEdit>,
-    pub(crate) display: Option<Arc<komponist_ipc::device_canvas::DisplayList>>,
+    pub(crate) display: Option<Arc<komponist_plugin_api::device_canvas::DisplayList>>,
     display_request: Option<u32>,
     display_at: Instant,
-    pub native_layout: Option<Arc<komponist_ipc::native_layout::NativeLayout>>,
+    pub native_layout: Option<Arc<komponist_plugin_api::native_layout::NativeLayout>>,
     pub values: BTreeMap<u32, ParamValue>,
     pub base_values: BTreeMap<u32, f64>,
     bundle: PathBuf,
@@ -890,7 +892,7 @@ impl Bridge {
         {
             let request = self.seq();
             self.display_request = Some(request);
-            self.display_at = now + komponist_ipc::device_canvas::REFRESH;
+            self.display_at = now + komponist_plugin_api::device_canvas::REFRESH;
             self.send(ControlMsg::GetDeviceDisplay(request));
         }
     }
@@ -1455,11 +1457,12 @@ impl Bridge {
         events: &mut Vec<PluginManagerEvent>,
     ) {
         self.native_layout = bytes.and_then(|bytes| {
-            let layout =
-                komponist_ipc::native_layout::NativeLayout::parse(&bytes).and_then(|layout| {
+            let layout = komponist_plugin_api::native_layout::NativeLayout::parse(&bytes).and_then(
+                |layout| {
                     layout.validate_params(&self.params)?;
                     Ok(layout)
-                });
+                },
+            );
             match layout {
                 Ok(layout) => Some(Arc::new(layout)),
                 Err(error) => {
@@ -1968,7 +1971,7 @@ impl Bridge {
                     self.display_request = None;
                     self.display = bytes
                         .as_deref()
-                        .and_then(komponist_ipc::device_canvas::DisplayList::decode)
+                        .and_then(komponist_plugin_api::device_canvas::DisplayList::decode)
                         .map(Arc::new);
                 }
             }

@@ -539,7 +539,11 @@ impl HostedProcessor for ClapProcessor {
         }
     }
 
-    fn read_signal_taps(&mut self, mask: u32, out: &mut komponist_ipc::signal_taps::BlockTaps) {
+    fn read_signal_taps(
+        &mut self,
+        mask: u32,
+        out: &mut komponist_plugin_api::signal_taps::BlockTaps,
+    ) {
         if let Some(taps) = &self.signal_taps {
             let _audio = AudioThreadScope::enter();
             taps.read(self.audio.plugin_handle().as_raw(), mask, out);

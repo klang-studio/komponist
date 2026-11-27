@@ -4,8 +4,9 @@
 
 use std::time::Instant;
 
-use komponist_ipc::control::param_flags;
-use komponist_ipc::{ParamInfo, PluginKind, WireEvent, WireEventKind};
+use komponist_ipc::{PluginKind, WireEvent, WireEventKind};
+use komponist_plugin_api::params::ParamInfo;
+use komponist_plugin_api::params::param_flags;
 
 use super::*;
 

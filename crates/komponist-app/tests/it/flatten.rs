@@ -15,13 +15,13 @@ use komponist_app::{Action, App, EditAction, ProjectAction};
 use komponist_engine::testing::{TestMidiFx, TestPanic};
 use komponist_i18n::Lang;
 use komponist_ipc::RenderMode;
-use komponist_ipc::device_assets::{AssetKind, AssetStatus, Slot, Snapshot};
 use komponist_model::edits::{self, NewBus, NewClip, NewClipContent, NewDevice, NewNote, NewTrack};
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{
     ChannelRef, ClipContent, Device, DeviceId, DeviceRole, PluginFormat, PluginRef, Project,
     Sidechain, Tap, Tick, TrackId, TrackKind,
 };
+use komponist_plugin_api::device_assets::{AssetKind, AssetStatus, Slot, Snapshot};
 use komponist_plugins::{
     Catalog, DeviceSnapshots, DeviceStatus, PluginManagerEvent, ProcessorSetup,
 };

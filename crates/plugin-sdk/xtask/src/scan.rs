@@ -14,8 +14,8 @@ use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_fact
 use clap_sys::host::clap_host;
 use clap_sys::plugin::clap_plugin;
 use clap_sys::version::{CLAP_VERSION, clap_version_is_compatible};
-use komponist_ipc::control::{ParamInfo, param_flags};
-use komponist_ipc::{
+use komponist_plugin_api::params::{ParamInfo, param_flags};
+use komponist_plugin_api::{
     device_canvas,
     native_layout::{MAX_BYTES, NativeLayout},
 };
@@ -238,7 +238,7 @@ fn layout(plugin: &clap_plugin, params: &[ParamInfo], plain: bool) -> Result<Val
     if bindings != params.iter().map(|param| param.id).collect() {
         return Err("not every advertised example parameter is bound in the layout".into());
     }
-    let bilingual = |labels: &komponist_ipc::native_layout::Labels| {
+    let bilingual = |labels: &komponist_plugin_api::native_layout::Labels| {
         labels.contains_key("en") && labels.contains_key("de")
     };
     if layout.default_locale != "en"

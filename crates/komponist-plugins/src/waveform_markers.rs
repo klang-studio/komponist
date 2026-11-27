@@ -5,14 +5,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use komponist_ipc::ParamInfo;
-use komponist_ipc::control::{MAX_STATE_PARAMETER_BASES, param_flags};
-use komponist_ipc::device_assets::MAX_SLOTS;
-use komponist_ipc::native_layout::NativeLayout;
-use komponist_ipc::waveform_markers::{
+use komponist_ipc::control::MAX_STATE_PARAMETER_BASES;
+use komponist_model::project::SavedPluginState;
+use komponist_plugin_api::device_assets::MAX_SLOTS;
+use komponist_plugin_api::native_layout::NativeLayout;
+use komponist_plugin_api::params::ParamInfo;
+use komponist_plugin_api::params::param_flags;
+use komponist_plugin_api::waveform_markers::{
     Edit, EditResult, EditStatus, MAX_EDIT_BYTES, Request, Snapshot,
 };
-use komponist_model::project::SavedPluginState;
 
 const REFRESH: Duration = Duration::from_millis(80);
 static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
@@ -289,7 +290,7 @@ impl MarkerCache {
 
 #[cfg(test)]
 mod tests {
-    use komponist_ipc::waveform_markers::SliceOptions;
+    use komponist_plugin_api::waveform_markers::SliceOptions;
 
     use super::*;
 

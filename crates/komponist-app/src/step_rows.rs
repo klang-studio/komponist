@@ -18,11 +18,12 @@
 use std::borrow::Cow;
 
 use komponist_i18n::Lang;
-use komponist_ipc::{NoteName, native_layout::PadBank};
+use komponist_ipc::NoteName;
 use komponist_model::edits::StepRowSpec;
 use komponist_model::format::note_name;
 use komponist_model::project::DEFAULT_STEP_ROWS;
 use komponist_model::{Device, StepClip, Track};
+use komponist_plugin_api::native_layout::PadBank;
 
 use crate::device_host::DeviceHost;
 
@@ -184,7 +185,7 @@ mod tests {
 
     #[test]
     fn a_native_pad_bank_preserves_declared_order_and_labels() {
-        use komponist_ipc::native_layout::Pad;
+        use komponist_plugin_api::native_layout::Pad;
 
         let bank = PadBank {
             pads: vec![

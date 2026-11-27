@@ -6,7 +6,7 @@ use clap_sys::plugin::clap_plugin;
 use komponist_device_core::pinned_clap_state::{
     MAX_SAMPLE_ASSET_BYTES, SAMPLE_ASSETS_FIELD, decode, encode, encode_document, parameter,
 };
-use komponist_ipc::device_assets::edit_state::{self, Edits, Intent, Prepared};
+use komponist_plugin_api::device_assets::edit_state::{self, Edits, Intent, Prepared};
 use komponist_sampler_shared::settings::Settings;
 use nice_plug::wrapper::clap::Wrapper;
 use serde_json::{Map, Value};

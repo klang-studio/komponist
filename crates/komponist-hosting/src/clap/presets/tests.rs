@@ -15,7 +15,7 @@ use clap_sys::universal_plugin_id::clap_universal_plugin_id;
 use clap_sys::version::CLAP_VERSION;
 
 use crate::HostedPlugin;
-use komponist_ipc::clap_presets::PresetReport;
+use komponist_plugin_api::clap_presets::PresetReport;
 
 use super::*;
 

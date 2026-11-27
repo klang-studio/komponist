@@ -29,7 +29,7 @@ komponist-audiofile.workspace = true
 komponist-i18n.workspace = true
 # The plugin frame header's model and events (`plugin_frame::header`), plain data shared with the
 # bridge, which draws the header itself on macOS (#52).
-komponist-ipc.workspace = true
+komponist-plugin-api.workspace = true
 # Peak meter ballistics (`meter::PeakMeter`) and dB ↔ gain.
 klang-dsp.workspace = true
 egui.workspace = true

@@ -741,9 +741,9 @@ fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
 fn preset_menu(
     t: Lang,
     response: &Response,
-    presets: &[komponist_ipc::clap_presets::ClapPreset],
+    presets: &[komponist_plugin_api::clap_presets::ClapPreset],
 ) -> Option<usize> {
-    let categories = komponist_ipc::clap_presets::categories(presets);
+    let categories = komponist_plugin_api::clap_presets::categories(presets);
     let entries_for = |category| {
         presets
             .iter()
@@ -893,7 +893,7 @@ fn menu(
         .asset_slots
         .iter()
         .map(|(slot, _)| {
-            use komponist_ipc::device_assets::AssetStatus;
+            use komponist_plugin_api::device_assets::AssetStatus;
             let status = match &slot.status {
                 AssetStatus::Empty => t.plugin_file_empty(),
                 AssetStatus::Loading => t.plugin_file_loading(),

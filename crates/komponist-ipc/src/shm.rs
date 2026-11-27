@@ -59,6 +59,8 @@ use rustix::fs::fstat;
 #[cfg(unix)]
 use rustix::mm::{MapFlags, ProtFlags, mlock, mmap, munmap};
 
+use komponist_plugin_api::signal_taps;
+
 use crate::ring::ShmRing;
 use crate::signal::{self, WaitOutcome};
 
@@ -70,7 +72,7 @@ pub const SHM_VERSION: u32 = 6;
 
 /// Frames of audio per block the mapping holds. Must equal `komponist_engine::MAX_BLOCK`
 /// (`komponist-plugins` asserts it in a test).
-pub const MAX_BLOCK: usize = 2048;
+pub const MAX_BLOCK: usize = signal_taps::MAX_BLOCK_SAMPLES;
 
 /// Slots of the input event ring (app → bridge). A block carries at most this many events.
 pub const INPUT_EVENT_CAPACITY: usize = 1024;
@@ -92,7 +94,7 @@ pub const BLOCK_FLAG_OFFLINE: u32 = 2;
 pub const BLOCK_FLAG_SIDECHAIN: u32 = 4;
 const RESULT_SIGNAL_TAPS: u32 = 2;
 const TAP_SHIFT: u32 = 8;
-const TAP_MASK: u32 = (1 << crate::signal_taps::MAX_TAPS) - 1;
+const TAP_MASK: u32 = (1 << signal_taps::MAX_TAPS) - 1;
 
 /// Encode a signal tap selection into the block request flags.
 pub fn signal_tap_flags(mask: u32) -> u32 {
@@ -135,7 +137,7 @@ pub struct ShmLayout {
     /// Output audio, `[channel][frame]`; written by the bridge before `done_seq`.
     pub audio_out: UnsafeCell<[[f32; MAX_BLOCK]; 2]>,
     /// Optional named streams, read only after the matching completion.
-    signal_taps: UnsafeCell<crate::signal_taps::BlockTaps>,
+    signal_taps: UnsafeCell<signal_taps::BlockTaps>,
 }
 
 /// Header at offset 0.
@@ -1309,7 +1311,7 @@ impl BridgeClient {
     }
 
     /// Named streams of the matching completed block, before the next request.
-    pub fn signal_taps(&self, seq: u32) -> Option<&crate::signal_taps::BlockTaps> {
+    pub fn signal_taps(&self, seq: u32) -> Option<&signal_taps::BlockTaps> {
         let layout = self.region.layout();
         let header = &layout.header;
         if self.frames == 0 || seq != self.seq || header.done_seq.load(Ordering::Acquire) != seq {
@@ -1477,7 +1479,7 @@ impl BridgeServer {
     }
 
     /// Write streams directly into the reusable mapping for an open request.
-    pub fn signal_taps_mut(&mut self) -> Option<&mut crate::signal_taps::BlockTaps> {
+    pub fn signal_taps_mut(&mut self) -> Option<&mut signal_taps::BlockTaps> {
         if !self.busy {
             return None;
         }

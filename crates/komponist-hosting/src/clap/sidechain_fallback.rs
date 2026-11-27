@@ -1,6 +1,6 @@
 use clack_extensions::audio_ports_config::{AudioPortsConfigBuffer, PluginAudioPortsConfig};
 use clack_host::prelude::*;
-use komponist_ipc::sidechain_fallback::{
+use komponist_plugin_api::sidechain_fallback::{
     CURRENT_CONFIGURATION, EXTENSION_ID, MAIN_INPUT, SidechainFallback,
 };
 

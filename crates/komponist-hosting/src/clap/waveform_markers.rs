@@ -1,7 +1,7 @@
 //! Access to the optional main-thread CLAP waveform marker callbacks.
 
 use clap_sys::plugin::clap_plugin;
-use komponist_ipc::waveform_markers::{
+use komponist_plugin_api::waveform_markers::{
     EXTENSION_ID, EditStatus, Extension, MAX_EDIT_BYTES, MAX_SNAPSHOT_BYTES, Request, Snapshot,
 };
 
@@ -54,7 +54,7 @@ mod tests {
     use std::ffi::{CStr, c_char, c_void};
     use std::ptr;
 
-    use komponist_ipc::waveform_markers::Edit;
+    use komponist_plugin_api::waveform_markers::Edit;
 
     use super::*;
 

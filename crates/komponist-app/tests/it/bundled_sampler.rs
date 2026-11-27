@@ -11,11 +11,11 @@ use komponist_app::device_host::{DeviceHost, PluginHost};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::{Action, App, ProjectAction};
 use komponist_engine::Command;
-use komponist_ipc::device_assets::AssetStatus;
-use komponist_ipc::waveform_markers::SliceOptions;
 use komponist_model::edits::{self, NewTrack};
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{DeviceId, Project, TrackId};
+use komponist_plugin_api::device_assets::AssetStatus;
+use komponist_plugin_api::waveform_markers::SliceOptions;
 use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent};
 use serde_json::{Value, json};
 
@@ -705,9 +705,9 @@ fn bundled_sampler_panels_edit_and_restore_current_state() {
     };
     use komponist_app::views::automation::{Action as Automation, Source};
     use komponist_app::{settings::Language, ui_state::DockTab};
-    use komponist_ipc::waveform_markers::{Edit as MarkerEdit, Request as MarkerRequest};
     use komponist_model::Tick;
     use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points};
+    use komponist_plugin_api::waveform_markers::{Edit as MarkerEdit, Request as MarkerRequest};
 
     let launcher = std::env::var_os("KOMPONIST_CURRENT_BUNDLED_APP").expect("packaged launcher");
     let scratch = tempfile::tempdir().unwrap();

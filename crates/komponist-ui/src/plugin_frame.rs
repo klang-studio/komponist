@@ -2,12 +2,12 @@
 //!
 //! Linux: the app draws the frame (`komponist-app` `windows::plugin_frame`). macOS (#52): the
 //! bridge owns the frame window and draws the same header with this code, from the model the app
-//! sends (`komponist_ipc::frame`).
+//! sends (`komponist_plugin_api::frame`).
 
 pub mod header;
 pub mod metrics;
 
-use komponist_ipc::frame::HeaderModel;
+use komponist_plugin_api::frame::HeaderModel;
 
 /// The frame window's title, "Surge XT · Pad · komponist": the plugin name, the track (the
 /// header's sub line is "track · format") and the wordmark.

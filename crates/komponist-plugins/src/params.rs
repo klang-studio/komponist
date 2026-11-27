@@ -2,12 +2,12 @@
 //!
 //! The bridge reports `u32` ids (CLAP `clap_id`, VST3 `ParamID`) with a plain range; VST3
 //! parameters arrive normalised (0 ..= 1) because only the plugin's controller can convert, so
-//! the plugin's own value text ([`komponist_ipc::ParamValue::text`]) stays the text to show
+//! the plugin's own value text ([`komponist_plugin_api::params::ParamValue::text`]) stays the text to show
 //! whenever it exists; [`ParamInfo::format`] is the fallback. Wire id and model id correspond:
 //! [`ParamId::plugin`] / [`ParamId::plugin_id`].
 
-use komponist_ipc::control::{ParamInfo as WireInfo, param_flags};
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
+use komponist_plugin_api::params::{ParamInfo as WireInfo, param_flags};
 
 /// Whether a generic view lists the parameter (not hidden, not read-only, not the plugin's own
 /// bypass).

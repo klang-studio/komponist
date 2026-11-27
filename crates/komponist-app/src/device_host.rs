@@ -36,15 +36,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource};
-use komponist_ipc::device_assets::{
-    AssetKind, AssetStatus, Bindings, OfflineRequest, OfflineStatus, Snapshot,
-};
-use komponist_ipc::frame::HeaderModel;
-use komponist_ipc::{GuiSize, GuiTarget, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode};
+use komponist_ipc::{GuiSize, GuiTarget, NoteName, PluginKind, RenderMode};
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::project::SavedPluginState;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project};
+use komponist_plugin_api::clap_presets::{ClapPreset, ClapPresetSource};
+use komponist_plugin_api::device_assets::{
+    AssetKind, AssetStatus, Bindings, OfflineRequest, OfflineStatus, Snapshot,
+};
+use komponist_plugin_api::frame::HeaderModel;
+use komponist_plugin_api::params::{ParamInfo, ParamValue};
 use komponist_plugins::{
     AssetEdit, AssetEditPreparation, Catalog, DeviceSnapshots, DeviceStatus, MissingPlugin,
     PluginDirs, PluginError, PluginManager, PluginManagerConfig, PluginManagerEvent,
@@ -54,7 +55,7 @@ use komponist_processor::Processor;
 
 /// The index and modified flag of the preset recorded through CLAP preset-load.
 pub fn selected_preset(device: &Device, presets: &[ClapPreset]) -> Option<(usize, bool)> {
-    komponist_ipc::clap_presets::selected_preset(device.preset.as_ref(), presets)
+    komponist_plugin_api::clap_presets::selected_preset(device.preset.as_ref(), presets)
 }
 
 /// Creates processors for devices and reports their runtime status.
@@ -109,7 +110,7 @@ pub trait DeviceHost {
         &self,
         _device: DeviceId,
         _slot: u32,
-    ) -> Option<&komponist_ipc::waveform_markers::Snapshot> {
+    ) -> Option<&komponist_plugin_api::waveform_markers::Snapshot> {
         None
     }
 
@@ -118,9 +119,9 @@ pub trait DeviceHost {
         &mut self,
         _device: DeviceId,
         _slot: u32,
-        _request: komponist_ipc::waveform_markers::Request,
-    ) -> Result<(), komponist_ipc::waveform_markers::EditStatus> {
-        Err(komponist_ipc::waveform_markers::EditStatus::Unavailable)
+        _request: komponist_plugin_api::waveform_markers::Request,
+    ) -> Result<(), komponist_plugin_api::waveform_markers::EditStatus> {
+        Err(komponist_plugin_api::waveform_markers::EditStatus::Unavailable)
     }
 
     /// Presets discovered for a live CLAP instance.
@@ -209,14 +210,14 @@ pub trait DeviceHost {
     fn native_layout(
         &self,
         _device: DeviceId,
-    ) -> Option<&Arc<komponist_ipc::native_layout::NativeLayout>> {
+    ) -> Option<&Arc<komponist_plugin_api::native_layout::NativeLayout>> {
         None
     }
 
     fn device_display(
         &self,
         _device: DeviceId,
-    ) -> Option<&Arc<komponist_ipc::device_canvas::DisplayList>> {
+    ) -> Option<&Arc<komponist_plugin_api::device_canvas::DisplayList>> {
         None
     }
 
@@ -685,14 +686,14 @@ impl DeviceHost for PluginHost {
     fn native_layout(
         &self,
         device: DeviceId,
-    ) -> Option<&Arc<komponist_ipc::native_layout::NativeLayout>> {
+    ) -> Option<&Arc<komponist_plugin_api::native_layout::NativeLayout>> {
         self.manager.native_layout(device)
     }
 
     fn device_display(
         &self,
         device: DeviceId,
-    ) -> Option<&Arc<komponist_ipc::device_canvas::DisplayList>> {
+    ) -> Option<&Arc<komponist_plugin_api::device_canvas::DisplayList>> {
         self.manager.device_display(device)
     }
 
@@ -779,7 +780,7 @@ impl DeviceHost for PluginHost {
         &self,
         device: DeviceId,
         slot: u32,
-    ) -> Option<&komponist_ipc::waveform_markers::Snapshot> {
+    ) -> Option<&komponist_plugin_api::waveform_markers::Snapshot> {
         self.manager.waveform_markers(device, slot)
     }
 
@@ -787,8 +788,8 @@ impl DeviceHost for PluginHost {
         &mut self,
         device: DeviceId,
         slot: u32,
-        request: komponist_ipc::waveform_markers::Request,
-    ) -> Result<(), komponist_ipc::waveform_markers::EditStatus> {
+        request: komponist_plugin_api::waveform_markers::Request,
+    ) -> Result<(), komponist_plugin_api::waveform_markers::EditStatus> {
         self.manager.edit_waveform_markers(device, slot, request)
     }
 
@@ -1068,7 +1069,7 @@ mod tests {
 
     #[test]
     fn the_shipped_sampler_loads_linked_audio_into_its_authored_pad_bank() {
-        use komponist_ipc::device_assets::AssetStatus;
+        use komponist_plugin_api::device_assets::AssetStatus;
         use std::time::Instant;
 
         let host = App::headless_plugin_host();

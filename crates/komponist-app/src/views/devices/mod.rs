@@ -318,7 +318,7 @@ impl View for Devices {
                             && c.asset_slots.iter().any(|(slot, _)| {
                                 slot.id == id
                                     && slot.status
-                                        == komponist_ipc::device_assets::AssetStatus::Ready
+                                        == komponist_plugin_api::device_assets::AssetStatus::Ready
                             })
                     });
                     let playhead = (show && playable_asset)

@@ -1438,7 +1438,7 @@ mod tests {
 
     #[test]
     fn new_step_clips_keep_the_plugin_pad_order_and_use_the_project_grid() {
-        use komponist_ipc::native_layout::{Pad, PadBank};
+        use komponist_plugin_api::native_layout::{Pad, PadBank};
 
         let p = demo_project();
         let v = ArrangementView::default();

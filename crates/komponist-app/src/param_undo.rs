@@ -56,12 +56,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_engine::Command;
-use komponist_ipc::clap_presets::ClapPresetSource;
 use komponist_model::automation::AutomationTarget;
 use komponist_model::edits;
 use komponist_model::macros::MAX_MAPPINGS;
 use komponist_model::project::SavedPluginState;
 use komponist_model::{DeviceId, DevicePreset, Project, TrackId};
+use komponist_plugin_api::clap_presets::ClapPresetSource;
 
 use crate::app::App;
 use crate::undo_label;

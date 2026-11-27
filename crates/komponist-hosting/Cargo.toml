@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 # Shared plugin vocabulary and the per-block wire types (no plugin format, no audio backend).
 komponist-ipc.workspace = true
+komponist-plugin-api.workspace = true
 # CLAP hosting (WP-26).
 clack-host.workspace = true
 clap-sys.workspace = true

@@ -1,10 +1,10 @@
 use std::path::Path;
 
-use komponist_ipc::device_assets::{
+use komponist_native_clap_sdk::assets::AssetProvider;
+use komponist_plugin_api::device_assets::{
     AssetKind, AssetStatus, Bindings, MAX_ERROR_BYTES, OfflineRequest, OfflineStatus, Slot,
     Snapshot,
 };
-use komponist_native_clap_sdk::assets::AssetProvider;
 use komponist_sampler_shared::{PadStatus, SyncStatus, links::SampleLink};
 
 use super::{SampleParameters, SampledDefinition};

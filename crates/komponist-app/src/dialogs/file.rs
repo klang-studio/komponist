@@ -45,7 +45,7 @@ pub enum Purpose {
     PluginAsset {
         device: komponist_model::DeviceId,
         slot: u32,
-        kind: komponist_ipc::device_assets::AssetKind,
+        kind: komponist_plugin_api::device_assets::AssetKind,
     },
     /// Import linked audio files, with multiple selection.
     ImportAudio,
@@ -431,7 +431,7 @@ pub fn list(dir: &Path, purpose: Purpose) -> std::io::Result<Vec<Entry>> {
         } else if match purpose {
             Purpose::OpenPreset(_) | Purpose::SavePreset(_) => is_user_preset_file(&path),
             Purpose::PluginAsset { kind, .. } => {
-                kind == komponist_ipc::device_assets::AssetKind::File || is_audio_file(&path)
+                kind == komponist_plugin_api::device_assets::AssetKind::File || is_audio_file(&path)
             }
             Purpose::ImportAudio | Purpose::ReplaceAudio(_) => is_audio_file(&path),
             _ => !purpose.is_folder() && is_project_file(&path),

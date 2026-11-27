@@ -67,8 +67,8 @@ const HEXA: &str = "org.klang-studio.komponist.hexa";
 /// Choose from the first eight advertised presets to keep the soak's preset variation bounded.
 fn preset_source(
     rng: &mut Rng,
-    presets: &[komponist_ipc::clap_presets::ClapPreset],
-) -> Option<komponist_ipc::clap_presets::ClapPresetSource> {
+    presets: &[komponist_plugin_api::clap_presets::ClapPreset],
+) -> Option<komponist_plugin_api::clap_presets::ClapPresetSource> {
     let presets = &presets[..presets.len().min(8)];
     if presets.is_empty() {
         return None;

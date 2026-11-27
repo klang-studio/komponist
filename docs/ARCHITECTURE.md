@@ -128,7 +128,8 @@ Their READMEs record provenance.
 | [`sampler-core`](../crates/builtin-devices/sampler-shared/core/README.md) | Shared Klopfer and Sampler engine |
 | [`komponist-device-core`](../crates/builtin-devices/core/src/lib.rs) | Unstable device API: catalog and parameter metadata, layouts, state, presets, processor adapters and shared DSP |
 | [Device crates](../crates/builtin-devices/README.md) | One directory per instrument, audio effect and MIDI effect, with a standalone CLAP package alongside its DSP |
-| [`komponist-ipc`](../crates/komponist-ipc/README.md) | Shared-memory layout, signalling, control protocol, process watching, frame vocabulary |
+| [`komponist-plugin-api`](../crates/komponist-plugin-api/README.md) | CLAP extensions, parameter metadata, and plugin frame data shared by the SDK, host, and UI |
+| [`komponist-ipc`](../crates/komponist-ipc/README.md) | Shared-memory layout, signalling, control protocol and process watching |
 | [`komponist-hosting`](../crates/komponist-hosting/README.md) | CLAP/VST3 loading, processing, state, parameters, GUI and host services |
 | [`komponist-bridge`](../crates/komponist-bridge/README.md) | Bridge library and utility executable; instance and scan modes |
 | [`komponist-plugins`](../crates/komponist-plugins/README.md) | App-side catalog, scan cache, direct and bridge lifecycle, processor adapters |

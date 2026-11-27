@@ -22,8 +22,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::*;
-use komponist_ipc::frame::{FrameChord, FrameRect, HeaderModel, Mark, PluginView};
 use komponist_ipc::{BlockStatus, BridgeMsg, ControlMsg, ErrorContext, GuiSize, GuiTarget};
+use komponist_plugin_api::frame::{FrameChord, FrameRect, HeaderModel, Mark, PluginView};
 use windows_sys::Win32::Foundation::{HWND, RECT};
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetThreadDpiAwarenessContext,

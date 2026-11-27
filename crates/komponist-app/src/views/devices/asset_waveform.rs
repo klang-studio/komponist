@@ -12,12 +12,12 @@ use egui::{
 };
 use komponist_audiofile::{FileId, FilePool, PeakData, PeakState, PoolFile};
 use komponist_i18n::Lang;
-use komponist_ipc::device_assets::{AssetKind, AssetStatus};
-use komponist_ipc::native_layout::{Graph, TrimUnit};
-use komponist_ipc::waveform_markers::{Edit, Preparation, Request, Snapshot};
 use komponist_model::params::ParamInfo;
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{Device, DeviceId};
+use komponist_plugin_api::device_assets::{AssetKind, AssetStatus};
+use komponist_plugin_api::native_layout::{Graph, TrimUnit};
+use komponist_plugin_api::waveform_markers::{Edit, Preparation, Request, Snapshot};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, device, size, space, typography};
 use komponist_ui::fonts;

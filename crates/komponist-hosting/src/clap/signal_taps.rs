@@ -3,7 +3,7 @@
 use core::ffi::c_void;
 
 use clap_sys::plugin::clap_plugin;
-use komponist_ipc::signal_taps::{
+use komponist_plugin_api::signal_taps::{
     BlockTaps, Descriptor, EXTENSION_ID, Extension, MAX_TAPS, valid_inventory,
 };
 

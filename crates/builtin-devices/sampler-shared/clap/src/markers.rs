@@ -4,7 +4,7 @@ use std::ffi::c_void;
 use std::ops::Range;
 
 use clap_sys::plugin::clap_plugin;
-use komponist_ipc::waveform_markers::{
+use komponist_plugin_api::waveform_markers::{
     Edit, EditStatus, Extension, MAX_EDIT_BYTES, MAX_MARKERS, MAX_SNAPSHOT_BYTES, Preparation,
     Request, SliceOptions as WireOptions, Snapshot,
 };
@@ -17,7 +17,7 @@ use nice_plug::wrapper::clap::Wrapper;
 use super::{MAX_SAMPLE_ASSET_BYTES, SampleAssets, SampleParameters, Sampled, SampledDefinition};
 
 const _: () = assert!(MAX_SLICES == MAX_MARKERS);
-const _: () = assert!(MAX_FADE_MS == komponist_ipc::waveform_markers::MAX_FADE_MS);
+const _: () = assert!(MAX_FADE_MS == komponist_plugin_api::waveform_markers::MAX_FADE_MS);
 
 #[derive(Default)]
 pub(super) struct MarkerState {

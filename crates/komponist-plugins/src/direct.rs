@@ -12,10 +12,12 @@ use komponist_hosting::host_loop::{Observed, PollLoop, notification_bits};
 use komponist_hosting::{
     ActivateConfig, EventOut, HostedPlugin, HostedProcessor, HostingError, ProcessBlock,
 };
-use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot, edit_state};
 use komponist_ipc::shm::{INPUT_EVENT_CAPACITY, MAX_BLOCK, OUTPUT_EVENT_CAPACITY};
 use komponist_ipc::{PluginFormat, WireEvent, WireEventKind};
 use komponist_model::DeviceRole;
+use komponist_plugin_api::device_assets::{
+    Bindings, OfflineRequest, OfflineStatus, Snapshot, edit_state,
+};
 use komponist_processor::processor::{EventSink, ParameterEdit, ParameterEditKind};
 use komponist_processor::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
@@ -140,12 +142,16 @@ impl DirectClap {
         self.refresh.0 &= !mask;
     }
 
-    pub(crate) fn device_display(&self) -> Option<komponist_ipc::device_canvas::DisplayList> {
+    pub(crate) fn device_display(
+        &self,
+    ) -> Option<komponist_plugin_api::device_canvas::DisplayList> {
         self.plugin.device_display()
     }
 
     /// Host-side data only: the plugin is not called, so processing need not stop.
-    pub(crate) fn take_preset_reports(&mut self) -> Vec<komponist_ipc::clap_presets::PresetReport> {
+    pub(crate) fn take_preset_reports(
+        &mut self,
+    ) -> Vec<komponist_plugin_api::clap_presets::PresetReport> {
         self.plugin.take_preset_reports()
     }
 
@@ -181,7 +187,7 @@ impl DirectClap {
     pub(crate) fn waveform_markers(
         &self,
         slot: u32,
-    ) -> Option<komponist_ipc::waveform_markers::Snapshot> {
+    ) -> Option<komponist_plugin_api::waveform_markers::Snapshot> {
         self.plugin.waveform_markers(slot)
     }
 
@@ -211,7 +217,7 @@ impl DirectClap {
             taps.set_rate(setup.sample_rate);
             (
                 Arc::clone(taps),
-                Box::new(komponist_ipc::signal_taps::BlockTaps::EMPTY),
+                Box::new(komponist_plugin_api::signal_taps::BlockTaps::EMPTY),
             )
         });
         // SAFETY: On activation no audio half is being called by the engine.
@@ -325,7 +331,7 @@ pub(crate) struct DirectProcessor {
     offline_failures: u64,
     signal_taps: Option<(
         Arc<crate::signal_taps::SignalTaps>,
-        Box<komponist_ipc::signal_taps::BlockTaps>,
+        Box<komponist_plugin_api::signal_taps::BlockTaps>,
     )>,
     midi: Option<MidiStage>,
 }

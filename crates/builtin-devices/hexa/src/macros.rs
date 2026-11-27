@@ -194,7 +194,7 @@ impl Macro {
     }
 
     /// Steps between [`Macro::min`] and [`Macro::max`] for stepped macros, 0 = continuous
-    /// (as `komponist_ipc::control::ParamInfo::step_count`).
+    /// (as `komponist_plugin_api::params::ParamInfo::step_count`).
     pub fn step_count(self) -> u32 {
         match self {
             Macro::Algorithm => ALGORITHMS.len() as u32,

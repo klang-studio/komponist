@@ -372,7 +372,7 @@ fn check_named_tap(
     processor: &mut dyn Processor,
     tap: &crate::signal_taps::SignalTap,
 ) -> Result<(), String> {
-    use komponist_ipc::signal_taps::{REDUCTION, SPECTRUM_SOURCE};
+    use komponist_plugin_api::signal_taps::{REDUCTION, SPECTRUM_SOURCE};
     let input = [2.0; FRAMES];
     let mut left = [0.0; FRAMES];
     let mut right = [0.0; FRAMES];

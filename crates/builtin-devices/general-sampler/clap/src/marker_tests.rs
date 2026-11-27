@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_factory};
 use clap_sys::host::clap_host;
 use clap_sys::version::CLAP_VERSION;
-use komponist_ipc::device_assets::edit_state;
-use komponist_ipc::{device_assets, waveform_markers as wire};
+use komponist_plugin_api::device_assets::edit_state;
+use komponist_plugin_api::{device_assets, waveform_markers as wire};
 use serde_json::{Value, json};
 use wire::{Edit, EditStatus, Request, SliceOptions, Snapshot};
 

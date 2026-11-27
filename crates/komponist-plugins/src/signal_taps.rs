@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use komponist_ipc::signal_taps::{
+use komponist_plugin_api::signal_taps::{
     BlockTaps, Descriptor, MAX_PAD_ACTIVITY_FRAME, PAD_ACTIVITY, PadActivity, REDUCTION,
     valid_inventory,
 };
@@ -142,7 +142,7 @@ fn stereo_peak(channels: [&[f32]; 2]) -> f32 {
 mod tests {
     use super::*;
     use assert_no_alloc::assert_no_alloc;
-    use komponist_ipc::signal_taps::{LEVEL_HISTORY, SPECTRUM_SOURCE};
+    use komponist_plugin_api::signal_taps::{LEVEL_HISTORY, SPECTRUM_SOURCE};
 
     #[cfg(debug_assertions)]
     #[global_allocator]

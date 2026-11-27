@@ -56,15 +56,16 @@ use komponist_hosting::{
     ActivateConfig, HostContext, HostNotify, HostedPlugin, HostingError, PluginKind, RenderMode,
     TimerId,
 };
-use komponist_ipc::clap_presets::PresetReport;
+use komponist_plugin_api::clap_presets::PresetReport;
 use std::num::NonZeroU32;
 
 use komponist_ipc::control::{PROTOCOL_VERSION, ReportedPresetValues, StateRestoreError};
 use komponist_ipc::shm::MAX_BLOCK;
 use komponist_ipc::{
     BridgeChannel, BridgeMsg, BridgeServer, BridgeState, ChannelError, ControlMsg, ErrorContext,
-    GuiTarget, LoadedInfo, LogLevel, ParamInfo, ParamValue, ShmRegion, WireEvent, WireEventKind,
+    GuiTarget, LoadedInfo, LogLevel, ShmRegion, WireEvent, WireEventKind,
 };
+use komponist_plugin_api::params::{ParamInfo, ParamValue};
 #[cfg(target_os = "linux")]
 use rustix::event::{PollFd, PollFlags};
 
@@ -885,7 +886,7 @@ impl Bridge {
                 edits,
                 state,
             } => {
-                use komponist_ipc::device_assets::edit_state::{Rejected, State};
+                use komponist_plugin_api::device_assets::edit_state::{Rejected, State};
                 let prepared = self.plugin.as_ref().ok_or(Rejected).and_then(|plugin| {
                     plugin.prepare_asset_edit_state(&edits, state.as_ref().map(State::as_bytes))
                 });
@@ -970,7 +971,7 @@ impl Bridge {
                 self.report_params();
             }
             ControlMsg::GetWaveformMarkers(request, slot) => {
-                use komponist_ipc::waveform_markers::MAX_SNAPSHOT_BYTES;
+                use komponist_plugin_api::waveform_markers::MAX_SNAPSHOT_BYTES;
 
                 let snapshot = self
                     .plugin
@@ -1388,9 +1389,9 @@ impl Bridge {
                 if load_result.is_ok() && !bases.is_empty() {
                     let values = infos.iter().filter_map(|info| {
                         let &value = bases.get(&info.id)?;
-                        let excluded = komponist_ipc::control::param_flags::HIDDEN
-                            | komponist_ipc::control::param_flags::READ_ONLY
-                            | komponist_ipc::control::param_flags::BYPASS;
+                        let excluded = komponist_plugin_api::params::param_flags::HIDDEN
+                            | komponist_plugin_api::params::param_flags::READ_ONLY
+                            | komponist_plugin_api::params::param_flags::BYPASS;
                         (info.flags & excluded == 0
                             && info.min.is_finite()
                             && info.max.is_finite()
@@ -1471,7 +1472,11 @@ impl Bridge {
         self.send_preset_reports(earlier_reports);
     }
 
-    fn load_clap_preset(&mut self, request: u32, preset: &komponist_ipc::clap_presets::PresetLoad) {
+    fn load_clap_preset(
+        &mut self,
+        request: u32,
+        preset: &komponist_plugin_api::clap_presets::PresetLoad,
+    ) {
         let Some(plugin) = self.plugin.as_mut() else {
             self.send(BridgeMsg::ClapPresetApplied(
                 request,
@@ -1550,7 +1555,7 @@ impl Bridge {
     }
 
     fn report_device_assets(&mut self, request: u32) {
-        use komponist_ipc::device_assets::MAX_SNAPSHOT_BYTES;
+        use komponist_plugin_api::device_assets::MAX_SNAPSHOT_BYTES;
 
         let assets = self.plugin.as_ref().and_then(|plugin| plugin.asset_slots());
         let encoded = assets.and_then(|assets| {
@@ -1581,7 +1586,7 @@ impl Bridge {
     }
 
     fn set_device_assets(&mut self, request: u32, bytes: &[u8]) {
-        let bindings = komponist_ipc::device_assets::Bindings::decode(bytes);
+        let bindings = komponist_plugin_api::device_assets::Bindings::decode(bytes);
         let accepted = self
             .plugin
             .as_mut()
@@ -1593,9 +1598,9 @@ impl Bridge {
     fn prepare_device_offline(
         &mut self,
         request: u32,
-        work: Option<komponist_ipc::device_assets::OfflineRequest>,
+        work: Option<komponist_plugin_api::device_assets::OfflineRequest>,
     ) {
-        use komponist_ipc::device_assets::OfflineStatus;
+        use komponist_plugin_api::device_assets::OfflineStatus;
 
         let status = self.plugin.as_mut().and_then(|plugin| {
             if let Some(active) = self.active.as_mut() {
@@ -1617,7 +1622,7 @@ impl Bridge {
         encoded: &[u8],
         expected: &[(u32, f64)],
     ) {
-        use komponist_ipc::waveform_markers::{EditResult, EditStatus, Request};
+        use komponist_plugin_api::waveform_markers::{EditResult, EditStatus, Request};
 
         let result = 'edit: {
             let Some(edit) = Request::decode(encoded) else {

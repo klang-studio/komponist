@@ -52,6 +52,7 @@ komponist-scale = { path = "crates/builtin-devices/scale" }
 komponist-surf = { path = "crates/builtin-devices/surf" }
 komponist-volt = { path = "crates/builtin-devices/volt" }
 komponist-ipc = { path = "crates/komponist-ipc" }
+komponist-plugin-api = { path = "crates/komponist-plugin-api" }
 komponist-rt = { path = "crates/komponist-rt" }
 komponist-audiofile = { path = "crates/komponist-audiofile" }
 komponist-stretch = { path = "crates/komponist-stretch" }

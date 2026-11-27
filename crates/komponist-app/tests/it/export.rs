@@ -177,8 +177,8 @@ pub(crate) fn export(app: &mut App, settings: ExportSettings) {
 
 #[test]
 fn an_unreadable_clap_pad_blocks_wav_export() {
-    use komponist_ipc::device_assets::AssetStatus;
     use komponist_model::plugin_assets::AssetLink;
+    use komponist_plugin_api::device_assets::AssetStatus;
 
     let dir = scratch("unreadable-clap-pad");
     let Some((host, plugin)) =

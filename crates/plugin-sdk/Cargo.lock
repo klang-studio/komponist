@@ -233,28 +233,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "embedded-io"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef1a6892d9eef45c8fa6b9e0086428a2cca8491aca8f787c534a3d6d0bcb3ced"
-
-[[package]]
-name = "embedded-io"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
-
-[[package]]
-name = "errno"
-version = "0.3.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
-dependencies = [
- "libc",
- "windows-sys",
-]
-
-[[package]]
 name = "fluent-syntax"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -339,19 +317,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "komponist-ipc"
-version = "0.2.0"
-dependencies = [
- "komponist-model",
- "komponist-rt",
- "postcard",
- "rustix",
- "serde",
- "serde_json",
- "windows-sys",
-]
-
-[[package]]
 name = "komponist-model"
 version = "0.2.0"
 dependencies = [
@@ -367,9 +332,19 @@ version = "0.1.0"
 dependencies = [
  "clap-sys",
  "komponist-device-core",
- "komponist-ipc",
  "komponist-model",
+ "komponist-plugin-api",
  "nice-plug",
+ "serde_json",
+]
+
+[[package]]
+name = "komponist-plugin-api"
+version = "0.2.0"
+dependencies = [
+ "komponist-model",
+ "postcard",
+ "serde",
  "serde_json",
 ]
 
@@ -378,14 +353,6 @@ name = "komponist-processor"
 version = "0.2.0"
 dependencies = [
  "komponist-model",
-]
-
-[[package]]
-name = "komponist-rt"
-version = "0.2.0"
-dependencies = [
- "libc",
- "windows-sys",
 ]
 
 [[package]]
@@ -416,12 +383,6 @@ dependencies = [
  "cfg-if",
  "windows-link",
 ]
-
-[[package]]
-name = "linux-raw-sys"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "lock_api"
@@ -466,7 +427,7 @@ name = "native-clap-xtask"
 version = "0.1.0"
 dependencies = [
  "clap-sys",
- "komponist-ipc",
+ "komponist-plugin-api",
  "libloading",
  "serde_json",
  "sha2",
@@ -609,8 +570,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6764c3b5dd454e283a30e6dfe78e9b31096d9e32036b5d1eaac7a6119ccb9a24"
 dependencies = [
  "cobs",
- "embedded-io 0.4.0",
- "embedded-io 0.6.1",
  "heapless",
  "serde",
 ]
@@ -667,19 +626,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
 dependencies = [
  "semver",
-]
-
-[[package]]
-name = "rustix"
-version = "1.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
-dependencies = [
- "bitflags",
- "errno",
- "libc",
- "linux-raw-sys",
- "windows-sys",
 ]
 
 [[package]]
@@ -1046,15 +992,6 @@ name = "windows-strings"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
-dependencies = [
- "windows-link",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.61.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
 dependencies = [
  "windows-link",
 ]

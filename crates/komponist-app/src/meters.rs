@@ -10,8 +10,8 @@ use std::collections::HashMap;
 
 use std::sync::{Arc, Weak};
 
-use komponist_ipc::signal_taps::PadActivity;
 use komponist_model::{DeviceId, TrackId};
+use komponist_plugin_api::signal_taps::PadActivity;
 use komponist_plugins::signal_taps::SignalTap;
 use komponist_processor::{DeviceMeter, SampleTap};
 use komponist_ui::widgets::meter::{MeterState, fraction};
@@ -240,7 +240,7 @@ impl Meters {
         source: &SignalTap,
         now: f64,
     ) -> Option<DeviceLevels> {
-        use komponist_ipc::signal_taps::REDUCTION;
+        use komponist_plugin_api::signal_taps::REDUCTION;
         if source.descriptor().kind != REDUCTION {
             return None;
         }
@@ -278,7 +278,7 @@ impl Meters {
         source: &SignalTap,
         now: f64,
     ) -> Option<f32> {
-        if source.descriptor().kind != komponist_ipc::signal_taps::PLAYHEAD_POSITION {
+        if source.descriptor().kind != komponist_plugin_api::signal_taps::PLAYHEAD_POSITION {
             return None;
         }
         let reading = self.playhead_reading(device, source, now)?;
@@ -322,7 +322,7 @@ impl Meters {
         visible: bool,
         now: f64,
     ) -> Option<Analysis> {
-        use komponist_ipc::signal_taps::SPECTRUM_SOURCE;
+        use komponist_plugin_api::signal_taps::SPECTRUM_SOURCE;
         if source.descriptor().kind != SPECTRUM_SOURCE {
             return None;
         }
@@ -352,7 +352,7 @@ impl Meters {
         now: f64,
     ) -> Dynamics {
         use crate::gain_trace::{LEVEL_FLOOR_DB, LEVEL_HEIGHT, POINTS};
-        use komponist_ipc::signal_taps::{LEVEL_HISTORY, REDUCTION};
+        use komponist_plugin_api::signal_taps::{LEVEL_HISTORY, REDUCTION};
         let (level_db, input) = detector
             .filter(|tap| tap.descriptor().kind == LEVEL_HISTORY)
             .and_then(|tap| {

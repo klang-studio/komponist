@@ -19,8 +19,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::*;
-use komponist_ipc::frame::{FrameRect, HeaderModel, Mark, PluginView};
 use komponist_ipc::{BlockStatus, BridgeMsg, ControlMsg, ErrorContext, GuiSize, GuiTarget};
+use komponist_plugin_api::frame::{FrameRect, HeaderModel, Mark, PluginView};
 
 /// Height of the frame header, points (`komponist_ui::plugin_frame::metrics::HEADER`).
 const HEADER: f32 = 28.0;

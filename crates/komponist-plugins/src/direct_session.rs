@@ -8,10 +8,12 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use komponist_hosting::host_loop::notification_bits;
 use komponist_hosting::{HostedPlugin, HostingError};
-use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot, edit_state};
 use komponist_ipc::shm::{INPUT_EVENT_CAPACITY, MAX_BLOCK};
 use komponist_ipc::{RenderMode, WireEvent, WireEventKind};
 use komponist_model::DeviceRole;
+use komponist_plugin_api::device_assets::{
+    Bindings, OfflineRequest, OfflineStatus, Snapshot, edit_state,
+};
 use komponist_processor::processor::{EventProcessor, EventSink, ParameterEdit};
 use komponist_processor::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
@@ -267,7 +269,9 @@ impl DirectSession {
         Some(result)
     }
 
-    pub(crate) fn take_preset_reports(&mut self) -> Vec<komponist_ipc::clap_presets::PresetReport> {
+    pub(crate) fn take_preset_reports(
+        &mut self,
+    ) -> Vec<komponist_plugin_api::clap_presets::PresetReport> {
         self.host.take_preset_reports()
     }
 
@@ -304,7 +308,9 @@ impl DirectSession {
         true
     }
 
-    pub(crate) fn device_display(&self) -> Option<komponist_ipc::device_canvas::DisplayList> {
+    pub(crate) fn device_display(
+        &self,
+    ) -> Option<komponist_plugin_api::device_canvas::DisplayList> {
         self.host.device_display()
     }
 
@@ -334,7 +340,7 @@ impl DirectSession {
     pub(crate) fn waveform_markers(
         &self,
         slot: u32,
-    ) -> Option<komponist_ipc::waveform_markers::Snapshot> {
+    ) -> Option<komponist_plugin_api::waveform_markers::Snapshot> {
         self.host.waveform_markers(slot)
     }
 

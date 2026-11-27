@@ -51,14 +51,15 @@ use clack_extensions::state_context::{PluginStateContext, StateContextType};
 use clack_extensions::timer::{PluginTimer, TimerId as ClapTimerId};
 use clack_host::events::Match;
 use clack_host::prelude::*;
-use komponist_ipc::clap_presets::{ClapPreset, ClapPresetLocation, PresetReport};
-use komponist_ipc::control::param_flags;
-use komponist_ipc::native_layout::LocalizedPlugin;
 use komponist_ipc::shm::MAX_BLOCK;
 use komponist_ipc::{
-    GuiSize, LogLevel, NoteName, ParamInfo, PluginDescriptor, PluginFormat, RenderMode, WireEvent,
+    GuiSize, LogLevel, NoteName, PluginDescriptor, PluginFormat, RenderMode, WireEvent,
     WireEventKind,
 };
+use komponist_plugin_api::clap_presets::{ClapPreset, ClapPresetLocation, PresetReport};
+use komponist_plugin_api::native_layout::LocalizedPlugin;
+use komponist_plugin_api::params::ParamInfo;
+use komponist_plugin_api::params::param_flags;
 
 use self::events::{InputEventList, WireSink};
 use self::host::{KpHost, MainThreadHost, SharedHost};
@@ -259,7 +260,7 @@ pub(crate) struct ClapPlugin {
     ext: Extensions,
     context: HostContext,
     has_gui: bool,
-    native_layout: Option<(Vec<u8>, komponist_ipc::native_layout::NativeLayout)>,
+    native_layout: Option<(Vec<u8>, komponist_plugin_api::native_layout::NativeLayout)>,
     gui: Option<OpenGui>,
     render_mode: RenderMode,
 }
@@ -430,13 +431,13 @@ impl HostedPlugin for ClapPlugin {
         &self.descriptor
     }
 
-    fn native_layout(&self) -> Option<(&[u8], &komponist_ipc::native_layout::NativeLayout)> {
+    fn native_layout(&self) -> Option<(&[u8], &komponist_plugin_api::native_layout::NativeLayout)> {
         self.native_layout
             .as_ref()
             .map(|(bytes, layout)| (bytes.as_slice(), layout))
     }
 
-    fn signal_taps(&self) -> &[komponist_ipc::signal_taps::Descriptor] {
+    fn signal_taps(&self) -> &[komponist_plugin_api::signal_taps::Descriptor] {
         self.ext
             .signal_taps
             .as_ref()
@@ -447,11 +448,14 @@ impl HostedPlugin for ClapPlugin {
         device_assets::supports_slots(self.instance.borrow_mut().plugin_handle().as_raw())
     }
 
-    fn asset_slots(&self) -> Option<komponist_ipc::device_assets::Snapshot> {
+    fn asset_slots(&self) -> Option<komponist_plugin_api::device_assets::Snapshot> {
         device_assets::snapshot(self.instance.borrow_mut().plugin_handle().as_raw())
     }
 
-    fn set_asset_bindings(&mut self, bindings: &komponist_ipc::device_assets::Bindings) -> bool {
+    fn set_asset_bindings(
+        &mut self,
+        bindings: &komponist_plugin_api::device_assets::Bindings,
+    ) -> bool {
         device_assets::set_bindings(
             self.instance.borrow_mut().plugin_handle().as_raw(),
             bindings,
@@ -464,9 +468,9 @@ impl HostedPlugin for ClapPlugin {
 
     fn prepare_asset_edit_state(
         &self,
-        edits: &komponist_ipc::device_assets::edit_state::Edits,
+        edits: &komponist_plugin_api::device_assets::edit_state::Edits,
         state: Option<&[u8]>,
-    ) -> komponist_ipc::device_assets::edit_state::PreparedChange {
+    ) -> komponist_plugin_api::device_assets::edit_state::PreparedChange {
         device_assets::prepare_edit_state(
             self.instance.borrow_mut().plugin_handle().as_raw(),
             edits,
@@ -482,8 +486,8 @@ impl HostedPlugin for ClapPlugin {
 
     fn prepare_offline(
         &mut self,
-        request: Option<komponist_ipc::device_assets::OfflineRequest>,
-    ) -> Option<komponist_ipc::device_assets::OfflineStatus> {
+        request: Option<komponist_plugin_api::device_assets::OfflineRequest>,
+    ) -> Option<komponist_plugin_api::device_assets::OfflineStatus> {
         device_assets::prepare_offline(self.instance.borrow_mut().plugin_handle().as_raw(), request)
     }
 
@@ -601,19 +605,22 @@ impl HostedPlugin for ClapPlugin {
             .collect()
     }
 
-    fn device_display(&self) -> Option<komponist_ipc::device_canvas::DisplayList> {
+    fn device_display(&self) -> Option<komponist_plugin_api::device_canvas::DisplayList> {
         device_canvas::draw(self.instance.borrow_mut().plugin_handle().as_raw())
     }
 
-    fn waveform_markers(&self, slot: u32) -> Option<komponist_ipc::waveform_markers::Snapshot> {
+    fn waveform_markers(
+        &self,
+        slot: u32,
+    ) -> Option<komponist_plugin_api::waveform_markers::Snapshot> {
         waveform_markers::snapshot(self.instance.borrow_mut().plugin_handle().as_raw(), slot)
     }
 
     fn edit_waveform_markers(
         &mut self,
         slot: u32,
-        request: komponist_ipc::waveform_markers::Request,
-    ) -> Option<komponist_ipc::waveform_markers::EditStatus> {
+        request: komponist_plugin_api::waveform_markers::Request,
+    ) -> Option<komponist_plugin_api::waveform_markers::EditStatus> {
         waveform_markers::edit(
             self.instance.borrow_mut().plugin_handle().as_raw(),
             slot,
@@ -622,7 +629,7 @@ impl HostedPlugin for ClapPlugin {
     }
 
     fn preview_waveform(&self, slot: u32, time: Option<f64>) {
-        use komponist_ipc::waveform_preview::{EXTENSION_ID, Extension, encode_time};
+        use komponist_plugin_api::waveform_preview::{EXTENSION_ID, Extension, encode_time};
 
         let Some(time) = encode_time(time) else {
             return;

@@ -84,7 +84,11 @@ use std::num::NonZeroU32;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderModel};
+use komponist_plugin_api::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderModel};
+use komponist_plugin_api::params::{ParamInfo, ParamValue};
+use komponist_plugin_api::{
+    clap_presets, device_assets, native_layout, signal_taps, waveform_markers,
+};
 
 /// Protocol version; `Hello` carries it and the app refuses other versions. 2: `Ping`/`Pong`,
 /// `RtPriority`. 3 (#6): [`PluginDescriptor::sidechain`] (shared memory version 2 carries the
@@ -142,6 +146,9 @@ const HANDLE_PAYLOAD: usize = 8;
 /// states of sample-based instruments reach tens of MiB).
 pub(crate) const MAX_MESSAGE: usize = 1 << 30;
 
+// A waveform edit can carry both the original and edited state within one message budget.
+const _: () = assert!(waveform_markers::MAX_STATE_BYTES <= (MAX_MESSAGE - 64) / 2);
+
 // ------------------------------------------------------------------------------------------------
 // Shared plugin vocabulary
 // ------------------------------------------------------------------------------------------------
@@ -182,7 +189,7 @@ pub struct PluginDescriptor {
     pub name: String,
     /// Optional localized layout labels and the standard CLAP description fallback.
     #[serde(default)]
-    pub localized: Option<crate::native_layout::LocalizedPlugin>,
+    pub localized: Option<native_layout::LocalizedPlugin>,
     /// Vendor.
     pub vendor: String,
     /// Version string as reported.
@@ -200,59 +207,6 @@ pub struct PluginDescriptor {
     /// before #6 (read as `false`).
     #[serde(default)]
     pub sidechain: bool,
-}
-
-/// Parameter flag bits ([`ParamInfo::flags`]).
-pub mod param_flags {
-    /// Integer steps (`step_count` > 0).
-    pub const STEPPED: u32 = 1;
-    /// The plugin's bypass parameter.
-    pub const BYPASS: u32 = 2;
-    /// Not shown in generic views.
-    pub const HIDDEN: u32 = 4;
-    /// Read-only (meters, outputs).
-    pub const READ_ONLY: u32 = 8;
-    /// Automatable.
-    pub const AUTOMATABLE: u32 = 16;
-    /// Enumerated values: show [`super::ParamValue::text`].
-    pub const ENUM: u32 = 32;
-    /// The plugin reports the parameter as a macro: the auto-layout shows these first. No host
-    /// sets it yet (neither CLAP nor VST3 has the concept; reserved for plugins that tell).
-    pub const MACRO: u32 = 64;
-}
-
-/// A plugin parameter as the generic parameter view needs it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ParamInfo {
-    /// Stable parameter id (CLAP `clap_id`, VST3 `ParamID`).
-    pub id: u32,
-    /// Display name ("Cutoff").
-    pub name: String,
-    /// Group path ("Filter/Env"), empty if none.
-    pub module: String,
-    /// Lowest plain value. VST3 parameters are exposed normalized (0..1, stepped = `step_count`
-    /// steps of 1/n), because only the controller can convert to plain values; use the plugin's
-    /// value text for display.
-    pub min: f64,
-    /// Highest plain value (1.0 for VST3, see `min`).
-    pub max: f64,
-    /// Default plain value (Alt-click).
-    pub default: f64,
-    /// Number of steps for stepped parameters (0 = continuous).
-    pub step_count: u32,
-    /// [`param_flags`] bits.
-    pub flags: u32,
-}
-
-/// A parameter value with the plugin's own text for it ("80 Hz", "−1.5 dB").
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ParamValue {
-    /// Parameter id.
-    pub id: u32,
-    /// Plain value.
-    pub value: f64,
-    /// Text from the plugin (CLAP `value_to_text`, VST3 `getParamStringByValue`); empty if none.
-    pub text: String,
 }
 
 /// A failed state restore, with any parameter changes the plugin made before returning.
@@ -351,13 +305,13 @@ pub enum ControlMsg {
     /// Prepare persisted state for a user file edit without touching live state.
     PrepareDeviceAssetEdit {
         request: u64,
-        edits: crate::device_assets::edit_state::Edits,
-        state: Option<crate::device_assets::edit_state::State>,
+        edits: device_assets::edit_state::Edits,
+        state: Option<device_assets::edit_state::State>,
     },
     /// Start, poll or clear a detached offline preparation request.
-    PrepareDeviceOffline(u32, Option<crate::device_assets::OfflineRequest>),
+    PrepareDeviceOffline(u32, Option<device_assets::OfflineRequest>),
     /// Apply a discovered CLAP preset and capture the resulting project state.
-    LoadClapPreset(u32, crate::clap_presets::PresetLoad),
+    LoadClapPreset(u32, clap_presets::PresetLoad),
     /// Capture current state in the CLAP preset context.
     CaptureClapPreset(u32),
     /// Load plugin `plugin_id` from `bundle`. Answer: `Loaded` or `Error`.
@@ -491,9 +445,9 @@ pub enum BridgeMsg {
     },
     /// Whether the plugin accepted the file-slot update.
     DeviceAssetsApplied(u32, bool),
-    DeviceAssetEditPrepared(u64, crate::device_assets::edit_state::PreparedChange),
+    DeviceAssetEditPrepared(u64, device_assets::edit_state::PreparedChange),
     /// Preparation result. Absent when the extension is unavailable.
-    DeviceOfflineStatus(u32, Option<crate::device_assets::OfflineStatus>),
+    DeviceOfflineStatus(u32, Option<device_assets::OfflineStatus>),
     /// First message after start.
     Hello {
         /// [`PROTOCOL_VERSION`] of the bridge.
@@ -636,17 +590,17 @@ pub enum BridgeMsg {
     /// Bounded display list encoded with the public display schema.
     DeviceDisplay(u32, Option<Vec<u8>>),
     /// Immutable named signal streams advertised by the loaded plugin.
-    SignalTaps(Vec<crate::signal_taps::Descriptor>),
+    SignalTaps(Vec<signal_taps::Descriptor>),
     /// An absent snapshot indicates that the extension or slot was unavailable.
     WaveformMarkers(u32, Option<Vec<u8>>),
     /// Result of editing the requested marker list.
-    WaveformMarkersEdited(u32, crate::waveform_markers::EditResult),
+    WaveformMarkersEdited(u32, waveform_markers::EditResult),
     /// Answer to a preset load.
     ClapPresetApplied(u32, Result<AppliedClapPreset, String>),
     /// Answer to user preset state capture.
     ClapPresetCaptured(u32, Result<Vec<u8>, String>),
     /// The plug-in loaded a preset on its own, or failed to (host side of CLAP preset-load).
-    PresetReported(crate::clap_presets::PresetReport),
+    PresetReported(clap_presets::PresetReport),
     /// Every parameter value right after a load the plug-in reported (not at startup): the new
     /// persistent bases. Sent before any later state answer.
     PresetValues(ReportedPresetValues),
@@ -1836,8 +1790,9 @@ impl<Tx, Rx> AsHandle for Channel<Tx, Rx> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{KeyMods, Mark, PluginView};
     use crate::shm::ShmRegion;
+    use komponist_plugin_api::frame::{KeyMods, Mark, PluginView};
+    use komponist_plugin_api::params::param_flags;
 
     #[cfg(unix)]
     fn pair() -> (AppChannel, BridgeChannel) {
@@ -1924,7 +1879,7 @@ mod tests {
             format: PluginFormat::Clap,
             id: "org.example.synth".into(),
             name: "Synth".into(),
-            localized: Some(crate::native_layout::LocalizedPlugin {
+            localized: Some(native_layout::LocalizedPlugin {
                 default_locale: "en".into(),
                 names: [
                     ("en".into(), "Synth".into()),
@@ -2032,23 +1987,21 @@ mod tests {
             },
             ControlMsg::PrepareDeviceAssetEdit {
                 request: 7,
-                edits: crate::device_assets::edit_state::Edits {
-                    slots: vec![crate::device_assets::edit_state::Edit {
+                edits: device_assets::edit_state::Edits {
+                    slots: vec![device_assets::edit_state::Edit {
                         slot: 42,
-                        intent: crate::device_assets::edit_state::Intent::Relink,
+                        intent: device_assets::edit_state::Intent::Relink,
                     }],
                 },
-                state: Some(
-                    crate::device_assets::edit_state::State::try_from(vec![1, 2, 3]).unwrap(),
-                ),
+                state: Some(device_assets::edit_state::State::try_from(vec![1, 2, 3]).unwrap()),
             },
             ControlMsg::Ping { seq: u32::MAX },
             ControlMsg::LoadClapPreset(
                 9,
-                crate::clap_presets::PresetLoad::Discovered(crate::clap_presets::ClapPreset {
+                clap_presets::PresetLoad::Discovered(clap_presets::ClapPreset {
                     plugin_id: "example".into(),
-                    source: crate::clap_presets::ClapPresetSource {
-                        location: crate::clap_presets::ClapPresetLocation::Plugin,
+                    source: clap_presets::ClapPresetSource {
+                        location: clap_presets::ClapPresetLocation::Plugin,
                         load_key: Some(vec![0xff, 42]),
                     },
                     name: "Warm".into(),
@@ -2097,15 +2050,13 @@ mod tests {
             },
             BridgeMsg::DeviceAssetEditPrepared(
                 7,
-                Ok(crate::device_assets::edit_state::Change {
-                    state: Some(
-                        crate::device_assets::edit_state::State::try_from(vec![1, 2, 3]).unwrap(),
-                    ),
+                Ok(device_assets::edit_state::Change {
+                    state: Some(device_assets::edit_state::State::try_from(vec![1, 2, 3]).unwrap()),
                     reset_parameter_bases: vec![3, 412],
                 }),
             ),
             BridgeMsg::DeviceAssetEditPrepared(8, Ok(Default::default())),
-            BridgeMsg::DeviceAssetEditPrepared(9, Err(crate::device_assets::edit_state::Rejected)),
+            BridgeMsg::DeviceAssetEditPrepared(9, Err(device_assets::edit_state::Rejected)),
             BridgeMsg::Hello {
                 protocol: PROTOCOL_VERSION,
                 pid: 4242,
@@ -2134,7 +2085,7 @@ mod tests {
             BridgeMsg::Params {
                 params: vec![param],
                 native_layout: Some(
-                    (0..crate::native_layout::MAX_BYTES)
+                    (0..native_layout::MAX_BYTES)
                         .map(|i| (i * 7 + i / 251) as u8)
                         .collect(),
                 ),
@@ -2173,9 +2124,9 @@ mod tests {
                 }),
             ),
             BridgeMsg::ClapPresetApplied(10, Err("preset refused".into())),
-            BridgeMsg::PresetReported(crate::clap_presets::PresetReport::Loaded {
-                source: crate::clap_presets::ClapPresetSource {
-                    location: crate::clap_presets::ClapPresetLocation::File("/p.fxp".into()),
+            BridgeMsg::PresetReported(clap_presets::PresetReport::Loaded {
+                source: clap_presets::ClapPresetSource {
+                    location: clap_presets::ClapPresetLocation::File("/p.fxp".into()),
                     load_key: Some(vec![0xff, 42]),
                 },
                 startup: true,
@@ -2190,9 +2141,9 @@ mod tests {
                 superseded: vec![(3, NonZeroU32::new(8).unwrap())],
                 settled: vec![(7, NonZeroU32::new(9).unwrap())],
             }),
-            BridgeMsg::PresetReported(crate::clap_presets::PresetReport::Failed {
-                source: crate::clap_presets::ClapPresetSource {
-                    location: crate::clap_presets::ClapPresetLocation::Plugin,
+            BridgeMsg::PresetReported(clap_presets::PresetReport::Failed {
+                source: clap_presets::ClapPresetSource {
+                    location: clap_presets::ClapPresetLocation::Plugin,
                     load_key: None,
                 },
                 message: "missing".into(),
@@ -2238,7 +2189,7 @@ mod tests {
             BridgeMsg::WaveformMarkers(7, Some(vec![4, 2, 1])),
             BridgeMsg::WaveformMarkersEdited(
                 8,
-                crate::waveform_markers::EditResult::Applied {
+                waveform_markers::EditResult::Applied {
                     previous_state: vec![4, 2],
                     state: vec![4, 2, 1],
                 },

@@ -21,10 +21,10 @@ use komponist_app::{Action, App, PluginAction, ProjectAction, UiAction};
 use komponist_audiofile::fixtures as testkit;
 use komponist_audiofile::{FilePool, PeakState};
 use komponist_i18n::Lang;
-use komponist_ipc::device_assets::AssetStatus;
 use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack, StepRowSpec};
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{DeviceId, Project, Tick, TickRange, TrackId, persist};
+use komponist_plugin_api::device_assets::AssetStatus;
 use komponist_plugins::DeviceStatus;
 
 /// The first of the sampler bundle's eight pad notes. `show_authored_pads` checks it against the

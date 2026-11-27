@@ -1157,10 +1157,10 @@ const SLOW_SEND: Duration = Duration::from_millis(2000);
 #[cfg(unix)]
 #[test]
 fn fake_bridge_entry() {
-    use komponist_ipc::control::{ParamValue, StateRestoreError, param_flags};
-    use komponist_ipc::{
-        BridgeChannel, BridgeMsg, ControlMsg, LoadedInfo, ParamInfo, PluginDescriptor,
-    };
+    use komponist_ipc::control::StateRestoreError;
+    use komponist_ipc::{BridgeChannel, BridgeMsg, ControlMsg, LoadedInfo, PluginDescriptor};
+    use komponist_plugin_api::params::ParamInfo;
+    use komponist_plugin_api::params::{ParamValue, param_flags};
     use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 
     let args: Vec<String> = std::env::args().collect();

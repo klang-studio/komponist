@@ -8,11 +8,10 @@ use std::sync::{Arc, Mutex};
 
 use komponist_app::App;
 use komponist_app::device_host::{DeviceHost, PluginHost};
-use komponist_ipc::control::param_flags;
-use komponist_ipc::{
-    ParamInfo, ParamValue, PluginDescriptor, PluginFormat as BundleFormat, PluginKind,
-};
+use komponist_ipc::{PluginDescriptor, PluginFormat as BundleFormat, PluginKind};
 use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef};
+use komponist_plugin_api::params::param_flags;
+use komponist_plugin_api::params::{ParamInfo, ParamValue};
 use komponist_plugins::{Catalog, DeviceStatus, PluginManagerEvent, ProcessorSetup};
 use komponist_processor::Processor;
 
@@ -277,18 +276,18 @@ impl DeviceHost for FakeHost {
     fn native_layout(
         &self,
         device: DeviceId,
-    ) -> Option<&Arc<komponist_ipc::native_layout::NativeLayout>> {
+    ) -> Option<&Arc<komponist_plugin_api::native_layout::NativeLayout>> {
         self.bundled.as_ref()?.native_layout(device)
     }
 
     fn device_display(
         &self,
         device: DeviceId,
-    ) -> Option<&Arc<komponist_ipc::device_canvas::DisplayList>> {
+    ) -> Option<&Arc<komponist_plugin_api::device_canvas::DisplayList>> {
         self.bundled.as_ref()?.device_display(device)
     }
 
-    fn clap_presets(&self, device: &Device) -> &[komponist_ipc::clap_presets::ClapPreset] {
+    fn clap_presets(&self, device: &Device) -> &[komponist_plugin_api::clap_presets::ClapPreset] {
         self.bundled
             .as_ref()
             .map_or(&[], |host| host.clap_presets(device))

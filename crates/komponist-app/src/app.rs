@@ -1046,7 +1046,7 @@ impl App {
                 self.finish_plugin_asset_edit(*device, *request, result);
             }
             PluginManagerEvent::WaveformMarkersEdited { device, result, .. } => {
-                use komponist_ipc::waveform_markers::EditStatus;
+                use komponist_plugin_api::waveform_markers::EditStatus;
                 use komponist_plugins::WaveformMarkerEditResult;
 
                 match result {

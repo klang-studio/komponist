@@ -388,6 +388,8 @@ Rules that follow from this picture:
   `Box<dyn Processor>`.
 - **`komponist-audio` does not know the engine.** It drives anything that implements its
   `AudioProcess` trait; the app supplies the adapter (`EngineProcess`).
+- **`komponist-plugin-api` defines shared extension and frame data.** The UI and SDK use these
+  contracts directly. The bridge protocol uses the same types as message payloads.
 - **`komponist-hosting` implements the plugin formats.** In the app process, `komponist-plugins`
   uses it to host verified shipped CLAP bundles. The bridge uses it for third-party CLAP and VST3
   instances and for scanning. The app interacts with both paths through `komponist-plugins`.

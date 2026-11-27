@@ -8,7 +8,7 @@ use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
 
-use crate::control::{ParamInfo, param_flags};
+use crate::params::{ParamInfo, param_flags};
 
 pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.device-layout";
 /// Required capability for layouts using source-fraction trim.

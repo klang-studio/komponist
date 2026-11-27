@@ -11,7 +11,6 @@ use komponist_app::{Action, App};
 use komponist_engine::compile::{self, NoEnv};
 use komponist_engine::testing::{Logged, TestSine};
 use komponist_engine::{Command, Engine, EngineConfig, TransportState};
-use komponist_ipc::device_assets::{OfflineRequest, OfflineStatus};
 use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points, Shape};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewDevice, NewNote, NewTrack};
 use komponist_model::macros::Mapping;
@@ -21,6 +20,7 @@ use komponist_model::{
     AudioFile, ChannelRef, DeviceId, DeviceRole, PPQ, PluginFormat, PluginRef, Project, Sidechain,
     Tick, TickRange, TrackId,
 };
+use komponist_plugin_api::device_assets::{OfflineRequest, OfflineStatus};
 use komponist_plugins::{DeviceStatus, FailReason, PluginDirs, PluginManagerEvent, ProcessorSetup};
 use komponist_processor::{EventKind, Processor};
 

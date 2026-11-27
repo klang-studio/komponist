@@ -973,13 +973,13 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
     use komponist_app::actions::{EditAction, UiAction};
     use komponist_app::views::devices::model::cards;
     use komponist_i18n::Lang;
-    use komponist_ipc::device_canvas::Primitive;
     use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points, Shape};
     use komponist_model::edits::{
         NewClip, NewClipContent, NewDevice, NewNote, NewTrack, add_clip, add_track, insert_device,
     };
     use komponist_model::params::ParamId;
     use komponist_model::{ChannelRef, PPQ};
+    use komponist_plugin_api::device_canvas::Primitive;
     use std::path::PathBuf;
 
     let Some(bundle) = std::env::var_os("KOMPONIST_LAYOUT_FIXTURE") else {
@@ -1384,10 +1384,10 @@ fn sdk_example_uses_native_layout_and_falls_back() {
     use komponist_app::UiAction;
     use komponist_app::views::devices::model::cards;
     use komponist_i18n::Lang;
-    use komponist_ipc::device_assets::{AssetStatus, OfflineRequest, OfflineStatus};
     use komponist_model::ChannelRef;
     use komponist_model::edits::{NewDevice, NewTrack, add_track, insert_device};
     use komponist_model::params::ParamId;
+    use komponist_plugin_api::device_assets::{AssetStatus, OfflineRequest, OfflineStatus};
     use std::path::{Path, PathBuf};
 
     const PLUGIN_ID: &str = "org.klang-studio.komponist.native-clap-example";

@@ -41,8 +41,8 @@ use std::ffi::c_void;
 
 use egui::{Rect, ViewportCommand, vec2};
 use komponist_hosting::GuiParent;
-use komponist_ipc::frame::FrameRect;
-use komponist_ipc::frame::keys::{PolicyKey, PolicyMods};
+use komponist_plugin_api::frame::FrameRect;
+use komponist_plugin_api::frame::keys::{PolicyKey, PolicyMods};
 use komponist_tokens::color;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::Foundation::{
@@ -693,8 +693,8 @@ fn swallow(msg: &MSG) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use komponist_ipc::frame::FrameChord;
-    use komponist_ipc::frame::keys::decide;
+    use komponist_plugin_api::frame::FrameChord;
+    use komponist_plugin_api::frame::keys::decide;
 
     #[test]
     fn keys_map_by_virtual_key_or_the_layouts_character() {

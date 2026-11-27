@@ -16,13 +16,14 @@ use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::{PluginView, StatusKind};
 use komponist_app::{Action, App};
-use komponist_ipc::clap_presets::{ClapPreset, ClapPresetLocation, ClapPresetSource, DevicePreset};
-use komponist_ipc::{
-    LogLevel, ParamInfo, PluginDescriptor, PluginFormat as BundleFormat, PluginKind,
-};
+use komponist_ipc::{LogLevel, PluginDescriptor, PluginFormat as BundleFormat, PluginKind};
 use komponist_model::edits::ProjectProp;
 use komponist_model::fixtures::demo_project;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginRef, TrackId, persist};
+use komponist_plugin_api::clap_presets::{
+    ClapPreset, ClapPresetLocation, ClapPresetSource, DevicePreset,
+};
+use komponist_plugin_api::params::ParamInfo;
 use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{
     Catalog, DeviceSnapshots, DeviceStatus, FailReason, PluginDirs, PluginError,
@@ -2053,11 +2054,11 @@ fn plugin_gui_automation(
     GuiEditSource,
     komponist_model::automation::LaneId,
 ) {
-    use komponist_ipc::control::param_flags;
     use komponist_model::Tick;
     use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points};
     use komponist_model::edits::automation::{add_lane, set_lane_mode, set_lane_points};
     use komponist_model::params::ParamId;
+    use komponist_plugin_api::params::param_flags;
 
     let project = demo_project();
     let (track, device) = project

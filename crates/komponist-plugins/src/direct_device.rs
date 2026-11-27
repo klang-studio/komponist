@@ -7,15 +7,15 @@ use std::time::{Duration, Instant};
 
 use komponist_hosting::host_loop::notification_bits;
 use komponist_hosting::{HostedPlugin, HostingError};
-use komponist_ipc::clap_presets::{PresetLoad, PresetReport};
-use komponist_ipc::control::{MAX_STATE_PARAMETER_BASES, param_flags};
-use komponist_ipc::native_layout::NativeLayout;
-use komponist_ipc::waveform_markers::{EditResult, EditStatus, Request};
-use komponist_ipc::{
-    LogLevel, NoteName, ParamInfo, ParamValue, RenderMode, WireEvent, WireEventKind,
-};
+use komponist_ipc::control::MAX_STATE_PARAMETER_BASES;
+use komponist_ipc::{LogLevel, NoteName, RenderMode, WireEvent, WireEventKind};
 use komponist_model::project::SavedPluginState;
 use komponist_model::{DeviceId, DeviceRole};
+use komponist_plugin_api::clap_presets::{PresetLoad, PresetReport};
+use komponist_plugin_api::native_layout::NativeLayout;
+use komponist_plugin_api::params::param_flags;
+use komponist_plugin_api::params::{ParamInfo, ParamValue};
+use komponist_plugin_api::waveform_markers::{EditResult, EditStatus, Request};
 
 use crate::bundled_clap::VerifiedClap;
 use crate::direct::DirectClap;
@@ -62,7 +62,7 @@ pub(crate) struct DirectDevice {
     /// Edits made after the request must reach the replacement control epoch.
     after_preset_writes: BTreeMap<u32, (f64, NonZeroU32)>,
     capture_preset: bool,
-    pub(crate) display: Option<Arc<komponist_ipc::device_canvas::DisplayList>>,
+    pub(crate) display: Option<Arc<komponist_plugin_api::device_canvas::DisplayList>>,
     display_at: Instant,
     macro_params: BTreeMap<u32, f64>,
     /// A direct lane retains the host base. An automated macro retains its saved output.
@@ -450,16 +450,16 @@ impl DirectDevice {
                 .as_ref()
                 .is_some_and(|layout| layout.has_canvas())
         {
-            self.display_at = now + komponist_ipc::device_canvas::REFRESH;
+            self.display_at = now + komponist_plugin_api::device_canvas::REFRESH;
             self.display = self.session.device_display().map(Arc::new);
         }
     }
 
     pub(crate) fn prepare_asset_edit_state(
         &self,
-        edits: &komponist_ipc::device_assets::edit_state::Edits,
+        edits: &komponist_plugin_api::device_assets::edit_state::Edits,
         state: Option<&[u8]>,
-    ) -> komponist_ipc::device_assets::edit_state::PreparedChange {
+    ) -> komponist_plugin_api::device_assets::edit_state::PreparedChange {
         self.session.prepare_asset_edit_state(edits, state)
     }
 

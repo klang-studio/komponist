@@ -52,8 +52,9 @@ mod waveform_markers;
 
 pub use host::{FdEvents, HostContext, HostLoop, HostNotification, HostNotify, TimerId};
 pub use komponist_ipc::{
-    GuiSize, NoteName, ParamInfo, PluginDescriptor, PluginFormat, PluginKind, RenderMode,
+    GuiSize, NoteName, PluginDescriptor, PluginFormat, PluginKind, RenderMode,
 };
+pub use komponist_plugin_api::params::ParamInfo;
 pub use plugin::{
     ActivateConfig, EventOut, GUI_EMBEDDING, GuiInfo, GuiParent, HostedPlugin, HostedProcessor,
     HostingError, ProcessBlock, ProcessStatus,
@@ -86,7 +87,7 @@ pub fn scan(bundle: &Path) -> Result<Vec<PluginDescriptor>, HostingError> {
 /// Call from a disposable process when inspecting external plug-ins.
 pub fn discover_clap_presets(
     bundle: &Path,
-) -> Result<Vec<komponist_ipc::clap_presets::ClapPreset>, HostingError> {
+) -> Result<Vec<komponist_plugin_api::clap_presets::ClapPreset>, HostingError> {
     if bundle_format(bundle) != Some(PluginFormat::Clap) {
         return Err(HostingError::Unsupported(
             "preset discovery requires a CLAP bundle",

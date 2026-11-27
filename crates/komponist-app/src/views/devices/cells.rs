@@ -11,10 +11,10 @@
 
 use egui::{Id, Rect, Role, Sense, Ui, WidgetInfo};
 use komponist_i18n::Lang;
-use komponist_ipc::device_assets::{AssetKind, AssetStatus};
 use komponist_model::DeviceId;
 use komponist_model::params::eq_curve::CURVE_RATE;
 use komponist_model::params::{ParamContext, ParamId, ParamKind, Scale, Unit, resolve};
+use komponist_plugin_api::device_assets::{AssetKind, AssetStatus};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
 use komponist_tokens::{TrackPalette, color, device, radius};
@@ -669,7 +669,7 @@ fn native_choices<'a>(
     card: &'a Card,
     cell: &Cell,
     wire: u32,
-) -> Option<&'a [komponist_ipc::native_layout::Choice]> {
+) -> Option<&'a [komponist_plugin_api::native_layout::Choice]> {
     let native = card.native_cell(cell)?;
     native
         .variant_bindings()
@@ -751,10 +751,10 @@ fn segment(
 fn choice_wave(
     card: &Card,
     param: &Param,
-    authored: Option<&[komponist_ipc::native_layout::Choice]>,
+    authored: Option<&[komponist_plugin_api::native_layout::Choice]>,
     index: usize,
 ) -> Option<Wave> {
-    use komponist_ipc::native_layout::ChoiceGlyph;
+    use komponist_plugin_api::native_layout::ChoiceGlyph;
     if card.native_layout.is_some() || param.info.id.plugin_id().is_some() {
         return match authored?.get(index)?.glyph? {
             ChoiceGlyph::WaveSine => Some(Wave::Sine),
@@ -1085,7 +1085,7 @@ fn native_pads(
     cell: &Cell,
     palette: &TrackPalette,
     rect: Rect,
-    bank: &komponist_ipc::native_layout::PadBank,
+    bank: &komponist_plugin_api::native_layout::PadBank,
 ) {
     let lang = komponist_ui::lang(cu.ctx());
     let slot = |id| {
@@ -1358,7 +1358,7 @@ fn graph(
     }
     let asset_slot = native_graph.and_then(|graph| graph.asset_slot);
     let fractional_trim = native_graph.is_some_and(|graph| {
-        graph.trim_unit == Some(komponist_ipc::native_layout::TrimUnit::SourceFraction)
+        graph.trim_unit == Some(komponist_plugin_api::native_layout::TrimUnit::SourceFraction)
     });
     let asset = asset_slot.and_then(|id| card.asset_waveforms.get(&id));
     let length = asset.map(|source| source.duration);
@@ -2065,7 +2065,7 @@ mod tests {
                 ]}
             ]
         });
-        let layout = komponist_ipc::native_layout::NativeLayout::parse(
+        let layout = komponist_plugin_api::native_layout::NativeLayout::parse(
             &serde_json::to_vec(&document).unwrap(),
         )
         .unwrap();
@@ -2122,8 +2122,8 @@ mod tests {
 
     #[test]
     fn an_authored_fm_diagram_selects_and_colors_using_the_same_routing() {
-        use komponist_ipc::device_canvas::DisplayList;
-        use komponist_ipc::native_layout::NativeLayout;
+        use komponist_plugin_api::device_canvas::DisplayList;
+        use komponist_plugin_api::native_layout::NativeLayout;
 
         let layout = NativeLayout::parse(br#"{
           "default_locale":"en","locales":["en"],
@@ -2177,7 +2177,7 @@ mod tests {
 
     #[test]
     fn native_selectors_can_use_another_selectors_label_suffix() {
-        let layout = komponist_ipc::native_layout::NativeLayout::parse(
+        let layout = komponist_plugin_api::native_layout::NativeLayout::parse(
             br#"{
               "default_locale":"en","locales":["en"],
               "required_capabilities":["cell-selections"],
@@ -2235,8 +2235,8 @@ mod tests {
 
     #[test]
     fn authored_graph_and_canvas_use_the_layout_locale() {
-        use komponist_ipc::device_canvas::DisplayList;
-        use komponist_ipc::native_layout::NativeLayout;
+        use komponist_plugin_api::device_canvas::DisplayList;
+        use komponist_plugin_api::native_layout::NativeLayout;
         use std::sync::Arc;
 
         let layout = Arc::new(
@@ -2297,8 +2297,8 @@ mod tests {
 
     #[test]
     fn a_native_pad_bank_selects_and_auditions_its_authored_notes() {
-        use komponist_ipc::device_assets::Slot;
-        use komponist_ipc::native_layout::{CAP_PAD_BANK, NativeLayout};
+        use komponist_plugin_api::device_assets::Slot;
+        use komponist_plugin_api::native_layout::{CAP_PAD_BANK, NativeLayout};
         use serde_json::json;
         use std::path::{Path, PathBuf};
         use std::sync::Arc;
@@ -2407,7 +2407,7 @@ mod tests {
     #[test]
     fn authored_gain_reduction_meters_use_independent_accessible_holds() {
         use crate::meters::DeviceLevels;
-        use komponist_ipc::native_layout::NativeLayout;
+        use komponist_plugin_api::native_layout::NativeLayout;
         use std::sync::Arc;
 
         let layout = Arc::new(
@@ -2500,7 +2500,7 @@ mod tests {
 
     #[test]
     fn number_entry_uses_the_displayed_units() {
-        let layout = komponist_ipc::native_layout::NativeLayout::parse(
+        let layout = komponist_plugin_api::native_layout::NativeLayout::parse(
             br#"{
             "default_locale":"en","locales":["en"],
             "pages":[{"key":"main","labels":{"en":"Main"},"columns":4,"cells":[
@@ -2664,8 +2664,8 @@ mod tests {
 
     #[test]
     fn an_authored_xy_panel_keeps_physical_axes_and_normalized_actions() {
-        use komponist_ipc::control::ParamInfo as WireInfo;
-        use komponist_ipc::native_layout::NativeLayout;
+        use komponist_plugin_api::native_layout::NativeLayout;
+        use komponist_plugin_api::params::ParamInfo as WireInfo;
         use serde_json::json;
         use std::sync::Arc;
 
@@ -2706,7 +2706,7 @@ mod tests {
                     0.42 / 0.95
                 },
                 step_count: 0,
-                flags: komponist_ipc::control::param_flags::AUTOMATABLE,
+                flags: komponist_plugin_api::params::param_flags::AUTOMATABLE,
             });
             native.validate_params(&wires).unwrap();
             authored.params = wires
@@ -3009,8 +3009,8 @@ mod tests {
     }
 
     fn authored_asset_waveform_card(fractional: bool) -> Card {
-        use komponist_ipc::device_assets::{AssetKind, AssetStatus, Slot};
-        use komponist_ipc::native_layout::{CAP_SOURCE_FRACTION_TRIM, NativeLayout};
+        use komponist_plugin_api::device_assets::{AssetKind, AssetStatus, Slot};
+        use komponist_plugin_api::native_layout::{CAP_SOURCE_FRACTION_TRIM, NativeLayout};
         use std::sync::Arc;
 
         let mut layout: serde_json::Value = serde_json::from_slice(
@@ -3053,8 +3053,8 @@ mod tests {
 
     #[test]
     fn authored_slice_controls_name_the_notes_and_request_transient_detection() {
-        use komponist_ipc::native_layout::{CAP_SOURCE_FRACTION_TRIM, NativeLayout};
-        use komponist_ipc::waveform_markers::{Edit, Request, SliceOptions, Snapshot};
+        use komponist_plugin_api::native_layout::{CAP_SOURCE_FRACTION_TRIM, NativeLayout};
+        use komponist_plugin_api::waveform_markers::{Edit, Request, SliceOptions, Snapshot};
         use serde_json::json;
         use std::sync::Arc;
 
@@ -3228,7 +3228,7 @@ mod tests {
         card.graph_signals.insert(
             (0, 0),
             model::GraphSignals {
-                markers: Some(komponist_ipc::waveform_markers::Snapshot {
+                markers: Some(komponist_plugin_api::waveform_markers::Snapshot {
                     revision: 4,
                     editable: true,
                     positions: vec![0.125, 0.5],
@@ -3251,9 +3251,9 @@ mod tests {
             action,
             Action::Plugin(PluginAction::EditWaveformMarkers {
                 slot: 5,
-                request: komponist_ipc::waveform_markers::Request {
+                request: komponist_plugin_api::waveform_markers::Request {
                     revision: 4,
-                    operation: komponist_ipc::waveform_markers::Edit::Move { index: 0, seconds },
+                    operation: komponist_plugin_api::waveform_markers::Edit::Move { index: 0, seconds },
                 },
                 ..
             }) if *seconds > 0.0 && *seconds < 0.125
@@ -3263,9 +3263,9 @@ mod tests {
     #[test]
     fn asset_waveform_reads_its_link_and_edits_the_plugin_range() {
         use super::super::viewport::Viewport;
-        use komponist_ipc::device_assets::AssetKind;
         use komponist_model::plugin_assets::AssetLink;
         use komponist_model::{Device, DeviceRole, PluginFormat, PluginRef};
+        use komponist_plugin_api::device_assets::AssetKind;
         use std::path::Path;
         use std::time::{Duration, Instant};
 
@@ -3391,10 +3391,10 @@ mod tests {
 
     #[test]
     fn fractional_waveform_trim_uses_the_wire_fraction_with_parameter_display() {
-        use komponist_ipc::control::ParamInfo as WireInfo;
-        use komponist_ipc::native_layout::{
+        use komponist_plugin_api::native_layout::{
             CAP_PARAMETER_DISPLAY, CAP_SOURCE_FRACTION_TRIM, NativeLayout,
         };
+        use komponist_plugin_api::params::ParamInfo as WireInfo;
         use serde_json::json;
         use std::sync::Arc;
 
