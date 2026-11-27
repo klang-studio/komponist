@@ -479,7 +479,7 @@ fn missing_plugin_files_have_english_places_and_a_search_button() {
     let [row] = model.assets.as_slice() else {
         panic!("one missing linked file expected")
     };
-    assert_eq!(row.place, "Track Drums · Sampler");
+    assert_eq!(row.place, "Track Drums · Klopfer");
     assert_eq!(row.name, "kick.wav");
     assert_eq!(row.format, "FILE");
     assert_eq!(row.asset, Some((device_id, 2)));

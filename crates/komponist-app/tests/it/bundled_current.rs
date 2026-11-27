@@ -1138,7 +1138,9 @@ fn missing_bundle_opens_as_a_placeholder_without_changing_the_project() {
     assert!(host.catalog().resolve(&plugin).is_none());
     let mut app = app_with(Project::new("Empty"), host);
     open(&mut app, &path);
-    assert_eq!(app.engine().device_status(device), DeviceStatus::Missing);
+    step_until(&mut app, "missing packaged processor", |app| {
+        app.engine().device_status(device) == DeviceStatus::Missing
+    });
     assert!(matches!(
         &app.ui().dialog,
         Some(Dialog::MissingPlugins(missing))
