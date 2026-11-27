@@ -1,7 +1,7 @@
 //! EQ: parametric, six bands (`graph::eq`) and an output gain (WP-90).
 //!
 //! Each band is one RBJ biquad (low cut and high cut 12 dB/oct with `Q` as resonance, low and high
-//! shelf, bell). The coefficients come from [`komponist_model::params::eq_curve`], the same code the
+//! shelf, bell). The coefficients come from [`komponist_device_dsp::eq_curve`], the same code the
 //! graph samples for its curve, so the drawn curve is the filter's response. Frequency, gain and Q
 //! glide (log domain, 20 ms) and the coefficients are recomputed every [`CONTROL`] samples, which
 //! is independent of the block size. Filters are direct form I ([`Df1`]),
@@ -18,7 +18,7 @@ use komponist_model::params::layout::{
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 use komponist_processor::{SampleTap, tap};
 
-use komponist_model::params::eq_curve::{self, Coefs};
+use komponist_device_dsp::eq_curve::{self, Coefs};
 
 use komponist_device_core::dsp::{CONTROL, Df1, Glide, db_to_gain, finite, smooth_coeff};
 use komponist_device_core::layout::{knob, param, single_page, template, toggle};

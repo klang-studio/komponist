@@ -28,7 +28,9 @@ use komponist_ui::widgets::device::graph::{
 };
 use komponist_ui::widgets::number_field::format_number;
 
-use super::layout::{Cell, CellParam, Half, WidgetKind, cell_rect};
+use komponist_ui::widgets::device::cell_rect;
+
+use super::layout::{Cell, CellParam, Half, WidgetKind};
 use super::metrics::{
     SAMPLER_FILE_INFO_WIDTH, SAMPLER_FILE_WIDTH, SAMPLER_TICK_COUNT, WAVEFORM_MIN_ZOOM,
 };

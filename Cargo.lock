@@ -2653,6 +2653,7 @@ dependencies = [
  "komponist-audio",
  "komponist-audiofile",
  "komponist-bridge",
+ "komponist-device-dsp",
  "komponist-engine",
  "komponist-i18n",
  "komponist-ipc",
@@ -2923,6 +2924,7 @@ dependencies = [
  "clap-sys",
  "komponist-bundled-clap-adapter",
  "komponist-device-core",
+ "komponist-device-dsp",
  "komponist-i18n",
  "komponist-model",
  "komponist-native-clap-sdk",
@@ -2960,11 +2962,16 @@ dependencies = [
 name = "komponist-device-core"
 version = "0.2.0"
 dependencies = [
+ "komponist-device-dsp",
  "komponist-i18n",
  "komponist-model",
  "komponist-processor",
  "serde_json",
 ]
+
+[[package]]
+name = "komponist-device-dsp"
+version = "0.2.0"
 
 [[package]]
 name = "komponist-engine"
@@ -2990,6 +2997,7 @@ version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "komponist-device-core",
+ "komponist-device-dsp",
  "komponist-i18n",
  "komponist-model",
  "komponist-processor",
@@ -3077,7 +3085,6 @@ name = "komponist-model"
 version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
- "komponist-tokens",
  "proptest",
  "serde",
  "serde_json",
@@ -3132,6 +3139,7 @@ name = "komponist-presse"
 version = "0.2.0"
 dependencies = [
  "komponist-device-core",
+ "komponist-device-dsp",
  "komponist-i18n",
  "komponist-model",
  "komponist-processor",
@@ -3232,6 +3240,7 @@ version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "komponist-device-core",
+ "komponist-device-dsp",
  "komponist-i18n",
  "komponist-model",
  "komponist-processor",
@@ -3259,6 +3268,7 @@ dependencies = [
  "egui_kittest",
  "klang-dsp",
  "komponist-audiofile",
+ "komponist-device-dsp",
  "komponist-i18n",
  "komponist-model",
  "komponist-plugin-api",
@@ -3275,6 +3285,7 @@ dependencies = [
  "assert_no_alloc",
  "klang-dsp",
  "komponist-device-core",
+ "komponist-device-dsp",
  "komponist-engine",
  "komponist-i18n",
  "komponist-model",

@@ -16,7 +16,7 @@
 //! ```
 //!
 //! - **Tables** ([`bank`]): 16 original factory tables of 32 frames, generated from the recipes in
-//!   `komponist_model::params::wavetable` when the first surf is created, ten band-limited levels
+//!   `komponist_device_dsp::wavetable` when the first surf is created, ten band-limited levels
 //!   each. No sample files, no import (a later issue).
 //! - **Oscillators** ([`osc`]): per control interval (32 samples) the frames around the position
 //!   and the two levels for the pitch; per sample a linear read of four slices, blended. The

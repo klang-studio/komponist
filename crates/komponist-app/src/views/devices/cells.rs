@@ -10,9 +10,9 @@
 //! (selected pad, held reduction) in egui memory until the device runtime (WP-85, WP-87) feeds it.
 
 use egui::{Id, Rect, Role, Sense, Ui, WidgetInfo};
+use komponist_device_dsp::eq_curve::CURVE_RATE;
 use komponist_i18n::Lang;
 use komponist_model::DeviceId;
-use komponist_model::params::eq_curve::CURVE_RATE;
 use komponist_model::params::{ParamContext, ParamId, ParamKind, Scale, Unit, resolve};
 use komponist_plugin_api::device_assets::{AssetKind, AssetStatus};
 use komponist_tokens::egui_support::color32;
@@ -1876,6 +1876,7 @@ mod tests {
     use egui_kittest::kittest::Queryable as _;
     use komponist_model::DeviceId;
     use komponist_model::params::{ParamId, ParamInfo};
+    use komponist_ui::widgets::device::cell_rect;
 
     fn draw_test_cell(
         ui: &mut Ui,
@@ -2021,8 +2022,7 @@ mod tests {
                     let page = card.current_page().unwrap().clone();
                     let origin = ui.min_rect().min;
                     for cell in &page.cells {
-                        let rect = crate::views::devices::layout::cell_rect(cell)
-                            .translate(origin.to_vec2());
+                        let rect = cell_rect(cell).translate(origin.to_vec2());
                         draw_test_cell(ui, out, card, &palette, cell, rect);
                     }
                 },
@@ -2271,8 +2271,7 @@ mod tests {
                         let palette = TrackPalette::new(150);
                         let page = card.current_page().unwrap();
                         for cell in &page.cells {
-                            let rect = crate::views::devices::layout::cell_rect(cell)
-                                .translate(ui.min_rect().min.to_vec2());
+                            let rect = cell_rect(cell).translate(ui.min_rect().min.to_vec2());
                             draw_test_cell(ui, out, card, &palette, cell, rect);
                         }
                     },
@@ -2364,8 +2363,7 @@ mod tests {
                         let palette = TrackPalette::new(150);
                         let origin = ui.min_rect().min;
                         for cell in &card.current_page().unwrap().cells {
-                            let rect = crate::views::devices::layout::cell_rect(cell)
-                                .translate(origin.to_vec2());
+                            let rect = cell_rect(cell).translate(origin.to_vec2());
                             draw_test_cell(ui, out, card, &palette, cell, rect);
                         }
                     },
@@ -2450,8 +2448,7 @@ mod tests {
                         komponist_ui::set_lang(ui.ctx(), lang);
                         let palette = TrackPalette::new(150);
                         for cell in &card.current_page().unwrap().cells {
-                            let rect = crate::views::devices::layout::cell_rect(cell)
-                                .translate(ui.min_rect().min.to_vec2());
+                            let rect = cell_rect(cell).translate(ui.min_rect().min.to_vec2());
                             draw_test_cell(ui, out, card, &palette, cell, rect);
                         }
                     },
@@ -2651,8 +2648,7 @@ mod tests {
                         color32(color::SURFACE_2),
                     );
                     for cell in &page.cells {
-                        let rect = crate::views::devices::layout::cell_rect(cell)
-                            .translate(origin.to_vec2());
+                        let rect = cell_rect(cell).translate(origin.to_vec2());
                         draw_test_cell(ui, out, card, &palette, cell, rect);
                     }
                 },

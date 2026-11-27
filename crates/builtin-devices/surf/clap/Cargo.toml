@@ -24,5 +24,6 @@ komponist-volt.workspace = true
 nice-plug.workspace = true
 
 [dev-dependencies]
+komponist-device-dsp.workspace = true
 clap-sys.workspace = true
 serde_json.workspace = true

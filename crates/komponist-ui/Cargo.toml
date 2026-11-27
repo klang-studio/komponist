@@ -19,6 +19,7 @@ path = "src/bin/gallery.rs"
 snapshot = ["dep:egui_kittest"]
 
 [dependencies]
+komponist-device-dsp.workspace = true
 komponist-tokens = { workspace = true, features = ["egui"] }
 # dB / pan formatting and parsing for the value controls (decided at G1); time, notes and clips
 # for the timeline paint functions.

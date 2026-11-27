@@ -126,6 +126,7 @@ Their READMEs record provenance.
 | [`komponist-stretch`](../crates/komponist-stretch/README.md) | Worker-only Rust/C++ wrapper around vendored Signalsmith Stretch/Linear |
 | [`hexa-core`](../crates/builtin-devices/hexa/core/README.md) | Hexa six-operator FM engine |
 | [`sampler-core`](../crates/builtin-devices/sampler-shared/core/README.md) | Shared Klopfer and Sampler engine |
+| [`komponist-device-dsp`](../crates/komponist-device-dsp/README.md) | Shared device math for DSP and visualizations |
 | [`komponist-device-core`](../crates/builtin-devices/core/src/lib.rs) | Unstable device API: catalog and parameter metadata, layouts, state, presets, processor adapters and shared DSP |
 | [Device crates](../crates/builtin-devices/README.md) | One directory per instrument, audio effect and MIDI effect, with a standalone CLAP package alongside its DSP |
 | [`komponist-plugin-api`](../crates/komponist-plugin-api/README.md) | CLAP extensions, parameter metadata, and plugin frame data shared by the SDK, host, and UI |
@@ -141,9 +142,9 @@ Their READMEs record provenance.
 `komponist-model` depends on no other komponist crate and receives localized names as arguments.
 The engine knows neither egui nor IPC nor CLAP/VST3. `komponist-audio` defines an `AudioProcess`
 callback interface without depending on the engine; the app supplies the adapter.
-`komponist-device-core` uses the model, i18n catalog and `komponist-processor` interfaces.
+`komponist-device-core` uses the model, i18n catalog, `komponist-processor` interfaces and shared device math.
 The Rust author SDK reaches the processor contracts through `komponist-device-core`.
-Individual device crates build on that API and are dependencies of their respective CLAP
+The UI computes device pixel geometry from design tokens. Individual device crates build on the device-core API and are dependencies of their respective CLAP
 bundles. The app, UI, plugin manager, engine and model have no dependency on the device crates.
 The plugin manager obtains each device's metadata and processor through the host interfaces at
 runtime. The workspace boundary check enforces the dependency rule.
@@ -805,7 +806,7 @@ The bundled devices use the normal document, processor and device-card interface
 - **Surf:** wavetable synthesis on Volt's engine: the voice, filter, envelopes, LFOs, matrix and
   voice modes are shared (`Engine<O: Oscillators>`), only the two oscillators differ. Sixteen
   original factory tables are generated at first use from recipes in
-  `komponist_model::params::wavetable`, which the 3D graph reads too, into ten band-limited
+  `komponist_device_dsp::wavetable`, which the 3D graph reads too, into ten band-limited
   levels each. User tables are a later issue (#184).
 - **Klopfer:** drum sampler with eight pads on MIDI notes 36–43.
 - **Sampler:** general-purpose instrument with chromatic and slice modes, waveform regions,

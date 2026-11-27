@@ -5,7 +5,7 @@
 //! The device head's preset menu lists them (WP-96, [`presets`]); [`state`] is the plain
 //! state without the loaded preset's name.
 
-use komponist_model::params::va_curve::{dst, src};
+use komponist_device_dsp::va_curve::{dst, src};
 
 use komponist_device_core::Preset;
 

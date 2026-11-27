@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+komponist-device-dsp.workspace = true
 komponist-device-core.workspace = true
 komponist-processor.workspace = true
 komponist-i18n.workspace = true

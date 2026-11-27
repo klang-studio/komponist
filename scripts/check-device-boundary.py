@@ -18,6 +18,7 @@ PROTECTED = {
     "komponist-model",
     "komponist-processor",
     "komponist-plugin-api",
+    "komponist-device-dsp",
 }
 DEVICE_DIR = ROOT / "crates" / "builtin-devices"
 BASELINE = "scripts/device-boundary-baseline.tsv"

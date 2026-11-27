@@ -9,7 +9,7 @@
 //! [`fast_log2`] and floored at −120 dB. With **link** the level of each channel is blended
 //! towards the louder one (`lerp(x_c, max(x_L, x_R), link)`, in dB); at 100 % one gain computer
 //! serves both channels. The gain computer is the quadratic soft knee of `comp_curve`
-//! ([`komponist_model::params::comp_curve`], the same formulas the graph draws). Its reduction
+//! ([`komponist_device_dsp::comp_curve`], the same formulas the graph draws). Its reduction
 //! (dB, ≤ 0) goes through a branching one-pole smoother in the dB domain: deeper → the attack
 //! coefficient, shallower → the release coefficient. Times are time constants (63 %).
 //! **Auto-release** (program dependent): the smoother's release becomes 0.3 · `release`, and a
@@ -40,9 +40,9 @@
 
 use std::sync::Arc;
 
+use komponist_device_dsp::comp_curve::{self, RATIO_MAX};
+use komponist_device_dsp::eq_curve::{self, Coefs};
 use komponist_i18n::Lang;
-use komponist_model::params::comp_curve::{self, RATIO_MAX};
-use komponist_model::params::eq_curve::{self, Coefs};
 use komponist_model::params::layout::{
     Cell, CellParam, DeviceLayout, GraphBinding, GraphConfig, Half, Page, WidgetKind,
 };

@@ -1,5 +1,5 @@
 //! The factory wavetables, band-limited: built once per process from the recipes in
-//! [`komponist_model::params::wavetable`] and shared by every surf.
+//! [`komponist_device_dsp::wavetable`] and shared by every surf.
 //!
 //! Every frame of every table exists in [`LEVELS`] versions. Level `L` holds the harmonics up to
 //! `512 >> L` in `max(4 · (512 >> L), 256)` samples (2048 … 256: at least eight samples per period
@@ -18,7 +18,7 @@
 
 use std::sync::OnceLock;
 
-use komponist_model::params::wavetable::{
+use komponist_device_dsp::wavetable::{
     FRAMES, MAX_HARMONIC, Recipe, TABLES, frame_position, recipe,
 };
 use realfft::RealFftPlanner;

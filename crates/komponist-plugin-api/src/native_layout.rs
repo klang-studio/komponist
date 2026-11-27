@@ -982,7 +982,10 @@ impl NativeLayout {
         if let Some(bank) = &self.pad_bank {
             self.validate_pad_bank(bank)?;
         } else {
-            check((1..=4).contains(&self.pages.len()), "page count")?;
+            check(
+                (1..=komponist_model::params::layout::MAX_PAGES).contains(&self.pages.len()),
+                "page count",
+            )?;
         }
         self.validate_metadata(&locales)?;
         for display in self.parameter_display.values() {

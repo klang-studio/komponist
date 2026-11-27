@@ -12,7 +12,7 @@
 //! interval's slices fade out across the interval while the new ones fade in. Everything is
 //! references into the shared [`Bank`](crate::bank::Bank): no allocation, no lock.
 
-use komponist_model::params::wavetable::{FRAMES, TABLES};
+use komponist_device_dsp::wavetable::{FRAMES, TABLES};
 use komponist_volt::Oscillators;
 use komponist_volt::params::id;
 

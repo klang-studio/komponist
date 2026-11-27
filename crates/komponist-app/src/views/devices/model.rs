@@ -12,6 +12,7 @@ use komponist_plugin_api::params::ParamValue;
 use komponist_plugins::params::{is_listed, param_info};
 use komponist_plugins::{DeviceStatus, FailReason};
 use komponist_tokens::device;
+use komponist_ui::widgets::device::device_width;
 
 use super::layout::{self, DeviceLayout};
 use super::metrics;
@@ -312,8 +313,10 @@ impl Card {
             return device::frame::COLLAPSED_W;
         }
         let grid = match self.state {
-            CardState::Ok => self.current_page().map_or(0.0, layout::Page::width),
-            _ => layout::device_width(metrics::MESSAGE_COLUMNS),
+            CardState::Ok => self
+                .current_page()
+                .map_or(0.0, |page| device_width(page.cols)),
+            _ => device_width(metrics::MESSAGE_COLUMNS),
         };
         grid.max(head)
     }
@@ -546,7 +549,7 @@ pub(crate) fn card(
         preset_changed: selected.is_some_and(|(_, changed)| changed),
         has_sidechain: host.has_sidechain(device.id),
         sidechain: device.sidechain,
-        width: layout::device_width(metrics::COLUMNS as u8),
+        width: device_width(metrics::COLUMNS as u8),
         late: None,
         levels: None,
         native_meter_levels: Default::default(),

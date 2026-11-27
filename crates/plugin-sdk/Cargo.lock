@@ -303,11 +303,16 @@ dependencies = [
 name = "komponist-device-core"
 version = "0.2.0"
 dependencies = [
+ "komponist-device-dsp",
  "komponist-i18n",
  "komponist-model",
  "komponist-processor",
  "serde_json",
 ]
+
+[[package]]
+name = "komponist-device-dsp"
+version = "0.2.0"
 
 [[package]]
 name = "komponist-i18n"
@@ -321,7 +326,6 @@ name = "komponist-model"
 version = "0.2.0"
 dependencies = [
  "base64",
- "komponist-tokens",
  "serde",
  "serde_json",
 ]
@@ -353,13 +357,6 @@ name = "komponist-processor"
 version = "0.2.0"
 dependencies = [
  "komponist-model",
-]
-
-[[package]]
-name = "komponist-tokens"
-version = "0.2.0"
-dependencies = [
- "serde_json",
 ]
 
 [[package]]

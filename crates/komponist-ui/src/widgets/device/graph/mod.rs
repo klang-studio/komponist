@@ -27,7 +27,7 @@ use egui::{
     Color32, CursorIcon, Event, EventFilter, Id, Key, Painter, Pos2, Rect, Response, Role, Sense,
     Shape, Stroke, Ui, Vec2, WidgetInfo, pos2, vec2,
 };
-use komponist_model::params::va_curve;
+use komponist_device_dsp::va_curve;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography::{self, TypeStyle};
 use komponist_tokens::{color, radius, widget};

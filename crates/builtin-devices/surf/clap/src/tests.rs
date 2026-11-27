@@ -267,6 +267,6 @@ fn every_enum_choice_matches_the_device_list() {
     assert_eq!(choices("mod1_src"), ModSource::variants().len());
     assert_eq!(
         Table::variants().len(),
-        komponist_model::params::wavetable::TABLES.len()
+        komponist_device_dsp::wavetable::TABLES.len()
     );
 }

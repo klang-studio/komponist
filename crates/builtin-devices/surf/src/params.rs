@@ -12,9 +12,9 @@
 //! Oscillator B keeps volt's `osc_b_oct` and `osc_b_fine`; in surf both oscillators are tuned
 //! against the played pitch (volt tunes B against A, which has no tuning of its own).
 
+use komponist_device_dsp::va_curve::dst;
+use komponist_device_dsp::wavetable::TABLES;
 use komponist_i18n::Lang;
-use komponist_model::params::va_curve::dst;
-use komponist_model::params::wavetable::TABLES;
 use komponist_model::params::{ParamInfo, ParamKind};
 use komponist_volt::params::{
     self as volt, cents_text, dest_names, id, names, octaves_text, percent,

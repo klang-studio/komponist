@@ -3,25 +3,19 @@
 //! parameter it edits. Pure data and arithmetic: the app's device frame draws it, the
 //! validator checks it in debug builds ([`validate`]). Plugins define
 //! theirs here too.
-//!
-//! A cell is `56 × 64`, the gap `4`, the margin `8` (`komponist_tokens::device::grid`), so column
-//! `c` starts at `x = 8 + 60·c`, row `r` at `y = 8 + 68·r`. A half cell is `56 × 30` and sits in the
-//! top (`y`) or bottom (`y + 34`) half of its row; two half cells share a row, a full cell never
-//! shares with anything.
 
 use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::params::{ParamContext, ParamId, ResolveError, resolve};
-use komponist_tokens::{device, widget};
 
 mod auto;
 pub use auto::{AUTO_COLUMNS, AUTO_MAX, auto_layout};
 
 /// Rows of the grid.
 pub const ROWS: u8 = 3;
-/// Most pages a device has (`widget.pages.max_pages`).
-pub const MAX_PAGES: usize = widget::pages::MAX_PAGES as usize;
+/// Maximum pages in a device layout without a pad bank.
+pub const MAX_PAGES: usize = 4;
 
 /// The widget a cell shows (WP-83 and WP-84 build them in `komponist_ui::widgets::device`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -60,9 +54,9 @@ pub enum WidgetKind {
 /// Which half of a row a half cell takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Half {
-    /// `y`.
+    /// Upper half.
     Top,
-    /// `y + 34`.
+    /// Lower half.
     Bottom,
 }
 
@@ -336,31 +330,6 @@ impl Cell {
         self
     }
 
-    /// The cell's bounds `[x, y, width, height]` in design px, relative to the top-left corner of
-    /// the device body.
-    pub fn bounds(&self) -> [f32; 4] {
-        let [cw, ch] = device::grid::CELL;
-        let (gap, pad) = (device::grid::GAP, device::grid::PADDING);
-        let x = pad + f32::from(self.col) * (cw + gap);
-        let mut y = pad + f32::from(self.row) * (ch + gap);
-        let (w, h) = (span(cw, self.cols), span(ch, self.rows));
-        let h = match self.half {
-            // A half cell over several rows (`graph_half`): the full rows above it and the top
-            // half of the last one.
-            Some(Half::Top) if self.rows > 1 => {
-                span(ch, self.rows - 1) + gap + device::grid::HALF_CELL_H
-            }
-            Some(half) => {
-                if half == Half::Bottom {
-                    y += device::grid::HALF_OFFSET_BOTTOM;
-                }
-                device::grid::HALF_CELL_H
-            }
-            None => h,
-        };
-        [x, y, w, h]
-    }
-
     /// The grid slots it occupies: (column, row, which part of the row).
     fn slots(&self) -> impl Iterator<Item = (u8, u8, Part)> + '_ {
         let part = match self.half {
@@ -389,17 +358,6 @@ impl Cell {
     }
 }
 
-/// `n` cells with gaps between them: `n · cell + (n − 1) · gap` (`device.grid.span_w` / `span_h`).
-pub fn span(cell: f32, n: u8) -> f32 {
-    let n = f32::from(n.max(1));
-    n * cell + (n - 1.0) * device::grid::GAP
-}
-
-/// The width of a device with `cols` columns: `16 + 60·cols − 4` (`device.grid.device_w`).
-pub fn device_width(cols: u8) -> f32 {
-    2.0 * device::grid::PADDING + span(device::grid::CELL[0], cols)
-}
-
 /// One page: a name for the page switch, its own column count, its cells.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Page {
@@ -411,13 +369,6 @@ pub struct Page {
     pub cells: Vec<Cell>,
     /// Columns after which a 1 px `line.1` divider runs in the gap (between function groups).
     pub dividers: Vec<u8>,
-}
-
-impl Page {
-    /// The width of the device on this page.
-    pub fn width(&self) -> f32 {
-        device_width(self.cols)
-    }
 }
 
 /// The layout of a device: 1 to [`MAX_PAGES`] pages.
@@ -681,27 +632,6 @@ mod tests {
     }
 
     #[test]
-    fn device_widths_follow_the_handoff() {
-        assert_eq!(device_width(4), 252.0);
-        assert_eq!(device_width(7), 432.0);
-        assert_eq!(device_width(10), 612.0);
-        assert_eq!(span(56.0, 2), 116.0);
-    }
-
-    #[test]
-    fn cells_sit_on_the_grid() {
-        let k = Cell::knob(2, 1, id("a"));
-        assert_eq!(k.bounds(), [128.0, 76.0, 56.0, 64.0]);
-        let top = Cell::half(0, 2, 2, Half::Top, WidgetKind::Number, CellParam::None);
-        let bottom = Cell::half(0, 2, 2, Half::Bottom, WidgetKind::Segment, CellParam::None);
-        assert_eq!(top.bounds()[1], 144.0);
-        assert_eq!(bottom.bounds()[1], 178.0);
-        assert_eq!((top.bounds()[3], top.bounds()[2]), (30.0, 116.0));
-        let tall = Cell::span(0, 0, 1, 3, WidgetKind::MiniFader, CellParam::None);
-        assert_eq!(tall.bounds()[3], 200.0);
-    }
-
-    #[test]
     fn a_valid_layout_has_no_errors() {
         let l = page(
             4,
@@ -789,7 +719,6 @@ mod tests {
     #[test]
     fn a_graph_of_one_and_a_half_rows_leaves_the_bottom_half_of_its_last_row() {
         let graph = || Cell::graph_half(0, 0, 4, 1, GraphBinding::new(GraphConfig::FilterVa));
-        assert_eq!(graph().bounds(), [8.0, 8.0, 236.0, 98.0]);
         let free = page(
             4,
             vec![
@@ -946,11 +875,7 @@ mod tests {
         assert_eq!((page.cells[5].col, page.cells[5].row), (1, 1));
         assert_eq!(validate(&l, &ParamContext::new(), &all), vec![]);
         let two = DeviceLayout::knob_grid([id("a"), id("b")], 4);
-        assert_eq!(
-            two.pages[0].width(),
-            252.0,
-            "a short row keeps the frame's width"
-        );
+        assert_eq!(two.pages[0].cols, 4, "a short row keeps all columns");
     }
 
     impl Cell {

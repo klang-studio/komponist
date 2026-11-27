@@ -383,11 +383,12 @@ The workspace is split by responsibility, and dependencies point downwards only:
 Rules that follow from this picture:
 
 - **`komponist-model` knows nothing about audio, UI or plugins.** It is pure data and pure
-  functions. (It only uses `komponist-tokens` for the device-card grid metrics.)
+  functions. The UI uses the design tokens to convert device grid coordinates into pixel bounds.
 - **`komponist-engine` knows neither egui, nor IPC, nor CLAP/VST3.** It sees devices only as
   `Box<dyn Processor>`.
 - **`komponist-audio` does not know the engine.** It drives anything that implements its
   `AudioProcess` trait; the app supplies the adapter (`EngineProcess`).
+- **`komponist-device-dsp` shares device math.** The device crates and UI graphs use the same curves.
 - **`komponist-plugin-api` defines shared extension and frame data.** The UI and SDK use these
   contracts directly. The bridge protocol uses the same types as message payloads.
 - **`komponist-hosting` implements the plugin formats.** In the app process, `komponist-plugins`

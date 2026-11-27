@@ -14,6 +14,7 @@ name = "komponist"
 path = "src/main.rs"
 
 [dependencies]
+komponist-device-dsp.workspace = true
 komponist-model.workspace = true
 # Waveforms of audio clips: the file pool and its peak cache (`views/arrangement/files`).
 komponist-audiofile.workspace = true

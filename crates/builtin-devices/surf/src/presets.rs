@@ -6,7 +6,7 @@
 //! or the mod wheel and pressure (leads), through the matrix destinations Position A and B.
 
 use komponist_device_core::Preset;
-use komponist_model::params::va_curve::{dst as d, src};
+use komponist_device_dsp::va_curve::{dst as d, src};
 
 use crate::SPEC;
 use crate::params::table;

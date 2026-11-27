@@ -16,6 +16,7 @@ on:
       - "crates/builtin-devices/**"
       - "crates/komponist-processor/**"
       - "crates/komponist-plugin-api/**"
+      - "crates/komponist-device-dsp/**"
       - "crates/komponist-engine/**"
       - "Cargo.toml"
       - "Cargo.lock"

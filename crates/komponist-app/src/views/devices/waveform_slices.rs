@@ -17,7 +17,9 @@ use komponist_ui::widgets::dropdown::{Dropdown, Item};
 use komponist_ui::widgets::number_field::format_number;
 
 use super::asset_waveform::{self, Waveform};
-use super::layout::{Cell, CellParam, Half, WidgetKind, cell_rect};
+use komponist_ui::widgets::device::cell_rect;
+
+use super::layout::{Cell, CellParam, Half, WidgetKind};
 use super::metrics::SAMPLER_FILE_WIDTH;
 use super::model::Card;
 use super::viewport::Viewport;

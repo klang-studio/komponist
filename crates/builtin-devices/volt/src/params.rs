@@ -6,9 +6,9 @@
 //! parameters: they are context selections of the layout, like hexa's operator
 //! (`CellParam::Choice`), so a view is not part of the sound or of a saved state.
 
+use komponist_device_dsp::va_curve::{FILTER_TYPES, LFO_DIVS, dst as dest, src as source};
 use komponist_i18n::Lang;
 use komponist_model::format::MINUS;
-use komponist_model::params::va_curve::{FILTER_TYPES, LFO_DIVS, dst as dest, src as source};
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
 
 /// Declares the wire ids in order (`id::CUTOFF` …) and the list of their keys.

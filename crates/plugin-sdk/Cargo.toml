@@ -21,5 +21,6 @@ komponist-processor = { path = "../komponist-processor" }
 komponist-i18n = { path = "../komponist-i18n" }
 komponist-plugin-api = { path = "../komponist-plugin-api" }
 komponist-model = { path = "../komponist-model" }
+komponist-device-dsp = { path = "../komponist-device-dsp" }
 komponist-native-clap-sdk = { path = "author" }
 nice-plug = { git = "https://github.com/klang-studio/nice-plug", rev = "4a376c7f60775da0455ba0c72c1a7b7d2d56dbdc", default-features = false }
