@@ -609,11 +609,13 @@ struct Scratch {
     reset_after_restore: bool,
     retry_params: Vec<DeferredParam>,
     retry_indices: HashMap<(u32, bool), usize>,
+    retry_order: u64,
 }
 
 struct DeferredParam {
     id: u32,
     generation: u64,
+    order: u64,
     event: WireEvent,
 }
 
@@ -867,6 +869,7 @@ fn rt_main(
         reset_after_restore: false,
         retry_params: Vec::with_capacity(INPUT_EVENT_CAPACITY),
         retry_indices: HashMap::with_capacity(INPUT_EVENT_CAPACITY),
+        retry_order: 0,
     };
     if ok {
         // Before the report: once it arrives the main thread publishes `Active`, and every request
@@ -970,9 +973,11 @@ fn serve(
                     scratch.reset_after_restore = true;
                 }
                 if let Some(WireEventKind::ParamValue { id, .. }) = event.decode() {
+                    scratch.retry_order += 1;
                     let retry = DeferredParam {
                         id,
                         generation,
+                        order: scratch.retry_order,
                         event: WireEvent { offset: 0, ..event },
                     };
                     let key = (id, event.reserved != 0);
@@ -1017,6 +1022,11 @@ fn serve(
     // Check the IDs known to a successful restore, even when a rescan has installed a new table.
     let restore_generation = sync.activity.load(Ordering::Relaxed) & !ACTIVITY_BITS;
     let fence = processing.restore_fence();
+    // A replacement keeps its storage slot while the worker is paused. Replay by
+    // arrival so a newer write still follows an earlier one of the other kind.
+    scratch
+        .retry_params
+        .sort_unstable_by_key(|retry| retry.order);
     for retry in &scratch.retry_params {
         if fence
             .superseded
@@ -1030,6 +1040,7 @@ fn serve(
     fence.replayed_generation = restore_generation;
     scratch.retry_params.clear();
     scratch.retry_indices.clear();
+    scratch.retry_order = 0;
     while let Some(event) = server.pop_event() {
         scratch.events_in[count] = event;
         count += 1;
@@ -1398,6 +1409,27 @@ mod tests {
             .expect("tagged edit delivered");
         assert_eq!(stamp.superseded_by(1), NonZeroU32::new(9));
         assert!(rt.snapshot(|p| p.confirms_input(1, 0.25, 0.25)).unwrap());
+
+        // Replacing a tagged write later in the pause puts it after the prior playback value.
+        let replacement = WireEvent {
+            reserved: 10,
+            ..param(0.7)
+        };
+        rt.snapshot(|_| {
+            assert_eq!(block(&mut client, &[tagged, param(0.25)]), inactive);
+            assert_eq!(block(&mut client, &[replacement]), inactive);
+        })
+        .unwrap();
+        assert_eq!(block(&mut client, &[]), ok);
+        rt.snapshot(|p| {
+            let (_, stamp) = p
+                .durable_deliveries()
+                .next()
+                .expect("replacement delivered");
+            assert_eq!(stamp.settled_at(0), NonZeroU32::new(10));
+            assert!(p.confirms_input(1, 0.7, 0.7));
+        })
+        .unwrap();
         let _ = rt.stop();
     }
 
