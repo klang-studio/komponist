@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 komponist-bundled-clap-adapter.workspace = true
-komponist-engine.workspace = true
+komponist-processor.workspace = true
 komponist-hexa.workspace = true
 komponist-i18n.workspace = true
 komponist-model.workspace = true

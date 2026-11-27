@@ -6,8 +6,8 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use komponist_device_core::InternalProcessor;
-use komponist_engine::{Processor, StereoIo};
 use komponist_model::params::ParamId;
+use komponist_processor::{Processor, StereoIo};
 
 use super::tests::{RATE, ctx, on, render};
 

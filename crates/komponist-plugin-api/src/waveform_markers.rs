@@ -13,7 +13,7 @@ pub const MAX_FADE_MS: f32 = 10_000.0;
 pub const MAX_SNAPSHOT_BYTES: usize = 4096;
 pub const MAX_EDIT_BYTES: usize = 32;
 /// Bound each state in an edit reply so both fit in one message with room for encoding.
-pub const MAX_STATE_BYTES: usize = (crate::control::MAX_MESSAGE - 64) / 2;
+pub const MAX_STATE_BYTES: usize = (1 << 29) - 32;
 
 /// Plugin-owned immutable CLAP extension table. The opaque argument is a CLAP plugin pointer.
 #[repr(C)]

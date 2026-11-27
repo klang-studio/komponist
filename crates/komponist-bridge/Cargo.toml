@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 komponist-ipc.workspace = true
+komponist-plugin-api.workspace = true
 komponist-hosting.workspace = true
 # Realtime set-up of the RT thread: SCHED_FIFO (Linux), time-constraint policy and an own audio
 # work interval (macOS, #45), MMCSS (Windows).

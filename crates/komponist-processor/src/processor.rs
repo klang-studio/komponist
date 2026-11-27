@@ -28,9 +28,9 @@ pub const DEADLINE_SHARE: f64 = 0.6;
 /// once) and must not allocate, free, lock, log, do IO or block (AGENTS.md rule 4). Tests wrap
 /// them in `assert_no_alloc`.
 pub trait Processor: Send {
-    /// Non-RT. Prepares for `sample_rate` Hz and calls of at most `max_block` frames
-    /// (≤ [`crate::MAX_BLOCK`]). Called before the processor goes into the engine and again after
-    /// a sample rate change (the engine is then out of the audio callback). May allocate.
+    /// Non-RT. Prepares for `sample_rate` Hz and calls of at most `max_block` frames.
+    /// Called before the processor goes into the engine and again after a sample rate change
+    /// (the engine is then out of the audio callback). May allocate.
     fn activate(&mut self, sample_rate: f32, max_block: usize) -> Result<(), ProcessorError>;
 
     /// Non-RT, between audio blocks. Performs any engine-side handoff needed before an
@@ -191,26 +191,24 @@ pub trait EventProcessor {
     fn reset(&mut self);
 }
 
-/// Where an [`EventProcessor`] writes its output. Bounded: [`crate::MAX_EVENTS_PER_BLOCK`] events
-/// per call, of which the engine keeps room for the note-offs of sounding notes.
+/// Where an [`EventProcessor`] writes its output. Capacity comes from the host's event buffer.
+/// The engine uses [`crate::MAX_EVENTS_PER_BLOCK`] and keeps room for sounding notes' note-offs.
 #[derive(Debug)]
 pub struct EventSink<'a> {
-    list: &'a mut crate::sequencer::EventList,
+    list: &'a mut EventBuffer,
     frames: u32,
     start: u32,
     overflowed: bool,
 }
 
 impl<'a> EventSink<'a> {
-    pub(crate) fn new(list: &'a mut crate::sequencer::EventList, frames: u32) -> EventSink<'a> {
+    /// Opens a sink at the start of the block without clearing the buffer.
+    pub fn new(list: &'a mut EventBuffer, frames: u32) -> EventSink<'a> {
         Self::in_segment(list, 0, frames)
     }
 
-    pub(crate) fn in_segment(
-        list: &'a mut crate::sequencer::EventList,
-        start: u32,
-        frames: u32,
-    ) -> EventSink<'a> {
+    /// Opens a sink at the given offset within the block without clearing the buffer.
+    pub fn in_segment(list: &'a mut EventBuffer, start: u32, frames: u32) -> EventSink<'a> {
         EventSink {
             list,
             frames,
@@ -245,35 +243,105 @@ impl<'a> EventSink<'a> {
     }
 }
 
-/// A preallocated event buffer for driving an [`EventProcessor`] outside the engine (unit tests of
-/// MIDI effects): [`EventBuffer::sink`], then [`EventBuffer::events`] sorted as the engine sorts.
+/// Events for one processor call, sorted by offset when finished.
+///
+/// Sorting keeps the push order within an offset, except that note-ons go after everything else
+/// at their offset (note-offs before note-ons, `Processor::process`). No allocation: both buffers
+/// are preallocated and `sort_unstable` works in place (the monotonic push counter makes the keys
+/// unique, so the order is stable).
 #[derive(Debug)]
-pub struct EventBuffer(crate::sequencer::EventList);
+pub struct EventBuffer {
+    keyed: Vec<(u64, Event)>,
+    sorted: Vec<Event>,
+    capacity: usize,
+    note_off_first: bool,
+    /// Sequence number of the next push; reset by `clear`, never reused after `remove_note_on`.
+    /// A block pushes far fewer than 2^31 events, so the 31 bits of the key cannot wrap.
+    next_seq: u32,
+}
 
 impl EventBuffer {
-    /// Non-RT. A buffer for at most `capacity` events.
+    /// Non-RT. A list for at most `capacity` events.
     pub fn new(capacity: usize) -> EventBuffer {
-        EventBuffer(crate::sequencer::EventList::new(capacity))
+        Self::with_note_off_first(capacity, true)
     }
 
-    /// Non-RT. A bounded buffer that keeps insertion order for events at the same frame.
-    /// Use it when a host supplies or expects an explicit order for simultaneous note events.
-    pub fn with_insertion_order(capacity: usize) -> EventBuffer {
-        EventBuffer(crate::sequencer::EventList::with_note_off_first(
-            capacity, false,
-        ))
+    fn with_note_off_first(capacity: usize, note_off_first: bool) -> EventBuffer {
+        EventBuffer {
+            keyed: Vec::with_capacity(capacity),
+            sorted: Vec::with_capacity(capacity),
+            capacity,
+            note_off_first,
+            next_seq: 0,
+        }
+    }
+
+    /// Non-RT. A buffer that keeps insertion order for events at the same frame.
+    pub fn with_insertion_order(capacity: usize) -> Self {
+        Self::with_note_off_first(capacity, false)
     }
 
     /// RT. Empties the buffer and opens a sink for a call of `frames` frames.
     pub fn sink(&mut self, frames: u32) -> EventSink<'_> {
-        self.0.clear();
-        EventSink::new(&mut self.0, frames)
+        self.clear();
+        EventSink::new(self, frames)
     }
 
-    /// RT. The events pushed since [`EventBuffer::sink`], sorted by offset. At the same offset
-    /// the default order puts note-offs before note-ons. Insertion-order buffers keep push order.
+    /// RT. Empties the list.
+    pub fn clear(&mut self) {
+        self.keyed.clear();
+        self.sorted.clear();
+        self.next_seq = 0;
+    }
+
+    /// Number of events that still fit.
+    pub fn room(&self) -> usize {
+        self.capacity - self.keyed.len()
+    }
+
+    /// RT. Adds an event; `false` when the list is full.
+    pub fn push(&mut self, offset: u32, kind: EventKind) -> bool {
+        if self.room() == 0 {
+            return false;
+        }
+        let rank = u64::from(self.note_off_first && matches!(kind, EventKind::NoteOn { .. }));
+        let seq = u64::from(self.next_seq & 0x7fff_ffff);
+        self.next_seq = self.next_seq.wrapping_add(1);
+        let key = u64::from(offset) << 32 | rank << 31 | seq;
+        self.keyed.push((key, Event { offset, kind }));
+        true
+    }
+
+    /// Offset of the pending note-on with `note_id`, if it is in the list.
+    pub fn note_on_offset(&self, note_id: u32) -> Option<u32> {
+        self.keyed.iter().find_map(|(_, e)| match e.kind {
+            EventKind::NoteOn { note_id: id, .. } if id == note_id => Some(e.offset),
+            _ => None,
+        })
+    }
+
+    /// RT. Takes the note-on with `note_id` out of the list again.
+    pub fn remove_note_on(&mut self, note_id: u32) {
+        let found = self.keyed.iter().position(
+            |(_, e)| matches!(e.kind, EventKind::NoteOn { note_id: id, .. } if id == note_id),
+        );
+        if let Some(index) = found {
+            self.keyed.remove(index);
+        }
+    }
+
+    /// The events as last sorted by [`EventBuffer::events`].
+    pub fn sorted(&self) -> &[Event] {
+        &self.sorted
+    }
+
+    /// RT. The buffered events sorted by offset. At the same offset the default order puts
+    /// note-offs before note-ons. Insertion-order buffers keep push order.
     pub fn events(&mut self) -> &[Event] {
-        self.0.finish()
+        self.keyed.sort_unstable_by_key(|(key, _)| *key);
+        self.sorted.clear();
+        self.sorted.extend(self.keyed.iter().map(|(_, e)| *e));
+        &self.sorted
     }
 }
 
@@ -443,6 +511,66 @@ impl StereoIo<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_buffer_sorts_stably_with_note_offs_first() {
+        let mut list = EventBuffer::new(8);
+        let on = |key| EventKind::NoteOn {
+            key,
+            velocity: 1,
+            channel: 0,
+            note_id: 0,
+        };
+        let off = |key| EventKind::NoteOff {
+            key,
+            channel: 0,
+            note_id: 0,
+        };
+        list.push(5, on(1));
+        list.push(5, off(2));
+        list.push(0, EventKind::Midi([0xb0, 1, 2]));
+        list.push(5, off(3));
+        list.push(5, on(4));
+        list.push(0, EventKind::AllNotesOff);
+        let got: Vec<_> = list.events().iter().map(|e| (e.offset, e.kind)).collect();
+        assert_eq!(
+            got,
+            [
+                (0, EventKind::Midi([0xb0, 1, 2])),
+                (0, EventKind::AllNotesOff),
+                (5, off(2)),
+                (5, off(3)),
+                (5, on(1)),
+                (5, on(4)),
+            ]
+        );
+        assert_eq!(list.room(), 2);
+        assert!(list.push(1, off(1)) && list.push(1, off(1)));
+        assert!(!list.push(1, off(1)));
+    }
+
+    /// After `remove_note_on` the list shrinks; a new event must still sort after everything
+    /// pushed before it (the old `keyed.len()` key reused a number and broke the send order).
+    #[test]
+    fn retriggered_note_keeps_send_order_after_remove() {
+        let mut list = EventBuffer::new(8);
+        let on = |note_id| EventKind::NoteOn {
+            key: 60,
+            velocity: 1,
+            channel: 0,
+            note_id,
+        };
+        let cc = |v| EventKind::Midi([0xb0, 64, v]);
+        list.push(7, cc(1));
+        list.push(7, on(10)); // retriggered below
+        list.push(7, cc(2));
+        list.remove_note_on(10);
+        list.push(7, cc(3));
+        list.push(7, on(11));
+        list.push(7, cc(4));
+        let got: Vec<_> = list.events().iter().map(|e| e.kind).collect();
+        assert_eq!(got, [cc(1), cc(2), cc(3), cc(4), on(11)]);
+    }
 
     #[test]
     fn stereo_io_fallbacks() {

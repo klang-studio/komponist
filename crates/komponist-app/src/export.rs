@@ -55,9 +55,9 @@ use komponist_engine::export::{
 };
 use komponist_engine::{Command, Program, SlotId, TransportState};
 use komponist_ipc::RenderMode;
-use komponist_ipc::device_assets::{AssetKind, AssetStatus, OfflineRequest, OfflineStatus};
 use komponist_model::format::fmt_bar_pos;
 use komponist_model::{ClipId, DeviceId, Project, Tick, TickRange};
+use komponist_plugin_api::device_assets::{AssetKind, AssetStatus, OfflineRequest, OfflineStatus};
 use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::actions::{Action, BitDepth, ExportRange, ExportSettings, ProjectAction, UiAction};

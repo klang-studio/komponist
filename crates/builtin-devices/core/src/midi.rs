@@ -1,7 +1,7 @@
 //! Shared audio placeholder and parameter handling for MIDI effects.
 
-use komponist_engine::{Event, EventProcessor, EventSink, ProcessContext};
 use komponist_model::params::ParamInfo;
+use komponist_processor::{Event, EventProcessor, EventSink, ProcessContext};
 
 use super::Dsp;
 

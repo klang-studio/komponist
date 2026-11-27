@@ -6,12 +6,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_ipc::LogLevel;
-use komponist_ipc::device_assets::{
-    Binding, Bindings, MAX_SLOTS, OfflineRequest, OfflineStatus, Snapshot, edit_state,
-};
 use komponist_model::DeviceId;
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::project::SavedPluginState;
+use komponist_plugin_api::device_assets::{
+    Binding, Bindings, MAX_SLOTS, OfflineRequest, OfflineStatus, Snapshot, edit_state,
+};
 
 use crate::manager::PluginManagerEvent;
 
@@ -367,7 +367,7 @@ impl DeviceAssets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use komponist_ipc::device_assets::{AssetKind, AssetStatus, Slot};
+    use komponist_plugin_api::device_assets::{AssetKind, AssetStatus, Slot};
 
     fn bindings(id: u32) -> Bindings {
         Bindings {

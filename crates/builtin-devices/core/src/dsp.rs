@@ -5,7 +5,7 @@
 //! linear and Hermite reads), [`Glide`] (control-rate one-pole smoother with settle), the
 //! one-pole low/high-pass [`OnePole`], and the sliding minimum [`SlidingMin`].
 
-use komponist_model::params::eq_curve::Coefs;
+use komponist_device_dsp::eq_curve::Coefs;
 
 /// Samples between two control updates (parameter smoothing, coefficient recomputation). The
 /// counter runs across calls, so the output does not depend on how the host splits blocks.

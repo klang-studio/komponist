@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+komponist-device-dsp.workspace = true
 klang-dsp.workspace = true
 komponist-device-core.workspace = true
 komponist-i18n.workspace = true
@@ -18,3 +19,4 @@ komponist-model.workspace = true
 [dev-dependencies]
 assert_no_alloc.workspace = true
 komponist-engine.workspace = true
+komponist-processor.workspace = true

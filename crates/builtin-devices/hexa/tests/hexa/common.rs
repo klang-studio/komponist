@@ -2,11 +2,11 @@
 //! `assert_no_alloc`, and measuring its output.
 
 use assert_no_alloc::assert_no_alloc;
-use komponist_engine::{
-    Event, EventKind, NOTE_ID_NONE, ProcessContext, Processor, StereoIo, TransportInfo,
-};
 use komponist_hexa::{HexaProcessor, Macro, Patch};
 use komponist_model::{Meter, Tick, TickRange};
+use komponist_processor::{
+    Event, EventKind, NOTE_ID_NONE, ProcessContext, Processor, StereoIo, TransportInfo,
+};
 
 /// Sample rate of the tests.
 pub const RATE: f32 = 48_000.0;

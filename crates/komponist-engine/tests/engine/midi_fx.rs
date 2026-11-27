@@ -31,7 +31,7 @@ fn the_instrument_gets_the_stage_output_with_the_timing_of_the_input() {
     assert_eq!((got[0].0, got[0].1, got[0].2), (24_000, "on", 62));
     assert_eq!((got[1].0, got[1].1, got[1].2), (48_000, "off", 62));
     assert_eq!(got[0].3, got[1].3, "the off carries the note's id");
-    assert_ne!(got[0].3, komponist_engine::NOTE_ID_NONE);
+    assert_ne!(got[0].3, komponist_processor::NOTE_ID_NONE);
 }
 
 #[test]

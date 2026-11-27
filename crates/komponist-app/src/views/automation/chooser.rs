@@ -207,7 +207,11 @@ impl<'a> Catalog<'a> {
     }
 
     /// Resolve just the visible lane's parameter. The full catalog is built when the chooser opens.
-    fn device_param(&self, device: &Device, id: &ParamId) -> Option<&komponist_ipc::ParamInfo> {
+    fn device_param(
+        &self,
+        device: &Device,
+        id: &ParamId,
+    ) -> Option<&komponist_plugin_api::params::ParamInfo> {
         let wire = id.plugin_id()?;
         self.engine
             .host()
@@ -219,7 +223,7 @@ impl<'a> Catalog<'a> {
     fn device_target(
         &self,
         device: &Device,
-        wire: &komponist_ipc::ParamInfo,
+        wire: &komponist_plugin_api::params::ParamInfo,
         prefix: &str,
     ) -> Target {
         let host = self.engine.host();
@@ -919,7 +923,7 @@ mod tests {
         assert!((target.parse("2.40 s").unwrap() - target.base).abs() < 1e-6);
         assert!((target.parse("2400 ms").unwrap() - target.base).abs() < 1e-6);
 
-        let generic = komponist_ipc::ParamInfo {
+        let generic = komponist_plugin_api::params::ParamInfo {
             id: u32::MAX,
             ..wire.clone()
         };

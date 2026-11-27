@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use komponist_engine::SampleTap;
+use komponist_processor::SampleTap;
 use serde::{Deserialize, Serialize};
 
 use crate::metrics::transport as m;
@@ -282,7 +282,7 @@ mod tests {
     }
 
     fn tap() -> Arc<SampleTap> {
-        let tap = Arc::new(SampleTap::new(komponist_engine::tap::DEFAULT_CAPACITY));
+        let tap = Arc::new(SampleTap::new(komponist_processor::tap::DEFAULT_CAPACITY));
         tap.set_rate(RATE);
         tap
     }

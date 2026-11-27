@@ -10,7 +10,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-komponist-engine.workspace = true
+komponist-device-dsp.workspace = true
+komponist-processor.workspace = true
 komponist-i18n.workspace = true
 komponist-model.workspace = true
 serde_json.workspace = true

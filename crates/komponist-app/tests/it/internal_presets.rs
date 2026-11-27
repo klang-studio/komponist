@@ -18,7 +18,7 @@ use crate::common::{
     author_base, author_parameter, author_wire_value, set_authored_param as set_param,
     shipped_plugin, step_for, step_until, wait_for_layout,
 };
-use komponist_ipc::clap_presets::ClapPreset;
+use komponist_plugin_api::clap_presets::ClapPreset;
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;

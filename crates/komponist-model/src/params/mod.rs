@@ -23,14 +23,10 @@
 //! Plain values are what travels to devices (`Command::SetParam`, `PluginAction::SetParam`); the
 //! normalised value is for knobs, automation lanes and modulation.
 
-pub mod comp_curve;
 pub mod context;
-pub mod eq_curve;
 mod format;
 pub mod layout;
 mod scale;
-pub mod va_curve;
-pub mod wavetable;
 
 use std::fmt;
 use std::sync::Arc;

@@ -4,13 +4,13 @@ use std::ffi::{CStr, c_void};
 use std::sync::Arc;
 
 use komponist_device_core::SAMPLE_RATES;
-use komponist_engine::processor::{EventBuffer, EventSink};
-use komponist_engine::{
+use komponist_model::{Meter, PPQ, Tick, TickRange};
+use komponist_native_clap_sdk::{NativeClapLayout, Panel};
+use komponist_processor::processor::{EventBuffer, EventSink};
+use komponist_processor::{
     EventKind, EventProcessor, MAX_EVENTS_PER_BLOCK, NOTE_ID_NONE, ProcessContext as EngineContext,
     TransportInfo,
 };
-use komponist_model::{Meter, PPQ, Tick, TickRange};
-use komponist_native_clap_sdk::{NativeClapLayout, Panel};
 use nice_plug::midi::{Channel, Key, MidiResult, VoiceID};
 use nice_plug::prelude::*;
 

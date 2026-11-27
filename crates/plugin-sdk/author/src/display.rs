@@ -7,7 +7,7 @@ use clap_sys::plugin::clap_plugin;
 use nice_plug::prelude::ClapPlugin;
 use nice_plug::wrapper::clap::Wrapper;
 
-pub use komponist_ipc::device_canvas::{
+pub use komponist_plugin_api::device_canvas::{
     Alignment, DisplayList, EXTENSION_ID, FmFrame, Frame, MAX_FM_OPERATORS, Point, Primitive, Tone,
 };
 

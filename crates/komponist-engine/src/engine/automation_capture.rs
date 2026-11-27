@@ -9,10 +9,10 @@ use crate::automation::{
     self, AutomationBoundary, CompiledTarget, Cursor, EngineTarget, PluginParam, PluginParamBatch,
 };
 use crate::garbage::Outbox;
-use crate::processor::ParameterEditKind;
 use crate::program::{ChainSlot, SlotId};
 use crate::sequencer::Window;
 use crate::slots::Slot;
+use komponist_processor::processor::ParameterEditKind;
 
 /// The bridge's bounded output ring can contain at most this many edits per processor.
 const MAX_PLUGIN_EDITS: usize = 1024;

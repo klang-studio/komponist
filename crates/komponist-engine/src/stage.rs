@@ -22,10 +22,11 @@ use komponist_model::time::PPQ;
 
 use crate::MAX_STAGES;
 use crate::automation;
-use crate::processor::{Event, EventKind, EventProcessor, EventSink, ProcessContext};
 use crate::program::{ChainSlot, SlotId};
-use crate::sequencer::{EventList, MAX_ACTIVE_NOTES};
+use crate::sequencer::MAX_ACTIVE_NOTES;
 use crate::slots::SlotTable;
+use komponist_processor::EventBuffer;
+use komponist_processor::processor::{Event, EventKind, EventProcessor, EventSink, ProcessContext};
 
 /// What decides how a track's events reach its instrument: the MIDI effect slots with their
 /// bypass flags, and the instrument slot. A program swap that changes it cuts the track's notes
@@ -128,7 +129,7 @@ impl StageState {
     fn next_id(&mut self) -> u32 {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        if self.next_id == crate::NOTE_ID_NONE {
+        if self.next_id == komponist_processor::NOTE_ID_NONE {
             self.next_id = 0;
         }
         id
@@ -141,7 +142,7 @@ impl StageState {
     }
 
     /// Note-offs at offset 0 for the flushed notes.
-    fn emit_flushed(&mut self, out: &mut EventList) {
+    fn emit_flushed(&mut self, out: &mut EventBuffer) {
         let mut k = 0;
         while k < self.notes.len() {
             let n = self.notes[k];
@@ -156,7 +157,7 @@ impl StageState {
 
     /// One event of the last stage's output, towards the instrument. Returns the number of
     /// dropped events (0 or 1).
-    fn admit(&mut self, e: &Event, out: &mut EventList) -> u32 {
+    fn admit(&mut self, e: &Event, out: &mut EventBuffer) -> u32 {
         match e.kind {
             EventKind::NoteOn {
                 key,
@@ -241,9 +242,9 @@ fn off(n: &GuardNote) -> EventKind {
 
 /// Scratch event lists of one thread that runs track jobs (a lane).
 pub(crate) struct StageLists {
-    a: EventList,
-    b: EventList,
-    out: EventList,
+    a: EventBuffer,
+    b: EventBuffer,
+    out: EventBuffer,
     rebased: Vec<Event>,
 }
 
@@ -251,9 +252,9 @@ impl StageLists {
     /// Non-RT.
     pub(crate) fn new(capacity: usize) -> StageLists {
         StageLists {
-            a: EventList::new(capacity),
-            b: EventList::new(capacity),
-            out: EventList::new(capacity),
+            a: EventBuffer::new(capacity),
+            b: EventBuffer::new(capacity),
+            out: EventBuffer::new(capacity),
             rebased: Vec::with_capacity(capacity),
         }
     }
@@ -297,7 +298,7 @@ pub(crate) fn run<'a, T: SlotTable + ?Sized>(
                 slot.all_off = false;
             }
         }
-        return (out.finish(), 0);
+        return (out.events(), 0);
     }
     if all_off {
         state.flush_all();
@@ -337,7 +338,7 @@ pub(crate) fn run<'a, T: SlotTable + ?Sized>(
                 Some(serial) => stage.set_param_edit(id, value, serial),
                 None => stage.set_param(id, value),
             });
-            let (src, dst): (&[Event], &mut EventList) = match last {
+            let (src, dst): (&[Event], &mut EventBuffer) = match last {
                 None => (input, &mut *a),
                 Some(false) => (a.sorted(), &mut *b),
                 Some(true) => (b.sorted(), &mut *a),
@@ -351,7 +352,7 @@ pub(crate) fn run<'a, T: SlotTable + ?Sized>(
                 automation.stage_events(d.slot),
                 rebased,
             );
-            dst.finish();
+            dst.events();
             last = Some(matches!(last, Some(false)));
         }
         let result: &[Event] = match last {
@@ -369,7 +370,7 @@ pub(crate) fn run<'a, T: SlotTable + ?Sized>(
         slot.params.drain_into(out, state.notes.len() + 2);
         dropped += automation.add_events(d.slot, out);
     }
-    (out.finish(), dropped)
+    (out.events(), dropped)
 }
 
 /// Process a MIDI stage over contiguous windows ending at an automated parameter change. The
@@ -378,7 +379,7 @@ fn process_stage(
     stage: &mut dyn EventProcessor,
     context: &ProcessContext,
     mut input: &[Event],
-    output: &mut EventList,
+    output: &mut EventBuffer,
     automation: impl Iterator<Item = Event>,
     rebased: &mut Vec<Event>,
 ) {

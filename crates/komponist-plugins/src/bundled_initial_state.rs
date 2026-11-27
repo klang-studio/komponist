@@ -7,12 +7,12 @@ use std::time::{Duration, Instant};
 
 use komponist_hosting::HostedPlugin;
 
-use komponist_ipc::clap_presets::{ClapPresetLocation, DevicePreset};
-use komponist_ipc::device_assets::{AssetStatus, Binding, Bindings};
-use komponist_ipc::waveform_markers::{Edit, EditStatus, Request};
 use komponist_ipc::{PluginKind, WireEvent, WireEventKind};
 use komponist_model::params::ParamId;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef};
+use komponist_plugin_api::clap_presets::{ClapPresetLocation, DevicePreset};
+use komponist_plugin_api::device_assets::{AssetStatus, Binding, Bindings};
+use komponist_plugin_api::waveform_markers::{Edit, EditStatus, Request};
 
 use crate::bundled_clap::BundledClap;
 use crate::catalog::bundled_module;

@@ -2,9 +2,9 @@
 //! the EQ's mono output when it runs, no allocation, old projects load with it on.
 
 use assert_no_alloc::assert_no_alloc;
-use komponist_engine::{ProcessContext, Processor, SampleTap, StereoIo, TransportInfo};
 use komponist_model::params::ParamId;
 use komponist_model::{Meter, Tick, TickRange};
+use komponist_processor::{ProcessContext, Processor, SampleTap, StereoIo, TransportInfo};
 
 use std::sync::Arc;
 

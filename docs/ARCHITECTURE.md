@@ -119,20 +119,23 @@ Their READMEs record provenance.
 | Crate | Responsibility |
 |---|---|
 | [`komponist-model`](../crates/komponist-model/README.md) | Project tree, musical time, edits, undo, routing validation, parameter descriptions, persistence |
-| [`komponist-engine`](../crates/komponist-engine/README.md) | Processor interfaces, compilation, transport, sequencing, mixer, routing scheduler, clip streaming, recording, export |
+| [`komponist-processor`](../crates/komponist-processor/src/lib.rs) | Realtime audio and MIDI processor contracts, event buffers, sample taps and device meters |
+| [`komponist-engine`](../crates/komponist-engine/README.md) | Compilation, transport, sequencing, mixer, routing scheduler, clip streaming, recording, export |
 | [`komponist-audio`](../crates/komponist-audio/README.md) | Audio/MIDI backends, device enumeration, stream lifecycle, input alignment, statistics |
 | [`komponist-rt`](../crates/komponist-rt/README.md) | OS realtime scheduling, workgroups and wait primitives |
 | [`komponist-audiofile`](../crates/komponist-audiofile/README.md) | Seekable decoding, resampling, shared file pool, peak cache, source tempo analysis |
 | [`komponist-stretch`](../crates/komponist-stretch/README.md) | Worker-only Rust/C++ wrapper around vendored Signalsmith Stretch/Linear |
 | [`hexa-core`](../crates/builtin-devices/hexa/core/README.md) | Hexa six-operator FM engine |
 | [`sampler-core`](../crates/builtin-devices/sampler-shared/core/README.md) | Shared Klopfer and Sampler engine |
+| [`komponist-device-dsp`](../crates/komponist-device-dsp/README.md) | Shared device math for DSP and visualizations |
 | [`komponist-device-core`](../crates/builtin-devices/core/src/lib.rs) | Unstable device API: catalog and parameter metadata, layouts, state, presets, processor adapters and shared DSP |
 | [`komponist-sampler-shared`](../crates/builtin-devices/sampler-shared/Cargo.toml) | Shared sample loading and instrument support for Klopfer and Sampler |
 | [`komponist-sampler-clap`](../crates/builtin-devices/sampler-shared/clap/Cargo.toml) | Shared CLAP asset and sampler UI adapters |
 | [`komponist-native-clap-sdk`](../crates/plugin-sdk/author/) | Author-facing Rust SDK for CLAP devices and native layouts |
 | [`komponist-bundled-clap-adapter`](../crates/plugin-sdk/bundled-adapter/) | Wraps device-core processors and specifications as CLAP plugins |
 | [Device crates](../crates/builtin-devices/README.md) | One directory per instrument, audio effect and MIDI effect, with a standalone CLAP package alongside its DSP |
-| [`komponist-ipc`](../crates/komponist-ipc/README.md) | Shared-memory layout, signalling, control protocol, process watching, frame vocabulary |
+| [`komponist-plugin-api`](../crates/komponist-plugin-api/README.md) | CLAP extensions, parameter metadata, and plugin frame data shared by the SDK, host, and UI |
+| [`komponist-ipc`](../crates/komponist-ipc/README.md) | Shared-memory layout, signalling, control protocol and process watching |
 | [`komponist-hosting`](../crates/komponist-hosting/README.md) | CLAP/VST3 loading, processing, state, parameters, GUI and host services |
 | [`komponist-bridge`](../crates/komponist-bridge/README.md) | Bridge library and utility executable; instance and scan modes |
 | [`komponist-plugins`](../crates/komponist-plugins/README.md) | App-side catalog, scan cache, direct and bridge lifecycle, processor adapters |
@@ -145,8 +148,9 @@ Their READMEs record provenance.
 names as arguments.
 The engine knows neither egui nor IPC nor CLAP/VST3. `komponist-audio` defines an `AudioProcess`
 callback interface without depending on the engine; the app supplies the adapter.
-`komponist-device-core` uses the model, i18n catalog and engine processor interfaces.
-Individual device crates build on that API and are dependencies of their respective CLAP
+`komponist-device-core` uses the model, i18n catalog, `komponist-processor` interfaces and shared device math.
+The Rust author SDK reaches the processor contracts through `komponist-device-core`.
+The UI computes device pixel geometry from design tokens. Individual device crates build on the device-core API and are dependencies of their respective CLAP
 bundles. The app, UI, plugin manager, engine and model have no dependency on the device crates.
 The plugin manager obtains each device's metadata and processor through the host interfaces at
 runtime. The workspace boundary check enforces the dependency rule.
@@ -810,7 +814,7 @@ The bundled devices use the normal document, processor and device-card interface
 - **Surf:** wavetable synthesis on Volt's engine: the voice, filter, envelopes, LFOs, matrix and
   voice modes are shared (`Engine<O: Oscillators>`), only the two oscillators differ. Sixteen
   original factory tables are generated at first use from recipes in
-  `komponist_model::params::wavetable`, which the 3D graph reads too, into ten band-limited
+  `komponist_device_dsp::wavetable`, which the 3D graph reads too, into ten band-limited
   levels each. User tables are a later issue (#184).
 - **Klopfer:** drum sampler with eight pads on MIDI notes 36–43.
 - **Sampler:** general-purpose instrument with chromatic and slice modes, waveform regions,

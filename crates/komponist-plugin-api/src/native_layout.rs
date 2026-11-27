@@ -8,7 +8,7 @@ use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
 
-use crate::control::{ParamInfo, param_flags};
+use crate::params::{ParamInfo, param_flags};
 
 pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.device-layout";
 /// Required capability for layouts using source-fraction trim.
@@ -982,7 +982,10 @@ impl NativeLayout {
         if let Some(bank) = &self.pad_bank {
             self.validate_pad_bank(bank)?;
         } else {
-            check((1..=4).contains(&self.pages.len()), "page count")?;
+            check(
+                (1..=komponist_model::params::layout::MAX_PAGES).contains(&self.pages.len()),
+                "page count",
+            )?;
         }
         self.validate_metadata(&locales)?;
         for display in self.parameter_display.values() {

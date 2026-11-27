@@ -17,7 +17,7 @@ const STRETCH_SLOTS: [usize; 2] = [1, 2];
 const PAD: usize = 0;
 // Incoming notes with this sentinel are translated to None by InternalProcessor.
 const SLICE_PREVIEW_KEY: u8 = 0;
-const SLICE_PREVIEW_ID: u32 = komponist_engine::NOTE_ID_NONE;
+const SLICE_PREVIEW_ID: u32 = komponist_processor::NOTE_ID_NONE;
 
 pub(super) struct GeneralSamplerDsp {
     engine: Box<Engine>,

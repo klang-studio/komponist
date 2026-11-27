@@ -757,7 +757,7 @@ fn toggling_the_presse_lookahead_while_playing_updates_the_delay_compensation() 
 }
 
 /// The sample tap of `device`, for the counters.
-fn tap_of(app: &App, device: DeviceId) -> std::sync::Arc<komponist_engine::SampleTap> {
+fn tap_of(app: &App, device: DeviceId) -> std::sync::Arc<komponist_processor::SampleTap> {
     app.engine()
         .host()
         .signal_tap(device, "detector")

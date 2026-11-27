@@ -2,12 +2,12 @@
 
 use assert_no_alloc::assert_no_alloc;
 use komponist_device_core::InternalProcessor;
-use komponist_engine::{
+use komponist_model::params::ParamId;
+use komponist_model::{Meter, Tick, TickRange};
+use komponist_processor::{
     Event, EventBuffer, EventKind, EventProcessor, NOTE_ID_NONE, ProcessContext, Processor,
     TransportInfo,
 };
-use komponist_model::params::ParamId;
-use komponist_model::{Meter, Tick, TickRange};
 
 use super::{MODE, ROOT, SCALES, SPEC, Snap, map_key};
 
@@ -288,7 +288,7 @@ fn the_audio_path_passes_through() {
     let input = [vec![0.25f32; 64], vec![-0.5f32; 64]];
     let mut out = [vec![0.0f32; 64], vec![0.0f32; 64]];
     let [ol, or] = &mut out;
-    let mut io = komponist_engine::StereoIo {
+    let mut io = komponist_processor::StereoIo {
         input: [&input[0], &input[1]],
         output: [ol, or],
     };

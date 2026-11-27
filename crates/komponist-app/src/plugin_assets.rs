@@ -7,10 +7,12 @@ use std::time::{Duration, Instant};
 
 use egui::Context;
 use komponist_engine::Command;
-use komponist_ipc::device_assets::{AssetKind, Binding, Bindings, MAX_PATH_BYTES, edit_state};
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::project::SavedPluginState;
 use komponist_model::{ChannelRef, Device, DeviceId, TrackId, edits};
+use komponist_plugin_api::device_assets::{
+    AssetKind, Binding, Bindings, MAX_PATH_BYTES, edit_state,
+};
 use komponist_plugins::{AssetEdit, AssetEditPreparation, DeviceStatus};
 
 use crate::app::App;
@@ -479,7 +481,7 @@ impl App {
                         .any(|asset| asset.id == slot && asset.kind == AssetKind::AudioSample)
                 })
             || self.engine.host().status(device) != DeviceStatus::Ok
-            || komponist_ipc::waveform_preview::encode_time(time).is_none()
+            || komponist_plugin_api::waveform_preview::encode_time(time).is_none()
         {
             return;
         }
@@ -611,17 +613,17 @@ mod tests {
     }
     use crate::device_host::DeviceHost;
     use crate::engine_sync::EngineSync;
-    use komponist_engine::Processor;
     use komponist_model::{DeviceRole, Document, PluginFormat, PluginRef, Project};
     use komponist_plugins::{Catalog, DeviceStatus, PluginManagerEvent, ProcessorSetup};
+    use komponist_processor::Processor;
 
     struct PreparingHost {
         catalog: Catalog,
-        assets: Option<komponist_ipc::device_assets::Snapshot>,
+        assets: Option<komponist_plugin_api::device_assets::Snapshot>,
     }
 
     impl PreparingHost {
-        fn new(assets: Option<komponist_ipc::device_assets::Snapshot>) -> Self {
+        fn new(assets: Option<komponist_plugin_api::device_assets::Snapshot>) -> Self {
             Self {
                 catalog: Catalog::default(),
                 assets,
@@ -686,7 +688,7 @@ mod tests {
         fn asset_slots(
             &self,
             _device: DeviceId,
-        ) -> Option<&komponist_ipc::device_assets::Snapshot> {
+        ) -> Option<&komponist_plugin_api::device_assets::Snapshot> {
             self.assets.as_ref()
         }
 
@@ -753,7 +755,7 @@ mod tests {
 
     #[test]
     fn preview_requires_a_declared_audio_slot() {
-        use komponist_ipc::device_assets::{AssetStatus, Slot, Snapshot};
+        use komponist_plugin_api::device_assets::{AssetStatus, Slot, Snapshot};
 
         let (project, device) = asset_project();
         let link = AssetLink::new(Path::new("/samples/example.wav"), None);

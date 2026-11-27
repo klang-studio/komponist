@@ -5,8 +5,9 @@ use std::hint::black_box;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use komponist_engine::{
-    Command, Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+use komponist_engine::Command;
+use komponist_processor::{
+    Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
 
 use crate::common::*;

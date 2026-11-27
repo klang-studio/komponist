@@ -950,9 +950,8 @@ impl HostLoop for PollLoop {
 mod tests {
     use super::*;
     use crate::plugin::{ActivateConfig, GuiInfo, HostedProcessor};
-    use komponist_ipc::{
-        NoteName, ParamInfo, PluginDescriptor, PluginFormat, PluginKind, RenderMode,
-    };
+    use komponist_ipc::{NoteName, PluginDescriptor, PluginFormat, PluginKind, RenderMode};
+    use komponist_plugin_api::params::ParamInfo;
     #[cfg(unix)]
     use std::io::Write;
     #[cfg(unix)]

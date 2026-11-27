@@ -12,11 +12,11 @@ use komponist_app::device_host::PluginHost;
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, PluginAction, UiAction};
 use komponist_i18n::Lang;
-use komponist_ipc::device_assets::AssetStatus;
-use komponist_ipc::waveform_markers::{Edit, Request, SliceOptions};
 use komponist_model::edits::{self, NewDevice};
 use komponist_model::project::SavedPluginState;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, Project, TrackId};
+use komponist_plugin_api::device_assets::AssetStatus;
+use komponist_plugin_api::waveform_markers::{Edit, Request, SliceOptions};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
 
 use crate::common::{
@@ -234,7 +234,10 @@ fn marker_edit_persisted(app: &App, device: DeviceId) -> bool {
     })
 }
 
-fn live_markers(app: &App, device: DeviceId) -> Option<&komponist_ipc::waveform_markers::Snapshot> {
+fn live_markers(
+    app: &App,
+    device: DeviceId,
+) -> Option<&komponist_plugin_api::waveform_markers::Snapshot> {
     app.engine().host().waveform_markers(device, 0)
 }
 
@@ -382,7 +385,7 @@ fn waveform_zoom_slice_editing_and_pages_are_accessible() {
 
 fn wait_for_waveform_image(harness: &mut Harness<'_, App>, device: DeviceId) {
     use komponist_audiofile::{FilePool, PeakState};
-    use komponist_ipc::waveform_markers::Preparation;
+    use komponist_plugin_api::waveform_markers::Preparation;
 
     let source = &harness
         .state()

@@ -10,14 +10,13 @@ use std::time::{Duration, Instant};
 
 use assert_no_alloc::assert_no_alloc;
 use common::*;
+use komponist_engine::Command as EngineCommand;
 use komponist_engine::testing::{TestSidechain, TestSidechainMode, TestSine};
-use komponist_engine::{
-    Command as EngineCommand, ProcessContext, ProcessStatus, StereoIo, TransportInfo,
-};
 use komponist_model::{
     DeviceId, DeviceRole, Meter, PluginFormat, PluginRef, Sidechain, Tick, TickRange, TrackId,
 };
 use komponist_plugins::DeviceStatus;
+use komponist_processor::{ProcessContext, ProcessStatus, StereoIo, TransportInfo};
 
 pub const SC: &str = "de.klang-studio.kp-test-sc";
 

@@ -3,15 +3,16 @@
 //! tested without pixels.
 
 use komponist_i18n::Lang;
-use komponist_ipc::ParamValue;
-use komponist_ipc::control::ParamInfo as WireInfo;
-use komponist_ipc::native_layout::{DisplayUnit, NativeLayout, ParameterDisplay, Widget};
 use komponist_model::automation::AutomationOwner;
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Unit, auto_layout};
 use komponist_model::{Device, DeviceId, DeviceRole, Track};
+use komponist_plugin_api::native_layout::{DisplayUnit, NativeLayout, ParameterDisplay, Widget};
+use komponist_plugin_api::params::ParamInfo as WireInfo;
+use komponist_plugin_api::params::ParamValue;
 use komponist_plugins::params::{is_listed, param_info};
 use komponist_plugins::{DeviceStatus, FailReason};
 use komponist_tokens::device;
+use komponist_ui::widgets::device::device_width;
 
 use super::layout::{self, DeviceLayout};
 use super::metrics;
@@ -177,13 +178,14 @@ pub struct Card {
     pub has_gui: bool,
     /// Its plugin window is open ("Geöffnet").
     pub open: bool,
-    pub(crate) native_layout: Option<std::sync::Arc<komponist_ipc::native_layout::NativeLayout>>,
-    pub(super) display: Option<std::sync::Arc<komponist_ipc::device_canvas::DisplayList>>,
+    pub(crate) native_layout:
+        Option<std::sync::Arc<komponist_plugin_api::native_layout::NativeLayout>>,
+    pub(super) display: Option<std::sync::Arc<komponist_plugin_api::device_canvas::DisplayList>>,
     /// Live file slots with their host-owned link status.
-    pub(super) asset_slots: Vec<(komponist_ipc::device_assets::Slot, bool)>,
+    pub(super) asset_slots: Vec<(komponist_plugin_api::device_assets::Slot, bool)>,
     pub(super) asset_waveforms: std::collections::BTreeMap<u32, super::asset_waveform::Waveform>,
     pub(super) asset_names: std::collections::BTreeMap<u32, String>,
-    pub(super) pad_activity: Option<komponist_ipc::signal_taps::PadActivity>,
+    pub(super) pad_activity: Option<komponist_plugin_api::signal_taps::PadActivity>,
     /// The declarative layout of the body, with an automatic layout for generic plugins.
     pub layout: DeviceLayout,
     /// The page shown (set by the view from the view state).
@@ -226,11 +228,11 @@ pub(super) struct GraphSignals {
     pub(super) analysis: Option<Analysis>,
     pub(super) dynamics: Option<Dynamics>,
     pub(super) playhead: Option<f32>,
-    pub(super) markers: Option<komponist_ipc::waveform_markers::Snapshot>,
+    pub(super) markers: Option<komponist_plugin_api::waveform_markers::Snapshot>,
 }
 
 impl Card {
-    pub(super) fn pad_bank(&self) -> Option<&komponist_ipc::native_layout::PadBank> {
+    pub(super) fn pad_bank(&self) -> Option<&komponist_plugin_api::native_layout::PadBank> {
         self.native_layout.as_ref()?.pad_bank.as_ref()
     }
 
@@ -276,7 +278,7 @@ impl Card {
         param.display_at_position(self.parameter_display(param), position)
     }
 
-    pub(super) fn native_page(&self) -> Option<&komponist_ipc::native_layout::Page> {
+    pub(super) fn native_page(&self) -> Option<&komponist_plugin_api::native_layout::Page> {
         let pages = &self.native_layout.as_ref()?.pages;
         pages.get(self.page).or_else(|| pages.last())
     }
@@ -284,11 +286,11 @@ impl Card {
     pub(super) fn native_cell(
         &self,
         cell: &layout::Cell,
-    ) -> Option<&komponist_ipc::native_layout::Cell> {
+    ) -> Option<&komponist_plugin_api::native_layout::Cell> {
         let page = self.native_page()?;
         let half = cell.half.map(|half| match half {
-            layout::Half::Top => komponist_ipc::native_layout::Half::Top,
-            layout::Half::Bottom => komponist_ipc::native_layout::Half::Bottom,
+            layout::Half::Top => komponist_plugin_api::native_layout::Half::Top,
+            layout::Half::Bottom => komponist_plugin_api::native_layout::Half::Bottom,
         });
         page.cells.iter().find(|native| {
             native.row == cell.row
@@ -311,8 +313,10 @@ impl Card {
             return device::frame::COLLAPSED_W;
         }
         let grid = match self.state {
-            CardState::Ok => self.current_page().map_or(0.0, layout::Page::width),
-            _ => layout::device_width(metrics::MESSAGE_COLUMNS),
+            CardState::Ok => self
+                .current_page()
+                .map_or(0.0, |page| device_width(page.cols)),
+            _ => device_width(metrics::MESSAGE_COLUMNS),
         };
         grid.max(head)
     }
@@ -545,7 +549,7 @@ pub(crate) fn card(
         preset_changed: selected.is_some_and(|(_, changed)| changed),
         has_sidechain: host.has_sidechain(device.id),
         sidechain: device.sidechain,
-        width: layout::device_width(metrics::COLUMNS as u8),
+        width: device_width(metrics::COLUMNS as u8),
         late: None,
         levels: None,
         native_meter_levels: Default::default(),
@@ -557,10 +561,10 @@ pub(crate) fn card(
 }
 
 pub(super) fn native_card_layout(
-    native: &komponist_ipc::native_layout::NativeLayout,
+    native: &komponist_plugin_api::native_layout::NativeLayout,
     lang: Lang,
 ) -> DeviceLayout {
-    use komponist_ipc::native_layout::{GraphKind, Half, Widget};
+    use komponist_plugin_api::native_layout::{GraphKind, Half, Widget};
     use layout::{Cell, CellParam, GraphBinding, GraphConfig, Page, WidgetKind};
     DeviceLayout {
         pages: native
@@ -840,7 +844,7 @@ pub(crate) fn native_param(
                 Some((index, layout.label(labels, lang.code())?.to_owned()))
             })
             .collect();
-        let localize = |labels: &komponist_ipc::native_layout::Labels| {
+        let localize = |labels: &komponist_plugin_api::native_layout::Labels| {
             layout.label(labels, lang.code()).map(str::to_owned)
         };
         let minimum_label = display.minimum_label.as_ref().and_then(localize);
@@ -1117,10 +1121,10 @@ pub fn move_target_in(from: usize, slot: usize, lo: usize, hi: usize) -> Option<
 mod tests {
     use super::*;
     use crate::app::App;
-    use komponist_ipc::ParamValue;
     use komponist_model::fixtures::demo_project;
+    use komponist_plugin_api::params::ParamValue;
 
-    use komponist_ipc::control::param_flags;
+    use komponist_plugin_api::params::param_flags;
 
     fn info(id: u32, name: &str, flags: u32) -> WireInfo {
         WireInfo {
@@ -1206,7 +1210,7 @@ mod tests {
         let project = demo_project();
         let host = App::headless_plugin_host();
         let mut card = cards(Lang::En, &project.tracks[2], &host, &[]).remove(0);
-        let native = komponist_ipc::native_layout::NativeLayout::parse(include_bytes!(
+        let native = komponist_plugin_api::native_layout::NativeLayout::parse(include_bytes!(
             "../../../../../docs/clap-device-layout/example.json"
         ))
         .unwrap();

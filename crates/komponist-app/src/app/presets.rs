@@ -3,7 +3,7 @@
 use super::*;
 
 use crate::dialogs::file::Purpose;
-use komponist_ipc::clap_presets::{ClapPresetSource, DevicePreset};
+use komponist_plugin_api::clap_presets::{ClapPresetSource, DevicePreset};
 use komponist_plugins::PresetPreparation;
 use serde::{Deserialize, Serialize};
 use std::io::Read as _;

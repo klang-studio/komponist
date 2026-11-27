@@ -11,9 +11,9 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use komponist_ipc::clap_presets::ClapPreset;
 use komponist_ipc::{PluginDescriptor, PluginFormat as BundleFormat, PluginKind};
 use komponist_model::PluginRef;
+use komponist_plugin_api::clap_presets::ClapPreset;
 
 /// Time one bundle scan may take before its process is killed and the bundle skipped.
 pub const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -104,7 +104,7 @@ pub struct CatalogEntry {
     /// The reference a device stores when this entry is added.
     pub plugin: PluginRef,
     /// Device labels advertised by a native layout.
-    pub localized: Option<komponist_ipc::native_layout::LocalizedPlugin>,
+    pub localized: Option<komponist_plugin_api::native_layout::LocalizedPlugin>,
     /// Presets advertised for this CLAP ID by the particular bundle that supplied the entry.
     pub clap_presets: Vec<ClapPreset>,
     /// Instrument or effect.
@@ -558,7 +558,7 @@ mod tests {
     }
 
     fn clap_preset(id: &str, name: &str) -> ClapPreset {
-        use komponist_ipc::clap_presets::{ClapPresetLocation, ClapPresetSource};
+        use komponist_plugin_api::clap_presets::{ClapPresetLocation, ClapPresetSource};
         ClapPreset {
             plugin_id: id.into(),
             source: ClapPresetSource {
@@ -912,7 +912,7 @@ mod tests {
         let file = dir.join("nested/plugins.json");
         assert_eq!(ScanCache::load(&file), ScanCache::default());
         let mut localized = descriptor("a", "A", PluginKind::Effect, &["eq"]);
-        localized.localized = Some(komponist_ipc::native_layout::LocalizedPlugin {
+        localized.localized = Some(komponist_plugin_api::native_layout::LocalizedPlugin {
             default_locale: "en".into(),
             names: [
                 ("en".into(), "Test EQ".into()),

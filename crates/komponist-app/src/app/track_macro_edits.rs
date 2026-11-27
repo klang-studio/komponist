@@ -1,12 +1,12 @@
 //! Applies track macro gestures and mapping changes to the document.
 
 use komponist_engine::automation::PluginParamBatch;
-use komponist_engine::processor::ParameterEditKind;
 use komponist_engine::{Command, SlotId};
 use komponist_model::automation::{AutomationOwner, AutomationTarget};
 use komponist_model::edits::{self, ChannelProp, EditError, SendProp, TrackProp, macros};
 use komponist_model::macros::{MAX_MAPPINGS, Mapping, initial_range};
 use komponist_model::{DeviceId, Project, TrackId};
+use komponist_processor::processor::ParameterEditKind;
 
 use super::App;
 use crate::actions::SelectMode;

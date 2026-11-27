@@ -1046,7 +1046,7 @@ impl App {
                 self.finish_plugin_asset_edit(*device, *request, result);
             }
             PluginManagerEvent::WaveformMarkersEdited { device, result, .. } => {
-                use komponist_ipc::waveform_markers::EditStatus;
+                use komponist_plugin_api::waveform_markers::EditStatus;
                 use komponist_plugins::WaveformMarkerEditResult;
 
                 match result {
@@ -3548,7 +3548,7 @@ mod tests {
             &mut self,
             _: &komponist_model::Device,
             _: komponist_plugins::ProcessorSetup,
-        ) -> Option<Box<dyn komponist_engine::Processor>> {
+        ) -> Option<Box<dyn komponist_processor::Processor>> {
             None
         }
 

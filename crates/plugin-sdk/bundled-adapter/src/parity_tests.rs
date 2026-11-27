@@ -7,11 +7,11 @@ use std::sync::{Arc, Mutex};
 use komponist_device_core::{
     CatalogSpec, DeviceNote, Dsp, InternalProcessor, Spec, SpecCache, dispatch_note, no_presets,
 };
-use komponist_engine::{
-    Event, EventKind, NOTE_ID_NONE, ProcessContext, Processor, StereoIo, TransportInfo,
-};
 use komponist_model::params::layout::DeviceLayout;
 use komponist_model::{DeviceRole, Meter, Tick, TickRange};
+use komponist_processor::{
+    Event, EventKind, NOTE_ID_NONE, ProcessContext, Processor, StereoIo, TransportInfo,
+};
 use nice_plug::midi::{Channel, Key, NoteEvent, VoiceID};
 
 use crate::instrument::apply_note;

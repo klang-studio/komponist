@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use std::path::Path;
 
 use clap_sys::plugin::clap_plugin;
-use komponist_ipc::device_assets::{
+use komponist_plugin_api::device_assets::{
     Bindings, EXTENSION_ID, Extension, MAX_BINDINGS_BYTES, MAX_SNAPSHOT_BYTES, OfflineRequest,
     OfflineStatus, Snapshot,
 };

@@ -4,11 +4,11 @@ use core::ffi::{CStr, c_void};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use komponist_engine::SampleTap;
 use komponist_native_clap_sdk::effect_meter::{
     BlockMeter, DETECTOR_FRAMES, EXTENSION_ID, Extension,
 };
 use komponist_native_clap_sdk::signal_taps;
+use komponist_processor::SampleTap;
 use nice_plug::wrapper::clap::{Wrapper, clap_plugin};
 
 use super::{AudioDefinition, Effect};

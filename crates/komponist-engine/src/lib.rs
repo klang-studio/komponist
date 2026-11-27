@@ -6,13 +6,12 @@
 //! engine knows no UI, no IPC, no plugin format and no audio backend.
 //!
 //! Module map (ARCHITECTURE §6):
-//! - [`processor`]: the [`Processor`] trait, the [`EventProcessor`] stage of MIDI effects, events,
-//!   [`ProcessContext`], [`StereoIo`].
+//! - [`komponist_processor`]: audio and MIDI processor contracts used by the engine.
 //! - [`program`]: the compiled [`Program`] the engine plays.
 //! - [`audio`]: audio clips: the [`AudioPlan`] of an audio track, disk streaming, the voice.
 //! - [`compile`]: project → program, with processor-slot mapping and the routing graph.
 //! - [`route`]: the compiled routing graph of a program (buses, sends, sidechains, gates).
-//! - [`api`]: [`Command`], [`EngineEvent`], [`Garbage`], [`Telemetry`], [`TrackMeter`], [`DeviceMeter`],
+//! - [`api`]: [`Command`], [`EngineEvent`], [`Garbage`], [`Telemetry`], [`TrackMeter`],
 //!   [`EngineHandle`].
 //! - [`engine`]: [`Engine::new`], [`Engine::process`], [`Engine::render`].
 //! - [`export`]: WAV export of a frame range ([`export::export`]): render, normalise, dither, write.
@@ -41,7 +40,6 @@ mod macros;
 mod metronome;
 mod mixer;
 mod note_schedule;
-pub mod processor;
 pub mod program;
 pub mod recording;
 pub mod route;
@@ -49,7 +47,6 @@ mod sequencer;
 mod slots;
 mod stage;
 mod sys;
-pub mod tap;
 pub mod testing;
 mod transport;
 pub mod workers;
@@ -60,19 +57,12 @@ pub mod workers;
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
-pub use api::{
-    Command, DeviceMeter, EngineEvent, EngineHandle, Garbage, Telemetry, TrackMeter, TransportState,
-};
+pub use api::{Command, EngineEvent, EngineHandle, Garbage, Telemetry, TrackMeter, TransportState};
 pub use audio::{AudioPlan, ClipSource, Segment, SourceStatus};
 pub use engine::{
     AudioInputBuffer, AudioInputRoutes, Engine, EngineConfig, LiveInput, MacroInput, MidiInEvent,
 };
-pub use processor::{
-    Event, EventBuffer, EventKind, EventProcessor, EventSink, NOTE_ID_NONE, ProcessContext,
-    ProcessStatus, Processor, ProcessorError, StereoIo, TransportInfo,
-};
 pub use program::{MidiPort, Program, SlotId};
-pub use tap::SampleTap;
 
 /// Largest number of frames per processor call. Device buffers above it are processed in chunks;
 /// shared memory to the bridges is sized for it (`komponist_ipc::shm::MAX_BLOCK` must be equal).
@@ -92,10 +82,6 @@ pub const MAX_PENDING_PARAMS: usize = 16;
 
 /// Size of the engine's processor slot table ([`SlotId`] `0 .. MAX_SLOTS`).
 pub const MAX_SLOTS: usize = 1024;
-
-/// Most events one processor call receives; further events of that call are dropped (note-offs
-/// first in line) and counted in [`Telemetry::dropped_events`].
-pub const MAX_EVENTS_PER_BLOCK: usize = 1024;
 
 /// Most commands the engine applies per block; the rest wait for the next block.
 pub const MAX_COMMANDS_PER_BLOCK: usize = 64;

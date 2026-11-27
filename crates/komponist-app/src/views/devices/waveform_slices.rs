@@ -4,10 +4,10 @@ use std::ops::Range;
 
 use egui::{Align, Id, Layout, PointerButton, Rect, Ui, UiBuilder};
 use komponist_i18n::Lang;
-use komponist_ipc::waveform_markers::{
+use komponist_model::format::note_name;
+use komponist_plugin_api::waveform_markers::{
     Edit, MAX_FADE_MS, MAX_MARKERS, Request, SliceOptions, Snapshot,
 };
-use komponist_model::format::note_name;
 use komponist_tokens::device;
 use komponist_ui::widgets::button::Button;
 use komponist_ui::widgets::device::choice::DropdownCell;
@@ -17,7 +17,9 @@ use komponist_ui::widgets::dropdown::{Dropdown, Item};
 use komponist_ui::widgets::number_field::format_number;
 
 use super::asset_waveform::{self, Waveform};
-use super::layout::{Cell, CellParam, Half, WidgetKind, cell_rect};
+use komponist_ui::widgets::device::cell_rect;
+
+use super::layout::{Cell, CellParam, Half, WidgetKind};
 use super::metrics::SAMPLER_FILE_WIDTH;
 use super::model::Card;
 use super::viewport::Viewport;

@@ -74,7 +74,7 @@ enum Rate {
 type ArpeggiatorPlugin = MidiEffect<Arpeggiator>;
 
 impl komponist_bundled_clap_adapter::MidiDefinition for Arpeggiator {
-    fn event_stage() -> Box<dyn komponist_engine::EventProcessor + Send> {
+    fn event_stage() -> Box<dyn komponist_processor::EventProcessor + Send> {
         komponist_arpeggiator::stage()
     }
 }

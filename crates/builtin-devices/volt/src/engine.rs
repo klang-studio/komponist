@@ -2,7 +2,7 @@
 //! smoothing and the control-rate step. See the module docs of [`super`] for the signal flow.
 
 use klang_dsp::rng::Rng;
-use komponist_model::params::va_curve::{LFO_DIV_BEATS, dst};
+use komponist_device_dsp::va_curve::{LFO_DIV_BEATS, dst};
 
 use super::env::pole;
 use super::lfo::Lfo;

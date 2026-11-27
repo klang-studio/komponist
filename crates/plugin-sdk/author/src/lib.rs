@@ -24,35 +24,35 @@ use clap_sys::{
     },
     plugin::clap_plugin,
 };
-use komponist_ipc::control::{ParamInfo, param_flags};
-use komponist_ipc::native_layout::{
+use komponist_model::params::context::{BAND, placeholders};
+use komponist_model::params::layout::validate;
+use komponist_model::params::{ParamContext, resolve};
+use komponist_plugin_api::native_layout::{
     CAP_CELL_SELECTIONS, CAP_CONDITIONAL_CONTROLS, CAP_EQ_BAND_CONTROLS, CAP_FM_TOPOLOGY,
     CAP_PAD_BANK, CAP_PANEL_SELECTIONS, CAP_PARAMETER_DISPLAY, CAP_SOURCE_FRACTION_TRIM, GraphKind,
     MAX_AUTHOR_IDS, MAX_BYTES, NativeLayout, valid_author_id,
 };
-use komponist_model::params::context::{BAND, placeholders};
-use komponist_model::params::layout::validate;
-use komponist_model::params::{ParamContext, resolve};
+use komponist_plugin_api::params::{ParamInfo, param_flags};
 use nice_plug::prelude::ClapPlugin;
 use nice_plug::wrapper::clap::Wrapper;
 use serde_json::{Value, json};
 
 pub use komponist_device_core::layout;
-pub use komponist_ipc::device_assets;
-pub use komponist_ipc::effect_meter;
-pub use komponist_ipc::native_layout::{
-    Canvas, ChoiceGlyph, DisplayScale, DisplayUnit, FmCarrier, FmDiagram, Heading, Labels, Pad,
-    ParameterDisplay, TrimUnit,
-};
-pub use komponist_ipc::sampler_ui;
-pub use komponist_ipc::signal_taps;
 pub use komponist_model::params::{
     ParamId,
     layout::{Cell, CellParam, DeviceLayout, GraphBinding, GraphConfig, Half, Page, WidgetKind},
 };
+pub use komponist_plugin_api::device_assets;
+pub use komponist_plugin_api::effect_meter;
+pub use komponist_plugin_api::native_layout::{
+    Canvas, ChoiceGlyph, DisplayScale, DisplayUnit, FmCarrier, FmDiagram, Heading, Labels, Pad,
+    ParameterDisplay, TrimUnit,
+};
+pub use komponist_plugin_api::sampler_ui;
+pub use komponist_plugin_api::signal_taps;
 
 /// ID of the native device layout extension.
-pub use komponist_ipc::native_layout::EXTENSION_ID;
+pub use komponist_plugin_api::native_layout::EXTENSION_ID;
 
 const OK: u32 = 0;
 const BUFFER_TOO_SMALL: u32 = 2;
@@ -200,7 +200,7 @@ pub fn extension<P: NativeClapLayout>(id: &CStr) -> *const c_void {
 /// and an auxiliary sidechain. Pass `u32::MAX` if the default configuration already has one.
 /// Ordinary hosts can still use the standard audio ports config extension.
 pub fn sidechain_fallback_to_main<const AUX_CONFIGURATION_ID: u32>(id: &CStr) -> *const c_void {
-    use komponist_ipc::sidechain_fallback::{EXTENSION_ID, MAIN_INPUT, SidechainFallback};
+    use komponist_plugin_api::sidechain_fallback::{EXTENSION_ID, MAIN_INPUT, SidechainFallback};
 
     if id != EXTENSION_ID {
         return ptr::null();
@@ -613,7 +613,7 @@ pub unsafe fn compile<P: ClapPlugin>(
     NativeLayout::parse(&bytes)
         .and_then(|layout| {
             if panel.device_labels.is_some() && layout.localized_plugin().is_none() {
-                return Err(komponist_ipc::native_layout::LayoutError::Invalid(
+                return Err(komponist_plugin_api::native_layout::LayoutError::Invalid(
                     "plugin metadata",
                 ));
             }

@@ -667,7 +667,7 @@ pub struct ExportProgress {
 }
 
 /// What a plugin frame window shows (shared with the bridge, which draws the frame on macOS).
-pub use komponist_ipc::frame::PluginView;
+pub use komponist_plugin_api::frame::PluginView;
 
 /// An open plugin frame window (S05).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

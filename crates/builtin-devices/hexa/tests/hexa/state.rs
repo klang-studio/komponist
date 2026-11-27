@@ -1,9 +1,9 @@
 //! Device state and preset switching through the processor.
 
-use komponist_engine::Processor;
 use komponist_hexa::{
     HexaProcessor, Macro, decode_state, default_patch, encode_state, preset_patch, presets,
 };
+use komponist_processor::Processor;
 
 use crate::common::*;
 

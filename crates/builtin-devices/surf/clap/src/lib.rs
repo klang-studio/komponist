@@ -20,7 +20,7 @@ macro_rules! stable_choice {
     };
 }
 
-// The factory tables in the order of `komponist_model::params::wavetable::TABLES` (append only).
+// The factory tables in the order of `komponist_device_dsp::wavetable::TABLES` (append only).
 stable_choice!(Table {
     Basic => "basic", "Basic Shapes";
     Pulse => "pulse", "Pulse Width";

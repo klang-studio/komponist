@@ -2,7 +2,6 @@
 //! running patch like the document-side `Field::set`, old macro states load, and the layout
 //! validates for every operator.
 
-use komponist_engine::EventKind;
 use komponist_hexa::device::{self, Field, OpField, layout, params};
 use komponist_hexa::{
     Macro, PRESET_COUNT, decode_state, default_patch, encode_state, preset_patch,
@@ -10,6 +9,7 @@ use komponist_hexa::{
 use komponist_model::params::layout::ENV_OP;
 use komponist_model::params::layout::validate;
 use komponist_model::params::{ParamContext, ParamId};
+use komponist_processor::EventKind;
 
 use crate::common::{activated, note_on, play};
 

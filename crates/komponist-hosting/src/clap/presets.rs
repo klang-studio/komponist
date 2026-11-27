@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use clack_extensions::preset_discovery::prelude::*;
 use clack_host::prelude::{HostError, HostInfo, PluginEntry};
-use komponist_ipc::clap_presets::{
+use komponist_plugin_api::clap_presets::{
     ClapPreset, ClapPresetLocation, ClapPresetSource, LOCALIZED_NAME_PREFIX,
 };
 

@@ -4,7 +4,7 @@
 
 use klang_dsp::phase::to_unit;
 use klang_dsp::sine::sine;
-use komponist_model::params::va_curve::{MOD_PW, PULSE, SAW, TRIANGLE};
+use komponist_device_dsp::va_curve::{MOD_PW, PULSE, SAW, TRIANGLE};
 
 /// The oscillators of a voice ([`crate::engine::Engine`]): what makes the shared engine volt
 /// ([`Analog`]) or surf (the wavetable reader). Everything else, the sub, noise, filter,

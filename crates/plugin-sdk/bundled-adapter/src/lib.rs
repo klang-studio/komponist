@@ -72,7 +72,7 @@ pub trait AudioDefinition: DeviceDefinition {
 
 /// Builds the event processor for a MIDI effect.
 pub trait MidiDefinition: DeviceDefinition {
-    fn event_stage() -> Box<dyn komponist_engine::EventProcessor + Send>;
+    fn event_stage() -> Box<dyn komponist_processor::EventProcessor + Send>;
 }
 
 /// A regular stereo CLAP effect backed by an existing device processor.

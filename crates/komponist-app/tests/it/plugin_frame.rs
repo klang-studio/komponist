@@ -24,19 +24,19 @@ use komponist_app::windows::plugin_frame::body::{self, BodyEvent, BodyModel, Par
 use komponist_app::windows::plugin_frame::header::{self, HeaderEvent, HeaderModel, Mark};
 use komponist_app::windows::plugin_frame::metrics;
 use komponist_app::{Action, App};
-use komponist_engine::Processor;
 use komponist_i18n::{Lang, de};
-use komponist_ipc::clap_presets::{ClapPreset, ClapPresetLocation, ClapPresetSource};
-use komponist_ipc::frame::{FrameChord, FrameKeyEvent, FrameRect, KeyMods};
 use komponist_ipc::{
-    GuiSize, GuiTarget, ParamInfo, ParamValue, PluginDescriptor, PluginFormat as BundleFormat,
-    PluginKind,
+    GuiSize, GuiTarget, PluginDescriptor, PluginFormat as BundleFormat, PluginKind,
 };
 use komponist_model::fixtures::demo_project;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginRef};
+use komponist_plugin_api::clap_presets::{ClapPreset, ClapPresetLocation, ClapPresetSource};
+use komponist_plugin_api::frame::{FrameChord, FrameKeyEvent, FrameRect, KeyMods};
+use komponist_plugin_api::params::{ParamInfo, ParamValue};
 use komponist_plugins::{
     Catalog, DeviceStatus, FailReason, PluginError, PluginManagerEvent, ProcessorSetup,
 };
+use komponist_processor::Processor;
 
 /// The title the device card gives a crashed device (`views::devices::model::failure_texts`, #2).
 const CRASHED_TITLE: &str = "Abgestürzt";
@@ -441,7 +441,7 @@ struct Script {
 struct FakeHost {
     script: Rc<RefCell<Script>>,
     catalog: Catalog,
-    native_layout: Option<std::sync::Arc<komponist_ipc::native_layout::NativeLayout>>,
+    native_layout: Option<std::sync::Arc<komponist_plugin_api::native_layout::NativeLayout>>,
     presets: Vec<ClapPreset>,
     params: Vec<ParamInfo>,
     values: HashMap<u32, ParamValue>,
@@ -522,7 +522,7 @@ impl DeviceHost for FakeHost {
     fn native_layout(
         &self,
         device: DeviceId,
-    ) -> Option<&std::sync::Arc<komponist_ipc::native_layout::NativeLayout>> {
+    ) -> Option<&std::sync::Arc<komponist_plugin_api::native_layout::NativeLayout>> {
         self.known(device).then_some(())?;
         self.native_layout.as_ref()
     }
@@ -615,7 +615,7 @@ fn scripted_app(layout: Option<&[u8]>) -> (App, Rc<RefCell<Script>>, DeviceId) {
             max: 1.0,
             default: 0.5,
             step_count: 0,
-            flags: komponist_ipc::control::param_flags::HIDDEN,
+            flags: komponist_plugin_api::params::param_flags::HIDDEN,
         },
     ];
     let values = HashMap::from([(
@@ -630,7 +630,9 @@ fn scripted_app(layout: Option<&[u8]>) -> (App, Rc<RefCell<Script>>, DeviceId) {
         script: Rc::clone(&script),
         catalog,
         native_layout: layout.map(|bytes| {
-            std::sync::Arc::new(komponist_ipc::native_layout::NativeLayout::parse(bytes).unwrap())
+            std::sync::Arc::new(
+                komponist_plugin_api::native_layout::NativeLayout::parse(bytes).unwrap(),
+            )
         }),
         presets: Vec::new(),
         params,

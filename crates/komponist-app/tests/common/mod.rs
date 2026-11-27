@@ -182,7 +182,11 @@ pub fn author_wire_value(app: &App, device: DeviceId, id: u32, plain: f64) -> f6
 }
 
 /// [`author_wire_value`] from the bundle's layout itself.
-pub fn wire_value(layout: &komponist_ipc::native_layout::NativeLayout, id: u32, plain: f64) -> f64 {
+pub fn wire_value(
+    layout: &komponist_plugin_api::native_layout::NativeLayout,
+    id: u32,
+    plain: f64,
+) -> f64 {
     let Some(display) = layout.parameter_display(id) else {
         return plain;
     };

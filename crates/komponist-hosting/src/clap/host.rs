@@ -37,8 +37,8 @@ use clack_extensions::state::{HostState, HostStateImpl};
 use clack_extensions::thread_check::{HostThreadCheck, HostThreadCheckImpl};
 use clack_extensions::timer::{HostTimer, HostTimerImpl, TimerId as ClapTimerId};
 use clack_host::prelude::*;
-use komponist_ipc::clap_presets::{ClapPresetLocation, ClapPresetSource, PresetReport};
 use komponist_ipc::{GuiSize, LogLevel};
+use komponist_plugin_api::clap_presets::{ClapPresetLocation, ClapPresetSource, PresetReport};
 
 #[cfg(unix)]
 use crate::host::FdEvents;

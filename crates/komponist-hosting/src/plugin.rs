@@ -20,8 +20,9 @@
 //! optional stereo sidechain in (#6); the format layer adapts mono or multi-channel ports
 //! (WP-26/WP-32).
 
-use komponist_ipc::{GuiSize, NoteName, ParamInfo, PluginDescriptor, RenderMode};
+use komponist_ipc::{GuiSize, NoteName, PluginDescriptor, RenderMode};
 use komponist_ipc::{WireEvent, WireTransport};
+use komponist_plugin_api::params::ParamInfo;
 #[cfg(unix)]
 use std::os::fd::RawFd;
 
@@ -155,12 +156,12 @@ pub trait HostedPlugin {
 
     /// The immutable descriptor read once after plugin initialization. The bridge checks the
     /// parameter bindings again whenever it publishes a parameter inventory.
-    fn native_layout(&self) -> Option<(&[u8], &komponist_ipc::native_layout::NativeLayout)> {
+    fn native_layout(&self) -> Option<(&[u8], &komponist_plugin_api::native_layout::NativeLayout)> {
         None
     }
 
     /// Immutable inventory of the plugin's named signal streams.
-    fn signal_taps(&self) -> &[komponist_ipc::signal_taps::Descriptor] {
+    fn signal_taps(&self) -> &[komponist_plugin_api::signal_taps::Descriptor] {
         &[]
     }
 
@@ -169,11 +170,14 @@ pub trait HostedPlugin {
     }
 
     /// Current inventory and loading status of the plugin’s declared file slots.
-    fn asset_slots(&self) -> Option<komponist_ipc::device_assets::Snapshot> {
+    fn asset_slots(&self) -> Option<komponist_plugin_api::device_assets::Snapshot> {
         None
     }
 
-    fn set_asset_bindings(&mut self, _bindings: &komponist_ipc::device_assets::Bindings) -> bool {
+    fn set_asset_bindings(
+        &mut self,
+        _bindings: &komponist_plugin_api::device_assets::Bindings,
+    ) -> bool {
         false
     }
 
@@ -184,10 +188,10 @@ pub trait HostedPlugin {
 
     fn prepare_asset_edit_state(
         &self,
-        _edits: &komponist_ipc::device_assets::edit_state::Edits,
+        _edits: &komponist_plugin_api::device_assets::edit_state::Edits,
         _state: Option<&[u8]>,
-    ) -> komponist_ipc::device_assets::edit_state::PreparedChange {
-        Err(komponist_ipc::device_assets::edit_state::Rejected)
+    ) -> komponist_plugin_api::device_assets::edit_state::PreparedChange {
+        Err(komponist_plugin_api::device_assets::edit_state::Rejected)
     }
 
     fn supports_offline_preparation(&self) -> bool {
@@ -196,13 +200,16 @@ pub trait HostedPlugin {
 
     fn prepare_offline(
         &mut self,
-        _request: Option<komponist_ipc::device_assets::OfflineRequest>,
-    ) -> Option<komponist_ipc::device_assets::OfflineStatus> {
+        _request: Option<komponist_plugin_api::device_assets::OfflineRequest>,
+    ) -> Option<komponist_plugin_api::device_assets::OfflineStatus> {
         None
     }
 
     /// Reads the current waveform markers for an asset slot on the plugin's main thread.
-    fn waveform_markers(&self, _slot: u32) -> Option<komponist_ipc::waveform_markers::Snapshot> {
+    fn waveform_markers(
+        &self,
+        _slot: u32,
+    ) -> Option<komponist_plugin_api::waveform_markers::Snapshot> {
         None
     }
 
@@ -210,8 +217,8 @@ pub trait HostedPlugin {
     fn edit_waveform_markers(
         &mut self,
         _slot: u32,
-        _request: komponist_ipc::waveform_markers::Request,
-    ) -> Option<komponist_ipc::waveform_markers::EditStatus> {
+        _request: komponist_plugin_api::waveform_markers::Request,
+    ) -> Option<komponist_plugin_api::waveform_markers::EditStatus> {
         None
     }
 
@@ -219,7 +226,7 @@ pub trait HostedPlugin {
     fn preview_waveform(&self, _slot: u32, _time: Option<f64>) {}
 
     /// A bounded list of primitives for an authored canvas.
-    fn device_display(&self) -> Option<komponist_ipc::device_canvas::DisplayList> {
+    fn device_display(&self) -> Option<komponist_plugin_api::device_canvas::DisplayList> {
         None
     }
 
@@ -267,7 +274,7 @@ pub trait HostedPlugin {
     /// `preset-load` since the last call, in order ([`crate::HostNotification::PresetReported`]).
     /// Reports made while the host's own [`HostedPlugin::load_clap_preset`] runs belong to that
     /// load and are not returned.
-    fn take_preset_reports(&mut self) -> Vec<komponist_ipc::clap_presets::PresetReport> {
+    fn take_preset_reports(&mut self) -> Vec<komponist_plugin_api::clap_presets::PresetReport> {
         Vec::new()
     }
 
@@ -279,7 +286,7 @@ pub trait HostedPlugin {
     /// Loads a preset through the provider's opaque CLAP preset source on the main thread.
     fn load_clap_preset(
         &mut self,
-        _preset: &komponist_ipc::clap_presets::ClapPreset,
+        _preset: &komponist_plugin_api::clap_presets::ClapPreset,
     ) -> Result<(), HostingError> {
         Err(HostingError::Unsupported("CLAP preset loading"))
     }
@@ -288,9 +295,9 @@ pub trait HostedPlugin {
     /// includes whether the host can keep operating the instance after a failed rollback.
     fn apply_clap_preset(
         &mut self,
-        preset: &komponist_ipc::clap_presets::PresetLoad,
+        preset: &komponist_plugin_api::clap_presets::PresetLoad,
     ) -> Result<(Vec<u8>, Vec<u8>), (String, bool)> {
-        use komponist_ipc::clap_presets::PresetLoad;
+        use komponist_plugin_api::clap_presets::PresetLoad;
         let before = self
             .save_state()
             .map_err(|error| (error.to_string(), true))?;
@@ -377,7 +384,12 @@ pub trait HostedProcessor: Send {
     fn begin_signal_taps(&mut self, _mask: u32) {}
 
     /// Read the requested streams into preallocated block storage.
-    fn read_signal_taps(&mut self, _mask: u32, _out: &mut komponist_ipc::signal_taps::BlockTaps) {}
+    fn read_signal_taps(
+        &mut self,
+        _mask: u32,
+        _out: &mut komponist_plugin_api::signal_taps::BlockTaps,
+    ) {
+    }
 
     /// Routes VST3 controller updates through the host. Called before processing starts.
     fn use_host_controller_sync(&mut self) {}

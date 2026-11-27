@@ -23,11 +23,11 @@ use komponist_app::{Action, App, EditAction, ProjectAction, UiAction};
 use komponist_audio::{
     DeviceId as AudioDeviceId, DeviceInfo, HostKind, JackDirection, JackPort, StreamConfig,
 };
-use komponist_engine::Processor;
 use komponist_i18n::{Lang, de, en};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, Project};
 use komponist_plugins::{Catalog, DeviceStatus, MissingPlugin, PluginManagerEvent, ProcessorSetup};
+use komponist_processor::Processor;
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;

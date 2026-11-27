@@ -91,9 +91,9 @@ use egui::{
 };
 use komponist_i18n::Lang;
 use komponist_ipc::GuiTarget;
-use komponist_ipc::clap_presets::ClapPresetSource;
-use komponist_ipc::frame::{FrameKeyEvent, FrameRect};
 use komponist_model::{ChannelRef, DeviceId};
+use komponist_plugin_api::clap_presets::ClapPresetSource;
+use komponist_plugin_api::frame::{FrameKeyEvent, FrameRect};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
 use komponist_tokens::color;
 
@@ -899,7 +899,11 @@ impl App {
     }
 
     /// A key the bridge's own frame took from its plugin (macOS, Windows; the X11 grab's counterpart).
-    fn frame_shortcut(&mut self, device: DeviceId, chord: &komponist_ipc::frame::FrameChord) {
+    fn frame_shortcut(
+        &mut self,
+        device: DeviceId,
+        chord: &komponist_plugin_api::frame::FrameChord,
+    ) {
         let Some(chord) = keys::chord_from_frame(chord) else {
             return;
         };

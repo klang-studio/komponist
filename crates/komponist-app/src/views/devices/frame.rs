@@ -23,6 +23,7 @@ use komponist_tokens::typography;
 use komponist_tokens::{Srgba, TrackPalette, color, device, radius, size};
 use komponist_ui::widgets::button::Button;
 use komponist_ui::widgets::context_menu::{ContextMenu, Entry};
+use komponist_ui::widgets::device::cell_rect;
 use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{focus, fonts, px, state};
@@ -741,9 +742,9 @@ fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
 fn preset_menu(
     t: Lang,
     response: &Response,
-    presets: &[komponist_ipc::clap_presets::ClapPreset],
+    presets: &[komponist_plugin_api::clap_presets::ClapPreset],
 ) -> Option<usize> {
-    let categories = komponist_ipc::clap_presets::categories(presets);
+    let categories = komponist_plugin_api::clap_presets::categories(presets);
     let entries_for = |category| {
         presets
             .iter()
@@ -893,7 +894,7 @@ fn menu(
         .asset_slots
         .iter()
         .map(|(slot, _)| {
-            use komponist_ipc::device_assets::AssetStatus;
+            use komponist_plugin_api::device_assets::AssetStatus;
             let status = match &slot.status {
                 AssetStatus::Empty => t.plugin_file_empty(),
                 AssetStatus::Loading => t.plugin_file_loading(),
@@ -1066,7 +1067,7 @@ fn cells_body(
     }
     let choice_defaults = super::cells::choice_defaults(&card.layout);
     for cell in &page.cells {
-        let rect = super::layout::cell_rect(cell).translate(origin.to_vec2());
+        let rect = cell_rect(cell).translate(origin.to_vec2());
         if rect.bottom() <= body.bottom() {
             let mut out = Vec::new();
             super::cells::draw_cell(cu, &mut out, card, &palette, cell, rect, &choice_defaults);

@@ -20,7 +20,7 @@ fields in order are `revision: u64`, `editable: bool`, `positions: Vec<f64>`,
 `preparation: Option<Preparation>`. `Preparation` has variants `Preparing` and
 `Unavailable` in that order and describes a derived playback source, such as
 tempo-stretched audio. A provider sends `None` when there is no preparation status.
-The canonical codec is `komponist_ipc::waveform_markers`.
+The canonical codec is `komponist_plugin_api::waveform_markers`.
 
 The positions are finite, positive and strictly increasing source seconds. The list holds up to
 127 markers. It includes saved positions outside the current trim or beyond a shorter relinked

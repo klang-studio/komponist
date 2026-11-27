@@ -7,7 +7,7 @@
 use klang_dsp::phase::increment;
 use klang_dsp::rng::Rng;
 use klang_dsp::sine::sine;
-use komponist_model::params::va_curve::{
+use komponist_device_dsp::va_curve::{
     ENV_CUTOFF_OCT, MOD_CUTOFF_OCT, MOD_DETUNE_CT, MOD_PITCH_ST, MOD_RATE_OCT, SUB_GAIN, dst,
     mix_gains, src,
 };

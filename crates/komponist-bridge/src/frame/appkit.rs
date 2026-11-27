@@ -10,8 +10,8 @@ use std::ptr::NonNull;
 use block2::RcBlock;
 use egui::Rect;
 use komponist_hosting::GuiParent;
-use komponist_ipc::frame::FrameRect;
-use komponist_ipc::frame::keys::{PolicyKey, PolicyMods};
+use komponist_plugin_api::frame::FrameRect;
+use komponist_plugin_api::frame::keys::{PolicyKey, PolicyMods};
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
@@ -205,7 +205,7 @@ pub(super) fn set_level(window: &Window, keep_on_top: bool, komponist_active: bo
     }
 }
 
-/// The frame's rect in egui's screen coordinates (module docs of `komponist_ipc::frame`): the
+/// The frame's rect in egui's screen coordinates (module docs of `komponist_plugin_api::frame`): the
 /// window's top-left corner from the top of the main screen, and its content size.
 pub(super) fn frame_rect(window: &Window) -> FrameRect {
     let frame = window.frame();
@@ -507,8 +507,8 @@ pub(super) fn install_offscreen_mode() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use komponist_ipc::frame::FrameChord;
-    use komponist_ipc::frame::keys::decide;
+    use komponist_plugin_api::frame::FrameChord;
+    use komponist_plugin_api::frame::keys::decide;
 
     #[test]
     fn keys_map_by_code_or_character() {

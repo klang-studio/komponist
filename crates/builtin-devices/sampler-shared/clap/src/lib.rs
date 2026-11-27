@@ -17,10 +17,12 @@ use clap_sys::plugin::clap_plugin;
 use komponist_bundled_clap_adapter::{DeviceDefinition, Parameters, to_device_note};
 use komponist_device_core::pinned_clap_state::{MAX_SAMPLE_ASSET_BYTES, SAMPLE_ASSETS_FIELD};
 use komponist_device_core::{Dsp, SAMPLE_RATES, dispatch_note};
-use komponist_ipc::device_assets::edit_state;
-pub use komponist_ipc::device_assets::edit_state::Intent as AssetEditIntent;
-use komponist_ipc::sampler_ui::{self, EXTENSION_ID, Pad, Snapshot, Status, Sync as WireSync};
 use komponist_native_clap_sdk::{NativeClapLayout, Panel};
+use komponist_plugin_api::device_assets::edit_state;
+pub use komponist_plugin_api::device_assets::edit_state::Intent as AssetEditIntent;
+use komponist_plugin_api::sampler_ui::{
+    self, EXTENSION_ID, Pad, Snapshot, Status, Sync as WireSync,
+};
 use komponist_sampler_shared::{
     ManagedLoader, PadStatus, SamplerHandle, SyncStatus, links, settings::Settings,
 };
@@ -68,7 +70,7 @@ struct SampleParameters<T> {
     samples: SamplerHandle,
     assets: Mutex<SampleAssets>,
     host_bindings: Mutex<BTreeMap<usize, Option<links::SampleLink>>>,
-    offline: Mutex<Option<komponist_ipc::device_assets::OfflineRequest>>,
+    offline: Mutex<Option<komponist_plugin_api::device_assets::OfflineRequest>>,
     definition: std::marker::PhantomData<fn() -> T>,
 }
 
@@ -280,8 +282,8 @@ struct SamplerUi {
 }
 
 impl<T: SampledDefinition> Sampled<T> {
-    const WAVEFORM_PREVIEW: komponist_ipc::waveform_preview::Extension =
-        komponist_ipc::waveform_preview::Extension {
+    const WAVEFORM_PREVIEW: komponist_plugin_api::waveform_preview::Extension =
+        komponist_plugin_api::waveform_preview::Extension {
             preview: Some(Self::preview_waveform),
         };
 
@@ -430,19 +432,21 @@ impl<T: SampledDefinition> ClapPlugin for Sampled<T> {
     unsafe fn clap_custom_extension(id: &CStr) -> *const c_void {
         if id == EXTENSION_ID {
             std::ptr::from_ref(&Self::SAMPLER_UI).cast()
-        } else if id == komponist_ipc::waveform_preview::EXTENSION_ID && T::SLICE_SETTINGS.is_some()
+        } else if id == komponist_plugin_api::waveform_preview::EXTENSION_ID
+            && T::SLICE_SETTINGS.is_some()
         {
             std::ptr::from_ref(&Self::WAVEFORM_PREVIEW).cast()
         } else if id == edit_state::EXTENSION_ID {
             asset_edit::extension::<T>()
-        } else if id == komponist_ipc::device_assets::EXTENSION_ID {
+        } else if id == komponist_plugin_api::device_assets::EXTENSION_ID {
             komponist_native_clap_sdk::assets::extension::<Self, SampleParameters<T>>(id)
         } else if id == komponist_native_clap_sdk::display::EXTENSION_ID && T::DISPLAY.is_some() {
             komponist_native_clap_sdk::display::extension::<Self, SampleParameters<T>>(id)
-        } else if id == komponist_ipc::waveform_markers::EXTENSION_ID && T::SLICE_SETTINGS.is_some()
+        } else if id == komponist_plugin_api::waveform_markers::EXTENSION_ID
+            && T::SLICE_SETTINGS.is_some()
         {
             markers::extension::<T>()
-        } else if id == komponist_ipc::signal_taps::EXTENSION_ID {
+        } else if id == komponist_plugin_api::signal_taps::EXTENSION_ID {
             playhead::extension::<T>()
         } else {
             komponist_native_clap_sdk::extension::<Self>(id)

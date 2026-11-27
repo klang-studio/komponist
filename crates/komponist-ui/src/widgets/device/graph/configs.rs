@@ -24,10 +24,10 @@ use super::spec::{
 };
 use crate::Lang;
 use crate::widgets::metrics::device::graph as m;
-use komponist_model::params::comp_curve;
-use komponist_model::params::eq_curve::CURVE_RATE;
-use komponist_model::params::va_curve;
-use komponist_model::params::wavetable;
+use komponist_device_dsp::comp_curve;
+use komponist_device_dsp::eq_curve::CURVE_RATE;
+use komponist_device_dsp::va_curve;
+use komponist_device_dsp::wavetable;
 
 /// Slot indices of [`envelope`].
 pub mod env {
@@ -169,7 +169,7 @@ pub fn eq_band_response_at(p: &[f64], i: usize, hz: f64, rate: f64) -> f64 {
     }
     let (fc, gain, q, typ) = (p[o + 1], p[o + 2], p[o + 3], p[o + 4]);
     // The real filter's response (WP-90): the device runs the same coefficients.
-    komponist_model::params::eq_curve::band_response_db_at(typ, fc, gain, q, hz, rate)
+    komponist_device_dsp::eq_curve::band_response_db_at(typ, fc, gain, q, hz, rate)
 }
 
 /// The summed response of `bands` bands at `hz`.
@@ -340,7 +340,7 @@ pub fn transfer(t: Lang) -> GraphSpec {
 // Compressor
 
 /// The compressor's output level at input `x` dB: the curve of the device
-/// ([`komponist_model::params::comp_curve::output_db`]), with the knee as its width in dB.
+/// ([`komponist_device_dsp::comp_curve::output_db`]), with the knee as its width in dB.
 pub fn compressor_level(x: f64, threshold: f64, ratio: f64, knee: f64) -> f64 {
     comp_curve::output_db(x, threshold, ratio, knee)
 }

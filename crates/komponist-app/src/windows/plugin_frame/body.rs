@@ -11,6 +11,7 @@ use komponist_i18n::Lang;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{TrackPalette, color, device, radius, size, typography};
 use komponist_ui::widgets::button::Button;
+use komponist_ui::widgets::device::{cell_rect, device_width};
 use komponist_ui::widgets::knob::Knob;
 use komponist_ui::widgets::value_menu;
 use komponist_ui::widgets::{self as w, metrics as wm};
@@ -155,12 +156,12 @@ fn native_card(ui: &mut Ui, card: &mut Card, events: &mut Vec<BodyEvent>) {
     };
     let defaults = choice_defaults(&card.layout);
     ScrollArea::both().show(ui, |ui| {
-        let (_, body) = ui.allocate_space(vec2(page.width(), device::grid::BODY_H));
+        let (_, body) = ui.allocate_space(vec2(device_width(page.cols), device::grid::BODY_H));
         let palette = TrackPalette::new(150);
         let mut actions = Vec::new();
         for (index, cell) in page.cells.iter().enumerate() {
-            let [x, y, width, height] = cell.bounds();
-            let rect = Rect::from_min_size(body.min + vec2(x, y), vec2(width, height));
+            let local = cell_rect(cell);
+            let rect = Rect::from_min_size(body.min + local.min.to_vec2(), local.size());
             let mut cell_ui =
                 ui.new_child(UiBuilder::new().id_salt((card.page, index)).max_rect(rect));
             draw_cell(

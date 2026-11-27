@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 pub const EXTENSION_ID: &CStr = c"org.klang-studio.komponist.signal-taps";
 /// Maximum number of streams in one instance.
 pub const MAX_TAPS: usize = 4;
-/// The wire block holds one sample per audio frame per stream.
-pub const MAX_BLOCK_SAMPLES: usize = crate::shm::MAX_BLOCK;
+/// Maximum samples per stream in a process block, one per audio frame.
+pub const MAX_BLOCK_SAMPLES: usize = 2048;
 /// Largest ring capacity the host allocates per stream.
 pub const MAX_CAPACITY: u32 = 65_536;
 

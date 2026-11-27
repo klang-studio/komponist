@@ -11,9 +11,8 @@
 //! - [`ring`]: [`ShmRing`], the SPSC ring inside the mapping.
 //! - [`signal`]: wait with deadline and wake on shared words.
 //! - [`control`]: [`ControlMsg`] / [`BridgeMsg`] over a stream-socket [`Channel`], and the shared
-//!   plugin vocabulary ([`PluginDescriptor`], [`ParamInfo`], [`NoteName`], …).
-//! - [`frame`]: the plugin frame window's vocabulary (header model and events, frame rect, keys
-//!   and the key policy), shared by the app and the bridge that owns the frame on macOS (#52).
+//!   bridge metadata ([`PluginDescriptor`], [`NoteName`], …). Extension payloads and the
+//!   frame vocabulary come from [`komponist_plugin_api`].
 //! - [`process`]: [`ProcessWatcher`], crash detection of a bridge process, and children that die
 //!   with the app ([`spawn_tied`], [`ProcessGroup`]).
 //!
@@ -34,22 +33,11 @@
 //!
 //! This crate links no plugin format and no audio backend.
 
-pub mod clap_presets;
 pub mod control;
-pub mod device_assets;
-pub mod device_canvas;
-pub mod effect_meter;
-pub mod frame;
-pub mod native_layout;
 pub mod process;
 pub mod ring;
-pub mod sampler_ui;
 pub mod shm;
-pub mod sidechain_fallback;
 pub mod signal;
-pub mod signal_taps;
-pub mod waveform_markers;
-pub mod waveform_preview;
 
 // Unit tests run RT paths inside `assert_no_alloc`, which needs its allocator (debug builds only;
 // in release builds `assert_no_alloc` is a no-op).
@@ -59,8 +47,8 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 pub use control::{
     AppChannel, BridgeChannel, BridgeMsg, Channel, ChannelError, ControlMsg, ErrorContext, GuiSize,
-    GuiTarget, LoadedInfo, LogLevel, NoteName, ParamInfo, ParamValue, PluginDescriptor,
-    PluginFormat, PluginKind, RenderMode,
+    GuiTarget, LoadedInfo, LogLevel, NoteName, PluginDescriptor, PluginFormat, PluginKind,
+    RenderMode,
 };
 pub use process::{ProcessExit, ProcessGroup, ProcessWatcher, spawn_tied};
 pub use ring::ShmRing;

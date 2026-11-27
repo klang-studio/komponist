@@ -10,10 +10,12 @@
 use komponist_device_core::layout::single_page;
 use komponist_device_core::midi::PITCH_CLASSES;
 use komponist_device_core::{CatalogSpec, Preset, Spec, SpecCache};
-use komponist_engine::{Event, EventKind, EventProcessor, EventSink, NOTE_ID_NONE, ProcessContext};
 use komponist_i18n::Lang;
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, WidgetKind};
 use komponist_model::params::{ParamId, ParamInfo, ParamKind};
+use komponist_processor::{
+    Event, EventKind, EventProcessor, EventSink, NOTE_ID_NONE, ProcessContext,
+};
 
 /// The built-in device specification.
 pub static SPEC: Spec = Spec {

@@ -1,8 +1,9 @@
 //! Program swaps, stop, locate and the active-notes table.
 
 use komponist_engine::testing::{EventLog, Logged, TestSine};
-use komponist_engine::{Command, EngineEvent, EventKind, Program};
+use komponist_engine::{Command, EngineEvent, Program};
 use komponist_model::{Tempo, TempoMap, Tick, TrackId};
+use komponist_processor::EventKind;
 
 use crate::common::*;
 

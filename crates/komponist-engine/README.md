@@ -9,7 +9,7 @@ crates.
 - [src/compile.rs](src/compile.rs) — Compiles the project into an engine program.
 - [src/api.rs](src/api.rs) — Defines commands, events, telemetry and the engine handle.
 - [src/engine.rs](src/engine.rs) — Processes blocks, manages processor slots and drives transport.
-- [src/processor.rs](src/processor.rs) — Defines audio and MIDI processing contracts.
+- [komponist-processor](../komponist-processor/src/lib.rs) — Defines audio and MIDI processing contracts.
 - [src/graph.rs](src/graph.rs) — Processes routing, taps and aligned inputs.
 - [src/workers.rs](src/workers.rs) — Schedules independent jobs in parallel.
 - [src/audio/](src/audio/) — Handles clip playback and background read-ahead.

@@ -1,5 +1,5 @@
 use clap_sys::plugin::clap_plugin;
-use komponist_ipc::device_canvas::{DisplayList, EXTENSION_ID, MAX_BYTES};
+use komponist_plugin_api::device_canvas::{DisplayList, EXTENSION_ID, MAX_BYTES};
 
 #[repr(C)]
 struct Extension {

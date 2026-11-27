@@ -38,7 +38,7 @@ pub fn run_presets(bundle: &Path) -> u8 {
 /// Loads a catalogued preset into an inactive instance before the app creates a new device.
 pub fn run_preset_state(bundle: &Path, preset: &str) -> u8 {
     run_output(bundle, false, |out| {
-        use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource};
+        use komponist_plugin_api::clap_presets::{ClapPreset, ClapPresetSource};
         let (plugin_id, source): (String, ClapPresetSource) =
             serde_json::from_str(preset).map_err(|error| HostingError::State(error.to_string()))?;
         let bridge = komponist_hosting::host_loop::PollLoop::new(false)?;

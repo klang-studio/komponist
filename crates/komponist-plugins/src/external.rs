@@ -1,6 +1,6 @@
 //! The engine-side stand-in for a plugin running in a bridge process (ARCHITECTURE §8.1).
 //!
-//! Implements `komponist_engine::Processor` on top of `komponist_ipc::BridgeClient`. Per call:
+//! Implements `komponist_processor::Processor` on top of `komponist_ipc::BridgeClient`. Per call:
 //! convert the events to `WireEvent`s and the transport to `WireTransport`, `begin_block`, then
 //! `wait_done` until the callback's shared deadline (`ProcessContext::deadline`: 60 % of the
 //! callback period after the callback started, the same for every processor of the callback).
@@ -26,11 +26,6 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use komponist_engine::processor::{EventProcessor, EventSink, ParameterEdit, ParameterEditKind};
-use komponist_engine::{
-    Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
-    TransportInfo,
-};
 use komponist_ipc::shm::{
     BLOCK_FLAG_OFFLINE, BLOCK_FLAG_RESET, INPUT_EVENT_CAPACITY, MAX_BLOCK, OUTPUT_EVENT_CAPACITY,
     TRANSPORT_LOOPING, TRANSPORT_PLAYING, TRANSPORT_RECORDING,
@@ -40,12 +35,17 @@ use komponist_ipc::{
     WireTransport,
 };
 use komponist_model::{DeviceRole, PPQ};
+use komponist_processor::processor::{EventProcessor, EventSink, ParameterEdit, ParameterEditKind};
+use komponist_processor::{
+    Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+    TransportInfo,
+};
 
 use crate::manager::ProcessorSetup;
 
 /// Share of the callback period by which bridges must be done (ARCHITECTURE §8.1); the engine's
 /// constant, re-exported.
-pub use komponist_engine::processor::DEADLINE_SHARE;
+pub use komponist_processor::processor::DEADLINE_SHARE;
 
 /// How long an offline call (export) waits for the bridge.
 pub const OFFLINE_DEADLINE: Duration = Duration::from_secs(2);
@@ -919,8 +919,8 @@ mod tests {
     fn midi_stage_discards_stale_and_partial_notes_and_resets_after_loss() {
         use std::sync::mpsc;
 
-        use komponist_engine::processor::EventBuffer;
         use komponist_ipc::{BlockResult, BridgeServer, BridgeState, ShmRegion};
+        use komponist_processor::processor::EventBuffer;
 
         let region = Arc::new(ShmRegion::create().unwrap());
         region.set_bridge_state(BridgeState::Active);

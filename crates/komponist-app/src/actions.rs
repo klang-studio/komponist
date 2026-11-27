@@ -473,12 +473,12 @@ pub enum PluginAction {
     EditWaveformMarkers {
         device: DeviceId,
         slot: u32,
-        request: komponist_ipc::waveform_markers::Request,
+        request: komponist_plugin_api::waveform_markers::Request,
     },
     /// Load a discovered preset into the live CLAP instance.
     ApplyClapPreset {
         device: DeviceId,
-        source: komponist_ipc::clap_presets::ClapPresetSource,
+        source: komponist_plugin_api::clap_presets::ClapPresetSource,
     },
     /// Choose a file in which to save the current CLAP preset.
     SaveUserPreset(DeviceId),
@@ -487,7 +487,7 @@ pub enum PluginAction {
     /// Insert a device with a preset already loaded.
     AddFromPreset {
         plugin: PluginRef,
-        source: komponist_ipc::clap_presets::ClapPresetSource,
+        source: komponist_plugin_api::clap_presets::ClapPresetSource,
         track: Option<TrackId>,
     },
     /// "Öffnen" on a device card or insert click: open the plugin window (own GUI, or the generic

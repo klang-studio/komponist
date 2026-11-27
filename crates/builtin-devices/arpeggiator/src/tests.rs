@@ -2,12 +2,12 @@
 
 use assert_no_alloc::assert_no_alloc;
 use komponist_device_core::InternalProcessor;
-use komponist_engine::{
+use komponist_model::params::ParamId;
+use komponist_model::{Meter, PPQ, Tempo, TempoMap, Tick, TickRange};
+use komponist_processor::{
     Event, EventBuffer, EventKind, EventProcessor, NOTE_ID_NONE, ProcessContext, Processor,
     TransportInfo,
 };
-use komponist_model::params::ParamId;
-use komponist_model::{Meter, PPQ, Tempo, TempoMap, Tick, TickRange};
 
 use super::{HOLD, MODES, RATES, SPEC};
 

@@ -152,7 +152,7 @@ core).
 Some work happens outside the audio thread but must still finish within the block: the engine's
 worker threads and the plugin bridge processes. The engine computes a **deadline** for each
 callback: `callback start + 0.6 × block duration` (`DEADLINE_SHARE` in
-[`processor.rs`](../crates/komponist-engine/src/processor.rs)). The two kinds of helpers handle
+[`processor.rs`](../crates/komponist-processor/src/processor.rs)). The two kinds of helpers handle
 lateness differently:
 
 - **A late bridge** is not waited for. Its block is replaced (an instrument is silent, an effect
@@ -354,40 +354,36 @@ Three ideas carry the whole design. If you keep them in mind, most code explains
 
 ### 8.1 Layers
 
-The workspace is split by responsibility, and dependencies point downwards only:
+The diagram shows selected direct workspace dependencies. Crate names omit the `komponist-` prefix.
 
 ```text
-                         komponist-app  (binary "komponist": shell, views, actions, EngineSync)
-                        /      |       \              \
-          komponist-ui    komponist-plugins     komponist-audio    komponist-bridge
-          (widgets,       (catalog, scan,       (cpal/JACK/        (plugin process:
-           canvases)       bridge lifecycle,     MIDI devices,      instance + scan)
-             |             processor adapters)   EngineSlot)            |
-             |                 |                    |            komponist-hosting
-             |        komponist-hosting             |            (CLAP + VST3 host)
-             |        (bundled CLAP host)            |                  |
-             |                 |                    |            komponist-ipc
-             |             komponist-ipc             |
-             |             (shm, protocol)           |
-             |                                       |
-             |   komponist-engine  ──────────────────┼── komponist-rt (RT priority, waits)
-             |   (compile, Program, Engine,          |
-             |    Processor trait, mixing)           |
-             |      |            \                   |
-             +-- komponist-model  komponist-audiofile, komponist-stretch, klang-dsp
-                 (Project, edits, undo, persistence)
-                    |
-          komponist-tokens, komponist-i18n  (generated design tokens and texts)
+app             → audio, bridge, engine, plugins, ui
+bridge          → hosting, ipc, plugin-api, ui
+plugins         → engine, hosting, ipc, plugin-api, processor
+engine          → audiofile, model, processor, rt, stretch
+hosting         → ipc, plugin-api
+ipc             → plugin-api, rt (macOS)
+audio           → rt
+ui              → device-dsp, i18n, model, plugin-api, tokens
+processor       → model
+plugin-api      → model
+native-clap-sdk → device-core, model, plugin-api
+device-core     → device-dsp, i18n, model, processor
+
+model, device-dsp, i18n, tokens have no normal workspace dependencies.
 ```
 
 Rules that follow from this picture:
 
 - **`komponist-model` knows nothing about audio, UI or plugins.** It is pure data and pure
-  functions. (It only uses `komponist-tokens` for the device-card grid metrics.)
+  functions. The UI uses the design tokens to convert device grid coordinates into pixel bounds.
 - **`komponist-engine` knows neither egui, nor IPC, nor CLAP/VST3.** It sees devices only as
   `Box<dyn Processor>`.
 - **`komponist-audio` does not know the engine.** It drives anything that implements its
   `AudioProcess` trait; the app supplies the adapter (`EngineProcess`).
+- **`komponist-device-dsp` shares device math.** The device crates and UI graphs use the same curves.
+- **`komponist-plugin-api` defines shared extension and frame data.** The UI and SDK use these
+  contracts directly. The bridge protocol uses the same types as message payloads.
 - **`komponist-hosting` implements the plugin formats.** In the app process, `komponist-plugins`
   uses it to host verified shipped CLAP bundles. The bridge uses it for third-party CLAP and VST3
   instances and for scanning. The app interacts with both paths through `komponist-plugins`.
@@ -398,7 +394,7 @@ Rules that follow from this picture:
 |---|---:|---|
 | [`komponist-app`](../crates/komponist-app/README.md) | ~122k (41k tests) | `main.rs`, `app.rs`, `actions.rs`, `engine_sync.rs` |
 | [`builtin-devices/*`](../crates/builtin-devices/README.md) | ~47k (Hexa alone 23k) | `core/src/processor.rs`, `delay/src/lib.rs` |
-| [`komponist-engine`](../crates/komponist-engine/README.md) | ~35k | `api.rs`, `processor.rs`, `compile.rs`, `program.rs`, `engine.rs` |
+| [`komponist-engine`](../crates/komponist-engine/README.md) | ~35k | `api.rs`, `compile.rs`, `program.rs`, `engine.rs` |
 | [`komponist-ui`](../crates/komponist-ui/README.md) | ~31k | `lib.rs`, `widgets/`, `timeline/mod.rs` |
 | [`komponist-model`](../crates/komponist-model/README.md) | ~22k | `project.rs`, `time.rs`, `document.rs`, `edits/mod.rs` |
 | [`komponist-plugins`](../crates/komponist-plugins/README.md) | ~15k | `manager.rs`, `external.rs`, `bridge.rs` |
@@ -649,7 +645,7 @@ value.
 ### 11.1 The `Processor` trait
 
 Every device, built-in or external, is a `Processor`
-([`processor.rs`](../crates/komponist-engine/src/processor.rs)). Simplified:
+([`processor.rs`](../crates/komponist-processor/src/processor.rs)). Simplified:
 
 ```rust
 pub trait Processor: Send {

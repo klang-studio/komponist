@@ -17,8 +17,8 @@ use std::collections::BTreeSet;
 
 use komponist_i18n::Lang;
 use komponist_ipc::PluginKind;
-use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource};
 use komponist_model::{ClipContent, ClipId, PluginRef, Project, TrackId};
+use komponist_plugin_api::clap_presets::{ClapPreset, ClapPresetSource};
 use komponist_plugins::{Catalog, CatalogEntry, EffectCategory, requires_bundled};
 
 use crate::actions::{Action, DropTarget, EditAction, PluginAction, UiAction};
@@ -403,7 +403,7 @@ fn preset_key(entry: &CatalogEntry, category: Option<&str>) -> String {
 }
 
 fn preset_folder_keys(entry: &CatalogEntry) -> impl Iterator<Item = String> + '_ {
-    let categories = komponist_ipc::clap_presets::categories(&entry.clap_presets);
+    let categories = komponist_plugin_api::clap_presets::categories(&entry.clap_presets);
     let uncategorized = entry
         .clap_presets
         .iter()
@@ -874,7 +874,7 @@ mod tests {
     #[test]
     fn rows_show_device_labels_in_the_current_language() {
         let mut entry = descriptor("gain", "Test Gain", PluginKind::Effect, &["utility"]);
-        entry.localized = Some(komponist_ipc::native_layout::LocalizedPlugin {
+        entry.localized = Some(komponist_plugin_api::native_layout::LocalizedPlugin {
             default_locale: "en".into(),
             names: [
                 ("en".into(), "Test Gain".into()),
@@ -1213,7 +1213,7 @@ mod tests {
         // Lead plays hexa; Pad plays Surge XT (no hexa there).
         let plugin = p.tracks[2].channel.devices[0].plugin.clone();
         let source = ClapPresetSource {
-            location: komponist_ipc::clap_presets::ClapPresetLocation::Plugin,
+            location: komponist_plugin_api::clap_presets::ClapPresetLocation::Plugin,
             load_key: Some(b"test-preset".to_vec()),
         };
         let preset = Row::new(

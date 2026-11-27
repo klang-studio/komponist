@@ -30,7 +30,7 @@ nice-plug.workspace = true
 
 [dev-dependencies]
 clap-sys.workspace = true
-komponist-ipc.workspace = true
+komponist-plugin-api.workspace = true
 serde_json.workspace = true
 hound.workspace = true
 tempfile.workspace = true

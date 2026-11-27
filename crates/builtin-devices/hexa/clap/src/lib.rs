@@ -10,12 +10,12 @@ use komponist_bundled_clap_adapter::Parameters;
 use komponist_bundled_clap_adapter::presets::{
     FactoryPreset, FactoryPresets, embedded_load_extension,
 };
-use komponist_engine::{Event, EventKind, NOTE_ID_NONE, Processor};
 use komponist_hexa::device::{Field, WIRE_COUNT};
 use komponist_hexa::{HexaProcessor, default_patch};
 use komponist_i18n::Lang;
 use komponist_model::params::ParamInfo;
 use komponist_native_clap_sdk::{NativeClapLayout, Panel};
+use komponist_processor::{Event, EventKind, NOTE_ID_NONE, Processor};
 use nice_plug::prelude::*;
 
 use crate::state::{HexaParams, Snapshot};

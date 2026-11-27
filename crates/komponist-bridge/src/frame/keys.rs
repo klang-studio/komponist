@@ -1,4 +1,4 @@
-//! Which keys the frame takes from a focused plugin (WP-50's policy, `komponist_ipc::frame::keys`):
+//! Which keys the frame takes from a focused plugin (WP-50's policy, `komponist_plugin_api::frame::keys`):
 //! the decision both OS layers share. Each OS inspects key events before the plugin gets them and
 //! asks here: macOS with an `NSEvent` local monitor (spike #42 Q4, `appkit.rs`), Windows with a
 //! `WH_GETMESSAGE` hook on the main thread (`win32.rs`). Both decide synchronously on the main thread
@@ -22,7 +22,7 @@
 use std::time::Instant;
 
 use komponist_ipc::BridgeMsg;
-use komponist_ipc::frame::keys::{PolicyKey, PolicyMods, decide, kind};
+use komponist_plugin_api::frame::keys::{PolicyKey, PolicyMods, decide, kind};
 
 use super::{Frame, log};
 

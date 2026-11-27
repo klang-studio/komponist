@@ -10,13 +10,14 @@ use std::time::{Duration, Instant};
 
 use assert_no_alloc::assert_no_alloc;
 use common::*;
-use komponist_engine::processor::DEADLINE_SHARE;
-use komponist_engine::{
-    Command as EngineCommand, Event, EventKind, LiveInput, NOTE_ID_NONE, ProcessContext,
-    ProcessStatus, Processor, ProcessorError, StereoIo, TransportInfo,
-};
+use komponist_engine::{Command as EngineCommand, LiveInput};
 use komponist_model::{DeviceId, DeviceRole, Meter, PluginFormat, PluginRef, Tick, TickRange};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
+use komponist_processor::processor::DEADLINE_SHARE;
+use komponist_processor::{
+    Event, EventKind, NOTE_ID_NONE, ProcessContext, ProcessStatus, Processor, ProcessorError,
+    StereoIo, TransportInfo,
+};
 
 /// Zero crossings per second of `samples` at `rate`, halved: the frequency of a sine.
 fn frequency(samples: &[f32], rate: f32) -> f32 {

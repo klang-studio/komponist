@@ -1,6 +1,6 @@
 //! Project-state capture for waveform marker edits on either hosting route.
 
-use komponist_ipc::waveform_markers::{EditResult, EditStatus, MAX_STATE_BYTES, Request};
+use komponist_plugin_api::waveform_markers::{EditResult, EditStatus, MAX_STATE_BYTES, Request};
 
 use crate::HostedPlugin;
 

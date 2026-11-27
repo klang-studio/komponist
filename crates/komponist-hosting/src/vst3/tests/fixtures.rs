@@ -246,7 +246,7 @@ fn params_are_normalized_and_change_the_sound() {
     let info = params.iter().find(|p| p.id == gain).unwrap();
     assert_eq!((info.min, info.max, info.step_count), (0.0, 1.0, 0));
     assert!((info.default - 0.8).abs() < 1e-6, "{info:?}");
-    assert!(info.flags & komponist_ipc::control::param_flags::AUTOMATABLE != 0);
+    assert!(info.flags & komponist_plugin_api::params::param_flags::AUTOMATABLE != 0);
     assert!((plugin.param_value(gain).unwrap() - 0.8).abs() < 1e-6);
     assert_eq!(plugin.param_value(12345), None);
     assert_eq!(plugin.param_text(12345, 0.5), None);

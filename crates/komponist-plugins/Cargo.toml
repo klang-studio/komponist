@@ -12,7 +12,9 @@ workspace = true
 [dependencies]
 komponist-model.workspace = true
 komponist-engine.workspace = true
+komponist-processor.workspace = true
 komponist-ipc.workspace = true
+komponist-plugin-api.workspace = true
 komponist-hosting.workspace = true
 rtrb.workspace = true
 serde.workspace = true

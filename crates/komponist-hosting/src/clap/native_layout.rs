@@ -1,7 +1,7 @@
 //! Main-thread reader for the C ABI in docs/clap-device-layout/clap-device-layout.h.
 
 use clap_sys::plugin::clap_plugin;
-use komponist_ipc::native_layout::{EXTENSION_ID, LayoutError, MAX_BYTES, NativeLayout};
+use komponist_plugin_api::native_layout::{EXTENSION_ID, LayoutError, MAX_BYTES, NativeLayout};
 
 const OK: u32 = 0;
 const ABSENT: u32 = 1;

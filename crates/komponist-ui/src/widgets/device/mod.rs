@@ -33,6 +33,7 @@ pub mod pad_grid;
 use std::sync::Arc;
 
 use egui::{Color32, Galley, Painter, Pos2, Rect, Vec2, pos2, vec2};
+use komponist_model::params::layout::{Cell, Half};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography::{self, TypeStyle};
 use komponist_tokens::{color, device, radius, widget};
@@ -53,6 +54,35 @@ pub fn cell_height(n: u8) -> f32 {
 fn span(cell: f32, n: u8) -> f32 {
     let n = f32::from(n.max(1));
     n * cell + (n - 1.0) * device::grid::GAP
+}
+
+/// Width of a device body, including padding on both sides of the grid.
+pub fn device_width(cols: u8) -> f32 {
+    2.0 * device::grid::PADDING + cell_width(cols)
+}
+
+/// Rectangle of a cell relative to the top-left corner of the device body.
+pub fn cell_rect(cell: &Cell) -> Rect {
+    let [cw, ch] = device::grid::CELL;
+    let (gap, pad) = (device::grid::GAP, device::grid::PADDING);
+    let x = pad + f32::from(cell.col) * (cw + gap);
+    let mut y = pad + f32::from(cell.row) * (ch + gap);
+    let (w, h) = (span(cw, cell.cols), span(ch, cell.rows));
+    let h = match cell.half {
+        // A half cell over several rows (`graph_half`): the full rows above it and the top
+        // half of the last one.
+        Some(Half::Top) if cell.rows > 1 => {
+            span(ch, cell.rows - 1) + gap + device::grid::HALF_CELL_H
+        }
+        Some(half) => {
+            if half == Half::Bottom {
+                y += device::grid::HALF_OFFSET_BOTTOM;
+            }
+            device::grid::HALF_CELL_H
+        }
+        None => h,
+    };
+    Rect::from_min_size(pos2(x, y), vec2(w, h))
 }
 
 /// The size of a half cell `cols` wide: `56 · cols … × 30`.
@@ -229,4 +259,56 @@ pub fn paint_knob_cell(
         cell.width(),
         color32(val_col),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use komponist_model::params::ParamId;
+    use komponist_model::params::layout::{
+        CellParam, GraphBinding, GraphConfig, MAX_PAGES, WidgetKind,
+    };
+
+    #[test]
+    fn device_widths_match_the_grid() {
+        assert_eq!(device_width(4), 252.0);
+        assert_eq!(device_width(7), 432.0);
+        assert_eq!(device_width(10), 612.0);
+        assert_eq!(cell_width(2), 116.0);
+    }
+
+    #[test]
+    fn page_limit_matches_the_design_tokens() {
+        assert_eq!(MAX_PAGES as f32, widget::pages::MAX_PAGES);
+    }
+
+    #[test]
+    fn full_and_half_cells_sit_on_the_grid() {
+        let knob = Cell::knob(2, 1, ParamId::new("a"));
+        assert_eq!(
+            cell_rect(&knob),
+            Rect::from_min_size(pos2(128.0, 76.0), vec2(56.0, 64.0))
+        );
+        let top = Cell::half(0, 2, 2, Half::Top, WidgetKind::Number, CellParam::None);
+        let bottom = Cell::half(0, 2, 2, Half::Bottom, WidgetKind::Segment, CellParam::None);
+        assert_eq!(
+            cell_rect(&top),
+            Rect::from_min_size(pos2(8.0, 144.0), vec2(116.0, 30.0))
+        );
+        assert_eq!(
+            cell_rect(&bottom),
+            Rect::from_min_size(pos2(8.0, 178.0), vec2(116.0, 30.0))
+        );
+        let tall = Cell::span(0, 0, 1, 3, WidgetKind::MiniFader, CellParam::None);
+        assert_eq!(cell_rect(&tall).height(), 200.0);
+    }
+
+    #[test]
+    fn a_graph_spans_the_full_row_and_top_half_of_the_next() {
+        let graph = Cell::graph_half(0, 0, 4, 1, GraphBinding::new(GraphConfig::FilterVa));
+        assert_eq!(
+            cell_rect(&graph),
+            Rect::from_min_size(pos2(8.0, 8.0), vec2(236.0, 98.0))
+        );
+    }
 }

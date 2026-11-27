@@ -3,7 +3,7 @@
 use std::ffi::c_void;
 
 use clap_sys::plugin::clap_plugin;
-use komponist_ipc::signal_taps::{
+use komponist_plugin_api::signal_taps::{
     Descriptor, Extension, MAX_PAD_ACTIVITY_FRAME, PAD_ACTIVITY, PLAYHEAD_POSITION, PadActivity,
 };
 use nice_plug::wrapper::clap::Wrapper;

@@ -9,10 +9,8 @@ bridges.
 - [src/ring.rs](src/ring.rs) — Transfers bounded event lists through single-producer,
   single-consumer rings.
 - [src/signal.rs](src/signal.rs) — Provides deadline waits and wakes.
-- [src/control.rs](src/control.rs) — Defines framed control messages and the shared plugin
-  vocabulary.
-- [src/frame.rs](src/frame.rs) — Defines frame state, keyboard policy and UI actions shared across
-  processes.
+- [src/control.rs](src/control.rs) — Defines framed control messages using shared extension
+  and frame types from [komponist-plugin-api](../komponist-plugin-api/README.md).
 - [src/process.rs](src/process.rs) — Watches bridge exits.
 
 ## How it works

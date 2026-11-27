@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use komponist_engine::Processor;
 use komponist_hexa::{HexaProcessor, preset_patch, presets};
+use komponist_processor::Processor;
 
 use crate::engine_common::RATE;
 use crate::measure::{BLOCK, run, worker_counts};

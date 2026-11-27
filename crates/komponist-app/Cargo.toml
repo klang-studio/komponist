@@ -14,16 +14,19 @@ name = "komponist"
 path = "src/main.rs"
 
 [dependencies]
+komponist-device-dsp.workspace = true
 komponist-model.workspace = true
 # Waveforms of audio clips: the file pool and its peak cache (`views/arrangement/files`).
 komponist-audiofile.workspace = true
 komponist-engine.workspace = true
+komponist-processor.workspace = true
 komponist-audio.workspace = true
 komponist-plugins.workspace = true
 # `komponist --bridge`: the plugin bridge runs inside this executable, in its own process (WP-94).
 komponist-bridge.workspace = true
 # Parameter, note-name, GUI-size and log types of the plugin manager's API (`device_host`).
 komponist-ipc.workspace = true
+komponist-plugin-api.workspace = true
 komponist-ui.workspace = true
 # `Lang` and the generated texts (`panels::dock` is the pilot; `docs/I18N.md`).
 komponist-i18n.workspace = true

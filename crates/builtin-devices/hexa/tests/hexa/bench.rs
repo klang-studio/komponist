@@ -4,8 +4,8 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use komponist_engine::{Event, EventKind, Processor};
 use komponist_hexa::{HexaProcessor, Macro, preset_patch, presets};
+use komponist_processor::{Event, EventKind, Processor};
 
 use crate::common::*;
 

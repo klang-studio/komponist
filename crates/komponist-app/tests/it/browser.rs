@@ -90,8 +90,8 @@ fn snapshot_next_to_s01() {
 #[test]
 fn scanned_device_names_in_browser_and_instrument_picker_in_both_languages() {
     use komponist_ipc::PluginKind;
-    use komponist_ipc::native_layout::LocalizedPlugin;
     use komponist_model::Project;
+    use komponist_plugin_api::native_layout::LocalizedPlugin;
     use komponist_plugins::Catalog;
 
     let mut descriptor = fake_host::descriptor(

@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 komponist-device-core.workspace = true
-komponist-engine.workspace = true
+komponist-processor.workspace = true
 komponist-i18n.workspace = true
 komponist-model.workspace = true
 komponist-sampler-shared.workspace = true

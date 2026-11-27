@@ -9,10 +9,10 @@ use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::{Action, App, EditAction, ProjectAction, TransportAction, UiAction};
 use komponist_engine::testing::{EventLog, Logged, TestSine};
-use komponist_engine::{EventKind, Processor};
 use komponist_model::edits::{self, ExclusiveFlag, NewTrack};
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginRef, Project, TrackId};
 use komponist_plugins::{Catalog, DeviceStatus, PluginManagerEvent, ProcessorSetup};
+use komponist_processor::{EventKind, Processor};
 
 struct SineHost {
     catalog: Catalog,

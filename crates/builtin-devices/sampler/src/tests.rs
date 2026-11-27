@@ -7,12 +7,12 @@ use std::time::Duration;
 
 use assert_no_alloc::assert_no_alloc;
 use komponist_device_core::InternalProcessor;
-use komponist_engine::{
-    Event, EventKind, NOTE_ID_NONE, ProcessContext, Processor, StereoIo, TransportInfo,
-};
 use komponist_model::params::ParamContext;
 use komponist_model::params::layout::{SEL, validate};
 use komponist_model::{Meter, Tick, TickRange};
+use komponist_processor::{
+    Event, EventKind, NOTE_ID_NONE, ProcessContext, Processor, StereoIo, TransportInfo,
+};
 
 use super::links::SampleLink;
 use super::load::{PadStatus, decode};

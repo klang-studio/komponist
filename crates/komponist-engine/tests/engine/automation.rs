@@ -1,15 +1,15 @@
 use komponist_engine::automation::{AutomationBoundary, EngineTarget, Parameter, PlainMap};
 use komponist_engine::compile::{self, CompileEnv};
-use komponist_engine::{
-    Command, EngineEvent, Event, EventKind, MidiPort, ProcessContext, ProcessStatus, Processor,
-    ProcessorError, StereoIo,
-};
+use komponist_engine::{Command, EngineEvent, MidiPort};
 use komponist_model::automation::{
     AutomationMode, AutomationOwner, AutomationTarget, Point, Points, Shape,
 };
 use komponist_model::edits::{self, NewTrack, automation::*};
 use komponist_model::params::ParamId;
 use komponist_model::{Device, DeviceId, PluginFormat, PluginRef, Project, Tick, TickRange};
+use komponist_processor::{
+    Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+};
 
 use crate::common::{RATE, Rig};
 
@@ -38,7 +38,7 @@ struct Probe {
     pos: usize,
     gain: f32,
     log: Option<rtrb::Producer<(usize, u32, f64)>>,
-    edits: Option<std::array::IntoIter<komponist_engine::processor::ParameterEdit, 3>>,
+    edits: Option<std::array::IntoIter<komponist_processor::processor::ParameterEdit, 3>>,
 }
 
 impl Processor for Probe {
@@ -73,7 +73,7 @@ impl Processor for Probe {
         ProcessStatus::Continue
     }
 
-    fn pop_parameter_edit(&mut self) -> Option<komponist_engine::processor::ParameterEdit> {
+    fn pop_parameter_edit(&mut self) -> Option<komponist_processor::processor::ParameterEdit> {
         self.edits.as_mut()?.next()
     }
 
@@ -471,7 +471,7 @@ fn overflow_retains_the_latest_value_for_each_target() {
     rig.send(Command::Play);
     rig.process(2048, 2048);
     let events = core::iter::from_fn(|| log.pop().ok()).collect::<Vec<_>>();
-    assert_eq!(events.len(), komponist_engine::MAX_EVENTS_PER_BLOCK);
+    assert_eq!(events.len(), komponist_processor::MAX_EVENTS_PER_BLOCK);
     assert!(rig.handle.telemetry().dropped_events() > 0);
     assert!((0..40).all(|id| {
         events
@@ -682,7 +682,7 @@ fn discarding_after_a_loop_wrap_restores_an_empty_latch_lane() {
 
 #[test]
 fn plugin_gui_edges_and_value_use_the_engine_clock() {
-    use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
+    use komponist_processor::processor::{ParameterEdit, ParameterEditKind};
 
     let (project, owner, device) = source();
     let (project, _) = lane(
@@ -1085,7 +1085,7 @@ fn flatten_scope_removes_master_and_target_strip_lanes_only() {
 
 #[test]
 fn plugin_touch_return_starts_after_the_reporting_block() {
-    use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
+    use komponist_processor::processor::{ParameterEdit, ParameterEditKind};
 
     let (project, owner, device) = source();
     let (project, _) = lane(
@@ -1145,7 +1145,7 @@ fn plugin_touch_return_starts_after_the_reporting_block() {
 
 #[test]
 fn bypass_drains_pending_plugin_edits_at_the_engine_boundary() {
-    use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
+    use komponist_processor::processor::{ParameterEdit, ParameterEditKind};
 
     let (mut project, owner, device) = source();
     std::sync::Arc::make_mut(
@@ -1345,7 +1345,7 @@ fn sub_grid_mixer_peak_reaches_the_ordinary_point_in_every_block_partition() {
 
 #[test]
 fn pending_base_restore_on_a_bypassed_plugin_yields_only_to_a_new_gui_value() {
-    use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
+    use komponist_processor::processor::{ParameterEdit, ParameterEditKind};
     use std::sync::Arc;
 
     for has_value in [false, true] {
@@ -1645,8 +1645,8 @@ fn macro_picks_up_metadata_and_reasserts_at_resume_and_reinsert() {
 
 #[test]
 fn mapped_native_edit_is_temporary_and_reasserts_after_gesture_end() {
-    use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
     use komponist_model::edits::macros::{add_mapping, remove_mapping, set_macro_value};
+    use komponist_processor::processor::{ParameterEdit, ParameterEditKind};
 
     let (project, owner, device) = source();
     let AutomationOwner::Track(track) = owner else {
@@ -1850,8 +1850,8 @@ fn macro_converts_stepped_and_bool_parameters_at_delivery() {
 
 #[test]
 fn gestureless_plugin_edit_waits_for_quiet_before_macro_reassert() {
-    use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
     use komponist_model::edits::macros::{add_mapping, set_macro_value};
+    use komponist_processor::processor::{ParameterEdit, ParameterEditKind};
 
     let (project, owner, device) = source();
     let AutomationOwner::Track(track) = owner else {

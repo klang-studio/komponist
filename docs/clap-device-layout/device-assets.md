@@ -41,7 +41,7 @@ the call only.
 
 ## Payloads
 
-The canonical codec is `komponist_ipc::device_assets`. Both payloads use postcard with one
+The canonical codec is `komponist_plugin_api::device_assets`. Both payloads use postcard with one
 length-prefixed sequence of 1–32 records and no trailing bytes. Struct fields and enum
 variants appear in the order shown below. IDs must be distinct in each payload.
 

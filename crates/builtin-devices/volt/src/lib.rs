@@ -21,7 +21,7 @@
 //!   solved in closed form, `tanh`-like clip at the input, resonance up to self-oscillation, part
 //!   of the lost passband made up); LP 12, BP 12, HP 12 and notch are `klang_dsp`'s Simper SVF.
 //!   With `Spread > 0` and `Unison > 1` the filter runs twice (left, right), else once. The curve
-//!   in the graph comes from the same formulas (`komponist_model::params::va_curve`).
+//!   in the graph comes from the same formulas (`komponist_device_dsp::va_curve`).
 //! - **Control rate:** every [`CONTROL`](komponist_device_core::dsp::CONTROL) = 32 samples the smoothed
 //!   parameters, envelopes, LFOs, matrix and glide advance and every voice recomputes its
 //!   increments, filter coefficients and gain (the gain ramps linearly across the interval). The

@@ -9,11 +9,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
+use komponist_engine::Command;
 use komponist_engine::testing::{TestGain, TestSine};
-use komponist_engine::{
-    Command, Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
-};
 use komponist_model::{Tick, TickRange};
+use komponist_processor::{
+    Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+};
 
 use crate::common::*;
 use crate::material::material;

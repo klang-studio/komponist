@@ -20,8 +20,8 @@ use egui_kittest::kittest::Queryable as _;
 use komponist_audiofile::fixtures as testkit;
 use komponist_engine::TransportState;
 use komponist_i18n::de;
-use komponist_ipc::device_assets::AssetStatus;
 use komponist_model::{ClipContent, Tick};
+use komponist_plugin_api::device_assets::AssetStatus;
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
 
 const BAR: i64 = 3840;

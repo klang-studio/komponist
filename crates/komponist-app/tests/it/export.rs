@@ -23,11 +23,9 @@ use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::{self, Settings};
 use komponist_app::ui_state::{Dialog, FocusArea, StatusKind};
 use komponist_app::{Action, App, ProjectAction, TransportAction, UiAction};
+use komponist_engine::TransportState;
 use komponist_engine::export::{ExportJob, NORMALIZE_TARGET_DB};
 use komponist_engine::testing::TestPanic;
-use komponist_engine::{
-    Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo, TransportState,
-};
 use komponist_i18n::{Lang, de};
 use komponist_ipc::RenderMode;
 use komponist_model::edits::{self, NewDevice};
@@ -37,6 +35,9 @@ use komponist_model::{
     TickRange,
 };
 use komponist_plugins::{Catalog, DeviceStatus, PluginManagerEvent, ProcessorSetup};
+use komponist_processor::{
+    Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+};
 
 use fake_host::FakeHost;
 
@@ -176,8 +177,8 @@ pub(crate) fn export(app: &mut App, settings: ExportSettings) {
 
 #[test]
 fn an_unreadable_clap_pad_blocks_wav_export() {
-    use komponist_ipc::device_assets::AssetStatus;
     use komponist_model::plugin_assets::AssetLink;
+    use komponist_plugin_api::device_assets::AssetStatus;
 
     let dir = scratch("unreadable-clap-pad");
     let Some((host, plugin)) =

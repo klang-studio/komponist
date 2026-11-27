@@ -10,8 +10,7 @@ use komponist_app::project_io::{load_project, save_project};
 use komponist_app::{Action, App};
 use komponist_engine::compile::{self, NoEnv};
 use komponist_engine::testing::{Logged, TestSine};
-use komponist_engine::{Command, Engine, EngineConfig, EventKind, Processor, TransportState};
-use komponist_ipc::device_assets::{OfflineRequest, OfflineStatus};
+use komponist_engine::{Command, Engine, EngineConfig, TransportState};
 use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points, Shape};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewDevice, NewNote, NewTrack};
 use komponist_model::macros::Mapping;
@@ -21,7 +20,9 @@ use komponist_model::{
     AudioFile, ChannelRef, DeviceId, DeviceRole, PPQ, PluginFormat, PluginRef, Project, Sidechain,
     Tick, TickRange, TrackId,
 };
+use komponist_plugin_api::device_assets::{OfflineRequest, OfflineStatus};
 use komponist_plugins::{DeviceStatus, FailReason, PluginDirs, PluginManagerEvent, ProcessorSetup};
+use komponist_processor::{EventKind, Processor};
 
 use crate::common::{PATIENCE, app_with, config, devices, step_for, step_until};
 use crate::export::{export_settings, read};
@@ -1498,7 +1499,7 @@ fn check_presse_panel(
         key: 60,
         velocity: 120,
     });
-    let live = |tap: &komponist_engine::SampleTap, above| {
+    let live = |tap: &komponist_processor::SampleTap, above| {
         let mut samples = [0.0; 32];
         tap.read_latest(&mut samples).is_some() && samples.into_iter().any(|sample| sample > above)
     };

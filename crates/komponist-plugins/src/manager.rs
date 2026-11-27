@@ -30,17 +30,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use komponist_engine::Processor;
-use komponist_ipc::clap_presets::{ClapPreset, ClapPresetSource, PresetLoad};
-use komponist_ipc::device_assets::{Bindings, OfflineRequest, OfflineStatus, Snapshot, edit_state};
-use komponist_ipc::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderModel};
 use komponist_ipc::shm::MAX_BLOCK;
-use komponist_ipc::waveform_markers::{self, EditStatus};
-use komponist_ipc::{
-    ControlMsg, GuiSize, GuiTarget, LogLevel, NoteName, ParamInfo, ParamValue, RenderMode,
-};
+use komponist_ipc::{ControlMsg, GuiSize, GuiTarget, LogLevel, NoteName, RenderMode};
 use komponist_model::project::SavedPluginState;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project, TrackId};
+use komponist_plugin_api::clap_presets::{ClapPreset, ClapPresetSource, PresetLoad};
+use komponist_plugin_api::device_assets::{
+    Bindings, OfflineRequest, OfflineStatus, Snapshot, edit_state,
+};
+use komponist_plugin_api::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderModel};
+use komponist_plugin_api::params::{ParamInfo, ParamValue};
+use komponist_plugin_api::waveform_markers::{self, EditStatus};
+use komponist_processor::Processor;
 #[cfg(unix)]
 use rustix::event::{PollFd, PollFlags, Timespec};
 
@@ -1055,7 +1056,7 @@ impl PluginManager {
     pub fn device_display(
         &self,
         device: DeviceId,
-    ) -> Option<&Arc<komponist_ipc::device_canvas::DisplayList>> {
+    ) -> Option<&Arc<komponist_plugin_api::device_canvas::DisplayList>> {
         if let Some(direct) = self.direct.get(&device) {
             return direct.display.as_ref();
         }
@@ -1066,7 +1067,7 @@ impl PluginManager {
     pub fn native_layout(
         &self,
         device: DeviceId,
-    ) -> Option<&Arc<komponist_ipc::native_layout::NativeLayout>> {
+    ) -> Option<&Arc<komponist_plugin_api::native_layout::NativeLayout>> {
         if let Some(direct) = self.direct.get(&device) {
             return direct.layout.as_ref();
         }
@@ -1307,7 +1308,7 @@ impl PluginManager {
 
     /// Start or release an authored waveform preview through the live host route.
     pub fn preview_waveform(&self, device: DeviceId, slot: u32, time: Option<f64>) {
-        if komponist_ipc::waveform_preview::encode_time(time).is_none() {
+        if komponist_plugin_api::waveform_preview::encode_time(time).is_none() {
             return;
         }
         if let Some(direct) = self
@@ -2225,8 +2226,8 @@ mod tests {
             // with its source.
             PluginManagerEvent::ClapPresetReported {
                 device,
-                source: komponist_ipc::clap_presets::ClapPresetSource {
-                    location: komponist_ipc::clap_presets::ClapPresetLocation::Plugin,
+                source: komponist_plugin_api::clap_presets::ClapPresetSource {
+                    location: komponist_plugin_api::clap_presets::ClapPresetLocation::Plugin,
                     load_key: Some(b"B".to_vec()),
                 },
                 startup: false,
