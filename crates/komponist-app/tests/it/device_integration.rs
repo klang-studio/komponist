@@ -15,10 +15,10 @@ use komponist_app::panels::statusbar;
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, EditAction, PluginAction, UiAction};
 use komponist_i18n::{Lang, de};
-use komponist_model::edits::{NewDevice, NewTrack};
+use komponist_model::edits::NewTrack;
 use komponist_model::fixtures::demo_project;
 use komponist_model::params::ParamId;
-use komponist_model::{ChannelRef, DeviceId, DeviceRole, Project, TrackId, edits};
+use komponist_model::{ChannelRef, DeviceId, Project, TrackId, edits};
 use komponist_tokens::device;
 
 use crate::common::{

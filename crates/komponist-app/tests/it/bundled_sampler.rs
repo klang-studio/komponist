@@ -611,13 +611,13 @@ fn sample_document(state: &[u8]) -> Option<String> {
         .map(str::to_owned)
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct SliceFixture {
     first: SliceOptions,
     slices: Vec<SliceBoundary>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct SliceBoundary {
     time: f64,
     options: SliceOptions,

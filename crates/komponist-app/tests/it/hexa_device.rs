@@ -13,7 +13,7 @@ use komponist_app::actions::{SelectMode, SelectionChange};
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, PluginAction, UiAction};
 use komponist_i18n::Lang;
-use komponist_model::{DeviceId, Project};
+use komponist_model::DeviceId;
 use komponist_plugins::DeviceStatus;
 
 use crate::common::{instrument_project, set_authored_param, step_until};
