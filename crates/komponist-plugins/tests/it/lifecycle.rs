@@ -1715,7 +1715,7 @@ fn release_shutdown_and_drop_end_the_bridges() {
             name: "Hexa".into(),
             vendor: "klang-studio".into(),
             version: "0.1.0".into(),
-            module: "bundled-clap/komponist_hexa_clap.clap".into(),
+            module: "bundled-clap/missing-instrument.clap".into(),
         },
         ..device(9, DeviceRole::Instrument, clap_plugin(SYNTH), None)
     };

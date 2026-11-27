@@ -498,7 +498,7 @@ It is never undone and never saved with the project.
 
 ### 9.4 Files
 
-A project is a `*.komponist` JSON file (`format: "komponist"`, version 5) written by
+A project is a `*.komponist` JSON file (`format: "komponist"`, version 6) written by
 [`persist.rs`](../crates/komponist-model/src/persist.rs). Plugin states are base64. Audio files
 are *linked* by relative and absolute path, never embedded. Below 1.0 exactly one version is valid:
 any other version is rejected, nothing is migrated (D10). If you change the file format, read ARCHITECTURE §5.5 first.

@@ -226,12 +226,11 @@ Pure formatting functions provide musical positions, elapsed time, dB, pan and n
 
 ### 5.5 Persistence
 
-A `*.komponist` file is JSON with `format: "komponist"`, **version 5** and a `project` object.
+A `*.komponist` file is JSON with `format: "komponist"`, **version 6** and a `project` object.
 Plugin states are base64 and survive a missing plugin unchanged. Loading validates data and
 routing, repairs defined dangling-reference cases and rejects cycles or invalid track content.
-Version 4 added optional track, clip and master automation, version 5 an optional eight-slot macro
-array on each track. There is no migration: below 1.0 exactly one version is valid (D10), and a file
-with any other `version` (older or newer) is rejected with a clear message.
+Device references use CLAP or VST3 identities. Below 1.0 only the current version is supported
+(D10). Files with a different version are rejected with a clear message.
 
 Audio assets remain linked by relative and absolute paths. Save As rebases resolving links;
 Collect and Save copies audio and Sampler sources into the project's sample folder, deduplicating
