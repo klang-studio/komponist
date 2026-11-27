@@ -1127,7 +1127,7 @@ mod tests {
             PluginKind::Effect,
             &["reverb"],
         )]);
-        let external = c.entries().iter().next().unwrap();
+        let external = c.entries().first().unwrap();
         let mut bundled = external.clone();
         bundled.plugin.module = format!("bundled-clap/{}", external.plugin.module).into();
         let mut favorites = Favorites(Vec::new());

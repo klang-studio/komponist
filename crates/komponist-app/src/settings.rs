@@ -772,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn favourites_start_with_the_builtins_and_toggle() {
+    fn favourites_start_with_the_shipped_instruments_and_toggle() {
         let s = Settings::default();
         let ids: Vec<&str> = s.favorites.0.iter().map(|f| f.id.as_str()).collect();
         assert_eq!(

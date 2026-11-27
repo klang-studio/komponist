@@ -206,8 +206,7 @@ pub fn centered_text(ui: &mut Ui, rect: Rect, title: &str, detail: Option<&str>)
     }
 }
 
-/// The format tag of a plugin: "INTERN" / "BUILT-IN" (built-ins, `missing-format-builtin`, the
-/// same chip as the missing-plugins dialog), "CLAP", "VST3" (`B()`, `card()`).
+/// The standard format tag of a CLAP or VST3 plugin.
 pub fn format_tag(_lang: Lang, format: PluginFormat) -> &'static str {
     match format {
         PluginFormat::Clap => "CLAP",

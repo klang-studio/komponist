@@ -2700,11 +2700,15 @@ mod tests {
                 module: String::new(),
                 min: 0.0,
                 max: 1.0,
-                default: 0.5,
+                default: if id == 42 {
+                    375.0_f64.ln() / 2000.0_f64.ln()
+                } else {
+                    0.42 / 0.95
+                },
                 step_count: 0,
                 flags: komponist_ipc::control::param_flags::AUTOMATABLE,
             });
-            assert!(native.validate_params(&wires).is_ok());
+            native.validate_params(&wires).unwrap();
             authored.params = wires
                 .iter()
                 .map(|wire| model::native_param(lang, &native, wire, None))

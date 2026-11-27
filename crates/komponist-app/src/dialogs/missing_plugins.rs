@@ -6,12 +6,9 @@
 //! keeps them as placeholders with their state; "Plugin-Ordner prüfen" opens the settings at
 //! "Plugins" and rescans.
 //!
-//! **Missing samples (WP-87)** are listed in the same dialog, in the same row style: the format
-//! chip says "SAMPLE", the place is "Spur Drums · Pad 3", the module line the file name, and
-//! "Suchen …" opens the file browser to relink it (the other missing samples of the project that
-//! are in the chosen folder follow). The rows come from the project every frame, so a found
-//! sample leaves the list; with nothing left the dialog closes. With samples only the title is
-//! "1 Sample fehlt" / "n Samples fehlen" and the primary action "Ohne diese Samples fortfahren".
+//! Missing plugin asset links and missing audio clips share the list. A plugin link keeps its
+//! device and asset slot so the file picker can relink exactly that slot. An audio clip opens
+//! in its editor to change its source.
 
 use egui::{Color32, Context, Rect, Role, Sense, Ui, pos2, vec2};
 use komponist_i18n::Lang;
@@ -31,7 +28,7 @@ use super::{ActionButton, button_row, dot, galley, label_node, modal, styled};
 pub struct Row {
     /// Plugin name ("Vital").
     pub name: String,
-    /// Format chip ("VST3", "CLAP", "INTERN").
+    /// Format or file type of the missing item.
     pub format: &'static str,
     /// Where it sits ("Spur Arp · Instrument").
     pub place: String,
@@ -52,6 +49,7 @@ pub struct Model {
     pub rows: Vec<Row>,
     /// Missing linked audio clips.
     pub audio: Vec<Row>,
+    /// Missing host-managed plugin file links.
     pub assets: Vec<Row>,
 }
 
@@ -68,7 +66,7 @@ pub enum Output {
     SearchAsset(DeviceId, u32),
 }
 
-/// The format chip of a plugin format ("INTERN" / "BUILT-IN" for the built-in devices).
+/// The format chip of a CLAP or VST3 plugin.
 pub fn format_label(t: Lang, format: PluginFormat) -> &'static str {
     crate::views::format_tag(t, format)
 }
@@ -317,12 +315,10 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
         indented(ui, dm::PADDING, |ui| {
             let primary = if !model.audio.is_empty() || !model.assets.is_empty() {
                 t.missing_continue_files()
+            } else if n == 1 {
+                t.missing_continue_one()
             } else {
-                if n == 1 {
-                    t.missing_continue_one()
-                } else {
-                    t.missing_continue_many()
-                }
+                t.missing_continue_many()
             };
             let mut buttons = Vec::new();
             let check = n > 0 || (model.audio.is_empty() && model.assets.is_empty());

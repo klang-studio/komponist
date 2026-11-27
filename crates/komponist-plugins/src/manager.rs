@@ -12,8 +12,7 @@
 //! stores them with `edits::set_device_state` as tracked, coalesced undo steps (`komponist-app`'s
 //! `param_undo`).
 //!
-//! Built-in in-process devices (hexa) are not managed here; the app creates their processors.
-//! Their status is always `Ok`.
+//! The manager loads the manifest-verified CLAP bundles into the app process.
 //!
 //! Start order per bridge: memfd, `Load`, `SetState` (if there is a state), `Activate`, so the
 //! plugin starts processing with its state. Messages to a bridge go through a writer thread of its
@@ -419,6 +418,12 @@ impl PluginManager {
     /// Opens the installed bundled inventory and the cached external plugin catalog.
     pub fn new(config: PluginManagerConfig) -> PluginManager {
         Self::new_with_bundled_clap(config, true)
+    }
+
+    /// An isolated test manager using its scan cache without the installed bundle inventory.
+    #[doc(hidden)]
+    pub fn without_bundled_clap(config: PluginManagerConfig) -> Self {
+        Self::with_catalog(config, false)
     }
 
     pub(crate) fn new_with_bundled_clap(
@@ -959,7 +964,7 @@ impl PluginManager {
         (self.status(device) == DeviceStatus::Ok).then_some(id.as_str())
     }
 
-    /// Status of a device; `Ok` for devices this manager does not manage (in-process built-ins).
+    /// Status of a device; defaults to `Ok` before it has a managed instance.
     pub fn status(&self, device: DeviceId) -> DeviceStatus {
         if let Some(direct) = self.direct.get(&device) {
             return direct.status.clone();

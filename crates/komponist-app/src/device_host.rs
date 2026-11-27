@@ -555,6 +555,14 @@ impl PluginHost {
         }
     }
 
+    pub(crate) fn without_bundled_clap(config: PluginManagerConfig) -> Self {
+        Self {
+            manager: PluginManager::without_bundled_clap(config),
+            project_dir: None,
+            external: HashSet::new(),
+        }
+    }
+
     /// Open and begin scanning an explicit, manifest-verified fixture inventory.
     #[doc(hidden)]
     pub fn for_test_fixtures(

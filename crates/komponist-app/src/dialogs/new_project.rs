@@ -202,7 +202,6 @@ mod tests {
     #[test]
     fn the_template_needs_the_packaged_instruments() {
         assert_eq!(template_instruments(&Catalog::default()), None);
-        assert_eq!(template_instruments(&Catalog::default()), None);
     }
 
     #[test]

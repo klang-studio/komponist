@@ -292,7 +292,7 @@ impl App {
 
         fn open(fixtures: &Fixtures) -> PluginHost {
             let Some((root, digest)) = &fixtures.inventory else {
-                return PluginHost::new(fixtures.config.clone());
+                return PluginHost::without_bundled_clap(fixtures.config.clone());
             };
             let mut host = PluginHost::for_test_fixtures(fixtures.config.clone(), root, digest)
                 .expect("open the test fixture inventory");
@@ -2108,6 +2108,11 @@ impl App {
     /// Ctrl T and instrument drops: a new MIDI track with `instrument`, armed exclusively,
     /// selected (S10).
     fn new_midi_track(&mut self, index: Option<usize>, instrument: Option<PluginRef>) {
+        let names = crate::dialogs::new_track::midi_names(
+            self.lang,
+            self.engine.host().catalog(),
+            instrument.as_ref(),
+        );
         let spec = NewTrack {
             name: None,
             hue: None,
@@ -2115,7 +2120,6 @@ impl App {
             index,
             arm_exclusive: true,
         };
-        let names = default_names(self.lang);
         if let Some(id) = self.apply_with("undo-new-midi-track", |p| {
             edits::add_track_in(p, spec, &names)
         }) {
@@ -2139,7 +2143,11 @@ impl App {
         } else {
             "undo-new-midi-track"
         };
-        let names = default_names(self.lang);
+        let names = crate::dialogs::new_track::midi_names(
+            self.lang,
+            self.engine.host().catalog(),
+            spec.instrument.as_ref(),
+        );
         let made = self.apply_with(label, |p| {
             let mut p = p.clone();
             let mut ids = Vec::with_capacity(tracks.len());
@@ -3601,6 +3609,18 @@ mod tests {
         assert_eq!(worker_notice(true, false, true, true, true), None);
         assert_eq!(worker_notice(true, true, false, true, false), None);
         assert_eq!(worker_notice(false, false, false, true, true), None);
+    }
+
+    #[test]
+    fn missing_shipped_devices_use_the_localized_startup_status() {
+        for lang in [Lang::De, Lang::En] {
+            let mut app = App::headless(Project::new("Test")).with_lang(lang);
+            app.show_start_screen();
+            app.handle_device_event(&PluginManagerEvent::BundledDevicesUnavailable);
+            let status = app.ui.status.as_ref().unwrap();
+            assert_eq!(status.kind, StatusKind::Error);
+            assert_eq!(status.text, lang.status_bundled_devices_unavailable());
+        }
     }
 
     #[test]

@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use super::*;
+use crate::PluginFormat;
 use crate::fixtures::demo_project;
 use crate::project::StepClip;
 
@@ -43,17 +44,6 @@ fn plugin(name: &str) -> PluginRef {
         vendor: "Test".to_owned(),
         version: "1.0".to_owned(),
         module: Box::default(),
-    }
-}
-
-fn sampler() -> PluginRef {
-    PluginRef {
-        format: PluginFormat::Clap,
-        id: DRUM_SAMPLER_CLAP_ID.to_owned(),
-        name: "Sampler".to_owned(),
-        vendor: "komponist".to_owned(),
-        version: "0.1.0".to_owned(),
-        module: "bundled-clap/komponist_sampler_clap.clap".into(),
     }
 }
 
@@ -421,7 +411,7 @@ fn add_track_names() {
             .name
             .clone()
     };
-    assert_eq!(named(Some(sampler())), "Drums 2");
+    assert_eq!(named(Some(plugin("Drums"))), "Drums 2");
     assert_eq!(named(None), "MIDI");
     assert_eq!(named(Some(plugin(" "))), "MIDI");
     let (q, _) = ok_with(add_track(&p, new_track("  Bass ", None)));
@@ -439,7 +429,7 @@ fn add_track_names() {
 /// The words of an English app: the model writes no language of its own.
 const EN: DefaultNames = DefaultNames {
     track: "MIDI",
-    drums: "Drums",
+    instrument: None,
     bus: "Bus",
     group: "Group",
     audio: "Audio",
@@ -462,14 +452,14 @@ fn default_names_come_from_the_names_the_caller_passes() {
     assert_eq!(last(&add_track_in(&p, spec(None), &EN).unwrap().0), "MIDI");
     let words = DefaultNames {
         track: "Spur",
-        drums: "Schlagzeug",
+        instrument: Some("Schlagzeug"),
         ..EN
     };
     assert_eq!(
         last(&add_track_in(&p, spec(None), &words).unwrap().0),
         "Spur"
     );
-    let (q, _) = add_track_in(&p, spec(Some(sampler())), &words).unwrap();
+    let (q, _) = add_track_in(&p, spec(Some(plugin("Sampler"))), &words).unwrap();
     assert_eq!(last(&q), "Schlagzeug");
     // An explicit name wins over the words.
     let (q, _) = add_track_in(&p, new_track("Bass", None), &words).unwrap();
@@ -1601,7 +1591,7 @@ fn midi_effects_stay_in_front_of_the_instrument() {
 fn replace_or_insert_the_instrument() {
     let f = fixture();
     let p = ok(set_device_state(&f.p, f.synth, Some(Arc::from(&b"x"[..]))));
-    let (p, id) = ok_with(replace_instrument(&p, f.a, sampler()));
+    let (p, id) = ok_with(replace_instrument(&p, f.a, plugin("Sampler")));
     assert_ne!(id, f.synth);
     let d = &track(&p, f.a).channel.devices[0];
     assert_eq!(
@@ -1630,7 +1620,7 @@ fn replace_or_insert_the_instrument() {
         ]
     );
     assert_eq!(track(&p, f.b).channel.devices[0].id, id);
-    assert!(replace_instrument(&p, TrackId(999), sampler()).is_err());
+    assert!(replace_instrument(&p, TrackId(999), plugin("Sampler")).is_err());
 }
 
 #[test]

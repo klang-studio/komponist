@@ -1,5 +1,4 @@
 //! The plugin catalog: scanned CLAP and VST3 bundles (ARCHITECTURE §8.3, §8.5).
-//! Reference hosts can also include the legacy in-process entries.
 //!
 //! Scanning runs `komponist-bridge --scan <bundle>` per bundle as separate processes, in parallel,
 //! with [`SCAN_TIMEOUT`] each, and caches results by path and modification time in
@@ -33,12 +32,6 @@ pub(crate) fn bundled_module(file_name: &str) -> Box<str> {
 pub fn requires_bundled(plugin: &PluginRef) -> bool {
     plugin.format == komponist_model::PluginFormat::Clap
         && plugin.module.starts_with(BUNDLED_MODULE_PREFIX)
-}
-
-/// The CLAP ID of the packaged bundle for the built-in with catalog id `builtin_id`: every
-/// bundle is named after the device it replaces.
-pub fn clap_id(builtin_id: &str) -> String {
-    format!("org.klang-studio.komponist.{builtin_id}")
 }
 
 /// Where a catalog entry's code comes from.
@@ -448,8 +441,7 @@ impl Default for ScanCache {
 
 impl ScanCache {
     /// Reads the cache; a missing or unreadable file, or one of another
-    /// [`SCAN_CACHE_VERSION`], gives an empty cache, so the next scan scans every bundle again
-    /// (the catalog starts with the built-ins only until then).
+    /// [`SCAN_CACHE_VERSION`], gives an empty cache so the next scan reads every bundle again.
     pub fn load(path: &Path) -> ScanCache {
         std::fs::read(path)
             .ok()
@@ -780,12 +772,9 @@ mod tests {
                 .collect()
         };
         assert_eq!(names(""), ["Big Hall", "Squash"]);
-        assert_eq!(names("HALL"), ["Hall", "Big Hall"]);
+        assert_eq!(names("HALL"), ["Big Hall"]);
         assert_eq!(names("vendor"), ["Big Hall", "Squash"]);
-        // The built-in compressor matches by its feature (WP-93).
-        assert_eq!(names("compress"), ["Presse", "Squash"]);
-        assert_eq!(names("synth"), ["Hexa", "Volt", "Surf"]);
-        assert_eq!(names("wavetable"), ["Surf"]);
+        assert_eq!(names("compress"), ["Squash"]);
         assert!(names("nothing like this").is_empty());
     }
 

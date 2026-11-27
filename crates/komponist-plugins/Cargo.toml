@@ -10,7 +10,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-komponist-i18n.workspace = true
 komponist-model.workspace = true
 komponist-engine.workspace = true
 komponist-ipc.workspace = true

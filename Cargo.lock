@@ -3097,7 +3097,6 @@ dependencies = [
  "assert_no_alloc",
  "komponist-engine",
  "komponist-hosting",
- "komponist-i18n",
  "komponist-ipc",
  "komponist-model",
  "komponist-rt",

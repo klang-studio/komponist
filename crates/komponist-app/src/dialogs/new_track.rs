@@ -360,11 +360,27 @@ pub struct View<'a> {
 pub fn default_names(t: Lang) -> DefaultNames {
     DefaultNames {
         track: t.default_name_track(),
-        drums: t.default_name_drums(),
+        instrument: None,
         bus: t.default_name_bus(),
         group: t.default_name_group(),
         audio: t.default_name_audio(),
     }
+}
+
+/// Track names reflect the selected plugin's advertised role before it is loaded.
+pub(crate) fn midi_names(
+    t: Lang,
+    catalog: &komponist_plugins::Catalog,
+    instrument: Option<&PluginRef>,
+) -> DefaultNames {
+    let mut names = default_names(t);
+    if instrument
+        .and_then(|plugin| catalog.resolve(plugin))
+        .is_some_and(|entry| entry.features.iter().any(|feature| feature == "drum"))
+    {
+        names.instrument = Some(t.default_name_drums());
+    }
+    names
 }
 
 /// The name a new bus gets when none is given: „Bus 1“, „Bus 2“, … (`edits::add_bus_in`).
@@ -373,7 +389,7 @@ pub fn auto_bus_name(t: Lang, project: &Project) -> String {
 }
 
 /// The name a new track with `instrument` gets when none is given (`edits::add_track_in`).
-pub fn auto_name(t: Lang, project: &Project, instrument: Option<&PluginRef>) -> String {
+fn auto_name(names: &DefaultNames, project: &Project, instrument: Option<&PluginRef>) -> String {
     let spec = NewTrack {
         name: None,
         hue: None,
@@ -381,7 +397,7 @@ pub fn auto_name(t: Lang, project: &Project, instrument: Option<&PluginRef>) -> 
         index: None,
         arm_exclusive: false,
     };
-    edits::add_track_in(project, spec, &default_names(t))
+    edits::add_track_in(project, spec, names)
         .ok()
         .and_then(|(p, id)| p.track(id).map(|t| t.name.clone()))
         .unwrap_or_default()
@@ -543,7 +559,9 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                     } else if s.kind == KIND_AUDIO {
                         t.default_name_audio().to_owned()
                     } else {
-                        auto_name(t, view.project, s.instrument.as_ref())
+                        let instrument = s.instrument.as_ref();
+                        let names = midi_names(t, view.engine.host().catalog(), instrument);
+                        auto_name(&names, view.project, instrument)
                     };
                     if !s.name_touched {
                         s.name.clone_from(&hint);
@@ -798,8 +816,8 @@ mod tests {
     #[test]
     fn the_automatic_name_is_the_one_add_track_gives() {
         let p = Project::new("x");
-        assert_eq!(auto_name(Lang::De, &p, None), "MIDI");
-        assert_eq!(auto_name(Lang::En, &p, None), "MIDI");
+        assert_eq!(auto_name(&default_names(Lang::De), &p, None), "MIDI");
+        assert_eq!(auto_name(&default_names(Lang::En), &p, None), "MIDI");
         let (p, _) = edits::add_track(
             &p,
             NewTrack {
@@ -811,7 +829,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(auto_name(Lang::De, &p, None), "MIDI 2");
-        assert_eq!(auto_name(Lang::En, &p, None), "MIDI 2");
+        assert_eq!(auto_name(&default_names(Lang::De), &p, None), "MIDI 2");
+        assert_eq!(auto_name(&default_names(Lang::En), &p, None), "MIDI 2");
     }
 }

@@ -169,8 +169,6 @@ pub fn row_names(pattern: &StepClip, note_names: &[NoteName]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use komponist_model::project::MAX_STEPS;
-    use komponist_model::{Step, StepResolution, StepRow};
 
     fn name(key: u8, name: &str) -> NoteName {
         NoteName {
@@ -204,9 +202,9 @@ mod tests {
         };
         let rows = pad_rows(Lang::En, &bank, &[name(23, " Snare sample ")]);
         assert_eq!(pairs(&rows), [("Kick", 61), ("Snare sample", 23)]);
-        assert_eq!(device_row_label(Some(&bank), None, 61), "P1");
-        assert_eq!(device_row_label(Some(&bank), None, 23), "P2");
-        assert_eq!(device_row_label(Some(&bank), None, 48), note_name(48));
+        assert_eq!(device_row_label(Some(&bank), 61), "P1");
+        assert_eq!(device_row_label(Some(&bank), 23), "P2");
+        assert_eq!(device_row_label(Some(&bank), 48), note_name(48));
     }
 
     #[test]
