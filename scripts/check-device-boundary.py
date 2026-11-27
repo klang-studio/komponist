@@ -1,4 +1,4 @@
-"""Ratchet built-in device dependencies and references out of generic host crates."""
+"""Ratchet built-in device and plugin-only dependencies and references out of generic host crates."""
 
 import argparse
 from collections import Counter, defaultdict
@@ -21,6 +21,8 @@ PROTECTED = {
     "komponist-device-dsp",
 }
 DEVICE_DIR = ROOT / "crates" / "builtin-devices"
+# Opt-in DSP crates that only devices and plugins may link (#352); the host never does.
+PLUGIN_ONLY = {"klang-synth"}
 BASELINE = "scripts/device-boundary-baseline.tsv"
 
 
@@ -29,7 +31,8 @@ def run(*args):
 
 
 def device_crates(packages):
-    """Derive names from every package under builtin-devices, including its CLAP adapters."""
+    """Derive names from every package under builtin-devices, including its CLAP adapters,
+    plus the plugin-only crates."""
     local_names = {
         package["name"]
         for package in packages.values()
@@ -38,7 +41,7 @@ def device_crates(packages):
     return {
         package_id
         for package_id, package in packages.items()
-        if package["name"] in local_names or package["name"].startswith("komponist-bundled-")
+        if package["name"] in local_names | PLUGIN_ONLY or package["name"].startswith("komponist-bundled-")
     }
 
 
@@ -128,7 +131,8 @@ def inventory(metadata):
     if missing := PROTECTED - roots.keys():
         raise ValueError(f"missing protected workspace crates: {', '.join(sorted(missing))}")
     devices = device_crates(packages)
-    names = set()
+    # Plugin-only crates are not resolved until some crate uses them, so name them up front.
+    names = {variant for name in PLUGIN_ONLY for variant in (name, name.replace("-", "_"))}
     for package_id in devices:
         package = packages[package_id]
         names.update([package["name"], package["name"].replace("-", "_")])

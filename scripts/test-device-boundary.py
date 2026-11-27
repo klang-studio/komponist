@@ -96,6 +96,59 @@ class DeviceBoundaryTests(unittest.TestCase):
                     },
                 )
 
+    def test_plugin_only_crates_count_as_devices(self):
+        packages = {
+            "synth": {"name": "klang-synth", "manifest_path": "/elsewhere/klang-synth/Cargo.toml"},
+            "dsp": {"name": "klang-dsp", "manifest_path": "/elsewhere/Cargo.toml"},
+            "hexa": {"name": "hexa-core", "manifest_path": str(check.DEVICE_DIR / "hexa/core/Cargo.toml")},
+            "adapter": {"name": "komponist-bundled-hexa", "manifest_path": "/elsewhere/adapter/Cargo.toml"},
+        }
+        self.assertEqual(check.device_crates(packages), {"synth", "hexa", "adapter"})
+
+    def test_inventory_reports_plugin_only_dependencies_and_references(self):
+        def package(name, manifest, lib=None):
+            return {
+                "id": name,
+                "name": name,
+                "manifest_path": manifest,
+                "targets": [{"name": lib or name.replace("-", "_"), "kind": ["lib"]}],
+            }
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = root / "komponist-engine"
+            (engine / "src").mkdir(parents=True)
+            (engine / "src" / "lib.rs").write_text("use klang_synth::CyclicLfo;\n", encoding="utf-8")
+            protected = sorted(check.PROTECTED)
+            packages = [package(name, str(root / name / "Cargo.toml")) for name in protected]
+            packages.append(package("klang-synth", "/elsewhere/klang-synth/Cargo.toml"))
+            deps = {name: [] for name in protected}
+            deps["komponist-engine"] = [dependency("klang-synth")]
+            metadata = {
+                "packages": packages,
+                "workspace_members": protected,
+                "resolve": {
+                    "nodes": [{"id": name, "deps": deps[name]} for name in protected]
+                    + [{"id": "klang-synth", "deps": []}]
+                },
+            }
+            with patch.object(check, "ROOT", root):
+                self.assertEqual(
+                    check.inventory(metadata),
+                    {
+                        (
+                            "dependency",
+                            "komponist-engine",
+                            "komponist-engine",
+                            "klang-synth",
+                            "klang-synth",
+                            "normal",
+                            "*",
+                        ): 1,
+                        ("source", "komponist-engine/src/lib.rs", "klang_synth"): 1,
+                    },
+                )
+
     def test_baseline_rejects_duplicate_or_nonpositive_rows(self):
         row = "1\tsource\tsrc.rs\tInternal::"
         with self.assertRaisesRegex(ValueError, "duplicate"):
