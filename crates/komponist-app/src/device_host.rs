@@ -178,6 +178,11 @@ pub trait DeviceHost {
         false
     }
 
+    /// Whether the first scan is still cataloging an installed packaged plugin.
+    fn awaiting_packaged_plugin(&self, _clap_id: &str) -> bool {
+        false
+    }
+
     /// The last finished scan (S07: found, per folder, skipped).
     fn last_scan(&self) -> Option<&ScanReport> {
         None
@@ -657,6 +662,10 @@ impl DeviceHost for PluginHost {
 
     fn is_scanning(&self) -> bool {
         self.manager.is_scanning()
+    }
+
+    fn awaiting_packaged_plugin(&self, clap_id: &str) -> bool {
+        self.manager.awaiting_packaged_plugin(clap_id)
     }
 
     fn last_scan(&self) -> Option<&ScanReport> {

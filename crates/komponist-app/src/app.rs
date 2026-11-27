@@ -402,6 +402,7 @@ impl App {
     /// Shows the start screen (S09) instead of the open document (no project argument).
     pub fn show_start_screen(&mut self) {
         self.ui.screen = Screen::Start;
+        self.dialogs.new_track_after_scan.clear();
         self.ui.focus = FocusArea::default();
         self.ui.start.reset_selection();
     }
@@ -815,6 +816,7 @@ impl App {
             self.engine.send_project(self.doc.project());
         }
         self.flush_deferred();
+        self.finish_startup_track_actions();
         if rebuilt.is_some() {
             if kept_take {
                 self.set_status(self.lang.status_engine_rebuilt_take(), StatusKind::Error);
@@ -2205,10 +2207,45 @@ impl App {
         }
     }
 
+    const DEFAULT_INSTRUMENT_ID: &str = "org.klang-studio.komponist.hexa";
+
+    fn defer_startup_track_action(&mut self, action: Action) -> bool {
+        if !self
+            .engine
+            .host()
+            .awaiting_packaged_plugin(Self::DEFAULT_INSTRUMENT_ID)
+        {
+            return false;
+        }
+        self.dialogs.new_track_after_scan.push_back(action);
+        self.set_status(self.lang.status_plugin_scan(), StatusKind::Info);
+        true
+    }
+
+    fn finish_startup_track_actions(&mut self) {
+        while !self.dialogs.new_track_after_scan.is_empty()
+            && self.ui.dialog.is_none()
+            && self.dialogs.overlay.is_none()
+            && !self
+                .engine
+                .host()
+                .awaiting_packaged_plugin(Self::DEFAULT_INSTRUMENT_ID)
+        {
+            let action = self.dialogs.new_track_after_scan.pop_front().unwrap();
+            self.dispatch(action);
+        }
+    }
+
+    fn add_default_midi_track(&mut self) {
+        if !self.defer_startup_track_action(Action::Edit(EditAction::NewMidiTrack)) {
+            self.new_midi_track(None, self.default_instrument());
+        }
+    }
+
     fn default_instrument(&self) -> Option<PluginRef> {
         let catalog = self.engine.host().catalog();
         catalog
-            .packaged("org.klang-studio.komponist.hexa")
+            .packaged(Self::DEFAULT_INSTRUMENT_ID)
             .map(|entry| entry.plugin.clone())
     }
 
@@ -2227,6 +2264,12 @@ impl App {
                 .or_else(|| self.default_instrument()),
             None => self.default_instrument(),
         };
+        if instrument.is_none()
+            && !matches!(self.dialogs.last_instrument, Some(None))
+            && self.defer_startup_track_action(Action::Ui(UiAction::OpenNewTrackDialog))
+        {
+            return;
+        }
         let mut state = crate::dialogs::new_track::State::new(instrument);
         state.choose_default_input(self.project(), &self.engine);
         self.open_overlay(crate::dialogs::Overlay::NewTrack(state));
@@ -3067,6 +3110,7 @@ impl App {
         self.dialogs.repaired = 0;
         self.param_undo.forget();
         self.dialogs.after_param_text = None;
+        self.dialogs.new_track_after_scan.clear();
         self.shell.catalog_retirements.clear();
         self.preset_preparations.clear();
         self.user_presets = Default::default();
@@ -3492,6 +3536,108 @@ fn worker_notice(
 mod tests {
     use super::*;
     use komponist_model::fixtures::empty_project;
+
+    struct StartupCatalogHost {
+        catalog: komponist_plugins::Catalog,
+        published: komponist_plugins::Catalog,
+        scanning: Arc<AtomicBool>,
+    }
+
+    impl DeviceHost for StartupCatalogHost {
+        fn create_processor(
+            &mut self,
+            _: &komponist_model::Device,
+            _: komponist_plugins::ProcessorSetup,
+        ) -> Option<Box<dyn komponist_engine::Processor>> {
+            None
+        }
+
+        fn release(&mut self, _: DeviceId) {}
+
+        fn status(&self, _: DeviceId) -> DeviceStatus {
+            DeviceStatus::Ok
+        }
+
+        fn latency(&self, _: DeviceId) -> u32 {
+            0
+        }
+
+        fn poll(&mut self) -> Vec<PluginManagerEvent> {
+            if !self.scanning.load(Ordering::Relaxed) && self.catalog.entries().is_empty() {
+                self.catalog = std::mem::take(&mut self.published);
+            }
+            Vec::new()
+        }
+
+        fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
+            self.catalog.resolve(plugin).map(|_| DeviceRole::Instrument)
+        }
+
+        fn catalog(&self) -> &komponist_plugins::Catalog {
+            &self.catalog
+        }
+
+        fn awaiting_packaged_plugin(&self, id: &str) -> bool {
+            self.scanning.load(Ordering::Relaxed) && id == App::DEFAULT_INSTRUMENT_ID
+        }
+    }
+
+    fn cold_catalog_app(published: komponist_plugins::Catalog) -> (App, Arc<AtomicBool>) {
+        let scanning = Arc::new(AtomicBool::new(true));
+        let host = StartupCatalogHost {
+            catalog: Default::default(),
+            published,
+            scanning: Arc::clone(&scanning),
+        };
+        (
+            App::headless(Project::new("Cold scan")).with_device_host(Box::new(host)),
+            scanning,
+        )
+    }
+
+    #[test]
+    fn new_midi_track_and_new_track_dialog_wait_for_the_installed_default() {
+        let fixture = App::headless_plugin_host();
+        let Some(hexa) = fixture.catalog().packaged(App::DEFAULT_INSTRUMENT_ID) else {
+            return;
+        };
+        let (mut app, scanning) =
+            cold_catalog_app(komponist_plugins::Catalog::from_entries(vec![hexa.clone()]));
+        app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+        app.dispatch(Action::Ui(UiAction::OpenNewTrackDialog));
+        assert!(app.project().tracks.is_empty());
+        assert!(app.dialogs.overlay.is_none());
+
+        scanning.store(false, Ordering::Relaxed);
+        app.step();
+        let instrument = app.project().tracks[0].channel.instrument().unwrap().1;
+        assert_eq!(instrument.plugin, hexa.plugin);
+        assert!(matches!(
+            &app.dialogs.overlay,
+            Some(crate::dialogs::Overlay::NewTrack(state))
+                if state.instrument.as_ref() == Some(&hexa.plugin)
+        ));
+    }
+
+    #[test]
+    fn new_track_keeps_an_explicit_empty_choice_and_recovers_from_a_failed_scan() {
+        let (mut app, scanning) = cold_catalog_app(Default::default());
+        app.dialogs.last_instrument = Some(None);
+        app.dispatch(Action::Ui(UiAction::OpenNewTrackDialog));
+        assert!(matches!(
+            &app.dialogs.overlay,
+            Some(crate::dialogs::Overlay::NewTrack(state)) if state.instrument.is_none()
+        ));
+        app.close_overlay();
+
+        app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+        assert!(app.project().tracks.is_empty());
+        scanning.store(false, Ordering::Relaxed);
+        app.step();
+        assert_eq!(app.project().tracks.len(), 1);
+        assert!(app.project().tracks[0].channel.instrument().is_none());
+        assert!(app.dialogs.new_track_after_scan.is_empty());
+    }
 
     #[test]
     fn catalog_restoration_refreshes_the_missing_dialog_waiting_behind_flatten() {

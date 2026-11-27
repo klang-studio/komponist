@@ -658,6 +658,18 @@ impl PluginManager {
         self.scan.is_some()
     }
 
+    /// Whether the first scan is still cataloging an installed packaged plugin.
+    pub fn awaiting_packaged_plugin(&self, id: &str) -> bool {
+        self.last_scan.is_none()
+            && self.is_scanning()
+            && self.catalog.packaged(id).is_none()
+            && self.bundled_clap.as_ref().is_some_and(|inventory| {
+                inventory
+                    .bundle_entries()
+                    .any(|(path, listed_id)| listed_id == id && inventory.has_required_files(path))
+            })
+    }
+
     /// The last finished scan.
     pub fn last_scan(&self) -> Option<&ScanReport> {
         self.last_scan.as_ref()
@@ -1003,19 +1015,30 @@ impl PluginManager {
             collected.clear();
         }
         self.retiring.retain(|b| !b.is_finished());
-        if let Some(outcome) = self.scan.as_mut().and_then(ScanJob::try_finish) {
-            self.scan = None;
-            self.cache = outcome.cache;
-            self.refresh_catalog();
-            if let Some(error) = outcome.cache_error {
+        match self.scan.as_mut().map(ScanJob::try_finish) {
+            Some(Ok(outcome)) => {
+                self.scan = None;
+                self.cache = outcome.cache;
+                self.refresh_catalog();
+                if let Some(error) = outcome.cache_error {
+                    events.push(PluginManagerEvent::Log {
+                        device: None,
+                        level: LogLevel::Warning,
+                        message: format!("plugin scan cache not written: {error}"),
+                    });
+                }
+                self.last_scan = Some(outcome.report.clone());
+                events.push(PluginManagerEvent::ScanFinished(outcome.report));
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                self.scan = None;
                 events.push(PluginManagerEvent::Log {
                     device: None,
                     level: LogLevel::Warning,
-                    message: format!("plugin scan cache not written: {error}"),
+                    message: "plugin scan ended without a result".into(),
                 });
             }
-            self.last_scan = Some(outcome.report.clone());
-            events.push(PluginManagerEvent::ScanFinished(outcome.report));
+            _ => {}
         }
         events
     }

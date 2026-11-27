@@ -80,6 +80,8 @@ pub(crate) struct DialogState {
     /// The instrument the last "Neue Spur" dialog created tracks with (`Some(None)` = none), for
     /// the next one in this session.
     pub(crate) last_instrument: Option<Option<komponist_model::PluginRef>>,
+    /// New-track actions waiting for the installed default instrument's startup scan.
+    pub(crate) new_track_after_scan: std::collections::VecDeque<crate::actions::Action>,
     /// The folder the file browser showed last.
     pub(crate) last_dir: Option<PathBuf>,
     /// Device lists, MIDI activity and scroll targets of the settings dialog.
