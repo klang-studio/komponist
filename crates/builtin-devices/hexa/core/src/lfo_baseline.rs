@@ -1,19 +1,15 @@
-//! The LFO behaviour of Hexa pinned before #352 moves it into a shared component, in two layers:
+//! The LFO behaviour of Hexa pinned before #352 moved it into `klang_synth::CyclicLfo`: an
+//! FNV-1a hash over the output bits (and the LFO positions) of representative [`Synth`] renders,
+//! committed for the reference platform (Linux x86_64); elsewhere the digests are printed and not
+//! compared. (#360 also passed a differential oracle against a verbatim copy of the old `Lfos`
+//! before removing it.)
 //!
-//! - **Differential oracle:** the production [`Lfos`] and the verbatim copy in
-//!   [`crate::lfo_reference`] run the same scripts in lockstep; every output of `advance_voice`
-//!   and every `position` must have the same bits. Runs on every platform.
-//! - **Render digests:** an FNV-1a hash over the output bits (and the LFO positions) of
-//!   representative [`Synth`] renders, committed for the reference platform (Linux x86_64);
-//!   elsewhere the digests are printed and not compared.
-//!
-//! Both layers cover the block splits 1, 31, 32, 33, 64, 256 and irregular splits from a fixed
+//! The renders cover the block splits 1, 31, 32, 33, 64, 256 and irregular splits from a fixed
 //! seed, because Hexa advances its LFOs once per block.
 
-use crate::lfo::{LfoParams, LfoWaveform, Lfos, MAX_LFOS};
-use crate::lfo_reference;
-use crate::modulation::{ModRoute, ModSource, ModTarget, Modulated, Routes, SourceValues};
-use crate::{MAX_VOICES, Patch, Synth};
+use crate::lfo::{LfoParams, LfoWaveform};
+use crate::modulation::{ModRoute, ModSource, ModTarget};
+use crate::{Patch, Synth};
 
 const SR: f32 = 48_000.0;
 
@@ -36,11 +32,6 @@ impl Dice {
     /// Uniform in `1..=max`.
     fn size(&mut self, max: usize) -> usize {
         1 + (self.next() % max as u64) as usize
-    }
-
-    /// Uniform in 0..1.
-    fn unit(&mut self) -> f32 {
-        (self.next() >> 40) as f32 / (1u64 << 24) as f32
     }
 }
 
@@ -150,133 +141,7 @@ fn check_digests(actual: &[(String, u64)], expected: &[(&str, u64)]) {
 }
 
 // ------------------------------------------------------------------------------------------------
-// Differential oracle
-
-/// Something that happens before a block.
-#[derive(Clone, Debug)]
-enum Event {
-    /// Note-on (or retrigger) on a voice; it sounds from now on.
-    NoteOn(usize),
-    /// The voice stops sounding (no more advancing), as when its envelopes end.
-    Silence(usize),
-    Seed(u32),
-    /// New LFO parameters; LFOs beyond the old count start on every sounding voice, as
-    /// `Engine::set_patch` does.
-    Params(Vec<LfoParams>),
-}
-
-/// An LFO script: parameters, routes on the LFOs' own parameters, events by block.
-struct Script {
-    name: &'static str,
-    params: Vec<LfoParams>,
-    routes: Vec<ModRoute>,
-    used: u8,
-    /// Seconds of audio.
-    seconds: f32,
-    /// Events at fractions of the length.
-    events: Vec<(f32, Event)>,
-}
-
-/// Runs `script` with `split` through the production `Lfos` and the reference in lockstep and
-/// compares every output bit for bit. Returns how many values were compared.
-fn lockstep(script: &Script, split: Split) -> usize {
-    let mut prod = Lfos::new();
-    let mut refr = lfo_reference::Lfos::new();
-    let mut params = script.params.clone();
-    let routes = Routes::new(&script.routes);
-    let slots = *routes.slots();
-    let modulated = Modulated::new(&script.routes).lfos();
-    let mut sounding = [false; MAX_VOICES];
-    let mut dice = Dice(0x5eed);
-    let mut sizes = split.sizes();
-    let total = (script.seconds * SR) as usize;
-    let mut events: Vec<(usize, Event)> = script
-        .events
-        .iter()
-        .map(|(at, e)| ((at * total as f32) as usize, e.clone()))
-        .collect();
-    events.sort_by_key(|(at, _)| *at);
-    let mut next = 0;
-    let mut pos = 0;
-    let mut block = 0;
-    let mut compared = 0;
-    let context = |block: usize, pos: usize| {
-        format!(
-            "script {}, {}, block {block} (sample {pos})",
-            script.name,
-            split.name()
-        )
-    };
-    let mut same = |a: f32, b: f32, what: &dyn Fn() -> String| {
-        assert_eq!(a.to_bits(), b.to_bits(), "{}: {a} vs {b}", what());
-        compared += 1;
-    };
-    while pos < total {
-        while next < events.len() && events[next].0 <= pos {
-            match &events[next].1 {
-                Event::NoteOn(v) => {
-                    prod.note_on(*v, &params);
-                    refr.note_on(*v, &params);
-                    sounding[*v] = true;
-                }
-                Event::Silence(v) => sounding[*v] = false,
-                Event::Seed(seed) => {
-                    prod.seed(*seed);
-                    refr.seed(*seed);
-                }
-                Event::Params(new) => {
-                    for v in (0..MAX_VOICES).filter(|&v| sounding[v]) {
-                        for (l, p) in new.iter().enumerate().skip(params.len()) {
-                            prod.start(l, v, p);
-                            refr.start(l, v, p);
-                        }
-                    }
-                    params = new.clone();
-                }
-            }
-            next += 1;
-        }
-        let n = sizes().min(total - pos);
-        let seconds = n as f32 / SR;
-        prod.advance_global(&params, seconds);
-        refr.advance_global(&params, seconds);
-        for v in (0..MAX_VOICES).filter(|&v| sounding[v]) {
-            let mut values = || SourceValues {
-                velocity: dice.unit(),
-                aftertouch: dice.unit(),
-                mod_wheel: dice.unit(),
-                pitch_bend: 2.0 * dice.unit() - 1.0,
-                ..SourceValues::ZERO
-            };
-            let (v0, v1) = (values(), values());
-            let o0 = routes.lfo_offsets(&slots, &v0);
-            let o1 = routes.lfo_offsets(&slots, &v1);
-            let a = prod.advance_voice(v, &params, script.used, modulated, (&o0, &o1), seconds);
-            let b = refr.advance_voice(v, &params, script.used, modulated, (&o0, &o1), seconds);
-            for l in 0..MAX_LFOS {
-                same(a.0[l], b.0[l], &|| {
-                    format!("{}: voice {v} LFO {l} start", context(block, pos))
-                });
-                same(a.1[l], b.1[l], &|| {
-                    format!("{}: voice {v} LFO {l} end", context(block, pos))
-                });
-            }
-        }
-        for v in (0..MAX_VOICES).filter(|&v| sounding[v]) {
-            for l in 0..params.len() {
-                let (a, b) = (prod.position(l, v), refr.position(l, v));
-                for k in 0..3 {
-                    same(a[k], b[k], &|| {
-                        format!("{}: voice {v} LFO {l} position[{k}]", context(block, pos))
-                    });
-                }
-            }
-        }
-        pos += n;
-        block += 1;
-    }
-    compared
-}
+// LFO parameters and routes
 
 fn lfo(waveform: LfoWaveform, rate: f32) -> LfoParams {
     LfoParams {
@@ -336,167 +201,6 @@ fn route(source: ModSource, target: ModTarget, depth: f32, via: ModSource) -> Mo
         target,
         depth,
         via,
-    }
-}
-
-fn scripts() -> Vec<Script> {
-    use LfoWaveform::*;
-    let notes = vec![
-        (0.0, Event::NoteOn(0)),
-        (0.15, Event::NoteOn(3)),
-        (0.3, Event::Seed(0)),
-        (0.35, Event::NoteOn(0)), // retrigger
-        (0.45, Event::NoteOn(7)),
-        (0.55, Event::Silence(3)),
-        (0.6, Event::Seed(0xdead_beef)),
-        (0.7, Event::NoteOn(3)),
-        (0.85, Event::NoteOn(15)),
-    ];
-    let mut later = notes.clone();
-    // The free-running phases run alone for a while before the first note.
-    later[0].0 = 0.1;
-    vec![
-        Script {
-            name: "all shapes",
-            params: all_shapes(),
-            routes: vec![],
-            used: 0xff,
-            seconds: 1.5,
-            events: later,
-        },
-        Script {
-            name: "some used",
-            params: all_shapes(),
-            routes: vec![],
-            used: 0b1010_0110,
-            seconds: 0.5,
-            events: notes.clone(),
-        },
-        Script {
-            name: "modulated",
-            params: vec![
-                lfo(Sine, 3.0),
-                LfoParams {
-                    key_sync: false,
-                    ..lfo(SampleHold, 9.0)
-                },
-                LfoParams {
-                    fade_in: 0.4,
-                    ..lfo(Triangle, 1.0)
-                },
-                LfoParams {
-                    fade_in: 0.0,
-                    delay: 0.1,
-                    amount: 0.3,
-                    ..lfo(Square, 4.0)
-                },
-                lfo(SawDown, 0.5),
-                LfoParams {
-                    amount: 0.0,
-                    ..lfo(SampleHold, 50.0)
-                },
-            ],
-            routes: vec![
-                route(
-                    ModSource::Velocity,
-                    ModTarget::LfoRate(0),
-                    3.0,
-                    ModSource::None,
-                ),
-                route(
-                    ModSource::ModWheel,
-                    ModTarget::LfoRate(1),
-                    -2.0,
-                    ModSource::None,
-                ),
-                route(
-                    ModSource::PitchBend,
-                    ModTarget::LfoRate(4),
-                    1.5,
-                    ModSource::None,
-                ),
-                // The deepest rate modulation: many periods per block at long blocks.
-                route(
-                    ModSource::Velocity,
-                    ModTarget::LfoRate(5),
-                    8.0,
-                    ModSource::None,
-                ),
-                route(
-                    ModSource::Aftertouch,
-                    ModTarget::LfoAmount(0),
-                    -0.7,
-                    ModSource::None,
-                ),
-                route(
-                    ModSource::Velocity,
-                    ModTarget::LfoAmount(3),
-                    0.5,
-                    ModSource::ModWheel,
-                ),
-                route(
-                    ModSource::ModWheel,
-                    ModTarget::LfoAmount(5),
-                    1.0,
-                    ModSource::None,
-                ),
-                route(
-                    ModSource::ModWheel,
-                    ModTarget::LfoFade(2),
-                    0.5,
-                    ModSource::None,
-                ),
-                route(
-                    ModSource::Velocity,
-                    ModTarget::LfoFade(3),
-                    0.3,
-                    ModSource::None,
-                ),
-                route(
-                    ModSource::Aftertouch,
-                    ModTarget::LfoFade(4),
-                    -0.4,
-                    ModSource::Velocity,
-                ),
-            ],
-            used: 0b11_1111,
-            seconds: 1.0,
-            events: notes.clone(),
-        },
-        Script {
-            name: "added while sounding",
-            params: all_shapes()[..2].to_vec(),
-            routes: vec![],
-            used: 0xff,
-            seconds: 1.0,
-            events: {
-                let mut e = notes.clone();
-                e.push((0.25, Event::Params(all_shapes()[..5].to_vec())));
-                // New rates and shapes for the same LFOs (an edited patch).
-                let mut edited = all_shapes();
-                edited[0].rate = 17.0;
-                edited[1].waveform = SampleHold;
-                edited[2].key_sync = false;
-                e.push((0.5, Event::Params(edited[..5].to_vec())));
-                e.push((0.65, Event::Params(all_shapes())));
-                e
-            },
-        },
-    ]
-}
-
-#[test]
-fn hexa_lfos_match_the_reference_bit_for_bit() {
-    for script in scripts() {
-        for split in SPLITS {
-            let compared = lockstep(&script, split);
-            assert!(
-                compared > 1000,
-                "{} {}: {compared}",
-                script.name,
-                split.name()
-            );
-        }
     }
 }
 
