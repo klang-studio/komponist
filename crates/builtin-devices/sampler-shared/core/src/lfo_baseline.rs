@@ -298,6 +298,9 @@ fn slot(source: ModSource, target: ModTarget, amount: f32) -> ModSlot {
 /// LFO modulating its own rate; velocity and an envelope on the rate; LFO at note on (sample
 /// start, attack); a Nyquist-rate square; a pad without slots (as the drum Sampler plays it); a
 /// pad with noise only; a gate pad with a modulated end.
+///
+/// No pad modulates drive: its `tanh` comes from the system libm, whose results differ between
+/// glibc versions (2.44 here, older on CI), and the digests must not depend on that.
 fn pads() -> Vec<PadParams> {
     use LfoShape::*;
     use ModSource as S;
@@ -330,13 +333,20 @@ fn pads() -> Vec<PadParams> {
         },
         pad(SawUp, 13.3, false, 0, &[slot(S::Lfo, T::Pan, 0.8)]),
         pad(SawDown, 50.0, true, 2, &[slot(S::Lfo, T::Volume, -0.6)]),
-        pad(
-            Square,
-            2.2,
-            false,
-            1,
-            &[slot(S::Lfo, T::Drive, 0.5), slot(S::Lfo, T::Resonance, 0.3)],
-        ),
+        PadParams {
+            filter_mode: FilterMode::HighPass,
+            cutoff_hz: 400.0,
+            ..pad(
+                Square,
+                2.2,
+                false,
+                1,
+                &[
+                    slot(S::Lfo, T::Cutoff, 0.2),
+                    slot(S::Lfo, T::Resonance, 0.3),
+                ],
+            )
+        },
         PadParams {
             filter_mode: FilterMode::BandPass,
             cutoff_hz: 900.0,
@@ -545,18 +555,18 @@ fn engine_renders_match_the_committed_digests() {
 
 /// The committed digests (Linux x86_64), from `01db1cd8`, before #362.
 const ENGINE_DIGESTS: &[(&str, u64)] = &[
-    ("engine-48000/split-1", 0x906ac2ff40ee2c9c),
-    ("engine-48000/split-31", 0x8c52ea603703165f),
-    ("engine-48000/split-32", 0x7a2fc767f257290a),
-    ("engine-48000/split-33", 0x2874260c2f9fbeb9),
-    ("engine-48000/split-64", 0xdde03bb92fae0b56),
-    ("engine-48000/split-256", 0x09d016fbcb93c6cb),
-    ("engine-48000/irregular-362-256", 0x538b32178e5d8884),
-    ("engine-44100/split-1", 0xd6c0620904b14fdc),
-    ("engine-44100/split-31", 0xdfb6d3e7278b8735),
-    ("engine-44100/split-32", 0x121ae45d504f5851),
-    ("engine-44100/split-33", 0x7bc134a4052ff4fd),
-    ("engine-44100/split-64", 0x099681e3c508e3fd),
-    ("engine-44100/split-256", 0x395bb5ec51bd112b),
-    ("engine-44100/irregular-362-256", 0x3e8ffcd6d1d36ac7),
+    ("engine-48000/split-1", 0x22c693ee62baeaf2),
+    ("engine-48000/split-31", 0x621b363de5732e9f),
+    ("engine-48000/split-32", 0xadac622af0c25c0f),
+    ("engine-48000/split-33", 0xfe317e29073433a0),
+    ("engine-48000/split-64", 0xfb981d8fa5300cef),
+    ("engine-48000/split-256", 0xba6813691024d497),
+    ("engine-48000/irregular-362-256", 0x40b69de02b052328),
+    ("engine-44100/split-1", 0x072f425614604adb),
+    ("engine-44100/split-31", 0x64a1ed776f4e30d6),
+    ("engine-44100/split-32", 0x5c219115b594310a),
+    ("engine-44100/split-33", 0xa15e45fadb137eb7),
+    ("engine-44100/split-64", 0x535aac56f2fb6238),
+    ("engine-44100/split-256", 0x94755aa43f640a39),
+    ("engine-44100/irregular-362-256", 0x3efc02788e36dd89),
 ];
