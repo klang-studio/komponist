@@ -2164,25 +2164,28 @@ impl Bridge {
             return;
         }
         for (id, serial) in reported.superseded {
-            if self.pending_param_serials.get(&id) == Some(&serial) {
-                self.pending_params.remove(&id);
-                self.pending_param_serials.remove(&id);
-            }
+            self.clear_pending_param_edit(id, serial);
         }
+        let settled: BTreeMap<_, _> = reported.settled.into_iter().collect();
         // Playback may have changed the values of controls it currently owns. A lane with
         // no current value leaves its control at the reported preset's base.
         for value in reported.values {
-            if !self.params.iter().any(|param| param.id == value.id)
-                || self.pending_params.contains(&value.id)
-            {
+            let id = value.id;
+            if !self.params.iter().any(|param| param.id == id) {
                 continue;
             }
-            if !matches!(self.automated_params.get(&value.id), Some(Some(_)))
-                && !self.macro_params.contains_key(&value.id)
-            {
-                self.base_values.insert(value.id, value.value);
+            let driven = matches!(self.automated_params.get(&id), Some(Some(_)))
+                || self.macro_params.contains_key(&id);
+            if !driven && let Some(&serial) = settled.get(&id) {
+                self.clear_pending_param_edit(id, serial);
             }
-            self.values.insert(value.id, value);
+            if self.pending_params.contains(&id) {
+                continue;
+            }
+            if !driven {
+                self.base_values.insert(id, value.value);
+            }
+            self.values.insert(id, value);
         }
         events.push(PluginManagerEvent::ParamsChanged {
             device: self.device,
@@ -2190,6 +2193,13 @@ impl Bridge {
         events.push(PluginManagerEvent::ParamValuesChanged {
             device: self.device,
         });
+    }
+
+    fn clear_pending_param_edit(&mut self, id: u32, serial: NonZeroU32) {
+        if self.pending_param_serials.get(&id) == Some(&serial) {
+            self.pending_params.remove(&id);
+            self.pending_param_serials.remove(&id);
+        }
     }
 
     fn finish_restore(

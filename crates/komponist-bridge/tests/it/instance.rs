@@ -85,8 +85,9 @@ fn an_unsolicited_preset_supersedes_delivered_edits_on_both_paths() {
         BlockStatus::Ok as u32
     );
 
+    let program_edit = NonZeroU32::new(13).unwrap();
     assert_eq!(
-        bridge.block(&[param(0, program, 2.0)]).status,
+        bridge.block(&[render(program, 2.0, program_edit)]).status,
         BlockStatus::Ok as u32
     );
     let values = bridge.expect("reported preset values", |message| match message {
@@ -97,9 +98,26 @@ fn an_unsolicited_preset_supersedes_delivered_edits_on_both_paths() {
         values.values.iter().find(|p| p.id == gain).unwrap().value,
         0.25
     );
-    assert_eq!(values.superseded.len(), 2);
     assert!(values.superseded.contains(&(gain, control_edit)));
     assert!(values.superseded.contains(&(mode, render_edit)));
+    // The main-thread callback can run just before or after the worker records this edit.
+    // Both paths return the Program value present once the block has completed.
+    assert!(
+        values
+            .superseded
+            .iter()
+            .chain(&values.settled)
+            .any(|stamp| *stamp == (program, program_edit))
+    );
+    assert_eq!(
+        values
+            .values
+            .iter()
+            .find(|p| p.id == program)
+            .unwrap()
+            .value,
+        2.0
+    );
 
     // The next block emits the new Gain as a plugin output, invalidating confirmation of
     // the displaced 0.61. The host now checks the preset's base instead.

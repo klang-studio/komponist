@@ -217,6 +217,7 @@ struct Bridge {
     pending_values: BTreeMap<u32, f64>,
     values_due: Option<Instant>,
     values_sent: Option<Instant>,
+    pending_preset_values: Option<(u64, Instant)>,
     params_due: Option<Instant>,
     /// The next state capture must wait for the audio block that applies restored bases.
     verify_restored_bases: bool,
@@ -262,6 +263,7 @@ impl Bridge {
             pending_values: BTreeMap::new(),
             values_due: None,
             values_sent: None,
+            pending_preset_values: None,
             params_due: None,
             verify_restored_bases: false,
             unstable_snapshots: 0,
@@ -480,6 +482,7 @@ impl Bridge {
             }
         }
         self.handle_notifications();
+        self.send_loaded_values_if_due();
         if control {
             self.read_control();
         }
@@ -553,7 +556,9 @@ impl Bridge {
     // --------------------------------------------------------------------------------------------
 
     fn value_deadline(&self) -> Option<Instant> {
-        self.values_due
+        self.pending_preset_values
+            .map(|(_, due)| due)
+            .or(self.values_due)
             .into_iter()
             .chain(self.params_due)
             .chain(self.controller_due)
@@ -621,36 +626,61 @@ impl Bridge {
         }
     }
 
-    /// Every parameter's current value at once, outside the coalesced value updates.
-    fn send_loaded_values(&mut self, epoch: u64) {
+    /// Reads the final values and delivery stamps at the same block boundary.
+    fn send_loaded_values_if_due(&mut self) {
+        let Some((epoch, due)) = self.pending_preset_values else {
+            return;
+        };
+        if due > Instant::now() {
+            return;
+        }
+        self.pending_preset_values = None;
         let Some(plugin) = self.plugin.as_ref() else {
             return;
         };
-        let values = plugin
-            .params()
-            .into_iter()
-            .filter_map(|info| {
-                let value = plugin.param_value(info.id)?;
-                Some(ParamValue {
-                    id: info.id,
-                    value,
-                    text: plugin.param_text(info.id, value).unwrap_or_default(),
-                })
-            })
-            .collect();
+        let params = plugin.params();
+        let read_values = || {
+            params
+                .iter()
+                .filter_map(|info| plugin.param_value(info.id).map(|value| (info.id, value)))
+                .collect::<Vec<_>>()
+        };
         let mut delivery = self.durable_edits.clone();
-        if let Some(active) = &self.active {
-            delivery.extend(active.rt.durable_deliveries());
+        let values = if let Some(active) = &mut self.active {
+            let Ok(values) = active.rt.snapshot(|delivered| {
+                delivery.extend(delivered.durable_deliveries());
+                read_values()
+            }) else {
+                self.pending_preset_values = Some((epoch, Instant::now() + VALUES_INTERVAL));
+                return;
+            };
+            values
+        } else {
+            read_values()
+        };
+        let mut superseded = Vec::new();
+        let mut settled = Vec::new();
+        for (id, stamp) in delivery {
+            if let Some(serial) = stamp.superseded_by(epoch) {
+                superseded.push((id, serial));
+            } else if let Some(serial) = stamp.settled_at(epoch) {
+                settled.push((id, serial));
+            }
         }
-        let superseded = delivery
+        let values = values
             .into_iter()
-            .filter_map(|(id, stamp)| Some((id, stamp.superseded_by(epoch)?)))
+            .map(|(id, value)| ParamValue {
+                id,
+                value,
+                text: plugin.param_text(id, value).unwrap_or_default(),
+            })
             .collect();
         self.pending_values.clear();
         self.values_due = None;
         self.send(BridgeMsg::PresetValues(ReportedPresetValues {
             values,
             superseded,
+            settled,
         }));
     }
 
@@ -676,13 +706,14 @@ impl Bridge {
         }
         if let Some(epoch) = loaded_epoch {
             // The reported values belong to the last load in the batch.
-            self.send_loaded_values(epoch);
+            self.pending_preset_values = Some((epoch, Instant::now()));
+            self.send_loaded_values_if_due();
         }
     }
 
     fn send_values_if_due(&mut self) {
         let now = Instant::now();
-        if self.values_due.is_none_or(|due| due > now) {
+        if self.pending_preset_values.is_some() || self.values_due.is_none_or(|due| due > now) {
             return;
         }
         self.values_due = None;
@@ -888,6 +919,13 @@ impl Bridge {
                 });
             }
             ControlMsg::Deactivate => self.deactivate(),
+            ControlMsg::GetState { request }
+            | ControlMsg::GetStateChecked { request, .. }
+            | ControlMsg::CaptureClapPreset(request)
+                if self.pending_preset_values.is_some() =>
+            {
+                self.send(BridgeMsg::StateDeferred { request });
+            }
             ControlMsg::GetState { request } => {
                 if self.verify_restored_bases {
                     // StateApplied only acknowledges the overlay was queued. A checked capture
@@ -1421,6 +1459,7 @@ impl Bridge {
             };
             if superseded {
                 self.durable_edits.clear();
+                self.pending_preset_values = None;
                 earlier_reports.retain(|report| matches!(report, PresetReport::Failed { .. }));
                 // Old coalesced values must not follow the authoritative state report.
                 self.pending_values.clear();
@@ -1482,6 +1521,7 @@ impl Bridge {
         };
         if result.is_ok() {
             self.durable_edits.clear();
+            self.pending_preset_values = None;
             // Values coalesced before the load must not overwrite the preset's reported values.
             self.pending_values.clear();
             self.values_due = None;
@@ -1676,6 +1716,11 @@ impl Bridge {
         self.queue_flushed(&out);
         // Echo with the plugin's text, so the generic view can show "−12.0 dB".
         self.queue_value(id, value);
+        if self.active.is_none() {
+            // A flush can report a preset on this thread. Publish its final values before
+            // another control request in the same batch captures state.
+            self.report_presets();
+        }
     }
 
     fn set_render_mode(&mut self, mode: RenderMode) {

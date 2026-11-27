@@ -362,6 +362,14 @@ impl ParamEditStamp {
         }
         NonZeroU32::new(self.0 as u32)
     }
+
+    pub(crate) fn settled_at(self, epoch: u64) -> Option<NonZeroU32> {
+        if (self.0 >> 32) as u32 == epoch as u32 {
+            NonZeroU32::new(self.0 as u32)
+        } else {
+            None
+        }
+    }
 }
 
 pub(crate) struct StoppedRt {
@@ -384,6 +392,13 @@ struct ParameterTable {
 pub(crate) struct DeliveredParams<'a>(&'a BTreeMap<u32, Arc<DeliverySlot>>);
 
 impl DeliveredParams<'_> {
+    pub(crate) fn durable_deliveries(&self) -> impl Iterator<Item = (u32, ParamEditStamp)> + '_ {
+        self.0.iter().filter_map(|(&id, slot)| {
+            let stamp = slot.1.load(Ordering::Acquire);
+            (stamp != 0).then_some((id, ParamEditStamp(stamp)))
+        })
+    }
+
     pub fn confirms_input(&self, id: u32, expected: f64, actual: f64) -> bool {
         self.0.get(&id).is_some_and(|slot| {
             // SAFETY: The view cannot outlive the exclusive activity guard.
@@ -695,13 +710,6 @@ impl RtThread {
         let mut event = WireEvent::new(0, WireEventKind::ParamValue { id, value });
         event.reserved = serial.map_or(0, NonZeroU32::get);
         self.params.push(event).is_ok()
-    }
-
-    pub(crate) fn durable_deliveries(&self) -> impl Iterator<Item = (u32, ParamEditStamp)> + '_ {
-        self.parameters.delivered.iter().filter_map(|(&id, slot)| {
-            let stamp = slot.1.load(Ordering::Acquire);
-            (stamp != 0).then_some((id, ParamEditStamp(stamp)))
-        })
     }
 
     pub fn has_queued_params(&self) -> bool {
@@ -1081,8 +1089,8 @@ fn serve(
         }
     };
     if status == BlockStatus::Ok {
-        // An overlapping block enters the new epoch. Its edits are kept pending because
-        // the plugin may have applied them after reporting the preset.
+        // An overlapping block enters the new epoch. Its edits can be reconciled
+        // with the parameter values read under the next control-thread pause.
         let epoch = sync
             .preset_epoch
             .as_ref()
@@ -1139,6 +1147,8 @@ mod tests {
         // the report's epoch. A repeated value with a new serial remains a separate edit.
         let straddled = ParamEditStamp::new(repeated, 5);
         assert_eq!(straddled.superseded_by(5), None);
+        assert_eq!(straddled.settled_at(5), Some(repeated));
+        assert_eq!(straddled.settled_at(4), None);
         assert_eq!(straddled.superseded_by(6), Some(repeated));
         assert_eq!(straddled.superseded_by(4), None);
         assert_eq!(
@@ -1383,8 +1393,8 @@ mod tests {
         assert_eq!(status, inactive);
         assert_eq!(block(&mut client, &[]), ok);
         let (_, stamp) = rt
-            .durable_deliveries()
-            .next()
+            .snapshot(|p| p.durable_deliveries().next())
+            .unwrap()
             .expect("tagged edit delivered");
         assert_eq!(stamp.superseded_by(1), NonZeroU32::new(9));
         assert!(rt.snapshot(|p| p.confirms_input(1, 0.25, 0.25)).unwrap());

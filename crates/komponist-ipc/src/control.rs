@@ -110,7 +110,8 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// 24 (#285) returns the parameter IDs a device reset while preparing a file edit.
 /// 25 (#336) carries layout descriptors for the single current CLAP layout contract.
 /// 27 (#344) forwards the plug-in's own preset loads reported through CLAP preset-load.
-pub const PROTOCOL_VERSION: u32 = 29;
+/// 30 (#344) distinguishes overlapping writes settled by the final preset values.
+pub const PROTOCOL_VERSION: u32 = 30;
 
 /// Maximum number of parameter bases that can follow an active state restore.
 pub const MAX_STATE_PARAMETER_BASES: usize = crate::shm::INPUT_EVENT_CAPACITY;
@@ -651,11 +652,14 @@ pub enum BridgeMsg {
     PresetValues(ReportedPresetValues),
 }
 
-/// Current values and manual writes that had already been delivered when a preset was reported.
+/// Settled values and durable manual writes delivered before or during a preset report.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReportedPresetValues {
     pub values: Vec<ParamValue>,
+    /// The preset displaced these earlier deliveries.
     pub superseded: Vec<(u32, NonZeroU32)>,
+    /// For these overlapping deliveries, use the settled value while playback leaves it alone.
+    pub settled: Vec<(u32, NonZeroU32)>,
 }
 
 /// Project states and parameter values from one successful preset load.
@@ -2184,6 +2188,7 @@ mod tests {
                     text: "50 %".into(),
                 }],
                 superseded: vec![(3, NonZeroU32::new(8).unwrap())],
+                settled: vec![(7, NonZeroU32::new(9).unwrap())],
             }),
             BridgeMsg::PresetReported(crate::clap_presets::PresetReport::Failed {
                 source: crate::clap_presets::ClapPresetSource {
