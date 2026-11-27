@@ -354,30 +354,23 @@ Three ideas carry the whole design. If you keep them in mind, most code explains
 
 ### 8.1 Layers
 
-The workspace is split by responsibility, and dependencies point downwards only:
+The diagram shows selected direct workspace dependencies. Crate names omit the `komponist-` prefix.
 
 ```text
-                         komponist-app  (binary "komponist": shell, views, actions, EngineSync)
-                        /      |       \              \
-          komponist-ui    komponist-plugins     komponist-audio    komponist-bridge
-          (widgets,       (catalog, scan,       (cpal/JACK/        (plugin process:
-           canvases)       bridge lifecycle,     MIDI devices,      instance + scan)
-             |             processor adapters)   EngineSlot)            |
-             |                 |                    |            komponist-hosting
-             |        komponist-hosting             |            (CLAP + VST3 host)
-             |        (bundled CLAP host)            |                  |
-             |                 |                    |            komponist-ipc
-             |             komponist-ipc             |
-             |             (shm, protocol)           |
-             |                                       |
-             |   komponist-engine  ──────────────────┼── komponist-rt (RT priority, waits)
-             |   (compile, Program, Engine,          |
-             |    Processor trait, mixing)           |
-             |      |            \                   |
-             +-- komponist-model  komponist-audiofile, komponist-stretch, klang-dsp
-                 (Project, edits, undo, persistence)
-                    |
-          komponist-tokens, komponist-i18n  (generated design tokens and texts)
+app             → audio, bridge, engine, plugins, ui
+bridge          → hosting, ipc, plugin-api, ui
+plugins         → engine, hosting, ipc, plugin-api, processor
+engine          → audiofile, model, processor, rt, stretch
+hosting         → ipc, plugin-api
+ipc             → plugin-api, rt (macOS)
+audio           → rt
+ui              → device-dsp, i18n, model, plugin-api, tokens
+processor       → model
+plugin-api      → model
+native-clap-sdk → device-core, model, plugin-api
+device-core     → device-dsp, i18n, model, processor
+
+model, device-dsp, i18n, tokens have no normal workspace dependencies.
 ```
 
 Rules that follow from this picture:
