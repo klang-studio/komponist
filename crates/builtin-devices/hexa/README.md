@@ -1,6 +1,6 @@
 # komponist-hexa
 
-**Hexa** is componist's built-in six-operator FM synthesizer. Its [DSP core](core/README.md)
+**Hexa** is komponist's built-in six-operator FM synthesizer. Its [DSP core](core/README.md)
 contains the synth engine and factory patches. This crate connects that engine to the host,
 defines the device card and macros, and encodes project state as patch JSON.
 

@@ -388,7 +388,8 @@ pub trait HostedProcessor: Send {
         &[]
     }
 
-    /// Clears voices and tails (CLAP `reset`; VST3: all-notes-off and a flush at the next block).
+    /// Requests a processor reset. CLAP calls `reset` directly. VST3 toggles processing
+    /// if it is running and sends note-offs for held notes in the next block.
     fn reset(&mut self);
 }
 

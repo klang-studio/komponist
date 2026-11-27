@@ -7,8 +7,8 @@
 //! allocate and do file IO, so they run on loader or UI-adjacent worker threads and hand finished
 //! `Arc`s over. See `docs/ARCHITECTURE.md` §6.10.
 //!
-//! - [`AudioFile`]: a seekable, chunked decoder (WAV through `hound`; FLAC, OGG Vorbis and MP3
-//!   through `symphonia`) delivering interleaved `f32` frames from any frame offset.
+//! - [`AudioFile`]: a seekable, chunked decoder (WAV through `hound`; FLAC, OGG Vorbis, MP3
+//!   and AIFF/AIFF-C PCM through `symphonia`) delivering interleaved `f32` frames from any frame offset.
 //! - [`decode_all`] and [`Decoded`]: the whole file in memory as planar `f32`.
 //! - [`resample`] and [`StreamResampler`]: sample-rate conversion (rubato's FFT resampler).
 //! - [`PeakData`] and [`PeakBuilder`]: multi-resolution min/max peaks per channel, with a disk

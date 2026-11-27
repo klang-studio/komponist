@@ -124,8 +124,8 @@ pub struct ShmLayout {
     pub header: ShmHeader,
     /// Events for the next block; producer: app audio thread, consumer: bridge RT thread.
     pub input_events: ShmRing<WireEvent, INPUT_EVENT_CAPACITY>,
-    /// Events the plugin emitted (parameter changes and gestures from its GUI); producer: bridge RT
-    /// thread, consumer: app UI thread (`BridgeMonitor`, polled by the plugin manager).
+    /// Events the plugin emitted; producer: bridge RT thread, consumer: the app's engine
+    /// processing path (`ExternalProcessor` via `BridgeMonitor`).
     pub output_events: ShmRing<WireEvent, OUTPUT_EVENT_CAPACITY>,
     /// Input audio, `[channel][frame]`; written by the app before a request.
     pub audio_in: UnsafeCell<[[f32; MAX_BLOCK]; 2]>,
