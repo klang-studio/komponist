@@ -1,6 +1,7 @@
 # CI: formatting, clippy, tests (incl. the test plugins and the GUI tests under Xvfb) on every push to
 # main and on every pull request, on Linux; clippy and tests (incl. the test plugins) on macOS arm64 too
-# (epic #41: macOS 14.4+, Apple Silicon only) and on Windows x86_64 (port in progress, not blocking).
+# (epic #41: macOS 14.4+, Apple Silicon only) and on Windows x86_64. The Linux, macOS and Windows jobs are the
+# required checks for main (repository ruleset).
 # Local equivalent: scripts/check.sh + scripts/check-gui.sh.
 #
 # Snapshot tests (egui_kittest, wgpu) render with lavapipe, the software Vulkan driver of Mesa, on the runner.
@@ -202,7 +203,7 @@ jobs:
     name: "macOS arm64: clippy, tests"
     runs-on: macos-15
     timeout-minutes: 75
-    # A required check for main, like the Linux job (#58, branch protection).
+    # A required check for main, like the Linux and Windows jobs (repository ruleset).
     env:
       # The workflow-wide lavapipe setting is for Linux; here wgpu uses Metal.
       WGPU_BACKEND: metal
@@ -272,15 +273,12 @@ jobs:
 
   # Windows x86_64 (port in progress, branch `windows`). Formatting is checked once, on Linux. No GUI tests
   # (scripts/check-gui.sh is Linux only). Snapshots render without a GPU (wgpu falls back to WARP on DX12) and are not
-  # compared (kittest.toml [windows]). The gate passes locally on Windows 11 (with Vulkan, scripts/check.sh); this job
-  # has not run on a GitHub runner yet.
+  # compared (kittest.toml [windows]). The gate passes locally on Windows 11 (with Vulkan, scripts/check.sh).
   windows-x86_64:
     name: "Windows x86_64: clippy, tests"
     runs-on: windows-2025
     timeout-minutes: 90
-    # Not blocking while the port is new: the job has never run on a runner (WARP, shared VM timing). Remove this
-    # once the job is reliably green.
-    continue-on-error: true
+    # A required check for main, like the Linux and macOS jobs (repository ruleset).
     env:
       # The workflow-wide lavapipe setting is for Linux.
       WGPU_BACKEND: dx12

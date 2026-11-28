@@ -84,9 +84,8 @@ komponist runs on macOS 14.4+ (Apple Silicon only) as well as on Linux. Agents o
   comparing; **never run `UPDATE_SNAPSHOTS` on macOS**, it would overwrite the reference PNGs with Metal pixels.
 - **No `/proc` on macOS:** tests that list or inspect processes have a `cfg(target_os)` path (`ps`, `kill -0`) or
   are gated with a reason.
-- CI has a macOS arm64 job (clippy, tests, test plugins; no GUI tests, no format check). Both jobs ("Linux x86_64:
-  fmt, clippy, tests" and "macOS arm64: clippy, tests") are required checks for `main` (branch protection, #58): changes
-  land through pull requests that are green on both.
+- CI has a macOS arm64 job (clippy, tests, test plugins; no GUI tests, no format check). It is one of the three required
+  checks for `main`, see **Required CI checks** below.
 
 ## Windows (port in progress)
 
@@ -106,8 +105,16 @@ builds and its gate passes there; plugin GUI frames are bridge-owned as on macOS
   `<name>.vst3/Contents/x86_64-win/<name>.vst3`.
 - **Snapshots:** Linux (lavapipe) is the reference. On Windows `kittest.toml` `[windows]` renders every snapshot without
   comparing; **never run `UPDATE_SNAPSHOTS` on Windows**, it would overwrite the reference PNGs with the GPU's pixels.
-- CI has a `windows` job (clippy, test plugins, tests; no GUI tests, no format check), not blocking while the port is in
-  progress.
+- CI has a Windows x86_64 job (clippy, test plugins, tests; no GUI tests, no format check). It is one of the three
+  required checks for `main`, see **Required CI checks** below: Windows must stay green like Linux and macOS.
+
+## Required CI checks
+
+Changes land on `main` only through pull requests that are green on all three required checks (repository ruleset for
+`main`; owner, 2026-11-28): "Linux x86_64: fmt, clippy, tests", "macOS arm64: clippy, tests" and "Windows x86_64:
+clippy, tests". A red Windows job blocks a merge exactly like a red Linux or macOS job. The checks appear on a pull
+request only some seconds after a push, and a new push cancels the running ones (concurrency group): when you wait for
+CI, wait until all three exist and are done, and push follow-up commits only after that.
 
 ## Bundled devices in a worktree
 
