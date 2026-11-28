@@ -58,6 +58,13 @@ perf suites that `docs/PERFORMANCE.md` names (`soak`, `engine_perf`, `arrangemen
 the child processes of the test process (`plugin_exit`). Run one module:
 `cargo test -p komponist-app --test it piano_roll::`.
 
+**Tests with installed plugins run only locally:** the editor tests in `scripts/check-gui.sh` that use installed
+third-party plugins (Dexed, Surge XT, Klopfer …) return early when the plugin is missing, which it always is in CI, so a
+stale assertion there stays green on every check (`gui_dexed` expected a notification the host had stopped sending,
+#383). If you change plugin editor hosting or the host's parameter and state notifications (CLAP `host_params` /
+`host_state`, VST3 `IComponentHandler`), run `scripts/check-gui.sh` once locally on Linux, in the background, and name
+in the report which installed plugins it covered.
+
 **klang-dsp is a git dependency** (`Cargo.toml`, pinned `rev`); its repository also holds `klang-synth` (folder
 `klang-synth/`), pinned to the same `rev`. To change klang-dsp and komponist together, patch both to the local
 checkout without touching tracked files: either pass
