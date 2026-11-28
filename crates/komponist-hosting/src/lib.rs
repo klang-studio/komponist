@@ -11,8 +11,10 @@
 //!   [`HostContext`].
 //! - [`load`] and [`scan`]: entry points, dispatching on the bundle format.
 //! - [`host_loop`]: [`host_loop::PollLoop`], a reference `poll()` implementation of [`HostLoop`]
-//!   with the write-interest policy for plugin fds (used by the tests; the bridge owns its loop);
-//!   on Windows a message-pumping wait (`host_loop::wake`) shared with the bridge.
+//!   (used by the tests and direct hosting; the bridge owns its loop), built like the bridge's
+//!   loop on [`host_loop::PluginFds`] (plugin fds and their write-interest policy) and
+//!   [`host_loop::PendingNotifications`] (notification bits and the wake); on Windows a
+//!   message-pumping wait (`host_loop::wake`) shared with the bridge.
 //! - `adapter` (private): what the CLAP and VST3 processors share: the stereo adaptation of a
 //!   plugin's audio ports and the held notes behind all-notes-off (#243).
 //! - `clap` (private): the CLAP format layer on clack-host 0.2 (WP-26).
