@@ -26,7 +26,7 @@
 
 use komponist_model::DeviceId;
 
-use crate::device_host::PluginWindowHost;
+use komponist_session::device_host::PluginWindowHost;
 
 /// Brings `device`'s bridge frame to the front.
 pub(super) fn bring_to_front(host: &mut dyn PluginWindowHost, device: DeviceId) {

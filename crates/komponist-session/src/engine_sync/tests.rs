@@ -1,6 +1,5 @@
 use super::*;
-use crate::app::App;
-use crate::device_host::PluginCatalogHost;
+use crate::device_host::{PluginCatalogHost, PluginHost};
 use komponist_engine::MAX_SLOTS;
 use komponist_engine::workers::auto_workers;
 use komponist_model::edits::{self, ChannelProp, TrackProp};
@@ -38,8 +37,67 @@ pub(super) fn wait_until(mut f: impl FnMut() -> bool) -> bool {
 }
 
 #[test]
+fn headless_draft_sync_tracks_completed_passes_without_editing_the_document() {
+    struct TempoDraft {
+        revision: u64,
+        bpm: f64,
+    }
+
+    impl AutomationDraft for TempoDraft {
+        fn completed_revision(&self) -> u64 {
+            self.revision
+        }
+
+        fn apply(&self, project: &Project) -> edits::EditResult {
+            let mut tempo = project.tempo;
+            tempo.bpm = self.bpm;
+            edits::set_project_prop(project, edits::ProjectProp::Tempo(tempo))
+        }
+    }
+
+    let cache = tempfile::tempdir().unwrap();
+    let config = komponist_plugins::PluginManagerConfig::defaults(cache.path());
+    let host = PluginHost::without_bundled_clap(config);
+    let mut sync = EngineSync::null(Box::new(host));
+    let doc = Document::new(Project::new("Headless session"));
+    let committed = doc.project().tempo.bpm;
+    let revision = doc.revision();
+    let empty = TempoDraft {
+        revision: 0,
+        bpm: committed,
+    };
+    let earlier = TempoDraft {
+        revision: 1,
+        bpm: 130.0,
+    };
+    let later = TempoDraft {
+        revision: 2,
+        bpm: 140.0,
+    };
+
+    sync.sync(&doc);
+    let sent = sync.programs_sent();
+    sync.sync_with_draft(&doc, DraftOverlay::new(None, &earlier));
+    assert_eq!(sync.program().unwrap().tempo_map.tempo.bpm, 130.0);
+    assert_eq!(sync.programs_sent(), sent + 1);
+
+    sync.sync_with_draft(&doc, DraftOverlay::new(Some(&earlier), &empty));
+    assert_eq!(sync.programs_sent(), sent + 1);
+
+    sync.sync_with_draft(&doc, DraftOverlay::new(Some(&earlier), &later));
+    assert_eq!(sync.program().unwrap().tempo_map.tempo.bpm, 140.0);
+    assert_eq!(sync.programs_sent(), sent + 2);
+
+    sync.sync(&doc);
+    assert_eq!(sync.program().unwrap().tempo_map.tempo.bpm, committed);
+    assert_eq!(sync.programs_sent(), sent + 3);
+    assert_eq!(doc.revision(), revision);
+    sync.shutdown();
+}
+
+#[test]
 fn the_demo_plays_on_the_null_backend() {
-    let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let mut sync = EngineSync::null(Box::new(PluginHost::headless_fixture()));
     assert!(matches!(sync.audio_state(), AudioState::Running { .. }));
     let doc = Document::new(test_song(sync.host()));
     sync.sync(&doc);
@@ -65,7 +123,7 @@ fn the_demo_plays_on_the_null_backend() {
 /// arrive, and the app is told once (with that playhead).
 #[test]
 fn a_poisoned_engine_is_rebuilt_from_the_document() {
-    let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let mut sync = EngineSync::null(Box::new(PluginHost::headless_fixture()));
     // Single-threaded: the panic must happen on this thread (a worker runs its jobs inside
     // `assert_no_alloc`, where the panic's allocation aborts in debug builds).
     assert_eq!(sync.set_workers(Some(0)).unwrap().unwrap().threads, 0);
@@ -131,7 +189,7 @@ fn a_poisoned_engine_is_rebuilt_from_the_document() {
 /// is told once, and the new engine plays the document.
 #[test]
 fn a_lost_engine_is_rebuilt_and_the_waiting_commands_dropped() {
-    let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let mut sync = EngineSync::null(Box::new(PluginHost::headless_fixture()));
     let doc = Document::new(test_song(sync.host()));
     sync.sync(&doc);
     let rate = sync.sample_rate();
@@ -159,7 +217,7 @@ fn a_lost_engine_is_rebuilt_and_the_waiting_commands_dropped() {
 /// #211 review: a replacement engine keeps the worker setting the user chose.
 #[test]
 fn a_replacement_engine_keeps_the_worker_setting() {
-    let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let mut sync = EngineSync::null(Box::new(PluginHost::headless_fixture()));
     sync.set_workers(Some(0)).unwrap();
     let detached = sync.detach().unwrap();
     drop(detached);
@@ -180,7 +238,7 @@ fn a_replacement_engine_keeps_the_worker_setting() {
 /// to (also for #210's rebuild after a stream panic: both set `locate_after_rebuild`).
 #[test]
 fn a_newer_locate_beats_the_rebuild_position() {
-    let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let mut sync = EngineSync::null(Box::new(PluginHost::headless_fixture()));
     let doc = Document::new(test_song(sync.host()));
     sync.sync(&doc);
     sync.send(Command::Play);
@@ -226,7 +284,7 @@ fn diagnostics_follow_the_sent_program_and_notice_only_new_ones() {
     for _ in 0..MAX_TRACKS {
         project = add(&project);
     }
-    let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let mut sync = EngineSync::null(Box::new(PluginHost::headless_fixture()));
     let mut doc = Document::new(project);
     sync.sync(&doc);
     assert_eq!(sync.diagnostics(), []);
@@ -283,7 +341,7 @@ fn diagnostics_follow_the_sent_program_and_notice_only_new_ones() {
 
 #[test]
 fn attach_flushes_program_and_transport_commands_in_order() {
-    let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let mut sync = EngineSync::null(Box::new(PluginHost::headless_fixture()));
     let mut project = Project::new("Queued program");
     project.count_in_bars = 0;
     let doc = Document::new(project);
@@ -310,7 +368,7 @@ fn attach_flushes_program_and_transport_commands_in_order() {
 
 #[test]
 fn reattaching_at_a_new_rate_recompiles_the_same_document_revision() {
-    let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let mut sync = EngineSync::null(Box::new(PluginHost::headless_fixture()));
     let doc = Document::new(test_song(sync.host()));
     sync.sync(&doc);
     let sent = sync.programs_sent();
@@ -331,7 +389,7 @@ fn reattaching_at_a_new_rate_recompiles_the_same_document_revision() {
 /// engine held, during an export and in the stream) and playback goes on.
 #[test]
 fn worker_threads_follow_the_setting() {
-    let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let mut sync = EngineSync::null(Box::new(PluginHost::headless_fixture()));
     let realtime = Some(komponist_engine::workers::DEFAULT_WORKER_PRIORITY);
     let status = sync.worker_status().expect("prepared at stream start");
     // The automatic count depends on the machine: none on a small one (a 3-core CI VM before
@@ -373,7 +431,7 @@ fn worker_threads_follow_the_setting() {
 /// member keeps its group open (WP-102).
 #[test]
 fn mute_and_solo_gestures_send_the_routing_gates() {
-    let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let mut sync = EngineSync::null(Box::new(PluginHost::headless_fixture()));
     let mut doc = Document::new(test_song(sync.host()));
     assert!(sync.gates(doc.project()).is_none());
     let (drums, bass) = (doc.project().tracks[0].id, doc.project().tracks[1].id);
@@ -401,7 +459,7 @@ fn mute_and_solo_gestures_send_the_routing_gates() {
 
 #[test]
 fn unchanged_documents_are_not_recompiled() {
-    let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let mut sync = EngineSync::null(Box::new(PluginHost::headless_fixture()));
     let doc = Document::new(test_song(sync.host()));
     sync.sync(&doc);
     let first = sync.program().unwrap().tracks[0].clone();
@@ -411,7 +469,7 @@ fn unchanged_documents_are_not_recompiled() {
 
 #[test]
 fn removed_devices_leave_the_host_and_new_ones_get_processors() {
-    let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let mut sync = EngineSync::null(Box::new(PluginHost::headless_fixture()));
     let mut doc = Document::new(test_song(sync.host()));
     sync.sync(&doc);
     let lead_synth = doc.project().tracks[2].channel.devices[0].id;
@@ -439,7 +497,7 @@ fn sync_reuses_full_processor_slots_after_retiring_the_old_device() {
     use komponist_model::{ChannelRef, DeviceRole};
 
     const LIMITER: &str = "org.klang-studio.komponist.limiter";
-    let host = App::headless_plugin_host();
+    let host = PluginHost::headless_fixture();
     let prepare = |plugin: &str, edits: &[(&str, f64)], targets: &[&str]| {
         host.manager()
             .prepare_bundled_device(plugin, None, edits, targets)
@@ -480,7 +538,7 @@ fn sync_reuses_full_processor_slots_after_retiring_the_old_device() {
             edits::automation::add_lane(&project, owner, parameter(removed), "Gain".into())
                 .unwrap();
         let mut doc = Document::new(project);
-        let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
+        let mut sync = EngineSync::null(Box::new(PluginHost::headless_fixture()));
         sync.hold_engine().unwrap();
         sync.sync(&doc);
         let original = sync.program().unwrap();
@@ -547,7 +605,7 @@ fn sync_reuses_full_processor_slots_after_retiring_the_old_device() {
 
 #[test]
 fn reset_starts_the_next_project_from_scratch() {
-    let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let mut sync = EngineSync::null(Box::new(PluginHost::headless_fixture()));
     let first = Document::new(test_song(sync.host()));
     sync.sync(&first);
     let lead = first.project().tracks[2].channel.devices[0].id;
@@ -580,7 +638,7 @@ fn reset_starts_the_next_project_from_scratch() {
 
 #[test]
 fn fast_path_defers_the_recompile_to_the_gesture_end() {
-    let mut sync = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let mut sync = EngineSync::null(Box::new(PluginHost::headless_fixture()));
     let mut doc = Document::new(test_song(sync.host()));
     sync.sync(&doc);
     let track = doc.project().tracks[1].id;

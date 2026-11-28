@@ -1,4 +1,4 @@
-//! Coordinates the UI thread's program sync and its audio/MIDI I/O.
+//! Coordinates the control thread's program sync and its audio/MIDI I/O.
 //!
 //! Program sync compiles the document and draft against the last program sent. It inserts
 //! new processors before publishing a program and removes unused processors afterward.
@@ -34,9 +34,9 @@ pub use io::{
     lacks_workgroup, midi_changes,
 };
 use program::ProgramSync;
-pub(crate) use program::{DraftOverlay, MacroValueEdit};
+pub use program::{AutomationDraft, DraftOverlay, MacroValueEdit};
 
-/// The app's control-thread entry point for the engine.
+/// The session's control-thread entry point for the engine.
 pub struct EngineSync {
     io: EngineIo,
     program: ProgramSync,
@@ -106,7 +106,7 @@ impl EngineSync {
 
     /// Sync the document with any completed in-progress automation. A gesture can skip compiling
     /// a revision sent as fast-path commands as long as the overlay is unchanged.
-    pub(crate) fn sync_with_draft(&mut self, doc: &Document, draft: DraftOverlay<'_>) {
+    pub fn sync_with_draft(&mut self, doc: &Document, draft: DraftOverlay<'_>) {
         // Export renders the committed document. The playback draft stays with the app.
         let draft = if self.io.is_detached() {
             DraftOverlay::default()
@@ -117,7 +117,7 @@ impl EngineSync {
     }
 
     /// Force the next sync to compile again after a change outside the document.
-    pub(crate) fn invalidate_project(&mut self) {
+    pub fn invalidate_project(&mut self) {
         self.program.invalidate_project();
     }
 
@@ -157,12 +157,12 @@ impl EngineSync {
     }
 
     /// Refresh the model positions used for state snapshots after a fast-path macro edit.
-    pub(crate) fn refresh_snapshot_automation(&mut self, project: &Project) {
+    pub fn refresh_snapshot_automation(&mut self, project: &Project) {
         self.program.refresh_snapshot_automation(project);
     }
 
     /// Starts tracking a manual value edit until the engine publishes its effect.
-    pub(crate) fn macro_value_command(
+    pub fn macro_value_command(
         &mut self,
         track: TrackId,
         index: u8,
@@ -171,12 +171,12 @@ impl EngineSync {
         self.program.macro_value_command(track, index, change)
     }
 
-    pub(crate) fn pending_macro_value(&self, track: TrackId, index: u8, base: f32) -> Option<f32> {
+    pub fn pending_macro_value(&self, track: TrackId, index: u8, base: f32) -> Option<f32> {
         self.program
             .pending_macro_value(self.io.telemetry(), track, index, base)
     }
 
-    pub(crate) fn discard_pending_macro_overrides(&mut self) {
+    pub fn discard_pending_macro_overrides(&mut self) {
         self.program.discard_pending_macro_overrides();
     }
 
@@ -205,15 +205,18 @@ impl EngineSync {
         self.io.send(command);
     }
 
-    pub(crate) fn plugin_parameter_slot_matches(&self, slot: SlotId, device: DeviceId) -> bool {
+    /// Checks that a processor event still refers to the active slot for its device.
+    pub fn plugin_parameter_slot_matches(&self, slot: SlotId, device: DeviceId) -> bool {
         self.program.plugin_parameter_slot_matches(slot, device)
     }
 
-    pub(crate) fn plugin_mapping_parameter(&self, device: DeviceId, id: u32) -> bool {
+    /// Checks whether a plugin parameter can be used in a macro mapping.
+    pub fn plugin_mapping_parameter(&self, device: DeviceId, id: u32) -> bool {
         self.program.plugin_mapping_parameter(device, id)
     }
 
-    pub(crate) fn update_plugin_parameter(
+    /// Updates the host parameter cache and returns its previous value when learning a mapping.
+    pub fn update_plugin_parameter(
         &mut self,
         device: DeviceId,
         edit: ParameterEditKind,
@@ -224,7 +227,8 @@ impl EngineSync {
             .update_plugin_parameter(device, edit, temporary, learning)
     }
 
-    pub(crate) fn poll_engine_events(&mut self) -> Vec<EngineEvent> {
+    /// Maintains the audio stream and drains engine events on the control thread.
+    pub fn poll_engine_events(&mut self) -> Vec<EngineEvent> {
         let changes = self.io.maintain();
         if let Some(at) = changes.rebuilt_at {
             self.program.engine_rebuilt(at);
@@ -235,7 +239,8 @@ impl EngineSync {
         self.io.drain_events()
     }
 
-    pub(crate) fn poll_device_events(&mut self) -> Vec<PluginManagerEvent> {
+    /// Polls the device host and applies its changes to processor slots before returning events.
+    pub fn poll_device_events(&mut self) -> Vec<PluginManagerEvent> {
         self.program.poll_device_events(&mut self.io)
     }
 
@@ -253,8 +258,9 @@ impl EngineSync {
 
     /// Tests: a MIDI change and a new compile diagnostic waiting for the app, as a scan and a
     /// sync leave them.
-    #[cfg(test)]
-    pub(crate) fn queue_notices(&mut self, change: MidiChange, diagnostic: compile::Diagnostic) {
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn queue_notices(&mut self, change: MidiChange, diagnostic: compile::Diagnostic) {
         self.io.queue_midi_change(change);
         self.program.queue_diagnostic(diagnostic);
     }
@@ -323,8 +329,9 @@ impl EngineSync {
         self.io.jack_capture_sources()
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_test_jack_capture_sources(
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn set_test_jack_capture_sources(
         &mut self,
         sources: Vec<komponist_audio::JackCaptureChannel>,
     ) {

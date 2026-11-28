@@ -6,17 +6,17 @@ use std::sync::Arc;
 use komponist_audio::MidiInputHub;
 use komponist_engine::compile::{self, CompileEnv};
 use komponist_engine::{Command, MAX_SLOTS, MidiPort, Program, SlotId, Telemetry, TrackMeter};
+use komponist_model::edits::EditResult;
 use komponist_model::project::SavedPluginState;
 use komponist_model::{DeviceId, Document, Project, Tick, TrackId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
 use komponist_processor::processor::ParameterEditKind;
 
 use crate::device_host::{DeviceHost, ParameterHost, ProcessorHost};
-use crate::recording::automation_capture::AutomationCapture;
 
 use super::io::EngineIo;
 
-/// The compiler's view of the app: MIDI ports from the hub, latencies from the device host.
+/// The compiler's view of the session: MIDI ports from the hub, latencies from the device host.
 struct Env<'a, H: ?Sized> {
     midi: Option<&'a MidiInputHub>,
     host: &'a H,
@@ -70,29 +70,40 @@ impl<H: ProcessorHost + ParameterHost + ?Sized> CompileEnv for Env<'_, H> {
     }
 }
 
+/// An immediate macro edit while the engine catches up with the document.
 #[derive(Clone, Copy)]
-pub(crate) enum MacroValueEdit {
+pub enum MacroValueEdit {
+    /// Set the macro's base value.
     Base(f32),
+    /// Override the currently playing automation for the macro.
     AutomationOverride(f32),
+}
+
+/// A completed automation pass that has yet to be committed to document history.
+pub trait AutomationDraft {
+    /// A revision that changes with completed edits. Zero denotes an empty pass.
+    fn completed_revision(&self) -> u64;
+
+    /// Applies the completed edits to the supplied project snapshot.
+    fn apply(&self, project: &Project) -> EditResult;
 }
 
 /// Completed automation heard during playback while it is still outside the document history.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct DraftOverlay<'a> {
-    automation: [Option<&'a AutomationCapture>; 2],
+pub struct DraftOverlay<'a> {
+    automation: [Option<&'a dyn AutomationDraft>; 2],
 }
 
 impl<'a> DraftOverlay<'a> {
-    pub(crate) fn new(
-        pending: Option<&'a AutomationCapture>,
-        active: &'a AutomationCapture,
-    ) -> Self {
+    /// Compose the pass pending audio finalization before the current live pass.
+    pub fn new<T: AutomationDraft>(pending: Option<&'a T>, active: &'a T) -> Self {
         // The audio writer owns an earlier pass. Apply it before any newer, live segments.
         // Compact empty passes so transferring a pass to the writer keeps the same revision.
         let mut passes = [pending, Some(active)]
             .into_iter()
             .flatten()
-            .filter(|pass| pass.completed_revision() != 0);
+            .filter(|pass| pass.completed_revision() != 0)
+            .map(|pass| pass as &dyn AutomationDraft);
         Self {
             automation: [passes.next(), passes.next()],
         }
@@ -100,7 +111,7 @@ impl<'a> DraftOverlay<'a> {
 
     fn revision(self) -> [u64; 2] {
         self.automation
-            .map(|pass| pass.map_or(0, AutomationCapture::completed_revision))
+            .map(|pass| pass.map_or(0, AutomationDraft::completed_revision))
     }
 
     fn compose(self, project: &Project) -> Option<Project> {
@@ -187,7 +198,7 @@ impl ProgramSync {
         self.sync_macro_params(telemetry);
     }
 
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     pub(super) fn queue_diagnostic(&mut self, diagnostic: compile::Diagnostic) {
         self.diagnostics.push(diagnostic);
         self.diagnostics_notice = true;
@@ -669,7 +680,7 @@ impl ProgramSync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::App;
+    use crate::device_host::PluginHost;
     use crate::engine_sync::{EngineSync, tests::wait_until};
     use komponist_model::edits;
 
@@ -717,7 +728,7 @@ mod tests {
 
     #[test]
     fn the_compiler_uses_the_authored_clap_parameter_ids() {
-        let host = App::headless_plugin_host();
+        let host = PluginHost::headless_fixture();
         let prepared = host
             .manager()
             .prepare_bundled_device(

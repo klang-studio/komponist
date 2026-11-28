@@ -284,7 +284,7 @@ pub(super) struct EngineIo {
     worker_notice: Arc<AtomicBool>,
     workgroup_notice: Arc<AtomicBool>,
     worker_stats: Arc<WorkerStats>,
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     test_jack_capture_sources: Option<Vec<komponist_audio::JackCaptureChannel>>,
 }
 
@@ -339,7 +339,7 @@ impl EngineIo {
             worker_notice,
             workgroup_notice,
             worker_stats,
-            #[cfg(test)]
+            #[cfg(feature = "test-support")]
             test_jack_capture_sources: None,
         };
         let started = io.audio.start(config);
@@ -381,7 +381,7 @@ impl EngineIo {
         while self.handle.as_mut().and_then(EngineHandle::poll).is_some() {}
     }
 
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     pub(super) fn queue_midi_change(&mut self, change: MidiChange) {
         self.midi_changes.push(change);
     }
@@ -477,7 +477,7 @@ impl EngineIo {
     }
 
     pub(super) fn hardware_input_available(&self, input: komponist_model::HardwareInput) -> bool {
-        #[cfg(test)]
+        #[cfg(feature = "test-support")]
         if let Some(sources) = self.test_jack_capture_sources.as_ref() {
             let first = usize::from(input.first);
             return sources
@@ -493,14 +493,14 @@ impl EngineIo {
     }
 
     pub(super) fn jack_capture_sources(&self) -> Option<&[komponist_audio::JackCaptureChannel]> {
-        #[cfg(test)]
+        #[cfg(feature = "test-support")]
         if let Some(sources) = self.test_jack_capture_sources.as_deref() {
             return Some(sources);
         }
         self.audio.jack_capture_sources()
     }
 
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     pub(super) fn set_test_jack_capture_sources(
         &mut self,
         sources: Vec<komponist_audio::JackCaptureChannel>,

@@ -7,7 +7,6 @@ use egui_kittest::kittest::Queryable as _;
 use egui_kittest::{Harness, SnapshotOptions};
 use komponist_app::actions::SettingsAction;
 use komponist_app::audio_settings::AudioDevices;
-use komponist_app::engine_sync::EngineSync;
 use komponist_app::ui_state::{SettingsSection, StatusKind};
 use komponist_app::{Action, App, EditAction, UiAction};
 use komponist_audio::{AudioError, DeviceInfo, HostKind, MidiInputHub, StreamConfig};
@@ -15,6 +14,7 @@ use komponist_i18n::Lang;
 use komponist_model::edits::{self, EditError, NewBus};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{Project, TrackId, TrackOutput};
+use komponist_session::engine_sync::EngineSync;
 
 const LANGS: [Lang; 2] = [Lang::De, Lang::En];
 
@@ -146,7 +146,7 @@ fn app_with_midi_hub(lang: Lang) -> Option<App> {
         &config,
         Some(hub),
         receiver,
-        Box::new(App::headless_plugin_host()),
+        Box::new(komponist_session::device_host::PluginHost::headless_fixture()),
     );
     started.unwrap();
     let settings = komponist_app::settings::Settings {

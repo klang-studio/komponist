@@ -16,10 +16,8 @@ use egui::accesskit::Role;
 use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::device_host::PluginCatalogHost;
 use komponist_app::dialogs::recovery::{self as prompt, Answer, Model, Variant};
 use komponist_app::dialogs::start;
-use komponist_app::engine_sync::EngineSync;
 use komponist_app::project_io;
 use komponist_app::recovery::{self, EndedBy, Id, RecoveryMeta};
 use komponist_app::settings::Settings;
@@ -29,6 +27,8 @@ use komponist_audio::HostKind;
 use komponist_i18n::{Lang, de, en};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{Document, Project};
+use komponist_session::device_host::PluginCatalogHost;
+use komponist_session::engine_sync::EngineSync;
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
@@ -69,7 +69,9 @@ impl FakeClock {
 fn session(dir: &Path, project: Project, clock: &FakeClock) -> App {
     let mut settings = Settings::default();
     settings.audio.host = HostKind::Null;
-    let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let engine = EngineSync::null(Box::new(
+        komponist_session::device_host::PluginHost::headless_fixture(),
+    ));
     App::new(
         Document::new(project),
         engine,
@@ -678,7 +680,7 @@ fn open_plugin_waits_for_the_document_the_prompt_opens() {
     let file = dir.join("Beat.komponist");
     let project = {
         let (drums, hexa) = komponist_app::dialogs::new_project::template_instruments(
-            App::headless_plugin_host().catalog(),
+            komponist_session::device_host::PluginHost::headless_fixture().catalog(),
         )
         .unwrap();
         komponist_app::dialogs::new_project::template(Lang::De, drums, hexa)

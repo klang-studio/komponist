@@ -8,12 +8,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use komponist_app::device_host::{
-    DeviceHost, PluginCatalogHost, PluginHost, PluginWindowHost, ProcessorHost,
-};
 use komponist_audio::HostKind;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project};
 use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent, ProcessorSetup};
+use komponist_session::device_host::{
+    DeviceHost, PluginCatalogHost, PluginHost, PluginWindowHost, ProcessorHost,
+};
 
 use super::{
     HEXA_PRESETS, PATIENCE, app_at_buffer, config, measure, project_with_hexa,

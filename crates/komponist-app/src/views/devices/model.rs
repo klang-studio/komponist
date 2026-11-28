@@ -16,12 +16,12 @@ use komponist_ui::widgets::device::device_width;
 
 use super::layout::{self, DeviceLayout};
 use super::metrics;
-use crate::device_host::DeviceHost;
 use crate::gain_trace::Dynamics;
 use crate::meters::DeviceLevels;
 use crate::spectrum::Analysis;
 use crate::ui_state::{PluginWindow, Reveal};
 use crate::views::format_tag;
+use komponist_session::device_host::DeviceHost;
 
 /// Marks a loaded preset whose values were changed since (as in the plugin window's header).
 pub const CHANGED: &str = " *";
@@ -504,7 +504,7 @@ pub(crate) fn card(
         );
     }
     let preset_entries = host.clap_presets(device);
-    let selected = crate::device_host::selected_preset(device, preset_entries);
+    let selected = komponist_session::device_host::selected_preset(device, preset_entries);
     Card {
         device: device.id,
         automation_owner: None,
@@ -1120,7 +1120,6 @@ pub fn move_target_in(from: usize, slot: usize, lo: usize, hi: usize) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::App;
     use komponist_model::fixtures::demo_project;
     use komponist_plugin_api::params::ParamValue;
 
@@ -1208,7 +1207,7 @@ mod tests {
     #[test]
     fn native_metadata_uses_the_same_page_as_the_card_grid() {
         let project = demo_project();
-        let host = App::headless_plugin_host();
+        let host = komponist_session::device_host::PluginHost::headless_fixture();
         let mut card = cards(Lang::En, &project.tracks[2], &host, &[]).remove(0);
         let native = komponist_plugin_api::native_layout::NativeLayout::parse(include_bytes!(
             "../../../../../docs/clap-device-layout/example.json"
@@ -1273,7 +1272,7 @@ mod tests {
         let mut card = card(
             Lang::De,
             &project.tracks[2].channel.devices[0],
-            &App::headless_plugin_host(),
+            &komponist_session::device_host::PluginHost::headless_fixture(),
             &[],
         );
         card.state = CardState::Ok;
@@ -1373,7 +1372,7 @@ mod tests {
             sidechain: None,
             preset: None,
         };
-        let host = App::headless_plugin_host();
+        let host = komponist_session::device_host::PluginHost::headless_fixture();
         let analyse = |value: f64| Param {
             wire: 31,
             info: ParamInfo::new("analyse", "Analyse", ParamKind::Bool, 1.0),

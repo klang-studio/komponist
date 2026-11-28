@@ -73,7 +73,7 @@ struct Scene {
 
 /// The routing scene with verified shipped devices.
 fn scene() -> Scene {
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     let shipped = |name: &str| crate::common::shipped(&host, name);
     let hexa = shipped("hexa");
     let mut p = Project::new("Sidechain");
@@ -278,7 +278,7 @@ fn a_device_without_a_sidechain_input_has_no_chip() {
 #[test]
 fn a_bridged_plugin_has_the_chip_only_with_a_sidechain_port() {
     use crate::common::{all_ok, app_with, config, fixture_dirs, scratch, step_until};
-    use komponist_app::device_host::{PluginCatalogHost, PluginHost, ProcessorHost};
+    use komponist_session::device_host::{PluginCatalogHost, PluginHost, ProcessorHost};
 
     let Some(dirs) = fixture_dirs() else {
         return;

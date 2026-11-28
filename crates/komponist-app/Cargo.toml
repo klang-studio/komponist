@@ -18,6 +18,7 @@ komponist-device-dsp.workspace = true
 komponist-model.workspace = true
 # Waveforms of audio clips: the file pool and its peak cache (`views/arrangement/files`).
 komponist-audiofile.workspace = true
+komponist-session.workspace = true
 komponist-engine.workspace = true
 komponist-processor.workspace = true
 komponist-audio.workspace = true
@@ -56,6 +57,7 @@ assert_no_alloc.workspace = true
 asio = ["komponist-audio/asio"]
 
 [dev-dependencies]
+komponist-session = { workspace = true, features = ["test-support"] }
 # Snapshot and interaction tests of the shell (`tests/`).
 komponist-ui = { workspace = true, features = ["snapshot"] }
 egui_kittest.workspace = true

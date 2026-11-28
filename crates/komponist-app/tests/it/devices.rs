@@ -318,7 +318,9 @@ fn hexa_shows_its_card_and_turning_a_knob_is_saved() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("Night Drive.komponist");
-    let project = common::song_with_shipped_instruments(&App::headless_plugin_host());
+    let project = common::song_with_shipped_instruments(
+        &komponist_session::device_host::PluginHost::headless_fixture(),
+    );
     std::fs::write(&path, komponist_model::persist::to_json(&project).unwrap()).unwrap();
     let mut app = App::headless(project);
     app.dispatch(Action::Project(komponist_app::ProjectAction::OpenPath(
@@ -656,7 +658,9 @@ fn a_failed_load_or_a_hang_does_not_read_abgestuerzt_on_the_card() {
 #[test]
 fn a_missing_plugin_is_a_red_placeholder_that_keeps_its_state() {
     // The shipped instruments load while the external effects remain unknown.
-    let project = common::song_with_shipped_instruments(&App::headless_plugin_host());
+    let project = common::song_with_shipped_instruments(
+        &komponist_session::device_host::PluginHost::headless_fixture(),
+    );
     let effect = project.tracks[2].channel.devices[1].id;
     let state = std::sync::Arc::<[u8]>::from(&b"opaque effect state"[..]);
     let project = edits::set_device_state(&project, effect, Some(state.clone())).unwrap();
@@ -858,7 +862,7 @@ fn a_test_plugin_added_from_the_browser_loads_and_shows_its_parameters() {
         return;
     };
     let dir = common::scratch("wp44-load");
-    let host = komponist_app::device_host::PluginHost::new(common::config(&dir));
+    let host = komponist_session::device_host::PluginHost::new(common::config(&dir));
     let mut app = common::app_with(demo_project(), host);
     app.engine_mut().host_mut().start_scan(&dirs);
     common::step_until(&mut app, "scan", |a| {

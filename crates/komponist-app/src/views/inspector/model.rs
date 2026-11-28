@@ -13,10 +13,10 @@ use komponist_model::{
 };
 use komponist_plugins::{DeviceStatus, FailReason};
 
-use crate::device_host::DeviceHost;
 use crate::ui_state::{DockTab, PanelLayout};
 use crate::views::browser::model::selected_track;
 use crate::views::format_tag;
+use komponist_session::device_host::DeviceHost;
 
 /// Units of the number fields: the same in every language (`docs/I18N.md` §5).
 pub mod units {
@@ -332,8 +332,8 @@ mod tests {
 
     /// The demo with the shipped Hexa on its Lead track: the one device the packaged test host knows.
     fn demo_with_shipped_lead() -> komponist_model::Project {
-        use crate::device_host::PluginCatalogHost as _;
-        let host = crate::app::App::headless_plugin_host();
+        use komponist_session::device_host::PluginCatalogHost as _;
+        let host = komponist_session::device_host::PluginHost::headless_fixture();
         let hexa = host
             .catalog()
             .entries()
@@ -353,9 +353,9 @@ mod tests {
 
     /// The packaged test host that has seen every device of `p` and loaded the shipped ones; the
     /// catalog does not know the demo's other plugins, so they report `Missing`.
-    fn host_for(p: &komponist_model::Project) -> crate::device_host::PluginHost {
-        use crate::device_host::ProcessorHost as _;
-        let mut host = crate::app::App::headless_plugin_host();
+    fn host_for(p: &komponist_model::Project) -> komponist_session::device_host::PluginHost {
+        use komponist_session::device_host::ProcessorHost as _;
+        let mut host = komponist_session::device_host::PluginHost::headless_fixture();
         let devices: Vec<_> = p
             .tracks
             .iter()

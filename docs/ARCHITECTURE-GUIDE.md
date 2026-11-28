@@ -392,7 +392,8 @@ Rules that follow from this picture:
 
 | Crate | Lines | Read first |
 |---|---:|---|
-| [`komponist-app`](../crates/komponist-app/README.md) | ~122k (41k tests) | `main.rs`, `app.rs`, `actions.rs`, `engine_sync.rs` |
+| [`komponist-app`](../crates/komponist-app/README.md) | ~119k (40k tests) | `main.rs`, `app.rs`, `actions.rs` |
+| [`komponist-session`](../crates/komponist-session/src/lib.rs) | ~3k | `engine_sync.rs`, `device_host.rs` |
 | [`builtin-devices/*`](../crates/builtin-devices/README.md) | ~47k (Hexa alone 23k) | `core/src/processor.rs`, `delay/src/lib.rs` |
 | [`komponist-engine`](../crates/komponist-engine/README.md) | ~35k | `api.rs`, `compile.rs`, `program.rs`, `engine.rs` |
 | [`komponist-ui`](../crates/komponist-ui/README.md) | ~31k | `lib.rs`, `widgets/`, `timeline/mod.rs` |
@@ -563,8 +564,8 @@ now has a new `current` root and an incremented `revision`.
 
 ### 10.4 Step 3 – `EngineSync` compiles a `Program`
 
-`EngineSync` ([`engine_sync.rs`](../crates/komponist-app/src/engine_sync.rs)) is the UI thread's
-side of the engine. It coordinates `EngineIo` (`engine_sync/io.rs`), which owns the stream,
+`EngineSync` ([`engine_sync.rs`](../crates/komponist-session/src/engine_sync.rs)) is the control
+thread's side of the engine. It coordinates `EngineIo` (`engine_sync/io.rs`), which owns the stream,
 MIDI ports, engine queues and export handoff, and `ProgramSync` (`engine_sync/program.rs`),
 which owns playback revisions, the last program sent and the `DeviceHost` that creates
 processors. Stream rate and MIDI port changes invalidate the compiled program.
@@ -765,7 +766,7 @@ pub trait AudioProcess: Send + 'static {
 }
 ```
 
-The app's implementation is `EngineProcess` in `engine_sync/io.rs`. It converts live MIDI to engine
+The session's implementation is `EngineProcess` in `engine_sync/io.rs`. It converts live MIDI to engine
 input, calls `Engine::process_with_audio`, and writes the engine's planar stereo into the device's
 interleaved buffer.
 
@@ -956,8 +957,6 @@ Useful flags: `--demo`, `--null-audio`, `--lang de|en`, `--scale F`, `--open-plu
 | `views/` (~39k lines) | arrangement, piano roll, step sequencer, audio editor, mixer, devices, inspector, browser, automation, routing |
 | `dialogs/`, `windows/`, `panels/` | settings, export, file dialogs; plugin frame windows; transport bar, status bar, dock tabs |
 | `shell.rs`, `layout.rs` | the main window layout |
-| `engine_sync.rs`, `engine_sync/` | program compilation and audio/MIDI I/O coordination |
-| `device_host.rs` | creating processors for verified bundles and bridged plugins |
 | `project_io.rs`, `settings.rs`, `dirs.rs` | files, settings, platform folders |
 | `record.rs`, `recording/` | MIDI capture and coordination of MIDI, audio and automation takes |
 | `audio_settings.rs` | driver and device inventory for audio settings |
@@ -1214,8 +1213,8 @@ proposal with mockups in the internal notes and the owner's approval first (AGEN
 - [I18N.md](I18N.md): texts, languages, style guide and glossary.
 - [INSTALL.md](INSTALL.md): building, installing, working on klang-dsp locally.
 - The crate READMEs and the `//!` module docs, especially
-  `komponist-engine/src/{api,compile,processor}.rs`, `komponist-app/src/{actions,engine_sync}.rs` and
-  `komponist-model/src/document.rs`.
+  `komponist-engine/src/{api,compile,processor}.rs`, `komponist-app/src/actions.rs`,
+  `komponist-session/src/engine_sync.rs` and `komponist-model/src/document.rs`.
 - The test fixtures in [test-plugins/README.md](../test-plugins/README.md) show what the plugin
   host must survive.
 

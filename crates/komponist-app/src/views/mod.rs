@@ -46,11 +46,11 @@ use komponist_tokens::{color, typography};
 use komponist_ui::{fonts, px, widgets};
 
 use crate::actions::Action;
-use crate::engine_sync::EngineSync;
 use crate::keymap::Keymap;
 use crate::meters::Meters;
 use crate::record::Recording;
 use crate::ui_state::UiState;
+use komponist_session::engine_sync::EngineSync;
 
 pub(super) fn parameter_value_texts(lang: Lang) -> komponist_model::params::ValueTexts {
     komponist_model::params::ValueTexts {

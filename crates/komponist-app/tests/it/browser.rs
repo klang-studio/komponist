@@ -407,7 +407,7 @@ fn the_star_toggles_a_favourite_and_the_settings_keep_it() {
     let dir = std::env::temp_dir().join(format!("komponist-wp44-fav-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("settings.json");
-    let engine = komponist_app::engine_sync::EngineSync::null(Box::new(FakeHost::new()));
+    let engine = komponist_session::engine_sync::EngineSync::null(Box::new(FakeHost::new()));
     let doc = komponist_model::Document::new(demo_project());
     let app = App::new(doc, engine, Settings::default(), Some(path.clone()));
     let mut h = harness(app);
@@ -426,7 +426,7 @@ fn the_star_toggles_a_favourite_and_the_settings_keep_it() {
     // Saved: a new app with the file shows it as a favourite.
     let saved = Settings::load(&path).unwrap();
     assert!(saved.favorites.contains(&surge));
-    let engine = komponist_app::engine_sync::EngineSync::null(Box::new(FakeHost::new()));
+    let engine = komponist_session::engine_sync::EngineSync::null(Box::new(FakeHost::new()));
     let doc = komponist_model::Document::new(demo_project());
     let h2 = harness(App::new(doc, engine, saved, None));
     assert_eq!(&row_names(&h2)[..3], ["Hexa", "Klopfer", "Surge XT"]);

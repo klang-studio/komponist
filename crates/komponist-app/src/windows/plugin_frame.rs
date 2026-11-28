@@ -103,11 +103,11 @@ use self::sizing::{Chrome, Effect, Px, Sizing};
 use self::x11::X11;
 use crate::actions::{Action, EditAction, PluginAction, UiAction};
 use crate::app::App;
-use crate::device_host::PluginWindowHost;
 use crate::keymap::{self, Key, KeyChord};
 use crate::settings::FrameMemory;
 use crate::ui_state::{FocusArea, PluginView, PluginWindow, StatusKind};
 use crate::views::devices::model::all_plugin_params;
+use komponist_session::device_host::PluginWindowHost;
 
 /// How long a parked child waits for the bridge's `GuiClosed` before it is destroyed anyway.
 const PARK_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1630,14 +1630,14 @@ impl App {
     }
 
     /// The preset the device shows and whether it was modified since
-    /// ([`crate::device_host::selected_preset`]).
+    /// ([`komponist_session::device_host::selected_preset`]).
     fn update_preset_state(&mut self, i: usize) {
         let device = self.frames.frames[i].device;
         let Some((_, _, d)) = self.project().find_device(device) else {
             return;
         };
         let entries = self.engine.host().clap_presets(d);
-        let selected = crate::device_host::selected_preset(d, entries);
+        let selected = komponist_session::device_host::selected_preset(d, entries);
         let preset = selected.map(|(index, _)| entries[index].source.clone());
         let changed = selected.is_some_and(|(_, modified)| modified);
         let f = &mut self.frames.frames[i];

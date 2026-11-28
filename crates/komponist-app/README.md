@@ -11,9 +11,8 @@ to the plugin bridge. The library also supports headless acceptance tests.
   keybindings.
 - [src/views/](src/views/) — Implements the arrangement, clip editors, mixer, browser and device
   views.
-- [src/engine_sync.rs](src/engine_sync.rs) — Compiles document changes and manages the engine
-  connection.
-- [src/device_host.rs](src/device_host.rs) — Provides built-in and bridged processors.
+- [komponist-session](../komponist-session/src/lib.rs) — Synchronizes document changes to the engine
+  and provides packaged and bridged processors.
 - [src/project_io.rs](src/project_io.rs) — Coordinates project loading, saving and linked assets.
 
 ## How it works

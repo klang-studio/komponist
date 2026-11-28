@@ -85,7 +85,7 @@ impl App {
                     let command = self.engine.macro_value_command(
                         track,
                         index,
-                        crate::engine_sync::MacroValueEdit::Base(value.clamp(0.0, 1.0)),
+                        komponist_session::engine_sync::MacroValueEdit::Base(value.clamp(0.0, 1.0)),
                     );
                     if self.doc.in_gesture() {
                         self.engine.fast_path(command, before, after);
@@ -725,12 +725,12 @@ mod tests {
 
     #[test]
     fn mapping_mode_preserves_pan_then_the_macro_pans_a_real_synth() {
-        use crate::device_host::PluginCatalogHost as _;
         use komponist_ipc::control::RenderMode;
         use komponist_plugins::DeviceStatus;
+        use komponist_session::device_host::PluginCatalogHost as _;
         use std::time::{Duration, Instant};
 
-        let host = App::headless_plugin_host();
+        let host = komponist_session::device_host::PluginHost::headless_fixture();
         let instrument = host
             .catalog()
             .entries()

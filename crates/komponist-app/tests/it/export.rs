@@ -17,12 +17,7 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{BitDepth, ExportRange, ExportSettings};
-use komponist_app::device_host::{
-    AssetHost, DeviceHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost,
-    ParameterHost, PluginCatalogHost, PluginHost, PluginWindowHost, PresetHost, ProcessorHost,
-};
 use komponist_app::dialogs::export::{self as view};
-use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::{self, Settings};
 use komponist_app::ui_state::{Dialog, FocusArea, StatusKind};
 use komponist_app::{Action, App, ProjectAction, TransportAction, UiAction};
@@ -41,6 +36,11 @@ use komponist_plugins::{Catalog, DeviceStatus, PluginManagerEvent, ProcessorSetu
 use komponist_processor::{
     Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
+use komponist_session::device_host::{
+    AssetHost, DeviceHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost,
+    ParameterHost, PluginCatalogHost, PluginHost, PluginWindowHost, PresetHost, ProcessorHost,
+};
+use komponist_session::engine_sync::EngineSync;
 
 use fake_host::FakeHost;
 
@@ -69,7 +69,10 @@ fn snapshot_dir() -> PathBuf {
 /// The demo "Night Drive" with the shipped Hexa for every instrument and no effects, so that
 /// everything sounds on the packaged host and no device is missing.
 fn hexa_demo() -> Project {
-    let hexa = crate::common::shipped(&App::headless_plugin_host(), "hexa");
+    let hexa = crate::common::shipped(
+        &komponist_session::device_host::PluginHost::headless_fixture(),
+        "hexa",
+    );
     let mut p = demo_project();
     for track in &mut p.tracks {
         let track = Arc::make_mut(track);
@@ -102,7 +105,10 @@ fn one_bar_song() -> Project {
 
 /// The shipped Presse.
 fn presse() -> PluginRef {
-    crate::common::shipped(&App::headless_plugin_host(), "presse")
+    crate::common::shipped(
+        &komponist_session::device_host::PluginHost::headless_fixture(),
+        "presse",
+    )
 }
 
 /// An effect device for `plugin` at the end of the first track's chain.
@@ -147,7 +153,11 @@ fn settings_path(dir: &Path) -> PathBuf {
 }
 
 pub(crate) fn app_in(dir: &Path, project: Project) -> (App, Opened) {
-    app_with(dir, project, Box::new(App::headless_plugin_host()))
+    app_with(
+        dir,
+        project,
+        Box::new(komponist_session::device_host::PluginHost::headless_fixture()),
+    )
 }
 
 /// Export settings into `dir/out`: the defaults, `range`, "Night Drive.wav".
@@ -890,7 +900,9 @@ fn missing_devices_are_listed_and_the_export_goes_on_without_them_or_not_at_all(
     let dir = scratch("missing");
     // The demo on the packaged host: Surge XT, Dexed, Vital and the third-party effects are
     // missing (the Sampler and Hexa are the shipped ones).
-    let mut project = crate::common::song_with_shipped_instruments(&App::headless_plugin_host());
+    let mut project = crate::common::song_with_shipped_instruments(
+        &komponist_session::device_host::PluginHost::headless_fixture(),
+    );
     project.loop_range = TickRange::new(Tick(8 * BAR), Tick(8 * BAR + BAR / 2));
     let (app, _) = app_in(&dir, project);
     let mut h = harness(app);
@@ -1113,7 +1125,7 @@ fn a_device_that_drops_out_of_the_render_is_named() {
     };
     let (project, scripted) = with_effect(project, kaputt);
     let host = FailingHost {
-        packaged: App::headless_plugin_host(),
+        packaged: komponist_session::device_host::PluginHost::headless_fixture(),
         scripted,
         mode: Arc::default(),
     };
@@ -1163,7 +1175,7 @@ fn a_panic_on_the_export_worker_leaves_a_playing_session() {
         let (project, scripted) = with_effect(project, panik);
         let mode = Arc::new(Mutex::new(None));
         let host = FailingHost {
-            packaged: App::headless_plugin_host(),
+            packaged: komponist_session::device_host::PluginHost::headless_fixture(),
             scripted,
             mode: Arc::clone(&mode),
         };
@@ -1257,7 +1269,9 @@ fn the_last_settings_are_saved_and_the_dialog_opens_with_them() {
     assert_eq!(saved.export.as_ref(), Some(&used));
 
     // A new session with these settings: S08 opens with them, the file named after the project.
-    let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let engine = EngineSync::null(Box::new(
+        komponist_session::device_host::PluginHost::headless_fixture(),
+    ));
     let mut app = App::new(Document::new(project), engine, saved, None);
     app.step();
     app.dispatch(Action::Project(ProjectAction::OpenExportDialog));
@@ -1436,7 +1450,9 @@ fn snapshot_next_to_s08_in_english() {
         export: Some(s08_settings()),
         ..Settings::default()
     };
-    let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let engine = EngineSync::null(Box::new(
+        komponist_session::device_host::PluginHost::headless_fixture(),
+    ));
     let mut app = App::new(Document::new(demo_project()), engine, settings, None)
         .with_lang(komponist_i18n::Lang::En);
     app.dispatch(Action::Project(ProjectAction::OpenExportDialog));
@@ -1458,7 +1474,9 @@ fn snapshots_next_to_s08() {
             export: Some(s08_settings()),
             ..Settings::default()
         };
-        let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
+        let engine = EngineSync::null(Box::new(
+            komponist_session::device_host::PluginHost::headless_fixture(),
+        ));
         let mut app = App::new(Document::new(demo_project()), engine, settings, None);
         app.dispatch(Action::Project(ProjectAction::OpenExportDialog));
         let mut h = harness_at(app, ppp);

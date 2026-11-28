@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use komponist_i18n::Lang;
 use komponist_model::DeviceId;
 
-use crate::device_host::ProcessorHost;
+use komponist_session::device_host::ProcessorHost;
 
 /// The indicator's text: a device whose blocks recently missed their deadline (not in the design).
 pub fn label(lang: Lang) -> &'static str {

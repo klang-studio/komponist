@@ -25,12 +25,12 @@ use common::{CRASH, SYNTH, app_with, bridge_children, config, scratch};
 use frame_gui::*;
 use komponist_app::Action;
 use komponist_app::actions::{PluginAction, ProjectAction};
-use komponist_app::device_host::PluginHost;
 use komponist_app::ui_state::PluginView;
 use komponist_app::windows::plugin_frame::FrameInfo;
 use komponist_model::PluginFormat;
 use komponist_model::fixtures::empty_project;
 use komponist_plugins::{DeviceStatus, PluginDirs};
+use komponist_session::device_host::PluginHost;
 
 fn fixture_dirs() -> Option<PluginDirs> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

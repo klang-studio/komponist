@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use komponist_audio::{AudioError, AudioSystem, DeviceInfo, HostKind, InputDeviceInfo, JackPort};
 
-use crate::engine_sync::EngineProcess;
+use komponist_session::engine_sync::EngineProcess;
 
 /// How often to refresh the JACK graph while settings are open.
 pub(crate) const JACK_REFRESH: Duration = Duration::from_secs(1);

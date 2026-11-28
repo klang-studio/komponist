@@ -30,9 +30,9 @@ use super::{
 };
 use super::{automation, buses};
 use crate::actions::{Action, EditAction, SelectMode, UiAction};
-use crate::engine_sync::EngineSync;
 use crate::meters::Meters;
 use crate::views::ViewCtx;
+use komponist_session::engine_sync::EngineSync;
 
 /// The second line of a header and whether it is an error: "stumm durch Solo" while muted by a
 /// solo elsewhere (`any_solo`: the track's output is solo-muted, `routing::gates`); else the instrument ("Hexa", "Surge XT · lädt …", "Dexed · aus",

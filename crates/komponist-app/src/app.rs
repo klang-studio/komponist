@@ -27,6 +27,8 @@
 //! flight first.
 
 mod clip_edits;
+#[cfg(test)]
+mod device_host_tests;
 mod devices;
 mod edit_dispatch;
 mod presets;
@@ -59,11 +61,9 @@ use crate::actions::{
     SelectionChange, SettingsAction, TransportAction, UiAction,
 };
 use crate::audio_settings::{AudioDevices, AudioSettings, FixedDevices};
-use crate::device_host::{DeviceHost, PluginCatalogHost, PluginHost, ProcessorHost};
 use crate::dialogs::DialogState;
 use crate::dialogs::new_track::default_names;
 use crate::dialogs::settings::midi_label;
-use crate::engine_sync::{EngineSync, MidiChange};
 use crate::keymap::{self, Key, KeyChord, Keymap};
 use crate::meters::Meters;
 use crate::metrics;
@@ -77,6 +77,8 @@ use crate::ui_state::{
 };
 use crate::views::{Requests, Views};
 use crate::windows::plugin_frame::{self, PluginFrames};
+use komponist_session::device_host::{DeviceHost, PluginHost};
+use komponist_session::engine_sync::{EngineSync, MidiChange};
 
 /// How long a status bar message stays (`ks-view.js` `statusView`: 7000 ms).
 pub const STATUS_DURATION: Duration = Duration::from_secs(7);
@@ -262,94 +264,6 @@ impl App {
         self.lang
     }
 
-    /// A fresh host for headless tests over the locally built, verified fixture catalog.
-    #[doc(hidden)]
-    pub fn headless_plugin_host() -> PluginHost {
-        use std::sync::OnceLock;
-        use std::time::{Duration, Instant};
-
-        use komponist_plugins::bundled_clap::BundledClap;
-
-        struct Fixtures {
-            config: komponist_plugins::PluginManagerConfig,
-            inventory: Option<Arc<BundledClap>>,
-            _cache_dir: tempfile::TempDir,
-        }
-
-        fn open(fixtures: &Fixtures) -> PluginHost {
-            let Some(inventory) = &fixtures.inventory else {
-                return PluginHost::without_bundled_clap(fixtures.config.clone());
-            };
-            let mut host =
-                PluginHost::for_test_inventory(fixtures.config.clone(), Arc::clone(inventory));
-            let deadline = Instant::now() + Duration::from_secs(30);
-            while host.manager().is_scanning() {
-                host.poll();
-                assert!(Instant::now() < deadline, "headless fixture scan timed out");
-                if host.manager().is_scanning() {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-            }
-            assert!(
-                !fixtures_required()
-                    || host
-                        .catalog()
-                        .entries()
-                        .iter()
-                        .any(|entry| { komponist_plugins::requires_bundled(&entry.plugin) }),
-                "the required headless fixture scan found no verified CLAP devices"
-            );
-            host
-        }
-
-        fn fixtures_required() -> bool {
-            std::env::var_os("KOMPONIST_REQUIRE_FIXTURES").is_some_and(|value| value == "1")
-        }
-
-        static FIXTURES: OnceLock<Fixtures> = OnceLock::new();
-        let fixtures = FIXTURES.get_or_init(|| {
-            let cache_dir = tempfile::tempdir().expect("create headless fixture cache");
-            let mut config = komponist_plugins::PluginManagerConfig::defaults(cache_dir.path());
-            let workspace_target =
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
-            let candidate = std::env::current_exe().ok().and_then(|exe| {
-                exe.ancestors()
-                    .skip(1)
-                    .take(7)
-                    .map(|folder| folder.join(format!("komponist{}", std::env::consts::EXE_SUFFIX)))
-                    .find(|path| path.is_file())
-            });
-            let root = workspace_target
-                .join("test-plugins")
-                .join(std::env::consts::OS)
-                .join("headless-bundles");
-            let inventory = candidate.and_then(|bridge| {
-                let digest = std::fs::read_to_string(root.join("manifest.sha256")).ok()?;
-                config.bridge_exe = bridge;
-                let inventory = BundledClap::open_fixture(
-                    &root.join("bundled-clap"),
-                    cache_dir.path(),
-                    digest.trim(),
-                )
-                .expect("open the test fixture inventory");
-                Some(Arc::new(inventory))
-            });
-            assert!(
-                inventory.is_some() || !fixtures_required(),
-                "headless fixtures require scripts/build-test-plugins.sh and the componist binary"
-            );
-            let fixtures = Fixtures {
-                config,
-                inventory,
-                _cache_dir: cache_dir,
-            };
-            // Seed the cache once before concurrent app tests construct individual hosts.
-            let _ = open(&fixtures);
-            fixtures
-        });
-        open(fixtures)
-    }
-
     /// The app on the null backend with `project` open, default settings (with the null driver,
     /// as the engine runs), nothing persisted, and only the null driver in S07: for tests (and
     /// `--null-audio`).
@@ -359,7 +273,7 @@ impl App {
 
     /// [`App::headless`] with a MIDI queue that a [`komponist_audio::TestMidiSource`] feeds.
     pub fn headless_with_midi(project: Project, midi: komponist_audio::MidiReceiver) -> App {
-        let engine = EngineSync::null_with_midi(Box::new(Self::headless_plugin_host()), midi);
+        let engine = EngineSync::null_with_midi(Box::new(PluginHost::headless_fixture()), midi);
         let mut settings = Settings::default();
         settings.audio.host = komponist_audio::HostKind::Null;
         let mut app = App::new(Document::new(project), engine, settings, None);
@@ -396,7 +310,7 @@ impl App {
         &self.recent.projects
     }
 
-    /// Replaces the device host (`main` plugs in [`crate::device_host::PluginHost`]; tests may
+    /// Replaces the device host (`main` plugs in [`komponist_session::device_host::PluginHost`]; tests may
     /// too). The next sync creates every processor through the new host.
     pub fn with_device_host(mut self, host: Box<dyn DeviceHost>) -> App {
         self.engine.set_host(host);
@@ -1326,7 +1240,7 @@ impl App {
         }
         // A frame now and then looks for MIDI devices that were plugged in meanwhile.
         if self.engine.midi().is_some() {
-            ctx.request_repaint_after(crate::engine_sync::MIDI_SCAN_INTERVAL);
+            ctx.request_repaint_after(komponist_session::engine_sync::MIDI_SCAN_INTERVAL);
         }
     }
 
@@ -3485,11 +3399,11 @@ fn worker_notice(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device_host::{
-        AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
-        PluginCatalogHost, PluginWindowHost, PresetHost,
-    };
     use komponist_model::fixtures::empty_project;
+    use komponist_session::device_host::{
+        AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
+        PluginCatalogHost, PluginWindowHost, PresetHost, ProcessorHost,
+    };
 
     struct StartupCatalogHost {
         catalog: komponist_plugins::Catalog,
@@ -3567,7 +3481,7 @@ mod tests {
 
     #[test]
     fn new_midi_track_and_new_track_dialog_wait_for_the_installed_default() {
-        let fixture = App::headless_plugin_host();
+        let fixture = PluginHost::headless_fixture();
         let Some(hexa) = fixture.catalog().packaged(App::DEFAULT_INSTRUMENT_ID) else {
             return;
         };
@@ -3655,7 +3569,7 @@ mod tests {
         let blocker = dir.join("config");
         std::fs::write(&blocker, b"").unwrap();
         let path = blocker.join("settings.json");
-        let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
+        let engine = EngineSync::null(Box::new(PluginHost::headless_fixture()));
         let mut app = App::new(
             Document::new(empty_project()),
             engine,
@@ -3684,7 +3598,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
-        let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
+        let engine = EngineSync::null(Box::new(PluginHost::headless_fixture()));
         let mut app = App::new(
             Document::new(empty_project()),
             engine,

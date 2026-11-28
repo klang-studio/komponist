@@ -27,7 +27,7 @@ const POSITION_A: [(i64, f32); 3] = [(8, 0.0), (12, 1.0), (16, 0.3)];
 
 pub(super) fn add_track(
     project: &mut Project,
-    host: &crate::device_host::PluginHost,
+    host: &komponist_session::device_host::PluginHost,
 ) -> Result<(), String> {
     let prepared = prepare_device(host, "surf", Some(PRESET), &[], &["osc_a_pos", "osc_b_pos"])?;
     let position_a = prepared.targets["osc_a_pos"].0.clone();

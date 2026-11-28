@@ -25,7 +25,7 @@ use komponist_model::project::DEFAULT_STEP_ROWS;
 use komponist_model::{Device, StepClip, Track};
 use komponist_plugin_api::native_layout::PadBank;
 
-use crate::device_host::DevicePresentationHost;
+use komponist_session::device_host::DevicePresentationHost;
 
 /// Rows of a new step clip (S03: 8 pads).
 pub const ROWS: usize = 8;

@@ -116,7 +116,7 @@ impl GlassTrack {
 /// the bundle's waveform-marker extension; the project links the sample as a host-managed file.
 pub(super) fn add_tracks(
     project: &mut Project,
-    host: &crate::device_host::PluginHost,
+    host: &komponist_session::device_host::PluginHost,
     dir: &Path,
 ) -> Result<(), String> {
     let path = write_sample(dir).map_err(|error| error.to_string())?;

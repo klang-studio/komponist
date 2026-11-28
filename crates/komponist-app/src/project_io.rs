@@ -6,7 +6,7 @@
 //!   project.
 //! - The recent list lives in `recent.json` next to the settings file
 //!   (`~/.config/komponist/recent.json`, on macOS in `~/Library/Application Support/komponist/`, on Windows in `%APPDATA%\komponist\`), newest first, at most [`RECENT_LIMIT`] entries.
-//! - Opening or creating a project resets the engine ([`crate::engine_sync::EngineSync::reset`]).
+//! - Opening or creating a project resets the engine ([`komponist_session::engine_sync::EngineSync::reset`]).
 //!   A project whose plugins are not in the catalog opens the S06 dialog; while a plugin scan
 //!   runs, the check waits for its end, so plugins the scan is about to find are not reported.
 //! - A dirty project asks first (`dialogs::new_project`): save, discard or cancel; so does
@@ -1785,8 +1785,8 @@ pub(crate) mod tests {
         std::fs::write(&recent, "{ kaputt").unwrap();
         let mut app = App::new(
             Document::new(Project::new("Recent")),
-            crate::engine_sync::EngineSync::null_with_midi(
-                Box::new(App::headless_plugin_host()),
+            komponist_session::engine_sync::EngineSync::null_with_midi(
+                Box::new(komponist_session::device_host::PluginHost::headless_fixture()),
                 komponist_audio::MidiReceiver::disconnected(),
             ),
             crate::settings::Settings::default(),

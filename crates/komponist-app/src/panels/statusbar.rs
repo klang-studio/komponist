@@ -466,11 +466,11 @@ mod tests {
     #[test]
     fn compensation_warning_shows_in_both_languages_and_clears_after_a_recompile() {
         use crate::actions::{Action, EditAction};
-        use crate::device_host::PluginCatalogHost as _;
         use egui_kittest::kittest::Queryable as _;
         use komponist_engine::MAX_PDC_FRAMES;
         use komponist_model::edits::{self, NewDevice, NewTrack};
         use komponist_model::{ChannelRef, DeviceRole, Project};
+        use komponist_session::device_host::PluginCatalogHost as _;
         use std::time::Duration;
 
         let wait_for_shortfall = |app: &mut App, expected| {
@@ -501,7 +501,7 @@ mod tests {
         };
         let (project, slow) = edits::add_track(&Project::new("Latency"), track.clone()).unwrap();
         let (mut project, _) = edits::add_track(&project, track).unwrap();
-        let host = App::headless_plugin_host();
+        let host = komponist_session::device_host::PluginHost::headless_fixture();
         let limiter = host
             .catalog()
             .entries()

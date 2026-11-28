@@ -1,34 +1,9 @@
-//! Where the processors of devices come from: the seam between `EngineSync` and plugin hosting.
+//! Device capabilities used by the session's control thread and its callers.
 //!
-//! [`EngineSync`](crate::engine_sync::EngineSync) asks a [`DeviceHost`] for a processor whenever a
-//! device gets a slot, tells it when a device leaves, reads latencies for the compiler and status
-//! for the UI, and forwards its events every frame. The app handles those events
-//! (`App::show` step 1): state snapshots go into the document as coalesced undo steps (`crate::param_undo`), a latency
-//! change recompiles the program, a finished scan retries the devices that were missing, crashes
-//! and warnings go to the status bar.
-//!
-//! Verified packaged CLAPs run directly and external plugins run in the bridge.
-//!
-//! # API for the views and plugin windows
-//!
-//! Read through `app.engine().host()`, change through `app.engine_mut().host_mut()` or, where an
-//! action exists, through [`App::dispatch`](crate::App::dispatch):
-//!
-//! - Device cards, insert slots, track headers (WP-44): [`ProcessorHost::status`],
-//!   [`DeviceStateHost::state_warning`] („Zustand konnte nicht geladen werden“),
-//!   [`ProcessorHost::late_blocks`], "Neu laden" = `PluginAction::Reload`.
-//! - Generic parameter grid (WP-44): [`ParameterHost::params`], [`ParameterHost::param_value`]; knob
-//!   changes go through `PluginAction::SetParam`.
-//! - Browser (WP-44) and S06/S07 (WP-52): [`PluginCatalogHost::catalog`], [`PluginCatalogHost::role`],
-//!   [`PluginCatalogHost::missing_plugins`], [`PluginCatalogHost::is_scanning`], [`PluginCatalogHost::last_scan`];
-//!   a rescan is `SettingsAction::RescanPlugins` (or `App::scan_plugins`).
-//! - Step rows (WP-54): [`DevicePresentationHost::note_names`].
-//! - Plugin windows (WP-50): [`PluginWindowHost::has_gui`], [`PluginWindowHost::open_gui`] with the frame's
-//!   X11 child, [`PluginWindowHost::set_gui_size`] after a resize, `PluginAction::CloseWindow` (which
-//!   calls [`PluginWindowHost::close_gui`]). The answers (`GuiOpened`, `GuiSizeRequest`, `GuiClosed`)
-//!   are in `App::device_events` for the frame in which they arrived.
-//!
-//! Thread: UI thread.
+//! [`EngineSync`](crate::engine_sync::EngineSync) asks a [`DeviceHost`] for processors,
+//! reads their status and latency, and drains events that callers can act on.
+//! [`PluginHost`] runs verified packaged CLAPs directly and hosts external plugins
+//! in bridge processes.
 
 use std::collections::{BTreeMap, HashSet};
 use std::num::NonZeroU32;
@@ -618,7 +593,7 @@ impl PluginHost {
         }
     }
 
-    pub(crate) fn for_test_inventory(
+    fn for_test_inventory(
         config: PluginManagerConfig,
         inventory: Arc<komponist_plugins::bundled_clap::BundledClap>,
     ) -> Self {
@@ -627,6 +602,94 @@ impl PluginHost {
             project_dir: None,
             external: HashSet::new(),
         }
+    }
+
+    /// A fresh host for headless tests over the locally built, verified fixture catalog.
+    #[doc(hidden)]
+    pub fn headless_fixture() -> Self {
+        use std::sync::OnceLock;
+        use std::time::{Duration, Instant};
+
+        use komponist_plugins::bundled_clap::BundledClap;
+
+        struct Fixtures {
+            config: komponist_plugins::PluginManagerConfig,
+            inventory: Option<Arc<BundledClap>>,
+            _cache_dir: tempfile::TempDir,
+        }
+
+        fn open(fixtures: &Fixtures) -> PluginHost {
+            let Some(inventory) = &fixtures.inventory else {
+                return PluginHost::without_bundled_clap(fixtures.config.clone());
+            };
+            let mut host =
+                PluginHost::for_test_inventory(fixtures.config.clone(), Arc::clone(inventory));
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while host.manager().is_scanning() {
+                host.poll();
+                assert!(Instant::now() < deadline, "headless fixture scan timed out");
+                if host.manager().is_scanning() {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            assert!(
+                !fixtures_required()
+                    || host
+                        .catalog()
+                        .entries()
+                        .iter()
+                        .any(|entry| { komponist_plugins::requires_bundled(&entry.plugin) }),
+                "the required headless fixture scan found no verified CLAP devices"
+            );
+            host
+        }
+
+        fn fixtures_required() -> bool {
+            std::env::var_os("KOMPONIST_REQUIRE_FIXTURES").is_some_and(|value| value == "1")
+        }
+
+        static FIXTURES: OnceLock<Fixtures> = OnceLock::new();
+        let fixtures = FIXTURES.get_or_init(|| {
+            let cache_dir = tempfile::tempdir().expect("create headless fixture cache");
+            let mut config = komponist_plugins::PluginManagerConfig::defaults(cache_dir.path());
+            let workspace_target =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+            let candidate = std::env::current_exe().ok().and_then(|exe| {
+                exe.ancestors()
+                    .skip(1)
+                    .take(7)
+                    .map(|folder| folder.join(format!("komponist{}", std::env::consts::EXE_SUFFIX)))
+                    .find(|path| path.is_file())
+            });
+            let root = workspace_target
+                .join("test-plugins")
+                .join(std::env::consts::OS)
+                .join("headless-bundles");
+            let inventory = candidate.and_then(|bridge| {
+                let digest = std::fs::read_to_string(root.join("manifest.sha256")).ok()?;
+                config.bridge_exe = bridge;
+                let inventory = BundledClap::open_fixture(
+                    &root.join("bundled-clap"),
+                    cache_dir.path(),
+                    digest.trim(),
+                )
+                .expect("open the test fixture inventory");
+                Some(Arc::new(inventory))
+            });
+            assert!(
+                inventory.is_some() || !fixtures_required(),
+                "headless fixtures require scripts/build-test-plugins.sh and the componist binary"
+            );
+            let fixtures = Fixtures {
+                config,
+                inventory,
+                _cache_dir: cache_dir,
+            };
+            // Seed the cache once before concurrent app tests construct individual hosts.
+            let _ = open(&fixtures);
+            fixtures
+        });
+        open(fixtures)
     }
 
     /// The plugin manager (diagnostics and tests; processors come only through
@@ -1051,150 +1114,5 @@ impl DevicePresentationHost for PluginHost {
 
     fn note_names(&self, device: DeviceId) -> &[NoteName] {
         self.manager.note_names(device)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::app::App;
-    use komponist_model::plugin_assets::AssetLink;
-
-    const SETUP: ProcessorSetup = ProcessorSetup {
-        sample_rate: 48_000.0,
-        max_block: komponist_engine::MAX_BLOCK,
-    };
-
-    fn shipped(host: &PluginHost, name: &str) -> Option<PluginRef> {
-        let id = format!("org.klang-studio.komponist.{name}");
-        let plugin = host
-            .catalog()
-            .entries()
-            .iter()
-            .find(|entry| {
-                entry.plugin.id == id && komponist_plugins::requires_bundled(&entry.plugin)
-            })
-            .map(|entry| entry.plugin.clone());
-        if plugin.is_none() {
-            assert!(
-                !std::env::var_os("KOMPONIST_REQUIRE_FIXTURES").is_some_and(|value| value == "1"),
-                "required bundled fixture {id} is missing from the catalog"
-            );
-            eprintln!("skipping: build {id} with scripts/build-test-plugins.sh");
-        }
-        plugin
-    }
-
-    #[test]
-    fn the_fixture_catalog_resolves_shipped_devices_and_reports_unavailable_plugins() {
-        let mut host = App::headless_plugin_host();
-        let Some(hexa) = shipped(&host, "hexa") else {
-            return;
-        };
-        assert_eq!(host.catalog().entries().len(), 12);
-        assert_eq!(host.role(&hexa), Some(DeviceRole::Instrument));
-        let demo = komponist_model::fixtures::demo_project();
-        for track in &demo.tracks[..3] {
-            let (_, instrument) = track.channel.instrument().unwrap();
-            assert_eq!(
-                host.role(&instrument.plugin),
-                Some(DeviceRole::Instrument),
-                "{} ({}) must resolve in the staged package",
-                instrument.plugin.id,
-                instrument.plugin.module
-            );
-        }
-        let mut unavailable = hexa.clone();
-        unavailable.id = "de.klang-studio.test.unavailable".into();
-        unavailable.module = "not-installed.clap".into();
-        let (project, _) = komponist_model::edits::add_track(
-            &Project::new("Fixture inventory"),
-            komponist_model::edits::NewTrack {
-                name: None,
-                hue: None,
-                instrument: Some(unavailable.clone()),
-                index: None,
-                arm_exclusive: false,
-            },
-        )
-        .unwrap();
-        assert_eq!(host.role(&unavailable), None);
-        let missing = host.missing_plugins(&project);
-        assert_eq!(missing.len(), 1);
-        assert_eq!(missing[0].plugin, unavailable);
-        assert_eq!(missing[0].role, DeviceRole::Instrument);
-        let device = &project.tracks[0].channel.devices[0];
-        assert!(host.create_processor(device, SETUP).is_none());
-        assert_eq!(host.status(device.id), DeviceStatus::Missing);
-        assert!(host.params(device.id).is_none());
-        assert!(!host.has_gui(device.id));
-        host.release(device.id);
-        assert_eq!(host.status(device.id), DeviceStatus::Ok);
-    }
-
-    #[test]
-    fn the_shipped_sampler_loads_linked_audio_into_its_authored_pad_bank() {
-        use komponist_plugin_api::device_assets::AssetStatus;
-        use std::time::Instant;
-
-        let host = App::headless_plugin_host();
-        let Some(sampler) = shipped(&host, "sampler") else {
-            return;
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let kit = komponist_audiofile::fixtures::write_kit(dir.path()).unwrap();
-        let (project, _) = komponist_model::edits::add_track(
-            &Project::new("Sampler assets"),
-            komponist_model::edits::NewTrack {
-                name: None,
-                hue: None,
-                instrument: Some(sampler),
-                index: None,
-                arm_exclusive: false,
-            },
-        )
-        .unwrap();
-        let device = project.tracks[0].channel.devices[0].id;
-        let links = kit
-            .iter()
-            .take(2)
-            .enumerate()
-            .map(|(pad, path)| (pad as u32, AssetLink::new(path, None)))
-            .collect();
-        let project =
-            komponist_model::edits::set_device_asset_links(&project, device, links).unwrap();
-        let mut app = App::headless(project);
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            app.step();
-            let host = app.engine().host();
-            if host.status(device) == DeviceStatus::Ok
-                && host.asset_slots(device).is_some_and(|assets| {
-                    assets
-                        .slots
-                        .iter()
-                        .filter(|slot| slot.status == AssetStatus::Ready)
-                        .count()
-                        == 2
-                })
-            {
-                let layout = host.native_layout(device).unwrap();
-                let bank = layout.pad_bank.as_ref().unwrap();
-                assert_eq!(
-                    bank.pads
-                        .iter()
-                        .take(2)
-                        .map(|pad| pad.note)
-                        .collect::<Vec<_>>(),
-                    [36, 37]
-                );
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the sampler fixture did not load its kit"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
     }
 }

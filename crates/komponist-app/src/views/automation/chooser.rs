@@ -19,9 +19,9 @@ use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::{focus, icons, px, widgets};
 
 use super::{lanes, metrics as m};
-use crate::engine_sync::EngineSync;
 use crate::ui_state::ParamTouch;
 use crate::views::{ViewCtx, catalog_plugin_name, elided_galley};
+use komponist_session::engine_sync::EngineSync;
 
 #[derive(Clone)]
 pub(crate) struct Target {
@@ -851,7 +851,7 @@ mod tests {
         use komponist_model::edits::{NewDevice, insert_device};
         use komponist_model::{ChannelRef, DeviceRole};
 
-        let host = crate::App::headless_plugin_host();
+        let host = komponist_session::device_host::PluginHost::headless_fixture();
         let Some(hall) = host
             .manager()
             .catalog()

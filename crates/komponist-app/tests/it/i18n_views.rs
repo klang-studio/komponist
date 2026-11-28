@@ -511,7 +511,7 @@ fn the_routing_ui_speaks_english() {
 fn english_chain() -> App {
     use komponist_app::PluginAction;
     use komponist_app::actions::DropTarget;
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     let hexa = crate::common::shipped_plugin(&host, "org.klang-studio.komponist.hexa").unwrap();
     let (project, track, device) = crate::common::instrument_project("Language", hexa);
     let mut app = App::headless(project).with_lang(Lang::En);

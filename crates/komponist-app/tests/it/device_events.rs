@@ -11,11 +11,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use komponist_app::actions::{EditAction, PluginAction, ProjectAction, SettingsAction};
-use komponist_app::device_host::{
-    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
-    PluginCatalogHost, PluginWindowHost, PresetHost, ProcessorHost,
-};
-use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::{PluginView, StatusKind};
 use komponist_app::{Action, App};
@@ -36,6 +31,11 @@ use komponist_processor::processor::{ParameterEdit, ParameterEditKind};
 use komponist_processor::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
+use komponist_session::device_host::{
+    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
+    PluginCatalogHost, PluginWindowHost, PresetHost, ProcessorHost,
+};
+use komponist_session::engine_sync::EngineSync;
 
 /// What the test scripts and observes.
 #[derive(Default)]

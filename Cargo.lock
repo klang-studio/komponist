@@ -2670,6 +2670,7 @@ dependencies = [
  "komponist-plugin-api",
  "komponist-plugins",
  "komponist-processor",
+ "komponist-session",
  "komponist-tokens",
  "komponist-ui",
  "libc",
@@ -3234,6 +3235,21 @@ dependencies = [
  "komponist-i18n",
  "komponist-model",
  "komponist-processor",
+]
+
+[[package]]
+name = "komponist-session"
+version = "0.2.0"
+dependencies = [
+ "assert_no_alloc",
+ "komponist-audio",
+ "komponist-engine",
+ "komponist-ipc",
+ "komponist-model",
+ "komponist-plugin-api",
+ "komponist-plugins",
+ "komponist-processor",
+ "tempfile",
 ]
 
 [[package]]

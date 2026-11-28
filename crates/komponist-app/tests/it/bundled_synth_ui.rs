@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::Queryable as _};
 use komponist_app::actions::{DropTarget, EditAction};
-use komponist_app::device_host::PluginCatalogHost;
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, PluginAction, UiAction};
 use komponist_i18n::Lang;
@@ -13,6 +12,7 @@ use komponist_model::edits::{self, NewTrack};
 use komponist_model::project::SavedPluginState;
 use komponist_model::{Device, DeviceId, PluginRef, Project};
 use komponist_plugins::{CatalogEntry, PluginManagerEvent, requires_bundled};
+use komponist_session::device_host::PluginCatalogHost;
 
 use crate::acceptance_support::{click, drag, harness, rect_of};
 use crate::bundled_current::scan;

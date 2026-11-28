@@ -895,7 +895,9 @@ impl App {
             } => self.engine.macro_value_command(
                 track,
                 index,
-                crate::engine_sync::MacroValueEdit::AutomationOverride(value.clamp(0.0, 1.0)),
+                komponist_session::engine_sync::MacroValueEdit::AutomationOverride(
+                    value.clamp(0.0, 1.0),
+                ),
             ),
             command => command,
         };

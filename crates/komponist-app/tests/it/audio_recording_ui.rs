@@ -390,10 +390,10 @@ fn capture_device_choices_distinguish_disabled_default_and_disconnected() {
 
 #[test]
 fn reselecting_the_same_input_retries_saving_settings() {
-    use komponist_app::engine_sync::EngineSync;
     use komponist_app::settings::Settings;
     use komponist_audio::{DeviceId, HostKind, InputConfig};
     use komponist_model::Document;
+    use komponist_session::engine_sync::EngineSync;
 
     let dir = crate::export::scratch("capture-settings-write");
     let path = dir.join("settings.json");
@@ -413,7 +413,9 @@ fn reselecting_the_same_input_retries_saving_settings() {
     let previous_file = path.with_extension("backup");
     std::fs::rename(&path, &previous_file).unwrap();
     std::fs::create_dir(&path).unwrap();
-    let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let engine = EngineSync::null(Box::new(
+        komponist_session::device_host::PluginHost::headless_fixture(),
+    ));
     let (project, _) = audio(AudioInput::None);
     let mut app = App::new(Document::new(project), engine, settings, Some(path.clone()));
     let choose = || Action::Settings(SettingsAction::SetAudioInput(Some(other.clone())));
@@ -432,10 +434,10 @@ fn reselecting_the_same_input_retries_saving_settings() {
 
 #[test]
 fn failed_track_input_selection_keeps_the_previous_route_and_device() {
-    use komponist_app::engine_sync::EngineSync;
     use komponist_app::settings::Settings;
     use komponist_audio::{DeviceId, HostKind, InputConfig, StreamConfig};
     use komponist_model::Document;
+    use komponist_session::engine_sync::EngineSync;
 
     let dir = crate::export::scratch("capture-settings-rollback");
     let path = dir.join("settings.json");
@@ -450,7 +452,9 @@ fn failed_track_input_selection_keeps_the_previous_route_and_device() {
     settings.audio_input = Some(previous.clone());
     settings.save(&path).unwrap();
 
-    let mut engine = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let mut engine = EngineSync::null(Box::new(
+        komponist_session::device_host::PluginHost::headless_fixture(),
+    ));
     engine.set_audio_input(Some(previous.clone())).unwrap();
     // Reject the stream launch without asking a hardware backend to open a device.
     assert!(
