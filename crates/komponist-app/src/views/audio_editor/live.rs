@@ -1,12 +1,12 @@
 //! Live recording views use bounded telemetry, never the unfinished WAV or its file cache.
 use super::{AudioEditor, metrics as m};
-use crate::recording::audio_record::AudioRecording;
 use crate::ui_state::{FocusArea, UiState};
 use crate::views::ViewCtx;
 use egui::{Id, Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
-use komponist_engine::recording::RecordingPeak;
 use komponist_model::{Project, Tick, Track, TrackKind};
+use komponist_session::recording::audio::AudioRecording;
 use komponist_session::recording::midi::Recording;
+use komponist_session::recording::writer::RecordingPeak;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, size, space, typography};
 use komponist_ui::timeline::{
@@ -216,7 +216,7 @@ fn live_toolbar(
     ctx: &mut ViewCtx<'_>,
     rect: Rect,
     track: &Track,
-    progress: Option<&komponist_engine::recording::RecordingProgress>,
+    progress: Option<&komponist_session::recording::writer::RecordingProgress>,
     rate: u32,
 ) {
     px::fill(ui.painter(), rect, 0.0, color32(color::SURFACE_2));
@@ -367,7 +367,7 @@ mod tests {
                 ..*p
             })
             .collect();
-        let progress = komponist_engine::recording::RecordingProgress {
+        let progress = komponist_session::recording::writer::RecordingProgress {
             track: audio,
             path: "/preview/Take1.wav".into(),
             start,

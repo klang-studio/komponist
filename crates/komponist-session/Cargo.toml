@@ -22,6 +22,7 @@ komponist-plugin-api.workspace = true
 komponist-plugins.workspace = true
 komponist-processor.workspace = true
 tempfile.workspace = true
+hound.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -30,4 +31,5 @@ libc.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+komponist-engine = { workspace = true, features = ["recording-test-support"] }
 assert_no_alloc.workspace = true

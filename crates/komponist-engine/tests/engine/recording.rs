@@ -1,14 +1,15 @@
 //! Synthetic audio capture only. Every engine callback is guarded against allocation/free.
 use crate::common::*;
 use komponist_engine::compile::{self, NoEnv};
-use komponist_engine::recording::{
-    self, RecordingConfig, RecordingError, RecordingFormat, RecordingResult, RecordingSession,
-    RecordingTrack,
-};
+use komponist_engine::recording::{Recorder, RecordingTrack};
 use komponist_engine::{AudioInputBuffer, AudioInputRoutes, Command, LiveInput};
 use komponist_model::edits::{self, ChannelProp, NewAudioTrack, NewBus, TrackProp};
 use komponist_model::{
     AudioInput, HardwareInput, MonitorMode, Project, Tick, TickRange, TrackId, TrackOutput,
+};
+use komponist_session::recording::writer::{
+    self as recording, RecordingConfig, RecordingError, RecordingFormat, RecordingResult,
+    RecordingSession,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -63,7 +64,7 @@ fn prepare(
     p: &Project,
     tracks: &[TrackId],
     format: RecordingFormat,
-) -> (Scratch, Box<recording::Recorder>, RecordingSession) {
+) -> (Scratch, Box<Recorder>, RecordingSession) {
     let directory = directory();
     let (rec, session) = recording::prepare(RecordingConfig {
         directory: directory.0.clone(),
@@ -288,7 +289,7 @@ fn checkpoint_and_relocation_keep_capture_running_and_a_failed_move_keeps_old_pa
     assert!(checkpoint[0].path.starts_with(&_dir.0));
     let destination = _dir.0.join("Takes");
     let moved = session.relocate(&destination).unwrap();
-    assert!(moved[0].path.starts_with(&destination));
+    assert!(moved[&checkpoint[0].path].starts_with(&destination));
     assert!(!checkpoint[0].path.exists());
     feed(&mut rig, &[0.25; 128], 0, 0, false);
     rig.send(Command::Stop);

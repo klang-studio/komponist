@@ -948,10 +948,10 @@ The session owns the open `Document` from `komponist-model`, its file path and `
 On project replacement the app closes plugin windows and discards the take before the session
 resets the engine and sets the new path base. After a successful Save As, the session adopts
 the rebased document and updates live asset links in the existing processors.
-The app recording controller handles count-in, audio takes, and the combined commit. The
-`komponist-session::recording` module captures MIDI notes and automation segments, builds previews
-and prepares document edits. The app supplies localized MIDI take names and routes transport and
-macro-learning events to the capture code.
+The app recording controller handles count-in, routes transport and macro-learning events,
+and supplies localized take names. The `komponist-session::recording` module captures MIDI notes
+and automation segments, writes and finalizes WAVs, and commits the resulting edits in a single
+undo step. The engine supplies bounded sample and timestamp queues for the WAV worker.
 The export controller owns the render lifecycle and export history. Plugin frame state owns
 window focus and bridge activation. The audio settings controller runs driver and device
 enumeration and supplies the inventory to the settings dialog.

@@ -13,7 +13,8 @@ crates.
 - [src/graph.rs](src/graph.rs) — Processes routing, taps and aligned inputs.
 - [src/workers.rs](src/workers.rs) — Schedules independent jobs in parallel.
 - [src/audio/](src/audio/) — Handles clip playback and background read-ahead.
-- [src/recording.rs](src/recording.rs) — Queues captured input and writes recordings on a worker.
+- [src/recording.rs](src/recording.rs) — Queues captured input for the
+  [session WAV worker](../komponist-session/src/recording/writer.rs).
 - [src/export.rs](src/export.rs) — Renders and writes WAV output.
 
 ## How it works

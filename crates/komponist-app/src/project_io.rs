@@ -407,7 +407,7 @@ impl App {
             Ok((path, (project, repairs))) => {
                 let project_dir =
                     komponist_model::paths::absolute(path.parent().unwrap_or(Path::new("")));
-                crate::recording::audio_record::reclaim_abandoned_takes(&project_dir);
+                komponist_session::recording::audio::reclaim_abandoned_takes(&project_dir);
                 self.open_document(Document::new(project), Some(path.clone()));
                 if !repairs.is_empty() {
                     eprintln!("komponist: {}: repaired on open: {repairs}", path.display());
@@ -598,7 +598,7 @@ impl App {
         };
         let mut document = self.session.document().clone();
         document.rewrite_untracked(|project| {
-            crate::project_assets::rebase_project_links(
+            komponist_session::project_assets::rebase_project_links(
                 project,
                 old_dir.as_deref(),
                 &new_dir,

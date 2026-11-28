@@ -5,16 +5,8 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
-/// Unsaved takes live in `<music>/komponist/Recordings` (the folder name is language-neutral; the
-/// Music folder comes from `crate::dirs::music_dir`). Documents reference takes by absolute path,
-/// so takes left in an older `komponist/Aufnahmen` folder keep working and are never moved.
-pub(super) fn provisional_root() -> Option<PathBuf> {
-    crate::dirs::recordings_dir()
-}
-
-pub(super) fn directory(root: &Path, name: &str) -> io::Result<PathBuf> {
+pub(super) fn directory(root: &Path, name: &str, date: &str) -> io::Result<PathBuf> {
     fs::create_dir_all(root)?;
     let name: String = name
         .chars()
@@ -26,10 +18,15 @@ pub(super) fn directory(root: &Path, name: &str) -> io::Result<PathBuf> {
     } else {
         name.trim()
     };
-    let date = crate::dialogs::format::local(SystemTime::now()).map_or_else(
-        || "recording".into(),
-        |date| format!("{:04}-{:02}-{:02}", date.year, date.month, date.day),
-    );
+    let date = if !date.is_empty()
+        && date
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'-')
+    {
+        date
+    } else {
+        "recording"
+    };
     for index in 0..10_000 {
         let suffix = if index == 0 {
             String::new()
@@ -242,9 +239,9 @@ pub(super) fn canonical_copies(copies: &BTreeMap<PathBuf, PathBuf>) -> BTreeMap<
 /// the header and copying exactly the flushed prefix avoids saving a concurrently changing
 /// RIFF length. Short cycle prefixes receive the same silent tail as finalized takes.
 pub(super) fn checkpoint(
-    takes: &[komponist_engine::recording::RecordedTake],
+    takes: &[crate::recording::writer::RecordedTake],
     target: &Path,
-) -> io::Result<Vec<komponist_engine::recording::RecordedTake>> {
+) -> io::Result<Vec<crate::recording::writer::RecordedTake>> {
     ensure_takes_folder(target)?;
     let mut created = Vec::new();
     let result = (|| {
@@ -417,10 +414,12 @@ mod tests {
     #[test]
     fn recording_directories_are_unique_and_cannot_escape_the_root() {
         let root = scratch();
-        let first = directory(&root, "../../Song/").unwrap();
-        let second = directory(&root, "../../Song/").unwrap();
+        let first = directory(&root, "../../Song/", "2026-11-28").unwrap();
+        let second = directory(&root, "../../Song/", "2026-11-28").unwrap();
+        let unsafe_date = directory(&root, "Song", "../../other/root").unwrap();
         assert_ne!(first, second);
         assert_eq!(first.parent(), Some(root.as_path()));
+        assert_eq!(unsafe_date.parent(), Some(root.as_path()));
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -441,7 +440,7 @@ mod tests {
             writer.write_sample(123_i32).unwrap();
         }
         writer.flush().unwrap();
-        let take = komponist_engine::recording::RecordedTake {
+        let take = crate::recording::writer::RecordedTake {
             track: komponist_model::TrackId(1),
             path: path.clone(),
             frames: 64,

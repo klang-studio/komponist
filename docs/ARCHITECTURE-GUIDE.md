@@ -748,7 +748,7 @@ created outside the callback. For each segment:
 | `macros.rs` | track macros (one control driving several parameters) |
 | `metronome.rs` | the click |
 | `audio/` | audio clips: plan, read-ahead streamer, rings, voices, stretch (section 16) |
-| `recording.rs` | capturing input and the writer thread |
+| `recording.rs` | bounded realtime capture queues and their read endpoint |
 | `export.rs`, `export/track.rs` | offline rendering to WAV, track flattening |
 | `garbage.rs` | the outbox that sends retired objects back to the UI thread |
 | `testing.rs` | test processors (`TestSine`, `TestGain`, …) |
@@ -959,7 +959,7 @@ Useful flags: `--demo`, `--null-audio`, `--lang de|en`, `--scale F`, `--open-plu
 | `dialogs/`, `windows/`, `panels/` | settings, export, file dialogs; plugin frame windows; transport bar, status bar, dock tabs |
 | `shell.rs`, `layout.rs` | the main window layout |
 | `project_io.rs`, `settings.rs`, `dirs.rs` | project lifecycle and recent projects, settings, platform folders |
-| `recording/` | count-in, audio capture, and coordination of MIDI, audio and automation takes |
+| `recording/` | count-in, event routing, and UI feedback for MIDI, audio and automation takes |
 | `audio_settings.rs` | driver and device inventory for audio settings |
 | `export*.rs` | WAV export coordination |
 | `showcase.rs` | the "Night Drive" demo project (`showcase_project()`) |

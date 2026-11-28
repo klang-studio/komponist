@@ -9,6 +9,9 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+recording-test-support = []
+
 [dependencies]
 komponist-processor.workspace = true
 komponist-model.workspace = true
@@ -26,3 +29,5 @@ komponist-rt.workspace = true
 # install `assert_no_alloc::AllocDisabler`; a no-op in release builds).
 assert_no_alloc.workspace = true
 
+[dev-dependencies]
+komponist-session.workspace = true

@@ -812,7 +812,7 @@ impl App {
         &mut self,
         project: &Project,
         playhead: Tick,
-        recordings: &mut crate::recording::audio_record::StagedRecordings,
+        recordings: &mut komponist_session::recording::audio::StagedRecordings,
     ) -> Result<Option<Project>, ()> {
         let mut project = project.clone();
         let mut changed = false;
@@ -845,7 +845,7 @@ impl App {
             changed = true;
         }
         if let Some(next) = recordings
-            .project_with_audio_take(&project, self.lang)
+            .project_with_audio_take(&project, &crate::recording::MidiTakeNames(self.lang))
             .map_err(|error| {
                 self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
             })?
@@ -877,16 +877,16 @@ impl App {
             }
             return;
         };
-        // The take is an undo step of its own, also in the middle of a drag.
-        self.session.document_mut().end_gesture();
         let label = commit.label().to_owned();
-        let Some(clips) = self.apply_with(&label, |p| {
-            let project = automation.apply(p)?;
-            commit.apply(&project)
-        }) else {
+        let Some(applied) = self.commit_recorded_take(
+            &label,
+            Some(&automation),
+            std::slice::from_ref(&commit),
+            &[],
+        ) else {
             return;
         };
-        if let Some(&first) = clips.first() {
+        if let Some(&first) = applied.clips.first() {
             self.ui_action(UiAction::OpenClip(first));
         }
         if commit.incomplete() {
