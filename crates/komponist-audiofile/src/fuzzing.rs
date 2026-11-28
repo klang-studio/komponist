@@ -59,11 +59,10 @@ pub fn audio_file(path: &Path, seek: u64) {
         let peaks = PeakData::from_decoded(&decoded);
         assert_eq!(peaks.channels(), decoded.channels.len());
         assert_eq!(peaks.frames(), frames as u64);
-    }
-    if let Ok(mut file) = AudioFile::open(path)
-        && let Ok(peaks) = PeakData::from_file(&mut file)
-    {
-        assert_eq!(peaks.channels(), file.info().channels);
+        // Streamed peaks read the file to its end: only for a file the whole-file decode found
+        // short enough. They are the peaks of the same samples.
+        let mut file = AudioFile::open(path).expect("the file opened for the whole-file decode");
+        assert_eq!(PeakData::from_file(&mut file).ok(), Some(peaks));
     }
 }
 

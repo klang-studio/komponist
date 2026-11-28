@@ -93,8 +93,9 @@ pub fn plugin_messages(bytes: &[u8]) {
         device_assets::edit_state::Edits::decode,
         |v, out| v.encode(out),
     );
-    if let Some(list) = device_canvas::DisplayList::decode(bytes) {
-        let again = list.encode().expect("a decoded display list encodes");
+    // Encoding may refuse a valid list: its floats can serialise longer than the input wrote them
+    // (`0` as `0.0`), past the size limit.
+    if let Some(again) = device_canvas::DisplayList::decode(bytes).and_then(|list| list.encode()) {
         let decoded = device_canvas::DisplayList::decode(&again).expect("and decodes again");
         assert_eq!(decoded.encode().as_ref(), Some(&again));
     }

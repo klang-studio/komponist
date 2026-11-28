@@ -574,7 +574,11 @@ mod tests {
             let mut blob = encode_state(&cid, &component, &controller);
             blob[24..32].copy_from_slice(&claimed.0.to_le_bytes());
             blob[32..40].copy_from_slice(&claimed.1.to_le_bytes());
-            let exact = claimed == (component.len() as u64, controller.len() as u64);
+            // Any partition of the payload is a valid blob; only the total must match.
+            let exact = (STATE_HEADER as u64)
+                .checked_add(claimed.0)
+                .and_then(|n| n.checked_add(claimed.1))
+                == Some(blob.len() as u64);
             proptest::prop_assert_eq!(decode_state(&blob).is_ok(), exact);
             check_state(&blob);
         }
