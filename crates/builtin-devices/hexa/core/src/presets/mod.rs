@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn presets_have_unique_names_and_valid_values() {
-        assert_eq!(PRESET_COUNT, 181);
+        assert_eq!(PRESET_COUNT, 182);
         let all: Vec<Preset> = presets().collect();
         assert_eq!(all.len(), PRESET_COUNT);
         assert_eq!((all[0].name, all[1].name), ("Init", "E-Piano"));
@@ -265,7 +265,7 @@ mod tests {
                 .enumerate()
                 .any(|(i, a)| active[i + 1..].iter().any(|b| b.target == a.target))
         };
-        let checks: [(&str, usize, usize); 27] = [
+        let checks: [(&str, usize, usize); 28] = [
             ("stereo", count(&stereo), 30),
             (
                 "filter",
@@ -278,6 +278,16 @@ mod tests {
                 8,
             ),
             ("LFO", count(&|p| !p.lfos.is_empty()), 30),
+            (
+                "smooth random LFO",
+                count(&|p| {
+                    p.lfos
+                        .as_slice()
+                        .iter()
+                        .any(|l| l.waveform == crate::LfoWaveform::SmoothRandom)
+                }),
+                1,
+            ),
             (
                 "modulation envelope",
                 count(&|p| !p.envelopes.is_empty()),
