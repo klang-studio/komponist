@@ -14,8 +14,6 @@ pub mod interp;
 pub mod layers;
 #[cfg(test)]
 mod lfo_baseline;
-#[cfg(test)]
-mod lfo_reference;
 pub mod lofi;
 pub mod modulation;
 pub mod pad;
