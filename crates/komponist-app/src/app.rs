@@ -21,7 +21,7 @@
 //! stderr). Saving takes a state snapshot of every bridged device first; [`App::shutdown`] shuts
 //! the bridges down.
 //!
-//! Engine events (step 1) feed the recording ([`crate::record`]): the count-in's end starts a
+//! Engine events (step 1) feed the [MIDI recording](komponist_session::recording::midi): the count-in's end starts a
 //! [`Recording`], captured notes and loop wraps grow it, Stop (Leertaste, Stop, R) commits it as one
 //! undo step and Esc discards it ([`TransportAction::DiscardTake`]); both drain the events still in
 //! flight first.
@@ -68,7 +68,6 @@ use crate::keymap::{self, Key, KeyChord, Keymap};
 use crate::meters::Meters;
 use crate::metrics;
 use crate::project_io::{self, RecentList};
-use crate::record::Recording;
 use crate::recording::RecordingController;
 use crate::settings::{PanelSettings, Settings};
 use crate::ui_state::{
@@ -80,6 +79,7 @@ use crate::windows::plugin_frame::{self, PluginFrames};
 use komponist_session::Session;
 use komponist_session::device_host::{DeviceHost, PluginHost};
 use komponist_session::engine_sync::{EngineSync, MidiChange};
+use komponist_session::recording::midi::Recording;
 
 /// How long a status bar message stays (`ks-view.js` `statusView`: 7000 ms).
 pub const STATUS_DURATION: Duration = Duration::from_secs(7);

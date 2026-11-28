@@ -21,7 +21,7 @@
 //!   implementations: [`device_host::PluginHost`] (hexa in process, everything else in bridges
 //!   of the plugin manager).
 //! - [`meters`]: meter ballistics fed from the engine once per frame.
-//! - [`record`]: [`record::Recording`], the take that grows while recording (WP-51).
+//! - [`recording`]: recording lifecycle and the take that grows while recording (WP-51).
 //! - [`step_rows`]: which rows a new step clip gets per instrument and how rows are labelled
 //!   (sampler pads "P1…", note names elsewhere; WP-54, WP-87).
 //! - [`settings`]: the settings file, `~/.config/komponist/settings.json`
@@ -72,7 +72,6 @@ pub mod platform;
 mod plugin_assets;
 mod project_assets;
 pub mod project_io;
-pub mod record;
 pub mod recording;
 pub mod recovery;
 mod samples;

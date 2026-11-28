@@ -1,12 +1,12 @@
 //! Live recording views use bounded telemetry, never the unfinished WAV or its file cache.
 use super::{AudioEditor, metrics as m};
-use crate::record::Recording;
 use crate::recording::audio_record::AudioRecording;
 use crate::ui_state::{FocusArea, UiState};
 use crate::views::ViewCtx;
 use egui::{Id, Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
 use komponist_engine::recording::RecordingPeak;
 use komponist_model::{Project, Tick, Track, TrackKind};
+use komponist_session::recording::midi::Recording;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, size, space, typography};
 use komponist_ui::timeline::{
@@ -420,7 +420,11 @@ mod tests {
     #[test]
     fn mixed_live_editor_follows_selected_recorded_track_and_audio_count_in() {
         let (mut app, audio, midi_id, audio_id) = fixture(Lang::En, true);
-        let midi = Recording::new(app.project(), Tick::ZERO, Lang::En);
+        let midi = Recording::new(
+            app.project(),
+            Tick::ZERO,
+            crate::recording::MidiTakeNames(Lang::En),
+        );
         assert_eq!(
             recording_area(app.project(), &app.ui, Some(&midi), Some(&audio)),
             Some(FocusArea::Waveform)

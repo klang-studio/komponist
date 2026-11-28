@@ -3,24 +3,33 @@
 pub mod audio_record;
 pub(crate) mod automation_capture;
 
+use std::collections::BTreeSet;
+
 use komponist_engine::EngineEvent;
 use komponist_engine::automation::EngineTarget;
 use komponist_i18n::Lang;
 use komponist_model::automation::{AutomationOwner, LaneId};
-use komponist_model::{Project, Tick};
+use komponist_model::{DeviceId, Project, Tick};
 
-use crate::record::{Commit, Recording};
 use audio_record::AudioRecording;
-use automation_capture::AutomationCapture;
-use komponist_session::engine_sync::{AutomationDraft, DraftOverlay};
+use komponist_session::engine_sync::DraftOverlay;
+use komponist_session::recording::automation::AutomationCapture;
+use komponist_session::recording::midi::{Commit, Recording, TakeNames};
 
-impl AutomationDraft for AutomationCapture {
-    fn completed_revision(&self) -> u64 {
-        self.completed_revision()
+#[derive(Debug)]
+pub(crate) struct MidiTakeNames(pub(crate) Lang);
+
+impl TakeNames for MidiTakeNames {
+    fn take(&self, number: u32, incomplete: bool) -> String {
+        if incomplete {
+            self.0.record_take_incomplete(number)
+        } else {
+            self.0.record_take(number)
+        }
     }
 
-    fn apply(&self, project: &Project) -> komponist_model::edits::EditResult {
-        self.apply(project)
+    fn live_clip(&self, take: &str) -> String {
+        self.0.record_clip(take)
     }
 }
 
@@ -29,6 +38,8 @@ pub(crate) struct RecordingController {
     midi: Option<Recording>,
     audio: audio_record::State,
     automation: AutomationCapture,
+    // Native writes intercepted for macro learning are ignored until the release.
+    learned_automation: BTreeSet<(DeviceId, u32)>,
     controls: Vec<(AutomationOwner, EngineTarget)>,
     automation_stop_pending: bool,
     record_from: Option<Tick>,
@@ -87,7 +98,7 @@ impl RecordingController {
     }
 
     pub(crate) fn start_midi(&mut self, project: &Project, at: Tick, lang: Lang) {
-        let midi = Recording::new(project, at, lang);
+        let midi = Recording::new(project, at, MidiTakeNames(lang));
         self.midi = midi.first().is_some().then_some(midi);
     }
 
@@ -115,7 +126,7 @@ impl RecordingController {
             } else {
                 project.loop_range.start
             };
-            self.midi = Some(Recording::new(project, start, lang));
+            self.midi = Some(Recording::new(project, start, MidiTakeNames(lang)));
         }
         if let Some(midi) = &mut self.midi {
             midi.interrupt(at, first_incomplete_lap, triggering_track, project);

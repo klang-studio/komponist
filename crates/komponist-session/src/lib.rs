@@ -3,6 +3,7 @@
 pub mod device_host;
 pub mod engine_sync;
 pub mod project_io;
+pub mod recording;
 mod session;
 
 pub use session::Session;
