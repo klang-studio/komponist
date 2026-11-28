@@ -398,7 +398,9 @@ fn smooth_random_lfo_glides_the_pitch_between_random_values() {
     // The pitch in windows of 25 ms: it wanders, but without the steps of sample-and-hold. At
     // most 1.5 · 2 · 3 Hz · 25 ms · 4.8 = 1.1 semitones from one window to the next.
     let pitches: Vec<f32> = smooth
-        .chunks_exact(400)
+        .as_chunks::<400>()
+        .0
+        .iter()
         .map(|window| 12.0 * (frequency(window) / 400.0).log2())
         .collect();
     let (low, high) = pitches
